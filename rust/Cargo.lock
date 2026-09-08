@@ -3925,6 +3925,7 @@ dependencies = [
  "sot-log",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
  "uuid",
  "vt100-ctt",
  "windows-sys 0.59.0",

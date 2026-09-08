@@ -340,11 +340,28 @@ pub enum StartMode {
 
 /// The wire phase string `workspace.list` reports (`WorkspaceListEntry.phase`)
 /// for a capsule workspace whose supervisor lane could not be reached at
-/// all — connect refused, the challenge proving foreign/undetermined, or a
-/// timeout (ADR 0042 L1a: "failure -> unreachable"). Distinct from every
+/// all — connect refused, an undetermined challenge, or a timeout (ADR
+/// 0042 L1a: "failure -> unreachable"). Distinct from every
 /// [`sot_log::wire::SupervisorPhase`] variant, which are all states of a
-/// lane that DID answer.
+/// lane that DID answer, and from [`FOREIGN_PHASE`] (ADR 0030 §8 decision
+/// 31c) below — a challenge that specifically proves foreign now gets its
+/// own phase rather than folding in here.
 pub const UNREACHABLE_PHASE: &str = "unreachable";
+
+/// The wire phase string for a capsule workspace whose supervisor lane
+/// DID answer — but with `version_skew`: it is held by a supervisor of
+/// ANOTHER build (ADR 0030 §8 decision 31c, ADR 0043 decision 31; ADR
+/// 0041 build boundary). This daemon can never attach, adopt, end, or
+/// destroy such a row — see `pair_verdict`'s own doc for the operator
+/// recovery. Deliberately its own phase rather than folding into
+/// [`UNREACHABLE_PHASE`]: the lane DID answer, which is exactly the fact
+/// `note_if_foreign` already detected and used to be discarded one line
+/// before the wire (2026-09-08 field incident) — this is that fact,
+/// finally on the wire. `phase_of` sets it on the SAME branch
+/// `note_if_foreign` already recognizes by text-matching "foreign" in
+/// `query_status`'s error — no new detection, only a new destination for
+/// a fact this daemon already had.
+pub const FOREIGN_PHASE: &str = "foreign";
 
 /// The wire phase string for a capsule workspace with no published
 /// voyage pointer (`<state_dir>/drawer.voyage`, `sot_log::pointer` —
@@ -916,7 +933,10 @@ mod runtime {
     /// short-circuits to `NEVER_STARTED_PHASE` ("stopped") BEFORE
     /// attempting a connect that cannot possibly succeed; only a
     /// workspace WITH a published pointer falls through to the real
-    /// query, where a failure stays `UNREACHABLE_PHASE`.
+    /// query, where an ordinary failure stays `UNREACHABLE_PHASE` and a
+    /// failure specifically proving the lane foreign (ADR 0030 §8
+    /// decision 31c) reports `FOREIGN_PHASE` instead — the lane DID
+    /// answer, just not to this daemon's build.
     pub fn phase_of(state_dir: &Path) -> &'static str {
         if let Some(phase) =
             super::phase_for_missing_pointer(sot_log::pointer::pointer_path(state_dir).is_file())
@@ -929,7 +949,9 @@ mod runtime {
             // (closing the handle) the instant this returns.
             Ok((report, _process)) => super::phase_str(report.phase),
             Err(e) => {
-                note_if_foreign(state_dir, &e);
+                if note_if_foreign(state_dir, &e) {
+                    return super::FOREIGN_PHASE;
+                }
                 tracing::debug!(state_dir = ?state_dir, error = %e, "capsule workspace: supervisor lane unreachable");
                 super::UNREACHABLE_PHASE
             }
@@ -939,16 +961,20 @@ mod runtime {
     /// A supervisor of ANOTHER build answers the hello with `version_skew`
     /// and the client reports it as `foreign` (`query_status` erases the
     /// typed `ChallengeOutcome::Foreign` into a state string, hence the
-    /// text match). `phase_of` then reads "unreachable" and every start
-    /// decision treats the row as restartable, but a fresh spawn only
-    /// exits contended against the old fence -- the row is a dead end
-    /// until an operator acts. Say so ONCE per row per daemon lifetime
-    /// (`phase_of` is also the list poll's probe), with the recovery.
-    fn note_if_foreign(state_dir: &Path, e: &dyn std::fmt::Display) {
+    /// text match). Returns `true` on that match — `phase_of` reports
+    /// `FOREIGN_PHASE` rather than `UNREACHABLE_PHASE` on `true` (ADR 0030
+    /// §8 decision 31c: this fact used to be detected here and then
+    /// discarded one line before the wire; every start decision treated
+    /// the row as restartable, but a fresh spawn only exits contended
+    /// against the old fence -- the row is a dead end until an operator
+    /// acts). Also logs the recovery ONCE per row per daemon lifetime
+    /// (`phase_of` is also the list poll's probe) — the true/false return
+    /// is unconditional (every call), the warn log is not.
+    fn note_if_foreign(state_dir: &Path, e: &dyn std::fmt::Display) -> bool {
         use std::sync::{Mutex, OnceLock};
         let text = e.to_string();
         if !text.contains("foreign") {
-            return;
+            return false;
         }
         static NOTED: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
         let mut noted = NOTED.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
@@ -960,6 +986,7 @@ mod runtime {
                  supervise` process and attach the row again (the run leg and its agent survive and are adopted)"
             );
         }
+        true
     }
 
     /// `workspace.delete` on a capsule workspace (and the default row's
@@ -1671,7 +1698,12 @@ mod runtime {
                                 // A foreign holder is first met HERE when the row was
                                 // never probed before this leg (a fresh spawn that
                                 // exited contended) -- note it the same once-per-row way.
-                                Ok(Err(e)) => note_if_foreign(&state_dir, &e),
+                                // The bool return (does `phase_of` now report
+                                // FOREIGN_PHASE?) is unused here -- this is a
+                                // one-shot adoption probe, not the list poll.
+                                Ok(Err(e)) => {
+                                    note_if_foreign(&state_dir, &e);
+                                }
                                 Err(_) => {}
                             }
                         }
@@ -2582,6 +2614,26 @@ mod tests {
             SupervisorPhase::Terminal,
         ] {
             assert_ne!(phase_str(p), UNREACHABLE_PHASE);
+        }
+    }
+
+    #[test]
+    fn foreign_phase_is_distinct_from_every_other_phase() {
+        // ADR 0030 §8 decision 31c: a lane that answered but refused this
+        // daemon's build must never collide with "unreachable" (no answer
+        // at all), "stopped" (never started), or any answered lifecycle
+        // phase (the lane DID answer, unlike the other two).
+        use sot_log::wire::SupervisorPhase;
+        assert_ne!(FOREIGN_PHASE, UNREACHABLE_PHASE);
+        assert_ne!(FOREIGN_PHASE, NEVER_STARTED_PHASE);
+        for p in [
+            SupervisorPhase::Starting,
+            SupervisorPhase::Ready,
+            SupervisorPhase::Ending,
+            SupervisorPhase::EndedNoRespawn,
+            SupervisorPhase::Terminal,
+        ] {
+            assert_ne!(phase_str(p), FOREIGN_PHASE);
         }
     }
 

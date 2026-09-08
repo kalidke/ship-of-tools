@@ -47,6 +47,23 @@ comm_home() = _env_dir("SOT_COMM_HOME", joinpath(homedir(), ".sot-comm"))
 "Resolved runtime home for codex (honors `\$CODEX_HOME`)."
 codex_home() = _env_dir("CODEX_HOME", joinpath(homedir(), ".codex"))
 
+# ADR 0030 §8 "Installed comm scripts": these carried no stamp before this —
+# only a registry PROTOCOL_VERSION, no way to answer "what commit are the
+# scripts on THIS box actually from" (the send-deaf Windows bridge incident
+# had no way to state that). Best-effort, never throws: a release tarball or
+# a checkout with git unavailable gets "unknown" rather than failing the
+# whole install over a stamp nobody strictly needs to proceed.
+"Short git commit this checkout is at, or \"unknown\" when git is unavailable."
+function _repo_commit()
+    repo_root = normpath(joinpath(@__DIR__, ".."))
+    try
+        sha = readchomp(`git -C $repo_root rev-parse --short=9 HEAD`)
+        isempty(sha) ? "unknown" : sha
+    catch
+        "unknown"
+    end
+end
+
 # Top-level object keys of a JSON document, without taking a JSON dependency.
 # Used only to guard the codex hooks payload (see the call site for why an
 # unrecognized top-level key is catastrophic there). A regex over indented key
@@ -260,6 +277,13 @@ function install_comm(; clis = [:claude, :codex])
         end
     end
     @info "Installed comm scripts" dir = bin count = length(readdir(bin))
+
+    # ADR 0030 §8 "Installed comm scripts": invariant "the scripts on this
+    # box came from commit X" — a fact this crate had no way to state before
+    # this. Written on every install/update, so it always reflects the repo
+    # state the LAST `install_comm`/`update_comm` ran from, not merely the
+    # first.
+    write(joinpath(comm_home(), "VERSION"), _repo_commit())
 
     for cli in clis
         _install_adapter(Symbol(cli))

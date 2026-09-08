@@ -23,6 +23,7 @@
 #   sot-fe repl status [<workspace>]               [--timeout <s>]
 #   sot-fe type   <workspace> [<text>] [--stdin] [--enter] [--origin <who>] [--timeout <s>]
 #   sot-fe screen <workspace>                      [--timeout <s>]
+#   sot-fe version                                 [--endpoint <ep>] [--timeout <s>]
 #
 #   preview  — switch the FE to <workspace>, Files mode, and preview <path>.
 #   reveal   — switch + reveal <path> in the file tree (cursor it, no preview).
@@ -111,6 +112,29 @@
 #              line, blank rows kept) and `cols=.. rows=.. cursor=r,c
 #              runtime=..` to stderr; exit 2 on a daemon-reported error.
 #              This is the READ half of the read-before-write policy above.
+#   version  — what build the daemon at --endpoint (default: this box's own
+#              local daemon) is, plus every frontend attached to it and every
+#              capsule row's own pair verdict (ADR 0030 §8 decision 31, ADR
+#              0043 decision 31: "every runtime answers what build it is").
+#              One op (version.query) + workspace.list, no new probe. Prints a
+#              `component  version  build` table: one `frontend <client_id>`
+#              row per attached FE (op version.query's clients[]), one
+#              `<local|backend> daemon` row (label follows the --endpoint
+#              FLAG specifically, not its env fallbacks: no --endpoint =
+#              "local daemon", an explicit --endpoint = "backend daemon")
+#              with its own app_version + lane_build, one `row
+#              <slug>` per capsule workspace with its phase and a DERIVED
+#              verdict (`matches` / `MISMATCH` for "foreign" — never
+#              transmitted, computed here from workspace.list's own phase),
+#              and a `comm scripts` row from the local $SOT_COMM_HOME/VERSION
+#              file (install_comm's own stamp; "not installed" if absent).
+#              Run it once per daemon you want to see (local, then again
+#              with --endpoint for the backend) — this verb does not fan out
+#              to both itself. Against a daemon that predates version.query
+#              (the generic `{"error":"unknown op: version.query"}` reply,
+#              same op on a res frame), prints `unknown` for its app_version/
+#              lane_build rather than failing — that daemon simply predates
+#              this op — and still exits 0.
 #
 #   --fe <handle>  scope delivery to one FE by its sot-comm handle (sets the
 #                  wire `target`); absent = every FE acts (the badge floor).
@@ -764,6 +788,95 @@ send_pty_screen() {
         " runtime=\(.runtime)"' >&2
 }
 
+# ADR 0030 §8 decision 31 (ADR 0043 decision 31): what build the daemon at
+# --endpoint is, every frontend attached to it, and every capsule row's own
+# pair verdict — see this verb's own usage-block doc above for the full
+# column/fallback contract. One version.query + one workspace.list against
+# THIS ONE daemon; run again with a different --endpoint for the other side
+# (local vs backend) — this verb never fans out to both itself. Always
+# exits 0: an old daemon that predates version.query is a fact this prints,
+# never a failure.
+send_version() {
+    # Captured BEFORE `_need_endpoint` resolves/overwrites $ENDPOINT: this
+    # variable is set ONLY by the --endpoint flag itself (never by the env
+    # fallbacks `resolve_endpoint` separately consults) — an explicit
+    # --endpoint on THIS call means the caller pointed it somewhere on
+    # purpose, same convention as the box's own --endpoint doc above ("no
+    # --endpoint a session reaches its own box's rows").
+    local explicit=""
+    [ -n "$ENDPOINT" ] && explicit=1
+    _need_endpoint
+    export SEND_TIMEOUT="${TIMEOUT:-15}"
+    local daemon_label="local daemon"
+    [ -n "$explicit" ] && daemon_label="backend daemon"
+
+    local vreq vresp verr
+    vreq="$(jq -nc '{v:1, id:2, kind:"req", op:"version.query", payload:{}}')"
+    vresp="$(sot_send "$vreq" version.query || true)"
+    if [ -z "$vresp" ]; then
+        echo "ERROR: the daemon did not answer version.query within ${SEND_TIMEOUT}s via $ENDPOINT. TRANSPORT, not a version problem." >&2
+        exit 2
+    fi
+    verr="$(printf '%s' "$vresp" | jq -r '.payload.error // empty')"
+    local daemon_version daemon_build
+    if [ -n "$verr" ]; then
+        # The ONE shape every daemon this verb must never fail against:
+        # the generic unknown-op reply (server.rs's `other =>` catch-all,
+        # SAME op echoed back on a `res` frame) means "daemon predates
+        # this op" -- print `unknown`, keep going, still exit 0. Any OTHER
+        # refusal (a real error) is a genuine failure.
+        if [ "$verr" = "unknown op: version.query" ]; then
+            daemon_version="unknown"
+            daemon_build="unknown"
+        else
+            echo "ERROR: the daemon refused version.query: $verr [$(printf '%s' "$vresp" | jq -r '.payload.code // "?"')]" >&2
+            exit 2
+        fi
+    else
+        daemon_version="$(printf '%s' "$vresp" | jq -r '.payload.daemon.app_version')"
+        daemon_build="$(printf '%s' "$vresp" | jq -r '.payload.daemon.lane_build')"
+    fi
+
+    printf '%-20s %-28s %s\n' "component" "version" "build"
+    if [ -z "$verr" ]; then
+        printf '%s' "$vresp" | jq -r '(.payload.clients // [])[] | "frontend " + .client_id + "\t" + .app_version + "\t—"' \
+            | while IFS=$'\t' read -r comp ver build; do
+                printf '%-20s %-28s %s\n' "$comp" "$ver" "$build"
+            done
+    fi
+    printf '%-20s %-28s %s\n' "$daemon_label" "$daemon_version" "$daemon_build"
+
+    # workspace.list -- capsule rows only, one line each, with a DERIVED
+    # verdict (never transmitted): `MISMATCH` for phase "foreign" (ADR
+    # 0030 §8 decision 31c), `matches` for every other phase. A daemon
+    # that failed workspace.list too (rare -- version.query above already
+    # answered) just prints no row rather than compounding the error.
+    local wreq wresp
+    wreq="$(jq -nc '{v:1, id:2, kind:"req", op:"workspace.list", payload:{}}')"
+    wresp="$(sot_send "$wreq" workspace.list || true)"
+    if [ -n "$wresp" ] && [ -z "$(printf '%s' "$wresp" | jq -r '.payload.error // empty')" ]; then
+        printf '%s' "$wresp" | jq -r '
+            (.payload.workspaces // [])
+            | map(select(.runtime == "capsule"))
+            | .[]
+            | .slug + "\t" + (.phase // "unknown")
+              + "\t" + (if .phase == "foreign" then "MISMATCH" else "matches" end)
+        ' | while IFS=$'\t' read -r slug phase verdict; do
+            printf '%-20s %-28s %s\n' "row $slug" "$phase" "$verdict"
+        done
+    fi
+
+    # Installed comm scripts (ADR 0030 §8 decision 31, "Installed comm
+    # scripts"): `install_comm` stamps $SOT_COMM_HOME/VERSION with the
+    # repo commit at install time. This is a LOCAL read regardless of
+    # --endpoint -- the scripts running this very command are the ones
+    # being reported on, not whatever the remote daemon's own box has.
+    local comm_version_file="${SOT_COMM_HOME:-$HOME/.sot-comm}/VERSION"
+    local comm_version="not installed"
+    [ -f "$comm_version_file" ] && comm_version="$(cat "$comm_version_file")"
+    printf '%-20s %s\n' "comm scripts" "$comm_version"
+}
+
 case "$CMD" in
     preview|reveal)
         WS="${POS[0]:-}"; PATH_ARG="${POS[1]:-}"
@@ -977,6 +1090,9 @@ case "$CMD" in
         WS="${POS[0]:-}"
         [ -n "$WS" ] || { echo "usage: sot-fe screen <workspace> [--timeout <s>]" >&2; exit 1; }
         send_pty_screen "$WS"
+        ;;
+    version)
+        send_version
         ;;
     -h|--help|help) usage 0 ;;
     *) echo "ERROR: unknown subcommand '$CMD'" >&2; usage 1 ;;

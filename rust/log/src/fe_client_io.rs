@@ -1181,6 +1181,13 @@ impl<E: Endpoint> FeAttachClient<E> {
                     changed = true;
                 }
                 Ok(ClientEvent::Terminal(text)) => {
+                    // ADR 0030 §8 "Where it is shown": mirror the reason to
+                    // `tracing` here too, not only `self.status` (which a
+                    // caller must poll) -- this is the ONE place `self.dead`
+                    // ever becomes true, so it fires exactly once per
+                    // episode, same as every other one-shot log line in
+                    // this file.
+                    tracing::warn!(reason = %text, "fe attach client: reached a terminal state");
                     self.status = text;
                     self.dead = true;
                     changed = true;

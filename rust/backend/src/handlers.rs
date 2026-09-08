@@ -322,6 +322,37 @@ pub async fn handle_hello(
     Ok(out)
 }
 
+/// `version.query` (ADR 0030 §8 decision 31b, ADR 0043 decision 31): pure
+/// in-memory, no fan-out, no supervisor probe — this daemon's own version
+/// triple plus the roster of currently-attached frontends, sourced from
+/// their hellos. Never fails: an empty `clients` list from a daemon with
+/// zero OTHER attached frontends is a legitimate answer, not an error.
+pub async fn handle_version_query(
+    req_id: u64,
+    clients: &crate::clients::Clients,
+) -> Result<HandlerOutput> {
+    let daemon = sot_protocol::DaemonVersion {
+        app_version: sot_protocol::app_version(),
+        protocol: sot_protocol::PROTOCOL_VERSION,
+        lane_build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
+    };
+    let clients = clients
+        .snapshot()
+        .into_iter()
+        .map(|c| sot_protocol::ClientVersion {
+            client_id: c.client_id,
+            app_version: c.app_version,
+            protocol: c.protocol,
+            connected_at: c.connected_at,
+        })
+        .collect();
+    let res = sot_protocol::VersionQueryRes { daemon, clients };
+    Ok(vec![(
+        Frame::res(req_id, op::VERSION_QUERY, serde_json::to_value(res)?),
+        None,
+    )])
+}
+
 pub async fn handle_tree_root(
     req_id: u64,
     payload_json: serde_json::Value,

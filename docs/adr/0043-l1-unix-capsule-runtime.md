@@ -2,7 +2,7 @@
 
 **Status:** LU1–LU4 implemented (#212–#221); LU5 proposed (2026-09-06; amended the same day after one Codex design
 round — twelve findings, every one discharged in the text below; LU1b's landed
-mechanism folded into decisions 1–3; the LU2 decisions 11–16 and the LU3 decisions 17–20 added 2026-09-07; the LU5 decisions 23–26 added 2026-09-07 evening after the first backend trial and two Codex rounds; the LU6b decisions 27–30 (attach convergence) added 2026-09-07 late, from the measured local-session create latency — decision 24 reverses decision 16's survival clause and amends decision 21's kill-domain sentence). Design pass for the lane series that makes
+mechanism folded into decisions 1–3; the LU2 decisions 11–16 and the LU3 decisions 17–20 added 2026-09-07; the LU5 decisions 23–26 added 2026-09-07 evening after the first backend trial and two Codex rounds; the LU6b decisions 27–30 (attach convergence) added 2026-09-07 late, from the measured local-session create latency — decision 24 reverses decision 16's survival clause and amends decision 21's kill-domain sentence; decision 31, added 2026-09-08, lives in ADR 0030 §8 — this is only its cross-reference). Design pass for the lane series that makes
 ADR 0042's rule — "the capsule is the default runtime for every NEW session on
 EVERY host" — true on the Linux backend hosts, where today every row is still
 a tmux row and no session leaves a Ship's Log record. Builds on ADR 0037 (P1:
@@ -725,6 +725,26 @@ per-episode dead-pipe connects and its pre-attach backoff; the terminal
 `PointerAbsentOrCorrupt` while the supervisor is still starting; any wait parameter or
 knob; the first draft's additive latency arithmetic and its "the interval is the readiness
 latency" claim.
+
+## Decision 31 (added 2026-09-08) — cross-reference only, see ADR 0030 §8
+
+31. **Every runtime answers what build it is — the field bug this ADR's own
+    pair-verdict check (decision 22's `check_pair`) exists to prevent at
+    spawn time, closed for the ALREADY-RUNNING case too.** `phase_of`
+    (`capsule_workspace.rs`) already detected a foreign supervisor's refusal
+    (`version_skew`) via `note_if_foreign`'s text match and only ever logged
+    it once, folding the wire-visible outcome into the same `"unreachable"`
+    a merely-dead lane reports — this decision gives `workspace.list` a
+    THIRD phase, `"foreign"`, on that same detection, plus a new
+    `version.query` op that reports this daemon's own
+    `SUPERVISOR_LANE_BUILD_ID` and every attached frontend's version. Full
+    decision text, the version-string dirty-suffix fix, and the "where it is
+    shown" list (a foreign row's yellow tag, a capsule pane that names its
+    own death instead of showing blank, `sot-fe version`, and the installed
+    comm scripts' own version stamp) all live in ADR 0030 §8 — this ADR's
+    own build-boundary machinery (`pair_verdict`, `check_pair`,
+    `SUPERVISOR_LANE_BUILD_ID`) is exactly what decision 31 makes visible on
+    the wire, so it is cross-referenced here rather than duplicated.
 
 ## What this deletes
 

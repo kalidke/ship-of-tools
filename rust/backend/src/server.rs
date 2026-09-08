@@ -1499,8 +1499,13 @@ where
                     if let Ok(req) =
                         serde_json::from_value::<sot_protocol::HelloReq>(frame.payload.clone())
                     {
-                        client_guard =
-                            Some(clients.register(req.client_id, transport, peer.clone()));
+                        client_guard = Some(clients.register(
+                            req.client_id,
+                            transport,
+                            peer.clone(),
+                            req.app_version,
+                            req.protocol,
+                        ));
                     }
                 }
                 // Flip the per-connection auth flag based on THIS hello's token
@@ -1766,6 +1771,7 @@ where
             op::UPDATE_APPLY => {
                 crate::update::handle_update_apply(frame.id, &fe_command_tx).await
             }
+            op::VERSION_QUERY => handlers::handle_version_query(frame.id, &clients).await,
             op::WORKSPACE_DESTROY => {
                 handlers::handle_workspace_destroy(
                     frame.id,

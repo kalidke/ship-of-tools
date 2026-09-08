@@ -310,6 +310,18 @@ pub mod op {
     /// ride the standard error payload (`bad_port`, `dial_failed`) and the
     /// connection closes.
     pub const PROXY_CONNECT: &str = "proxy.connect";
+    /// Every runtime answers what build it is (ADR 0030 §8 decision 31,
+    /// cross-referenced as ADR 0043 decision 31). Empty request
+    /// (`VersionQueryReq`); pure in-memory, no fan-out, no supervisor probe
+    /// — `workspace.list` already probes every capsule row per call, so
+    /// this never duplicates that. Answers `VersionQueryRes { daemon,
+    /// clients }`: this daemon's own version triple, plus one entry per
+    /// currently-attached frontend (sourced from the hello each already
+    /// sent). An old daemon that predates this op answers the generic
+    /// unknown-op payload (`{"error": "unknown op: version.query"}` on a
+    /// `res` frame carrying this same op) — callers must treat that as
+    /// "daemon predates this op", not a failure.
+    pub const VERSION_QUERY: &str = "version.query";
 }
 
 /// Connect handshake. Per ADR 0010, every connect carries
@@ -1344,9 +1356,14 @@ pub struct WorkspaceListEntry {
     /// The capsule's supervisor-lane phase (ADR 0041 Lifecycle: STARTING |
     /// READY | ENDING | ENDED-NO-RESPAWN | TERMINAL, snake_case), `"stopped"`
     /// when its state directory was never created (no supervisor has ever
-    /// run for it), or `"unreachable"` when the lane could not be queried
-    /// at all — present only for `runtime == "capsule"` rows, same
-    /// reasoning as `state_dir`.
+    /// run for it), `"unreachable"` when the lane could not be queried at
+    /// all, or `"foreign"` (ADR 0030 §8 decision 31c) when it WAS queried
+    /// and answered — but refused this daemon's own build
+    /// (`sot_log::exchange::SUPERVISOR_LANE_BUILD_ID` mismatch,
+    /// `version_skew`): a row this daemon can never attach, adopt, end, or
+    /// destroy. Distinct from `"unreachable"` (no answer at all) even
+    /// though both start from the same failed query — present only for
+    /// `runtime == "capsule"` rows, same reasoning as `state_dir`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
 }
@@ -1853,6 +1870,49 @@ pub struct ProxyConnectRes {
     pub ok: bool,
 }
 
+/// `version.query` request — empty, always (ADR 0030 §8 decision 31b).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VersionQueryReq {}
+
+/// This daemon's own version triple, as `version.query` reports it.
+/// `lane_build` is `sot_log::exchange::SUPERVISOR_LANE_BUILD_ID` — what this
+/// daemon demands of any supervisor it attaches, adopts, or spawns; distinct
+/// from `app_version`, which is the product version (ADR 0030 §1) and never
+/// gates a capsule attach.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonVersion {
+    pub app_version: String,
+    pub protocol: u32,
+    pub lane_build: String,
+}
+
+/// One attached frontend, as `version.query` reports it — sourced from the
+/// hello that connection already sent (`HelloReq::app_version`/`protocol`),
+/// never a new probe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientVersion {
+    pub client_id: String,
+    pub app_version: String,
+    pub protocol: u32,
+    pub connected_at: u64,
+}
+
+/// `version.query` response (ADR 0030 §8 decision 31b, ADR 0043 decision
+/// 31). Deliberately carries no per-capsule-row build info: `workspace.list`
+/// already fans out to every supervisor per call, and its `phase` field
+/// (`"foreign"`, decision 31c) already says everything an operator acts on
+/// differently.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionQueryRes {
+    pub daemon: DaemonVersion,
+    /// `#[serde(default)]`: additive, mirrors every other collection field
+    /// in this protocol (`HelloRes` legacy tolerance below) — a peer that
+    /// answers this op but omits the roster still deserializes to no
+    /// clients rather than failing the whole response.
+    #[serde(default)]
+    pub clients: Vec<ClientVersion>,
+}
+
 #[cfg(test)]
 mod hello_version_tests {
     use super::{HelloReq, HelloRes};
@@ -1920,6 +1980,46 @@ mod hello_version_tests {
         let back: HelloReq = serde_json::from_str(&json).unwrap();
         assert_eq!(back.protocol, 2);
         assert_eq!(back.app_version, "0.2.0-dev+abc");
+    }
+}
+
+#[cfg(test)]
+mod version_query_tests {
+    use super::{ClientVersion, DaemonVersion, VersionQueryRes};
+
+    #[test]
+    fn version_query_res_round_trips() {
+        let res = VersionQueryRes {
+            daemon: DaemonVersion {
+                app_version: "0.6.0-dev+abc1234".into(),
+                protocol: 1,
+                lane_build: "abc1234def".into(),
+            },
+            clients: vec![ClientVersion {
+                client_id: "fe-1".into(),
+                app_version: "0.6.0-dev+abc1234".into(),
+                protocol: 1,
+                connected_at: 1_700_000_000,
+            }],
+        };
+        let json = serde_json::to_string(&res).unwrap();
+        let back: VersionQueryRes = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.daemon.lane_build, "abc1234def");
+        assert_eq!(back.clients.len(), 1);
+        assert_eq!(back.clients[0].client_id, "fe-1");
+    }
+
+    #[test]
+    fn version_query_res_missing_clients_deserializes_to_empty() {
+        // Mirrors `legacy_hello_res_defaults_to_preversioning`: a peer that
+        // answers this op but omits the roster must still deserialize
+        // rather than failing the whole response.
+        let json = serde_json::json!({
+            "daemon": { "app_version": "0.6.0", "protocol": 1, "lane_build": "abc" },
+        });
+        let res: VersionQueryRes = serde_json::from_value(json).expect("legacy payload deserializes");
+        assert!(res.clients.is_empty());
+        assert_eq!(res.daemon.app_version, "0.6.0");
     }
 }
 

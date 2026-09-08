@@ -27,9 +27,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// One connected frontend, as the backend sees it. `peer` and
-/// `connected_at` are captured now but not yet surfaced on the wire —
-/// they feed a future `clients.list` / presence op (hence `allow`ed).
+/// One connected frontend, as the backend sees it. `app_version`/`protocol`
+/// (ADR 0030 §8 decision 31b) are what `version.query` reports per client —
+/// sourced from the hello this connection already sent, never a new probe.
+/// `peer` is captured but not yet surfaced on the wire (hence `allow`ed).
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct ClientInfo {
@@ -41,6 +42,14 @@ pub struct ClientInfo {
     pub peer: Option<String>,
     /// Unix-epoch seconds the connection registered (hello time).
     pub connected_at: u64,
+    /// This client's `HelloReq::app_version`, captured at registration
+    /// (first hello on this connection — a later reconnect hello on the
+    /// SAME connection keeps the original `register` call, matching
+    /// `transport`/`peer`'s own lifetime).
+    pub app_version: String,
+    /// This client's `HelloReq::protocol`, same capture timing as
+    /// `app_version`.
+    pub protocol: u32,
 }
 
 #[derive(Default)]
@@ -73,6 +82,8 @@ impl Clients {
         client_id: impl Into<String>,
         transport: &'static str,
         peer: Option<String>,
+        app_version: impl Into<String>,
+        protocol: u32,
     ) -> ClientGuard {
         let serial = self.next_serial.fetch_add(1, Ordering::Relaxed);
         let info = ClientInfo {
@@ -80,6 +91,8 @@ impl Clients {
             transport,
             peer,
             connected_at: now_secs(),
+            app_version: app_version.into(),
+            protocol,
         };
         let (count, roster) = {
             let mut g = self.inner.lock().unwrap();
@@ -106,10 +119,9 @@ impl Clients {
         self.inner.lock().unwrap().by_conn.len()
     }
 
-    /// Snapshot of every connected client, for a future `clients.list` op
-    /// or presence display. Exercised by tests today.
-    #[allow(dead_code)]
-    pub fn list(&self) -> Vec<ClientInfo> {
+    /// Snapshot of every connected client — `version.query`'s `clients[]`
+    /// roster (ADR 0030 §8 decision 31b).
+    pub fn snapshot(&self) -> Vec<ClientInfo> {
         self.inner.lock().unwrap().by_conn.values().cloned().collect()
     }
 }
@@ -188,12 +200,12 @@ mod tests {
         let clients = Clients::new();
         assert_eq!(clients.count(), 0);
 
-        let g1 = clients.register("client-a", "tcp", Some("127.0.0.1:5000".into()));
+        let g1 = clients.register("client-a", "tcp", Some("127.0.0.1:5000".into()), "0.6.0", 1);
         assert_eq!(clients.count(), 1);
 
-        let g2 = clients.register("client-b", "local", None);
+        let g2 = clients.register("client-b", "local", None, "0.6.0", 1);
         assert_eq!(clients.count(), 2);
-        assert_eq!(clients.list().len(), 2);
+        assert_eq!(clients.snapshot().len(), 2);
 
         drop(g1);
         assert_eq!(clients.count(), 1);
@@ -204,8 +216,8 @@ mod tests {
     #[test]
     fn same_client_id_two_connections_are_distinct() {
         let clients = Clients::new();
-        let g1 = clients.register("client-a", "tcp", None);
-        let g2 = clients.register("client-a", "tcp", None);
+        let g1 = clients.register("client-a", "tcp", None, "0.6.0", 1);
+        let g2 = clients.register("client-a", "tcp", None, "0.6.0", 1);
         // Two live connections, one distinct client.
         assert_eq!(clients.count(), 2);
         assert_eq!(distinct_client_ids(&clients.inner.lock().unwrap().by_conn), "client-a");
@@ -213,5 +225,17 @@ mod tests {
         assert_eq!(clients.count(), 1);
         drop(g2);
         assert_eq!(clients.count(), 0);
+    }
+
+    #[test]
+    fn snapshot_carries_app_version_and_protocol() {
+        // Decision 31b: this is exactly what `version.query`'s `clients[]`
+        // roster reads — sourced from registration, not a new probe.
+        let clients = Clients::new();
+        let _g = clients.register("client-a", "tcp", None, "0.6.0-dev+abc1234", 1);
+        let snap = clients.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].app_version, "0.6.0-dev+abc1234");
+        assert_eq!(snap[0].protocol, 1);
     }
 }

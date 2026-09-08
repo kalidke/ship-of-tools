@@ -174,6 +174,34 @@ async fn main() -> Result<()> {
                 println!("{}", sot_protocol::version_line("sotd"));
                 return Ok(());
             }
+            // ADR 0030 §8 decision 31d: `sotd --help` used to fall all the
+            // way through to `parse_args()`'s `other => bail!` (a confusing
+            // "unrecognised argument: --help" for exactly the flag someone
+            // reaches for to get UNconfused) -- folded into this same
+            // early pure-query arm as `--version`, mirroring the
+            // frontend's own `sot --help` (`cli.rs`).
+            "--help" | "-h" => {
+                println!("{}", sot_protocol::version_line("sotd"));
+                println!(
+                    r#"
+Usage: sotd [OPTIONS]
+
+  --socket <path>        listen on this unix socket / named pipe
+                          (default: $SOT_SOCKET, else derived from --label)
+  --project-root <path>  filesystem root the Files-mode tree exposes
+                          (default: $SOT_PROJECT_ROOT, else the cwd)
+  --label <name>         human-friendly backend label (Sessions mode
+                          matches the running daemon to it)
+
+Pure queries (no startup side effects, answered before any of the above):
+  --version, -V           print the version line and exit
+  --help, -h              print this usage and exit
+  tmux-socket-path        print the shared tmux control socket path and exit
+  session-socket-path [label]
+                          print the per-session socket path and exit"#
+                );
+                return Ok(());
+            }
             _ => {}
         }
     }

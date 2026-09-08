@@ -24,6 +24,11 @@ crc32c = { workspace = true }
 uuid = { workspace = true }
 thiserror = "2"
 getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From impl
+# ADR 0030 §8 "Where it is shown": mirror an FE attach client's terminal
+# reason to `tracing` (`fe_client_io.rs`), not only the pane's own status
+# string -- this crate had no tracing dep before this. Same version the
+# rest of the workspace pins.
+tracing = { workspace = true }
 # The live vt100 parser the unified capsule runtime keeps across the run
 # (ADR 0041 "Terminal state"). Ungated as of ADR 0043 "Decisions for LU2"
 # (L1-unix LU2a): `capsule.rs` (formerly `capsule_win.rs`) is no longer

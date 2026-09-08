@@ -409,6 +409,114 @@ their next installer re-run; installs without an `install.json` get
 check/notify/stage against the legacy path but never prepare/arm (fail-safe:
 they keep working exactly as before, updated manually).
 
+## Amendment 2026-09-08 — §8: every runtime answers what build it is
+
+Prompted by a field incident: a launcher pair rebuild left a pinned
+`sot-capsule` binary behind, and every capsule it had already spawned became
+permanently unreachable with no operator-visible signal beyond a bare
+`workspace.list` row that merely *looked* started. §1 above owns "one product
+version"; §2 owns the protocol gate. Neither owns the fact that a capsule
+runtime has a THIRD identity — the supervisor lane's own build-boundary id
+(ADR 0041/0043) — and nothing on the wire exposed it. This amendment closes
+that gap: it defines what a version string honestly means and adds the one
+op that lets any caller ask any runtime what it is. Cross-referenced from ADR
+0043's own decision list as **decision 31**.
+
+**The identities, and who enforces them today:**
+
+| pair | matched on | enforced at | visibility before this amendment |
+|---|---|---|---|
+| frontend ↔ daemon | `PROTOCOL_VERSION` (hard) | the hello gate (§2) | a rejection screen |
+| frontend ↔ daemon | `app_version()` (soft) | nothing | the FE's own fe/be strip stamp |
+| daemon ↔ its `sot-capsule` | `SUPERVISOR_LANE_BUILD_ID` | the pair-verdict check before every spawn | a spawn error only |
+| daemon ↔ a running supervisor | `SUPERVISOR_LANE_BUILD_ID` | the supervisor's own hello | erased to a bare "unreachable" |
+| supervisor ↔ its leg | nothing, by design | — | n/a (ADR 0041 Lifecycle: adopting a surviving leg across a supervisor restart is the point) |
+
+The fourth row was the field incident. `workspace.list`'s capsule-phase probe
+already detected a foreign-build refusal internally (it text-matches the
+error to log a one-time operator warning) and then discarded that fact one
+line before the wire, folding it into the same `"unreachable"` a merely-dead
+lane reports. Not a missing probe — a discarded fact.
+
+**Decisions:**
+
+**(a) `app_version()` gains a `-dirty` suffix.** Two builds a real build-
+boundary check would refuse to pair could, before this, print the identical
+version string — the protocol crate's `build.rs` emitted a short sha with no
+dirty flag, unlike the capsule-runtime build id, which already carried one.
+Format becomes `X.Y.Z-dev+<short sha>-dirty` whenever the working tree had
+uncommitted changes at build time (fails closed: an unverifiable tree counts
+as dirty, never assumed clean); a tree that is ON its release tag but ALSO
+dirty is not the release it claims to sit on, so it takes the `-dirty` form
+too rather than collapsing to the bare tag version. Invariant: a version
+string never claims to be a commit it was merely built FROM. Two distinct
+dirty trees at one HEAD still alias on this scheme — the same hole the
+capsule-runtime build id already documents as deferred (a release never
+ships a dirty build, so it never reaches production); this amendment does
+not invent a second answer to it.
+
+**(b) A new op, `version.query`.** Pure in-memory, no fan-out, no supervisor
+probe: `{}` in, `{ daemon: { app_version, protocol, lane_build }, clients: [
+{ client_id, app_version, protocol, connected_at } ] }` out. `lane_build` is
+the supervisor-lane build id this daemon demands of any capsule it attaches,
+adopts, or spawns — the fact every pair-verdict check already has and had
+nowhere to report. `clients` is every attached frontend, sourced from the
+hello each already sent (an operator on the backend can now name the build
+each frontend is running without seeing its screen) — this is why the op
+cannot simply be folded into `hello`: hello answers once, self-only, before
+later clients ever connect. Capsule rows are deliberately NOT in this reply:
+`workspace.list` already fans out to every supervisor per call and already
+carries `phase`, so a second fan-out here would only duplicate it with its
+own timeouts. The protocol change is additive — every new field is
+`#[serde(default)]` — and an old daemon answers with the ordinary generic
+unknown-op payload on a `res` frame carrying the same op; every caller of
+this op must treat that shape as "daemon predates this op," never a failure.
+
+**(c) One new value of an existing field.** `WorkspaceListEntry.phase` gains
+`"foreign"`: the lane answered and refused this daemon's build
+(`version_skew`), as opposed to `"unreachable"` (no answer at all). The
+daemon's own capsule-phase probe already detects exactly this case to log
+its one-time operator warning; this decision gives that same detection a
+second destination — the wire — instead of only a log line. No new field, no
+new wire shape: the frontend's existing phase-tag rendering picks it up for
+free. The foreign supervisor's own build id is deliberately NOT put on the
+wire — `[foreign]` plus this daemon's own `lane_build` (from `version.query`)
+already says everything an operator would act on differently, and the
+foreign build id would require widening the supervisor lane's own refusal
+frame for a string nobody would act on differently.
+
+**(d) `sotd --help` answers.** It used to fall through to the argument
+parser's generic "unrecognised argument" bail — folded into the same early,
+side-effect-free query arm as `--version`.
+
+**Where this is shown:** the frontend paints `[foreign]` in the same yellow
+its fe/be skew stamp already uses, and — the "blank page" fix — a capsule
+attach client that dies terminal before ever checkpointing now paints one
+line naming why in the pane itself (previously the reason existed only in
+the status bar while the pane fell through to an unrelated, usually-blank
+tmux screen); that terminal reason is also mirrored to `tracing` now, not
+only the pane's own status string. A `sot-fe version` shell verb prints one
+table — daemon identity, attached clients, one row per capsule workspace
+with a DERIVED (never transmitted) `matches`/`MISMATCH` verdict, and a row
+for the locally installed comm scripts. That last row is new too:
+`install_comm` now stamps `$SOT_COMM_HOME/VERSION` with the repo commit at
+install time — the fact a send-deaf Windows bridge incident had no way to
+state ("the scripts on this box came from commit X").
+
+**Deliberately left out** (same reasoning as the rest of this ADR's
+"smallest useful slice" posture): a capsule row's own build id on the wire
+(covered by (c)'s own reasoning); `lane_build` duplicated onto `HelloRes`
+(one op should answer one question once); a background version-skew sweep
+(reactive over eager — the frontend already asks at hello and on every
+`workspace.list` poll); hashing a dirty tree's content for a unique dirty id
+(real, bounded work already deferred alongside the capsule-runtime build
+id's own identical gap); a `clients.list` presence op (the two new
+`ClientInfo` fields ride the existing, previously-unused `peer`/
+`connected_at` capture — no new op for it); auto-remediation (a daemon
+killing a foreign supervisor, or rebuilding itself) — that is the pinned U4
+upgrade transaction; this amendment makes skew *visible*, and must not also
+make it silently disappear.
+
 ## Public baseline hygiene
 
 For the sanitized public baseline, operational content lives in the private

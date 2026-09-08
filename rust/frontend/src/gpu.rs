@@ -3133,6 +3133,21 @@ fn pane_screen_choice(
     }
 }
 
+/// ADR 0030 §8 "Where it is shown": `pane_screen_choice` resolving to
+/// `PaneScreen::Tmux` covers TWO different situations — no client ever
+/// existed for this pane, or a client reached a terminal failure before
+/// it EVER checkpointed (`has_client && is_dead`, matching that
+/// function's own `PaneScreen::Tmux` branch for the dead-uncheckpointed
+/// case). Only the second one has a REASON worth painting — `pty_terminal`
+/// underneath a capsule row is an unrelated, usually-blank tmux session,
+/// which is exactly the "blank page" this closes: the pane must say why,
+/// not just show nothing. Pulled out so the branch is unit-tested without
+/// a live `State`.
+#[allow(dead_code)] // see `PaneScreen`'s own doc — the only production caller is `#[cfg(windows)]`.
+fn pane_shows_terminal_reason(has_client: bool, checkpointed: bool, is_dead: bool) -> bool {
+    has_client && is_dead && !checkpointed
+}
+
 /// ADR 0042 slice L1b fix 2: how many bytes of an incoming chunk fit in
 /// `queue_pane_pending_input`'s buffer, given it already holds
 /// `buffered_len` bytes and the whole buffer is capped at `cap` — pulled
@@ -3145,12 +3160,24 @@ fn pending_input_room(buffered_len: usize, incoming_len: usize, cap: usize) -> u
 }
 
 /// ADR 0042 slice L1b: the capsule row's supervisor phase (ADR 0041
-/// Lifecycle, snake_case, plus `"unreachable"`), folded into the
-/// Sessions-row glance line — the ONLY place this phase is surfaced;
+/// Lifecycle, snake_case, plus `"unreachable"` and, since ADR 0030 §8
+/// decision 31c, `"foreign"`), folded into the Sessions-row glance line —
 /// nothing renders the tree's `badges` vec today (deletion pressure: a
 /// second, invisible `badges` entry would name no observable invariant).
+/// `capsule_row_is_foreign` below is the SECOND surface this same phase
+/// value drives — the row's colour, not only this text tag.
 fn capsule_phase_tag(phase: &str) -> String {
     format!("[{phase}]")
+}
+
+/// True when a Sessions row's capsule supervisor lane refused this
+/// daemon's build (`WorkspaceListEntry.phase == "foreign"`, ADR 0030 §8
+/// decision 31c) — pulled out so the nav-row colour branch is
+/// unit-tested without a live `State`. Only `kind == "session"` rows
+/// carry a `phase` payload key at all (`build_session_row`); every other
+/// kind is never foreign, regardless of what `phase` happens to hold.
+fn capsule_row_is_foreign(kind: &str, phase: Option<&str>) -> bool {
+    kind == "session" && phase == Some("foreign")
 }
 
 /// Phase of the post-launch task delivery to a spawned agent, driven from the
@@ -8041,6 +8068,17 @@ impl State {
         payload.insert(
             "agent_status_at".to_string(),
             serde_json::Value::String(w.agent_status_at.clone()),
+        );
+        // ADR 0030 §8 decision 31c: the capsule's supervisor-lane phase —
+        // `""` for a tmux row or a daemon that predates the field, so the
+        // NavRow foreign check below reads it the same as an absent value.
+        // `capsule_phase_tag` below already bakes this into the glance
+        // TEXT (`w.phase.as_deref()`, Windows-only render); this payload
+        // copy is what lets the row-colour pass (host-agnostic, not
+        // `#[cfg(windows)]`) see it too.
+        payload.insert(
+            "phase".to_string(),
+            serde_json::Value::String(w.phase.clone().unwrap_or_default()),
         );
         let mut badges = Vec::new();
         if w.is_default {
@@ -15728,6 +15766,18 @@ impl State {
             self.pane_feed,
             self.pane_hold.is_some(),
         );
+        // ADR 0030 §8 "Where it is shown": a client that died terminal
+        // without ever checkpointing falls through to the (usually blank)
+        // tmux screen above — paint ONE line naming why, instead of a
+        // silent blank pane. `self.status` already carries the string
+        // (`pump_pane_attach_term`'s `t.status_line()` mirror); this only
+        // changes WHERE it renders.
+        #[cfg(windows)]
+        let pane_terminal_reason: Option<String> =
+            pane_shows_terminal_reason(pane_attach_has_client, pane_attach_checkpointed, pane_attach_is_dead)
+                .then(|| self.status.clone());
+        #[cfg(not(windows))]
+        let pane_terminal_reason: Option<String> = None;
         // Switch-latency Phase 1, item 3: the acceptance metric itself
         // (keypress → current screen visible), not merely the client's
         // own parser being ready (`pump_pane_attach_term`'s "checkpoint
@@ -15923,7 +15973,19 @@ impl State {
                 .enumerate()
                 .map(|(i, r)| {
                     let selected = i == self.tree.selected;
-                    let stale = selected && selected_stale;
+                    // ADR 0030 §8 decision 31c: a capsule row held by a
+                    // foreign build folds into the SAME "stale" colour
+                    // slot as annotation drift (both are cross-cutting
+                    // yellow, never mode-specific) — these two conditions
+                    // never both hold in practice (concept-annotation
+                    // staleness is computed only for `files:`-prefixed
+                    // rows, `is_foreign` only for `kind == "session"`
+                    // ones), so sharing the flag adds no new ambiguity.
+                    let is_foreign = capsule_row_is_foreign(
+                        &r.node.kind,
+                        r.node.payload.get("phase").and_then(|v| v.as_str()),
+                    );
+                    let stale = (selected && selected_stale) || is_foreign;
                     let pinned = pinned_id == Some(r.node.id.as_str());
                     // Agent tone + status-change flash only on Sessions
                     // rows (kind "session"), keyed by the row's slug so it
@@ -16138,17 +16200,23 @@ impl State {
                     &tree_lines
                 {
                     let mut style = Style::default();
-                    // Cross-cutting colour layer. State-nav agent tone (ADR
-                    // 0023) owns the colour of a Sessions row that has one:
-                    // working/idle/blocked/done each get a hue, a stale
-                    // "working" wilts (DIM), and selection still reads through
-                    // the `>` caret + bold so the cursor stays visible over
-                    // the state colour. Without an agent tone we fall back to
-                    // the original layer: stale (annotation drift) is loudest,
-                    // then the pinned accent (bright cyan, distinct from the
-                    // yellow stale/selected hues), then selection (light
-                    // yellow), then dim.
-                    if let Some((tone, aged)) = agent {
+                    // Cross-cutting colour layer. `is_stale` (annotation
+                    // drift OR, since ADR 0030 §8 decision 31c, a foreign-
+                    // build capsule row) is loudest and checked FIRST — a
+                    // row that is drifted or unusable must read that way
+                    // regardless of any work-state tone it also carries.
+                    // Below that, state-nav agent tone (ADR 0023) owns the
+                    // colour of a Sessions row that has one: working/idle/
+                    // blocked/done each get a hue, a stale "working" wilts
+                    // (DIM), and selection still reads through the `>`
+                    // caret + bold so the cursor stays visible over the
+                    // state colour. Without an agent tone either, the
+                    // original layer applies: the pinned accent (bright
+                    // cyan, distinct from the yellow stale/selected hues),
+                    // then selection (light yellow), then dim.
+                    if *is_stale {
+                        style = style.fg(Color::Yellow);
+                    } else if let Some((tone, aged)) = agent {
                         // Resolve the tone to RGB through the shared contrast
                         // helper so the nav row and the bottom strip render
                         // the same pixels. `Color::Rgb` (not the named tone
@@ -16168,8 +16236,6 @@ impl State {
                         if bold {
                             style = style.add_modifier(Modifier::BOLD);
                         }
-                    } else if *is_stale {
-                        style = style.fg(Color::Yellow);
                     } else if *is_pinned {
                         style = style.fg(Color::Cyan).add_modifier(Modifier::BOLD);
                     } else if *flash > 0.0 {
@@ -16658,6 +16724,24 @@ impl State {
                 // was sized to llm_rect earlier, so the grid fits
                 // exactly.
                 paint_terminal(buf, llm_rect, &pty_screen);
+                // ADR 0030 §8 "Where it is shown": a capsule attach client
+                // that died terminal before ever checkpointing paints the
+                // (usually blank, unrelated) tmux screen above via the
+                // fallback in `pty_screen` — overlay ONE line naming why,
+                // rather than leaving the pane looking dead with no cue
+                // beyond the status bar.
+                if let Some(reason) = pane_terminal_reason.as_deref() {
+                    if llm_rect.width > 2 {
+                        write_title(
+                            buf,
+                            llm_rect.x + 1,
+                            llm_rect.y,
+                            reason,
+                            llm_rect.width - 2,
+                            Style::default().fg(Color::Yellow),
+                        );
+                    }
+                }
                 pty_size_observed = (llm_rect.width, llm_rect.height);
                 // G3: local terminal drawer — paint its vt100 grid into the
                 // drawer rect (same renderer as the LLM pane). Record the
@@ -24249,6 +24333,24 @@ mod tests {
     }
 
     #[test]
+    fn foreign_capsule_row_takes_the_skew_style() {
+        // ADR 0030 §8 decision 31c: `[foreign]` renders — the tag comes
+        // from `capsule_phase_tag` — and the row itself takes the SAME
+        // yellow the strip line uses for FE/BE skew (`is_stale`'s branch,
+        // checked before agent tone in the draw loop).
+        assert_eq!(capsule_phase_tag("foreign"), "[foreign]");
+        assert!(capsule_row_is_foreign("session", Some("foreign")));
+        // Never foreign off a session row, even with the same phase text —
+        // only `build_session_row` ever populates a `phase` payload key.
+        assert!(!capsule_row_is_foreign("file", Some("foreign")));
+        // Every other phase value on a session row is not foreign either.
+        for phase in ["ready", "unreachable", "stopped", "starting"] {
+            assert!(!capsule_row_is_foreign("session", Some(phase)));
+        }
+        assert!(!capsule_row_is_foreign("session", None));
+    }
+
+    #[test]
     fn strip_lines_active_is_bold_and_centered() {
         let labels = vec!["aa".to_string(), "bbbb".to_string(), "cc".to_string()];
         let cell_w = 10.0;
@@ -27669,5 +27771,20 @@ mod capsule_pane_tests {
             pane_screen_choice(false, false, false, PaneFeed::Tmux, true),
             PaneScreen::Tmux
         );
+    }
+
+    #[test]
+    fn pane_shows_terminal_reason_only_for_the_dead_uncheckpointed_case() {
+        // ADR 0030 §8 "Where it is shown": exactly the one `PaneScreen::Tmux`
+        // sub-case that has a REASON worth painting — no client at all falls
+        // through to `Tmux` too, but there is nothing to explain there.
+        assert!(pane_shows_terminal_reason(true, false, true));
+        // A checkpointed client that later dies keeps showing its own last
+        // content (`PaneScreen::Client`, not `Tmux`) — no reason to paint.
+        assert!(!pane_shows_terminal_reason(true, true, true));
+        // A live, not-yet-dead client — nothing to explain.
+        assert!(!pane_shows_terminal_reason(true, false, false));
+        // No client at all.
+        assert!(!pane_shows_terminal_reason(false, false, false));
     }
 }
