@@ -44,7 +44,8 @@ use crate::workspaces::AgentMessage;
 use crate::workspaces::WorkspaceChanged;
 use crate::workspaces::{self, Workspace, Workspaces};
 use crate::Opts;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc, Semaphore};
+use tokio::task::JoinSet;
 
 // Half-open connection reaper tunables (ADR 0027). A peer that dies without a
 // FIN — a frontend killed -9, a collapsed SSH local-forward, a yanked network
@@ -121,6 +122,200 @@ where
             "frame write exceeded {timeout:?}; dropping connection (peer not draining)"
         ),
     }
+}
+
+/// Write one outgoing frame — an inline reply or an off-loop job's reply
+/// alike — with the SAME containment `handle_connection`'s dispatch loop has
+/// always applied: an over-cap envelope degrades to an error frame for that
+/// request instead of ending the connection (`codec::write_frame` validates
+/// size before writing a single byte, so nothing reached the wire and the
+/// stream is still consistent); every other write failure, most notably the
+/// write-timeout "peer not draining" bail, still propagates so the caller's
+/// `?` ends the connection exactly as it always did.
+async fn write_reply<W>(tx: &mut W, frame: Frame, blob: Option<Vec<u8>>) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    if let Err(e) = write_frame_to(tx, &frame, blob.as_deref()).await {
+        if let Some(too_large) = e.downcast_ref::<codec::EnvelopeTooLarge>() {
+            tracing::warn!(
+                op = %frame.op,
+                id = frame.id,
+                len = too_large.len,
+                cap = too_large.cap,
+                "response envelope over cap — answering with error frame, keeping connection"
+            );
+            let payload = serde_json::json!({
+                "error": format!("{too_large}"),
+                "code": "envelope_too_large",
+            });
+            let err_frame = Frame::res(frame.id, &frame.op, payload);
+            write_frame_to(tx, &err_frame, None).await?;
+            return Ok(());
+        }
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Per-request service-time logging (`SLOW_REQUEST_MS`) plus the error
+/// containment that turns a handler `Err` into one `handler_error` frame for
+/// `req_id` — shared by the inline dispatch path and every off-loop job
+/// (`spawn_job`) so the two don't carry separate copies of the same
+/// bookkeeping.
+fn finish_dispatch(
+    op_name: &str,
+    req_id: u64,
+    transport: &'static str,
+    started: std::time::Instant,
+    result: Result<handlers::HandlerOutput>,
+) -> handlers::HandlerOutput {
+    let service_ms = started.elapsed().as_millis() as u64;
+    if service_ms >= SLOW_REQUEST_MS {
+        tracing::info!(op = %op_name, id = req_id, service_ms, transport, "slow request");
+    } else {
+        tracing::debug!(op = %op_name, id = req_id, service_ms, "request served");
+    }
+    match result {
+        Ok(frames) => frames,
+        Err(e) => {
+            tracing::warn!(
+                op = %op_name,
+                id = req_id,
+                error = format!("{e:#}"),
+                "handler error — answering with error frame, keeping connection"
+            );
+            let payload = serde_json::json!({
+                "error": format!("{e:#}"),
+                "code": "handler_error",
+            });
+            vec![(Frame::res(req_id, op_name, payload), None)]
+        }
+    }
+}
+
+/// One outgoing job reply: a frame and its optional trailing blob. Off-loop
+/// jobs (`spawn_job`) have no access to `tx` — it stays owned by
+/// `handle_connection`'s own loop, the connection's one writer — so a job
+/// hands its finished reply back over this channel instead; the loop drains
+/// it and calls `write_reply` itself, same as it does for its own inline
+/// replies.
+type OutTx = mpsc::Sender<(Frame, Option<Vec<u8>>)>;
+
+/// Per-connection cap on concurrently RUNNING off-loop jobs (`preview.get`,
+/// `concept.read`, `image.crop`). Names the invariant it protects: one
+/// connection's burst of these can't starve the tokio runtime's worker
+/// threads for every OTHER connection. Acquired INSIDE each spawned job, never
+/// before spawning, so request intake itself is never blocked by the cap —
+/// only how many jobs run at once, once already queued.
+const OFFLOOP_CONCURRENCY: usize = 4;
+
+/// Spawn one request's handler as its own task, off this connection's
+/// read/dispatch loop (switch-latency Phase 1): a slow `preview.get` no
+/// longer delays a later cheap request's reply on the same connection. `fut`
+/// is the actual handler call, already bound to its own owned copies of
+/// whatever it needs (this task outlives the loop iteration that spawned
+/// it). A panic inside `fut` unwinds this whole task — caught by the
+/// `JoinSet` as a `JoinError`, which `handle_connection`'s own
+/// `jobs.join_next()` arm logs; that mirrors the inline dispatch path, which
+/// has never had panic containment either. Delivers its result through
+/// `out_tx` for the loop to write, exactly like an inline reply.
+fn spawn_job<F>(
+    jobs: &mut JoinSet<()>,
+    semaphore: Arc<Semaphore>,
+    out_tx: OutTx,
+    req_id: u64,
+    op_name: String,
+    transport: &'static str,
+    fut: F,
+) where
+    F: std::future::Future<Output = Result<handlers::HandlerOutput>> + Send + 'static,
+{
+    jobs.spawn(async move {
+        let started = std::time::Instant::now();
+        let _permit = semaphore
+            .acquire_owned()
+            .await
+            .expect("connection job semaphore is never closed");
+        let out_frames = finish_dispatch(&op_name, req_id, transport, started, fut.await);
+        for (frame, blob) in out_frames {
+            if out_tx.send((frame, blob)).await.is_err() {
+                // The connection loop is gone — nothing left to deliver.
+                break;
+            }
+        }
+    });
+}
+
+/// Resolve `payload`'s `workspace_id` hint to a concrete workspace INLINE,
+/// before a request is handed to an off-loop job, and rewrite the hint to
+/// that workspace's canonical id. Without this, a job queued behind others
+/// (semaphore contention) resolves its workspace only once it actually runs
+/// — if the hinted slug's workspace was destroyed and a new one created
+/// reusing the SAME slug in the meantime, the job would silently bind to the
+/// replacement. Canonical ids are never reused, so re-resolving by id at
+/// execution time (the handler's own first step) either finds the SAME
+/// workspace or correctly reports it gone — never someone else's.
+///
+/// Returns `Ok(true)` with `payload` rewritten when resolution succeeds,
+/// `Ok(false)` after already answering the same `unknown_workspace` error
+/// frame the handler itself would have sent — the caller just `continue`s
+/// without spawning anything. `Err` only on a write failure serious enough
+/// to end the connection.
+async fn canonicalize_workspace_id<W>(
+    tx: &mut W,
+    workspaces: &Workspaces,
+    req_id: u64,
+    op_name: &str,
+    payload: &mut serde_json::Value,
+) -> Result<bool>
+where
+    W: AsyncWrite + Unpin,
+{
+    let hint = payload
+        .get("workspace_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    match workspaces.resolve(hint.as_deref()) {
+        Some(ws) => {
+            if let serde_json::Value::Object(m) = payload {
+                m.insert(
+                    "workspace_id".to_string(),
+                    serde_json::Value::String(ws.workspace_id.clone()),
+                );
+            }
+            Ok(true)
+        }
+        None => {
+            let err_payload = serde_json::json!({
+                "error": format!("unknown workspace: {hint:?}"),
+                "code": "unknown_workspace",
+            });
+            write_reply(tx, Frame::res(req_id, op_name, err_payload), None).await?;
+            Ok(false)
+        }
+    }
+}
+
+/// Test-only knob (switch-latency Phase 1): an integration test needs ONE
+/// request it can make deterministically slow, through the real wire
+/// protocol, to prove a later cheap request's reply doesn't wait behind it
+/// on the same connection — no existing op is slow on demand without
+/// something a CI sandbox can't assume (a real Julia kernel, a large file
+/// already on disk). Reads `SOT_TEST_SLOW_CONCEPT_READ_MS` ONCE per process
+/// via `OnceLock`, so it can only ever be a fixed value a test harness set
+/// before spawning the daemon — never something a client controls
+/// per-request. Unset (or unparseable) is `0`, a no-op sleep: production
+/// never sets this, so every real deployment gets zero delay.
+fn test_slow_concept_read_delay() -> std::time::Duration {
+    static DELAY_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let ms = *DELAY_MS.get_or_init(|| {
+        std::env::var("SOT_TEST_SLOW_CONCEPT_READ_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    });
+    std::time::Duration::from_millis(ms)
 }
 
 /// Derive an agent's work-state from a snapshot of its live tmux pane (the
@@ -1063,6 +1258,19 @@ where
     let mut monitor_rx = workspaces.monitor_hub().map(|h| h.subscribe());
     let mut monitor_subscribed = false;
 
+    // Off-loop jobs (switch-latency Phase 1): `preview.get` / `concept.read`
+    // / `image.crop` run as their own tasks in `jobs`, bounded to
+    // `OFFLOOP_CONCURRENCY` concurrent (the semaphore is acquired INSIDE
+    // each job, never here, so queuing one never blocks reading the next
+    // frame). `tx` stays this loop's alone — a job has no way to reach the
+    // socket, so it hands its finished reply to `out_tx` and the loop
+    // (`out_rx`, drained in the select below) writes it exactly like an
+    // inline reply. Dropping `jobs` (this function returning, any path)
+    // aborts whatever's still running — no leaked tasks.
+    let (out_tx, mut out_rx): (OutTx, _) = mpsc::channel(OFFLOOP_CONCURRENCY);
+    let mut jobs: JoinSet<()> = JoinSet::new();
+    let job_sem = Arc::new(Semaphore::new(OFFLOOP_CONCURRENCY));
+
     loop {
         // ADR 0035: the peeked first frame (any non-proxy first frame, e.g.
         // hello) is dispatched here before the first socket read, so the
@@ -1074,6 +1282,15 @@ where
         // once across arms, so split based on whether the pty is up.
             tokio::select! {
                 biased;
+                // Off-loop job replies drain BEFORE reads: a finished
+                // preview.get/concept.read/image.crop reply goes out before
+                // this connection accepts another frame, so a burst of new
+                // requests can't indefinitely postpone delivering one
+                // that's already done.
+                Some((frame, blob)) = out_rx.recv() => {
+                    write_reply(&mut tx, frame, blob).await?;
+                    continue;
+                }
                 done = read_fut.as_mut().expect("read_fut is always Some at loop top") => {
                     // Completed: reclaim the reader and arm the next read.
                     let (rx_back, wire) = done;
@@ -1153,10 +1370,28 @@ where
                     }
                     continue;
                 }
+                // Reclaims a finished off-loop job's slot in `jobs` — a
+                // `JoinSet` keeps a completed task's result until it's
+                // retrieved, so a long-lived connection that never drained
+                // this would leak one slot per off-loop request served over
+                // its lifetime. A panicking job surfaces here as `Err`; that
+                // is logged, not answered — the inline dispatch path has
+                // never had per-request panic containment either. Guarded so
+                // an empty set (the common case) can't resolve every poll.
+                Some(res) = jobs.join_next(), if !jobs.is_empty() => {
+                    if let Err(e) = res {
+                        tracing::error!(error = %e, transport, "off-loop job panicked");
+                    }
+                    continue;
+                }
             }
         } else {
             tokio::select! {
                 biased;
+                Some((frame, blob)) = out_rx.recv() => {
+                    write_reply(&mut tx, frame, blob).await?;
+                    continue;
+                }
                 done = read_fut.as_mut().expect("read_fut is always Some at loop top") => {
                     let (rx_back, wire) = done;
                     read_fut = Some(Box::pin(read_owned(rx_back)));
@@ -1210,6 +1445,13 @@ where
                 tick = recv_monitor(&mut monitor_rx) => {
                     if authenticated && monitor_subscribed {
                         write_monitor_tick(&mut tx, tick, transport).await?;
+                    }
+                    continue;
+                }
+                // Same hygiene drain as the pty-present arm above.
+                Some(res) = jobs.join_next(), if !jobs.is_empty() => {
+                    if let Err(e) = res {
+                        tracing::error!(error = %e, transport, "off-loop job panicked");
                     }
                     continue;
                 }
@@ -1299,14 +1541,66 @@ where
                     .await
             }
             op::PREVIEW_GET => {
-                handlers::handle_preview_get(frame.id, frame.payload, &session, &workspaces).await
+                // Off-loop (switch-latency Phase 1): a read-and-render of
+                // the requested node. `preview.set_scale` stays INLINE just
+                // below — it writes a `.scale.json` sidecar.
+                let req_id = frame.id;
+                let op_name = frame.op.clone();
+                let mut payload = frame.payload;
+                if !canonicalize_workspace_id(&mut tx, &workspaces, req_id, &op_name, &mut payload)
+                    .await?
+                {
+                    continue;
+                }
+                let session = session.clone();
+                let workspaces = workspaces.clone();
+                spawn_job(
+                    &mut jobs,
+                    job_sem.clone(),
+                    out_tx.clone(),
+                    req_id,
+                    op_name,
+                    transport,
+                    async move {
+                        handlers::handle_preview_get(req_id, payload, &session, &workspaces).await
+                    },
+                );
+                continue;
             }
             op::PREVIEW_SET_SCALE => {
                 handlers::handle_preview_set_scale(frame.id, frame.payload, &session, &workspaces)
                     .await
             }
             op::IMAGE_CROP => {
-                handlers::handle_image_crop(frame.id, frame.payload, &session, &workspaces).await
+                // Off-loop (switch-latency Phase 1): decodes the source
+                // image and writes a NEW, uniquely-named capture file — it
+                // never mutates any EXISTING shared state (the session
+                // revision bump it also does is safe off-loop for the same
+                // reason concurrent connections already interleave those
+                // bumps: their order relative to wall-clock request order
+                // was never guaranteed).
+                let req_id = frame.id;
+                let op_name = frame.op.clone();
+                let mut payload = frame.payload;
+                if !canonicalize_workspace_id(&mut tx, &workspaces, req_id, &op_name, &mut payload)
+                    .await?
+                {
+                    continue;
+                }
+                let session = session.clone();
+                let workspaces = workspaces.clone();
+                spawn_job(
+                    &mut jobs,
+                    job_sem.clone(),
+                    out_tx.clone(),
+                    req_id,
+                    op_name,
+                    transport,
+                    async move {
+                        handlers::handle_image_crop(req_id, payload, &session, &workspaces).await
+                    },
+                );
+                continue;
             }
             op::MATH_RENDER => {
                 handlers::handle_math_render(frame.id, frame.payload, &session, &mathjax).await
@@ -1342,8 +1636,37 @@ where
                     .await
             }
             op::CONCEPT_READ => {
-                handlers::handle_concept_read(frame.id, frame.payload, &session, &workspaces)
-                    .await
+                // Off-loop (switch-latency Phase 1): a read of one
+                // `.concept/` annotation file. `concept.write`/`concept.list`
+                // stay INLINE (write, and directory-walk-then-read).
+                let req_id = frame.id;
+                let op_name = frame.op.clone();
+                let mut payload = frame.payload;
+                if !canonicalize_workspace_id(&mut tx, &workspaces, req_id, &op_name, &mut payload)
+                    .await?
+                {
+                    continue;
+                }
+                let session = session.clone();
+                let workspaces = workspaces.clone();
+                spawn_job(
+                    &mut jobs,
+                    job_sem.clone(),
+                    out_tx.clone(),
+                    req_id,
+                    op_name,
+                    transport,
+                    async move {
+                        // Test-only (see `test_slow_concept_read_delay`): a
+                        // no-op sleep unless a test set the env var.
+                        let delay = test_slow_concept_read_delay();
+                        if !delay.is_zero() {
+                            tokio::time::sleep(delay).await;
+                        }
+                        handlers::handle_concept_read(req_id, payload, &session, &workspaces).await
+                    },
+                );
+                continue;
             }
             op::CONCEPT_WRITE => {
                 handlers::handle_concept_write(frame.id, frame.payload, &session, &workspaces)
@@ -1889,67 +2212,13 @@ where
             }
         };
 
-        let service_ms = dispatch_started.elapsed().as_millis() as u64;
-        if service_ms >= SLOW_REQUEST_MS {
-            tracing::info!(op = %frame.op, id = frame.id, service_ms, transport, "slow request");
-        } else {
-            tracing::debug!(op = %frame.op, id = frame.id, service_ms, "request served");
-        }
-
-        // Per-request error containment: answer the failed request with an
-        // error frame and keep serving. Wire-write failures below still end
-        // the connection — those mean the socket itself is broken, and
-        // `handle_connection`'s caller logs the drop.
-        let out_frames = match dispatched {
-            Ok(frames) => frames,
-            Err(e) => {
-                tracing::warn!(
-                    op = %frame.op,
-                    id = frame.id,
-                    error = format!("{e:#}"),
-                    "handler error — answering with error frame, keeping connection"
-                );
-                let payload = serde_json::json!({
-                    "error": format!("{e:#}"),
-                    "code": "handler_error",
-                });
-                vec![(Frame::res(frame.id, &frame.op, payload), None)]
-            }
-        };
+        // Service-time logging + per-request error containment (turns a
+        // handler `Err` into one `handler_error` frame instead of ending the
+        // connection) — shared with every off-loop job via `finish_dispatch`.
+        let out_frames = finish_dispatch(&frame.op, frame.id, transport, dispatch_started, dispatched);
 
         for (out_frame, out_blob) in out_frames {
-            if let Err(e) = write_frame_to(&mut tx, &out_frame, out_blob.as_deref()).await {
-                // An over-cap envelope is NOT a broken socket, so it must not
-                // end the connection. `codec::write_frame` validates the size
-                // before writing a single byte, so nothing reached the wire and
-                // the stream is still consistent — we can answer this request
-                // with a small error frame and keep serving. (A `quarto.open`
-                // response used to exceed the cap and tear the session down;
-                // its HTML now rides the blob path, but any future oversize
-                // payload should degrade to one failed request, not a drop.)
-                //
-                // Every other write failure — including the write-timeout
-                // "peer not draining" bail, which is a different error type —
-                // still propagates and drops the connection: mid-write there is
-                // no guarantee about what reached the wire.
-                if let Some(too_large) = e.downcast_ref::<codec::EnvelopeTooLarge>() {
-                    tracing::warn!(
-                        op = %out_frame.op,
-                        id = out_frame.id,
-                        len = too_large.len,
-                        cap = too_large.cap,
-                        "response envelope over cap — answering with error frame, keeping connection"
-                    );
-                    let payload = serde_json::json!({
-                        "error": format!("{too_large}"),
-                        "code": "envelope_too_large",
-                    });
-                    let err_frame = Frame::res(out_frame.id, &out_frame.op, payload);
-                    write_frame_to(&mut tx, &err_frame, None).await?;
-                    continue;
-                }
-                return Err(e);
-            }
+            write_reply(&mut tx, out_frame, out_blob).await?;
         }
     }
 }

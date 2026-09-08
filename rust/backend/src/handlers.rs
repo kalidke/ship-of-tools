@@ -660,17 +660,33 @@ async fn build_preview_payload(
         // No plugin claim (or kernel unavailable / errored — logged in
         // `try_plugin_preview`). Fall back to the bytes-level reader so
         // files outside any plugin's coverage still get served, with
-        // mime inferred from extension.
-        match read_bytes_preview(&path, &req.node_id) {
+        // mime inferred from extension. `read_bytes_preview` is a
+        // synchronous `std::fs::read` (up to `PREVIEW_BINARY_CAP` bytes) —
+        // real blocking I/O, so it runs via `spawn_blocking` rather than
+        // inline on this async task.
+        let path_for_blk = path.clone();
+        let node_id_for_blk = req.node_id.clone();
+        match tokio::task::spawn_blocking(move || read_bytes_preview(&path_for_blk, &node_id_for_blk))
+            .await
+            .context("preview bytes-level read task")?
+        {
             Ok((mime, bytes)) => (mime, bytes, None, true),
             Err(e) => return Ok(Err(("io_error".to_string(), format!("read {path:?}: {e}")))),
         }
     };
 
     // ADR 0034: attach a `<path>.scale.json` sidecar's contents as
-    // `extras.physical_scale` so the FE can render a dynamic scalebar on raster
-    // previews. Backend-side (rasters are served here, not via the kernel).
-    let extras = merge_scale_sidecar(&path, &mime, extras);
+    // `extras.physical_scale` so the FE can render a dynamic scalebar on
+    // raster previews. Backend-side (rasters are served here, not via the
+    // kernel) — `merge_scale_sidecar` is a synchronous `std::fs::read_to_string`,
+    // so it runs via `spawn_blocking` too.
+    let path_for_scale = path.clone();
+    let mime_for_scale = mime.clone();
+    let extras = tokio::task::spawn_blocking(move || {
+        merge_scale_sidecar(&path_for_scale, &mime_for_scale, extras)
+    })
+    .await
+    .context("preview scale-sidecar read task")?;
     // ADR 0034 tier 2 (embedded metadata, PNG half): a PNG that declares its
     // own density via `pHYs` gets a scalebar with no sidecar on disk. Fills
     // only when the sidecar tier produced nothing (resolution order, §1).
@@ -1464,7 +1480,14 @@ pub async fn handle_concept_read(
         )]);
     };
     let concept = ws.concept();
-    let (exists, content) = match concept.read(&req.target) {
+    // `ConceptStore::read` is a synchronous `std::fs::read_to_string` — real
+    // blocking I/O, so it runs via `spawn_blocking` rather than inline on
+    // this async task.
+    let target_for_blk = req.target.clone();
+    let read_result = tokio::task::spawn_blocking(move || concept.read(&target_for_blk))
+        .await
+        .context("concept.read task")?;
+    let (exists, content) = match read_result {
         Ok(v) => v,
         Err(e) => {
             let payload = json!({
