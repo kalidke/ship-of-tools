@@ -13,9 +13,11 @@
 > `cycle_ws` could forge `read: true`), so a daemon inferring presence from traffic
 > could hand an untargeted command to a box nobody was at, or never call an actually-
 > typing capsule pane active at all. **Shipped instead: one new op, `fe.presence`,
-> sent ONLY by the frontend's own winit keyboard/mouse handlers**, throttled
-> client-side to at most one per 30s while input keeps coming and nothing at all
-> when idle — no heartbeat, no timer. `HelloReq` gains `fe_handle` so a connection
+> sent ONLY by the frontend's own winit keyboard/mouse handlers, to EVERY attached
+> daemon** (not only whichever host is active — a person is present for every
+> backend this frontend routes commands through), throttled client-side to at
+> most one round per 30s while input keeps coming and nothing at all when idle —
+> no heartbeat, no timer. `HelloReq` gains `fe_handle` so a connection
 > can self-report its `win-fe-<host>` handle. **Active frontend = the `fe_handle`'d
 > CONNECTION (identified by its registration serial, never a bare handle string —
 > two connections can share one, e.g. a stale reconnect) with the most recent

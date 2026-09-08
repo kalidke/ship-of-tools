@@ -4565,11 +4565,13 @@ struct State {
     relaunch_flag: Arc<std::sync::atomic::AtomicU8>,
     /// Last time this FE sent `fe.presence` (2026-09-08 review rework,
     /// design point A) — `None` until the first real keyboard/mouse event.
-    /// `window_event`'s `KeyboardInput`/`MouseInput` arms send one whenever
-    /// this is stale by more than `PRESENCE_THROTTLE`, throttling a burst of
-    /// input to at most one wire request per window; idle input sends
-    /// nothing at all (no timer, no heartbeat — presence is purely a
-    /// side-effect of real events already being handled).
+    /// `window_event`'s `KeyboardInput`/`MouseInput` arms fan a send out to
+    /// EVERY connected host's daemon (`report_presence`) whenever this is
+    /// stale by more than `PRESENCE_THROTTLE` — ONE throttle gates the
+    /// whole fan-out, not one per host, so a burst of input still costs at
+    /// most one round of requests per window; idle input sends nothing at
+    /// all (no timer, no heartbeat — presence is purely a side-effect of
+    /// real events already being handled).
     presence_last_sent: Option<std::time::Instant>,
     /// FE control commands (ADR 0019) enqueued by the command-file watcher
     /// thread (the producer) and drained on the main thread in `window_event`
@@ -7227,8 +7229,20 @@ impl State {
             return;
         }
         self.presence_last_sent = Some(now);
-        if let Err(e) = self.send(OutgoingReq::FePresence) {
-            tracing::warn!(error = %e, "drop fe.presence — channel closed");
+        // EVERY connected host, not just `active_host` (2026-09-08 review
+        // correction) — a person is present for every daemon THIS frontend
+        // is attached to, backend included: the backend's own agents route
+        // commands through its daemon, so if the person spends an hour on
+        // a local row, the backend's stamp for this frontend would go
+        // stale and its commands would broadcast or fail to reach here.
+        // One throttle covers the whole fan-out (`presence_last_sent` is
+        // per-frontend, not per-host) — same pattern as Sessions mode's
+        // `workspace.list` re-announce just above. Invariant: every daemon
+        // this frontend is attached to knows when a person is at it.
+        for (host, _) in &self.conns {
+            if let Err(e) = self.send_to(host, OutgoingReq::FePresence) {
+                tracing::warn!(error = %e, %host, "drop fe.presence — channel closed");
+            }
         }
     }
 
@@ -27499,6 +27513,30 @@ mod tests {
             err.is_err(),
             "an unrouteable host must surface as an error, not vanish"
         );
+    }
+
+    /// Mirrors `State::report_presence`'s host fan-out (`for (host, _) in
+    /// &self.conns { self.send_to(host, OutgoingReq::FePresence) }`) so the
+    /// 2026-09-08 review correction — a person is present for EVERY daemon
+    /// this frontend is attached to, not only `active_host` — is provable
+    /// without a GPU-backed `State`.
+    fn route_report_presence(conns: &[(HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)]) {
+        for (host, _) in conns {
+            let _ = route_send_to(conns, host, OutgoingReq::FePresence);
+        }
+    }
+
+    #[test]
+    fn report_presence_fans_out_to_every_connected_host_not_just_active() {
+        let (conns, mut rxs) = fake_conns();
+        route_report_presence(&conns);
+        for host in ["local", "alpha"] {
+            assert!(
+                rxs.get_mut(host).unwrap().try_recv().is_ok(),
+                "fe.presence must reach every connected host's daemon ({host} included) — \
+                 a person is present for all of them, not only whichever is active"
+            );
+        }
     }
 
     #[test]

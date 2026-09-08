@@ -932,13 +932,19 @@ pub enum OutgoingReq {
     /// winit `window_event` handler's real `KeyboardInput`/`MouseInput`
     /// arms, throttled there to at most one per `PRESENCE_THROTTLE` — never
     /// from command-file dispatch, capture-mode simulation, or any other
-    /// automated path. Empty payload, fire-and-forget: no `PendingKind` is
-    /// stamped, same idiom as `ToggleHidden`/`WorkspaceActivate` above. The
-    /// daemon is the one place that decides "the active frontend" from
-    /// this signal (`Clients::touch_person_input`) — the FE never infers
-    /// its own activity from op traffic, which is exactly the false-
-    /// positive/false-negative pair the review found in the daemon-side-
-    /// inference design this replaces.
+    /// automated path. `gpu.rs`'s `report_presence` sends this one PER
+    /// CONNECTED HOST (`send_to`, not `send`) under that one throttle: a
+    /// person is present for every daemon this frontend is attached to,
+    /// not only whichever host is active right now — otherwise a daemon
+    /// the person hasn't LOOKED at recently, but whose commands still
+    /// route through here, would see this frontend go stale. Empty
+    /// payload, fire-and-forget: no `PendingKind` is stamped, same idiom
+    /// as `ToggleHidden`/`WorkspaceActivate` above. The daemon is the one
+    /// place that decides "the active frontend" from this signal
+    /// (`Clients::touch_person_input`) — the FE never infers its own
+    /// activity from op traffic, which is exactly the false-positive/
+    /// false-negative pair the review found in the daemon-side-inference
+    /// design this replaces.
     FePresence,
     /// Ask the kernel for its loaded-modules list. Response surfaces as
     /// `IncomingEvt::ModulesList`. Currently the only kernel.request the
