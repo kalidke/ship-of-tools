@@ -892,18 +892,18 @@ fn headless_screen_read_never_takes_the_pen() {
     wait_for_exit(child, Duration::from_secs(30));
 }
 
-/// Phase-deadline proof, in the simplest deterministic shape the harness
-/// can force: a state dir with NO supervisor ever run has no `drawer.
-/// voyage` pointer at all, which the worker treats as terminal
-/// IMMEDIATELY (`fe_client_io.rs`'s own pointer-validate arm) — the
-/// fastest, most deterministic real instance of "the checkpoint phase
-/// never completes." `type_into`/`screen_of`'s own deadline+dead checks
-/// (mirrored here at the client level) treat this identically to a lane
-/// that accepts but withholds the checkpoint forever: neither ever sets
-/// `is_checkpointed()`, and both end with the worker observed closed
-/// within the bound.
+/// Decision 28 (LU6b, attach convergence): a state dir with NO supervisor
+/// ever run has no `drawer.voyage` pointer and no supervisor lane, and the
+/// worker invents NO cutoff of its own for that -- the frontend's create
+/// path starts this same client before the supervisor has bound its lane,
+/// so "nothing there yet" is a wait ("supervisor lane not answering --
+/// retrying"), bounded only by the health window. What the headless
+/// callers (`type_into`/`screen_of`, each with its own deadline + dead
+/// check) rely on instead is proven here: `is_checkpointed()` never flips
+/// while the worker is parked in that convergence wait, and a shutdown
+/// closes the worker within its bound from inside the wait.
 #[test]
-fn headless_attach_against_a_pointerless_state_dir_is_terminal_and_worker_closes() {
+fn headless_attach_against_a_pointerless_state_dir_waits_and_shutdown_closes_the_worker() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -913,22 +913,23 @@ fn headless_attach_against_a_pointerless_state_dir_is_terminal_and_worker_closes
     let mut client = FeAttachClient::<PlatformEndpoint>::attach_headless(state_dir, "lu6c-headless-deadline-test".to_string())
         .expect("attach_headless (the constructor itself never touches the network)");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
+    // A spell long enough for several fail-fast connect rounds and their
+    // backoffs; the client must still be waiting, not dead, not checkpointed.
+    let spell = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < spell {
         client.pump();
-        if client.is_dead() {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "a pointerless state dir must be reported terminal quickly, not left connecting forever"
-        );
+        assert!(!client.is_dead(), "a pointerless state dir is a wait, never a terminal client (status={})", client.status_line());
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(!client.is_checkpointed(), "a terminal client must never have reached a checkpoint");
+    assert!(!client.is_checkpointed(), "no checkpoint can exist without a supervisor");
+    assert!(
+        client.status_line().contains("not answering"),
+        "the wait must be the designed one (supervisor lane not answering), got: {}",
+        client.status_line()
+    );
     assert!(
         client.shutdown(Duration::from_secs(5)),
-        "the worker must be observed closed within the shutdown bound, even on the terminal path"
+        "the worker must be observed closed within the shutdown bound from inside the convergence wait"
     );
 }
 
