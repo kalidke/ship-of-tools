@@ -99,6 +99,59 @@ function Write-SupLog {
 }
 
 # ---------------------------------------------------------------------------
+# Single-instance lock (2026-09-08 incident): a shortcut launch 90 s into a
+# resident supervisor's exit-76 converge ran the WHOLE prelude + freshness
+# pass concurrently -- two cargo builds raced on one target dir, the pair link
+# failed (LNK1104), the loser found the winner's control port open and opened
+# no tunnel, then tore the winner's tunnel down on exit: a frontend with no
+# backend at all. One launcher per user: the lock file names the live
+# supervisor pid. A second launcher waits briefly for it (a cold relaunch's
+# old supervisor is in its last seconds), then exits with a visible message
+# -- it never runs a pass of its own. A stale lock (pid gone, or not a
+# launcher any more) is simply taken over.
+# ---------------------------------------------------------------------------
+$launcherLock = Join-Path $logDir 'launcher.pid'
+function Get-OtherLauncherPid {
+    $other = 0
+    try { $other = [int](Get-Content -Path $launcherLock -ErrorAction Stop | Select-Object -First 1) } catch { $other = 0 }
+    if ($other -le 0 -or $other -eq $PID) { return 0 }
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $other" -ErrorAction SilentlyContinue
+    if ($proc -and $proc.CommandLine -and $proc.CommandLine -like '*launch-sot.ps1*') { return $other }
+    return 0
+}
+function Get-LaunchStatusText {
+    try { return ([System.IO.File]::ReadAllText((Join-Path $logDir 'launch-status.txt'))).Trim() } catch { return '' }
+}
+$otherLauncher = Get-OtherLauncherPid
+if ($otherLauncher) {
+    # The other launcher's status file says what it is doing. DONE means its
+    # frontend is up (nothing for us to do); anything else is a launch or a
+    # converge in progress -- wait for it to reach DONE or exit, bounded.
+    Write-SupLog "another launcher is running (pid $otherLauncher, status: $(Get-LaunchStatusText)) - waiting for it"
+    $lockDeadline = (Get-Date).AddMinutes(15)
+    while ($otherLauncher -and (Get-Date) -lt $lockDeadline) {
+        if ((Get-LaunchStatusText) -eq 'DONE') { break }
+        Start-Sleep -Seconds 1
+        $otherLauncher = Get-OtherLauncherPid
+    }
+}
+if ($otherLauncher) {
+    if ((Get-LaunchStatusText) -eq 'DONE') {
+        Write-SupLog "launcher pid $otherLauncher owns the running frontend - nothing to do; exiting"
+        exit 0
+    }
+    Write-SupLog "another launcher is still running (pid $otherLauncher, status: $(Get-LaunchStatusText)) - exiting; it owns the frontend, the tunnels and any converge in progress"
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show(
+            "Ship of Tools is already starting or running (launcher pid $otherLauncher).`nIf it is mid-converge, wait for the window to come back.",
+            'Ship of Tools launcher', 'OK', 'Information') | Out-Null
+    } catch { }
+    exit 2
+}
+try { [System.IO.File]::WriteAllText($launcherLock, "$PID") } catch { }
+
+# ---------------------------------------------------------------------------
 # Launch progress surface (maintainer note, 2026-07-06: "say what it's doing ... or Error").
 # The Windows launcher runs hidden, so the dev-freshness pull+rebuild (up to
 # ~1-3 min after a big merge) was invisible and read as a dead taskbar click.
@@ -118,12 +171,20 @@ function Set-LaunchStatus {
     Write-SupLog "status: $Message"
 }
 Set-LaunchStatus 'Starting Ship of Tools...'
-try {
-    $splash = Start-Process -FilePath 'powershell.exe' `
-        -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-            '-File', (Join-Path $PSScriptRoot 'launch-splash.ps1'), '-StatusFile', $statusFile) `
-        -WindowStyle Hidden -PassThru
-} catch { $splash = $null }
+# A function, not a one-shot: an exit-76 converge (see the do/while loop)
+# spawns it again, because the splash exits itself on DONE and the converge's
+# pull + rebuild + daemon ensure otherwise run for minutes with no window at
+# all (2026-09-08: the owner read that as a dead launch and clicked the
+# shortcut, which double-ran the converge).
+function Start-Splash {
+    try {
+        $script:splash = Start-Process -FilePath 'powershell.exe' `
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+                '-File', (Join-Path $PSScriptRoot 'launch-splash.ps1'), '-StatusFile', $statusFile) `
+            -WindowStyle Hidden -PassThru
+    } catch { $script:splash = $null }
+}
+Start-Splash
 function Stop-Splash {
     if ($splash -and -not $splash.HasExited) {
         try { Stop-Process -Id $splash.Id -Force -ErrorAction SilentlyContinue } catch { }
@@ -957,7 +1018,7 @@ function Invoke-FreshnessPass {
         }
         # Stale images renamed aside by an earlier pass (below): a mapped
         # one refuses deletion and is left for a later pass; a free one goes.
-        Get-ChildItem -Path (Join-Path $devBinDir 'sot-capsule-stale-*.exe') -ErrorAction SilentlyContinue |
+        Get-ChildItem -Path (Join-Path $devBinDir 'sot-capsule-stale-*.exe'), (Join-Path $devBinDir 'deps\sot_capsule-stale-*.exe') -ErrorAction SilentlyContinue |
             Remove-Item -Force -ErrorAction SilentlyContinue
         if ($capsuleSessionsAlive.Count -gt 0) {
             # Live supervisors pin sot-capsule.exe, so an in-place rebuild
@@ -969,12 +1030,25 @@ function Invoke-FreshnessPass {
             # supervisors keep executing the renamed file until their
             # workspaces end or their processes are killed (the daemon then
             # respawns them from the new binary, journals recovering).
-            $staleName = "sot-capsule-stale-$(Get-Date -Format 'yyyyMMdd-HHmmss').exe"
+            $staleStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+            $staleName = "sot-capsule-stale-$staleStamp.exe"
             $renamedAside = $null
             try {
                 Rename-Item -Path (Join-Path $devBinDir 'sot-capsule.exe') -NewName $staleName -ErrorAction Stop
                 $renamedAside = Join-Path $devBinDir $staleName
-                Write-SupLog "freshness: sot-capsule.exe pinned by $($capsuleSessionsAlive.Count) live supervisors - renamed aside as $staleName; rebuilding the full pair"
+                # cargo HARD-LINKS target\release\sot-capsule.exe to
+                # target\release\deps\sot_capsule.exe, and the linker writes
+                # the deps name first. The live supervisors' mapped image is
+                # therefore still reachable -- and locked -- under deps\ after
+                # the rename above, and the pair build dies with LNK1104
+                # "cannot open file ...deps\sot_capsule.exe" (2026-09-08). Move
+                # that name aside too; both stale names are swept above on the
+                # next pass once nothing maps them.
+                $depsImage = Join-Path $devBinDir 'deps\sot_capsule.exe'
+                if (Test-Path $depsImage) {
+                    Rename-Item -Path $depsImage -NewName "sot_capsule-stale-$staleStamp.exe" -ErrorAction Stop
+                }
+                Write-SupLog "freshness: sot-capsule.exe pinned by $($capsuleSessionsAlive.Count) live supervisors - renamed aside as $staleName (and deps\sot_capsule.exe likewise); rebuilding the full pair"
                 $script:launchNotices.Add("$($capsuleSessionsAlive.Count) running capsule supervisor(s) are on the previous build and cannot attach to this frontend: end them from a frontend of that build, or kill only their 'sot-capsule supervise' process and attach the row again (the run leg and its agent survive and are adopted)") | Out-Null
             } catch {
                 Write-SupLog "freshness: could not rename the pinned sot-capsule.exe aside ($($_.Exception.Message)); the pair build below will refresh sotd.exe only"
@@ -983,6 +1057,7 @@ function Invoke-FreshnessPass {
         }
         # The full pair build, unconditionally: the only difference a pinned
         # image makes is the rename above.
+        Set-LaunchStatus 'Rebuilding backend pair...'
         Write-SupLog "freshness: cargo build -p sot-backend -p sot-log"
             $capOut = cargo build --release -p sot-backend -p sot-log --manifest-path (Join-Path $repo 'rust\Cargo.toml') 2>&1
             if ($LASTEXITCODE -ne 0) {
@@ -1047,6 +1122,7 @@ function Invoke-LocalDaemonEnsure {
         Write-SupLog "local daemon: sot-local-daemon.ps1 missing at $sotLocalDaemon"
         return $false
     }
+    Set-LaunchStatus 'Starting local daemon...'
     $localOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) 6>&1 2>&1
     foreach ($l in @($localOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
     return ($LASTEXITCODE -eq 0)
@@ -1298,6 +1374,11 @@ try {
         # matching what a first launch with that switch would do.
         if ($convergeRequested) {
             Write-SupLog 'converge (exit 76): re-running self-update prelude + freshness pass'
+            # Visible progress for the whole window-less stretch: the splash
+            # renders each step below and exits itself on the DONE write after
+            # the respawn, exactly as on the first launch.
+            Start-Splash
+            $splashDismissed = $false
             Invoke-SelfUpdatePrelude
             Invoke-FreshnessPass
             $localDaemonReady = Invoke-LocalDaemonEnsure
@@ -1356,4 +1437,10 @@ try {
             try { Stop-Process -Id $et.Proc.Id -Force -ErrorAction SilentlyContinue } catch {}
         }
     }
+    # Release the single-instance lock only if it is still ours.
+    try {
+        if ((Get-Content -Path $launcherLock -ErrorAction Stop | Select-Object -First 1) -eq "$PID") {
+            Remove-Item -Path $launcherLock -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
 }
