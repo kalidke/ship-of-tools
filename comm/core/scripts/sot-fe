@@ -818,7 +818,11 @@ send_version() {
 
     printf '%-20s %-28s %s\n' "component" "version" "build"
     if [ -z "$verr" ]; then
-        printf '%s' "$vresp" | jq -r '(.payload.clients // [])[] | "client " + .client_id + "\t" + .app_version + "\t—"' \
+        # Identical (client_id, version) pairs collapse to one row with a
+        # count: every comm-script connection registers as "sot-comm", and a
+        # busy backend has a dozen of them at once.
+        printf '%s' "$vresp" | jq -r '(.payload.clients // []) | group_by(.client_id + "\u0000" + .app_version) | .[]
+            | "client " + .[0].client_id + (if length > 1 then " ×" + (length|tostring) else "" end) + "\t" + .[0].app_version + "\t—"' \
             | while IFS=$'\t' read -r comp ver build; do
                 printf '%-20s %-28s %s\n' "$comp" "$ver" "$build"
             done

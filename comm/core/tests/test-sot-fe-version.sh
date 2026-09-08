@@ -121,6 +121,11 @@ start_stub_daemon() {
 }
 
 stop_stub_daemon() {
+    # The watcher is a subshell whose `tail -F | while` children outlive a
+    # kill of the subshell alone and keep this script's stdout open — a
+    # caller piping the suite (`| tail`) then never sees EOF. Kill the
+    # children first.
+    [ -n "$STUB_WATCHER_PID" ] && pkill -TERM -P "$STUB_WATCHER_PID" >/dev/null 2>&1
     [ -n "$STUB_WATCHER_PID" ] && kill "$STUB_WATCHER_PID" >/dev/null 2>&1
     [ -n "$STUB_NC_PID" ] && kill "$STUB_NC_PID" >/dev/null 2>&1
     wait "$STUB_WATCHER_PID" 2>/dev/null
