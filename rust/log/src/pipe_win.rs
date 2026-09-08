@@ -241,7 +241,7 @@ use std::collections::{HashMap, VecDeque};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
-use std::sync::{Arc, Condvar, Mutex, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock, RwLockReadGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -1097,6 +1097,20 @@ struct ServerShared {
     accept_cv: Condvar,
     reaper_tx: SyncSender<ReaperMsg>,
     events_tx: SyncSender<LaneEvent>,
+    /// Switch-latency Phase 1 (c): the bridging `Transport` impl's own
+    /// wake callback (`PipeTransport::bind`, via [`PipeServer::set_wake`])
+    /// — invoked, if set, every time [`send_lifecycle_event`]/
+    /// [`deliver_bytes`] successfully push a fresh event, AFTER the push
+    /// (so a caller woken by it is guaranteed the event is already
+    /// sitting in `events_tx` for `events()`'s own `try_recv` to find).
+    /// `OnceLock`, not a `Mutex`: set at most once, by the ONE caller
+    /// that ever calls `set_wake` (immediately after `bind`/
+    /// `bind_supervisor` returns) — every read after that is wait-free.
+    /// Never set at all for the supervisor lane (`bind_supervisor`'s own
+    /// caller, `supervisor.rs`, wakes its main loop by blocking on
+    /// `events()` directly — see that module's own `MAIN_LOOP_POLL`
+    /// comment — so it has no need of this).
+    activity_wake: OnceLock<Arc<dyn Fn() + Send + Sync>>,
     max_instances: u32,
     name: Vec<u16>,
     /// Set exactly once, by `PipeServer::disconnect_listener` (which
@@ -1224,6 +1238,7 @@ impl PipeServer {
             accept_cv: Condvar::new(),
             reaper_tx,
             events_tx,
+            activity_wake: OnceLock::new(),
             max_instances,
             name,
             dropping: AtomicBool::new(false),
@@ -1323,6 +1338,20 @@ impl PipeServer {
     /// never silently loses a lifecycle event.
     pub fn events(&self) -> &Receiver<LaneEvent> {
         &self.events_rx
+    }
+
+    /// Switch-latency Phase 1 (c): register `wake` to be pinged (see
+    /// [`notify_wake`]) after every event this server successfully queues
+    /// from here on — `pipe_transport::PipeTransport::bind` is the one
+    /// real caller, immediately after this server itself is bound, so
+    /// `capsule::run`'s own `output_rx.recv_timeout` wakes on real voyage-
+    /// pipe activity. `pub(crate)`: an implementation detail of the
+    /// bridge, not part of this server's own public transport contract
+    /// (`events`/`send`/`close`/...). Idempotent-once: a second call is a
+    /// silent no-op (`OnceLock::set`'s own contract) — this server has
+    /// exactly one bridge owner, which calls it at most once.
+    pub(crate) fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        let _ = self.shared.activity_wake.set(wake);
     }
 
     /// Queue `bytes` for `conn_id`, tagged with `marker` if the caller
@@ -1718,6 +1747,18 @@ fn recycle_instance(shared: &Arc<ServerShared>, id: u64, raw: SendableHandle) {
     );
 }
 
+/// Switch-latency Phase 1 (c): ping this server's own wake callback, if
+/// [`PipeServer::set_wake`] ever registered one — called ONLY after a
+/// push to `events_tx` already succeeded, so a caller woken by it always
+/// finds the real event already queued for `events()`'s own `try_recv`.
+/// A no-op for the (common, unaffected) case nothing ever registered
+/// one, e.g. the supervisor lane.
+fn notify_wake(shared: &Arc<ServerShared>) {
+    if let Some(wake) = shared.activity_wake.get() {
+        wake();
+    }
+}
+
 /// Deliver one lifecycle event (`Accepted`/`Sent`/`Closed`/`AcceptError`)
 /// RELIABLY — see the module doc's "Reliable lifecycle delivery" section
 /// for the full contract this implements.
@@ -1725,7 +1766,10 @@ fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
     let mut item = evt;
     loop {
         match shared.events_tx.try_send(item) {
-            Ok(()) => return,
+            Ok(()) => {
+                notify_wake(shared);
+                return;
+            }
             Err(TrySendError::Disconnected(_)) => return,
             Err(TrySendError::Full(v)) => {
                 item = v;
@@ -2100,7 +2144,10 @@ fn deliver_bytes(
     let deadline = Instant::now() + BYTES_ABANDON_AFTER;
     loop {
         match shared.events_tx.try_send(item) {
-            Ok(()) => return true,
+            Ok(()) => {
+                notify_wake(shared);
+                return true;
+            }
             Err(TrySendError::Disconnected(_)) => return false,
             Err(TrySendError::Full(v)) => {
                 item = v;

@@ -502,6 +502,115 @@ fn full_socket_e2e_two_clients_and_mgmt() {
     drop(mgmt_client);
 }
 
+/// Switch-latency Phase 1 (c): once a real capsule's producer has gone
+/// quiet (`--script 1 --linger` writes one small script block, then sits
+/// forever with no further output — no `--drip` nudging the main loop the
+/// way `full_socket_e2e_two_clients_and_mgmt`'s own producer does) and the
+/// main loop has had nothing to do for well over `GROUP_COMMIT_WINDOW`
+/// (50ms) — so it is genuinely parked in its own `output_rx.recv_timeout`
+/// tail wait, not mid-tick — a FRESH attach (connect, hello, attach,
+/// collect the checkpoint) over the REAL socket transport must complete
+/// near-instantly rather than risk paying the OLD worst case (each step
+/// landing right after a drain, sitting unnoticed for up to the full
+/// window before the loop's own tick would have found it). The bound
+/// asserted here (200ms) is generous and CI-safe, but only reachable at
+/// all if `Transport::set_wake`'s callback (`SocketTransport::bind`, via
+/// `SocketServer::set_wake`) actually wakes this loop on real transport
+/// activity — a connection accepted, a frame readable — rather than
+/// solely on its own group-commit cadence.
+#[test]
+fn an_attach_against_an_idle_capsule_is_not_group_commit_bound() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let helper = env!("CARGO_BIN_EXE_sot-pty-helper").to_string();
+    let argv = vec![helper, "--script".to_string(), "1".to_string(), "--linger".to_string()];
+    let voyage_id = fresh_voyage_id();
+    let cfg = config(dir.path(), &voyage_id, argv, 80, 25);
+    let root = cfg.voyage_root.clone();
+
+    let mut transport = SocketTransport::new(8);
+    let (_cmd_tx, cmd_rx) = mpsc::channel();
+    let handle = std::thread::spawn(move || capsule::run::<PtyProducer>(cfg, cmd_rx, &mut transport));
+
+    // Prove the run is genuinely up (and drain its one-shot startup
+    // script) with an ORDINARY attach first -- untimed setup, not the
+    // measurement.
+    let setup_client = Arc::new(connect_voyage_socket(&voyage_id).unwrap());
+    let mut setup = RealFrames::spawn(Arc::clone(&setup_client));
+    setup_client.write_all(&frame::hello()).unwrap();
+    setup.wait_for("setup hello_ok", Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+    });
+    setup_client.write_all(&frame::attach("setup")).unwrap();
+    setup.collect_checkpoint("setup checkpoint", Duration::from_secs(10), 80, 25);
+    // `cancel` (SHUT_RDWR), not `drop`: the run is still very much alive
+    // at this point (unlike the OTHER tests in this file, which only
+    // drop/join their own connections AFTER the whole run has already
+    // been shut down and every connection closed server-side) --
+    // `setup`'s own reader thread holds its OWN `Arc` clone of
+    // `setup_client`, so dropping this local one alone would never
+    // actually close the socket, and the reader thread would block on
+    // its own `read` forever.
+    setup_client.cancel();
+    setup.join(Duration::from_secs(10));
+
+    // Let the main loop go genuinely idle -- comfortably longer than
+    // GROUP_COMMIT_WINDOW -- so it is parked in its own tail wait when
+    // the timed attach below connects, not mid-tick from the setup
+    // attach's own teardown just above.
+    std::thread::sleep(Duration::from_millis(300));
+
+    // TIMED: a fresh connect + hello + attach + checkpoint against the
+    // now-idle capsule.
+    let started = Instant::now();
+    let fresh_client = Arc::new(connect_voyage_socket(&voyage_id).unwrap());
+    let mut fresh = RealFrames::spawn(Arc::clone(&fresh_client));
+    fresh_client.write_all(&frame::hello()).unwrap();
+    fresh.wait_for("fresh attach hello_ok", Duration::from_secs(5), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+    });
+    fresh_client.write_all(&frame::attach("fresh")).unwrap();
+    fresh.collect_checkpoint("fresh attach checkpoint", Duration::from_secs(5), 80, 25);
+    let elapsed = started.elapsed();
+    println!("idle-capsule fresh attach (connect+hello+attach+checkpoint) took {elapsed:?}");
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "a fresh attach against an idle capsule took {elapsed:?}, expected well under 200ms -- the main \
+         loop should wake on the incoming connection/bytes immediately rather than waiting out its own \
+         GROUP_COMMIT_WINDOW cadence"
+    );
+    // Same reasoning as the setup connection's own cleanup above --
+    // `cancel`, not `drop`, actually closes the socket while the run is
+    // still alive.
+    fresh_client.cancel();
+    fresh.join(Duration::from_secs(10));
+
+    // Clean shutdown over a mgmt connection -- matching
+    // `full_socket_e2e_two_clients_and_mgmt`'s own pattern, never just
+    // dropping the run thread's handle (which would strand the producer).
+    let mgmt_client = Arc::new(connect_voyage_socket(&voyage_id).unwrap());
+    let mut mgmt_splitter = wire::FrameSplitter::new();
+    let mut mgmt_pending = VecDeque::new();
+    let shutdown_reply = mgmt_roundtrip(
+        &mgmt_client,
+        &mut mgmt_splitter,
+        &mut mgmt_pending,
+        frame::mgmt_shutdown("idle-attach latency test done"),
+    );
+    assert_eq!(shutdown_reply, wire::MgmtReply::ShutdownOk);
+    let eof = read_bounded(&mgmt_client, "mgmt EOF after shutdown ack", Duration::from_secs(10));
+    assert!(eof.is_empty(), "expected ordered EOF on the mgmt connection after its own shutdown ack");
+
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return within the teardown bound")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested, "expected the mgmt shutdown to end the run as Requested");
+
+    verify_voyage(&root, &voyage_id).unwrap();
+    drop(mgmt_client);
+}
+
 /// The direct children of `pid`, via `/proc/<pid>/task/<pid>/children`
 /// (Linux 3.5+) — the capsule's fork of its producer happens on its own
 /// main thread, before any of its own extra threads exist (the reader

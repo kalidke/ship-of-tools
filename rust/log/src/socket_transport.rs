@@ -54,6 +54,7 @@ use crate::socket_unix::{ConnId, SocketServer};
 use crate::transport::{LaneEvent, Transport, TransportEvent as CapsuleEvent};
 use crate::Result;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
 /// A `Transport` over a real `SocketServer`. Constructed UNBOUND (see
@@ -67,6 +68,10 @@ pub struct SocketTransport {
     /// LATCHES the connection" section.
     closing: HashSet<ConnId>,
     next_send_id: u64,
+    /// Switch-latency Phase 1 (c): identical shape to
+    /// `pipe_transport::PipeTransport`'s own field — see that struct's
+    /// doc.
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl SocketTransport {
@@ -81,13 +86,25 @@ impl SocketTransport {
             server: None,
             closing: HashSet::new(),
             next_send_id: 0,
+            wake: None,
         }
     }
 }
 
 impl Transport for SocketTransport {
+    fn set_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.wake = Some(wake);
+    }
+
     fn bind(&mut self, voyage_id: &str) -> Result<()> {
-        self.server = Some(SocketServer::bind(voyage_id, self.max_connections)?);
+        let server = SocketServer::bind(voyage_id, self.max_connections)?;
+        // Switch-latency Phase 1 (c): forward a wake registered before
+        // `bind` (the trait's own contract) to the FRESH server that
+        // exists only from here on.
+        if let Some(wake) = &self.wake {
+            server.set_wake(Arc::clone(wake));
+        }
+        self.server = Some(server);
         // A fresh server restarts conn ids; no latch entry may outlive
         // the server whose connections it described (see shutdown_all).
         self.closing.clear();

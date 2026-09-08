@@ -156,7 +156,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -355,6 +355,23 @@ struct ServerShared {
     next_id: AtomicU64,
     reaper_tx: SyncSender<ReaperMsg>,
     events_tx: SyncSender<LaneEvent>,
+    /// Switch-latency Phase 1 (c): the bridging `Transport` impl's own
+    /// wake callback (`SocketTransport::bind`, via [`SocketServer::
+    /// set_wake`]) — invoked, if set, every time [`send_lifecycle_event`]/
+    /// [`deliver_bytes`] successfully push a fresh event, AFTER the push
+    /// (so a caller woken by it is guaranteed the event is already
+    /// sitting in `events_tx` for `events()`'s own `try_recv` to find).
+    /// `OnceLock`, not a `Mutex`: set at most once, by the ONE caller
+    /// that ever calls `set_wake` (immediately after `bind`/
+    /// `bind_supervisor` returns) — every read after that is wait-free.
+    /// Never set at all for the supervisor lane (`bind_supervisor`'s own
+    /// caller, `supervisor.rs`, wakes its main loop by blocking on
+    /// `events()` directly — see that module's own `MAIN_LOOP_POLL`
+    /// comment — so it has no need of this). NOT to be confused with
+    /// `wake_write`/`wake_read` below — this server's OWN internal
+    /// accept-loop self-pipe, an unrelated mechanism (module doc: "the
+    /// accept loop wakes via poll(2) over a self-pipe").
+    activity_wake: OnceLock<Arc<dyn Fn() + Send + Sync>>,
     max_connections: u32,
     /// TWO jobs, both won via `compare_exchange` (Codex review finding 1):
     /// (a) the ONE escape for [`send_lifecycle_event`]'s otherwise-
@@ -512,6 +529,7 @@ impl SocketServer {
             next_id: AtomicU64::new(0),
             reaper_tx,
             events_tx,
+            activity_wake: OnceLock::new(),
             max_connections,
             dropping: AtomicBool::new(false),
             accept_stopping: AtomicBool::new(false),
@@ -575,6 +593,20 @@ impl SocketServer {
     /// convention (a `Receiver` is not `Sync`).
     pub fn events(&self) -> &Receiver<LaneEvent> {
         &self.events_rx
+    }
+
+    /// Switch-latency Phase 1 (c): register `wake` to be pinged (see
+    /// [`notify_wake`]) after every event this server successfully queues
+    /// from here on — `socket_transport::SocketTransport::bind` is the
+    /// one real caller, immediately after this server itself is bound, so
+    /// `capsule::run`'s own `output_rx.recv_timeout` wakes on real voyage-
+    /// pipe activity. `pub(crate)`: an implementation detail of the
+    /// bridge, not part of this server's own public transport contract
+    /// (`events`/`send`/`close`/...). Idempotent-once: a second call is a
+    /// silent no-op (`OnceLock::set`'s own contract) — this server has
+    /// exactly one bridge owner, which calls it at most once.
+    pub(crate) fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        let _ = self.shared.activity_wake.set(wake);
     }
 
     /// Queue `bytes` for `conn_id`, tagged with `marker` if the caller
@@ -1179,6 +1211,19 @@ fn classify_terminal_error(e: io::Error) -> ClosedReason {
     ClosedReason::Error(e.to_string())
 }
 
+/// Switch-latency Phase 1 (c): ping this server's own wake callback, if
+/// [`SocketServer::set_wake`] ever registered one — called ONLY after a
+/// push to `events_tx` already succeeded, so a caller woken by it always
+/// finds the real event already queued for `events()`'s own `try_recv`.
+/// A no-op for the (common, unaffected) case nothing ever registered
+/// one, e.g. the supervisor lane. Identical contract to
+/// `pipe_win::notify_wake`.
+fn notify_wake(shared: &Arc<ServerShared>) {
+    if let Some(wake) = shared.activity_wake.get() {
+        wake();
+    }
+}
+
 /// Deliver one lifecycle event (`Accepted`/`Sent`/`Closed`/`AcceptError`)
 /// RELIABLY: retries against a full `events` channel indefinitely, with
 /// exactly one escape — [`ServerShared::dropping`] — once true, nothing
@@ -1188,7 +1233,10 @@ fn send_lifecycle_event(shared: &Arc<ServerShared>, evt: LaneEvent) {
     let mut item = evt;
     loop {
         match shared.events_tx.try_send(item) {
-            Ok(()) => return,
+            Ok(()) => {
+                notify_wake(shared);
+                return;
+            }
             Err(TrySendError::Disconnected(_)) => return,
             Err(TrySendError::Full(v)) => {
                 shared.probes.note_events_full_lifecycle();
@@ -1218,7 +1266,10 @@ fn deliver_bytes(
     let deadline = Instant::now() + BYTES_ABANDON_AFTER;
     loop {
         match shared.events_tx.try_send(item) {
-            Ok(()) => return true,
+            Ok(()) => {
+                notify_wake(shared);
+                return true;
+            }
             Err(TrySendError::Disconnected(_)) => return false,
             Err(TrySendError::Full(v)) => {
                 shared.probes.note_events_full_bytes();

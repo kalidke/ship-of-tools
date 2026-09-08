@@ -180,6 +180,7 @@ use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -394,6 +395,17 @@ enum ReaderEvent {
     /// error. Sent EXACTLY once, always, as the last thing this thread
     /// ever sends.
     Done(std::result::Result<(), std::io::Error>),
+    /// Switch-latency Phase 1 (c): a transport event (an accepted
+    /// connection, a readable frame, a completed send) may be waiting —
+    /// carries no data itself. Sent by `Transport::set_wake`'s own
+    /// callback (`run`'s own `wake_pending`-gated closure), NEVER by the
+    /// reader thread. Purely a wake: every `output_rx.recv_timeout` site
+    /// that matches this just clears `wake_pending` and loops back to its
+    /// own top, where `service_transport_events!`/
+    /// `service_transport_events_teardown!` (already run there,
+    /// unconditionally, every iteration) is what actually drains and
+    /// processes whatever the transport queued.
+    TransportActivity,
 }
 
 /// Encodes a wire `idem_key` (16 raw bytes) as the lowercase hex32 shape
@@ -999,6 +1011,34 @@ pub fn run<P: Producer>(
     }
     let transport = ShutdownGuard(transport);
 
+    // Switch-latency Phase 1 (c): ONE channel for both producer output
+    // (the reader thread, spawned later once `producer` exists, is its
+    // only other sender — unchanged) and transport activity, so this
+    // loop's own `output_rx.recv_timeout` wait (below) wakes on either
+    // without a second channel or a select. Created here, ahead of
+    // `bind` (`Transport::set_wake`'s own contract: register before
+    // binding) rather than at the reader thread's own spot further down.
+    let (tx, output_rx) = mpsc::channel::<ReaderEvent>();
+    // Coalescing: several transport events arriving between one drain
+    // and the next collapse into ONE queued wake, cleared the moment the
+    // loop actually consumes a `TransportActivity` (below) — a busy
+    // transport can never grow an unbounded backlog of these stacked on
+    // top of the real, separately-bounded queue `try_recv_event` drains.
+    let wake_pending = Arc::new(AtomicBool::new(false));
+    transport.0.set_wake({
+        let wake_tx = tx.clone();
+        let wake_pending = Arc::clone(&wake_pending);
+        Arc::new(move || {
+            if !wake_pending.swap(true, Ordering::AcqRel) {
+                // The peer send failing here means the loop already
+                // dropped `output_rx` (this run is past the point of
+                // caring) -- never a reason to panic a transport worker
+                // thread over.
+                let _ = wake_tx.send(ReaderEvent::TransportActivity);
+            }
+        })
+    });
+
     // The pipe-lifetime invariant, enforced here by code order (see
     // `Transport::bind`'s own doc): the writer lock is already held
     // (`store`, above) and `ShutdownGuard` is already in place to close
@@ -1206,8 +1246,11 @@ pub fn run<P: Producer>(
     // `take_output` runs EXACTLY here — before this thread starts, per its
     // own doc — so `producer` itself stays a live, fully-owned binding for
     // every other call this function makes (`input`/`resize`/`wait`/...).
+    // `tx`/`output_rx` themselves were created earlier, ahead of
+    // `transport.0.bind` (switch-latency Phase 1 (c)) — `tx` is moved
+    // into this thread's closure below exactly as before; only its
+    // CREATION moved, not its ownership story.
     let mut reader = producer.take_output();
-    let (tx, output_rx) = mpsc::channel::<ReaderEvent>();
     let reader_handle = {
         let budget = Arc::clone(&output_budget);
         std::thread::spawn(move || {
@@ -2007,27 +2050,29 @@ pub fn run<P: Producer>(
             // arm empty rather than tracking "stop trying".
             Err(mpsc::TryRecvError::Disconnected) => {}
         }
-        // Switch-latency Phase 1 finding (left as a documented gap, not a
-        // half-built mechanism): a `Transport` event arriving DURING this
-        // wait is invisible until it returns — `service_transport_events!`
-        // above already drained everything queued at the TOP of this tick,
-        // non-blockingly, and `Transport::try_recv_event` is contractually
-        // forbidden from blocking (see that method's own doc) — so an
-        // attach request or a `Sent` completion landing right after that
-        // drain waits out the FULL window below before this loop ever
-        // looks again. Waking this wait on real transport activity (the
-        // same technique `supervisor.rs`'s own main loop now uses on its
-        // lane) needs a receiver this loop can actually block on, and the
-        // concrete one (`PipeServer`/`SocketServer`'s own `events()`)
-        // is reachable only from `pipe_transport.rs`/`socket_transport.rs`
-        // — the `Transport` impls bridging it to this loop's `&mut dyn
-        // Transport` — never from here, and out of this change's file
-        // scope. `GROUP_COMMIT_WINDOW` unchanged in the meantime: still the
-        // one bound on both producer-output batching and this gap.
+        // Switch-latency Phase 1 (c): a `Transport` event arriving DURING
+        // this wait no longer waits out the full window before this loop
+        // notices — `transport.0.set_wake`'s callback (registered above,
+        // before `bind`) pushes `ReaderEvent::TransportActivity` on the
+        // SAME channel this `recv_timeout` already blocks on, the instant
+        // the transport queues a fresh event (AFTER queuing it — see that
+        // callback's own doc — so `service_transport_events!` at the top
+        // of the NEXT iteration is guaranteed to find it). `Transport::
+        // try_recv_event` itself is still never blocking (its own
+        // contract, unchanged); this wait is what wakes early, not that
+        // drain. `GROUP_COMMIT_WINDOW` is unchanged as the bound on how
+        // long producer output may batch, and as the IDLE cadence when
+        // nothing — output or transport — has anything to say.
         match output_rx.recv_timeout(GROUP_COMMIT_WINDOW) {
             Ok(ReaderEvent::Output(bytes)) => {
                 pace_output!(bytes);
                 maybe_rotate!(w);
+            }
+            Ok(ReaderEvent::TransportActivity) => {
+                wake_pending.store(false, Ordering::Release);
+                // Nothing else to do: `service_transport_events!` at this
+                // loop's own top (next iteration) drains and processes
+                // whatever prompted this wake.
             }
             Ok(ReaderEvent::Done(result)) => {
                 // Reached only if the reader's read loop ended BEFORE this
@@ -2119,6 +2164,15 @@ pub fn run<P: Producer>(
                 pace_output!(bytes);
                 maybe_rotate!(w);
             }
+            Ok(ReaderEvent::TransportActivity) => {
+                // Switch-latency Phase 1 (c): same wake, same channel, as
+                // the main loop's own arm -- mgmt/`Sent` traffic keeps
+                // being serviced through teardown (finding 7), so it gets
+                // the same early wake here rather than waiting out
+                // `TEARDOWN_REAP_POLL`. `service_transport_events_teardown!`
+                // at this loop's own top does the actual draining.
+                wake_pending.store(false, Ordering::Release);
+            }
             Ok(ReaderEvent::Done(result)) => {
                 // Same anomaly as the main loop's identical check: nothing
                 // has called close_pty() yet, so this cannot be an
@@ -2156,6 +2210,11 @@ pub fn run<P: Producer>(
             Ok(ReaderEvent::Output(bytes)) => {
                 pace_output!(bytes);
                 maybe_rotate!(w);
+            }
+            Ok(ReaderEvent::TransportActivity) => {
+                // Switch-latency Phase 1 (c): same wake as both other
+                // sites -- see the main loop's own arm.
+                wake_pending.store(false, Ordering::Release);
             }
             Ok(ReaderEvent::Done(_)) => {
                 // Round-2 review, finding 5: service transport ONE more
