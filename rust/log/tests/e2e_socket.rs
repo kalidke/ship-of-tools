@@ -570,7 +570,7 @@ fn an_attach_against_an_idle_capsule_is_not_group_commit_bound() {
     // Prove the run is genuinely up (and drain its one-shot startup
     // script) with an ORDINARY attach first -- untimed setup, not the
     // measurement.
-    let setup_client = Arc::new(connect_voyage_socket(&voyage_id).unwrap());
+    let setup_client = Arc::new(wait_for_endpoint(|| connect_voyage_socket(&voyage_id), Duration::from_secs(10)));
     let mut setup = RealFrames::spawn(Arc::clone(&setup_client));
     setup_client.write_all(&frame::hello()).unwrap();
     setup.wait_for("setup hello_ok", Duration::from_secs(10), |f| {
