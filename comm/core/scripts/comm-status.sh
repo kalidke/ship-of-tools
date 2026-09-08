@@ -5,67 +5,42 @@
 #
 # Usage:
 #   comm-status.sh <state> ["summary"]
-#     state      working | idle | blocked | done | waiting   — the WORK state
-#                (distinct from the comm-lifecycle `status` field). blocked = red
-#                (needs the USER to act); waiting = purple (a long job / subagent
-#                is still running — the session is idle-of-its-own-work but NOT
-#                free, so don't read it as available); done = blue (finished —
-#                survives turn ends and machine turns, cleared by the next
-#                genuine prompt or any explicit report); idle = free.
+#     state      working | idle | blocked | done | waiting  — the WORK state
+#                (distinct from the comm-lifecycle `status` field).
+#                blocked = red (needs the USER to act); waiting = purple (a
+#                job/subagent/peer you launched is still running — not free);
+#                done = blue (finished, unread); working = green; idle = gray.
 #     summary    one sentence of current (working) / just-finished (done) work.
-#                OMITTED keeps the prior summary (so `comm-status.sh idle` from a
-#                Stop hook reads "idle · last: <prior>"); pass "" to clear it.
+#                OMITTED keeps the prior summary (so a floor write reads
+#                "idle · last: <prior>"); pass "" to clear it.
 #
-# Two writers by design (state-nav design note):
-#   - the model runs `comm-status.sh working "<one-liner>"` when it judges the
-#     upcoming work will run >~30s (pre-announce — model decides "is it long");
-#   - a global Stop hook runs a SOFT `comm-status.sh done` at every turn-end (the
-#     deterministic floor) so the glance never lies if the model stays quiet.
+# Two kinds of writer:
+#   - the MODEL reports EXPLICITLY (COMM_STATUS_SOFT unset). Its word overrides
+#     everything. `waiting` sets a sticky marker (.sticky/.sticky_at); any other
+#     explicit state clears it, except `blocked`, which keeps it underneath —
+#     waiting-on-a-job and blocked-on-the-user can both be true, and answering
+#     the question must drop the row back to purple, not green.
+#   - HOOKS write SOFT (COMM_STATUS_SOFT=1) and never override a deliberate
+#     state:
+#       soft `working` (the prompt hook, with COMM_STATUS_ORIGIN=user|machine —
+#         default machine): HOLDS a `waiting` row with a live marker; HOLDS a
+#         `blocked` or `done` row on a MACHINE turn (a relay message, Monitor
+#         event or notification is not the user answering); and ALWAYS records
+#         `turn_origin`, even when holding, so the floor below reads the running
+#         turn's origin and never a stale one.
+#       soft floor (`done` from the Stop hook; `idle` from older callers):
+#         HOLDS `blocked`, `done`, and a `waiting` row with a live marker;
+#         DEMOTES a `working` row that still carries a live marker back to
+#         `waiting` (so purple survives turn cycles); paints BLUE only when the
+#         row was `working` with `turn_origin == user` — absent or `machine`
+#         FAILS GRAY; a marker older than STICKY_MAX_AGE_S self-heals to gray.
+#   Display precedence: blocked > working > waiting > done > idle.
+#   Decisions: ADR 0044 (blue/gray = unread/read, no aging), ADR 0023.
 #
-# BLUE/GRAY = UNREAD/READ (owner decision 2026-09-08). Before this, `done` was
-# written only when the model remembered to report it, and the Stop floor
-# dropped every turn end to `idle` -- so gray meant "not mid-turn" (true of
-# every session you aren't typing into) and blue meant "the model remembered".
-# Now the floor itself writes `done`, but ONLY for a row that was `working`
-# from a GENUINE human prompt (`turn_origin == user`, stamped by the soft
-# working write; absent or anything else fails GRAY): "this session finished a
-# turn you asked for and you have not been back since". Anything else floors to `idle` as before: a machine wake
-# (relay message, Monitor event, task notification) that never went green, or
-# whose green came from a machine turn -- so a peer's ack can't paint a parked
-# row blue. A machine turn that did REAL work still ends gray; the model reports
-# `done "<summary>"` explicitly when a job lands (the skill rule), which is the
-# accurate signal. Blue clears on the next genuine prompt (the working hook)
-# or any explicit report; there is no time-based decay (owner: honest, no aging).
-#
-# STICKY WAITING (2026-07-02, "why are you not showing purple"): a deliberate
-# `waiting` must survive TURN CYCLES, not just the turn it was set in. Before
-# this fix the sequence  waiting → user prompt (hook: working) → turn end
-# (hook: soft idle)  landed on GREEN while the background job still ran — the
-# soft-idle guard protected `waiting` only until the next prompt clobbered it
-# via `working`. Mechanics now:
-#   - `comm-status.sh waiting "<summary>"` also stamps a sticky marker
-#     (.sticky = summary, .sticky_at = now) in the registry row;
-#   - the SOFT working write (COMM_STATUS_SOFT=1, from the UserPromptSubmit
-#     hook) sets state=working but PRESERVES the marker — actively processing
-#     a turn is true, but the wait isn't over;
-#   - the SOFT idle write (Stop hook) DEMOTES to state=waiting (purple, sticky
-#     summary restored) while the marker is live, instead of dropping to idle;
-#   - any EXPLICIT (non-soft) state report — idle/done/working/blocked — CLEARS
-#     the marker: the model consciously said the wait is over or superseded;
-#   - a marker older than STICKY_MAX_AGE_S (2h) self-heals: soft idle clears it
-#     and goes green, so a forgotten purple can't lie forever.
-#
-# CANONICAL HIERARCHY (maintainer decision, 2026-07-04): blocked/red > working/green >
-# waiting/purple > done/blue > idle. Red = a question pending ON THE USER: it survives
-# machine-initiated turns (the working hook's machine-turn guard) and turn
-# ends (soft idle's blocked guard), clearing only on a genuine user prompt or
-# an explicit report. Blue = a deliberate "finished" report: it gets the same
-# two protections as red (soft idle preserves it; machine turns don't flip it
-# to green) — a Monitor wake is not new work, and a turn end is not a reason
-# to erase the one state the FE's Done tone exists to display. Green = actively working: any tool activity promotes a
-# waiting row (heartbeat hook) for the turn's duration. Purple = idle with a
-# live wait (sticky demote at Stop). The hooks enforce this; the model's
-# explicit reports override everything.
+# READ-DECIDE-WRITE IS ONE CRITICAL SECTION (Codex review, #223): every guard
+# reads the row INSIDE `with_lock`, so a writer that commits between our read
+# and our write cannot be overwritten by a decision made against a stale row.
+# The registry mutation's exit status is this script's exit status.
 #
 # Self-gating: a session with no registry row (not a joined comm agent — e.g. a
 # plain human session where a global hook also fires) is a silent no-op (rc 0).
@@ -92,134 +67,46 @@ jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || exit 0
 
 SOFT="${COMM_STATUS_SOFT:-0}"
 STICKY_MAX_AGE_S=7200   # a forgotten sticky-waiting self-heals after 2h
+# ${2+set}: distinguish an omitted summary (keep prior) from an explicit "" (clear).
+HAVE=0; [ "${2+set}" = set ] && HAVE=1
+SUMMARY="${2-}"
+# turn_origin is written by the SOFT working write only: the prompt hook is the
+# one writer that can tell a human prompt from a wake, and says so explicitly.
+TURN_ORIGIN=""
+if [ "$STATE" = working ] && [ "$SOFT" = 1 ]; then TURN_ORIGIN="${COMM_STATUS_ORIGIN:-machine}"; fi
 
+soft_floor() { [ "$SOFT" = 1 ] && { [ "$STATE" = idle ] || [ "$STATE" = done ]; }; }
+row_field() { jq -r --arg n "$NAME" --arg f "$1" '.agents[$n][$f] // ""' "$REGISTRY" 2>/dev/null; }
 # sticky_age_s — seconds since the row's sticky_at stamp; empty when no marker
 # (or unparseable → 999999, i.e. treated as expired rather than immortal).
 sticky_age_s() {
     local at now
-    at="$(jq -r --arg n "$NAME" '.agents[$n].sticky_at // ""' "$REGISTRY" 2>/dev/null)"
+    at="$(row_field sticky_at)"
     [ -n "$at" ] || { echo ""; return; }
     now=$(date -u +%s)
     at=$(date -u -d "$at" +%s 2>/dev/null) || { echo 999999; return; }
     echo $(( now - at ))
 }
+marker_live() { [ -n "$1" ] && [ "$1" -lt "$STICKY_MAX_AGE_S" ]; }
 
-# Soft working (the UserPromptSubmit hook): a re-invocation — a background task
-# notification, a monitor wake, an inbox event — starts a turn but the session is
-# still waiting on the agents/job it spawned. The soft `working` write must NOT
-# clobber a live sticky-`waiting` marker to green: stay `waiting` (purple) while
-# the marker is live. This is the counterpart to the soft-idle demote below and
-# is what the header's "SOFT working does NOT clobber a live waiting marker"
-# contract requires — without it, every re-invocation flipped the row green and
-# the demote only restored purple on a CLEAN (non-nudged) turn-end, so the row
-# read idle/green while spawned agents ran. An EXPIRED marker falls through to
-# plain working (self-heal); an EXPLICIT `working` (SOFT=0, the model resuming
-# its own work) is unaffected and clears the marker below.
-# registry_origin NAME ORIGIN — record the running turn's provenance without
-# touching the state. Used when a soft working write HOLDS the current state
-# (below): the colour stays, but the floor must still learn who started this
-# turn, or a stale "user" from an earlier turn would paint a machine turn blue.
-registry_origin() {
-    jq --arg n "$1" --arg o "$2" 'if .agents[$n] then .agents[$n] += {turn_origin:$o} else . end' \
+# write_origin ORIGIN — record the running turn's provenance without touching
+# the state (a soft working write that HOLDS the current colour).
+write_origin() {
+    jq --arg n "$NAME" --arg o "$1" 'if .agents[$n] then .agents[$n] += {turn_origin:$o} else . end' \
        "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
 }
-# TURN_ORIGIN: who started the turn now running -- "user" (a genuine prompt) or
-# "machine" (a wake). Set on the SOFT working write only (the prompt hook is the
-# one writer that knows and says so explicitly); the default is machine, so
-# anything else FAILS GRAY at the floor. Read by the soft done floor (ADR 0044).
-TURN_ORIGIN=""
-if [ "$STATE" = working ] && [ "$SOFT" = 1 ]; then
-    TURN_ORIGIN="${COMM_STATUS_ORIGIN:-machine}"
-    cur="$(jq -r --arg n "$NAME" '.agents[$n].state // ""' "$REGISTRY" 2>/dev/null)"
-    hold=0
-    case "$cur" in
-        waiting)
-            age="$(sticky_age_s)"
-            if [ -z "$age" ] || [ "$age" -lt "$STICKY_MAX_AGE_S" ]; then hold=1; fi ;;
-        blocked|done)
-            # Hierarchy guard (maintainer 2026-07-04): a MACHINE turn must not
-            # flip red (question pending on the user) or blue (finished,
-            # unread) to green; a genuine human prompt still does.
-            [ "$TURN_ORIGIN" = machine ] && hold=1 ;;
-    esac
-    if [ "$hold" = 1 ]; then
-        with_lock registry_origin "$NAME" "$TURN_ORIGIN"
-        exit 0
-    fi
-fi
-
-# Soft idle (the Stop hook): the turn-end idle floor must NOT overwrite a
-# deliberate `blocked` (pending question — would wipe red the instant it's set),
-# a deliberate `done` (finished — the report the FE's blue tone exists to show;
-# without this guard `done` survived only from the tool call to the SAME turn's
-# Stop hook, so every done-row read idle wearing a done-shaped summary), or a
-# live `waiting`. While a sticky-waiting marker is live, soft idle DEMOTES to
-# waiting (purple, sticky summary restored) instead of going green — this is
-# what makes `waiting` survive turn cycles (see header). An expired marker is
-# cleared and falls through to plain idle.
-# The Stop hook sends a soft `done` (2026-09-08); a soft `idle` is the same
-# floor minus the blue (kept for older callers).
-soft_floor() { [ "$SOFT" = 1 ] && { [ "$STATE" = idle ] || [ "$STATE" = done ]; }; }
-if soft_floor; then
-    cur="$(jq -r --arg n "$NAME" '.agents[$n].state // ""' "$REGISTRY" 2>/dev/null)"
-    [ "$cur" = blocked ] && exit 0
-    [ "$cur" = done ] && exit 0
-    age="$(sticky_age_s)"
-    if [ "$cur" = waiting ]; then
-        # Already purple: stay purple while the marker is live — or when there
-        # is no marker at all (a pre-sticky manual waiting; ages out visually).
-        # An EXPIRED marker falls through to idle + clear (the self-heal).
-        if [ -z "$age" ] || [ "$age" -lt "$STICKY_MAX_AGE_S" ]; then exit 0; fi
-    elif [ -n "$age" ] && [ "$age" -lt "$STICKY_MAX_AGE_S" ]; then
-        # Live marker but state was clobbered to working by a turn cycle:
-        # DEMOTE back to waiting (purple), restoring the sticky summary.
-        STATE=waiting
-        set -- waiting "$(jq -r --arg n "$NAME" '.agents[$n].sticky // ""' "$REGISTRY" 2>/dev/null)"
-    fi
-    # Blue only for a row that was actually running a turn a HUMAN asked for
-    # (see the header's BLUE/GRAY note); everything else floors to gray.
-    if [ "$STATE" = done ]; then
-        # Absent provenance FAILS GRAY (a row stamped working before this
-        # field existed, or by anything but the prompt hook) -- blue is opt-in.
-        origin="$(jq -r --arg n "$NAME" '.agents[$n].turn_origin // "machine"' "$REGISTRY" 2>/dev/null)"
-        { [ "$cur" = working ] && [ "$origin" = user ]; } || STATE=idle
-    fi
-    # expired/absent marker: fall through; STICKY_OP=clear removes it.
-fi
-
-# Sticky marker lifecycle: explicit `waiting` sets it; explicit idle/done/
-# working clears it (the model consciously reported — the wait is over or
-# superseded). Explicit `blocked` PRESERVES it: waiting-on-job and blocked-on-
-# user can both be true (blocked wins display precedence), and when the user
-# answers, the row must demote back to purple, not green. Soft writes (hooks)
-# preserve it, except the expired-idle case.
-STICKY_OP=keep
-if [ "$SOFT" = 0 ]; then
-    case "$STATE" in
-        waiting) STICKY_OP=set ;;
-        blocked) STICKY_OP=keep ;;
-        *)       STICKY_OP=clear ;;
-    esac
-fi
-if soft_floor; then STICKY_OP=clear; fi   # only reached when marker absent/expired
-
-# registry_status NAME STATE HAVE_SUMMARY SUMMARY STICKY_OP — merge the
-# work-state into the row (only if present), mirroring registry_touch's
-# read-merge-write. Object `+=` preserves every other field. status_at +
-# last_seen both get the stamp so the nav can age a stale "working" that never
-# got a closing Stop.
-registry_status() {
-    local n="$1" st="$2" have="$3" sum="$4" sticky_op="$5" ts; ts="$(now_iso)"
-    local base sticky
+# write_state STATE HAVE_SUMMARY SUMMARY STICKY_OP — merge the work-state into
+# the row. Object `+=` preserves every other field. status_at + last_seen both
+# get the stamp so the nav can age a stale "working" that never got a closing
+# Stop. Returns the mutation's status (the trailing cleanup must not mask it).
+write_state() {
+    local st="$1" have="$2" sum="$3" sticky_op="$4" ts base sticky sum_file rc=0
+    ts="$(now_iso)"
     if [ "$have" = 1 ]; then
         base='{state:$st, summary:$sum, status_at:$t, last_seen:$t}'
     else
         base='{state:$st, status_at:$t, last_seen:$t}'
     fi
-    # turn_origin: who started the turn now running -- "user" (a genuine
-    # prompt) or "machine" (a wake). Written by the SOFT working write only
-    # (the UserPromptSubmit hook is the one writer that knows), read by the
-    # soft done floor: blue is reserved for a human-requested turn.
     if [ -n "$TURN_ORIGIN" ]; then base="($base + {turn_origin:\$o})"; fi
     case "$sticky_op" in
         set)   sticky=' + {sticky: (if $sum != "" then $sum else (.agents[$n].summary // "") end), sticky_at: $t}' ;;
@@ -228,19 +115,54 @@ registry_status() {
     esac
     # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): sum is a
     # free-text work-state summary and must never reach jq via --arg.
-    local sum_file; sum_file="$(sot_jq_rawfile "$sum")" || return 1
+    sum_file="$(sot_jq_rawfile "$sum")" || return 1
     if [ "$sticky_op" = clear ]; then
-        jq --arg n "$n" --arg st "$st" --rawfile sum "$sum_file" --arg t "$ts" --arg o "$TURN_ORIGIN" \
+        jq --arg n "$NAME" --arg st "$st" --rawfile sum "$sum_file" --arg t "$ts" --arg o "$TURN_ORIGIN" \
            "(if .agents[\$n] then .agents[\$n] += $base else . end) $sticky" \
-           "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+           "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY" || rc=$?
     else
-        jq --arg n "$n" --arg st "$st" --rawfile sum "$sum_file" --arg t "$ts" --arg o "$TURN_ORIGIN" \
+        jq --arg n "$NAME" --arg st "$st" --rawfile sum "$sum_file" --arg t "$ts" --arg o "$TURN_ORIGIN" \
            "if .agents[\$n] then .agents[\$n] += ($base$sticky) else . end" \
-           "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+           "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY" || rc=$?
     fi
     rm -f "$sum_file"
+    return $rc
 }
 
-# ${2+set}: distinguish an omitted summary (keep prior) from an explicit "" (clear).
-HAVE=0; [ "${2+set}" = set ] && HAVE=1
-with_lock registry_status "$NAME" "$STATE" "$HAVE" "${2-}" "$STICKY_OP"
+# The whole read-decide-write, run under the registry lock.
+status_txn() {
+    local st="$STATE" have="$HAVE" sum="$SUMMARY" cur age sticky_op=keep
+    jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || return 0   # row gone: no-op
+    cur="$(row_field state)"
+    if [ "$st" = working ] && [ "$SOFT" = 1 ]; then
+        local hold=0
+        case "$cur" in
+            waiting)      age="$(sticky_age_s)"; { [ -z "$age" ] || marker_live "$age"; } && hold=1 ;;
+            blocked|done) [ "$TURN_ORIGIN" = machine ] && hold=1 ;;
+        esac
+        if [ "$hold" = 1 ]; then write_origin "$TURN_ORIGIN"; return; fi
+    fi
+    if soft_floor; then
+        case "$cur" in blocked|done) return 0 ;; esac
+        age="$(sticky_age_s)"
+        if [ "$cur" = waiting ]; then
+            # No marker at all = a pre-sticky manual waiting: also held.
+            { [ -z "$age" ] || marker_live "$age"; } && return 0
+        elif marker_live "$age"; then
+            st=waiting; have=1; sum="$(row_field sticky)"
+        fi
+        if [ "$st" = done ]; then
+            { [ "$cur" = working ] && [ "$(row_field turn_origin)" = user ]; } || st=idle
+        fi
+        sticky_op=clear   # only reached with the marker absent/expired (or demoting, where it stays: see below)
+        [ "$st" = waiting ] && sticky_op=keep
+    elif [ "$SOFT" = 0 ]; then
+        case "$st" in
+            waiting) sticky_op=set ;;
+            blocked) sticky_op=keep ;;
+            *)       sticky_op=clear ;;
+        esac
+    fi
+    write_state "$st" "$have" "$sum" "$sticky_op"
+}
+with_lock status_txn

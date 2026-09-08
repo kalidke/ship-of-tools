@@ -74,6 +74,28 @@ hooks:
 - Codex sessions share the same scripts (ADR 0031), so they get the same
   floor with zero new logic.
 
+## Review round 2 (Codex on #223)
+
+- **Read-decide-write is one critical section.** Every guard read (state,
+  sticky age, `turn_origin`) now runs inside `with_lock`, in `status_txn`.
+  Before, the reads ran before the lock and the locked jq only checked row
+  existence, so a `done` committed while the floor waited was overwritten
+  with `idle`, and a machine start committed while a `working/user` floor
+  waited was painted blue. Both races are reproduced in the test suite via
+  the lock's barrier seam.
+- **A failed mutation is a failed script.** The write helpers return the jq
+  or `mv` status; the trailing temp-file cleanup no longer masks it, and
+  `with_lock` propagates it as the exit code.
+- **Deployment-order tolerance.** The Stop hook sends soft `done` only to a
+  `comm-status.sh` that has the soft floor (it greps for `soft_floor`), else
+  soft `idle` — an old script guarded only `idle` and would have painted a
+  blocked or waiting row blue between the two copies landing.
+- **History pruned.** `comm-status.sh`'s header now states the current
+  contract only; this ADR holds the decision and its history.
+- **Regression suite.** `comm/core/tests/test-status-floor.sh` (23 cases:
+  the state scenarios, both races, both failed-write paths, the hook
+  tolerance) runs in the ubuntu CI leg beside the disambiguation suite.
+
 ## Verification
 
 Fourteen scenarios run against a scratch registry (`SOT_COMM_HOME` pointed at a

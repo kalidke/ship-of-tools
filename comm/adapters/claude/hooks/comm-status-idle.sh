@@ -33,7 +33,11 @@ STATUS="$HOME_DIR/bin/comm-status.sh"
 REGISTRY="$HOME_DIR/registry.json"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-turn_floor() { [ -x "$STATUS" ] && COMM_STATUS_SOFT=1 "$STATUS" done >/dev/null 2>&1 || true; }
+# Deployment-order tolerance (Codex review, #223): an OLDER comm-status.sh
+# guards only a soft `idle`, so sending it `done` would paint a blocked or
+# waiting row blue. Send `done` only to a script that has the soft floor.
+FLOOR=idle; grep -q soft_floor "$STATUS" 2>/dev/null && FLOOR=done
+turn_floor() { [ -x "$STATUS" ] && COMM_STATUS_SOFT=1 "$STATUS" "$FLOOR" >/dev/null 2>&1 || true; }
 
 # Stop-hook input (JSON on stdin): {stop_hook_active, transcript_path, ...}.
 input="$(cat 2>/dev/null || true)"
