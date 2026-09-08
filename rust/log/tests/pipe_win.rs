@@ -1419,6 +1419,22 @@ fn cross_process_challenge_server_role() {
     let (pid, created) = self_pid_and_created();
     let reply = wire::encode_mgmt_reply(&MgmtReply::StatusOk { pid, created, survival: Survival::Normal }).unwrap();
     server.send(conn_id, reply, None).expect("server role: send status_ok");
+    // Stay alive until the CLIENT has read the reply and closed: `send` only
+    // queues the bytes, and this process's exit drops the `PipeServer`, whose
+    // teardown `DisconnectNamedPipe`s the instance — which DISCARDS anything
+    // the client has not yet read. On a fast box the client always won that
+    // race; on a loaded CI runner it lost it and the parent saw EOF instead
+    // of `status_ok`, i.e. `Undetermined` (main, windows-latest, 2026-09-08).
+    // The parent drops its client right after the challenge, so `Closed`
+    // arrives promptly; the bound only guards a parent that died mid-test.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match next_event(&server, left) {
+            LaneEvent::Closed(id, _) if id == conn_id => break,
+            _ => continue,
+        }
+    }
 }
 
 /// The real cross-process test (ADR 0041 U0 round-1 required test):
@@ -1474,9 +1490,12 @@ fn cross_process_challenge_proves_a_real_child_server() {
         other => panic!("expected Proven against a real cross-process server, got {other:?}"),
     }
 
-    // The child already answered and is expected to exit on its own;
-    // reap it normally, then defuse the guard's own kill (a no-op by
-    // then, kept only for the panic/early-return paths above).
+    // Close our end FIRST: the child waits for our `Closed` before it exits
+    // (see `cross_process_challenge_server_role`), so reaping it while this
+    // handle is still open would deadlock. Then reap it normally and defuse
+    // the guard's own kill (a no-op by then, kept only for the panic/
+    // early-return paths above).
+    drop(client);
     if let Some(c) = guard.0.as_mut() {
         let _ = c.wait();
     }
