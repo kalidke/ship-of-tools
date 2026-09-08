@@ -2605,17 +2605,24 @@ fn fresh_workspace_caches(
     out
 }
 
-/// Activity tier for the bottom strip's within-host ordering (owner ask
-/// 2026-09-08): a LIVE agent — working, waiting (delegated, still owed a
-/// result), blocked (needs the user) — ranks above every resting state
-/// (idle, done, and an empty/unknown state alike). Two tiers on purpose,
-/// not five: the strip is scanned for "who is busy / who needs me", and
-/// inside the live tier the freshest `agent_status_at` stamp is a better
-/// signal than any fixed working-vs-blocked precedence would be.
-fn activity_rank(state: &str) -> u8 {
-    match state {
-        "working" | "waiting" | "blocked" => 0,
-        _ => 1,
+/// Activity tier for the bottom strip's within-host ordering (owner ruling
+/// 2026-09-08): red, white, blue, green, purple, gray — left to right.
+/// Needs-you first: `blocked` (a question pending on the user) ahead of a
+/// BADGED row (a result the session deliberately surfaced for the user and
+/// they have not looked at — the ADR 0025 badge floor, FE-local, cleared by
+/// the very act of switching to it), ahead of `done` (a turn the user asked
+/// for, finished and unread — ADR 0044). Then the busy tiers, `working`
+/// before `waiting` (delegated, owed a result), then everything resting
+/// (`idle`, empty, unknown). A badge lifts any row except a red one — red
+/// stays first whatever else is true of the row.
+fn activity_rank(state: &str, badged: bool) -> u8 {
+    match (state, badged) {
+        ("blocked", _) => 0,
+        (_, true) => 1,
+        ("done", _) => 2,
+        ("working", _) => 3,
+        ("waiting", _) => 4,
+        _ => 5,
     }
 }
 
@@ -2630,9 +2637,11 @@ fn activity_rank(state: &str) -> u8 {
 /// `workspace.list` arrival, and an arrival that changed no state or stamp
 /// reproduces the previous order byte-for-byte.
 ///
-/// Sort key within a block, ascending: `activity_rank`, then the stamp
-/// (newest first — RFC 3339, parsed; an unparseable/empty stamp sorts
-/// last), then the row's position in `prev` (so full ties keep their
+/// Sort key within a block, ascending: `activity_rank` (with `badged` —
+/// the rows carrying a pending badge-floor result, FE state rather than
+/// registry projection, which is why it is a separate input), then the
+/// stamp (newest first — RFC 3339, parsed; an unparseable/empty stamp
+/// sorts last), then the row's position in `prev` (so full ties keep their
 /// standing order instead of following whatever order the daemon happened
 /// to list them in), then daemon order for a brand-new row. `pinned` — the
 /// selected row — keeps the index it had within its block in `prev`
@@ -2643,6 +2652,7 @@ fn activity_rank(state: &str) -> u8 {
 fn activity_order(
     slugs: &[WsKey],
     states: &HashMap<WsKey, (String, String)>,
+    badged: &std::collections::HashSet<WsKey>,
     prev: &[WsKey],
     pinned: Option<&WsKey>,
 ) -> Vec<WsKey> {
@@ -2656,7 +2666,7 @@ fn activity_order(
             .ok()
             .map(|t| t.timestamp_millis())
             .unwrap_or(i64::MIN);
-        (activity_rank(state), std::cmp::Reverse(stamp), prev_pos(k))
+        (activity_rank(state, badged.contains(k)), std::cmp::Reverse(stamp), prev_pos(k))
     };
     let mut out: Vec<WsKey> = Vec::with_capacity(slugs.len());
     let mut start = 0;
@@ -6300,6 +6310,7 @@ impl State {
     fn mark_pending_nav(&mut self, host: HostKey, ws: String, path: String) {
         self.status = pending_nav_status(&ws, &path);
         self.pending_nav.insert((host, ws), path);
+        self.resort_strip();
         self.window.request_redraw();
     }
 
@@ -7801,6 +7812,38 @@ impl State {
     /// unit-testable); this method applies the result and layers on the
     /// one thing that genuinely needs history — flash-on-transition
     /// detection against the PRIOR `prev_workspace_states`.
+    /// The strip's selected row as a `(host, slug)` key: the active
+    /// workspace, else `default_slug` (the caller says which default — the
+    /// fresh one during a rebuild, the cached one otherwise) on the active
+    /// host. `None` before any workspace is known.
+    fn selected_ws_key(&self, default_slug: Option<&str>) -> Option<WsKey> {
+        self.active_workspace_id
+            .as_deref()
+            .or(default_slug)
+            .map(|s| (self.active_host.clone(), s.to_string()))
+    }
+
+    /// Rows carrying a pending badge-floor result (ADR 0025 §1) — the
+    /// `activity_order` input that lives in FE state, not the registry.
+    fn badged_keys(&self) -> std::collections::HashSet<WsKey> {
+        self.pending_nav.keys().cloned().collect()
+    }
+
+    /// Re-rank the strip in place after a badge was marked or cleared —
+    /// the one activity input that changes without a `workspace.list`
+    /// arrival. Same pure function, same pin, same stability: a call that
+    /// changed nothing reproduces the current order.
+    fn resort_strip(&mut self) {
+        let selected = self.selected_ws_key(self.default_workspace_slug.as_deref());
+        self.workspace_slugs = activity_order(
+            &self.workspace_slugs,
+            &self.workspace_states,
+            &self.badged_keys(),
+            &self.workspace_slugs,
+            selected.as_ref(),
+        );
+    }
+
     fn rebuild_workspace_caches(&mut self) {
         let fresh = fresh_workspace_caches(
             &self.ordered_hosts(),
@@ -7825,18 +7868,15 @@ impl State {
             self.prev_workspace_states
                 .insert(key.clone(), state.clone());
         }
-        // Strip order = activity order within each host block (owner ask
+        // Strip order = activity order within each host block (owner ruling
         // 2026-09-08); the selected row is pinned to its previous slot.
         // The fallback default slug comes from `fresh`, not `self` — the
         // old one may name a row this rebuild just dropped.
-        let selected: Option<WsKey> = self
-            .active_workspace_id
-            .clone()
-            .or_else(|| fresh.default_workspace_slug.clone())
-            .map(|s| (self.active_host.clone(), s));
+        let selected = self.selected_ws_key(fresh.default_workspace_slug.as_deref());
         self.workspace_slugs = activity_order(
             &fresh.workspace_slugs,
             &fresh.workspace_states,
+            &self.badged_keys(),
             &self.workspace_slugs,
             selected.as_ref(),
         );
@@ -8469,6 +8509,9 @@ impl State {
         if let Some(slug) = switched_slug {
             let pending_key: WsKey = (self.active_host.clone(), slug.clone());
             if let Some(path) = self.pending_nav.remove(&pending_key) {
+                // The badge just cleared for the row we switched to — it is
+                // the pinned row, so the re-rank moves nothing under the cursor.
+                self.resort_strip();
                 // Through the store seam: a workspace restored in Modules mode
                 // parks its Modules tree and brings in its Files slot (empty on
                 // a first visit) — never shows modules: rows under Files.
@@ -26234,8 +26277,63 @@ mod tests {
             .collect()
     }
 
+    fn nobadge() -> std::collections::HashSet<WsKey> {
+        std::collections::HashSet::new()
+    }
+
     #[test]
-    fn activity_order_live_tier_left_then_newest_stamp() {
+    fn activity_order_tiers_red_white_blue_green_purple_gray() {
+        let red = ak("h", "red");
+        let white = ak("h", "white");
+        let blue = ak("h", "blue");
+        let green = ak("h", "green");
+        let purple = ak("h", "purple");
+        let gray = ak("h", "gray");
+        // Daemon order is the reverse of the ruling; every stamp is newer
+        // than the one before, so a stamp-only sort would also be reversed.
+        let slugs = vec![
+            gray.clone(),
+            purple.clone(),
+            green.clone(),
+            blue.clone(),
+            white.clone(),
+            red.clone(),
+        ];
+        let states = astates(&[
+            (&gray, "idle", "2026-09-08T09:00:00Z"),
+            (&purple, "waiting", "2026-09-08T09:01:00Z"),
+            (&green, "working", "2026-09-08T09:02:00Z"),
+            (&blue, "done", "2026-09-08T09:03:00Z"),
+            (&white, "idle", "2026-09-08T09:04:00Z"),
+            (&red, "blocked", "2026-09-08T08:00:00Z"),
+        ]);
+        let badged = [white.clone()].into_iter().collect();
+        let got = activity_order(&slugs, &states, &badged, &[], None);
+        assert_eq!(got, vec![red, white, blue, green, purple, gray]);
+    }
+
+    #[test]
+    fn activity_order_badge_lifts_any_row_but_red_stays_first() {
+        let red = ak("h", "red");
+        let busy = ak("h", "busy");
+        let blue = ak("h", "blue");
+        let slugs = vec![blue.clone(), busy.clone(), red.clone()];
+        let states = astates(&[
+            (&blue, "done", "2026-09-08T09:00:00Z"),
+            (&busy, "working", "2026-09-08T09:00:00Z"),
+            (&red, "blocked", "2026-09-08T09:00:00Z"),
+        ]);
+        // A badge on a working row lifts it above done; a badge on the red
+        // row changes nothing about its place.
+        let badged = [busy.clone(), red.clone()].into_iter().collect();
+        assert_eq!(
+            activity_order(&slugs, &states, &badged, &[], None),
+            vec![red, busy, blue]
+        );
+    }
+
+    #[test]
+    fn activity_order_ranks_by_tier_then_newest_stamp() {
         let a = ak("h", "a");
         let b = ak("h", "b");
         let c = ak("h", "c");
@@ -26249,10 +26347,10 @@ mod tests {
             (&d, "blocked", "2026-09-08T08:30:00Z"),
             (&e, "", ""),
         ]);
-        let got = activity_order(&slugs, &states, &[], None);
-        // live tier (d newer than b) first; resting tier by stamp (c, a),
-        // the stampless row last.
-        assert_eq!(got, vec![d, b, c, a, e]);
+        let got = activity_order(&slugs, &states, &nobadge(), &[], None);
+        // red, blue, green, then the resting rows by stamp with the
+        // stampless one last.
+        assert_eq!(got, vec![d, c, b, a, e]);
     }
 
     #[test]
@@ -26268,7 +26366,7 @@ mod tests {
             (&b1, "idle", "2026-09-08T09:00:00Z"),
             (&b2, "working", "2026-09-08T09:00:00Z"),
         ]);
-        let got = activity_order(&slugs, &states, &[], None);
+        let got = activity_order(&slugs, &states, &nobadge(), &[], None);
         assert_eq!(got, vec![a2, a1, b2, b1]);
         assert_eq!(
             strip_items(&got).iter().filter(|i| **i == StripItem::HostDivider).count(),
@@ -26287,13 +26385,14 @@ mod tests {
             (&b, "idle", "2026-09-08T09:00:00Z"),
             (&c, "idle", "2026-09-08T09:00:00Z"),
         ]);
-        let first = activity_order(&[a.clone(), b.clone(), c.clone()], &states, &[], None);
+        let first = activity_order(&[a.clone(), b.clone(), c.clone()], &states, &nobadge(), &[], None);
         assert_eq!(first, vec![a.clone(), b.clone(), c.clone()], "full ties keep daemon order");
-        let again = activity_order(&first, &states, &first, None);
+        let again = activity_order(&first, &states, &nobadge(), &first, None);
         assert_eq!(again, first, "an unchanged rebuild is byte-identical");
         // The daemon lists the same tied rows in a different order: the
         // previous standing wins, so nothing jitters.
-        let shuffled = activity_order(&[c.clone(), a.clone(), b.clone()], &states, &first, None);
+        let shuffled =
+            activity_order(&[c.clone(), a.clone(), b.clone()], &states, &nobadge(), &first, None);
         assert_eq!(shuffled, first);
     }
 
@@ -26310,10 +26409,10 @@ mod tests {
             (&b, "idle", "2026-09-08T09:00:00Z"),
             (&c, "working", "2026-09-08T09:05:00Z"),
         ]);
-        let got = activity_order(&prev, &states, &prev, Some(&b));
+        let got = activity_order(&prev, &states, &nobadge(), &prev, Some(&b));
         assert_eq!(got, vec![c.clone(), b.clone(), a.clone()]);
         // Unpinned, the same change re-ranks b too.
-        let free = activity_order(&prev, &states, &prev, None);
+        let free = activity_order(&prev, &states, &nobadge(), &prev, None);
         assert_eq!(free, vec![c, a, b]);
     }
 
@@ -26328,7 +26427,7 @@ mod tests {
             (&c, "idle", "2026-09-08T09:00:00Z"),
         ]);
         // b vanished; the selected c sat at index 2, now clamped to 1.
-        let got = activity_order(&[a.clone(), c.clone()], &states, &prev, Some(&c));
+        let got = activity_order(&[a.clone(), c.clone()], &states, &nobadge(), &prev, Some(&c));
         assert_eq!(got, vec![a, c]);
     }
 
@@ -26345,12 +26444,15 @@ mod tests {
         ]);
         let slugs = vec![a.clone(), b.clone(), n.clone()];
         assert_eq!(
-            activity_order(&slugs, &states, &prev, None),
+            activity_order(&slugs, &states, &nobadge(), &prev, None),
             vec![n.clone(), a.clone(), b.clone()]
         );
         // Selecting the brand-new row (no previous standing) doesn't pin it
         // to a phantom slot — it ranks like any other row.
-        assert_eq!(activity_order(&slugs, &states, &prev, Some(&n)), vec![n, a, b]);
+        assert_eq!(
+            activity_order(&slugs, &states, &nobadge(), &prev, Some(&n)),
+            vec![n, a, b]
+        );
     }
 
     #[test]
