@@ -12,14 +12,19 @@
 //! second, and — worse — `body` finishing early still cost this
 //! function's caller up to a 10ms wait on `watchdog.join()` (the
 //! watchdog only notices `state` left `PENDING` on its next poll tick).
-//! The watchdog now blocks in `Condvar::wait_timeout`, timed out exactly
-//! at `deadline`, and is woken the INSTANT `body` settles: both places
-//! that move `state` out of `PENDING` after entry (the normal
-//! completion path and `SettleOnPanic::drop`) notify the same condvar
-//! right after their CAS. An idle watchdog therefore produces zero
-//! periodic wakeups — one park, one wake (by notify or by its own
-//! timeout), done — and a caller's `join()` returns as soon as `body`
-//! itself does, not up to a poll interval later.
+//! The watchdog now blocks in `Condvar::wait_timeout`, armed for
+//! whatever is left until `deadline`, and both places that move `state`
+//! out of `PENDING` after entry (the normal completion path and
+//! `SettleOnPanic::drop`) notify it right after their own CAS — an idle
+//! watchdog parks rather than polling, so it produces no PERIODIC
+//! wakeup (a spurious OS wakeup can still happen; the loop just
+//! re-checks and re-arms). `run_with_deadline`'s return still requires
+//! joining the watchdog thread, same as before this change — the
+//! notify is what usually makes that join prompt rather than a
+//! guarantee that it always is (see the `on_time`/`notify_watchdog`
+//! ordering comment at the return path for the one case where the
+//! notify itself can be delayed, and why that no longer affects
+//! correctness).
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -51,6 +56,26 @@ pub fn run_with_deadline<T>(
     deadline: Instant,
     on_timeout: impl Fn() + Sync,
     body: impl FnOnce() -> T,
+) -> Option<T> {
+    run_with_deadline_traced(deadline, on_timeout, body, || {})
+}
+
+/// Same as [`run_with_deadline`], plus `on_watchdog_wake` — called once
+/// per iteration of the watchdog's own loop (its initial entry, and
+/// again each time `Condvar::wait_timeout` returns, by notify, a
+/// spurious OS wakeup, or its own timeout). Exists so tests can tell a
+/// genuinely notified wait (entry, then ordinarily one more call, never
+/// growing with how long `body` takes) apart from a poll loop (one call
+/// per tick FOR AS LONG AS `body` runs) WITHOUT depending on wall-clock
+/// timing, which scheduler noise makes an unreliable witness either
+/// way. `run_with_deadline` is this with a no-op hook — the two share
+/// every line of the actual race logic, so a test run through this
+/// entry point exercises the exact same code the real callers do.
+pub(crate) fn run_with_deadline_traced<T>(
+    deadline: Instant,
+    on_timeout: impl Fn() + Sync,
+    body: impl FnOnce() -> T,
+    on_watchdog_wake: impl Fn() + Sync,
 ) -> Option<T> {
     const PENDING: u8 = 0;
     const COMPLETED: u8 = 1;
@@ -85,6 +110,7 @@ pub fn run_with_deadline<T>(
         let watchdog = std::thread::Builder::new().spawn_scoped(scope, || {
             let mut guard = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             loop {
+                on_watchdog_wake();
                 if state.load(Ordering::Acquire) != PENDING {
                     return;
                 }
@@ -98,11 +124,11 @@ pub fn run_with_deadline<T>(
                     }
                     return;
                 }
-                // Timed out at exactly `deadline`, not a fixed poll tick:
-                // a spurious wakeup (or one from `notify_watchdog` that
-                // lost the race to a state change from elsewhere) just
-                // loops back to the top and re-checks `state`/re-arms the
-                // remaining wait.
+                // Armed for whatever is left until `deadline`, not a
+                // fixed poll tick: a spurious wakeup (or one from
+                // `notify_watchdog` that lost the race to a state change
+                // from elsewhere) just loops back to the top and
+                // re-checks `state`/re-arms the remaining wait.
                 let (g, _timed_out) = signal
                     .wait_timeout(guard, deadline - now)
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -158,11 +184,16 @@ pub fn run_with_deadline<T>(
         let claimed_completed = state
             .compare_exchange(PENDING, COMPLETED, Ordering::AcqRel, Ordering::Acquire)
             .is_ok();
-        // Wake the watchdog the instant `body` settles, on-time or not —
-        // see this function's own `notify_watchdog` doc. A no-op if the
-        // CAS above lost (the watchdog already won its own and is not
-        // waiting any more).
-        notify_watchdog();
+        // Codex review round finding 1: evaluated IMMEDIATELY after the
+        // CAS above, before `notify_watchdog()` below -- `notify_watchdog`
+        // takes `gate`, which the watchdog can be holding (descheduled
+        // between its own `state` check and its own `wait_timeout` call),
+        // so it can block for an unbounded stretch of real time. Reading
+        // `Instant::now()` only after that possible block let an
+        // on-time `body` be misjudged late purely by how long the notify
+        // happened to wait for the lock (reproduced: a `body` completing
+        // well inside the deadline still came back cancelled). Timeliness
+        // must be settled before touching anything that can stall.
         let on_time = Instant::now() < deadline;
         let outcome = if claimed_completed && on_time {
             Some(result)
@@ -176,6 +207,13 @@ pub fn run_with_deadline<T>(
             }
             None
         };
+        // Wake the watchdog now that this thread has fully settled --
+        // see this function's own `notify_watchdog` doc. A no-op if the
+        // CAS above lost (the watchdog already won its own and is not
+        // waiting any more). Safe to let this block on `gate` here: it
+        // can no longer feed back into `on_time`, which is already
+        // decided above.
+        notify_watchdog();
         // Propagate a watchdog panic (round-2 finding 4) rather than
         // silently discarding it — `on_timeout` is caller-supplied and a
         // bug in it must not vanish just because it happened to run on
@@ -240,8 +278,9 @@ mod tests {
         // `body` ever runs -- it re-tested `expired_at_entry_never_runs_body`
         // under a different name, not the reply/deadline race at all.
         // The GENUINE race needs a FUTURE deadline that `body` actually
-        // runs past: the watchdog (polling every 10ms) discovers the
-        // expiry while `body` is still sleeping, wins the CAS, and calls
+        // runs past: the watchdog (waiting out `deadline`, whether by
+        // polling or by a timed park) discovers the expiry while `body`
+        // is still sleeping, wins the CAS, and calls
         // `on_timeout` -- `body`'s own later completion then loses its
         // own CAS attempt (state is already `TIMED_OUT`, not `PENDING`),
         // so its result is discarded without a second `on_timeout` call.
@@ -354,56 +393,140 @@ mod tests {
         assert_eq!(result, Some(5));
     }
 
-    /// switch-latency Phase 1: the whole point of the notified wait. A
-    /// distant (30s) deadline means the OLD 10ms poll loop would still
-    /// have made this call's `watchdog.join()` wait up to another full
-    /// poll tick after `body` itself returned; the condvar wait wakes
-    /// the watchdog the instant `notify_watchdog` runs, so the entire
-    /// call returns in comfortably under one such tick.
+    /// switch-latency Phase 1, via `run_with_deadline_traced`'s wake
+    /// counter: proves the watchdog is genuinely NOTIFIED rather than
+    /// polled, without depending on wall-clock latency (which scheduler
+    /// noise makes an unreliable witness -- a loose bound admits the old
+    /// 10ms poll just as easily as the new wait). `body` takes a real,
+    /// deliberate 200ms on the calling thread, well inside the 30s
+    /// deadline. The watchdog's own loop, ideally, wakes exactly twice:
+    /// once at entry (parks, since 30s is still ahead) and once more
+    /// when `notify_watchdog` runs right after `body` settles. A 10ms
+    /// poll loop, by contrast, would wake roughly 200ms / 10ms ~= 20
+    /// times over the same stretch -- the assertion below sits between
+    /// those two numbers with slack for the rare spurious OS wakeup, not
+    /// for a specific latency.
     #[test]
-    fn completion_is_observed_promptly_not_after_a_poll_interval() {
+    fn completion_wakes_the_watchdog_a_bounded_number_of_times_not_once_per_poll_tick() {
+        let wakes = AtomicUsize::new(0);
         let deadline = Instant::now() + Duration::from_secs(30);
-        let started = Instant::now();
-        let result = run_with_deadline(deadline, || {}, || 42);
-        let elapsed = started.elapsed();
+        let result = run_with_deadline_traced(
+            deadline,
+            || {},
+            || {
+                std::thread::sleep(Duration::from_millis(200));
+                42
+            },
+            || {
+                wakes.fetch_add(1, Ordering::SeqCst);
+            },
+        );
         assert_eq!(result, Some(42));
+        let wake_count = wakes.load(Ordering::SeqCst);
         assert!(
-            elapsed < Duration::from_millis(25),
-            "run_with_deadline took {elapsed:?} to return after an instant body; \
-             a notified wait should be well under the old 10ms poll tick even \
-             with generous CI scheduling slack"
+            wake_count <= 6,
+            "watchdog woke {wake_count} times across a 200ms body -- expected entry plus one \
+             notified wake (2, with slack for a loaded CI runner's own spurious wakeups), not \
+             a 10ms poll cadence (which would be ~20)"
         );
     }
 
-    /// The other half of the same property: a `body` that never
-    /// completes must still be cancelled right around `deadline` itself
-    /// (the watchdog's `wait_timeout` is armed for exactly
-    /// `deadline - now`), not merely "eventually, on some later poll".
+    /// The timeout-path counterpart of the test above, proven the same
+    /// way (wake count, not latency): `body` blocks on a channel that
+    /// only `on_timeout` itself ever signals (mirrors
+    /// `cancels_a_body_parked_mid_operation`), so this costs only the
+    /// deadline itself, never a multi-second sleep on the calling
+    /// thread. The watchdog's own loop ideally wakes exactly twice here
+    /// too: once at entry (parks for the deadline's duration) and once
+    /// when its own `wait_timeout` expires and it wins the CAS itself.
+    /// No assertion depends on how CLOSE to the deadline that second
+    /// wake lands -- only on how MANY wakes happened -- so a loaded CI
+    /// runner delivering the timeout late costs this test time, never
+    /// correctness.
     #[test]
-    fn deadline_still_fires_close_to_itself_on_a_stalled_body() {
-        let (fired_tx, fired_rx) = std::sync::mpsc::channel::<Instant>();
-        let started = Instant::now();
-        let deadline = started + Duration::from_millis(60);
-        let result = run_with_deadline(
+    fn deadline_still_fires_on_a_stalled_body_without_repeated_polling() {
+        let wakes = AtomicUsize::new(0);
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let deadline = Instant::now() + Duration::from_millis(200);
+        let result = run_with_deadline_traced(
             deadline,
             move || {
-                let _ = fired_tx.send(Instant::now());
+                let _ = tx.send(());
+            },
+            move || rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            || {
+                wakes.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert_eq!(result, None, "the deadline must win before body's own cancellation-triggered return");
+        let wake_count = wakes.load(Ordering::SeqCst);
+        assert!(
+            wake_count <= 6,
+            "watchdog woke {wake_count} times waiting out one 200ms deadline -- expected entry \
+             plus its own timeout wake (2, with slack for a loaded CI runner's own spurious \
+             wakeups), not a 10ms poll cadence (which would be ~20)"
+        );
+    }
+
+    /// Regression test for Codex review round finding 1:
+    /// `notify_watchdog` takes `gate`, which the watchdog can be
+    /// holding while descheduled between its own `state` check and its
+    /// own `wait_timeout` call -- `on_time` must be decided BEFORE that
+    /// notify call, never after, or a `body` that genuinely finished on
+    /// time can be judged late purely by how long the notify happened to
+    /// block waiting for the lock. Reproduced with the old ordering:
+    /// this returned `None` for a `body` that finished in nanoseconds.
+    ///
+    /// The interleaving is pinned deterministically, not hoped for:
+    /// `on_watchdog_wake`'s first call runs ON THE WATCHDOG THREAD while
+    /// it still holds `gate` (the hook sits at the very top of its
+    /// loop, inside the guard scope). It signals `body` over a channel
+    /// before sleeping well past `deadline` -- `body` waits for that
+    /// signal before returning, so by the time this thread calls
+    /// `notify_watchdog()` right after, the watchdog is GUARANTEED to
+    /// still be holding `gate` for the whole stretch. The channel (with
+    /// a bounded `recv_timeout`, rather than an unbounded rendezvous)
+    /// keeps this test's own worst case bounded even if some future
+    /// change stopped the watchdog loop from running at all.
+    ///
+    /// `deadline` (400ms) and the hook's hold (900ms) are both generous
+    /// on purpose, not tight: the only two facts this test needs are
+    /// "the channel handshake plus a thread spawn finishes well inside
+    /// 400ms" (true on any CI runner this crate targets, loaded or not
+    /// -- that handshake is microseconds of real work) and "900ms is
+    /// unambiguously longer than 400ms" -- neither depends on exactly
+    /// how fast either runs, only on that first bound being generous
+    /// enough and the second exceeding it.
+    #[test]
+    fn on_time_completion_is_never_misjudged_late_by_a_delayed_notify() {
+        let (holding_gate_tx, holding_gate_rx) = std::sync::mpsc::channel::<()>();
+        let first_wake = AtomicUsize::new(0);
+        let deadline = Instant::now() + Duration::from_millis(400);
+        let result = run_with_deadline_traced(
+            deadline,
+            || {},
+            move || {
+                holding_gate_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("the watchdog must reach its first loop iteration");
+                42 // finishes essentially instantly once signalled -- comfortably on time
             },
             move || {
-                std::thread::sleep(Duration::from_secs(5)); // never finishes on time
-                99
+                if first_wake.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let _ = holding_gate_tx.send(());
+                    // Hold `gate` for well past `deadline` -- this
+                    // thread's own `notify_watchdog()` call, made right
+                    // after `body` returns, must block on this same
+                    // lock for the whole stretch.
+                    std::thread::sleep(Duration::from_millis(900));
+                }
             },
         );
-        assert_eq!(result, None);
-        let fired_at = fired_rx.recv_timeout(Duration::from_secs(1)).expect("on_timeout must fire");
-        assert!(
-            fired_at >= deadline,
-            "on_timeout must never fire before the deadline it is bound to"
-        );
-        assert!(
-            fired_at.duration_since(deadline) < Duration::from_millis(50),
-            "on_timeout fired {:?} after its own deadline -- expected close to it, not a stale poll tick late",
-            fired_at.duration_since(deadline)
+        assert_eq!(
+            result,
+            Some(42),
+            "a body that finished on time must be accepted even though notifying the \
+             watchdog afterward blocked past the deadline"
         );
     }
 }

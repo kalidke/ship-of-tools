@@ -598,9 +598,12 @@ pub struct FeAttachClient<E: Endpoint = PlatformEndpoint> {
     restore_ok: bool,
     /// Codex review round, finding 7: the SHARED half of the byte-account
     /// (the episode reader thread, spawned inside the worker, holds the
-    /// other `Arc` clone and increments this on every `Output`/
-    /// `CheckpointChunk` byte it reads, blocking further reads while at
-    /// cap). `pump` decrements it as it actually consumes `Output` bytes
+    /// other `Arc` clone and increments this on every `Output` byte it
+    /// reads, blocking further reads while at cap — `CheckpointChunk`
+    /// bytes are never counted here: they are consumed by
+    /// `attach_and_collect_checkpoint`, on the attach connection's SAME
+    /// `FrameReader`, before this reader thread even exists). `pump`
+    /// decrements it as it actually consumes `Output` bytes
     /// — the ONLY place this counter is ever decremented, which is what
     /// makes the accounting real (the first landing incremented and
     /// immediately decremented in the SAME reader-thread call, which
@@ -837,6 +840,19 @@ impl<E: Endpoint> FeAttachClient<E> {
             }
             match self.events_rx.try_recv() {
                 Ok(ClientEvent::Checkpoint(bytes)) => {
+                    // switch-latency Phase 1: a fresh checkpoint starts a
+                    // new attach episode against a (possibly different)
+                    // leg, so any notice left over from the PREVIOUS one
+                    // is retracted here rather than left standing until a
+                    // new `Notice` event replaces it. The attach notice
+                    // is emitted only after this checkpoint (the
+                    // mgmt-lane identity lookup it depends on runs
+                    // afterward — see `run_worker`'s own comment at that
+                    // reorder), so without this clear a reconnect from
+                    // leg A to leg B would render B's freshly restored
+                    // screen under A's stale notice text for as long as
+                    // that lookup takes.
+                    self.notice = None;
                     let restore_result = self.parser.restore_screen(&bytes);
                     // switch-latency Phase 1: recorded separately from
                     // `checkpointed` below (which is set unconditionally
@@ -1836,8 +1852,10 @@ fn reconnect_supervisor_lane_for_quit<E: Endpoint>(supervisor_conn: &mut E::Clie
 
 /// The byte-account behind Codex review round finding 7 ("the FE STOPS
 /// READING THE PIPE"): the episode reader (`run_attach_reader`)
-/// increments it on every `Output`/`CheckpointChunk` byte it reads and
-/// blocks its own next `read()` while it is at or above
+/// increments it on every `Output` byte it reads (`CheckpointChunk`
+/// bytes are never counted — those are consumed earlier, by
+/// `attach_and_collect_checkpoint` on the same connection, before this
+/// reader exists) and blocks its own next `read()` while it is at or above
 /// [`READER_QUEUE_CAP_BYTES`]; [`FeAttachClient::pump`] decrements it as
 /// it actually consumes `Output` bytes — the ONLY place it is ever
 /// decremented, which is what makes the accounting real (see
@@ -1895,8 +1913,22 @@ impl QueuedBytes {
     /// would go on to wait) or while it is genuinely parked inside
     /// `Condvar::wait` (where it is, by definition, listening).
     fn wait_below_cap(&self, cap: usize, stop: &AtomicBool) {
+        self.wait_below_cap_traced(cap, stop, || {})
+    }
+
+    /// Same as [`Self::wait_below_cap`], plus `on_wake` — called once
+    /// per loop iteration (initial entry, and again each time
+    /// `Condvar::wait` returns). Lets tests count how many times this
+    /// waits wakes instead of trusting wall-clock latency (which
+    /// scheduler noise on a loaded CI runner makes an unreliable witness
+    /// either way) to tell a genuinely notified wait apart from a poll.
+    fn wait_below_cap_traced(&self, cap: usize, stop: &AtomicBool, on_wake: impl Fn()) {
         let mut guard = self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        while self.load() >= cap && !stop.load(Ordering::Acquire) {
+        loop {
+            on_wake();
+            if self.load() < cap || stop.load(Ordering::Acquire) {
+                return;
+            }
             guard = self.room.wait(guard).unwrap_or_else(|poisoned| poisoned.into_inner());
         }
     }
@@ -2510,59 +2542,186 @@ mod tests {
         assert!(!client.restore_ok(), "a failed restore must not report restore_ok");
     }
 
-    /// switch-latency Phase 1: `wait_below_cap` must not busy-poll -- a
-    /// waiter parked above the cap is released promptly once `sub` drains
-    /// it back under, via the notify, not by timing out on its own.
+    /// switch-latency Phase 1, via `wait_below_cap_traced`'s wake
+    /// counter: proves `wait_below_cap` is genuinely NOTIFIED rather than
+    /// polled, without depending on wall-clock latency (a loose bound
+    /// would admit the old 20ms poll just as easily as the new wait, and
+    /// a tight one can miss on a loaded CI runner regardless of which
+    /// mechanism is really running). The waiter parks for a real 200ms
+    /// before `sub` drains it below the cap; ideally it wakes exactly
+    /// twice: once at entry (parks, since the count is still at the cap)
+    /// and once more when `sub`'s notify runs. A 20ms poll loop, by
+    /// contrast, would wake roughly 200ms / 20ms ~= 10 times over the
+    /// same stretch.
     #[test]
-    fn queued_bytes_wait_below_cap_is_released_by_a_drain() {
+    fn queued_bytes_wait_below_cap_wakes_a_bounded_number_of_times_when_released_by_a_drain() {
         let q = Arc::new(QueuedBytes::new());
         q.add(10);
         let stop = Arc::new(AtomicBool::new(false));
+        let wakes = Arc::new(AtomicUsize::new(0));
 
         let waiter_q = Arc::clone(&q);
         let waiter_stop = Arc::clone(&stop);
+        let waiter_wakes = Arc::clone(&wakes);
         let waiter = thread::spawn(move || {
-            let started = Instant::now();
-            waiter_q.wait_below_cap(10, &waiter_stop);
-            started.elapsed()
+            waiter_q.wait_below_cap_traced(10, &waiter_stop, || {
+                waiter_wakes.fetch_add(1, Ordering::SeqCst);
+            });
         });
 
-        // Give the waiter a moment to actually park before draining --
-        // not required for correctness (the drain would still be seen on
-        // entry otherwise), only so this test exercises the parked path.
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(200));
         q.sub(1); // 9 < 10: below the cap
-        let elapsed = waiter.join().expect("waiter thread must not panic");
+        waiter.join().expect("waiter thread must not panic");
+
+        let wake_count = wakes.load(Ordering::SeqCst);
         assert!(
-            elapsed < Duration::from_millis(200),
-            "wait_below_cap took {elapsed:?} to notice a drain -- expected a prompt notify, not a stale poll"
+            wake_count <= 6,
+            "waiter woke {wake_count} times across a 200ms hold -- expected entry plus one \
+             notified wake (2, with slack for a loaded CI runner's own spurious wakeups), not \
+             a 20ms poll cadence (which would be ~10)"
         );
     }
 
-    /// The other release path: `stop` alone (via `notify_stop`) must
-    /// unblock a waiter that would otherwise stay above the cap forever
-    /// -- a stop while blocked must not hang.
+    /// The other release path, proven the same way: `stop` alone (via
+    /// `notify_stop`) must unblock a waiter that would otherwise stay
+    /// above the cap forever, and must do so without a poll cadence --
+    /// this is exactly the mechanism `run_attach_reader`'s own episode
+    /// teardown depends on, exercised here with NOTHING ever draining
+    /// the queue (no `FeAttachClient`, no `pump()` call at all): `stop`
+    /// is the ONLY way out.
     #[test]
-    fn queued_bytes_wait_below_cap_is_released_by_stop() {
+    fn queued_bytes_wait_below_cap_wakes_a_bounded_number_of_times_when_released_by_stop_with_no_drain_ever_happening()
+    {
         let q = Arc::new(QueuedBytes::new());
-        q.add(10); // stays at/above the cap for the whole test
+        q.add(10); // stays at/above the cap for the whole test -- nothing ever calls sub()
         let stop = Arc::new(AtomicBool::new(false));
+        let wakes = Arc::new(AtomicUsize::new(0));
 
         let waiter_q = Arc::clone(&q);
         let waiter_stop = Arc::clone(&stop);
+        let waiter_wakes = Arc::clone(&wakes);
         let waiter = thread::spawn(move || {
-            let started = Instant::now();
-            waiter_q.wait_below_cap(10, &waiter_stop);
-            started.elapsed()
+            waiter_q.wait_below_cap_traced(10, &waiter_stop, || {
+                waiter_wakes.fetch_add(1, Ordering::SeqCst);
+            });
         });
 
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(200));
         stop.store(true, Ordering::Release);
         q.notify_stop();
-        let elapsed = waiter.join().expect("waiter thread must not panic");
+        waiter.join().expect("waiter thread must not panic");
+
+        let wake_count = wakes.load(Ordering::SeqCst);
         assert!(
-            elapsed < Duration::from_millis(200),
-            "wait_below_cap took {elapsed:?} to notice stop -- a stop while blocked must not hang"
+            wake_count <= 6,
+            "waiter woke {wake_count} times across a 200ms hold -- expected entry plus one \
+             notified wake (2, with slack for a loaded CI runner's own spurious wakeups), not \
+             a 20ms poll cadence (which would be ~10)"
         );
+    }
+
+    /// Codex review round finding 2: a fresh checkpoint (a new attach
+    /// episode, possibly against a DIFFERENT leg after a reconnect) must
+    /// retract whatever notice was showing for the PREVIOUS leg, rather
+    /// than leaving it standing until a new `Notice` event replaces it.
+    /// The attach notice is emitted only after the checkpoint (see
+    /// `run_worker`'s own reorder comment), so without this clear, a
+    /// caller reading `notice()` right after this `pump()` call -- before
+    /// the worker's own mgmt-lane lookup for the NEW leg has produced its
+    /// own `Notice` -- would see leg A's stale text rendered over leg B's
+    /// freshly restored screen.
+    #[test]
+    fn checkpoint_event_clears_a_notice_left_over_from_the_previous_leg() {
+        let (events_tx, events_rx) = mpsc::channel();
+        let (msg_tx, _msg_rx) = mpsc::channel();
+        let mut client = FeAttachClient::<PlatformEndpoint> {
+            _endpoint: PhantomData,
+            parser: vt100_ctt::Parser::new(24, 80, 100),
+            pane_size: (24, 80),
+            msg_tx,
+            events_rx,
+            status: "connecting\u{2026}".to_string(),
+            notice: None,
+            quit_message: None,
+            should_exit: false,
+            dead: false,
+            checkpointed: false,
+            restore_ok: false,
+            queued_bytes: Arc::new(QueuedBytes::new()),
+            pending_fe_down_markers: VecDeque::new(),
+            headless: false,
+            recorded_bytes: Arc::new(AtomicU64::new(0)),
+            last_input_outcome: Arc::new(Mutex::new(None)),
+            worker_handle: None,
+        };
+
+        events_tx
+            .send(ClientEvent::Notice("leg A started at ...".to_string()))
+            .expect("send a synthetic notice for leg A");
+        client.pump();
+        assert_eq!(client.notice(), Some("leg A started at ..."));
+
+        let bytes = vt100_ctt::Parser::new(24, 80, 100)
+            .screen()
+            .checkpoint()
+            .expect("encode a checkpoint of a fresh, in-range screen");
+        events_tx
+            .send(ClientEvent::Checkpoint(bytes))
+            .expect("send leg B's own checkpoint -- no Notice for leg B has arrived yet");
+        client.pump();
+        assert_eq!(
+            client.notice(),
+            None,
+            "leg A's notice must be retracted the moment leg B's checkpoint lands, not left \
+             standing until leg B's own Notice (if any) arrives"
+        );
+    }
+
+    /// Successive checkpoints (each attach episode gets its own) must
+    /// each report `restore_ok` for THEIR OWN restore, not a value stuck
+    /// from an earlier one -- proven here across three in a row:
+    /// success, failure, success again.
+    #[test]
+    fn restore_ok_reflects_only_the_most_recent_checkpoint_across_several_in_a_row() {
+        let (events_tx, events_rx) = mpsc::channel();
+        let (msg_tx, _msg_rx) = mpsc::channel();
+        let mut client = FeAttachClient::<PlatformEndpoint> {
+            _endpoint: PhantomData,
+            parser: vt100_ctt::Parser::new(24, 80, 100),
+            pane_size: (24, 80),
+            msg_tx,
+            events_rx,
+            status: "connecting\u{2026}".to_string(),
+            notice: None,
+            quit_message: None,
+            should_exit: false,
+            dead: false,
+            checkpointed: false,
+            restore_ok: false,
+            queued_bytes: Arc::new(QueuedBytes::new()),
+            pending_fe_down_markers: VecDeque::new(),
+            headless: false,
+            recorded_bytes: Arc::new(AtomicU64::new(0)),
+            last_input_outcome: Arc::new(Mutex::new(None)),
+            worker_handle: None,
+        };
+        let good_checkpoint = || {
+            vt100_ctt::Parser::new(24, 80, 100)
+                .screen()
+                .checkpoint()
+                .expect("encode a checkpoint of a fresh, in-range screen")
+        };
+
+        events_tx.send(ClientEvent::Checkpoint(good_checkpoint())).expect("send checkpoint 1 (good)");
+        client.pump();
+        assert!(client.restore_ok(), "checkpoint 1 (good) must report restore_ok");
+
+        events_tx.send(ClientEvent::Checkpoint(vec![0xff; 4])).expect("send checkpoint 2 (bad)");
+        client.pump();
+        assert!(!client.restore_ok(), "checkpoint 2 (bad) must clear restore_ok, not inherit checkpoint 1's");
+
+        events_tx.send(ClientEvent::Checkpoint(good_checkpoint())).expect("send checkpoint 3 (good)");
+        client.pump();
+        assert!(client.restore_ok(), "checkpoint 3 (good) must report restore_ok again, not inherit checkpoint 2's");
     }
 }
