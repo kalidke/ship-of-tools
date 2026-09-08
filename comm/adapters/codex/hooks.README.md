@@ -23,9 +23,9 @@ are the same bin scripts the Claude adapter uses (the payloads share the field
 names that matter — notably `prompt`), the state HIERARCHY (blocked/red >
 working/green > waiting/purple > done/blue > idle, 2360fca; the turn-end floor
 writes `done` only for a human-started turn, ADR 0044) is enforced
-identically: the working hook's machine-turn guard (which also stamps
-`turn_origin`), the heartbeat's waiting→working promotion, the soft floor's
-sticky demote. Every script self-gates on the pane's registry row, so
+identically: the hook classifies the prompt's origin and `comm-status.sh`
+applies the machine-turn guard and stamps `turn_origin`, the heartbeat's
+waiting→working promotion, the soft floor's sticky demote. Every script self-gates on the pane's registry row, so
 codex sessions **outside** Ship of Tools are silent no-ops.
 
 `ShipTools.update_comm()` deploys the file into the sot-comm plugin under

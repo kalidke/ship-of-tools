@@ -36,9 +36,20 @@ hooks:
    `machine`), written only by the soft `working` write. The
    `UserPromptSubmit` hook is the one writer that can tell a human prompt from
    a wake (its existing machine-turn case: system notifications, task
-   notifications, relay messages, teammate messages), so it passes
-   `COMM_STATUS_ORIGIN=machine` on that branch. Nothing else reads the field.
-   The invariant it serves: *blue is reserved for a turn a human asked for.*
+   notifications, relay messages, teammate messages), so it classifies the
+   prompt and passes `COMM_STATUS_ORIGIN=user|machine` — and nothing else.
+   The 2026-07-04 hierarchy guard (a machine turn must not flip a `blocked`
+   or `done` row to green) moves from the hook into `comm-status.sh`'s soft
+   working path, beside the sticky-waiting hold it already had, so that a
+   held state **still records the origin**. Without that, a machine wake on
+   a red or blue row left a stale `user` behind, and an explicit model
+   `working` later in that turn ended blue (review finding on #223). Nothing
+   else reads the field. **Absent provenance fails gray**: a row stamped
+   `working` before the field existed (a not-yet-updated box, a mid-update
+   turn) or by any writer other than the prompt hook floors to `idle`, and a
+   soft `working` write without an explicit origin records `machine`. Blue
+   is opt-in. The invariant the field serves: *blue is reserved for a turn a
+   human asked for.*
    Without it every peer ack would paint a parked row blue and the colour
    would be noise again.
 4. **Blue clears on the next genuine prompt** (the working hook, unchanged)
@@ -65,9 +76,13 @@ hooks:
 
 ## Verification
 
-Twelve scenarios run against a scratch registry (`SOT_COMM_HOME` pointed at a
+Fourteen scenarios run against a scratch registry (`SOT_COMM_HOME` pointed at a
 throwaway home, a scratch handle, mutations only through `comm-status.sh` and
 the two hooks): user turn → blue; machine turn → gray; blocked / explicit done
 / sticky waiting untouched by the floor; explicit idle then floor → gray;
 legacy soft idle unchanged; explicit done cleared by the next genuine prompt;
-blocked answered → green → blue.
+blocked answered → green → blue; a machine wake on a red, blue or sticky-purple
+row holds the colour and records `machine`, so an explicit `working` in that
+turn ends gray; a genuine prompt on a sticky-purple row records `user` and an
+explicit `working` in that turn ends blue; a pre-field `working` row and an
+origin-less soft write both floor gray.

@@ -28,8 +28,8 @@
 # every session you aren't typing into) and blue meant "the model remembered".
 # Now the floor itself writes `done`, but ONLY for a row that was `working`
 # from a GENUINE human prompt (`turn_origin == user`, stamped by the soft
-# working write): "this session finished a turn you asked for and you have not
-# been back since". Anything else floors to `idle` as before: a machine wake
+# working write; absent or anything else fails GRAY): "this session finished a
+# turn you asked for and you have not been back since". Anything else floors to `idle` as before: a machine wake
 # (relay message, Monitor event, task notification) that never went green, or
 # whose green came from a machine turn -- so a peer's ack can't paint a parked
 # row blue. A machine turn that did REAL work still ends gray; the model reports
@@ -115,11 +115,36 @@ sticky_age_s() {
 # read idle/green while spawned agents ran. An EXPIRED marker falls through to
 # plain working (self-heal); an EXPLICIT `working` (SOFT=0, the model resuming
 # its own work) is unaffected and clears the marker below.
+# registry_origin NAME ORIGIN — record the running turn's provenance without
+# touching the state. Used when a soft working write HOLDS the current state
+# (below): the colour stays, but the floor must still learn who started this
+# turn, or a stale "user" from an earlier turn would paint a machine turn blue.
+registry_origin() {
+    jq --arg n "$1" --arg o "$2" 'if .agents[$n] then .agents[$n] += {turn_origin:$o} else . end' \
+       "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+}
+# TURN_ORIGIN: who started the turn now running -- "user" (a genuine prompt) or
+# "machine" (a wake). Set on the SOFT working write only (the prompt hook is the
+# one writer that knows and says so explicitly); the default is machine, so
+# anything else FAILS GRAY at the floor. Read by the soft done floor (ADR 0044).
+TURN_ORIGIN=""
 if [ "$STATE" = working ] && [ "$SOFT" = 1 ]; then
+    TURN_ORIGIN="${COMM_STATUS_ORIGIN:-machine}"
     cur="$(jq -r --arg n "$NAME" '.agents[$n].state // ""' "$REGISTRY" 2>/dev/null)"
-    if [ "$cur" = waiting ]; then
-        age="$(sticky_age_s)"
-        if [ -z "$age" ] || [ "$age" -lt "$STICKY_MAX_AGE_S" ]; then exit 0; fi
+    hold=0
+    case "$cur" in
+        waiting)
+            age="$(sticky_age_s)"
+            if [ -z "$age" ] || [ "$age" -lt "$STICKY_MAX_AGE_S" ]; then hold=1; fi ;;
+        blocked|done)
+            # Hierarchy guard (maintainer 2026-07-04): a MACHINE turn must not
+            # flip red (question pending on the user) or blue (finished,
+            # unread) to green; a genuine human prompt still does.
+            [ "$TURN_ORIGIN" = machine ] && hold=1 ;;
+    esac
+    if [ "$hold" = 1 ]; then
+        with_lock registry_origin "$NAME" "$TURN_ORIGIN"
+        exit 0
     fi
 fi
 
@@ -154,7 +179,9 @@ if soft_floor; then
     # Blue only for a row that was actually running a turn a HUMAN asked for
     # (see the header's BLUE/GRAY note); everything else floors to gray.
     if [ "$STATE" = done ]; then
-        origin="$(jq -r --arg n "$NAME" '.agents[$n].turn_origin // "user"' "$REGISTRY" 2>/dev/null)"
+        # Absent provenance FAILS GRAY (a row stamped working before this
+        # field existed, or by anything but the prompt hook) -- blue is opt-in.
+        origin="$(jq -r --arg n "$NAME" '.agents[$n].turn_origin // "machine"' "$REGISTRY" 2>/dev/null)"
         { [ "$cur" = working ] && [ "$origin" = user ]; } || STATE=idle
     fi
     # expired/absent marker: fall through; STICKY_OP=clear removes it.
@@ -214,8 +241,6 @@ registry_status() {
     rm -f "$sum_file"
 }
 
-TURN_ORIGIN=""
-if [ "$STATE" = working ] && [ "$SOFT" = 1 ]; then TURN_ORIGIN="${COMM_STATUS_ORIGIN:-user}"; fi
 # ${2+set}: distinguish an omitted summary (keep prior) from an explicit "" (clear).
 HAVE=0; [ "${2+set}" = set ] && HAVE=1
 with_lock registry_status "$NAME" "$STATE" "$HAVE" "${2-}" "$STICKY_OP"

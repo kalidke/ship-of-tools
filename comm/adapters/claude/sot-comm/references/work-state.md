@@ -47,7 +47,8 @@ Blue and gray are an **unread / read** pair, stamped by hooks, not by you:
   is never touched by the floor (same guards as the old soft idle).
 
 `turn_origin` is a registry field on the row, written only by the soft
-`working` write; nothing else reads it.
+`working` write; nothing else reads it. Absent provenance fails gray, so a box
+still on the old hooks never paints blue by accident.
 
 ## Testing the state machinery — never against your live row
 
