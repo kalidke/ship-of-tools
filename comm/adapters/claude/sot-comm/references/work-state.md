@@ -67,10 +67,12 @@ mean a new field that serves no other invariant. One rule: `done` → `idle`.
 `blocked`, `waiting` and `working` are never touched — viewing is not
 answering, and it is not finishing a job.
 
-**No dwell timer.** A switch fully repaints the view onto that workspace; a
-blow-through while cycling is still being back at it. If it proves wrong in
-use, the hold belongs in the frontend (the only party that knows what stayed
-on screen), and needs no protocol change: a repeat `activate` is idempotent.
+**A 10 s dwell (owner decision 2026-09-08 evening).** A switch alone does
+not count: the frontend arms a mark when a person switches to a row and sends
+`read: true` only if that same view is still up ten seconds later. Any other
+switch drops the mark, so a blow-through while cycling never reads a row. The
+daemon side is unchanged — the flag arrives on the same `activate` it always
+did, just later.
 
 **Not the user's every arrival.** An agent driving the view (`sot-fe switch`,
 a cross-workspace `show-result`), a `workspace.create` auto-switch, a destroy

@@ -3108,6 +3108,81 @@ enum PaneScreen {
 /// `FeAttachClient::is_dead`/`pane_hold.is_some()`. `#[allow(dead_code)]`:
 /// see `PaneScreen`'s own doc — the only production caller is
 /// `#[cfg(windows)]`.
+/// A person switched the view to a workspace and has not switched away:
+/// when `at` arrives with the same view still up, the frontend sends
+/// `workspace.activate { read: true }` once (ADR 0044 "Viewing clears
+/// blue" — the 10 s dwell, owner decision 2026-09-08). Any other switch
+/// drops the mark, so a blow-through while cycling never counts as read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReadMark {
+    host: HostKey,
+    workspace_id: Option<String>,
+    at: std::time::Instant,
+}
+
+/// How long a person must stay on a row before it counts as read.
+const READ_DWELL: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadMarkAction {
+    /// No mark, or not due yet: nothing to do.
+    Keep,
+    /// The view moved on before the dwell elapsed: drop the mark, send nothing.
+    Cancel,
+    /// Due, and the same view is still up: send the read flag and drop the mark.
+    Fire,
+}
+
+fn read_mark_decision(
+    mark: Option<&ReadMark>,
+    active_host: &str,
+    active_workspace_id: Option<&str>,
+    now: std::time::Instant,
+) -> ReadMarkAction {
+    let Some(m) = mark else {
+        return ReadMarkAction::Keep;
+    };
+    if m.host != active_host || m.workspace_id.as_deref() != active_workspace_id {
+        return ReadMarkAction::Cancel;
+    }
+    if now < m.at {
+        return ReadMarkAction::Keep;
+    }
+    ReadMarkAction::Fire
+}
+
+#[cfg(test)]
+mod read_mark_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn mark(at: Instant) -> ReadMark {
+        ReadMark { host: "h".into(), workspace_id: Some("ws".into()), at }
+    }
+
+    #[test]
+    fn no_mark_is_keep() {
+        assert_eq!(read_mark_decision(None, "h", Some("ws"), Instant::now()), ReadMarkAction::Keep);
+    }
+
+    #[test]
+    fn not_due_yet_is_keep_due_is_fire() {
+        let t0 = Instant::now();
+        let m = mark(t0 + READ_DWELL);
+        assert_eq!(read_mark_decision(Some(&m), "h", Some("ws"), t0 + Duration::from_secs(3)), ReadMarkAction::Keep);
+        assert_eq!(read_mark_decision(Some(&m), "h", Some("ws"), t0 + READ_DWELL), ReadMarkAction::Fire);
+    }
+
+    #[test]
+    fn a_different_view_cancels_even_when_due() {
+        let t0 = Instant::now();
+        let m = mark(t0);
+        assert_eq!(read_mark_decision(Some(&m), "h", Some("other"), t0 + Duration::from_secs(1)), ReadMarkAction::Cancel);
+        assert_eq!(read_mark_decision(Some(&m), "elsewhere", Some("ws"), t0 + Duration::from_secs(1)), ReadMarkAction::Cancel);
+        assert_eq!(read_mark_decision(Some(&m), "h", None, t0 + Duration::from_secs(1)), ReadMarkAction::Cancel);
+    }
+}
+
 #[allow(dead_code)]
 fn pane_screen_choice(
     has_client: bool,
@@ -4334,6 +4409,8 @@ struct State {
     /// space and the columns shrink. The variant selects which content
     /// renders; `layout::compute` only needs `drawer.is_open()`.
     drawer: DrawerContent,
+    /// Pending 10 s read mark for the row a person just switched to.
+    read_mark: Option<ReadMark>,
     /// Local PTY terminal hosting the OS shell (G2). Lazily spawned the
     /// first time the Terminal drawer opens (Ctrl+T); a separate field
     /// from the ratatui `terminal` so the draw closure's `self.terminal`
@@ -5935,6 +6012,7 @@ impl State {
             pane_attach_term: None,
             #[cfg(windows)]
             pane_hold: None,
+            read_mark: None,
             #[cfg(windows)]
             pane_attach_requested_at: None,
             #[cfg(windows)]
@@ -8485,7 +8563,7 @@ impl State {
         host: HostKey,
         slug: Option<String>,
         tmux_session: Option<String>,
-        read: bool,
+        person_driven: bool,
     ) {
         self.snapshot_current_workspace_ui();
         self.snapshot_current_workspace_repl();
@@ -8516,10 +8594,18 @@ impl State {
         // just above), so this routes correctly even on a cross-host switch.
         if let Err(e) = self.send(crate::transport::OutgoingReq::WorkspaceActivate {
             workspace_id: slug.clone(),
-            read,
+            read: false,
         }) {
             tracing::warn!(error = %e, "drop workspace.activate on switch — channel closed");
         }
+        // ADR 0044 dwell: a PERSON's switch arms a 10 s read mark for this
+        // exact view; any switch (person or not) replaces it, so only a row
+        // the user stayed on gets `read: true` (sent from `fire_due_read_mark`).
+        self.read_mark = person_driven.then(|| ReadMark {
+            host: self.active_host.clone(),
+            workspace_id: slug.clone(),
+            at: std::time::Instant::now() + READ_DWELL,
+        });
         // A workspace change invalidates any one-shot reveal armed for the
         // PREVIOUS workspace. Its `tree.root` reply is dropped by the TreeRoot
         // workspace guard WITHOUT consuming `pending_switch_reveal`, so a stale
@@ -9385,6 +9471,33 @@ impl State {
             },
         ) {
             tracing::warn!(error = %e, "drop pty.write — channel closed");
+        }
+    }
+
+    /// Runs every redraw (the idle clock wakes once a second, so a due mark
+    /// fires within a second of its deadline with no timer of its own):
+    /// send the read flag for a row the user has stayed on for
+    /// `READ_DWELL`, or drop a mark whose view has moved on.
+    fn fire_due_read_mark(&mut self) {
+        match read_mark_decision(
+            self.read_mark.as_ref(),
+            &self.active_host,
+            self.active_workspace_id.as_deref(),
+            std::time::Instant::now(),
+        ) {
+            ReadMarkAction::Keep => {}
+            ReadMarkAction::Cancel => self.read_mark = None,
+            ReadMarkAction::Fire => {
+                let Some(m) = self.read_mark.take() else { return };
+                tracing::info!(host = %m.host, ws = ?m.workspace_id, "read mark: dwell elapsed — clearing blue");
+                let _ = self.send_to(
+                    &m.host,
+                    crate::transport::OutgoingReq::WorkspaceActivate {
+                        workspace_id: m.workspace_id,
+                        read: true,
+                    },
+                );
+            }
         }
     }
 
@@ -15623,6 +15736,7 @@ impl State {
         // `pty_scroll` — applying it to `pty_terminal` too would clobber
         // it with the idle tmux parser's own (empty) scrollback every
         // frame. `pty_terminal` only drives `pty_scroll` on the tmux path.
+        self.fire_due_read_mark();
         #[cfg(windows)]
         let pane_is_capsule = self.pane_attach_term.is_some();
         #[cfg(not(windows))]

@@ -70,7 +70,10 @@ hooks:
   not exist — **shipped 2026-09-08** ("Viewing clears blue"):
   `workspace.activate` carries `read: bool`, set by the frontend only on
   the two person-driven view switches (Sessions-Enter, Shift+Left/Right
-  cycling); the daemon flips a `done` row's registry state to `idle` and
+  cycling) — and, since the owner's 2026-09-08 evening ruling, only after a
+  10 s dwell on that view (a blow-through while cycling never reads a row;
+  the frontend times it, the daemon is unchanged); the daemon flips a
+  `done` row's registry state to `idle` and
   writes nothing else (summary and `status_at` survive). Both blues clear
   the same way — the registry doesn't record which writer stamped
   `done`. Full mechanism, lock protocol, and the deliberately-left-out
