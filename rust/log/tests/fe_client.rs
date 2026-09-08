@@ -1278,7 +1278,7 @@ fn unresponsive_supervisor_expires_the_health_window() {
     // Past the window's own end: a generous margin beyond the constant
     // itself, so the wait is a proof of "it DOES expire," never a tight
     // race against `HEALTH_WINDOW`'s exact edge.
-    let expiry_deadline = Instant::now() + fe_client::HEALTH_WINDOW + Duration::from_secs(30);
+    let expiry_deadline = Instant::now() + sot_log::fe_client::HEALTH_WINDOW + Duration::from_secs(30);
     loop {
         client.pump();
         if client.is_dead() {
