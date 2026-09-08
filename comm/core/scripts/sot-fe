@@ -19,7 +19,7 @@
 #   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <handle>]
 #   sot-fe open-url <http(s)-url>                  [--fe <handle>]
 #   sot-fe docs    <workspace> <abs-path>          [--fe <handle>]
-#   sot-fe relaunch --fe <handle> [--converge]
+#   sot-fe relaunch [--fe <handle>] [--converge]
 #   sot-fe repl run  <workspace> <path>            [--fresh] [--timeout <s>] [--origin <who>]
 #   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>] [--origin <who>]
 #   sot-fe repl interrupt <workspace>              [--timeout <s>]
@@ -45,8 +45,11 @@
 #              (use open-url for those); path is confined to a workspace root.
 #   relaunch — ask ONE frontend to respawn itself (ADR 0017): plain (exit 75,
 #              re-stage + respawn) or --converge (exit 76: pull, rebuild,
-#              daemon-pair re-ensure, respawn). --fe is REQUIRED: a broadcast
-#              would bounce every attached frontend and is refused FE-side.
+#              daemon-pair re-ensure, respawn). With no --fe, the daemon
+#              routes to the ACTIVE frontend; --fe <handle> overrides the
+#              active frontend. A still-untargeted delivery (no frontend is
+#              active) is refused FE-side, same as an explicit broadcast --
+#              nothing bounces.
 #   repl     — run a .jl file (or eval code) in a workspace's persistent REPL
 #              and print the COLLECTED output (stdout/stderr/value/error +
 #              figure file paths). Unlike the other verbs this is a real
@@ -333,10 +336,12 @@ send_fe_command() {
     if [ -n "${FE:-}" ]; then
         case "$FE" in
             win-fe-*) ;; # a real per-host handle
-            *) echo "WARNING: --fe '$FE' is not a per-host handle (win-fe-<host>); FEs self-filter on their EXACT handle, so this likely matched NO frontend and was dropped silently. Omit --fe to reach all FEs." >&2 ;;
+            *) echo "WARNING: --fe '$FE' is not a per-host handle (win-fe-<host>); FEs self-filter on their EXACT handle, so this likely matched NO frontend and was dropped silently. Omit --fe to let the daemon route to the active frontend instead." >&2 ;;
         esac
         # The badge-floor note is about the SHOW verbs' focus semantics; a
-        # relaunch has no view to steal and REQUIRES its target.
+        # relaunch has no view to steal, so it's exempt. (It no longer
+        # REQUIRES an explicit target either -- omitting --fe now routes to
+        # the active frontend, same as every other verb; see send_fe_command.)
         [ "$fe_cmd" = relaunch ] || echo "note: --fe/--urgent are deprecated (2026-06-29, badge-floor only — we never force-switch the user's view)." >&2
     fi
     case "$fe_cmd" in
@@ -1031,7 +1036,12 @@ case "$CMD" in
         send_fe_command notify "$ARGS"
         ;;
     relaunch)
-        [ -n "$FE" ] || { echo "usage: sot-fe relaunch --fe <handle> [--converge]  (a target is required)" >&2; exit 1; }
+        # --fe is OPTIONAL (owner-approved "active frontend" design,
+        # 2026-09-08): with none given, send_fe_command omits `target` and
+        # the daemon's fe.command.send relay fills in the active frontend
+        # (falling back to a broadcast only when none is active, which the
+        # FE-side handler above still refuses -- see route_fe_command's
+        # `!directed` check, unchanged). --fe <handle> still overrides it.
         ARGS="$(jq -nc --argjson c "$([ "$CONVERGE" = true ] && echo true || echo false)" '{converge:$c}')"
         send_fe_command relaunch "$ARGS"
         ;;

@@ -182,6 +182,30 @@ case_active_and_idle_frontends_print_their_state() {
     return 0
 }
 
+case_untargeted_relaunch_carries_no_target_field() {
+    # Owner-approved "active frontend" design (2026-09-08), addendum:
+    # --fe is now OPTIONAL for relaunch too. With none given, the wire
+    # request must carry NO `target` field at all -- the daemon fills one
+    # in from the active frontend (or leaves it absent, which the
+    # unchanged FE-side handler refuses; that refusal happens on the FE,
+    # not observable from this BE-side stub, so it is out of reach here).
+    stage_reply "fe.command.send" '{"v":1,"id":1,"kind":"res","op":"fe.command.send","payload":{"ok":true}}'
+    start_stub_daemon
+    local reqlog="$WORK/req-$STUBN.log"
+    local out rc
+    out="$("$SOT_FE" relaunch --endpoint "unix:$SOCK" --timeout 5 2>&1)"
+    rc=$?
+    stop_stub_daemon
+
+    [ "$rc" -eq 0 ] || { echo "  expected exit 0 with no --fe (the CLI must no longer gate this), got $rc. Output:\n$out"; return 1; }
+    local req
+    req="$(grep '"op":"fe.command.send"' "$reqlog" | tail -n1)"
+    [ -n "$req" ] || { echo "  no fe.command.send request reached the stub daemon. Output:\n$out"; return 1; }
+    printf '%s' "$req" | jq -e '(.payload | has("target")) | not' >/dev/null \
+        || { echo "  an untargeted relaunch must carry no target field: $req"; return 1; }
+    return 0
+}
+
 case_foreign_row_prints_the_phase_with_no_derived_verdict() {
     stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def"},"clients":[]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[{"workspace_id":"ws2","slug":"scratch","label":"","project_root":"/p2","tmux_session":"t2","kernel_running":false,"is_default":false,"runtime":"capsule","state_dir":"/sd2","phase":"foreign"}]}}'
@@ -260,6 +284,7 @@ case_comm_scripts_row_prints_unknown_when_the_stamp_is_missing() {
 
 check "a matching pair prints daemon/client rows and the row's phase verbatim, no verdict" case_matching_pair_prints_the_phase_verbatim
 check "an active and an idle frontend print their handle and active|idle state"            case_active_and_idle_frontends_print_their_state
+check "an untargeted relaunch sends a request with no target field"                        case_untargeted_relaunch_carries_no_target_field
 check "a foreign-phase capsule row prints its phase with no derived verdict column"        case_foreign_row_prints_the_phase_with_no_derived_verdict
 check "a daemon that predates version.query prints 'unknown' and still exits 0"            case_legacy_daemon_predating_version_query_prints_unknown_and_exits_0
 check "a workspace.list failure after a successful version.query reports it and exits 2"   case_workspace_list_failure_after_successful_version_query_exits_2
