@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 128" role="img" aria-label="Ship of Tools">
+  <title>Ship of Tools</title>
+  <!-- helm icon, dark-mode variant, gray spokes (canonical Julia orientation: green top, red BL, purple BR) -->
+  <g stroke="#939dad" stroke-width="7" fill="none" stroke-linecap="round">
+    <circle cx="64" cy="64" r="36"/>
+    <line x1="64" y1="16" x2="64" y2="112"/>
+    <line x1="16" y1="64" x2="112" y2="64"/>
+    <line x1="29" y1="29" x2="99" y2="99"/>
+    <line x1="99" y1="29" x2="29" y2="99"/>
+  </g>
+  <g fill="#939dad">
+    <circle cx="64" cy="116" r="7"/>
+    <circle cx="12" cy="64" r="7"/>
+    <circle cx="116" cy="64" r="7"/>
+    <circle cx="101" cy="27" r="7"/>
+    <circle cx="27" cy="27" r="7"/>
+  </g>
+  <circle cx="64" cy="12" r="7.5" fill="#389826"/>
+  <circle cx="27" cy="101" r="7.5" fill="#cb3c33"/>
+  <circle cx="101" cy="101" r="7.5" fill="#9558b2"/>
+  <circle cx="64" cy="64" r="9" fill="#939dad"/>
+  <!-- wordmark in lightened Julia blue for dark backgrounds -->
+  <text x="146" y="64" font-family="Lato, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="44" font-weight="700" fill="#6d8cf0" dominant-baseline="central">Ship of Tools</text>
+</svg>

@@ -1,0 +1,7 @@
+/* Screenshots: the FE chrome is dark — give shots a hairline border + radius
+   so they read as window captures on both Documenter themes instead of
+   bleeding into documenter-dark or glaring on the light theme. */
+#documenter .docs-main img {
+    border: 1px solid rgba(128, 128, 144, 0.35);
+    border-radius: 6px;
+}
