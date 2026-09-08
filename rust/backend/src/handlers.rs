@@ -7602,14 +7602,11 @@ mod clear_comm_unread_tests {
         // `clear_comm_unread` can never acquire it.
         std::fs::create_dir(dir.join(".registry.lock")).unwrap();
 
-        let start = std::time::Instant::now();
+        // No wall-clock assertion: the spin is bounded by a fixed iteration
+        // count, and a loaded CI runner (the macOS leg took 2.6 s for the
+        // ~1 s spin) turns any elapsed-time gate into a flake. The property
+        // under test is fail-closed: the registry is untouched.
         clear_comm_unread(&mk_ws("x", ""), "kitt");
-        let elapsed = start.elapsed();
-
-        assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "bounded ~1s spin must not stall the caller: took {elapsed:?}"
-        );
         let after = std::fs::read(&registry_path).unwrap();
         assert_eq!(before, after, "a contended lock must fail closed with no write");
 
