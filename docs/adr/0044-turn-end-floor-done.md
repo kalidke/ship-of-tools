@@ -68,9 +68,9 @@ hooks:
 - A "seen" mark (the user switched to the workspace but did not type) would
   need an FE → registry write path, which does not exist. Deferred; ship
   without it and evaluate.
-- The strip ordering (PR #222) keeps `done` in the resting tier for now. A
-  follow-up may promote it to a needs-you tier beside `blocked`; that is a
-  one-line `activity_rank` change once this has been lived with.
+- The strip ordering (PR #222) ranks the tiers red, white (badged), blue,
+  green, purple, gray (owner ruling 2026-09-08), so a blue row sits right
+  behind the rows that need the user most.
 - Codex sessions share the same scripts (ADR 0031), so they get the same
   floor with zero new logic.
 
