@@ -26,7 +26,6 @@
 //! thread, unlike `fe_client`'s own unit tests.
 
 use sot_log::client::{Endpoint, PlatformEndpoint};
-use sot_log::fe_client;
 use sot_log::fe_client_io::{FeAttachClient, InputOutcome};
 use sot_log::segment::SegmentReader;
 use sot_log::state_dir::state_dir_hash;

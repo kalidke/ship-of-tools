@@ -4288,14 +4288,20 @@ mod tests {
     async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
         use interprocess::local_socket::{tokio::prelude::*, GenericFilePath, ListenerOptions};
 
-        let sock_path = std::env::temp_dir().join(format!(
-            "sot-transport-test-{}-{}.sock",
+        let unique = format!(
+            "sot-transport-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
-        ));
+        );
+        // A named-pipe path on Windows, a socket file elsewhere -- both go
+        // through `GenericFilePath`, exactly the route `connect_pipe` takes.
+        #[cfg(windows)]
+        let sock_path = std::path::PathBuf::from(format!(r"\\.\pipe\{unique}"));
+        #[cfg(not(windows))]
+        let sock_path = std::env::temp_dir().join(format!("{unique}.sock"));
         let _ = std::fs::remove_file(&sock_path);
         let name = sock_path
             .to_str()

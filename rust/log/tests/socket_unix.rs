@@ -1165,18 +1165,9 @@ fn a_terminal_write_failure_latches_the_connection_closed() {
     ));
     let conn_id = expect_accepted(&server, TIMEOUT);
 
-    // A payload the kernel's own socket buffers cannot absorb in one
-    // gulp, so this write genuinely blocks partway through, waiting for
-    // the server side to keep draining it.
-    let writer_client = Arc::clone(&client);
-    let writer = std::thread::spawn(move || {
-        let payload = vec![0xABu8; 8 * 1024 * 1024];
-        writer_client.write_all(&payload)
-    });
-
-    // Read SOME of it -- proving data is genuinely flowing (a partial
-    // delivery, not an instantly-severed connection) -- then sever the
-    // connection out from under the still-in-flight write.
+    // Data genuinely flows first -- a live connection, not one severed
+    // before it ever carried a byte.
+    client.write_all(&[0xABu8; 4096]).unwrap();
     match next_event(&server, TIMEOUT) {
         LaneEvent::Bytes(cid, bytes) => {
             assert_eq!(cid, conn_id, "Bytes for the wrong connection");
@@ -1184,9 +1175,32 @@ fn a_terminal_write_failure_latches_the_connection_closed() {
         }
         other => panic!("expected Bytes, got {other:?}"),
     }
-    server.close(conn_id);
 
-    let result = writer.join().unwrap();
+    // Sever the connection server-side and WAIT for the server to report
+    // it closed, so the peer is provably gone before the client writes
+    // again. (The earlier shape severed underneath a blocking 8 MiB write
+    // and could lose the race to a fast peer that drained the whole
+    // payload first -- the rc.8 macOS flake, "got Ok(())".)
+    server.close(conn_id);
+    loop {
+        match next_event(&server, TIMEOUT) {
+            LaneEvent::Closed(cid, _) if cid == conn_id => break,
+            LaneEvent::Bytes(cid, _) if cid == conn_id => continue,
+            other => panic!("expected Closed, got {other:?}"),
+        }
+    }
+
+    // Writing into a closed peer fails within a bounded number of chunks:
+    // the kernel may absorb at most a socket buffer's worth before the
+    // failure surfaces, never an unbounded amount.
+    let chunk = vec![0xABu8; 64 * 1024];
+    let mut result = Ok(());
+    for _ in 0..256 {
+        result = client.write_all(&chunk);
+        if result.is_err() {
+            break;
+        }
+    }
     assert!(
         matches!(result, Err(TransportError::Io { .. })),
         "expected the terminal write failure to surface as its OWN Io error \

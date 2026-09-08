@@ -218,6 +218,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+      # Built FIRST: the real-process suites below leave supervisors
+      # behind that outlive their step (the runner reaps them at job end)
+      # and a live sot-capsule.exe pins the file -- a rebuild after them
+      # fails with 'Access is denied' as soon as the suites run fast enough.
+      # ADR 0042 slice L1a: `sot-capsule` lives in the sot-log package, a
+      # DIFFERENT crate than `sotd` (sot-backend) — `cargo test -p
+      # sot-backend` builds `sotd.exe` itself (CARGO_BIN_EXE_sotd, same
+      # package as the test) but has no reason to build a binary from a
+      # dependency crate, so it's built explicitly here, into the SAME
+      # target dir `sotd.exe` lands in — exactly the sibling-executable
+      # layout the daemon's own `capsule_workspace::sot_capsule_exe()`
+      # (current_exe().parent()) assumes in production.
+      - name: Build sot-capsule (for the backend capsule-workspace test below)
+        timeout-minutes: 5
+        run: cargo build -p sot-log --bin sot-capsule
       # --test conpty: the one test BINARY (tests/conpty.rs), not a name
       # substring filter — nothing else in the workspace needs this image.
       # --nocapture: test 4's DA1-presence finding and the jobbed-probe
@@ -277,17 +292,6 @@ jobs:
       - name: Test fe_client (FE attach-only client, real process)
         timeout-minutes: 20
         run: cargo test -p sot-log --test fe_client -- --nocapture
-      # ADR 0042 slice L1a: `sot-capsule` lives in the sot-log package, a
-      # DIFFERENT crate than `sotd` (sot-backend) — `cargo test -p
-      # sot-backend` builds `sotd.exe` itself (CARGO_BIN_EXE_sotd, same
-      # package as the test) but has no reason to build a binary from a
-      # dependency crate, so it's built explicitly here, into the SAME
-      # target dir `sotd.exe` lands in — exactly the sibling-executable
-      # layout the daemon's own `capsule_workspace::sot_capsule_exe()`
-      # (current_exe().parent()) assumes in production.
-      - name: Build sot-capsule (for the backend capsule-workspace test below)
-        timeout-minutes: 5
-        run: cargo build -p sot-log --bin sot-capsule
       # --test capsule_workspaces: ADR 0042 slice L1a, the daemon's capsule
       # workspace runtime -- a real `sotd` spawning a real, DETACHED
       # `sot-capsule supervise` for workspace.create, workspace.list
