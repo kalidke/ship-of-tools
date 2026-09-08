@@ -107,7 +107,12 @@ jobs:
     name: Documentation
     runs-on: ubuntu-latest
     concurrency:
-      group: docs-${{ github.repository }}
+      # Serialize only the DEPLOYING build (main -> gh-pages). A PR/branch
+      # docs build deploys nothing, and one repo-wide group made GitHub
+      # cancel the older PENDING job whenever any other branch pushed (one
+      # running + one pending per group), so PR docs checks came back
+      # "cancelled" under fleet load (2026-09-08, #223 twice).
+      group: docs-${{ github.repository }}-${{ github.ref == 'refs/heads/main' && 'deploy' || github.ref }}
       cancel-in-progress: false
     permissions:
       actions: write # needed to allow julia-actions/cache to proactively delete old caches that it has created

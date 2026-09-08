@@ -12,7 +12,7 @@ like a Claude Code session does:
 |---------------------|----------------------------|------------------|
 | `UserPromptSubmit`  | `comm-status-working.sh`   | working / green  |
 | `PostToolUse`       | `comm-status-heartbeat.sh` | working / green  |
-| `Stop`              | `comm-status-idle.sh`      | idle (neutral)   |
+| `Stop`              | `comm-status-idle.sh`      | done (blue, human-started turn) / idle |
 | `PermissionRequest` | `codex-status-blocked.sh`  | blocked / red    |
 
 `PermissionRequest` maps to blocked because codex has no `AskUserQuestion` tool;
@@ -21,9 +21,11 @@ means. Its payload carries a top-level `tool_name`, which is why
 `codex-status-blocked.sh` can name the asking tool in the summary. Because these
 are the same bin scripts the Claude adapter uses (the payloads share the field
 names that matter — notably `prompt`), the state HIERARCHY (blocked/red >
-working/green > waiting/purple > idle, 2360fca) is enforced identically: the
-working hook's machine-turn guard, the heartbeat's waiting→working promotion,
-soft idle's sticky demote. Every script self-gates on the pane's registry row, so
+working/green > waiting/purple > done/blue > idle, 2360fca; the turn-end floor
+writes `done` only for a human-started turn, ADR 0044) is enforced
+identically: the hook classifies the prompt's origin and `comm-status.sh`
+applies the machine-turn guard and stamps `turn_origin`, the heartbeat's
+waiting→working promotion, the soft floor's sticky demote. Every script self-gates on the pane's registry row, so
 codex sessions **outside** Ship of Tools are silent no-ops.
 
 `ShipTools.update_comm()` deploys the file into the sot-comm plugin under

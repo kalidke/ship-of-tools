@@ -12,8 +12,11 @@
 #       signal (only the AskUserQuestion tool does), so without this the row looks
 #       idle while the agent is actually waiting.
 #
-#   (2) IDLE FLOOR. Otherwise mark the agent idle (soft — never clobbers a
-#       deliberate blocked/waiting; see comm-status.sh's soft-idle guard).
+#   (2) TURN-END FLOOR. Otherwise floor the row with a SOFT `done`: blue
+#       ("finished a turn you asked for, unread") when the row was working from
+#       a genuine prompt, gray otherwise -- comm-status.sh's soft-floor guard
+#       decides, and never clobbers a deliberate blocked/waiting/done (owner
+#       decision 2026-09-08, BLUE/GRAY = UNREAD/READ; see that script's header).
 #
 # Wired as a global Stop hook in ~/.claude/settings.json (comm.jl / update_comm).
 # It fires at every turn-end in EVERY session. CRITICAL SAFETY: the nudge (which
@@ -30,7 +33,11 @@ STATUS="$HOME_DIR/bin/comm-status.sh"
 REGISTRY="$HOME_DIR/registry.json"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-idle_floor() { [ -x "$STATUS" ] && COMM_STATUS_SOFT=1 "$STATUS" idle >/dev/null 2>&1 || true; }
+# Deployment-order tolerance (Codex review, #223): an OLDER comm-status.sh
+# guards only a soft `idle`, so sending it `done` would paint a blocked or
+# waiting row blue. Send `done` only to a script that has the soft floor.
+FLOOR=idle; grep -q soft_floor "$STATUS" 2>/dev/null && FLOOR=done
+turn_floor() { [ -x "$STATUS" ] && COMM_STATUS_SOFT=1 "$STATUS" "$FLOOR" >/dev/null 2>&1 || true; }
 
 # Stop-hook input (JSON on stdin): {stop_hook_active, transcript_path, ...}.
 input="$(cat 2>/dev/null || true)"
@@ -38,7 +45,7 @@ jqget() { printf '%s' "$input" | jq -r "$1" 2>/dev/null || true; }
 
 # Loop guard: if we are ALREADY in a stop-hook continuation, never re-nudge —
 # floor + let the turn end (one nudge per turn, no infinite continue-loop).
-[ "$(jqget '.stop_hook_active // false')" = "true" ] && { idle_floor; exit 0; }
+[ "$(jqget '.stop_hook_active // false')" = "true" ] && { turn_floor; exit 0; }
 
 # Comm-agent gate (the safety line): resolve our handle; ONLY a joined comm agent
 # with a registry row is eligible for the nudge. Anyone else → plain idle floor,
@@ -46,13 +53,13 @@ jqget() { printf '%s' "$input" | jq -r "$1" 2>/dev/null || true; }
 NAME=""
 [ -x "$SELF_DIR/comm-context.sh" ] && eval "$("$SELF_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
 if [ -z "${NAME:-}" ] || ! jq -e --arg n "${NAME:-}" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
-    idle_floor; exit 0
+    turn_floor; exit 0
 fi
 
 # Skip the nudge if the agent already self-marked blocked/waiting this turn —
 # disciplined turns cost nothing; the nudge fires only when it FORGOT.
 cur="$(jq -r --arg n "$NAME" '.agents[$n].state // ""' "$REGISTRY" 2>/dev/null || echo "")"
-{ [ "$cur" = blocked ] || [ "$cur" = waiting ]; } && { idle_floor; exit 0; }
+{ [ "$cur" = blocked ] || [ "$cur" = waiting ]; } && { turn_floor; exit 0; }
 
 tp="$(jqget '.transcript_path // empty')"
 
@@ -88,11 +95,11 @@ if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
                 # Temp file failed -- degrade rather than risk a corrupted
                 # --arg on Windows; the legacy grep fallback below still runs.
                 rm -f "$_findings_file" 2>/dev/null
-                idle_floor
+                turn_floor
             fi
             exit 0
         fi
-        idle_floor; exit 0
+        turn_floor; exit 0
     fi
 fi
 
@@ -114,5 +121,5 @@ if printf '%s' "$last_text" | grep -q '?'; then
 fi
 
 # No question → plain idle floor.
-idle_floor
+turn_floor
 exit 0

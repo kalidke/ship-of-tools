@@ -1660,7 +1660,9 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     # before it is ever bound, never raw text.
     # A line whose first non-blank character is '#' is skipped entirely
     # (a prose mention of `--arg NAME`, not a real binding).
-    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag "
+    # `o` = comm-status.sh's turn_origin (ADR 0044): the enum user|machine,
+    # set from an env var the prompt hook controls, never free text.
+    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag o "
     local bad="" dir file name line match comment_lines
     dir="$(cd "$SCRIPTS_DIR/../../adapters/claude/hooks" && pwd)"
     for file in "$SCRIPTS_DIR"/*.sh "$SCRIPTS_DIR/sot-fe" "$dir"/*.sh; do

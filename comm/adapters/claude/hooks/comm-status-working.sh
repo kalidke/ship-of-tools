@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # comm-status-working.sh — Claude Code `UserPromptSubmit` hook: mark this comm
-# agent working.
+# agent working, and say WHO started the turn.
 #
 # Wired as a global UserPromptSubmit hook in ~/.claude/settings.json (see comm.jl
 # / update_comm). It fires the INSTANT a turn starts — automatic, deterministic,
@@ -18,38 +18,34 @@
 #
 # Source of truth: comm/adapters/claude/hooks/comm-status-working.sh in Ship of Tools,
 # deployed to ~/.sot-comm/bin by ShipTools.update_comm(). Edit it there.
+#
 # SOFT write: a turn starting is truthfully "working", but it must PRESERVE a
 # live sticky-waiting marker (see comm-status.sh header) — the user prompting
-# the session doesn't finish its background job; before this flag, the
-# waiting → prompt(working) → stop(idle) cycle landed a still-waiting session
-# on green. Only the model's explicit non-soft report clears the marker.
-# HIERARCHY GUARD (maintainer decision, 2026-07-04: "question/red always first priority"):
-# a BLOCKED row means a question is pending ON THE USER. Machine-initiated
-# turns — teammate relay messages, task/monitor notifications — also fire
-# UserPromptSubmit, and before this guard they flipped red to green with the
-# question still unanswered. So: when the row is blocked AND the prompt looks
-# like a machine turn, DON'T touch the state. A genuine human prompt (the
-# answer) still clears red to working. Detection is by prompt shape; stdin is
-# the hook's JSON envelope ({"prompt": ...}).
+# the session doesn't finish its background job. Only the model's explicit
+# non-soft report clears the marker.
+#
+# TURN ORIGIN (ADR 0044, 2026-09-08): this hook is the ONE writer that can tell
+# a genuine human prompt from a machine-initiated turn — teammate relay
+# messages, task/monitor notifications, system notifications also fire
+# UserPromptSubmit. It classifies by prompt shape (stdin is the hook's JSON
+# envelope, {"prompt": ...}) and passes COMM_STATUS_ORIGIN=user|machine. Every
+# decision that depends on it lives in comm-status.sh, not here:
+#   - HIERARCHY GUARD (maintainer 2026-07-04, "question/red always first
+#     priority"): a machine turn must not flip a BLOCKED (question pending on
+#     the user) or DONE (finished, unread) row to green; a genuine human prompt
+#     still does. comm-status.sh holds the state on a machine origin — and
+#     still records the origin, so the turn-end floor can never read a stale
+#     "user" from an earlier turn and paint a machine turn blue.
+#   - The turn-end floor paints blue only for origin=user (ADR 0044).
+set -uo pipefail
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$COMM_HOME/bin/comm-status.sh"
 [ -x "$STATUS" ] || exit 0
 prompt="$(jq -r '.prompt // ""' 2>/dev/null || true)"   # consumes hook stdin
-if [ -n "$prompt" ]; then
-    case "$prompt" in
-        "[SYSTEM NOTIFICATION"*|*"<task-notification>"*|"[relay] from"*|        \[*:*\]\ *)   # teammate messages arrive as "[handle:team] ..."
-            NAME=""
-            SELF_DIR="$COMM_HOME/bin"
-            eval "$("$SELF_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
-            if [ -n "${NAME:-}" ]; then
-                cur="$(jq -r --arg n "$NAME" '.agents[$n].state // ""' "$COMM_HOME/registry.json" 2>/dev/null || true)"
-                # blocked: the question is still pending — don't flip red to green.
-                # done: a Monitor wake / relay message is not new work — don't
-                # flip a finished row to green; a genuine human prompt still does.
-                { [ "$cur" = blocked ] || [ "$cur" = done ]; } && exit 0
-            fi
-            ;;
-    esac
-fi
-COMM_STATUS_SOFT=1 "$STATUS" working >/dev/null 2>&1 || true
+ORIGIN=user
+case "$prompt" in
+    "[SYSTEM NOTIFICATION"*|*"<task-notification>"*|"[relay] from"*|\[*:*\]\ *)   # teammate messages arrive as "[handle:team] ..."
+        ORIGIN=machine ;;
+esac
+COMM_STATUS_SOFT=1 COMM_STATUS_ORIGIN="$ORIGIN" "$STATUS" working >/dev/null 2>&1 || true
 exit 0
