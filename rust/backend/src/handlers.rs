@@ -5342,9 +5342,32 @@ fn with_comm_registry_lock<T>(
         return None;
     }
 
-    let result = f(&reg_path, &tmp_path);
-    let _ = std::fs::remove_dir(&lock_dir);
-    Some(result)
+    // RAII release: `f` runs under the caller's `spawn_blocking`, which
+    // contains a panic (the awaiting task just sees a `JoinError`), but a
+    // plain "release after the call" would only run on the NORMAL return
+    // path — a panic mid-critical-section would leave `.registry.lock`
+    // behind forever, and since nothing force-breaks it any more (the
+    // fail-closed fix above), every subsequent writer — this daemon's own
+    // callers and every `comm-status.sh` hook on the shared home — would
+    // wedge closed permanently. The guard's `Drop` runs on unwind too, so
+    // the lock is released either way.
+    let _guard = CommRegistryLockGuard {
+        lock_dir: &lock_dir,
+    };
+    Some(f(&reg_path, &tmp_path))
+}
+
+/// Releases `lock_dir` on drop — including during a panic unwind — so
+/// `with_comm_registry_lock` above always releases the mkdir-spinlock it
+/// took, whatever `f` does.
+struct CommRegistryLockGuard<'a> {
+    lock_dir: &'a std::path::Path,
+}
+
+impl Drop for CommRegistryLockGuard<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(self.lock_dir);
+    }
 }
 
 /// `remove_comm_agents_for_workspace`'s lock bound: a `workspace.destroy`
@@ -6823,6 +6846,74 @@ mod comm_row_owned_here_tests {
     fn host_matches_is_case_insensitive() {
         assert!(host_matches(&json!({ "host": "KITT" }), "kitt"));
         assert!(!host_matches(&json!({ "host": "descent" }), "kitt"));
+    }
+}
+
+#[cfg(test)]
+mod with_comm_registry_lock_panic_tests {
+    // Coordinator hardening: `f` runs inside the caller's `spawn_blocking`,
+    // which contains a panic (the awaiting task just sees a `JoinError`) —
+    // but the OLD code released `.registry.lock` only on the normal return
+    // path, so a panic mid-critical-section left it behind forever. Since
+    // the fail-closed fix means nothing force-breaks it any more, every
+    // subsequent writer — this daemon's own callers AND every
+    // `comm-status.sh` hook on the shared home — would then wedge closed
+    // permanently. `CommRegistryLockGuard`'s `Drop` must release on unwind
+    // too.
+    use super::with_comm_registry_lock;
+
+    struct EnvGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        sot_comm_home: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.sot_comm_home {
+                Some(v) => std::env::set_var("SOT_COMM_HOME", v),
+                None => std::env::remove_var("SOT_COMM_HOME"),
+            }
+        }
+    }
+
+    fn guarded() -> EnvGuard {
+        let serial = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        EnvGuard {
+            sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
+            _serial: serial,
+        }
+    }
+
+    #[test]
+    fn a_panicking_closure_still_releases_the_lock() {
+        let _guard = guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-comm-registry-lock-panic-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOT_COMM_HOME", &dir);
+        let lock_dir = dir.join(".registry.lock");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_comm_registry_lock(std::time::Duration::from_secs(1), |_reg, _tmp| {
+                panic!("boom — simulate a write that panics mid-critical-section");
+            })
+        }));
+
+        assert!(result.is_err(), "the panic must propagate to the caller");
+        assert!(
+            !lock_dir.exists(),
+            "the lock dir must be released even when `f` panics"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
