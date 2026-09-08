@@ -1803,6 +1803,27 @@ async fn read_owned<R: AsyncRead + Unpin>(
     (rx, res)
 }
 
+/// Build this connection's `HelloReq` — pulled out of `run_protocol` so it's
+/// unit-testable without a live socket. `fe_handle` (owner-approved "active
+/// frontend" design, 2026-09-08) always carries this FE's own sot-comm
+/// handle (`gpu::self_comm_handle`) — the same value the daemon's
+/// `--fe <handle>` target already matches against — so the daemon can
+/// resolve "the frontend a person is at" without a second derivation.
+fn build_hello_req(memory: &crate::state::SessionMemory, token: Option<&str>) -> HelloReq {
+    HelloReq {
+        client_id: memory.client_id.clone(),
+        session_id: memory.session_id.clone(),
+        last_seen_revision: memory.last_seen_revision,
+        token: token.map(|s| s.to_string()),
+        // ADR 0030 §2: advertise our wire-contract protocol + product version
+        // so the backend can gate on protocol equality and name both sides in
+        // a mismatch error.
+        protocol: sot_protocol::PROTOCOL_VERSION,
+        app_version: sot_protocol::app_version(),
+        fe_handle: Some(crate::gpu::self_comm_handle()),
+    }
+}
+
 /// Drive the wire protocol over an already-connected stream's halves. Generic
 /// over the read/write types so the same code path serves the local-socket
 /// transport and the TCP transport.
@@ -1873,17 +1894,7 @@ where
 
     // hello
     let hello_id = take_id(&mut next_id);
-    let hello = HelloReq {
-        client_id: session.memory.client_id.clone(),
-        session_id: session.memory.session_id.clone(),
-        last_seen_revision: session.memory.last_seen_revision,
-        token: token.map(|s| s.to_string()),
-        // ADR 0030 §2: advertise our wire-contract protocol + product version
-        // so the backend can gate on protocol equality and name both sides in
-        // a mismatch error.
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-    };
+    let hello = build_hello_req(&session.memory, token);
     codec::write_frame(
         &mut tx,
         &Frame::req(hello_id, op::HELLO, serde_json::to_value(&hello)?),
@@ -4364,6 +4375,7 @@ mod tests {
                     token: None,
                     protocol: sot_protocol::PROTOCOL_VERSION,
                     app_version: sot_protocol::app_version(),
+                    fe_handle: None,
                 })
                 .unwrap(),
             ),
@@ -4405,6 +4417,22 @@ mod tests {
         });
         assert_eq!(memory.last_seen_revision, 0);
         assert_eq!(save_calls, 0, "no rev means nothing to persist");
+    }
+
+    /// Owner-approved "active frontend" design (2026-09-08): the real hello
+    /// this FE sends (`build_hello_req`, the exact call `run_protocol` makes)
+    /// must carry a `fe_handle` — an old daemon ignores the field, but the
+    /// daemon this design targets can't resolve an active frontend from a
+    /// hello that omits it.
+    #[test]
+    fn hello_req_carries_this_fes_comm_handle() {
+        let memory = crate::state::SessionMemory::fresh();
+        let hello = build_hello_req(&memory, None);
+        assert_eq!(
+            hello.fe_handle.as_deref(),
+            Some(crate::gpu::self_comm_handle().as_str()),
+            "the FE's hello must self-report the same handle route_fe_command matches on"
+        );
     }
 
     /// Real-seam regression for the round-1 fix: an `{error, code}` reply to

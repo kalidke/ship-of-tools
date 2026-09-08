@@ -67,9 +67,10 @@ checkout is bare `<repo-lowercase>`; a git worktree adds `-wt-<shortname>`
 ## Driving the frontend (`sot-fe`)
 
 The show verbs (`preview`, `reveal`, `goto`, `mode`, `notify`, `open-url`)
-broadcast to every attached FE unless scoped with `--fe <handle>`; `repl`,
-`type` and `screen` are daemon requests answered to you. Full reference:
-`sot-fe --help`; rarer essays: `references/fe-verbs.md`.
+go to whichever FE the owner is active on (the daemon resolves this itself;
+falls back to broadcast when no frontend is active) unless scoped with
+`--fe <handle>`; `repl`, `type` and `screen` are daemon requests answered to
+you. Full reference: `sot-fe --help`; rarer essays: `references/fe-verbs.md`.
 
 | Verb | Does |
 |------|------|

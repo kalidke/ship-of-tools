@@ -18979,8 +18979,11 @@ fn parse_nav_envelope(text: &str) -> Option<NavEnvelope> {
 /// `state_persistence::state_path`'s hostname logic exactly: `$HOSTNAME` (Linux)
 /// else `$COMPUTERNAME` (Windows) else "unknown", lowercased, as
 /// `win-fe-<host>`. The daemon scopes an `FE_COMMAND`'s `target` to one FE by
-/// this handle; we self-filter against it.
-fn self_comm_handle() -> String {
+/// this handle; we self-filter against it. `pub(crate)` since the
+/// owner-approved "active frontend" design (2026-09-08): `transport.rs`
+/// sends this same value as `HelloReq::fe_handle` so the daemon can name
+/// this connection without a second derivation to keep in sync.
+pub(crate) fn self_comm_handle() -> String {
     let host = std::env::var("HOSTNAME")
         .ok()
         .or_else(|| std::env::var("COMPUTERNAME").ok())

@@ -355,6 +355,16 @@ pub struct HelloReq {
     /// sees both sides' versions.
     #[serde(default)]
     pub app_version: String,
+    /// This frontend's own sot-comm handle (`win-fe-<host>`), self-reported
+    /// (owner-approved "active frontend" design, 2026-09-08) — the same
+    /// derivation the frontend's `route_fe_command` target filter already
+    /// matches on. `#[serde(default)]` → `None` for a pre-this-field
+    /// frontend, or a non-FE client (a `sot-comm` script's hello): such a
+    /// connection can never become "the active frontend" (see
+    /// `Clients::active_frontend`), only ever an explicit `--fe <handle>`
+    /// reaches it, exactly as before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fe_handle: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1894,6 +1904,23 @@ pub struct ClientVersion {
     pub client_id: String,
     pub app_version: String,
     pub protocol: u32,
+    /// This client's self-reported `HelloReq::fe_handle` (owner-approved
+    /// "active frontend" design, 2026-09-08) — `None` for a non-FE client
+    /// or one that predates the field. `#[serde(default)]` so a daemon
+    /// that predates this field still deserializes for an older caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fe_handle: Option<String>,
+    /// Seconds since this client's last person-generated request
+    /// (`Clients::active_frontend`'s input); `None` if it has never sent
+    /// one. Meaningless for a client with no `fe_handle`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_secs: Option<u64>,
+    /// True for the one client (at most) that `Clients::active_frontend`
+    /// resolves to — the frontend an untargeted `fe.command.send` would be
+    /// delivered to right now. `#[serde(default)]` → `false` for a daemon
+    /// that predates this field.
+    #[serde(default)]
+    pub active: bool,
 }
 
 /// `version.query` response (ADR 0030 §8 decision 31b, ADR 0043 decision
@@ -1974,11 +2001,38 @@ mod hello_version_tests {
             token: None,
             protocol: 2,
             app_version: "0.2.0-dev+abc".into(),
+            fe_handle: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: HelloReq = serde_json::from_str(&json).unwrap();
         assert_eq!(back.protocol, 2);
         assert_eq!(back.app_version, "0.2.0-dev+abc");
+    }
+
+    #[test]
+    fn legacy_hello_req_without_fe_handle_defaults_to_none() {
+        // A pre-"active frontend" frontend's HelloReq omits fe_handle
+        // entirely — must still deserialize, reading None rather than
+        // failing the whole hello.
+        let json = r#"{"client_id":"c3","last_seen_revision":0}"#;
+        let req: HelloReq = serde_json::from_str(json).expect("legacy HelloReq deserializes");
+        assert_eq!(req.fe_handle, None);
+    }
+
+    #[test]
+    fn hello_req_fe_handle_round_trips() {
+        let req = HelloReq {
+            client_id: "c4".into(),
+            session_id: None,
+            last_seen_revision: 0,
+            token: None,
+            protocol: 2,
+            app_version: "0.2.0-dev+abc".into(),
+            fe_handle: Some("win-fe-a".into()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: HelloReq = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.fe_handle.as_deref(), Some("win-fe-a"));
     }
 }
 
@@ -1998,6 +2052,9 @@ mod version_query_tests {
                 client_id: "fe-1".into(),
                 app_version: "0.6.0-dev+abc1234".into(),
                 protocol: 1,
+                fe_handle: Some("win-fe-a".into()),
+                idle_secs: Some(3),
+                active: true,
             }],
         };
         let json = serde_json::to_string(&res).unwrap();
@@ -2005,6 +2062,27 @@ mod version_query_tests {
         assert_eq!(back.daemon.lane_build, "abc1234def");
         assert_eq!(back.clients.len(), 1);
         assert_eq!(back.clients[0].client_id, "fe-1");
+        assert_eq!(back.clients[0].fe_handle.as_deref(), Some("win-fe-a"));
+        assert_eq!(back.clients[0].idle_secs, Some(3));
+        assert!(back.clients[0].active);
+    }
+
+    #[test]
+    fn client_version_without_active_frontend_fields_defaults_absent() {
+        // Owner-approved "active frontend" design (2026-09-08): a daemon
+        // that predates fe_handle/idle_secs/active omits them entirely —
+        // must still deserialize, reading None/None/false rather than
+        // failing the whole roster entry.
+        let json = serde_json::json!({
+            "client_id": "fe-1",
+            "app_version": "0.6.0",
+            "protocol": 1,
+        });
+        let cv: ClientVersion =
+            serde_json::from_value(json).expect("legacy ClientVersion deserializes");
+        assert_eq!(cv.fe_handle, None);
+        assert_eq!(cv.idle_secs, None);
+        assert!(!cv.active);
     }
 
     #[test]

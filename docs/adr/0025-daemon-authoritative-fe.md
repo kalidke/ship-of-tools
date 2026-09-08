@@ -3,6 +3,21 @@
 **Status:** Accepted (co-design converged 2026-06-22; building on `feat/op-fe-command`)
 **Date:** 2026-06-22
 
+> **Update — 2026-09-08: v1.1 landed — "the active frontend," no new op.** §5's `v1.1`
+> promised daemon primary-tracking via a dedicated `fe.active` signal. Shipped simpler:
+> the daemon already sees a person-generated request on every connection (`pty.write`,
+> `preview.get`, `tree.root`/`tree.children`, and a `workspace.activate` carrying
+> `read: true` — ADR 0044's existing honest signal for "a person stayed on this view,"
+> reused rather than inventing a new flag) and stamps that connection's
+> `last_person_input_at`; `HelloReq` gains `fe_handle` so a connection can self-report
+> its `win-fe-<host>` handle. **Active frontend = the `fe_handle`'d client with the
+> most recent stamp inside a 5-minute window.** An untargeted `fe.command.send` now
+> resolves to it — delivered exactly as an explicit `--fe <handle>` would be — and
+> falls back to the pre-existing broadcast only when nothing qualifies; an explicit
+> `--fe <handle>` is untouched. `version.query`'s `clients[]` exposes
+> `fe_handle`/`idle_secs`/`active` so `sot-fe version` can name it without asking the
+> frontend. No heartbeat, no timer — "active" is read off ops already on the wire.
+
 > **Update — 2026-07-25: `preview` gains an optional `caption` (agent-authored figure caption).**
 > `preview{ws, path, caption?}` — prose the producing agent attaches to a figure, so a
 > badge says what it IS instead of making the user infer it from the filename.

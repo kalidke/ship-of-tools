@@ -27,6 +27,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// The "active frontend" window (owner-approved design, 2026-09-08): a
+/// `last_person_input_at` stamp older than this no longer counts as "a
+/// person is here" for `Clients::active_frontend` below. Five minutes —
+/// long enough that a person reading a preview without touching a key
+/// doesn't get silently demoted, short enough that a box the owner walked
+/// away from stops absorbing untargeted commands.
+const ACTIVE_WINDOW_SECS: u64 = 5 * 60;
+
 /// One connected frontend, as the backend sees it. `app_version`/`protocol`
 /// (ADR 0030 §8 decision 31b) are what `version.query` reports per client —
 /// sourced from the hello this connection already sent, never a new probe.
@@ -50,6 +58,22 @@ pub struct ClientInfo {
     /// This client's `HelloReq::protocol`, same capture timing as
     /// `app_version`.
     pub protocol: u32,
+    /// This client's `HelloReq::fe_handle` (owner-approved "active
+    /// frontend" design, 2026-09-08): the frontend's own `win-fe-<host>`
+    /// sot-comm handle, self-reported at hello. `None` for a non-FE
+    /// client (a comm script's `sot-comm` hello) or a pre-this-field
+    /// frontend — such a client can never become the active frontend
+    /// (`active_frontend` requires a handle), only ever an explicit
+    /// `--fe <handle>` target reaches it, exactly as before this design.
+    pub fe_handle: Option<String>,
+    /// Unix-epoch seconds of the most recent request THIS connection sent
+    /// that a person, not an agent, generates — see the call sites in
+    /// `server.rs` for the exact op list (`pty.write`, `preview.get`,
+    /// `tree.root`/`tree.children`, a `workspace.activate` with
+    /// `read: true`). `None` until the first such request. This is the
+    /// invariant `active_frontend` resolves from: the daemon can name
+    /// which frontend a person is using without asking them.
+    pub last_person_input_at: Option<u64>,
 }
 
 #[derive(Default)]
@@ -84,6 +108,7 @@ impl Clients {
         peer: Option<String>,
         app_version: impl Into<String>,
         protocol: u32,
+        fe_handle: Option<String>,
     ) -> ClientGuard {
         let serial = self.next_serial.fetch_add(1, Ordering::Relaxed);
         let info = ClientInfo {
@@ -93,6 +118,8 @@ impl Clients {
             connected_at: now_secs(),
             app_version: app_version.into(),
             protocol,
+            fe_handle,
+            last_person_input_at: None,
         };
         let (count, roster) = {
             let mut g = self.inner.lock().unwrap();
@@ -123,6 +150,42 @@ impl Clients {
     /// roster (ADR 0030 §8 decision 31b).
     pub fn snapshot(&self) -> Vec<ClientInfo> {
         self.inner.lock().unwrap().by_conn.values().cloned().collect()
+    }
+
+    /// Stamp `last_person_input_at = now` for the connection at `serial`
+    /// (owner-approved "active frontend" design, 2026-09-08). Call this
+    /// ONLY from a request a person, not an agent, generates — see the
+    /// call sites in `server.rs`. A no-op if `serial` isn't registered
+    /// (already disconnected, or `hello` hasn't landed yet).
+    pub fn touch_person_input(&self, serial: u64) {
+        let mut g = self.inner.lock().unwrap();
+        if let Some(info) = g.by_conn.get_mut(&serial) {
+            info.last_person_input_at = Some(now_secs());
+        }
+    }
+
+    /// The active frontend (owner-approved design, 2026-09-08): the
+    /// `fe_handle` of whichever client has one AND the most recent
+    /// `last_person_input_at` within `ACTIVE_WINDOW_SECS` of now. `None`
+    /// when no client qualifies — no frontend has reported a handle yet,
+    /// or none has had person input inside the window. A client with no
+    /// `fe_handle` is never a candidate, so a pre-this-field frontend (or
+    /// a non-FE client) never becomes "the active frontend" even if it's
+    /// the only thing touching the daemon.
+    pub fn active_frontend(&self) -> Option<String> {
+        let now = now_secs();
+        self.inner
+            .lock()
+            .unwrap()
+            .by_conn
+            .values()
+            .filter_map(|c| {
+                let handle = c.fe_handle.clone()?;
+                let at = c.last_person_input_at?;
+                (now.saturating_sub(at) <= ACTIVE_WINDOW_SECS).then_some((at, handle))
+            })
+            .max_by_key(|(at, _)| *at)
+            .map(|(_, handle)| handle)
     }
 }
 
@@ -184,7 +247,7 @@ fn distinct_client_ids(by_conn: &HashMap<u64, ClientInfo>) -> String {
     ids.join(",")
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -200,10 +263,10 @@ mod tests {
         let clients = Clients::new();
         assert_eq!(clients.count(), 0);
 
-        let g1 = clients.register("client-a", "tcp", Some("127.0.0.1:5000".into()), "0.6.0", 1);
+        let g1 = clients.register("client-a", "tcp", Some("127.0.0.1:5000".into()), "0.6.0", 1, None);
         assert_eq!(clients.count(), 1);
 
-        let g2 = clients.register("client-b", "local", None, "0.6.0", 1);
+        let g2 = clients.register("client-b", "local", None, "0.6.0", 1, None);
         assert_eq!(clients.count(), 2);
         assert_eq!(clients.snapshot().len(), 2);
 
@@ -216,8 +279,8 @@ mod tests {
     #[test]
     fn same_client_id_two_connections_are_distinct() {
         let clients = Clients::new();
-        let g1 = clients.register("client-a", "tcp", None, "0.6.0", 1);
-        let g2 = clients.register("client-a", "tcp", None, "0.6.0", 1);
+        let g1 = clients.register("client-a", "tcp", None, "0.6.0", 1, None);
+        let g2 = clients.register("client-a", "tcp", None, "0.6.0", 1, None);
         // Two live connections, one distinct client.
         assert_eq!(clients.count(), 2);
         assert_eq!(distinct_client_ids(&clients.inner.lock().unwrap().by_conn), "client-a");
@@ -232,10 +295,85 @@ mod tests {
         // Decision 31b: this is exactly what `version.query`'s `clients[]`
         // roster reads — sourced from registration, not a new probe.
         let clients = Clients::new();
-        let _g = clients.register("client-a", "tcp", None, "0.6.0-dev+abc1234", 1);
+        let _g = clients.register("client-a", "tcp", None, "0.6.0-dev+abc1234", 1, None);
         let snap = clients.snapshot();
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].app_version, "0.6.0-dev+abc1234");
         assert_eq!(snap[0].protocol, 1);
+    }
+
+    #[test]
+    fn touch_person_input_stamps_only_the_named_serial() {
+        let clients = Clients::new();
+        let g1 = clients.register("client-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        let _g2 = clients.register("client-b", "local", None, "0.6.0", 1, Some("win-fe-b".into()));
+
+        assert!(clients.snapshot().iter().all(|c| c.last_person_input_at.is_none()));
+
+        clients.touch_person_input(g1.serial());
+        let snap = clients.snapshot();
+        let a = snap.iter().find(|c| c.client_id == "client-a").unwrap();
+        let b = snap.iter().find(|c| c.client_id == "client-b").unwrap();
+        assert!(a.last_person_input_at.is_some(), "the touched connection is stamped");
+        assert!(b.last_person_input_at.is_none(), "an untouched connection stays unstamped");
+    }
+
+    #[test]
+    fn touch_person_input_on_a_departed_serial_is_a_harmless_noop() {
+        let clients = Clients::new();
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        let serial = g.serial();
+        drop(g);
+        // Must not panic on a serial that no longer has an entry.
+        clients.touch_person_input(serial);
+        assert_eq!(clients.count(), 0);
+    }
+
+    #[test]
+    fn active_frontend_requires_both_a_handle_and_a_fresh_stamp() {
+        let clients = Clients::new();
+        // No handle at all: never active, even though it's touched.
+        let no_handle = clients.register("client-a", "local", None, "0.6.0", 1, None);
+        clients.touch_person_input(no_handle.serial());
+        assert_eq!(clients.active_frontend(), None, "a client with no fe_handle is never active");
+
+        // A handle but never touched: not active either.
+        let untouched = clients.register("client-b", "local", None, "0.6.0", 1, Some("win-fe-b".into()));
+        let _ = &untouched;
+        assert_eq!(clients.active_frontend(), None);
+    }
+
+    #[test]
+    fn active_frontend_ties_resolve_to_the_most_recent_stamp() {
+        let clients = Clients::new();
+        let older = clients.register("client-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        let newer = clients.register("client-b", "local", None, "0.6.0", 1, Some("win-fe-b".into()));
+
+        // Stamp the "older" one first, then the "newer" one a moment later
+        // (both real wall-clock seconds, so this only asserts ordering, not
+        // an exact gap) — the more recently touched frontend wins.
+        clients.touch_person_input(older.serial());
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        clients.touch_person_input(newer.serial());
+
+        assert_eq!(clients.active_frontend(), Some("win-fe-b".to_string()));
+    }
+
+    #[test]
+    fn active_frontend_ignores_a_stamp_outside_the_window() {
+        let clients = Clients::new();
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        {
+            // Reach in and backdate the stamp past ACTIVE_WINDOW_SECS —
+            // sleeping the real window in a unit test isn't practical.
+            let mut inner = clients.inner.lock().unwrap();
+            inner.by_conn.get_mut(&g.serial()).unwrap().last_person_input_at =
+                Some(now_secs().saturating_sub(ACTIVE_WINDOW_SECS + 1));
+        }
+        assert_eq!(
+            clients.active_frontend(),
+            None,
+            "a stamp older than the active window no longer counts as \"a person is here\""
+        );
     }
 }

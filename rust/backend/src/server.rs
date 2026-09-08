@@ -28,7 +28,7 @@ use sot_protocol::{
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::clients::Clients;
+use crate::clients::{ClientGuard, Clients};
 use crate::concept::ConceptStore;
 use crate::files_mode::FilesMode;
 use crate::handlers;
@@ -1087,6 +1087,21 @@ async fn read_owned<R: AsyncRead + Unpin>(
 /// switch the user can feel.
 const SLOW_REQUEST_MS: u64 = 50;
 
+/// Stamp this connection's `last_person_input_at` (owner-approved "active
+/// frontend" design, 2026-09-08) if it has registered. Call ONLY from the
+/// op arms below whose request a PERSON, not an agent, generates —
+/// `pty.write` (typing), `tree.root`/`tree.children`/`preview.get`
+/// (navigation), and a `workspace.activate` with `read: true` (ADR 0044:
+/// only a person-driven switch ever arms that dwell timer). Deliberately
+/// NOT `pty.input` (the agent path) or an untargeted `workspace.activate`
+/// (fired on every switch, person or not). A no-op pre-hello, when
+/// `client_guard` is still `None`.
+fn touch_person_input(clients: &Clients, guard: &Option<ClientGuard>) {
+    if let Some(g) = guard {
+        clients.touch_person_input(g.serial());
+    }
+}
+
 async fn handle_connection<R, W>(
     rx: R,
     mut tx: W,
@@ -1505,6 +1520,7 @@ where
                             peer.clone(),
                             req.app_version,
                             req.protocol,
+                            req.fe_handle,
                         ));
                     }
                 }
@@ -1535,9 +1551,11 @@ where
                 .await
             }
             op::TREE_ROOT => {
+                touch_person_input(&clients, &client_guard);
                 handlers::handle_tree_root(frame.id, frame.payload, &session, &workspaces).await
             }
             op::TREE_CHILDREN => {
+                touch_person_input(&clients, &client_guard);
                 handlers::handle_tree_children(frame.id, frame.payload, &session, &workspaces)
                     .await
             }
@@ -1549,6 +1567,7 @@ where
                 // Off-loop (switch-latency Phase 1): a read-and-render of
                 // the requested node. `preview.set_scale` stays INLINE just
                 // below — it writes a `.scale.json` sidecar.
+                touch_person_input(&clients, &client_guard);
                 let req_id = frame.id;
                 let op_name = frame.op.clone();
                 let mut payload = frame.payload;
@@ -1759,13 +1778,23 @@ where
                         .map(|ws| ws.workspace_id.clone())
                         .unwrap_or_else(|| hinted.unwrap_or_default().to_string()),
                 );
+                // `read: true` (ADR 0044) is honest evidence of a person: the
+                // frontend arms that dwell-timer follow-up ONLY on a switch
+                // `person_driven` already flagged, so — unlike the plain
+                // `workspace.activate` every switch fires regardless of who
+                // drove it — this one op arm is safe to stamp from. No new
+                // flag: reusing ADR 0044's existing signal.
+                if frame.payload.get("read").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    touch_person_input(&clients, &client_guard);
+                }
                 handlers::handle_workspace_activate(frame.id, frame.payload, &workspaces).await
             }
             op::AGENT_SEND => {
                 handlers::handle_agent_send(frame.id, frame.payload, &agent_events_tx).await
             }
             op::FE_COMMAND_SEND => {
-                handlers::handle_fe_command_send(frame.id, frame.payload, &fe_command_tx).await
+                handlers::handle_fe_command_send(frame.id, frame.payload, &fe_command_tx, &clients)
+                    .await
             }
             op::UPDATE_CHECK => crate::update::handle_update_check(frame.id).await,
             op::UPDATE_APPLY => {
@@ -2133,6 +2162,10 @@ where
                 continue; // no response for scroll
             }
             op::PTY_WRITE => {
+                // Typing into a pane is the clearest person-input signal on
+                // the wire (ADR: a person's own keystrokes, never an agent's
+                // — agents write via `pty.input`, untouched here).
+                touch_person_input(&clients, &client_guard);
                 let req: PtyWriteReq = match serde_json::from_value(frame.payload) {
                     Ok(r) => r,
                     Err(e) => {

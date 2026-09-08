@@ -327,6 +327,12 @@ pub async fn handle_hello(
 /// triple plus the roster of currently-attached frontends, sourced from
 /// their hellos. Never fails: an empty `clients` list from a daemon with
 /// zero OTHER attached frontends is a legitimate answer, not an error.
+///
+/// Owner-approved "active frontend" design (2026-09-08): each row also
+/// carries `fe_handle`/`idle_secs`/`active` — the same
+/// `Clients::active_frontend` resolution `fe.command.send` uses to pick a
+/// default target, made visible here so `sot-fe version` can name it
+/// without asking the frontend.
 pub async fn handle_version_query(
     req_id: u64,
     clients: &crate::clients::Clients,
@@ -336,13 +342,21 @@ pub async fn handle_version_query(
         protocol: sot_protocol::PROTOCOL_VERSION,
         lane_build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
     };
+    let active_handle = clients.active_frontend();
+    let now = crate::clients::now_secs();
     let clients = clients
         .snapshot()
         .into_iter()
-        .map(|c| sot_protocol::ClientVersion {
-            client_id: c.client_id,
-            app_version: c.app_version,
-            protocol: c.protocol,
+        .map(|c| {
+            let active = active_handle.is_some() && c.fe_handle == active_handle;
+            sot_protocol::ClientVersion {
+                client_id: c.client_id,
+                app_version: c.app_version,
+                protocol: c.protocol,
+                fe_handle: c.fe_handle,
+                idle_secs: c.last_person_input_at.map(|t| now.saturating_sub(t)),
+                active,
+            }
         })
         .collect();
     let res = sot_protocol::VersionQueryRes { daemon, clients };
@@ -5091,15 +5105,27 @@ pub async fn handle_agent_send(
 /// broadcast channel (each connection turns it into an `fe.command` evt), and
 /// ack. The publish is fire-and-forget: a send with no FE connected still acks
 /// ok. Structurally mirrors `handle_agent_send` — the only daemon-side step is
-/// re-emit; `target` routing is FE-side (the FE self-filters), so the daemon
-/// broadcasts to every connection unconditionally (v1.1 will route here).
+/// re-emit; `target` routing is FE-side (the FE self-filters).
+///
+/// Owner-approved "active frontend" design (2026-09-08): an untargeted
+/// request (`target: None`) is resolved HERE, before publish, to whichever
+/// frontend a person is at (`Clients::active_frontend`) — delivered exactly
+/// as if `--fe <that handle>` had been given. No active frontend (none
+/// registered a handle, or none within the window) falls through to the
+/// pre-existing behaviour unchanged: `target` stays `None` and every
+/// connection's `route_fe_command` self-filter sees a broadcast. An
+/// explicit `target` from the caller is never touched.
 pub async fn handle_fe_command_send(
     req_id: u64,
     payload_json: serde_json::Value,
     fe_tx: &broadcast::Sender<FeCommandEvt>,
+    clients: &crate::clients::Clients,
 ) -> Result<HandlerOutput> {
-    let req: FeCommandSendReq =
+    let mut req: FeCommandSendReq =
         serde_json::from_value(payload_json).context("fe.command.send payload")?;
+    if req.target.is_none() {
+        req.target = clients.active_frontend();
+    }
     tracing::info!(cmd = %req.cmd, target = ?req.target, "fe.command.send relay");
     let evt = FeCommandEvt {
         v: 1,
@@ -5117,6 +5143,80 @@ pub async fn handle_fe_command_send(
         ),
         None,
     )])
+}
+
+#[cfg(test)]
+mod fe_command_send_tests {
+    use super::handle_fe_command_send;
+    use crate::clients::Clients;
+    use sot_protocol::FeCommandEvt;
+    use tokio::sync::broadcast;
+
+    fn req_json(target: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "cmd": "notify",
+            "args": {"text": "hi"},
+            "target": target,
+        })
+    }
+
+    /// Design point 3 (owner-approved "active frontend", 2026-09-08): no
+    /// `target` on the wire + an active client registered → the daemon
+    /// resolves delivery to that client's handle, exactly as an explicit
+    /// `--fe <handle>` would have.
+    #[tokio::test]
+    async fn untargeted_send_with_an_active_client_delivers_to_it_only() {
+        let clients = Clients::new();
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, Some("win-fe-b".into()));
+        clients.touch_person_input(active.serial());
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        handle_fe_command_send(1, req_json(None), &tx, &clients)
+            .await
+            .expect("handler ok");
+        let evt = rx.try_recv().expect("exactly one evt published");
+        assert_eq!(
+            evt.target.as_deref(),
+            Some("win-fe-a"),
+            "resolves to the active frontend, not a broadcast"
+        );
+        assert!(rx.try_recv().is_err(), "only one evt published");
+    }
+
+    /// With no active client (none registered a handle, or none touched
+    /// recently), an untargeted send falls through to today's behaviour
+    /// unchanged: `target` stays `None`, which every connection's
+    /// `route_fe_command` self-filter reads as "broadcast, act".
+    #[tokio::test]
+    async fn untargeted_send_with_no_active_client_broadcasts_as_before() {
+        let clients = Clients::new();
+        // Registered but never touched by a person -> no active frontend.
+        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        handle_fe_command_send(1, req_json(None), &tx, &clients)
+            .await
+            .expect("handler ok");
+        let evt = rx.try_recv().expect("exactly one evt published");
+        assert!(evt.target.is_none(), "no active frontend -> today's broadcast behaviour");
+    }
+
+    /// An explicit `--fe <handle>` target is never overridden by the
+    /// active-frontend resolution, even when a different client is active.
+    #[tokio::test]
+    async fn explicit_target_is_never_overridden_by_active_resolution() {
+        let clients = Clients::new();
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        clients.touch_person_input(active.serial());
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        handle_fe_command_send(1, req_json(Some("win-fe-explicit")), &tx, &clients)
+            .await
+            .expect("handler ok");
+        let evt = rx.try_recv().expect("exactly one evt published");
+        assert_eq!(evt.target.as_deref(), Some("win-fe-explicit"));
+    }
 }
 
 /// ISO-8601 UTC instant (e.g. `2026-05-29T14:30:05Z`) without pulling in

@@ -164,6 +164,24 @@ case_matching_pair_prints_the_phase_verbatim() {
     return 0
 }
 
+case_active_and_idle_frontends_print_their_state() {
+    # Owner-approved "active frontend" design (2026-09-08): a client with a
+    # self-reported fe_handle gets its own "frontend <handle> ... active|idle
+    # <N>s" row instead of the generic "client <id>" one.
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def"},"clients":[{"client_id":"fe-a","app_version":"0.6.0-dev+abc1234","protocol":1,"fe_handle":"win-fe-a","idle_secs":1,"active":true},{"client_id":"fe-b","app_version":"0.6.0-dev+abc1234","protocol":1,"fe_handle":"win-fe-b","idle_secs":412,"active":false}]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    start_stub_daemon
+    run_version
+    stop_stub_daemon
+
+    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    contains "$VER_OUT" "frontend win-fe-a" || { echo "  missing the active frontend's row: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "frontend win-fe-b" || { echo "  missing the idle frontend's row: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "active" || { echo "  expected the active frontend marked active: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "idle 412s" || { echo "  expected the idle frontend's idle seconds: $VER_OUT"; return 1; }
+    return 0
+}
+
 case_foreign_row_prints_the_phase_with_no_derived_verdict() {
     stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def"},"clients":[]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[{"workspace_id":"ws2","slug":"scratch","label":"","project_root":"/p2","tmux_session":"t2","kernel_running":false,"is_default":false,"runtime":"capsule","state_dir":"/sd2","phase":"foreign"}]}}'
@@ -241,6 +259,7 @@ case_comm_scripts_row_prints_unknown_when_the_stamp_is_missing() {
 # --- run ---------------------------------------------------------------
 
 check "a matching pair prints daemon/client rows and the row's phase verbatim, no verdict" case_matching_pair_prints_the_phase_verbatim
+check "an active and an idle frontend print their handle and active|idle state"            case_active_and_idle_frontends_print_their_state
 check "a foreign-phase capsule row prints its phase with no derived verdict column"        case_foreign_row_prints_the_phase_with_no_derived_verdict
 check "a daemon that predates version.query prints 'unknown' and still exits 0"            case_legacy_daemon_predating_version_query_prints_unknown_and_exits_0
 check "a workspace.list failure after a successful version.query reports it and exits 2"   case_workspace_list_failure_after_successful_version_query_exits_2

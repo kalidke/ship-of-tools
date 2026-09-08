@@ -206,6 +206,7 @@ async fn slow_concept_read_does_not_delay_a_later_cheap_reply_on_the_same_connec
         token: None,
         protocol: sot_protocol::PROTOCOL_VERSION,
         app_version: sot_protocol::app_version(),
+        fe_handle: None,
     };
     let hello_payload = serde_json::to_value(&hello).unwrap();
 

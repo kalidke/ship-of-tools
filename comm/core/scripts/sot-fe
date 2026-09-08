@@ -3,9 +3,12 @@
 # the backend (ADR 0025, op::FE_COMMAND). A BE-side CLI: it frames an
 # `fe.command.send` request, sends it to the running sotd daemon over its
 # socket (no comm relay, no FE LLM), and the daemon re-emits it as an
-# `fe.command` evt to every connected frontend. The FE switches + shows the
-# target regardless of its current view (badge floor without --fe; force-show
-# to one FE with --fe <handle>).
+# `fe.command` evt. The FE switches + shows the target regardless of its
+# current view. With no --fe, the daemon resolves delivery to the ACTIVE
+# frontend (owner-approved "active frontend" design, 2026-09-08: whichever
+# FE a person last touched, within a 5-minute window) and falls back to
+# broadcasting to every attached FE only when none qualifies; --fe <handle>
+# always scopes delivery to that one FE explicitly.
 #
 # Usage:
 #   sot-fe preview <workspace> <path> [--urgent] [--fe <handle>] [--roi x,y,w,h]
@@ -31,8 +34,9 @@
 #   mode     — switch the FE's active mode (files | modules | project | ...).
 #   notify   — surface a one-line notice (optionally scoped to a workspace).
 #   open-url — open an http(s) URL in the FE machine's OS BROWSER (not a
-#              forwarded port — the FE just opens it). Broadcast opens on
-#              every attached FE; use --fe to target one.
+#              forwarded port — the FE just opens it). Opens on the active
+#              FE by default (see --fe below); use --fe to target a
+#              specific one instead.
 #   docs     — open a LOCAL .html/site (ABSOLUTE backend path) in the FE's OS
 #              BROWSER via docs.open (the `W` key, backend-triggered): the FE
 #              serves the file from backend disk over the forwarded site_serve
@@ -128,7 +132,9 @@
 #              failure after a successful version.query, exits 2.
 #
 #   --fe <handle>  scope delivery to one FE by its sot-comm handle (sets the
-#                  wire `target`); absent = every FE acts (the badge floor).
+#                  wire `target`); absent = the daemon delivers to the ACTIVE
+#                  frontend (whichever FE a person last touched), falling
+#                  back to every FE (the badge floor) only when none is active.
 #   --urgent       hint the FE to force-show now (preview/reveal); sets args.urgent.
 #   --roi x,y,w,h   (preview) aim the viewport at a SOURCE-IMAGE-PIXEL rect (ADR-0022
 #                  image.crop vocabulary; round-trippable). FE clamps to image bounds.
@@ -818,11 +824,28 @@ send_version() {
 
     printf '%-20s %-28s %s\n' "component" "version" "build"
     if [ -z "$verr" ]; then
-        # Identical (client_id, version) pairs collapse to one row with a
-        # count: every comm-script connection registers as "sot-comm", and a
-        # busy backend has a dozen of them at once.
-        printf '%s' "$vresp" | jq -r '(.payload.clients // []) | group_by(.client_id + "\u0000" + .app_version) | .[]
-            | "client " + .[0].client_id + (if length > 1 then " ×" + (length|tostring) else "" end) + "\t" + .[0].app_version + "\t—"' \
+        # A client with a self-reported fe_handle is a real frontend --
+        # printed on its own row (owner-approved "active frontend" design,
+        # 2026-09-08: never collapsed, each box is distinct) as
+        # "frontend <handle>  <version>  active|idle <N>s". idle_secs absent
+        # means the daemon has never seen person input from it -- printed as
+        # "idle -", never "idle 0s" (which would misreport a fresh connection
+        # as recently touched). Everything else (a client_id with no handle
+        # -- every comm-script connection registers as "sot-comm") keeps the
+        # pre-existing collapse: identical (client_id, version) pairs fold
+        # into one row with a count, since a busy backend has a dozen of
+        # those at once.
+        printf '%s' "$vresp" | jq -r '(.payload.clients // []) as $c
+            | ( $c | map(select(.fe_handle != null and .fe_handle != "")) | .[]
+                | "frontend " + .fe_handle + "\t" + .app_version + "\t"
+                    + (if .active then "active"
+                       elif .idle_secs != null then "idle " + (.idle_secs | tostring) + "s"
+                       else "idle -" end)
+              ),
+              ( $c | map(select(.fe_handle == null or .fe_handle == ""))
+                | group_by(.client_id + "\u0000" + .app_version) | .[]
+                | "client " + .[0].client_id + (if length > 1 then " ×" + (length|tostring) else "" end) + "\t" + .[0].app_version + "\t—"
+              )' \
             | while IFS=$'\t' read -r comp ver build; do
                 printf '%-20s %-28s %s\n' "$comp" "$ver" "$build"
             done
