@@ -59,3 +59,9 @@ The real wake proof is a typed `[relay] from __selftest__:` line from
 `codex-watch.sh`, not the inline selftest text. `bus=<n>` is a peek, not an
 acknowledgement — run `bus.sh sync` for real to see and consume those
 entries.
+
+Work-state (the nav row colour) is yours to stamp: `comm-status.sh waiting
+"<what>"` (purple) the moment you launch a background job or hand work to a
+peer — sticky until you stamp `working`/`idle`/`done` when it lands. A
+background job never makes you idle; `blocked` (red) only when the user must
+act.

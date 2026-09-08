@@ -117,6 +117,18 @@ _survived() {
     fi
 }
 
+# The work-state rule, printed on EVERY bootstrap outcome (fresh, survived,
+# catch-up): the nav row colour is derived from it, and a session that
+# launches a background job without stamping `waiting` shows green while the
+# job runs — the exact miss the one-script rewrite's terse hint allowed.
+_workstate_rule() {
+    cat <<EOF
+Work-state (nav row colour) — stamp it yourself with comm-status.sh <working|waiting|blocked|done|idle> "why":
+  blocked (red: needs the user) > waiting (purple: a job/subagent/peer YOU launched is still running — stamp it the moment you delegate; sticky until you stamp working/idle/done when the job lands) > working (green) > idle.
+  A background job does NOT make you idle. Full mechanics: the sot-comm skill's references/work-state.md.
+EOF
+}
+
 _context_block() {
     local h="$1" inbox
     if [ "$IS_WINDOWS" = 1 ]; then
@@ -126,8 +138,10 @@ _context_block() {
     fi
     cat <<EOF
 You are @$h. Inbox: $inbox
-Verbs: comm-relay.sh send @<peer> "msg" | comm-poll.sh | comm-status.sh <blocked|waiting|idle> "why" | comm-list.sh | bus.sh sync
-Work-state precedence: blocked (needs the user) > waiting (watching a job) > idle.
+Verbs: comm-relay.sh send @<peer> "msg" | comm-poll.sh | comm-status.sh <working|waiting|blocked|done|idle> "why" | comm-list.sh | bus.sh sync
+EOF
+    _workstate_rule
+    cat <<EOF
 Your Monitor (comm-watch.sh $h) never stopped: it survived this wipe. Do not re-join, re-listen, or re-poll.
 EOF
 }
@@ -218,6 +232,7 @@ if [ "$MODE" = "catchup" ]; then
     fi
 
     echo "BOOTSTRAP handle=$H poll=${POLL_COUNT:-0} selftest=$SELFTEST bus=$BUS identity=ok"
+    _workstate_rule
     exit 0
 fi
 
@@ -310,3 +325,4 @@ IDENTITY="ok"
 # nothing extra to thread through here.
 MONITOR_CMD="$(printf '%q %q' "$SCRIPT_DIR/comm-watch.sh" "$HANDLE")"
 echo "BOOTSTRAP-ARM handle=$HANDLE listener=$LISTENER_STATE identity=$IDENTITY MONITOR: $MONITOR_CMD"
+_workstate_rule

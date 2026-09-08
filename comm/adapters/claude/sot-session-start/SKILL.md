@@ -54,6 +54,13 @@ subagent/lane that doesn't own its ambient identity slot MUST pin both.
 `identity=MISMATCH` and a `REFUSED` start are different problems with
 different fixes — see `references/reclaim-handle.md`.
 
+**Work-state (the nav row colour) is yours to stamp** — the script prints the
+rule after every outcome. `comm-status.sh waiting "<what>"` (purple) the moment
+you launch a background job, subagent, Codex run or hand work to a peer; it is
+sticky across turns until you stamp `working`/`idle`/`done` when the job lands.
+A background job never makes you idle; `blocked` (red) only when the user must
+act. Mechanics: the sot-comm skill's `references/work-state.md`.
+
 A Ship of Tools checkout gets the sot-specific layer (FE ping, bus count)
 folded into phase 2 for free — no separate skill. `ccb`/`ccbe` both launch
 this skill.
