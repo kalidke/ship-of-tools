@@ -166,6 +166,12 @@ pub fn parse(text: &str) -> HostsConfig {
         }
     };
 
+    // A UTF-8 byte-order mark: PowerShell's `Set-Content`/`Out-File` on
+    // Windows writes one, and `str::trim` does not strip U+FEFF, so the first
+    // key of a BOM-prefixed file (`default_host = ...`) never matched and the
+    // frontend silently fell back to the local daemon as its default host
+    // (a monitor drawer showing only the local roster, 2026-09-08).
+    let text = text.trim_start_matches('\u{feff}');
     for raw in text.lines() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -435,6 +441,15 @@ socket = "\\.\pipe\sot-local"
         assert_eq!(cfg.hosts[1].name, "host-b");
         assert_eq!(cfg.hosts[2].name, "local");
         assert_eq!(cfg.hosts[2].socket.as_deref(), Some(r"\\.\pipe\sot-local"));
+    }
+
+    #[test]
+    fn parse_strips_a_leading_utf8_bom_so_default_host_is_read() {
+        // PowerShell-written file: BOM, then the top-level key on line 1.
+        let cfg = parse("\u{feff}default_host = \"kitt\"\n\n[host.kitt]\ntcp_port = 18743\n");
+        assert_eq!(cfg.default_host.as_deref(), Some("kitt"));
+        assert_eq!(cfg.hosts.len(), 1);
+        assert_eq!(cfg.hosts[0].name, "kitt");
     }
 
     #[test]
