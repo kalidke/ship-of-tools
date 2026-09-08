@@ -4281,6 +4281,18 @@ struct State {
     /// spawn.
     #[cfg(windows)]
     pane_attach_episode_warnings: u32,
+    /// Switch-latency Phase 1, item 3: one-shot per attach — set the first
+    /// time the render loop actually paints THIS client's own screen
+    /// (`pane_screen_choice` resolving to `PaneScreen::Client`), so the
+    /// `capsule screen presented` line fires exactly once per attach, the
+    /// same edge-triggered pattern `pump_pane_attach_term` already uses
+    /// for "checkpoint applied"/"attached". This is the acceptance metric
+    /// itself (keypress → current screen visible) — `checkpoint applied`
+    /// only proves the client's OWN parser is ready, not that a frame with
+    /// it on screen has actually been submitted for display. Reset to
+    /// `false` on every new spawn (`spawn_pane_attach_term`).
+    #[cfg(windows)]
+    pane_attach_presented: bool,
     /// ADR 0042 slice L1b fix 2: which backend the session pane's
     /// input/resize/scroll route to right now — see `PaneFeed`'s own
     /// doc for why this can't just be derived from
@@ -4501,6 +4513,26 @@ struct State {
     /// `WorkspaceUiSnapshot` field of the same name for why this is a
     /// distinct field from `preview_node_id_fired`.
     preview_src_node_id: Option<String>,
+    /// Switch-latency Phase 1: monotonic "latest issued" counter for the
+    /// preview slot (`preview.get` + `preview.set_scale` share one slot —
+    /// both install through the single `IncomingEvt::Preview` path).
+    /// Incremented every time a request for either op is fired and stamped
+    /// into the `OutgoingReq`/`PendingKind`/`IncomingEvt` trio unchanged;
+    /// the reply handler drops any reply whose echoed generation is behind
+    /// this counter's CURRENT value — a strictly-increasing counter means
+    /// only the most recently fired request can ever match, so an earlier,
+    /// slower reply (same workspace, a different node, a different host —
+    /// even the daemon answering requests out of order) can never overwrite
+    /// what a later cursor move already asked for. Paired with an owner
+    /// check (host/workspace/node) as defense in depth for the one case
+    /// generation alone can't see: `active_host`/`active_workspace_id`
+    /// changing without firing a fresh preview request.
+    preview_req_gen: u64,
+    /// Same mechanism as `preview_req_gen`, for the concept/annotation
+    /// slot (`concept.read`, cursor-tracking + stale-reload re-fire share
+    /// this one counter — both land in the same `IncomingEvt::ConceptRead`
+    /// consumer).
+    concept_req_gen: u64,
 }
 
 /// Wire shape for `application/vnd.sot.tokens+json` from the
@@ -4965,6 +4997,38 @@ fn picker_start_for_host(
     } else {
         pick([configured, remote_home, default_row_root])
     }
+}
+
+/// Switch-latency Phase 1: the single stale-reply test shared by every
+/// single-slot consumer (the preview pane, the concept/annotation slot).
+/// A reply is only ever installed when BOTH hold:
+///   - `generation == latest_generation` — this reply answers the MOST
+///     RECENT request this session has fired for the slot. Generations are
+///     minted per fired request (`State::next_preview_gen` /
+///     `next_concept_gen`) and only ever increase, so an older one means a
+///     newer request has since superseded it — the daemon answering
+///     out-of-order (or simply slower) can never make an older answer look
+///     newer than one already in flight.
+///   - `event_host == active_host && reply_workspace == active_workspace`
+///     — this reply's owner is still what the slot currently has active. A
+///     generation match alone misses the one case where the ACTIVE (host,
+///     workspace) changes without a fresh request being fired for the new
+///     one (e.g. no in-flight preview existed there yet) — a stale reply
+///     from the abandoned owner would otherwise still read as "latest".
+///
+/// Free function (not a `State` method) so it's unit-testable without
+/// constructing the whole GPU/window state.
+fn reply_is_current(
+    generation: u64,
+    latest_generation: u64,
+    event_host: &HostKey,
+    active_host: &HostKey,
+    reply_workspace: &Option<String>,
+    active_workspace: &Option<String>,
+) -> bool {
+    generation == latest_generation
+        && event_host == active_host
+        && reply_workspace == active_workspace
 }
 
 impl State {
@@ -5749,6 +5813,8 @@ impl State {
             pane_attach_started_at: None,
             #[cfg(windows)]
             pane_attach_episode_warnings: 0,
+            #[cfg(windows)]
+            pane_attach_presented: false,
             pane_feed: PaneFeed::Tmux,
             pane_pending_input: Vec::new(),
             #[cfg(windows)]
@@ -5794,6 +5860,8 @@ impl State {
             text_scale_mult: 1.0,
             preview_src: None,
             preview_src_node_id: None,
+            preview_req_gen: 0,
+            concept_req_gen: 0,
         };
         // Self-update notice from the launcher's own process spawn (a
         // REFUSED pull; empty/unset for offline or ok - see
@@ -6102,6 +6170,24 @@ impl State {
             .unwrap_or(false)
     }
 
+    /// Switch-latency Phase 1: mint the next preview-slot request
+    /// generation. Call this once per fired `preview.get`/
+    /// `preview.set_scale` and stamp the result into the request — every
+    /// `IncomingEvt::Preview` handler compares its echoed generation
+    /// against `self.preview_req_gen`'s CURRENT value (read fresh at reply
+    /// time, not the value captured here) to tell a stale reply from the
+    /// latest one asked for. See the field doc for the full rationale.
+    fn next_preview_gen(&mut self) -> u64 {
+        self.preview_req_gen += 1;
+        self.preview_req_gen
+    }
+
+    /// Same mechanism as `next_preview_gen`, for the concept/annotation slot.
+    fn next_concept_gen(&mut self) -> u64 {
+        self.concept_req_gen += 1;
+        self.concept_req_gen
+    }
+
     /// If the selected tree row's node id differs from the last one we
     /// asked for a preview of, fire a fresh `preview.get`. The Preview
     /// handler routes the response to the right pane based on mime.
@@ -6191,6 +6277,7 @@ impl State {
         // be mistaken for this fetch.
         self.preview_page_raster_pending = None;
         let (fit_w, fit_h) = self.preview_fit_px();
+        let generation = self.next_preview_gen();
         if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewGet {
             node_id: id.clone(),
             workspace_id: self.active_workspace_id.clone(),
@@ -6199,6 +6286,7 @@ impl State {
             page: None,
             fit_w,
             fit_h,
+            generation,
         }) {
             tracing::warn!(error = %e, %id, "drop preview.get request — channel closed");
             return;
@@ -6281,12 +6369,14 @@ impl State {
         let node_id = format!("files:{path}");
         // Fire the preview body up front — don't wait on tree expansion.
         let (fit_w, fit_h) = self.preview_fit_px();
+        let generation = self.next_preview_gen();
         if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewGet {
             node_id: node_id.clone(),
             workspace_id: self.active_workspace_id.clone(),
             page: None,
             fit_w,
             fit_h,
+            generation,
         }) {
             tracing::warn!(error = %e, %node_id,
                 "drive_same_ws_open: drop preview.get — channel closed");
@@ -8381,12 +8471,14 @@ impl State {
                 self.force_files_mode();
                 let node_id = format!("files:{path}");
                 let (fit_w, fit_h) = self.preview_fit_px();
+                let generation = self.next_preview_gen();
                 if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewGet {
                     node_id: node_id.clone(),
                     workspace_id: self.active_workspace_id.clone(),
                     page: None,
                     fit_w,
                     fit_h,
+                    generation,
                 }) {
                     tracing::warn!(error = %e, %node_id,
                         "pending nav.preview: drop preview.get on switch — channel closed");
@@ -8932,6 +9024,29 @@ impl State {
     /// started — every caller must check this rather than assume success,
     /// so a spawn failure's `self.status` (set here) is never immediately
     /// overwritten by an "attached" message.
+    ///
+    /// Switch-latency Phase 1, item 2: a bare `self.pane_attach_term =
+    /// None` only runs `Drop`, which SENDS the old client's `Shutdown` but
+    /// never waits for its worker thread to act on it — the departing
+    /// worker can keep talking to the daemon for an unbounded time after,
+    /// overlapping the replacement client's own connection on the SAME
+    /// capsule lane. `FeAttachClient::shutdown(wait)` is the fix already
+    /// on offer here (same send, then blocks polling the worker's
+    /// `JoinHandle` up to `wait`) — but calling it inline, synchronously,
+    /// would stall every capsule switch by up to `wait`, directly working
+    /// against the keypress→paint metric this lane exists to shrink,
+    /// which is why the wait is moved to a detached helper thread rather
+    /// than paid for on the switch path. Only the SEND has to happen
+    /// before the replacement client dials in, and it effectively does:
+    /// a thread spawn plus one channel send costs low-single-digit
+    /// microseconds, versus the real pipe connect + handshake
+    /// `FeAttachClient::attach` below has to do — in practice `Shutdown`
+    /// reaches the old worker well before the new one could plausibly
+    /// finish connecting, without formally blocking this thread on it. If
+    /// the old worker is unusually slow to exit, `shutdown`'s own 250ms
+    /// timeout just warns (on the helper thread) and moves on — the
+    /// worker is not joined, but per its own doc that never leaks the
+    /// thread, it just finishes on its own.
     #[cfg(windows)]
     fn spawn_pane_attach_term(
         &mut self,
@@ -8939,7 +9054,11 @@ impl State {
         cols: u16,
         rows: u16,
     ) -> bool {
-        self.pane_attach_term = None;
+        if let Some(mut old) = self.pane_attach_term.take() {
+            std::thread::spawn(move || {
+                old.shutdown(std::time::Duration::from_millis(250));
+            });
+        }
         let controller_id = self_comm_handle();
         let fe_down_to = self_comm_handle();
         let waker = self.window.clone();
@@ -8961,6 +9080,7 @@ impl State {
                 // episode warnings.
                 self.pane_attach_started_at = Some(std::time::Instant::now());
                 self.pane_attach_episode_warnings = 0;
+                self.pane_attach_presented = false;
                 true
             }
             Err(e) => {
@@ -9533,9 +9653,11 @@ impl State {
             // file-parse check below without re-firing concept.read.
         } else {
             if let Some(t) = target.as_ref() {
+                let generation = self.next_concept_gen();
                 if let Err(e) = self.send(crate::transport::OutgoingReq::ConceptRead {
                     target: t.clone(),
                     workspace_id: self.active_workspace_id.clone(),
+                    generation,
                 }) {
                     tracing::warn!(error = %e, target = %t, "drop concept.read request — channel closed");
                     return;
@@ -10534,10 +10656,12 @@ impl State {
         // Isotropic from a single entry: both axes get the same value. The
         // anisotropic (XZ) case is Phase 3 — one number can't describe it, and
         // guessing would be worse than the Phase-1 lateral bar.
+        let generation = self.next_preview_gen();
         if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewSetScale {
             node_id: node_id.clone(),
             nm_per_px,
             workspace_id: self.active_workspace_id.clone(),
+            generation,
         }) {
             tracing::warn!(error = %e, %node_id, "drop preview.set_scale — channel closed");
             self.status = "pixel size · channel closed".to_string();
@@ -10951,6 +11075,7 @@ impl State {
         // request honest about what's needed at this zoom.
         let scaled_w = ((fw as f32 * target).round() as u32).clamp(1, 8192);
         let scaled_h = ((fh as f32 * target).round() as u32).clamp(1, 8192);
+        let generation = self.next_preview_gen();
         if self
             .send(crate::transport::OutgoingReq::PreviewGet {
                 node_id,
@@ -10958,6 +11083,7 @@ impl State {
                 page: Some(page),
                 fit_w: Some(scaled_w),
                 fit_h: Some(scaled_h),
+                generation,
             })
             .is_ok()
         {
@@ -11986,6 +12112,7 @@ impl State {
                         // showing right now".
                         if let Some(node_id) = self.preview_node_id_fired.clone() {
                             let (fit_w, fit_h) = self.preview_fit_px();
+                            let generation = self.next_preview_gen();
                             let _ = self.send(crate::transport::OutgoingReq::PreviewGet {
                                 node_id,
                                 workspace_id: self.active_workspace_id.clone(),
@@ -11995,6 +12122,7 @@ impl State {
                                 page: self.preview_page.map(|(p, _)| p),
                                 fit_w,
                                 fit_h,
+                                generation,
                             });
                         }
                     } // if event_host == self.active_host
@@ -12160,12 +12288,14 @@ impl State {
                             let node_id = format!("files:{rel}");
                             tracing::info!(%node_id, "firing --capture-preview");
                             let (fit_w, fit_h) = self.preview_fit_px();
+                            let generation = self.next_preview_gen();
                             if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewGet {
                                 node_id: node_id.clone(),
                                 workspace_id: None,
                                 page: None,
                                 fit_w,
                                 fit_h,
+                                generation,
                             }) {
                                 tracing::warn!(error = %e, %node_id, "drop --capture-preview request — channel closed");
                             }
@@ -12616,9 +12746,37 @@ impl State {
                 }
                 crate::transport::IncomingEvt::ConceptRead {
                     target,
+                    workspace_id,
                     exists,
                     content,
+                    generation,
                 } => {
+                    // Switch-latency Phase 1: drop a reply that isn't the
+                    // LATEST concept.read this session has fired for the
+                    // slot, or that answers a (host, workspace) the chrome
+                    // has since left — a daemon can now answer requests on
+                    // one connection out of order, and `target` alone isn't
+                    // a safe owner check (two projects can annotate the
+                    // same relative path). Both consumers below (an open
+                    // edit buffer, and the read-only annotation view) each
+                    // additionally match on their own "current target"
+                    // (`edit.target` / `concept_target_fired`) — this gate
+                    // is the host/workspace/generation leg of the same
+                    // owner check, common to both.
+                    if !reply_is_current(
+                        generation,
+                        self.concept_req_gen,
+                        &event_host,
+                        &self.active_host,
+                        &workspace_id,
+                        &self.active_workspace_id,
+                    ) {
+                        tracing::debug!(%target, ?workspace_id, generation,
+                            latest = self.concept_req_gen, %event_host,
+                            active_host = %self.active_host,
+                            "concept.read reply dropped — stale generation or non-active (host, workspace)");
+                        continue;
+                    }
                     // Two consumers for concept.read replies:
                     //   1) Edit-mode stale-reload: when the user picks
                     //      `r` on the stale banner we re-fire the read
@@ -12692,20 +12850,35 @@ impl State {
                     mime,
                     bytes,
                     extras,
+                    generation,
                 } => {
-                    // Drop a preview.get reply for a workspace we've since
-                    // switched away from. An in-flight cross-workspace reply
-                    // would otherwise clobber the restored preview_src on a
-                    // workspace round-trip (A→B→A: the nav cursor restores to
-                    // A's file from A's snapshot, but B's late blob lands + paints
-                    // over it — the round-trip preview/blob mismatch repro'd
-                    // 2026-06-24). Mirrors the tree.root workspace-scoping above
-                    // (gpu.rs ~6560); `workspace_id` is the ws the request was
-                    // fired for (threaded back via PendingKind::PreviewGet,
-                    // transport.rs:2677), `None` == the daemon-default workspace.
-                    if workspace_id != self.active_workspace_id {
-                        tracing::debug!(?workspace_id, active = ?self.active_workspace_id,
-                            "drop stale cross-workspace preview.get reply");
+                    // Switch-latency Phase 1: drop a reply that isn't the
+                    // LATEST preview.get/preview.set_scale this session has
+                    // fired for the preview slot, or that answers a (host,
+                    // workspace) it's since left. The workspace-only check
+                    // this replaced (2026-06-24, the A→B→A round-trip fix)
+                    // caught a reply from an abandoned WORKSPACE but not one
+                    // from an abandoned NODE within the still-active
+                    // workspace — a slower earlier preview.get could still
+                    // overwrite what a later cursor move already asked for;
+                    // the generation check (a request's slot-monotonic
+                    // sequence number, stamped at send time and echoed here)
+                    // catches that regardless of workspace. It also folds in
+                    // the host: `workspace_id: None` names "the default
+                    // workspace" on EVERY host, so a workspace-only check
+                    // could mistake a stale reply from a non-active host for
+                    // the active one.
+                    if !reply_is_current(
+                        generation,
+                        self.preview_req_gen,
+                        &event_host,
+                        &self.active_host,
+                        &workspace_id,
+                        &self.active_workspace_id,
+                    ) {
+                        tracing::debug!(?workspace_id, generation, latest = self.preview_req_gen,
+                            %event_host, active_host = %self.active_host,
+                            "drop stale preview.get/set_scale reply");
                         continue;
                     }
                     // Cache the source so a runtime font-size change
@@ -13942,6 +14115,7 @@ impl State {
                             && self.preview_node_id_fired.as_deref() == Some(node_id.as_str())
                         {
                             let (fit_w, fit_h) = self.preview_fit_px();
+                            let generation = self.next_preview_gen();
                             let _ = self.send_to(
                                 &event_host,
                                 crate::transport::OutgoingReq::PreviewGet {
@@ -13950,6 +14124,7 @@ impl State {
                                     page: self.preview_page.map(|(p, _)| p),
                                     fit_w,
                                     fit_h,
+                                    generation,
                                 },
                             );
                         }
@@ -15387,13 +15562,31 @@ impl State {
         #[cfg(windows)]
         let pane_attach_is_dead = self.pane_attach_term.as_mut().is_some_and(|t| t.is_dead());
         #[cfg(windows)]
-        let pty_screen = match pane_screen_choice(
+        let pane_screen = pane_screen_choice(
             pane_attach_has_client,
             pane_attach_checkpointed,
             pane_attach_is_dead,
             self.pane_feed,
             self.pane_hold.is_some(),
-        ) {
+        );
+        // Switch-latency Phase 1, item 3: the acceptance metric itself
+        // (keypress → current screen visible), not merely the client's
+        // own parser being ready (`pump_pane_attach_term`'s "checkpoint
+        // applied") — this is the first REDRAW that actually paints the
+        // new client's own screen (`PaneScreen::Client`) rather than the
+        // held prior content or the tmux fallback. One-shot per attach,
+        // same edge-triggered pattern as the other attach-outcome lines.
+        #[cfg(windows)]
+        if pane_screen == PaneScreen::Client && !self.pane_attach_presented {
+            self.pane_attach_presented = true;
+            let since_request_ms = self
+                .pane_attach_requested_at
+                .map(|s| s.elapsed().as_millis() as u64)
+                .unwrap_or(0);
+            tracing::info!(since_request_ms, "session pane: capsule screen presented");
+        }
+        #[cfg(windows)]
+        let pty_screen = match pane_screen {
             PaneScreen::Client => self.pane_attach_term.as_ref().map(|t| t.screen()),
             PaneScreen::Hold => self.pane_hold.as_ref().map(|h| h.screen()),
             PaneScreen::Tmux => None,
@@ -20697,9 +20890,11 @@ impl ApplicationHandler for App {
                                             }
                                         } else {
                                             let target = edit.target.clone();
+                                            let generation = state.next_concept_gen();
                                             if let Err(e) = state.send(OutgoingReq::ConceptRead {
                                                 target,
                                                 workspace_id: ws,
+                                                generation,
                                             }) {
                                                 tracing::warn!(error = %e,
                                                     "drop concept.read for stale reload");
@@ -20954,6 +21149,7 @@ impl ApplicationHandler for App {
                                                 // any pending zoom re-raster.
                                                 state.preview_page_raster_pending = None;
                                                 let (fit_w, fit_h) = state.preview_fit_px();
+                                                let generation = state.next_preview_gen();
                                                 if let Err(e) = state.send(
                                                     crate::transport::OutgoingReq::PreviewGet {
                                                         node_id,
@@ -20963,6 +21159,7 @@ impl ApplicationHandler for App {
                                                         page: Some(np),
                                                         fit_w,
                                                         fit_h,
+                                                        generation,
                                                     },
                                                 ) {
                                                     tracing::warn!(error = %e,
@@ -22785,6 +22982,85 @@ fn force_os_foreground(window: &winit::window::Window) -> bool {
 mod tests {
     use super::*;
     use sot_protocol::TreeNode;
+
+    // Switch-latency Phase 1: `reply_is_current` is the whole stale-reply
+    // guard for the preview pane and the concept/annotation slot — a
+    // single free function shared by both `IncomingEvt` match arms, so one
+    // set of cases covers both consumers.
+
+    #[test]
+    fn reply_is_current_accepts_the_latest_generation_for_the_active_owner() {
+        assert!(reply_is_current(
+            3,
+            3,
+            &"h".to_string(),
+            &"h".to_string(),
+            &Some("ws".to_string()),
+            &Some("ws".to_string()),
+        ));
+        // `None` (the daemon-default workspace) matches itself too.
+        assert!(reply_is_current(1, 1, &"h".to_string(), &"h".to_string(), &None, &None));
+    }
+
+    #[test]
+    fn reply_is_current_drops_an_older_generation() {
+        // A slower earlier request's reply landing after a newer one has
+        // already been fired for the same slot — the core switch-latency
+        // repro (an obsolete preview overwriting a newer cursor's target).
+        assert!(!reply_is_current(
+            1,
+            3,
+            &"h".to_string(),
+            &"h".to_string(),
+            &Some("ws".to_string()),
+            &Some("ws".to_string()),
+        ));
+    }
+
+    #[test]
+    fn reply_is_current_drops_a_generation_ahead_of_the_latest_issued() {
+        // Shouldn't happen (a reply can't answer a request this session
+        // never sent), but the check is a strict equality, not `<=`, so a
+        // forged/corrupt generation is rejected too rather than silently
+        // becoming the new "latest".
+        assert!(!reply_is_current(
+            5,
+            3,
+            &"h".to_string(),
+            &"h".to_string(),
+            &Some("ws".to_string()),
+            &Some("ws".to_string()),
+        ));
+    }
+
+    #[test]
+    fn reply_is_current_drops_a_non_active_host_even_at_the_latest_generation() {
+        // `workspace_id: None` names "the default workspace" on EVERY
+        // host, so the host leg of the owner check has to be independent
+        // of the workspace leg — a stale reply from a host the session has
+        // since switched away from must not be mistaken for the active one
+        // just because both happen to be on their own default workspace.
+        assert!(!reply_is_current(
+            1,
+            1,
+            &"old-host".to_string(),
+            &"active-host".to_string(),
+            &None,
+            &None,
+        ));
+    }
+
+    #[test]
+    fn reply_is_current_drops_a_non_active_workspace_even_at_the_latest_generation() {
+        assert!(!reply_is_current(
+            1,
+            1,
+            &"h".to_string(),
+            &"h".to_string(),
+            &Some("old-ws".to_string()),
+            &Some("active-ws".to_string()),
+        ));
+    }
 
     // Workspace-create picker root: a Windows FE with no `$HOME` in its
     // process env must not seed the picker (and hence `workspace.create`'s

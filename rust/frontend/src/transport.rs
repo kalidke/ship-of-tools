@@ -234,11 +234,23 @@ pub enum IncomingEvt {
     /// the chrome to show the annotation under the selected tree node and
     /// to drive the drift badge once `synced_against`-vs-AST-hash compare
     /// lands.
-    #[allow(dead_code)] // chrome consumer lands in the next commit
     ConceptRead {
         target: String,
+        /// Switch-latency Phase 1: the workspace this read was fired for,
+        /// echoed from `PendingKind::ConceptRead` — previously dropped
+        /// here, which meant a late reply from a workspace the chrome had
+        /// since left could be mistaken for the active one whenever the
+        /// `target` string happened to coincide (two projects annotating
+        /// the same relative path). Paired with `generation`, below.
+        workspace_id: Option<String>,
         exists: bool,
         content: String,
+        /// Same mechanism as `IncomingEvt::Preview::generation` — the
+        /// concept/annotation slot's request generation, so an
+        /// out-of-order `concept.read` reply for a target the cursor has
+        /// since moved away from (and back to) can't be mistaken for the
+        /// current one.
+        generation: u64,
     },
     /// `concept.write` reply for `target`. `result` distinguishes the
     /// happy path from the stale-write optimistic-concurrency refusal
@@ -328,6 +340,17 @@ pub enum IncomingEvt {
         /// The chrome reads `page` / `page_count` to drive page-turn keys;
         /// unknown keys are ignored.
         extras: Option<serde_json::Value>,
+        /// Switch-latency Phase 1: the preview slot's request generation,
+        /// echoed verbatim from the `PendingKind` this reply resolved
+        /// (`0` for the connect-time preamble fetch, which has no
+        /// `PendingKind` to source one from). The chrome drops any reply
+        /// whose generation is behind the latest one it has issued for the
+        /// preview slot — otherwise a `preview.get`/`preview.set_scale`
+        /// answered slowly and out of order (a daemon can now reply
+        /// out-of-order per-connection) could overwrite what a newer
+        /// cursor move already asked for, even though `workspace_id` alone
+        /// still matches.
+        generation: u64,
     },
     /// A `figure.get` (`preview.get` op + figure-routed pending entry)
     /// reply: the bytes for a `![](url)` embedded in markdown. `url` is
@@ -909,10 +932,16 @@ pub enum OutgoingReq {
     ProjectScan { workspace_id: Option<String> },
     /// Fetch the `.concept/<target>.md` annotation for `target`. Response
     /// surfaces as `IncomingEvt::ConceptRead`.
-    #[allow(dead_code)] // chrome wires this up in the next commit
     ConceptRead {
         target: String,
         workspace_id: Option<String>,
+        /// Switch-latency Phase 1: the caller's concept-slot request
+        /// generation (its own monotonic "requests fired for this slot"
+        /// counter, incremented before this call) — stamped into
+        /// `PendingKind::ConceptRead` unchanged and echoed back on the
+        /// reply so the caller can tell a stale answer from the latest
+        /// one it asked for.
+        generation: u64,
     },
     /// Persist `content` as the `.concept/<target>.md` annotation. When
     /// `expected_ast_hash` is `Some`, the backend gates the write on
@@ -1010,6 +1039,9 @@ pub enum OutgoingReq {
         /// pages arrive at display resolution (no resample aliasing).
         fit_w: Option<u32>,
         fit_h: Option<u32>,
+        /// Switch-latency Phase 1: caller's preview-slot request
+        /// generation. See `ConceptRead::generation`.
+        generation: u64,
     },
     /// Persist a user-entered physical scale for a raster and get the
     /// re-rendered preview back (ADR 0034 §4/§5 live entry).
@@ -1027,6 +1059,10 @@ pub enum OutgoingReq {
         /// describe an anisotropic XZ view — that's Phase 3).
         nm_per_px: f64,
         workspace_id: Option<String>,
+        /// Switch-latency Phase 1: shares the preview slot's generation
+        /// counter with `PreviewGet` — both install through the same
+        /// `IncomingEvt::Preview` consumer.
+        generation: u64,
     },
     /// Fetch the bytes for a `![](url)` figure embedded in a markdown
     /// preview. Shares the `preview.get` wire op but stamps the response
@@ -1241,6 +1277,11 @@ enum PendingKind {
     },
     ConceptRead {
         target: String,
+        /// Switch-latency Phase 1: the workspace this read was fired for,
+        /// plus the request generation — both threaded straight through
+        /// to `IncomingEvt::ConceptRead` unchanged. See that variant.
+        workspace_id: Option<String>,
+        generation: u64,
     },
     ConceptWrite {
         target: String,
@@ -1273,6 +1314,9 @@ enum PendingKind {
     PreviewGet {
         node_id: String,
         workspace_id: Option<String>,
+        /// Switch-latency Phase 1: preview-slot request generation, threaded
+        /// straight through to `IncomingEvt::Preview`. See that variant.
+        generation: u64,
     },
     /// Reply to `preview.set_scale`. Carries the SAME `PreviewGetRes` envelope
     /// as a normal preview, so it decodes with the existing type and surfaces
@@ -1281,6 +1325,9 @@ enum PendingKind {
     SetScale {
         node_id: String,
         workspace_id: Option<String>,
+        /// Same preview-slot generation as `PreviewGet` — set_scale and an
+        /// ordinary preview.get share one consumer slot.
+        generation: u64,
     },
     FigureGet {
         url: String,
@@ -1869,6 +1916,13 @@ where
             mime: res.mime,
             bytes,
             extras: res.extras,
+            // No `PendingKind` to source a generation from — `0` is a
+            // sentinel below the chrome's counter (which starts at `0` and
+            // only increments on the first cursor-driven `preview.get`), so
+            // this preamble reply naturally loses to any real request the
+            // chrome has since fired, exactly like the workspace/host guard
+            // above already intends for a resumed non-default workspace.
+            generation: 0,
         });
         window.request_redraw();
     }
@@ -2077,8 +2131,8 @@ where
                         .await?;
                         pending.insert(id, PendingKind::MarkdownTokenize { lang, source_hash });
                     }
-                    OutgoingReq::ConceptRead { target, workspace_id } => {
-                        tracing::debug!(%target, ?workspace_id, id, "→ concept.read");
+                    OutgoingReq::ConceptRead { target, workspace_id, generation } => {
+                        tracing::debug!(%target, ?workspace_id, generation, id, "→ concept.read");
                         codec::write_frame(
                             &mut tx,
                             &Frame::req(
@@ -2086,13 +2140,20 @@ where
                                 op::CONCEPT_READ,
                                 serde_json::to_value(ConceptReadReq {
                                     target: target.clone(),
-                                    workspace_id,
+                                    workspace_id: workspace_id.clone(),
                                 })?,
                             ),
                             None,
                         )
                         .await?;
-                        pending.insert(id, PendingKind::ConceptRead { target });
+                        pending.insert(
+                            id,
+                            PendingKind::ConceptRead {
+                                target,
+                                workspace_id,
+                                generation,
+                            },
+                        );
                     }
                     OutgoingReq::MathRender { latex, display } => {
                         let is_display = display;
@@ -2247,8 +2308,8 @@ where
                         .await?;
                         pending.insert(id, PendingKind::FileParse { path, workspace_id });
                     }
-                    OutgoingReq::PreviewGet { node_id, workspace_id, page, fit_w, fit_h } => {
-                        tracing::debug!(%node_id, ?workspace_id, ?page, id, "→ preview.get");
+                    OutgoingReq::PreviewGet { node_id, workspace_id, page, fit_w, fit_h, generation } => {
+                        tracing::debug!(%node_id, ?workspace_id, ?page, generation, id, "→ preview.get");
                         codec::write_frame(
                             &mut tx,
                             &Frame::req(
@@ -2270,6 +2331,7 @@ where
                             PendingKind::PreviewGet {
                                 node_id,
                                 workspace_id,
+                                generation,
                             },
                         );
                     }
@@ -2277,8 +2339,9 @@ where
                         node_id,
                         nm_per_px,
                         workspace_id,
+                        generation,
                     } => {
-                        tracing::debug!(%node_id, nm_per_px, ?workspace_id, id,
+                        tracing::debug!(%node_id, nm_per_px, ?workspace_id, generation, id,
                             "→ preview.set_scale");
                         // Isotropic from a single typed value. `nm_per_px` is the
                         // RAW/original pixel size the user entered, sent verbatim:
@@ -2307,6 +2370,7 @@ where
                             PendingKind::SetScale {
                                 node_id,
                                 workspace_id,
+                                generation,
                             },
                         );
                     }
@@ -2914,13 +2978,19 @@ fn handle_response_frame(
                     spans,
                 });
             }
-            PendingKind::ConceptRead { target } => {
+            PendingKind::ConceptRead {
+                target,
+                workspace_id,
+                generation,
+            } => {
                 match serde_json::from_value::<ConceptReadRes>(frame.payload) {
                     Ok(res) => {
                         emit(IncomingEvt::ConceptRead {
                             target: res.target,
+                            workspace_id,
                             exists: res.exists,
                             content: res.content,
+                            generation,
                         });
                     }
                     Err(e) => {
@@ -3193,6 +3263,7 @@ fn handle_response_frame(
             PendingKind::PreviewGet {
                 node_id,
                 workspace_id,
+                generation,
             } => {
                 // Same shape as the connect-time preview.get: a typed
                 // PreviewGetRes envelope plus a length-prefixed blob the
@@ -3210,6 +3281,7 @@ fn handle_response_frame(
                             mime: res.mime,
                             bytes: blob.unwrap_or_default(),
                             extras: res.extras,
+                            generation,
                         });
                     }
                     Err(e) => {
@@ -3221,6 +3293,7 @@ fn handle_response_frame(
             PendingKind::SetScale {
                 node_id,
                 workspace_id,
+                generation,
             } => {
                 // ADR 0034 §5: the backend persisted the sidecar and returned
                 // the RE-RENDERED preview in the same PreviewGetRes envelope,
@@ -3258,6 +3331,7 @@ fn handle_response_frame(
                             mime: res.mime,
                             bytes: blob.unwrap_or_default(),
                             extras: res.extras,
+                            generation,
                         });
                     }
                     Err(e) => {
@@ -4307,6 +4381,103 @@ mod tests {
                 assert_eq!(pane_command.as_deref(), Some("claude"));
             }
             other => panic!("expected PtyOpened, got {other:?}"),
+        }
+    }
+
+    // --- Switch-latency Phase 1: the generation/owner fields transport.rs
+    // threads through `PendingKind` are exactly what the request stamped.
+    // The chrome's accept/reject DECISION (`reply_is_current`) lives in
+    // gpu.rs and is tested there; this only proves the plumbing.
+
+    #[test]
+    fn concept_read_reply_echoes_the_workspace_and_generation_it_was_fired_with() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+        pending.insert(
+            21,
+            PendingKind::ConceptRead {
+                target: "MyModule.myfunction".to_string(),
+                workspace_id: Some("ws-a".to_string()),
+                generation: 7,
+            },
+        );
+        let frame = Frame::res(
+            21,
+            op::CONCEPT_READ,
+            serde_json::json!({
+                "target": "MyModule.myfunction",
+                "exists": true,
+                "content": "hello",
+            }),
+        );
+        let host = "test-host".to_string();
+        handle_response_frame(frame, None, &mut pending, &evt_tx, &host);
+
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
+        assert_eq!(events.len(), 1, "got {events:?}");
+        match &events[0] {
+            (
+                h,
+                IncomingEvt::ConceptRead {
+                    target,
+                    workspace_id,
+                    exists,
+                    content,
+                    generation,
+                },
+            ) => {
+                assert_eq!(h, &host);
+                assert_eq!(target, "MyModule.myfunction");
+                assert_eq!(workspace_id.as_deref(), Some("ws-a"));
+                assert!(*exists);
+                assert_eq!(content, "hello");
+                assert_eq!(*generation, 7);
+            }
+            other => panic!("expected ConceptRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preview_get_reply_echoes_the_generation_it_was_fired_with() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+        pending.insert(
+            22,
+            PendingKind::PreviewGet {
+                node_id: "files:a.md".to_string(),
+                workspace_id: Some("ws-b".to_string()),
+                generation: 42,
+            },
+        );
+        let frame = Frame::res(
+            22,
+            op::PREVIEW_GET,
+            serde_json::json!({
+                "mime": "text/markdown",
+                "blob": {"len": 0, "mime": "text/markdown"},
+            }),
+        );
+        let host = "test-host".to_string();
+        handle_response_frame(frame, Some(Vec::new()), &mut pending, &evt_tx, &host);
+
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
+        assert_eq!(events.len(), 1, "got {events:?}");
+        match &events[0] {
+            (
+                h,
+                IncomingEvt::Preview {
+                    node_id,
+                    workspace_id,
+                    generation,
+                    ..
+                },
+            ) => {
+                assert_eq!(h, &host);
+                assert_eq!(node_id.as_deref(), Some("files:a.md"));
+                assert_eq!(workspace_id.as_deref(), Some("ws-b"));
+                assert_eq!(*generation, 42);
+            }
+            other => panic!("expected Preview, got {other:?}"),
         }
     }
 }
