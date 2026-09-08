@@ -4740,7 +4740,52 @@ fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> Cap
             detail: "supervisor is starting; retry".to_string(),
         },
         O::NotEnded(detail) => CapsuleDestroyOutcome::Kept { detail },
+        // The lane was unreachable but the supervisor lock itself was
+        // free to take -- nobody holds this row (see `EndRunOutcome::
+        // Unheld`'s own doc). A run with no holder is not running.
+        O::Unheld => {
+            CapsuleDestroyOutcome::Removable("no supervisor held the row".to_string())
+        }
     }
+}
+
+/// After a default row's run is CONFIRMED ended (`confirmed_ended` from
+/// `default_row_end_response`), reset the row's `agent`/`agent_name` back
+/// to the inert-anchor shape and persist + broadcast the change — the
+/// ADR 0042 amendment invariant ("an anchor with no run is inert, and
+/// inert anchors are hidden") applied to the one path that used to leave
+/// a carried-over `agent` stuck forever (field defect, v0.6.0-rc.12: the
+/// owner once started an agent in this row before that rule existed, and
+/// nothing ever reset `agent` back to "none" once its run ended, so
+/// `Workspaces::is_inert_default_anchor` never went true again). A
+/// `false` confirmed_ended is a no-op: `default_row_end_response` already
+/// built the typed-error response for a `Kept` outcome, and neither the
+/// row nor its toml may change under a refusal.
+fn end_default_row_run(
+    workspaces: &Workspaces,
+    ws_events: &broadcast::Sender<WorkspaceChanged>,
+    workspace_id: &str,
+    slug: &str,
+    confirmed_ended: bool,
+) {
+    if !confirmed_ended {
+        return;
+    }
+    if let Some(reset) = workspaces.reset_agent_to_none(workspace_id) {
+        if let Err(e) = crate::workspaces::save(&reset) {
+            tracing::warn!(error = %e, workspace_id = %workspace_id,
+                "default row agent-reset toml persist failed; workspace is in-memory only");
+        }
+    }
+    // Live-push so the Sessions strip re-lists — the row's phase is
+    // derived fresh from the supervisor lane on every `workspace.list`
+    // call. `action` is informational only: every `workspace.changed`
+    // push just triggers an FE re-list.
+    let _ = ws_events.send(WorkspaceChanged {
+        action: "run_ended".into(),
+        slug: slug.to_string(),
+        workspace_id: workspace_id.to_string(),
+    });
 }
 
 /// `reason` is the immutable end-run reason recorded on the wire —
@@ -4919,17 +4964,7 @@ pub async fn handle_workspace_destroy(
             default_row_end_response(&ws.workspace_id, &ws.slug, &ws.label, outcome);
         tracing::info!(workspace_id = %ws.workspace_id, confirmed_ended, "workspace.destroy: default row's capsule run outcome; row kept");
 
-        if confirmed_ended {
-            // Live-push so the Sessions strip re-lists — the row's phase
-            // is derived fresh from the supervisor lane on every
-            // `workspace.list` call. `action` is informational only:
-            // every `workspace.changed` push just triggers an FE re-list.
-            let _ = ws_events.send(WorkspaceChanged {
-                action: "run_ended".into(),
-                slug: ws.slug.clone(),
-                workspace_id: ws.workspace_id.clone(),
-            });
-        }
+        end_default_row_run(workspaces, ws_events, &ws.workspace_id, &ws.slug, confirmed_ended);
 
         return Ok(vec![(
             Frame::res(req_id, op::WORKSPACE_DESTROY, payload),
@@ -8000,6 +8035,42 @@ mod workspace_destroy_default_row_tests {
     // `capsule_end_not_reached` error, never the flat tmux-style refusal.
     use super::*;
 
+    // Isolates `crate::workspaces::save`'s config dir for the one test
+    // below that (unlike every other test in this module) runs the
+    // reset+persist path for real -- same technique as `workspaces.rs`'s
+    // own `env_guarded`, serialized under the crate-wide lock so this
+    // never races another module's env-mutating test.
+    struct EnvGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        xdg_config_home: Option<std::ffi::OsString>,
+        sot_state_host: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, val) in [
+                ("XDG_CONFIG_HOME", &self.xdg_config_home),
+                ("SOT_STATE_HOST", &self.sot_state_host),
+            ] {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn env_guarded() -> EnvGuard {
+        let serial = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        EnvGuard {
+            xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
+            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            _serial: serial,
+        }
+    }
+
     fn seed_default(runtime: &str) -> (Workspaces, String) {
         let reg = Workspaces::new();
         let mut ws = Workspace::from_label(
@@ -8015,6 +8086,28 @@ mod workspace_destroy_default_row_tests {
         reg.insert(ws);
         reg.set_default(&id);
         (reg, id)
+    }
+
+    /// Same as `seed_default("capsule")` but with a carried-over agent —
+    /// the field shape (owner once started an agent in this row before
+    /// the "nothing runs in the anchor" rule existed) that the reset in
+    /// `end_default_row_run` exists to unstick.
+    fn seed_default_with_agent(agent: &str, agent_name: &str) -> (Workspaces, String, String) {
+        let reg = Workspaces::new();
+        let mut ws = Workspace::from_label(
+            "local",
+            std::path::PathBuf::from("/p/local"),
+            true,
+            agent.to_string(),
+            agent_name.to_string(),
+            String::new(),
+        );
+        ws.runtime = "capsule".to_string();
+        let id = ws.workspace_id.clone();
+        let slug = ws.slug.clone();
+        reg.insert(ws);
+        reg.set_default(&id);
+        (reg, id, slug)
     }
 
     async fn destroy(workspaces: &Workspaces, workspace_id: &str) -> serde_json::Value {
@@ -8105,6 +8198,91 @@ mod workspace_destroy_default_row_tests {
         }
     }
 
+    // The full field defect this lane fixes: a default row carrying an
+    // agent from before the anchor rule, whose run is CONFIRMED ended,
+    // must have its `agent`/`agent_name` reset to the inert-anchor
+    // shape, that reset persisted to its toml, and the existing
+    // `run_ended` broadcast still fired -- all through the real
+    // `handle_workspace_destroy` wire path. Hermetic despite going
+    // through the full handler: `mark_capsule_terminal` (same technique
+    // as the test above) makes the outcome deterministic with no live
+    // supervisor at all, and `XDG_CONFIG_HOME`/`SOT_STATE_HOST` are
+    // pinned to a scratch dir so the toml write lands there, never under
+    // a real `~/.config/sot`.
+    #[tokio::test]
+    async fn default_row_confirmed_ended_resets_agent_persists_toml_and_broadcasts() {
+        let _guard = env_guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-ws-destroy-default-reset-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        std::env::set_var("SOT_STATE_HOST", "reset-test-host");
+
+        let (reg, id, slug) = seed_default_with_agent("claude", "kal-local");
+        assert!(
+            !reg.is_inert_default_anchor(&reg.resolve(Some(&id)).unwrap()),
+            "a default row carrying an agent is a real session, not the anchor, before the fix runs"
+        );
+        reg.mark_capsule_terminal(&id);
+
+        let session = Session::new();
+        let (tx, mut rx) = broadcast::channel(16);
+        let payload = json!({ "workspace_id": id });
+        let out = handle_workspace_destroy(1, payload, &session, &reg, &tx)
+            .await
+            .expect("handler must not error");
+        let response = out[0].0.payload.clone();
+        assert!(
+            response.get("error").is_none(),
+            "a confirmed end must not error: {response:?}"
+        );
+        assert!(
+            response.get("kept").is_some(),
+            "a confirmed end reports the success shape: {response:?}"
+        );
+
+        // The row: agent reset, inert again, id unchanged.
+        let after = reg
+            .resolve(Some(&id))
+            .expect("the default row is never removed");
+        assert_eq!(after.workspace_id, id);
+        assert_eq!(after.agent, "none");
+        assert_eq!(after.agent_name, "");
+        assert!(
+            reg.is_inert_default_anchor(&after),
+            "with agent reset to none, the default row must be inert again"
+        );
+
+        // The broadcast: the existing `run_ended` WorkspaceChanged, unchanged.
+        let evt = rx
+            .try_recv()
+            .expect("run_ended must still be broadcast on a confirmed end");
+        assert_eq!(evt.action, "run_ended");
+        assert_eq!(evt.workspace_id, id);
+        assert_eq!(evt.slug, slug);
+
+        // The toml: the reset was persisted, not just held in memory.
+        let toml_path = crate::workspaces::toml_path_for(&slug);
+        let contents = std::fs::read_to_string(&toml_path)
+            .unwrap_or_else(|e| panic!("toml must be persisted at {toml_path:?}: {e}"));
+        assert!(
+            contents.contains("agent         = \"none\""),
+            "agent must persist as none:\n{contents}"
+        );
+        assert!(
+            contents.contains("agent_name    = \"\""),
+            "agent_name must persist as empty:\n{contents}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // A lane still `Starting` is never "not running" -- retryable
     // `Kept`, never a fabricated "was not running" success.
     #[test]
@@ -8181,6 +8359,22 @@ mod workspace_destroy_default_row_tests {
             }
             CapsuleDestroyOutcome::Kept { detail } => {
                 panic!("Terminal is a confirmed end (stop was sent and awaited) — must not be Kept: {detail}");
+            }
+        }
+    }
+
+    // `Unheld` (no supervisor holds the row — see its own doc) is a
+    // confirmed end, same family as `Terminal`/`AlreadyEnded`: `Removable`,
+    // never `Kept`.
+    #[test]
+    fn unheld_outcome_is_removable_not_kept() {
+        use crate::capsule_workspace::EndRunOutcome as O;
+        match capsule_destroy_outcome_of(O::Unheld) {
+            CapsuleDestroyOutcome::Removable(detail) => {
+                assert_eq!(detail, "no supervisor held the row");
+            }
+            CapsuleDestroyOutcome::Kept { detail } => {
+                panic!("Unheld means nobody holds the row — must not be Kept: {detail}");
             }
         }
     }

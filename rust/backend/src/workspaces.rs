@@ -655,6 +655,45 @@ impl Workspaces {
         ws.agent == "none" && self.default_id().as_deref() == Some(ws.workspace_id.as_str())
     }
 
+    /// Reset `workspace_id`'s `agent`/`agent_name` back to the inert-anchor
+    /// shape ("none" / "") — called once a default row's run is CONFIRMED
+    /// ended (`handle_workspace_destroy`'s default-capsule-row branch), so
+    /// `is_inert_default_anchor` reads true again and the row disappears
+    /// from `workspace.list` instead of surviving forever with a stale
+    /// `agent` from before the run ended (field defect, v0.6.0-rc.12: a
+    /// row whose agent predated the "nothing runs in the anchor" rule
+    /// never went inert again after its run was ended). Every other
+    /// field is carried over unchanged via `insert`'s own id-preserving
+    /// same-slug refresh — the same mechanism an ordinary metadata edit
+    /// (e.g. `workspace.create`'s duplicate-slug path) already relies on.
+    /// `None` if `workspace_id` is no longer registered (not reachable on
+    /// the caller's own path today, but this stays total rather than
+    /// panicking). A no-op re-insert when the row is already inert avoids
+    /// a needless toml rewrite.
+    pub fn reset_agent_to_none(&self, workspace_id: &str) -> Option<Arc<Workspace>> {
+        let ws = {
+            let g = self.inner.read().expect("workspaces lock");
+            g.by_id.get(workspace_id)?.clone()
+        };
+        if ws.agent == "none" && ws.agent_name.is_empty() {
+            return Some(ws);
+        }
+        let mut fresh = Workspace::meta_only(
+            ws.workspace_id.clone(),
+            ws.slug.clone(),
+            ws.label.clone(),
+            ws.project_root.clone(),
+            ws.tmux_session.clone(),
+            ws.created,
+            ws.autostart_claude,
+            "none".to_string(),
+            String::new(),
+            ws.task.clone(),
+        );
+        fresh.runtime = ws.runtime.clone();
+        Some(self.insert(fresh))
+    }
+
     /// Resolve an optional workspace_id to a workspace handle. `None`
     /// → default. A non-default id that's missing is `None` (caller's
     /// responsibility to error). The returned `Arc` shares the same
@@ -1766,6 +1805,49 @@ mod tests {
         agent.runtime = "capsule".to_string();
         let agent = reg.insert(agent);
         assert!(!reg.is_inert_default_anchor(&agent));
+    }
+
+    /// Field defect (v0.6.0-rc.12): a default row that once carried an
+    /// agent (pre-dating the "nothing runs in the anchor" rule) never
+    /// went inert again after its run ended, because nothing ever reset
+    /// `agent` back to "none" — `reset_agent_to_none` is that reset, and
+    /// this proves it flips `is_inert_default_anchor` from false to true
+    /// while preserving the row's id and every other field.
+    #[test]
+    fn reset_agent_to_none_makes_a_carried_over_default_row_inert_again() {
+        let reg = Workspaces::new();
+        let mut row = Workspace::from_label(
+            "local",
+            PathBuf::from("/home/u"),
+            true,
+            "claude".into(),
+            "kal-local".into(),
+            "hello".into(),
+        );
+        row.runtime = "capsule".to_string();
+        let row = reg.insert(row);
+        reg.set_default(&row.workspace_id);
+        let original_id = row.workspace_id.clone();
+        assert!(
+            !reg.is_inert_default_anchor(&row),
+            "a default row that carries an agent is a real session, not the anchor"
+        );
+
+        let reset = reg
+            .reset_agent_to_none(&row.workspace_id)
+            .expect("the row is registered");
+        assert_eq!(reset.workspace_id, original_id, "reset must preserve the id");
+        assert_eq!(reset.agent, "none");
+        assert_eq!(reset.agent_name, "");
+        assert_eq!(reset.runtime, "capsule", "unrelated metadata must survive the reset");
+        assert!(
+            reg.is_inert_default_anchor(&reset),
+            "with agent reset to none, the default row must be inert again"
+        );
+        // The registry's own row (not just the returned handle) reflects
+        // the reset -- resolve() must see it too.
+        let resolved = reg.resolve(Some(&original_id)).unwrap();
+        assert!(reg.is_inert_default_anchor(&resolved));
     }
 
     #[test]

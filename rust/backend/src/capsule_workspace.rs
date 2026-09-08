@@ -583,6 +583,21 @@ pub enum EndRunOutcome {
     /// `end_run` reported the operation failed, was refused, or its
     /// outcome is unknown — no confirmed end in any case.
     NotEnded(String),
+    /// The lane itself was unreachable (the `query_status` round trip
+    /// failed — no listener answered at all, not merely a phase this
+    /// call disagreed with) AND a bounded, non-blocking attempt to take
+    /// `supervisor.lock` on the same state dir succeeded: nobody holds
+    /// this row (the kernel released the fence the instant its last
+    /// holder died — `sot_log::fence`). A run with no holder is not
+    /// running, so this is safe to treat as `Removable`, same as
+    /// `Terminal`. Distinct from `NotEnded`: that variant means the lane
+    /// DID answer and refused/failed the request — a live, responsive
+    /// holder, never fabricated as ended. Field defect closed
+    /// (v0.6.0-rc.12): a supervisor that died out from under a row (a
+    /// daemon-pair converge that ended the old build) left the row
+    /// permanently `Kept`/unendable, because `query_status` failing was
+    /// the ONLY signal this function ever consulted.
+    Unheld,
 }
 
 /// The pair invariant, decided from what `sot-capsule.exe build-id`
@@ -1004,9 +1019,29 @@ mod runtime {
         use sot_log::supervisor_client::EndRunOutcome as O;
         use sot_log::wire::SupervisorPhase;
 
-        let status = sot_log::supervisor_client::query_status(state_dir)
-            .map_err(|e| std::io::Error::other(e.to_string()))?
-            .0;
+        let status = match sot_log::supervisor_client::query_status(state_dir) {
+            Ok((status, _process)) => status,
+            Err(e) => {
+                // Unreachable is not the same claim as "not running" —
+                // the caller must keep refusing a live-but-unresponsive
+                // lane, never fabricate "ended" for one (see
+                // `destroy_capsule_workspace`'s own doc). But liveness
+                // IS knowable independent of this IPC round trip:
+                // `supervisor.lock` is a kernel-held OS file lock,
+                // released the instant its holder dies (`fence.rs`), so
+                // a bounded (~250ms), non-blocking attempt to take it
+                // settles the question for certain. Acquirable -> no
+                // supervisor holds this row; release immediately (this
+                // call only OBSERVES liveness, it must never itself
+                // become the holder) and report the row unheld. Still
+                // held (or any other lock error) -> unchanged: the
+                // original "lane unreachable" refusal.
+                return match sot_log::fence::lock_supervisor(state_dir) {
+                    Ok(_lock) => Ok(R::Unheld),
+                    Err(_) => Err(std::io::Error::other(e.to_string())),
+                };
+            }
+        };
 
         match status.phase {
             SupervisorPhase::Starting => return Ok(R::Starting),
@@ -2384,6 +2419,42 @@ mod tests {
             state_dir_for(root, "ws-alpha-1a2b"),
             PathBuf::from("/tmp/sot-state-root/workspaces/ws-alpha-1a2b")
         );
+    }
+
+    // Field defect (v0.6.0-rc.12): a supervisor that died out from under
+    // a row (e.g. a daemon-pair converge that ended the old build's
+    // supervisor) left the state dir holding only a lock FILE, and
+    // `end_run` used to treat every unreachable lane identically -- kept
+    // forever, with no way to tell a merely-unresponsive live holder
+    // from no holder at all. `query_status` fails against this temp dir
+    // either way (nothing is listening on its lane) -- what changes
+    // between the two cases below is whether `supervisor.lock` itself is
+    // free to take.
+    #[test]
+    #[cfg(any(windows, target_os = "linux"))]
+    fn end_run_is_unheld_when_the_lock_is_free_and_kept_when_it_is_held() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state_dir = dir.path();
+
+        // No supervisor.lock exists yet at all -- the lock is free to
+        // take, so nobody holds this row: `Unheld`.
+        match end_run(state_dir, "test reason") {
+            Ok(super::EndRunOutcome::Unheld) => {}
+            other => panic!("expected Ok(Unheld) with no holder present: {other:?}"),
+        }
+
+        // Something else holds the fence right now -- the lock attempt
+        // must fail, so `end_run` keeps today's unreachable-lane
+        // refusal (Err) rather than fabricating Unheld out from under a
+        // live holder.
+        let holder = sot_log::fence::lock_supervisor(state_dir).expect("take the fence");
+        match end_run(state_dir, "test reason") {
+            Err(_) => {}
+            Ok(outcome) => {
+                panic!("expected the unchanged unreachable-lane Err while the fence is held: {outcome:?}")
+            }
+        }
+        drop(holder);
     }
 
     #[test]
