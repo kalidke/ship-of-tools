@@ -50,7 +50,8 @@ use sot_log::segment::{RetentionClass, SegmentReader};
 use sot_log::verify::{leg_carries_run_end_marker, verify_voyage};
 use sot_log::wire::{self, Survival};
 use sot_log::{Class, Envelope, RefKind};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use transports::{no_transport, TestTransport};
 
@@ -1479,6 +1480,139 @@ fn shutdown_ack_grace_admits_no_new_connections_or_bytes() {
         .expect("run did not return after the late ack was released")
         .unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
+}
+
+/// A non-panicking, bounded poll for an `AttachServer::Output` frame on
+/// `conn` whose bytes contain `needle` — unlike `FrameWatcher::wait_for`
+/// (which panics on timeout), this returns `false` on expiry so the
+/// caller can run its own cleanup (ending the run, joining threads)
+/// BEFORE asserting on the result, rather than leaking a live shell/
+/// thread behind an early panic mid-test.
+fn poll_for_committed_marker(transport: &TestTransport, conn: ConnId, needle: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut start = 0usize;
+    loop {
+        let frames = transport.sent_frames_from(start);
+        start += frames.len();
+        for (c, bytes) in &frames {
+            if *c != conn {
+                continue;
+            }
+            let mut s = wire::FrameSplitter::new();
+            let (decoded, _err) = s.feed(bytes);
+            for f in &decoded {
+                if let wire::DecodedFrame::AttachServer(wire::AttachServer::Output { bytes }) = f {
+                    if String::from_utf8_lossy(bytes).contains(needle) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Codex round on #227 (P1 discharge): the group-commit deadline
+/// (`last_commit.elapsed() >= GROUP_COMMIT_WINDOW`) used to be evaluated
+/// ONLY inside `output_rx.recv_timeout`'s own `Timeout` arm, so producer
+/// output plus transport activity arriving faster than
+/// `GROUP_COMMIT_WINDOW` apart could starve it indefinitely — the DATA was
+/// always buffered correctly; only WHEN an attached watcher got to see it
+/// was at risk. Proven here with a mechanism-level bound, not a lucky
+/// timing sample: a `mgmt_probe()` fed on one already-open mgmt
+/// connection every 10ms — comfortably faster than `GROUP_COMMIT_WINDOW`'s
+/// own 50ms — for the WHOLE observation window means `output_rx.
+/// recv_timeout` can never time out during it, so a Timeout-arm-only
+/// regression could not commit ANYTHING in that window NO MATTER HOW LONG
+/// it ran, which is what makes the bound's own exact value (500ms, 10x the
+/// window -- generous headroom for this test running alongside others
+/// under `cargo test`'s default parallelism, not a tight timing race)
+/// irrelevant to whether this is a real proof: the ping thread below runs
+/// for the bound's own FULL duration, so a regression has no window in
+/// which the Timeout arm could ever fire, regardless of how loose the
+/// bound is.
+#[test]
+fn group_commit_progresses_despite_continuous_transport_pings() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
+    let cfg = config(dir.path(), "commitpings1", argv, 80, 25);
+    let transport = TestTransport::new();
+    let (tx, rx) = mpsc::channel();
+    let run_transport = transport.clone();
+    let handle = std::thread::spawn(move || {
+        let mut t = run_transport;
+        capsule::run::<P>(cfg, rx, &mut t)
+    });
+
+    const WATCHER: ConnId = 1;
+    transport.open(WATCHER);
+    transport.feed(WATCHER, frame::hello());
+    let mut watcher = FrameWatcher::new(&transport);
+    watcher.wait_for("watcher hello_ok", WATCHER, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+    });
+    transport.feed(WATCHER, frame::attach("watcher"));
+    watcher.collect_checkpoint("watcher checkpoint", WATCHER, Duration::from_secs(10));
+    transport.feed(WATCHER, frame::take("watcher"));
+    let epoch = watcher.wait_for("watcher take_ok", WATCHER, Duration::from_secs(10), |f| match f {
+        wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => Some(*take_epoch),
+        _ => None,
+    });
+
+    // Continuous "transport activity" for the WHOLE observation window
+    // below -- see this test's own doc for why 10ms (< GROUP_COMMIT_WINDOW)
+    // is the exact shape that starves a Timeout-arm-only deadline check.
+    // A repeated `mgmt_probe()` on ONE already-open mgmt connection, not a
+    // churn of freshly opened connections: a fresh `ConnectionOpened`
+    // every 10ms, never classified, hits `attach_proto`'s own
+    // `NON_WATCHER_CAP` (4) almost immediately, spamming a real, logged
+    // `RecordRefusal` per ping thereafter -- and closing each one right
+    // back (tried first) exercises `remove_connection`'s own driver/
+    // checkpoint-slot bookkeeping on every single tick, which is exactly
+    // the kind of protocol-level churn this test has no business
+    // depending on: it needs "the loop wakes on transport activity",
+    // nothing about admission or teardown paths. A probe on one
+    // long-lived mgmt connection is real, wake-triggering "activity" with
+    // none of that: lockstep, always answered, and already the protocol's
+    // OWN intended shape for frequent liveness checks.
+    const PINGER_MGMT: ConnId = 999;
+    transport.open(PINGER_MGMT);
+    let stop_pinging = Arc::new(AtomicBool::new(false));
+    let ping_transport = transport.clone();
+    let stop_for_pinger = Arc::clone(&stop_pinging);
+    let ping_handle = std::thread::spawn(move || {
+        while !stop_for_pinger.load(Ordering::Relaxed) {
+            ping_transport.feed(PINGER_MGMT, frame::mgmt_probe());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+
+    let idem_key = [0x77u8; 16];
+    transport.feed(WATCHER, frame::input("watcher", epoch, idem_key, b"echo sot-commit-marker\r\n"));
+
+    // Non-panicking, bounded poll -- cleanup below must still run even if
+    // this never finds the frame, so the assertion on `found` comes AFTER
+    // it, not here.
+    let found = poll_for_committed_marker(&transport, WATCHER, "sot-commit-marker", Duration::from_millis(500));
+
+    stop_pinging.store(true, Ordering::Relaxed);
+    ping_handle.join().unwrap();
+    tx.send(Command::Kill).unwrap();
+    let summary = wait_for_join(handle, Duration::from_secs(30))
+        .expect("run did not return within the teardown bound")
+        .unwrap();
+    assert_eq!(summary.exit_kind, ExitKind::Requested);
+
+    assert!(
+        found,
+        "expected the shell's own echoed input to reach the attached watcher within 500ms despite a \
+         transport ping every 10ms the whole time -- the group-commit deadline must be evaluated every \
+         loop iteration, not only when output_rx.recv_timeout happens to time out"
+    );
 }
 
 // ---------------------------------------------------------------------

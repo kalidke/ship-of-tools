@@ -58,6 +58,14 @@ pub struct TestTransport {
     events_tx: mpsc::Sender<TransportEvent>,
     events_rx: Arc<Mutex<mpsc::Receiver<TransportEvent>>>,
     inner: Arc<Mutex<TestInner>>,
+    /// Switch-latency Phase 1 (c): mirrors `pipe_win`/`socket_unix`'s own
+    /// `activity_wake` — a test that wants to exercise `Transport::
+    /// set_wake`'s real effect (not merely `try_recv_event`'s own ordinary
+    /// per-iteration poll, which needs no wake at all to eventually find
+    /// an event) registers here via `run`'s own call, and every method
+    /// below that pushes to `events_tx` pings it AFTER, exactly like a
+    /// real transport.
+    wake: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
 }
 
 #[derive(Default)]
@@ -90,17 +98,30 @@ impl TestTransport {
             events_tx: tx,
             events_rx: Arc::new(Mutex::new(rx)),
             inner: Arc::new(Mutex::new(TestInner::default())),
+            wake: Arc::new(Mutex::new(None)),
+        }
+    }
+    /// Pings the registered wake, if any — called AFTER every push to
+    /// `events_tx` below, mirroring `pipe_win`/`socket_unix`'s own
+    /// `notify_wake` (the real event is always already enqueued before a
+    /// caller woken by this looks for it).
+    fn ping_wake(&self) {
+        if let Some(wake) = self.wake.lock().unwrap().as_ref() {
+            wake();
         }
     }
     pub fn open(&self, conn: ConnId) {
         let _ = self.events_tx.send(TransportEvent::ConnectionOpened(conn));
+        self.ping_wake();
     }
     pub fn feed(&self, conn: ConnId, bytes: Vec<u8>) {
         let _ = self.events_tx.send(TransportEvent::Bytes(conn, bytes));
+        self.ping_wake();
     }
     #[allow(dead_code)] // exercised by tests that simulate a peer-initiated EOF
     pub fn close_conn(&self, conn: ConnId) {
         let _ = self.events_tx.send(TransportEvent::ConnectionClosed(conn));
+        self.ping_wake();
     }
     pub fn set_hold_for(&self, conn: ConnId, on: bool) {
         let mut inner = self.inner.lock().unwrap();
@@ -116,6 +137,7 @@ impl TestTransport {
         let held = std::mem::take(&mut self.inner.lock().unwrap().held);
         for (conn, id) in held {
             let _ = self.events_tx.send(TransportEvent::Sent(conn, id));
+            self.ping_wake();
         }
     }
     pub fn sent_frames(&self) -> Vec<(ConnId, Vec<u8>)> {
@@ -173,6 +195,9 @@ impl TestTransport {
 }
 
 impl Transport for TestTransport {
+    fn set_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *self.wake.lock().unwrap() = Some(wake);
+    }
     fn bind(&mut self, _voyage_id: &str) -> sot_log::Result<()> {
         // The synthetic transport under test here has nothing to bind --
         // `open`/`feed`/`close_conn` already drive its event channel
@@ -194,6 +219,7 @@ impl Transport for TestTransport {
         } else {
             drop(inner);
             let _ = self.events_tx.send(TransportEvent::Sent(conn, id));
+            self.ping_wake();
             id
         }
     }

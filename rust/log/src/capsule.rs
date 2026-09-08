@@ -406,6 +406,22 @@ enum ReaderEvent {
     /// unconditionally, every iteration) is what actually drains and
     /// processes whatever the transport queued.
     TransportActivity,
+    /// Codex review (PR #227): the reader thread's `tx` is no longer the
+    /// channel's only real sender — `Transport::set_wake`'s callback holds
+    /// a clone too (above) — so a bare channel disconnect can no longer be
+    /// trusted to mean "the reader thread dropped its sender". This event
+    /// restores that guarantee explicitly: `ReaderGoneGuard`, constructed
+    /// as the reader thread's closure's first local, sends exactly this on
+    /// every exit from that closure — the two designed `Done`-then-return
+    /// exits above AND an unwind (a panic partway through a `read()` or a
+    /// `budget` call) — so a reader-thread death always reaches every
+    /// `output_rx.recv_timeout` site as a real, matched event, never a
+    /// silent disconnect the wake clone happens to paper over. Treated
+    /// exactly where `RecvTimeoutError::Disconnected` is already handled
+    /// (same arm, same error) — it is that same "the reader is gone and
+    /// said nothing" condition, just reached through an explicit send
+    /// instead of a channel with zero senders left.
+    ReaderGone,
 }
 
 /// Encodes a wire `idem_key` (16 raw bytes) as the lowercase hex32 shape
@@ -1011,13 +1027,15 @@ pub fn run<P: Producer>(
     }
     let transport = ShutdownGuard(transport);
 
-    // Switch-latency Phase 1 (c): ONE channel for both producer output
-    // (the reader thread, spawned later once `producer` exists, is its
-    // only other sender — unchanged) and transport activity, so this
-    // loop's own `output_rx.recv_timeout` wait (below) wakes on either
-    // without a second channel or a select. Created here, ahead of
-    // `bind` (`Transport::set_wake`'s own contract: register before
-    // binding) rather than at the reader thread's own spot further down.
+    // Switch-latency Phase 1 (c): ONE channel for producer output, the
+    // reader thread's own death (`ReaderGone`, Codex review PR #227), and
+    // transport activity — the reader thread (spawned later once
+    // `producer` exists) and its own `ReaderGoneGuard` are two of this
+    // channel's three senders, so this loop's own `output_rx.
+    // recv_timeout` wait (below) wakes on any of the three without a
+    // second channel or a select. Created here, ahead of `bind`
+    // (`Transport::set_wake`'s own contract: register before binding)
+    // rather than at the reader thread's own spot further down.
     let (tx, output_rx) = mpsc::channel::<ReaderEvent>();
     // Coalescing: several transport events arriving between one drain
     // and the next collapse into ONE queued wake, cleared the moment the
@@ -1240,8 +1258,11 @@ pub fn run<P: Producer>(
     let output_budget = Arc::new(OutputBudget::new());
     let _budget_guard = BudgetCancelGuard(Arc::clone(&output_budget));
 
-    // The reader thread is the ONLY sender on this channel — no bridging
-    // threads for input/control any more (see the module doc): `commands`
+    // Three senders share this channel, not one: the reader thread below,
+    // `Transport::set_wake`'s callback (registered earlier, sends
+    // `TransportActivity`), and this thread's own `ReaderGoneGuard` (sends
+    // `ReaderGone` on every exit, including a panic unwind). No bridging
+    // threads for input/control though (see the module doc): `commands`
     // is serviced directly, by this loop, from its own separate receiver.
     // `take_output` runs EXACTLY here — before this thread starts, per its
     // own doc — so `producer` itself stays a live, fully-owned binding for
@@ -1254,6 +1275,21 @@ pub fn run<P: Producer>(
     let reader_handle = {
         let budget = Arc::clone(&output_budget);
         std::thread::spawn(move || {
+            // Codex review (PR #227): a drop guard, not another explicit
+            // send at the bottom of this closure — the two designed exits
+            // already send `Done` and return, but a `read()`/`budget` call
+            // panicking partway through would skip any send placed after
+            // it. `Drop` runs on every exit, unwind included, which is the
+            // one guarantee an ordinary send can't make; see `ReaderGone`'s
+            // own doc for why this needs to be a real, matched event
+            // rather than relying on the channel's sender count.
+            struct ReaderGoneGuard(mpsc::Sender<ReaderEvent>);
+            impl Drop for ReaderGoneGuard {
+                fn drop(&mut self) {
+                    let _ = self.0.send(ReaderEvent::ReaderGone);
+                }
+            }
+            let _reader_gone_guard = ReaderGoneGuard(tx.clone());
             let mut buf = [0u8; READ_CHUNK];
             loop {
                 if !budget.reserve(READ_CHUNK as u64) {
@@ -2087,22 +2123,26 @@ pub fn run<P: Producer>(
                     "capsule_win: reader reached its terminal state before close_pty was ever called: {result:?}"
                 )));
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if last_commit.elapsed() >= GROUP_COMMIT_WINDOW {
-                    flush_output!(w);
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // The reader thread always sends exactly one `Done` before
-                // its sender drops — reaching a bare disconnect without
-                // one is an internal bug in this module, not a producer
-                // condition. Loud, not a panic: nothing external caused
-                // this.
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(ReaderEvent::ReaderGone) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // Codex review (PR #227): `ReaderGone` (an explicit send,
+                // including from a panic unwind — see its own doc) and a
+                // bare channel disconnect are the SAME condition now — the
+                // reader thread is gone without having sent a terminal
+                // `Done` — so they share this one arm rather than treating
+                // an unwind as a distinct, undiagnosed case.
                 return Err(Error::State(
-                    "capsule_win: reader thread's channel disconnected without a terminal Done event"
-                        .into(),
+                    "capsule_win: the reader thread ended without a terminal Done event".into(),
                 ));
             }
+        }
+        // Codex review (PR #227): checked here, after the match rather
+        // than only inside its `Timeout` arm, so a transport wake (or any
+        // other non-`Timeout` result) can never starve this deadline —
+        // continuous transport activity every `recv_timeout` call used to
+        // mean `last_commit.elapsed()` was never even read.
+        if last_commit.elapsed() >= GROUP_COMMIT_WINDOW {
+            flush_output!(w);
         }
     };
     // N1 (Codex review round 3, owner-corrected): captured HERE, the
@@ -2182,10 +2222,12 @@ pub fn run<P: Producer>(
                 )));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {} // just recheck active_processes
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Ok(ReaderEvent::ReaderGone) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // Codex review (PR #227): see the main loop's identical arm
+                // — `ReaderGone` and a bare disconnect are the same "reader
+                // thread is gone without a terminal Done" condition.
                 return Err(Error::State(
-                    "capsule_win: reader thread's channel disconnected without a terminal Done event during reap"
-                        .into(),
+                    "capsule_win: the reader thread ended without a terminal Done event during reap".into(),
                 ));
             }
         }
@@ -2206,6 +2248,16 @@ pub fn run<P: Producer>(
         service_transport_events_teardown!();
         execute_teardown_actions!(attach_proto.tick(Instant::now()));
         eager_ground_check!();
+        // Codex review (PR #227): checked here, unconditionally, every
+        // iteration — mirroring Phase A's `reap_deadline` just above and
+        // the main loop's own commit-deadline fix — rather than only
+        // inside the `Timeout` arm below, where continuous transport
+        // activity could starve it exactly as it did the commit deadline.
+        if Instant::now() >= drain_deadline {
+            return Err(Error::State(
+                "capsule_win: reader did not reach EOF within the teardown drain timeout".into(),
+            ));
+        }
         match output_rx.recv_timeout(TEARDOWN_DRAIN_POLL) {
             Ok(ReaderEvent::Output(bytes)) => {
                 pace_output!(bytes);
@@ -2229,17 +2281,11 @@ pub fn run<P: Producer>(
                 execute_teardown_actions!(attach_proto.tick(Instant::now()));
                 break;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if Instant::now() >= drain_deadline {
-                    return Err(Error::State(
-                        "capsule_win: reader did not reach EOF within the teardown drain timeout".into(),
-                    ));
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(ReaderEvent::ReaderGone) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // Codex review (PR #227): see the main loop's identical arm.
                 return Err(Error::State(
-                    "capsule_win: reader thread's channel disconnected without a terminal Done event during drain"
-                        .into(),
+                    "capsule_win: the reader thread ended without a terminal Done event during drain".into(),
                 ));
             }
         }

@@ -104,9 +104,13 @@ pub enum TransportEvent {
 pub trait Transport {
     /// Switch-latency Phase 1 (c): register a wake callback, invoked by
     /// the transport (from whatever thread noticed the activity — an
-    /// accept, a completed read, a completed send) at least once for
-    /// every event that becomes newly available to [`Transport::
-    /// try_recv_event`], so `run`'s own `output_rx.recv_timeout` wait can
+    /// accept, a completed read, a completed send) to produce a wake
+    /// after enqueue, drained on the loop's next iteration subject to the
+    /// existing quota (`capsule::run`'s own `TRANSPORT_EVENTS_PER_PASS`,
+    /// the per-tick bound on [`Transport::try_recv_event`]'s drain, is
+    /// unaffected by this callback and still governs how many queued
+    /// events one iteration actually processes) — NOT a promise of one
+    /// wake per event. So `run`'s own `output_rx.recv_timeout` wait can
     /// wake on real transport activity immediately instead of waiting out
     /// its own group-commit window. Called by `run` AT MOST ONCE, before
     /// [`Transport::bind`] — a real transport stores the callback and

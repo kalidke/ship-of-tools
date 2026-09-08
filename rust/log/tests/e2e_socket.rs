@@ -512,12 +512,20 @@ fn full_socket_e2e_two_clients_and_mgmt() {
 /// collect the checkpoint) over the REAL socket transport must complete
 /// near-instantly rather than risk paying the OLD worst case (each step
 /// landing right after a drain, sitting unnoticed for up to the full
-/// window before the loop's own tick would have found it). The bound
-/// asserted here (200ms) is generous and CI-safe, but only reachable at
-/// all if `Transport::set_wake`'s callback (`SocketTransport::bind`, via
-/// `SocketServer::set_wake`) actually wakes this loop on real transport
-/// activity — a connection accepted, a frame readable — rather than
-/// solely on its own group-commit cadence.
+/// window before the loop's own tick would have found it), only reachable
+/// at all if `Transport::set_wake`'s callback (`SocketTransport::bind`,
+/// via `SocketServer::set_wake`) actually wakes this loop on real
+/// transport activity rather than solely on its own group-commit cadence.
+///
+/// Codex round on #227 (P2 discharge): a SINGLE sample against a 200ms
+/// bound does not reliably fail the OLD code (measured ~91ms across
+/// several runs against the pre-fix code — comfortably under 200ms with
+/// no fix at all). `TRIALS` independent attaches against a TIGHT bound
+/// (50ms) is the mechanism proof instead: the old code's own measured
+/// value clusters tightly around 91ms (not mere luck-prone variance), so
+/// EVERY trial failing a 50ms bound is what the old code actually does,
+/// while an immediate, connection/frame-triggered wake lands every
+/// single trial near-instantly.
 #[test]
 fn an_attach_against_an_idle_capsule_is_not_group_commit_bound() {
     let _serial = serial();
@@ -555,36 +563,35 @@ fn an_attach_against_an_idle_capsule_is_not_group_commit_bound() {
     setup_client.cancel();
     setup.join(Duration::from_secs(10));
 
-    // Let the main loop go genuinely idle -- comfortably longer than
-    // GROUP_COMMIT_WINDOW -- so it is parked in its own tail wait when
-    // the timed attach below connects, not mid-tick from the setup
-    // attach's own teardown just above.
-    std::thread::sleep(Duration::from_millis(300));
+    const TRIALS: usize = 5;
+    const IDLE_BEFORE_ATTACH: Duration = Duration::from_millis(300); // > GROUP_COMMIT_WINDOW (50ms)
+    const TIGHT_BOUND: Duration = Duration::from_millis(50); // == GROUP_COMMIT_WINDOW
+    let mut elapsed_all = Vec::with_capacity(TRIALS);
+    for i in 0..TRIALS {
+        // Let the main loop go genuinely idle before each trial --
+        // comfortably longer than GROUP_COMMIT_WINDOW -- so it is parked
+        // in its own tail wait when this trial's attach connects, not
+        // mid-tick from the PREVIOUS trial's own teardown.
+        std::thread::sleep(IDLE_BEFORE_ATTACH);
 
-    // TIMED: a fresh connect + hello + attach + checkpoint against the
-    // now-idle capsule.
-    let started = Instant::now();
-    let fresh_client = Arc::new(connect_voyage_socket(&voyage_id).unwrap());
-    let mut fresh = RealFrames::spawn(Arc::clone(&fresh_client));
-    fresh_client.write_all(&frame::hello()).unwrap();
-    fresh.wait_for("fresh attach hello_ok", Duration::from_secs(5), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-    });
-    fresh_client.write_all(&frame::attach("fresh")).unwrap();
-    fresh.collect_checkpoint("fresh attach checkpoint", Duration::from_secs(5), 80, 25);
-    let elapsed = started.elapsed();
-    println!("idle-capsule fresh attach (connect+hello+attach+checkpoint) took {elapsed:?}");
-    assert!(
-        elapsed < Duration::from_millis(200),
-        "a fresh attach against an idle capsule took {elapsed:?}, expected well under 200ms -- the main \
-         loop should wake on the incoming connection/bytes immediately rather than waiting out its own \
-         GROUP_COMMIT_WINDOW cadence"
-    );
-    // Same reasoning as the setup connection's own cleanup above --
-    // `cancel`, not `drop`, actually closes the socket while the run is
-    // still alive.
-    fresh_client.cancel();
-    fresh.join(Duration::from_secs(10));
+        let started = Instant::now();
+        let fresh_client = Arc::new(connect_voyage_socket(&voyage_id).unwrap());
+        let mut fresh = RealFrames::spawn(Arc::clone(&fresh_client));
+        fresh_client.write_all(&frame::hello()).unwrap();
+        fresh.wait_for("fresh attach hello_ok", Duration::from_secs(5), |f| {
+            matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+        });
+        fresh_client.write_all(&frame::attach(&format!("fresh{i}"))).unwrap();
+        fresh.collect_checkpoint("fresh attach checkpoint", Duration::from_secs(5), 80, 25);
+        elapsed_all.push(started.elapsed());
+
+        // Same reasoning as the setup connection's own cleanup above --
+        // `cancel`, not `drop`, actually closes the socket while the run
+        // is still alive, and closing it before the NEXT trial's connect
+        // keeps each trial an independent, fresh attach.
+        fresh_client.cancel();
+        fresh.join(Duration::from_secs(10));
+    }
 
     // Clean shutdown over a mgmt connection -- matching
     // `full_socket_e2e_two_clients_and_mgmt`'s own pattern, never just
@@ -609,6 +616,18 @@ fn an_attach_against_an_idle_capsule_is_not_group_commit_bound() {
 
     verify_voyage(&root, &voyage_id).unwrap();
     drop(mgmt_client);
+
+    println!(
+        "idle-capsule fresh attach over {TRIALS} trials: max={:?}, all={elapsed_all:?}",
+        elapsed_all.iter().max().unwrap()
+    );
+    assert!(
+        elapsed_all.iter().all(|e| *e < TIGHT_BOUND),
+        "expected every one of {TRIALS} fresh attaches (connect+hello+attach+checkpoint) against an idle \
+         capsule to complete in well under {TIGHT_BOUND:?} -- got {elapsed_all:?}. A single attach passing \
+         this bound could be luck; ALL {TRIALS} passing is only possible if the main loop wakes on \
+         incoming connections/bytes immediately rather than waiting out its own group-commit cadence"
+    );
 }
 
 /// The direct children of `pid`, via `/proc/<pid>/task/<pid>/children`
