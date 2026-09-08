@@ -45,6 +45,25 @@ git fetch -q origin main
 if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
     echo "preflight: HEAD != origin/main — pull/push first" >&2; exit 1
 fi
+# CI is the TAG gate, not the per-PR gate (owner ruling 2026-09-08): the
+# Rust and CI workflows run on pushes to main (path-filtered, so a docs-only
+# HEAD may have no Rust run of its own), so the LATEST run of each on main
+# must be green and must sit at HEAD or an ancestor of it. Anything else
+# (failed, cancelled, still running, a run on a commit not in HEAD's history)
+# refuses the cut; rerun a flaky leg (`gh run rerun <id> --failed`), never
+# skip it. gh is required — a release is never cut blind.
+command -v gh >/dev/null 2>&1 || { echo "preflight: gh not found — CI on main cannot be verified" >&2; exit 1; }
+for wf in rust.yml CI.yml; do
+    run="$(gh run list --branch main --workflow "$wf" --limit 1 --json headSha,status,conclusion,databaseId \
+        --jq '.[0] | "\(.headSha) \(.status) \(.conclusion) \(.databaseId)"' 2>/dev/null || true)"
+    [[ -n "$run" && "$run" != "null null null null" ]] || { echo "preflight: no $wf run on main — push and let CI finish, or: gh workflow run $wf --ref main" >&2; exit 1; }
+    read -r run_sha run_status run_concl run_id <<<"$run"
+    if [[ "$run_concl" != "success" ]]; then
+        echo "preflight: latest $wf run on main (id $run_id, ${run_sha:0:8}) is $run_status/$run_concl — rerun it (gh run rerun $run_id --failed) and cut when green" >&2; exit 1
+    fi
+    git merge-base --is-ancestor "$run_sha" HEAD \
+        || { echo "preflight: latest green $wf run is at ${run_sha:0:8}, which is not in HEAD's history" >&2; exit 1; }
+done
 
 # ---- stamp -----------------------------------------------------------------
 STAMPED=(rust/Cargo.toml rust/Cargo.lock)

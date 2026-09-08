@@ -1,10 +1,22 @@
 name: CI
 on:
+  # Pushes to main and tags only -- not pull requests (owner ruling
+  # 2026-09-08: CI is the tag gate, not the per-PR workflow; see rust.yml).
+  # Path-filtered to the Julia packages and docs so a Rust-only or comm-only
+  # change never spends five Julia jobs.
   push:
     branches:
       - main
     tags: ['*']
-  pull_request:
+    paths:
+      - "core/**"
+      - "julia/**"
+      - "docs/**"
+      - "src/**"
+      - "test/**"
+      - "Project.toml"
+      - "Manifest.toml"
+      - ".github/workflows/CI.yml"
   workflow_dispatch:
 concurrency:
   # Skip intermediate builds: always.
