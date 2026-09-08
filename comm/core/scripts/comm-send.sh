@@ -57,14 +57,24 @@ trap 'rm -f "$MSG_FILE"' EXIT
 # target daemon-created panes, which live on the daemon's private socket,
 # not tmux's default server. Resolved once, used on every `tmux` call below
 # via `-S`.
-SOT_TMUX_SOCK="$(sot_tmux_socket)" \
-    || { echo "ERROR: could not resolve/secure the private tmux socket dir — see reason above" >&2; exit 1; }
+if _sot_is_windows; then
+    # A Windows frontend box has no tmux: the durable inbox and the relay
+    # bridge are the only delivery legs there. Resolving the private socket
+    # hard-rejects under Git Bash's ACL emulation (the dir reports mode 755)
+    # and used to kill EVERY send before the inbox write (field report
+    # 2026-09-08). The tmux legs below are skipped when this is empty.
+    SOT_TMUX_SOCK=""
+else
+    SOT_TMUX_SOCK="$(sot_tmux_socket)" \
+        || { echo "ERROR: could not resolve/secure the private tmux socket dir — see reason above" >&2; exit 1; }
+fi
 
 FORMATTED="[${NAME:-?}:$REPO] $MSG"
 
 # Raw delivery to a tmux target with no registry lookup — for first contact with
 # a session that hasn't joined yet. No inbox (no known recipient name).
 if [ -n "$FORCE_TARGET" ]; then
+    [ -n "$SOT_TMUX_SOCK" ] || { echo "ERROR: --force-target pastes into a tmux pane and this host has no tmux" >&2; exit 1; }
     sess="${FORCE_TARGET%%:*}"
     if ! tmux -S "$SOT_TMUX_SOCK" has-session -t "$sess" 2>/dev/null; then
         echo "ERROR: tmux session '$sess' not found" >&2; exit 1
@@ -105,7 +115,7 @@ deliver() {  # $1 = target name
     # broadcast (one peer was hit through exactly this path). Worse, a paste
     # into a pane whose claude has exited lands at a bash PROMPT and the
     # Enter executes message text as shell input.
-    if [ "$BROADCAST" != true ] && [ "$thost" = "$HOST" ] && [ -n "$tpane" ] && [ -n "$ttmux" ] \
+    if [ "$BROADCAST" != true ] && [ -n "$SOT_TMUX_SOCK" ] && [ "$thost" = "$HOST" ] && [ -n "$tpane" ] && [ -n "$ttmux" ] \
        && tmux -S "$SOT_TMUX_SOCK" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$tpane"; then
         f="$(mktemp "${TMPDIR:-/tmp}/comm-send.XXXXXX")"
         printf '%s' "$FORMATTED" > "$f"
