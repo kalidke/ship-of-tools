@@ -343,7 +343,6 @@ pub async fn handle_version_query(
             client_id: c.client_id,
             app_version: c.app_version,
             protocol: c.protocol,
-            connected_at: c.connected_at,
         })
         .collect();
     let res = sot_protocol::VersionQueryRes { daemon, clients };

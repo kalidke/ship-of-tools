@@ -163,6 +163,14 @@ pub struct SupervisorLaneExchange {
     build: String,
     splitter: wire::FrameSplitter,
     done: bool,
+    /// `true` iff the terminal `Foreign` this exchange reached was
+    /// SPECIFICALLY a `Refused { reason: VersionSkew }` reply (ADR 0030
+    /// §8 decision 31c) — the one `Foreign` cause that means "another
+    /// build", as opposed to a malformed reply, trailing bytes, a wrong
+    /// pid/creation, or any other corruption `feed` also classifies
+    /// `Foreign`. `connect_and_challenge` (`supervisor_client.rs`) reads
+    /// this via [`Self::is_version_skew`] after the challenge concludes.
+    version_skew: bool,
 }
 
 impl SupervisorLaneExchange {
@@ -187,7 +195,13 @@ impl SupervisorLaneExchange {
             }
             build.truncate(cut);
         }
-        Self { build, splitter: wire::FrameSplitter::new(), done: false }
+        Self { build, splitter: wire::FrameSplitter::new(), done: false, version_skew: false }
+    }
+
+    /// See [`Self::version_skew`]'s own doc. Only meaningful once `feed`
+    /// has reached a terminal `Foreign` outcome.
+    pub fn is_version_skew(&self) -> bool {
+        self.version_skew
     }
 }
 
@@ -238,7 +252,18 @@ impl IdentityExchange for SupervisorLaneExchange {
                             ExchangeDecode::Foreign
                         }
                     }
-                    _ => ExchangeDecode::Foreign, // hello_refused, or any other well-formed reply
+                    // The ONE `Foreign` cause that specifically means
+                    // "another build" — see `version_skew`'s own doc.
+                    // Every other well-formed-but-wrong reply below
+                    // (a premature `StatusOk`, `Operation`, or a second
+                    // `HelloOk`/`Refused`) stays plain `Foreign`.
+                    DecodedFrame::SupervisorReply(SupervisorReply::Refused {
+                        reason: wire::SupervisorRefusedReason::VersionSkew,
+                    }) => {
+                        self.version_skew = true;
+                        ExchangeDecode::Foreign
+                    }
+                    _ => ExchangeDecode::Foreign, // any other well-formed reply, or corruption
                 }
             }
             _ => {
@@ -429,13 +454,41 @@ mod tests {
     }
 
     #[test]
-    fn supervisor_hello_refused_is_foreign() {
+    fn supervisor_hello_refused_is_foreign_and_specifically_version_skew() {
+        // ADR 0030 §8 decision 31c: `Refused { VersionSkew }` is the ONE
+        // `Foreign` cause `is_version_skew()` must flag — `phase_of`
+        // reports "foreign" only on this, never on a merely wrong/
+        // malformed reply (see the sibling test below).
         let mut ex = SupervisorLaneExchange::new("b");
         let bytes = wire::encode_supervisor_reply(&SupervisorReply::Refused {
             reason: wire::SupervisorRefusedReason::VersionSkew,
         })
         .unwrap();
         assert!(matches!(ex.feed(&bytes), ExchangeDecode::Foreign));
+        assert!(ex.is_version_skew());
+    }
+
+    #[test]
+    fn supervisor_wrong_reply_kind_is_foreign_but_not_version_skew() {
+        // A well-formed reply of the WRONG kind (here, a premature
+        // `StatusOk` — the mgmt lane's own shape, never legal on the
+        // supervisor lane's hello step) is exactly the case ADR 0030 §8
+        // decision 31c's typed check must NOT classify as "another
+        // build": `phase_of` must report "unreachable" for this, not
+        // "foreign".
+        let mut ex = SupervisorLaneExchange::new("b");
+        let bytes = status_ok_bytes(1, 2);
+        assert!(matches!(ex.feed(&bytes), ExchangeDecode::Foreign));
+        assert!(!ex.is_version_skew());
+    }
+
+    #[test]
+    fn supervisor_corrupt_bytes_are_foreign_but_not_version_skew() {
+        // Undecodable bytes (a malformed hello, in the review's own
+        // words) must never look like version skew either.
+        let mut ex = SupervisorLaneExchange::new("b");
+        assert!(matches!(ex.feed(b"not a valid frame at all"), ExchangeDecode::Foreign));
+        assert!(!ex.is_version_skew());
     }
 
     #[test]
@@ -479,6 +532,10 @@ mod tests {
         let mut ex = SupervisorLaneExchange::new("b");
         let bytes = hello_ok_bytes_with(wire::SUPERVISOR_PROTO_V1, "different-build", 1, 2);
         assert!(matches!(ex.feed(&bytes), ExchangeDecode::Foreign));
+        // ADR 0030 §8 decision 31c: a mismatched `HelloOk` echo is
+        // corruption/a stale reply, never version skew -- only an actual
+        // `Refused { VersionSkew }` sets this.
+        assert!(!ex.is_version_skew());
     }
 
     #[test]

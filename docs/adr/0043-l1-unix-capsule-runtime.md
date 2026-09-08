@@ -731,13 +731,15 @@ latency" claim.
 31. **Every runtime answers what build it is — the field bug this ADR's own
     pair-verdict check (decision 22's `check_pair`) exists to prevent at
     spawn time, closed for the ALREADY-RUNNING case too.** `phase_of`
-    (`capsule_workspace.rs`) already detected a foreign supervisor's refusal
-    (`version_skew`) via `note_if_foreign`'s text match and only ever logged
-    it once, folding the wire-visible outcome into the same `"unreachable"`
-    a merely-dead lane reports — this decision gives `workspace.list` a
-    THIRD phase, `"foreign"`, on that same detection, plus a new
-    `version.query` op that reports this daemon's own
-    `SUPERVISOR_LANE_BUILD_ID` and every attached frontend's version. Full
+    (`capsule_workspace.rs`) folded a foreign supervisor's refusal
+    (`version_skew`) into the same `"unreachable"` a merely-dead lane
+    reports — this decision types the distinction (`SupervisorLaneExchange`
+    now flags a `Refused { VersionSkew }` reply specifically, surfaced as
+    `sot_log::Error::VersionSkew`, never a text match against the broader
+    `Foreign` classification a malformed reply or trailing bytes also
+    produce) and gives `workspace.list` a THIRD phase, `"foreign"`, on that
+    typed match, plus a new `version.query` op that reports this daemon's
+    own `SUPERVISOR_LANE_BUILD_ID` and every attached frontend's version. Full
     decision text, the version-string dirty-suffix fix, and the "where it is
     shown" list (a foreign row's yellow tag, a capsule pane that names its
     own death instead of showing blank, `sot-fe version`, and the installed

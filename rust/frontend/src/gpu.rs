@@ -3148,6 +3148,19 @@ fn pane_shows_terminal_reason(has_client: bool, checkpointed: bool, is_dead: boo
     has_client && is_dead && !checkpointed
 }
 
+/// The text `pane_shows_terminal_reason`'s own overlay paints, given
+/// `client_status` — the RETAINED client's own `status_line()`, read
+/// directly at the call site. Deliberately takes no `self.status`
+/// parameter at all (Codex review): that field is shared with every
+/// other status-bar message in the event loop, so a function that could
+/// read it would be a function a LATER, unrelated write could silently
+/// retitle this pane's own explanation through — this signature makes
+/// that impossible by construction, not merely untested.
+#[allow(dead_code)] // see `PaneScreen`'s own doc — the only production caller is `#[cfg(windows)]`.
+fn pane_terminal_reason_text(shows_reason: bool, client_status: Option<&str>) -> Option<String> {
+    shows_reason.then(|| client_status.unwrap_or_default().to_string())
+}
+
 /// ADR 0042 slice L1b fix 2: how many bytes of an incoming chunk fit in
 /// `queue_pane_pending_input`'s buffer, given it already holds
 /// `buffered_len` bytes and the whole buffer is capped at `cap` — pulled
@@ -15769,13 +15782,17 @@ impl State {
         // ADR 0030 §8 "Where it is shown": a client that died terminal
         // without ever checkpointing falls through to the (usually blank)
         // tmux screen above — paint ONE line naming why, instead of a
-        // silent blank pane. `self.status` already carries the string
-        // (`pump_pane_attach_term`'s `t.status_line()` mirror); this only
-        // changes WHERE it renders.
+        // silent blank pane. Codex review: reads the RETAINED client's own
+        // `status_line()` directly, never `self.status` — that field is
+        // shared with every other status-bar message in the whole event
+        // loop and a later, unrelated write (autostart, a daemon
+        // reconnect, a drawer switch) would silently retitle this pane's
+        // own explanation to whatever last touched the status bar.
         #[cfg(windows)]
-        let pane_terminal_reason: Option<String> =
-            pane_shows_terminal_reason(pane_attach_has_client, pane_attach_checkpointed, pane_attach_is_dead)
-                .then(|| self.status.clone());
+        let pane_terminal_reason: Option<String> = pane_terminal_reason_text(
+            pane_shows_terminal_reason(pane_attach_has_client, pane_attach_checkpointed, pane_attach_is_dead),
+            self.pane_attach_term.as_ref().map(|t| t.status_line()),
+        );
         #[cfg(not(windows))]
         let pane_terminal_reason: Option<String> = None;
         // Switch-latency Phase 1, item 3: the acceptance metric itself
@@ -27786,5 +27803,33 @@ mod capsule_pane_tests {
         assert!(!pane_shows_terminal_reason(true, false, false));
         // No client at all.
         assert!(!pane_shows_terminal_reason(false, false, false));
+    }
+
+    #[test]
+    fn pane_terminal_reason_text_reads_only_the_clients_own_status_never_self_status() {
+        // Codex review, should-fix: `pane_terminal_reason_text` takes the
+        // client's OWN `status_line()` as a plain `Option<&str>` argument
+        // and nothing resembling a shared, event-loop-wide status field —
+        // there is no `self.status` parameter for a later, unrelated
+        // write to reach through. Proven by construction (the signature),
+        // demonstrated here: two calls with the SAME `client_status` give
+        // the SAME text regardless of anything else that could have
+        // happened in between.
+        let text = pane_terminal_reason_text(true, Some("checkpoint restore failed: some detail"));
+        assert_eq!(text.as_deref(), Some("checkpoint restore failed: some detail"));
+
+        // A DIFFERENT string arriving elsewhere in the caller's own state
+        // (what `self.status` becoming "already attached …" would be)
+        // cannot change the ALREADY-COMPUTED reason above, and a fresh
+        // call with the client's status UNCHANGED reproduces it exactly.
+        let unrelated_later_status = "already attached — nothing to do";
+        assert_ne!(unrelated_later_status, "checkpoint restore failed: some detail");
+        let text_again = pane_terminal_reason_text(true, Some("checkpoint restore failed: some detail"));
+        assert_eq!(text_again, text);
+    }
+
+    #[test]
+    fn pane_terminal_reason_text_is_none_when_no_reason_is_shown() {
+        assert_eq!(pane_terminal_reason_text(false, Some("attached")), None);
     }
 }

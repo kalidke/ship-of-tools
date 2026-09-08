@@ -56,16 +56,16 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// `-dev` marker is what gates the auto-updater — a dev build must never
 /// self-update.
 ///
-/// Invariant: a version string never claims to be a commit it was merely
-/// built FROM — two builds that would otherwise print the same
-/// `X.Y.Z-dev+<sha>` (one clean, one with local edits on top) are exactly
-/// the pair a build-boundary gate (`sot_log::exchange::SUPERVISOR_LANE_BUILD_ID`)
-/// refuses to pair, so their `app_version()` strings must differ too. A tree
-/// on-tag but ALSO dirty is not the release it claims to sit on, so it falls
-/// through to the `-dirty` form rather than collapsing to the bare tag
-/// version. Two distinct dirty trees at one HEAD still alias on this sha —
-/// deferred, same as `rust/log/build.rs` already documents for its own
-/// build id.
+/// The `-dirty` suffix is a SNAPSHOT taken when `build.rs` last ran, not a
+/// live-tracked flag (see that file's own doc on `SOT_BUILD_DIRTY`) — an
+/// edit made after the last build can leave it stale until something else
+/// forces a rebuild. It is a hint for a dev build, never a promise; the
+/// actual provenance GUARANTEE this string leans on is a clean, exactly-
+/// on-tag release build, which never carries this suffix at all (a tree
+/// on-tag but ALSO dirty is not that release, so it still falls through to
+/// the `-dirty` form rather than collapsing to the bare tag version). Two
+/// distinct dirty trees at one HEAD still alias on this sha — deferred,
+/// same as `rust/log/build.rs` already documents for its own build id.
 pub fn app_version() -> String {
     format_app_version(
         env!("CARGO_PKG_VERSION"),

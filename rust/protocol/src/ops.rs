@@ -1894,7 +1894,6 @@ pub struct ClientVersion {
     pub client_id: String,
     pub app_version: String,
     pub protocol: u32,
-    pub connected_at: u64,
 }
 
 /// `version.query` response (ADR 0030 §8 decision 31b, ADR 0043 decision
@@ -1999,7 +1998,6 @@ mod version_query_tests {
                 client_id: "fe-1".into(),
                 app_version: "0.6.0-dev+abc1234".into(),
                 protocol: 1,
-                connected_at: 1_700_000_000,
             }],
         };
         let json = serde_json::to_string(&res).unwrap();

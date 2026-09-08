@@ -52,13 +52,24 @@ codex_home() = _env_dir("CODEX_HOME", joinpath(homedir(), ".codex"))
 # scripts on THIS box actually from" (the send-deaf Windows bridge incident
 # had no way to state that). Best-effort, never throws: a release tarball or
 # a checkout with git unavailable gets "unknown" rather than failing the
-# whole install over a stamp nobody strictly needs to proceed.
-"Short git commit this checkout is at, or \"unknown\" when git is unavailable."
+# whole install over a stamp nobody strictly needs to proceed. Codex review:
+# a checkout with LOCAL EDITS installs those edited scripts, not the bare
+# commit -- `-dirty`-suffixed here for the same reason the Rust build ids
+# are (ADR 0030 §8 decision 31a), so the stamp never claims to describe a
+# commit's files when it actually describes a commit plus local changes.
+"Short git commit this checkout is at (dirty-suffixed if the working tree \
+has uncommitted changes), or \"unknown\" when git is unavailable."
 function _repo_commit()
     repo_root = normpath(joinpath(@__DIR__, ".."))
     try
         sha = readchomp(`git -C $repo_root rev-parse --short=9 HEAD`)
-        isempty(sha) ? "unknown" : sha
+        isempty(sha) && return "unknown"
+        dirty = try
+            !isempty(readchomp(`git -C $repo_root status --porcelain`))
+        catch
+            true  # fails closed, same reasoning as the Rust build scripts
+        end
+        dirty ? "$sha-dirty" : sha
     catch
         "unknown"
     end
@@ -263,6 +274,16 @@ re-run to update an existing install.
 function install_comm(; clis = [:claude, :codex])
     bin = joinpath(comm_home(), "bin")
     mkpath(bin)
+    # ADR 0030 §8 "Installed comm scripts", Codex review (should-fix): a
+    # stamp that survives a FAILED install claims a commit that may not
+    # describe what actually landed -- invalidate it FIRST, before any
+    # copy, so a mid-install throw below leaves NO stamp (read as
+    # "unknown" by `sot-fe version`) rather than a stale, misleading one.
+    # The real stamp is written only once, at the very end, past every
+    # copy that could still throw.
+    version_file = joinpath(comm_home(), "VERSION")
+    rm(version_file; force = true)
+
     srcscripts = joinpath(COMM_SRC, "core", "scripts")
     isdir(srcscripts) || error("comm scripts not found at $srcscripts")
     srcfiles = readdir(srcscripts)
@@ -278,16 +299,15 @@ function install_comm(; clis = [:claude, :codex])
     end
     @info "Installed comm scripts" dir = bin count = length(readdir(bin))
 
-    # ADR 0030 §8 "Installed comm scripts": invariant "the scripts on this
-    # box came from commit X" — a fact this crate had no way to state before
-    # this. Written on every install/update, so it always reflects the repo
-    # state the LAST `install_comm`/`update_comm` ran from, not merely the
-    # first.
-    write(joinpath(comm_home(), "VERSION"), _repo_commit())
-
     for cli in clis
         _install_adapter(Symbol(cli))
     end
+
+    # Published LAST, only once every copy above has actually succeeded —
+    # invariant "the scripts on this box came from commit X" (dirty-
+    # suffixed when the source checkout has local edits), the fact a
+    # send-deaf Windows bridge incident had no way to state.
+    write(version_file, _repo_commit())
     @info "sot-comm ready" protocol = COMM_PROTOCOL_VERSION home = comm_home()
     @info "Next: in a tmux session run  ~/.sot-comm/bin/comm-join.sh --name <handle>  (or use the /sot-comm skill)"
     return nothing

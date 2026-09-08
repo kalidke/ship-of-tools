@@ -948,45 +948,40 @@ mod runtime {
             // this caller's concern -- a one-shot phase probe, dropped
             // (closing the handle) the instant this returns.
             Ok((report, _process)) => super::phase_str(report.phase),
+            // Typed, not text (ADR 0030 §8 decision 31c): `VersionSkew`
+            // is the ONLY `sot_log::Error` variant `query_status` returns
+            // for a lane that answered but refused this build. Every
+            // other error -- a malformed reply, a timeout, connect
+            // refused -- stays `UNREACHABLE_PHASE`.
+            Err(sot_log::Error::VersionSkew) => {
+                note_version_skew(state_dir);
+                super::FOREIGN_PHASE
+            }
             Err(e) => {
-                if note_if_foreign(state_dir, &e) {
-                    return super::FOREIGN_PHASE;
-                }
                 tracing::debug!(state_dir = ?state_dir, error = %e, "capsule workspace: supervisor lane unreachable");
                 super::UNREACHABLE_PHASE
             }
         }
     }
 
-    /// A supervisor of ANOTHER build answers the hello with `version_skew`
-    /// and the client reports it as `foreign` (`query_status` erases the
-    /// typed `ChallengeOutcome::Foreign` into a state string, hence the
-    /// text match). Returns `true` on that match — `phase_of` reports
-    /// `FOREIGN_PHASE` rather than `UNREACHABLE_PHASE` on `true` (ADR 0030
-    /// §8 decision 31c: this fact used to be detected here and then
-    /// discarded one line before the wire; every start decision treated
-    /// the row as restartable, but a fresh spawn only exits contended
-    /// against the old fence -- the row is a dead end until an operator
-    /// acts). Also logs the recovery ONCE per row per daemon lifetime
-    /// (`phase_of` is also the list poll's probe) — the true/false return
-    /// is unconditional (every call), the warn log is not.
-    fn note_if_foreign(state_dir: &Path, e: &dyn std::fmt::Display) -> bool {
+    /// Log ONCE per row per daemon lifetime that a capsule row is held by
+    /// a supervisor of ANOTHER build (ADR 0030 §8 decision 31c) — called
+    /// only once the caller has ALREADY typed-matched
+    /// `sot_log::Error::VersionSkew`, so this never fires on a merely
+    /// unreachable lane. `phase_of` is also the list poll's own probe, so
+    /// this dedupes on `state_dir` rather than logging every poll.
+    fn note_version_skew(state_dir: &Path) {
         use std::sync::{Mutex, OnceLock};
-        let text = e.to_string();
-        if !text.contains("foreign") {
-            return false;
-        }
         static NOTED: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
         let mut noted = NOTED.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
         if noted.insert(state_dir.to_path_buf()) {
             tracing::warn!(
-                state_dir = ?state_dir, error = %text,
+                state_dir = ?state_dir,
                 "capsule row is held by a supervisor from ANOTHER build; this daemon cannot attach, adopt, end \
                  or destroy it. Recovery: end it from a frontend of that build, or kill only its `sot-capsule \
                  supervise` process and attach the row again (the run leg and its agent survive and are adopted)"
             );
         }
-        true
     }
 
     /// `workspace.delete` on a capsule workspace (and the default row's
@@ -1698,12 +1693,10 @@ mod runtime {
                                 // A foreign holder is first met HERE when the row was
                                 // never probed before this leg (a fresh spawn that
                                 // exited contended) -- note it the same once-per-row way.
-                                // The bool return (does `phase_of` now report
-                                // FOREIGN_PHASE?) is unused here -- this is a
-                                // one-shot adoption probe, not the list poll.
-                                Ok(Err(e)) => {
-                                    note_if_foreign(&state_dir, &e);
+                                Ok(Err(sot_log::Error::VersionSkew)) => {
+                                    note_version_skew(&state_dir);
                                 }
+                                Ok(Err(_)) => {}
                                 Err(_) => {}
                             }
                         }
@@ -2614,26 +2607,6 @@ mod tests {
             SupervisorPhase::Terminal,
         ] {
             assert_ne!(phase_str(p), UNREACHABLE_PHASE);
-        }
-    }
-
-    #[test]
-    fn foreign_phase_is_distinct_from_every_other_phase() {
-        // ADR 0030 §8 decision 31c: a lane that answered but refused this
-        // daemon's build must never collide with "unreachable" (no answer
-        // at all), "stopped" (never started), or any answered lifecycle
-        // phase (the lane DID answer, unlike the other two).
-        use sot_log::wire::SupervisorPhase;
-        assert_ne!(FOREIGN_PHASE, UNREACHABLE_PHASE);
-        assert_ne!(FOREIGN_PHASE, NEVER_STARTED_PHASE);
-        for p in [
-            SupervisorPhase::Starting,
-            SupervisorPhase::Ready,
-            SupervisorPhase::Ending,
-            SupervisorPhase::EndedNoRespawn,
-            SupervisorPhase::Terminal,
-        ] {
-            assert_ne!(phase_str(p), FOREIGN_PHASE);
         }
     }
 

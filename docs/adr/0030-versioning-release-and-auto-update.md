@@ -457,7 +457,7 @@ not invent a second answer to it.
 
 **(b) A new op, `version.query`.** Pure in-memory, no fan-out, no supervisor
 probe: `{}` in, `{ daemon: { app_version, protocol, lane_build }, clients: [
-{ client_id, app_version, protocol, connected_at } ] }` out. `lane_build` is
+{ client_id, app_version, protocol } ] }` out. `lane_build` is
 the supervisor-lane build id this daemon demands of any capsule it attaches,
 adopts, or spawns — the fact every pair-verdict check already has and had
 nowhere to report. `clients` is every attached frontend, sourced from the
@@ -467,18 +467,27 @@ cannot simply be folded into `hello`: hello answers once, self-only, before
 later clients ever connect. Capsule rows are deliberately NOT in this reply:
 `workspace.list` already fans out to every supervisor per call and already
 carries `phase`, so a second fan-out here would only duplicate it with its
-own timeouts. The protocol change is additive — every new field is
-`#[serde(default)]` — and an old daemon answers with the ordinary generic
-unknown-op payload on a `res` frame carrying the same op; every caller of
-this op must treat that shape as "daemon predates this op," never a failure.
+own timeouts. Legacy compatibility here is about who ANSWERS, not the
+schema: this is a WHOLLY NEW op, so its response's own fields need not be
+`#[serde(default)]` to avoid breaking an old peer — an old daemon never
+constructs one at all, answering instead with the ordinary generic
+unknown-op payload on a `res` frame carrying the same op, which every
+caller of this op must treat as "daemon predates this op," never a
+failure. `clients` IS `#[serde(default)]` regardless, for the ordinary
+reason any collection field is: a future daemon that answers this op but
+omits the roster should still deserialize to no clients, not fail.
 
 **(c) One new value of an existing field.** `WorkspaceListEntry.phase` gains
 `"foreign"`: the lane answered and refused this daemon's build
-(`version_skew`), as opposed to `"unreachable"` (no answer at all). The
-daemon's own capsule-phase probe already detects exactly this case to log
-its one-time operator warning; this decision gives that same detection a
-second destination — the wire — instead of only a log line. No new field, no
-new wire shape: the frontend's existing phase-tag rendering picks it up for
+(`version_skew`), as opposed to `"unreachable"` (no answer at all). This is
+typed, not text: the supervisor-lane exchange itself now flags whether the
+terminal refusal was SPECIFICALLY a `Refused { VersionSkew }` reply, surfaced
+as a dedicated `sot_log::Error::VersionSkew` the daemon's own capsule-phase
+probe matches on directly — a malformed reply, trailing bytes, or a wrong
+pid/creation is `Foreign` too at the exchange level, but NONE of those are
+version skew, and only the typed check can tell them apart (a text match
+against a broader "foreign" classification cannot). No new field, no new
+wire shape: the frontend's existing phase-tag rendering picks it up for
 free. The foreign supervisor's own build id is deliberately NOT put on the
 wire — `[foreign]` plus this daemon's own `lane_build` (from `version.query`)
 already says everything an operator would act on differently, and the
@@ -494,14 +503,21 @@ its fe/be skew stamp already uses, and — the "blank page" fix — a capsule
 attach client that dies terminal before ever checkpointing now paints one
 line naming why in the pane itself (previously the reason existed only in
 the status bar while the pane fell through to an unrelated, usually-blank
-tmux screen); that terminal reason is also mirrored to `tracing` now, not
-only the pane's own status string. A `sot-fe version` shell verb prints one
-table — daemon identity, attached clients, one row per capsule workspace
-with a DERIVED (never transmitted) `matches`/`MISMATCH` verdict, and a row
-for the locally installed comm scripts. That last row is new too:
-`install_comm` now stamps `$SOT_COMM_HOME/VERSION` with the repo commit at
-install time — the fact a send-deaf Windows bridge incident had no way to
-state ("the scripts on this box came from commit X").
+tmux screen), read from the retained client's OWN status directly so a
+later, unrelated status-bar write can never retitle it; that terminal
+reason is also mirrored to `tracing` now, not only the pane's own status
+string. A `sot-fe version` shell verb prints one table — daemon identity
+(labeled by its resolved endpoint, never a "local"/"backend" guess),
+attached clients, and one row per capsule workspace with its phase
+PRINTED VERBATIM: no derived verdict column — this script never
+challenges the lane itself, so it has no proof to claim beyond the
+phase the daemon already reported (`"foreign"` already IS the verdict) —
+and a row for the locally installed comm scripts. That last row is new
+too: `install_comm` now stamps `$SOT_COMM_HOME/VERSION` (dirty-suffixed
+when the source checkout has local edits), written only after every copy
+has actually succeeded, with the repo commit at install time — the fact a
+send-deaf Windows bridge incident had no way to state ("the scripts on
+this box came from commit X").
 
 **Deliberately left out** (same reasoning as the rest of this ADR's
 "smallest useful slice" posture): a capsule row's own build id on the wire

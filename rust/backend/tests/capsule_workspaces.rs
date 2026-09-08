@@ -1151,147 +1151,68 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     env.kill_daemon_bounded().await;
 }
 
-/// ADR 0030 §8 decision 31c (cross-referenced as ADR 0043 decision 31):
-/// compiles a SECOND `sot-capsule` with a genuinely different
-/// `SUPERVISOR_LANE_BUILD_ID`, for [`phase_of_reports_foreign_when_the_lane_refuses_a_different_build`]
-/// below. That id is baked in at COMPILE time from `git rev-parse HEAD`
-/// (`rust/log/build.rs`) — reusing THIS checkout's own build (as every
-/// other test in this file does via [`sot_capsule_exe`]) can therefore
-/// never produce a mismatch; only a genuinely separate build can. Two
-/// env vars make `build.rs` take its "no git" branch without touching
-/// this checkout at all: `GIT_DIR` points at a path that doesn't exist,
-/// so every `git` call in `build.rs` fails closed (`Command::output()`
-/// succeeds as a `Result`, but the process itself exits non-zero, which
-/// `build.rs`'s own `git()` helper already treats as `None`) — proven by
-/// hand: `GIT_DIR=/nonexistent git rev-parse HEAD` exits 128 with no
-/// stdout; `SOT_BUILD_ID` then supplies the (deliberately different)
-/// identity `build.rs` falls back to in exactly that case. A fresh
-/// `--target-dir` under the system temp dir, never this test's own
-/// `CARGO_TARGET_DIR`: reusing the real one would let `SOT_BUILD_ID`'s
-/// `cargo:rerun-if-env-changed` force a rebuild of the REAL `sot-capsule`/
-/// `sotd` this whole file's other tests depend on, with the FOREIGN
-/// identity baked in — corrupting every test that runs after this one.
-/// Only `-p sot-log --bin sot-capsule` (not the whole workspace) — the
-/// daemon (`sot-backend`) is never rebuilt here, only the one binary this
-/// test needs a foreign copy of. Slower than every other helper in this
-/// file (a real nested compile of `sot-log` and its own small dependency
-/// set) — bounded, never unbounded.
+/// A minimal lane-refusal FIXTURE standing in for a supervisor of another
+/// build (ADR 0030 §8 decision 31c) — binds the EXACT unix socket path
+/// `phase_of`'s own `query_status` will dial for `state_dir`
+/// (`sot_log::socket_unix::supervisor_socket_path`, the same one this
+/// process's own `SOT_RUNTIME_DIR` resolves it to), accepts ONE
+/// connection, and writes back `reply_bytes` verbatim before closing.
+/// Same-user peer credentials (the SID/`SO_PEERCRED` steps) pass for
+/// free: this fixture runs as the test's own process, so the kernel
+/// reports it as the caller's own user regardless of what this function's
+/// code does — no second build, no real supervisor, and no compile step
+/// are needed to prove either half of the "answered but ___" split;
+/// only the one reply a real peer would send. Two callers below use this
+/// with two different `reply_bytes`: an actual `Refused { VersionSkew }`
+/// encoding proves "foreign"; anything else well-formed-but-wrong proves
+/// "unreachable" stays unreachable.
 #[cfg(target_os = "linux")]
-async fn build_foreign_sot_capsule() -> (PathBuf, tempfile::TempDir) {
-    let target_tmp = tempfile::Builder::new()
-        .prefix("sotcw-foreign-target-")
-        .tempdir_in(std::env::temp_dir())
-        .expect("foreign target tempdir");
-    let target_path = target_tmp.path().to_path_buf();
-    let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("rust/backend has a parent directory (rust/)")
-        .join("Cargo.toml");
-    let build_id = format!("test-foreign-build-{}", std::process::id());
-
-    let status = {
-        let target_path = target_path.clone();
-        let manifest_path = manifest_path.clone();
-        let build_id = build_id.clone();
-        tokio::time::timeout(
-            Duration::from_secs(300),
-            tokio::task::spawn_blocking(move || {
-                Command::new("cargo")
-                    .arg("build")
-                    .arg("--manifest-path")
-                    .arg(&manifest_path)
-                    .arg("-p")
-                    .arg("sot-log")
-                    .arg("--bin")
-                    .arg("sot-capsule")
-                    .arg("--target-dir")
-                    .arg(&target_path)
-                    .env("GIT_DIR", target_path.join("no-such-git-dir"))
-                    .env("SOT_BUILD_ID", &build_id)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::inherit())
-                    .stderr(Stdio::inherit())
-                    .status()
-                    .expect("spawn cargo build for the foreign sot-capsule")
-            }),
-        )
-        .await
-        .expect("nested cargo build for the foreign sot-capsule exceeded its 300s bound")
-        .unwrap()
-    };
-    assert!(status.success(), "nested cargo build for the foreign sot-capsule failed");
-
-    let exe = target_path.join("debug").join(CAPSULE_EXE_NAME);
-    assert!(exe.is_file(), "foreign sot-capsule not found at {exe:?} after the nested build");
-
-    // Prove the mismatch is real (not this checkout's own commit sneaking
-    // back in some other way) before this test ever trusts it.
-    let reported = Command::new(&exe)
-        .arg("build-id")
-        .output()
-        .expect("run the foreign sot-capsule's own build-id subcommand");
-    let reported_id = String::from_utf8_lossy(&reported.stdout).trim().to_string();
-    assert_eq!(
-        reported_id, build_id,
-        "the nested build did not embed the SOT_BUILD_ID override -- git was not actually made unreachable"
-    );
-    assert_ne!(
-        reported_id,
-        sot_log::exchange::SUPERVISOR_LANE_BUILD_ID,
-        "the foreign build's id must differ from this test binary's own"
-    );
-    (exe, target_tmp)
+fn spawn_lane_refusal_fixture(state_dir: &Path, reply_bytes: Vec<u8>) -> std::thread::JoinHandle<()> {
+    let h = sot_log::state_dir::state_dir_hash(state_dir);
+    let path = sot_log::socket_unix::supervisor_socket_path(&h).expect("supervisor socket path");
+    let _ = std::fs::remove_file(&path);
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the fixture supervisor socket");
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            use std::io::Write;
+            let _ = stream.write_all(&reply_bytes);
+            // Hold the connection open briefly so the client's own read
+            // has time to land before this fixture (and its listener)
+            // drop -- a one-shot fixture, not a persistent server.
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    })
 }
 
-/// ADR 0030 §8 decision 31c (cross-referenced as ADR 0043 decision 31):
-/// `phase_of` reports `"foreign"` — never `"unreachable"` — for a capsule
-/// row whose supervisor lane answered but refused THIS daemon's build
-/// (`version_skew`). Reproduces the field incident exactly (a launcher
-/// pair rebuild left a pinned `sot-capsule` behind — `pair_verdict`'s own
-/// doc): a REAL supervisor (this checkout's own build) starts a real
-/// run, its AUTHORITY alone is stopped (the leg survives, ADR 0041
-/// Lifecycle), and a supervisor compiled with a genuinely different
-/// build id ([`build_foreign_sot_capsule`]) resumes the SAME state dir,
-/// bypassing the daemon's own spawn path entirely — `check_pair`/
-/// `pair_verdict` would refuse to spawn this pair itself, exactly why the
-/// field incident is a row an operator finds ALREADY held foreign, never
-/// one this daemon started that way.
-#[tokio::test]
+/// Real-supervisor preamble shared by both lane-refusal tests below:
+/// create a capsule workspace, wait for a REAL supervisor (this
+/// checkout's own build) to reach "ready", then stop JUST the authority
+/// (the leg survives, ADR 0041 Lifecycle) so the state dir carries a
+/// published pointer with nothing currently answering its socket —
+/// exactly the precondition [`spawn_lane_refusal_fixture`]'s caller needs
+/// before binding in the real supervisor's place.
 #[cfg(target_os = "linux")]
-async fn phase_of_reports_foreign_when_the_lane_refuses_a_different_build() {
-    let _serial = SERIAL.lock().await;
-    assert!(
-        sot_capsule_exe().is_file(),
-        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
-         this test's own sotd[.exe] was built into",
-        sot_capsule_exe()
-    );
-
-    let (foreign_exe, _foreign_target) = build_foreign_sot_capsule().await;
-
-    let env = Env::new("foreign");
-    env.spawn_sotd();
-    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
-
+async fn create_ready_workspace_then_stop_its_supervisor(
+    env: &Env,
+    conn: &mut Conn,
+    next_id: &mut u64,
+    label: &str,
+) -> (String, PathBuf) {
     let create_req = serde_json::json!({
-        "label": "foreign-workspace",
+        "label": label,
         "project_root": env.workspace_project_root.to_string_lossy(),
         "runtime": "capsule",
     });
-    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
-    next_id += 1;
+    let create_res = call(conn, *next_id, op::WORKSPACE_CREATE, create_req).await;
+    *next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
 
-    // Same "wait for ready" preamble as `capsule_workspace_create_list_attach_refusal_adopt_and_destroy`
-    // — a real supervisor of THIS checkout's own build must be up and
-    // answering before anything about "foreign" can mean anything.
     let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
     let state_dir = loop {
-        let id = next_id;
-        next_id += 1;
-        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        let id = *next_id;
+        *next_id += 1;
+        let payload = call(conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
         if let Some(row) = find_row(&payload, &workspace_id) {
             assert_eq!(row["runtime"], "capsule", "row: {row:?}");
             if let (Some(sd), Some("ready")) = (row["state_dir"].as_str(), row["phase"].as_str()) {
@@ -1306,11 +1227,6 @@ async fn phase_of_reports_foreign_when_the_lane_refuses_a_different_build() {
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    // Stop the REAL supervisor authority — its leg survives (ADR 0041
-    // Lifecycle: legs are outside the supervisor's own job) — and wait
-    // for the lane to actually go silent before resuming into the same
-    // fence with the FOREIGN build (mirrors `restart_daemon_and_prove_adoption`'s
-    // own `AuthorityAtRestart::Stopped` scenario).
     tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || sot_log::supervisor_client::stop(&dir).expect("stop the real supervisor authority")
@@ -1333,55 +1249,109 @@ async fn phase_of_reports_foreign_when_the_lane_refuses_a_different_build() {
     )
     .await;
 
-    // Resume the SAME state dir with the FOREIGN build, directly — never
-    // through the daemon (which would refuse this pair outright via
-    // `check_pair`). Local fence-adoption of the surviving leg is build-
-    // id-agnostic (only the WIRE hello checks it), so this succeeds
-    // locally; only THIS daemon's own probe of it is refused.
-    let foreign = Command::new(&foreign_exe)
-        .arg("supervise")
-        .arg(&state_dir_path)
-        .arg("--resume")
-        .arg("--survival")
-        .arg("normal")
-        .arg("--assume-no-rollback-target")
-        .arg("--")
-        .arg("/bin/sh")
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn the foreign sot-capsule supervise");
+    (workspace_id, state_dir_path)
+}
 
-    let phase_deadline = Instant::now() + BOUND.max(Duration::from_secs(60));
+/// Poll `workspace.list` until `workspace_id`'s row reaches `want_phase`,
+/// asserting it never reports `"terminal"` along the way (a competing
+/// spawn racing the still-held fence would be the WRONG way to reach
+/// this test's own target phase).
+#[cfg(target_os = "linux")]
+async fn poll_for_phase(conn: &mut Conn, next_id: &mut u64, workspace_id: &str, want_phase: &str, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
     loop {
-        let id = next_id;
-        next_id += 1;
-        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
-        if let Some(row) = find_row(&payload, &workspace_id) {
+        let id = *next_id;
+        *next_id += 1;
+        let payload = call(conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        if let Some(row) = find_row(&payload, workspace_id) {
             assert_eq!(row["runtime"], "capsule", "row: {row:?}");
-            assert_ne!(
-                row["phase"].as_str(),
-                Some("terminal"),
-                "row went terminal instead of foreign: {row:?}"
-            );
-            if row["phase"].as_str() == Some("foreign") {
-                break;
+            assert_ne!(row["phase"].as_str(), Some("terminal"), "row went terminal instead of {want_phase}: {row:?}");
+            if row["phase"].as_str() == Some(want_phase) {
+                return;
             }
         }
-        assert!(
-            Instant::now() < phase_deadline,
-            "timed out waiting for workspace.list to report phase \"foreign\" for the foreign-build row"
-        );
+        assert!(Instant::now() < deadline, "timed out waiting for workspace.list to report phase \"{want_phase}\"");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
 
-    // Teardown: this test's own foreign process is invisible to `Env`'s
-    // own leg sweep (that pgreps for the REAL sot-capsule exe path, never
-    // this test's throwaway one) — kill it directly. The surviving leg
-    // (the platform shell the ORIGINAL, real-build supervisor spawned) IS
-    // caught by that sweep, anchored on `env`'s own `state_root`.
-    kill_and_wait_bounded(foreign).await;
+/// ADR 0030 §8 decision 31c (cross-referenced as ADR 0043 decision 31):
+/// `phase_of` reports `"foreign"` for a capsule row whose supervisor lane
+/// answered but refused THIS daemon's build (typed as
+/// `sot_log::Error::VersionSkew`, never a text match). Reproduces the
+/// field incident's OBSERVABLE shape (a row an operator finds already
+/// held by another build, not one this daemon started that way — this
+/// daemon's own `check_pair` would refuse to spawn a mismatched pair
+/// itself) using [`spawn_lane_refusal_fixture`] in place of a real
+/// foreign build.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn phase_reports_foreign_for_a_version_skew_refusal() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("foreign");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let (workspace_id, state_dir_path) =
+        create_ready_workspace_then_stop_its_supervisor(&env, &mut conn, &mut next_id, "foreign-workspace").await;
+
+    // Bind the fixture where the (now-stopped) real supervisor was, and
+    // reply with the ACTUAL wire encoding of `Refused { VersionSkew }` —
+    // the one reply a real supervisor of another build would send.
+    let reply = sot_log::wire::encode_supervisor_reply(&sot_log::wire::SupervisorReply::Refused {
+        reason: sot_log::wire::SupervisorRefusedReason::VersionSkew,
+    })
+    .expect("Refused encodes unconditionally");
+    let fixture = spawn_lane_refusal_fixture(&state_dir_path, reply);
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "foreign", BOUND.max(Duration::from_secs(60))).await;
+
+    // Teardown: the surviving leg (the platform shell the ORIGINAL real
+    // supervisor spawned) is caught by `Env`'s own leg sweep, anchored on
+    // `env`'s own `state_root` — the fixture thread holds no leg of its
+    // own and exits on its own once its one connection closes.
+    let _ = fixture.join();
+    env.kill_daemon_bounded().await;
+}
+
+/// Sibling of [`phase_reports_foreign_for_a_version_skew_refusal`]: a lane
+/// that answers but with a MALFORMED/wrong-shape reply (never a
+/// `Refused { VersionSkew }`) must stay `"unreachable"` — the exact
+/// distinction ADR 0030 §8 decision 31c's typed check exists to draw
+/// (Codex review: a broader `Foreign` classification, text-matched, would
+/// have reported "foreign" here too).
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn phase_stays_unreachable_for_a_malformed_reply() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("malformed");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let (workspace_id, state_dir_path) =
+        create_ready_workspace_then_stop_its_supervisor(&env, &mut conn, &mut next_id, "malformed-workspace").await;
+
+    let fixture = spawn_lane_refusal_fixture(&state_dir_path, b"not a valid supervisor-lane frame".to_vec());
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "unreachable", BOUND.max(Duration::from_secs(60))).await;
+
+    let _ = fixture.join();
     env.kill_daemon_bounded().await;
 }
 

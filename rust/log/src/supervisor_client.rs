@@ -361,6 +361,14 @@ pub(crate) fn connect_and_challenge<E: Endpoint>(
     let mut exchange = crate::exchange::SupervisorLaneExchange::new(build.to_string());
     match E::challenge(&conn, &mut exchange, deadline) {
         crate::challenge::ChallengeOutcome::Proven(process) => Ok((conn, process)),
+        // ADR 0030 §8 decision 31c: the ONE `Foreign` cause that is
+        // typed, not text — `exchange.is_version_skew()` is read AFTER
+        // the challenge, off the SAME concrete exchange this call
+        // constructed (never a trait object here), so it reflects
+        // exactly what the terminal reply was.
+        crate::challenge::ChallengeOutcome::Foreign if exchange.is_version_skew() => {
+            Err(crate::Error::VersionSkew)
+        }
         crate::challenge::ChallengeOutcome::Foreign => Err(err_state("supervisor lane challenge: foreign")),
         crate::challenge::ChallengeOutcome::Undetermined => Err(err_state("supervisor lane challenge: undetermined")),
     }

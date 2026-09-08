@@ -142,7 +142,7 @@ run_version() {
 
 # --- cases -----------------------------------------------------------------
 
-case_matching_pair_prints_matches() {
+case_matching_pair_prints_the_phase_verbatim() {
     stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def"},"clients":[{"client_id":"fe-1","app_version":"0.6.0-dev+abc1234","protocol":1,"connected_at":1}]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[{"workspace_id":"ws1","slug":"research","label":"","project_root":"/p","tmux_session":"t","kernel_running":false,"is_default":false,"runtime":"capsule","state_dir":"/sd","phase":"ready"}]}}'
     start_stub_daemon
@@ -150,16 +150,16 @@ case_matching_pair_prints_matches() {
     stop_stub_daemon
 
     [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
-    contains "$VER_OUT" "backend daemon" || { echo "  missing backend daemon row: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "unix:$SOCK" || { echo "  daemon row must be labeled by the resolved endpoint: $VER_OUT"; return 1; }
     contains "$VER_OUT" "abc1234def" || { echo "  missing daemon lane_build: $VER_OUT"; return 1; }
-    contains "$VER_OUT" "frontend fe-1" || { echo "  missing attached-client row: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "client fe-1" || { echo "  missing attached-client row: $VER_OUT"; return 1; }
     contains "$VER_OUT" "row research" || { echo "  missing capsule row: $VER_OUT"; return 1; }
-    contains "$VER_OUT" "matches" || { echo "  expected a 'matches' verdict for a ready row: $VER_OUT"; return 1; }
-    contains "$VER_OUT" "MISMATCH" && { echo "  unexpected MISMATCH for a ready row: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "ready" || { echo "  expected the row's phase printed verbatim: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "matches" && { echo "  no derived verdict column expected: $VER_OUT"; return 1; }
     return 0
 }
 
-case_foreign_row_prints_mismatch() {
+case_foreign_row_prints_the_phase_with_no_derived_verdict() {
     stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def"},"clients":[]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[{"workspace_id":"ws2","slug":"scratch","label":"","project_root":"/p2","tmux_session":"t2","kernel_running":false,"is_default":false,"runtime":"capsule","state_dir":"/sd2","phase":"foreign"}]}}'
     start_stub_daemon
@@ -169,7 +169,7 @@ case_foreign_row_prints_mismatch() {
     [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
     contains "$VER_OUT" "row scratch" || { echo "  missing capsule row: $VER_OUT"; return 1; }
     contains "$VER_OUT" "foreign" || { echo "  missing foreign phase in the row: $VER_OUT"; return 1; }
-    contains "$VER_OUT" "MISMATCH" || { echo "  expected a MISMATCH verdict for a foreign row: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "MISMATCH" && { echo "  no derived MISMATCH column expected -- 'foreign' IS the verdict: $VER_OUT"; return 1; }
     return 0
 }
 
@@ -189,21 +189,20 @@ case_legacy_daemon_predating_version_query_prints_unknown_and_exits_0() {
     return 0
 }
 
-case_local_daemon_label_used_with_no_explicit_endpoint() {
-    # `sot-fe version` with NO --endpoint must still resolve somewhere —
-    # this suite has no real local daemon, so drive it via $SOT_FE_ENDPOINT
-    # instead (resolve_endpoint's own env fallback), which is exactly the
-    # "no --endpoint flag" case the local-vs-backend label distinguishes.
+case_workspace_list_failure_after_successful_version_query_exits_2() {
+    # Codex review, should-fix: unlike version.query's legacy exception, a
+    # daemon new enough to answer version.query has no excuse for a failed
+    # workspace.list -- capsule rows must never silently vanish into a
+    # successful-looking, exit-0 output.
     stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0","protocol":1,"lane_build":"xyz"},"clients":[]}}'
-    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"error":"kaboom","code":"internal"}}'
     start_stub_daemon
-    VER_OUT="$(SOT_FE_ENDPOINT="unix:$SOCK" "$SOT_FE" version --timeout 5 2>&1)"
-    VER_RC=$?
+    run_version
     stop_stub_daemon
 
-    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
-    contains "$VER_OUT" "local daemon" || { echo "  expected the 'local daemon' label with no --endpoint flag: $VER_OUT"; return 1; }
-    contains "$VER_OUT" "backend daemon" && { echo "  unexpected 'backend daemon' label with no --endpoint flag: $VER_OUT"; return 1; }
+    [ "$VER_RC" -eq 2 ] || { echo "  expected exit 2 on a failed workspace.list, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    contains "$VER_OUT" "workspace.list" || { echo "  expected the failed op named in the output: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "kaboom" || { echo "  expected the daemon's own error text surfaced: $VER_OUT"; return 1; }
     return 0
 }
 
@@ -220,13 +219,28 @@ case_comm_scripts_row_reads_the_installed_version_file() {
     return 0
 }
 
+case_comm_scripts_row_prints_unknown_when_the_stamp_is_missing() {
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0","protocol":1,"lane_build":"xyz"},"clients":[]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    rm -f "$SOT_COMM_HOME/VERSION"
+    start_stub_daemon
+    run_version
+    stop_stub_daemon
+
+    contains "$VER_OUT" "comm scripts" || { echo "  missing comm scripts row: $VER_OUT"; return 1; }
+    printf '%s\n' "$VER_OUT" | grep -qE '^comm scripts +unknown *$' \
+        || { echo "  expected 'unknown' (not 'not installed') with no VERSION file: $VER_OUT"; return 1; }
+    return 0
+}
+
 # --- run ---------------------------------------------------------------
 
-check "a matching pair prints the daemon/client rows and a 'matches' capsule verdict" case_matching_pair_prints_matches
-check "a foreign-phase capsule row prints a MISMATCH verdict"                          case_foreign_row_prints_mismatch
-check "a daemon that predates version.query prints 'unknown' and still exits 0"        case_legacy_daemon_predating_version_query_prints_unknown_and_exits_0
-check "no --endpoint flag labels the daemon row 'local daemon', not 'backend daemon'"  case_local_daemon_label_used_with_no_explicit_endpoint
-check "the comm scripts row reads the installed \$SOT_COMM_HOME/VERSION file"          case_comm_scripts_row_reads_the_installed_version_file
+check "a matching pair prints daemon/client rows and the row's phase verbatim, no verdict" case_matching_pair_prints_the_phase_verbatim
+check "a foreign-phase capsule row prints its phase with no derived verdict column"        case_foreign_row_prints_the_phase_with_no_derived_verdict
+check "a daemon that predates version.query prints 'unknown' and still exits 0"            case_legacy_daemon_predating_version_query_prints_unknown_and_exits_0
+check "a workspace.list failure after a successful version.query reports it and exits 2"   case_workspace_list_failure_after_successful_version_query_exits_2
+check "the comm scripts row reads the installed \$SOT_COMM_HOME/VERSION file"              case_comm_scripts_row_reads_the_installed_version_file
+check "the comm scripts row prints 'unknown' when the VERSION stamp is missing"            case_comm_scripts_row_prints_unknown_when_the_stamp_is_missing
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"
