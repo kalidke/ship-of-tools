@@ -1165,7 +1165,7 @@ mod runtime {
         if !workspaces.try_begin_capsule_start(workspace_id) {
             return Ok(None);
         }
-        start_supervisor_claimed(state_root, workspace_id, mode, agent_argv, project_root, agent_name, slug, workspaces)
+        start_supervisor_claimed(state_root, workspace_id, mode, agent_argv, project_root, agent_name, slug, workspaces).map(Some)
     }
 
     /// The BLOCKING half of [`start_supervisor`] (process spawn, `check_pair`'s
@@ -1187,6 +1187,16 @@ mod runtime {
     /// still releases the claim, exactly as [`start_supervisor`] always
     /// did — this function assumes ONLY that the claim is already held,
     /// never that it still needs taking.
+    ///
+    /// Returns a plain `bool` (Codex review round finding 9's delete
+    /// list): every caller of THIS function already holds the claim by
+    /// the time it runs (either taken synchronously just above by
+    /// [`start_supervisor`] itself, or by the caller directly — see
+    /// `handlers.rs`'s `workspace.create` and [`resume_all`]'s own
+    /// `Some(StartMode::Resume)` arm), so the `None` case
+    /// [`start_supervisor`]'s own `Result<Option<bool>, String>` exists
+    /// for can never actually occur here — carrying it anyway would need
+    /// dead, impossible-to-exercise handling at every call site.
     pub fn start_supervisor_claimed(
         state_root: &Path,
         workspace_id: &str,
@@ -1196,7 +1206,7 @@ mod runtime {
         agent_name: &str,
         slug: &str,
         workspaces: Workspaces,
-    ) -> Result<Option<bool>, String> {
+    ) -> Result<bool, String> {
         let state_dir = super::state_dir_for(state_root, workspace_id);
         let exe = match sot_capsule_exe() {
             Ok(exe) => exe,
@@ -1216,7 +1226,7 @@ mod runtime {
             slug.to_string(),
             workspaces.clone(),
         ) {
-            Ok(degraded) => Ok(Some(degraded)),
+            Ok(degraded) => Ok(degraded),
             Err(e) => {
                 workspaces.end_capsule_start(workspace_id);
                 Err(format!("capsule supervisor spawn failed: {e}"))
@@ -1957,32 +1967,58 @@ mod runtime {
                         }
                     }
                     Some(StartMode::Resume) => {
-                        // ADR 0043 decision 29: a process spawn never runs
-                        // on a Tokio worker. `start_supervisor`'s own
-                        // atomic claim check moves with it (unlike the
-                        // `workspace.create` handler, nothing here rolls
-                        // back a registry row on `Ok(None)`, so there is
-                        // no race to split the claim out of this call
-                        // for) — `workspace_id` alone is cloned, needed
-                        // for the tracing calls below the `.await`.
-                        let workspace_id_for_log = workspace_id.clone();
-                        let spawn_result = tokio::task::spawn_blocking(move || {
-                            start_supervisor(&state_root, &workspace_id, StartMode::Resume, &argv, &cwd, &agent_name, &slug, workspaces)
-                        })
-                        .await;
-                        match spawn_result {
-                            Ok(Ok(Some(degraded))) => {
-                                tracing::info!(workspace_id = %workspace_id_for_log, degraded, "capsule workspace supervisor resumed");
+                        // ADR 0043 decision 29, Codex review round finding
+                        // 5: the claim is taken HERE, synchronously,
+                        // BEFORE `spawn_blocking` — exactly the
+                        // `workspace.create` handler's own discipline —
+                        // never inside the queued closure. Between this
+                        // task's own `start_mode_needed` decision (above,
+                        // itself already a `spawn_blocking` round trip)
+                        // and a closure merely QUEUED on the blocking
+                        // pool, an intervening `pty.open` (`ensure_started`)
+                        // can reach the SAME freshly-observed "dead"
+                        // workspace, claim, spawn, and RELEASE the slot
+                        // before this closure ever runs — claiming inside
+                        // the closure would then claim it a SECOND time
+                        // and spawn a redundant supervisor. Taking the
+                        // claim now makes that race resolve exactly like
+                        // `workspace.create`'s own: whoever claims first
+                        // spawns; the loser sees the slot already held and
+                        // skips.
+                        if workspaces.try_begin_capsule_start(&workspace_id) {
+                            let workspace_id_for_log = workspace_id.clone();
+                            // A separate handle, kept OUTSIDE the closure
+                            // below, so a panicked spawn can still release
+                            // the claim it took above (the closure's own
+                            // `workspaces` is consumed by the move and
+                            // never runs its own cleanup if it panics
+                            // before doing so).
+                            let workspaces_for_release = workspaces.clone();
+                            let spawn_result = tokio::task::spawn_blocking(move || {
+                                start_supervisor_claimed(&state_root, &workspace_id, StartMode::Resume, &argv, &cwd, &agent_name, &slug, workspaces)
+                            })
+                            .await;
+                            match spawn_result {
+                                Ok(Ok(degraded)) => {
+                                    tracing::info!(workspace_id = %workspace_id_for_log, degraded, "capsule workspace supervisor resumed");
+                                }
+                                Ok(Err(e)) => {
+                                    tracing::warn!(workspace_id = %workspace_id_for_log, error = %e, "capsule workspace supervisor resume spawn failed");
+                                }
+                                Err(join_err) => {
+                                    // Finding 5: a panic before
+                                    // `start_supervisor_claimed`'s own
+                                    // cleanup tasks are installed would
+                                    // otherwise leave `workspace_id` wedged
+                                    // "starting" forever — released here,
+                                    // mirroring `workspace.create`'s own
+                                    // join-error handling.
+                                    workspaces_for_release.end_capsule_start(&workspace_id_for_log);
+                                    tracing::warn!(workspace_id = %workspace_id_for_log, error = %join_err, "capsule workspace resume-scan: resume spawn task panicked");
+                                }
                             }
-                            Ok(Ok(None)) => {
-                                tracing::debug!(workspace_id = %workspace_id_for_log, "capsule workspace resume-scan: launch already in flight; skipping");
-                            }
-                            Ok(Err(e)) => {
-                                tracing::warn!(workspace_id = %workspace_id_for_log, error = %e, "capsule workspace supervisor resume spawn failed");
-                            }
-                            Err(join_err) => {
-                                tracing::warn!(workspace_id = %workspace_id_for_log, error = %join_err, "capsule workspace resume-scan: resume spawn task panicked");
-                            }
+                        } else {
+                            tracing::debug!(workspace_id = %workspace_id, "capsule workspace resume-scan: launch already in flight; skipping");
                         }
                     }
                     Some(StartMode::Start) => {

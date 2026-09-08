@@ -228,6 +228,9 @@ pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<En
             ) {
                 *c = new_conn;
                 *r = FrameReader::new();
+                true
+            } else {
+                false
             }
         },
         &mut quit,

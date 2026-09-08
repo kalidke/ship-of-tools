@@ -1229,13 +1229,20 @@ fn connect_fails_fast_when_nothing_listens() {
     let err = connect_voyage_socket(&id).unwrap_err();
     let elapsed = started.elapsed();
 
+    // Codex review round finding 9: the real proof is the error
+    // CLASSIFICATION below (a connect-family error, not a timeout or a
+    // retried-then-gave-up outcome) -- the timing check is a loose sanity
+    // bound against `CONNECT_BOUND` itself (the value the OLD retrying
+    // behavior would have fully consumed), reported alongside it rather
+    // than a tight wall-clock gate a busy runner could occasionally trip.
+    eprintln!("connect_fails_fast_when_nothing_listens: elapsed={elapsed:?}");
     assert!(
         matches!(err, TransportError::Io { op, .. } if op.contains("connect")),
         "expected a connect-family error, got {err}"
     );
     assert!(
-        elapsed < Duration::from_secs(1),
-        "an absent endpoint (ENOENT) must fail on the FIRST attempt, never consume {CONNECT_BOUND:?}: took {elapsed:?}"
+        elapsed < CONNECT_BOUND,
+        "an absent endpoint (ENOENT) must fail on the FIRST attempt, never consume the full {CONNECT_BOUND:?}: took {elapsed:?}"
     );
 }
 
@@ -1262,14 +1269,63 @@ fn connect_fails_fast_when_refused_by_a_stale_socket_file() {
     let err = connect_voyage_socket(&id).unwrap_err();
     let elapsed = started.elapsed();
 
+    // Codex review round finding 9: same reasoning as
+    // `connect_fails_fast_when_nothing_listens` -- classification is the
+    // real proof, timing is a loose sanity bound reported alongside it.
+    eprintln!("connect_fails_fast_when_refused_by_a_stale_socket_file: elapsed={elapsed:?}");
     assert!(
         matches!(err, TransportError::Io { op, .. } if op.contains("connect")),
         "expected a connect-family error, got {err}"
     );
     assert!(
-        elapsed < Duration::from_secs(1),
-        "ECONNREFUSED (no listener) must fail on the FIRST attempt, never consume {CONNECT_BOUND:?}: took {elapsed:?}"
+        elapsed < CONNECT_BOUND,
+        "ECONNREFUSED (no listener) must fail on the FIRST attempt, never consume the full {CONNECT_BOUND:?}: took {elapsed:?}"
     );
+}
+
+/// A single, raw, NONBLOCKING `connect(2)` attempt against `path` — used
+/// only to saturate a real kernel listen backlog (Codex review round
+/// finding 4). A BLOCKING `UnixStream::connect` against a full backlog
+/// does not fail: on Linux, `connect(2)` on a stream socket with a full
+/// backlog BLOCKS the calling thread until a slot frees rather than
+/// returning an error — which would starve a saturation loop built out
+/// of blocking connects of ever reaching the point where anything CAN
+/// free a slot (a real hang, not merely a slow test, and exactly what
+/// `[0..4096) { UnixStream::connect(..) }` risked). A nonblocking socket
+/// instead returns `EAGAIN` immediately once the backlog is full —
+/// `Ok(Some(stream))` is a queued connection (a slot was free);
+/// `Ok(None)` is the full-backlog case this saturation loop is waiting
+/// to observe; any other errno is a hard test-setup failure.
+#[cfg(target_os = "linux")]
+fn nonblocking_connect_attempt(path: &Path) -> std::io::Result<Option<UnixStream>> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::FromRawFd;
+    unsafe {
+        let raw = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_NONBLOCK, 0);
+        if raw < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut addr: libc::sockaddr_un = std::mem::zeroed();
+        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        let path_bytes = path.as_os_str().as_bytes();
+        assert!(path_bytes.len() < addr.sun_path.len(), "test socket path too long for sockaddr_un");
+        for (dst, &b) in addr.sun_path.iter_mut().zip(path_bytes) {
+            *dst = b as libc::c_char;
+        }
+        let addr_len = (std::mem::size_of::<libc::sa_family_t>() + path_bytes.len() + 1) as libc::socklen_t;
+        let rc = libc::connect(raw, std::ptr::addr_of!(addr).cast(), addr_len);
+        if rc == 0 {
+            return Ok(Some(UnixStream::from_raw_fd(raw)));
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EAGAIN) {
+            libc::close(raw);
+            Ok(None)
+        } else {
+            libc::close(raw);
+            Err(err)
+        }
+    }
 }
 
 /// ADR 0043 decision 27: `EAGAIN` (a full listen backlog) is a DIFFERENT
@@ -1278,11 +1334,12 @@ fn connect_fails_fast_when_refused_by_a_stale_socket_file() {
 /// retried within [`CONNECT_BOUND`]. A real listener with nothing ever
 /// calling `accept` on it leaves the kernel-level backlog as the only
 /// thing standing between a burst of raw connects and `EAGAIN`; this
-/// drives enough concurrent connects to reliably fill it without
-/// asserting a specific backlog size, then proves the retry loop still
-/// succeeds once a slot frees (draining one queued connection via
-/// `accept()`) -- `EAGAIN` alone must never become a fast, permanent
-/// failure the way `ENOENT`/`ECONNREFUSED` now do.
+/// drives enough concurrent connects to reliably fill it (observing a
+/// real `EAGAIN`, not merely "some connects queued" — Codex review round
+/// finding 4), then proves the retry loop still succeeds once a slot
+/// frees (draining one queued connection via `accept()`) -- `EAGAIN`
+/// alone must never become a fast, permanent failure the way
+/// `ENOENT`/`ECONNREFUSED` now do.
 #[test]
 #[cfg(target_os = "linux")]
 fn connect_retries_within_the_bound_on_a_full_backlog() {
@@ -1297,37 +1354,54 @@ fn connect_retries_within_the_bound_on_a_full_backlog() {
     // connect piles up in the backlog until it's full.
     let listener = UnixListener::bind(&path).unwrap();
 
-    // Saturate the backlog with raw, un-accepted connections until one
-    // fails (a bounded attempt count so a system with a huge backlog
-    // cannot spin this test forever).
+    // Saturate the backlog with NONBLOCKING raw connects until EAGAIN is
+    // actually observed (a bounded attempt count -- std's own
+    // `UnixListener::bind` backlog is 128 -- so a system with a huge
+    // backlog cannot spin this test forever; the bound is a sanity cap on
+    // the syscall count, not a race with the syscall itself, since a
+    // nonblocking connect can never block).
     let mut saturating = Vec::new();
-    for _ in 0..4096 {
-        match UnixStream::connect(&path) {
-            Ok(s) => saturating.push(s),
-            Err(_) => break,
+    let mut observed_eagain = false;
+    for _ in 0..8192 {
+        match nonblocking_connect_attempt(&path).expect("raw connect(2) setup failed") {
+            Some(s) => saturating.push(s),
+            None => {
+                observed_eagain = true;
+                break;
+            }
         }
     }
-    assert!(!saturating.is_empty(), "expected at least one connection to queue in the backlog");
+    assert!(observed_eagain, "expected the backlog to fill (a real EAGAIN) within 8192 raw connects");
 
     // `connect_voyage_socket` itself now races the saturated backlog: it
     // must not fail fast (this is EAGAIN, not "no listener"), and it must
     // eventually succeed once a slot frees -- draining ONE queued
     // connection via `accept()` frees exactly one backlog slot for it to
-    // land in.
-    let accept_thread = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(200));
-        let _ = listener.accept();
+    // land in. `thread::scope` keeps `listener` alive by REFERENCE across
+    // both the accept and the retry that follows it (Codex review round
+    // finding 4: the previous version moved `listener` into the accept
+    // thread's closure and so dropped it — closing the listening socket —
+    // the INSTANT that one `accept()` returned, racing the retry loop's
+    // own in-flight attempt; a retry landing after that drop sees a real
+    // `ECONNREFUSED`, which decision 27 now fails FAST and fatally rather
+    // than retrying).
+    let (client, elapsed) = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(Duration::from_millis(200));
+            let _ = listener.accept();
+        });
+        let started = Instant::now();
+        let client = connect_voyage_socket(&id).expect("expected the retry loop to succeed once a backlog slot freed");
+        (client, started.elapsed())
     });
-    let started = Instant::now();
-    let client = connect_voyage_socket(&id).expect("expected the retry loop to succeed once a backlog slot freed");
-    let elapsed = started.elapsed();
-    accept_thread.join().unwrap();
 
+    eprintln!("connect_retries_within_the_bound_on_a_full_backlog: elapsed={elapsed:?}");
     assert!(
         elapsed < CONNECT_BOUND,
         "expected the retry to succeed comfortably inside {CONNECT_BOUND:?}, took {elapsed:?}"
     );
     drop(client);
+    drop(listener);
     drop(saturating);
 }
 

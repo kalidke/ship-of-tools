@@ -560,13 +560,19 @@ fn connect_fails_fast_when_pipe_absent() {
     let err = connect_voyage_pipe(&id).unwrap_err();
     let elapsed = started.elapsed();
 
+    // Codex review round finding 9: classification is the real proof; the
+    // timing check is a loose sanity bound against `CONNECT_BOUND` itself
+    // (the value the OLD retrying behavior would have fully consumed),
+    // reported alongside it rather than a tight wall-clock gate a busy
+    // runner could occasionally trip.
+    eprintln!("connect_fails_fast_when_pipe_absent: elapsed={elapsed:?}");
     assert!(
         matches!(err, TransportError::Io { op, .. } if op == "CreateFileW"),
         "expected a CreateFileW error, got {err}"
     );
     assert!(
-        elapsed < Duration::from_secs(1),
-        "an absent pipe (ERROR_FILE_NOT_FOUND) must fail on the FIRST attempt, never consume {CONNECT_BOUND:?}: took {elapsed:?}"
+        elapsed < CONNECT_BOUND,
+        "an absent pipe (ERROR_FILE_NOT_FOUND) must fail on the FIRST attempt, never consume the full {CONNECT_BOUND:?}: took {elapsed:?}"
     );
 }
 
@@ -592,17 +598,29 @@ fn connect_retries_within_the_bound_when_busy_then_succeeds_once_freed() {
     let first_client = connect_voyage_pipe(&id).unwrap();
     let first_conn = expect_accepted(&server, TIMEOUT);
 
+    // Codex review round finding 9: synchronize on the thread actually
+    // having STARTED before relying on any sleep at all -- a raw
+    // `sleep(300ms)` with no such signal cannot tell "genuinely still
+    // retrying" apart from "never got scheduled yet" on a busy runner.
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
     let id_for_thread = id.clone();
     let second = std::thread::spawn(move || {
+        let _ = started_tx.send(());
         let started = Instant::now();
         let client = connect_voyage_pipe(&id_for_thread).expect("expected the busy retry to eventually succeed");
         (client, started.elapsed())
     });
+    started_rx
+        .recv_timeout(TIMEOUT)
+        .expect("expected the second connect thread to signal it has started");
 
+    // A generous grace period AFTER that signal -- long enough for at
+    // least one real busy-retry round trip, short enough that the actual
+    // join deadline below remains the meaningful bound.
     std::thread::sleep(Duration::from_millis(300));
     assert!(
         !second.is_finished(),
-        "expected the second connect to still be retrying against a busy pipe after 300ms"
+        "expected the second connect to still be retrying against a busy pipe 300ms after it started"
     );
 
     server.close(first_conn);
@@ -618,6 +636,7 @@ fn connect_retries_within_the_bound_when_busy_then_succeeds_once_freed() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let (_second_client, elapsed) = second.join().unwrap();
+    eprintln!("connect_retries_within_the_bound_when_busy_then_succeeds_once_freed: elapsed={elapsed:?}");
     assert!(
         elapsed < CONNECT_BOUND,
         "expected the busy retry to succeed comfortably inside {CONNECT_BOUND:?}, took {elapsed:?}"

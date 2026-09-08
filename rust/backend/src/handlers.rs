@@ -4498,17 +4498,12 @@ pub async fn handle_workspace_create(
                 })
                 .await
                 {
-                    // `start_supervisor_claimed` never actually produces
-                    // `Ok(None)` (the claim-losing case it inherited its
-                    // return type from is checked synchronously above,
-                    // before this task is even spawned) — the fallback
-                    // text is kept only so this arm's shape matches
-                    // `start_supervisor`'s own documented contract.
-                    Ok(result) => result.and_then(|spawned| {
-                        spawned.ok_or_else(|| {
-                            "a supervisor launch for this workspace was unexpectedly already in flight".to_string()
-                        })
-                    }),
+                    // `start_supervisor_claimed` returns a plain `bool`
+                    // (Codex review round finding 9's delete list): the
+                    // claim-losing case is checked synchronously above,
+                    // before this task is even spawned, so there is no
+                    // `None` left to handle here.
+                    Ok(result) => result,
                     Err(join_err) => {
                         // The claim taken above is never released by
                         // `start_supervisor_claimed` itself when its own

@@ -26,6 +26,7 @@
 //! thread, unlike `fe_client`'s own unit tests.
 
 use sot_log::client::{Endpoint, PlatformEndpoint};
+use sot_log::fe_client;
 use sot_log::fe_client_io::{FeAttachClient, InputOutcome};
 use sot_log::segment::SegmentReader;
 use sot_log::state_dir::state_dir_hash;
@@ -1214,9 +1215,18 @@ fn quit_is_dispatched_before_ready() {
     let _ = child.wait();
 }
 
+/// Codex review round finding 8: the predecessor version of this test
+/// only ever watched 15 of the 120s `HEALTH_WINDOW` -- proving the
+/// window does not expire EARLY, but never proving it expires AT ALL.
+/// This version runs the window to its real end (a genuinely slow test,
+/// deliberately: `HEALTH_WINDOW` is a wall-clock constant, and expiry is
+/// exactly the fact worth proving against the real clock, not a
+/// shortened stand-in for it) and asserts the client reaches `Terminal`
+/// with the `HealthWindowExpired` reason once it does, having stayed
+/// alive for the entire slow half.
 #[test]
 #[cfg(target_os = "linux")]
-fn unresponsive_supervisor_keeps_health_accounting() {
+fn unresponsive_supervisor_expires_the_health_window() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -1238,7 +1248,9 @@ fn unresponsive_supervisor_keeps_health_accounting() {
     )
     .expect("attach");
 
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // Well inside the window: proves it does not expire early, exactly
+    // as the predecessor test did.
+    let mid_deadline = Instant::now() + Duration::from_secs(15);
     let mut saw_retry_status = false;
     loop {
         client.pump();
@@ -1251,7 +1263,7 @@ fn unresponsive_supervisor_keeps_health_accounting() {
             !client.is_dead(),
             "must not reach Terminal well inside the 120s health window (status={s})"
         );
-        if Instant::now() >= deadline {
+        if Instant::now() >= mid_deadline {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -1262,4 +1274,26 @@ fn unresponsive_supervisor_keeps_health_accounting() {
         client.status_line()
     );
     assert!(!client.is_dead(), "must not be Terminal after only a small slice of the 120s health window");
+
+    // Past the window's own end: a generous margin beyond the constant
+    // itself, so the wait is a proof of "it DOES expire," never a tight
+    // race against `HEALTH_WINDOW`'s exact edge.
+    let expiry_deadline = Instant::now() + fe_client::HEALTH_WINDOW + Duration::from_secs(30);
+    loop {
+        client.pump();
+        if client.is_dead() {
+            break;
+        }
+        assert!(
+            Instant::now() < expiry_deadline,
+            "expected the client to reach Terminal once the health window truly expired (status={})",
+            client.status_line()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        client.status_line().to_lowercase().contains("healthwindowexpired"),
+        "expected the health-window's OWN expiry reason, got status={}",
+        client.status_line()
+    );
 }
