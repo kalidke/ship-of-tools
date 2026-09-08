@@ -46,6 +46,39 @@ Blue and gray are an **unread / read** pair, stamped by hooks, not by you:
   "you never came back", not a bug. A `blocked`/`waiting`/explicit `done` row
   is never touched by the floor (same guards as the old soft idle).
 
+### Viewing clears blue (owner decision 2026-09-08)
+
+Blue is *unread*, and there are two ways to read a session: type into it, or
+look at it. Only the first cleared blue, so rows the user read and moved on
+from stayed blue forever.
+
+**Switching the frontend's view to a workspace clears that row's blue.** The
+frontend already tells the daemon "my view is now this workspace"
+(`workspace.activate`); the switches a **person** performs — Sessions-Enter,
+Shift+Left/Right cycling — now carry `read: true` on that same signal. The
+daemon flips a `done` row to `idle` and **writes nothing else**: the summary
+survives (the row reads `idle · last: …`), and `status_at` is untouched, so
+reading a parked row does not make it look recently active.
+
+**Both blues clear.** The floor's blue and an explicit `comm-status.sh done
+"<summary>"` mean the same thing — a result you have not seen — and the
+registry does not record which writer stamped it. Telling them apart would
+mean a new field that serves no other invariant. One rule: `done` → `idle`.
+`blocked`, `waiting` and `working` are never touched — viewing is not
+answering, and it is not finishing a job.
+
+**No dwell timer.** A switch fully repaints the view onto that workspace; a
+blow-through while cycling is still being back at it. If it proves wrong in
+use, the hold belongs in the frontend (the only party that knows what stayed
+on screen), and needs no protocol change: a repeat `activate` is idempotent.
+
+**Not the user's every arrival.** An agent driving the view (`sot-fe switch`,
+a cross-workspace `show-result`), a `workspace.create` auto-switch, a destroy
+bounce and a reconnect re-announce all send `activate` with `read: false`.
+The daemon never infers that a person looked.
+
+*No time-based decay still stands.* Only a read clears blue.
+
 `turn_origin` is a registry field on the row, written only by the soft
 `working` write; nothing else reads it. Absent provenance fails gray, so a box
 still on the old hooks never paints blue by accident.

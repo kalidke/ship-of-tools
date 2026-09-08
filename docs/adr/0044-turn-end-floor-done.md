@@ -65,9 +65,16 @@ hooks:
   accepted residual: the peer that tasked it gets a comm report anyway, and
   the model reports `done "<summary>"` explicitly when a job lands — the
   skill rule that already existed, now with a colour that means something.
-- A "seen" mark (the user switched to the workspace but did not type) would
-  need an FE → registry write path, which does not exist. Deferred; ship
-  without it and evaluate.
+- A "seen" mark (the user switched to the workspace but did not type) —
+  flagged above as deferred, needing an FE → registry write path that did
+  not exist — **shipped 2026-09-08** ("Viewing clears blue"):
+  `workspace.activate` carries `read: bool`, set by the frontend only on
+  the two person-driven view switches (Sessions-Enter, Shift+Left/Right
+  cycling); the daemon flips a `done` row's registry state to `idle` and
+  writes nothing else (summary and `status_at` survive). Both blues clear
+  the same way — the registry doesn't record which writer stamped
+  `done`. Full mechanism, lock protocol, and the deliberately-left-out
+  list: `comm/adapters/claude/sot-comm/references/work-state.md`.
 - The strip ordering (PR #222) ranks the tiers red, white (badged), blue,
   green, purple, gray (owner ruling 2026-09-08), so a blue row sits right
   behind the rows that need the user most.
