@@ -46,7 +46,7 @@ esac
 
 ENDPOINT="${SOT_RELAY_ENDPOINT:-}"
 resolve_endpoint() {
-    sot_daemon_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
+    sot_relay_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
 }
 # nc preferred; on hosts without it (e.g. git-bash on Windows, which ships no
 # nc) fall back to bash's /dev/tcp for tcp endpoints. unix-socket endpoints

@@ -1962,6 +1962,39 @@ FAKESOTD
     return 0
 }
 
+case_windows_relay_endpoint_is_the_tunnel_even_with_a_live_local_pipe() {
+    # sot_relay_endpoint on the same simulated Windows host, WITH a live
+    # local pipe on offer: relay traffic (send/listen) must still go to the
+    # backend tunnel -- a handle lives on the backend daemon, and the local
+    # daemon's pipe has no route to it (2026-09-08: cross-host sends from a
+    # Windows session went dark when discovery became pipe-first).
+    local fakebin appdata out
+    fakebin="$WORK/win-discovery-bin"
+    appdata="$WORK/win-discovery-localappdata"
+    [ -x "$fakebin/uname" ] && [ -x "$appdata/sot/bin/sotd.exe" ] \
+        || { echo "  depends on case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep's fakes"; return 1; }
+    out="$(
+        unset OS OSTYPE SOT_SOCKET SOTD_BIN SOT_PORT
+        PATH="$fakebin:$PATH"
+        LOCALAPPDATA="$appdata"
+        sot_relay_endpoint
+    )"
+    [ "$out" = "tcp:127.0.0.1:18743" ] \
+        || { echo "  expected the backend tunnel tcp:127.0.0.1:18743 for relay traffic, got: $out"; return 1; }
+    out="$(
+        unset OS OSTYPE SOT_SOCKET SOTD_BIN
+        PATH="$fakebin:$PATH"
+        LOCALAPPDATA="$appdata"
+        SOT_PORT=18750 sot_relay_endpoint
+    )"
+    [ "$out" = "tcp:127.0.0.1:18750" ] \
+        || { echo "  expected SOT_PORT to pick the tunnel port, got: $out"; return 1; }
+    out="$(sot_relay_endpoint "unix:/explicit.sock")"
+    [ "$out" = "unix:/explicit.sock" ] \
+        || { echo "  an explicit endpoint must win verbatim, got: $out"; return 1; }
+    return 0
+}
+
 # --- run, in order (later cases depend on earlier ones' registry state) --
 
 check "fresh claim records root"                            case_fresh_claim
@@ -2016,6 +2049,7 @@ check "sot_oneshot_request over a pipe: endpoint dispatches to the stub powershe
 check "sot_oneshot_request over a pipe: endpoint fails cleanly with no powershell.exe on PATH (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_powershell
 check "sot_oneshot_request over a pipe: endpoint fails cleanly with comm-pipe-request.ps1 missing (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_missing_ps1
 check "sot_daemon_endpoint on a simulated Windows host returns pipe: first and never calls pgrep (LU6e)" case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep
+check "sot_relay_endpoint on a simulated Windows host is the backend tunnel even with a live local pipe (never the pipe)" case_windows_relay_endpoint_is_the_tunnel_even_with_a_live_local_pipe
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

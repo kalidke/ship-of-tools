@@ -82,7 +82,7 @@ if _sot_is_windows; then
         # daemon -> broadcast -> native FE -> fe_inbox append, so the proof is
         # a real injected frame surviving that exact path, not a bridge
         # liveness check. Inject a synthetic `agent.message` addressed to
-        # ourselves over $SOT_RELAY_ENDPOINT (sot_daemon_endpoint defaults
+        # ourselves over $SOT_RELAY_ENDPOINT (sot_relay_endpoint defaults
         # this to the local tunnel on Windows — comm-lib.sh, finding 6) and
         # poll the inbox for it. Same exit-code contract as the Linux branch
         # below: 0 receive path OK, 1 daemon unreachable/rejected, 3 daemon
@@ -91,7 +91,7 @@ if _sot_is_windows; then
         [ -z "$NAME" ] && { echo "ERROR: no handle — run comm-join.sh first or pass --name" >&2; exit 1; }
         mkdir -p "$(dirname "$fe_inbox")" 2>/dev/null || true
         : >> "$fe_inbox"
-        EP="$(sot_daemon_endpoint "${SOT_RELAY_ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}")" \
+        EP="$(sot_relay_endpoint "${SOT_RELAY_ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}")" \
             || { echo "selftest @$NAME: no daemon endpoint found (set SOT_RELAY_ENDPOINT=tcp:HOST:PORT — the local tunnel to the remote socket)" >&2; exit 1; }
         case "$EP" in
             tcp:*) hp="${EP#tcp:}"; SH="${hp%:*}"; SP="${hp##*:}" ;;
@@ -231,7 +231,7 @@ case "$MODE" in
         # error bash can't 2>/dev/null-suppress (it fires before the fd dup) —
         # cosmetic, but it derailed a real first-join diagnosis. Append-touch.
         : >> "$INBOX"
-        EP="$(sot_daemon_endpoint "${SOT_RELAY_ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}")" \
+        EP="$(sot_relay_endpoint "${SOT_RELAY_ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}")" \
             || { echo "selftest @$NAME: no daemon endpoint found (set SOT_RELAY_ENDPOINT=unix:/path or tcp:HOST:PORT)" >&2; exit 1; }
         SH=""; SP=""; SU=""
         case "$EP" in

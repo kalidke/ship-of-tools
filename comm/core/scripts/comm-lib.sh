@@ -185,6 +185,25 @@ _sot_windows_local_pipe() {
     printf '%s\n' "$raw"
 }
 
+# sot_relay_endpoint [EXPLICIT] — the endpoint for comm RELAY traffic (send,
+# ask, listen, selftest): where the HANDLES live. A handle is registered live
+# on the BACKEND daemon by its listener connection, so on a Windows box this
+# is the SSH tunnel to the backend — never the local daemon's pipe, which has
+# no route to a handle on another host and drops the frame without a word
+# (2026-09-08: every cross-host send from a Windows session went dark the
+# day discovery became pipe-first). Workspace ops, spawn and sot-fe keep
+# sot_daemon_endpoint's pipe-first order: those really do target the local
+# daemon. An explicit endpoint always wins, as everywhere else.
+sot_relay_endpoint() {
+    local explicit="${1:-}"
+    [ -n "$explicit" ] && { printf '%s\n' "$explicit"; return 0; }
+    if _sot_is_windows; then
+        printf 'tcp:127.0.0.1:%s\n' "${SOT_PORT:-18743}"
+        return 0
+    fi
+    sot_daemon_endpoint
+}
+
 # sot_daemon_endpoint [EXPLICIT] — resolve the control socket endpoint used by
 # comm relay/spawn/FE commands. Explicit endpoints keep their old behavior; the
 # socket-only default is discovered by asking sotd for the label-derived socket.
