@@ -1077,6 +1077,34 @@ function Invoke-FreshnessPass {
                 $script:launchNotices.Add("backend rebuild failed - running the existing sotd.exe/sot-capsule.exe pair: $(Limit-NoticeText $capExcerpt[0])") | Out-Null
             } else {
                 Write-SupLog "freshness: backend pair (sotd.exe, sot-capsule.exe) rebuilt"
+                # The supervisors that pinned the old image are now one build
+                # behind the pair: the daemon's pair guard refuses them, every
+                # attach fails as ForeignPipe, and the rows sit unusable until
+                # someone kills the supervisors by hand (2026-09-08, twice in
+                # one evening). Do it here, before the daemon ensure: compare
+                # the two images' build ids (the same id the pair guard
+                # compares), and when they differ end ONLY the 'supervise'
+                # processes -- never a run leg or the agent inside it, never
+                # an endrun/reset in flight. The legs survive; the first
+                # attach of each row spawns a fresh supervisor that adopts.
+                if ($renamedAside -and (Test-Path $renamedAside)) {
+                    $newId = & (Join-Path $devBinDir 'sot-capsule.exe') build-id 2>$null | Select-Object -First 1
+                    $oldId = & $renamedAside build-id 2>$null | Select-Object -First 1
+                    if ($newId -and $oldId -and "$newId" -ne "$oldId") {
+                        foreach ($cp in $capsuleSessionsAlive) {
+                            if (-not $cp.CommandLine -or $cp.CommandLine -notmatch '"\s+supervise\s') { continue }
+                            $row = if ($cp.CommandLine -match 'ws-[A-Za-z0-9-]+') { $Matches[0] } else { '?' }
+                            try {
+                                Stop-Process -Id $cp.ProcessId -Force -ErrorAction Stop
+                                Write-SupLog "freshness: ended old-build supervisor pid=$($cp.ProcessId) row=$row ($oldId -> $newId); its leg and agent survive, the first attach adopts them"
+                            } catch {
+                                Write-SupLog "freshness: could not end old-build supervisor pid=$($cp.ProcessId) row=$row ($($_.Exception.Message))"
+                            }
+                        }
+                    } else {
+                        Write-SupLog "freshness: pair build id unchanged ($newId) - live supervisors kept"
+                    }
+                }
             }
         }
     } finally {
