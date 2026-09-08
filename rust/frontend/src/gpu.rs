@@ -3123,6 +3123,13 @@ struct ReadMark {
 /// How long a person must stay on a row before it counts as read.
 const READ_DWELL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Minimum gap between `fe.presence` sends while real input keeps coming
+/// (2026-09-08 review rework, design point A) — matches the daemon's own
+/// `ACTIVE_WINDOW_SECS` order of magnitude without needing to agree on the
+/// exact number: any throttle well under the daemon's activity window keeps
+/// a person who is genuinely still typing/clicking from ever expiring out.
+const PRESENCE_THROTTLE: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReadMarkAction {
     /// No mark, or not due yet: nothing to do.
@@ -4556,6 +4563,14 @@ struct State {
     /// nonzero value and exits with that code so the supervisor restages the
     /// freshly-built binary and respawns us with `--relaunched`. ADR 0017.
     relaunch_flag: Arc<std::sync::atomic::AtomicU8>,
+    /// Last time this FE sent `fe.presence` (2026-09-08 review rework,
+    /// design point A) — `None` until the first real keyboard/mouse event.
+    /// `window_event`'s `KeyboardInput`/`MouseInput` arms send one whenever
+    /// this is stale by more than `PRESENCE_THROTTLE`, throttling a burst of
+    /// input to at most one wire request per window; idle input sends
+    /// nothing at all (no timer, no heartbeat — presence is purely a
+    /// side-effect of real events already being handled).
+    presence_last_sent: Option<std::time::Instant>,
     /// FE control commands (ADR 0019) enqueued by the command-file watcher
     /// thread (the producer) and drained on the main thread in `window_event`
     /// (the consumer), so dispatch runs the same code paths as the keybinds.
@@ -6032,6 +6047,7 @@ impl State {
             repo_dir,
             pending_resume_command,
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            presence_last_sent: None,
             fe_commands: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             fe_state_sig: None,
             focus_on_first_frame: true,
@@ -7148,7 +7164,16 @@ impl State {
     /// registered (nothing to cycle to). Routes through
     /// `switch_to_workspace` so all the snapshot / repaint / BL-retarget
     /// machinery fires the same way it does for Sessions-Enter.
-    fn cycle_workspace(&mut self, direction: i32) {
+    ///
+    /// `person_driven` is the caller's own provenance, carried through
+    /// rather than assumed (2026-09-08 review, finding 3): the real
+    /// Shift+Left/Right keyboard handler passes `true`; the FE
+    /// command-file dispatch (`FeCommand::CycleWs`, someone else driving
+    /// the view) and the `--capture-cycle` test/demo simulation both pass
+    /// `false`. Previously this was hardcoded `true` below, so ANY caller
+    /// — including the command file — could forge the ADR-0044 "a person
+    /// stayed on this view" dwell signal.
+    fn cycle_workspace(&mut self, direction: i32, person_driven: bool) {
         if self.workspace_slugs.len() < 2 {
             return;
         }
@@ -7176,8 +7201,35 @@ impl State {
             .clamp(-WHEEL_MAX_VEL, WHEEL_MAX_VEL);
         self.dirty = true;
         self.window.request_redraw();
-        // Shift+Left/Right cycling is person-driven: clear this row's blue.
-        self.switch_to_workspace(next_host, Some(next_slug), Some(tmux_session), true);
+        self.switch_to_workspace(next_host, Some(next_slug), Some(tmux_session), person_driven);
+    }
+
+    /// Send `fe.presence` if this is real input and the last send is stale
+    /// by more than `PRESENCE_THROTTLE` (2026-09-08 review rework, design
+    /// point A). Call ONLY from `window_event`'s real `KeyboardInput`/
+    /// `MouseInput` arms — never from command-file dispatch,
+    /// `--capture-cycle`, or any other simulated path, which is exactly
+    /// what makes this signal trustworthy where the daemon-side inference
+    /// it replaces wasn't (every op the daemon used to stamp from turned
+    /// out to have an automated producer too). A harness run
+    /// (`--ephemeral`/`--capture`) has no person at the keyboard even when
+    /// it synthesizes input, so it's excluded outright. No timer, no
+    /// heartbeat: idle input sends nothing at all.
+    fn report_presence(&mut self) {
+        if self.ephemeral {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self
+            .presence_last_sent
+            .is_some_and(|last| now.duration_since(last) < PRESENCE_THROTTLE)
+        {
+            return;
+        }
+        self.presence_last_sent = Some(now);
+        if let Err(e) = self.send(OutgoingReq::FePresence) {
+            tracing::warn!(error = %e, "drop fe.presence — channel closed");
+        }
     }
 
     /// Switch the nav mode and fire that mode's data fetch. Shared by the
@@ -7535,7 +7587,9 @@ impl State {
             FeCommand::CycleWs { dir } => {
                 let dir = if dir == 0 { 1 } else { dir };
                 tracing::info!(dir, "fe-command: cycle workspace");
-                self.cycle_workspace(dir);
+                // Command-file driven, not a person looking: leave blue as-is
+                // (2026-09-08 review, finding 3 — this was the forgeable path).
+                self.cycle_workspace(dir, false);
             }
             FeCommand::ReloadKeybindings => {
                 self.bindings = KeyBindings::load_layered();
@@ -15155,7 +15209,8 @@ impl State {
                         self.capture_cycle = 0;
                         let dir = if steps > 0 { 1 } else { -1 };
                         for _ in 0..steps.abs() {
-                            self.cycle_workspace(dir);
+                            // Simulated cycling (--capture-cycle), not a person.
+                            self.cycle_workspace(dir, false);
                         }
                     }
                     // The rest of this handler rebuilds the Sessions-mode
@@ -18979,10 +19034,10 @@ fn parse_nav_envelope(text: &str) -> Option<NavEnvelope> {
 /// `state_persistence::state_path`'s hostname logic exactly: `$HOSTNAME` (Linux)
 /// else `$COMPUTERNAME` (Windows) else "unknown", lowercased, as
 /// `win-fe-<host>`. The daemon scopes an `FE_COMMAND`'s `target` to one FE by
-/// this handle; we self-filter against it. `pub(crate)` since the
-/// owner-approved "active frontend" design (2026-09-08): `transport.rs`
-/// sends this same value as `HelloReq::fe_handle` so the daemon can name
-/// this connection without a second derivation to keep in sync.
+/// this handle; we self-filter against it. `pub(crate)` because
+/// `transport.rs` also sends this same value as `HelloReq::fe_handle`, so
+/// the daemon can name this connection without a second derivation to
+/// keep in sync.
 pub(crate) fn self_comm_handle() -> String {
     let host = std::env::var("HOSTNAME")
         .ok()
@@ -19603,6 +19658,10 @@ impl ApplicationHandler for App {
                 button,
                 ..
             } => {
+                // A real click, regardless of which button or what it does
+                // below — presence reporting (design point A) precedes and
+                // is independent of the click's own handling.
+                state.report_presence();
                 if button == MouseButton::Left {
                     match btn_state {
                         ElementState::Pressed => {
@@ -19896,6 +19955,10 @@ impl ApplicationHandler for App {
                 }
                 if matches!(event.logical_key, Key::Named(NamedKey::Control | NamedKey::Shift |
                     NamedKey::Alt | NamedKey::Super | NamedKey::Meta | NamedKey::AltGraph)) { return; }
+                // A real, non-synthetic keypress, past this point — presence
+                // reporting (design point A) precedes and is independent of
+                // whatever action this key resolves to below.
+                state.report_presence();
                 // Snapshot-and-clear the destroy arm. The D handler
                 // re-arms on first press; any other key (cursor move,
                 // mode switch, etc.) silently clears it. Same pattern
@@ -20113,12 +20176,12 @@ impl ApplicationHandler for App {
                 // keep it disjoint from Ctrl+Arrow (pane focus) above.
                 if !event.repeat && state.edit_state.is_none() {
                     if action == Some(Action::WorkspaceCycleNext) {
-                        state.cycle_workspace(1);
+                        state.cycle_workspace(1, true);
                         state.last_key = Some(label);
                         return;
                     }
                     if action == Some(Action::WorkspaceCyclePrev) {
-                        state.cycle_workspace(-1);
+                        state.cycle_workspace(-1, true);
                         state.last_key = Some(label);
                         return;
                     }
@@ -25003,6 +25066,11 @@ mod tests {
             cmd: cmd.to_string(),
             args,
             target: target.map(|s| s.to_string()),
+            // Never reaches the wire (`#[serde(skip)]`) and irrelevant to
+            // the FE's own `route_fe_command` — these tests exercise that
+            // pure routing decision, not the daemon-side exclusive-delivery
+            // filter (which lives entirely in server.rs).
+            target_serial: None,
         }
     }
 

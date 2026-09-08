@@ -5,10 +5,11 @@
 # socket (no comm relay, no FE LLM), and the daemon re-emits it as an
 # `fe.command` evt. The FE switches + shows the target regardless of its
 # current view. With no --fe, the daemon resolves delivery to the ACTIVE
-# frontend (owner-approved "active frontend" design, 2026-09-08: whichever
-# FE a person last touched, within a 5-minute window) and falls back to
-# broadcasting to every attached FE only when none qualifies; --fe <handle>
-# always scopes delivery to that one FE explicitly.
+# frontend — whichever FE last reported real keyboard/mouse input
+# (`fe.presence`), within a 5-minute window — and delivers to that ONE
+# connection exclusively; it falls back to broadcasting to every attached FE
+# only when none qualifies. --fe <handle> always scopes delivery to that one
+# FE explicitly, overriding the active-frontend resolution.
 #
 # Usage:
 #   sot-fe preview <workspace> <path> [--urgent] [--fe <handle>] [--roi x,y,w,h]
@@ -46,10 +47,10 @@
 #   relaunch — ask ONE frontend to respawn itself (ADR 0017): plain (exit 75,
 #              re-stage + respawn) or --converge (exit 76: pull, rebuild,
 #              daemon-pair re-ensure, respawn). With no --fe, the daemon
-#              routes to the ACTIVE frontend; --fe <handle> overrides the
-#              active frontend. A still-untargeted delivery (no frontend is
-#              active) is refused FE-side, same as an explicit broadcast --
-#              nothing bounces.
+#              routes to the ACTIVE frontend; --fe <handle> overrides it.
+#              With no --fe and no active frontend (or an old daemon that
+#              can't say), this script itself exits 2 with a `--fe` hint —
+#              nothing bounces either way, but a silent no-op is refused.
 #   repl     — run a .jl file (or eval code) in a workspace's persistent REPL
 #              and print the COLLECTED output (stdout/stderr/value/error +
 #              figure file paths). Unlike the other verbs this is a real
@@ -124,8 +125,10 @@
 #              0030 §8 decision 31, ADR 0043 decision 31). One
 #              version.query + one workspace.list (never fans out to a
 #              second daemon — pass --endpoint again for the other side).
-#              Table rows: `client <id>` per attached FE, one row labeled
-#              by the RESOLVED ENDPOINT with its app_version + lane_build,
+#              Table rows: `frontend <handle>` per attached FE with
+#              `active`/`idle` (a client with no self-reported handle prints
+#              as `client <id>` instead), one row labeled by the RESOLVED
+#              ENDPOINT with its app_version + lane_build,
 #              `row <slug>` per capsule workspace with its phase and no
 #              derived verdict (this script never challenged the lane —
 #              "foreign" already IS the verdict), and `comm scripts` from
@@ -329,6 +332,22 @@ send_fe_command() {
         echo "ERROR: fe.command.send ($fe_cmd) failed via $ENDPOINT" >&2
         [ -n "$resp" ] && printf '  daemon said: %s\n' "$resp" >&2
         exit 1
+    fi
+    # relaunch with no --fe: `resolved_target` (2026-09-08 review, design
+    # point E) is the daemon's own claim about where this went. Absent means
+    # EITHER "no frontend is active right now" OR "this daemon predates
+    # resolved_target" (an old daemon still broadcasts the untouched
+    # request, and every FE refuses an undirected relaunch -- nothing
+    # bounces, but nothing happens either) -- both read identically from
+    # here: fail visibly instead of reporting success for a command nobody
+    # executed. Every other verb keeps its broadcast fallback untouched.
+    if [ "$fe_cmd" = relaunch ] && [ -z "${FE:-}" ]; then
+        local resolved
+        resolved="$(printf '%s' "$resp" | jq -r '.payload.resolved_target // empty' 2>/dev/null || true)"
+        if [ -z "$resolved" ]; then
+            echo "ERROR: no active frontend to relaunch -- supply --fe <handle> ('sot-fe version' lists attached frontends)." >&2
+            exit 2
+        fi
     fi
     echo "fe.command sent: cmd=$fe_cmd${FE:+ target=$FE} via $ENDPOINT"
     # Two sessions burned on the same traps (MyAnalysis, MyDocs) — say the
@@ -830,22 +849,20 @@ send_version() {
     printf '%-20s %-28s %s\n' "component" "version" "build"
     if [ -z "$verr" ]; then
         # A client with a self-reported fe_handle is a real frontend --
-        # printed on its own row (owner-approved "active frontend" design,
-        # 2026-09-08: never collapsed, each box is distinct) as
-        # "frontend <handle>  <version>  active|idle <N>s". idle_secs absent
-        # means the daemon has never seen person input from it -- printed as
-        # "idle -", never "idle 0s" (which would misreport a fresh connection
-        # as recently touched). Everything else (a client_id with no handle
-        # -- every comm-script connection registers as "sot-comm") keeps the
+        # printed on its own row (never collapsed, each box is distinct) as
+        # "frontend <handle>  <version>  active|idle". No idle AGE is shown
+        # (deleted 2026-09-08 review, finding 6): the daemon's expiry/tie
+        # policy is the only thing entitled to decide "how idle" something
+        # is, so this script only ever asks "which one, if any, is active"
+        # and prints that. Everything else (a client_id with no handle --
+        # every comm-script connection registers as "sot-comm") keeps the
         # pre-existing collapse: identical (client_id, version) pairs fold
         # into one row with a count, since a busy backend has a dozen of
         # those at once.
         printf '%s' "$vresp" | jq -r '(.payload.clients // []) as $c
             | ( $c | map(select(.fe_handle != null and .fe_handle != "")) | .[]
                 | "frontend " + .fe_handle + "\t" + .app_version + "\t"
-                    + (if .active then "active"
-                       elif .idle_secs != null then "idle " + (.idle_secs | tostring) + "s"
-                       else "idle -" end)
+                    + (if .active then "active" else "idle" end)
               ),
               ( $c | map(select(.fe_handle == null or .fe_handle == ""))
                 | group_by(.client_id + "\u0000" + .app_version) | .[]
@@ -1036,12 +1053,11 @@ case "$CMD" in
         send_fe_command notify "$ARGS"
         ;;
     relaunch)
-        # --fe is OPTIONAL (owner-approved "active frontend" design,
-        # 2026-09-08): with none given, send_fe_command omits `target` and
-        # the daemon's fe.command.send relay fills in the active frontend
-        # (falling back to a broadcast only when none is active, which the
-        # FE-side handler above still refuses -- see route_fe_command's
-        # `!directed` check, unchanged). --fe <handle> still overrides it.
+        # --fe is OPTIONAL: with none given, send_fe_command omits `target`
+        # and the daemon resolves the active frontend itself, publishing
+        # nothing at all when none is active (the send_fe_command check
+        # above then exits 2 rather than reporting a false success).
+        # --fe <handle> still overrides it.
         ARGS="$(jq -nc --argjson c "$([ "$CONVERGE" = true ] && echo true || echo false)" '{converge:$c}')"
         send_fe_command relaunch "$ARGS"
         ;;

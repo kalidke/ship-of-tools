@@ -258,6 +258,9 @@ async fn run_check_once(
             cmd: "notify".into(),
             args: json!({ "text": notify_text(&out.latest, &updater.current) }),
             target: None,
+            // A genuine broadcast: every FE should see an update notice,
+            // not just whoever's active. See `FeCommandEvt::target_serial`.
+            target_serial: None,
         };
         // Fire-and-forget broadcast; a send error just means no FE is attached.
         let _ = fe_command_tx.send(evt);
@@ -437,6 +440,8 @@ pub async fn handle_update_apply(
             if will_restart { "restarting" } else { "exiting; your next launch completes the update" }
         )}),
         target: None,
+        // A genuine broadcast: see `FeCommandEvt::target_serial`.
+        target_serial: None,
     };
     let _ = fe_command_tx.send(evt);
 

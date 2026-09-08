@@ -212,17 +212,30 @@ pub mod op {
     /// envelope (gated, workspace-scoped), this is *imperative*: the FE switches +
     /// shows regardless of its current view, under a badge-floor + opt-in
     /// force-show consent model (FE-side). Payload `FeCommandSendReq`
-    /// (`{cmd, args, target?}`); response `FeCommandSendRes{ok}`. Sent by the
-    /// `sot-fe` BE CLI over the daemon socket — no comm relay, no FE LLM.
+    /// (`{cmd, args, target?}`); response `FeCommandSendRes{ok, resolved_target?}`.
+    /// Sent by the `sot-fe` BE CLI over the daemon socket — no comm relay, no FE LLM.
     pub const FE_COMMAND_SEND: &str = "fe.command.send";
     /// Server→client push carrying one imperative FE command (ADR 0025). Mirrors
     /// `AGENT_MESSAGE`: the daemon broadcasts to every connection; the FE parses
     /// the `{v, cmd, args}` envelope into an `FeCommand` and runs it through the
     /// existing `dispatch_fe_command` sink. `target` (a FE sot-comm handle)
     /// optionally scopes it: `None` → every FE acts (the badge floor);
-    /// `Some(handle)` → only the matching FE acts (force-show to a specific FE;
-    /// v1.1 will route via daemon primary-tracking instead). Payload `FeCommandEvt`.
+    /// `Some(handle)` → only the matching FE acts (force-show to a specific FE).
+    /// An untargeted `fe.command.send` is auto-resolved daemon-side to the
+    /// active frontend (2026-09-08 review rework) — exclusively, by connection
+    /// identity, not merely by re-checking `target` FE-side (see
+    /// `FeCommandEvt::target_serial`). Payload `FeCommandEvt`.
     pub const FE_COMMAND: &str = "fe.command";
+    /// A person is providing real input right now (2026-09-08 review rework,
+    /// design point A). Sent by the frontend from its own winit
+    /// keyboard/mouse handlers, throttled client-side — never by any
+    /// automated or command-file-driven path. Empty request
+    /// (`FePresenceReq`); the daemon stamps this connection's
+    /// `last_person_input_at` and acks (`FePresenceRes{ok}`). This is the
+    /// ONLY thing that stamps it — replaces an earlier design that inferred
+    /// presence from ordinary navigation/typing ops, which turned out to
+    /// have automated producers for every one of them.
+    pub const FE_PRESENCE: &str = "fe.presence";
     /// Open a `.jl` Pluto-flavored notebook in the backend-supervised
     /// Pluto server. The backend lazy-spawns one shared server per
     /// daemon (listening on 127.0.0.1:1234), keeps it across calls,
@@ -356,13 +369,14 @@ pub struct HelloReq {
     #[serde(default)]
     pub app_version: String,
     /// This frontend's own sot-comm handle (`win-fe-<host>`), self-reported
-    /// (owner-approved "active frontend" design, 2026-09-08) — the same
-    /// derivation the frontend's `route_fe_command` target filter already
-    /// matches on. `#[serde(default)]` → `None` for a pre-this-field
-    /// frontend, or a non-FE client (a `sot-comm` script's hello): such a
-    /// connection can never become "the active frontend" (see
-    /// `Clients::active_frontend`), only ever an explicit `--fe <handle>`
-    /// reaches it, exactly as before this field existed.
+    /// — the same derivation the frontend's `route_fe_command` target
+    /// filter already matches on. `#[serde(default)]` → `None` for a
+    /// pre-this-field frontend, or a non-FE client (a `sot-comm` script's
+    /// hello): such a connection can never be SELECTED as "the active
+    /// frontend" (see `Clients::snapshot_with_active`), but it still
+    /// receives a genuine broadcast (no active frontend resolved) same as
+    /// any other connection, and a pre-this-field frontend still
+    /// self-filters against an explicit `--fe <handle>` client-side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fe_handle: Option<String>,
 }
@@ -1470,12 +1484,14 @@ pub struct AgentSendRes {
 
 /// `fe.command.send` request (ADR 0025) — ask the daemon to drive the
 /// frontend(s) with an imperative UI command. The daemon re-emits
-/// `{v:1, cmd, args, target}` as an `FE_COMMAND` evt to every connection
-/// (mirrors `AGENT_SEND` → `AGENT_MESSAGE`). `cmd` ∈ {"preview", "reveal",
-/// "goto_workspace", "goto_mode", "notify"} for v1; `args` is the per-cmd object
-/// (e.g. `preview` = `{workspace, path, urgent?}`, `goto_workspace` =
-/// `{workspace}`). `target` optionally scopes delivery to one FE by its
-/// sot-comm handle; absent = all FEs (the badge floor).
+/// `{v:1, cmd, args, target}` as an `FE_COMMAND` evt (mirrors `AGENT_SEND` →
+/// `AGENT_MESSAGE`). `cmd` ∈ {"preview", "reveal", "goto_workspace",
+/// "goto_mode", "notify"} for v1; `args` is the per-cmd object (e.g.
+/// `preview` = `{workspace, path, urgent?}`, `goto_workspace` = `{workspace}`).
+/// `target` optionally scopes delivery to one FE by its sot-comm handle;
+/// absent = the daemon resolves the active frontend (2026-09-08 review
+/// rework) and delivers to that ONE connection exclusively, falling back to
+/// every FE (the badge floor) only when none is active.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeCommandSendReq {
     pub cmd: String,
@@ -1485,12 +1501,21 @@ pub struct FeCommandSendReq {
     pub target: Option<String>,
 }
 
-/// `fe.command.send` response — a bare ack. `ok` is true on a parsed request;
-/// the FE-command publish is fire-and-forget, so a send with no FE connected
-/// still acks ok (mirrors `AgentSendRes`).
+/// `fe.command.send` response — a bare ack plus `resolved_target` (2026-09-08
+/// review rework, design point E): the handle the daemon actually resolved
+/// `target` to, or `None` if it published unresolved (a genuine broadcast) or
+/// didn't publish at all. `ok` is true on a parsed request; the FE-command
+/// publish is fire-and-forget, so a send with no FE connected still acks ok
+/// (mirrors `AgentSendRes`). `#[serde(default)]` on `resolved_target` so an
+/// old daemon that predates this field deserializes to `None` here too —
+/// `sot-fe` treats "old daemon" and "no active frontend" identically for
+/// `relaunch`: both mean "we don't know this reached anyone," so it exits
+/// non-zero with a `--fe` hint either way rather than reporting success.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeCommandSendRes {
     pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_target: Option<String>,
 }
 
 /// Payload of an `FE_COMMAND` evt (ADR 0025) — one imperative UI command pushed
@@ -1507,10 +1532,38 @@ pub struct FeCommandEvt {
     pub args: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// DAEMON-INTERNAL ONLY — `#[serde(skip)]`, never reaches the wire in
+    /// either direction. The connection SERIAL the daemon resolved via
+    /// `Clients::snapshot_with_active` when it auto-targeted this event
+    /// (2026-09-08 review rework, design point B: a handle string is not a
+    /// reliable identity — two connections can share one, e.g. a stale
+    /// reconnect). `server.rs`'s per-connection fan-out drops this event
+    /// for every connection whose own serial doesn't match, so exactly one
+    /// connection ever writes it to its wire — `target` above still rides
+    /// along for that one connection's own (redundant, harmless)
+    /// `route_fe_command` self-check. `None` here means every connection
+    /// may act on `target` as today: a handle-matched broadcast for an
+    /// explicit `--fe <handle>`, or an unresolved genuine broadcast.
+    #[serde(skip)]
+    pub target_serial: Option<u64>,
 }
 
 fn fe_command_version() -> u32 {
     1
+}
+
+/// `fe.presence` request (2026-09-08 review rework, design point A) — empty:
+/// the frontend's own signal that a PERSON just provided real keyboard or
+/// mouse input, sent from the winit input handlers themselves (throttled
+/// there), never inferred by the daemon from other op traffic. See
+/// `Clients::touch_person_input`, which this op alone drives.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FePresenceReq {}
+
+/// `fe.presence` response — a bare ack; the frontend doesn't act on it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FePresenceRes {
+    pub ok: bool,
 }
 
 /// Open a Pluto-flavored `.jl` notebook in the backend-supervised
@@ -1904,21 +1957,20 @@ pub struct ClientVersion {
     pub client_id: String,
     pub app_version: String,
     pub protocol: u32,
-    /// This client's self-reported `HelloReq::fe_handle` (owner-approved
-    /// "active frontend" design, 2026-09-08) — `None` for a non-FE client
-    /// or one that predates the field. `#[serde(default)]` so a daemon
-    /// that predates this field still deserializes for an older caller.
+    /// This client's self-reported `HelloReq::fe_handle` — `None` for a
+    /// non-FE client or one that predates the field. `#[serde(default)]`
+    /// so a daemon that predates this field still deserializes for an
+    /// older caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fe_handle: Option<String>,
-    /// Seconds since this client's last person-generated request
-    /// (`Clients::active_frontend`'s input); `None` if it has never sent
-    /// one. Meaningless for a client with no `fe_handle`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idle_secs: Option<u64>,
-    /// True for the one client (at most) that `Clients::active_frontend`
-    /// resolves to — the frontend an untargeted `fe.command.send` would be
-    /// delivered to right now. `#[serde(default)]` → `false` for a daemon
-    /// that predates this field.
+    /// True for the one connection (at most, identified by SERIAL, never
+    /// merely by a matching handle — see `Clients::snapshot_with_active`)
+    /// that an untargeted `fe.command.send` would be delivered to right
+    /// now. No idle age is reported here (deleted 2026-09-08 review,
+    /// finding 6): deriving "how idle" in shell would duplicate the
+    /// daemon's own expiry/tie policy, and a caller only ever needs to
+    /// know WHICH one is active, never by how much. `#[serde(default)]` →
+    /// `false` for a daemon that predates this field.
     #[serde(default)]
     pub active: bool,
 }
@@ -2053,7 +2105,6 @@ mod version_query_tests {
                 app_version: "0.6.0-dev+abc1234".into(),
                 protocol: 1,
                 fe_handle: Some("win-fe-a".into()),
-                idle_secs: Some(3),
                 active: true,
             }],
         };
@@ -2063,16 +2114,14 @@ mod version_query_tests {
         assert_eq!(back.clients.len(), 1);
         assert_eq!(back.clients[0].client_id, "fe-1");
         assert_eq!(back.clients[0].fe_handle.as_deref(), Some("win-fe-a"));
-        assert_eq!(back.clients[0].idle_secs, Some(3));
         assert!(back.clients[0].active);
     }
 
     #[test]
     fn client_version_without_active_frontend_fields_defaults_absent() {
-        // Owner-approved "active frontend" design (2026-09-08): a daemon
-        // that predates fe_handle/idle_secs/active omits them entirely —
-        // must still deserialize, reading None/None/false rather than
-        // failing the whole roster entry.
+        // A daemon that predates fe_handle/active omits them entirely —
+        // must still deserialize, reading None/false rather than failing
+        // the whole roster entry.
         let json = serde_json::json!({
             "client_id": "fe-1",
             "app_version": "0.6.0",
@@ -2081,7 +2130,6 @@ mod version_query_tests {
         let cv: ClientVersion =
             serde_json::from_value(json).expect("legacy ClientVersion deserializes");
         assert_eq!(cv.fe_handle, None);
-        assert_eq!(cv.idle_secs, None);
         assert!(!cv.active);
     }
 
@@ -2096,6 +2144,67 @@ mod version_query_tests {
         let res: VersionQueryRes = serde_json::from_value(json).expect("legacy payload deserializes");
         assert!(res.clients.is_empty());
         assert_eq!(res.daemon.app_version, "0.6.0");
+    }
+}
+
+#[cfg(test)]
+mod fe_presence_and_command_tests {
+    use super::{FeCommandEvt, FeCommandSendRes, FePresenceReq, FePresenceRes};
+
+    #[test]
+    fn fe_presence_req_and_res_round_trip_empty() {
+        let req = FePresenceReq {};
+        assert_eq!(serde_json::to_value(&req).unwrap(), serde_json::json!({}));
+        let _: FePresenceReq = serde_json::from_value(serde_json::json!({})).expect("empty req parses");
+
+        let res = FePresenceRes { ok: true };
+        let json = serde_json::to_string(&res).unwrap();
+        let back: FePresenceRes = serde_json::from_str(&json).unwrap();
+        assert!(back.ok);
+    }
+
+    #[test]
+    fn fe_command_send_res_resolved_target_round_trips_and_defaults_absent() {
+        // Design point E: a daemon that predates `resolved_target` omits it
+        // — `sot-fe` must read `None`, the same value it reads for "no
+        // active frontend", not fail the whole ack.
+        let legacy: FeCommandSendRes =
+            serde_json::from_value(serde_json::json!({ "ok": true })).expect("legacy ack parses");
+        assert_eq!(legacy.resolved_target, None);
+
+        let res = FeCommandSendRes {
+            ok: true,
+            resolved_target: Some("win-fe-a".into()),
+        };
+        let json = serde_json::to_string(&res).unwrap();
+        let back: FeCommandSendRes = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.resolved_target.as_deref(), Some("win-fe-a"));
+    }
+
+    #[test]
+    fn fe_command_evt_target_serial_never_reaches_the_wire() {
+        // Design point B: `target_serial` is a daemon-internal routing hint
+        // riding in the SAME struct as the wire-serialized `FeCommandEvt`
+        // (so `write_fe_command` can filter before writing) — it must never
+        // actually appear in the JSON, in either direction.
+        let evt = FeCommandEvt {
+            v: 1,
+            cmd: "notify".into(),
+            args: serde_json::json!({"text": "hi"}),
+            target: Some("win-fe-a".into()),
+            target_serial: Some(42),
+        };
+        let json = serde_json::to_value(&evt).unwrap();
+        assert!(
+            json.get("target_serial").is_none(),
+            "target_serial must never be serialized: {json}"
+        );
+        // And an incoming wire payload that somehow named it is ignored,
+        // deserializing to None regardless.
+        let mut with_stray_field = json.clone();
+        with_stray_field["target_serial"] = serde_json::json!(99);
+        let back: FeCommandEvt = serde_json::from_value(with_stray_field).unwrap();
+        assert_eq!(back.target_serial, None);
     }
 }
 

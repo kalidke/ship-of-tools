@@ -1087,14 +1087,18 @@ async fn read_owned<R: AsyncRead + Unpin>(
 /// switch the user can feel.
 const SLOW_REQUEST_MS: u64 = 50;
 
-/// Stamp this connection's `last_person_input_at` (owner-approved "active
-/// frontend" design, 2026-09-08) if it has registered. Call ONLY from the
-/// op arms below whose request a PERSON, not an agent, generates —
-/// `pty.write` (typing), `tree.root`/`tree.children`/`preview.get`
-/// (navigation), and a `workspace.activate` with `read: true` (ADR 0044:
-/// only a person-driven switch ever arms that dwell timer). Deliberately
-/// NOT `pty.input` (the agent path) or an untargeted `workspace.activate`
-/// (fired on every switch, person or not). A no-op pre-hello, when
+/// Stamp this connection's `last_person_input_at` if it has registered.
+/// Call ONLY from the `fe.presence` op arm (2026-09-08 review rework,
+/// design point A) — that op alone is trustworthy evidence of a person,
+/// because the frontend sends it from its own real keyboard/mouse input
+/// handlers, throttled there, never from a command-file or other
+/// automated path. An EARLIER design stamped this from ordinary
+/// navigation ops (`tree.root`, `preview.get`, `pty.write`, a
+/// `workspace.activate` with `read: true`); review found every one of
+/// them had an automated producer too (reconnect re-announces tree/preview
+/// requests, a badge-consuming `goto` fires them, an autostarted agent
+/// writes into its own pane, and a command-file `cycle_ws` could forge
+/// `read: true`) — deleted rather than patched. A no-op pre-hello, when
 /// `client_guard` is still `None`.
 fn touch_person_input(clients: &Clients, guard: &Option<ClientGuard>) {
     if let Some(g) = guard {
@@ -1369,7 +1373,7 @@ where
                 }
                 fc = recv_fe_command(&mut fe_command_rx) => {
                     if authenticated {
-                        write_fe_command(&mut tx, fc, transport).await?;
+                        write_fe_command(&mut tx, fc, transport, client_guard.as_ref().map(|g| g.serial())).await?;
                     }
                     continue;
                 }
@@ -1447,7 +1451,7 @@ where
                 }
                 fc = recv_fe_command(&mut fe_command_rx) => {
                     if authenticated {
-                        write_fe_command(&mut tx, fc, transport).await?;
+                        write_fe_command(&mut tx, fc, transport, client_guard.as_ref().map(|g| g.serial())).await?;
                     }
                     continue;
                 }
@@ -1551,11 +1555,9 @@ where
                 .await
             }
             op::TREE_ROOT => {
-                touch_person_input(&clients, &client_guard);
                 handlers::handle_tree_root(frame.id, frame.payload, &session, &workspaces).await
             }
             op::TREE_CHILDREN => {
-                touch_person_input(&clients, &client_guard);
                 handlers::handle_tree_children(frame.id, frame.payload, &session, &workspaces)
                     .await
             }
@@ -1567,7 +1569,6 @@ where
                 // Off-loop (switch-latency Phase 1): a read-and-render of
                 // the requested node. `preview.set_scale` stays INLINE just
                 // below — it writes a `.scale.json` sidecar.
-                touch_person_input(&clients, &client_guard);
                 let req_id = frame.id;
                 let op_name = frame.op.clone();
                 let mut payload = frame.payload;
@@ -1778,15 +1779,6 @@ where
                         .map(|ws| ws.workspace_id.clone())
                         .unwrap_or_else(|| hinted.unwrap_or_default().to_string()),
                 );
-                // `read: true` (ADR 0044) is honest evidence of a person: the
-                // frontend arms that dwell-timer follow-up ONLY on a switch
-                // `person_driven` already flagged, so — unlike the plain
-                // `workspace.activate` every switch fires regardless of who
-                // drove it — this one op arm is safe to stamp from. No new
-                // flag: reusing ADR 0044's existing signal.
-                if frame.payload.get("read").and_then(|v| v.as_bool()).unwrap_or(false) {
-                    touch_person_input(&clients, &client_guard);
-                }
                 handlers::handle_workspace_activate(frame.id, frame.payload, &workspaces).await
             }
             op::AGENT_SEND => {
@@ -1795,6 +1787,14 @@ where
             op::FE_COMMAND_SEND => {
                 handlers::handle_fe_command_send(frame.id, frame.payload, &fe_command_tx, &clients)
                     .await
+            }
+            op::FE_PRESENCE => {
+                // The ONLY place `last_person_input_at` is stamped from
+                // (2026-09-08 review rework, design point A) — see
+                // `touch_person_input`'s doc for why every other op that
+                // used to stamp it was removed instead of patched.
+                touch_person_input(&clients, &client_guard);
+                handlers::handle_fe_presence(frame.id).await
             }
             op::UPDATE_CHECK => crate::update::handle_update_check(frame.id).await,
             op::UPDATE_APPLY => {
@@ -2162,10 +2162,6 @@ where
                 continue; // no response for scroll
             }
             op::PTY_WRITE => {
-                // Typing into a pane is the clearest person-input signal on
-                // the wire (ADR: a person's own keystrokes, never an agent's
-                // — agents write via `pty.input`, untouched here).
-                touch_person_input(&clients, &client_guard);
                 let req: PtyWriteReq = match serde_json::from_value(frame.payload) {
                     Ok(r) => r,
                     Err(e) => {
@@ -2494,19 +2490,33 @@ async fn recv_fe_command(
 }
 
 /// Translates one FE command into an `fe.command` evt frame on the wire
-/// (ADR 0025). Returns `Ok(true)` if a frame was written, `Ok(false)` if the
-/// receiver was lagged or closed (skip and keep the connection alive). The
-/// evt is broadcast to every connection; the FE self-filters on `target`.
+/// (ADR 0025). Returns `Ok(true)` if a frame was written OR correctly
+/// filtered out for this connection, `Ok(false)` if the receiver was lagged
+/// or closed (skip and keep the connection alive). The evt is broadcast to
+/// every connection; ordinarily the FE self-filters on `target`, but when
+/// `e.target_serial` names a specific connection (2026-09-08 review rework,
+/// design point B — exclusive delivery by connection identity, not merely a
+/// handle string that two connections could share) this connection drops
+/// the event outright, without writing anything, unless its own `my_serial`
+/// matches. An explicit `--fe <handle>` send carries `target_serial: None`
+/// and keeps today's behaviour: every connection gets it and self-filters
+/// on `target`.
 async fn write_fe_command<W>(
     tx: &mut W,
     evt: Result<FeCommandEvt, broadcast::error::RecvError>,
     transport: &'static str,
+    my_serial: Option<u64>,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
     match evt {
         Ok(e) => {
+            if let Some(want) = e.target_serial {
+                if my_serial != Some(want) {
+                    return Ok(true);
+                }
+            }
             let frame = Frame::evt(op::FE_COMMAND, serde_json::to_value(e)?);
             write_frame_to(tx, &frame, None).await?;
             Ok(true)

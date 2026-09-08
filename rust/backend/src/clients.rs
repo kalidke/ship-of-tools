@@ -21,19 +21,25 @@
 // writer lock, follower mode) is deliberately *not* built here — for the
 // roaming use case both connections are the same user and optimistic
 // concurrency on file/concept writes already prevents lost writes.
+//
+// "Active frontend" (2026-09-08 review rework of the same-day design):
+// which connection is `fe.presence`'s most recent recipient, resolved by
+// SERIAL (never a bare handle string — two connections can share one,
+// e.g. a stale reconnect) with monotonic sub-second stamps so concurrent
+// touches order correctly. See `touch_person_input` and
+// `snapshot_with_active`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// The "active frontend" window (owner-approved design, 2026-09-08): a
-/// `last_person_input_at` stamp older than this no longer counts as "a
-/// person is here" for `Clients::active_frontend` below. Five minutes —
-/// long enough that a person reading a preview without touching a key
-/// doesn't get silently demoted, short enough that a box the owner walked
-/// away from stops absorbing untargeted commands.
-const ACTIVE_WINDOW_SECS: u64 = 5 * 60;
+/// The "active frontend" window: a `last_person_input_at` stamp older than
+/// this no longer counts as "a person is here" for `snapshot_with_active`
+/// below. Five minutes — long enough that a person reading a preview
+/// without touching a key doesn't get silently demoted, short enough that
+/// a box the owner walked away from stops absorbing untargeted commands.
+const ACTIVE_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 /// One connected frontend, as the backend sees it. `app_version`/`protocol`
 /// (ADR 0030 §8 decision 31b) are what `version.query` reports per client —
@@ -42,6 +48,12 @@ const ACTIVE_WINDOW_SECS: u64 = 5 * 60;
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct ClientInfo {
+    /// This connection's own registration serial (mirrors the `by_conn`
+    /// map key onto the value itself) — carried here so a caller holding
+    /// only a `ClientInfo` from a `ClientsSnapshot` can still compare it
+    /// against `ClientsSnapshot::active()`'s serial without a second
+    /// registry lookup.
+    pub serial: u64,
     /// The frontend-supplied, reconnect-stable id (per ADR 0010).
     pub client_id: String,
     /// "local" | "tcp" — the transport this connection arrived on.
@@ -58,22 +70,27 @@ pub struct ClientInfo {
     /// This client's `HelloReq::protocol`, same capture timing as
     /// `app_version`.
     pub protocol: u32,
-    /// This client's `HelloReq::fe_handle` (owner-approved "active
-    /// frontend" design, 2026-09-08): the frontend's own `win-fe-<host>`
-    /// sot-comm handle, self-reported at hello. `None` for a non-FE
-    /// client (a comm script's `sot-comm` hello) or a pre-this-field
-    /// frontend — such a client can never become the active frontend
-    /// (`active_frontend` requires a handle), only ever an explicit
-    /// `--fe <handle>` target reaches it, exactly as before this design.
+    /// This client's `HelloReq::fe_handle`: the frontend's own
+    /// `win-fe-<host>` sot-comm handle, self-reported at hello. `None` for
+    /// a non-FE client (a comm script's `sot-comm` hello) or a
+    /// pre-this-field frontend — such a connection can never be SELECTED
+    /// as the active frontend (`snapshot_with_active` requires a handle),
+    /// but that only removes it from the exclusive-delivery path: a
+    /// genuine broadcast (no active frontend resolved at all) still
+    /// reaches it exactly like every other connection, and a
+    /// pre-this-field FRONTEND still self-filters correctly against an
+    /// explicit `--fe <handle>` client-side, since that match never
+    /// depended on what the daemon knows about it.
     pub fe_handle: Option<String>,
-    /// Unix-epoch seconds of the most recent request THIS connection sent
-    /// that a person, not an agent, generates — see the call sites in
-    /// `server.rs` for the exact op list (`pty.write`, `preview.get`,
-    /// `tree.root`/`tree.children`, a `workspace.activate` with
-    /// `read: true`). `None` until the first such request. This is the
-    /// invariant `active_frontend` resolves from: the daemon can name
-    /// which frontend a person is using without asking them.
-    pub last_person_input_at: Option<u64>,
+    /// Monotonic instant of the most recent `fe.presence` this connection
+    /// sent (2026-09-08 review rework) — `None` until the first one.
+    /// `Instant`, not wall-clock time: sub-second precision so two
+    /// touches close together still order correctly, and immune to clock
+    /// adjustment. This is the ONLY thing that sets this field — no other
+    /// op stamps it (an earlier design inferred presence from ordinary
+    /// navigation/typing ops; every one of them turned out to have an
+    /// automated producer too, so it was deleted).
+    pub last_person_input_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -112,6 +129,7 @@ impl Clients {
     ) -> ClientGuard {
         let serial = self.next_serial.fetch_add(1, Ordering::Relaxed);
         let info = ClientInfo {
+            serial,
             client_id: client_id.into(),
             transport,
             peer,
@@ -146,52 +164,90 @@ impl Clients {
         self.inner.lock().unwrap().by_conn.len()
     }
 
-    /// Snapshot of every connected client — `version.query`'s `clients[]`
-    /// roster (ADR 0030 §8 decision 31b).
-    pub fn snapshot(&self) -> Vec<ClientInfo> {
-        self.inner.lock().unwrap().by_conn.values().cloned().collect()
-    }
-
-    /// Stamp `last_person_input_at = now` for the connection at `serial`
-    /// (owner-approved "active frontend" design, 2026-09-08). Call this
-    /// ONLY from a request a person, not an agent, generates — see the
-    /// call sites in `server.rs`. A no-op if `serial` isn't registered
-    /// (already disconnected, or `hello` hasn't landed yet).
+    /// Stamp `last_person_input_at = now` for the connection at `serial` —
+    /// the ONLY thing that should call this is the `fe.presence` handler
+    /// (2026-09-08 review rework, design point A). A no-op if `serial`
+    /// isn't registered (already disconnected, or `hello` hasn't landed
+    /// yet).
     pub fn touch_person_input(&self, serial: u64) {
         let mut g = self.inner.lock().unwrap();
         if let Some(info) = g.by_conn.get_mut(&serial) {
-            info.last_person_input_at = Some(now_secs());
+            info.last_person_input_at = Some(Instant::now());
         }
     }
 
-    /// The active frontend (owner-approved design, 2026-09-08): the
-    /// `fe_handle` of whichever client has one AND the most recent
-    /// `last_person_input_at` within `ACTIVE_WINDOW_SECS` of now. `None`
-    /// when no client qualifies — no frontend has reported a handle yet,
-    /// or none has had person input inside the window. A client with no
-    /// `fe_handle` is never a candidate, so a pre-this-field frontend (or
-    /// a non-FE client) never becomes "the active frontend" even if it's
-    /// the only thing touching the daemon.
-    pub fn active_frontend(&self) -> Option<String> {
-        let now = now_secs();
-        self.inner
-            .lock()
-            .unwrap()
-            .by_conn
-            .values()
+    /// One consistent read of the registry: every connection (the
+    /// `version.query` roster) PLUS the active frontend, resolved from the
+    /// SAME lock acquisition and the SAME `Instant::now()` — so the roster
+    /// and "who's active" can never disagree about what "now" meant
+    /// (2026-09-08 review, finding 6). Call this once per request that
+    /// needs either piece, never `clients()`-then-`active()` as two
+    /// separate reads.
+    pub fn snapshot_with_active(&self) -> ClientsSnapshot {
+        let now = Instant::now();
+        let clients: Vec<ClientInfo> = self.inner.lock().unwrap().by_conn.values().cloned().collect();
+        let active = Self::resolve_active(&clients, now);
+        ClientsSnapshot { clients, active }
+    }
+
+    /// Pure resolution: the fe_handle'd connection with the most recent
+    /// `last_person_input_at` within `ACTIVE_WINDOW` of `now`. Ties resolve
+    /// to the LATER-REGISTERED connection — `serial` is monotonically
+    /// increasing, so ordering by `(instant, serial)` picks it
+    /// automatically on an exact `Instant` tie — without a separate
+    /// tie-break rule. Factored out of `snapshot_with_active` (which always
+    /// passes real `Instant::now()`) so tests can inject an exact `now`
+    /// instead of racing the wall clock for boundary/ordering cases.
+    fn resolve_active(clients: &[ClientInfo], now: Instant) -> Option<ActiveFrontend> {
+        clients
+            .iter()
             .filter_map(|c| {
-                let handle = c.fe_handle.clone()?;
+                let handle = c.fe_handle.as_ref()?;
                 let at = c.last_person_input_at?;
-                (now.saturating_sub(at) <= ACTIVE_WINDOW_SECS).then_some((at, handle))
+                (now.saturating_duration_since(at) <= ACTIVE_WINDOW).then_some((at, c.serial, handle))
             })
-            .max_by_key(|(at, _)| *at)
-            .map(|(_, handle)| handle)
+            .max_by_key(|(at, serial, _)| (*at, *serial))
+            .map(|(_, serial, handle)| ActiveFrontend {
+                serial,
+                handle: handle.clone(),
+            })
     }
 }
 
 impl Default for Clients {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The connection an untargeted `fe.command.send` resolves to: identified
+/// by SERIAL (the only reliable identity — see the module doc), with its
+/// `fe_handle` carried along for the wire's `target` field and for
+/// `sot-fe version`'s display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveFrontend {
+    pub serial: u64,
+    pub handle: String,
+}
+
+/// One consistent snapshot of the client registry — see
+/// `Clients::snapshot_with_active`.
+pub struct ClientsSnapshot {
+    pub clients: Vec<ClientInfo>,
+    active: Option<ActiveFrontend>,
+}
+
+impl ClientsSnapshot {
+    /// The active frontend this snapshot resolved, if any.
+    pub fn active(&self) -> Option<&ActiveFrontend> {
+        self.active.as_ref()
+    }
+
+    /// Is `serial` the active frontend in this snapshot? Roster rows use
+    /// this (never a handle comparison) so a duplicate-handle connection
+    /// that ISN'T the winner is never marked active alongside it.
+    pub fn is_active_serial(&self, serial: u64) -> bool {
+        self.active.as_ref().is_some_and(|a| a.serial == serial)
     }
 }
 
@@ -247,7 +303,9 @@ fn distinct_client_ids(by_conn: &HashMap<u64, ClientInfo>) -> String {
     ids.join(",")
 }
 
-pub(crate) fn now_secs() -> u64 {
+/// Wall-clock seconds for `connected_at` (informational/logging only — the
+/// active-frontend resolution above uses `Instant`, never this).
+fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -268,7 +326,7 @@ mod tests {
 
         let g2 = clients.register("client-b", "local", None, "0.6.0", 1, None);
         assert_eq!(clients.count(), 2);
-        assert_eq!(clients.snapshot().len(), 2);
+        assert_eq!(clients.snapshot_with_active().clients.len(), 2);
 
         drop(g1);
         assert_eq!(clients.count(), 1);
@@ -291,15 +349,16 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_carries_app_version_and_protocol() {
+    fn snapshot_carries_app_version_protocol_and_own_serial() {
         // Decision 31b: this is exactly what `version.query`'s `clients[]`
         // roster reads — sourced from registration, not a new probe.
         let clients = Clients::new();
-        let _g = clients.register("client-a", "tcp", None, "0.6.0-dev+abc1234", 1, None);
-        let snap = clients.snapshot();
-        assert_eq!(snap.len(), 1);
-        assert_eq!(snap[0].app_version, "0.6.0-dev+abc1234");
-        assert_eq!(snap[0].protocol, 1);
+        let g = clients.register("client-a", "tcp", None, "0.6.0-dev+abc1234", 1, None);
+        let snap = clients.snapshot_with_active();
+        assert_eq!(snap.clients.len(), 1);
+        assert_eq!(snap.clients[0].app_version, "0.6.0-dev+abc1234");
+        assert_eq!(snap.clients[0].protocol, 1);
+        assert_eq!(snap.clients[0].serial, g.serial());
     }
 
     #[test]
@@ -308,12 +367,16 @@ mod tests {
         let g1 = clients.register("client-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
         let _g2 = clients.register("client-b", "local", None, "0.6.0", 1, Some("win-fe-b".into()));
 
-        assert!(clients.snapshot().iter().all(|c| c.last_person_input_at.is_none()));
+        assert!(clients
+            .snapshot_with_active()
+            .clients
+            .iter()
+            .all(|c| c.last_person_input_at.is_none()));
 
         clients.touch_person_input(g1.serial());
-        let snap = clients.snapshot();
-        let a = snap.iter().find(|c| c.client_id == "client-a").unwrap();
-        let b = snap.iter().find(|c| c.client_id == "client-b").unwrap();
+        let snap = clients.snapshot_with_active();
+        let a = snap.clients.iter().find(|c| c.client_id == "client-a").unwrap();
+        let b = snap.clients.iter().find(|c| c.client_id == "client-b").unwrap();
         assert!(a.last_person_input_at.is_some(), "the touched connection is stamped");
         assert!(b.last_person_input_at.is_none(), "an untouched connection stays unstamped");
     }
@@ -335,45 +398,100 @@ mod tests {
         // No handle at all: never active, even though it's touched.
         let no_handle = clients.register("client-a", "local", None, "0.6.0", 1, None);
         clients.touch_person_input(no_handle.serial());
-        assert_eq!(clients.active_frontend(), None, "a client with no fe_handle is never active");
+        assert_eq!(
+            clients.snapshot_with_active().active(),
+            None,
+            "a client with no fe_handle is never active"
+        );
 
         // A handle but never touched: not active either.
         let untouched = clients.register("client-b", "local", None, "0.6.0", 1, Some("win-fe-b".into()));
         let _ = &untouched;
-        assert_eq!(clients.active_frontend(), None);
+        assert_eq!(clients.snapshot_with_active().active(), None);
     }
 
-    #[test]
-    fn active_frontend_ties_resolve_to_the_most_recent_stamp() {
-        let clients = Clients::new();
-        let older = clients.register("client-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
-        let newer = clients.register("client-b", "local", None, "0.6.0", 1, Some("win-fe-b".into()));
-
-        // Stamp the "older" one first, then the "newer" one a moment later
-        // (both real wall-clock seconds, so this only asserts ordering, not
-        // an exact gap) — the more recently touched frontend wins.
-        clients.touch_person_input(older.serial());
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        clients.touch_person_input(newer.serial());
-
-        assert_eq!(clients.active_frontend(), Some("win-fe-b".to_string()));
-    }
-
-    #[test]
-    fn active_frontend_ignores_a_stamp_outside_the_window() {
-        let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
-        {
-            // Reach in and backdate the stamp past ACTIVE_WINDOW_SECS —
-            // sleeping the real window in a unit test isn't practical.
-            let mut inner = clients.inner.lock().unwrap();
-            inner.by_conn.get_mut(&g.serial()).unwrap().last_person_input_at =
-                Some(now_secs().saturating_sub(ACTIVE_WINDOW_SECS + 1));
+    /// A directly-constructed `ClientInfo` for `Clients::resolve_active`'s
+    /// pure-function tests below — bypasses the registry lock and real
+    /// `Instant::now()` entirely, so `now` and every stamp are exactly the
+    /// values the test chose (2026-09-08 review, finding 8: "inject the
+    /// clock; no sleeps").
+    fn ci(serial: u64, handle: &str, last_person_input_at: Option<Instant>) -> ClientInfo {
+        ClientInfo {
+            serial,
+            client_id: format!("client-{serial}"),
+            transport: "local",
+            peer: None,
+            connected_at: 0,
+            app_version: "0.6.0".into(),
+            protocol: 1,
+            fe_handle: Some(handle.to_string()),
+            last_person_input_at,
         }
+    }
+
+    #[test]
+    fn active_frontend_prefers_the_more_recent_stamp_no_sleeps() {
+        // Deterministic ordering, one fixed `now`, no real waiting
+        // (2026-09-08 review, finding 8: the prior version of this test
+        // slept 1.1s to dodge a same-second tie).
+        let now = Instant::now();
+        let clients = vec![
+            ci(1, "win-fe-a", Some(now - Duration::from_secs(10))),
+            ci(2, "win-fe-b", Some(now - Duration::from_secs(1))),
+        ];
+        let active = Clients::resolve_active(&clients, now);
         assert_eq!(
-            clients.active_frontend(),
-            None,
-            "a stamp older than the active window no longer counts as \"a person is here\""
+            active,
+            Some(ActiveFrontend { serial: 2, handle: "win-fe-b".to_string() }),
+            "the more recently touched frontend wins, identified by its serial"
         );
+    }
+
+    #[test]
+    fn active_frontend_equal_stamp_ties_go_to_the_later_registered_connection() {
+        // "on equal stamps, the later-registered connection wins" —
+        // registration order is `serial`, which `resolve_active`'s
+        // `(instant, serial)` ordering uses as its tie-break.
+        let tie = Instant::now();
+        let clients = vec![ci(1, "win-fe-a", Some(tie)), ci(2, "win-fe-b", Some(tie))];
+        let active = Clients::resolve_active(&clients, tie);
+        assert_eq!(
+            active,
+            Some(ActiveFrontend { serial: 2, handle: "win-fe-b".to_string() }),
+            "an exact tie goes to the later-registered (higher-serial) connection"
+        );
+    }
+
+    #[test]
+    fn active_frontend_window_boundary_exactly_in_then_one_past() {
+        let now = Instant::now();
+        let exactly_at_window = vec![ci(1, "win-fe-a", Some(now - ACTIVE_WINDOW))];
+        assert!(
+            Clients::resolve_active(&exactly_at_window, now).is_some(),
+            "a stamp exactly ACTIVE_WINDOW old is still active (inclusive boundary)"
+        );
+
+        let one_past_window = vec![ci(1, "win-fe-a", Some(now - ACTIVE_WINDOW - Duration::from_millis(1)))];
+        assert!(
+            Clients::resolve_active(&one_past_window, now).is_none(),
+            "one millisecond past the window no longer counts as \"a person is here\""
+        );
+    }
+
+    #[test]
+    fn duplicate_handle_active_resolves_to_one_serial_not_both_rows() {
+        // Two connections sharing a handle (a stale reconnect, or a genuine
+        // hostname collision) must resolve to exactly one winner BY SERIAL
+        // — `is_active_serial` must be true for that one and false for the
+        // other, never both (2026-09-08 review, finding 5).
+        let clients = Clients::new();
+        let a = clients.register("client-a", "local", None, "0.6.0", 1, Some("win-fe-dup".into()));
+        let b = clients.register("client-b", "local", None, "0.6.0", 1, Some("win-fe-dup".into()));
+        clients.touch_person_input(a.serial());
+
+        let snap = clients.snapshot_with_active();
+        assert_eq!(snap.active().map(|x| x.serial), Some(a.serial()));
+        assert!(snap.is_active_serial(a.serial()));
+        assert!(!snap.is_active_serial(b.serial()), "the untouched duplicate is never active");
     }
 }

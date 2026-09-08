@@ -165,10 +165,11 @@ case_matching_pair_prints_the_phase_verbatim() {
 }
 
 case_active_and_idle_frontends_print_their_state() {
-    # Owner-approved "active frontend" design (2026-09-08): a client with a
-    # self-reported fe_handle gets its own "frontend <handle> ... active|idle
-    # <N>s" row instead of the generic "client <id>" one.
-    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def"},"clients":[{"client_id":"fe-a","app_version":"0.6.0-dev+abc1234","protocol":1,"fe_handle":"win-fe-a","idle_secs":1,"active":true},{"client_id":"fe-b","app_version":"0.6.0-dev+abc1234","protocol":1,"fe_handle":"win-fe-b","idle_secs":412,"active":false}]}}'
+    # A client with a self-reported fe_handle gets its own
+    # "frontend <handle> ... active|idle" row instead of the generic
+    # "client <id>" one. No idle AGE (deleted 2026-09-08 review, finding 6):
+    # the roster only ever says which one, if any, is active.
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def"},"clients":[{"client_id":"fe-a","app_version":"0.6.0-dev+abc1234","protocol":1,"fe_handle":"win-fe-a","active":true},{"client_id":"fe-b","app_version":"0.6.0-dev+abc1234","protocol":1,"fe_handle":"win-fe-b","active":false}]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
     start_stub_daemon
     run_version
@@ -178,17 +179,20 @@ case_active_and_idle_frontends_print_their_state() {
     contains "$VER_OUT" "frontend win-fe-a" || { echo "  missing the active frontend's row: $VER_OUT"; return 1; }
     contains "$VER_OUT" "frontend win-fe-b" || { echo "  missing the idle frontend's row: $VER_OUT"; return 1; }
     contains "$VER_OUT" "active" || { echo "  expected the active frontend marked active: $VER_OUT"; return 1; }
-    contains "$VER_OUT" "idle 412s" || { echo "  expected the idle frontend's idle seconds: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "idle" || { echo "  expected the other frontend marked idle: $VER_OUT"; return 1; }
     return 0
 }
 
-case_untargeted_relaunch_carries_no_target_field() {
-    # Owner-approved "active frontend" design (2026-09-08), addendum:
-    # --fe is now OPTIONAL for relaunch too. With none given, the wire
-    # request must carry NO `target` field at all -- the daemon fills one
-    # in from the active frontend (or leaves it absent, which the
-    # unchanged FE-side handler refuses; that refusal happens on the FE,
-    # not observable from this BE-side stub, so it is out of reach here).
+case_untargeted_relaunch_carries_no_target_field_and_exits_2_without_resolved_target() {
+    # --fe is OPTIONAL for relaunch. With none given, the wire request must
+    # carry NO `target` field at all -- the daemon fills one in from the
+    # active frontend, or leaves it absent. This daemon's ack has no
+    # `resolved_target` at all (2026-09-08 review, design point E: this is
+    # ALSO exactly the shape an old, pre-this-field daemon answers with) --
+    # `sot-fe` must fail visibly (exit 2) rather than report success for a
+    # relaunch nobody could have executed (every FE refuses an undirected
+    # one anyway; this is the old-daemon/no-active-frontend path finding 7
+    # and finding 8 both asked for).
     stage_reply "fe.command.send" '{"v":1,"id":1,"kind":"res","op":"fe.command.send","payload":{"ok":true}}'
     start_stub_daemon
     local reqlog="$WORK/req-$STUBN.log"
@@ -197,12 +201,28 @@ case_untargeted_relaunch_carries_no_target_field() {
     rc=$?
     stop_stub_daemon
 
-    [ "$rc" -eq 0 ] || { echo "  expected exit 0 with no --fe (the CLI must no longer gate this), got $rc. Output:\n$out"; return 1; }
+    [ "$rc" -eq 2 ] || { echo "  expected exit 2 (no resolved_target -> fail visibly), got $rc. Output:\n$out"; return 1; }
+    contains "$out" "--fe" || { echo "  expected a --fe hint in the failure message: $out"; return 1; }
     local req
     req="$(grep '"op":"fe.command.send"' "$reqlog" | tail -n1)"
     [ -n "$req" ] || { echo "  no fe.command.send request reached the stub daemon. Output:\n$out"; return 1; }
     printf '%s' "$req" | jq -e '(.payload | has("target")) | not' >/dev/null \
         || { echo "  an untargeted relaunch must carry no target field: $req"; return 1; }
+    return 0
+}
+
+case_untargeted_relaunch_with_resolved_target_exits_0() {
+    # The happy path this daemon's ack claims: an active frontend WAS
+    # resolved, so relaunch went somewhere real -- exits 0 same as any
+    # other successfully-delivered verb.
+    stage_reply "fe.command.send" '{"v":1,"id":1,"kind":"res","op":"fe.command.send","payload":{"ok":true,"resolved_target":"win-fe-a"}}'
+    start_stub_daemon
+    local out rc
+    out="$("$SOT_FE" relaunch --endpoint "unix:$SOCK" --timeout 5 2>&1)"
+    rc=$?
+    stop_stub_daemon
+
+    [ "$rc" -eq 0 ] || { echo "  expected exit 0 when resolved_target is present, got $rc. Output:\n$out"; return 1; }
     return 0
 }
 
@@ -284,7 +304,8 @@ case_comm_scripts_row_prints_unknown_when_the_stamp_is_missing() {
 
 check "a matching pair prints daemon/client rows and the row's phase verbatim, no verdict" case_matching_pair_prints_the_phase_verbatim
 check "an active and an idle frontend print their handle and active|idle state"            case_active_and_idle_frontends_print_their_state
-check "an untargeted relaunch sends a request with no target field"                        case_untargeted_relaunch_carries_no_target_field
+check "an untargeted relaunch sends no target and exits 2 without a resolved_target"        case_untargeted_relaunch_carries_no_target_field_and_exits_2_without_resolved_target
+check "an untargeted relaunch with a resolved_target in the ack exits 0"                    case_untargeted_relaunch_with_resolved_target_exits_0
 check "a foreign-phase capsule row prints its phase with no derived verdict column"        case_foreign_row_prints_the_phase_with_no_derived_verdict
 check "a daemon that predates version.query prints 'unknown' and still exits 0"            case_legacy_daemon_predating_version_query_prints_unknown_and_exits_0
 check "a workspace.list failure after a successful version.query reports it and exits 2"   case_workspace_list_failure_after_successful_version_query_exits_2

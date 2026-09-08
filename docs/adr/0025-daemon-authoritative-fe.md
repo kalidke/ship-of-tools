@@ -3,20 +3,33 @@
 **Status:** Accepted (co-design converged 2026-06-22; building on `feat/op-fe-command`)
 **Date:** 2026-06-22
 
-> **Update — 2026-09-08: v1.1 landed — "the active frontend," no new op.** §5's `v1.1`
-> promised daemon primary-tracking via a dedicated `fe.active` signal. Shipped simpler:
-> the daemon already sees a person-generated request on every connection (`pty.write`,
-> `preview.get`, `tree.root`/`tree.children`, and a `workspace.activate` carrying
-> `read: true` — ADR 0044's existing honest signal for "a person stayed on this view,"
-> reused rather than inventing a new flag) and stamps that connection's
-> `last_person_input_at`; `HelloReq` gains `fe_handle` so a connection can self-report
-> its `win-fe-<host>` handle. **Active frontend = the `fe_handle`'d client with the
-> most recent stamp inside a 5-minute window.** An untargeted `fe.command.send` now
-> resolves to it — delivered exactly as an explicit `--fe <handle>` would be — and
-> falls back to the pre-existing broadcast only when nothing qualifies; an explicit
-> `--fe <handle>` is untouched. `version.query`'s `clients[]` exposes
-> `fe_handle`/`idle_secs`/`active` so `sot-fe version` can name it without asking the
-> frontend. No heartbeat, no timer — "active" is read off ops already on the wire.
+> **Update — 2026-09-08: v1.1 landed — "the active frontend," presence from the
+> frontend, not inferred by the daemon.** §5's `v1.1` promised daemon primary-tracking
+> via a dedicated signal; a first pass tried to derive it from ops the daemon already
+> sees (`tree.root`, `preview.get`, `pty.write`, `workspace.activate{read:true}`) and
+> was rejected on review — every one of those ops turned out to have an automated
+> producer too (a reconnect re-announces `tree.root`/`preview.get`; a badge-consuming
+> `goto` fires them; an autostarted agent writes into its own pane; a command-file
+> `cycle_ws` could forge `read: true`), so a daemon inferring presence from traffic
+> could hand an untargeted command to a box nobody was at, or never call an actually-
+> typing capsule pane active at all. **Shipped instead: one new op, `fe.presence`,
+> sent ONLY by the frontend's own winit keyboard/mouse handlers**, throttled
+> client-side to at most one per 30s while input keeps coming and nothing at all
+> when idle — no heartbeat, no timer. `HelloReq` gains `fe_handle` so a connection
+> can self-report its `win-fe-<host>` handle. **Active frontend = the `fe_handle`'d
+> CONNECTION (identified by its registration serial, never a bare handle string —
+> two connections can share one, e.g. a stale reconnect) with the most recent
+> `fe.presence` inside a 5-minute window**, resolved from one lock acquisition and
+> one clock read so a roster and its "who's active" answer can't disagree. An
+> untargeted `fe.command.send` resolves to it and is delivered to that ONE
+> connection EXCLUSIVELY — filtered server-side before the frame is even written,
+> not merely a hint the FE is trusted to honor — falling back to the pre-existing
+> broadcast only when nothing qualifies; a `relaunch` with nothing to resolve
+> publishes NOTHING (an unresolved broadcast is a command nobody could safely
+> execute) and the ack's `resolved_target` lets `sot-fe` fail visibly instead of
+> reporting success for a no-op. An explicit `--fe <handle>` is untouched.
+> `version.query`'s `clients[]` exposes `fe_handle`/`active` (no idle age — the
+> daemon's expiry/tie policy is the only thing entitled to decide "how idle").
 
 > **Update — 2026-07-25: `preview` gains an optional `caption` (agent-authored figure caption).**
 > `preview{ws, path, caption?}` — prose the producing agent attaches to a figure, so a
