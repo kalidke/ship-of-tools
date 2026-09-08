@@ -102,6 +102,36 @@ pub enum TransportEvent {
 /// considered active it is a contract violation and the loop fails loudly
 /// rather than silently dropping it.
 pub trait Transport {
+    /// Switch-latency Phase 1 (c): register a wake callback, invoked by
+    /// the transport (from whatever thread noticed the activity — an
+    /// accept, a completed read, a completed send) to produce a wake
+    /// after enqueue, drained on the loop's next iteration subject to the
+    /// existing quota (`capsule::run`'s own `TRANSPORT_EVENTS_PER_PASS`,
+    /// the per-tick bound on [`Transport::try_recv_event`]'s drain, is
+    /// unaffected by this callback and still governs how many queued
+    /// events one iteration actually processes) — NOT a promise of one
+    /// wake per event. So `run`'s own `output_rx.recv_timeout` wait can
+    /// wake on real transport activity immediately instead of waiting out
+    /// its own group-commit window. Called by `run` AT MOST ONCE, before
+    /// [`Transport::bind`] — a real transport stores the callback and
+    /// forwards it to whatever it binds; the concrete `PipeServer`/
+    /// `SocketServer` created inside `bind` is what actually invokes it
+    /// (see `pipe_transport`/`socket_transport`'s own `bind` for the
+    /// exact hookup). The callback itself carries no event data — it is a
+    /// PURE wake, "something may be waiting"; the loop's own
+    /// non-blocking `try_recv_event` drain (already run every iteration,
+    /// unconditionally, ahead of this wait) is what actually finds and
+    /// processes whatever arrived. Coalescing (never queuing more than
+    /// one outstanding wake) is the CALLER's concern, not this trait's —
+    /// see `capsule::run`'s own `wake_pending` flag.
+    ///
+    /// Default: a no-op. A transport that never has this called (every
+    /// synthetic test transport, and any real one bound BEFORE this
+    /// existed) degrades to exactly the OLD behavior — `try_recv_event`'s
+    /// own polling still eventually finds an event on the loop's regular
+    /// cadence. Never a correctness requirement, purely a latency one.
+    fn set_wake(&mut self, _wake: Arc<dyn Fn() + Send + Sync>) {}
+
     /// Bind the transport to `voyage_id` — called by `run` EXACTLY ONCE,
     /// immediately after `open_for_writing` has the voyage's writer lock
     /// and before anything else that could fail, so that on EVERY exit

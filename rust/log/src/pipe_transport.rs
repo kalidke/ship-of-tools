@@ -107,6 +107,7 @@ use crate::pipe_win::{ConnId, PipeServer};
 use crate::transport::{LaneEvent, Transport, TransportEvent as CapsuleEvent};
 use crate::Result;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
 /// A `Transport` over a real `PipeServer`. Constructed UNBOUND (see
@@ -120,6 +121,14 @@ pub struct PipeTransport {
     /// LATCHES the connection" section.
     closing: HashSet<ConnId>,
     next_send_id: u64,
+    /// Switch-latency Phase 1 (c): `Transport::set_wake`'s callback,
+    /// stashed here (rather than forgotten) because `bind` — not
+    /// `PipeTransport::new` — is what actually creates the `PipeServer`
+    /// this needs to be forwarded to. `None` for a transport `run` never
+    /// registered one on (degrades to the trait's own documented default:
+    /// no early wake, `try_recv_event`'s regular polling still finds
+    /// everything eventually).
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl PipeTransport {
@@ -134,13 +143,26 @@ impl PipeTransport {
             server: None,
             closing: HashSet::new(),
             next_send_id: 0,
+            wake: None,
         }
     }
 }
 
 impl Transport for PipeTransport {
+    fn set_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.wake = Some(wake);
+    }
+
     fn bind(&mut self, voyage_id: &str) -> Result<()> {
-        self.server = Some(PipeServer::bind(voyage_id, self.max_instances)?);
+        let server = PipeServer::bind(voyage_id, self.max_instances)?;
+        // Switch-latency Phase 1 (c): forward a wake registered before
+        // `bind` (the trait's own contract) to the FRESH server that
+        // exists only from here on — every event it queues from this
+        // point pings it, per `PipeServer::set_wake`'s own doc.
+        if let Some(wake) = &self.wake {
+            server.set_wake(Arc::clone(wake));
+        }
+        self.server = Some(server);
         // A fresh server restarts conn ids; no latch entry may outlive the
         // server whose connections it described (see shutdown_all).
         self.closing.clear();

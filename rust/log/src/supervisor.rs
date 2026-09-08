@@ -2249,7 +2249,21 @@ struct LaneCtx<'a> {
 /// loop has died PERMANENTLY (`LaneEvent::AcceptError` — the
 /// transport's own doc: "stopped accepting new connections FOR GOOD"),
 /// which the caller treats as terminal.
-fn service_lane(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, ctx: &mut LaneCtx, now: Instant) -> bool {
+///
+/// `first`, if `Some`, is an event the main loop's own tail wait already
+/// pulled off `lane.events()` (via `recv_timeout`, to wake early on lane
+/// activity — see that call site) — processed here as this tick's OWN
+/// first event, ahead of any further `try_recv`, rather than a second,
+/// redundant fetch. `None` whenever that wait simply timed out idle —
+/// this function then behaves exactly as it did before that wake path
+/// existed.
+fn service_lane(
+    lane: &Lane,
+    mut first: Option<LaneEvent>,
+    conns: &mut HashMap<ConnId, Conn>,
+    ctx: &mut LaneCtx,
+    now: Instant,
+) -> bool {
     let mut accept_loop_dead = false;
     // N10 (Codex review round 3): bounded to LANE_EVENT_QUOTA per tick —
     // an earlier version drained the WHOLE channel unconditionally, so
@@ -2258,9 +2272,17 @@ fn service_lane(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, ctx: &mut LaneCt
     // indefinitely, starving `Lifecycle` polling, worker results,
     // watchdogs, and `Terminal` grace of their own turn. Leftover
     // events stay queued in the transport's own channel for the NEXT
-    // tick — no extra bookkeeping needed here.
+    // tick — no extra bookkeeping needed here. `first` (if any) counts
+    // against this SAME budget — it is one event already off the
+    // channel, not an addition to it.
     for _ in 0..LANE_EVENT_QUOTA {
-        let Ok(event) = lane.events().try_recv() else { break };
+        let event = match first.take() {
+            Some(ev) => ev,
+            None => match lane.events().try_recv() {
+                Ok(ev) => ev,
+                Err(_) => break,
+            },
+        };
         match event {
             LaneEvent::Accepted(id) => {
                 conns.insert(
@@ -2653,11 +2675,19 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
 
     let mut consecutive_unstable_legs: u32 = 0;
 
+    // Switch-latency Phase 1: the event this loop's own tail wait
+    // ([`Lane::events`]'s `recv_timeout`, replacing an unconditional
+    // `sleep(MAIN_LOOP_POLL)`) woke on, carried forward as the very first
+    // thing the NEXT `service_lane` call processes — see that call site's
+    // own comment for why a plain `try_recv` there would otherwise miss
+    // it (a channel `recv_timeout` already consumes the item it returns).
+    let mut woke_on: Option<LaneEvent> = None;
+
     'authority: loop {
         let now = Instant::now();
         {
             let mut lane_ctx = LaneCtx { authority: &mut authority, lifecycle: &mut lifecycle };
-            if service_lane(&lane, &mut conns, &mut lane_ctx, now) {
+            if service_lane(&lane, woke_on.take(), &mut conns, &mut lane_ctx, now) {
                 force_terminal(
                     &mut lifecycle,
                     &mut authority.retired_legs,
@@ -3054,7 +3084,19 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             break 'authority;
         }
 
-        std::thread::sleep(MAIN_LOOP_POLL);
+        // Switch-latency Phase 1: wake the instant the lane has something
+        // (a connection accepted, or a frame readable — anything
+        // `LaneServer::events()` can produce) instead of always paying the
+        // full idle cadence before the NEXT `service_lane` call even looks.
+        // `MAIN_LOOP_POLL` is unchanged as the IDLE bound: with nothing on
+        // the lane, this blocks the exact same 100 ms `sleep` used to —
+        // zero added wakeups, zero added idle power. Only genuine lane
+        // traffic makes this return sooner, which is the entire point (an
+        // attach's status probe no longer waits out a tick it happens to
+        // land inside). Never a second, uncoordinated wait alongside this
+        // one: it IS this iteration's one wait, replacing the sleep in
+        // place.
+        woke_on = lane.events().recv_timeout(MAIN_LOOP_POLL).ok();
     }
 
     let exit_code = match (&lifecycle, &authority.stop_requested) {

@@ -1210,7 +1210,18 @@ mod runtime {
     /// scan's own defensive no-op (it should never see this — its own
     /// candidate filter already requires a published pointer).
     fn start_mode_needed(state_dir: &Path) -> Option<StartMode> {
-        match phase_of(state_dir) {
+        start_mode_for_phase(phase_of(state_dir))
+    }
+
+    /// The pure half of [`start_mode_needed`], split out so
+    /// [`ensure_started`] can decide on a phase it already probed once
+    /// (switch-latency Phase 1: the healthy already-running path used to
+    /// call [`phase_of`] — a fresh `query_status` connect+challenge round
+    /// trip — TWICE per attach; this mapping itself does no I/O, so
+    /// reusing an already-fetched phase string here costs nothing beyond
+    /// what an already-answered lane already told the caller).
+    fn start_mode_for_phase(phase: &str) -> Option<StartMode> {
+        match phase {
             NEVER_STARTED_PHASE => Some(StartMode::Start),
             UNREACHABLE_PHASE => Some(StartMode::Resume),
             _ => None,
@@ -1258,7 +1269,18 @@ mod runtime {
             return Ok(None);
         }
         let state_dir = super::state_dir_for(state_root, workspace_id);
-        let spawned = match start_mode_needed(&state_dir) {
+        // ONE probe on the healthy already-running path (switch-latency
+        // Phase 1): this used to probe the lane HERE via
+        // `start_mode_needed` (which calls `phase_of`), then probe it
+        // AGAIN below for the `EndedNoRespawn` check — two full
+        // `query_status` round trips (connect + identity challenge +
+        // status exchange, each) for a workspace that never needed a
+        // spawn decision more than once. `initial_phase` is that one
+        // probe; `mode_needed` is the pure decision on it, reused below
+        // instead of probing a second time.
+        let initial_phase = phase_of(&state_dir);
+        let mode_needed = start_mode_for_phase(initial_phase);
+        let spawned = match mode_needed {
             Some(mode) => {
                 let argv = agent_argv(agent_kind)?;
                 let result = start_supervisor(
@@ -1303,8 +1325,18 @@ mod runtime {
         // is the ONE operation that phase admits; proceed as for a
         // fresh start (the reset transaction mints the new voyage and
         // spawns).
-        if phase_of(&state_dir) == super::phase_str(sot_log::wire::SupervisorPhase::EndedNoRespawn)
-        {
+        //
+        // `mode_needed == None` means nothing above touched the lane at
+        // all (the healthy already-running path) — `initial_phase` is
+        // still current, so it answers this check directly. Any other
+        // branch DID just change the lane's state (a fresh spawn, or the
+        // resume settle wait), so it re-probes for the truth rather than
+        // trusting a phase read before that happened.
+        let settled_phase = match mode_needed {
+            None => initial_phase,
+            Some(_) => phase_of(&state_dir),
+        };
+        if settled_phase == super::phase_str(sot_log::wire::SupervisorPhase::EndedNoRespawn) {
             return sot_log::supervisor_client::reset(&state_dir)
                 .map(|_new_voyage| Some(false))
                 .map_err(|e| format!("capsule workspace reset (after an ended run) failed: {e}"));
