@@ -2,11 +2,27 @@
 //! must bound a blocking operation it does not otherwise control (today:
 //! `challenge::exchange_identity`, shared by every platform's own
 //! `challenge()`). Portable — no OS
-//! dependency at all, just `std::thread`/`std::sync::atomic`/`std::time`
-//! — so its race logic is exercised by REAL executed tests on every CI
-//! platform, not merely compile-checked on Windows.
+//! dependency at all, just `std::thread`/`std::sync::atomic`/
+//! `std::sync::{Mutex, Condvar}`/`std::time` — so its race logic is
+//! exercised by REAL executed tests on every CI platform, not merely
+//! compile-checked on Windows.
+//!
+//! switch-latency Phase 1: the watchdog used to `thread::sleep(10ms)` in
+//! a loop, so an idle-but-still-running watchdog woke ~100 times a
+//! second, and — worse — `body` finishing early still cost this
+//! function's caller up to a 10ms wait on `watchdog.join()` (the
+//! watchdog only notices `state` left `PENDING` on its next poll tick).
+//! The watchdog now blocks in `Condvar::wait_timeout`, timed out exactly
+//! at `deadline`, and is woken the INSTANT `body` settles: both places
+//! that move `state` out of `PENDING` after entry (the normal
+//! completion path and `SettleOnPanic::drop`) notify the same condvar
+//! right after their CAS. An idle watchdog therefore produces zero
+//! periodic wakeups — one park, one wake (by notify or by its own
+//! timeout), done — and a caller's `join()` returns as soon as `body`
+//! itself does, not up to a poll interval later.
 
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::Instant;
 
 /// Run `body` to completion on the CALLING thread, but accept its result
@@ -40,6 +56,21 @@ pub fn run_with_deadline<T>(
     const COMPLETED: u8 = 1;
     const TIMED_OUT: u8 = 2;
     let state = AtomicU8::new(PENDING);
+    // The watchdog's own doorbell: `body` settling (normally or via
+    // panic) locks `gate` and calls `notify_all` right after its CAS, so
+    // the watchdog — parked in `wait_timeout` holding the SAME lock —
+    // can never miss the wakeup (it can only be mid-`wait` or about to
+    // re-check `state` while holding `gate`; a notifier blocked on that
+    // same lock cannot slip a wakeup into the gap between the two). A
+    // plain `Condvar`/`Mutex` pair, not tied to `state`'s own encoding —
+    // `state` stays the single source of truth for WHO won the race,
+    // this only ever wakes a waiter early.
+    let gate = Mutex::new(());
+    let signal = Condvar::new();
+    let notify_watchdog = || {
+        drop(gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+        signal.notify_all();
+    };
 
     std::thread::scope(|scope| {
         // Already too late to even start: never attempt `body` at all --
@@ -51,20 +82,32 @@ pub fn run_with_deadline<T>(
             return None;
         }
 
-        let watchdog = std::thread::Builder::new().spawn_scoped(scope, || loop {
-            if state.load(Ordering::Acquire) != PENDING {
-                return;
-            }
-            if Instant::now() >= deadline {
-                if state
-                    .compare_exchange(PENDING, TIMED_OUT, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    on_timeout();
+        let watchdog = std::thread::Builder::new().spawn_scoped(scope, || {
+            let mut guard = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            loop {
+                if state.load(Ordering::Acquire) != PENDING {
+                    return;
                 }
-                return;
+                let now = Instant::now();
+                if now >= deadline {
+                    if state
+                        .compare_exchange(PENDING, TIMED_OUT, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        on_timeout();
+                    }
+                    return;
+                }
+                // Timed out at exactly `deadline`, not a fixed poll tick:
+                // a spurious wakeup (or one from `notify_watchdog` that
+                // lost the race to a state change from elsewhere) just
+                // loops back to the top and re-checks `state`/re-arms the
+                // remaining wait.
+                let (g, _timed_out) = signal
+                    .wait_timeout(guard, deadline - now)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard = g;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
         });
         let Ok(watchdog) = watchdog else {
             // Cannot bound this exchange at all: never run `body`, never
@@ -88,6 +131,7 @@ pub fn run_with_deadline<T>(
         struct SettleOnPanic<'a> {
             state: &'a AtomicU8,
             on_timeout: &'a (dyn Fn() + Sync),
+            notify_watchdog: &'a dyn Fn(),
         }
         impl Drop for SettleOnPanic<'_> {
             fn drop(&mut self) {
@@ -98,17 +142,27 @@ pub fn run_with_deadline<T>(
                         .is_ok()
                 {
                     (self.on_timeout)();
+                    // Wake the watchdog immediately rather than leaving
+                    // it parked until `deadline` — see this function's
+                    // own `notify_watchdog` doc.
+                    (self.notify_watchdog)();
                 }
             }
         }
         let result = {
-            let _settle = SettleOnPanic { state: &state, on_timeout: &on_timeout };
+            let _settle =
+                SettleOnPanic { state: &state, on_timeout: &on_timeout, notify_watchdog: &notify_watchdog };
             body()
         };
 
         let claimed_completed = state
             .compare_exchange(PENDING, COMPLETED, Ordering::AcqRel, Ordering::Acquire)
             .is_ok();
+        // Wake the watchdog the instant `body` settles, on-time or not —
+        // see this function's own `notify_watchdog` doc. A no-op if the
+        // CAS above lost (the watchdog already won its own and is not
+        // waiting any more).
+        notify_watchdog();
         let on_time = Instant::now() < deadline;
         let outcome = if claimed_completed && on_time {
             Some(result)
@@ -298,5 +352,58 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(30);
         let result = run_with_deadline(deadline, || {}, || *rc);
         assert_eq!(result, Some(5));
+    }
+
+    /// switch-latency Phase 1: the whole point of the notified wait. A
+    /// distant (30s) deadline means the OLD 10ms poll loop would still
+    /// have made this call's `watchdog.join()` wait up to another full
+    /// poll tick after `body` itself returned; the condvar wait wakes
+    /// the watchdog the instant `notify_watchdog` runs, so the entire
+    /// call returns in comfortably under one such tick.
+    #[test]
+    fn completion_is_observed_promptly_not_after_a_poll_interval() {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let started = Instant::now();
+        let result = run_with_deadline(deadline, || {}, || 42);
+        let elapsed = started.elapsed();
+        assert_eq!(result, Some(42));
+        assert!(
+            elapsed < Duration::from_millis(25),
+            "run_with_deadline took {elapsed:?} to return after an instant body; \
+             a notified wait should be well under the old 10ms poll tick even \
+             with generous CI scheduling slack"
+        );
+    }
+
+    /// The other half of the same property: a `body` that never
+    /// completes must still be cancelled right around `deadline` itself
+    /// (the watchdog's `wait_timeout` is armed for exactly
+    /// `deadline - now`), not merely "eventually, on some later poll".
+    #[test]
+    fn deadline_still_fires_close_to_itself_on_a_stalled_body() {
+        let (fired_tx, fired_rx) = std::sync::mpsc::channel::<Instant>();
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(60);
+        let result = run_with_deadline(
+            deadline,
+            move || {
+                let _ = fired_tx.send(Instant::now());
+            },
+            move || {
+                std::thread::sleep(Duration::from_secs(5)); // never finishes on time
+                99
+            },
+        );
+        assert_eq!(result, None);
+        let fired_at = fired_rx.recv_timeout(Duration::from_secs(1)).expect("on_timeout must fire");
+        assert!(
+            fired_at >= deadline,
+            "on_timeout must never fire before the deadline it is bound to"
+        );
+        assert!(
+            fired_at.duration_since(deadline) < Duration::from_millis(50),
+            "on_timeout fired {:?} after its own deadline -- expected close to it, not a stale poll tick late",
+            fired_at.duration_since(deadline)
+        );
     }
 }
