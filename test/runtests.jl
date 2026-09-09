@@ -233,6 +233,23 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
         end
     end
 
+    @testset "_install_files: an identical destination is current even when it cannot be replaced" begin
+        mktempdir() do tmp
+            srcdir = joinpath(tmp, "src"); dstdir = joinpath(tmp, "dst")
+            mkpath(srcdir); mkpath(dstdir)
+            write(joinpath(srcdir, "same.sh"), "#!/bin/sh\necho same\n")
+            write(joinpath(dstdir, "same.sh"), "#!/bin/sh\necho same\n")
+            chmod(joinpath(dstdir, "same.sh"), 0o755)
+            # Make the destination directory read-only so a replace would fail.
+            chmod(dstdir, 0o555)
+            try
+                @test ShipTools._install_files(srcdir, dstdir, ["same.sh"]; executable = endswith(".sh")) === nothing
+            finally
+                chmod(dstdir, 0o755)
+            end
+        end
+    end
+
     @testset "_install_files: continues past a locked destination, reports it, updates the rest" begin
         # The property the coordinator's field trace demanded: ONE destination
         # a live process still has open (comm-relay.sh, observed) must not

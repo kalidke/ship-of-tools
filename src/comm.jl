@@ -250,8 +250,19 @@ function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
     for f in files
         dst = joinpath(dstdir, f)
         mkpath(dirname(dst))
+        src = joinpath(srcdir, f)
+        # A destination that already holds these exact bytes is current: skip the
+        # replace. A live Monitor on Windows holds comm-watch.sh open and the
+        # replace fails with EACCES even though nothing is stale.
+        if isfile(dst) && read(dst) == read(src)
+            try
+                executable(f) && chmod(dst, 0o755)
+            catch
+            end
+            continue
+        end
         try
-            install_file(joinpath(srcdir, f), dst)
+            install_file(src, dst)
             executable(f) && chmod(dst, 0o755)
         catch err
             push!(problems, "$f could not be updated, kept the previous copy ($(sprint(showerror, err)))")
