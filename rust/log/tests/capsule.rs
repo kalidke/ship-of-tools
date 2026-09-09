@@ -1597,7 +1597,13 @@ fn group_commit_progresses_despite_continuous_transport_pings() {
     // Non-panicking, bounded poll -- cleanup below must still run even if
     // this never finds the frame, so the assertion on `found` comes AFTER
     // it, not here.
-    let found = poll_for_committed_marker(&transport, WATCHER, "sot-commit-marker", Duration::from_millis(500));
+    // The mechanism under test is that the marker arrives AT ALL while pings
+    // keep the loop busy (the old loop only evaluated the group-commit
+    // deadline when recv_timeout expired, which continuous pings prevent —
+    // the marker then never arrived). A tight wall-clock bound is not part
+    // of that proof and flakes on a loaded CI runner (a Windows leg took
+    // >500 ms just to echo the shell input); the bound is generous.
+    let found = poll_for_committed_marker(&transport, WATCHER, "sot-commit-marker", Duration::from_secs(10));
 
     stop_pinging.store(true, Ordering::Relaxed);
     ping_handle.join().unwrap();
