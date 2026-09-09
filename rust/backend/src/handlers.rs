@@ -5226,6 +5226,22 @@ pub async fn handle_agent_send(
 /// broadcast), so a caller like `sot-fe relaunch` can tell "no active
 /// frontend" apart from "delivered/broadcast" without inspecting `cmd`
 /// itself.
+///
+/// `delivered_to` (2026-09-09 field incident: a broadcast `open-url` acked
+/// `ok:true` twice while landing on a machine other than the one the owner
+/// was sitting at) is the count of ATTACHED FRONTENDS this command was
+/// actually published to, read off the SAME `snapshot_with_active()` call
+/// `resolved_target` was resolved from — never a second lock acquisition
+/// (`handle_version_query` sets the precedent). It counts what will
+/// ACTUALLY act, which is not always a handle count: a target resolved to
+/// the active frontend is delivered by SERIAL, so it is exactly 1 even when
+/// a second connection shares that handle; an explicit `--fe <handle>` stays
+/// a handle-matched broadcast, so its audience IS the handle count (0 when
+/// nothing carries it — the incident above); `target: None` counts every row
+/// with a non-empty `fe_handle` (the badge-floor broadcast's audience); the
+/// unresolved-relaunch early return below is `Some(0)` — it published
+/// nothing. This never changes WHAT gets published, only what the ack
+/// truthfully reports about it.
 pub async fn handle_fe_command_send(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -5235,8 +5251,9 @@ pub async fn handle_fe_command_send(
     let mut req: FeCommandSendReq =
         serde_json::from_value(payload_json).context("fe.command.send payload")?;
     let mut target_serial: Option<u64> = None;
+    let snap = clients.snapshot_with_active();
     if req.target.is_none() {
-        if let Some(active) = clients.snapshot_with_active().active() {
+        if let Some(active) = snap.active() {
             req.target = Some(active.handle.clone());
             target_serial = Some(active.serial);
         }
@@ -5246,19 +5263,49 @@ pub async fn handle_fe_command_send(
     if req.cmd == "relaunch" && req.target.is_none() {
         tracing::info!(
             cmd = %req.cmd,
+            delivered_to = 0,
             "fe.command.send relay: relaunch has no active frontend and no explicit target — not publishing"
         );
         return Ok(vec![(
             Frame::res(
                 req_id,
                 op::FE_COMMAND_SEND,
-                serde_json::to_value(FeCommandSendRes { ok: true, resolved_target })?,
+                serde_json::to_value(FeCommandSendRes {
+                    ok: true,
+                    resolved_target,
+                    delivered_to: Some(0),
+                })?,
             ),
             None,
         )]);
     }
 
-    tracing::info!(cmd = %req.cmd, target = ?req.target, "fe.command.send relay");
+    let delivered_to = match (target_serial, resolved_target.as_deref()) {
+        // Resolved to the ACTIVE frontend: `server.rs` fans out on the
+        // SERIAL, so exactly that one CONNECTION acts — however many
+        // connections happen to share its handle (a relaunched frontend
+        // whose predecessor's connection has not been reaped yet is the
+        // real case). Counting handles here would over-report the audience
+        // of an exclusive delivery: the same lie in miniature that this
+        // field exists to end.
+        (Some(_), _) => 1,
+        // An explicit `--fe <handle>` stays a handle-matched broadcast —
+        // every connection carrying that handle self-filters as a match,
+        // so the handle count IS the audience.
+        (None, Some(handle)) => snap
+            .clients
+            .iter()
+            .filter(|c| c.fe_handle.as_deref() == Some(handle))
+            .count(),
+        // The badge floor: every attached, handle-bearing frontend acts.
+        (None, None) => snap
+            .clients
+            .iter()
+            .filter(|c| c.fe_handle.as_deref().is_some_and(|h| !h.is_empty()))
+            .count(),
+    };
+
+    tracing::info!(cmd = %req.cmd, target = ?req.target, delivered_to, "fe.command.send relay");
     let evt = FeCommandEvt {
         v: 1,
         cmd: req.cmd,
@@ -5272,7 +5319,11 @@ pub async fn handle_fe_command_send(
         Frame::res(
             req_id,
             op::FE_COMMAND_SEND,
-            serde_json::to_value(FeCommandSendRes { ok: true, resolved_target })?,
+            serde_json::to_value(FeCommandSendRes {
+                ok: true,
+                resolved_target,
+                delivered_to: Some(delivered_to),
+            })?,
         ),
         None,
     )])
@@ -5317,6 +5368,47 @@ mod fe_command_send_tests {
             .map(str::to_string)
     }
 
+    fn delivered_to_of(out: &super::HandlerOutput) -> Option<usize> {
+        out[0]
+            .0
+            .payload
+            .get("delivered_to")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+    }
+
+    /// Two connections share one handle (a relaunched frontend whose
+    /// predecessor has not been reaped yet) and one of them is active.
+    /// Delivery is by SERIAL, so exactly one connection acts — and
+    /// `delivered_to` must say 1, not the handle's population. Counting
+    /// handles here would over-report an exclusive delivery.
+    #[tokio::test]
+    async fn untargeted_send_counts_the_exclusive_connection_not_the_shared_handle() {
+        let clients = Clients::new();
+        let stale = clients.register("c-stale", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        clients.touch_person_input(active.serial());
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
+            .await
+            .expect("handler ok");
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("win-fe-a"));
+        assert_eq!(
+            delivered_to_of(&out),
+            Some(1),
+            "delivery is by serial: one connection acts even though two share the handle"
+        );
+
+        let evt = rx.try_recv().expect("exactly one evt published");
+        assert_eq!(
+            evt.target_serial,
+            Some(active.serial()),
+            "the ACTIVE connection's serial, not the stale one sharing its handle"
+        );
+        assert_ne!(active.serial(), stale.serial(), "two distinct connections");
+    }
+
     /// No `target` on the wire + an active client registered → the daemon
     /// resolves delivery to that client's CONNECTION EXCLUSIVELY
     /// (`target_serial`, design point B) — not merely its handle, which a
@@ -5333,6 +5425,11 @@ mod fe_command_send_tests {
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("win-fe-a"));
+        assert_eq!(
+            delivered_to_of(&out),
+            Some(1),
+            "exclusive delivery to the resolved handle -> exactly one attached frontend"
+        );
 
         let evt = rx.try_recv().expect("exactly one evt published");
         assert_eq!(
@@ -5352,17 +5449,25 @@ mod fe_command_send_tests {
     /// recently), an untargeted send falls through to today's behaviour
     /// unchanged: `target`/`target_serial` stay `None`, which every
     /// connection's `route_fe_command` self-filter reads as "broadcast, act".
+    /// `delivered_to` now says how big that broadcast's real audience is —
+    /// every attached, handle-bearing frontend (here, two), not just "some".
     #[tokio::test]
     async fn untargeted_send_with_no_active_client_broadcasts_as_before() {
         let clients = Clients::new();
         // Registered but never touched by a person -> no active frontend.
-        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        let _idle_a = clients.register("c-idle-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        let _idle_b = clients.register("c-idle-b", "local", None, "0.6.0", 1, Some("win-fe-b".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out), None);
+        assert_eq!(
+            delivered_to_of(&out),
+            Some(2),
+            "an undirected broadcast's delivered_to counts every attached frontend, not merely 0/1"
+        );
 
         let evt = rx.try_recv().expect("exactly one evt published");
         assert!(evt.target.is_none(), "no active frontend -> today's broadcast behaviour");
@@ -5372,6 +5477,12 @@ mod fe_command_send_tests {
     /// An explicit `--fe <handle>` target is never overridden by the
     /// active-frontend resolution, even when a different client is active,
     /// and stays a handle-matched broadcast (`target_serial` unset).
+    ///
+    /// This is the exact shape of the 2026-09-09 field incident: no
+    /// attached connection has the handle "win-fe-explicit" (only
+    /// "win-fe-a" is registered), yet the ack was `ok:true` regardless —
+    /// `delivered_to == Some(0)` is the fix, the ground truth the old ack
+    /// could not report.
     #[tokio::test]
     async fn explicit_target_is_never_overridden_by_active_resolution() {
         let clients = Clients::new();
@@ -5383,17 +5494,41 @@ mod fe_command_send_tests {
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("win-fe-explicit"));
+        assert_eq!(
+            delivered_to_of(&out),
+            Some(0),
+            "ok:true but delivered to nobody -- the bug this field fixes"
+        );
 
         let evt = rx.try_recv().expect("exactly one evt published");
         assert_eq!(evt.target.as_deref(), Some("win-fe-explicit"));
         assert!(evt.target_serial.is_none(), "explicit --fe stays a handle-matched broadcast");
     }
 
+    /// The happy-path mirror of the case above: an explicit `--fe <handle>`
+    /// that IS attached counts as delivered.
+    #[tokio::test]
+    async fn explicit_target_that_is_attached_delivers_to_it() {
+        let clients = Clients::new();
+        let _target = clients.register("c-target", "local", None, "0.6.0", 1, Some("win-fe-target".into()));
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        let out = handle_fe_command_send(1, req_json("notify", Some("win-fe-target")), &tx, &clients)
+            .await
+            .expect("handler ok");
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("win-fe-target"));
+        assert_eq!(delivered_to_of(&out), Some(1));
+
+        let evt = rx.try_recv().expect("exactly one evt published");
+        assert_eq!(evt.target.as_deref(), Some("win-fe-target"));
+    }
+
     /// Design point E: an untargeted `relaunch` with NO active frontend
     /// publishes NOTHING — a command nobody could safely act on anyway
     /// (every FE refuses an undirected relaunch) — and the ack's
     /// `resolved_target` is `None` so `sot-fe` can fail visibly instead of
-    /// reporting success for a no-op.
+    /// reporting success for a no-op. `delivered_to` says the same thing
+    /// numerically: `Some(0)`, since nothing was published.
     #[tokio::test]
     async fn untargeted_relaunch_with_no_active_frontend_publishes_nothing() {
         let clients = Clients::new();
@@ -5404,6 +5539,7 @@ mod fe_command_send_tests {
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out), None);
+        assert_eq!(delivered_to_of(&out), Some(0), "nothing was published, so nothing was delivered");
         assert!(
             rx.try_recv().is_err(),
             "an unresolved relaunch must not publish ANYTHING, not even an untargeted broadcast"
@@ -5423,6 +5559,7 @@ mod fe_command_send_tests {
             .await
             .expect("handler ok");
         assert_eq!(resolved_target_of(&out).as_deref(), Some("win-fe-a"));
+        assert_eq!(delivered_to_of(&out), Some(1));
 
         let evt = rx.try_recv().expect("exactly one evt published");
         assert_eq!(evt.target_serial, Some(active.serial()));

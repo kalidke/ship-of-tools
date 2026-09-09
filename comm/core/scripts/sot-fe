@@ -34,10 +34,16 @@
 #   goto     — switch the FE to <workspace> (no path).
 #   mode     — switch the FE's active mode (files | modules | project | ...).
 #   notify   — surface a one-line notice (optionally scoped to a workspace).
-#   open-url — open an http(s) URL in the FE machine's OS BROWSER (not a
-#              forwarded port — the FE just opens it). Opens on the active
-#              FE by default (see --fe below); use --fe to target a
-#              specific one instead.
+#   open-url — open an http(s) URL in the FE machine's OS BROWSER (the FE
+#              just opens it). Before opening, the FE arms a loopback proxy
+#              for the URL's port WHERE IT CAN: a remote, proxy-capable FE
+#              (launched with --tcp) binds a local listener that tunnels the
+#              port back to the daemon; a local FE, or one with no proxy
+#              manager, is a no-op and the URL must already resolve on its
+#              own. A tab that opens to a refused connection means THAT
+#              frontend has no proxy for the port — not that nothing was
+#              sent. Opens on the active FE by default (see --fe below); use
+#              --fe to target a specific one instead.
 #   docs     — open a LOCAL .html/site (ABSOLUTE backend path) in the FE's OS
 #              BROWSER via docs.open (the `W` key, backend-triggered): the FE
 #              serves the file from backend disk over the forwarded site_serve
@@ -333,35 +339,53 @@ send_fe_command() {
         [ -n "$resp" ] && printf '  daemon said: %s\n' "$resp" >&2
         exit 1
     fi
-    # relaunch with no --fe: `resolved_target` (2026-09-08 review, design
-    # point E) is the daemon's own claim about where this went. Absent means
-    # EITHER "no frontend is active right now" OR "this daemon predates
-    # resolved_target" (an old daemon still broadcasts the untouched
-    # request, and every FE refuses an undirected relaunch -- nothing
-    # bounces, but nothing happens either) -- both read identically from
-    # here: fail visibly instead of reporting success for a command nobody
-    # executed. Every other verb keeps its broadcast fallback untouched.
-    if [ "$fe_cmd" = relaunch ] && [ -z "${FE:-}" ]; then
-        local resolved
-        resolved="$(printf '%s' "$resp" | jq -r '.payload.resolved_target // empty' 2>/dev/null || true)"
-        if [ -z "$resolved" ]; then
+    # `delivered_to` (2026-09-09 field incident: an untargeted open-url acked
+    # ok:true TWICE while landing on a machine other than the one the owner
+    # was sitting at) is the daemon's own count of attached frontends this
+    # command actually reached — ground truth, not a guess from --fe's
+    # string shape. Absent means an old daemon that predates the field; only
+    # there do we fall back to the previous blind-ack behaviour.
+    local has_delivered delivered_to resolved_target
+    has_delivered="$(printf '%s' "$resp" | jq -r '.payload | has("delivered_to")' 2>/dev/null || true)"
+    delivered_to="$(printf '%s' "$resp" | jq -r '.payload.delivered_to // empty' 2>/dev/null || true)"
+    resolved_target="$(printf '%s' "$resp" | jq -r '.payload.resolved_target // empty' 2>/dev/null || true)"
+    if [ "$has_delivered" = "true" ]; then
+        # Ground truth, every verb: nothing can act on this send.
+        if [ "$delivered_to" = "0" ]; then
+            echo "ERROR: fe.command.send ($fe_cmd) reached NO attached frontend${FE:+ (--fe '$FE' matched nothing)}." >&2
+            echo "  'sot-fe version' lists attached frontends (handle + active|idle)." >&2
+            exit 2
+        fi
+        if [ -n "$resolved_target" ]; then
+            echo "fe.command sent: cmd=$fe_cmd target=$resolved_target via $ENDPOINT"
+        else
+            echo "fe.command sent: cmd=$fe_cmd broadcast to $delivered_to frontend(s) via $ENDPOINT"
+        fi
+    else
+        # Old daemon (predates delivered_to): relaunch with no --fe keeps
+        # its 2026-09-08-review guard as the only signal available.
+        # `resolved_target` absent means EITHER "no frontend is active right
+        # now" OR "this daemon predates resolved_target" (it still
+        # broadcasts the untouched request, and every FE refuses an
+        # undirected relaunch -- nothing bounces, but nothing happens
+        # either) -- both read identically: fail visibly instead of
+        # reporting success for a command nobody executed. A current daemon
+        # never reaches this branch -- see the delivered_to rule above.
+        if [ "$fe_cmd" = relaunch ] && [ -z "${FE:-}" ] && [ -z "$resolved_target" ]; then
             echo "ERROR: no active frontend to relaunch -- supply --fe <handle> ('sot-fe version' lists attached frontends)." >&2
             exit 2
         fi
+        echo "fe.command sent: cmd=$fe_cmd${FE:+ target=$FE} via $ENDPOINT"
     fi
-    echo "fe.command sent: cmd=$fe_cmd${FE:+ target=$FE} via $ENDPOINT"
-    # Two sessions burned on the same traps (MyAnalysis, MyDocs) — say the
-    # delivery semantics out loud instead of letting 'sent' read as 'shown'.
+    # The badge-floor note is about the SHOW verbs' (preview/reveal) focus
+    # semantics; every other verb either has no view to steal (relaunch) or
+    # --fe is the documented, delivered_to-verified way to scope it
+    # (open-url, docs, notify, ...).
     if [ -n "${FE:-}" ]; then
-        case "$FE" in
-            win-fe-*) ;; # a real per-host handle
-            *) echo "WARNING: --fe '$FE' is not a per-host handle (win-fe-<host>); FEs self-filter on their EXACT handle, so this likely matched NO frontend and was dropped silently. Omit --fe to let the daemon route to the active frontend instead." >&2 ;;
+        case "$fe_cmd" in
+            preview|reveal)
+                echo "note: --fe/--urgent are deprecated (2026-06-29, badge-floor only — we never force-switch the user's view)." >&2 ;;
         esac
-        # The badge-floor note is about the SHOW verbs' focus semantics; a
-        # relaunch has no view to steal, so it's exempt. (It no longer
-        # REQUIRES an explicit target either -- omitting --fe now routes to
-        # the active frontend, same as every other verb; see send_fe_command.)
-        [ "$fe_cmd" = relaunch ] || echo "note: --fe/--urgent are deprecated (2026-06-29, badge-floor only — we never force-switch the user's view)." >&2
     fi
     case "$fe_cmd" in
         preview|reveal)

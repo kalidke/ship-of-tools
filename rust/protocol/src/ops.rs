@@ -212,7 +212,8 @@ pub mod op {
     /// envelope (gated, workspace-scoped), this is *imperative*: the FE switches +
     /// shows regardless of its current view, under a badge-floor + opt-in
     /// force-show consent model (FE-side). Payload `FeCommandSendReq`
-    /// (`{cmd, args, target?}`); response `FeCommandSendRes{ok, resolved_target?}`.
+    /// (`{cmd, args, target?}`); response
+    /// `FeCommandSendRes{ok, resolved_target?, delivered_to?}`.
     /// Sent by the `sot-fe` BE CLI over the daemon socket — no comm relay, no FE LLM.
     pub const FE_COMMAND_SEND: &str = "fe.command.send";
     /// Server→client push carrying one imperative FE command (ADR 0025). Mirrors
@@ -1511,11 +1512,23 @@ pub struct FeCommandSendReq {
 /// `sot-fe` treats "old daemon" and "no active frontend" identically for
 /// `relaunch`: both mean "we don't know this reached anyone," so it exits
 /// non-zero with a `--fe` hint either way rather than reporting success.
+///
+/// `delivered_to` (2026-09-09 field incident: a broadcast `open-url` acked
+/// `ok:true` twice while landing on a machine other than the one the owner
+/// was sitting at) is how many ATTACHED FRONTENDS this command was actually
+/// published to. `Some(0)` means nothing can act on it — an explicit
+/// `--fe <handle>` that matched no attached connection, no frontend attached
+/// at all, or an undirected `relaunch` the daemon deliberately refused to
+/// publish (design point E above). `None` means this daemon predates the
+/// field and cannot say — NOT "zero"; `#[serde(default)]` gives that
+/// deserialization for free.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeCommandSendRes {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered_to: Option<usize>,
 }
 
 /// Payload of an `FE_COMMAND` evt (ADR 0025) — one imperative UI command pushed
@@ -2171,14 +2184,17 @@ mod fe_presence_and_command_tests {
         let legacy: FeCommandSendRes =
             serde_json::from_value(serde_json::json!({ "ok": true })).expect("legacy ack parses");
         assert_eq!(legacy.resolved_target, None);
+        assert_eq!(legacy.delivered_to, None, "a pre-field daemon says 'cannot say', not zero");
 
         let res = FeCommandSendRes {
             ok: true,
             resolved_target: Some("win-fe-a".into()),
+            delivered_to: Some(1),
         };
         let json = serde_json::to_string(&res).unwrap();
         let back: FeCommandSendRes = serde_json::from_str(&json).unwrap();
         assert_eq!(back.resolved_target.as_deref(), Some("win-fe-a"));
+        assert_eq!(back.delivered_to, Some(1));
     }
 
     #[test]
