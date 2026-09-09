@@ -229,6 +229,12 @@ pub enum IncomingEvt {
         package_name: Option<String>,
         entry_file: Option<String>,
         modules: Vec<ScanModule>,
+        /// Per-(host, workspace) request generation, echoed from
+        /// `OutgoingReq::ProjectScan` — `kernel.request` runs off-loop, so
+        /// two scans fired close together for the same workspace can
+        /// complete in either order; the chrome drops one whose generation
+        /// isn't the latest it issued for that (host, workspace).
+        generation: u64,
     },
     /// `concept.read` reply for `target`. `content` is the raw markdown
     /// (including YAML frontmatter) if `exists`; empty otherwise. Used by
@@ -352,6 +358,23 @@ pub enum IncomingEvt {
         /// cursor move already asked for, even though `workspace_id` alone
         /// still matches.
         generation: u64,
+    },
+    /// A plain `preview.get` reply came back as an ERROR envelope
+    /// (`{"error", "code"}`) rather than a `PreviewGetRes` — most notably
+    /// `code: "kernel_unavailable"`: the Julia kernel is unavailable and
+    /// this file type has no sane bytes-level fallback (HDF5, video, PDF).
+    /// Same `"{code}: {err}"` status-line convention as
+    /// `ScaleSetFailed`/`ImageCropFailed`. Carries the same ownership pair
+    /// those don't need but this DOES (a preview request can be superseded
+    /// by a workspace switch or a different file selection before its
+    /// error arrives) — the consumer applies `reply_is_current` exactly
+    /// like the success path (`IncomingEvt::Preview`) does, so a stale
+    /// failure can never overwrite what's current.
+    PreviewGetFailed {
+        node_id: Option<String>,
+        workspace_id: Option<String>,
+        generation: u64,
+        message: String,
     },
     /// A `figure.get` (`preview.get` op + figure-routed pending entry)
     /// reply: the bytes for a `![](url)` embedded in markdown. `url` is
@@ -956,7 +979,7 @@ pub enum OutgoingReq {
     /// and return a nested {modules → types/functions/submodules}
     /// view. Drives the unified Modules+Types nav mode.
     #[allow(dead_code)] // consumer lands in the unified-tree commit
-    ProjectScan { workspace_id: Option<String> },
+    ProjectScan { workspace_id: Option<String>, generation: u64 },
     /// Fetch the `.concept/<target>.md` annotation for `target`. Response
     /// surfaces as `IncomingEvt::ConceptRead`.
     ConceptRead {
@@ -1297,6 +1320,7 @@ enum PendingKind {
     },
     ProjectScan {
         workspace_id: Option<String>,
+        generation: u64,
     },
     MarkdownTokenize {
         lang: String,
@@ -2268,8 +2292,8 @@ where
                         // keyable (tree-provenance redesign).
                         pending.insert(id, PendingKind::ModulesList { workspace_id });
                     }
-                    OutgoingReq::ProjectScan { workspace_id } => {
-                        tracing::debug!(?workspace_id, id, "→ kernel.request project.scan");
+                    OutgoingReq::ProjectScan { workspace_id, generation } => {
+                        tracing::debug!(?workspace_id, generation, id, "→ kernel.request project.scan");
                         codec::write_frame(
                             &mut tx,
                             &Frame::req(
@@ -2284,7 +2308,7 @@ where
                             None,
                         )
                         .await?;
-                        pending.insert(id, PendingKind::ProjectScan { workspace_id });
+                        pending.insert(id, PendingKind::ProjectScan { workspace_id, generation });
                     }
                     OutgoingReq::MarkdownTokenize { lang, source_hash, source } => {
                         tracing::debug!(%lang, source_hash, id, "→ kernel.request markdown.tokenize");
@@ -3086,7 +3110,7 @@ fn handle_response_frame(
                     modules,
                 });
             }
-            PendingKind::ProjectScan { workspace_id } => {
+            PendingKind::ProjectScan { workspace_id, generation } => {
                 // KERNEL_REQUEST returns the kernel's response payload
                 // verbatim. project.scan shape is described in
                 // ShipToolsKernel.handle_project_scan: `{project_root,
@@ -3112,6 +3136,7 @@ fn handle_response_frame(
                         package_name,
                         entry_file,
                         modules: Vec::new(),
+                        generation,
                     });
                 } else {
                     let modules = payload
@@ -3125,6 +3150,7 @@ fn handle_response_frame(
                         package_name,
                         entry_file,
                         modules,
+                        generation,
                     });
                 }
             }
@@ -3441,6 +3467,30 @@ fn handle_response_frame(
                 workspace_id,
                 generation,
             } => {
+                // An error envelope (`{"error", "code"}` — e.g.
+                // `code: "kernel_unavailable"`) fails `PreviewGetRes`
+                // deserialization (both its fields are required), so check
+                // for it FIRST — same convention `PendingKind::SetScale`
+                // below already uses for the same wire op. Surfaced on the
+                // status line via `PreviewGetFailed`, carrying the same
+                // ownership pair `IncomingEvt::Preview` echoes below so a
+                // stale failure can be dropped the same way a stale success
+                // is.
+                if let Some(err) = frame.payload.get("error").and_then(|v| v.as_str()) {
+                    let code = frame
+                        .payload
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("error");
+                    tracing::warn!(%node_id, %code, %err, "preview.get failed");
+                    emit(IncomingEvt::PreviewGetFailed {
+                        node_id: Some(node_id),
+                        workspace_id,
+                        generation,
+                        message: format!("{code}: {err}"),
+                    });
+                    return;
+                }
                 // Same shape as the connect-time preview.get: a typed
                 // PreviewGetRes envelope plus a length-prefixed blob the
                 // codec already pulled out. Emit the existing
@@ -4904,6 +4954,48 @@ mod tests {
                 assert_eq!(*generation, 42);
             }
             other => panic!("expected Preview, got {other:?}"),
+        }
+    }
+
+    /// A `preview.get` error envelope (as `handle_preview_get` sends for
+    /// e.g. `code: "kernel_unavailable"`) must surface as
+    /// `PreviewGetFailed`, not silently fail `PreviewGetRes` deserialization
+    /// — and must echo the SAME ownership pair the success path does, so a
+    /// stale one can be dropped identically.
+    #[test]
+    fn preview_get_error_envelope_emits_preview_get_failed() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+        pending.insert(
+            9,
+            PendingKind::PreviewGet {
+                node_id: "files:data.h5".to_string(),
+                workspace_id: Some("ws-a".to_string()),
+                generation: 3,
+            },
+        );
+        let frame = Frame::res(
+            9,
+            op::PREVIEW_GET,
+            serde_json::json!({
+                "error": "Julia kernel unavailable: julia exited at once",
+                "code": "kernel_unavailable",
+            }),
+        );
+        let host = "test-host".to_string();
+        handle_response_frame(frame, None, &mut pending, &evt_tx, &host);
+
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
+        assert_eq!(events.len(), 1, "got {events:?}");
+        match &events[0] {
+            (h, IncomingEvt::PreviewGetFailed { node_id, workspace_id, generation, message }) => {
+                assert_eq!(h, &host);
+                assert_eq!(node_id.as_deref(), Some("files:data.h5"));
+                assert_eq!(workspace_id.as_deref(), Some("ws-a"));
+                assert_eq!(*generation, 3);
+                assert_eq!(message, "kernel_unavailable: Julia kernel unavailable: julia exited at once");
+            }
+            other => panic!("expected PreviewGetFailed, got {other:?}"),
         }
     }
 }

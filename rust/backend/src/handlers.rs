@@ -676,6 +676,21 @@ async fn build_preview_payload(
         Err(e) => return Ok(Err(("bad_node_id".to_string(), format!("{e:#}")))),
     };
 
+    // A plugin match, resolved up front so the `is_dir`/plugin/fallback
+    // three-way below can stay a plain `if`/`else if`/`else` — `Err` means
+    // the kernel is unavailable for a file type with no sane bytes-level
+    // fallback, and short-circuits this whole function.
+    let plugin_matched = if path.is_dir() {
+        None
+    } else {
+        match try_plugin_preview(&kernel, &path, &req.node_id, req.page, req.fit_w, req.fit_h)
+            .await
+        {
+            Ok(matched) => matched,
+            Err(code_msg) => return Ok(Err(code_msg)),
+        }
+    };
+
     // The 4th element is preview PROVENANCE: true only when `bytes` is the
     // file itself. `merge_png_phys_scale` is gated on it — see its doc for
     // why a plugin's generated blob must never be read for embedded scale.
@@ -688,9 +703,7 @@ async fn build_preview_payload(
             .unwrap_or_else(|| path.to_str().unwrap_or("/"));
         let md = ROOT_PREVIEW_TEMPLATE.replace("{root}", label);
         ("text/markdown".to_string(), md.into_bytes(), None, false)
-    } else if let Some((mime, bytes, extras)) =
-        try_plugin_preview(&kernel, &path, &req.node_id, req.page, req.fit_w, req.fit_h).await
-    {
+    } else if let Some((mime, bytes, extras)) = plugin_matched {
         // Plugin-routed preview: a loaded FileType plugin claimed this
         // path. Use the plugin's mime + decoded blob — that's how
         // HDF5Preview, JuliaSource, MarkdownDoc, and any future plugin
@@ -1147,6 +1160,16 @@ pub async fn handle_image_crop(
 /// — in those cases the caller falls back to the bytes-level reader. Errors
 /// are logged but not propagated; preview failures should never break the
 /// frontend's chrome.
+/// `Ok(Some(...))`: a plugin claimed the path and rendered it. `Ok(None)`:
+/// no plugin matched, OR the kernel failed in some way that still leaves the
+/// bytes-level fallback a REASONABLE degrade (a live kernel's wire/protocol
+/// error, or the kernel being `Dead` for a file type the bytes-level reader
+/// can still show something sane for, e.g. raw Julia source as plain text).
+/// `Err((code, msg))`: the kernel is confirmed `Dead` (see `KernelDead`) AND
+/// this path is a bounded-output-only plugin (`is_bounded_output_plugin` —
+/// HDF5/video/PDF) where the bytes-level fallback would serve raw binary
+/// nonsense instead of a preview; callers surface this straight to the FE
+/// as "Julia kernel unavailable: <reason>" rather than silently degrading.
 async fn try_plugin_preview(
     kernel: &Kernel,
     path: &std::path::Path,
@@ -1154,7 +1177,7 @@ async fn try_plugin_preview(
     page: Option<u32>,
     fit_w: Option<u32>,
     fit_h: Option<u32>,
-) -> Option<(String, Vec<u8>, Option<serde_json::Value>)> {
+) -> std::result::Result<Option<(String, Vec<u8>, Option<serde_json::Value>)>, (String, String)> {
     // Gate on input size before invoking the plugin. Plugins for structured
     // mimes (e.g. `application/vnd.sot.tokens+json` from JuliaSource)
     // produce output proportional to input; if we let the plugin run on a
@@ -1177,7 +1200,7 @@ async fn try_plugin_preview(
                 cap = PREVIEW_BYTE_CAP,
                 "skipping plugin path on oversize input; falling back to bytes-level reader"
             );
-            return None;
+            return Ok(None);
         }
         _ => {}
     }
@@ -1202,23 +1225,51 @@ async fn try_plugin_preview(
     let v = match kernel.request("file.preview", payload).await {
         Ok(v) => v,
         Err(e) => {
+            // Kernel unavailable (dead or still starting): for a bounded-
+            // output plugin (HDF5/video/PDF) the bytes-level fallback below
+            // would serve raw binary nonsense, not a degraded-but-sane
+            // preview — surface the reason instead. Every other file type
+            // (and every other kind of kernel failure — a live kernel's own
+            // wire/protocol error) keeps the existing silent fallback: raw
+            // bytes are still a reasonable thing to show for, say, Julia
+            // source.
+            if let Some(unavailable) = e.downcast_ref::<crate::kernel::KernelUnavailable>() {
+                if is_bounded_output_plugin(path) {
+                    tracing::warn!(
+                        %node_id,
+                        %unavailable,
+                        "kernel unavailable for a bounded-output-only file type; no usable fallback"
+                    );
+                    return Err((
+                        "kernel_unavailable".to_string(),
+                        format!("Julia kernel unavailable: {unavailable}"),
+                    ));
+                }
+                tracing::warn!(%node_id, %unavailable, "kernel unavailable; falling back to bytes-level reader");
+                return Ok(None);
+            }
             tracing::warn!(
                 %node_id,
                 error = %e,
                 "kernel.file.preview failed; falling back to bytes-level reader"
             );
-            return None;
+            return Ok(None);
         }
     };
     let matched = v.get("matched").and_then(|m| m.as_bool()).unwrap_or(false);
     if !matched {
-        return None;
+        return Ok(None);
     }
-    let mime = v.get("mime").and_then(|m| m.as_str())?.to_string();
+    let Some(mime) = v.get("mime").and_then(|m| m.as_str()) else {
+        return Ok(None);
+    };
+    let mime = mime.to_string();
     // Prefer `blob_base64` (canonical, supports binary). Plain `text` is also
     // emitted for text/* mimes — but decoding base64 still gives the right
     // bytes either way, so we route everything through the same path.
-    let b64 = v.get("blob_base64").and_then(|b| b.as_str())?;
+    let Some(b64) = v.get("blob_base64").and_then(|b| b.as_str()) else {
+        return Ok(None);
+    };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
     let mut bytes = match STANDARD.decode(b64) {
@@ -1229,7 +1280,7 @@ async fn try_plugin_preview(
                 error = %e,
                 "kernel.file.preview returned undecodable blob_base64; falling back"
             );
-            return None;
+            return Ok(None);
         }
     };
     if bytes.len() > PREVIEW_BYTE_CAP {
@@ -1254,13 +1305,13 @@ async fn try_plugin_preview(
                 cap = PREVIEW_BYTE_CAP,
                 "plugin output exceeds cap on non-text mime; falling back to bytes-level reader"
             );
-            return None;
+            return Ok(None);
         }
     }
     // Plugin-reported metadata (page/page_count, …) — forwarded verbatim,
     // opaque here (ADR 0021).
     let extras = v.get("extras").cloned();
-    Some((mime, bytes, extras))
+    Ok(Some((mime, bytes, extras)))
 }
 
 /// Bytes-level reader: read the file at `path`, infer mime from extension,
@@ -2749,11 +2800,23 @@ pub async fn handle_kernel_request(
     let (_, rev) = session.snapshot().await;
     let payload = match result {
         Ok(v) => v,
-        Err(e) => json!({
-            "error": format!("{e:#}"),
-            "code": "kernel_request_failed",
-            "kernel_op": req.kernel_op,
-        }),
+        // The kernel being unavailable (dead OR still starting) gets its own
+        // code + a "Julia kernel unavailable: <reason>" message so callers
+        // (Modules mode, any other kernel.request consumer) can distinguish
+        // it from a live request that failed for some other reason (bad op,
+        // a real wire/protocol error).
+        Err(e) => match e.downcast_ref::<crate::kernel::KernelUnavailable>() {
+            Some(unavailable) => json!({
+                "error": format!("Julia kernel unavailable: {unavailable}"),
+                "code": "kernel_unavailable",
+                "kernel_op": req.kernel_op,
+            }),
+            None => json!({
+                "error": format!("{e:#}"),
+                "code": "kernel_request_failed",
+                "kernel_op": req.kernel_op,
+            }),
+        },
     };
     Ok(vec![(
         Frame::res(req_id, op::KERNEL_REQUEST, payload).with_rev(rev),

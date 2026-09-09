@@ -2716,7 +2716,11 @@ struct TreeSlot {
     /// A later parked reply MAY replace reply-provenance contents — replies
     /// are server-ordered, so newest wins (codex r5: two `.` toggles then a
     /// mode switch — reply #1 filled the empty slot, reply #2 with the
-    /// FINAL visibility was dropped by the plain empty-only rule).
+    /// FINAL visibility was dropped by the plain empty-only rule). NOT true
+    /// for `project.scan`: `kernel.request` runs off-loop, so two scans for
+    /// the same key can complete out of order — that consumer gates on its
+    /// own per-key generation (`next_project_scan_gen`) before ever
+    /// reaching this field, rather than trusting arrival order.
     from_reply: bool,
 }
 
@@ -4757,6 +4761,11 @@ struct State {
     /// this one counter — both land in the same `IncomingEvt::ConceptRead`
     /// consumer).
     concept_req_gen: u64,
+    /// Same mechanism as `preview_req_gen`/`concept_req_gen`, for
+    /// `project.scan` — keyed per (host, workspace) rather than one global
+    /// counter, since scans for different workspaces are independently
+    /// valid in flight together (see `next_project_scan_gen`).
+    project_scan_req_gen: HashMap<(HostKey, Option<String>), u64>,
 }
 
 /// Wire shape for `application/vnd.sot.tokens+json` from the
@@ -6088,6 +6097,7 @@ impl State {
             preview_src_node_id: None,
             preview_req_gen: 0,
             concept_req_gen: 0,
+            project_scan_req_gen: HashMap::new(),
         };
         // Self-update notice from the launcher's own process spawn (a
         // REFUSED pull; empty/unset for offline or ok - see
@@ -6300,8 +6310,11 @@ impl State {
             // only and would error on the synthetic "modules:" id; the
             // entire scan ships in one round-trip anyway so per-row
             // expansion doesn't need a separate fetch.
+            let generation =
+                self.next_project_scan_gen(self.active_host.clone(), self.active_workspace_id.clone());
             Some(crate::transport::OutgoingReq::ProjectScan {
                 workspace_id: self.active_workspace_id.clone(),
+                generation,
             })
         } else if row.node.kind == "sessions" {
             // Sessions-mode root re-expansion: refresh the workspace
@@ -6412,6 +6425,20 @@ impl State {
     fn next_concept_gen(&mut self) -> u64 {
         self.concept_req_gen += 1;
         self.concept_req_gen
+    }
+
+    /// Same mechanism as `next_preview_gen`, keyed per (host, workspace)
+    /// rather than one global counter: unlike the single preview slot,
+    /// `project.scan`s for DIFFERENT workspaces are independently valid in
+    /// flight together, so staleness must be judged per key, not globally.
+    /// `kernel.request` runs off-loop (switch-latency): two scans issued
+    /// close together for the SAME workspace can now complete in EITHER
+    /// order, so this same generation check previews already use is
+    /// required here too.
+    fn next_project_scan_gen(&mut self, host: HostKey, workspace_id: Option<String>) -> u64 {
+        let gen = self.project_scan_req_gen.entry((host, workspace_id)).or_insert(0);
+        *gen += 1;
+        *gen
     }
 
     /// If the selected tree row's node id differs from the last one we
@@ -7318,8 +7345,11 @@ impl State {
             }
             Mode::Modules => {
                 if self.tree.rows.is_empty() {
+                    let generation = self
+                        .next_project_scan_gen(self.active_host.clone(), self.active_workspace_id.clone());
                     if let Err(e) = self.send(OutgoingReq::ProjectScan {
                         workspace_id: self.active_workspace_id.clone(),
+                        generation,
                     }) {
                         tracing::warn!(error = %e, "drop project.scan request — channel closed");
                     }
@@ -8773,8 +8803,11 @@ impl State {
                 }
                 Mode::Modules => {
                     tracing::info!("project.scan requested: workspace switch (empty Modules slot)");
+                    let generation = self
+                        .next_project_scan_gen(self.active_host.clone(), self.active_workspace_id.clone());
                     if let Err(e) = self.send(crate::transport::OutgoingReq::ProjectScan {
                         workspace_id: self.active_workspace_id.clone(),
+                        generation,
                     }) {
                         tracing::warn!(error = %e, "drop project.scan after workspace switch");
                     }
@@ -12405,8 +12438,13 @@ impl State {
                             // host would just be a redundant round trip.
                             Mode::Sessions => {}
                             Mode::Modules => {
+                                let generation = self.next_project_scan_gen(
+                                    self.active_host.clone(),
+                                    self.active_workspace_id.clone(),
+                                );
                                 let _ = self.send(crate::transport::OutgoingReq::ProjectScan {
                                     workspace_id: self.active_workspace_id.clone(),
+                                    generation,
                                 });
                             }
                             Mode::Files => {
@@ -12816,7 +12854,26 @@ impl State {
                     package_name,
                     entry_file,
                     modules,
+                    generation,
                 } => {
+                    // `kernel.request` runs off-loop (switch-latency): two
+                    // scans fired close together for the SAME (host,
+                    // workspace) can complete in EITHER order now, so —
+                    // exactly like `preview.get`'s `reply_is_current` —
+                    // drop one that isn't the latest generation issued for
+                    // its own key. Per-key (not global) because scans for
+                    // DIFFERENT workspaces are independently valid in
+                    // flight together; see `next_project_scan_gen`.
+                    let latest = self
+                        .project_scan_req_gen
+                        .get(&(event_host.clone(), workspace_id.clone()))
+                        .copied()
+                        .unwrap_or(0);
+                    if generation != latest {
+                        tracing::debug!(?workspace_id, generation, latest, %event_host,
+                            "drop stale project.scan reply");
+                        continue;
+                    }
                     tracing::info!(
                         ?workspace_id,
                         ?project_root,
@@ -15065,6 +15122,46 @@ impl State {
                     // consume it and report a "saved" that never happened.
                     self.scale_save_pending = None;
                     self.status = format!("pixel size failed · {name}: {message}");
+                    self.window.request_redraw();
+                }
+                crate::transport::IncomingEvt::PreviewGetFailed {
+                    node_id,
+                    workspace_id,
+                    generation,
+                    message,
+                } => {
+                    // Same stale-reply test the success path (`Preview`,
+                    // above) applies: a preview request can be superseded
+                    // by a workspace switch or a different file selection
+                    // before its FAILURE arrives, and an obsolete error
+                    // must not overwrite the current status line any more
+                    // than an obsolete success may overwrite the pane.
+                    if !reply_is_current(
+                        generation,
+                        self.preview_req_gen,
+                        &event_host,
+                        &self.active_host,
+                        &workspace_id,
+                        &self.active_workspace_id,
+                    ) {
+                        tracing::debug!(?workspace_id, generation, latest = self.preview_req_gen,
+                            %event_host, active_host = %self.active_host,
+                            "drop stale preview.get failure");
+                        continue;
+                    }
+                    // Most commonly `code: "kernel_unavailable"` — a
+                    // bounded-output-only file type (HDF5/video/PDF) with
+                    // the Julia kernel unavailable. Same status-line
+                    // convention as `ScaleSetFailed`/`ImageCropFailed` just
+                    // above; the preview pane itself is left as whatever it
+                    // already showed (no blank/stale flash) rather than
+                    // inventing a new error widget for it.
+                    let name = node_id
+                        .as_deref()
+                        .and_then(|id| id.rsplit(['/', '\\']).next())
+                        .unwrap_or("preview")
+                        .to_string();
+                    self.status = format!("preview failed · {name}: {message}");
                     self.window.request_redraw();
                 }
                 crate::transport::IncomingEvt::ReplRunFileDone { eval_id, result } => {
@@ -19458,8 +19555,11 @@ impl ApplicationHandler for App {
                 // unified Modules/Types tree. Mostly for `--capture`,
                 // where we can't inject `m` mid-run.
                 if state.mode == Mode::Modules {
+                    let generation = state
+                        .next_project_scan_gen(state.active_host.clone(), state.active_workspace_id.clone());
                     if let Err(e) = state.send(OutgoingReq::ProjectScan {
                         workspace_id: state.active_workspace_id.clone(),
+                        generation,
                     }) {
                         tracing::warn!(error = %e, "drop initial project.scan request");
                     }

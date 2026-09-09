@@ -21,6 +21,7 @@ mod file_io;
 mod files_mode;
 mod handlers;
 mod http_serve;
+mod julia;
 mod kernel;
 mod mathjax;
 mod monitor;

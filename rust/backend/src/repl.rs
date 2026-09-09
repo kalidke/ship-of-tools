@@ -274,7 +274,7 @@ impl Repl {
         workspace_id: Option<String>,
         user_project: Option<PathBuf>,
     ) -> Self {
-        let julia_bin = std::env::var("SOT_JULIA_BIN").unwrap_or_else(|_| "julia".to_string());
+        let julia_bin = crate::julia::resolve_bin_or_bare();
         Self {
             inner: Arc::new(ReplInner {
                 repl_project,

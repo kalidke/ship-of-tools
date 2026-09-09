@@ -203,12 +203,27 @@ fn finish_dispatch(
 type OutTx = mpsc::Sender<(Frame, Option<Vec<u8>>)>;
 
 /// Per-connection cap on concurrently RUNNING off-loop jobs (`preview.get`,
-/// `concept.read`, `image.crop`). Names the invariant it protects: one
-/// connection's burst of these can't starve the tokio runtime's worker
-/// threads for every OTHER connection. Acquired INSIDE each spawned job, never
-/// before spawning, so request intake itself is never blocked by the cap —
-/// only how many jobs run at once, once already queued.
+/// `concept.read`, `image.crop`, `kernel.request`). Names the invariant it
+/// protects: one connection's burst of these can't starve the tokio
+/// runtime's worker threads for every OTHER connection. Acquired INSIDE
+/// each spawned job, never before spawning, so request intake itself is
+/// never blocked by the cap — only how many jobs run at once, once already
+/// queued. `pty.*` ops never touch this semaphore at all — they dispatch
+/// INLINE (see the `op::PTY_*` arms below), which is what keeps them served
+/// even while every slot here is busy (see `switch_latency.rs`'s
+/// `pty_not_starved::pty_screen_is_served_while_a_real_slow_kernel_request_is_pending`
+/// test).
 const OFFLOOP_CONCURRENCY: usize = 4;
+
+/// Cap on how long a queued off-loop job may wait for its `job_sem` PERMIT
+/// before being discarded outright — never running the handler at all.
+/// Without this, N jobs queued behind a live-but-hung kernel each wait
+/// successive `OFFLOOP_CONCURRENCY`-sized batches with no overall bound: 40
+/// requests could occupy ~10 batches in a row before the last one even
+/// starts. Matches `KERNEL_REQUEST_TIMEOUT`'s own bound, so a request that
+/// would time out anyway during its internal wait doesn't also waste a
+/// queue slot first waiting to even begin.
+const OFFLOOP_QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Spawn one request's handler as its own task, off this connection's
 /// read/dispatch loop (switch-latency Phase 1): a slow `preview.get` no
@@ -220,6 +235,12 @@ const OFFLOOP_CONCURRENCY: usize = 4;
 /// `jobs.join_next()` arm logs; that mirrors the inline dispatch path, which
 /// has never had panic containment either. Delivers its result through
 /// `out_tx` for the loop to write, exactly like an inline reply.
+///
+/// The deadline (`OFFLOOP_QUEUE_TIMEOUT`) starts HERE, before the permit is
+/// even requested — not after acquiring it — so a job queued behind a
+/// saturated cap for too long is discarded with the standard timeout error
+/// and `fut` never runs, rather than finally starting once nobody still
+/// cares about the answer.
 fn spawn_job<F>(
     jobs: &mut JoinSet<()>,
     semaphore: Arc<Semaphore>,
@@ -231,13 +252,26 @@ fn spawn_job<F>(
 ) where
     F: std::future::Future<Output = Result<handlers::HandlerOutput>> + Send + 'static,
 {
+    let started = std::time::Instant::now();
     jobs.spawn(async move {
-        let started = std::time::Instant::now();
-        let _permit = semaphore
-            .acquire_owned()
+        let permit = match tokio::time::timeout(OFFLOOP_QUEUE_TIMEOUT, semaphore.acquire_owned())
             .await
-            .expect("connection job semaphore is never closed");
+        {
+            Ok(p) => p.expect("connection job semaphore is never closed"),
+            Err(_) => {
+                let err = anyhow::anyhow!(
+                    "{op_name} timed out after {OFFLOOP_QUEUE_TIMEOUT:?} waiting to run \
+                     (off-loop queue saturated)"
+                );
+                let out_frames = finish_dispatch(&op_name, req_id, transport, started, Err(err));
+                for (frame, blob) in out_frames {
+                    let _ = out_tx.send((frame, blob)).await;
+                }
+                return;
+            }
+        };
         let out_frames = finish_dispatch(&op_name, req_id, transport, started, fut.await);
+        drop(permit);
         for (frame, blob) in out_frames {
             if out_tx.send((frame, blob)).await.is_err() {
                 // The connection loop is gone — nothing left to deliver.
@@ -1277,9 +1311,10 @@ where
     let mut monitor_rx = workspaces.monitor_hub().map(|h| h.subscribe());
     let mut monitor_subscribed = false;
 
-    // Off-loop jobs (switch-latency Phase 1): `preview.get` / `concept.read`
-    // / `image.crop` run as their own tasks in `jobs`, bounded to
-    // `OFFLOOP_CONCURRENCY` concurrent (the semaphore is acquired INSIDE
+    // Off-loop jobs (switch-latency Phase 1, joined by `kernel.request` in
+    // the kernel-dead-pane-starvation fix): `preview.get` / `concept.read`
+    // / `image.crop` / `kernel.request` run as their own tasks in `jobs`,
+    // bounded to `OFFLOOP_CONCURRENCY` concurrent (the semaphore is acquired INSIDE
     // each job, never here, so queuing one never blocks reading the next
     // frame). `tx` stays this loop's alone — a job has no way to reach the
     // socket, so it hands its finished reply to `out_tx` and the loop
@@ -1302,7 +1337,7 @@ where
             tokio::select! {
                 biased;
                 // Off-loop job replies drain BEFORE reads: a finished
-                // preview.get/concept.read/image.crop reply goes out before
+                // preview.get/concept.read/image.crop/kernel.request reply goes out before
                 // this connection accepts another frame, so a burst of new
                 // requests can't indefinitely postpone delivering one
                 // that's already done.
@@ -1657,8 +1692,45 @@ where
                 continue;
             }
             op::KERNEL_REQUEST => {
-                handlers::handle_kernel_request(frame.id, frame.payload, &session, &workspaces)
-                    .await
+                // Off-loop: this op used to await
+                // `handlers::handle_kernel_request(...)` INLINE, in this
+                // same per-connection dispatch loop that
+                // also carries this connection's `pty` byte stream — a
+                // `kernel.request` against a dead/slow kernel held up
+                // dispatch of the NEXT frame on this connection, including
+                // a `pty.write`/`pty.open` for the same session's attached
+                // pane (the frontend multiplexes both over one connection
+                // per host). `preview.get`/`concept.read`/`image.crop` were
+                // already off-loop for the identical reason; this joins
+                // their existing pool (`job_sem`, `OFFLOOP_CONCURRENCY`)
+                // rather than adding a second cap for the same shape of
+                // operation (a bounded external-process call). Note this is
+                // NOT about `job_sem` ever being shared with pty ops —
+                // pty.* dispatch inline just below and never touch it; the
+                // actual shared choke point was the inline `.await` itself.
+                let req_id = frame.id;
+                let op_name = frame.op.clone();
+                let mut payload = frame.payload;
+                if !canonicalize_workspace_id(&mut tx, &workspaces, req_id, &op_name, &mut payload)
+                    .await?
+                {
+                    continue;
+                }
+                let session = session.clone();
+                let workspaces = workspaces.clone();
+                spawn_job(
+                    &mut jobs,
+                    job_sem.clone(),
+                    out_tx.clone(),
+                    req_id,
+                    op_name,
+                    transport,
+                    async move {
+                        handlers::handle_kernel_request(req_id, payload, &session, &workspaces)
+                            .await
+                    },
+                );
+                continue;
             }
             op::CONCEPT_READ => {
                 // Off-loop (switch-latency Phase 1): a read of one

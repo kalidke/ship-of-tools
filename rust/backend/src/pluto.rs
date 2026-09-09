@@ -43,7 +43,7 @@ struct Submission {
 
 impl Pluto {
     pub fn new(project_dir: PathBuf, start_script: PathBuf) -> Self {
-        let julia_bin = std::env::var("SOT_JULIA_BIN").unwrap_or_else(|_| "julia".to_string());
+        let julia_bin = crate::julia::resolve_bin_or_bare();
         Self {
             inner: Arc::new(PlutoInner {
                 project_dir,
