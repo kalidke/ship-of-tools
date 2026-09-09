@@ -1009,9 +1009,16 @@ case "$CMD" in
         # RAW and confines it to any workspace root, so a repo-relative node_id
         # would be resolved against sotd's CWD and fail. Refuse a relative path
         # rather than send a broken one; do NOT relativize.
+        # A Windows backend spells an absolute path with a drive letter, so
+        # `/*` alone refused every legitimate local path on such a box. The
+        # refusal is invisible on a Linux backend, where every path starts
+        # with `/`. Both separators are accepted -- the daemon stats the
+        # string raw and Windows takes either.
         case "$PATH_ARG" in
             /*) : ;;
-            *)  echo "ERROR: sot-fe docs needs an ABSOLUTE backend path (docs.open stats it raw, not a repo-relative node_id)." >&2; exit 1 ;;
+            [A-Za-z]:/*) : ;;
+            [A-Za-z]:\\*) : ;;
+            *)  echo "ERROR: sot-fe docs needs an ABSOLUTE backend path -- /unix/style or C:\windows\style (docs.open stats it raw, not a repo-relative node_id)." >&2; exit 1 ;;
         esac
         # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile):
         # PATH_ARG is REQUIRED absolute here (the case above just enforced
