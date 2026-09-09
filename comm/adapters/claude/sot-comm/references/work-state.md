@@ -85,6 +85,22 @@ The daemon never infers that a person looked.
 `working` write; nothing else reads it. Absent provenance fails gray, so a box
 still on the old hooks never paints blue by accident.
 
+## Closing markers — the turn-end word (2026-09-09)
+
+A reply whose closing block opens a line with `SITREP:`, `SITREP-QUESTION:`
+or `SITREP-WAITING:` declares the turn's end state (done / blocked /
+waiting) and carries the report that state demands (the `sitrep` skill
+holds the three shapes). The `Stop` hook stamps that state **explicitly** —
+`waiting` sets the sticky marker, `done` paints blue — with the rest of the
+marker line as the row summary (the next non-empty line when the marker
+stands alone). A marker ends the hook: no floor, no auditor, no nudge.
+
+Without a marker, a **human** turn that ends with a `blocked` / `waiting` /
+`done` row gets one Stop nudge naming the shape it owes; the continuation's
+marker then stamps the row. A machine wake (relay, Monitor, notification)
+never nudges — a peer's ack on a parked row is not a report — and a plain
+answer with no explicit state floors exactly as before.
+
 ## Testing the state machinery — never against your live row
 
 Registering fixture states on your own handle paints real colors on the

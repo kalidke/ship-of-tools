@@ -118,3 +118,16 @@ row holds the colour and records `machine`, so an explicit `working` in that
 turn ends gray; a genuine prompt on a sticky-purple row records `user` and an
 explicit `working` in that turn ends blue; a pre-field `working` row and an
 origin-less soft write both floor gray.
+
+## Update 2026-09-09 — closing markers
+
+The floor is now the fallback, not the word. A reply whose closing block opens
+a line with `SITREP:`, `SITREP-QUESTION:` or `SITREP-WAITING:` declares the
+turn's end state (done / blocked / waiting) and carries the report that state
+demands (the `sitrep` skill holds the three shapes). The Stop hook stamps that
+state explicitly, with the rest of the marker line as the row summary, so the
+chat and the nav row come from one sentence. Without a marker, a human turn
+that ends parked (blocked / waiting / done) gets one nudge naming the shape
+it owes; a machine wake never nudges, and a plain answer floors as above.
+Seven more scenarios cover it in the same suite. Mechanics: the sot-comm
+skill's `references/work-state.md`.

@@ -86,6 +86,27 @@ pages), the log executive summary goes into the page's opening "In short"
 block, in this chain shape, replacing any activity-shaped summary. It never
 introduces a number that the page's tables do not hold.
 
+## The closing marker — one line that stamps the row
+
+The closing block of a turn opens with a marker line. The Stop hook reads
+it, stamps the session's work-state from it, and takes the rest of the line
+as the nav-row summary, so the chat and the row come from one sentence and
+cannot disagree. No separate status call is needed at turn end.
+
+| Marker | State | The line, then the block |
+|---|---|---|
+| `SITREP: <headline>` | done (blue) | one-line headline, then the chain above |
+| `SITREP-QUESTION: <the question>` | blocked (red) | the exact question in one sentence, then the context to answer it cold: what was being done, the options and what follows from each, the default if unanswered, what is irreversible |
+| `SITREP-WAITING: <what for>` | waiting (purple) | one sentence, then EVERY armed monitor, background job, subagent and peer request: what it is, what completion looks like, expected duration, the fallback if it never lands, and what happens when it does |
+
+The marker starts a line (bold-wrapping it is fine). The block is the last
+thing in the reply. A turn that ends parked (blocked / waiting / done) from a
+human prompt and carries no marker is nudged once for the shape it owes; a
+plain answer needs no marker and floors as before. The question and waiting
+blocks follow the same language rules as the sitrep: plain words, no
+identifiers, about 80–150 words. Mid-turn stamps (marking `waiting` the
+moment a job is launched) stay as they are; the marker is the turn-end word.
+
 ## Before sending: the two checks
 
 1. **Vocabulary scan.** Read the draft as the field colleague. Circle every

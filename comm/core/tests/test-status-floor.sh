@@ -44,6 +44,14 @@ sot_write_self_file "$SOT_COMM_SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT" || { e
 ST="$SCRIPTS_DIR/comm-status.sh"
 W() { printf '%s' "$1" | bash "$HOOKS_DIR/comm-status-working.sh"; }
 I() { printf '{}' | bash "$HOOKS_DIR/comm-status-idle.sh"; }
+# IT TEXT [stop_hook_active]: Stop with a transcript whose last assistant message is TEXT.
+IT() {
+    local tr="$WORK/transcript.jsonl"
+    { jq -nc '{type:"user",message:{content:"go"}}'
+      jq -nc --arg t "$1" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'; } > "$tr"
+    jq -nc --arg p "$tr" --argjson a "${2:-false}" '{transcript_path:$p, stop_hook_active:$a}' | bash "$HOOKS_DIR/comm-status-idle.sh"
+}
+summary() { jq -r --arg n "$NAME" '.agents[$n].summary // ""' "$REGISTRY"; }
 HB() { printf '{"tool_name":"Bash"}' | bash "$HOOKS_DIR/comm-status-heartbeat.sh"; }
 GENUINE='{"prompt":"please do the thing"}'
 RELAY='{"prompt":"[relay] from peer: ack"}'
@@ -87,6 +95,50 @@ case_pre_field_working_row_floors_gray() { seed working; I; expect idle/-/- end;
 case_originless_soft_working_floors_gray() { seed idle; COMM_STATUS_SOFT=1 "$ST" working; expect working/machine/- start && I && expect idle/machine/- end; }
 case_legacy_soft_idle_unchanged() { seed idle; W "$GENUINE"; COMM_STATUS_SOFT=1 "$ST" idle; expect idle/user/- end; }
 case_working_with_live_marker_demotes_to_waiting() { seed idle; "$ST" waiting "job"; W "$GENUINE"; HB; I; expect waiting/user/sticky end; }
+
+# ---- closing markers (2026-09-09): the marker line stamps the row ----
+case_marker_done_stamps_blue_with_headline() {
+    seed idle; W "$GENUINE"
+    IT $'Some prose.\n\nSITREP: the docs failure is a silent unarmed proxy\n\nThe chain...' >/dev/null
+    expect done/user/- state && [ "$(summary)" = "the docs failure is a silent unarmed proxy" ] || { echo "    summary '$(summary)'"; return 1; }
+}
+case_marker_question_stamps_red() {
+    seed idle; W "$GENUINE"
+    IT $'**SITREP-QUESTION: which box did you press W on?**\n\nContext...' >/dev/null
+    expect blocked/user/- state && [ "$(summary)" = "which box did you press W on?" ] || { echo "    summary '$(summary)'"; return 1; }
+}
+case_marker_waiting_stamps_sticky_purple() {
+    seed idle; W "$GENUINE"
+    IT $'SITREP-WAITING:\n\nTwo FE peers, their launch argv; 15 min fallback.' >/dev/null
+    expect waiting/user/sticky state && [ "$(summary)" = "Two FE peers, their launch argv; 15 min fallback." ] || { echo "    summary '$(summary)'"; return 1; }
+}
+case_marker_in_continuation_still_stamps() {
+    seed idle; W "$GENUINE"; "$ST" blocked "q?"
+    local out; out="$(IT $'SITREP-QUESTION: which port?' true)"
+    [ -z "$out" ] || { echo "    unexpected output '$out'"; return 1; }
+    expect blocked/user/- state && [ "$(summary)" = "which port?" ]
+}
+case_parked_user_turn_without_marker_is_nudged_once() {
+    seed idle; W "$GENUINE"; "$ST" waiting "job"
+    local out; out="$(IT 'I launched the job and will report.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("SITREP-WAITING"))' >/dev/null || { echo "    no nudge: '$out'"; return 1; }
+    expect waiting/user/sticky untouched || return 1
+    out="$(IT 'still nothing' true)"
+    [ -z "$out" ] || { echo "    re-nudged in continuation: '$out'"; return 1; }
+    expect waiting/user/sticky end
+}
+case_parked_machine_turn_without_marker_is_not_nudged() {
+    seed idle; W "$RELAY"; "$ST" blocked "q?"
+    local out; out="$(IT 'ack received')"
+    [ -z "$out" ] || { echo "    nudged a machine turn: '$out'"; return 1; }
+    expect blocked/machine/- end
+}
+case_plain_user_turn_without_marker_floors_blue_unnudged() {
+    seed idle; W "$GENUINE"
+    local out; out="$(IT 'It is 14:00.')"
+    [ -z "$out" ] || { echo "    nudged a plain answer: '$out'"; return 1; }
+    expect done/user/- end
+}
 
 # ---- races: the floor decides against the row as it is UNDER the lock ----
 # Hold the registry lock, start the floor (it blocks on the lock; the barrier
@@ -164,6 +216,13 @@ check "a working row from before the field existed floors gray" case_pre_field_w
 check "an origin-less soft working (old prompt hook) floors gray" case_originless_soft_working_floors_gray
 check "legacy soft idle still floors gray" case_legacy_soft_idle_unchanged
 check "a working row with a live marker demotes to waiting at the floor" case_working_with_live_marker_demotes_to_waiting
+check "SITREP: stamps blue with the headline as summary" case_marker_done_stamps_blue_with_headline
+check "SITREP-QUESTION: (bold-wrapped) stamps red with the question" case_marker_question_stamps_red
+check "SITREP-WAITING: alone takes the next line and sets sticky purple" case_marker_waiting_stamps_sticky_purple
+check "a marker in a stop-hook continuation still stamps, no nudge" case_marker_in_continuation_still_stamps
+check "a human turn ending parked without a marker is nudged once, row untouched" case_parked_user_turn_without_marker_is_nudged_once
+check "a machine turn ending parked without a marker is not nudged" case_parked_machine_turn_without_marker_is_not_nudged
+check "a plain human answer without a marker floors blue, no nudge" case_plain_user_turn_without_marker_floors_blue_unnudged
 check "race: a done committed while the floor waits for the lock is kept" case_race_done_committed_while_floor_waits_is_kept
 check "race: a machine start committed while the floor waits ends gray, not blue" case_race_machine_start_while_floor_waits_ends_gray
 check "a failed state write exits non-zero and leaves the row untouched" case_failed_state_write_exits_nonzero

@@ -44,6 +44,12 @@ comm-status.sh blocked "the question you're asking"   # plain-text question, no 
 comm-status.sh waiting "what you're waiting on"        # turn ended with a background job/subagent still running
 ```
 
+**Closing markers.** End a parked turn with the closing block from the `sitrep`
+skill: a line opening `SITREP: <headline>` (done), `SITREP-QUESTION: <the
+question>` (blocked) or `SITREP-WAITING: <what for>` (waiting). The Stop hook
+stamps the row from that line, so no status call is needed at turn end; a human
+turn ending parked without one is nudged once.
+
 **Precedence: blocked > waiting > done > idle.** **Waiting is sticky** — set it
 once; it survives intervening turns until you report `working`/`idle`/`done`, or
 self-heals after 2h. Blue clears on the user's next genuine prompt — never by

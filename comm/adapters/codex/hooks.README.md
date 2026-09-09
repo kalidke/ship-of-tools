@@ -12,7 +12,7 @@ like a Claude Code session does:
 |---------------------|----------------------------|------------------|
 | `UserPromptSubmit`  | `comm-status-working.sh`   | working / green  |
 | `PostToolUse`       | `comm-status-heartbeat.sh` | working / green  |
-| `Stop`              | `comm-status-idle.sh`      | done (blue, human-started turn) / idle |
+| `Stop`              | `comm-status-idle.sh`      | closing marker → done/blocked/waiting; else done (blue, human-started turn) / idle |
 | `PermissionRequest` | `codex-status-blocked.sh`  | blocked / red    |
 
 `PermissionRequest` maps to blocked because codex has no `AskUserQuestion` tool;

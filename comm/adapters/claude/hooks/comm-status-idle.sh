@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
-# comm-status-idle.sh — Claude Code `Stop` hook for comm agents. Two jobs:
+# comm-status-idle.sh — Claude Code `Stop` hook for comm agents. Three jobs:
+#
+#   (0) CLOSING MARKER (2026-09-09). A turn whose last reply opens a line with
+#       `SITREP:` / `SITREP-QUESTION:` / `SITREP-WAITING:` has DECLARED its
+#       end state (done / blocked / waiting) and written the report that state
+#       demands (sitrep skill). The hook stamps that state EXPLICITLY, with the
+#       rest of the marker line as the nav-row summary, so the chat and the
+#       row come from one line and cannot disagree. A marker ends the hook: no
+#       floor, no nudge, no auditor. Conversely, a HUMAN turn that ends with an
+#       explicit blocked / waiting / done row and NO marker gets one nudge
+#       naming the shape it owes (a machine wake never does — a relay ack on a
+#       parked row is not a report). See sot-comm references/work-state.md.
 #
 #   (1) NUDGE (reinforce self-report). If a JOINED comm agent ends a turn whose
 #       last reply contains a `?` and it did NOT already self-mark blocked/waiting,
@@ -43,25 +54,83 @@ turn_floor() { [ -x "$STATUS" ] && COMM_STATUS_SOFT=1 "$STATUS" "$FLOOR" >/dev/n
 input="$(cat 2>/dev/null || true)"
 jqget() { printf '%s' "$input" | jq -r "$1" 2>/dev/null || true; }
 
-# Loop guard: if we are ALREADY in a stop-hook continuation, never re-nudge —
-# floor + let the turn end (one nudge per turn, no infinite continue-loop).
-[ "$(jqget '.stop_hook_active // false')" = "true" ] && { turn_floor; exit 0; }
-
 # Comm-agent gate (the safety line): resolve our handle; ONLY a joined comm agent
 # with a registry row is eligible for the nudge. Anyone else → plain idle floor,
 # NEVER a block.
 NAME=""
-[ -x "$SELF_DIR/comm-context.sh" ] && eval "$("$SELF_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
+# comm-context lives in the comm home's bin (where update_comm deploys every
+# script together); next to this file is the deployed layout too, kept as the
+# fallback. In the repo checkout the hooks dir holds only hooks.
+CTX="$HOME_DIR/bin/comm-context.sh"; [ -x "$CTX" ] || CTX="$SELF_DIR/comm-context.sh"
+[ -x "$CTX" ] && eval "$("$CTX" 2>/dev/null)" 2>/dev/null || true
 if [ -z "${NAME:-}" ] || ! jq -e --arg n "${NAME:-}" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
     turn_floor; exit 0
 fi
 
-# Skip the nudge if the agent already self-marked blocked/waiting this turn —
-# disciplined turns cost nothing; the nudge fires only when it FORGOT.
-cur="$(jq -r --arg n "$NAME" '.agents[$n].state // ""' "$REGISTRY" 2>/dev/null || echo "")"
-{ [ "$cur" = blocked ] || [ "$cur" = waiting ]; } && { turn_floor; exit 0; }
-
 tp="$(jqget '.transcript_path // empty')"
+
+# The WHOLE text of the last assistant message (the closing reply). The
+# legacy code took only its last line, which is where the marker never is.
+last_text=""
+if [ -n "$tp" ] && [ -r "$tp" ]; then
+    last_text="$(tail -n 400 "$tp" 2>/dev/null \
+        | jq -c 'select(.type=="assistant") | [.message.content[]? | select(.type=="text") | .text] | join("\n")' 2>/dev/null \
+        | tail -n 1 | jq -r '.' 2>/dev/null)"
+fi
+
+# (0) CLOSING MARKER: first line opening with SITREP[-QUESTION|-WAITING]:
+# (optionally bold-wrapped). State from the marker, summary from the rest of
+# the line — or the next non-empty line when the marker stands alone.
+marker_state=""; marker_summary=""
+if [ -n "$last_text" ]; then
+    marker_state="$(printf '%s\n' "$last_text" | awk '
+        /^[[:space:]]*(\*\*)?SITREP(-QUESTION|-WAITING)?:/ {
+            m=$0; sub(/^[[:space:]]*(\*\*)?SITREP/, "", m)
+            if (m ~ /^-QUESTION:/) print "blocked"; else if (m ~ /^-WAITING:/) print "waiting"; else print "done"
+            exit }')"
+    if [ -n "$marker_state" ]; then
+        marker_summary="$(printf '%s\n' "$last_text" | awk '
+            found { if ($0 ~ /[^[:space:]]/) { print; exit } ; next }
+            /^[[:space:]]*(\*\*)?SITREP(-QUESTION|-WAITING)?:/ {
+                sub(/^[[:space:]]*(\*\*)?SITREP(-QUESTION|-WAITING)?:[[:space:]]*/, "")
+                sub(/[[:space:]]*(\*\*)?[[:space:]]*$/, "")
+                if ($0 ~ /[^[:space:]]/) { print; exit } ; found=1 }')"
+    fi
+fi
+if [ -n "$marker_state" ]; then
+    # Explicit (not soft): the marker IS the model's report. `waiting` sets
+    # the sticky purple; `blocked` keeps a marker underneath as today.
+    [ -x "$STATUS" ] && "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || true
+    exit 0
+fi
+
+# Loop guard: if we are ALREADY in a stop-hook continuation, never re-nudge —
+# floor + let the turn end (one nudge per turn, no infinite continue-loop).
+[ "$(jqget '.stop_hook_active // false')" = "true" ] && { turn_floor; exit 0; }
+
+# A parked end state without its report. The row is blocked / waiting / done
+# at Stop time only when the MODEL stamped it (or a sticky waiting held
+# through the turn); on a HUMAN turn that owes the matching closing block.
+# One nudge, then the continuation's marker stamps the row above. A machine
+# wake (relay, Monitor, notification) never nudges: floor and end.
+cur="$(jq -r --arg n "$NAME" '.agents[$n] | (.state // "") + "|" + (.turn_origin // "")' "$REGISTRY" 2>/dev/null || echo "|")"
+origin="${cur#*|}"; cur="${cur%%|*}"
+case "$cur" in
+    blocked|waiting|done)
+        if [ "$origin" = user ]; then
+            case "$cur" in
+                blocked) owed='SITREP-QUESTION: <the exact question, one sentence>  then the context needed to answer it cold: what was being done, the options and what follows from each, the default if unanswered, what is irreversible' ;;
+                waiting) owed='SITREP-WAITING: <what is being waited on, one sentence>  then EVERY armed monitor, background job, subagent and peer request: what it is, what completion looks like, expected duration, the fallback if it never lands, and what happens when it does' ;;
+                *)       owed='SITREP: <one-line headline>  then the sitrep chain (the sitrep skill): issue in context, diagnosis, design, result with its scale, interpretation, plan' ;;
+            esac
+            jq -nc --arg s "$cur" --arg o "$owed" '{
+              decision: "block",
+              reason: ("Your row ends this turn as `" + $s + "` but the reply carries no closing marker. Write the closing block now, as the last thing in your reply, opening with the marker line:  " + $o + ".  The Stop hook stamps the row from that line (the rest of the marker line is the nav summary). If the state is wrong, run comm-status.sh with the right one and still close with the matching marker.")
+            }'
+            exit 0
+        fi
+        turn_floor; exit 0 ;;
+esac
 
 # TIERED TURN AUDITOR (v1, 2026-07-02): deterministic pre-filters + a
 # conservative Haiku judge (comm-turn-auditor.sh) check the turn for misses —
@@ -104,13 +173,6 @@ if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
 fi
 
 # LEGACY FALLBACK (auditor disabled/unavailable): grep the last reply for `?`.
-last_text=""
-if [ -n "$tp" ] && [ -r "$tp" ]; then
-    last_text="$(tail -n 200 "$tp" 2>/dev/null \
-        | jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text' 2>/dev/null \
-        | tail -1)"
-fi
-
 if printf '%s' "$last_text" | grep -q '?'; then
     # NUDGE — block the stop with a reminder. The model gates: self-report or not.
     jq -nc '{
