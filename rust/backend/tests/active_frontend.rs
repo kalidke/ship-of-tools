@@ -307,13 +307,24 @@ async fn duplicate_handle_connections_get_exactly_one_delivery() {
             .expect("the active (winning) connection must receive the fe.command evt");
         assert_eq!(evt.get("cmd").and_then(|v| v.as_str()), Some("notify"));
 
-        // conn_b (the untouched duplicate) must see NOTHING within
+        // conn_b (the untouched duplicate) must see NO fe.command within
         // ABSENCE_WAIT — proving server-side exclusive delivery, not merely
-        // "the FE would have ignored it anyway."
-        let saw_anything = tokio::time::timeout(ABSENCE_WAIT, codec::read_frame(&mut conn_b)).await;
+        // "the FE would have ignored it anyway." Unrelated broadcasts
+        // (`workspace.changed` from the daemon's own workspace bookkeeping)
+        // reach every connection by design and are not what this test is
+        // about, so they are skipped, not failed on.
+        let saw_command = async {
+            loop {
+                let (frame, _blob) = codec::read_frame(&mut conn_b).await.expect("read from conn_b");
+                if frame.kind == Kind::Evt && frame.op == op::FE_COMMAND {
+                    return frame.payload;
+                }
+            }
+        };
+        let saw_command = tokio::time::timeout(ABSENCE_WAIT, saw_command).await;
         assert!(
-            saw_anything.is_err(),
-            "the non-active duplicate connection must receive NOTHING, got: {saw_anything:?}"
+            saw_command.is_err(),
+            "the non-active duplicate connection must receive NO fe.command, got: {saw_command:?}"
         );
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
