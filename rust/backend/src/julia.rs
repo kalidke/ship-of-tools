@@ -395,10 +395,14 @@ mod tests {
         let _serial = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
         let _g2 = EnvGuard::capture("HOME");
-        std::env::set_var("SOT_JULIA_BIN", "  /explicit/override/julia  ");
+        // An absolute path on THIS platform (a Unix-style "/x/y" is not
+        // absolute on Windows and fails the juliaup rule there).
+        let abs = std::env::temp_dir().join("explicit-override-julia");
+        let abs_str = abs.to_string_lossy().into_owned();
+        std::env::set_var("SOT_JULIA_BIN", format!("  {abs_str}  "));
         std::env::set_var("HOME", "/should/not/matter");
         let (bin, source) = resolve_bin().unwrap();
-        assert_eq!(bin, "/explicit/override/julia"); // trimmed
+        assert_eq!(bin, abs_str); // trimmed
         assert_eq!(source, "SOT_JULIA_BIN");
     }
 
