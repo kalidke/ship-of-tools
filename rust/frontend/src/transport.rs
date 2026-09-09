@@ -3511,7 +3511,23 @@ fn handle_response_frame(
                         });
                     }
                     Err(e) => {
+                        // A reply that is neither an `{error, code}`
+                        // envelope (handled above) nor a valid
+                        // `PreviewGetRes` — the shape a MISSING FILE
+                        // produces, whose only trace used to be this warn
+                        // plus `reveal: target still absent`. That silence
+                        // actively misled: it was once read as a rendering
+                        // regression when the file simply did not exist.
+                        // `PendingKind::FigureGet` below already routes
+                        // both causes down one terminal path; the pane the
+                        // person is actually looking at gets the same.
                         tracing::warn!(error = %e, "preview.get res parse failed");
+                        emit(IncomingEvt::PreviewGetFailed {
+                            node_id: Some(node_id),
+                            workspace_id,
+                            generation,
+                            message: format!("preview unavailable: {e}"),
+                        });
                     }
                 }
                 return;
@@ -3561,7 +3577,15 @@ fn handle_response_frame(
                         });
                     }
                     Err(e) => {
+                        // Same rule as the plain `preview.get` arm above: a
+                        // malformed reply is a FAILED set_scale, not a
+                        // no-op. Silence here leaves the prompt's "saving…"
+                        // resolved-looking while nothing was served.
                         tracing::warn!(error = %e, "preview.set_scale res parse failed");
+                        emit(IncomingEvt::ScaleSetFailed {
+                            node_id,
+                            message: format!("scale set but preview unavailable: {e}"),
+                        });
                     }
                 }
                 return;
