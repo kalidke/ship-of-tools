@@ -19167,8 +19167,12 @@ pub(crate) fn self_comm_handle() -> String {
 /// Target filter: `None` → act (the badge floor; every FE acts). `Some(h)` →
 /// act only when `h == self_handle` (force-show scoped to this FE); otherwise
 /// ignore. The caller treats a `Some(h) == self_handle` match as force-show
-/// eligible (`urgent` carried through to `dispatch_fe_command`, which still
-/// gates on `fe_is_idle`).
+/// eligible: `urgent` is carried through to `dispatch_fe_command`, which
+/// honours it UNCONDITIONALLY on a directed send. There is no idle gate --
+/// an earlier version of this comment named an `fe_is_idle` check that has
+/// never existed in the code, and a session chasing a preview that did not
+/// switch reasoned from it that `--urgent` must be inert for exactly the
+/// frontend someone is typing at. Directedness is the whole gate.
 fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) -> Option<FeCommand> {
     // Target filter first — cheapest reject, and a mis-targeted command
     // shouldn't even be parsed.
@@ -19432,8 +19436,10 @@ enum FeCommand {
     CaptureRoi,
     /// ADR 0025 imperative preview: show `path` (workspace-relative) in
     /// `workspace`'s Files-mode preview. `urgent` requests force-show (switch +
-    /// show now); without it — or when the FE isn't idle — this degrades to the
-    /// badge floor (`mark_pending_nav`), the non-disruptive default. Carried as
+    /// show now) and is honoured whenever the send is DIRECTED; without it a
+    /// send degrades to the badge floor (`mark_pending_nav`), the
+    /// non-disruptive default. No idle condition enters this -- see
+    /// `route_fe_command`. Carried as
     /// an `FE_COMMAND` evt's `{cmd:"preview", args:{workspace, path, urgent?,
     /// roi?}}`; also constructible from the ADR-0019 file channel for parity.
     /// `roi` (ADR 0025 2026-07-21 update) is an optional source-px viewport
