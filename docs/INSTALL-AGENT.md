@@ -229,7 +229,11 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
    verbs fail with "repl project missing". A box installed before this
    existed gets the same on its next launch; every step is logged to
    `%LOCALAPPDATA%\sot\logs\supervisor.log` and a failure never stops the
-   launch.
+   launch. That first launch also instantiates the checkout's Julia
+   environments (`julia/kernel`, `julia/repl`, `julia/pluto`), which takes a
+   few minutes — so a box that wants **local** REPLs or Pluto needs Julia on
+   `PATH` (juliaup); without it the launcher says so in a startup notice and
+   the frontend still runs against the remote backend.
 
 ## 2c. macOS
 
