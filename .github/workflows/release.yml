@@ -131,6 +131,19 @@ jobs:
           # workspace op spawns it from Rust on this platform yet, so
           # there is no cross-distro requirement to satisfy).
           cp rust/target/release/sot-capsule "$stage/"
+          # The linux FE's provenance is proven HERE, on the runner that built
+          # it, not in the linux smoke: that smoke pins a glibc-2.31 container
+          # to prove the static sotd boots on the oldest fleet host, and the
+          # FE keeps this runner's 2.35 floor by design, so it cannot run
+          # there (the rc.16 cut failed exactly so). Same check the smokes run.
+          if [ "${{ matrix.target }}" = "linux-x86_64" ]; then
+            got="$("$stage/sot" --version)"
+            echo "sot --version: $got (expected version: $v)"
+            case "$v" in
+              0.0.0-ci.*) case "$got" in "sot "*) ;; *) echo "BROKEN --version OUTPUT for sot"; exit 1;; esac ;;
+              *)          case "$got" in "sot $v ("*) ;; *) echo "VERSION MISMATCH for sot: $got"; exit 1;; esac ;;
+            esac
+          fi
           cp deploy/sotd.service deploy/sot-tmux.service "$stage/"
           # The offline apply/rollback script rides in the archive so a staged
           # update always carries its own applier (Phase C3).
@@ -209,7 +222,9 @@ jobs:
           # nothing downstream would notice. Checking one of the pair leaves
           # the frontend — the half that self-updates on a remote box —
           # unverified.
-          for b in sotd sot; do
+          # sotd only: this container is glibc 2.31 on purpose and the FE
+          # cannot run here; the FE's provenance is checked in the build job.
+          for b in sotd; do
             got="$("$d/$b" --version)"
             echo "$b --version: $got (expected version: $expected)"
             # Exact version match is only meaningful on TAG runs — a dispatch
