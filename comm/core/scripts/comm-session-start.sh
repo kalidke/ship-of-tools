@@ -102,19 +102,35 @@ _survived() {
     local h="$1"
     [ -n "$h" ] || return 1
     _owns_handle "$h" || return 1
-    if [ "$IS_WINDOWS" = 1 ]; then
-        local marker pid
-        marker="$(_watch_marker "$h")"
-        [ -f "$marker" ] || return 1
-        pid="$(cat "$marker" 2>/dev/null)"
+    local marker pid sid
+    marker="$(_watch_marker "$h")"
+    if [ -f "$marker" ]; then
+        # Marker path, every platform (comm-watch.sh writes it everywhere):
+        # line 1 pid (liveness), line 2 the session that armed it (identity,
+        # 2026-09-10). A live watcher is OURS only if that session is this
+        # one — an orphan from a previous session (its claude gone, the
+        # watcher not: the killed capsule on a converged box, the pane-less
+        # restart on a shared host) wakes nobody, so it must not count, and
+        # it is reaped so it cannot fool the next check either. A marker with
+        # no session line (a watcher older than this rule) keeps the old
+        # liveness-only answer.
+        pid="$(sed -n '1p' "$marker" 2>/dev/null)"
+        sid="$(sed -n '2p' "$marker" 2>/dev/null)"
         [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-        kill -0 "$pid" 2>/dev/null
-    else
-        local h_re
-        h_re="$(printf '%s' "$h" | sed 's/\./\\./g')"
-        pgrep -u "$(id -un)" -f "comm-watch\\.sh ${h_re}\$" >/dev/null 2>&1 \
-            || pgrep -u "$(id -un)" -f "codex-watch\\.sh ${h_re} " >/dev/null 2>&1
+        kill -0 "$pid" 2>/dev/null || return 1
+        if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -n "$sid" ] && [ "$sid" != "$CLAUDE_CODE_SESSION_ID" ]; then
+            kill "$pid" 2>/dev/null || true
+            echo "ORPHAN watcher pid=$pid (armed by a previous session) reaped — re-arming" >&2
+            return 1
+        fi
+        return 0
     fi
+    [ "$IS_WINDOWS" = 1 ] && return 1
+    # No marker: a watcher from before the marker existed on this platform.
+    local h_re
+    h_re="$(printf '%s' "$h" | sed 's/\./\\./g')"
+    pgrep -u "$(id -un)" -f "comm-watch\\.sh ${h_re}\$" >/dev/null 2>&1 \
+        || pgrep -u "$(id -un)" -f "codex-watch\\.sh ${h_re} " >/dev/null 2>&1
 }
 
 # The work-state rule, printed on EVERY bootstrap outcome (fresh, survived,

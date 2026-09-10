@@ -48,7 +48,8 @@
 # live Monitor from a dead one. Linux does this with `pgrep` against the
 # process table directly — no marker needed there. git-bash on Windows has
 # no reliable pgrep, so this script instead writes ITS OWN pid ($$) to
-# state/<handle>.watch ONCE at startup; the survival check reads that pid
+# state/<handle>.watch ONCE at startup (plus the arming session's id on a
+# second line — see the write below); the survival check reads that pid
 # back and asks the OS (`kill -0`) whether it's still alive. This is
 # deliberately NOT an age/heartbeat heuristic (Codex review finding 4: a
 # "touched within the last N seconds" test misreads BOTH ways — a killed
@@ -92,7 +93,14 @@ fi
 
 marker="${SOT_COMM_HOME:-$HOME/.sot-comm}/state/$handle.watch"
 mkdir -p "$(dirname "$marker")" 2>/dev/null || true
-printf '%s' "$$" > "$marker" 2>/dev/null || true
+# Line 1: this watcher's pid (liveness). Line 2: the claude session that
+# armed it (identity, 2026-09-10) — a Monitor's watcher inherits the
+# session's env, so this names the ONLY session its wake can ever reach. A
+# watcher whose session is gone but whose process is not (the killed
+# capsule on a converged box; the pane-less restart on a shared host) used
+# to pass the survival check on liveness alone and leave the NEW session
+# deaf while it believed itself live — three boxes, three field reports.
+printf '%s\n%s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-}" > "$marker" 2>/dev/null || true
 
 # Line count that is robust to a missing/unreadable inbox WITHOUT noise: a freshly
 # joined handle may not have a file until its first frame lands. `wc -l < missing`

@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# test-session-start-survived.sh — hermetic regression suite for the
+# bootstrap's survival check (comm-session-start.sh --context): a watcher
+# counts as SURVIVED only when it is alive AND was armed by THIS session.
+# Field history (2026-09-06 / 09-08 / 09-10, three boxes): an orphan watcher
+# from a dead session passed a liveness-only check and left the new session
+# deaf while the bootstrap said "nothing to do".
+#
+# Runs against a temp $SOT_COMM_HOME with a pinned self-file — never touches
+# the real ~/.sot-comm. Usage: comm/core/tests/test-session-start-survived.sh
+set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-survived-test-XXXXXX")"
+[ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
+SLEEPERS=()
+cleanup() { for p in "${SLEEPERS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; rm -rf "$WORK"; }
+trap cleanup EXIT
+
+export SOT_COMM_HOME="$WORK/home"
+export SOT_COMM_SELF_FILE="$WORK/self.txt"
+export SOT_COMM_TEST_HOST="testhost"
+unset SOT_COMM_NAME
+mkdir -p "$SOT_COMM_HOME/state"
+ln -s "$SCRIPTS_DIR" "$SOT_COMM_HOME/bin"
+# shellcheck source=../scripts/comm-lib.sh
+source "$SCRIPTS_DIR/comm-lib.sh"
+ensure_home
+NAME="survived-test"
+eval "$("$SCRIPTS_DIR/comm-context.sh" 2>/dev/null | grep -E '^(REPO|PROJECT_ROOT)=')"
+sot_write_self_file "$SOT_COMM_SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT" || { echo "self-file write failed" >&2; exit 1; }
+[ "$("$SCRIPTS_DIR/comm-context.sh" | sed -n 's/^NAME=//p')" = "$NAME" ] || { echo "context did not resolve the pinned self-file" >&2; exit 1; }
+# The registry must attribute the handle to OUR project root (_owns_handle).
+jq -n --arg n "$NAME" --arg r "$PROJECT_ROOT" '{agents:{($n):{state:"idle", root:$r, repo:"x"}}}' > "$REGISTRY"
+MARKER="$SOT_COMM_HOME/state/$NAME.watch"
+
+sleeper() { sleep 300 & local p=$!; SLEEPERS+=("$p"); echo "$p"; }
+ctx() { CLAUDE_CODE_SESSION_ID="$1" bash "$SCRIPTS_DIR/comm-session-start.sh" --context 2>"$WORK/err" | head -n1; }
+
+PASS=0; FAIL=0
+check() { local d="$1"; shift; if "$@"; then PASS=$((PASS+1)); echo "PASS $d"; else FAIL=$((FAIL+1)); echo "FAIL $d"; fi; }
+
+case_own_live_watcher_survives() {
+    local p; p="$(sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
+    [ "$(ctx sess-A)" = "SURVIVED handle=$NAME" ] || { echo "    got '$(ctx sess-A)'"; return 1; }
+    kill -0 "$p" 2>/dev/null || { echo "    own watcher was killed"; return 1; }
+}
+case_orphan_from_another_session_is_not_survived_and_reaped() {
+    local p; p="$(sleeper)"; printf '%s\nsess-OLD\n' "$p" > "$MARKER"
+    local out; out="$(ctx sess-NEW)"
+    [[ "$out" == "NOT SURVIVED handle=$NAME"* ]] || { echo "    got '$out'"; return 1; }
+    grep -q "ORPHAN watcher pid=$p" "$WORK/err" || { echo "    no reap notice: $(cat "$WORK/err")"; return 1; }
+    sleep 0.3; ! kill -0 "$p" 2>/dev/null || { echo "    orphan still alive"; return 1; }
+}
+case_legacy_marker_without_session_line_keeps_liveness_answer() {
+    local p; p="$(sleeper)"; printf '%s' "$p" > "$MARKER"
+    [ "$(ctx sess-B)" = "SURVIVED handle=$NAME" ] || { echo "    got '$(ctx sess-B)'"; return 1; }
+}
+case_dead_pid_is_not_survived() {
+    local p; p="$(sleeper)"; kill "$p"; wait "$p" 2>/dev/null; printf '%s\nsess-A\n' "$p" > "$MARKER"
+    [[ "$(ctx sess-A)" == "NOT SURVIVED handle=$NAME"* ]] || { echo "    got '$(ctx sess-A)'"; return 1; }
+}
+case_no_session_id_in_env_trusts_liveness() {
+    local p; p="$(sleeper)"; printf '%s\nsess-OLD\n' "$p" > "$MARKER"
+    local out; out="$(bash "$SCRIPTS_DIR/comm-session-start.sh" --context 2>/dev/null | head -n1)"
+    [ "$out" = "SURVIVED handle=$NAME" ] || { echo "    got '$out'"; return 1; }
+}
+
+check "own live watcher survives, untouched" case_own_live_watcher_survives
+check "orphan armed by another session: NOT SURVIVED and reaped" case_orphan_from_another_session_is_not_survived_and_reaped
+check "legacy marker (pid only) keeps the liveness-only answer" case_legacy_marker_without_session_line_keeps_liveness_answer
+check "dead pid is not survived" case_dead_pid_is_not_survived
+check "no session id in the environment: liveness alone decides" case_no_session_id_in_env_trusts_liveness
+echo; echo "$PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
