@@ -347,6 +347,170 @@ $applyMarker = Join-Path $prefixDir 'updates\just-applied-windows-x86_64'
 $sotApply = Join-Path $PSScriptRoot 'sot-apply.ps1'
 $sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
 
+# ---------------------------------------------------------------------------
+# First-launch install layout (field report, a fresh hand-installed frontend
+# box on v0.6.0-rc.15). A hand install (docs/INSTALL-AGENT.md 2b) extracts the
+# release binaries into <prefix>\bin and clones the repo for the launcher +
+# config -- but NOTHING creates <prefix>\repo\current, and that junction is
+# how the local daemon finds its Julia resources: resource_dir
+# (rust/backend/src/paths.rs) tries $SOT_RESOURCE_ROOT, then
+# <exe>\..\repo\current\<rel>, then <exe>\..\julia\current\<rel>, then the
+# COMPILE-TIME CARGO_MANIFEST_DIR. With the junction absent, a release sotd
+# fell all the way through to the CI runner's build path and every REPL verb
+# died with "repl project missing". sot-apply.ps1 is the only other creator of
+# that junction and it only runs on a staged update -- whose prepare step
+# needs a resource checkout to prepare FROM, so a fresh box could neither
+# resolve resources nor update its way out.
+#
+# scripts/install.sh does this at install time on Linux (its section 4, the
+# ADR 0030 clone-install amendment). Windows has no installer, so the
+# launcher -- which runs on every launch and already knows the clone it runs
+# from -- lays the same layout down once, here:
+#   repo\versions\<tag>  a detached worktree of THIS clone, pinned at the tag
+#   repo\current         the junction the daemon resolves through
+# Same paths the installer and the updater use, so sot-apply.ps1's flip and
+# its prune of old version dirs keep working unchanged. julia\current is
+# deliberately NOT created: it is the retired bundle's mount point, read only
+# by pre-clone binaries, and resource_dir reaches repo\current first.
+#
+# Placed BEFORE the staged-update apply below on purpose: sot-apply.ps1
+# records the pre-apply junction target as its rollback checkout, so a box
+# whose first update lands right after this gets a rollback-able previous
+# version instead of the empty one its own comment calls out.
+#
+# Fail-open like every other step on this path: each failure logs, notices,
+# and the launch continues.
+# ---------------------------------------------------------------------------
+$repoCurrent = Join-Path $prefixDir 'repo\current'
+
+# Twin of sot-apply.ps1's Set-Junction -- keep the two in step. A directory
+# JUNCTION, never a symlink: a symlink needs Developer Mode or an elevated
+# shell, a junction needs neither, and every reader only traverses it as a
+# directory. Not shared by dot-sourcing: sot-apply.ps1 is fail-open by
+# contract on the launch path, and a file it would have to source in order to
+# run at all is a new way for it not to run.
+function Set-SotJunction {
+    param([string]$Link, [string]$Target)
+    try {
+        if (Test-Path -LiteralPath $Link) {
+            # Remove the LINK, never its contents: Remove-Item -Recurse on a
+            # junction can follow into the target on older PowerShell.
+            [System.IO.Directory]::Delete($Link)
+        }
+        $parent = Split-Path -Parent $Link
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+        New-Item -ItemType Junction -Path $Link -Target $Target -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        Write-SupLog "install layout: junction $Link -> $Target failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Initialize-InstallLayout {
+    if (Test-Path -LiteralPath $repoCurrent) { return }
+    $stagedSotd = Join-Path $prefixDir 'bin\sotd.exe'
+    if (-not (Test-Path -LiteralPath $stagedSotd)) {
+        # A pure dev box: its daemon runs out of rust\target\release, where
+        # resource_dir's compile-time fallback IS the correct answer. Nothing
+        # to create.
+        Write-SupLog 'install layout: no staged sotd.exe - dev box, leaving the layout alone'
+        return
+    }
+    if (-not (Test-Path (Join-Path $repo '.git'))) {
+        Write-SupLog "install layout: $repo is not a git clone - cannot pin a version checkout"
+        return
+    }
+    Set-LaunchStatus 'Creating install layout...'
+    # Relax 'Stop' -> 'Continue' around native git and the version probe: their
+    # stderr under 'Stop' + 2>&1 throws in PS 5.1. Gate on $LASTEXITCODE.
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        # The version comes from the binary itself, never a hardcoded string:
+        # the layout must describe what is actually installed. The line is
+        # "sotd X.Y.Z (<sha> <date>)"; a marked build adds "+src" or
+        # "-dev+<sha>[-dirty]" (rust/protocol/src/lib.rs app_version) and the
+        # release tag is the bare X.Y.Z[-pre] underneath both markers.
+        $versionLine = & $stagedSotd --version 2>&1 | Select-Object -First 1
+        if ("$versionLine" -notmatch '^\s*sotd\s+(\S+)') {
+            Write-SupLog "install layout: could not read a version from '$versionLine'"
+            return
+        }
+        $rawVersion = $Matches[1]
+        $version = ($rawVersion -replace '\+.*$', '') -replace '-dev$', ''
+        # Strict shape, because this string becomes a directory name and a git
+        # ref: X.Y.Z with an optional alnum-led prerelease, nothing else.
+        if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$') {
+            Write-SupLog "install layout: '$rawVersion' is not a version this can pin - leaving the layout alone"
+            return
+        }
+        $tag = "v$version"
+        $checkout = Join-Path $prefixDir "repo\versions\$tag"
+        if (-not (Test-Path -LiteralPath $checkout)) {
+            if (-not ((git -C $repo tag -l $tag) -join '')) {
+                if ($NoUpdate) {
+                    # -NoUpdate is documented as the offline path; no network here.
+                    Write-SupLog "install layout: tag $tag not in the local clone and -NoUpdate forbids fetching"
+                } else {
+                    Write-SupLog "install layout: tag $tag not in the local clone - fetching tags"
+                    $fetchOut = git -C $repo fetch --tags --quiet 2>&1
+                    foreach ($l in @($fetchOut)) { if ("$l".Trim()) { Write-SupLog "install layout: git fetch -> $l" } }
+                }
+            }
+            if (-not ((git -C $repo tag -l $tag) -join '')) {
+                # No tag means no honest resource tree to pin. Say it once and
+                # leave the daemon on resource_dir's own fallback rather than
+                # junctioning a tree that is not this version.
+                Write-SupLog "install layout: tag $tag unavailable - repo\current NOT created"
+                $script:launchNotices.Add("install layout: release tag $tag is not in the local clone - the local daemon runs without a resource checkout") | Out-Null
+                return
+            }
+            # An externally deleted worktree stays registered; prune first so
+            # the add cannot die on "missing but already registered" (the same
+            # order scripts/install.sh and the updater's prepare step use).
+            git -C $repo worktree prune 2>&1 | Out-Null
+            $addOut = git -C $repo worktree add --detach $checkout $tag 2>&1
+            $addExit = $LASTEXITCODE
+            foreach ($l in @($addOut)) { if ("$l".Trim()) { Write-SupLog "install layout: git worktree -> $l" } }
+            if ($addExit -ne 0 -or -not (Test-Path -LiteralPath $checkout)) {
+                Write-SupLog "install layout: worktree add for $tag failed (exit $addExit) - repo\current NOT created"
+                $script:launchNotices.Add("install layout: could not create the $tag resource checkout - see supervisor.log") | Out-Null
+                return
+            }
+        }
+        if (-not (Set-SotJunction $repoCurrent $checkout)) {
+            $script:launchNotices.Add('install layout: could not create the repo\current junction - see supervisor.log') | Out-Null
+            return
+        }
+        # install.json is what makes this box a release install to the updater
+        # (rust/updater/src/manifest.rs). install-shortcut.ps1 already writes
+        # it through install-manifest.ps1 at hand-install time, so this only
+        # fires for a box that missed that step -- and it DELEGATES rather
+        # than re-deriving the schema: that script is the Windows authority
+        # for it and refuses non-release builds on its own.
+        $installJson = Join-Path $prefixDir 'install.json'
+        $installManifest = Join-Path $PSScriptRoot 'install-manifest.ps1'
+        if (-not (Test-Path -LiteralPath $installJson) -and (Test-Path $installManifest)) {
+            try {
+                $manOut = & $installManifest -Prefix $prefixDir -Repo "$repo" 6>&1 2>&1
+                foreach ($l in @($manOut)) { if ("$l".Trim()) { Write-SupLog "install layout: $l" } }
+            } catch {
+                Write-SupLog "install layout: install-manifest.ps1 failed: $($_.Exception.Message)"
+            }
+        }
+        Write-SupLog "install layout: created repo\current -> $checkout"
+        $script:launchNotices.Add("install layout created: repo\current -> repo\versions\$tag") | Out-Null
+    } catch {
+        Write-SupLog "install layout: unexpected failure - $($_.Exception.Message)"
+    } finally {
+        $ErrorActionPreference = $savedEAP
+    }
+}
+Initialize-InstallLayout
+
 # ADR 0042 L2b design D: a running local daemon pins its sotd.exe/
 # sot-capsule.exe as mapped images (Windows) -- stop it BEFORE anything
 # that might replace those files out from under it. Checked, never

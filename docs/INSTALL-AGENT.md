@@ -219,6 +219,18 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
    the taskbar — it re-syncs the pin so it never drifts back to a naive
    `sot.exe`.
 
+   The **first launch** finishes the layout the steps above leave incomplete:
+   the launcher creates `%LOCALAPPDATA%\sot\repo\versions\v<ver>` (a detached
+   worktree of this clone, pinned at the installed binaries' release tag) and
+   the `repo\current` junction to it, because that junction is how the local
+   daemon resolves its Julia resources (`julia/repl`, `julia/kernel`, the
+   sidecars) and where the auto-updater prepares the next version — without
+   it a release daemon falls through to the build machine's paths and REPL
+   verbs fail with "repl project missing". A box installed before this
+   existed gets the same on its next launch; every step is logged to
+   `%LOCALAPPDATA%\sot\logs\supervisor.log` and a failure never stops the
+   launch.
+
 ## 2c. macOS
 
 macOS artifacts ship with every release; use the installer — it handles macOS
