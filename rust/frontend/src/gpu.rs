@@ -4696,16 +4696,20 @@ struct State {
     /// the keyboard handler reaches it via &mut state.
     reconnect_now: Arc<tokio::sync::Notify>,
     /// ADR 0035 daemon TCP proxy — frontend half.
-    /// `proxy_capable`: the connected daemon advertised the proxy (set from
-    /// the `Connected` evt). `proxy_remote`: this FE is a REMOTE one (dialing
-    /// the daemon over the tcp control tunnel, no local socket) — a local
-    /// (pipe) FE reaches the daemon's loopback ports directly and never
-    /// proxies. `proxy_listener_tx`: hands GPU-thread-bound `std` listeners to
+    /// `proxy_host`: the ONE host whose loopback pages this FE proxies — the
+    /// `default_host` (the launcher's own tcp control tunnel, the only
+    /// endpoint `spawn_proxy_manager` dials), and only once its `Connected`
+    /// evt said it was reached over tcp AND advertised the proxy. Per host,
+    /// never FE-global: a box that also runs a local (pipe) daemon (ADR 0042)
+    /// gets a `Connected{remote:false}` from that one too, and a global flag
+    /// let it silently switch proxying off for the remote host's pages
+    /// (2026-09-10 field incident: every backend page "can't be reached" on
+    /// a FE box with a local sotd, with nothing logged — the gate returned
+    /// before the first log line). `proxy_listener_tx`: hands GPU-thread-bound `std` listeners to
     /// the runtime accept loop (`None` when not remote / no runtime).
     /// `proxy_ensured`: ports we've already bound OR found already-forwarded
     /// (`AddrInUse` — a legacy launcher `-L` holds it; the two coexist).
-    proxy_capable: bool,
-    proxy_remote: bool,
+    proxy_host: Option<HostKey>,
     proxy_listener_tx: Option<tokio::sync::mpsc::UnboundedSender<std::net::TcpListener>>,
     proxy_ensured: std::collections::HashSet<u16>,
     /// REPL prompt mode. `false` = `julia>` (default), `true` = `pkg>`.
@@ -6082,11 +6086,9 @@ impl State {
             current_md_workspace_id: None,
             needs_md_reflow: false,
             reconnect_now: Arc::new(tokio::sync::Notify::new()),
-            // ADR 0035: defaults; `resumed()` sets proxy_remote + the listener
-            // channel when a runtime + remote (tcp) transport exist, and the
-            // `Connected` evt sets proxy_capable from the daemon's advertisement.
-            proxy_capable: false,
-            proxy_remote: false,
+            // ADR 0035: `proxy_host` is set by the default host's `Connected`
+            // evt (remote + proxy); `resumed()` spawns the listener manager.
+            proxy_host: None,
             proxy_listener_tx: None,
             proxy_ensured: std::collections::HashSet::new(),
             repl_pkg_mode: false,
@@ -7389,8 +7391,11 @@ impl State {
     /// no-op and the URL resolves directly / via the launcher's ssh forward.
     /// The bind is synchronous (`std::net::TcpListener`, sub-millisecond) so
     /// the port is listening by the time the caller launches the browser.
-    fn ensure_proxy_for_url(&mut self, url: &str) {
-        if !self.proxy_capable || !self.proxy_remote {
+    fn ensure_proxy_for_url(&mut self, host: &HostKey, url: &str) {
+        // Only the proxied host's pages (see `proxy_host`): a local daemon's
+        // page is reached directly, and another remote host's cannot be
+        // reached by this manager at all (it dials only the default tunnel).
+        if self.proxy_host.as_ref() != Some(host) {
             return;
         }
         let Some(tx) = self.proxy_listener_tx.as_ref() else {
@@ -7430,24 +7435,16 @@ impl State {
                 // UNKNOWN local listener, and opening the browser at it would
                 // render someone else's page looking entirely normal. Occupancy
                 // is not proof of ownership, so say so instead of proceeding
-                // quietly. Without the proxy, a legacy forward IS the expected
-                // holder and the old behaviour is right.
-                if self.proxy_capable {
-                    tracing::warn!(
-                        port,
-                        "proxy: port already bound by an UNKNOWN local listener — not ours. \
-                         Refusing to treat occupancy as ownership; the page may be someone else's."
-                    );
-                    self.status = format!(
-                        "port {port} is held by another local process — not opening (could be the wrong page)"
-                    );
-                    self.window.request_redraw();
-                } else {
-                    tracing::debug!(
-                        port,
-                        "proxy: port already bound; daemon advertises no proxy, so a legacy -L forward is expected"
-                    );
-                }
+                // quietly.
+                tracing::warn!(
+                    port,
+                    "proxy: port already bound by an UNKNOWN local listener — not ours. \
+                     Refusing to treat occupancy as ownership; the page may be someone else's."
+                );
+                self.status = format!(
+                    "port {port} is held by another local process — not opening (could be the wrong page)"
+                );
+                self.window.request_redraw();
             }
             Err(e) => {
                 tracing::warn!(port, error = %e, "proxy: bind failed");
@@ -7506,7 +7503,7 @@ impl State {
             Err(_) => return,
         };
         for cmd in cmds {
-            self.dispatch_fe_command(cmd);
+            self.dispatch_fe_command(None, cmd);
         }
     }
 
@@ -7581,7 +7578,7 @@ impl State {
     /// Apply one FE-control command, reusing the methods the keybinds call so
     /// commands inherit the same routing (incl. the ADR-0014 per-workspace
     /// tree-reply guard).
-    fn dispatch_fe_command(&mut self, cmd: FeCommand) {
+    fn dispatch_fe_command(&mut self, from_host: Option<&HostKey>, cmd: FeCommand) {
         match cmd {
             FeCommand::Workspace { slug, boot } => {
                 // null/empty/"default"/"<default>" → the daemon-default
@@ -7652,7 +7649,11 @@ impl State {
             FeCommand::OpenUrl { url } => {
                 // Scheme already allowlisted (http/https) at route time.
                 tracing::info!(%url, "fe-command: open_url");
-                self.ensure_proxy_for_url(&url);
+                // The URL is loopback on the daemon that sent this command; a
+                // command-file / internal dispatch names no host and gets the
+                // default — the only proxied one anyway.
+                let host = from_host.cloned().unwrap_or_else(|| self.default_host());
+                self.ensure_proxy_for_url(&host, &url);
                 match open_url_in_browser(&url) {
                     Ok(()) => self.status = format!("opened in browser · {url}"),
                     Err(e) => self.status = format!("open_url failed · {e}"),
@@ -7833,7 +7834,7 @@ impl State {
                 // or issue a separate cursor move. The cross-ws force-show/badge
                 // semantics are shared too, as is a `--roi` viewport aim (the
                 // sot-fe CLI attaches roi to either verb).
-                self.dispatch_fe_command(FeCommand::Preview {
+                self.dispatch_fe_command(None, FeCommand::Preview {
                     workspace,
                     path,
                     urgent,
@@ -12311,9 +12312,14 @@ impl State {
                     // CONNECTED, not the CLI shape — the documented
                     // `--socket <local> --tcp <addr>` remote config has both
                     // set and falls back to tcp. A local (pipe) FE reaches the
-                    // daemon's loopback ports directly and never proxies.
-                    self.proxy_capable = proxy;
-                    self.proxy_remote = remote;
+                    // daemon's loopback ports directly and never proxies. And
+                    // ONLY the default host's Connected may set it — that is
+                    // the one connection the proxy manager dials; a Connected
+                    // from any other host (the implicit local pipe daemon
+                    // above all) must not touch it.
+                    if event_host == self.default_host() {
+                        self.proxy_host = (proxy && remote).then(|| event_host.clone());
+                    }
                     // Residual (accepted, codex): these gates gate NEW binds
                     // only; listeners already bound this process persist across
                     // a reconnect. A capability DOWNGRADE across reconnect
@@ -13812,7 +13818,7 @@ impl State {
                                 self.window.request_redraw();
                                 continue;
                             }
-                            self.ensure_proxy_for_url(&url);
+                            self.ensure_proxy_for_url(&event_host, &url);
                             match open_url_in_browser(&url) {
                                 Ok(()) => {
                                     self.status = format!("opened interactive figure · {url}")
@@ -14448,7 +14454,7 @@ impl State {
                                 if let Some(cmd) = route_fe_command(&evt, &self_comm_handle()) {
                                     tracing::info!(cmd = %evt.cmd, target = ?evt.target,
                                         "fe.command: dispatching");
-                                    self.dispatch_fe_command(cmd);
+                                    self.dispatch_fe_command(Some(&event_host), cmd);
                                 } else {
                                     tracing::debug!(cmd = %evt.cmd, target = ?evt.target,
                                         "fe.command: ignored (target mismatch / unknown cmd / missing arg)");
@@ -14856,7 +14862,7 @@ impl State {
                 }
                 crate::transport::IncomingEvt::PlutoOpened { result } => match result {
                     Ok(url) => {
-                        self.ensure_proxy_for_url(&url);
+                        self.ensure_proxy_for_url(&event_host, &url);
                         if let Err(e) = open_url_in_browser(&url) {
                             tracing::warn!(error = %e, %url,
                                     "pluto: open_url_in_browser failed");
@@ -14874,7 +14880,7 @@ impl State {
                 },
                 crate::transport::IncomingEvt::DocsOpened { result } => match result {
                     Ok(url) => {
-                        self.ensure_proxy_for_url(&url);
+                        self.ensure_proxy_for_url(&event_host, &url);
                         if let Err(e) = open_url_in_browser(&url) {
                             tracing::warn!(error = %e, %url,
                                     "docs: open_url_in_browser failed");
@@ -14892,7 +14898,7 @@ impl State {
                 },
                 crate::transport::IncomingEvt::VideoOpened { result } => match result {
                     Ok(url) => {
-                        self.ensure_proxy_for_url(&url);
+                        self.ensure_proxy_for_url(&event_host, &url);
                         if let Err(e) = open_url_in_browser(&url) {
                             tracing::warn!(error = %e, %url,
                                     "video: open_url_in_browser failed");
@@ -19533,9 +19539,9 @@ impl ApplicationHandler for App {
                     // ADR 0035: spawn the proxy manager whenever a tcp endpoint
                     // is configured (the manager just waits for listeners). It
                     // arms only when the transport actually connects over tcp —
-                    // gated at ensure-time by `proxy_remote`, set from the
-                    // Connected evt's `remote` flag (the actual transport), NOT
-                    // the CLI shape. The manager owns the async accept loop; the
+                    // gated at ensure-time by `proxy_host`, set from the DEFAULT
+                    // host's Connected evt (`remote` + `proxy`, the actual
+                    // transport), NOT the CLI shape. The manager owns the async accept loop; the
                     // GPU thread hands it synchronously-bound listeners so a
                     // port is listening before the browser launches.
                     //
