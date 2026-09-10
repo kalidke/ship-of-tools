@@ -36,7 +36,6 @@ show-result <path> --caption "Recovery vs. SNR, 3 densities, N=500"
 Auto-discovers your workspace slug and calls `sot-fe preview`. Already
 viewing your workspace → cursored + rendered immediately; otherwise the row
 is badged and it renders the moment they switch — never a stolen session.
-`--urgent --fe <handle>` forces an immediate show, only when the user asked.
 
 **One slot — the LAST show wins.** Every call replaces the pending
 badge/preview, even one unseen — composite images into one figure first, or

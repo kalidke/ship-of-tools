@@ -11,9 +11,6 @@
 #                                             # (reserved space, never covers the plot);
 #                                             # sticky per (workspace, file) — re-badging
 #                                             # without --caption clears it
-#   show-result <path> --urgent --fe <handle> # force-show (RARE: only when the user is
-#                                             # actively waiting; re-targets the single
-#                                             # foreground pty — never broadcast --urgent)
 #
 # <path> is workspace-relative (an absolute path under the workspace auto-relativizes).
 # Bind it to production, e.g. in Julia:  save(p, fig); run(`show-result $p`)
@@ -65,5 +62,6 @@ case "$(printf '%s' "$REL" | tr '[:upper:]' '[:lower:]')" in
     fi ;;
 esac
 
-# Default is the badge floor (no --urgent). Any extra flags (--urgent --fe <h>) pass through.
+# The badge floor is the only path — we never force-switch the user's view.
+# Any extra flags pass through to `sot-fe preview`.
 exec "$SFE" preview "$WS" "$REL" "$@"

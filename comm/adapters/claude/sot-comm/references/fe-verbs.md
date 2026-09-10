@@ -50,10 +50,3 @@ opposite fixes.
 Seeds autostart so the FE boots `ccb` on the switch — the scriptable
 spawn→goto→boot primitive. Send this **directed** (`--fe <handle>`); a
 broadcast `--boot` would switch and boot every attached FE.
-
-## `--urgent`
-
-Forces an immediate show instead of the badge-floor default. Only on
-`preview`/`reveal`, and only when the user explicitly asked to see something
-now — a broadcast `--urgent` is stripped FE-side (it can't yank every
-screen).
