@@ -110,11 +110,12 @@ nudge: close with `SITREP:` if the turn closed an effort, end normally if it
 was a step in a live back-and-forth (the owner's ruling: no formal block
 during an exchange). Short turns never trip it, whatever they did.
 
-**Language lint.** When a marker is present, the closing block (marker line
-to the end) is checked for what the sitrep rules forbid — backticks, a commit
-hash, a file path, a session handle, bullet or numbered lines — and sent back
-once to be rewritten in plain words before the row is stamped. A continuation
-is never linted: its marker stamps whatever it says.
+**No nudge on a turn that has its block.** A plain-language lint that sent a
+block carrying identifiers back to be rewritten lasted one afternoon: a Stop
+send-back can only append a continuation, so the rewrite landed as a second,
+different report under the first. The marker stamps whatever the block says;
+the language rules are the skill's, not the hook's. The marker line tolerates
+a heading prefix and bold that closes before or after the colon.
 
 ## Testing the state machinery — never against your live row
 

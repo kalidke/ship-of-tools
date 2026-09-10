@@ -52,8 +52,9 @@ from that line, so no status call is needed at turn end. A step in a live
 back-and-forth owes no block — answer and end. Nudges, each once per turn: a
 human turn ending parked without a marker; a long human turn (many tool calls
 or minutes of wall time) ending green without one — "close with the block if
-this closed an effort, end normally if it was a step"; a closing block that
-carries identifiers or bullets — sent back to be rewritten before it stamps.
+this closed an effort, end normally if it was a step". A turn that already
+carries its block is never nudged, whatever the block says — a send-back can
+only append, and the owner would read two reports.
 
 **Precedence: blocked > waiting > done > idle.** **Waiting is sticky** — set it
 once; it survives intervening turns until you report `working`/`idle`/`done`, or

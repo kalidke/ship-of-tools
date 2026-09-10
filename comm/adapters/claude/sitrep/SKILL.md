@@ -109,10 +109,9 @@ thing in the reply. A turn that ends parked (blocked / waiting / done) from a
 human prompt and carries no marker is nudged once for the shape it owes; a
 long human turn ending green without one is asked once whether it closed an
 effort (then it owes `SITREP:`) or was a step in an exchange (then nothing);
-a plain answer needs no marker and floors as before. The hook also reads the
-closing block against the language rules — backticks, hashes, paths, session
-handles, bullet lines — and sends it back once to be rewritten before the row
-is stamped. The question and waiting
+a plain answer needs no marker and floors as before. The language rules are
+yours to keep: the hook never sends a block back (a send-back can only append
+a second block under the first, which is what a reader then sees). The question and waiting
 blocks follow the same language rules as the sitrep: plain words, no
 identifiers, about 80–150 words. Mid-turn stamps (marking `waiting` the
 moment a job is launched) stay as they are; the marker is the turn-end word.

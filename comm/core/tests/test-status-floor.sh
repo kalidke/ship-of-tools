@@ -178,23 +178,19 @@ case_effort_machine_turn_is_not_nudged() {
     local out; out="$(ITX 10 60 'peer handled')"
     [ -z "$out" ] || { echo "    nudged a machine turn: '$out'"; return 1; }
 }
-case_marker_block_with_identifiers_is_sent_back_unstamped() {
+case_marker_variants_bold_after_and_heading_still_stamp() {
     seed idle; W "$GENUINE"
-    local out; out="$(IT $'SITREP: shipped the fix in `gpu.rs` (be119dfa)\n\n- one bullet')"
-    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("plain words")) and (.reason|test("backticked")) and (.reason|test("commit hash")) and (.reason|test("bullet"))' >/dev/null || { echo "    no lint: '$out'"; return 1; }
-    expect working/user/- unstamped
+    IT $'**SITREP-WAITING**: the checks are rerunning\n\nOne job...' >/dev/null
+    expect waiting/user/sticky bold-after && [ "$(summary)" = "the checks are rerunning" ] || { echo "    summary '$(summary)'"; return 1; }
+    seed idle; W "$GENUINE"
+    IT $'## SITREP: the loop is built\n\nThe chain...' >/dev/null
+    expect done/user/- heading && [ "$(summary)" = "the loop is built" ] || { echo "    summary '$(summary)'"; return 1; }
 }
-case_marker_block_lint_never_repeats_in_continuation() {
+case_turn_with_a_block_is_never_nudged_twice() {
     seed idle; W "$GENUINE"
-    local out; out="$(IT $'SITREP: shipped the fix in `gpu.rs`' true)"
-    [ -z "$out" ] || { echo "    linted a continuation: '$out'"; return 1; }
-    expect done/user/- stamped && [ "$(summary)" = 'shipped the fix in `gpu.rs`' ]
-}
-case_plain_marker_block_passes_lint() {
-    seed idle; W "$GENUINE"
-    local out; out="$(IT $'SITREP: the figure reaches the owner again\n\nThe page could not be reached because one connection switched the relay off for every other. The relay now follows the host that owns the page.')"
-    [ -z "$out" ] || { echo "    linted a clean block: '$out'"; return 1; }
-    expect done/user/- stamped
+    local out; out="$(ITX 12 600 $'SITREP-WAITING: the suite is running in `bg`\n\n- a bullet')"
+    [ -z "$out" ] || { echo "    nudged a turn that had its block: '$out'"; return 1; }
+    expect waiting/user/sticky stamped
 }
 
 # ---- races: the floor decides against the row as it is UNDER the lock ----
@@ -284,9 +280,8 @@ check "an effort turn (many tool calls) ending green with no marker gets one sof
 check "a long quiet turn is an effort by duration" case_long_quiet_user_turn_is_an_effort_by_duration
 check "a short exchange step is never nudged" case_short_exchange_turn_is_never_nudged
 check "an effort on a machine wake is not nudged" case_effort_machine_turn_is_not_nudged
-check "a closing block with identifiers or bullets is sent back, unstamped" case_marker_block_with_identifiers_is_sent_back_unstamped
-check "the lint never repeats in a continuation; its marker stamps" case_marker_block_lint_never_repeats_in_continuation
-check "a plain-language closing block passes the lint" case_plain_marker_block_passes_lint
+check "marker variants (bold closing before the colon, a heading) still stamp" case_marker_variants_bold_after_and_heading_still_stamp
+check "a turn that already has its block is never nudged, whatever the block says" case_turn_with_a_block_is_never_nudged_twice
 check "race: a done committed while the floor waits for the lock is kept" case_race_done_committed_while_floor_waits_is_kept
 check "race: a machine start committed while the floor waits ends gray, not blue" case_race_machine_start_while_floor_waits_ends_gray
 check "a failed state write exits non-zero and leaves the row untouched" case_failed_state_write_exits_nonzero

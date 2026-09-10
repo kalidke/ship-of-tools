@@ -19,9 +19,12 @@
 #       end normally if it was a step in a live exchange. Before this, only a
 #       row the session had already parked was ever nudged, so the sessions
 #       that never stamp were never reminded. Short turns are never nudged.
-#       (b) a closing block that carries identifiers (backticks, hashes,
-#       paths, handles) or bullet lines is sent back once to be rewritten in
-#       plain words — the sitrep language rules — before it is stamped.
+#       (b) WITHDRAWN the same day: a plain-language lint that sent a block
+#       carrying identifiers back to be rewritten. A Stop send-back can only
+#       APPEND a continuation, so the rewrite landed as a second, different
+#       block under the first — the owner saw two waiting reports in a row.
+#       Any nudge on a turn that already has its block is a duplicate by
+#       construction; the language rules live in the sitrep skill only.
 #
 #   (1) NUDGE (reinforce self-report). If a JOINED comm agent ends a turn whose
 #       last reply contains a `?` and it did NOT already self-mark blocked/waiting,
@@ -118,40 +121,20 @@ fi
 marker_state=""; marker_summary=""
 if [ -n "$last_text" ]; then
     marker_state="$(printf '%s\n' "$last_text" | awk '
-        /^[[:space:]]*(\*\*)?SITREP(-QUESTION|-WAITING)?:/ {
-            m=$0; sub(/^[[:space:]]*(\*\*)?SITREP/, "", m)
+        /^[[:space:]]*(#+[[:space:]]*)?(\*\*)?SITREP(-QUESTION|-WAITING)?(\*\*)?:/ {
+            m=$0; sub(/^[[:space:]]*(#+[[:space:]]*)?(\*\*)?SITREP/, "", m); gsub(/\*\*/, "", m)
             if (m ~ /^-QUESTION:/) print "blocked"; else if (m ~ /^-WAITING:/) print "waiting"; else print "done"
             exit }')"
     if [ -n "$marker_state" ]; then
         marker_summary="$(printf '%s\n' "$last_text" | awk '
             found { if ($0 ~ /[^[:space:]]/) { print; exit } ; next }
-            /^[[:space:]]*(\*\*)?SITREP(-QUESTION|-WAITING)?:/ {
-                sub(/^[[:space:]]*(\*\*)?SITREP(-QUESTION|-WAITING)?:[[:space:]]*/, "")
+            /^[[:space:]]*(#+[[:space:]]*)?(\*\*)?SITREP(-QUESTION|-WAITING)?(\*\*)?:/ {
+                sub(/^[[:space:]]*(#+[[:space:]]*)?(\*\*)?SITREP(-QUESTION|-WAITING)?(\*\*)?:[[:space:]]*/, "")
                 sub(/[[:space:]]*(\*\*)?[[:space:]]*$/, "")
                 if ($0 ~ /[^[:space:]]/) { print; exit } ; found=1 }')"
     fi
 fi
 if [ -n "$marker_state" ]; then
-    # Plain-language lint on the closing block (marker line to the end): the
-    # sitrep rules forbid identifiers in prose and bullets in the chain, and
-    # that is what drifts. One send-back, never in a continuation (the loop
-    # guard is below; a continuation's marker stamps whatever it says).
-    if [ "$(jqget '.stop_hook_active // false')" != "true" ]; then
-        block="$(printf '%s\n' "$last_text" | awk '/^[[:space:]]*(\*\*)?SITREP(-QUESTION|-WAITING)?:/ {p=1} p')"
-        lint=""
-        printf '%s' "$block" | grep -q '`' && lint="$lint backticked identifiers;"
-        printf '%s' "$block" | grep -oE '\b[0-9a-f]{7,40}\b' | grep -q '[0-9]' && lint="$lint a commit hash;"
-        printf '%s' "$block" | grep -qE '(^|[[:space:](])(/[A-Za-z0-9_.~-]+){2,}|[A-Za-z]:\\' && lint="$lint a file path;"
-        printf '%s' "$block" | grep -qE '(^|[[:space:](])@[A-Za-z0-9_.-]+' && lint="$lint a session handle;"
-        printf '%s' "$block" | grep -qE '^[[:space:]]*([-*]|[0-9]+\.)[[:space:]]' && lint="$lint bullet or numbered lines;"
-        if [ -n "$lint" ]; then
-            jq -nc --arg l "$lint" '{
-              decision: "block",
-              reason: ("Your closing block carries" + $l + " -- the sitrep language rules forbid these (no identifiers in prose: no hashes, paths, function or session names, backticks; the chain is prose, not bullets). Rewrite the block in plain words a colleague in the field would follow, keep the marker line as its first line, and end the reply with it. This will not fire again this turn.")
-            }'
-            exit 0
-        fi
-    fi
     # Explicit (not soft): the marker IS the model's report. `waiting` sets
     # the sticky purple; `blocked` keeps a marker underneath as today.
     [ -x "$STATUS" ] && "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || true
