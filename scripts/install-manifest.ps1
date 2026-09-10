@@ -33,9 +33,7 @@ param(
     [ValidateSet('local', 'remote', 'be-only')]
     [string]$Role = 'remote',
     # Repo clone that supplies the launcher + config (not the binaries).
-    [string]$Repo,
-    # Write the manifest even if the frontend reports a -dev version.
-    [switch]$AllowDev
+    [string]$Repo
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,7 +50,8 @@ if (-not (Test-Path -LiteralPath $exe)) {
 
 # Version comes from the binary itself, never from a hardcoded string: the
 # manifest must describe what is actually installed. `sot --version` prints
-# "sot X.Y.Z (<sha> <date>)" or "sot X.Y.Z-dev+<sha> (...)".
+# "sot X.Y.Z (<sha> <date>)", "sot X.Y.Z+src (...)" or
+# "sot X.Y.Z-dev+<sha> (...)".
 $versionLine = & $exe --version 2>&1 | Select-Object -First 1
 if ($versionLine -notmatch '^\s*sot\s+(\S+)') {
     Write-Warning "install-manifest: could not read a version from '$versionLine' - skipping manifest."
@@ -60,13 +59,27 @@ if ($versionLine -notmatch '^\s*sot\s+(\S+)') {
 }
 $version = $Matches[1]
 
-# A source build is stamped -dev and is hard-guarded from self-updating in
-# selfupdate.rs regardless of what we write here. Claiming it is a release
-# install would make install.json describe something untrue, so skip it and
-# say why -- dev machines update with git pull + cargo build, which is what
-# the launcher's freshness prelude already does.
-if ($version -match '-dev' -and -not $AllowDev) {
-    Write-Host "install-manifest: $version is a source build (-dev) - no manifest written."
+# Only an official release build gets a manifest. Claiming otherwise would
+# make install.json describe something untrue, so skip it and say why -- dev
+# machines update with git pull + cargo build, which is what the launcher's
+# freshness prelude already does.
+#
+# The test is "is the version BARE", not "does it contain -dev" (ADR 0030 §8
+# decision 31c). Only a CI release build prints a bare X.Y.Z; every other
+# build carries a marker, either the -dev+<sha> of an ordinary source build
+# or the +src of one whose tree sits clean on the release tag. That last case
+# is why the old -dev regex was not enough: it prints no -dev, so it slipped
+# through here and got a release-looking manifest written for a dev checkout.
+# Matching the marker (any '+' or a -dev) rather than enumerating the good
+# shapes keeps this in step with app_version() without re-deriving it.
+#
+# There is no escape hatch. An -AllowDev switch used to force a manifest for
+# a dev build; nothing called it, and since is_release_build() became the
+# hard guard it could not buy what it was for -- a dev build with a manifest
+# still refuses to update. All it could still do was write a file claiming
+# to be a release install that isn't, so it is gone.
+if ($version -match '(\+|-dev)') {
+    Write-Host "install-manifest: $version is not a release build - no manifest written."
     Write-Host "  Dev machines update via the launcher's git pull + cargo rebuild, not the release updater."
     exit 0
 }

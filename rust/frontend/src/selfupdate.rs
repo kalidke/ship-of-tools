@@ -10,7 +10,9 @@
 // `sot-launch`'s sot-apply pick-up then applies at the next launch.
 //
 // Guards, in order:
-//   - `-dev` builds never self-update (hard guard, same as the backend);
+//   - only an official release build self-updates (`is_release_build()`,
+//     hard guard, same as the backend — see ADR 0030 §8 decision 31c for
+//     why the version string cannot answer this);
 //   - `SOT_UPDATE_MODE=off` disables;
 //   - no install manifest → not a release install → no-op (dev checkouts,
 //     Windows dev launcher);
@@ -41,8 +43,11 @@ const DEFAULT_REPO: &str = "kalidke/ship-of-tools";
 /// a self-reporting updater; the acting/erroring paths were already visible.
 pub fn spawn_startup_selfcheck() {
     let current = app_version();
-    if current.contains("-dev") {
-        tracing::info!(%current, "fe self-update: dev build — hard guard, skipping (update with git pull + cargo build)");
+    // Asks the build flags, not the string: a clean checkout on a release
+    // tag prints the same bare version the release does, so a substring test
+    // could not tell them apart (ADR 0030 §8 decision 31c).
+    if !sot_protocol::is_release_build() {
+        tracing::info!(%current, "fe self-update: not a release build — hard guard, skipping (update with git pull + cargo build)");
         return;
     }
     if matches!(

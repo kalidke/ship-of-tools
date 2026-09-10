@@ -566,6 +566,136 @@ release file. This trades one HTTPS request for two per check — an accepted
 cost; a public update check still runs at most daily plus on-demand, well
 under the unauthenticated `api.github.com` rate limit for a single host.
 
+## Amendment 2026-09-10 — §8 decision 31c: only CI can vouch for a release build
+
+Field incident: a Windows box read as a release install all evening while it
+was in fact a dev checkout parked on the `rc.10` tag, built locally. It was
+offered updates, applied them into the install prefix, and kept running its
+own binaries — the launcher's dev-pair-first rule (`launch-sot.ps1` stages
+`rust/target/release/sot.exe` over the staged copy on every launch, whenever
+that file exists at all) silently overwrote whatever the updater had armed.
+The box "self-updated" on every cycle and never moved.
+
+The root cause is upstream of the launcher. Decision 31a established the
+invariant that *a version string never claims to be a commit it was merely
+built FROM*, and enforced it on the one axis git can see: a dirty tree takes
+the `-dirty` form instead of collapsing to the bare tag version. But a CLEAN
+checkout sitting exactly on a release tag compiles the identical source as
+the release. Git has nothing left to distinguish them, because there is
+nothing left — they *are* the same source. So `app_version()` emitted the
+bare `X.Y.Z` for both, and every "is this a release install?" guard in the
+tree was a substring test on that string (`current.contains("-dev")`, in
+`backend/src/update.rs` and `frontend/src/selfupdate.rs`), which a bare
+version passes by construction.
+
+This amendment extends 31a's invariant one axis over: **a version string
+must not claim to be a release ARTIFACT it merely shares a commit with.**
+
+**Decisions:**
+
+**(a) A build declares its origin; only CI's declaration earns the bare
+version.** `rust/protocol/build.rs` reads `SOT_BUILD_ORIGIN` from the build
+environment and emits it as a `rustc-env`, alongside the existing sha /
+date / on-tag / dirty stamps. The release workflow sets it to `ci` at job
+level, so both the workspace build and the musl `sotd` build inherit it — a
+per-step env would let a future build step be added without it and ship a
+release that refuses to update itself. It is gated on the ref being a tag —
+deliberately the SAME condition the `publish` job already uses, so the bare
+version is stamped on exactly the runs that can publish a release. Note
+that is a REF test, not an event test: this workflow also runs on
+`workflow_dispatch`, and a dispatch aimed at a tag both publishes and gets
+stamped. That is consistent rather than a hole, and the two conditions must
+stay in step — if `publish` ever narrows, this must narrow with it, or we
+would stamp artifacts that never ship. The bare `X.Y.Z` is now emitted if
+and only if
+origin is `ci` **and** the tree was on-tag **and** clean; every other build
+carries a marker.
+
+`build.rs` declares `cargo:rerun-if-env-changed=SOT_BUILD_ORIGIN`. Without
+it the origin would be invisible to Cargo's freshness check — the existing
+directives only watch `HEAD` and `refs` — and flipping the variable would
+reuse a cached stamp from the previous build, mislabelling the binary in
+exactly the way this decision exists to prevent.
+
+This is a DECLARATION, not a proof — a local build can set the variable too.
+That is deliberate and is exactly the standing `SOT_BUILD_DIRTY` already
+has: the threat model is a build accidentally mistaking itself for a
+release, not one lying on purpose. A build that wants to lie about its own
+provenance can already do so by editing this file. Cryptographic
+attestation of release artifacts is a real question, and it is not this one;
+it is not opened here.
+
+**(b) The marker is `+src`, semver build metadata.** A clean, on-tag,
+non-CI build stamps `X.Y.Z+src`; a build with no git at all (a source
+tarball, where nothing about the tree can be proven) does the same. Build
+metadata is ignored for ordering — `sot_updater::semver` strips it before
+comparing — so a marked build compares EQUAL to the release it was built
+from and can never present itself as newer or older. A prerelease
+identifier (`-src`) would have sorted it *below* the release and invited the
+updater to "upgrade" a dev box onto its own version; there is a test
+asserting the marker is metadata and not a prerelease, because that
+distinction is the whole reason this shape was chosen.
+
+**(c) `is_release_build()` is the single authority, and the version string
+stops being load-bearing.** The predicate reads the build flags directly.
+Both hard guards now call it instead of sniffing the string. This is the
+deletion the amendment is really for: the string was serving two masters —
+a human-readable stamp and a policy input — and a substring test on a
+human-readable string was never going to survive a new version shape. One
+unit test asserts the bare-version branch and the predicate agree across
+every combination of the three flags, so a future edit cannot let a build
+print the bare version while the updater refuses it, or the reverse.
+
+**(d) The release smoke verifies BOTH binaries' stamps.** The Linux and
+macOS smoke jobs checked `sotd --version` only; Windows had always checked
+both. That asymmetry was harmless while the stamp was cosmetic. It is not
+now: the stamp decides whether an install may ever self-update, so a
+mis-stamped binary would refuse updates for the life of that install and
+nothing downstream would notice — and the unchecked half was the frontend,
+which is precisely the one that self-updates on a remote box. Both jobs now
+loop over the pair, which also collapses a hand-written check into one form.
+
+**(e) The Windows manifest gate tests for a bare version, not for `-dev`.**
+`scripts/install-manifest.ps1` refused to write `install.json` when the
+version matched `-dev`. A clean on-tag source build prints no `-dev`, so it
+slipped through and got a release-looking manifest written for a dev
+checkout — the second half of the same gap, on the only OS where the
+manifest is written by hand. It now refuses anything carrying a marker
+(`+` or `-dev`), which keeps it in step with `app_version()` without
+re-deriving it. `scripts/install.sh` needs no equivalent: it installs only
+from published release assets and never builds from source.
+
+**Deliberately left out:**
+
+- **An `origin` field in `install.json`.** The sketch that opened this item
+  carried one. It earns nothing: `install.sh` only ever installs CI
+  artifacts, and after (e) the Windows writer refuses everything else, so
+  the field would be the constant `"ci"` in every file that has it — a
+  state that cannot vary is not state. The compile-time predicate is the
+  whole fix; a second, weaker copy of the same fact on disk would only
+  create somewhere for the two to disagree. What made that claim only
+  *nearly* true was `install-manifest.ps1`'s `-AllowDev` switch, which could
+  force a manifest for a dev build. Nothing called it, and once
+  `is_release_build()` became the hard guard it could no longer buy what it
+  was for — a dev build with a manifest still refuses to update — so all it
+  could still do was write a file claiming to be a release install that
+  isn't. Deleted rather than documented, which is also what makes the
+  sentence above simply true.
+- **Changing the fe/be skew stamp.** `version_label` compares the two
+  version strings exactly, so a CI-built frontend (`X.Y.Z`) paired with a
+  source-built backend (`X.Y.Z+src`) now paints as skew where it previously
+  looked identical. That is the stamp working: its own contract is that FE
+  and BE "drift apart independently — one gets rebuilt, the other doesn't",
+  and these genuinely ARE two different artifacts. Making the comparison
+  semver-aware would restore the old silence and hide precisely the
+  mismatch this amendment exists to surface.
+- **The launcher's dev-pair-first rule.** It stays as it is. It is correct
+  for its own purpose — a dev checkout should run what the developer just
+  built — and once a dev build stops passing the release guard there is no
+  armed update for it to shadow. The incident needed both halves; only one
+  of them was wrong.
+
+
 ## Public baseline hygiene
 
 For the sanitized public baseline, operational content lives in the private

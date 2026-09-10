@@ -49,13 +49,24 @@ use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// Product version embedded at build time (ADR 0030 §1, §8 decision 31a):
-/// `X.Y.Z` when the build sits exactly on its release tag `vX.Y.Z` with a
-/// clean tree, `X.Y.Z-dev+<sha>` for an ordinary clean dev build, or
-/// `X.Y.Z-dev+<sha>-dirty` when the working tree had uncommitted changes at
-/// build time. Plain `X.Y.Z` when built without git (release tarballs). The
-/// `-dev` marker is what gates the auto-updater — a dev build must never
-/// self-update.
+/// Product version embedded at build time (ADR 0030 §1, §8 decisions 31a
+/// and 31c). Exactly one form means "this is an official release build":
+/// the bare `X.Y.Z`, emitted only when the build was produced by the release
+/// workflow, sits exactly on its release tag `vX.Y.Z`, and had a clean tree.
+/// Everything else is marked: `X.Y.Z+src` for a build off a tag that CI did
+/// not produce (or one built with no git at all), `X.Y.Z-dev+<sha>` for an
+/// ordinary clean dev build, `X.Y.Z-dev+<sha>-dirty` when the tree was
+/// dirty.
+///
+/// **Do not test this string to decide policy** — call [`is_release_build`],
+/// which answers the same question from the flags directly. The string is
+/// for humans and for the version stamp; a substring test on it is how the
+/// `contains("-dev")` guards used to let a clean on-tag source build through
+/// as if it were a release.
+///
+/// `+src` is semver BUILD METADATA, which is ignored for ordering (see
+/// `sot_updater::semver`), so a marked build compares equal to the release
+/// it was built from and can never present itself as newer or older.
 ///
 /// The `-dirty` suffix is a SNAPSHOT taken when `build.rs` last ran, not a
 /// live-tracked flag (see that file's own doc on `SOT_BUILD_DIRTY`) — an
@@ -73,21 +84,61 @@ pub fn app_version() -> String {
         env!("SOT_BUILD_SHA"),
         env!("SOT_BUILD_ON_TAG") == "1",
         env!("SOT_BUILD_DIRTY") == "1",
+        env!("SOT_BUILD_ORIGIN") == "ci",
     )
 }
 
-/// The pure formatting core of [`app_version`], pulled out so the `-dirty`
-/// shape is unit-tested without needing distinct compile-time `env!` values
-/// (those are baked in once per build, so `app_version()` itself can only
-/// ever exercise ONE branch per test run).
-fn format_app_version(pkg: &str, sha: &str, on_tag: bool, dirty: bool) -> String {
-    if sha.is_empty() {
+/// Whether this binary is an official release artifact — the single
+/// authority for every "may this install self-update?" decision (ADR 0030
+/// §8 decision 31c).
+///
+/// Policy lives here rather than in a test on the version string. The two
+/// agree today — the bare version is emitted on exactly this condition, and
+/// a unit test holds them to it — but that equivalence is a property of the
+/// current string shape, not something a caller should have to know. The
+/// previous guards did have to know it, spelled `contains("-dev")`, and a
+/// clean checkout parked on a release tag defeated them: it builds the same
+/// source as the release, so it printed the same bare `X.Y.Z`, passed as a
+/// release install, and took updates the launcher's dev-pair-first rule
+/// then discarded. The box "updated" and silently stayed put.
+///
+/// Fails closed: anything it cannot prove is not a release.
+pub fn is_release_build() -> bool {
+    is_release(
+        env!("SOT_BUILD_ON_TAG") == "1",
+        env!("SOT_BUILD_DIRTY") == "1",
+        env!("SOT_BUILD_ORIGIN") == "ci",
+    )
+}
+
+/// The shared predicate behind [`is_release_build`] and the bare-version
+/// branch of [`format_app_version`], stated once so the string and the
+/// policy can never drift apart: the version is bare if and only if this is
+/// true.
+fn is_release(on_tag: bool, dirty: bool, ci: bool) -> bool {
+    ci && on_tag && !dirty
+}
+
+/// The pure formatting core of [`app_version`], pulled out so each shape is
+/// unit-tested without needing distinct compile-time `env!` values (those
+/// are baked in once per build, so `app_version()` itself can only ever
+/// exercise ONE branch per test run).
+fn format_app_version(pkg: &str, sha: &str, on_tag: bool, dirty: bool, ci: bool) -> String {
+    if is_release(on_tag, dirty, ci) {
         return pkg.to_string();
     }
-    if on_tag && !dirty {
-        pkg.to_string()
-    } else if dirty {
+    // No git (a source tarball): nothing can be proven about this tree, and
+    // it is not the CI build above, so it is marked like any other
+    // unverifiable source build rather than borrowing the bare version.
+    if sha.is_empty() {
+        return format!("{pkg}+src");
+    }
+    if dirty {
         format!("{pkg}-dev+{sha}-dirty")
+    } else if on_tag {
+        // Clean and on the tag, but not from CI: the same source as the
+        // release, a different artifact. `+src` says exactly that.
+        format!("{pkg}+src")
     } else {
         format!("{pkg}-dev+{sha}")
     }
@@ -174,12 +225,14 @@ impl Frame {
 
 #[cfg(test)]
 mod app_version_tests {
-    use super::format_app_version;
+    use super::{format_app_version, is_release};
+
+    // Argument order throughout: (pkg, sha, on_tag, dirty, ci).
 
     #[test]
     fn dirty_build_differs_from_clean_at_the_same_sha() {
-        let clean = format_app_version("0.6.0", "abc1234", false, false);
-        let dirty = format_app_version("0.6.0", "abc1234", false, true);
+        let clean = format_app_version("0.6.0", "abc1234", false, false, false);
+        let dirty = format_app_version("0.6.0", "abc1234", false, true, false);
         assert_eq!(clean, "0.6.0-dev+abc1234");
         assert_eq!(dirty, "0.6.0-dev+abc1234-dirty");
         assert_ne!(clean, dirty, "a dirty build must never alias a clean one's version string");
@@ -189,21 +242,63 @@ mod app_version_tests {
     fn dirty_on_tag_still_shows_dirty_not_the_bare_tag() {
         // A tree that sits ON the release tag but carries local edits is not
         // the release it claims to be — must not collapse to the bare
-        // `X.Y.Z` a clean on-tag build reports.
-        let v = format_app_version("0.6.0", "abc1234", true, true);
-        assert_eq!(v, "0.6.0-dev+abc1234-dirty");
+        // `X.Y.Z` a clean on-tag build reports. True even in CI: a dirty
+        // release build is not a release.
+        assert_eq!(
+            format_app_version("0.6.0", "abc1234", true, true, false),
+            "0.6.0-dev+abc1234-dirty"
+        );
+        assert_eq!(
+            format_app_version("0.6.0", "abc1234", true, true, true),
+            "0.6.0-dev+abc1234-dirty"
+        );
     }
 
     #[test]
-    fn clean_on_tag_is_the_bare_version() {
-        let v = format_app_version("0.6.0", "abc1234", true, false);
-        assert_eq!(v, "0.6.0");
+    fn clean_on_tag_is_the_bare_version_only_from_ci() {
+        // THE regression this whole predicate exists for. Same source, same
+        // sha, same clean tree, on the same tag — the only difference is who
+        // built it, and that difference must be visible.
+        let ci = format_app_version("0.6.0", "abc1234", true, false, true);
+        let local = format_app_version("0.6.0", "abc1234", true, false, false);
+        assert_eq!(ci, "0.6.0");
+        assert_eq!(local, "0.6.0+src");
+        assert_ne!(
+            ci, local,
+            "a local build of a tagged tree must never alias the release artifact"
+        );
     }
 
     #[test]
-    fn no_git_is_the_bare_version_regardless_of_flags() {
-        // Release tarball: no sha to qualify, so on_tag/dirty go unread.
-        assert_eq!(format_app_version("0.6.0", "", true, true), "0.6.0");
-        assert_eq!(format_app_version("0.6.0", "", false, false), "0.6.0");
+    fn no_git_is_marked_src() {
+        // Source tarball: no sha, so nothing about the tree can be proven,
+        // and it does not get to borrow the bare version. `build.rs` cannot
+        // find a tag without git either, so on_tag is false in every
+        // reachable no-git build (rust/protocol/build.rs) — including under
+        // CI, which is why there is no bare-version case here to test.
+        assert_eq!(format_app_version("0.6.0", "", false, false, false), "0.6.0+src");
+        assert_eq!(format_app_version("0.6.0", "", false, true, false), "0.6.0+src");
+        assert_eq!(format_app_version("0.6.0", "", false, false, true), "0.6.0+src");
+    }
+
+    #[test]
+    fn the_bare_version_and_the_release_predicate_never_disagree() {
+        // The string is documentation; `is_release` is policy. They are
+        // derived from one condition precisely so a future edit cannot let
+        // a build print the bare version while the updater refuses it, or
+        // the reverse — which is the failure mode that produced this fix.
+        for &on_tag in &[true, false] {
+            for &dirty in &[true, false] {
+                for &ci in &[true, false] {
+                    let bare = format_app_version("0.6.0", "abc1234", on_tag, dirty, ci)
+                        == "0.6.0";
+                    assert_eq!(
+                        bare,
+                        is_release(on_tag, dirty, ci),
+                        "bare-version and is_release disagree at on_tag={on_tag} dirty={dirty} ci={ci}"
+                    );
+                }
+            }
+        }
     }
 }

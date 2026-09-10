@@ -32,6 +32,26 @@ jobs:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental }}
+    env:
+      # The one thing that marks these binaries as OFFICIAL release artifacts
+      # (ADR 0030 §8 decision 31c). A clean checkout parked on the release tag
+      # compiles the identical source, so nothing derivable from git can tell
+      # the two apart — only the build environment can say which one this is.
+      # `rust/protocol/build.rs` reads it; without it every binary this job
+      # produces would stamp itself `X.Y.Z+src` and the smoke steps below,
+      # which match the bare version exactly, would fail. Job-level so BOTH
+      # the workspace build and the musl sotd build inherit it — a build that
+      # missed it would ship a release that refuses to self-update.
+      #
+      # Gated on the ref being a TAG — deliberately the SAME condition the
+      # `publish` job below uses, so the bare version is stamped on exactly
+      # the runs that can publish a release and on no others. (Note this is
+      # a ref test, not an event test: a workflow_dispatch aimed at a tag
+      # both publishes and gets stamped, which is consistent. A dispatch on
+      # a branch does neither.) Keep the two conditions in step; if publish
+      # ever narrows, this must narrow with it, or we would stamp artifacts
+      # that never ship.
+      SOT_BUILD_ORIGIN: ${{ startsWith(github.ref, 'refs/tags/v') && 'ci' || '' }}
     outputs:
       # All matrix legs compute the identical string; last-writer-wins is fine.
       version: ${{ steps.ver.outputs.version }}
@@ -182,16 +202,25 @@ jobs:
           tar xzf sot-*-linux-x86_64.tar.gz
           d=$(ls -d sot-*-linux-x86_64/)
           expected="${{ needs.build.outputs.version }}"
-          got="$("$d/sotd" --version)"
-          echo "sotd --version: $got (expected version: $expected)"
-          # Exact version match is only meaningful on TAG runs — a dispatch
-          # run names artifacts 0.0.0-ci.<sha> while the binary embeds its
-          # real git-describe version; there "it runs and self-identifies"
-          # is the assertion.
-          case "$expected" in
-            0.0.0-ci.*) case "$got" in "sotd "*) ;; *) echo "BROKEN --version OUTPUT"; exit 1;; esac ;;
-            *)          case "$got" in "sotd $expected ("*) ;; *) echo "VERSION MISMATCH"; exit 1;; esac ;;
-          esac
+          # BOTH updater-bearing binaries, not just sotd (Windows has always
+          # checked both). Since ADR 0030 §8 decision 31c the stamp decides
+          # whether an install may EVER self-update, so a binary that shipped
+          # mis-stamped would refuse updates for the life of the install and
+          # nothing downstream would notice. Checking one of the pair leaves
+          # the frontend — the half that self-updates on a remote box —
+          # unverified.
+          for b in sotd sot; do
+            got="$("$d/$b" --version)"
+            echo "$b --version: $got (expected version: $expected)"
+            # Exact version match is only meaningful on TAG runs — a dispatch
+            # run names artifacts 0.0.0-ci.<sha> while the binary embeds its
+            # real git-describe version; there "it runs and self-identifies"
+            # is the assertion.
+            case "$expected" in
+              0.0.0-ci.*) case "$got" in "$b "*) ;; *) echo "BROKEN --version OUTPUT for $b"; exit 1;; esac ;;
+              *)          case "$got" in "$b $expected ("*) ;; *) echo "VERSION MISMATCH for $b: $got"; exit 1;; esac ;;
+            esac
+          done
           mkdir -p scratch
           # 0.4.0 removed the daemon TCP listener: assert the pointed error
           # (a stale launcher must fail loudly, not silently bind nothing).
@@ -282,13 +311,22 @@ jobs:
           tar xzf sot-*-macos-aarch64.tar.gz
           d=$(ls -d sot-*-macos-aarch64/)
           expected="${{ needs.build.outputs.version }}"
-          got="$("$d/sotd" --version)"
-          echo "sotd --version: $got (expected version: $expected)"
-          # Same tag-run exactness rule as the linux smoke.
-          case "$expected" in
-            0.0.0-ci.*) case "$got" in "sotd "*) ;; *) echo "BROKEN --version OUTPUT"; exit 1;; esac ;;
-            *)          case "$got" in "sotd $expected ("*) ;; *) echo "VERSION MISMATCH"; exit 1;; esac ;;
-          esac
+          # BOTH updater-bearing binaries, not just sotd (Windows has always
+          # checked both). Since ADR 0030 §8 decision 31c the stamp decides
+          # whether an install may EVER self-update, so a binary that shipped
+          # mis-stamped would refuse updates for the life of the install and
+          # nothing downstream would notice. Checking one of the pair leaves
+          # the frontend — the half that self-updates on a remote box —
+          # unverified.
+          for b in sotd sot; do
+            got="$("$d/$b" --version)"
+            echo "$b --version: $got (expected version: $expected)"
+            # Same tag-run exactness rule as the linux smoke.
+            case "$expected" in
+              0.0.0-ci.*) case "$got" in "$b "*) ;; *) echo "BROKEN --version OUTPUT for $b"; exit 1;; esac ;;
+              *)          case "$got" in "$b $expected ("*) ;; *) echo "VERSION MISMATCH for $b: $got"; exit 1;; esac ;;
+            esac
+          done
           mkdir -p scratch
           sock="$("$d/sotd" session-socket-path smoke-macos)"
           rm -f "$sock"

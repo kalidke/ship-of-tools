@@ -7,6 +7,18 @@
 //   SOT_BUILD_SHA     short commit sha
 //   SOT_BUILD_DATE    committer date, YYYY-MM-DD
 //   SOT_BUILD_ON_TAG  "1" iff HEAD sits exactly on tag v{CARGO_PKG_VERSION}
+//   SOT_BUILD_ORIGIN  the build environment that produced this binary, as
+//                     declared by whoever ran cargo. The release workflow
+//                     sets it to "ci"; an ordinary local build leaves it
+//                     unset. This is the ONLY thing that separates an
+//                     official release artifact from a local build of the
+//                     same clean, on-tag tree — git cannot tell them apart,
+//                     because they ARE the same source. Declared, not
+//                     proven: a local build can set it too. That is the same
+//                     standing as SOT_BUILD_DIRTY (a snapshot, not a
+//                     guarantee) and the threat model is identical — this
+//                     guards against a build accidentally MISTAKING itself
+//                     for a release, not against one lying on purpose.
 //   SOT_BUILD_DIRTY   "1" iff the working tree had uncommitted changes AT
 //                     THE MOMENT this metadata was generated (ADR 0030 §8
 //                     decision 31a) — a SNAPSHOT, not a live-tracked flag:
@@ -62,6 +74,9 @@ fn main() {
     // `is_dirty()`'s fail-closed default would otherwise wrongly stamp a
     // tarball build "1"). Only probed when there's a sha to qualify.
     let dirty = sha.is_some() && is_dirty();
+    // Declared by the build environment, never derived from the tree (see
+    // the header). Absent → empty → not a release build.
+    let origin = std::env::var("SOT_BUILD_ORIGIN").unwrap_or_default();
 
     // Re-stamp when HEAD moves (commit, checkout, tag). Best-effort: absent
     // paths make these directives inert. Deliberately NOT watching the
@@ -70,6 +85,13 @@ fn main() {
     // while looking like a live tracker — SOT_BUILD_DIRTY is a snapshot
     // (see its own doc above), and a knob that sometimes rebuilds and
     // sometimes doesn't is worse than one that plainly never does.
+    // The origin comes from the environment rather than a watched file, so
+    // Cargo has no other way to know it changed: without this, flipping
+    // SOT_BUILD_ORIGIN would reuse a cached stamp from the previous build
+    // and silently mislabel the binary — the exact failure this var exists
+    // to prevent.
+    println!("cargo:rerun-if-env-changed=SOT_BUILD_ORIGIN");
+
     if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
         println!("cargo:rerun-if-changed={git_dir}/HEAD");
         println!("cargo:rerun-if-changed={git_dir}/refs");
@@ -85,4 +107,5 @@ fn main() {
         "cargo:rustc-env=SOT_BUILD_DIRTY={}",
         if dirty { "1" } else { "0" }
     );
+    println!("cargo:rustc-env=SOT_BUILD_ORIGIN={origin}");
 }

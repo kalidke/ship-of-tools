@@ -89,7 +89,11 @@ pub struct Updater {
 impl Updater {
     pub fn from_env() -> Self {
         let current = app_version();
-        let dev = current.contains("-dev");
+        // NOT a substring test on `current`: a clean checkout parked on a
+        // release tag prints a version indistinguishable from the release's
+        // own by construction, so `contains("-dev")` used to pass it through
+        // as a release install (ADR 0030 §8 decision 31c).
+        let dev = !sot_protocol::is_release_build();
         Self {
             dev,
             mode: mode_from_env(),

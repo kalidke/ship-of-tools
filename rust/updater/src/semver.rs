@@ -154,6 +154,28 @@ mod tests {
     }
 
     #[test]
+    fn src_marked_build_is_ordering_identical_to_its_release() {
+        // A clean local build of a release tag stamps `X.Y.Z+src` (ADR 0030
+        // §8 decision 31c). That marker is BUILD metadata by choice: it must
+        // never read as newer or older than the release it was built from,
+        // or the updater would offer such a box an "upgrade" onto its own
+        // version — and, since the launcher runs the local build anyway,
+        // that upgrade would apply forever without ever taking effect.
+        assert_eq!(compare_versions("0.6.0+src", "0.6.0"), Ordering::Equal);
+        assert_eq!(
+            compare_versions("0.6.0-rc.15+src", "0.6.0-rc.15"),
+            Ordering::Equal
+        );
+        // A real successor is still strictly newer than the marked build.
+        assert_eq!(compare_versions("0.6.1", "0.6.0+src"), Ordering::Greater);
+        // And the marker must not disturb channel selection (select.rs keys
+        // on `pre.is_empty()`): a marked stable stays stable, a marked
+        // prerelease stays a prerelease.
+        assert!(parse_semver("0.6.0+src").unwrap().pre.is_empty());
+        assert!(!parse_semver("0.6.0-rc.15+src").unwrap().pre.is_empty());
+    }
+
+    #[test]
     fn semver_unparsable_never_wins() {
         // A garbage "latest" must never read as an available update.
         assert_eq!(compare_versions("garbage", "0.2.0"), Ordering::Less);
