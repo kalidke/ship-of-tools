@@ -377,16 +377,6 @@ send_fe_command() {
         fi
         echo "fe.command sent: cmd=$fe_cmd${FE:+ target=$FE} via $ENDPOINT"
     fi
-    # The badge-floor note is about the SHOW verbs' (preview/reveal) focus
-    # semantics; every other verb either has no view to steal (relaunch) or
-    # --fe is the documented, delivered_to-verified way to scope it
-    # (open-url, docs, notify, ...).
-    if [ -n "${FE:-}" ]; then
-        case "$fe_cmd" in
-            preview|reveal)
-                echo "note: --fe/--urgent are deprecated (2026-06-29, badge-floor only — we never force-switch the user's view)." >&2 ;;
-        esac
-    fi
     case "$fe_cmd" in
         preview|reveal)
             echo "note: badges the target workspace row — the user is never yanked; when they visit that workspace the file is cursored in the nav AND rendered in the preview (complete show, always). --urgent --fe <handle> is the user-requested focus-capture option." ;;
