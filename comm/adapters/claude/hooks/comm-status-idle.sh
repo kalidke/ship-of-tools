@@ -11,6 +11,17 @@
 #       explicit blocked / waiting / done row and NO marker gets one nudge
 #       naming the shape it owes (a machine wake never does — a relay ack on a
 #       parked row is not a report). See sot-comm references/work-state.md.
+#       Two refinements (2026-09-10, owner: "sessions are not strictly
+#       following the sitrep rules" + "don't need that formal thing during a
+#       back and forth"): (a) a HUMAN turn that was an EFFORT — many tool
+#       calls or a long wall time — and ends green with no marker gets ONE
+#       soft nudge: close with the sitrep block if the turn closed an effort,
+#       end normally if it was a step in a live exchange. Before this, only a
+#       row the session had already parked was ever nudged, so the sessions
+#       that never stamp were never reminded. Short turns are never nudged.
+#       (b) a closing block that carries identifiers (backticks, hashes,
+#       paths, handles) or bullet lines is sent back once to be rewritten in
+#       plain words — the sitrep language rules — before it is stamped.
 #
 #   (1) NUDGE (reinforce self-report). If a JOINED comm agent ends a turn whose
 #       last reply contains a `?` and it did NOT already self-mark blocked/waiting,
@@ -78,6 +89,29 @@ if [ -n "$tp" ] && [ -r "$tp" ]; then
         | tail -n 1 | jq -r '.' 2>/dev/null)"
 fi
 
+# The turn's size: tool calls and wall seconds since the last HUMAN prompt
+# (a `user` record whose content is a string / carries no tool_result —
+# tool results are `user` records too). A prompt not found in the tail means
+# the turn is longer than the tail: an effort by construction.
+EFFORT_TOOLS=8; EFFORT_SECS=300
+turn_tools=0; turn_secs=0
+if [ -n "$tp" ] && [ -r "$tp" ]; then
+    read -r turn_tools turn_secs < <(tail -n 3000 "$tp" 2>/dev/null | jq -sr '
+        def is_prompt: .type=="user" and ((.message.content|type)=="string"
+            or (([.message.content[]? | .type] | index("tool_result")) == null));
+        def secs: sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch 0);
+        ([to_entries[] | select(.value | is_prompt) | .key] | last) as $h
+        | if $h == null then "9999 9999"
+          else (.[$h+1:]) as $turn
+            | ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")] | length) as $n
+            | ((.[$h].timestamp // "") | if . == "" then 0 else secs end) as $t0
+            | (([$turn[] | select(.type=="assistant") | .timestamp // empty] | last // "") | if . == "" then 0 else secs end) as $t1
+            | "\($n) \(if $t0 > 0 and $t1 > $t0 then $t1 - $t0 else 0 end)"
+          end' 2>/dev/null || echo "0 0")
+    case "$turn_tools" in ''|*[!0-9]*) turn_tools=0 ;; esac
+    case "$turn_secs" in ''|*[!0-9]*) turn_secs=0 ;; esac
+fi
+
 # (0) CLOSING MARKER: first line opening with SITREP[-QUESTION|-WAITING]:
 # (optionally bold-wrapped). State from the marker, summary from the rest of
 # the line — or the next non-empty line when the marker stands alone.
@@ -98,6 +132,26 @@ if [ -n "$last_text" ]; then
     fi
 fi
 if [ -n "$marker_state" ]; then
+    # Plain-language lint on the closing block (marker line to the end): the
+    # sitrep rules forbid identifiers in prose and bullets in the chain, and
+    # that is what drifts. One send-back, never in a continuation (the loop
+    # guard is below; a continuation's marker stamps whatever it says).
+    if [ "$(jqget '.stop_hook_active // false')" != "true" ]; then
+        block="$(printf '%s\n' "$last_text" | awk '/^[[:space:]]*(\*\*)?SITREP(-QUESTION|-WAITING)?:/ {p=1} p')"
+        lint=""
+        printf '%s' "$block" | grep -q '`' && lint="$lint backticked identifiers;"
+        printf '%s' "$block" | grep -oE '\b[0-9a-f]{7,40}\b' | grep -q '[0-9]' && lint="$lint a commit hash;"
+        printf '%s' "$block" | grep -qE '(^|[[:space:](])(/[A-Za-z0-9_.~-]+){2,}|[A-Za-z]:\\' && lint="$lint a file path;"
+        printf '%s' "$block" | grep -qE '(^|[[:space:](])@[A-Za-z0-9_.-]+' && lint="$lint a session handle;"
+        printf '%s' "$block" | grep -qE '^[[:space:]]*([-*]|[0-9]+\.)[[:space:]]' && lint="$lint bullet or numbered lines;"
+        if [ -n "$lint" ]; then
+            jq -nc --arg l "$lint" '{
+              decision: "block",
+              reason: ("Your closing block carries" + $l + " -- the sitrep language rules forbid these (no identifiers in prose: no hashes, paths, function or session names, backticks; the chain is prose, not bullets). Rewrite the block in plain words a colleague in the field would follow, keep the marker line as its first line, and end the reply with it. This will not fire again this turn.")
+            }'
+            exit 0
+        fi
+    fi
     # Explicit (not soft): the marker IS the model's report. `waiting` sets
     # the sticky purple; `blocked` keeps a marker underneath as today.
     [ -x "$STATUS" ] && "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || true
@@ -131,6 +185,19 @@ case "$cur" in
         fi
         turn_floor; exit 0 ;;
 esac
+
+# An EFFORT that ends green with no marker (2026-09-10): the common shape of a
+# session that never stamps. One SOFT nudge — the model decides whether the
+# turn closed an effort (owes the sitrep block) or was a step in a live
+# back-and-forth (owes nothing). Short turns never trip this, whatever they
+# did; the thresholds are the effort/exchange line, not a work detector.
+if [ "$origin" = user ] && { [ "$turn_tools" -ge "$EFFORT_TOOLS" ] || [ "$turn_secs" -ge "$EFFORT_SECS" ]; }; then
+    jq -nc --arg n "$turn_tools" --arg m "$((turn_secs / 60))" '{
+      decision: "block",
+      reason: ("This turn ran " + $n + " tool calls over " + $m + " min and ends with no closing marker. IF it CLOSED a work effort (a result landed, a fix shipped, a diagnosis was reached, a decision point arrived), close with the sitrep block now, as the last thing in your reply: a line  SITREP: <one-line headline>  then the chain (issue in context, diagnosis, design, result with its scale, interpretation, plan) in plain words -- no hashes, paths, names, backticks or bullets. IF this turn was a step in a live back-and-forth with the user, end normally: no block is owed. This will not fire again this turn.")
+    }'
+    exit 0
+fi
 
 # TIERED TURN AUDITOR (v1, 2026-07-02): deterministic pre-filters + a
 # conservative Haiku judge (comm-turn-auditor.sh) check the turn for misses —

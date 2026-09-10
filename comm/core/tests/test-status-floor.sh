@@ -52,6 +52,18 @@ IT() {
     jq -nc --arg p "$tr" --argjson a "${2:-false}" '{transcript_path:$p, stop_hook_active:$a}' | bash "$HOOKS_DIR/comm-status-idle.sh"
 }
 summary() { jq -r --arg n "$NAME" '.agents[$n].summary // ""' "$REGISTRY"; }
+# ITX TOOLS SECS TEXT [stop_hook_active]: Stop with a transcript whose turn ran TOOLS
+# tool calls over SECS wall seconds after the human prompt, ending in TEXT.
+ITX() {
+    local tr="$WORK/transcript.jsonl" n="$1" secs="$2" i
+    { jq -nc '{type:"user",timestamp:"2026-09-10T12:00:00.000Z",message:{content:"go"}}'
+      for ((i=0; i<n; i++)); do
+        jq -nc --arg i "$i" '{type:"assistant",timestamp:"2026-09-10T12:00:01.000Z",message:{content:[{type:"tool_use",id:("t"+$i),name:"Bash",input:{command:"ls"}}]}}'
+        jq -nc --arg i "$i" '{type:"user",message:{content:[{type:"tool_result",tool_use_id:("t"+$i),content:"ok"}]}}'
+      done
+      jq -nc --arg t "$3" --argjson s "$secs" '{type:"assistant",timestamp:(("2026-09-10T12:00:00Z"|fromdateiso8601)+$s|todate),message:{content:[{type:"text",text:$t}]}}'; } > "$tr"
+    jq -nc --arg p "$tr" --argjson a "${4:-false}" '{transcript_path:$p, stop_hook_active:$a}' | bash "$HOOKS_DIR/comm-status-idle.sh"
+}
 HB() { printf '{"tool_name":"Bash"}' | bash "$HOOKS_DIR/comm-status-heartbeat.sh"; }
 GENUINE='{"prompt":"please do the thing"}'
 RELAY='{"prompt":"[relay] from peer: ack"}'
@@ -140,6 +152,51 @@ case_plain_user_turn_without_marker_floors_blue_unnudged() {
     expect done/user/- end
 }
 
+# ---- effort vs exchange (2026-09-10): a long green turn is asked once ----
+case_effort_user_turn_without_marker_gets_one_soft_nudge() {
+    seed idle; W "$GENUINE"
+    local out; out="$(ITX 10 60 'Fixed it; all green.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("SITREP: ")) and (.reason|test("back-and-forth"))' >/dev/null || { echo "    no soft nudge: '$out'"; return 1; }
+    expect working/user/- untouched || return 1
+    out="$(ITX 10 60 'That was a step in our exchange.' true)"
+    [ -z "$out" ] || { echo "    re-nudged in continuation: '$out'"; return 1; }
+    expect done/user/- end
+}
+case_long_quiet_user_turn_is_an_effort_by_duration() {
+    seed idle; W "$GENUINE"
+    local out; out="$(ITX 1 400 'Done after a long build.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block"' >/dev/null || { echo "    no nudge: '$out'"; return 1; }
+}
+case_short_exchange_turn_is_never_nudged() {
+    seed idle; W "$GENUINE"
+    local out; out="$(ITX 3 40 'Changed the label as you asked.')"
+    [ -z "$out" ] || { echo "    nudged an exchange step: '$out'"; return 1; }
+    expect done/user/- end
+}
+case_effort_machine_turn_is_not_nudged() {
+    seed idle; W "$RELAY"
+    local out; out="$(ITX 10 60 'peer handled')"
+    [ -z "$out" ] || { echo "    nudged a machine turn: '$out'"; return 1; }
+}
+case_marker_block_with_identifiers_is_sent_back_unstamped() {
+    seed idle; W "$GENUINE"
+    local out; out="$(IT $'SITREP: shipped the fix in `gpu.rs` (be119dfa)\n\n- one bullet')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("plain words")) and (.reason|test("backticked")) and (.reason|test("commit hash")) and (.reason|test("bullet"))' >/dev/null || { echo "    no lint: '$out'"; return 1; }
+    expect working/user/- unstamped
+}
+case_marker_block_lint_never_repeats_in_continuation() {
+    seed idle; W "$GENUINE"
+    local out; out="$(IT $'SITREP: shipped the fix in `gpu.rs`' true)"
+    [ -z "$out" ] || { echo "    linted a continuation: '$out'"; return 1; }
+    expect done/user/- stamped && [ "$(summary)" = 'shipped the fix in `gpu.rs`' ]
+}
+case_plain_marker_block_passes_lint() {
+    seed idle; W "$GENUINE"
+    local out; out="$(IT $'SITREP: the figure reaches the owner again\n\nThe page could not be reached because one connection switched the relay off for every other. The relay now follows the host that owns the page.')"
+    [ -z "$out" ] || { echo "    linted a clean block: '$out'"; return 1; }
+    expect done/user/- stamped
+}
+
 # ---- races: the floor decides against the row as it is UNDER the lock ----
 # Hold the registry lock, start the floor (it blocks on the lock; the barrier
 # seam tells us it got there), commit a competing write, release, and assert
@@ -223,6 +280,13 @@ check "a marker in a stop-hook continuation still stamps, no nudge" case_marker_
 check "a human turn ending parked without a marker is nudged once, row untouched" case_parked_user_turn_without_marker_is_nudged_once
 check "a machine turn ending parked without a marker is not nudged" case_parked_machine_turn_without_marker_is_not_nudged
 check "a plain human answer without a marker floors blue, no nudge" case_plain_user_turn_without_marker_floors_blue_unnudged
+check "an effort turn (many tool calls) ending green with no marker gets one soft nudge, then floors" case_effort_user_turn_without_marker_gets_one_soft_nudge
+check "a long quiet turn is an effort by duration" case_long_quiet_user_turn_is_an_effort_by_duration
+check "a short exchange step is never nudged" case_short_exchange_turn_is_never_nudged
+check "an effort on a machine wake is not nudged" case_effort_machine_turn_is_not_nudged
+check "a closing block with identifiers or bullets is sent back, unstamped" case_marker_block_with_identifiers_is_sent_back_unstamped
+check "the lint never repeats in a continuation; its marker stamps" case_marker_block_lint_never_repeats_in_continuation
+check "a plain-language closing block passes the lint" case_plain_marker_block_passes_lint
 check "race: a done committed while the floor waits for the lock is kept" case_race_done_committed_while_floor_waits_is_kept
 check "race: a machine start committed while the floor waits ends gray, not blue" case_race_machine_start_while_floor_waits_ends_gray
 check "a failed state write exits non-zero and leaves the row untouched" case_failed_state_write_exits_nonzero

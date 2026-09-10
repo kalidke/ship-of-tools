@@ -44,11 +44,16 @@ comm-status.sh blocked "the question you're asking"   # plain-text question, no 
 comm-status.sh waiting "what you're waiting on"        # turn ended with a background job/subagent still running
 ```
 
-**Closing markers.** End a parked turn with the closing block from the `sitrep`
-skill: a line opening `SITREP: <headline>` (done), `SITREP-QUESTION: <the
-question>` (blocked) or `SITREP-WAITING: <what for>` (waiting). The Stop hook
-stamps the row from that line, so no status call is needed at turn end; a human
-turn ending parked without one is nudged once.
+**Closing markers.** A turn that CLOSES an effort, or ends parked, ends with
+the closing block from the `sitrep` skill: a line opening `SITREP: <headline>`
+(done), `SITREP-QUESTION: <the question>` (blocked) or `SITREP-WAITING: <what
+for>` (waiting), then the chain in plain words. The Stop hook stamps the row
+from that line, so no status call is needed at turn end. A step in a live
+back-and-forth owes no block — answer and end. Nudges, each once per turn: a
+human turn ending parked without a marker; a long human turn (many tool calls
+or minutes of wall time) ending green without one — "close with the block if
+this closed an effort, end normally if it was a step"; a closing block that
+carries identifiers or bullets — sent back to be rewritten before it stamps.
 
 **Precedence: blocked > waiting > done > idle.** **Waiting is sticky** — set it
 once; it survives intervening turns until you report `working`/`idle`/`done`, or

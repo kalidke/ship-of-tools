@@ -101,6 +101,21 @@ marker then stamps the row. A machine wake (relay, Monitor, notification)
 never nudges — a peer's ack on a parked row is not a report — and a plain
 answer with no explicit state floors exactly as before.
 
+**Effort vs exchange (2026-09-10).** The parked-row nudge only ever reached a
+session that had already stamped itself; the sessions that never stamp ended
+every turn green and were never reminded. So a **human** turn that was an
+effort — at least 8 tool calls, or 5 minutes of wall time since the prompt,
+measured from the transcript — and ends green with no marker gets one SOFT
+nudge: close with `SITREP:` if the turn closed an effort, end normally if it
+was a step in a live back-and-forth (the owner's ruling: no formal block
+during an exchange). Short turns never trip it, whatever they did.
+
+**Language lint.** When a marker is present, the closing block (marker line
+to the end) is checked for what the sitrep rules forbid — backticks, a commit
+hash, a file path, a session handle, bullet or numbered lines — and sent back
+once to be rewritten in plain words before the row is stamped. A continuation
+is never linted: its marker stamps whatever it says.
+
 ## Testing the state machinery — never against your live row
 
 Registering fixture states on your own handle paints real colors on the

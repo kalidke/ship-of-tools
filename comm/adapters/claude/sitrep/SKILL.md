@@ -22,6 +22,11 @@ A sitrep is not a progress report and not a technical report. Activity
   that effort IS the sitrep. Do not report the close in any other shape first.
 - A direction changes or a previous conclusion is withdrawn. Say so in the
   sitrep, plainly, as part of the chain.
+- NOT for a step in a live back-and-forth (owner ruling 2026-09-10). When the
+  user is steering turn by turn — "change this", "what about that", a quick
+  answer — reply in the register of the exchange and end; no closing block.
+  The block belongs to an effort's close and to a parked end. The Stop hook
+  asks once after a long turn; if the turn was a step, say nothing and end.
 
 One sitrep per effort. If several efforts closed since the reader last looked,
 write one sitrep that carries the chain across all of them, not one per effort.
@@ -102,7 +107,12 @@ cannot disagree. No separate status call is needed at turn end.
 The marker starts a line (bold-wrapping it is fine). The block is the last
 thing in the reply. A turn that ends parked (blocked / waiting / done) from a
 human prompt and carries no marker is nudged once for the shape it owes; a
-plain answer needs no marker and floors as before. The question and waiting
+long human turn ending green without one is asked once whether it closed an
+effort (then it owes `SITREP:`) or was a step in an exchange (then nothing);
+a plain answer needs no marker and floors as before. The hook also reads the
+closing block against the language rules — backticks, hashes, paths, session
+handles, bullet lines — and sends it back once to be rewritten before the row
+is stamped. The question and waiting
 blocks follow the same language rules as the sitrep: plain words, no
 identifiers, about 80–150 words. Mid-turn stamps (marking `waiting` the
 moment a job is launched) stay as they are; the marker is the turn-end word.

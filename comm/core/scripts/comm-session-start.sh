@@ -126,6 +126,7 @@ _workstate_rule() {
 Work-state (nav row colour) — stamp it yourself with comm-status.sh <working|waiting|blocked|done|idle> "why":
   blocked (red: needs the user) > waiting (purple: a job/subagent/peer YOU launched is still running — stamp it the moment you delegate; sticky until you stamp working/idle/done when the job lands) > working (green) > idle.
   A background job does NOT make you idle. Full mechanics: the sot-comm skill's references/work-state.md.
+Turn end: when a turn CLOSES an effort (a result landed, a fix shipped, a diagnosis reached) or ends parked, its last block opens with a marker line — SITREP: <headline> (done) / SITREP-QUESTION: <question> (blocked) / SITREP-WAITING: <what for> (waiting) — followed by the sitrep chain in plain words (the sitrep skill: no hashes, paths, names, backticks or bullets). The Stop hook stamps the row from that line. A step in a live back-and-forth owes NO block: answer and end.
 EOF
 }
 
