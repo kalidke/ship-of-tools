@@ -250,12 +250,7 @@ impl Workspace {
                     .join("Project.toml")
                     .is_file()
                     .then(|| self.project_root.clone());
-                Repl::new(
-                    Repl::default_repl_project(),
-                    frame_tx,
-                    Some(self.workspace_id.clone()),
-                    user_project,
-                )
+                Repl::new(frame_tx, Some(self.workspace_id.clone()), user_project)
             })
             .clone()
     }
