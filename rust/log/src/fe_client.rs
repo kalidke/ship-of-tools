@@ -518,7 +518,7 @@ impl OutstandingSlot {
 }
 
 // ---------------------------------------------------------------------
-// (d) Reconnect is bounded, classified, and re-reads the pointer
+// (d) Reconnect is bounded and classified
 // ---------------------------------------------------------------------
 
 /// Why a reconnect episode is TERMINAL — an actionable error offering
@@ -528,7 +528,6 @@ pub enum TerminalReason {
     HelloRefusedVersionSkew,
     ForeignPipe,
     AccessDenied,
-    PointerAbsentOrCorrupt,
     OperatorCancel,
     /// A still-answering authority's own terminal phase.
     SupervisorPhase(SupervisorPhase),
@@ -603,9 +602,6 @@ impl ReconnectState {
         Self { backoff: RECONNECT_BACKOFF_INITIAL, unresponsive_since: None, ever_attached: false }
     }
 
-    /// Every episode starts by re-reading `drawer.voyage` fresh — this
-    /// type carries no phase to update for that; the caller (the
-    /// runtime) simply re-reads the pointer at the top of its own loop.
     pub fn classify_hello_refused_version_skew(&mut self) -> ReconnectDecision {
         ReconnectDecision::Terminal(TerminalReason::HelloRefusedVersionSkew)
     }
@@ -614,9 +610,6 @@ impl ReconnectState {
     }
     pub fn classify_access_denied(&mut self) -> ReconnectDecision {
         ReconnectDecision::Terminal(TerminalReason::AccessDenied)
-    }
-    pub fn classify_pointer_bad(&mut self) -> ReconnectDecision {
-        ReconnectDecision::Terminal(TerminalReason::PointerAbsentOrCorrupt)
     }
     pub fn classify_operator_cancel(&mut self) -> ReconnectDecision {
         ReconnectDecision::Terminal(TerminalReason::OperatorCancel)
@@ -1298,10 +1291,6 @@ mod tests {
         assert_eq!(
             r.classify_access_denied(),
             ReconnectDecision::Terminal(TerminalReason::AccessDenied)
-        );
-        assert_eq!(
-            r.classify_pointer_bad(),
-            ReconnectDecision::Terminal(TerminalReason::PointerAbsentOrCorrupt)
         );
         assert_eq!(
             r.classify_operator_cancel(),

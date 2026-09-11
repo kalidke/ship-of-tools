@@ -9453,7 +9453,8 @@ impl State {
         let fe_down_to = self_comm_handle();
         let waker = self.window.clone();
         match sot_log::fe_client_io::FeAttachClient::attach(
-            state_dir,
+            sot_log::client::PlatformEndpoint::default(),
+            sot_log::state_dir::state_dir_hash(&state_dir),
             cols,
             rows,
             controller_id,
@@ -15475,7 +15476,8 @@ impl State {
         let fe_down_last_evidence = self.fe_down_baseline_evidence.clone();
         let waker = self.window.clone();
         match sot_log::fe_client_io::FeAttachClient::attach(
-            state_dir,
+            sot_log::client::PlatformEndpoint::default(),
+            sot_log::state_dir::state_dir_hash(&state_dir),
             80,
             24,
             controller_id,
