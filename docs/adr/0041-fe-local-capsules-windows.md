@@ -913,7 +913,9 @@ here because "reusing `pipe_win`" carries mechanics, not a contract:
   a long-lived process and an old FE can outlive an apply — so the
   upgrade transaction quiesces the old FE explicitly (below) AND the
   lane rejects the pair it did not. Identity is the belt; the build
-  check is the version-skew braces.
+  check is the version-skew braces. **Superseded by ADR 0045 decision
+  7** — the lane gate compares the protocol integer only; build
+  identity stays on the wire as diagnostic information, never compared.
 
 **The lane's operations are one command family, one query family, and one
 stateless request.**
@@ -1435,7 +1437,11 @@ permanently compatible lane; attach-protocol versions negotiate via
 `hello` above it. The supervisor lane carries a build identity per
 connection and refuses a mismatched pair; file replacement is not
 process replacement, so step 3 below quiesces the old FE rather than
-assuming the transaction did.
+assuming the transaction did. **Superseded by ADR 0045 decisions 7 and
+10** — the pair check becomes a protocol-integer gate, not a build
+match, and a release carrying a lane bump upgrades by draining every
+capsule row with the old pair rather than by quiescing an old FE
+against a mismatched build.
 
 **An upgrade is ONE atomic transaction.** The capsule image IS the
 supervisor image, so no image can be deferred on its own: "no capsule is

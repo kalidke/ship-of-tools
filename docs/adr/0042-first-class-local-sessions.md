@@ -348,6 +348,11 @@ retiring `-Local` (it keeps its "no tunnels, no freshness" meaning).
   The attach protocol is transport-independent by design (ADR 0037, ADR
   0041 P4 note); the daemon adds no semantics, only bytes. The same
   challenge runs end to end because the daemon forwards, never answers.
+  **Superseded by ADR 0045 decision 2** — the daemon dials a dedicated
+  `lane.connect` connection, performs identity steps 1–3 itself and
+  reports the observation, and only steps 4–5 run end to end; it is an
+  active participant, not a forwarder, and there are no `attach.proxy`/
+  `mgmt.proxy` ops.
 - Acceptance: a microscope-control PC's capsule session driven from the main
   frontend; the tunnel dropping and returning re-attaches from the
   checkpoint; take-on-first-input and exactly-once input hold across it.

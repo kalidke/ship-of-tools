@@ -67,3 +67,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
+
+# ADR 0043 decision 32 (lane L2): `tests/capsule_workspaces.rs` names its
+# scratch `systemd-run --user --unit` uniquely per run (same reasoning as
+# the Windows dev-dependency just above).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+uuid = { workspace = true }

@@ -94,6 +94,15 @@ and that the destination has the retention you expect.
 registry stamps on that host's rows (case-insensitive) — the registry's
 ownership check compares them.
 
+## Survival
+
+On Linux, a capsule supervisor runs in its own transient user scope
+(`systemctl --user list-units --type=scope` lists it, not under `sotd`'s
+own unit) and survives a daemon restart. On a host with no
+reachable `systemd --user` manager it runs `--survival degraded` instead
+(a warn line in `sotd.log` names why) and shares the daemon's own kill
+domain there.
+
 ## Windows: never launch from inside a capsule shell
 
 Never launch the frontend or the daemon from a shell running inside a
