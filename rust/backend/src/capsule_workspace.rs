@@ -2070,6 +2070,7 @@ pub mod headless {
     use sot_log::client::PlatformEndpoint;
     use sot_log::fe_client::TAKE_QUEUE_CAP;
     use sot_log::fe_client_io::{FeAttachClient, InputOutcome};
+    use sot_log::state_dir::state_dir_hash;
 
     /// This daemon build's own concrete attach client — always the real
     /// platform endpoint (pipes on Windows, a Unix socket on Linux). No
@@ -2248,7 +2249,7 @@ pub mod headless {
     }
 
     fn attach(state_dir: &Path, controller_id: &str) -> Result<Client, HeadlessError> {
-        Client::attach_headless(state_dir.to_path_buf(), controller_id.to_string()).map_err(|e| {
+        Client::attach_headless(PlatformEndpoint::default(), state_dir_hash(state_dir), controller_id.to_string()).map_err(|e| {
             HeadlessError { phase: "attach", detail: e.to_string(), submitted: false }
         })
     }

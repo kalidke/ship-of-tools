@@ -17,20 +17,23 @@
 //! normal consumer" per this crate's own `Cargo.toml` — and the daemon is
 //! a normal consumer, not a test, so it needs its own, ungated path.
 //!
-//! Generic over [`Endpoint`], instantiated at [`PlatformEndpoint`] for
-//! every `pub fn` below — the daemon keeps calling
-//! `sot_log::supervisor_client::{query_status, stop, end_run, reset}`
-//! unchanged; only the TYPE `ChallengedProcess` names now resolves via
-//! `PlatformEndpoint` rather than hard-coding `challenge_win`'s. The
-//! connect/send/read/error helpers this module and `supervisor.rs` both
-//! need (`connect_and_challenge`, `send_and_read`, `read_one_frame`,
-//! `err_state`) moved HERE from `supervisor.rs` this lane, alongside
-//! `state_dir_hash` (moved to `state_dir.rs`, a neutral pure function) —
-//! the dependency now points server (`supervisor.rs`) -> client-helpers
-//! (this module), the right way round: a supervisor-lane CLIENT's own
-//! helpers should not have lived inside the SERVER module they were
-//! factored out of in the first place. Every piece below is reused, not
-//! reimplemented: `Endpoint::connect_supervisor_unchallenged`,
+//! Generic over [`Endpoint`], instantiated at a [`PlatformEndpoint`]
+//! value (`PlatformEndpoint::default()` — it is a type alias, so the
+//! unit value lives behind its own concrete name, not this one) for
+//! every `pub fn` below (ADR 0045 decision 5: an `Endpoint` is a value,
+//! its four trait functions take `&self`) — the daemon keeps calling
+//! `sot_log::supervisor_client::{query_status, stop,
+//! end_run, reset}` unchanged; only the TYPE `ChallengedProcess` names now
+//! resolves via `PlatformEndpoint` rather than hard-coding
+//! `challenge_win`'s. The connect/send/read/error helpers this module and
+//! `supervisor.rs` both need (`connect_and_challenge`, `send_and_read`,
+//! `read_one_frame`, `err_state`) moved HERE from `supervisor.rs` this
+//! lane, alongside `state_dir_hash` (moved to `state_dir.rs`, a neutral
+//! pure function) — the dependency now points server (`supervisor.rs`) ->
+//! client-helpers (this module), the right way round: a supervisor-lane
+//! CLIENT's own helpers should not have lived inside the SERVER module
+//! they were factored out of in the first place. Every piece below is
+//! reused, not reimplemented: `Endpoint::connect_supervisor_unchallenged`,
 //! `Endpoint::challenge`, `exchange::{SupervisorLaneExchange,
 //! SUPERVISOR_LANE_BUILD_ID}`, and `wire`'s supervisor-lane frames.
 
@@ -119,7 +122,7 @@ fn connect(
     deadline: Instant,
 ) -> crate::Result<(<PlatformEndpoint as Endpoint>::Client, ChallengedProcess)> {
     let h = crate::state_dir::state_dir_hash(state_dir);
-    connect_and_challenge::<PlatformEndpoint>(&h, crate::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)
+    connect_and_challenge::<PlatformEndpoint>(&PlatformEndpoint::default(), &h, crate::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)
 }
 
 /// Connect, challenge, and run one `status` request — everything a
@@ -222,6 +225,7 @@ pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<En
         &mut reader,
         |c, r| {
             if let Ok((new_conn, _process)) = connect_and_challenge::<PlatformEndpoint>(
+                &PlatformEndpoint::default(),
                 &h,
                 crate::exchange::SUPERVISOR_LANE_BUILD_ID,
                 Instant::now() + CONNECT_AND_HELLO_BUDGET,
@@ -353,13 +357,14 @@ pub fn reset(state_dir: &Path) -> crate::Result<String> {
 /// apart any further than "not a proven connection to my own
 /// supervisor".
 pub(crate) fn connect_and_challenge<E: Endpoint>(
+    endpoint: &E,
     h: &str,
     build: &str,
     deadline: Instant,
 ) -> crate::Result<(E::Client, E::Process)> {
-    let conn = E::connect_supervisor_unchallenged(h)?;
+    let conn = endpoint.connect_supervisor_unchallenged(h)?;
     let mut exchange = crate::exchange::SupervisorLaneExchange::new(build.to_string());
-    match E::challenge(&conn, &mut exchange, deadline) {
+    match endpoint.challenge(&conn, &mut exchange, deadline) {
         crate::challenge::ChallengeOutcome::Proven(process) => Ok((conn, process)),
         // ADR 0030 §8 decision 31c: the ONE `Foreign` cause that is
         // typed, not text — `exchange.is_version_skew()` is read AFTER

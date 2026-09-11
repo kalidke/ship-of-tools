@@ -45,7 +45,7 @@ use crate::challenge::{
     exchange_identity, ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome, PeerAuthenticated,
     StatusFailure,
 };
-use crate::client::PeerProcess;
+use crate::client::{PeerIdentity, PeerProcess};
 use crate::exchange::IdentityExchange;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -504,7 +504,7 @@ impl ChallengedProcess {
 /// `ChallengedProcess` implements — `pid`/`created`/`reverify`/`wait`/
 /// `terminate` already have these exact signatures, so this is pure
 /// delegation.
-impl PeerProcess for ChallengedProcess {
+impl PeerIdentity for ChallengedProcess {
     fn pid(&self) -> u32 {
         ChallengedProcess::pid(self)
     }
@@ -512,7 +512,9 @@ impl PeerProcess for ChallengedProcess {
     fn created(&self) -> u64 {
         ChallengedProcess::created(self)
     }
+}
 
+impl PeerProcess for ChallengedProcess {
     fn reverify(&self) -> io::Result<bool> {
         ChallengedProcess::reverify(self)
     }

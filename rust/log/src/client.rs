@@ -91,7 +91,7 @@ impl<C: Client> ChallengeableConnection for C {
 /// once the daemon's watchdog exists only for a `Child` it spawned
 /// itself (`wait_and_classify` reads a real `tokio::process::Child`'s
 /// own `ExitStatus`, never an adopted `ChallengedProcess`'s).
-pub trait PeerProcess: Send {
+pub trait PeerIdentity: Send {
     /// The pid this process was proven to be, at proof time.
     fn pid(&self) -> u32;
     /// The creation/start time this process was proven against, in
@@ -99,6 +99,14 @@ pub trait PeerProcess: Send {
     /// carries (compared for equality only, never interpreted as a
     /// calendar time).
     fn created(&self) -> u64;
+}
+
+/// The rest of what a step-6 supervisor (and, now, `fe_client_io`'s health
+/// path) needs beyond bare identity — split from [`PeerIdentity`] so a
+/// consumer that only reads pid/created (the bridge's `BridgedPeer`, B4a)
+/// is not forced to implement re-verification or termination it has no
+/// authority to perform.
+pub trait PeerProcess: PeerIdentity {
     /// Re-read this process's own identity and compare it against what it
     /// was proven with — the ADR's "pre-terminate re-verification".
     fn reverify(&self) -> std::io::Result<bool>;
@@ -117,22 +125,31 @@ pub trait PeerProcess: Send {
 /// exposes, and no consumer is generic over it yet.
 pub trait Endpoint {
     type Client: Client;
-    type Process: PeerProcess;
+    type Process: PeerIdentity;
 
     /// Connect to the voyage lane's own endpoint, with NO authentication
     /// — every real caller runs [`Self::authenticate_server`] or
     /// [`Self::challenge`] on top; see either concrete module's own doc
     /// for why the raw connect and the identity proof stay two separately
-    /// observed steps.
-    fn connect_voyage_unchallenged(voyage_id: &str) -> Result<Self::Client, TransportError>;
+    /// observed steps. `lane` is the row that owns the voyage, in this
+    /// endpoint's own namespace — the platform endpoints ignore it (their
+    /// voyage socket is named by id); the daemon-lane endpoint reads it.
+    fn connect_voyage_unchallenged(
+        &self,
+        lane: &str,
+        voyage_id: &str,
+    ) -> Result<Self::Client, TransportError>;
     /// Connect to the supervisor lane's own endpoint, with NO
     /// authentication — the supervisor lane's security is MUTUAL, so
     /// unlike the voyage lane this has no `_unchallenged`-free sibling:
-    /// the caller composes the full [`Self::challenge`] itself.
-    fn connect_supervisor_unchallenged(h: &str) -> Result<Self::Client, TransportError>;
+    /// the caller composes the full [`Self::challenge`] itself. `lane` is
+    /// the supervisor lane's name in this endpoint's own namespace — the
+    /// state-dir hash for the platform endpoints.
+    fn connect_supervisor_unchallenged(&self, lane: &str) -> Result<Self::Client, TransportError>;
     /// The full five-step same-connection challenge (ADR 0041 Lifecycle
     /// "The challenge").
     fn challenge(
+        &self,
         conn: &Self::Client,
         exchange: &mut dyn IdentityExchange,
         reply_deadline: Instant,
@@ -140,7 +157,7 @@ pub trait Endpoint {
     /// Steps 1-3 ONLY: identify the peer process and authenticate its
     /// identity — no wire I/O, deliberately weaker than [`Self::challenge`]
     /// (see either concrete module's own `authenticate_server` doc).
-    fn authenticate_server(conn: &Self::Client) -> PeerAuthOutcome;
+    fn authenticate_server(&self, conn: &Self::Client) -> PeerAuthOutcome;
 }
 
 /// L1-unix LU3b: the endpoint a process speaks on the platform it runs
