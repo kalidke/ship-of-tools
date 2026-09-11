@@ -91,6 +91,17 @@ pub enum IncomingEvt {
         /// `--socket <local> --tcp <addr>` remote config, which falls back to
         /// tcp, is correctly detected as remote.
         remote: bool,
+        /// ADR 0045 decision 1 (Codex review, lane B5 discharge): the
+        /// resolved peer address of THIS tcp connection (`TcpStream::
+        /// peer_addr()`, captured before the stream is split) — `Some`
+        /// exactly when `remote` is `true`. The capsule lane bridge dials
+        /// through the SAME resolved endpoint the control transport
+        /// actually chose (never a second guess at `config.tcp`'s own
+        /// hostname string, which `SocketAddr`'s own parser cannot resolve
+        /// anyway — `localhost:PORT` and friends need real resolution,
+        /// which `TcpStream::connect`'s own successful connect already
+        /// did here).
+        tcp_peer: Option<std::net::SocketAddr>,
         /// The backend's product version (`HelloRes::app_version`), e.g.
         /// `0.5.8` or `0.5.8-dev+a1b2c3d`. Painted next to the FE's own
         /// version on the bottom chrome edge so a running FE/BE skew is
@@ -1634,6 +1645,7 @@ async fn connect_and_run(
                     &window,
                     backoff_ms,
                     false, // via_tcp: this is the local pipe
+                    None,  // tcp_peer: no resolved tcp endpoint on the pipe path
                 )
                 .await;
             }
@@ -1661,7 +1673,15 @@ async fn connect_and_run(
         if let Err(e) = stream.set_nodelay(true) {
             tracing::warn!(error = %e, "set_nodelay failed on tcp stream");
         }
-        tracing::info!(%host, %tcp_addr, "connected via tcp");
+        // ADR 0045 decision 1 (Codex review): the RESOLVED peer address
+        // this connect actually used — `tcp_addr` itself may be a
+        // hostname:port a lane dial cannot re-derive with a bare
+        // `SocketAddr` parse, so this is captured here, once, from the
+        // connect that already did the real resolution, and carried
+        // through to `IncomingEvt::Connected` rather than re-resolved
+        // anywhere downstream.
+        let tcp_peer = stream.peer_addr().ok();
+        tracing::info!(%host, %tcp_addr, ?tcp_peer, "connected via tcp");
         let (rx, tx) = stream.into_split();
         let rx = codec::buffered(rx);
         return run_protocol(
@@ -1674,6 +1694,7 @@ async fn connect_and_run(
             &window,
             backoff_ms,
             true, // via_tcp: this is the remote TCP control tunnel
+            tcp_peer,
         )
         .await;
     }
@@ -1858,6 +1879,11 @@ async fn run_protocol<R, W>(
     // `--socket <local> --tcp <addr>` remote config has BOTH set and falls
     // back to tcp, so a CLI-shape guess would wrongly read as local).
     via_tcp: bool,
+    // ADR 0045 decision 1: the resolved peer address `connect_and_run`'s
+    // own tcp branch captured from the live `TcpStream` — `Some` exactly
+    // when `via_tcp` is true, carried straight through to `Connected`
+    // rather than re-derived here or downstream.
+    tcp_peer: Option<std::net::SocketAddr>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -2023,6 +2049,7 @@ where
         project_root: hello_res.project_root.clone(),
         proxy: hello_res.proxy,
         remote: via_tcp,
+        tcp_peer,
         backend_version: hello_res.app_version.clone(),
     });
     window.request_redraw();
