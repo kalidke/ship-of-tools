@@ -767,13 +767,22 @@ impl Workspaces {
 /// migration, in `~/.config/sot/sessions/`) and insert into the
 /// registry. Best-effort: a malformed toml is logged and skipped.
 /// Returns the count inserted.
-pub fn scan_disk(reg: &Workspaces) -> Result<usize> {
+///
+/// `adopt_legacy_registry` gates the Windows legacy-config-dir MOVE below
+/// (`migrate_legacy_windows_config_dir`'s doc has the why): `false` for
+/// every non-canonical caller, so a scratch/test daemon can never drain a
+/// box's shared legacy registry into itself. `true` only via
+/// `--adopt-legacy-registry`, which only `sot-local-daemon.ps1` passes.
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub fn scan_disk(reg: &Workspaces, adopt_legacy_registry: bool) -> Result<usize> {
     // Windows only: adopt the legacy config dir's backend children first,
     // so the per-host migration right below operates on the NEW root's
     // contents rather than a since-abandoned old one. A failure here is a
     // boot error (`?` — see that function's doc for why), not a warning.
     #[cfg(windows)]
-    migrate_legacy_windows_config_dir()?;
+    if adopt_legacy_registry {
+        migrate_legacy_windows_config_dir()?;
+    }
     // Per-host state dirs (see `state_host`): adopt the legacy unsuffixed
     // dirs on the first post-deploy boot, before scanning.
     migrate_legacy_state_dirs();
@@ -1400,6 +1409,13 @@ fn legacy_windows_config_candidates() -> Vec<PathBuf> {
 /// depended on which shell launched the daemon (see `app_config_dir`'s doc
 /// for the field report this fixes) — see `legacy_windows_config_candidates`
 /// for every root that could have produced.
+///
+/// Invariant: **a box's legacy registry moves exactly once, into the
+/// canonical daemon.** The "already migrated?" check below (empty
+/// `new_root`) alone can't hold it — `new_root` comes from THIS process's
+/// own overridable env, so a scratch daemon sees it empty too and would
+/// `rename` the box's real registry into itself (field-proven). Fix lives
+/// one level up: `scan_disk`'s `adopt_legacy_registry` gate (see its doc).
 ///
 /// Moves ONLY the backend's own registry children
 /// (`backend_registry_children`) from the FIRST candidate that has any,
@@ -2169,7 +2185,7 @@ started      = 1600000000
         .unwrap();
 
         let reg = Workspaces::new();
-        let count = scan_disk(&reg).unwrap();
+        let count = scan_disk(&reg, false).unwrap();
         assert_eq!(count, 1, "the shadowed legacy toml is not an insert");
         let ws = reg.resolve(Some("local")).unwrap();
         assert_eq!(ws.runtime, "capsule");
@@ -2453,7 +2469,7 @@ runtime       = "tmux"
         .unwrap();
 
         let reg = Workspaces::new();
-        scan_disk(&reg).unwrap();
+        scan_disk(&reg, false).unwrap();
         let existing = reg.resolve(Some("sot")).unwrap();
         // Prove this really exercises the on-disk "tmux" value, not a
         // tautology — `load_toml` read it back unmodified.
@@ -2647,6 +2663,25 @@ runtime       = "tmux"
             std::fs::read_to_string(legacy.join("hosts.toml")).unwrap(),
             "frontend hosts"
         );
+    }
+
+    /// Field defect: a scratch/test daemon must never drain the box's
+    /// shared legacy registry into itself. Proves the gate at `scan_disk`.
+    #[test]
+    #[cfg(windows)]
+    fn scan_disk_never_adopts_legacy_registry_without_the_canonical_flag() {
+        let _guard = env_guarded();
+        let s = MigrationScratch::new("no-adopt-without-flag");
+        let legacy = s.userprofile_legacy();
+        let workspace_toml = legacy.join("workspaces-host").join("alpha.toml");
+        std::fs::create_dir_all(workspace_toml.parent().unwrap()).unwrap();
+        std::fs::write(&workspace_toml, "slug = \"alpha\"\n").unwrap();
+        s.apply_env();
+
+        scan_disk(&Workspaces::new(), false).unwrap();
+
+        assert!(workspace_toml.is_file(), "legacy registry must be left exactly where it was");
+        assert!(!s.new_root().join("workspaces-host").exists(), "nothing may land at the new root");
     }
 
     #[test]

@@ -502,6 +502,14 @@ pub struct SuperviseConfig {
 /// every expected failure maps to [`EXIT_TERMINAL`], every success path
 /// to [`EXIT_CLEAN`].
 pub fn supervise(config: SuperviseConfig) -> i32 {
+    // Defect fix (field-proven, see `winhandle`'s module doc): harden this
+    // process's own inherited stdin/stdout before the first leg spawn, so
+    // `build_run_command`'s default-inherit stdio never carries anything
+    // past its own, intentionally-shared stderr (decision 25). Non-fatal.
+    #[cfg(windows)]
+    if let Err(e) = crate::winhandle::harden_own_stdio(false) {
+        note(format_args!("could not harden inherited stdin/stdout ({e}); continuing"));
+    }
     if !config.assume_no_rollback_target {
         note(format_args!(
             "no rollout evidence available — this build cannot open a feature-bearing segment \
