@@ -939,13 +939,14 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
 /// is never destroyed here"); on a NON-default row it actually REMOVES
 /// the registry entry once the run is confirmed ended, which would
 /// delete the very row this test needs to re-attach to. Ends the run
-/// directly over the lane instead (`sot_log::supervisor_client::end_run`
-/// + `stop` — the same primitives `capsule_workspace::end_run`, the
-/// daemon's OWN wrapper `workspace.destroy` calls, itself uses),
-/// leaving the row fully registered and untouched; `pty.open`'s
-/// start-on-attach (`ensure_started`) then discovers the durable end
-/// marker on its very next attach and mints a new voyage via `reset` —
-/// the exact mechanic this proves, regardless of which row it runs on.
+/// directly over the lane instead (`sot_log::supervisor_client::end_run`,
+/// never a follow-up `stop` — the authority is left RESIDENT in
+/// `EndedNoRespawn` on purpose, so the re-attach below exercises the
+/// real retirement arm against a genuinely resident authority, not an
+/// already-stopped one), leaving the row fully registered; `pty.open`'s
+/// start-on-attach (`ensure_started`) then retires it (ADR 0043
+/// decision 33) and mints a new voyage via `reset` — the exact mechanic
+/// this proves, regardless of which row it runs on.
 #[tokio::test]
 async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after_end() {
     let _serial = SERIAL.lock().await;
@@ -1043,42 +1044,29 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     )
     .await;
 
-    // --- #182 items A.1/C: end the run directly over the lane (never
-    // `workspace.destroy` — see this test's own doc for why), then
-    // prove attach recovers it via `reset` with a NEW voyage (not the
-    // old flat refusal, and not a resurrected ended one) ---
-    let (original_status, _process) = sot_log::supervisor_client::query_status(&state_dir_path)
+    // --- #182 items A.1/C, plus this test's own doc above: end the run,
+    // leave the authority resting, prove attach recovers via `reset`
+    // with a NEW voyage (not a flat refusal, not a resurrected old one) ---
+    let (original_status, original_process) = sot_log::supervisor_client::query_status(&state_dir_path)
         .expect("query_status before ending the run");
     let original_voyage = original_status
         .voyage
         .expect("a ready capsule has a voyage");
+    let original_pid = original_process.pid();
 
     sot_log::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end")
         .expect("end_run over the lane");
-    // Mirrors `capsule_workspace::end_run`'s own follow-up (the daemon's
-    // wrapper `workspace.destroy` calls): a confirmed end still leaves
-    // the authority itself running until an explicit `stop`.
-    let _ = tokio::task::spawn_blocking({
-        let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
-    })
-    .await;
 
-    // Item A.1: the authority must already be gone before this test
-    // re-attaches — same leak-proof idiom the create/destroy test uses.
     poll_until(
         || {
             let dir = state_dir_path.clone();
             async move {
-                if try_query_status(dir).await.is_none() {
-                    Some(())
-                } else {
-                    None
-                }
+                let report = try_query_status(dir).await?;
+                (report.phase == sot_log::wire::SupervisorPhase::EndedNoRespawn).then_some(())
             }
         },
         BOUND,
-        "the ended row's supervisor lane to go silent",
+        "the ended row's authority to settle into EndedNoRespawn",
     )
     .await;
 
@@ -1123,6 +1111,35 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
         "reset must mint a NEW voyage, not resurrect the ended one"
     );
 
+    // L3 (ADR 0043 decision 33's retirement clause): the OLD resident authority must actually
+    // be RETIRED, never merely raced past by a `reset` that landed on it
+    // directly — a distinct pid is the cross-platform half of that proof
+    // (`ChallengedProcess::pid()` exists on both platforms).
+    let (_new_status, new_process) =
+        sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status after recovery");
+    assert_ne!(
+        new_process.pid(),
+        original_pid,
+        "the recovered authority must be a FRESH process, never the old resident one reset() landed on"
+    );
+    // Linux-only half: the old pid is gone (or no longer naming
+    // `supervise`) from `/proc`, and exactly one `supervise` process
+    // matches this row's own state dir now.
+    #[cfg(target_os = "linux")]
+    {
+        let old_cmdline = std::fs::read_to_string(format!("/proc/{original_pid}/cmdline")).unwrap_or_default();
+        assert!(
+            !old_cmdline.contains("supervise"),
+            "the old resident authority (pid {original_pid}) must be gone or no longer running `supervise`: {old_cmdline:?}"
+        );
+        let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
+        assert_eq!(
+            count_matching_processes(&pattern).expect("pgrep"),
+            1,
+            "exactly one supervise process must match this row's state dir after recovery"
+        );
+    }
+
     // Rule H: the spawned supervisor's OWN leg is DETACHED (spawned by
     // the daemon, survives the daemon's own exit by design, ADR 0042
     // L1a), so killing the daemon below does NOT reap it and it would
@@ -1139,6 +1156,299 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     })
     .await;
 
+    env.kill_daemon_bounded().await;
+}
+
+/// ADR 0043 decision 33's guard covers its own retirement clause exactly
+/// like every other lifecycle mutation: two `pty.open` requests, on two
+/// separate connections, racing the SAME resting `EndedNoRespawn` row
+/// concurrently must both succeed -- the second simply waits for the
+/// first's own guard rather than racing a second stop/resume/reset --
+/// leaving exactly one `supervise` process behind (sampled continuously
+/// across the whole race, as [`capsule_stale_attach_during_backoff_spawns_no_second_authority`]
+/// already does for the backoff case) and never a `contended (70)` line
+/// in `sotd.log` -- the OLD symptom a second spawn racing the first's own
+/// fence produces.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("caes");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "caes-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let state_dir_path = env.state_root.join("sot").join("workspaces").join(&workspace_id);
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
+
+    let (status, _process) =
+        sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
+    let voyage = status.voyage.expect("a ready capsule has a voyage");
+    sot_log::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
+    poll_until(
+        || {
+            let dir = state_dir_path.clone();
+            async move {
+                let report = try_query_status(dir).await?;
+                (report.phase == sot_log::wire::SupervisorPhase::EndedNoRespawn).then_some(())
+            }
+        },
+        BOUND,
+        "the ended row's authority to settle into EndedNoRespawn",
+    )
+    .await;
+
+    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
+    let log_path = env.state_root.join("sot").join("sotd.log");
+    // As `capsule_stale_attach_during_backoff_spawns_no_second_authority`'s
+    // own sampler: a query failure FAILS the test rather than silently
+    // counting as zero processes (a false "at most one" would prove
+    // nothing), and the sampler task's own join result is checked too.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let max_seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sampler_error = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let sampler = {
+        let stop = stop.clone();
+        let max_seen = max_seen.clone();
+        let sampler_error = sampler_error.clone();
+        let pattern = pattern.clone();
+        tokio::spawn(async move {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let pattern = pattern.clone();
+                let outcome = tokio::task::spawn_blocking(move || count_matching_processes(&pattern)).await;
+                match outcome {
+                    Ok(Ok(n)) => max_seen.fetch_max(n, std::sync::atomic::Ordering::Relaxed),
+                    Ok(Err(e)) => {
+                        *sampler_error.lock().unwrap() = Some(format!("pgrep failed: {e}"));
+                        return;
+                    }
+                    Err(join_err) => {
+                        *sampler_error.lock().unwrap() = Some(format!("sampler task panicked: {join_err}"));
+                        return;
+                    }
+                };
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+    };
+
+    let (mut conn_a, next_id_a) = connect_and_hello(&env.socket_path).await;
+    let (mut conn_b, next_id_b) = connect_and_hello(&env.socket_path).await;
+    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
+    let (res_a, res_b) = tokio::join!(
+        call(&mut conn_a, next_id_a, op::PTY_OPEN, pty_req.clone()),
+        call(&mut conn_b, next_id_b, op::PTY_OPEN, pty_req.clone()),
+    );
+    // Every capsule `pty.open` (success included) carries the same
+    // informational `"error"` hint text alongside `"code": "attach_direct"`
+    // (`server.rs`) — the CODE is the success/failure signal, never
+    // `"error"`'s mere presence.
+    assert_eq!(res_a.payload["code"], "attach_direct", "first concurrent pty.open on an ended row: {:?}", res_a.payload);
+    assert_eq!(res_b.payload["code"], "attach_direct", "second concurrent pty.open on an ended row: {:?}", res_b.payload);
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Err(join_err) = sampler.await {
+        panic!("process sampler task panicked: {join_err}");
+    }
+    if let Some(e) = sampler_error.lock().unwrap().take() {
+        panic!("process sampler failed: {e}");
+    }
+    assert_eq!(
+        max_seen.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "expected exactly one supervise process throughout the concurrent ended-row attach"
+    );
+    let log_contents = std::fs::read_to_string(&log_path).unwrap_or_else(|e| panic!("could not read {log_path:?}: {e}"));
+    assert!(
+        !log_contents.contains("contended (70)"),
+        "sotd.log has a contended (70) line — two concurrent attaches raced the retirement into the fence"
+    );
+
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::stop(&dir)
+    })
+    .await;
+    env.kill_daemon_bounded().await;
+}
+
+/// ADR 0043 decision 33's retirement clause: a `stop` that never
+/// completes must leave the row EXACTLY as it was — no resume attempted,
+/// no reset sent. A real supervisor cannot be driven into "acked
+/// `Stopping`, then hangs" deterministically from outside (that window
+/// is sub-millisecond), so this induces an HONEST failure instead: a
+/// REAL supervisor, driven to a genuinely resident `EndedNoRespawn`,
+/// whose own `supervisor-journal` directory is temporarily replaced with
+/// a plain file (restored before this test ends, panic included).
+/// `handle_command`'s own idempotency check (`journal::read_active`,
+/// run before EVERY command, Stop included) then fails reading a path
+/// under that file, and answers `Operation(Failed{detail: "journal
+/// unreadable: ..."})` — which `stop()` itself reports as "expected
+/// Operation(Stopping), got ...".
+/// That EXACT text is `stop()`'s own mismatch report, never reachable
+/// from `reset()` (this arm cannot call it until `stop()` returns `Ok`),
+/// so the error crossing the wire is itself the cheap, honest witness
+/// that exactly one `Stop` — and zero `Reset` — requests ever reached
+/// the authority; a re-query over the SAME lane afterward confirms the
+/// SAME process is still resident on the SAME (never reset) voyage. Its
+/// reported PHASE is not asserted: `journal_failed`'s own safety rule
+/// treats any unreadable journal as cause to become Terminal regardless
+/// of which command tripped it — an orthogonal, expected side effect of
+/// this fault-injection method, not a claim about the retirement arm.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("cakw");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "cakw-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let state_dir_path = env.state_root.join("sot").join("workspaces").join(&workspace_id);
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
+
+    let (status, original_process) =
+        sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
+    let voyage = status.voyage.expect("a ready capsule has a voyage");
+    let original_pid = original_process.pid();
+    sot_log::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
+    poll_until(
+        || {
+            let dir = state_dir_path.clone();
+            async move {
+                let report = try_query_status(dir).await?;
+                (report.phase == sot_log::wire::SupervisorPhase::EndedNoRespawn).then_some(())
+            }
+        },
+        BOUND,
+        "the ended row's authority to settle into EndedNoRespawn",
+    )
+    .await;
+    let pointer_path = sot_log::pointer::pointer_path(&state_dir_path);
+    let pointer_before = std::fs::read(&pointer_path).expect("a resident EndedNoRespawn authority has a published pointer");
+
+    // Replace the journal directory with a plain file, restored on every
+    // exit path (including a panicking assertion) by this guard's `Drop`.
+    let journal_dir = state_dir_path.join("supervisor-journal");
+    assert!(journal_dir.is_dir(), "a resident authority must already have its own journal dir: {journal_dir:?}");
+    let journal_aside = state_dir_path.join("supervisor-journal.test-aside");
+    std::fs::rename(&journal_dir, &journal_aside).expect("rename the journal dir aside");
+    std::fs::write(&journal_dir, b"not a directory").expect("replace it with a plain file");
+    struct RestoreJournalDir {
+        journal_dir: PathBuf,
+        aside: PathBuf,
+    }
+    impl Drop for RestoreJournalDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.journal_dir);
+            let _ = std::fs::rename(&self.aside, &self.journal_dir);
+        }
+    }
+    let _restore_journal = RestoreJournalDir { journal_dir: journal_dir.clone(), aside: journal_aside };
+
+    // Never remove the lane socket before this attach -- that would make
+    // `phase_of`'s own initial probe read UNREACHABLE_PHASE and route
+    // through the RESUME path instead, never reaching this arm's retire
+    // logic at all.
+    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(
+        pty_res.payload["code"], "capsule_spawn_failed",
+        "pty.open against an ended row whose stop cannot complete must fail to start, not attach_direct: {:?}",
+        pty_res.payload
+    );
+    let error_text = pty_res.payload["error"].as_str().unwrap_or_default();
+    assert!(
+        error_text.contains("retire (stop before reset) failed") && error_text.contains("expected Operation(Stopping)"),
+        "expected stop()'s own mismatch report (proof a Stop, never a Reset, reached the authority): {error_text:?}"
+    );
+    assert!(
+        error_text.contains("journal unreadable"),
+        "expected the induced journal failure to surface in the reply: {error_text:?}"
+    );
+
+    // The row stays exactly as it was: pointer untouched, authority
+    // still the SAME resident process on the SAME voyage (queried over
+    // its own lane), and still registered.
+    assert_eq!(
+        std::fs::read(&pointer_path).expect("the pointer file must still exist"),
+        pointer_before,
+        "a failed retirement must never touch drawer.voyage — nothing was reset"
+    );
+    let (status_after, process_after) =
+        sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status after the failed attach");
+    assert_eq!(
+        process_after.pid(), original_pid,
+        "the SAME authority must still be resident after a failed stop — never replaced"
+    );
+    // Phase is NOT asserted here: an unreadable journal is a real fault,
+    // and `journal_failed`'s own safety rule (`supervisor.rs`) treats it
+    // as cause to become Terminal regardless of which command tripped
+    // it — an orthogonal, expected side effect of THIS fault-injection
+    // method, not a claim about `ensure_started`'s own retirement arm.
+    // What that arm itself guarantees, and what stays checked: the SAME
+    // process, the SAME voyage, the pointer untouched, the row retained.
+    assert_eq!(
+        status_after.voyage.as_deref(),
+        Some(voyage.as_str()),
+        "the voyage must be UNCHANGED — no reset ever reached the authority"
+    );
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    // `next_id` has no further use on this connection — no further increment.
+    assert!(
+        find_row(&list_payload, &workspace_id).is_some(),
+        "the row must still be registered after a failed retirement attempt"
+    );
+
+    drop(_restore_journal);
+
+    // Real cleanup, journal restored: the run already ended above, so
+    // only the authority itself needs stopping (its leg is swept by
+    // `Env`'s own `Drop`, F4).
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::stop(&dir)
+    })
+    .await;
     env.kill_daemon_bounded().await;
 }
 
