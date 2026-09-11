@@ -132,6 +132,63 @@ pub fn buffered<R: AsyncRead + Unpin>(r: R) -> tokio::io::BufReader<R> {
     tokio::io::BufReader::new(r)
 }
 
+/// The blocking twin of [`write_frame`], for a connection with no Tokio
+/// runtime behind it — ADR 0045 decision 3's lane-bridge dial
+/// (`sot-protocol::lane_client`) runs on a plain blocking thread, exactly
+/// like the rest of `sot-log`'s own client machinery it composes with.
+/// One `\n`-terminated JSON envelope, same [`MAX_ENVELOPE_BYTES`] cap as
+/// the async path — NO blob support: `lane.connect`'s request/response
+/// pair never carries one (see [`crate::ops::LaneConnectReq`]'s own
+/// doc), so this never looks for a `payload.blob` descriptor the way
+/// [`read_frame`] does.
+pub fn write_frame_blocking<W: std::io::Write>(w: &mut W, frame: &Frame) -> Result<()> {
+    let mut line = serde_json::to_vec(frame).context("frame serialize failed")?;
+    if line.len() > MAX_ENVELOPE_BYTES {
+        // Nothing has been written yet — see `EnvelopeTooLarge`.
+        return Err(anyhow::Error::new(EnvelopeTooLarge {
+            len: line.len(),
+            cap: MAX_ENVELOPE_BYTES,
+        }));
+    }
+    line.push(b'\n');
+    w.write_all(&line).context("write envelope")?;
+    w.flush().context("flush")?;
+    Ok(())
+}
+
+/// The blocking twin of [`read_frame`] — see [`write_frame_blocking`]'s
+/// own doc for why this exists and why it never reads a blob tail.
+pub fn read_frame_blocking<R: std::io::BufRead>(r: &mut R) -> Result<Frame> {
+    let mut line = Vec::with_capacity(256);
+    let n = r.read_until(b'\n', &mut line).context("read envelope")?;
+    if n == 0 {
+        return Err(anyhow!("eof"));
+    }
+    if line.len() > MAX_ENVELOPE_BYTES {
+        return Err(anyhow!(
+            "envelope is {} bytes; cap is {}",
+            line.len(),
+            MAX_ENVELOPE_BYTES
+        ));
+    }
+    if line.ends_with(b"\n") {
+        line.pop();
+    }
+    let frame: Frame = match serde_json::from_slice(&line) {
+        Ok(f) => f,
+        Err(e) => {
+            let preview_len = line.len().min(160);
+            let preview = String::from_utf8_lossy(&line[..preview_len]);
+            return Err(anyhow!(
+                "frame parse failed: {e} | len={} head={:?}",
+                line.len(),
+                preview
+            ));
+        }
+    };
+    Ok(frame)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{read_frame, write_frame, EnvelopeTooLarge, MAX_ENVELOPE_BYTES};

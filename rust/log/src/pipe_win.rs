@@ -2459,6 +2459,22 @@ fn connect_named_pipe_unchallenged(name: Vec<u16>) -> Result<PipeClient, Transpo
     }
 }
 
+/// ADR 0045 decision 3 (`sot-protocol`'s `DaemonLaneEndpoint`): the lane
+/// bridge dials a pipe PATH handed to it on the wire (`LaneDial::Local`
+/// carries whatever path the daemon's `lane.connect` reply implies),
+/// never a name this crate derives from a voyage id or a state-dir hash
+/// itself — so this is the raw connect by an arbitrary caller-supplied
+/// path, wide-encoded and handed to the SAME bounded-retry connect every
+/// other named-pipe client gets, never a parallel implementation. `pub`
+/// (every sibling raw connect above is `pub(crate)`): the caller here is
+/// `sot-protocol`, a different crate. NO authentication, exactly like
+/// [`connect_named_pipe_unchallenged`] itself — the lane bridge's own
+/// identity proof is decision 3's split (the daemon ran steps 1-3 on ITS
+/// dial; this client runs steps 4-5 over the pipe this returns).
+pub fn connect_pipe_path_unchallenged(path: &str) -> Result<PipeClient, TransportError> {
+    connect_named_pipe_unchallenged(wide_null(path))
+}
+
 impl PipeClient {
     /// Blocking write of the whole buffer, cancellable from another
     /// thread via [`PipeClient::cancel`]. `bytes` must be non-empty and no
