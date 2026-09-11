@@ -3116,7 +3116,6 @@ async fn capsule_launch_degrades_when_no_user_scope_is_available() {
 
     env.kill_daemon_bounded().await;
 }
-
 // --- ADR 0043 decision 33 (lane L1a): the per-row guard, resume_if_absent,
 // and the watchdog's guard-through-backoff restart --- //
 
@@ -3164,17 +3163,30 @@ fn kill_leg_only(state_root: &Path) {
 
 /// The number of live processes whose command line matches `pattern` —
 /// [`any_process_matches`]'s counting twin, needed by the stale-attach
-/// test below to prove "at most ONE," not merely "at least one."
+/// test below to prove "at most ONE," not merely "at least one." `Err`
+/// only when `pgrep` itself could not be run at all (Codex review,
+/// 2026-09-11: a query failure must fail the test, never silently count
+/// as "zero processes" — a false "at most one" proves nothing). `pgrep`
+/// exiting 1 (no match) is a normal, successful `Ok(0)`, not an error.
 #[cfg(target_os = "linux")]
-fn count_matching_processes(pattern: &str) -> usize {
-    Command::new("pgrep")
+fn count_matching_processes(pattern: &str) -> std::io::Result<usize> {
+    let output = Command::new("pgrep")
         .arg("-f")
         .arg(pattern)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.trim().is_empty()).count())
-        .unwrap_or(0)
+        .output()?;
+    Ok(String::from_utf8_lossy(&output.stdout).lines().filter(|l| !l.trim().is_empty()).count())
+}
+
+/// How many times `needle` appears in `sotd.log` so far — used to
+/// synchronize on a NEW occurrence of a specific watchdog log line
+/// (Codex review, 2026-09-11) rather than a fixed sleep, which proves
+/// nothing about whether the watchdog has actually reached the point in
+/// its own code that line marks.
+#[cfg(target_os = "linux")]
+fn count_log_occurrences(log_path: &Path, needle: &str) -> usize {
+    std::fs::read_to_string(log_path).map(|s| s.matches(needle).count()).unwrap_or(0)
 }
 
 /// Decision 33: an ADOPTED row (`resume_all`'s boot scan found the
@@ -3311,6 +3323,15 @@ async fn capsule_destroy_after_adoption_leaves_no_respawn() {
 /// leg (a SIGKILL of the authority alone never touches it, ADR 0041
 /// Lifecycle) is ADOPTED by the resume, not replaced: the leg epoch is
 /// unchanged.
+///
+/// Codex review (2026-09-11): the authority is first ADOPTED across a
+/// daemon restart (`restart_daemon_and_prove_adoption`,
+/// `AuthorityAtRestart::Alive`) BEFORE it is killed — an authority this
+/// daemon merely adopted at boot gets no watchdog at all (decision 33),
+/// so the ONLY thing that can bring the row back is whatever
+/// `pty.input` itself does. Without this, the row's ORIGINAL watchdog
+/// (installed by `workspace.create`) would race to restart it on its
+/// own, and this test could pass even with `resume_if_absent` deleted.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
@@ -3365,6 +3386,19 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     .await
     .unwrap()
     .expect("a ready capsule has a leg");
+
+    // Adopt across a daemon restart FIRST -- the authority survives, this
+    // daemon lifetime never spawned it, so no watchdog exists for it.
+    let (mut conn, mut next_id) = restart_daemon_and_prove_adoption(
+        &env,
+        conn,
+        &workspace_id,
+        &state_dir,
+        &state_dir_path,
+        leg_before,
+        AuthorityAtRestart::Alive,
+    )
+    .await;
 
     kill_supervisor_only(&env.state_root);
 
@@ -3426,6 +3460,13 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
 /// reporting its OWN ended phase — never resurrected to "ready," and its
 /// durable voyage pointer must be byte-identical (only `reset` — attach's
 /// own retirement path, unchanged by this lane — ever rewrites it).
+///
+/// Codex review (2026-09-11): the authority is first ADOPTED across a
+/// daemon restart (own inline restart, not
+/// `restart_daemon_and_prove_adoption` — that helper polls for "ready",
+/// which an `EndedNoRespawn` row never reaches) BEFORE it is killed, so
+/// no watchdog exists for it and the ONLY thing that can answer the
+/// headless op afterward is `resume_if_absent` itself.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn capsule_resume_never_resets_an_ended_row() {
@@ -3490,6 +3531,15 @@ async fn capsule_resume_never_resets_an_ended_row() {
     let pointer_path = sot_log::pointer::pointer_path(&state_dir_path);
     let pointer_before = std::fs::read(&pointer_path).expect("read the pointer before killing the authority");
 
+    // Adopt across a daemon restart FIRST -- the resting authority
+    // survives (ADR 0041 Lifecycle: `EndedNoRespawn` persists until an
+    // explicit `stop`), this daemon lifetime never spawned it, so no
+    // watchdog exists for it.
+    env.kill_daemon_bounded().await;
+    drop(conn);
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
     kill_supervisor_only(&env.state_root);
 
     use base64::engine::general_purpose::STANDARD;
@@ -3543,6 +3593,12 @@ async fn capsule_resume_never_resets_an_ended_row() {
 /// supervisor's own recovery rule, never a `reset`'s fresh one. Proven by
 /// a strictly higher leg epoch (a genuinely new leg process) alongside an
 /// unchanged voyage id.
+///
+/// Codex review (2026-09-11): the authority is first ADOPTED across a
+/// daemon restart (`restart_daemon_and_prove_adoption`,
+/// `AuthorityAtRestart::Alive`) BEFORE it (and its leg) are killed, so no
+/// watchdog exists for this row and the ONLY thing that can re-execute
+/// the leg afterward is `pty.input`'s own `resume_if_absent` call.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
@@ -3588,9 +3644,8 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     let (leg_before, voyage_before) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            let report = sot_log::supervisor_client::query_status(&dir)
-                .expect("query_status before killing supervisor and leg")
-                .0;
+            let (report, _process) = sot_log::supervisor_client::query_status(&dir)
+                .expect("query_status before killing supervisor and leg");
             (
                 report.leg.expect("a ready capsule has a leg"),
                 report.voyage.expect("a ready capsule has a voyage"),
@@ -3599,6 +3654,20 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     })
     .await
     .unwrap();
+
+    // Adopt across a daemon restart FIRST -- the authority survives,
+    // this daemon lifetime never spawned it, so no watchdog exists for
+    // it.
+    let (mut conn, mut next_id) = restart_daemon_and_prove_adoption(
+        &env,
+        conn,
+        &workspace_id,
+        &state_dir,
+        &state_dir_path,
+        leg_before,
+        AuthorityAtRestart::Alive,
+    )
+    .await;
 
     kill_supervisor_only(&env.state_root);
     kill_leg_only(&env.state_root);
@@ -3632,9 +3701,8 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     let (leg_after, voyage_after) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            let report = sot_log::supervisor_client::query_status(&dir)
-                .expect("query_status after the re-execution")
-                .0;
+            let (report, _process) = sot_log::supervisor_client::query_status(&dir)
+                .expect("query_status after the re-execution");
             (report.leg, report.voyage)
         }
     })
@@ -3713,37 +3781,63 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
     }
 
     let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
+    let log_path = env.state_root.join("sot").join("sotd.log");
+    let backoff_needle = "capsule supervisor watchdog: crashed, restarting with --resume";
 
     // Continuous background sampler — the claim under test is about
     // EVERY instant across the whole run below, not a handful of
-    // point-in-time checks.
+    // point-in-time checks. A query failure FAILS the test (Codex
+    // review, 2026-09-11) rather than silently counting as "zero
+    // processes" — a false "at most one" proves nothing.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let max_seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sampler_error = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let sampler = {
         let stop = stop.clone();
         let max_seen = max_seen.clone();
+        let sampler_error = sampler_error.clone();
         let pattern = pattern.clone();
         tokio::spawn(async move {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 let pattern = pattern.clone();
-                let n = tokio::task::spawn_blocking(move || count_matching_processes(&pattern))
-                    .await
-                    .unwrap_or(0);
-                max_seen.fetch_max(n, std::sync::atomic::Ordering::Relaxed);
+                let outcome = tokio::task::spawn_blocking(move || count_matching_processes(&pattern)).await;
+                match outcome {
+                    Ok(Ok(n)) => max_seen.fetch_max(n, std::sync::atomic::Ordering::Relaxed),
+                    Ok(Err(e)) => {
+                        *sampler_error.lock().unwrap() = Some(format!("pgrep failed: {e}"));
+                        return;
+                    }
+                    Err(join_err) => {
+                        *sampler_error.lock().unwrap() = Some(format!("sampler task panicked: {join_err}"));
+                        return;
+                    }
+                };
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
     };
 
     for _cycle in 0..3 {
+        let backoff_seen_before = count_log_occurrences(&log_path, backoff_needle);
         kill_supervisor_only(&env.state_root);
 
-        // A short settle so the watchdog has actually classified the
-        // exit and entered its own backoff sleep before this lands —
-        // the test's own assertions hold regardless of exact timing
-        // (the guard makes this safe either way), but landing mid-
-        // backoff is the scenario this test means to exercise.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Synchronize on the watchdog's OWN backoff log line (Codex
+        // review, 2026-09-11) — a NEW occurrence of the line the Crash
+        // arm logs immediately before its backoff sleep — rather than a
+        // fixed sleep, which proves nothing about whether the watchdog
+        // has actually reached that point by the time this test fires
+        // its own stale attach.
+        let backoff_deadline = Instant::now() + BOUND;
+        loop {
+            if count_log_occurrences(&log_path, backoff_needle) > backoff_seen_before {
+                break;
+            }
+            assert!(
+                Instant::now() < backoff_deadline,
+                "timed out waiting for the watchdog's own backoff log line to appear"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         let pty_req = serde_json::json!({
             "cols": 80, "rows": 24, "user_switch": true, "target": target,
         });
@@ -3761,12 +3855,14 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = sampler.await;
 
+    if let Some(e) = sampler_error.lock().unwrap().take() {
+        panic!("process sampler failed: {e}");
+    }
     assert!(
         max_seen.load(std::sync::atomic::Ordering::Relaxed) <= 1,
         "more than one supervise process matched at some sampled instant across the SIGKILL/backoff cycles"
     );
 
-    let log_path = env.state_root.join("sot").join("sotd.log");
     let log_contents = std::fs::read_to_string(&log_path)
         .unwrap_or_else(|e| panic!("could not read the daemon's own log {log_path:?}: {e}"));
     assert!(
@@ -4115,7 +4211,7 @@ async fn lane_connect_resumes_a_stopped_row() {
 
     let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
     assert_eq!(
-        count_matching_processes(&pattern),
+        count_matching_processes(&pattern).expect("pgrep"),
         1,
         "exactly one supervise process must exist -- the resume, never a second racing authority"
     );
@@ -4260,7 +4356,7 @@ async fn lane_connect_refusals() {
     assert_lane_connect_closes(&mut s).await;
 
     assert_eq!(
-        count_matching_processes(&pattern),
+        count_matching_processes(&pattern).expect("pgrep"),
         0,
         "a terminal row's own lane.connect refusal must never spawn a supervise process"
     );

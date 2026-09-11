@@ -20,8 +20,16 @@
 //! answers `runtime_not_available` without ever touching a state dir.
 
 use anyhow::Result;
-use sot_protocol::{codec, op, Frame, LaneConnectReq};
-use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
+use sot_protocol::{op, Frame, LaneConnectReq};
+// `codec`/`AsyncWriteExt` are used only by `reject_lane_absent` below,
+// which is itself gated to the capsule runtime's own availability
+// (`#[cfg(any(windows, target_os = "linux"))]`) — an unguarded import
+// here would warn unused on any other host (macOS).
+#[cfg(any(windows, target_os = "linux"))]
+use sot_protocol::codec;
+use tokio::io::{AsyncBufRead, AsyncWrite};
+#[cfg(any(windows, target_os = "linux"))]
+use tokio::io::AsyncWriteExt;
 
 use crate::workspaces::Workspaces;
 
