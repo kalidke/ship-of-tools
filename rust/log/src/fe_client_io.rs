@@ -296,15 +296,24 @@ fn connect_supervisor_lane<E: Endpoint>(h: &str) -> Result<(E::Client, E::Proces
     match E::challenge(&conn, &mut exchange, deadline) {
         ChallengeOutcome::Proven(process) => Ok((conn, process)),
         // The shared challenge machinery folds "SID mismatch" (Windows) /
-        // "not same-uid" (Linux) and "a well-formed WRONG reply" (which
-        // includes a genuine `hello_refused{version_skew}` from an
-        // otherwise legitimate, same-account peer) into the SAME
-        // `Foreign` outcome — see this module's own doc and the report's
-        // "Deviations" for why disambiguating them would need new
-        // machinery this unit prefers not to add. Either way it is an
-        // unproven server: never retried as if it might still be
-        // legitimate.
-        ChallengeOutcome::Foreign => Err(LaneError::Protocol("supervisor hello: foreign")),
+        // "not same-uid" (Linux) and "a well-formed WRONG reply" into the
+        // SAME `Foreign` outcome — see this module's own doc and the
+        // report's "Deviations" for why disambiguating THOSE would need
+        // new machinery this unit prefers not to add. `exchange` itself
+        // (ADR 0045 decision 7) already picks the ONE `Foreign` cause
+        // that specifically means "another lane protocol" out of that
+        // set — a genuine `hello_refused{version_skew}` from an
+        // otherwise legitimate, same-account peer — so a caller can tell
+        // it apart from every other unproven-server cause, which all
+        // stay "foreign". Either way it is an unproven server: never
+        // retried as if it might still be legitimate.
+        ChallengeOutcome::Foreign => {
+            if exchange.is_version_skew() {
+                Err(LaneError::Protocol("supervisor hello: version_skew"))
+            } else {
+                Err(LaneError::Protocol("supervisor hello: foreign"))
+            }
+        }
         ChallengeOutcome::Undetermined => Err(LaneError::Protocol("supervisor hello: undetermined")),
     }
 }
@@ -1495,6 +1504,17 @@ fn run_worker<E: Endpoint>(
                     }
                     ReadyOutcome::Shutdown => break 'episodes,
                     ReadyOutcome::LaneDown => None,
+                }
+            }
+            Err(LaneError::Protocol(p)) if p.contains("version_skew") => {
+                match reconnect.classify_hello_refused_version_skew() {
+                    ReconnectDecision::Terminal(_) => {
+                        emit(ClientEvent::Terminal(
+                            "supervisor speaks another lane protocol \u{2014} end the row from a client of its own build, or kill only its supervise process and attach again".to_string(),
+                        ));
+                        return;
+                    }
+                    ReconnectDecision::Retry => unreachable!("classify_hello_refused_version_skew is always terminal"),
                 }
             }
             Err(LaneError::Protocol(p)) if p.contains("foreign") => {

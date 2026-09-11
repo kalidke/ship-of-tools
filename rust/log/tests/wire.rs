@@ -9,7 +9,12 @@
 //! `host_handshake.rs`'s discipline of colocating tests with the module
 //! they exercise). What belongs here instead is scenario coverage that
 //! is inherently about the PUBLIC surface: arbitrary chunking of a
-//! multi-frame stream, and fuzzing.
+//! multi-frame stream, and fuzzing -- plus ONE exception mirroring
+//! `tests/golden.rs`'s own pattern: `supervisor_lane_v1_bytes_are_pinned`
+//! pins the WHOLE supervisor lane's v1 wire bytes against an immutable
+//! committed fixture file (ADR 0045 decision 7), the file-based
+//! conformance proof `src/wire.rs`'s own per-frame inline-byte goldens
+//! don't provide.
 
 use sot_log::wire::{
     encode_attach_client, encode_attach_server, encode_keepalive, encode_mgmt_reply,
@@ -17,8 +22,9 @@ use sot_log::wire::{
     AttachRefusedReason, AttachServer, DecodedFrame, FrameSplitter, MgmtReply, MgmtRequest,
     ResizeRefusedReason, SupervisorOp, SupervisorOperationState, SupervisorPhase,
     SupervisorRefusedReason, SupervisorReply, SupervisorRequest, Survival, TakeRefusedReason,
-    WireError, MGMT_MAGIC,
+    WireError, MGMT_MAGIC, SUPERVISOR_PROTO_V1,
 };
+use std::path::PathBuf;
 
 /// xorshift64* -- a fixed seed reproduces a failure exactly, with the
 /// seed printed alongside it. Same generator shape as
@@ -565,4 +571,97 @@ fn fuzz_random_mutations_of_valid_streams_never_panic() {
             );
         }
     }
+}
+
+// -----------------------------------------------------------------------
+// supervisor-lane-v1 fixture (ADR 0045 decision 7): mirrors
+// `tests/golden.rs:66-110`'s pattern -- an immutable committed file, one
+// instance of EVERY `SupervisorRequest`/`SupervisorReply` variant,
+// generated ONCE by the `#[ignore]`d writer test below and never
+// regenerated in place. What this proves and what it does not: two
+// processes agreeing on `SUPERVISOR_PROTO_V1` agree on these BYTES -- it
+// cannot prove semantics, and command bytes feed durable journal digests
+// (`wire.rs:1098`), so a lane bump that changes a command's encoding is
+// ALSO a `journal::SCHEMA_VERSION` event. A wire change to any variant
+// here is a NEW protocol version: add a `-v2` fixture and a
+// `SUPERVISOR_PROTO_V2` constant, never edit this file or this fixture.
+// -----------------------------------------------------------------------
+
+/// Fixed field values, stable declaration order -- one instance of every
+/// top-level `SupervisorRequest`/`SupervisorReply` variant. Shared by
+/// the writer (`write_supervisor_lane_v1_fixture`, ignored) and the pin
+/// (`supervisor_lane_v1_bytes_are_pinned`) so the two can never drift
+/// apart from each other, only from the committed file.
+fn supervisor_lane_v1_frames() -> Vec<Vec<u8>> {
+    vec![
+        encode_supervisor_request(&SupervisorRequest::Hello {
+            proto: SUPERVISOR_PROTO_V1,
+            build: "fixture-build".into(),
+        })
+        .unwrap(),
+        encode_supervisor_request(&SupervisorRequest::Command {
+            operation_id: "op-1".into(),
+            op: SupervisorOp::EndRun {
+                reason: "fixture".into(),
+                voyage: "01900000-0000-7000-8000-000000000001".into(),
+            },
+        })
+        .unwrap(),
+        encode_supervisor_request(&SupervisorRequest::Status).unwrap(),
+        encode_supervisor_request(&SupervisorRequest::Query { operation_id: "op-1".into() }).unwrap(),
+        encode_supervisor_reply(&SupervisorReply::HelloOk {
+            proto: SUPERVISOR_PROTO_V1,
+            build: "fixture-build".into(),
+            pid: 4242,
+            created: 1_756_000_000,
+        })
+        .unwrap(),
+        encode_supervisor_reply(&SupervisorReply::Refused { reason: SupervisorRefusedReason::VersionSkew }).unwrap(),
+        encode_supervisor_reply(&SupervisorReply::Operation(SupervisorOperationState::Accepted)).unwrap(),
+        encode_supervisor_reply(&SupervisorReply::StatusOk {
+            pid: 4242,
+            created: 1_756_000_000,
+            voyage: Some("01900000-0000-7000-8000-000000000001".into()),
+            leg: Some(7),
+            phase: SupervisorPhase::Ready,
+        })
+        .unwrap(),
+    ]
+}
+
+fn supervisor_lane_v1_fixture_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/supervisor-lane-v1.bin")
+}
+
+/// Run ONCE, by hand, to (re)produce the fixture
+/// `supervisor_lane_v1_bytes_are_pinned` pins against:
+/// `cargo test -p sot-log --test wire -- --ignored write_supervisor_lane_v1_fixture`.
+/// Never run as part of the suite, and never run again after the
+/// fixture is first committed -- see this section's own header doc.
+#[test]
+#[ignore]
+fn write_supervisor_lane_v1_fixture() {
+    let bytes: Vec<u8> = supervisor_lane_v1_frames().into_iter().flatten().collect();
+    std::fs::write(supervisor_lane_v1_fixture_path(), &bytes).unwrap();
+}
+
+/// Encodes one instance of EVERY `SupervisorRequest`/`SupervisorReply`
+/// variant and compares the concatenation byte-for-byte to the immutable
+/// committed fixture -- see this section's own header doc for what this
+/// proves and what it does not.
+#[test]
+fn supervisor_lane_v1_bytes_are_pinned() {
+    let generated: Vec<u8> = supervisor_lane_v1_frames().into_iter().flatten().collect();
+    let path = supervisor_lane_v1_fixture_path();
+    let committed = std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "fixture missing at {path:?} ({e}) -- run `cargo test -p sot-log --test wire -- \
+             --ignored write_supervisor_lane_v1_fixture` once"
+        )
+    });
+    assert_eq!(
+        committed, generated,
+        "supervisor lane v1 wire bytes changed -- this is a NEW PROTOCOL VERSION \
+         (ADR 0045 decision 7), not test drift: add a -v2 fixture instead of editing this one"
+    );
 }
