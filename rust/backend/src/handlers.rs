@@ -4942,22 +4942,20 @@ async fn end_default_row_run(
 /// own fence/leg proof. A resume failure is logged and never fails the
 /// call — `end_run`'s own arms decide the outcome regardless.
 ///
-/// Checks `workspaces.is_capsule_terminal` FIRST, before ever attempting
-/// a live round trip: the watchdog only sets that mark after its own
-/// bounded `child.wait()` already confirmed the authority process
-/// exited (`capsule_workspace::install_watchdog`'s `LegOutcome::Terminal`
-/// arm) — by the time a row reads "terminal" this way, the supervisor's
-/// named pipe is almost always ALREADY gone (a `Terminal` authority
-/// self-exits `TERMINAL_EXIT_GRACE` == 2s after entering that state,
-/// with no external `stop` required), so a live `end_run` here would
-/// only ever observe "lane unreachable" and report `Kept` forever — the
-/// exact "unendable row" this closes. `end_run`'s own
-/// `SupervisorPhase::Terminal` arm (see its doc) still covers the
-/// narrower complementary window where the lane is asked WHILE still
-/// briefly alive in `Lifecycle::Terminal`, before this mark is set. A
-/// `Terminal` row's watchdog has already stopped for good (`Terminal` is
-/// the cap across watchdogs) — nothing left to race, so this arm alone
-/// takes no row guard.
+/// Every mutation runs under the row's own guard, from the first probe
+/// through the outcome this returns (ADR 0043 decision 33) — a row the
+/// watchdog already marked `workspaces.is_capsule_terminal` takes the
+/// SAME guarded path as every other row: `resume_locked`'s own internal
+/// check still reports that phase without a live round trip (no wasted
+/// probe against an authority that is almost always already gone — see
+/// its own doc), but `end_run`'s fresh `query_status` then independently
+/// proves the row's fence AND leg both absent before this reports
+/// `Removable` (BLOCKER, Codex review, 2026-09-11: an earlier revision
+/// short-circuited straight to `Removable` on `is_capsule_terminal`
+/// alone, bypassing the guard and this proof entirely — `is_capsule_
+/// terminal` records that the watchdog's OWN `child.wait()` confirmed
+/// the AUTHORITY exited, never that a leg the watchdog's restart budget
+/// left running, or a failed adoption, is also gone).
 ///
 /// Returns the row's own guard alongside the outcome, still HELD
 /// (`None` only when no real lane call was ever attempted) — Codex
@@ -4976,14 +4974,6 @@ async fn destroy_capsule_workspace(
     project_root: &std::path::Path,
     workspaces: &Workspaces,
 ) -> (CapsuleDestroyOutcome, Option<tokio::sync::OwnedMutexGuard<()>>) {
-    if workspaces.is_capsule_terminal(workspace_id) {
-        return (
-            CapsuleDestroyOutcome::Removable(
-                "the run was terminal; the supervisor authority had already exited".to_string(),
-            ),
-            None,
-        );
-    }
     #[cfg(any(windows, target_os = "linux"))]
     {
         let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
@@ -5020,7 +5010,7 @@ async fn destroy_capsule_workspace(
                 );
             };
             let held = guard.blocking_lock_owned();
-            if let Err(e) = crate::capsule_workspace::resume_locked(
+            match crate::capsule_workspace::resume_locked(
                 &state_root,
                 &workspace_id,
                 &agent_kind,
@@ -5029,10 +5019,52 @@ async fn destroy_capsule_workspace(
                 &project_root,
                 workspaces_for_guard.clone(),
             ) {
-                tracing::warn!(
-                    workspace_id = %workspace_id, error = %e,
-                    "workspace.destroy: resume before end_run failed; end_run's own arms decide"
-                );
+                // BLOCKER (Codex review, 2026-09-11): a pending resume can
+                // outlive deletion. `resume_locked` returns this exact
+                // sentinel phase ONLY when it just spawned a fresh
+                // authority (its own probe first read `UNREACHABLE_PHASE`)
+                // and `start_supervisor`'s settle deadline elapsed with
+                // the lane STILL unobserved — an unresolved spawn is still
+                // in flight under THIS SAME guard. Falling through to
+                // `end_run` regardless (the old behaviour) would race it:
+                // the freshly spawned process has not yet taken the fence
+                // or re-executed the leg, so `end_run`'s own absence proof
+                // could read both as acquirable and report the row
+                // Removable an instant before that supervisor starts.
+                // There is no cheap way to cancel or reap it from here —
+                // the spawned `Child` is already owned by its own
+                // watchdog, installed inside `resume_locked`'s own call,
+                // never handed back to this caller — so a timeout stays
+                // non-removable: `Kept` with an honest code
+                // (`supervisor_starting`), never a guess.
+                Ok(phase) if phase == crate::capsule_workspace::UNREACHABLE_PHASE => {
+                    return (
+                        Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "supervisor_starting")),
+                        Some(held),
+                    );
+                }
+                Ok(_) => {}
+                // SHOULD-FIX (Codex review, 2026-09-11): a destroy that
+                // waited behind another remover's SAME guard must not
+                // continue into `end_run` once THIS recheck (run only
+                // after the guard was actually acquired) finds the row
+                // already gone — the old state dir's fence and leg really
+                // are free once nothing owns it any more, so `end_run`'s
+                // own proof would still succeed and report `Removable`,
+                // and the caller would then delete a SLUG-keyed toml that
+                // may since belong to a REPLACEMENT registration under
+                // the same slug. `held` is dropped (not carried) so this
+                // lands on the SAME "row already gone" `NotFound` arm
+                // below the top-of-function race already uses.
+                Err(e) if e == "unknown workspace" => {
+                    return (Err(std::io::Error::new(std::io::ErrorKind::NotFound, e)), None);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        workspace_id = %workspace_id, error = %e,
+                        "workspace.destroy: resume before end_run failed; end_run's own arms decide"
+                    );
+                }
             }
             let result = crate::capsule_workspace::end_run(&state_dir, &reason);
             (result, Some(held))
@@ -5057,6 +5089,13 @@ async fn destroy_capsule_workspace(
             Ok((Err(e), held)) if e.kind() == std::io::ErrorKind::NotFound => {
                 (CapsuleDestroyOutcome::Kept { detail: "state_dir_missing".to_string() }, held)
             }
+            // The pending-resume sentinel above — a timeout stays
+            // non-removable with its own honest code, never folded into
+            // the generic "supervisor lane unreachable" catch-all below.
+            Ok((Err(e), held)) if e.kind() == std::io::ErrorKind::WouldBlock => (
+                CapsuleDestroyOutcome::Kept { detail: "supervisor_starting".to_string() },
+                held,
+            ),
             Ok((Err(e), held)) => (
                 CapsuleDestroyOutcome::Kept {
                     detail: format!("supervisor lane unreachable: {e}"),
@@ -5073,7 +5112,7 @@ async fn destroy_capsule_workspace(
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
-        let _ = (workspace_id, reason, agent_kind, agent_name, slug, project_root);
+        let _ = (workspace_id, reason, agent_kind, agent_name, slug, project_root, workspaces);
         // Unreachable in practice: no workspace has `runtime == "capsule"`
         // off Windows/Linux (see `Workspace::runtime`'s own doc) — a host
         // this crate compiles for but the capsule runtime does not
@@ -5089,16 +5128,17 @@ async fn destroy_capsule_workspace(
 
 /// The typed error `workspace.destroy` returns for a `Kept` outcome —
 /// shared by the non-default path and the default row's own branch.
-/// `"state_dir_missing"` is `destroy_capsule_workspace`'s own sentinel
-/// detail (ADR 0043 decision 33) — the one `Kept` reason with a code more
-/// specific than the generic catch-all, so a caller can tell "nothing
-/// durable was ever established here" apart from every other kept reason
-/// without parsing prose.
+/// `"state_dir_missing"` and `"supervisor_starting"` are
+/// `destroy_capsule_workspace`'s own sentinel details (ADR 0043 decision
+/// 33) — the two `Kept` reasons with a code more specific than the
+/// generic catch-all, so a caller can tell "nothing durable was ever
+/// established here" and "a resume is still in flight, retry" apart from
+/// every other kept reason without parsing prose.
 fn capsule_end_not_reached_payload(detail: &str) -> serde_json::Value {
-    let code = if detail == "state_dir_missing" {
-        "state_dir_missing"
-    } else {
-        "capsule_end_not_reached"
+    let code = match detail {
+        "state_dir_missing" => "state_dir_missing",
+        "supervisor_starting" => "supervisor_starting",
+        _ => "capsule_end_not_reached",
     };
     json!({
         "error": format!("capsule workspace could not be safely deleted: {detail}"),
@@ -8461,10 +8501,23 @@ mod workspace_destroy_default_row_tests {
     // below that (unlike every other test in this module) runs the
     // reset+persist path for real -- same technique as `workspaces.rs`'s
     // own `env_guarded`, serialized under the crate-wide lock so this
-    // never races another module's env-mutating test.
+    // never races another module's env-mutating test. Every caller is now
+    // `#[cfg(any(windows, target_os = "linux"))]` (the absence proof
+    // `seed_provably_unheld_state_dir` builds only means anything there),
+    // so this whole cluster is unused dead code elsewhere -- allowed
+    // rather than gating the struct/fns themselves and losing the single
+    // definition every platform's `cargo check` still type-checks.
+    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
     struct EnvGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
         xdg_config_home: Option<std::ffi::OsString>,
+        // Added alongside `seed_provably_unheld_state_dir` below (ADR
+        // 0043 decision 33, Codex review, 2026-09-11): the tests that used
+        // to lean on `mark_capsule_terminal`'s now-deleted unguarded fast
+        // path instead point `sot_log::state_dir::sot_state_dir()` at a
+        // scratch root so `destroy_capsule_workspace`'s real guarded path
+        // finds a hermetic, provably-absent state dir there.
+        xdg_state_home: Option<std::ffi::OsString>,
         sot_state_host: Option<std::ffi::OsString>,
         sot_comm_home: Option<std::ffi::OsString>,
     }
@@ -8473,6 +8526,7 @@ mod workspace_destroy_default_row_tests {
         fn drop(&mut self) {
             for (key, val) in [
                 ("XDG_CONFIG_HOME", &self.xdg_config_home),
+                ("XDG_STATE_HOME", &self.xdg_state_home),
                 ("SOT_STATE_HOST", &self.sot_state_host),
                 ("SOT_COMM_HOME", &self.sot_comm_home),
             ] {
@@ -8484,16 +8538,50 @@ mod workspace_destroy_default_row_tests {
         }
     }
 
+    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
     fn env_guarded() -> EnvGuard {
         let serial = crate::paths::ENV_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         EnvGuard {
             xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
+            xdg_state_home: std::env::var_os("XDG_STATE_HOME"),
             sot_state_host: std::env::var_os("SOT_STATE_HOST"),
             sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
             _serial: serial,
         }
+    }
+
+    /// Builds a hermetic on-disk state dir that `destroy_capsule_
+    /// workspace`'s real guarded path (ADR 0043 decision 33) will
+    /// independently prove BOTH halves of the destroy proof absent for —
+    /// nothing ever holds `supervisor.lock`, and a published pointer
+    /// names a voyage whose own `writer.lock` exists and is free — so
+    /// `end_run`'s `Unheld` arm reports `Removable` with no live process
+    /// anywhere. Caller must first point `XDG_STATE_HOME` (under
+    /// `env_guarded`) at `state_root`. Replaces this module's old
+    /// reliance on `mark_capsule_terminal`'s deleted unguarded fast path
+    /// (Codex review, 2026-09-11: that path returned `Removable` on the
+    /// daemon's own say-so alone, with no proof at all) — same technique
+    /// `capsule_workspace`'s own absence-proof unit tests use. Really
+    /// `#[cfg]`-gated, not merely `allow(dead_code)`: the body reaches
+    /// `sot_log::supervisor`, a module gated `#![cfg(any(windows,
+    /// target_os = "linux"))]` at its own root (`log/src/supervisor.rs`)
+    /// — nonexistent on every other host, not merely unused.
+    #[cfg(any(windows, target_os = "linux"))]
+    fn seed_provably_unheld_state_dir(xdg_state_home: &std::path::Path, workspace_id: &str) {
+        // `sot_log::state_dir::sot_state_dir()` resolves to
+        // `$XDG_STATE_HOME/sot`, never `$XDG_STATE_HOME` itself -- joined
+        // here so every caller can just pass whatever it pointed
+        // `XDG_STATE_HOME` at, matching the real resolver exactly.
+        let state_root = xdg_state_home.join("sot");
+        let state_dir = crate::capsule_workspace::state_dir_for(&state_root, workspace_id);
+        std::fs::create_dir_all(&state_dir).expect("create the fake state dir");
+        let voyage_id = "a1b2c3d4-e5f6-4890-9abc-def012345678";
+        sot_log::pointer::publish(&state_dir, voyage_id).expect("publish the pointer");
+        let voyage_root = sot_log::supervisor::voyage_root_path(&state_dir, voyage_id);
+        std::fs::create_dir_all(&voyage_root).expect("voyage root");
+        std::fs::write(voyage_root.join("writer.lock"), b"").expect("writer.lock file");
     }
 
     fn seed_default(runtime: &str) -> (Workspaces, String) {
@@ -8604,25 +8692,51 @@ mod workspace_destroy_default_row_tests {
         assert!(reg.resolve(Some(&id)).is_some(), "the default row is never removed either way");
     }
 
-    // `destroy_capsule_workspace` checks `is_capsule_terminal` BEFORE any
-    // live lane round trip -- portable, so this runs (and must pass) on
-    // every platform, even though the real Windows lane path it bypasses
-    // here is Windows-only. This is the gap fix itself: a capsule row
-    // whose agent argv can never launch self-exits its authority process
-    // well before a human (or this daemon) ever gets around to asking it
-    // to end -- by the time `mark_capsule_terminal` is set, a live probe
-    // would only ever see "lane unreachable" and `end_run`'s wrapper used
-    // to report that as `Kept` forever (the unendable row this whole PR
-    // closes). Called directly (not through `handle_workspace_destroy`)
-    // to stay hermetic -- the full wire path also removes on-disk tomls
-    // under the real config dir, which is not safe to exercise from an
-    // in-process unit test.
+    // ADR 0043 decision 33 (BLOCKER, Codex review, 2026-09-11): a row the
+    // watchdog already marked `capsule_terminal` no longer takes an
+    // unguarded shortcut straight to `Removable` -- that deleted fast
+    // path returned "removable" on the daemon's own say-so alone,
+    // bypassing the guard AND the fence/leg absence proof, so a leg the
+    // watchdog's own exhausted restart budget (or a failed adoption) left
+    // running behind a `Terminal` authority could have been orphaned. A
+    // terminal row now goes through the SAME guarded resume/end_run path
+    // as every other row: `resume_locked`'s own internal `is_capsule_
+    // terminal` check still reports that phase without a live round trip
+    // (no wasted probe against an authority that is almost always
+    // already gone), but `end_run`'s fresh `query_status` -- naturally
+    // unreachable here, nothing is listening -- then reaches the SAME
+    // independent absence proof every other row does, hermetically
+    // reproduced via `seed_provably_unheld_state_dir`. Called directly
+    // (not through `handle_workspace_destroy`) to stay hermetic -- the
+    // full wire path also removes on-disk tomls under the real config
+    // dir, which is not safe to exercise from an in-process unit test.
+    //
+    // Gated (unlike the deleted portable shortcut this replaces): the
+    // absence proof this now exercises lives entirely inside
+    // `destroy_capsule_workspace`'s `#[cfg(any(windows, target_os =
+    // "linux"))]` arm -- every other host takes the unconditional `Kept`
+    // fallback regardless of any on-disk fixture.
     #[tokio::test]
-    async fn a_capsule_workspace_already_marked_terminal_is_removable_without_a_live_probe() {
+    #[cfg(any(windows, target_os = "linux"))]
+    async fn a_capsule_workspace_marked_terminal_still_needs_the_absence_proof() {
+        let _guard = env_guarded();
+        let state_root = std::env::temp_dir().join(format!(
+            "sot-ws-destroy-terminal-proof-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("XDG_STATE_HOME", &state_root);
+
         let (reg, id) = seed_default("capsule");
         reg.mark_capsule_terminal(&id);
-        // `is_capsule_terminal` short-circuits BEFORE any of these are
-        // touched -- placeholders, not real workspace fields.
+        seed_provably_unheld_state_dir(&state_root, &id);
+
+        // `/p/local`/`"local"` are placeholders (`resume_locked`'s own
+        // `is_capsule_terminal` check returns before any agent argv is
+        // resolved) -- only `state_root`'s on-disk fixture is real.
         let (outcome, held) = destroy_capsule_workspace(
             &id,
             "test reason",
@@ -8633,15 +8747,20 @@ mod workspace_destroy_default_row_tests {
             &reg,
         )
         .await;
-        assert!(held.is_none(), "the terminal fast path takes no row guard");
+        // The guard IS taken now (Codex review: the deleted fast path's
+        // `None` bypassed it) -- dropped once this proof has run.
+        assert!(held.is_some(), "a terminal row must take the same row guard every other row does");
         match outcome {
-            CapsuleDestroyOutcome::Removable(detail) => {
-                assert!(detail.contains("terminal"), "detail should explain why: {detail}");
-            }
+            CapsuleDestroyOutcome::Removable(_) => {}
             CapsuleDestroyOutcome::Kept { detail } => {
-                panic!("an already-terminal capsule row must be Removable, never Kept: {detail}");
+                panic!(
+                    "a terminal row with both halves of the absence proof independently absent \
+                     must be Removable: {detail}"
+                );
             }
         }
+
+        let _ = std::fs::remove_dir_all(&state_root);
     }
 
     // The full field defect this lane fixes: a default row carrying an
@@ -8650,12 +8769,19 @@ mod workspace_destroy_default_row_tests {
     // shape, that reset persisted to its toml, and the existing
     // `run_ended` broadcast still fired -- all through the real
     // `handle_workspace_destroy` wire path. Hermetic despite going
-    // through the full handler: `mark_capsule_terminal` (same technique
-    // as the test above) makes the outcome deterministic with no live
-    // supervisor at all, and `XDG_CONFIG_HOME`/`SOT_STATE_HOST` are
-    // pinned to a scratch dir so the toml write lands there, never under
-    // a real `~/.config/sot`.
+    // through the full handler: `seed_provably_unheld_state_dir` (ADR
+    // 0043 decision 33's own absence proof, reproduced on disk -- the
+    // technique the test above also uses) makes the outcome
+    // deterministic with no live supervisor at all, and
+    // `XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`SOT_STATE_HOST` are pinned to a
+    // scratch dir so neither the toml write nor the state dir ever
+    // touches a real `~/.config/sot` or `~/.local/state/sot`.
+    //
+    // Gated: the absence proof `seed_provably_unheld_state_dir` targets
+    // only exists inside `destroy_capsule_workspace`'s `#[cfg(any(windows,
+    // target_os = "linux"))]` arm.
     #[tokio::test]
+    #[cfg(any(windows, target_os = "linux"))]
     async fn default_row_confirmed_ended_resets_agent_persists_toml_and_broadcasts() {
         let _guard = env_guarded();
         let dir = std::env::temp_dir().join(format!(
@@ -8669,13 +8795,15 @@ mod workspace_destroy_default_row_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         std::env::set_var("SOT_STATE_HOST", "reset-test-host");
+        let state_root = dir.join("state");
+        std::env::set_var("XDG_STATE_HOME", &state_root);
 
         let (reg, id, slug) = seed_default_with_agent("claude", "kal-local");
         assert!(
             !reg.is_inert_default_anchor(&reg.resolve(Some(&id)).unwrap()),
             "a default row carrying an agent is a real session, not the anchor, before the fix runs"
         );
-        reg.mark_capsule_terminal(&id);
+        seed_provably_unheld_state_dir(&state_root, &id);
 
         let session = Session::new();
         let (tx, mut rx) = broadcast::channel(16);
@@ -8738,7 +8866,13 @@ mod workspace_destroy_default_row_tests {
     // string on the shared registry, one on this test's host and one on
     // another, to prove the prune is host-scoped exactly like the
     // destroy-path prune it mirrors.
+    //
+    // Gated: same reason as the reset test above -- the confirmed-end
+    // outcome `seed_provably_unheld_state_dir` produces only reaches
+    // `Removable` through `destroy_capsule_workspace`'s `#[cfg(any(windows,
+    // target_os = "linux"))]` arm.
     #[tokio::test]
+    #[cfg(any(windows, target_os = "linux"))]
     async fn default_row_end_prunes_the_rows_registry_row() {
         let _guard = env_guarded();
         let stamp = format!(
@@ -8758,6 +8892,8 @@ mod workspace_destroy_default_row_tests {
         std::env::set_var("XDG_CONFIG_HOME", &config_dir);
         std::env::set_var("SOT_COMM_HOME", &comm_dir);
         std::env::set_var("SOT_STATE_HOST", "leave-test-host");
+        let state_root = std::env::temp_dir().join(format!("sot-ws-destroy-default-leave-state-{stamp}"));
+        std::env::set_var("XDG_STATE_HOME", &state_root);
 
         let handle = "default-row-leave-handle";
         std::fs::write(
@@ -8773,7 +8909,7 @@ mod workspace_destroy_default_row_tests {
         .unwrap();
 
         let (reg, id, _slug) = seed_default_with_agent("claude", handle);
-        reg.mark_capsule_terminal(&id);
+        seed_provably_unheld_state_dir(&state_root, &id);
         let payload = destroy(&reg, &id).await;
         assert!(
             payload.get("error").is_none(),
@@ -8796,6 +8932,7 @@ mod workspace_destroy_default_row_tests {
 
         let _ = std::fs::remove_dir_all(&config_dir);
         let _ = std::fs::remove_dir_all(&comm_dir);
+        let _ = std::fs::remove_dir_all(&state_root);
     }
 
     // A lane still `Starting` is never "not running" -- retryable

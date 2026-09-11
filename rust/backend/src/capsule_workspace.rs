@@ -2,10 +2,11 @@
 // daemon's capsule workspace runtime, on Windows AND Linux. One
 // `sot-capsule supervise <state-dir>` authority per capsule workspace,
 // spawned DETACHED so it survives the daemon's own exit — the daemon is
-// never its kill domain. Which platform is chosen is exactly THREE
-// forks inside `mod runtime` (the capsule executable's name, the detach
-// mechanism, and the adopted leg's exit-status read) — everything else
-// in that module is byte-identical on both platforms. `runtime: "tmux"`
+// never its kill domain. Which platform is chosen is exactly TWO forks
+// inside `mod runtime` (the capsule executable's name and the detach
+// mechanism — that module's own doc says why this used to be three)
+// — everything else in that module is byte-identical on both platforms.
+// `runtime: "tmux"`
 // rows stay exactly what they are today; this module never touches
 // them, and the Linux default row is STILL "tmux" (ADR 0043 decision
 // 22: attach for a capsule row is same-machine-only until the bridge) —
@@ -570,16 +571,23 @@ pub enum EndRunOutcome {
     /// ever reached it — its own internal flap/retry budget exhausted
     /// (`FLAP_THRESHOLD`, `rust/log/src/supervisor.rs`), most often an
     /// agent argv that can never launch (e.g. `claude` missing from
-    /// PATH). There is no leg left to end, and a `Terminal` authority
-    /// admits no fresh `EndRun` anyway (`supervisor.rs`'s
-    /// `handle_command` gates `EndRun` on `Lifecycle::Ready`) — so this
-    /// sends `stop` instead (admitted unconditionally, regardless of
-    /// lifecycle: `SupervisorOp::Stop`'s own admission has no lifecycle
-    /// gate) and waits for its confirmed exit. Without this arm the row
-    /// was UNENDABLE: `workspace.destroy` kept reporting `NotEnded`
-    /// forever, because nothing ever told the stuck authority to stop.
-    /// Safe to treat as `Removable` — a `Terminal` authority has no live
-    /// leg left to orphan.
+    /// PATH). A `Terminal` authority admits no fresh `EndRun` anyway
+    /// (`supervisor.rs`'s `handle_command` gates `EndRun` on
+    /// `Lifecycle::Ready`) — so this sends `stop` instead (admitted
+    /// unconditionally, regardless of lifecycle: `SupervisorOp::Stop`'s
+    /// own admission has no lifecycle gate) and waits for its confirmed
+    /// exit. Without this arm the row was UNENDABLE: `workspace.destroy`
+    /// kept reporting `NotEnded` forever, because nothing ever told the
+    /// stuck authority to stop.
+    ///
+    /// `Terminal` alone does NOT prove the leg died (Codex review,
+    /// 2026-09-11: watchdog restart-budget exhaustion, a failed
+    /// adoption, or a kill/wait failure on the leg itself can all reach
+    /// `Terminal` with a leg still running) — this variant is reported
+    /// ONLY once the SAME [`runtime::absence_proof`] `Unheld` uses has
+    /// independently confirmed no leg holds the voyage either; a leg
+    /// still present is reported (`end_run` keeps the row), never
+    /// silently orphaned.
     Terminal,
     /// The lane answered `phase: Starting` (voyage may still be `None`
     /// — only set once Recovering completes) — NEVER "not running"; a
@@ -1103,30 +1111,15 @@ mod runtime {
                 // Unreachable is not the same claim as "not running" —
                 // the caller must keep refusing a live-but-unresponsive
                 // lane, never fabricate "ended" for one (see
-                // `destroy_capsule_workspace`'s own doc). But liveness
-                // IS knowable independent of this IPC round trip:
-                // `supervisor.lock` is a kernel-held OS file lock,
-                // released the instant its holder dies (`fence.rs`), so
-                // a bounded (~250ms), non-blocking attempt to take it
-                // settles the AUTHORITY half for certain. Acquirable ->
-                // no supervisor holds this row; release immediately
-                // (this call only OBSERVES liveness, it must never
-                // itself become the holder) — but that alone is not
-                // "not running": a leg can still hold the voyage's own
-                // `writer.lock` (`voyage.rs`) with no authority left to
-                // end it. Only [`leg_absent`] independently proving the
-                // LEG half absent too reports the row unheld; a leg
-                // still present with no authority is reported, not
-                // silently orphaned. Fence still held (or any other lock
-                // error) -> unchanged: the original "lane unreachable"
-                // refusal.
-                return match sot_log::fence::lock_supervisor(state_dir) {
-                    Ok(_lock) => match leg_absent(state_dir) {
-                        Ok(true) => Ok(R::Unheld),
-                        Ok(false) => Err(std::io::Error::other("a leg is running with no authority")),
-                        Err(_) => Err(std::io::Error::other(e.to_string())),
-                    },
-                    Err(_) => Err(std::io::Error::other(e.to_string())),
+                // `destroy_capsule_workspace`'s own doc). [`absence_proof`]
+                // settles it independently of this IPC round trip; a
+                // fence-stage failure keeps the ORIGINAL "lane
+                // unreachable" text (`e`), unchanged.
+                return match absence_proof(state_dir) {
+                    Ok(true) => Ok(R::Unheld),
+                    Ok(false) => Err(std::io::Error::other("a leg is running with no authority")),
+                    Err(NotProven::LegCheckFailed(detail)) => Err(std::io::Error::other(detail)),
+                    Err(NotProven::FenceUnavailable) => Err(std::io::Error::other(e.to_string())),
                 };
             }
         };
@@ -1146,13 +1139,27 @@ mod runtime {
                 return Ok(R::AlreadyEnded);
             }
             SupervisorPhase::Terminal => {
-                // No leg is running and no fresh `EndRun` would ever be
-                // admitted here (`Lifecycle::Terminal` isn't `Ready`) —
-                // the honest confirmed end is stopping the stuck
-                // authority itself. See `EndRunOutcome::Terminal`'s own
-                // doc for why this arm exists.
+                // No fresh `EndRun` would ever be admitted here
+                // (`Lifecycle::Terminal` isn't `Ready`), so the authority
+                // is stopped first — but `Terminal` alone does NOT prove
+                // the leg died (Codex review, 2026-09-11: it is also
+                // reached by the watchdog's own exhausted restart budget,
+                // by a failed adoption, or by a kill/wait failure on the
+                // leg itself, none of which confirm the leg is gone).
+                // This is therefore NOT a confirmed end on its own — the
+                // SAME independent [`absence_proof`] the unreachable arm
+                // above uses decides whether the row is actually Removable.
                 stop_and_warn(state_dir, "the authority was terminal before this call reached it");
-                return Ok(R::Terminal);
+                return match absence_proof(state_dir) {
+                    Ok(true) => Ok(R::Terminal),
+                    Ok(false) => {
+                        Err(std::io::Error::other("a leg is running with no authority (terminal)"))
+                    }
+                    Err(NotProven::LegCheckFailed(detail)) => Err(std::io::Error::other(detail)),
+                    Err(NotProven::FenceUnavailable) => Err(std::io::Error::other(
+                        "the authority did not release its fence after being stopped",
+                    )),
+                };
             }
             SupervisorPhase::Ready | SupervisorPhase::Ending => {}
         }
@@ -1183,20 +1190,76 @@ mod runtime {
         })
     }
 
-    /// The LEG half of decision 33's destroy proof — [`end_run`]'s own
-    /// `Err` arm calls this only once the AUTHORITY half (the supervisor
-    /// fence) is already proven free, never on its own. Reads the
-    /// published pointer to find which voyage the row last bound, then
-    /// takes the SAME bounded, non-blocking primitive `open_for_writing`
-    /// itself uses on that voyage's `writer.lock` (`voyage.rs`) — held
-    /// by a live leg, never by the authority — and releases it at once
-    /// (this call only OBSERVES, it must never become the holder).
-    /// `Ok(true)`: the lock was acquirable — no leg holds this voyage.
-    /// `Ok(false)`: the lock is held — a leg lives with no authority
-    /// left to end it. `Err`: the pointer itself is not a valid voyage
-    /// id, or the lock attempt failed for a reason OTHER than
-    /// contention — either way, absence is NOT proven, so the caller
-    /// (`end_run`) must keep the row rather than guess.
+    /// Why [`absence_proof`] could not prove either outcome — distinct
+    /// variants only so each of [`end_run`]'s TWO call sites (the
+    /// unreachable-lane arm and the `Terminal` arm) can keep its own
+    /// honest wording: a fence-stage failure means something else may
+    /// still hold the AUTHORITY (each caller already knows its own
+    /// reason to say there), while a leg-check failure carries
+    /// [`leg_absent`]'s own message forward instead of being discarded
+    /// for a caller-supplied one (Codex review, 2026-09-11 — the old code
+    /// replaced `leg_absent`'s own error with the outer `query_status`
+    /// error, losing the actual reason absence wasn't proven).
+    enum NotProven {
+        FenceUnavailable,
+        LegCheckFailed(String),
+    }
+
+    /// ADR 0043 decision 33's own absence proof, shared by every
+    /// [`end_run`] arm that reaches a state with no live leg to end and
+    /// so gets no live `end_run` round trip over the lane: the
+    /// unreachable-lane arm (no supervisor answers at all) and the
+    /// `Terminal` arm (a lane that DID answer, but whose authority admits
+    /// no fresh `EndRun` and was just told to stop — Codex review,
+    /// 2026-09-11: `Terminal` is also reached by watchdog restart-budget
+    /// exhaustion and by a failed kill/wait on the leg itself, neither of
+    /// which proves the leg died, so `Terminal` alone is not a confirmed
+    /// end). A bounded, non-blocking attempt to take `supervisor.lock`
+    /// settles the AUTHORITY half — acquirable means no supervisor holds
+    /// this row; released immediately (this call only OBSERVES, it must
+    /// never itself become the holder) — and [`leg_absent`] independently
+    /// settles the LEG half. `Ok(true)`: neither is held — nothing is
+    /// running here. `Ok(false)`: the leg is running with no authority
+    /// left to end it — reported, never silently orphaned. `Err`:
+    /// absence is NOT proven either way, so the caller must keep the row
+    /// rather than guess.
+    fn absence_proof(state_dir: &Path) -> Result<bool, NotProven> {
+        let _fence =
+            sot_log::fence::lock_supervisor(state_dir).map_err(|_| NotProven::FenceUnavailable)?;
+        leg_absent(state_dir).map_err(NotProven::LegCheckFailed)
+        // `_fence` drops here, right after `leg_absent`'s own single
+        // observation -- observe only, never become the holder.
+    }
+
+    /// Whether a `lock_writer` failure is genuine contention (its OWN
+    /// bounded-retry exhaustion, `fsutil.rs`) rather than some OTHER
+    /// refusal that happens to share `Error::State`'s shape — Windows:
+    /// `open_lock_file`'s reparse-point refusal is the one other producer
+    /// of `Error::State` on this exact call (Codex review, 2026-09-11:
+    /// conflating the two used to report a live leg for what was actually
+    /// a security refusal). Matched on `lock_writer`'s own fixed message
+    /// prefix rather than a new `sot_log::Error` variant — that ONE
+    /// crate-wide `State` variant already serves dozens of unrelated call
+    /// sites (see its own doc), so a new variant there is a much wider
+    /// change than this one call site needs.
+    pub fn is_lock_contention(detail: &str) -> bool {
+        detail.starts_with("lock held by another process:")
+    }
+
+    /// The LEG half of decision 33's destroy proof — [`absence_proof`]
+    /// calls this only once the AUTHORITY half (the supervisor fence) is
+    /// already proven free, never on its own. Reads the published
+    /// pointer to find which voyage the row last bound, then takes the
+    /// SAME bounded, non-blocking primitive `open_for_writing` itself
+    /// uses on that voyage's `writer.lock` (`voyage.rs`) — held by a live
+    /// leg, never by the authority — and releases it at once (this call
+    /// only OBSERVES, it must never become the holder). `Ok(true)`: the
+    /// lock was acquirable — no leg holds this voyage. `Ok(false)`: the
+    /// lock is held — a leg lives with no authority left to end it.
+    /// `Err`: the pointer itself is not a valid voyage id, or the lock
+    /// attempt failed for a reason OTHER than contention — either way,
+    /// absence is NOT proven, so the caller must keep the row rather than
+    /// guess.
     pub fn leg_absent(state_dir: &Path) -> Result<bool, String> {
         let voyage = match sot_log::pointer::validate(state_dir) {
             sot_log::pointer::PointerState::Valid(id) => id,
@@ -1208,10 +1271,7 @@ mod runtime {
                 drop(lock); // observe only -- never become the holder
                 Ok(true)
             }
-            // The SAME contention signal `lock_writer` reports for
-            // every genuinely held lock (its own bounded-retry
-            // exhaustion) -- see that function's own doc.
-            Err(sot_log::Error::State(_)) => Ok(false),
+            Err(sot_log::Error::State(detail)) if is_lock_contention(&detail) => Ok(false),
             Err(e) => Err(e.to_string()),
         }
     }
@@ -2369,33 +2429,33 @@ mod tests {
         drop(holder);
     }
 
-    // The LEG half of decision 33's destroy proof, in isolation --
-    // `end_run_is_unheld_only_when_both_the_fence_and_the_leg_are_proven_absent`
-    // exercises it through `end_run`; this is `leg_absent` on its own.
+    // The direct writer.lock cases (`leg_absent`'s own Ok(true)/Ok(false)
+    // on a real held/free lock) are already exercised through `end_run`
+    // by `end_run_is_unheld_only_when_both_the_fence_and_the_leg_are_proven_absent`
+    // above (including the no-pointer-published Err case) -- this test
+    // instead targets what `leg_absent` cannot organically produce on
+    // Linux at all: the OTHER, non-contention refusal `lock_writer` can
+    // report (Windows' reparse-point check, `fsutil.rs`) sharing the SAME
+    // `Error::State` shape as genuine contention. `is_lock_contention` is
+    // the pure predicate that tells them apart (Codex review,
+    // 2026-09-11); this is its regression test -- pure string matching,
+    // independent of any real lock file, but `is_lock_contention` itself
+    // lives inside `mod runtime`, gated like every other function this
+    // module's tests reach.
     #[test]
     #[cfg(any(windows, target_os = "linux"))]
-    fn leg_absent_is_false_while_the_writer_lock_is_held() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state_dir = dir.path();
-
-        // No pointer published at all -- nothing to read a voyage id
-        // from, so absence is not provable either way.
-        match leg_absent(state_dir) {
-            Err(_) => {}
-            Ok(v) => panic!("expected Err with no voyage pointer to read, got Ok({v})"),
-        }
-
-        let voyage_id = "a1b2c3d4-e5f6-4890-9abc-def012345678";
-        sot_log::pointer::publish(state_dir, voyage_id).expect("publish the pointer");
-        let voyage_root = sot_log::supervisor::voyage_root_path(state_dir, voyage_id);
-        std::fs::create_dir_all(&voyage_root).expect("voyage root");
-        std::fs::write(voyage_root.join("writer.lock"), b"").expect("writer.lock file");
-
-        let leg = sot_log::lock_writer(&voyage_root.join("writer.lock")).expect("take the writer lock");
-        assert_eq!(leg_absent(state_dir), Ok(false), "a held writer.lock means a leg lives");
-        drop(leg);
-
-        assert_eq!(leg_absent(state_dir), Ok(true), "a free writer.lock means no leg holds this voyage");
+    fn lock_contention_is_recognized_only_by_its_own_message() {
+        assert!(
+            is_lock_contention("lock held by another process: \"/tmp/x/writer.lock\""),
+            "lock_writer's own bounded-retry-exhaustion text must be recognized as contention"
+        );
+        assert!(
+            !is_lock_contention(
+                "writer.lock at \"/tmp/x/writer.lock\" is a reparse point — refusing a redirected fence"
+            ),
+            "a reparse-point refusal is not contention -- absence must stay unproven, not read as \"a leg lives\""
+        );
+        assert!(!is_lock_contention("some unrelated State error"));
     }
 
     #[test]

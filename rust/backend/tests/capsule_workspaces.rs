@@ -3318,12 +3318,25 @@ async fn capsule_destroy_after_adoption_leaves_no_respawn() {
 }
 
 /// ADR 0043 decision 33's destroy proof, exercised end to end: a row
-/// whose SUPERVISOR alone died (the leg survives headless, no adoption —
-/// this daemon spawned it) is still destroyable.
-/// `destroy_capsule_workspace`'s own pre-step (`capsule_workspace::
-/// resume_locked`, under the SAME row guard `end_run` then runs under)
-/// re-establishes the authority first, so `end_run` finds a real lane to
-/// ask — the fence/leg proof (`leg_absent`) never needs to fire at all.
+/// whose SUPERVISOR alone died (the leg survives headless) is still
+/// destroyable. `destroy_capsule_workspace`'s own pre-step
+/// (`capsule_workspace::resume_locked`, under the SAME row guard
+/// `end_run` then runs under) re-establishes the authority first, so
+/// `end_run` finds a real lane to ask — the fence/leg proof
+/// (`leg_absent`) never needs to fire at all.
+///
+/// Codex review (2026-09-11): the authority is first ADOPTED across a
+/// daemon restart (`restart_daemon_and_prove_adoption`,
+/// `AuthorityAtRestart::Alive`) BEFORE it is killed — an authority this
+/// daemon merely adopted at boot gets no watchdog at all (decision 33),
+/// so the ONLY thing that can bring the row back for `end_run` to reach
+/// is `destroy_capsule_workspace`'s own resume call below. Without this,
+/// the row's ORIGINAL watchdog (installed by `workspace.create`) could
+/// race to restart it on its own, and this test could pass even with
+/// that resume call deleted. The restart itself proves the surviving
+/// leg's identity is unchanged (`restart_daemon_and_prove_adoption`'s own
+/// leg-epoch assertion) before the supervisor is ever killed.
+///
 /// Both the re-established `supervise` process and the `run` leg it ends
 /// must be gone within a bound, and the row itself removed from
 /// `workspace.list` — the ordinary confirmed-end removal, reached from a
@@ -3355,7 +3368,7 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
 
     let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
-    let _state_dir = loop {
+    let state_dir = loop {
         let id = next_id;
         next_id += 1;
         let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -3368,6 +3381,35 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
         assert!(Instant::now() < list_deadline, "timed out waiting for the new capsule workspace to reach \"ready\"");
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
+    let state_dir_path = PathBuf::from(&state_dir);
+
+    let leg_before = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || {
+            sot_log::supervisor_client::query_status(&dir)
+                .expect("query_status before the daemon restart")
+                .0
+                .leg
+        }
+    })
+    .await
+    .unwrap()
+    .expect("a ready capsule has a leg");
+
+    // Adopt across a daemon restart FIRST -- the authority survives, this
+    // daemon lifetime never spawned it, so no watchdog exists for it; the
+    // ONLY thing left that can bring the row back is
+    // `destroy_capsule_workspace`'s own resume call below.
+    let (mut conn, mut next_id) = restart_daemon_and_prove_adoption(
+        &env,
+        conn,
+        &workspace_id,
+        &state_dir,
+        &state_dir_path,
+        leg_before,
+        AuthorityAtRestart::Alive,
+    )
+    .await;
 
     kill_supervisor_only(&env.state_root);
 
@@ -3428,6 +3470,21 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
 /// `capsule_resume_reexecutes_a_leg_that_ended_without_a_marker`) and the
 /// subsequent `end_run` ends THAT leg — the stated policy, not a gap
 /// this proof leaves open. Nothing survives, and the row is removed.
+///
+/// Codex review (2026-09-11): the authority is first ADOPTED across a
+/// daemon restart (`restart_daemon_and_prove_adoption`,
+/// `AuthorityAtRestart::Alive`) BEFORE it (and its leg) are killed, so no
+/// watchdog exists for this row and the ONLY thing that can re-execute
+/// the leg and then end it is `destroy_capsule_workspace`'s own resume
+/// call — the row's ORIGINAL watchdog (installed by `workspace.create`)
+/// could otherwise race to recover it first, and this test could pass
+/// even with that resume call deleted. The "no end marker" precondition
+/// this test's own name claims is checked directly
+/// (`sot_log::verify::leg_carries_run_end_marker`) right after both
+/// SIGKILLs, rather than only inferred from the recovery behaviour
+/// afterward — destroy's own success proves nothing about markerlessness
+/// on its own; an adopted-but-cleanly-ended leg would also let destroy
+/// succeed.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
@@ -3455,7 +3512,7 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
 
     let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
-    let _state_dir = loop {
+    let state_dir = loop {
         let id = next_id;
         next_id += 1;
         let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -3468,9 +3525,56 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
         assert!(Instant::now() < list_deadline, "timed out waiting for the new capsule workspace to reach \"ready\"");
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
+    let state_dir_path = PathBuf::from(&state_dir);
+
+    let (leg_before, voyage_before) = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || {
+            let (report, _process) = sot_log::supervisor_client::query_status(&dir)
+                .expect("query_status before the daemon restart");
+            (
+                report.leg.expect("a ready capsule has a leg"),
+                report.voyage.expect("a ready capsule has a voyage"),
+            )
+        }
+    })
+    .await
+    .unwrap();
+
+    // Adopt across a daemon restart FIRST -- the authority survives, this
+    // daemon lifetime never spawned it, so no watchdog exists for it; the
+    // ONLY thing left that can re-execute and then end the leg is
+    // `destroy_capsule_workspace`'s own resume call below.
+    let (mut conn, mut next_id) = restart_daemon_and_prove_adoption(
+        &env,
+        conn,
+        &workspace_id,
+        &state_dir,
+        &state_dir_path,
+        leg_before,
+        AuthorityAtRestart::Alive,
+    )
+    .await;
 
     kill_supervisor_only(&env.state_root);
     kill_leg_only(&env.state_root);
+
+    // The "markerless" precondition this test is named for, checked
+    // directly rather than only inferred from the recovery behaviour
+    // afterward.
+    let seg_dir = sot_log::supervisor::voyage_root_path(&state_dir_path, &voyage_before).join("seg");
+    let carries_marker = tokio::task::spawn_blocking({
+        let seg_dir = seg_dir.clone();
+        let voyage = voyage_before.clone();
+        move || sot_log::verify::leg_carries_run_end_marker(&seg_dir, &voyage, leg_before)
+    })
+    .await
+    .unwrap()
+    .expect("leg_carries_run_end_marker must read the SIGKILLed leg's own segment cleanly");
+    assert!(
+        !carries_marker,
+        "the killed leg carries an end marker — this is not the markerless-death precondition this test claims"
+    );
 
     // Re-executing the leg from scratch (no survivor to adopt) is
     // slower than a plain adoption — `destroy_capsule_workspace`'s
