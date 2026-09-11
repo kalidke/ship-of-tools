@@ -22,7 +22,7 @@ use std::sync::RwLock;
 
 use anyhow::Result;
 use sot_protocol::{codec, op, Frame, ProxyConnectReq};
-use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 /// Loopback ports announced by REPL children via their `browser` frames
@@ -154,7 +154,7 @@ pub fn allowed_proxy_ports() -> BTreeSet<u16> {
 /// token (if any). Returns when the pipe closes; errors are logged by the
 /// caller.
 pub async fn handle_proxy_connect<R, W>(
-    mut rx: R,
+    rx: R,
     mut tx: W,
     frame: Frame,
     expected_token: Option<&str>,
@@ -166,7 +166,7 @@ where
     let req: ProxyConnectReq = match serde_json::from_value(frame.payload) {
         Ok(r) => r,
         Err(e) => {
-            return reject(&mut tx, frame.id, "bad_request", &format!("{e}")).await;
+            return reject(&mut tx, frame.id, op::PROXY_CONNECT, "bad_request", &format!("{e}")).await;
         }
     };
 
@@ -178,7 +178,7 @@ where
         let presented = req.token.unwrap_or_default();
         if !crate::handlers::constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
             tracing::warn!(port = req.port, "proxy.connect rejected: bad token");
-            return reject(&mut tx, frame.id, "unauthenticated", "bad or missing token").await;
+            return reject(&mut tx, frame.id, op::PROXY_CONNECT, "unauthenticated", "bad or missing token").await;
         }
     }
 
@@ -191,6 +191,7 @@ where
         return reject(
             &mut tx,
             frame.id,
+            op::PROXY_CONNECT,
             "bad_port",
             &format!("port {} is not a proxyable backend port", req.port),
         )
@@ -204,15 +205,15 @@ where
         TcpStream::connect(("127.0.0.1", req.port)),
     )
     .await;
-    let mut upstream = match dial {
+    let upstream = match dial {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             tracing::warn!(port = req.port, error = %e, "proxy.connect dial failed");
-            return reject(&mut tx, frame.id, "dial_failed", &format!("{e}")).await;
+            return reject(&mut tx, frame.id, op::PROXY_CONNECT, "dial_failed", &format!("{e}")).await;
         }
         Err(_) => {
             tracing::warn!(port = req.port, "proxy.connect dial timed out");
-            return reject(&mut tx, frame.id, "dial_failed", "connect timed out").await;
+            return reject(&mut tx, frame.id, op::PROXY_CONNECT, "dial_failed", "connect timed out").await;
         }
     };
     let _ = upstream.set_nodelay(true);
@@ -227,12 +228,31 @@ where
     tx.flush().await?;
     tracing::info!(port = req.port, "proxy.connect established — piping");
 
-    // Manual bidirectional copy: the client side is SPLIT (buffered reader +
-    // write half are separate types), so `tokio::io::copy_bidirectional`
-    // (which wants one duplex per side) doesn't fit — join two one-way
-    // copies instead. Copying FROM the BufReader drains its internal buffer
-    // first, so any bytes it read past the handshake envelope are not lost.
-    let (mut up_rx, mut up_tx) = upstream.split();
+    pipe_bidirectional(rx, tx, upstream, &format!("port {}", req.port)).await
+}
+
+/// The post-handshake body shared by every daemon-side pipe: once a
+/// connect frame has been answered `{ok: true, ...}`, the connection
+/// stops being a frame stream and becomes a raw byte pipe between the
+/// client (`rx`/`tx`, still split because the reader is a `BufReader`
+/// wrapping the original connection while the writer is its own half)
+/// and `upstream` (one duplex value — a `TcpStream` for `proxy.connect`,
+/// a Unix socket or named-pipe client for `lane.connect`). `what` names
+/// the connection in the two teardown `debug!` lines (`proxy.connect`'s
+/// own port, `lane.connect`'s target+lane) — the caller's concern, not
+/// this function's. Returns once either direction closes; the daemon
+/// never decodes a byte after the handshake.
+pub(crate) async fn pipe_bidirectional<R, W, U>(mut rx: R, mut tx: W, upstream: U, what: &str) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    U: AsyncRead + AsyncWrite + Unpin,
+{
+    // `tokio::io::split` rather than a type-specific `.split()` (the
+    // former manual `TcpStream::split()` borrowed instead of owning) —
+    // generic over `U`, so this one body serves every upstream type this
+    // daemon pipes to.
+    let (mut up_rx, mut up_tx) = tokio::io::split(upstream);
     let client_to_up = async {
         let r = tokio::io::copy(&mut rx, &mut up_tx).await;
         let _ = up_tx.shutdown().await; // half-close so upstream sees EOF
@@ -251,20 +271,20 @@ where
     // the stream halves then drop at return, closing both sockets so the
     // stalled peer sees a reset.
     tokio::select! {
-        r = client_to_up => tracing::debug!(port = req.port, ?r, "proxy: client→upstream closed first"),
-        r = up_to_client => tracing::debug!(port = req.port, ?r, "proxy: upstream→client closed first"),
+        r = client_to_up => tracing::debug!(what, ?r, "pipe: client→upstream closed first"),
+        r = up_to_client => tracing::debug!(what, ?r, "pipe: upstream→client closed first"),
     }
     Ok(())
 }
 
-/// Write a `proxy.connect` rejection frame (standard error payload) and
-/// return; the caller closes the connection.
-async fn reject<W>(tx: &mut W, id: u64, code: &str, msg: &str) -> Result<()>
+/// Write a rejection frame (standard error payload, `op` naming which
+/// connect verb refused) and return; the caller closes the connection.
+pub(crate) async fn reject<W>(tx: &mut W, id: u64, op: &str, code: &str, msg: &str) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
     let payload = serde_json::json!({ "error": msg, "code": code });
-    let f = Frame::res(id, op::PROXY_CONNECT, payload);
+    let f = Frame::res(id, op, payload);
     codec::write_frame(tx, &f, None).await?;
     tx.flush().await?;
     Ok(())

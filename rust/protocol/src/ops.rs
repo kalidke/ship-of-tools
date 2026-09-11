@@ -324,6 +324,22 @@ pub mod op {
     /// ride the standard error payload (`bad_port`, `dial_failed`) and the
     /// connection closes.
     pub const PROXY_CONNECT: &str = "proxy.connect";
+    /// A capsule row's supervisor or voyage lane, piped through the row's
+    /// OWN daemon (ADR 0045 decision 2). Sent as the FIRST frame on a
+    /// DEDICATED connection — the `proxy.connect` peek, never inside the
+    /// hello-gated control loop: `LaneConnectReq { target, lane,
+    /// voyage_id?, token? }`. The daemon resolves `target` (the row's
+    /// `tmux_session`, as `pty.open` addresses it) to a capsule
+    /// workspace, dials that row's lane locally, resumes an absent
+    /// supervisor lane in place (`resume_if_absent`, never a voyage
+    /// lane), authenticates the peer it dialed, and answers
+    /// `LaneConnectRes { ok: true, pid, created }` before becoming a raw
+    /// byte pipe — the daemon never decodes a lane frame after the
+    /// reply. Rejections (`bad_request`, `unauthenticated`,
+    /// `unknown_workspace`, `not_capsule`, `bad_lane`, `lane_absent`,
+    /// `foreign`, `undetermined`, `dial_failed`) ride the standard error
+    /// payload and the connection closes.
+    pub const LANE_CONNECT: &str = "lane.connect";
     /// Every runtime answers what build it is (ADR 0030 §8 decision 31,
     /// cross-referenced as ADR 0043 decision 31). Empty request
     /// (`VersionQueryReq`); pure in-memory, no fan-out, no supervisor probe
@@ -1946,6 +1962,55 @@ pub struct ProxyConnectRes {
     pub ok: bool,
 }
 
+/// `lane.connect` request (ADR 0045 §2) — the FIRST frame on a dedicated
+/// lane-bridge connection. `target` is the capsule row's `tmux_session`
+/// name, exactly as `pty.open` addresses it, and is REQUIRED for BOTH
+/// lanes: a voyage lane is reached only through the capsule row that owns
+/// it — the daemon dials the voyage's own socket by `voyage_id`, but
+/// authorizes and (for the supervisor lane) recovers by row. `lane` is
+/// `"supervisor"` or `"voyage"`; any other value is `bad_lane`.
+/// `voyage_id` is required when `lane == "voyage"` (also `bad_lane` when
+/// missing) and ignored for the supervisor lane. `token` mirrors
+/// `ProxyConnectReq::token`.
+///
+/// Error codes on refusal (standard error payload, connection closes):
+/// `bad_request` (payload didn't parse), `unauthenticated` (bad/missing
+/// token on a token-configured daemon), `unknown_workspace` (`target`
+/// names no row), `not_capsule` (the row is a tmux workspace, which has
+/// no lane to bridge), `bad_lane` (as above), `lane_absent` (the
+/// endpoint is not there right now — for the supervisor lane, only after
+/// a resume attempt was tried or refused; payload also carries `"kind":
+/// "<io ErrorKind Debug>"`), `foreign` (the peer behind the endpoint
+/// failed identity authentication), `undetermined` (identity
+/// authentication could not be completed), `dial_failed` (any other I/O
+/// error dialing or authenticating).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaneConnectReq {
+    pub target: String,
+    pub lane: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voyage_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+/// `lane.connect` response. After `{ok: true, pid, created}` the
+/// connection stops being a frame stream: every subsequent byte in BOTH
+/// directions is piped verbatim to/from the dialed lane, exactly as
+/// `proxy.connect` pipes to a loopback port. `pid`/`created` are the
+/// lane peer's identity, as the daemon's own dial observed it
+/// (`PeerAuthenticated` — steps 1-3 of the challenge) — the frontend
+/// trusts the daemon it already trusts to control the row, and binds its
+/// own end-to-end `hello` (steps 4-5) against this report. Errors ride
+/// the standard error payload instead (see [`LaneConnectReq`]'s own doc
+/// for the codes) and the connection closes without entering pipe mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaneConnectRes {
+    pub ok: bool,
+    pub pid: u32,
+    pub created: u64,
+}
+
 /// `version.query` request — empty, always (ADR 0030 §8 decision 31b).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct VersionQueryReq {}
@@ -2061,6 +2126,44 @@ mod hello_version_tests {
         .unwrap();
         assert_eq!(back.port, 1236);
         assert_eq!(back.token.as_deref(), Some("t"));
+    }
+
+    #[test]
+    fn lane_connect_req_round_trips_and_optionals_are_optional() {
+        // ADR 0045 §2 handshake shapes. `voyage_id`/`token` absent on the
+        // wire must parse (the supervisor lane and a tokenless Unix-socket
+        // transport never send either).
+        let req: super::LaneConnectReq =
+            serde_json::from_str(r#"{"target":"ws-a","lane":"supervisor"}"#)
+                .expect("minimal req parses");
+        assert_eq!(req.target, "ws-a");
+        assert_eq!(req.lane, "supervisor");
+        assert!(req.voyage_id.is_none());
+        assert!(req.token.is_none());
+        let back: super::LaneConnectReq = serde_json::from_str(
+            &serde_json::to_string(&super::LaneConnectReq {
+                target: "ws-b".into(),
+                lane: "voyage".into(),
+                voyage_id: Some("v1".into()),
+                token: Some("t".into()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(back.target, "ws-b");
+        assert_eq!(back.lane, "voyage");
+        assert_eq!(back.voyage_id.as_deref(), Some("v1"));
+        assert_eq!(back.token.as_deref(), Some("t"));
+    }
+
+    #[test]
+    fn lane_connect_res_round_trips() {
+        let res = super::LaneConnectRes { ok: true, pid: 4242, created: 99 };
+        let back: super::LaneConnectRes =
+            serde_json::from_str(&serde_json::to_string(&res).unwrap()).unwrap();
+        assert!(back.ok);
+        assert_eq!(back.pid, 4242);
+        assert_eq!(back.created, 99);
     }
 
     #[test]

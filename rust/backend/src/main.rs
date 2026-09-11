@@ -23,6 +23,7 @@ mod handlers;
 mod http_serve;
 mod julia;
 mod kernel;
+mod lane_bridge;
 mod mathjax;
 mod monitor;
 mod paths;

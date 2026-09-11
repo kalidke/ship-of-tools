@@ -3779,3 +3779,508 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
 
     env.kill_daemon_bounded().await;
 }
+
+// --- ADR 0045 decision 2 (lane B3): `lane.connect`, the daemon-side lane
+// bridge --- //
+
+/// A FRESH connection to `env.socket_path` whose only frame is
+/// `lane.connect` (ADR 0045 decision 2: a dedicated connection, never
+/// through `connect_and_hello`'s multiplexed control loop). Returns the
+/// still-open connection — a `Conn` so a raw byte read/write afterward
+/// (on success) shares the SAME `BufReader` the response frame was read
+/// through, never a throwaway second reader that would lose whatever
+/// piped bytes it already buffered past the envelope — alongside the
+/// parsed response payload.
+#[cfg(target_os = "linux")]
+async fn lane_connect(env: &Env, target: &str, lane: &str, voyage_id: Option<&str>) -> (Conn, serde_json::Value) {
+    let stream = poll_until(
+        || async { try_connect(&env.socket_path).await },
+        BOUND,
+        "sotd's local socket to accept a connection",
+    )
+    .await;
+    let mut conn = tokio::io::BufReader::new(stream);
+    let mut req = serde_json::json!({ "target": target, "lane": lane });
+    if let Some(v) = voyage_id {
+        req["voyage_id"] = serde_json::json!(v);
+    }
+    codec::write_frame(&mut conn, &Frame::req(1, op::LANE_CONNECT, req), None)
+        .await
+        .expect("write_frame lane.connect");
+    let (frame, _blob) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
+        .await
+        .unwrap_or_else(|_| panic!("lane.connect reply did not arrive within {BOUND:?}"))
+        .expect("read_frame lane.connect reply");
+    (conn, frame.payload)
+}
+
+/// A refused `lane.connect` closes the connection (ADR 0045 decision 2:
+/// "Either direction closing ends both") — the next read observes
+/// ordered EOF, never a hang.
+#[cfg(target_os = "linux")]
+async fn assert_lane_connect_closes(conn: &mut Conn) {
+    use tokio::io::AsyncReadExt;
+    let mut buf = [0u8; 1];
+    let n = tokio::time::timeout(BOUND, conn.read(&mut buf))
+        .await
+        .expect("read after a lane.connect refusal within BOUND")
+        .expect("read after a lane.connect refusal");
+    assert_eq!(n, 0, "the connection must close (EOF) after a lane.connect refusal");
+}
+
+/// On a ready row, `lane: "supervisor"` pipes the real supervisor lane:
+/// `Hello` AND `Status` written in ONE write call (the buffered-bytes
+/// proof that the daemon never decodes a lane frame after its own reply
+/// — it is a raw pipe, not a second parser) come back as `HelloOk` (own
+/// pid matching `lane.connect`'s own report) and `StatusOk{phase:
+/// Ready}`. Dropping the pipe releases the lane slot without disturbing
+/// the row: `workspace.list` still reports "ready" afterward.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn lane_connect_supervisor_pipes_hello_and_status() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("lch");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "lch-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
+
+    let (mut lane_conn, res) = lane_connect(&env, &target, "supervisor", None).await;
+    assert!(res.get("error").is_none(), "lane.connect refused: {res:?}");
+    assert_eq!(res["ok"].as_bool(), Some(true), "lane.connect payload: {res:?}");
+    let pid = res["pid"].as_u64().expect("pid");
+    assert!(pid > 0, "pid must be a real process id: {res:?}");
+
+    let mut combined = sot_log::wire::encode_supervisor_request(&sot_log::wire::SupervisorRequest::Hello {
+        proto: sot_log::wire::SUPERVISOR_PROTO_V1,
+        build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
+    })
+    .expect("encode hello");
+    combined.extend(
+        sot_log::wire::encode_supervisor_request(&sot_log::wire::SupervisorRequest::Status).expect("encode status"),
+    );
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    lane_conn.write_all(&combined).await.expect("write hello+status in ONE call");
+
+    let mut splitter = sot_log::wire::FrameSplitter::new();
+    let mut got_hello: Option<u32> = None;
+    let mut got_status: Option<sot_log::wire::SupervisorPhase> = None;
+    let deadline = Instant::now() + BOUND;
+    let mut buf = [0u8; 4096];
+    while got_hello.is_none() || got_status.is_none() {
+        assert!(Instant::now() < deadline, "timed out waiting for HelloOk+StatusOk over the piped lane");
+        let n = tokio::time::timeout(BOUND, lane_conn.read(&mut buf))
+            .await
+            .expect("read piped bytes within BOUND")
+            .expect("read piped bytes");
+        assert!(n > 0, "the piped connection EOF'd before HelloOk+StatusOk arrived");
+        let (frames, err) = splitter.feed(&buf[..n]);
+        assert!(err.is_none(), "wire decode error over the piped supervisor lane: {err:?}");
+        for f in frames {
+            match f {
+                sot_log::wire::DecodedFrame::SupervisorReply(sot_log::wire::SupervisorReply::HelloOk {
+                    pid: hp,
+                    ..
+                }) => got_hello = Some(hp),
+                sot_log::wire::DecodedFrame::SupervisorReply(sot_log::wire::SupervisorReply::StatusOk {
+                    phase,
+                    ..
+                }) => got_status = Some(phase),
+                other => panic!("unexpected frame over the piped supervisor lane: {other:?}"),
+            }
+        }
+    }
+    assert_eq!(
+        got_hello,
+        Some(pid as u32),
+        "the piped HelloOk's own pid must match lane.connect's own report"
+    );
+    assert_eq!(got_status, Some(sot_log::wire::SupervisorPhase::Ready));
+
+    drop(lane_conn);
+
+    // The lane slot was released, not the row itself -- workspace.list
+    // still reports "ready" afterward.
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
+
+    env.kill_daemon_bounded().await;
+}
+
+/// `lane: "voyage"` (with the id from a real `status` reply) pipes the
+/// attach lane: `AttachClient::Hello{proto: ATTACH_PROTO_V2}` comes back
+/// `AttachServer::HelloOk{proto: 2}`.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn lane_connect_voyage_pipes_the_attach_hello() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("lcv");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "lcv-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
+    let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
+
+    let voyage_id = tokio::task::spawn_blocking({
+        let dir = state_dir.clone();
+        move || sot_log::supervisor_client::query_status(&dir).expect("query_status on the ready row").0.voyage
+    })
+    .await
+    .unwrap()
+    .expect("a ready capsule has a voyage");
+
+    let (mut lane_conn, res) = lane_connect(&env, &target, "voyage", Some(&voyage_id)).await;
+    assert!(res.get("error").is_none(), "lane.connect refused: {res:?}");
+    assert_eq!(res["ok"].as_bool(), Some(true), "lane.connect payload: {res:?}");
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let hello = sot_log::wire::encode_attach_client(&sot_log::wire::AttachClient::Hello {
+        proto: sot_log::wire::ATTACH_PROTO_V2,
+    })
+    .expect("encode attach hello");
+    lane_conn.write_all(&hello).await.expect("write attach hello");
+
+    let mut splitter = sot_log::wire::FrameSplitter::new();
+    let mut buf = [0u8; 4096];
+    let deadline = Instant::now() + BOUND;
+    let proto = loop {
+        assert!(Instant::now() < deadline, "timed out waiting for the attach lane's own HelloOk");
+        let n = tokio::time::timeout(BOUND, lane_conn.read(&mut buf))
+            .await
+            .expect("read piped bytes within BOUND")
+            .expect("read piped bytes");
+        assert!(n > 0, "the piped connection EOF'd before HelloOk arrived");
+        let (frames, err) = splitter.feed(&buf[..n]);
+        assert!(err.is_none(), "wire decode error over the piped voyage lane: {err:?}");
+        if let Some(f) = frames.into_iter().next() {
+            match f {
+                sot_log::wire::DecodedFrame::AttachServer(sot_log::wire::AttachServer::HelloOk { proto }) => break proto,
+                other => panic!("unexpected frame over the piped voyage lane: {other:?}"),
+            }
+        }
+    };
+    assert_eq!(proto, sot_log::wire::ATTACH_PROTO_V2);
+
+    drop(lane_conn);
+    env.kill_daemon_bounded().await;
+}
+
+/// (a) Dropping the client stream mid-pipe closes cleanly — a second
+/// `lane.connect` against the SAME row still succeeds afterward. (b)
+/// `workspace.destroy` while a supervisor-lane pipe is open ends the row
+/// out from under it: the client's next read observes EOF within its own
+/// bound, never a hang.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn lane_connect_closes_when_either_side_closes() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("lcc");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "lcc-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
+
+    // (a) drop the client stream -- a second lane.connect against the
+    // same row still succeeds.
+    let (first_conn, res) = lane_connect(&env, &target, "supervisor", None).await;
+    assert_eq!(res["ok"].as_bool(), Some(true), "first lane.connect payload: {res:?}");
+    drop(first_conn);
+    let (second_conn, res) = poll_until(
+        || {
+            let env = &env;
+            let target = &target;
+            async move {
+                let (conn, res) = lane_connect(env, target, "supervisor", None).await;
+                (res["ok"].as_bool() == Some(true)).then_some((conn, res))
+            }
+        },
+        BOUND,
+        "a second lane.connect to succeed after the first client dropped",
+    )
+    .await;
+    assert_eq!(res["ok"].as_bool(), Some(true), "second lane.connect payload: {res:?}");
+
+    // (b) workspace.destroy while a pipe is still open -> the client's
+    // own next read observes EOF within a bound.
+    let destroy_req = serde_json::json!({ "workspace_id": workspace_id });
+    // `next_id` has no further use on this connection (mirrors the
+    // create/list/destroy test's own convention) — no further increment.
+    let destroy_res = call(&mut conn, next_id, op::WORKSPACE_DESTROY, destroy_req).await;
+    assert!(destroy_res.payload.get("error").is_none(), "workspace.destroy failed: {:?}", destroy_res.payload);
+
+    let mut second_conn = second_conn;
+    use tokio::io::AsyncReadExt;
+    let mut buf = [0u8; 1];
+    let n = tokio::time::timeout(Duration::from_secs(30), second_conn.read(&mut buf))
+        .await
+        .expect("read after workspace.destroy within 30s")
+        .expect("read after workspace.destroy");
+    assert_eq!(n, 0, "the piped connection must EOF once workspace.destroy ends the row out from under it");
+
+    env.kill_daemon_bounded().await;
+}
+
+/// A stopped row's dial IS the recovery trigger (ADR 0045 decision 2):
+/// `lane: "supervisor"` on a row whose authority died resumes it in
+/// place rather than answering absent. A second `lane.connect` while the
+/// first pipe is still open spawns no second `supervise` process.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn lane_connect_resumes_a_stopped_row() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("lcr2");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let (workspace_id, _state_dir_path) =
+        create_ready_workspace_then_stop_its_supervisor(&env, &mut conn, &mut next_id, "lcr2-workspace").await;
+
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let row = find_row(&list_payload, &workspace_id).expect("the row is still registered");
+    let target = row["tmux_session"].as_str().expect("tmux_session").to_string();
+
+    let (first_conn, res) = lane_connect(&env, &target, "supervisor", None).await;
+    assert!(res.get("error").is_none(), "lane.connect must resume the stopped row rather than refuse it: {res:?}");
+    assert_eq!(res["ok"].as_bool(), Some(true), "lane.connect payload: {res:?}");
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
+
+    let (second_conn, res) = lane_connect(&env, &target, "supervisor", None).await;
+    assert_eq!(res["ok"].as_bool(), Some(true), "second lane.connect payload: {res:?}");
+
+    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
+    assert_eq!(
+        count_matching_processes(&pattern),
+        1,
+        "exactly one supervise process must exist -- the resume, never a second racing authority"
+    );
+
+    drop(first_conn);
+    drop(second_conn);
+    env.kill_daemon_bounded().await;
+}
+
+/// Every `lane.connect` refusal code this daemon can answer, each closing
+/// the connection: an unknown `target` (`unknown_workspace`), the tmux
+/// default row (`not_capsule`), `lane: "voyage"` with no `voyage_id`
+/// (`bad_lane`), a bogus `voyage_id` on a ready row (`lane_absent`, the
+/// supervisor owns leg respawn so this is never resumed), and a TERMINAL
+/// row's own supervisor lane (`lane_absent` with `kind` present, and —
+/// the row already has no live authority to begin with — no process
+/// spawned by the refusal).
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn lane_connect_refusals() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("lcf");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    // Unknown target.
+    let (mut s, res) = lane_connect(&env, "sot-be-no-such-row", "supervisor", None).await;
+    assert_eq!(res["code"].as_str(), Some("unknown_workspace"), "{res:?}");
+    assert_lane_connect_closes(&mut s).await;
+
+    // The tmux default row -- Linux stays "tmux" until the bridge (ADR
+    // 0043 decision 22).
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let default_row = list_payload["workspaces"]
+        .as_array()
+        .expect("workspaces array")
+        .iter()
+        .find(|w| w["is_default"].as_bool() == Some(true))
+        .cloned()
+        .expect("a default workspace row");
+    assert_eq!(default_row["runtime"], "tmux", "default row: {default_row:?}");
+    let default_target = default_row["tmux_session"].as_str().expect("tmux_session").to_string();
+    let (mut s, res) = lane_connect(&env, &default_target, "supervisor", None).await;
+    assert_eq!(res["code"].as_str(), Some("not_capsule"), "{res:?}");
+    assert_lane_connect_closes(&mut s).await;
+
+    // A ready capsule row, shared by the two voyage-lane sub-cases below.
+    let create_req = serde_json::json!({
+        "label": "lcf-ready",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let ready_workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    let ready_target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    poll_for_phase(&mut conn, &mut next_id, &ready_workspace_id, "ready", BOUND).await;
+
+    // voyage lane, no voyage_id.
+    let (mut s, res) = lane_connect(&env, &ready_target, "voyage", None).await;
+    assert_eq!(res["code"].as_str(), Some("bad_lane"), "{res:?}");
+    assert_lane_connect_closes(&mut s).await;
+
+    // voyage lane, a bogus id on an otherwise-ready row -- lane_absent at
+    // once (decision 2: the supervisor owns leg respawn, never this dial).
+    let (mut s, res) = lane_connect(&env, &ready_target, "voyage", Some("00000000-0000-0000-0000-000000000000")).await;
+    assert_eq!(res["code"].as_str(), Some("lane_absent"), "{res:?}");
+    assert_lane_connect_closes(&mut s).await;
+
+    env.kill_daemon_bounded().await;
+
+    // A TERMINAL row, in its own fresh daemon (the default row's own
+    // toml must carry `agent = "claude"` BEFORE boot -- incompatible
+    // with the plain tmux default row exercised above). Mirrors
+    // `capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroyable`.
+    let env2 = Env::new("lcft");
+    env2.seed_default_capsule_toml("claude");
+    let fake_claude_dir = env2.seed_fake_unlaunchable_claude();
+    env2.spawn_sotd_with_prepended_path(&fake_claude_dir);
+    let (mut conn2, mut next_id2) = connect_and_hello(&env2.socket_path).await;
+
+    let list_payload = call(&mut conn2, next_id2, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id2 += 1;
+    let default_row2 = list_payload["workspaces"]
+        .as_array()
+        .expect("workspaces array")
+        .iter()
+        .find(|w| w["is_default"].as_bool() == Some(true))
+        .cloned()
+        .expect("a default workspace row");
+    let default_workspace_id2 = default_row2["workspace_id"].as_str().expect("workspace_id").to_string();
+    let default_target2 = default_row2["tmux_session"].as_str().expect("tmux_session").to_string();
+
+    let pty_req = serde_json::json!({
+        "cols": 80, "rows": 24, "user_switch": true, "target": default_target2,
+    });
+    let pty_res = call(&mut conn2, next_id2, op::PTY_OPEN, pty_req).await;
+    next_id2 += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+
+    let terminal_deadline = Instant::now() + BOUND;
+    loop {
+        let id = next_id2;
+        next_id2 += 1;
+        let payload = call(&mut conn2, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        if let Some(row) = find_row(&payload, &default_workspace_id2) {
+            if row["phase"].as_str() == Some("terminal") {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < terminal_deadline,
+            "timed out waiting for the unlaunchable-agent capsule row to reach phase \"terminal\""
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env2.state_root);
+    // The anti-flap authority exits within a couple hundred ms of its own
+    // last spawn attempt (`capsule_row_with_an_unlaunchable_agent_...`'s
+    // own doc); `workspace.list`'s "terminal" is a POINTER read, so it
+    // can be observed a hair before the OS finishes reaping the just-
+    // exited process -- poll rather than a single point-in-time pgrep.
+    assert!(
+        poll_until_no_process_matches(&pattern, BOUND),
+        "a terminal row must settle to no live supervise process"
+    );
+
+    let (mut s, res) = lane_connect(&env2, &default_target2, "supervisor", None).await;
+    assert_eq!(res["code"].as_str(), Some("lane_absent"), "{res:?}");
+    assert!(res.get("kind").and_then(|v| v.as_str()).is_some(), "lane_absent must carry a kind field: {res:?}");
+    assert_lane_connect_closes(&mut s).await;
+
+    assert_eq!(
+        count_matching_processes(&pattern),
+        0,
+        "a terminal row's own lane.connect refusal must never spawn a supervise process"
+    );
+
+    env2.kill_daemon_bounded().await;
+}
+
+/// This daemon build has no CLI mechanism to start with a token at all
+/// (`server.rs`'s own doc: `expected_token` is unconditionally `None`
+/// since 0.4.0 removed the TCP listener — `main.rs` refuses `--token`
+/// outright). Skips loudly rather than silently passing without
+/// exercising anything, mirroring this file's own
+/// `SOT_TEST_REQUIRE_USER_MANAGER` skip convention.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn lane_connect_unauthenticated_on_a_token_daemon() {
+    eprintln!(
+        "SKIPPED: this Env has no mechanism to start sotd with a token \
+         (main.rs refuses --token outright; server.rs's expected_token is \
+         unconditionally None) -- nothing here to exercise lane.connect's \
+         own token gate against"
+    );
+}

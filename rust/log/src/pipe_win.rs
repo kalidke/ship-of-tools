@@ -2571,6 +2571,17 @@ impl PipeClient {
         self.read_slot.cancel(self.raw.0);
         self.write_slot.cancel(self.raw.0);
     }
+
+    /// ADR 0045 decision 2 (the daemon-side lane bridge): hand the raw
+    /// pipe handle off to a caller that will pipe raw bytes on its own
+    /// runtime — the client's cancel contract ends here. Moves `handle`
+    /// out (opened `FILE_FLAG_OVERLAPPED` above, so it is valid for a
+    /// Tokio named-pipe client to adopt); `raw`/the two `IoSlot`s simply
+    /// drop — there is no manual `Drop` on this type, so nothing else
+    /// needs releasing.
+    pub fn into_handle(self) -> OwnedHandle {
+        self.handle
+    }
 }
 
 /// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete

@@ -1206,6 +1206,16 @@ where
                     expected_token.as_deref(),
                 )
                 .await;
+            } else if f.kind == Kind::Req && f.op == op::LANE_CONNECT {
+                tracing::info!(transport, "lane.connect — leaving control loop for a raw pipe");
+                return crate::lane_bridge::handle_lane_connect(
+                    buffered,
+                    tx,
+                    f,
+                    expected_token.as_deref(),
+                    &workspaces,
+                )
+                .await;
             }
             Some((f, blob))
         }
