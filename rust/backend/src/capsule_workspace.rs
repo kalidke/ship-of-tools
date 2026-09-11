@@ -1015,7 +1015,10 @@ mod runtime {
             return phase;
         }
         match sot_log::supervisor_client::query_status(state_dir) {
-            Ok(report) => super::phase_str(report.phase),
+            // The retained process handle (the second element) is not
+            // this caller's concern -- a one-shot phase probe, dropped
+            // (closing the handle) the instant this returns.
+            Ok((report, _process)) => super::phase_str(report.phase),
             // Typed, not text (ADR 0030 §8 decision 31c): `VersionSkew`
             // is the ONLY `sot_log::Error` variant `query_status` returns
             // for a lane that answered but refused this build. Every
@@ -1078,7 +1081,7 @@ mod runtime {
         use sot_log::wire::SupervisorPhase;
 
         let status = match sot_log::supervisor_client::query_status(state_dir) {
-            Ok(status) => status,
+            Ok((status, _process)) => status,
             Err(e) => {
                 // Unreachable is not the same claim as "not running" —
                 // the caller must keep refusing a live-but-unresponsive
