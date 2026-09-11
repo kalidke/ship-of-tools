@@ -85,16 +85,12 @@ impl<C: Client> ChallengeableConnection for C {
 
 /// The methods both platforms' `ChallengedProcess` share — everything the
 /// full five-step [`crate::challenge::ChallengeOutcome::Proven`] proof
-/// earns a caller. Deliberately NOT the exit-status accessor (ADR 0043
-/// decisions 8/19): Windows reports it as a `u32`
-/// (`GetExitCodeProcess`), Linux as an `Option<i32>`
-/// (`PIDFD_GET_INFO`, "exited, status unknown" is a real, distinct
-/// outcome there) — the platforms disagree on the TYPE, not merely the
-/// mechanism, so it stays an inherent method on each concrete
-/// `ChallengedProcess` rather than forcing one shape on both. The one
-/// consumer that reads it is the daemon's `wait_and_classify` (LU4),
-/// which is where the "exited, status unknown" tolerance belongs — not
-/// here.
+/// earns a caller. ADR 0043 decision 33: the per-platform
+/// challenged-process exit-status accessor (`GetExitCodeProcess` on
+/// Windows, `PIDFD_GET_INFO` on Linux) is deleted outright — readerless
+/// once the daemon's watchdog exists only for a `Child` it spawned
+/// itself (`wait_and_classify` reads a real `tokio::process::Child`'s
+/// own `ExitStatus`, never an adopted `ChallengedProcess`'s).
 pub trait PeerProcess: Send {
     /// The pid this process was proven to be, at proof time.
     fn pid(&self) -> u32;

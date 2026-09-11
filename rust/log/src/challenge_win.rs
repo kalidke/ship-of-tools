@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{FILETIME, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessTimes, OpenProcess, TerminateProcess, WaitForSingleObject,
+    GetProcessTimes, OpenProcess, TerminateProcess, WaitForSingleObject,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 
@@ -112,33 +112,12 @@ impl ChallengedProcess {
         terminate_handle(self.raw())
     }
 
-    /// `GetExitCodeProcess`, mirroring
-    /// `conpty::PrimaryProcess::exit_code_after_confirmed_exit`'s own
-    /// precondition and honesty bound (that method's own doc has the full
-    /// reasoning): the caller must have already observed [`wait`](Self::wait)
-    /// return `true` before calling this -- `STILL_ACTIVE` (259) is also a
-    /// value a process can legitimately exit WITH, so this makes no attempt
-    /// to disambiguate "still running" from "exited with 259" and returns
-    /// whatever the OS reports, unconditionally. Lets a caller that has
-    /// ADOPTED a process (proven via the full challenge, not spawned by this
-    /// process) classify its eventual exit the SAME way a spawned child's
-    /// `ExitStatus::code()` does, once death is confirmed.
-    pub fn exit_code_after_confirmed_exit(&self) -> std::io::Result<u32> {
-        let mut code: u32 = 0;
-        if unsafe { GetExitCodeProcess(self.raw(), &mut code) } == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(code)
-    }
 }
 
 /// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
 /// `ChallengedProcess` implements — `pid`/`created`/`reverify`/`wait`/
 /// `terminate` already have these exact signatures, so this is pure
-/// delegation. `exit_code_after_confirmed_exit` stays OUT of the trait
-/// (decisions 8/19): Linux's own counterpart returns `Option<i32>`, not
-/// a `u32` — the platforms disagree on the TYPE, not merely the
-/// mechanism.
+/// delegation.
 impl PeerProcess for ChallengedProcess {
     fn pid(&self) -> u32 {
         ChallengedProcess::pid(self)

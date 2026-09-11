@@ -4867,6 +4867,11 @@ fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> Cap
 /// the same way `workspace.destroy`'s non-default path does below — a
 /// killed default-row agent can't run its own `comm-leave`, so without
 /// this its row lingered as a ghost `workspace.list` merges back in.
+///
+/// `held_guard` is `destroy_capsule_workspace`'s own row guard, carried
+/// through unexamined so it stays locked across the reset below too
+/// (ADR 0043 decision 33, Codex review round 2) — dropped only once this
+/// function returns, whichever arm it takes.
 async fn end_default_row_run(
     workspaces: &Workspaces,
     ws_events: &broadcast::Sender<WorkspaceChanged>,
@@ -4875,6 +4880,7 @@ async fn end_default_row_run(
     agent_name: &str,
     tmux_session: &str,
     confirmed_ended: bool,
+    _held_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 ) {
     if !confirmed_ended {
         return;
@@ -4914,6 +4920,16 @@ async fn end_default_row_run(
 /// `reason` is the immutable end-run reason recorded on the wire —
 /// parameterized so each caller (a real delete vs. the default row's
 /// own kept-not-deleted branch) supplies its own honest text.
+/// `agent_kind`/`agent_name`/`slug`/`project_root` are `ws`'s own fields,
+/// passed through (rather than re-resolved) so this can call
+/// `capsule_workspace::resume_locked` — the guard-free inner
+/// `resume_if_absent` itself uses — under the SAME row guard `end_run`
+/// then runs under (ADR 0043 decision 33's own resume-before-end
+/// destroy caller): a row whose supervisor died leaves a live LEG behind
+/// with no authority to end it; resuming re-establishes the authority so
+/// `end_run` has a real lane to ask, rather than falling straight to its
+/// own fence/leg proof. A resume failure is logged and never fails the
+/// call — `end_run`'s own arms decide the outcome regardless.
 ///
 /// Checks `workspaces.is_capsule_terminal` FIRST, before ever attempting
 /// a live round trip: the watchdog only sets that mark after its own
@@ -4927,62 +4943,138 @@ async fn end_default_row_run(
 /// exact "unendable row" this closes. `end_run`'s own
 /// `SupervisorPhase::Terminal` arm (see its doc) still covers the
 /// narrower complementary window where the lane is asked WHILE still
-/// briefly alive in `Lifecycle::Terminal`, before this mark is set.
+/// briefly alive in `Lifecycle::Terminal`, before this mark is set. A
+/// `Terminal` row's watchdog has already stopped for good (`Terminal` is
+/// the cap across watchdogs) — nothing left to race, so this arm alone
+/// takes no row guard.
+///
+/// Returns the row's own guard alongside the outcome, still HELD
+/// (`None` only when no real lane call was ever attempted) — Codex
+/// review round 2 on the L1a PR: an owned watchdog can check membership,
+/// enter its own backoff, and restart the very row a caller is mid-way
+/// through removing, unless the SAME guard covers both the end/stop
+/// call here AND whatever the caller does with a confirmed outcome
+/// (row removal, or the default row's own reset) afterward. The caller
+/// holds it through that follow-up, then drops it.
 async fn destroy_capsule_workspace(
     workspace_id: &str,
     reason: &str,
+    agent_kind: &str,
+    agent_name: &str,
+    slug: &str,
+    project_root: &std::path::Path,
     workspaces: &Workspaces,
-) -> CapsuleDestroyOutcome {
+) -> (CapsuleDestroyOutcome, Option<tokio::sync::OwnedMutexGuard<()>>) {
     if workspaces.is_capsule_terminal(workspace_id) {
-        return CapsuleDestroyOutcome::Removable(
-            "the run was terminal; the supervisor authority had already exited".to_string(),
+        return (
+            CapsuleDestroyOutcome::Removable(
+                "the run was terminal; the supervisor authority had already exited".to_string(),
+            ),
+            None,
         );
     }
     #[cfg(any(windows, target_os = "linux"))]
     {
         let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
-            return CapsuleDestroyOutcome::Kept {
-                detail: format!(
-                    "could not resolve this machine's state root ({} unset)",
-                    crate::capsule_workspace::STATE_ROOT_HINT
-                ),
-            };
+            return (
+                CapsuleDestroyOutcome::Kept {
+                    detail: format!(
+                        "could not resolve this machine's state root ({} unset)",
+                        crate::capsule_workspace::STATE_ROOT_HINT
+                    ),
+                },
+                None,
+            );
         };
         let state_dir = crate::capsule_workspace::state_dir_for(&state_root, workspace_id);
         let reason = reason.to_string();
+        let workspace_id = workspace_id.to_string();
+        let agent_kind = agent_kind.to_string();
+        let agent_name = agent_name.to_string();
+        let slug = slug.to_string();
+        let project_root = project_root.to_path_buf();
+        let workspaces_for_guard = workspaces.clone();
         let outcome = tokio::task::spawn_blocking(move || {
-            crate::capsule_workspace::end_run(&state_dir, &reason)
+            // ADR 0043 decision 33: this row's own guard, taken OWNED so
+            // it survives this closure's return and stays held by the
+            // caller through the row's actual removal/reset — see this
+            // function's own doc.
+            let held = workspaces_for_guard.capsule_guard(&workspace_id).blocking_lock_owned();
+            if let Err(e) = crate::capsule_workspace::resume_locked(
+                &state_root,
+                &workspace_id,
+                &agent_kind,
+                &agent_name,
+                &slug,
+                &project_root,
+                workspaces_for_guard.clone(),
+            ) {
+                tracing::warn!(
+                    workspace_id = %workspace_id, error = %e,
+                    "workspace.destroy: resume before end_run failed; end_run's own arms decide"
+                );
+            }
+            let result = crate::capsule_workspace::end_run(&state_dir, &reason);
+            (result, held)
         })
         .await;
         match outcome {
-            Ok(Ok(o)) => capsule_destroy_outcome_of(o),
-            Ok(Err(e)) => CapsuleDestroyOutcome::Kept {
-                detail: format!("supervisor lane unreachable: {e}"),
-            },
-            Err(join_err) => CapsuleDestroyOutcome::Kept {
-                detail: format!("end_run task panicked: {join_err}"),
-            },
+            Ok((Ok(o), held)) => (capsule_destroy_outcome_of(o), Some(held)),
+            // `end_run`'s own `state_dir_missing` (ADR 0043 decision 33's
+            // destroy proof: a missing state dir proves nothing and is
+            // reported, never recreated) gets its own typed code rather
+            // than folding into the generic "lane unreachable" detail —
+            // `capsule_end_not_reached_payload` reads it back off this
+            // exact sentinel string.
+            Ok((Err(e), held)) if e.kind() == std::io::ErrorKind::NotFound => {
+                (CapsuleDestroyOutcome::Kept { detail: "state_dir_missing".to_string() }, Some(held))
+            }
+            Ok((Err(e), held)) => (
+                CapsuleDestroyOutcome::Kept {
+                    detail: format!("supervisor lane unreachable: {e}"),
+                },
+                Some(held),
+            ),
+            Err(join_err) => (
+                CapsuleDestroyOutcome::Kept {
+                    detail: format!("end_run task panicked: {join_err}"),
+                },
+                None,
+            ),
         }
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
-        let _ = (workspace_id, reason);
+        let _ = (workspace_id, reason, agent_kind, agent_name, slug, project_root);
         // Unreachable in practice: no workspace has `runtime == "capsule"`
         // off Windows/Linux (see `Workspace::runtime`'s own doc) — a host
         // this crate compiles for but the capsule runtime does not
         // (ADR 0043: macOS stays experimental).
-        CapsuleDestroyOutcome::Kept {
-            detail: "the capsule runtime is not available on this host".to_string(),
-        }
+        (
+            CapsuleDestroyOutcome::Kept {
+                detail: "the capsule runtime is not available on this host".to_string(),
+            },
+            None,
+        )
     }
 }
 
 /// The typed error `workspace.destroy` returns for a `Kept` outcome —
 /// shared by the non-default path and the default row's own branch.
+/// `"state_dir_missing"` is `destroy_capsule_workspace`'s own sentinel
+/// detail (ADR 0043 decision 33) — the one `Kept` reason with a code more
+/// specific than the generic catch-all, so a caller can tell "nothing
+/// durable was ever established here" apart from every other kept reason
+/// without parsing prose.
 fn capsule_end_not_reached_payload(detail: &str) -> serde_json::Value {
+    let code = if detail == "state_dir_missing" {
+        "state_dir_missing"
+    } else {
+        "capsule_end_not_reached"
+    };
     json!({
         "error": format!("capsule workspace could not be safely deleted: {detail}"),
-        "code": "capsule_end_not_reached",
+        "code": code,
     })
 }
 
@@ -5081,12 +5173,23 @@ pub async fn handle_workspace_destroy(
 
         // Same end-run path the non-default delete uses below. The
         // reason is honest for THIS row (not "deleted" — it's kept).
-        let outcome =
-            destroy_capsule_workspace(&ws.workspace_id, "run ended by the user", workspaces).await;
+        let (outcome, held_guard) = destroy_capsule_workspace(
+            &ws.workspace_id,
+            "run ended by the user",
+            &ws.agent,
+            &ws.agent_name,
+            &ws.slug,
+            &ws.project_root,
+            workspaces,
+        )
+        .await;
         let (payload, confirmed_ended) =
             default_row_end_response(&ws.workspace_id, &ws.slug, &ws.label, outcome);
         tracing::info!(workspace_id = %ws.workspace_id, confirmed_ended, "workspace.destroy: default row's capsule run outcome; row kept");
 
+        // The row guard (if any) rides along into the reset below and
+        // drops only once that returns — see `end_default_row_run`'s own
+        // doc.
         end_default_row_run(
             workspaces,
             ws_events,
@@ -5095,6 +5198,7 @@ pub async fn handle_workspace_destroy(
             &ws.agent_name,
             &ws.tmux_session,
             confirmed_ended,
+            held_guard,
         )
         .await;
 
@@ -5110,6 +5214,14 @@ pub async fn handle_workspace_destroy(
     let tmux_session = ws.tmux_session.clone();
     let agent_name = ws.agent_name.clone();
 
+    // This row's guard, if `destroy_capsule_workspace` took one — HELD
+    // (ADR 0043 decision 33, Codex review round 2) across the removal
+    // below, past the `if`, so a watchdog can never restart the row
+    // between a confirmed end and `remove_by_id`. Dropped explicitly
+    // once removal is done; stays `None` for a tmux row (no capsule
+    // guard applies) or a `Kept` outcome (nothing is removed).
+    let mut destroy_guard: Option<tokio::sync::OwnedMutexGuard<()>> = None;
+
     // ADR 0042 slice L1a, Codex review finding 3: a capsule workspace has
     // no tmux session to kill at all — end its run over the supervisor
     // lane instead, and — unlike the tmux kill, which is a best-effort UX
@@ -5120,9 +5232,20 @@ pub async fn handle_workspace_destroy(
     // "succeeded" out from under it.
     let tmux_killed = if ws.runtime == "capsule" {
         let reason = format!("workspace '{slug}' deleted");
-        match destroy_capsule_workspace(&workspace_id, &reason, workspaces).await {
+        let (outcome, held) = destroy_capsule_workspace(
+            &workspace_id,
+            &reason,
+            &ws.agent,
+            &agent_name,
+            &slug,
+            &ws.project_root,
+            workspaces,
+        )
+        .await;
+        match outcome {
             CapsuleDestroyOutcome::Removable(outcome) => {
                 tracing::info!(workspace_id = %workspace_id, %outcome, "workspace.destroy: capsule run ended; removing the row");
+                destroy_guard = held;
                 false // no tmux session ever existed to kill -- accurate, not a failure
             }
             CapsuleDestroyOutcome::Kept { detail } => {
@@ -5202,6 +5325,11 @@ pub async fn handle_workspace_destroy(
     // killed. Other Arc holders (e.g. mid-flight handlers) will keep
     // those processes alive until they finish.
     let _ = workspaces.remove_by_id(&workspace_id);
+    // Only now may this row's guard (if any) release — see its own doc
+    // above: held from `destroy_capsule_workspace`'s end/stop call
+    // through this exact removal, so a watchdog waiting on the same
+    // guard can never restart a row that is already gone.
+    drop(destroy_guard);
 
     // Live-push to every connected frontend so the Sessions strip refreshes
     // without a manual workspace.list poll (mirror the create path). Clone
@@ -8418,11 +8546,15 @@ mod workspace_destroy_default_row_tests {
     // one always did — never the flat tmux-style refusal
     // (`default_workspace_not_destroyable`). Nothing is actually running
     // behind this row in-process, so the real attempt cannot reach a
-    // live lane and the row is KEPT (unconfirmed) with the capsule-
-    // specific typed error instead — deterministic on every platform:
-    // where the capsule runtime doesn't compile at all (e.g. macOS),
-    // `destroy_capsule_workspace`'s own portable fallback arm reports the
-    // SAME `Kept` shape for a different reason.
+    // live lane and the row is KEPT (unconfirmed) either way. The exact
+    // reason is platform-dependent (ADR 0043 decision 33): on Windows and
+    // Linux, `destroy_capsule_workspace`'s real path finds no state dir
+    // at all on disk for this synthetic, never-spawned row and reports
+    // the SPECIFIC `state_dir_missing` proof rather than the generic
+    // "lane unreachable" catch-all; where the capsule runtime doesn't
+    // compile at all (e.g. macOS), the portable fallback arm reports the
+    // generic code instead — the outward `Kept` shape is the same either
+    // way, only the code differs.
     #[tokio::test]
     async fn default_capsule_workspace_takes_the_real_end_run_path_not_the_flat_refusal() {
         let (reg, id) = seed_default("capsule");
@@ -8432,9 +8564,13 @@ mod workspace_destroy_default_row_tests {
             Some("default_workspace_not_destroyable"),
             "a capsule default row must not get the flat tmux-style refusal: {payload:?}"
         );
+        #[cfg(any(windows, target_os = "linux"))]
+        let expected_code = "state_dir_missing";
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let expected_code = "capsule_end_not_reached";
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
-            Some("capsule_end_not_reached"),
+            Some(expected_code),
             "payload: {payload:?}"
         );
         assert!(reg.resolve(Some(&id)).is_some(), "the default row is never removed either way");
@@ -8457,7 +8593,20 @@ mod workspace_destroy_default_row_tests {
     async fn a_capsule_workspace_already_marked_terminal_is_removable_without_a_live_probe() {
         let (reg, id) = seed_default("capsule");
         reg.mark_capsule_terminal(&id);
-        match destroy_capsule_workspace(&id, "test reason", &reg).await {
+        // `is_capsule_terminal` short-circuits BEFORE any of these are
+        // touched -- placeholders, not real workspace fields.
+        let (outcome, held) = destroy_capsule_workspace(
+            &id,
+            "test reason",
+            "none",
+            "",
+            "local",
+            std::path::Path::new("/p/local"),
+            &reg,
+        )
+        .await;
+        assert!(held.is_none(), "the terminal fast path takes no row guard");
+        match outcome {
             CapsuleDestroyOutcome::Removable(detail) => {
                 assert!(detail.contains("terminal"), "detail should explain why: {detail}");
             }

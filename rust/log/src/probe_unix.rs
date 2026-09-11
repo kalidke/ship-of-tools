@@ -40,9 +40,9 @@ const FAILURE_CLEANUP_REAP_BOUND: Duration = Duration::from_secs(2);
 /// what makes that safe: the child stays a retained zombie, its pid unrecycled, until
 /// [`Self::wait`] observes the exit and reaps it THEN — "reaps on the
 /// exit it observes", the moment there is nothing further Stage A needs
-/// to read off it (unlike a [`ChallengedProcess`], whose own reap is
-/// deferred to `exit_status_after_confirmed_exit` because a caller may
-/// still want to read its exit status first).
+/// to read off it (unlike a [`ChallengedProcess`], whose own reap
+/// (`ChallengedProcess::reap`) is a separate, explicit, owner-called
+/// step because a caller may still want to read its exit status first).
 pub struct SpawnedChild {
     pid: libc::pid_t,
     pidfd: OwnedFd,
