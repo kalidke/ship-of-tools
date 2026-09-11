@@ -195,6 +195,9 @@ pub mod supervisor_client;
 pub mod verify;
 pub mod voyage;
 pub mod wire;
+// Field-proven defect fix: hardens a process's own inherited stdio handles
+// against leaking into a spawned child — self-gated (`#![cfg(windows)]`).
+pub mod winhandle;
 
 mod fsutil;
 
