@@ -56,12 +56,14 @@ tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 
 # ADR 0043 decision 32: `tests/capsule_workspaces.rs`'s own Windows-only
-# breakaway-refusal test stands up a real job object and assigns the
-# spawned `sotd` to it directly (`AssignProcessToJobObject`/`CreateJobObjectW`) —
+# breakaway-containment test stands up a real job object, assigns the
+# spawned `sotd` to it directly (`AssignProcessToJobObject`/`CreateJobObjectW`),
+# and confirms the contained supervisor via `OpenProcess`/`IsProcessInJob` —
 # `sot-log` already depends on `windows-sys` with these same features, but a
 # dependency is not transitively `use`-able, so the test needs its own.
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_JobObjects",
+    "Win32_System_Threading",
 ] }

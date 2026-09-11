@@ -98,10 +98,11 @@ ownership check compares them.
 
 Never launch the frontend or the daemon from a shell running inside a
 capsule row — that shell's own job forbids breakaway, so a daemon started
-there could never free the supervisors it spawns. A daemon that finds
-itself inside a job that forbids breakaway refuses to create capsule rows
-and says so, rather than spawning a supervisor that would silently die
-with that job.
+there could never free the supervisors it spawns. Breakaway is attempted
+for every supervisor spawn; where the daemon's own job forbids it, the
+supervisor is contained in that job instead and shares its lifetime,
+reported once in the daemon log — launch the daemon outside any job for
+capsule survival.
 
 ## Extending it
 

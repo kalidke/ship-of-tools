@@ -1475,15 +1475,14 @@ fn run_worker<E: Endpoint>(
                 }
             }
             Err(LaneError::Protocol(p)) if p.contains("version_skew") => {
-                match reconnect.classify_hello_refused_version_skew() {
-                    ReconnectDecision::Terminal(_) => {
-                        emit(ClientEvent::Terminal(
-                            "supervisor speaks another lane protocol \u{2014} end the row from a client of its own build, or kill only its supervise process and attach again".to_string(),
-                        ));
-                        return;
-                    }
-                    ReconnectDecision::Retry => unreachable!("classify_hello_refused_version_skew is always terminal"),
-                }
+                // `classify_hello_refused_version_skew` is always `Terminal`
+                // (no `Retry` arm exists to discard it into) -- emit and
+                // return directly rather than matching a foregone answer.
+                reconnect.classify_hello_refused_version_skew();
+                emit(ClientEvent::Terminal(
+                    "the row's supervisor refused this client (another lane protocol, or a supervisor from before the protocol-only gate); end the row and recreate it".to_string(),
+                ));
+                return;
             }
             Err(LaneError::Protocol(p)) if p.contains("foreign") => {
                 match reconnect.classify_foreign() {

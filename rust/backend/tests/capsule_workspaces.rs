@@ -1257,7 +1257,6 @@ async fn create_ready_workspace_then_stop_its_supervisor(
 /// asserting it never reports `"terminal"` along the way (a competing
 /// spawn racing the still-held fence would be the WRONG way to reach
 /// this test's own target phase).
-#[cfg(target_os = "linux")]
 async fn poll_for_phase(conn: &mut Conn, next_id: &mut u64, workspace_id: &str, want_phase: &str, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
@@ -1276,15 +1275,15 @@ async fn poll_for_phase(conn: &mut Conn, next_id: &mut u64, workspace_id: &str, 
     }
 }
 
-/// ADR 0030 §8 decision 31c (cross-referenced as ADR 0043 decision 31):
-/// `phase_of` reports `"foreign"` for a capsule row whose supervisor lane
-/// answered but refused THIS daemon's build (typed as
+/// ADR 0030 §8 decision 31c (cross-referenced as ADR 0043 decision 31;
+/// the gate itself is superseded by ADR 0045 decision 7 -- `proto`, not
+/// build): `phase_of` reports `"foreign"` for a capsule row whose
+/// supervisor lane answered but refused this daemon's protocol (typed as
 /// `sot_log::Error::VersionSkew`, never a text match). Reproduces the
 /// field incident's OBSERVABLE shape (a row an operator finds already
-/// held by another build, not one this daemon started that way — this
-/// daemon's own `check_pair` would refuse to spawn a mismatched pair
-/// itself) using [`spawn_lane_refusal_fixture`] in place of a real
-/// foreign build.
+/// held by a foreign lane, not one this daemon started that way -- this
+/// daemon would never spawn one itself) using
+/// [`spawn_lane_refusal_fixture`] in place of a real foreign peer.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn phase_reports_foreign_for_a_version_skew_refusal() {
@@ -2539,31 +2538,33 @@ async fn capsule_create_is_refused_on_an_unqualified_state_root() {
     env.kill_daemon_bounded().await;
 }
 
-/// ADR 0043 decision 32, Windows: a daemon that finds itself inside a job
-/// forbidding breakaway refuses to create a capsule row, with the cause
-/// in its own error text — rather than spawning a supervisor that would
-/// silently die with that job (the "breakaway denied" line seen on one
-/// box before this decision). No `CREATE_SUSPENDED`/`ResumeThread` race
-/// to close here, unlike the helper-level tests in
-/// `rust/log/tests/capsule.rs`: the daemon's own breakaway spawn only
-/// happens in response to the `workspace.create` THIS TEST sends over
-/// the wire, strictly after `sotd` is assigned to the forbidding job
-/// below — the daemon's own boot sequence never attempts one.
+/// ADR 0043 decision 32 (revised): a daemon that finds itself inside a job
+/// forbidding breakaway is never refused the launch over its own
+/// containment — it retries the spawn without `CREATE_BREAKAWAY_FROM_JOB`,
+/// logs once, and the row still reaches "ready" (`--survival degraded`).
+/// Honest for a hosted CI runner too, which keeps its own processes inside
+/// a job lacking `JOB_OBJECT_LIMIT_BREAKAWAY_OK` regardless of this test's
+/// own explicit assignment below — the row reaching ready is asserted
+/// unconditionally, and containment is then proven directly
+/// (`IsProcessInJob` against the ONE job this test built, standing in for
+/// a capsule's own leg job) rather than assumed from the create call
+/// alone.
 #[tokio::test]
 #[cfg(windows)]
-async fn create_is_refused_from_inside_a_job_that_forbids_breakaway() {
+async fn create_from_inside_a_job_that_forbids_breakaway_still_reaches_ready() {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JobObjectExtendedLimitInformation,
         SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
     let _serial = SERIAL.lock().await;
-    let env = Env::new("breakaway-denied");
+    let env = Env::new("breakaway-contained");
     env.spawn_sotd();
-    let (mut conn, next_id) = connect_and_hello(&env.socket_path).await;
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     // A job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` only -- no
     // `JOB_OBJECT_LIMIT_BREAKAWAY_OK` -- standing in for a capsule's own
@@ -2589,32 +2590,36 @@ async fn create_is_refused_from_inside_a_job_that_forbids_breakaway() {
     assert!(ok != 0, "AssignProcessToJobObject(sotd): {}", std::io::Error::last_os_error());
 
     let create_req = serde_json::json!({
-        "label": "breakaway-denied-workspace",
+        "label": "breakaway-contained-workspace",
         "project_root": env.workspace_project_root.to_string_lossy(),
         "runtime": "capsule",
     });
     let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
-    let error_text = create_res.payload["error"].as_str().expect("error text");
-    assert!(error_text.contains("forbids breakaway"), "{error_text}");
+    next_id += 1;
     assert!(
-        create_res.payload.get("workspace_id").is_none(),
-        "a refused create must mint no workspace_id: {:?}", create_res.payload
+        create_res.payload.get("error").is_none(),
+        "a job that forbids breakaway must never refuse the launch: {:?}", create_res.payload
     );
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
 
-    // No `sot-capsule supervise` process exists: `CreateProcessW` itself
-    // failed (`ERROR_ACCESS_DENIED`), so no process object was ever
-    // created to leak -- observable here as no row at all for this
-    // label, the same proof the sibling unqualified-root refusal test
-    // above uses.
-    let ws_slug = sot_protocol::slug("breakaway-denied-workspace");
-    let list_payload = call(&mut conn, next_id + 1, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
-    let has_row = list_payload["workspaces"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .any(|w| w["slug"] == ws_slug);
-    assert!(!has_row, "a refused create must not appear in workspace.list: {list_payload:?}");
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
 
+    let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
+    let (_status, process) =
+        tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&state_dir))
+            .await
+            .unwrap()
+            .expect("query_status after ready");
+    let supervisor = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process.pid()) };
+    assert!(!supervisor.is_null(), "OpenProcess({}): {}", process.pid(), std::io::Error::last_os_error());
+    let mut in_job: i32 = 0;
+    let ok = unsafe { IsProcessInJob(supervisor, job, &mut in_job) };
+    assert!(ok != 0, "IsProcessInJob: {}", std::io::Error::last_os_error());
+    assert_eq!(in_job, 1, "the contained supervisor must stay in the job it could not break away from");
+
+    unsafe {
+        CloseHandle(supervisor);
+        CloseHandle(job);
+    }
     env.kill_daemon_bounded().await;
-    unsafe { CloseHandle(job) };
 }

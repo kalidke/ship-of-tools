@@ -222,15 +222,21 @@ pub enum Error {
     Schema(String),
     #[error("state: {0}")]
     State(String),
-    /// The supervisor lane answered but refused this build
+    /// The supervisor lane answered but refused this client
     /// (`SupervisorReply::Refused { reason: VersionSkew }`, ADR 0030 §8
     /// decision 31c) — typed so a caller (`sot-backend`'s `phase_of`) can
     /// match on it directly instead of substring-matching the generic
     /// `Foreign`-challenge `State` text, which also covers a malformed
     /// reply, trailing bytes, or a wrong pid/creation and does NOT mean
-    /// "another build". `supervisor_client::connect_and_challenge` is the
-    /// only place this is constructed.
-    #[error("supervisor lane refused: version skew (another build)")]
+    /// this. `supervisor_client::connect_and_challenge` is the only place
+    /// this is constructed. Display text is deliberately non-committal
+    /// about the cause (Codex review, 2026-09-11): ADR 0045 decision 7
+    /// retired the build-boundary gate this used to mean exclusively, so
+    /// during the migration window the SAME refusal can come from either
+    /// a genuinely different lane protocol or an OLD, pre-ADR-0045
+    /// supervisor still refusing on build — the wire alone can't say
+    /// which, so this never claims to.
+    #[error("supervisor lane refused: another lane protocol, or a supervisor from before the protocol-only gate")]
     VersionSkew,
     /// U1a (ADR 0041 Lifecycle "Discovery, and the two windows"):
     /// `VoyageStore::open_for_writing_with_lease`'s caller-supplied

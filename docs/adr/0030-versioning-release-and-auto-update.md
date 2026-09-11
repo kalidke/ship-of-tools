@@ -432,6 +432,8 @@ op that lets any caller ask any runtime what it is. Cross-referenced from ADR
 | daemon ↔ a running supervisor | `SUPERVISOR_LANE_BUILD_ID` | the supervisor's own hello | erased to a bare "unreachable" |
 | supervisor ↔ its leg | nothing, by design | — | n/a (ADR 0041 Lifecycle: adopting a surviving leg across a supervisor restart is the point) |
 
+**Superseded 2026-09-11 (ADR 0045 decision 7):** the third and fourth rows above no longer hold — the daemon↔capsule pair, at spawn and at an already-running supervisor's own hello alike, now gates on the lane's `proto` integer alone, with `SUPERVISOR_LANE_BUILD_ID`/`lane_build` carried as an informational diagnostic only, never enforced, and the pre-spawn pair-verdict check itself deleted.
+
 The fourth row was the field incident. `workspace.list`'s capsule-phase probe
 already detected a foreign-build refusal internally (it text-matches the
 error to log a one-time operator warning) and then discarded that fact one
