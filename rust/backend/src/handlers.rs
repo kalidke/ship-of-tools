@@ -4077,8 +4077,35 @@ pub async fn handle_pty_input(
                 // doc ("the enter byte, if requested, is not counted"), so
                 // this is captured BEFORE the CR (if any) is appended below.
                 let byte_len = bytes.len();
+                // ADR 0043 decision 33: `resume_if_absent` in place of a
+                // bare `phase_of` read — a row whose supervisor died
+                // between two headless ops resumes itself, under its own
+                // guard, rather than answering `NotReady` forever. A
+                // resume failure (an unknown workspace, a spawn error)
+                // is logged and folds into `UNREACHABLE_PHASE`, same
+                // shape `phase_of` itself always reported for a dead lane.
+                let workspace_id = ws.workspace_id.clone();
+                let agent_kind = ws.agent.clone();
+                let agent_name = ws.agent_name.clone();
+                let slug = ws.slug.clone();
+                let project_root = ws.project_root.clone();
+                let workspaces_for_resume = workspaces.clone();
                 let outcome = tokio::task::spawn_blocking(move || {
-                    let phase = crate::capsule_workspace::phase_of(&state_dir);
+                    let phase = match crate::capsule_workspace::resume_if_absent(
+                        &state_root,
+                        &workspace_id,
+                        &agent_kind,
+                        &agent_name,
+                        &slug,
+                        &project_root,
+                        workspaces_for_resume,
+                    ) {
+                        Ok(phase) => phase,
+                        Err(e) => {
+                            tracing::warn!(workspace_id = %workspace_id, error = %e, "pty.input: resume_if_absent failed");
+                            crate::capsule_workspace::UNREACHABLE_PHASE
+                        }
+                    };
                     let ready_phase =
                         crate::capsule_workspace::phase_str(sot_log::wire::SupervisorPhase::Ready);
                     if phase != ready_phase {
@@ -4216,8 +4243,30 @@ pub async fn handle_pty_screen(
                 // constant is honester than fabricating an identity this
                 // read has no caller-supplied handle for.
                 let controller_id = "sot-fe-screen".to_string();
+                // ADR 0043 decision 33: `resume_if_absent` in place of a
+                // bare `phase_of` read — see `pty.input`'s own comment.
+                let workspace_id = ws.workspace_id.clone();
+                let agent_kind = ws.agent.clone();
+                let agent_name = ws.agent_name.clone();
+                let slug = ws.slug.clone();
+                let project_root = ws.project_root.clone();
+                let workspaces_for_resume = workspaces.clone();
                 let outcome = tokio::task::spawn_blocking(move || {
-                    let phase = crate::capsule_workspace::phase_of(&state_dir);
+                    let phase = match crate::capsule_workspace::resume_if_absent(
+                        &state_root,
+                        &workspace_id,
+                        &agent_kind,
+                        &agent_name,
+                        &slug,
+                        &project_root,
+                        workspaces_for_resume,
+                    ) {
+                        Ok(phase) => phase,
+                        Err(e) => {
+                            tracing::warn!(workspace_id = %workspace_id, error = %e, "pty.screen: resume_if_absent failed");
+                            crate::capsule_workspace::UNREACHABLE_PHASE
+                        }
+                    };
                     let ready_phase =
                         crate::capsule_workspace::phase_str(sot_log::wire::SupervisorPhase::Ready);
                     if phase != ready_phase {
@@ -4507,6 +4556,20 @@ pub async fn handle_workspace_create(
     );
     ws_seed.runtime = runtime;
     let ws_handle = workspaces.insert(ws_seed);
+    // ADR 0043 decision 33: this row's own guard, held from here through
+    // the capsule spawn attempt below — closes the exact race `pty.open`'s
+    // own `ensure_started` could otherwise win against this handler's
+    // still-in-flight spawn (the field latency map's own ordering:
+    // `ensure_started` can reach this SAME freshly-minted workspace_id
+    // within milliseconds of the row becoming visible via `insert` just
+    // above). Every other lifecycle mutation of a capsule row takes the
+    // SAME guard (`ensure_started`, `resume_if_absent`, the watchdog's own
+    // restart) — this is that discipline's create-time entry. Taken
+    // unconditionally, even for a tmux row: nothing else ever contends
+    // this particular id's guard in that case, so the cost is a single
+    // uncontended lock/unlock.
+    let capsule_guard = workspaces.capsule_guard(&ws_handle.workspace_id);
+    let _capsule_guard_held = capsule_guard.lock().await;
     if let Err(e) = crate::workspaces::save(&ws_handle) {
         tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
     }
@@ -4546,25 +4609,17 @@ pub async fn handle_workspace_create(
         // earlier check ran and would have already returned on failure);
         // the `None` arm stays as a defensive fallback, never actually hit.
         // ADR 0043 decision 29: a process spawn never runs on a Tokio
-        // worker. The `starting` claim itself, though, is taken RIGHT
-        // HERE — synchronously, before the `spawn_blocking` scheduling
-        // yield below — never inside the blocking closure: `pty.open`'s
-        // `ensure_started` can reach this SAME freshly-minted
-        // workspace_id within milliseconds of this reply going out (the
-        // field latency map's own ordering), and would otherwise be free
-        // to win the claim itself while this spawn is merely QUEUED on
-        // the blocking pool, making THIS call observe `Ok(None)` and roll
-        // back a workspace the other caller is legitimately starting.
+        // worker. ADR 0043 decision 33: no claim to take here any more —
+        // `_capsule_guard_held`, taken right after `insert` above, already
+        // covers this whole spawn attempt (`start_supervisor`'s own doc:
+        // "the caller holds the row guard"), so a concurrent `pty.open`'s
+        // `ensure_started` for this same freshly-minted workspace_id
+        // simply waits for that same guard instead of racing this spawn.
         let spawn_result: std::result::Result<(), String> = match capsule_state_root {
             None => Err(format!(
                 "could not resolve this machine's state root ({} unset)",
                 crate::capsule_workspace::STATE_ROOT_HINT
             )),
-            // Rule D: losing the claim here is realistically impossible
-            // for a workspace_id this op just minted — kept only as the
-            // same defensive fallback `start_supervisor`'s own doc names,
-            // collapsing into the same failure/rollback path as a
-            // genuine spawn error rather than growing a third outcome.
             // `&req.agent_name` verbatim (Codex round finding 2: no
             // synthesized default — a synthesized `<slug>-<host>` handed
             // to SOT_COMM_NAME would become an explicit pin that
@@ -4573,9 +4628,6 @@ pub async fn handle_workspace_create(
             // `agent_name` is a real, supported case now — comm-join.sh's
             // own #148 auto-disambiguating derivation picks the handle,
             // via the SOT_COMM_SELF_FILE this spawn pins).
-            Some(_) if !workspaces.try_begin_capsule_start(&ws_handle.workspace_id) => {
-                Err("a supervisor launch for this workspace was unexpectedly already in flight".to_string())
-            }
             Some(state_root) => {
                 let workspace_id = ws_handle.workspace_id.clone();
                 let capsule_argv = capsule_argv.clone();
@@ -4583,12 +4635,14 @@ pub async fn handle_workspace_create(
                 let agent_name = req.agent_name.clone();
                 let slug = ws_handle.slug.clone();
                 let workspaces_for_spawn = workspaces.clone();
-                // BLOCKING (process spawn, `check_pair`'s probe): the
-                // claim above is already held, so this closure only ever
-                // runs the spawn itself — see `start_supervisor_claimed`'s
-                // own doc.
-                match tokio::task::spawn_blocking(move || {
-                    crate::capsule_workspace::start_supervisor_claimed(
+                // BLOCKING (process spawn, `check_pair`'s probe): the row
+                // guard is held by the CALLING async fn's own frame for
+                // this whole `.await`, not by this closure — a panic in
+                // here is caught by `spawn_blocking` itself and never
+                // unwinds past that guard, so there is nothing to release
+                // on the error path below beyond reporting it.
+                tokio::task::spawn_blocking(move || {
+                    crate::capsule_workspace::start_supervisor(
                         &state_root,
                         &workspace_id,
                         crate::capsule_workspace::StartMode::Start,
@@ -4600,25 +4654,7 @@ pub async fn handle_workspace_create(
                     )
                 })
                 .await
-                {
-                    // `start_supervisor_claimed` returns `Result<(), String>`
-                    // (Codex review round finding 9's delete list): the
-                    // claim-losing case is checked synchronously above,
-                    // before this task is even spawned, so there is no
-                    // `None` left to handle here.
-                    Ok(result) => result,
-                    Err(join_err) => {
-                        // The claim taken above is never released by
-                        // `start_supervisor_claimed` itself when its own
-                        // closure never got to run its cleanup (a panic
-                        // unwinds past every `end_capsule_start` call) —
-                        // released here so this workspace_id (freshly
-                        // minted, about to be rolled back below regardless)
-                        // can never wedge as permanently "starting".
-                        workspaces.end_capsule_start(&ws_handle.workspace_id);
-                        Err(format!("capsule spawn task panicked: {join_err}"))
-                    }
-                }
+                .unwrap_or_else(|join_err| Err(format!("capsule spawn task panicked: {join_err}")))
             }
         };
         match spawn_result {
