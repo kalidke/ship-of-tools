@@ -385,21 +385,25 @@ struct Inner {
     /// attempt failed"; the row stays retryable and the caller answers
     /// `capsule_spawn_failed` instead.
     capsule_terminal: std::collections::HashSet<String>,
-    /// Rule D (shrink round): workspace ids with a capsule supervisor
-    /// launch CURRENTLY in flight — inserted atomically by
-    /// `Workspaces::try_begin_capsule_start` (`capsule_workspace::
-    /// start_supervisor`'s own first act) and removed by
-    /// `end_capsule_start` once the lane first answers or the leg exits
-    /// (see `capsule_workspace::spawn_and_watch`'s own doc for the two
-    /// independent, idempotently-converging release paths). The
-    /// invariant this serves: AT MOST ONE launch per workspace at a
-    /// time — `ensure_started`, `workspace.create`, and `resume_all` all
-    /// check `is_capsule_starting` before attempting a spawn, so a
-    /// second concurrent request (the exact race a fast `pty.open`
-    /// against the daemon's own startup resume-scan can produce) spawns
-    /// nothing and the caller answers normally, letting the requester's
-    /// own retry find the lane once it comes up.
-    starting: std::collections::HashSet<String>,
+    /// ADR 0043 decision 33: one guard per capsule row. Every lifecycle
+    /// mutation of a row — spawn, resume, a watchdog's restart, destroy —
+    /// holds this mutex for its WHOLE duration and rechecks membership
+    /// and phase once it actually has the lock, so at most one actor can
+    /// ever touch a row's supervisor at a time. Replaces the old
+    /// `starting: HashSet<String>` claim: that flag guarded only a spawn
+    /// attempt and was released the moment the lane first answered or the
+    /// leg exited — BEFORE the watchdog's own
+    /// restart backoff — so a stale attach landing mid-backoff was free
+    /// to spawn a second authority. Created on demand
+    /// (`Workspaces::capsule_guard`, under the same write lock this map
+    /// itself uses, so two concurrent first-callers for one never-before-
+    /// seen id can never mint two different mutexes); dropped with the
+    /// row (`remove_by_id`). `Arc` so a caller can hold its own clone
+    /// across an `.await` without holding the registry's own `RwLock` —
+    /// blocking callers (`resume_if_absent`, `ensure_started`) take
+    /// `blocking_lock`, the watchdog's restart arm takes `lock().await`,
+    /// `resume_all` takes `try_lock` and skips a row already busy.
+    capsule_guards: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl Workspaces {
@@ -583,52 +587,25 @@ impl Workspaces {
         g.capsule_terminal.remove(workspace_id);
     }
 
-    /// Rule D (shrink round): atomically claim `workspace_id`'s capsule
-    /// launch slot — `true` iff THIS call is the one that gets to spawn
-    /// (the id was absent from `Inner::starting` and is now present);
-    /// `false` means another launch is already in flight and the caller
-    /// must spawn nothing. `HashSet::insert`'s own return value IS the
-    /// atomic check-and-set: no separate read-then-write under the same
-    /// lock acquisition could race a concurrent caller between them, and
-    /// this uses none — one `write()` guard, one `insert` call. The
-    /// invariant this serves: at most one capsule supervisor launch per
-    /// workspace at a time. `capsule_workspace::start_supervisor`'s own
-    /// first act. `#[cfg_attr(not(windows), allow(dead_code))]`: same
-    /// windows-only-caller reasoning as `mark_capsule_terminal` above —
-    /// every real caller lives in `capsule_workspace.rs`'s
-    /// `windows_runtime` module or `handlers.rs`'s `#[cfg(windows)]`
-    /// capsule-create block.
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub fn try_begin_capsule_start(&self, workspace_id: &str) -> bool {
+    /// This row's capsule lifecycle guard (ADR 0043 decision 33) —
+    /// created on demand under the SAME write lock the registry itself
+    /// uses, so two concurrent first-callers for one never-before-seen id
+    /// can never mint two different mutexes for it. Every lifecycle
+    /// mutation of a capsule row — a fresh spawn, `resume_if_absent`, the
+    /// watchdog's own restart — holds the returned `Arc` for its whole
+    /// duration and rechecks membership/phase once it actually has the
+    /// lock, closing the exact window the old `starting` claim left open
+    /// (released before the watchdog's restart backoff, so a stale attach
+    /// during that backoff could spawn a second authority). Portable, no
+    /// cfg: unlike `starting`'s three methods (Windows-only callers), this
+    /// is called from both platforms' shared `mod runtime` and from
+    /// `workspace.create` alike.
+    pub fn capsule_guard(&self, workspace_id: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut g = self.inner.write().expect("workspaces lock");
-        g.starting.insert(workspace_id.to_string())
-    }
-
-    /// Release `workspace_id`'s capsule launch slot claimed by
-    /// [`try_begin_capsule_start`]. Idempotent: removing an absent id is
-    /// a harmless no-op, which is exactly what lets TWO independent
-    /// release paths (`capsule_workspace::spawn_and_watch`'s own doc:
-    /// "the lane first answers or the child exits") call this without
-    /// coordinating — whichever fires first actually clears the entry.
-    /// Same windows-only-caller reasoning as `try_begin_capsule_start`.
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub fn end_capsule_start(&self, workspace_id: &str) {
-        let mut g = self.inner.write().expect("workspaces lock");
-        g.starting.remove(workspace_id);
-    }
-
-    /// `true` iff a capsule launch is currently claimed for this id —
-    /// the early-exit half of rule D's invariant (`ensure_started`,
-    /// `workspace.create`, and `resume_all` all check this BEFORE
-    /// attempting a spawn, to skip the work rather than race it out;
-    /// `try_begin_capsule_start`'s own atomic insert is what actually
-    /// enforces the invariant against a racer that read this a moment
-    /// too early). Same windows-only-caller reasoning as
-    /// `try_begin_capsule_start`.
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub fn is_capsule_starting(&self, workspace_id: &str) -> bool {
-        let g = self.inner.read().expect("workspaces lock");
-        g.starting.contains(workspace_id)
+        g.capsule_guards
+            .entry(workspace_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     /// Current default workspace id, if one has been set. Consumed by
@@ -768,6 +745,13 @@ impl Workspaces {
         let mut g = self.inner.write().expect("workspaces lock");
         let removed = g.by_id.remove(id)?;
         g.by_slug.remove(&removed.slug);
+        // ADR 0043 decision 33: the guard dies with the row. A caller
+        // that is still holding its own `Arc` clone (e.g. the watchdog
+        // mid-restart) keeps that mutex alive until it drops it — this
+        // only stops a FUTURE `capsule_guard(id)` call for this id from
+        // handing out the same, now-retired mutex; a fresh id reuse
+        // starts with a fresh one.
+        g.capsule_guards.remove(id);
         if g.default_id.as_deref() == Some(id) {
             g.default_id = None;
         }
