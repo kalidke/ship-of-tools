@@ -133,16 +133,14 @@ where
     let mut parent_lease_name: Option<String> = None;
     #[cfg(unix)]
     let mut parent_lease_fd: Option<std::os::fd::RawFd> = None;
-    // ADR 0042 slice L1a (Codex review finding 7): supplied by the
-    // spawner (`--start`/`--resume`'s own supervisor, via
-    // `build_run_command`'s `--survival`), never inferred — defaults to
-    // `Normal` for a bare manual invocation, matching every existing
-    // caller of this harness that predates the flag. ADR 0043 decision
-    // 32: both platforms attempt an escape from their own kill domain and
-    // report a denial as `degraded` rather than refusing or clamping it —
-    // `--survival` is honored verbatim on Unix too (Linux's own escape is
-    // a transient user scope, not a job).
-    let mut survival_flag: Option<sot_log::wire::Survival> = None;
+    // ADR 0042 slice L1a: supplied by the spawner (`--start`/`--resume`'s
+    // own supervisor, via `build_run_command`'s `--survival`), defaulting
+    // to `Normal` for a bare manual invocation. ADR 0043 decision 32:
+    // honored verbatim on both platforms now -- no clamp, so the
+    // "explicit vs. default" distinction an `Option` used to carry is
+    // immaterial (Codex review) -- the value itself is all downstream
+    // code ever needs.
+    let mut survival = sot_log::wire::Survival::Normal;
     loop {
         match rest.first().map(String::as_str) {
             Some("--cols") if rest.len() > 1 => {
@@ -200,14 +198,14 @@ where
                 }
             }
             Some("--survival") if rest.len() > 1 => {
-                survival_flag = Some(match rest[1].as_str() {
+                survival = match rest[1].as_str() {
                     "normal" => sot_log::wire::Survival::Normal,
                     "degraded" => sot_log::wire::Survival::Degraded,
                     _ => {
                         eprintln!("{usage}");
                         std::process::exit(2);
                     }
-                });
+                };
                 rest = &rest[2..];
             }
             Some("--assume-no-rollback-target") => {
@@ -254,14 +252,6 @@ where
     #[cfg(unix)]
     let producer_kind = "raw-terminal";
 
-    // ADR 0043 decision 32: both platforms attempt the escape from the
-    // daemon's own kill domain and report a denial rather than refusing or
-    // silently overriding it -- `--survival` is whatever the spawner
-    // actually achieved (Linux: a transient user scope; Windows: job
-    // breakaway), always honored, never clamped to `Normal` on either
-    // platform.
-    let survival = survival_flag.unwrap_or(sot_log::wire::Survival::Normal);
-
     #[cfg(windows)]
     let parent_lease = parent_lease_name.map(sot_log::producer::ParentLease::NamedMutex);
     #[cfg(unix)]
@@ -275,9 +265,6 @@ where
         argv,
         cols,
         rows,
-        // ADR 0042 slice L1a: supplied by `--survival` from a real spawner
-        // (`build_run_command`) on either platform; a bare manual
-        // invocation still defaults to the honest `Normal` (decision 32).
         survival,
         rollout_evidence,
         parent_lease,

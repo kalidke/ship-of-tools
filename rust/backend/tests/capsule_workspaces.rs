@@ -197,6 +197,19 @@ struct Env {
     /// `spawn_sotd_with_prepended_path` call (the daemon-restart tests
     /// spawn a second one after killing the first).
     daemon: RefCell<Option<Child>>,
+    /// ADR 0043 decision 32 (lane L2), Codex BLOCKER 2: the scratch
+    /// `systemd --user` unit [`Env::spawn_sotd_as_user_service`] started,
+    /// if any — owned here (never merely returned to the caller) so
+    /// `Drop` can stop it on EVERY exit path, a panic mid-test included,
+    /// before it ever sweeps this env's own legs or lets
+    /// `_tmp`/`_runtime_tmp` delete the directories that unit's daemon
+    /// may still be reading from. `SOT_TEST_REQUIRE_USER_MANAGER=1`-only
+    /// naming (`sot-test-<uuid>`) prevents a COLLISION between runs, not
+    /// a LEAK from one — this field is what closes that second gap.
+    /// Cleared by [`Env::forget_user_service`] once the test body itself
+    /// has already stopped it (so `Drop` does not redundantly re-stop an
+    /// already-gone unit — harmless either way, but quieter).
+    user_service_unit: RefCell<Option<String>>,
 }
 
 impl Env {
@@ -309,6 +322,7 @@ impl Env {
             config_root,
             socket_path,
             daemon: RefCell::new(None),
+            user_service_unit: RefCell::new(None),
         }
     }
 
@@ -554,10 +568,15 @@ impl Env {
     /// `sot-capsule`'s own PATH-searched `systemd-run` probe and locate
     /// its own home. Does NOT populate `self.daemon` — the unit itself is
     /// the daemon's lifecycle handle now; `Drop`'s best-effort daemon kill
-    /// and [`Env::kill_daemon_bounded`] both no-op for it, exactly as
-    /// intended (this test stops the unit itself, deliberately, mid-body).
+    /// and [`Env::kill_daemon_bounded`] both no-op for it. Tracked instead
+    /// in [`Env::user_service_unit`] (Codex BLOCKER 2) so `Drop` stops the
+    /// unit itself on every exit path, and the MainPID is read back and
+    /// returned alongside the unit name so [`stop_user_service`] can
+    /// confirm the actual daemon process — not merely `is-active`'s own
+    /// text — has exited before the caller's sustained-survival window
+    /// starts (Codex BLOCKER 1).
     #[cfg(target_os = "linux")]
-    fn spawn_sotd_as_user_service(&self) -> String {
+    fn spawn_sotd_as_user_service(&self) -> (String, u32) {
         let unit = format!("sot-test-{}.service", uuid::Uuid::now_v7());
         let setenv = |k: &str, v: &std::ffi::OsStr| format!("--setenv={k}={}", v.to_string_lossy());
         let tmux_sock = self.tmux_sock();
@@ -589,7 +608,38 @@ impl Env {
             .status()
             .expect("systemd-run --user --unit spawn_sotd_as_user_service");
         assert!(status.success(), "systemd-run --user --unit {unit} failed to start ({status})");
-        unit
+        // Tracked BEFORE returning, not after — a panic between here and
+        // the caller ever reading the return value must still leave
+        // `Drop` able to find and stop it.
+        *self.user_service_unit.borrow_mut() = Some(unit.clone());
+        // `--service-type=exec` (set above) makes `systemd-run` itself
+        // return only once the unit's own `execve` has actually happened
+        // — MainPID is therefore already populated the moment `status()`
+        // returns, no poll needed.
+        let pid_output = Command::new("systemctl")
+            .arg("--user")
+            .arg("show")
+            .arg(&unit)
+            .arg("--property=MainPID")
+            .arg("--value")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .expect("systemctl --user show MainPID");
+        let pid: u32 = String::from_utf8_lossy(&pid_output.stdout)
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("parse MainPID for {unit}: {e}"));
+        (unit, pid)
+    }
+
+    /// Tell `Drop` the test body has already stopped
+    /// [`Env::spawn_sotd_as_user_service`]'s own unit itself
+    /// (`stop_user_service`) — so it is not redundantly re-stopped.
+    #[cfg(target_os = "linux")]
+    fn forget_user_service(&self) {
+        self.user_service_unit.borrow_mut().take();
     }
 
     /// Linux only, used ONLY by
@@ -629,19 +679,47 @@ impl Env {
     }
 }
 
-/// LU4 review round 2, F4: kill the daemon FIRST (so its own crash-
-/// restart policy can't spawn a fresh contender into a state dir this
-/// impl is about to sweep), THEN sweep this env's own legs with the
-/// ANCHORED pattern ([`Env::leg_pgrep_pattern`] — never the old unanchored
-/// `pkill -f <state_dir>` substring match), THEN kill this env's own
-/// ISOLATED tmux server (F3) — in that exact order, on EVERY exit path
-/// including a panic, which a per-test teardown call can never guarantee.
-/// `_tmp`/`_runtime_tmp`'s own `Drop` (temp dir removal, step 4) runs
-/// automatically right after this method returns — Rust drops a value's
-/// remaining fields, in declaration order, immediately after a manual
-/// `Drop::drop` body finishes.
+/// ADR 0043 decision 32 (lane L2), Codex BLOCKER 2: stop this env's own
+/// scratch `systemd --user` service FIRST, if [`Env::spawn_sotd_as_user_
+/// service`] ever started one and the test body never called
+/// [`Env::forget_user_service`] — before ANY of the LU4 review round 2,
+/// F4 ordering below, which otherwise assumes `self.daemon` is the only
+/// live daemon process a panic could leave running. THEN: kill the
+/// tracked daemon `Child` (so its own crash-restart policy can't spawn a
+/// fresh contender into a state dir this impl is about to sweep), THEN
+/// sweep this env's own legs with the ANCHORED pattern
+/// ([`Env::leg_pgrep_pattern`] — never the old unanchored `pkill -f
+/// <state_dir>` substring match), THEN kill this env's own ISOLATED tmux
+/// server (F3) — in that exact order, on EVERY exit path including a
+/// panic, which a per-test teardown call can never guarantee.
+/// `_tmp`/`_runtime_tmp`'s own `Drop` (temp dir removal, the final step)
+/// runs automatically right after this method returns — Rust drops a
+/// value's remaining fields, in declaration order, immediately after a
+/// manual `Drop::drop` body finishes.
 impl Drop for Env {
     fn drop(&mut self) {
+        // (0) ADR 0043 decision 32 (lane L2), Codex BLOCKER 2: any
+        // scratch `systemd --user` service this env started, stopped
+        // FIRST — before the tracked daemon `Child` below and well
+        // before `_tmp`/`_runtime_tmp` (declared later in this struct,
+        // so dropped after this method returns) delete the directories
+        // out from under a daemon that is still running because the
+        // test body panicked before it ever reached `stop_user_service`
+        // itself. Best-effort, like the daemon kill just below (a failed
+        // stop here has no better recovery than leaving it for the next
+        // sweep) — never the asserting version test bodies use.
+        #[cfg(target_os = "linux")]
+        if let Some(unit) = self.user_service_unit.get_mut().take() {
+            let _ = Command::new("systemctl")
+                .arg("--user")
+                .arg("stop")
+                .arg(&unit)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+
         // (1) the daemon, first. `&mut self` here (not `&self`), so
         // `RefCell::get_mut` — no runtime borrow check needed, and this
         // can never race the `&self`-taking async methods above (nothing
@@ -788,6 +866,27 @@ fn poll_until_no_process_matches(pattern: &str, timeout: Duration) -> bool {
     }
 }
 
+/// Drains `pipe` to EOF or `bound`, whichever comes first — mirrors
+/// `capsule_workspace::runtime::drain_stderr_bounded` (production, Codex
+/// SHOULD-FIX: a wrapper that has already exited can still leave stderr
+/// inherited by a still-running grandchild, and a plain `read_to_string`
+/// then blocks until EVERY holder of the pipe's write end closes it, not
+/// just the immediate child whose own exit was already observed —
+/// measured 7 s in production's own repro). Same off-thread-plus-
+/// `recv_timeout` shape, duplicated rather than shared for the same
+/// crate-boundary reason [`user_manager_available_for_test`]'s own doc
+/// gives for duplicating the probe itself.
+#[cfg(target_os = "linux")]
+fn drain_stderr_bounded(mut pipe: impl std::io::Read + Send + 'static, bound: Duration) -> String {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = pipe.read_to_string(&mut buf);
+        let _ = tx.send(buf);
+    });
+    rx.recv_timeout(bound).unwrap_or_default()
+}
+
 /// ADR 0043 decision 32, test 1's own SKIP gate: does THIS test runner
 /// have a `systemd --user` manager reachable at all? Same capability
 /// question `capsule_workspace::runtime::user_scope_available` answers in
@@ -796,7 +895,8 @@ fn poll_until_no_process_matches(pattern: &str, timeout: Duration) -> bool {
 /// handful of lines each and answer the same question for genuinely
 /// different callers, not worth a shared crate-boundary-crossing export.
 /// `Err`'s message is the probe's own stderr, verbatim where there is
-/// any — exactly what the caller prints on `SKIPPED:`.
+/// any, drained under its own separate bound — exactly what the caller
+/// prints on `SKIPPED:`.
 #[cfg(target_os = "linux")]
 fn user_manager_available_for_test() -> Result<(), String> {
     let mut child = Command::new("systemd-run")
@@ -821,45 +921,51 @@ fn user_manager_available_for_test() -> Result<(), String> {
     if status.success() {
         return Ok(());
     }
-    let mut stderr = String::new();
-    if let Some(mut e) = child.stderr.take() {
-        let _ = std::io::Read::read_to_string(&mut e, &mut stderr);
-    }
+    let stderr = child
+        .stderr
+        .take()
+        .map(|pipe| drain_stderr_bounded(pipe, Duration::from_secs(1)))
+        .unwrap_or_default();
     Err(stderr.trim().to_string())
 }
 
 /// Stop the scratch unit [`Env::spawn_sotd_as_user_service`] started —
 /// NEVER the live `sotd`'s own unit, a distinct `sot-test-<uuid>.service`
-/// this test alone owns — and poll `is-active` until it reads anything
-/// but `"active"` (stopped, failed, or garbage-collected by the unit's
-/// own `--collect`, ALL of which mean "not running any more" equally for
-/// this proof's purposes), bounded rather than trusting `systemctl
-/// stop`'s own synchronous return alone.
+/// this test alone owns. Two proofs, both required (Codex BLOCKER 1,
+/// reproduced with a failing `systemctl` stub: the old version's ignored
+/// `status()` plus an `is-active` check that folded a command ERROR to
+/// `unwrap_or(false)` — "not active" — let a stop that never actually ran
+/// read as success): (1) `systemctl --user stop` itself reports success —
+/// a command error, a nonzero exit, ANY failure here is a hard test
+/// failure, never silently treated as "done"; (2) `daemon_pid` — read
+/// back by the caller from `MainPID` right after spawn, never re-derived
+/// here — has actually exited (`/proc/<pid>` gone), polled rather than
+/// trusted the instant `stop` returns. `is-active` alone is not enough
+/// for (2): it can still read `"deactivating"` mid-shutdown, which would
+/// let the caller's sustained-survival window start before the daemon
+/// backing this unit is actually dead.
 #[cfg(target_os = "linux")]
-fn stop_user_service(unit: &str) {
-    let _ = Command::new("systemctl")
+fn stop_user_service(unit: &str, daemon_pid: u32) {
+    let status = Command::new("systemctl")
         .arg("--user")
         .arg("stop")
         .arg(unit)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .status()
+        .expect("run systemctl --user stop");
+    assert!(status.success(), "systemctl --user stop {unit} failed ({status})");
+
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let still_active = Command::new("systemctl")
-            .arg("--user")
-            .arg("is-active")
-            .arg(unit)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
-            .unwrap_or(false);
-        if !still_active || Instant::now() >= deadline {
+        if !Path::new(&format!("/proc/{daemon_pid}")).exists() {
             return;
         }
+        assert!(
+            Instant::now() < deadline,
+            "systemctl --user stop {unit} reported success but pid {daemon_pid} is still alive after 10s"
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -981,6 +1087,61 @@ async fn try_query_status(state_dir: PathBuf) -> Option<sot_log::supervisor_clie
     })
     .await
     .unwrap_or(None)
+}
+
+/// One `MgmtRequest::Status` round trip against the LEG's own real
+/// voyage socket (`sot_log::socket_unix::connect_voyage_socket`, ADR
+/// 0043 decision 8 steps 1-3: connect + same-user auth, the ordinary
+/// step-5-client-facing constructor) — the WIRE value the degrade test
+/// proves against (Codex SHOULD-FIX: `/proc/<pid>/cmdline` text does not
+/// prove propagation onto the wire; restoring the deleted Unix survival
+/// clamp would still leave a cmdline-only check green). Distinct from
+/// [`try_query_status`]'s own `sot_log::supervisor_client::query_status`:
+/// that is the SUPERVISOR's own status (`SupervisorReply::StatusOk`,
+/// which carries no `survival` field at all) — `survival` lives only on
+/// `MgmtReply::StatusOk`, the LEG's own mgmt lane. The SOM0 mgmt lane
+/// has no hello frame (unlike the supervisor/attach lanes) — `connect_
+/// voyage_socket`'s own same-user auth already happened before this
+/// function ever gets a `SocketClient` back, so the very first frame
+/// sent here is the request itself. Bounded like every other wire round
+/// trip in this file ([`call`]'s own `BOUND`) — the blocking body runs
+/// on its own thread via `spawn_blocking`, abandoned (not cancelled) on
+/// timeout, exactly [`drain_stderr_bounded`]'s own "leak, never hang"
+/// tradeoff.
+#[cfg(target_os = "linux")]
+async fn leg_survival(voyage_id: &str) -> sot_log::wire::Survival {
+    let voyage_id_owned = voyage_id.to_string();
+    let voyage_id_for_body = voyage_id_owned.clone();
+    tokio::time::timeout(
+        BOUND,
+        tokio::task::spawn_blocking(move || -> sot_log::wire::Survival {
+            let client = sot_log::socket_unix::connect_voyage_socket(&voyage_id_for_body)
+                .unwrap_or_else(|e| panic!("connect_voyage_socket({voyage_id_for_body}): {e}"));
+            let body = sot_log::wire::encode_mgmt_request(&sot_log::wire::MgmtRequest::Status)
+                .expect("MgmtRequest::Status has no fields; encoding cannot fail");
+            client.write_all(&body).expect("write MgmtRequest::Status");
+            let mut splitter = sot_log::wire::FrameSplitter::new();
+            let mut buf = [0u8; 512];
+            loop {
+                let n = client.read(&mut buf).expect("read mgmt reply");
+                assert!(n > 0, "voyage socket closed before answering status");
+                let (frames, err) = splitter.feed(&buf[..n]);
+                assert!(err.is_none(), "mgmt lane wire error: {err:?}");
+                for frame in frames {
+                    if let sot_log::wire::DecodedFrame::MgmtReply(sot_log::wire::MgmtReply::StatusOk {
+                        survival,
+                        ..
+                    }) = frame
+                    {
+                        return survival;
+                    }
+                }
+            }
+        }),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("leg mgmt status for {voyage_id_owned} did not answer within {BOUND:?}"))
+    .expect("leg_survival's own blocking task panicked")
 }
 
 // A DETACHED leg this test's own row may have left running (`stop` ends
@@ -2802,7 +2963,7 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
     }
 
     let env = Env::new("uss");
-    let unit = env.spawn_sotd_as_user_service();
+    let (unit, daemon_pid) = env.spawn_sotd_as_user_service();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let create_req = serde_json::json!({
@@ -2844,7 +3005,8 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
         "supervisor's own cgroup still names the daemon's own unit {unit:?}: {cgroup:?}"
     );
 
-    stop_user_service(&unit);
+    stop_user_service(&unit, daemon_pid);
+    env.forget_user_service();
 
     // 3 s SUSTAINED (never a single lucky sample): the supervisor's own
     // lane keeps answering and its leg keeps running for the WHOLE
@@ -2886,11 +3048,12 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
 /// `systemd --user` manager", so this runs deterministically regardless
 /// of whether a REAL one exists here too), the row still reaches "ready"
 /// — contained, degraded, but never refused — and the daemon reports
-/// exactly why: the supervisor's own cmdline carries `--survival
-/// degraded`, and the daemon's own log names the probe's stderr.
-/// Propagation of `degraded` into the leg's own `status_ok.survival` is
-/// pinned one layer down, in `rust/log/tests/capsule.rs`'s own survival
-/// coverage — not duplicated here.
+/// exactly why: the LEG's own mgmt status reports `survival: Degraded`
+/// on the wire ([`leg_survival`] — Codex SHOULD-FIX: cmdline text proves
+/// only what was typed on the command line, not what the process
+/// actually configured or reported; restoring the deleted Unix survival
+/// clamp would still leave a cmdline-only check green), and the daemon's
+/// own log names the probe's stderr.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn capsule_launch_degrades_when_no_user_scope_is_available() {
@@ -2925,22 +3088,21 @@ async fn capsule_launch_degrades_when_no_user_scope_is_available() {
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
     let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
 
-    let (_status, process) = tokio::task::spawn_blocking({
+    let (status, process) = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
         move || sot_log::supervisor_client::query_status(&dir)
     })
     .await
     .unwrap()
     .expect("query_status on the degraded row");
-    let pid = process.pid();
     drop(process);
+    let voyage_id = status.voyage.expect("a voyage id on a ready row");
 
-    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline"))
-        .unwrap_or_else(|e| panic!("read /proc/{pid}/cmdline: {e}"));
-    let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
-    assert!(
-        cmdline.contains("--survival degraded"),
-        "the supervisor's own cmdline is missing --survival degraded: {cmdline:?}"
+    let survival = leg_survival(&voyage_id).await;
+    assert_eq!(
+        survival,
+        sot_log::wire::Survival::Degraded,
+        "the leg's own mgmt status must report survival=degraded when the user scope is denied"
     );
 
     let log_path = env.state_root.join("sot").join("sotd.log");

@@ -68,12 +68,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
 ] }
 
-# ADR 0043 decision 32 (lane L2): `tests/capsule_workspaces.rs`'s own
-# real-user-service survival test names its scratch `systemd-run --user
-# --unit` uniquely per run (`sot-test-<uuid>`) so a stray leftover from an
-# aborted run can never collide with a fresh one — `sot-log` already
-# depends on `uuid`, but a dependency is not transitively `use`-able, so
-# the test needs its own (same reasoning as the Windows dev-dependency
-# just above).
+# ADR 0043 decision 32 (lane L2): `tests/capsule_workspaces.rs` names its
+# scratch `systemd-run --user --unit` uniquely per run (same reasoning as
+# the Windows dev-dependency just above).
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 uuid = { workspace = true }
