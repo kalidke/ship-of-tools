@@ -132,22 +132,17 @@ fn connect(
 /// `Undetermined`, a timeout, a malformed reply — is folded into one
 /// `Err`: the caller has no use here for distinguishing WHY the lane is
 /// unreachable, only THAT it is (`workspace.list`'s own "failure ->
-/// unreachable" rule).
-///
-/// Returns the [`ChallengedProcess`] ALONGSIDE the status (round-2 Codex
-/// finding, daemon-boot-adopts-supervisor fix): the challenge already
-/// proves and retains a live handle to the process on the other end of
-/// this connection, and a caller that just ADOPTED a lane (found it
-/// alive rather than spawning into it) needs exactly that handle as its
-/// own death signal — the same role a spawned child's own `Child` plays
-/// for a leg this process spawned itself. A caller with no use for it
-/// (most callers) simply drops the second element; dropping closes the
-/// handle.
-pub fn query_status(state_dir: &Path) -> crate::Result<(StatusReport, ChallengedProcess)> {
+/// unreachable" rule). Returns the status alone: ADR 0043 decision 33
+/// deleted adopted watching (a watchdog now exists only for a `Child` the
+/// daemon itself spawned), so the [`ChallengedProcess`] this used to
+/// return alongside the status has no remaining caller — `connect`'s own
+/// handle is simply dropped here once the challenge has done its job of
+/// proving identity.
+pub fn query_status(state_dir: &Path) -> crate::Result<StatusReport> {
     let deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
-    let (conn, process) = connect(state_dir, deadline)?;
+    let (conn, _process) = connect(state_dir, deadline)?;
     match send_and_read(&conn, &SupervisorRequest::Status, Instant::now() + STATUS_BUDGET)? {
-        SupervisorReply::StatusOk { voyage, leg, phase, .. } => Ok((StatusReport { voyage, leg, phase }, process)),
+        SupervisorReply::StatusOk { voyage, leg, phase, .. } => Ok(StatusReport { voyage, leg, phase }),
         other => Err(err_state(format!("expected status_ok, got {other:?}"))),
     }
 }
@@ -171,8 +166,8 @@ pub fn query_status(state_dir: &Path) -> crate::Result<(StatusReport, Challenged
 /// could still race the old one's own teardown. The RPC connection is
 /// dropped first (never held open across a wait the peer has no reason
 /// to answer on), then this blocks on the SAME retained
-/// [`ChallengedProcess`] handle [`query_status`]'s own caller would use
-/// as a death signal, bounded by [`TEARDOWN_AGGREGATE_DEADLINE`] — the
+/// [`ChallengedProcess`] handle `connect` hands back — this function's
+/// own death signal, bounded by [`TEARDOWN_AGGREGATE_DEADLINE`] — the
 /// authority's own documented worst-case teardown budget (it drops its
 /// lane before releasing the fence), so a caller that waits this long
 /// and still sees no exit has a genuine, reportable problem, not mere

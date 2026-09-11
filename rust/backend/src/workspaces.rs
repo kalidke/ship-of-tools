@@ -591,21 +591,25 @@ impl Workspaces {
     /// created on demand under the SAME write lock the registry itself
     /// uses, so two concurrent first-callers for one never-before-seen id
     /// can never mint two different mutexes for it. Every lifecycle
-    /// mutation of a capsule row — a fresh spawn, `resume_if_absent`, the
-    /// watchdog's own restart — holds the returned `Arc` for its whole
+    /// mutation of a capsule row holds the returned `Arc` for its whole
     /// duration and rechecks membership/phase once it actually has the
-    /// lock, closing the exact window the old `starting` claim left open
-    /// (released before the watchdog's restart backoff, so a stale attach
-    /// during that backoff could spawn a second authority). Portable, no
-    /// cfg: unlike `starting`'s three methods (Windows-only callers), this
-    /// is called from both platforms' shared `mod runtime` and from
-    /// `workspace.create` alike.
-    pub fn capsule_guard(&self, workspace_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    /// lock. `None` when `workspace_id` is not currently registered
+    /// (Codex review, 2026-09-11): checked under this SAME write lock
+    /// before inserting, so a caller that races `remove_by_id` never
+    /// mints an orphan entry for a row already gone — the one thing
+    /// `remove_by_id`'s own cleanup cannot prevent on its own, since it
+    /// runs under a DIFFERENT acquisition of this lock.
+    pub fn capsule_guard(&self, workspace_id: &str) -> Option<Arc<tokio::sync::Mutex<()>>> {
         let mut g = self.inner.write().expect("workspaces lock");
-        g.capsule_guards
-            .entry(workspace_id.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
+        if !g.by_id.contains_key(workspace_id) {
+            return None;
+        }
+        Some(
+            g.capsule_guards
+                .entry(workspace_id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone(),
+        )
     }
 
     /// Current default workspace id, if one has been set. Consumed by

@@ -465,7 +465,7 @@ fn a_status_probe_against_an_idle_supervisor_is_not_poll_bound() {
         // mid-tick from the PREVIOUS trial's own connect/challenge.
         std::thread::sleep(IDLE_BEFORE_PROBE);
         let started = Instant::now();
-        let (report, _process) =
+        let report =
             sot_log::supervisor_client::query_status(&state_dir).expect("status probe against an idle supervisor");
         elapsed_all.push(started.elapsed());
         assert_eq!(report.phase, SupervisorPhase::Ready);

@@ -1080,11 +1080,7 @@ fn find_row(payload: &serde_json::Value, workspace_id: &str) -> Option<serde_jso
 /// which two of this test's own polls treat as the fact they're waiting
 /// for (the old supervisor going away after `stop`).
 async fn try_query_status(state_dir: PathBuf) -> Option<sot_log::supervisor_client::StatusReport> {
-    tokio::task::spawn_blocking(move || {
-        sot_log::supervisor_client::query_status(&state_dir)
-            .ok()
-            .map(|(report, _process)| report)
-    })
+    tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&state_dir).ok())
     .await
     .unwrap_or(None)
 }
@@ -1288,7 +1284,6 @@ async fn restart_daemon_and_prove_adoption(
         move || {
             sot_log::supervisor_client::query_status(&dir)
                 .expect("query_status after restart")
-                .0
                 .leg
         }
     })
@@ -1385,7 +1380,6 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
         move || {
             sot_log::supervisor_client::query_status(&dir)
                 .expect("query_status before stop")
-                .0
                 .leg
         }
     })
@@ -2116,7 +2110,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     // `workspace.destroy` — see this test's own doc for why), then
     // prove attach recovers it via `reset` with a NEW voyage (not the
     // old flat refusal, and not a resurrected ended one) ---
-    let (original_status, _process) = sot_log::supervisor_client::query_status(&state_dir_path)
+    let original_status = sot_log::supervisor_client::query_status(&state_dir_path)
         .expect("query_status before ending the run");
     let original_voyage = original_status
         .voyage
@@ -2301,7 +2295,6 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
         move || {
             sot_log::supervisor_client::query_status(&dir)
                 .expect("query_status before daemon restart")
-                .0
                 .leg
         }
     })
