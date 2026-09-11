@@ -4584,10 +4584,10 @@ pub async fn handle_workspace_create(
                 let agent_name = req.agent_name.clone();
                 let slug = ws_handle.slug.clone();
                 let workspaces_for_spawn = workspaces.clone();
-                // BLOCKING (process spawn, `check_pair`'s probe): the
-                // claim above is already held, so this closure only ever
-                // runs the spawn itself — see `start_supervisor_claimed`'s
-                // own doc.
+                // BLOCKING (process spawn, superseded by ADR 0045: no
+                // pre-spawn probe runs here anymore): the claim above is
+                // already held, so this closure only ever runs the spawn
+                // itself — see `start_supervisor_claimed`'s own doc.
                 match tokio::task::spawn_blocking(move || {
                     crate::capsule_workspace::start_supervisor_claimed(
                         &state_root,

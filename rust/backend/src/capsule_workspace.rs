@@ -882,12 +882,17 @@ mod runtime {
         }
     }
 
-    /// Log ONCE per row per daemon lifetime that a capsule row is held by
-    /// a supervisor of ANOTHER build (ADR 0030 §8 decision 31c) — called
+    /// Log ONCE per row per daemon lifetime that a capsule row's
+    /// supervisor refused this daemon's hello (ADR 0030 §8 decision 31c;
+    /// the gate itself is superseded by ADR 0045 decision 7) — called
     /// only once the caller has ALREADY typed-matched
     /// `sot_log::Error::VersionSkew`, so this never fires on a merely
-    /// unreachable lane. `phase_of` is also the list poll's own probe, so
-    /// this dedupes on `state_dir` rather than logging every poll.
+    /// unreachable lane. Wording covers BOTH migration-window causes
+    /// (Codex review, 2026-09-11): a genuine lane-protocol mismatch, or
+    /// an OLD (pre-ADR-0045) supervisor still refusing on build — this
+    /// daemon cannot tell which from the wire alone, so it never claims
+    /// to. `phase_of` is also the list poll's own probe, so this dedupes
+    /// on `state_dir` rather than logging every poll.
     fn note_version_skew(state_dir: &Path) {
         use std::sync::{Mutex, OnceLock};
         static NOTED: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
@@ -895,9 +900,9 @@ mod runtime {
         if noted.insert(state_dir.to_path_buf()) {
             tracing::warn!(
                 state_dir = ?state_dir,
-                "capsule row is held by a supervisor from ANOTHER build; this daemon cannot attach, adopt, end \
-                 or destroy it. Recovery: end it from a frontend of that build, or kill only its `sot-capsule \
-                 supervise` process and attach the row again (the run leg and its agent survive and are adopted)"
+                "the row's supervisor refused this client (another lane protocol, or a supervisor from before \
+                 the protocol-only gate); end the row and recreate it, or kill only its `sot-capsule supervise` \
+                 process and attach the row again (the run leg and its agent survive and are adopted)"
             );
         }
     }
@@ -1061,24 +1066,28 @@ mod runtime {
     }
 
     /// Rule D half 1: release this workspace's `starting` claim the
-    /// moment its lane first answers a status query, bounded by
+    /// moment its lane first ANSWERS a status query — a typed
+    /// `VersionSkew` counts (Codex review, 2026-09-11: the ADR 0045
+    /// migration case is exactly a live child that answers foreign
+    /// forever, never crashing into [`spawn_watchdog`]'s own child-exit
+    /// release) — or the settle bound itself expires, bounded by
     /// [`LIST_LANE_DEADLINE`] so a leg that never binds a lane at all
     /// (crashes before `PipeServer::bind_supervisor`) doesn't wedge the
-    /// flag open forever — [`spawn_watchdog`]'s own child-exit release
-    /// (half 2) still applies in that case.
+    /// flag open forever either.
     fn spawn_starting_release_poll(workspace_id: String, state_dir: PathBuf, workspaces: Workspaces) {
         tokio::spawn(async move {
             let deadline = Instant::now() + LIST_LANE_DEADLINE;
             loop {
                 let dir = state_dir.clone();
-                let answered = tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&dir).is_ok())
-                    .await
-                    .unwrap_or(false);
-                if answered {
+                let outcome = tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&dir)).await.ok();
+                // Invariant: the claim must clear on any DEFINITIVE answer, not only `Ok` -- a foreign-proto refusal is still an answer.
+                if matches!(outcome, Some(Ok(_)) | Some(Err(sot_log::Error::VersionSkew))) {
                     workspaces.end_capsule_start(&workspace_id);
                     return;
                 }
                 if Instant::now() >= deadline {
+                    // Invariant: the settle bound itself must also clear the claim -- a live, merely-unreachable child must not wedge it open forever.
+                    workspaces.end_capsule_start(&workspace_id);
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;

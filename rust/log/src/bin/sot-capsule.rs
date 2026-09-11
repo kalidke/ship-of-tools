@@ -42,9 +42,9 @@ sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-vers
     }
     match args.first().map(String::as_str) {
         // The lane build id this binary will answer the supervisor hello
-        // with -- the daemon reads it before every spawn (`sot-backend`'s
-        // `check_pair`) so a sotd/sot-capsule pair from two builds is
-        // refused up front instead of failing every attach as `Foreign`.
+        // with -- a diagnostic only since ADR 0045 decision 7 (the lane
+        // gate is the protocol integer, not this value; the pre-spawn
+        // `check_pair` probe that used to read it is deleted).
         Some("build-id") => println!("{}", sot_log::exchange::SUPERVISOR_LANE_BUILD_ID),
         #[cfg(windows)]
         Some("run") => cmd_run::<sot_log::producer_conpty::ConptyProducer, _, _>(&args[1..], |n| {
