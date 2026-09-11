@@ -2353,3 +2353,140 @@ mod unix_only {
         assert_eq!(summary.exit_kind, ExitKind::Requested);
     }
 }
+
+/// Spawn `sot-conpty-helper spawn-breakaway cmd.exe /c timeout 30`
+/// with piped stdin/stdout — blocked on its own "go" read (see the
+/// helper's own module doc) until the caller sends one, so the
+/// caller can assign the helper to whatever job(s) it wants it
+/// contained by BEFORE the helper ever attempts its own breakaway
+/// spawn. No `CREATE_SUSPENDED`/`ResumeThread` needed: the helper's
+/// blocking stdin read closes the same race deterministically,
+/// using only `std::process::Command`.
+#[cfg(windows)]
+fn spawn_gated_breakaway_helper() -> std::process::Child {
+    std::process::Command::new(env!("CARGO_BIN_EXE_sot-conpty-helper"))
+        .args(["spawn-breakaway", "cmd.exe", "/c", "timeout", "30"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sot-conpty-helper spawn-breakaway")
+}
+
+/// Send the "go" signal, then read and return the helper's one reply
+/// line (`pid=<n>` or `err=<n>`), trimmed.
+#[cfg(windows)]
+fn release_and_read_reply(helper: &mut std::process::Child) -> String {
+    use std::io::{BufRead, Write};
+    let mut stdin = helper.stdin.take().expect("helper stdin");
+    writeln!(stdin, "go").expect("write go signal");
+    drop(stdin);
+    let mut line = String::new();
+    std::io::BufReader::new(helper.stdout.take().expect("helper stdout"))
+        .read_line(&mut line)
+        .expect("read helper reply");
+    line.trim().to_string()
+}
+
+/// ADR 0043 decision 32, test 2: the leg job (`AnonymousJob::create`,
+/// now `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK`)
+/// really does let a breakaway child leave it — the mechanism
+/// `capsule_workspace.rs`'s own Windows `spawn_detached` depends on.
+/// The helper is assigned to the job, released, and asked to spawn a
+/// breakaway child; that child must NOT be `IsProcessInJob` the job
+/// it was spawned from inside.
+#[test]
+#[cfg(windows)]
+fn a_breakaway_child_leaves_the_leg_job() {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, IsProcessInJob};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    };
+
+    let job = sot_log::conpty::AnonymousJob::create().expect("create leg job");
+    let mut helper = spawn_gated_breakaway_helper();
+    let ok = unsafe { AssignProcessToJobObject(job.raw(), helper.as_raw_handle() as HANDLE) };
+    assert!(ok != 0, "AssignProcessToJobObject: {}", std::io::Error::last_os_error());
+
+    let reply = release_and_read_reply(&mut helper);
+    let pid: u32 = reply
+        .strip_prefix("pid=")
+        .unwrap_or_else(|| panic!("expected pid=<n>, got {reply:?}"))
+        .parse()
+        .expect("pid parses");
+
+    let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE;
+    let child = unsafe { OpenProcess(access, 0, pid) };
+    assert!(!child.is_null(), "OpenProcess({pid}): {}", std::io::Error::last_os_error());
+    let mut in_job: i32 = 0;
+    let ok = unsafe { IsProcessInJob(child, job.raw(), &mut in_job) };
+    assert!(ok != 0, "IsProcessInJob: {}", std::io::Error::last_os_error());
+    assert_eq!(in_job, 0, "expected the breakaway child NOT to be in the leg job it broke away from");
+
+    unsafe {
+        TerminateProcess(child, 1);
+        CloseHandle(child);
+    }
+    let _ = helper.wait();
+}
+
+/// A job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` ONLY — no
+/// `JOB_OBJECT_LIMIT_BREAKAWAY_OK` — standing in for an OUTER
+/// containing job that forbids breakaway (a daemon launched from a
+/// shell nested inside another job on top of its own leg job, say).
+/// `conpty.rs`'s own `AnonymousJob::create` always sets both flags
+/// now (ADR 0043 decision 32), so this test builds the "forbids
+/// breakaway" shape directly rather than through that type.
+#[cfg(windows)]
+fn create_job_without_breakaway() -> windows_sys::Win32::Foundation::HANDLE {
+    use windows_sys::Win32::System::JobObjects::{
+        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    assert!(!handle.is_null(), "CreateJobObjectW: {}", std::io::Error::last_os_error());
+    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let ok = unsafe {
+        SetInformationJobObject(
+            handle,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    assert!(ok != 0, "SetInformationJobObject: {}", std::io::Error::last_os_error());
+    handle
+}
+
+/// ADR 0043 decision 32, test 3: "Under a nested chain an outer job
+/// can still deny breakaway" (the decision's own text) — the helper
+/// is assigned to an OUTER job that forbids breakaway FIRST, then to
+/// the leg job (which itself permits it); the leg job's own
+/// permission is not enough, so the breakaway spawn is denied exactly
+/// like the single-job case already seen in the field
+/// (`capsule_workspace.rs`'s own `breakaway_denied` doc).
+#[test]
+#[cfg(windows)]
+fn a_breakaway_under_an_outer_job_without_breakaway_is_denied() {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
+    let outer_job = create_job_without_breakaway();
+    let leg_job = sot_log::conpty::AnonymousJob::create().expect("create leg job");
+    let mut helper = spawn_gated_breakaway_helper();
+    let raw_helper = helper.as_raw_handle() as HANDLE;
+    let ok = unsafe { AssignProcessToJobObject(outer_job, raw_helper) };
+    assert!(ok != 0, "AssignProcessToJobObject(outer): {}", std::io::Error::last_os_error());
+    let ok = unsafe { AssignProcessToJobObject(leg_job.raw(), raw_helper) };
+    assert!(ok != 0, "AssignProcessToJobObject(leg): {}", std::io::Error::last_os_error());
+
+    let reply = release_and_read_reply(&mut helper);
+    assert_eq!(reply, "err=5", "expected ERROR_ACCESS_DENIED (5) from the outer job's own refusal");
+
+    let _ = helper.wait();
+    unsafe { CloseHandle(outer_job) };
+}

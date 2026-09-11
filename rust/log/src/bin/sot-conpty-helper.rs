@@ -74,6 +74,17 @@
 //! `sot-pty-helper.rs`, so the exact bytes each platform's own attach-
 //! fidelity test drives are one constant, not two independently-drifting
 //! copies.
+//!
+//! `spawn-breakaway <exe> <args…>` (ADR 0043 decision 32's own breakaway
+//! tests, `tests/capsule.rs`): blocks for one line on stdin — the test's
+//! own signal that it has finished assigning THIS process to whichever
+//! job(s) the test wants it contained by, closing the race a plain
+//! "spawn immediately" would leave open — then spawns `exe args…` with
+//! `CREATE_BREAKAWAY_FROM_JOB` and prints exactly one line: `pid=<n>` on
+//! success, `err=<raw os error>` on failure (`ERROR_ACCESS_DENIED` when
+//! this helper's own job forbids breakaway), then returns (a natural
+//! exit — the spawned child, if any, is left running for the test to
+//! observe and kill itself).
 
 #[path = "support/helper_common.rs"]
 mod helper_common;
@@ -82,6 +93,12 @@ mod helper_common;
 fn main() {
     use helper_common::{flood_pattern, SCRIPT_BLOCK};
     use std::io::{BufRead, Write};
+
+    if let Some(pos) = std::env::args().position(|a| a == "spawn-breakaway") {
+        let rest: Vec<String> = std::env::args().skip(pos + 1).collect();
+        spawn_breakaway(&rest);
+        return;
+    }
 
     if let Some(pos) = std::env::args().position(|a| a == "--flood") {
         let total: usize = std::env::args()
@@ -188,6 +205,36 @@ fn script(repeats: usize, block: &[u8]) {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+}
+
+/// See the module doc's `spawn-breakaway` section. `args[0]` is the exe,
+/// `args[1..]` its own argv — quoting is `std::process::Command`'s own
+/// job, same as every other spawn in this file.
+#[cfg(windows)]
+fn spawn_breakaway(args: &[String]) {
+    use std::io::{BufRead, Write};
+    use std::os::windows::process::CommandExt as _;
+    // Matches `capsule_workspace.rs`'s own constant — no `windows-sys`
+    // dependency needed here for one flag value.
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+
+    let mut go = String::new();
+    std::io::stdin().lock().read_line(&mut go).expect("read go signal");
+
+    let (exe, rest) = args.split_first().expect("spawn-breakaway needs an exe");
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(rest).creation_flags(CREATE_BREAKAWAY_FROM_JOB);
+    let mut stdout = std::io::stdout().lock();
+    #[allow(clippy::zombie_processes)] // never waited on -- the test owns this child's lifetime
+    match cmd.spawn() {
+        Ok(child) => {
+            let _ = writeln!(stdout, "pid={}", child.id());
+        }
+        Err(e) => {
+            let _ = writeln!(stdout, "err={}", e.raw_os_error().unwrap_or(-1));
+        }
+    }
+    let _ = stdout.flush();
 }
 
 /// See the module doc's `--drip` section. One short, cheap, position-

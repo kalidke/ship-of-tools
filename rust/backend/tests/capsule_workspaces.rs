@@ -2537,3 +2537,83 @@ async fn capsule_create_is_refused_on_an_unqualified_state_root() {
 
     env.kill_daemon_bounded().await;
 }
+
+/// ADR 0043 decision 32, Windows: a daemon that finds itself inside a job
+/// forbidding breakaway refuses to create a capsule row, with the cause
+/// in its own error text — rather than spawning a supervisor that would
+/// silently die with that job (the "breakaway denied" line seen on one
+/// box before this decision). No `CREATE_SUSPENDED`/`ResumeThread` race
+/// to close here, unlike the helper-level tests in
+/// `rust/log/tests/capsule.rs`: the daemon's own breakaway spawn only
+/// happens in response to the `workspace.create` THIS TEST sends over
+/// the wire, strictly after `sotd` is assigned to the forbidding job
+/// below — the daemon's own boot sequence never attempts one.
+#[tokio::test]
+#[cfg(windows)]
+async fn create_is_refused_from_inside_a_job_that_forbids_breakaway() {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("breakaway-denied");
+    env.spawn_sotd();
+    let (mut conn, next_id) = connect_and_hello(&env.socket_path).await;
+
+    // A job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` only -- no
+    // `JOB_OBJECT_LIMIT_BREAKAWAY_OK` -- standing in for a capsule's own
+    // leg job that this `sotd` finds itself launched inside.
+    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    assert!(!job.is_null(), "CreateJobObjectW: {}", std::io::Error::last_os_error());
+    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let ok = unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    assert!(ok != 0, "SetInformationJobObject: {}", std::io::Error::last_os_error());
+    let daemon_handle = {
+        let daemon = env.daemon.borrow();
+        daemon.as_ref().expect("daemon spawned").as_raw_handle() as HANDLE
+    };
+    let ok = unsafe { AssignProcessToJobObject(job, daemon_handle) };
+    assert!(ok != 0, "AssignProcessToJobObject(sotd): {}", std::io::Error::last_os_error());
+
+    let create_req = serde_json::json!({
+        "label": "breakaway-denied-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    let error_text = create_res.payload["error"].as_str().expect("error text");
+    assert!(error_text.contains("forbids breakaway"), "{error_text}");
+    assert!(
+        create_res.payload.get("workspace_id").is_none(),
+        "a refused create must mint no workspace_id: {:?}", create_res.payload
+    );
+
+    // No `sot-capsule supervise` process exists: `CreateProcessW` itself
+    // failed (`ERROR_ACCESS_DENIED`), so no process object was ever
+    // created to leak -- observable here as no row at all for this
+    // label, the same proof the sibling unqualified-root refusal test
+    // above uses.
+    let ws_slug = sot_protocol::slug("breakaway-denied-workspace");
+    let list_payload = call(&mut conn, next_id + 1, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    let has_row = list_payload["workspaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|w| w["slug"] == ws_slug);
+    assert!(!has_row, "a refused create must not appear in workspace.list: {list_payload:?}");
+
+    env.kill_daemon_bounded().await;
+    unsafe { CloseHandle(job) };
+}

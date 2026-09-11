@@ -665,17 +665,40 @@ mod runtime {
     /// first for the common case. When the daemon IS in a job whose limit
     /// flags lack `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, `CreateProcess` fails
     /// `ERROR_ACCESS_DENIED` rather than silently dropping the flag —
-    /// exactly the signal [`spawn_detached`] uses to fall back
-    /// to a DEGRADED, still-in-job spawn (ADR 0042 L1a: "breakaway attempt
-    /// if the daemon is in a job, DEGRADED otherwise"). No Linux analogue:
-    /// there are no job objects to break away from — [`spawn_detached`]'s
-    /// Linux twin is never degraded (ADR 0043 decision 22).
+    /// exactly the signal [`spawn_detached`] uses to refuse the launch
+    /// outright, with the cause, rather than spawn a supervisor that
+    /// silently dies with someone else's job (ADR 0043 decision 32: no
+    /// probe, cache, or degraded arm on either platform). No Linux
+    /// analogue: there are no job objects to break away from.
     #[cfg(windows)]
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
     /// Win32 `ERROR_ACCESS_DENIED` — what a denied breakaway attempt
-    /// reports on `CreateProcess`.
-    #[cfg(windows)]
+    /// reports on `CreateProcess`. Portable (not `#[cfg(windows)]`):
+    /// [`breakaway_denied`]'s own mapping is pure and unit-tested on
+    /// every host, and needs this constant to do it without a real
+    /// Windows job.
     const ERROR_ACCESS_DENIED: i32 = 5;
+
+    /// The `ERROR_ACCESS_DENIED` -> `Unsupported` mapping
+    /// [`spawn_detached`]'s Windows twin applies to a denied breakaway
+    /// (ADR 0043 decision 32) — pulled out pure so the portable test
+    /// below can exercise it without a real Windows job. Any OTHER error
+    /// passes through unchanged: only a denied breakaway specifically is
+    /// refused with this message; every other spawn failure (a missing
+    /// binary, a bad argv, …) keeps its own kind and text.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn breakaway_denied(e: std::io::Error) -> std::io::Error {
+        if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) {
+            std::io::Error::new(
+                ErrorKind::Unsupported,
+                "this daemon runs inside a job that forbids breakaway; launch it from outside \
+                 any capsule or job (ADR 0043 decision 32)",
+            )
+        } else {
+            e
+        }
+    }
+
     /// `sot-capsule supervise`'s own clean-exit code (`EXIT_CLEAN`).
     const EXIT_CLEAN: i32 = 0;
     /// `sot-capsule supervise`'s own terminal-failure exit code
@@ -773,19 +796,6 @@ mod runtime {
             .map_err(|m| std::io::Error::new(ErrorKind::Unsupported, m))
     }
 
-    /// What [`spawn_detached_supervisor`] reports about how the spawn went.
-    struct SpawnedSupervisor {
-        child: Child,
-        /// `true` iff the breakaway attempt was denied and this
-        /// supervisor was spawned still inside the daemon's own job — it
-        /// will die if that job is ever closed with
-        /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Recorded on the wire via
-        /// `--survival degraded` (ADR 0042 L1a, Codex review finding 7),
-        /// so the capsule's own status/record are truthful, not merely
-        /// logged here.
-        degraded: bool,
-    }
-
     /// ADR 0043 decision 25: the supervisor's stderr is the daemon's OWN
     /// log — a FRESH `O_APPEND` open onto it per spawn (the daemon need
     /// not share its handle; `main.rs`'s `open_private_log_file` already
@@ -796,9 +806,8 @@ mod runtime {
     /// (or this open fails for any other reason), the supervisor inherits
     /// the daemon's OWN stderr instead — a daemon run by hand in a
     /// terminal shows the supervisor's lines there. Called fresh from
-    /// INSIDE `build` below (never hoisted out) because `build` itself
-    /// runs more than once per launch on Windows (the degraded-breakaway
-    /// retry) and each attempt needs its own descriptor.
+    /// INSIDE `build` below (never hoisted out), so the descriptor is
+    /// opened right alongside the rest of the command's own stdio wiring.
     fn supervisor_stderr() -> Stdio {
         let log_path = crate::paths::state_dir().join("sotd.log");
         std::fs::OpenOptions::new()
@@ -809,17 +818,17 @@ mod runtime {
     }
 
     /// Spawn `sot-capsule supervise <state_dir> <--start|--resume>
-    /// --survival <normal|degraded> --assume-no-rollback-target --
-    /// <agent argv>` DETACHED, so the supervisor authority survives the
-    /// daemon's own exit — the daemon must not be its kill domain (ADR
-    /// 0042 L1a). `--assume-no-rollback-target` is mandatory:
-    /// `sot_log::supervisor::supervise` itself refuses (exit 69) without
-    /// it pre-U4. The nesting env vars are scrubbed and `SOT_COMM_NAME`
-    /// exported (Codex review finding 9) — the same contract
-    /// `boot_wrapper_command`'s tmux path already gives every autostart
-    /// workspace. Builds the SAME `Command` on both platforms (this
-    /// function); only how it is actually detached — [`spawn_detached`],
-    /// the second of decision 22's three forks — differs.
+    /// --survival normal --assume-no-rollback-target -- <agent argv>`
+    /// DETACHED, so the supervisor authority survives the daemon's own
+    /// exit — the daemon must not be its kill domain (ADR 0042 L1a).
+    /// `--assume-no-rollback-target` is mandatory: `sot_log::supervisor::supervise`
+    /// itself refuses (exit 69) without it pre-U4. The nesting env vars
+    /// are scrubbed and `SOT_COMM_NAME` exported (Codex review finding
+    /// 9) — the same contract `boot_wrapper_command`'s tmux path already
+    /// gives every autostart workspace. Builds the SAME `Command` on both
+    /// platforms (this function); only how it is actually detached —
+    /// [`spawn_detached`], the second of decision 22's three forks —
+    /// differs.
     ///
     /// ADR 0043 decision 23: [`super::qualified_state_root`] runs beside
     /// [`check_pair`], BEFORE the build — this is the ONE mechanism every
@@ -840,16 +849,16 @@ mod runtime {
         agent_name: &str,
         workspace_id: &str,
         slug: &str,
-    ) -> std::io::Result<SpawnedSupervisor> {
+    ) -> std::io::Result<Child> {
         check_pair(sot_capsule_exe)?;
         super::qualified_state_root().map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
-        let build = |survival: &str| -> Command {
+        let build = || -> Command {
             let mut cmd = Command::new(sot_capsule_exe);
             cmd.arg("supervise")
                 .arg(state_dir)
                 .arg(mode_flag(mode))
                 .arg("--survival")
-                .arg(survival)
+                .arg("normal")
                 .arg("--assume-no-rollback-target")
                 .arg("--")
                 .args(agent_argv)
@@ -872,44 +881,31 @@ mod runtime {
     /// detached from the daemon so the supervisor authority survives the
     /// daemon's own exit.
     ///
-    /// Windows: attempts `CREATE_BREAKAWAY_FROM_JOB` unconditionally
-    /// alongside `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` —
+    /// Windows: attempts `CREATE_BREAKAWAY_FROM_JOB` alongside
+    /// `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` —
     /// `tokio::process::Command` re-exposes `.creation_flags()` natively
     /// (no `std::os::windows::process::CommandExt` import needed, unlike
-    /// `std::process::Command`). A denied breakaway reports
-    /// `ERROR_ACCESS_DENIED` distinctly from every other spawn failure (a
-    /// missing binary, an invalid argv, …), which is exactly the signal
-    /// that separates "retry without it, DEGRADED" from "propagate the
-    /// real error".
+    /// `std::process::Command`). A denied breakaway is mapped by
+    /// [`breakaway_denied`] to `Unsupported` — the one kind the watchdog
+    /// already treats as terminal-at-once and `workspace.create` already
+    /// surfaces (ADR 0043 decision 32: no retry, no degraded arm; a
+    /// denied breakaway refuses the launch with the cause).
     #[cfg(windows)]
-    fn spawn_detached(build: impl Fn(&str) -> Command, state_dir: &Path) -> std::io::Result<SpawnedSupervisor> {
-        let base_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
-        let mut cmd = build("normal");
-        cmd.creation_flags(base_flags | CREATE_BREAKAWAY_FROM_JOB);
-        match cmd.spawn() {
-            Ok(child) => Ok(SpawnedSupervisor { child, degraded: false }),
-            Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
-                tracing::warn!(
-                    state_dir = ?state_dir,
-                    "capsule supervisor breakaway denied — spawning DEGRADED (still in the daemon's job)"
-                );
-                let mut cmd = build("degraded");
-                cmd.creation_flags(base_flags);
-                let child = cmd.spawn()?;
-                Ok(SpawnedSupervisor { child, degraded: true })
-            }
-            Err(e) => Err(e),
-        }
+    fn spawn_detached(build: impl Fn() -> Command, state_dir: &Path) -> std::io::Result<Child> {
+        let _ = state_dir;
+        let mut cmd = build();
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+        cmd.spawn().map_err(breakaway_denied)
     }
 
     /// Linux: `pre_exec(setsid)` plus `Stdio::null()` on all three
     /// streams — set by [`spawn_detached_supervisor`]'s own `build`
-    /// closure already, nothing further needed here. NEVER degraded
-    /// (`survival` is always `"normal"`): there are no job objects on
-    /// Linux to break away from — this leg's own `setsid` IS the whole
-    /// detachment (ADR 0043 decision 22/14). `state_dir` is unused here
-    /// (only Windows's degraded-retry arm logs it) — kept as a shared
-    /// parameter so both platform twins have the same signature.
+    /// closure already, nothing further needed here. There are no job
+    /// objects on Linux to break away from — this leg's own `setsid` IS
+    /// the whole detachment (ADR 0043 decision 22/14). `state_dir` is
+    /// unused here (only Windows's breakaway-denied mapping names it in
+    /// its log line) — kept as a shared parameter so both platform twins
+    /// have the same signature.
     ///
     /// `setsid`'s failure is PROPAGATED (review round, reproduced): in a
     /// FRESH fork child, immediately post-fork, pre-exec, it cannot fail
@@ -922,9 +918,9 @@ mod runtime {
     /// stay attached to the daemon's own controlling terminal/session,
     /// silently breaking the whole point of detaching it.
     #[cfg(target_os = "linux")]
-    fn spawn_detached(build: impl Fn(&str) -> Command, state_dir: &Path) -> std::io::Result<SpawnedSupervisor> {
+    fn spawn_detached(build: impl Fn() -> Command, state_dir: &Path) -> std::io::Result<Child> {
         let _ = state_dir;
-        let mut cmd = build("normal");
+        let mut cmd = build();
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -933,8 +929,7 @@ mod runtime {
                 Ok(())
             });
         }
-        let child = cmd.spawn()?;
-        Ok(SpawnedSupervisor { child, degraded: false })
+        cmd.spawn()
     }
 
     /// One capsule workspace's supervisor-lane status, as the daemon's
@@ -1138,10 +1133,9 @@ mod runtime {
         workspace_id: String,
         slug: String,
         workspaces: Workspaces,
-    ) -> std::io::Result<bool> {
-        let spawned =
+    ) -> std::io::Result<()> {
+        let child =
             spawn_detached_supervisor(sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug)?;
-        let degraded = spawned.degraded;
         workspaces.clear_capsule_terminal(&workspace_id);
         spawn_starting_release_poll(workspace_id.clone(), state_dir.to_path_buf(), workspaces.clone());
         install_watchdog(
@@ -1152,10 +1146,10 @@ mod runtime {
             cwd.to_path_buf(),
             agent_name.to_string(),
             slug,
-            WatchedLeg::Spawned(spawned.child),
+            WatchedLeg::Spawned(child),
             workspaces,
         );
-        Ok(degraded)
+        Ok(())
     }
 
     /// Rule D half 1: release this workspace's `starting` claim the
@@ -1218,7 +1212,7 @@ mod runtime {
         agent_name: &str,
         slug: &str,
         workspaces: Workspaces,
-    ) -> Result<Option<bool>, String> {
+    ) -> Result<Option<()>, String> {
         if !workspaces.try_begin_capsule_start(workspace_id) {
             return Ok(None);
         }
@@ -1245,13 +1239,13 @@ mod runtime {
     /// did — this function assumes ONLY that the claim is already held,
     /// never that it still needs taking.
     ///
-    /// Returns a plain `bool` (Codex review round finding 9's delete
-    /// list): every caller of THIS function already holds the claim by
-    /// the time it runs (either taken synchronously just above by
-    /// [`start_supervisor`] itself, or by the caller directly — see
+    /// Returns `Ok(())` on success (Codex review round finding 9's
+    /// delete list): every caller of THIS function already holds the
+    /// claim by the time it runs (either taken synchronously just above
+    /// by [`start_supervisor`] itself, or by the caller directly — see
     /// `handlers.rs`'s `workspace.create` and [`resume_all`]'s own
     /// `Some(StartMode::Resume)` arm), so the `None` case
-    /// [`start_supervisor`]'s own `Result<Option<bool>, String>` exists
+    /// [`start_supervisor`]'s own `Result<Option<()>, String>` exists
     /// for can never actually occur here — carrying it anyway would need
     /// dead, impossible-to-exercise handling at every call site.
     pub fn start_supervisor_claimed(
@@ -1263,7 +1257,7 @@ mod runtime {
         agent_name: &str,
         slug: &str,
         workspaces: Workspaces,
-    ) -> Result<bool, String> {
+    ) -> Result<(), String> {
         let state_dir = super::state_dir_for(state_root, workspace_id);
         let exe = match sot_capsule_exe() {
             Ok(exe) => exe,
@@ -1283,7 +1277,7 @@ mod runtime {
             slug.to_string(),
             workspaces.clone(),
         ) {
-            Ok(degraded) => Ok(degraded),
+            Ok(()) => Ok(()),
             Err(e) => {
                 workspaces.end_capsule_start(workspace_id);
                 Err(format!("capsule supervisor spawn failed: {e}"))
@@ -1337,8 +1331,8 @@ mod runtime {
     /// `attach_direct` against a supervisor that was never spawned,
     /// parking the frontend on an empty pane forever). `Ok(None)` = a
     /// supervisor already answered, OR another launch is already in
-    /// flight (rule D); nothing started either way. `Ok(Some(degraded))`
-    /// = a fresh spawn succeeded (mode from [`start_mode_needed`]). `Err`
+    /// flight (rule D); nothing started either way. `Ok(Some(()))` = a
+    /// fresh spawn succeeded (mode from [`start_mode_needed`]). `Err`
     /// mirrors `start_supervisor`'s own failure, so a caller's error
     /// payload can match `workspace.create`'s.
     ///
@@ -1363,7 +1357,7 @@ mod runtime {
         slug: &str,
         project_root: &Path,
         workspaces: Workspaces,
-    ) -> Result<Option<bool>, String> {
+    ) -> Result<Option<()>, String> {
         if workspaces.is_capsule_starting(workspace_id) {
             return Ok(None);
         }
@@ -1437,7 +1431,7 @@ mod runtime {
         };
         if settled_phase == super::phase_str(sot_log::wire::SupervisorPhase::EndedNoRespawn) {
             return sot_log::supervisor_client::reset(&state_dir)
-                .map(|_new_voyage| Some(false))
+                .map(|_new_voyage| Some(()))
                 .map_err(|e| format!("capsule workspace reset (after an ended run) failed: {e}"));
         }
         Ok(spawned)
@@ -1797,7 +1791,7 @@ mod runtime {
                         })
                         .await;
                         match spawn_result {
-                            Ok(Ok(spawned)) => leg_opt = Some(WatchedLeg::Spawned(spawned.child)),
+                            Ok(Ok(child)) => leg_opt = Some(WatchedLeg::Spawned(child)),
                             Ok(Err(e)) if e.kind() == ErrorKind::Unsupported => {
                                 // `check_pair` refused (another build next to this
                                 // daemon) OR `qualified_state_root` refused (ADR
@@ -2059,8 +2053,8 @@ mod runtime {
                             })
                             .await;
                             match spawn_result {
-                                Ok(Ok(degraded)) => {
-                                    tracing::info!(workspace_id = %workspace_id_for_log, degraded, "capsule workspace supervisor resumed");
+                                Ok(Ok(())) => {
+                                    tracing::info!(workspace_id = %workspace_id_for_log, "capsule workspace supervisor resumed");
                                 }
                                 Ok(Err(e)) => {
                                     tracing::warn!(workspace_id = %workspace_id_for_log, error = %e, "capsule workspace supervisor resume spawn failed");
@@ -2128,6 +2122,34 @@ mod runtime {
                 "capsule workspace resume-scan: state directories with no matching registry entry -- \
                  left untouched (ADR 0042: the workspace list is the list)"
             );
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::breakaway_denied;
+        use std::io::ErrorKind;
+
+        /// ADR 0043 decision 32, test 1: a denied breakaway (raw os error
+        /// 5, `ERROR_ACCESS_DENIED`) maps to `Unsupported` with a message
+        /// naming the cause — the refusal `workspace.create`/the watchdog
+        /// surface, never a crash or a silent DEGRADED fallback. Portable
+        /// (no real Windows job needed): `breakaway_denied` is pure.
+        #[test]
+        fn a_denied_breakaway_is_unsupported_not_a_crash() {
+            let denied = std::io::Error::from_raw_os_error(5);
+            let mapped = breakaway_denied(denied);
+            assert_eq!(mapped.kind(), ErrorKind::Unsupported);
+            let text = mapped.to_string();
+            assert!(text.contains("forbids breakaway"), "unexpected message: {text}");
+            assert!(text.contains("ADR 0043 decision 32"), "unexpected message: {text}");
+
+            // Any OTHER error passes through unchanged -- only a denied
+            // breakaway specifically is refused with this message.
+            let other = std::io::Error::new(ErrorKind::NotFound, "sot-capsule.exe not found");
+            let mapped = breakaway_denied(other);
+            assert_eq!(mapped.kind(), ErrorKind::NotFound);
+            assert_eq!(mapped.to_string(), "sot-capsule.exe not found");
         }
     }
 }

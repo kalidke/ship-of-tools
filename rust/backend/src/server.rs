@@ -2009,9 +2009,9 @@ where
                                 }
                             };
                             match ensure_result {
-                                Ok(Some(degraded)) => {
+                                Ok(Some(())) => {
                                     tracing::info!(
-                                        workspace_id = %ws.workspace_id, degraded,
+                                        workspace_id = %ws.workspace_id,
                                         "pty.open: capsule supervisor started on attach"
                                     );
                                 }

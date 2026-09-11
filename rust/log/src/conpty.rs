@@ -36,7 +36,7 @@ use windows_sys::Win32::System::JobObjects::{
     CreateJobObjectW, IsProcessInJob, JobObjectBasicAccountingInformation,
     JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
     TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
@@ -223,20 +223,27 @@ pub struct SpawnDetail {
     pub spawning_process_was_jobbed: Option<bool>,
 }
 
-/// The anonymous containment job (ADR 0041): `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`,
-/// no breakaway flags, never named. The job handle IS the lease — sole
-/// handle, kept alive for as long as containment is wanted; the kernel
-/// kills every in-job process when the LAST handle closes, however this
-/// process dies (a hard crash included, since handle closure on process
-/// exit is a kernel guarantee, not something our own code has to run).
-/// "Reaps the tree" is scoped to in-job descendants — broker-mediated
-/// spawning (WMI, COM activation, schtasks, services) is outside the
-/// domain, the exact analog of the Linux external-supervisor carve-out.
+/// The anonymous containment job (ADR 0041): `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+/// | `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, never named — everything that does
+/// not explicitly ask to leave dies with the run; the daemon's own
+/// supervisor spawn is the one thing that asks, via `CREATE_BREAKAWAY_FROM_JOB`
+/// (ADR 0043 decision 32). The job handle IS the lease — sole handle, kept
+/// alive for as long as containment is wanted; the kernel kills every
+/// in-job process when the LAST handle closes, however this process dies
+/// (a hard crash included, since handle closure on process exit is a
+/// kernel guarantee, not something our own code has to run). "Reaps the
+/// tree" is scoped to in-job descendants — broker-mediated spawning (WMI,
+/// COM activation, schtasks, services) is outside the domain, the exact
+/// analog of the Linux external-supervisor carve-out.
 #[derive(Debug)]
 pub struct AnonymousJob(OwnedHandle);
 
 impl AnonymousJob {
-    fn create() -> Result<Self> {
+    /// `pub` for the ADR 0043 decision 32 breakaway tests
+    /// (`rust/log/tests/capsule.rs`), which stand up their own anonymous
+    /// job(s) outside any `ConptySpawn` to prove the breakaway/denial
+    /// shape directly.
+    pub fn create() -> Result<Self> {
         // NULL name + NULL security attributes: anonymous, non-inheritable
         // by construction (same default as `CreatePipe`'s NULL arm).
         let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
@@ -250,7 +257,8 @@ impl AnonymousJob {
         // bit pattern is a well-defined value everywhere in the struct;
         // only `LimitFlags` needs a real value.
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        info.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
         let ok = unsafe {
             SetInformationJobObject(
                 owned.as_raw_handle() as HANDLE,
@@ -265,7 +273,10 @@ impl AnonymousJob {
         Ok(Self(owned))
     }
 
-    fn raw(&self) -> HANDLE {
+    /// `pub` for the same reason [`create`](Self::create) is: the
+    /// breakaway tests assign this job to a process they spawn themselves
+    /// and probe with `IsProcessInJob`, both needing the raw handle.
+    pub fn raw(&self) -> HANDLE {
         self.0.as_raw_handle() as HANDLE
     }
 

@@ -4555,7 +4555,7 @@ pub async fn handle_workspace_create(
         // to win the claim itself while this spawn is merely QUEUED on
         // the blocking pool, making THIS call observe `Ok(None)` and roll
         // back a workspace the other caller is legitimately starting.
-        let spawn_result: std::result::Result<bool, String> = match capsule_state_root {
+        let spawn_result: std::result::Result<(), String> = match capsule_state_root {
             None => Err(format!(
                 "could not resolve this machine's state root ({} unset)",
                 crate::capsule_workspace::STATE_ROOT_HINT
@@ -4601,7 +4601,7 @@ pub async fn handle_workspace_create(
                 })
                 .await
                 {
-                    // `start_supervisor_claimed` returns a plain `bool`
+                    // `start_supervisor_claimed` returns `Result<(), String>`
                     // (Codex review round finding 9's delete list): the
                     // claim-losing case is checked synchronously above,
                     // before this task is even spawned, so there is no
@@ -4622,8 +4622,8 @@ pub async fn handle_workspace_create(
             }
         };
         match spawn_result {
-            Ok(degraded) => {
-                tracing::info!(workspace_id = %ws_handle.workspace_id, degraded, "workspace.create: capsule supervisor spawned");
+            Ok(()) => {
+                tracing::info!(workspace_id = %ws_handle.workspace_id, "workspace.create: capsule supervisor spawned");
             }
             Err(detail) => {
                 tracing::warn!(workspace_id = %ws_handle.workspace_id, error = %detail, "workspace.create: capsule spawn failed; rolling back");

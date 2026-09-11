@@ -94,6 +94,15 @@ and that the destination has the retention you expect.
 registry stamps on that host's rows (case-insensitive) — the registry's
 ownership check compares them.
 
+## Windows: never launch from inside a capsule shell
+
+Never launch the frontend or the daemon from a shell running inside a
+capsule row — that shell's own job forbids breakaway, so a daemon started
+there could never free the supervisors it spawns. A daemon that finds
+itself inside a job that forbids breakaway refuses to create capsule rows
+and says so, rather than spawning a supervisor that would silently die
+with that job.
+
 ## Extending it
 
 Ship of Tools is built to be extended with Julia multiple dispatch, not Rust
