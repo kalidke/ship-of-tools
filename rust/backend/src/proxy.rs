@@ -224,8 +224,7 @@ where
         op::PROXY_CONNECT,
         serde_json::json!({ "ok": true }),
     );
-    codec::write_frame(&mut tx, &res, None).await?;
-    tx.flush().await?;
+    codec::write_frame(&mut tx, &res, None).await?; // flushes internally
     tracing::info!(port = req.port, "proxy.connect established — piping");
 
     pipe_bidirectional(rx, tx, upstream, &format!("port {}", req.port)).await
@@ -285,9 +284,7 @@ where
 {
     let payload = serde_json::json!({ "error": msg, "code": code });
     let f = Frame::res(id, op, payload);
-    codec::write_frame(tx, &f, None).await?;
-    tx.flush().await?;
-    Ok(())
+    codec::write_frame(tx, &f, None).await // flushes internally
 }
 
 #[cfg(test)]

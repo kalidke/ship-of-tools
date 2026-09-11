@@ -3879,6 +3879,24 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
 // --- ADR 0045 decision 2 (lane B3): `lane.connect`, the daemon-side lane
 // bridge --- //
 
+/// The raw bytes of a `lane.connect` request frame — split out of
+/// [`lane_connect`] so a caller that needs to prove peek-buffer
+/// preservation (Codex review SHOULD-FIX, 2026-09-11: the daemon's own
+/// `read_frame` peek must consume EXACTLY this envelope and leave
+/// whatever follows untouched for the raw pipe) can concatenate it with
+/// the FIRST lane bytes and write both in ONE call, before ever reading
+/// a reply.
+#[cfg(target_os = "linux")]
+fn lane_connect_envelope_bytes(target: &str, lane: &str, voyage_id: Option<&str>) -> Vec<u8> {
+    let mut req = serde_json::json!({ "target": target, "lane": lane });
+    if let Some(v) = voyage_id {
+        req["voyage_id"] = serde_json::json!(v);
+    }
+    let mut bytes = serde_json::to_vec(&Frame::req(1, op::LANE_CONNECT, req)).expect("serialize lane.connect envelope");
+    bytes.push(b'\n');
+    bytes
+}
+
 /// A FRESH connection to `env.socket_path` whose only frame is
 /// `lane.connect` (ADR 0045 decision 2: a dedicated connection, never
 /// through `connect_and_hello`'s multiplexed control loop). Returns the
@@ -3889,6 +3907,25 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
 /// parsed response payload.
 #[cfg(target_os = "linux")]
 async fn lane_connect(env: &Env, target: &str, lane: &str, voyage_id: Option<&str>) -> (Conn, serde_json::Value) {
+    lane_connect_with_payload(env, target, lane, voyage_id, &[]).await
+}
+
+/// [`lane_connect`]'s own general form: the connect envelope AND
+/// `extra_payload` (raw bytes meant for the lane, once piped) are
+/// written in ONE `write_all` call, BEFORE this function ever reads
+/// anything back — the peek-buffer-preservation proof. Still returns
+/// only after the `LaneConnectRes` frame itself has been read (through
+/// the SAME `BufReader` the caller goes on to read any piped reply
+/// from), exactly like [`lane_connect`].
+#[cfg(target_os = "linux")]
+async fn lane_connect_with_payload(
+    env: &Env,
+    target: &str,
+    lane: &str,
+    voyage_id: Option<&str>,
+    extra_payload: &[u8],
+) -> (Conn, serde_json::Value) {
+    use tokio::io::AsyncWriteExt;
     let stream = poll_until(
         || async { try_connect(&env.socket_path).await },
         BOUND,
@@ -3896,13 +3933,9 @@ async fn lane_connect(env: &Env, target: &str, lane: &str, voyage_id: Option<&st
     )
     .await;
     let mut conn = tokio::io::BufReader::new(stream);
-    let mut req = serde_json::json!({ "target": target, "lane": lane });
-    if let Some(v) = voyage_id {
-        req["voyage_id"] = serde_json::json!(v);
-    }
-    codec::write_frame(&mut conn, &Frame::req(1, op::LANE_CONNECT, req), None)
-        .await
-        .expect("write_frame lane.connect");
+    let mut combined = lane_connect_envelope_bytes(target, lane, voyage_id);
+    combined.extend_from_slice(extra_payload);
+    conn.write_all(&combined).await.expect("write lane.connect envelope (+ payload) in ONE call");
     let (frame, _blob) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
         .await
         .unwrap_or_else(|_| panic!("lane.connect reply did not arrive within {BOUND:?}"))
@@ -3960,25 +3993,31 @@ async fn lane_connect_supervisor_pipes_hello_and_status() {
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
 
-    let (mut lane_conn, res) = lane_connect(&env, &target, "supervisor", None).await;
-    assert!(res.get("error").is_none(), "lane.connect refused: {res:?}");
-    assert_eq!(res["ok"].as_bool(), Some(true), "lane.connect payload: {res:?}");
-    let pid = res["pid"].as_u64().expect("pid");
-    assert!(pid > 0, "pid must be a real process id: {res:?}");
-
-    let mut combined = sot_log::wire::encode_supervisor_request(&sot_log::wire::SupervisorRequest::Hello {
+    // Codex review SHOULD-FIX (2026-09-11): the connect envelope AND the
+    // first lane bytes (Hello + Status) are written in ONE call, BEFORE
+    // this test ever reads the LaneConnectRes reply -- the real
+    // peek-buffer-preservation proof (the daemon's own `read_frame` peek
+    // must consume EXACTLY the envelope and hand everything past it,
+    // untouched, to the raw pipe; sending it only AFTER reading the
+    // reply would never exercise that).
+    let mut payload = sot_log::wire::encode_supervisor_request(&sot_log::wire::SupervisorRequest::Hello {
         proto: sot_log::wire::SUPERVISOR_PROTO_V1,
         build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
     })
     .expect("encode hello");
-    combined.extend(
+    payload.extend(
         sot_log::wire::encode_supervisor_request(&sot_log::wire::SupervisorRequest::Status).expect("encode status"),
     );
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    lane_conn.write_all(&combined).await.expect("write hello+status in ONE call");
+    let (mut lane_conn, res) = lane_connect_with_payload(&env, &target, "supervisor", None, &payload).await;
+    assert!(res.get("error").is_none(), "lane.connect refused: {res:?}");
+    assert_eq!(res["ok"].as_bool(), Some(true), "lane.connect payload: {res:?}");
+    let pid = res["pid"].as_u64().expect("pid");
+    let created = res["created"].as_u64().expect("created");
+    assert!(pid > 0, "pid must be a real process id: {res:?}");
 
+    use tokio::io::AsyncReadExt;
     let mut splitter = sot_log::wire::FrameSplitter::new();
-    let mut got_hello: Option<u32> = None;
+    let mut got_hello: Option<(u32, u64)> = None;
     let mut got_status: Option<sot_log::wire::SupervisorPhase> = None;
     let deadline = Instant::now() + BOUND;
     let mut buf = [0u8; 4096];
@@ -3995,8 +4034,9 @@ async fn lane_connect_supervisor_pipes_hello_and_status() {
             match f {
                 sot_log::wire::DecodedFrame::SupervisorReply(sot_log::wire::SupervisorReply::HelloOk {
                     pid: hp,
+                    created: hc,
                     ..
-                }) => got_hello = Some(hp),
+                }) => got_hello = Some((hp, hc)),
                 sot_log::wire::DecodedFrame::SupervisorReply(sot_log::wire::SupervisorReply::StatusOk {
                     phase,
                     ..
@@ -4007,8 +4047,8 @@ async fn lane_connect_supervisor_pipes_hello_and_status() {
     }
     assert_eq!(
         got_hello,
-        Some(pid as u32),
-        "the piped HelloOk's own pid must match lane.connect's own report"
+        Some((pid as u32, created)),
+        "the piped HelloOk's own pid+created must match lane.connect's own report"
     );
     assert_eq!(got_status, Some(sot_log::wire::SupervisorPhase::Ready));
 
@@ -4098,11 +4138,20 @@ async fn lane_connect_voyage_pipes_the_attach_hello() {
     env.kill_daemon_bounded().await;
 }
 
-/// (a) Dropping the client stream mid-pipe closes cleanly — a second
-/// `lane.connect` against the SAME row still succeeds afterward. (b)
-/// `workspace.destroy` while a supervisor-lane pipe is open ends the row
-/// out from under it: the client's next read observes EOF within its own
-/// bound, never a hang.
+/// (a) The client HALF-closes its own write side — never a full drop —
+/// on one pipe. ADR 0045 decision 2's own "either direction closing ends
+/// both": `pipe_bidirectional` tears down the WHOLE pipe (both
+/// directions) the instant EITHER copy direction completes, so the
+/// client's OWN read side then also observes a bounded EOF — the
+/// directly observable proof, from the client's own vantage point, that
+/// a client-initiated half-close reaches the upstream lane and the
+/// daemon closes back. A fresh `lane.connect` against the SAME row
+/// afterward still succeeds — the lane concurrency slot was released,
+/// not leaked. (b) `workspace.destroy` while a DIFFERENT pipe is open
+/// ends the row out from under it: that pipe's own client-side read
+/// observes a bounded EOF too — daemon-initiated closure, the opposite
+/// direction from (a)'s client-initiated one; together these are the
+/// bounded-EOF proof at both ends, both directions.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn lane_connect_closes_when_either_side_closes() {
@@ -4132,10 +4181,24 @@ async fn lane_connect_closes_when_either_side_closes() {
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
 
-    // (a) drop the client stream -- a second lane.connect against the
-    // same row still succeeds.
-    let (first_conn, res) = lane_connect(&env, &target, "supervisor", None).await;
+    // (a) HALF-close the client's own write side (never a full drop) --
+    // the daemon must still tear down BOTH directions, so THIS
+    // connection's own read side observes a bounded EOF back.
+    let (mut first_conn, res) = lane_connect(&env, &target, "supervisor", None).await;
     assert_eq!(res["ok"].as_bool(), Some(true), "first lane.connect payload: {res:?}");
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        first_conn.shutdown().await.expect("half-close the client's own write side");
+        let mut buf = [0u8; 1];
+        let n = tokio::time::timeout(BOUND, first_conn.read(&mut buf))
+            .await
+            .expect("read after a client half-close within BOUND")
+            .expect("read after a client half-close");
+        assert_eq!(
+            n, 0,
+            "a client half-close must still produce a bounded EOF back -- the daemon tears down BOTH directions once either one closes"
+        );
+    }
     drop(first_conn);
     let (second_conn, res) = poll_until(
         || {
@@ -4174,8 +4237,13 @@ async fn lane_connect_closes_when_either_side_closes() {
 
 /// A stopped row's dial IS the recovery trigger (ADR 0045 decision 2):
 /// `lane: "supervisor"` on a row whose authority died resumes it in
-/// place rather than answering absent. A second `lane.connect` while the
-/// first pipe is still open spawns no second `supervise` process.
+/// place rather than answering absent. TWO CONCURRENT initial dials
+/// (Codex review SHOULD-FIX, 2026-09-11: sequential connects plus one
+/// `pgrep` snapshot afterward cannot prove absence of a transient extra
+/// spawn while the race is still live) both succeed, and a background
+/// sampler running continuously across the WHOLE recovery window proves
+/// at most one `supervise` process ever matched at any sampled instant —
+/// the resume, never a second racing authority.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn lane_connect_resumes_a_stopped_row() {
@@ -4200,20 +4268,41 @@ async fn lane_connect_resumes_a_stopped_row() {
     let row = find_row(&list_payload, &workspace_id).expect("the row is still registered");
     let target = row["tmux_session"].as_str().expect("tmux_session").to_string();
 
-    let (first_conn, res) = lane_connect(&env, &target, "supervisor", None).await;
-    assert!(res.get("error").is_none(), "lane.connect must resume the stopped row rather than refuse it: {res:?}");
-    assert_eq!(res["ok"].as_bool(), Some(true), "lane.connect payload: {res:?}");
+    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let max_seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sampler = {
+        let stop = stop.clone();
+        let max_seen = max_seen.clone();
+        let pattern = pattern.clone();
+        tokio::spawn(async move {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let pattern = pattern.clone();
+                let n = tokio::task::spawn_blocking(move || count_matching_processes(&pattern).unwrap_or(0))
+                    .await
+                    .unwrap_or(0);
+                max_seen.fetch_max(n, std::sync::atomic::Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+    };
+
+    let ((first_conn, res_a), (second_conn, res_b)) = tokio::join!(
+        lane_connect(&env, &target, "supervisor", None),
+        lane_connect(&env, &target, "supervisor", None),
+    );
+    assert!(res_a.get("error").is_none(), "lane.connect must resume the stopped row rather than refuse it: {res_a:?}");
+    assert_eq!(res_a["ok"].as_bool(), Some(true), "first concurrent lane.connect payload: {res_a:?}");
+    assert!(res_b.get("error").is_none(), "lane.connect must resume the stopped row rather than refuse it: {res_b:?}");
+    assert_eq!(res_b["ok"].as_bool(), Some(true), "second concurrent lane.connect payload: {res_b:?}");
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
 
-    let (second_conn, res) = lane_connect(&env, &target, "supervisor", None).await;
-    assert_eq!(res["ok"].as_bool(), Some(true), "second lane.connect payload: {res:?}");
-
-    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
-    assert_eq!(
-        count_matching_processes(&pattern).expect("pgrep"),
-        1,
-        "exactly one supervise process must exist -- the resume, never a second racing authority"
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = sampler.await;
+    assert!(
+        max_seen.load(std::sync::atomic::Ordering::Relaxed) <= 1,
+        "more than one supervise process matched at some sampled instant across the two concurrent initial dials"
     );
 
     drop(first_conn);
@@ -4285,10 +4374,14 @@ async fn lane_connect_refusals() {
     assert_eq!(res["code"].as_str(), Some("bad_lane"), "{res:?}");
     assert_lane_connect_closes(&mut s).await;
 
-    // voyage lane, a bogus id on an otherwise-ready row -- lane_absent at
-    // once (decision 2: the supervisor owns leg respawn, never this dial).
+    // voyage lane, a bogus (but well-formed) id on an otherwise-ready row
+    // -- the row's own `drawer.voyage` pointer IS valid, just for a
+    // DIFFERENT voyage, so this is `voyage_mismatch` (the ownership
+    // check, Codex review BLOCKER 2026-09-11), never a dial attempt at
+    // all -- `lane_connect_refuses_a_voyage_id_the_target_row_does_not_own`
+    // covers the two-row form of this same check.
     let (mut s, res) = lane_connect(&env, &ready_target, "voyage", Some("00000000-0000-0000-0000-000000000000")).await;
-    assert_eq!(res["code"].as_str(), Some("lane_absent"), "{res:?}");
+    assert_eq!(res["code"].as_str(), Some("voyage_mismatch"), "{res:?}");
     assert_lane_connect_closes(&mut s).await;
 
     env.kill_daemon_bounded().await;
@@ -4364,19 +4457,85 @@ async fn lane_connect_refusals() {
     env2.kill_daemon_bounded().await;
 }
 
-/// This daemon build has no CLI mechanism to start with a token at all
-/// (`server.rs`'s own doc: `expected_token` is unconditionally `None`
-/// since 0.4.0 removed the TCP listener — `main.rs` refuses `--token`
-/// outright). Skips loudly rather than silently passing without
-/// exercising anything, mirroring this file's own
-/// `SOT_TEST_REQUIRE_USER_MANAGER` skip convention.
+/// Codex review BLOCKER (2026-09-11): a `voyage_id` names a socket by id
+/// ALONE — `Endpoint::connect_voyage_unchallenged`'s own `lane` argument
+/// is the daemon-lane endpoint's namespace, ignored by both platform
+/// endpoints — so nothing about the dial itself ties a voyage to the row
+/// that owns it. Two ready rows, A and B: `{target: A, voyage_id: B's
+/// voyage}` must refuse `voyage_mismatch` (checked against A's own
+/// `drawer.voyage` pointer BEFORE any dial — never piping B's voyage
+/// through A's row), closing the connection; `{target: A, voyage_id: A's
+/// own voyage}` must still succeed, proving the check is a real
+/// comparison and not an unconditional refusal.
 #[tokio::test]
 #[cfg(target_os = "linux")]
-async fn lane_connect_unauthenticated_on_a_token_daemon() {
-    eprintln!(
-        "SKIPPED: this Env has no mechanism to start sotd with a token \
-         (main.rs refuses --token outright; server.rs's expected_token is \
-         unconditionally None) -- nothing here to exercise lane.connect's \
-         own token gate against"
+async fn lane_connect_refuses_a_voyage_id_the_target_row_does_not_own() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
     );
+
+    let env = Env::new("lcvm");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    // Every `workspace.create` needs its OWN project root (the daemon
+    // refuses a duplicate one) -- a fresh directory per row, under this
+    // env's own private tempdir, mirrors this file's own
+    // `tmux_project_root` precedent.
+    async fn create_ready(conn: &mut Conn, next_id: &mut u64, env: &Env, label: &str) -> (String, PathBuf) {
+        let project_root = env._tmp.path().join(label);
+        std::fs::create_dir_all(&project_root).expect("mkdir project_root");
+        let create_req = serde_json::json!({
+            "label": label,
+            "project_root": project_root.to_string_lossy(),
+            "runtime": "capsule",
+        });
+        let create_res = call(conn, *next_id, op::WORKSPACE_CREATE, create_req).await;
+        *next_id += 1;
+        assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+        let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+        let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+        poll_for_phase(conn, next_id, &workspace_id, "ready", BOUND).await;
+        (target, state_dir_from_list(conn, next_id, &workspace_id).await)
+    }
+
+    let (target_a, state_dir_a) = create_ready(&mut conn, &mut next_id, &env, "lcvm-a").await;
+    // Only B's voyage id is needed (never B's own target) -- the whole
+    // point is dialing it THROUGH A.
+    let (_target_b, state_dir_b) = create_ready(&mut conn, &mut next_id, &env, "lcvm-b").await;
+
+    let voyage_a = tokio::task::spawn_blocking({
+        let dir = state_dir_a.clone();
+        move || sot_log::supervisor_client::query_status(&dir).expect("query_status on row A").0.voyage
+    })
+    .await
+    .unwrap()
+    .expect("row A has a voyage");
+    let voyage_b = tokio::task::spawn_blocking({
+        let dir = state_dir_b.clone();
+        move || sot_log::supervisor_client::query_status(&dir).expect("query_status on row B").0.voyage
+    })
+    .await
+    .unwrap()
+    .expect("row B has a voyage");
+    assert_ne!(voyage_a, voyage_b, "two freshly created rows must never share a voyage id");
+
+    // A's target with B's voyage id -- must never pipe B's voyage
+    // through A's row.
+    let (mut s, res) = lane_connect(&env, &target_a, "voyage", Some(&voyage_b)).await;
+    assert_eq!(res["code"].as_str(), Some("voyage_mismatch"), "{res:?}");
+    assert_lane_connect_closes(&mut s).await;
+
+    // A's target with A's OWN voyage id -- the check is a real
+    // comparison, not an unconditional refusal.
+    let (_s, res) = lane_connect(&env, &target_a, "voyage", Some(&voyage_a)).await;
+    assert!(res.get("error").is_none(), "A's own voyage id against A's own target must succeed: {res:?}");
+    assert_eq!(res["ok"].as_bool(), Some(true), "{res:?}");
+
+    env.kill_daemon_bounded().await;
 }
