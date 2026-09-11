@@ -203,11 +203,12 @@ pub(crate) enum LaneError {
     Wire(wire::WireError),
     Protocol(&'static str),
     /// ADR 0045 decision 4: the daemon behind a `DaemonLaneEndpoint`
-    /// dial refused `lane.connect` — its wire `code` and detail, joined
-    /// (`"{code}: {detail}"`) so a caller can still test which code
-    /// fired via `.starts_with(..)`, the same convention `Protocol`'s
-    /// own callers already use on `.contains(..)`.
-    Refused(String),
+    /// dial refused `lane.connect` — `code`/`detail` kept SEPARATE
+    /// (not joined into one string) so every caller can preserve the
+    /// daemon's own diagnostic through to whatever terminal shape it
+    /// produces, rather than a caller needing to re-parse a formatted
+    /// string to recover the code.
+    Refused { code: String, detail: String },
     /// ADR 0045 decision 4: the dial or handshake to the daemon's own
     /// lane bridge failed — retried after backoff, never charged to the
     /// absence window ([`ReconnectState::clear_unresponsive`]).
@@ -226,7 +227,7 @@ impl std::fmt::Display for LaneError {
             LaneError::Eof => write!(f, "connection closed"),
             LaneError::Wire(e) => write!(f, "wire: {e}"),
             LaneError::Protocol(s) => write!(f, "protocol: {s}"),
-            LaneError::Refused(s) => write!(f, "refused: {s}"),
+            LaneError::Refused { code, detail } => write!(f, "refused ({code}): {detail}"),
             LaneError::Unreachable(s) => write!(f, "unreachable: {s}"),
             LaneError::Undetermined(s) => write!(f, "undetermined: {s}"),
         }
@@ -235,21 +236,27 @@ impl std::fmt::Display for LaneError {
 
 /// The three bridge-only `TransportError` arms (ADR 0045 decision 4),
 /// classified BEFORE any conversion through [`transport_error_to_io`] —
-/// unwrapping `Unreachable`/`BridgeUndetermined` that way would make
-/// transport uncertainty look exactly like the absence
+/// unwrapping `Unreachable`/a bridge-sourced `Undetermined` that way
+/// would make transport uncertainty look exactly like the absence
 /// `TransportError::is_endpoint_absent()` reports, folding a hiccup and
 /// a genuinely dead row into one signal (the invariant this whole
 /// decision exists to keep). Every other `TransportError` — the
-/// platform endpoints' own `Io`/`RuntimeDir`/etc., including the unit
-/// `Foreign`/`Undetermined` a CHALLENGED connect can still produce
-/// elsewhere in this crate, never from an `Endpoint::connect_*_
-/// unchallenged` call — keeps going through [`transport_error_to_io`]
-/// exactly as before this decision landed.
+/// platform endpoints' own `Io`/`RuntimeDir`/etc., including a
+/// direct-sourced `Undetermined`/the unit `Foreign` a CHALLENGED
+/// connect can still produce elsewhere in this crate, never from an
+/// `Endpoint::connect_*_unchallenged` call — keeps going through
+/// [`transport_error_to_io`] exactly as before this decision landed.
+/// `Refused{code: "unauthenticated", ..}` reaching here is ALWAYS a
+/// bridge-speaking daemon's own bad-token refusal — `sot_protocol::
+/// lane_client::classify_reply` already renames an old daemon's
+/// coincidentally-`unauthenticated`-coded control-loop gate to
+/// `no_bridge` at the source, so this function never has to re-guess it
+/// from message text.
 fn classify_transport(e: TransportError) -> LaneError {
     match e {
-        TransportError::Refused { code, detail } => LaneError::Refused(format!("{code}: {detail}")),
+        TransportError::Refused { code, detail } => LaneError::Refused { code, detail },
         TransportError::Unreachable(io) => LaneError::Unreachable(io.to_string()),
-        TransportError::BridgeUndetermined(detail) => LaneError::Undetermined(detail),
+        TransportError::Undetermined { detail, .. } => LaneError::Undetermined(detail),
         other => LaneError::Io(transport_error_to_io(other)),
     }
 }
@@ -399,18 +406,23 @@ fn supervisor_status<E: Endpoint>(
 fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
     endpoint: &E,
     reconnect: &mut ReconnectState,
+    lane: &str,
     voyage: Option<&str>,
     now: Instant,
 ) -> ReconnectDecision {
     let Some(voyage) = voyage else {
         return reconnect.classify_unresponsive(now);
     };
-    // No supervisor lane is live at this probe (that is exactly why it is
-    // being called), so there is no `h`/lane name in scope to pass —
-    // `voyage` doubles as the trait's `lane` argument, which today's
-    // platform endpoints ignore regardless (only the daemon-lane endpoint,
-    // B4a, will ever read it).
-    match endpoint.connect_voyage_unchallenged(voyage, voyage) {
+    // `lane` is the row's own name in the endpoint's namespace (the
+    // worker's own `lane: String` -- ADR 0045 decision 5's row-identity
+    // argument, the daemon-lane endpoint's own `target`), NEVER `voyage`
+    // itself: a lane-bridge dial resolves the voyage id THROUGH the row
+    // that owns it, so passing `voyage` for both used to answer
+    // `unknown_workspace` for a row that is very much still there
+    // (ADR 0045 lane B4a Codex review, blocker: "health probing sends
+    // (voyage, voyage); the daemon expects (row, voyage)"). The platform
+    // endpoints still ignore this argument regardless.
+    match endpoint.connect_voyage_unchallenged(lane, voyage) {
         Ok(_probe) => {
             reconnect.clear_unresponsive();
             ReconnectDecision::Retry
@@ -419,14 +431,13 @@ fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
         // hiccups, never charged to the health window — clear the clock
         // and retry exactly like a live voyage pipe would. A refusal
         // whose code is `unauthenticated` keeps this probe's own prior
-        // access-denied classification; every OTHER refusal (an
-        // unknown/foreign/unbridgeable row) reuses `classify_foreign` —
-        // no NEW `TerminalReason` is worth adding for a probe this
-        // throwaway: both already mean "an unproven server, never
-        // retried as if it might still be legitimate."
+        // access-denied classification; every OTHER refusal preserves
+        // its own `{code, detail}` via `classify_lane_refused` rather
+        // than collapsing into a generic `ForeignPipe`/`AccessDenied`
+        // that would discard the daemon's own diagnostic.
         Err(e) => match classify_transport(e) {
-            LaneError::Refused(detail) if detail.starts_with("unauthenticated") => reconnect.classify_access_denied(),
-            LaneError::Refused(_) => reconnect.classify_foreign(),
+            LaneError::Refused { code, .. } if code == "unauthenticated" => reconnect.classify_access_denied(),
+            LaneError::Refused { code, detail } => reconnect.classify_lane_refused(code, detail),
             LaneError::Unreachable(_) | LaneError::Undetermined(_) => {
                 reconnect.clear_unresponsive();
                 ReconnectDecision::Retry
@@ -624,11 +635,11 @@ fn converge_on_ready<E: Endpoint>(
             // bounded Status-polling round, not the episode-level
             // backoff `ReconnectState::retry_with_backoff` governs).
             Err(e) => match classify_transport(e) {
-                LaneError::Refused(detail) => {
-                    let msg = if detail.starts_with("no_bridge") {
+                LaneError::Refused { code, detail } => {
+                    let msg = if code == "no_bridge" {
                         "this daemon has no bridge — it predates the lane bridge (ADR 0045)".to_string()
                     } else {
-                        format!("voyage pipe: daemon refused — {detail}")
+                        format!("voyage pipe: daemon refused ({code}): {detail}")
                     };
                     return ReadyOutcome::Terminal(msg);
                 }
@@ -671,7 +682,14 @@ fn converge_on_ready<E: Endpoint>(
 /// (`supervisor.rs`'s own doc: "`pid`/`created` are this process's own
 /// identity"), never the leg, so that reply can never stand in for this.
 fn capsule_identity_via_mgmt<E: Endpoint>(endpoint: &E, h: &str, voyage: &str) -> Result<E::Process, LaneError> {
-    let conn = endpoint.connect_voyage_unchallenged(h, voyage).map_err(|e| LaneError::Io(transport_error_to_io(e)))?;
+    // ADR 0045 decision 4 (SHOULD-FIX, lane B4a Codex review): routed
+    // through `classify_transport` like every other connect site, even
+    // though this whole call is best-effort (its own caller discards the
+    // error via `.ok()` -- see that call site's own doc) -- "every path"
+    // means every path, and a future caller that stops discarding this
+    // Result must not inherit a bare `Io` that already lost the refusal
+    // code / uncertainty distinction.
+    let conn = endpoint.connect_voyage_unchallenged(h, voyage).map_err(classify_transport)?;
     let mut exchange = VoyageMgmtExchange::default();
     let deadline = Instant::now() + STATUS_BUDGET;
     match endpoint.challenge(&conn, &mut exchange, deadline) {
@@ -1590,11 +1608,11 @@ fn run_worker<E: Endpoint>(
             // in the pane line; the two uncertain arms retry, clearing
             // the health window's clock first so transport uncertainty
             // is never charged to it.
-            Err(LaneError::Refused(detail)) => {
-                let msg = if detail.starts_with("no_bridge") {
+            Err(LaneError::Refused { code, detail }) => {
+                let msg = if code == "no_bridge" {
                     "this daemon has no bridge — it predates the lane bridge (ADR 0045)".to_string()
                 } else {
-                    format!("daemon refused the lane — {detail}")
+                    format!("daemon refused the lane ({code}): {detail}")
                 };
                 emit(ClientEvent::Terminal(msg));
                 return;
@@ -1628,7 +1646,7 @@ fn run_worker<E: Endpoint>(
                 // connect at all. Decision 6: the probe uses `voyage_uuid`
                 // -- the voyage id the supervisor last reported to THIS
                 // client, carried across episodes -- never a pointer file.
-                match on_supervisor_absent_or_unresponsive::<E>(&endpoint, &mut reconnect, voyage_uuid.as_deref(), Instant::now()) {
+                match on_supervisor_absent_or_unresponsive::<E>(&endpoint, &mut reconnect, &lane, voyage_uuid.as_deref(), Instant::now()) {
                     ReconnectDecision::Terminal(reason) => {
                         emit(ClientEvent::Terminal(format!("supervisor lane unreachable: {reason:?}")));
                         return;
@@ -2185,10 +2203,11 @@ fn run_quit<E: Endpoint>(
             )));
         }
     }
+    let refused = std::cell::Cell::new(false);
     run_end_run_and_wait::<E>(
         supervisor_conn,
         sup_reader,
-        |conn, reader| reconnect_supervisor_lane_for_quit::<E>(endpoint, conn, reader, h),
+        |conn, reader| reconnect_supervisor_lane_for_quit::<E>(endpoint, conn, reader, h, &refused),
         quit,
         operation_id,
         reason,
@@ -2203,18 +2222,38 @@ fn run_quit<E: Endpoint>(
 /// bounded overall by `QuitDispatcher::tick`'s 90 s cutoff -- there is
 /// no separate retry budget to manage here, unlike the reconnect EPISODE
 /// loop the rest of this module drives for the attach lane.
+///
+/// `refused`: latched `true` the first time the daemon answers
+/// `lane.connect` with a genuine `Refused` (ADR 0045 decision 4, lane
+/// B4a Codex review SHOULD-FIX: "the quit reconnect must not retry
+/// refusals") — once latched, every FURTHER tick skips the dial
+/// entirely rather than hammering a daemon that has already said no.
+/// Still returns `false` either way (this closure's `bool` contract has
+/// no third "give up" state, and `run_end_run_and_wait`'s own 90 s
+/// cutoff is the real bound either way), so the caller's pacing is
+/// unchanged — this only stops the WASTED re-dial, not the transaction's
+/// own timeout.
 fn reconnect_supervisor_lane_for_quit<E: Endpoint>(
     endpoint: &E,
     supervisor_conn: &mut E::Client,
     sup_reader: &mut FrameReader,
     h: &str,
+    refused: &std::cell::Cell<bool>,
 ) -> bool {
+    if refused.get() {
+        return false;
+    }
     match connect_supervisor_lane::<E>(endpoint, h) {
         Ok((conn, _proven)) => {
             *supervisor_conn = conn;
             *sup_reader = FrameReader::new();
             eprintln!("fe-client quit: reconnected the supervisor lane");
             true
+        }
+        Err(e @ LaneError::Refused { .. }) => {
+            refused.set(true);
+            eprintln!("fe-client quit: reconnect refused ({e}); giving up on further dials for this quit");
+            false
         }
         Err(e) => {
             eprintln!("fe-client quit: reconnect failed ({e}); will retry");
@@ -3136,14 +3175,18 @@ mod tests {
         }
     }
 
-    /// Records the id [`Endpoint::connect_voyage_unchallenged`] was asked
-    /// for and always answers as if the voyage pipe were reachable
+    /// Records the row/id [`Endpoint::connect_voyage_unchallenged`] was
+    /// asked for and always answers as if the voyage pipe were reachable
     /// (`Ok`) — proving [`on_supervisor_absent_or_unresponsive`] probes
-    /// the SAME id its caller passed in, never a pointer file it reads
-    /// itself. `connect_supervisor_unchallenged`/`challenge`/
-    /// `authenticate_server` are unreachable: this test never drives the
-    /// supervisor lane.
+    /// the SAME row and id its caller passed in, never a pointer file it
+    /// reads itself and never the voyage id in BOTH slots (ADR 0045 lane
+    /// B4a Codex review blocker: the probe used to send `(voyage,
+    /// voyage)`, which a real `DaemonLaneEndpoint` reads as "row =
+    /// voyage id", never resolving to any real row). `connect_
+    /// supervisor_unchallenged`/`challenge`/`authenticate_server` are
+    /// unreachable: this test never drives the supervisor lane.
     struct TestEndpoint {
+        last_lane_probed: Mutex<Option<String>>,
         last_voyage_probed: Mutex<Option<String>>,
     }
     impl Endpoint for TestEndpoint {
@@ -3152,9 +3195,10 @@ mod tests {
 
         fn connect_voyage_unchallenged(
             &self,
-            _lane: &str,
+            lane: &str,
             voyage_id: &str,
         ) -> Result<Self::Client, crate::transport::TransportError> {
+            *self.last_lane_probed.lock().unwrap() = Some(lane.to_string());
             *self.last_voyage_probed.lock().unwrap() = Some(voyage_id.to_string());
             Ok(TestClient)
         }
@@ -3179,13 +3223,19 @@ mod tests {
 
     #[test]
     fn health_probe_uses_the_last_reported_voyage_id() {
-        let ep = TestEndpoint { last_voyage_probed: Mutex::new(None) };
+        let ep = TestEndpoint { last_lane_probed: Mutex::new(None), last_voyage_probed: Mutex::new(None) };
         let mut reconnect = ReconnectState::new();
         let now = Instant::now();
+        let lane = "sot-capsule-row-1";
         let voyage_id = "11111111-1111-1111-1111-111111111111";
 
-        let decision = on_supervisor_absent_or_unresponsive::<TestEndpoint>(&ep, &mut reconnect, Some(voyage_id), now);
+        let decision = on_supervisor_absent_or_unresponsive::<TestEndpoint>(&ep, &mut reconnect, lane, Some(voyage_id), now);
         assert_eq!(decision, ReconnectDecision::Retry, "a reachable voyage pipe must retry, never go terminal");
+        assert_eq!(
+            ep.last_lane_probed.lock().unwrap().as_deref(),
+            Some(lane),
+            "the probe must connect through the WORKER'S OWN row, never the voyage id in that slot"
+        );
         assert_eq!(
             ep.last_voyage_probed.lock().unwrap().as_deref(),
             Some(voyage_id),
@@ -3195,10 +3245,10 @@ mod tests {
         // `None`: no id to probe with — the health clock starts exactly
         // as it would for an absent supervisor, and a second call
         // `HEALTH_WINDOW` later is `Terminal`.
-        let decision = on_supervisor_absent_or_unresponsive::<TestEndpoint>(&ep, &mut reconnect, None, now);
+        let decision = on_supervisor_absent_or_unresponsive::<TestEndpoint>(&ep, &mut reconnect, lane, None, now);
         assert_eq!(decision, ReconnectDecision::Retry, "the clock merely starting is never itself terminal");
         let later = now + fe_client::HEALTH_WINDOW + Duration::from_secs(1);
-        let decision = on_supervisor_absent_or_unresponsive::<TestEndpoint>(&ep, &mut reconnect, None, later);
+        let decision = on_supervisor_absent_or_unresponsive::<TestEndpoint>(&ep, &mut reconnect, lane, None, later);
         assert_eq!(
             decision,
             ReconnectDecision::Terminal(fe_client::TerminalReason::HealthWindowExpired),
@@ -3259,25 +3309,26 @@ mod tests {
             script: Mutex::new(std::collections::VecDeque::from([Err(absent()), Err(unreachable_err()), Err(absent()), Err(absent())])),
         };
         let mut reconnect = ReconnectState::new();
+        let lane = "sot-capsule-row-1";
         let voyage_id = "11111111-1111-1111-1111-111111111111";
         let t0 = Instant::now();
 
         // 1) A genuine absence starts the clock; not yet terminal.
-        let d = on_supervisor_absent_or_unresponsive::<ScriptedEndpoint>(&ep, &mut reconnect, Some(voyage_id), t0);
+        let d = on_supervisor_absent_or_unresponsive::<ScriptedEndpoint>(&ep, &mut reconnect, lane, Some(voyage_id), t0);
         assert_eq!(d, ReconnectDecision::Retry, "a clock that just started is never itself terminal");
 
         // 2) An `Unreachable` probe, well within what would have been
         // the original window, clears the clock instead of merely
         // retrying on top of it.
         let t1 = t0 + fe_client::HEALTH_WINDOW - Duration::from_secs(10);
-        let d = on_supervisor_absent_or_unresponsive::<ScriptedEndpoint>(&ep, &mut reconnect, Some(voyage_id), t1);
+        let d = on_supervisor_absent_or_unresponsive::<ScriptedEndpoint>(&ep, &mut reconnect, lane, Some(voyage_id), t1);
         assert_eq!(d, ReconnectDecision::Retry, "Unreachable must retry, never go terminal on its own");
 
         // 3) Past where the ORIGINAL (t0) clock would have expired --
         // still Retry, because step 2 cleared it: this absence starts
         // its OWN fresh window at t2, not inheriting t0's age.
         let t2 = t0 + fe_client::HEALTH_WINDOW + Duration::from_secs(1);
-        let d = on_supervisor_absent_or_unresponsive::<ScriptedEndpoint>(&ep, &mut reconnect, Some(voyage_id), t2);
+        let d = on_supervisor_absent_or_unresponsive::<ScriptedEndpoint>(&ep, &mut reconnect, lane, Some(voyage_id), t2);
         assert_eq!(
             d,
             ReconnectDecision::Retry,
@@ -3288,7 +3339,7 @@ mod tests {
         // its own -- proving step 2/3 cleared and restarted the clock
         // rather than disabling it.
         let t3 = t2 + fe_client::HEALTH_WINDOW + Duration::from_secs(1);
-        let d = on_supervisor_absent_or_unresponsive::<ScriptedEndpoint>(&ep, &mut reconnect, Some(voyage_id), t3);
+        let d = on_supervisor_absent_or_unresponsive::<ScriptedEndpoint>(&ep, &mut reconnect, lane, Some(voyage_id), t3);
         assert_eq!(
             d,
             ReconnectDecision::Terminal(fe_client::TerminalReason::HealthWindowExpired),

@@ -2324,7 +2324,10 @@ fn map_peer_auth_outcome(outcome: crate::challenge::PeerAuthOutcome) -> Result<(
     match outcome {
         crate::challenge::PeerAuthOutcome::Authenticated(_) => Ok(()),
         crate::challenge::PeerAuthOutcome::Foreign => Err(TransportError::Foreign),
-        crate::challenge::PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined),
+        crate::challenge::PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined {
+            via: "direct",
+            detail: "peer identity authentication could not be completed".to_string(),
+        }),
     }
 }
 
@@ -2388,7 +2391,7 @@ pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, TransportError
 /// to tell apart.
 pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeClient, TransportError> {
     validate_voyage_id(voyage_id)?;
-    connect_named_pipe_unchallenged(pipe_name_wide(voyage_id))
+    connect_named_pipe_unchallenged(pipe_name_wide(voyage_id), &AtomicBool::new(false))
 }
 
 /// ADR 0041 step 6 U2: connect to the supervisor lane's own pipe with NO
@@ -2400,7 +2403,7 @@ pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeCl
 /// composes the full challenge itself, exactly as `probe_win::RealProbeOps`
 /// does for the mgmt lane's own unchallenged connect.
 pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient, TransportError> {
-    connect_named_pipe_unchallenged(supervisor_pipe_name_wide(h))
+    connect_named_pipe_unchallenged(supervisor_pipe_name_wide(h), &AtomicBool::new(false))
 }
 
 /// Shared raw connect, given an already-resolved wide pipe name: retries
@@ -2414,9 +2417,24 @@ pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient
 /// every caller of either wrapper above is responsible for running the
 /// OS-level identity check (and, where the lane needs it, the full
 /// challenge) on top.
-fn connect_named_pipe_unchallenged(name: Vec<u16>) -> Result<PipeClient, TransportError> {
+///
+/// `cancel`: checked at the top of every loop iteration — i.e. between
+/// every bounded (200 ms) `WaitNamedPipeW` wait, never mid-syscall. This
+/// is the ONLY mid-dial cancellation Windows named pipes actually admit:
+/// `CreateFileW`'s synchronous OPEN has no async/overlapped form to
+/// cancel (unlike a read/write on an ALREADY-open handle, which
+/// `PipeClient::cancel` can interrupt via `CancelIoEx`), and
+/// `WaitNamedPipeW` has no cancellation handle either — there is no OS
+/// object yet for another thread to act on. A bounded poll loop that
+/// checks a flag between its own already-bounded waits is the only
+/// mechanism that exists; existing callers (both wrappers above) pass a
+/// fresh, never-set flag, so their own behavior is unchanged.
+fn connect_named_pipe_unchallenged(name: Vec<u16>, cancel: &AtomicBool) -> Result<PipeClient, TransportError> {
     let deadline = Instant::now() + CONNECT_BOUND;
     loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(TransportError::Cancelled);
+        }
         let h = unsafe {
             CreateFileW(
                 name.as_ptr(),
@@ -2470,9 +2488,13 @@ fn connect_named_pipe_unchallenged(name: Vec<u16>) -> Result<PipeClient, Transpo
 /// `sot-protocol`, a different crate. NO authentication, exactly like
 /// [`connect_named_pipe_unchallenged`] itself — the lane bridge's own
 /// identity proof is decision 3's split (the daemon ran steps 1-3 on ITS
-/// dial; this client runs steps 4-5 over the pipe this returns).
-pub fn connect_pipe_path_unchallenged(path: &str) -> Result<PipeClient, TransportError> {
-    connect_named_pipe_unchallenged(wide_null(path))
+/// dial; this client runs steps 4-5 over the pipe this returns). `cancel`
+/// is threaded straight through to [`connect_named_pipe_unchallenged`]'s
+/// own bounded poll loop — see that function's own doc for why a checked
+/// flag between its already-bounded waits is the only mid-dial
+/// cancellation a synchronous `CreateFileW`/`WaitNamedPipeW` pair admits.
+pub fn connect_pipe_path_unchallenged(path: &str, cancel: &AtomicBool) -> Result<PipeClient, TransportError> {
+    connect_named_pipe_unchallenged(wide_null(path), cancel)
 }
 
 impl PipeClient {
@@ -2752,7 +2774,7 @@ mod tests {
     fn map_peer_auth_outcome_undetermined_is_the_typed_transport_error() {
         assert!(matches!(
             map_peer_auth_outcome(PeerAuthOutcome::Undetermined),
-            Err(TransportError::Undetermined)
+            Err(TransportError::Undetermined { via: "direct", .. })
         ));
     }
 

@@ -489,12 +489,23 @@ pub enum TransportError {
     /// retried as if the peer might still turn out legitimate.
     #[error("the peer failed identity authentication (a different account's process is behind this endpoint)")]
     Foreign,
-    /// Peer identity authentication could not be completed at all — an
-    /// OS-call failure anywhere in the platform's own steps 1-3. Never
-    /// silently treated as either authenticated or foreign (ADR 0041: "a
-    /// failure... is PENDING, never READY and never ADOPTED").
-    #[error("peer identity authentication could not be completed (peer identity undetermined)")]
-    Undetermined,
+    /// Peer identity authentication could not be completed — `via`
+    /// names WHICH steps-1-3 check came back inconclusive: `"direct"`,
+    /// an OS-call failure in a platform endpoint's own steps 1-3 on a
+    /// direct connect (ADR 0041: "a failure... is PENDING, never READY
+    /// and never ADOPTED"), or `"bridge"` (ADR 0045 decision 4), the
+    /// DAEMON's own steps-1-3 on a lane-bridge dial answering
+    /// `undetermined` — this endpoint never runs its own OS-level check
+    /// at all; the daemon does that instead (decision 3). `detail` is
+    /// the check's own message. ONE variant: the two are the same
+    /// OUTCOME (identity undetermined, never treated as authenticated
+    /// or foreign) at two different STEPS on two different connections
+    /// — `via` is what tells a caller which, not a second variant name.
+    /// (Named `via`, not `source`: `thiserror` treats a field literally
+    /// named `source` as the std `Error::source()` chain, which a plain
+    /// `&'static str` cannot satisfy.)
+    #[error("peer identity undetermined ({via}): {detail}")]
+    Undetermined { via: &'static str, detail: String },
     /// This Unix target has no kernel-provided peer-pid mechanism this
     /// crate trusts (`SO_PEERCRED`'s pid field and `pidfd_open` are
     /// Linux-specific) — the connect constructor fails closed here
@@ -521,18 +532,6 @@ pub enum TransportError {
     /// unwrap it back into a bare `io::Error`.
     #[error("the daemon's lane bridge is unreachable: {0}")]
     Unreachable(std::io::Error),
-    /// ADR 0045 decision 4: the daemon's OWN dial answered
-    /// `undetermined` — its steps-1-3 identity check on the lane IT
-    /// dialed could not complete. Deliberately named `BridgeUndetermined`
-    /// rather than reusing [`Self::Undetermined`] above: that unit
-    /// variant is THIS process's own steps-1-3 outcome on a direct
-    /// platform connect (never produced by a lane-bridge dial, which
-    /// never runs its own OS-level identity check — decision 3 lets the
-    /// daemon do that instead) — two distinct failures, at two different
-    /// steps, on two different connections, must never collapse into one
-    /// variant a caller cannot tell apart.
-    #[error("the daemon could not determine the lane's own peer identity: {0}")]
-    BridgeUndetermined(String),
 }
 
 impl TransportError {

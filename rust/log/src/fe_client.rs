@@ -534,6 +534,15 @@ pub enum TerminalReason {
     /// The voyage pipe is absent while the supervisor lane is absent OR
     /// unresponsive, sustained for the whole [`HEALTH_WINDOW`].
     HealthWindowExpired,
+    /// ADR 0045 decision 4: a lane-bridge daemon refused `lane.connect`
+    /// with a code this crate has no dedicated classifier for (not
+    /// `unauthenticated`, which stays [`Self::AccessDenied`]) — `code`
+    /// and `detail` ride through VERBATIM rather than collapsing into
+    /// [`Self::ForeignPipe`]/[`Self::AccessDenied`], neither of which
+    /// carries a field: an operator reading the pane line deserves the
+    /// daemon's own diagnostic (`unknown_workspace`, `not_capsule`,
+    /// `voyage_mismatch`, ...), not just a generic label.
+    LaneRefused { code: String, detail: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -610,6 +619,13 @@ impl ReconnectState {
     }
     pub fn classify_access_denied(&mut self) -> ReconnectDecision {
         ReconnectDecision::Terminal(TerminalReason::AccessDenied)
+    }
+    /// ADR 0045 decision 4: a lane-bridge refusal reaching a terminal
+    /// classifier — everything EXCEPT `unauthenticated`, which stays
+    /// [`Self::classify_access_denied`]. `code`/`detail` ride through to
+    /// [`TerminalReason::LaneRefused`] verbatim.
+    pub fn classify_lane_refused(&mut self, code: String, detail: String) -> ReconnectDecision {
+        ReconnectDecision::Terminal(TerminalReason::LaneRefused { code, detail })
     }
     pub fn classify_operator_cancel(&mut self) -> ReconnectDecision {
         ReconnectDecision::Terminal(TerminalReason::OperatorCancel)

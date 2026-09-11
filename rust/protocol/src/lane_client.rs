@@ -7,37 +7,54 @@
 //! crate's own `LaneConnectReq`/`LaneConnectRes` — `sot-log` has no
 //! dependency the other way.
 //!
-//! # The split identity proof (decision 3)
+//! # The split identity proof
 //!
 //! A `lane.connect` dial gets its OWN peer-identity report for free: the
 //! daemon it asked ran steps 1-3 of the challenge on ITS dial and
 //! returned the observed `(pid, created)` in [`crate::ops::
-//! LaneConnectRes`]. This module's own [`DaemonLaneEndpoint::
-//! authenticate_server`] simply hands that report back — no OS-level
-//! check of its own is possible from here, reaching the peer only
-//! through a bridged pipe. [`DaemonLaneEndpoint::challenge`] then runs
-//! `sot_log::challenge::exchange_identity` (steps 4-5, the SAME wire
-//! round trip every platform endpoint's own `challenge()` runs) over
-//! that pipe and accepts the result ONLY when it equals the daemon's own
-//! report — never on its own say-so.
+//! LaneConnectRes`]. [`DaemonLaneEndpoint::authenticate_server`] simply
+//! hands that report back — no OS-level check of its own is possible
+//! from here, reaching the peer only through a bridged pipe.
+//! [`DaemonLaneEndpoint::challenge`] then runs `sot_log::challenge::
+//! exchange_identity` (steps 4-5, the SAME wire round trip every
+//! platform endpoint's own `challenge()` runs) over that pipe and
+//! accepts the result ONLY when it equals the daemon's own report.
 //!
-//! # Refusals and uncertainty are typed (decision 4)
+//! # One bounded, cancellable dial+handshake, one stream adapter
 //!
-//! [`dial`](DaemonLaneEndpoint::dial) never lets `lane.connect`'s wire
-//! outcome collapse into a bare `io::Error`: a `Refused` reply is
-//! terminal, `Unreachable`/`sot_log::transport::TransportError::
-//! BridgeUndetermined` are retried by the caller (`sot_log::
-//! fe_client_io`'s own three connect sites classify them), and only
-//! `lane_absent` decodes onto [`sot_log::transport::TransportError::Io`]
-//! with a `NotFound`/`ConnectionRefused` kind — the one case
-//! `is_endpoint_absent()` recognizes.
+//! [`LaneStream`] is the ONE adapter every transport (`Tcp`/`Unix`/
+//! `Pipe`) goes through, implementing `sot_log::client::Client`
+//! directly — [`DaemonLaneClient`] is just `{stream: LaneStream, peer}`,
+//! delegating every `Client` call straight to `stream`. `Unix` reuses
+//! `sot_log::socket_unix::SocketClient` and `Pipe` reuses `sot_log::
+//! pipe_win::PipeClient` verbatim (both already bounded, cancellable
+//! connectors with real `cancel()`s); `Tcp` gets a small local
+//! [`TcpClient`] wrapper matching the same shape. [`DaemonLaneEndpoint::
+//! dial`] then runs in two ABSOLUTE-deadline phases sharing this one
+//! adapter: connect (2 s, each transport's own bounded connector — never
+//! a blocking call an external deadline merely gives up ON without
+//! actually stopping), then [`run_handshake`] (a SEPARATE 2 s bound
+//! covering the whole write+read round trip as ONE operation, not a
+//! per-read socket timeout a trickle of bytes could extend indefinitely
+//! — `shutdown`/`cancel` on expiry, the same mechanism every transport's
+//! own `Client::cancel` already provides).
 //!
-//! # No process-control authority (decision 3)
+//! # Refusals and uncertainty are typed
+//!
+//! [`classify_reply`] never lets `lane.connect`'s wire outcome collapse
+//! into a bare `io::Error`: a `Refused` is terminal, `Unreachable`/
+//! `Undetermined` are retried by the caller (`sot_log::fe_client_io`'s
+//! three connect sites), and only `lane_absent` decodes onto
+//! `TransportError::Io` with a `NotFound`/`ConnectionRefused` kind — the
+//! one case `is_endpoint_absent()` recognizes.
+//!
+//! # No process-control authority; no independent trust
 //!
 //! [`BridgedPeer`] implements ONLY `sot_log::client::PeerIdentity` (bare
-//! `pid`/`created`) — never `PeerProcess` (`reverify`/`wait`/
-//! `terminate`): this endpoint cannot itself wait on or terminate a
-//! process it only ever reaches through the daemon's own pipe.
+//! `pid`/`created`) — never `PeerProcess`: this endpoint cannot wait on
+//! or terminate a process it only ever reaches through the daemon's own
+//! pipe. And [`DaemonLaneEndpoint`] itself holds no kernel handle on
+//! that process at all — see its own doc for the trust this implies.
 
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
@@ -51,32 +68,37 @@ use sot_log::transport::{TransportError, CONNECT_BOUND};
 
 use crate::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
 
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
-
 /// How to reach a row's daemon — the loopback tunnel (`Tcp`, matching
 /// `proxy.connect`'s own transport for a remote host) or a local Unix
 /// socket / Windows named pipe (`Local`, matching the platform
 /// endpoints' own transport for this host's daemon). Carries no row: the
-/// row rides `Endpoint`'s own `lane` argument, named exactly once
-/// (decision 3, decision 5) — never duplicated onto the dial value
-/// itself.
+/// row rides `Endpoint`'s own `lane` argument, named exactly once —
+/// never duplicated onto the dial value itself.
 pub enum LaneDial {
     Tcp(SocketAddr),
     Local(PathBuf),
 }
 
-/// An `Endpoint` value naming one daemon connection, never a row
-/// (decision 3, decision 5). `token` mirrors `ProxyConnectReq::token` /
-/// `LaneConnectReq::token` — present only on a token-configured daemon.
+/// An `Endpoint` value naming one daemon connection, never a row. `token`
+/// mirrors `ProxyConnectReq::token` / `LaneConnectReq::token` — present
+/// only on a token-configured daemon.
+///
+/// **Trust limitation**: this endpoint holds NO kernel handle on the
+/// lane's actual peer process and can run no OS-level identity check of
+/// its own — every identity claim it ever makes traces back to the
+/// DAEMON's own observation (`LaneConnectRes`'s `pid`/`created`, the
+/// daemon's steps 1-3 on ITS dial), bound only by the wire `hello`
+/// [`DaemonLaneEndpoint::challenge`] runs over the resulting pipe. A
+/// daemon this client already trusts to control the row is the one
+/// thing standing behind that report; nothing here re-verifies it
+/// independently, by design (decision 3's split).
 pub struct DaemonLaneEndpoint {
     pub dial: LaneDial,
     pub token: Option<String>,
 }
 
 /// The lane peer's identity, exactly as the DAEMON'S OWN dial observed
-/// it (steps 1-3, run by the daemon, never by this endpoint) —
-/// deliberately the same two fields as `sot_log::challenge::
+/// it — deliberately the same two fields as `sot_log::challenge::
 /// PeerAuthenticated`, but a separate type: nothing here is ever spelled
 /// `ChallengedProcess` or `PeerAuthenticated`, so no consumer can mistake
 /// a peer proven through a THIRD PARTY'S own OS-level check for one this
@@ -95,43 +117,31 @@ impl PeerIdentity for BridgedPeer {
     }
 }
 
-/// One of the three concrete streams a `lane.connect` dial can hand
-/// back — `Tcp`/`Unix` are raw `std` sockets (this module's own
-/// `Client` impl below does its own `shutdown(Both)`-based cancel for
-/// them); `Pipe` reuses `sot_log::pipe_win::PipeClient` verbatim,
-/// inheriting its real OVERLAPPED-I/O cancel rather than reimplementing
-/// one — Windows has no socket-shutdown equivalent for a named pipe.
-enum LaneStream {
-    Tcp(TcpStream),
-    #[cfg(unix)]
-    Unix(UnixStream),
-    #[cfg(windows)]
-    Pipe(sot_log::pipe_win::PipeClient),
-}
-
-/// The connected, identity-reported lane pipe a `lane.connect` dial
-/// produced. `stream`/`peer` are private — a caller drives this only
-/// through the `Client`/`Endpoint` trait vocabulary, exactly like
-/// `PipeClient`/`SocketClient`.
-pub struct DaemonLaneClient {
-    stream: LaneStream,
-    peer: PeerAuthenticated,
+/// The `Tcp` twin of `sot_log::socket_unix::SocketClient`/`pipe_win::
+/// PipeClient`: neither of those exists for a loopback TCP tunnel, so
+/// this is the small adapter that gives `Tcp` the SAME shape — a
+/// `cancelled` flag checked before AND interpreted after every I/O call
+/// (a `shutdown` racing a blocked read/write can otherwise surface as a
+/// generic `ConnectionAborted` instead of `Cancelled`), `cancel()` doing
+/// `shutdown(Both)`.
+struct TcpClient {
+    stream: TcpStream,
     cancelled: AtomicBool,
 }
 
-impl Client for DaemonLaneClient {
+impl Client for TcpClient {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
         if self.cancelled.load(Ordering::SeqCst) {
             return Err(TransportError::Cancelled);
         }
         use std::io::Write;
-        match &self.stream {
-            LaneStream::Tcp(s) => (&*s).write_all(bytes).map_err(|source| TransportError::Io { op: "lane write", source }),
-            #[cfg(unix)]
-            LaneStream::Unix(s) => (&*s).write_all(bytes).map_err(|source| TransportError::Io { op: "lane write", source }),
-            #[cfg(windows)]
-            LaneStream::Pipe(p) => p.write_all(bytes),
-        }
+        (&self.stream).write_all(bytes).map_err(|source| {
+            if self.cancelled.load(Ordering::SeqCst) {
+                TransportError::Cancelled
+            } else {
+                TransportError::Io { op: "lane write", source }
+            }
+        })
     }
 
     fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
@@ -139,34 +149,83 @@ impl Client for DaemonLaneClient {
             return Err(TransportError::Cancelled);
         }
         use std::io::Read;
-        match &self.stream {
-            LaneStream::Tcp(s) => (&*s).read(buf).map_err(|source| TransportError::Io { op: "lane read", source }),
-            #[cfg(unix)]
-            LaneStream::Unix(s) => (&*s).read(buf).map_err(|source| TransportError::Io { op: "lane read", source }),
-            #[cfg(windows)]
-            LaneStream::Pipe(p) => p.read(buf),
-        }
+        (&self.stream).read(buf).map_err(|source| {
+            if self.cancelled.load(Ordering::SeqCst) {
+                TransportError::Cancelled
+            } else {
+                TransportError::Io { op: "lane read", source }
+            }
+        })
     }
 
-    /// `shutdown(Both)` for `Tcp`/`Unix` (unblocks a pending read/write
-    /// the same way any other socket cancel does); `PipeClient::cancel`
-    /// for `Pipe` — its own OVERLAPPED-I/O cancel, not a shutdown this
-    /// stream kind has no equivalent of. Property 34: a cancelled client
-    /// refuses every FURTHER call with `TransportError::Cancelled`,
-    /// checked at the top of `write_all`/`read` above.
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
-        match &self.stream {
-            LaneStream::Tcp(s) => {
-                let _ = s.shutdown(std::net::Shutdown::Both);
-            }
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// The ONE stream adapter every transport this endpoint dials goes
+/// through — `Unix`/`Pipe` reuse `sot-log`'s own hardened clients
+/// verbatim (real bounded connectors, real `cancel()`s) rather than
+/// reimplementing either; only `Tcp` needed a wrapper of its own
+/// (`sot-log` has no loopback-TCP client). `DaemonLaneClient` below is
+/// nothing more than `{stream: LaneStream, peer}` — every `Client` call
+/// delegates straight through.
+enum LaneStream {
+    Tcp(TcpClient),
+    #[cfg(unix)]
+    Unix(sot_log::socket_unix::SocketClient),
+    #[cfg(windows)]
+    Pipe(sot_log::pipe_win::PipeClient),
+}
+
+impl Client for LaneStream {
+    fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
+        match self {
+            LaneStream::Tcp(c) => c.write_all(bytes),
             #[cfg(unix)]
-            LaneStream::Unix(s) => {
-                let _ = s.shutdown(std::net::Shutdown::Both);
-            }
+            LaneStream::Unix(c) => c.write_all(bytes),
             #[cfg(windows)]
-            LaneStream::Pipe(p) => p.cancel(),
+            LaneStream::Pipe(c) => c.write_all(bytes),
         }
+    }
+    fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
+        match self {
+            LaneStream::Tcp(c) => c.read(buf),
+            #[cfg(unix)]
+            LaneStream::Unix(c) => c.read(buf),
+            #[cfg(windows)]
+            LaneStream::Pipe(c) => c.read(buf),
+        }
+    }
+    fn cancel(&self) {
+        match self {
+            LaneStream::Tcp(c) => c.cancel(),
+            #[cfg(unix)]
+            LaneStream::Unix(c) => c.cancel(),
+            #[cfg(windows)]
+            LaneStream::Pipe(c) => c.cancel(),
+        }
+    }
+}
+
+/// The connected, identity-reported lane pipe a `lane.connect` dial
+/// produced. `stream`/`peer` are private — a caller drives this only
+/// through the `Client`/`Endpoint` trait vocabulary.
+pub struct DaemonLaneClient {
+    stream: LaneStream,
+    peer: PeerAuthenticated,
+}
+
+impl Client for DaemonLaneClient {
+    fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
+        self.stream.write_all(bytes)
+    }
+    fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
+        self.stream.read(buf)
+    }
+    fn cancel(&self) {
+        self.stream.cancel()
     }
 }
 
@@ -176,9 +235,8 @@ impl Endpoint for DaemonLaneEndpoint {
 
     /// `lane` is the row's `tmux_session` name — `LaneConnectReq::target`
     /// is required for the voyage lane too (a voyage is reached only
-    /// through the row that owns it; the daemon dials by `voyage_id` but
-    /// authorizes by row), so no daemon-side change was needed here: B3
-    /// already requires `target` on both lane kinds.
+    /// through the row that owns it), so no daemon-side change was
+    /// needed here: B3 already requires `target` on both lane kinds.
     fn connect_voyage_unchallenged(&self, lane: &str, voyage_id: &str) -> Result<Self::Client, TransportError> {
         self.dial(lane, "voyage", Some(voyage_id.to_string()))
     }
@@ -189,10 +247,9 @@ impl Endpoint for DaemonLaneEndpoint {
 
     /// Steps 4-5 ONLY, over the already-piped connection — the SAME
     /// `exchange_identity` every platform endpoint's own `challenge()`
-    /// runs, bound here against the daemon's own report (`conn.peer`,
-    /// steps 1-3, already proven before this endpoint ever saw the
-    /// connection) rather than a fresh OS-level check this endpoint has
-    /// no way to run.
+    /// runs, bound here against the daemon's own report (`conn.peer`)
+    /// rather than a fresh OS-level check this endpoint has no way to
+    /// run.
     fn challenge(&self, conn: &Self::Client, exchange: &mut dyn IdentityExchange, reply_deadline: Instant) -> ChallengeOutcome<Self::Process> {
         match sot_log::challenge::exchange_identity(conn, exchange, reply_deadline) {
             Some(Ok((pid, created))) if pid == conn.peer.pid && created == conn.peer.created => {
@@ -210,21 +267,19 @@ impl Endpoint for DaemonLaneEndpoint {
         }
     }
 
-    /// No wire I/O of its own (decision 3): the daemon already ran
-    /// steps 1-3 on its own dial before this client ever existed, so
-    /// this simply hands that report back.
+    /// No wire I/O of its own: the daemon already ran steps 1-3 on its
+    /// own dial before this client ever existed, so this simply hands
+    /// that report back.
     fn authenticate_server(&self, conn: &Self::Client) -> PeerAuthOutcome {
         PeerAuthOutcome::Authenticated(conn.peer)
     }
 }
 
 /// The standard error payload `crate::ops::LaneConnectReq`'s own doc
-/// promises on refusal, `{error, code}` (plus `kind` for `lane_absent`)
-/// — the same shape `proxy::reject`/`lane_bridge::reject_lane_absent`
-/// write on the daemon side. `code` is optional at the TYPE level only
-/// to catch a daemon that predates the lane bridge entirely: an old
-/// daemon's "unknown op" answer is `{"error": "unknown op: lane.connect"}`
-/// with no `code` at all.
+/// promises on refusal, `{error, code}` (plus `kind` for `lane_absent`).
+/// `code` is optional at the TYPE level only to catch a daemon that
+/// predates the lane bridge entirely: an old daemon's "unknown op"
+/// answer is `{"error": "unknown op: lane.connect"}` with no `code`.
 #[derive(serde::Deserialize)]
 struct WireError {
     error: String,
@@ -235,11 +290,9 @@ struct WireError {
 }
 
 /// The `io::ErrorKind` `Debug` text `lane_bridge::absent_kind` writes,
-/// decoded back — the only two kinds that daemon ever actually sends
+/// decoded back — the only two kinds `lane_absent` ever actually sends
 /// (`TransportError::is_endpoint_absent`'s own predicate), so anything
-/// else (including an absent `kind` field on `dial_failed`, which never
-/// carries one) safely falls back to `Other`: a caller that cares about
-/// absence at all only ever tests THOSE two kinds.
+/// else falls back to `Other`.
 fn absent_kind_from_wire(s: Option<&str>) -> std::io::ErrorKind {
     match s {
         Some("NotFound") => std::io::ErrorKind::NotFound,
@@ -248,11 +301,22 @@ fn absent_kind_from_wire(s: Option<&str>) -> std::io::ErrorKind {
     }
 }
 
+/// `true` iff a wire `unauthenticated` refusal is actually an OLD
+/// daemon's ordinary control-loop auth gate (`server.rs`'s exact "...
+/// send a token-valid hello first" text) answering a `lane.connect` it
+/// never recognized as a first-frame op — rather than the BRIDGE's own
+/// token check (`lane_bridge.rs`'s "bad or missing token", a daemon
+/// that DOES speak `lane.connect` but rejected THIS dial's `token`).
+/// There is no wire `code` for "predates the bridge" — `unauthenticated`
+/// is genuinely shared between the two cases — so the daemon's own
+/// message text is the only thing that tells them apart.
+fn unauthenticated_is_actually_no_bridge(detail: &str) -> bool {
+    detail.contains("token-valid hello")
+}
+
 /// Classify one `lane.connect` reply frame into the daemon's own
-/// `(pid, created)` report, or the typed refusal/uncertainty decision 4
-/// names. Matched BEFORE any `io::Error` conversion exists to unwrap
-/// these into (`sot_log::client::transport_error_to_io` only ever sees
-/// the RESULT of this function, never the wire payload directly).
+/// `(pid, created)` report, or a typed refusal/uncertainty. Matched
+/// BEFORE any `io::Error` conversion exists to unwrap these into.
 fn classify_reply(frame: Frame) -> Result<(u32, u64), TransportError> {
     if frame.kind != Kind::Res || frame.op != op::LANE_CONNECT {
         return Err(TransportError::Refused {
@@ -282,49 +346,37 @@ fn classify_reply(frame: Frame) -> Result<(u32, u64), TransportError> {
             op: "lane.connect",
             source: std::io::Error::new(absent_kind_from_wire(werr.kind.as_deref()), werr.error),
         }),
-        Some("dial_failed") => Err(TransportError::Io {
-            op: "lane.connect",
-            source: std::io::Error::new(absent_kind_from_wire(werr.kind.as_deref()), werr.error),
+        // The daemon's OWN dial/authenticate step failed on the far side
+        // (any I/O error but absence) — uncertain, not a confirmed dead
+        // row, so this retries and clears the health clock exactly like
+        // `Unreachable`, never a generic `Io` a caller could charge to
+        // the absence window.
+        Some("dial_failed") => Err(TransportError::Unreachable(std::io::Error::other(werr.error))),
+        Some("undetermined") => Err(TransportError::Undetermined { via: "bridge", detail: werr.error }),
+        Some("unauthenticated") if unauthenticated_is_actually_no_bridge(&werr.error) => Err(TransportError::Refused {
+            code: "no_bridge".to_string(),
+            detail: format!("a daemon that predates the lane bridge (ADR 0045) refused with its ordinary control-loop gate: {}", werr.error),
         }),
-        Some("undetermined") => Err(TransportError::BridgeUndetermined(werr.error)),
         Some(code) => Err(TransportError::Refused { code: code.to_string(), detail: werr.error }),
         None => Err(TransportError::Refused { code: "no_bridge".to_string(), detail: werr.error }),
     }
 }
 
-/// Write one frame then read one reply, over any stream kind that
-/// implements `std::io::{Read, Write}` BY SHARED REFERENCE — `TcpStream`
-/// and `UnixStream` both do (the standard concurrent-use-by-reference
-/// impls), so this one function serves both without owning the stream:
-/// `dial` still needs it afterward to build the `LaneStream` value.
-fn send_and_receive<S>(stream: &S, frame: &Frame) -> Result<Frame, TransportError>
-where
-    for<'a> &'a S: std::io::Read + std::io::Write,
-{
-    let mut w = stream;
-    crate::codec::write_frame_blocking(&mut w, frame).map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))?;
-    let mut r = std::io::BufReader::new(stream);
-    crate::codec::read_frame_blocking(&mut r).map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))
-}
+/// `PipeClient`/`SocketClient`/`TcpClient`'s `write_all`/`read` are
+/// `&self` methods returning `Result<_, TransportError>`
+/// (`sot_log::client::Client`'s own shape), not `std::io::{Read,
+/// Write}` — this is the ONE adapter that lets `write_frame_blocking`/
+/// `read_frame_blocking` drive ANY of them, so every transport speaks
+/// byte-identical framing rather than a per-transport reimplementation.
+struct ClientIo<'a>(&'a dyn Client);
 
-/// `PipeClient`'s `write_all`/`read` are `&self` methods returning
-/// `Result<_, TransportError>` (crate::client::Client's own shape), not
-/// `std::io::{Read, Write}` — this small adapter is what lets the SAME
-/// `write_frame_blocking`/`read_frame_blocking` codec functions drive a
-/// pipe too, so every platform speaks byte-identical framing (decision
-/// 7) rather than a pipe-specific reimplementation of it.
-#[cfg(windows)]
-struct PipeIo<'a>(&'a sot_log::pipe_win::PipeClient);
-
-#[cfg(windows)]
-impl<'a> std::io::Read for PipeIo<'a> {
+impl<'a> std::io::Read for ClientIo<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.0.read(buf).map_err(|e| std::io::Error::other(e.to_string()))
     }
 }
 
-#[cfg(windows)]
-impl<'a> std::io::Write for PipeIo<'a> {
+impl<'a> std::io::Write for ClientIo<'a> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.0.write_all(buf).map(|()| buf.len()).map_err(|e| std::io::Error::other(e.to_string()))
     }
@@ -333,33 +385,38 @@ impl<'a> std::io::Write for PipeIo<'a> {
     }
 }
 
-/// The pipe twin of [`send_and_receive`]: `PipeClient` has no socket-level
-/// read timeout to set/clear, so the whole write+read round trip runs
-/// under ONE `sot_log::deadline::run_with_deadline` bound instead,
-/// `on_timeout` calling `PipeClient::cancel` to unblock it — the same
-/// mechanism `exchange_identity`'s own wire round trip already uses.
-#[cfg(windows)]
-fn send_and_receive_pipe(client: &sot_log::pipe_win::PipeClient, frame: &Frame, deadline: Instant) -> Result<Frame, TransportError> {
-    let outcome = sot_log::deadline::run_with_deadline(deadline, || client.cancel(), || -> Result<Frame, TransportError> {
-        let mut io = PipeIo(client);
-        crate::codec::write_frame_blocking(&mut io, frame).map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))?;
-        let mut r = std::io::BufReader::new(PipeIo(client));
+/// The ONE deadline helper the handshake shares across all three
+/// transports: write the request, read ONE reply, as a SINGLE operation
+/// bounded by one absolute deadline — not a per-read socket timeout a
+/// trickle of bytes could extend indefinitely, and the write is bounded
+/// by the SAME deadline too (a slow/stalled write is no less a hang than
+/// a slow read). `on_timeout` is `stream.cancel()` — `shutdown(Both)` for
+/// `Tcp`/`Unix`, `PipeClient`'s own OVERLAPPED cancel for `Pipe` — the
+/// SAME mechanism `exchange_identity`'s own wire round trip already uses
+/// for the POST-handshake attach hello, so the handshake and the hello
+/// that immediately follows it are bounded identically.
+fn run_handshake(stream: &LaneStream, req: &Frame, deadline: Instant) -> Result<(u32, u64), TransportError> {
+    let outcome = sot_log::deadline::run_with_deadline(deadline, || stream.cancel(), || -> Result<Frame, TransportError> {
+        let mut io = ClientIo(stream);
+        crate::codec::write_frame_blocking(&mut io, req).map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))?;
+        let mut r = std::io::BufReader::new(ClientIo(stream));
         crate::codec::read_frame_blocking(&mut r).map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))
     });
     match outcome {
-        Some(inner) => inner,
+        Some(Ok(frame)) => classify_reply(frame),
+        Some(Err(e)) => Err(e),
         None => Err(TransportError::Unreachable(std::io::Error::new(std::io::ErrorKind::TimedOut, "lane.connect: handshake timed out"))),
     }
 }
 
 impl DaemonLaneEndpoint {
-    /// The blocking dial: connect with a 2 s bound
-    /// (`sot_log::transport::CONNECT_BOUND`, reused rather than a second
-    /// magic number), write the `lane.connect` request, read ONE reply
-    /// frame under a separate 2 s bound, then classify it (decision 4).
-    /// `row` is the row's `tmux_session` name (`LaneConnectReq::target`,
-    /// required for both lane kinds); `kind` is `"supervisor"` or
-    /// `"voyage"` (`LaneConnectReq::lane`).
+    /// The blocking dial: connect (2 s bound, each transport's own
+    /// hardened connector — see [`LaneStream`]'s own doc), write the
+    /// `lane.connect` request and read ONE reply under a SEPARATE 2 s
+    /// bound ([`run_handshake`]), then classify it.  `row` is the row's
+    /// `tmux_session` name (`LaneConnectReq::target`, required for both
+    /// lane kinds); `kind` is `"supervisor"` or `"voyage"`
+    /// (`LaneConnectReq::lane`).
     fn dial(&self, row: &str, kind: &str, voyage_id: Option<String>) -> Result<DaemonLaneClient, TransportError> {
         let req = LaneConnectReq {
             target: row.to_string(),
@@ -369,60 +426,61 @@ impl DaemonLaneEndpoint {
         };
         let frame = Frame::req(1, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
 
-        match &self.dial {
+        let stream = match &self.dial {
             LaneDial::Tcp(addr) => {
                 let stream = TcpStream::connect_timeout(addr, CONNECT_BOUND).map_err(TransportError::Unreachable)?;
-                stream.set_read_timeout(Some(CONNECT_BOUND)).map_err(TransportError::Unreachable)?;
-                let reply = send_and_receive(&stream, &frame)?;
-                let (pid, created) = classify_reply(reply)?;
-                stream.set_read_timeout(None).map_err(TransportError::Unreachable)?;
-                Ok(DaemonLaneClient {
-                    stream: LaneStream::Tcp(stream),
-                    peer: PeerAuthenticated { pid, created },
-                    cancelled: AtomicBool::new(false),
-                })
+                LaneStream::Tcp(TcpClient { stream, cancelled: AtomicBool::new(false) })
             }
             #[cfg(unix)]
             LaneDial::Local(path) => {
-                let deadline = Instant::now() + CONNECT_BOUND;
-                let path_owned = path.clone();
-                let stream = match sot_log::deadline::run_with_deadline(deadline, || {}, move || UnixStream::connect(&path_owned)) {
-                    Some(Ok(s)) => s,
-                    Some(Err(e)) => return Err(TransportError::Unreachable(e)),
-                    None => return Err(TransportError::Unreachable(std::io::Error::new(std::io::ErrorKind::TimedOut, "lane.connect: dial timed out"))),
-                };
-                stream.set_read_timeout(Some(CONNECT_BOUND)).map_err(TransportError::Unreachable)?;
-                let reply = send_and_receive(&stream, &frame)?;
-                let (pid, created) = classify_reply(reply)?;
-                stream.set_read_timeout(None).map_err(TransportError::Unreachable)?;
-                Ok(DaemonLaneClient {
-                    stream: LaneStream::Unix(stream),
-                    peer: PeerAuthenticated { pid, created },
-                    cancelled: AtomicBool::new(false),
-                })
+                // Reuses `sot_log::socket_unix`'s own bounded, non-
+                // blocking connector rather than a blocking
+                // `UnixStream::connect` under an external deadline: the
+                // latter would leak the blocked connect thread past the
+                // deadline on a full listen backlog instead of actually
+                // stopping — this connector never blocks past
+                // `CONNECT_BOUND` in the first place.
+                let client = sot_log::socket_unix::connect_unix_socket_unchallenged(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
+                LaneStream::Unix(client)
             }
             #[cfg(windows)]
             LaneDial::Local(path) => {
                 let path_str = path.to_str().ok_or_else(|| {
                     TransportError::Unreachable(std::io::Error::new(std::io::ErrorKind::InvalidInput, "lane pipe path is not valid Unicode"))
                 })?;
-                let client = sot_log::pipe_win::connect_pipe_path_unchallenged(path_str).map_err(|te| {
-                    let io = match te {
-                        TransportError::Io { source, .. } => source,
-                        other => std::io::Error::other(other.to_string()),
-                    };
-                    TransportError::Unreachable(io)
-                })?;
-                let deadline = Instant::now() + CONNECT_BOUND;
-                let reply = send_and_receive_pipe(&client, &frame, deadline)?;
-                let (pid, created) = classify_reply(reply)?;
-                Ok(DaemonLaneClient {
-                    stream: LaneStream::Pipe(client),
-                    peer: PeerAuthenticated { pid, created },
-                    cancelled: AtomicBool::new(false),
-                })
+                // A fresh, per-dial cancel flag: `connect_pipe_path_
+                // unchallenged`'s own bounded poll loop checks it between
+                // every already-bounded `WaitNamedPipeW` wait — the only
+                // mid-dial cancellation a synchronous `CreateFileW`/
+                // `WaitNamedPipeW` pair admits (neither has an OS-level
+                // cancellation handle the way an OVERLAPPED read/write on
+                // an already-open handle does). Nothing external sets it
+                // today (this dial has no caller that cancels one in
+                // flight yet) — the hook exists so one can.
+                let dial_cancel = AtomicBool::new(false);
+                let client = sot_log::pipe_win::connect_pipe_path_unchallenged(path_str, &dial_cancel).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
+                LaneStream::Pipe(client)
             }
-        }
+        };
+
+        let handshake_deadline = Instant::now() + CONNECT_BOUND;
+        let (pid, created) = run_handshake(&stream, &frame, handshake_deadline)?;
+        Ok(DaemonLaneClient { stream, peer: PeerAuthenticated { pid, created } })
+    }
+}
+
+/// `connect_unix_socket_unchallenged`/`connect_pipe_path_unchallenged`'s
+/// own failures are always [`TransportError::Io`] — this unwraps that
+/// (preserving the underlying `io::Error`) so [`DaemonLaneEndpoint::
+/// dial`] can rewrap it as [`TransportError::Unreachable`] uniformly;
+/// any other variant (unreachable in practice — neither connector
+/// produces one) still degrades to a generic io error rather than
+/// panicking.
+#[cfg(any(unix, windows))]
+fn unwrap_connect_io(e: TransportError) -> std::io::Error {
+    match e {
+        TransportError::Io { source, .. } => source,
+        other => std::io::Error::other(other.to_string()),
     }
 }
 
@@ -463,7 +521,7 @@ mod tests {
 
     #[test]
     fn refusal_codes_map_to_typed_errors() {
-        for code in ["unknown_workspace", "not_capsule", "bad_lane", "unauthenticated", "foreign"] {
+        for code in ["unknown_workspace", "not_capsule", "bad_lane", "foreign", "voyage_mismatch"] {
             let code = code.to_string();
             let result = dial_against(move |conn| {
                 respond_with(conn, serde_json::json!({ "error": "refused", "code": code }));
@@ -473,6 +531,53 @@ mod tests {
                 other => panic!("expected Refused, got {other:?}"),
             }
         }
+    }
+
+    /// The bridge's OWN token check (a daemon that DOES speak
+    /// `lane.connect` but rejected this dial's `token`) stays
+    /// `unauthenticated` — distinct from the old-daemon case below, which
+    /// shares the same wire code but a different message.
+    #[test]
+    fn a_bridge_daemons_own_bad_token_stays_unauthenticated() {
+        let result = dial_against(|conn| {
+            respond_with(conn, serde_json::json!({ "error": "bad or missing token", "code": "unauthenticated" }));
+        });
+        match result {
+            Err(TransportError::Refused { code, .. }) => assert_eq!(code, "unauthenticated"),
+            other => panic!("expected Refused{{code: unauthenticated}}, got {other:?}"),
+        }
+    }
+
+    /// An OLD daemon's ordinary control-loop auth gate answers
+    /// `lane.connect` with the SAME `unauthenticated` code but its own
+    /// "send a token-valid hello first" text — this must be recognized
+    /// as `no_bridge`, not confused with a real bridge's bad-token
+    /// refusal (ADR 0045 lane B4a Codex review blocker).
+    #[test]
+    fn an_old_daemons_control_loop_unauthenticated_is_no_bridge() {
+        let result = dial_against(|conn| {
+            respond_with(
+                conn,
+                serde_json::json!({ "error": "authentication required: send a token-valid hello first", "code": "unauthenticated" }),
+            );
+        });
+        match result {
+            Err(TransportError::Refused { code, .. }) => assert_eq!(code, "no_bridge"),
+            other => panic!("expected Refused{{code: no_bridge}}, got {other:?}"),
+        }
+    }
+
+    /// `dial_failed` is the daemon's OWN dial/authenticate step failing
+    /// on the far side — uncertain transport, not a confirmed absence,
+    /// so it must classify as `Unreachable` (retried, clock cleared),
+    /// never a generic `Io` a caller's absence-window accounting could
+    /// charge (ADR 0045 lane B4a Codex review blocker).
+    #[test]
+    fn dial_failed_is_unreachable_not_generic_io() {
+        let result = dial_against(|conn| {
+            respond_with(conn, serde_json::json!({ "error": "connection refused dialing the voyage socket", "code": "dial_failed" }));
+        });
+        assert!(matches!(result, Err(TransportError::Unreachable(_))), "got {result:?}");
     }
 
     #[test]
@@ -505,7 +610,7 @@ mod tests {
         let result = dial_against(|conn| {
             respond_with(conn, serde_json::json!({ "error": "could not authenticate", "code": "undetermined" }));
         });
-        assert!(matches!(result, Err(TransportError::BridgeUndetermined(_))), "got {result:?}");
+        assert!(matches!(result, Err(TransportError::Undetermined { via: "bridge", .. })), "got {result:?}");
     }
 
     #[test]
@@ -535,10 +640,17 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(4));
     }
 
+    /// A cancel mid-read must be what unblocks it, not an eventual peer
+    /// close racing ahead of the cancel — so the peer stays open for up
+    /// to 10 s (far past any real cancel latency) while the test asserts
+    /// the read actually completed in well under 2 s (ADR 0045 lane B4a
+    /// Codex review SHOULD-FIX: the previous version's peer closed after
+    /// 500 ms, so the test could pass even if `cancel()` did nothing).
     #[test]
     fn cancel_unblocks_a_pending_read() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let handle = std::thread::spawn(move || {
             let (mut conn, _) = listener.accept().unwrap();
             let mut buf = [0u8; 4096];
@@ -547,10 +659,9 @@ mod tests {
             let mut line = serde_json::to_vec(&res).unwrap();
             line.push(b'\n');
             conn.write_all(&line).unwrap();
-            // Hold the connection open — no further bytes, no close —
-            // so the read below genuinely blocks on nothing rather than
-            // racing an EOF this test does not mean to exercise.
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            // Held open until the test says the cancelled read already
+            // completed -- see this test's own doc.
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
         });
         let endpoint = DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None };
         let client = endpoint.dial("row-1", "supervisor", None).expect("handshake succeeds");
@@ -559,18 +670,25 @@ mod tests {
         let reader = std::sync::Arc::clone(&client);
         let read_thread = std::thread::spawn(move || {
             let mut buf = [0u8; 16];
-            reader.read(&mut buf)
+            let started = Instant::now();
+            let result = reader.read(&mut buf);
+            (result, started.elapsed())
         });
         std::thread::sleep(std::time::Duration::from_millis(50));
         client.cancel();
-        let result = read_thread.join().unwrap();
+        let (result, elapsed) = read_thread.join().unwrap();
+        let _ = release_tx.send(()); // only now may the peer close
         handle.join().unwrap();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "cancel() itself must unblock the read (peer stayed open 10s) -- took {elapsed:?}"
+        );
         // `shutdown(Both)` on a Tcp/Unix stream unblocks a pending LOCAL
         // read as ordered EOF (`Ok(0)`) — it marks this end fully closed,
         // it does not raise an error the way `PipeClient::cancel`'s own
-        // OVERLAPPED cancel does. Either outcome proves the read did not
-        // stay blocked forever; `Ok(n > 0)` would not (that would mean
-        // the daemon, not the cancel, produced the completion).
+        // OVERLAPPED cancel does. Either outcome proves cancel() (not
+        // the still-open peer) produced the completion.
         match result {
             Ok(0) | Err(TransportError::Cancelled) | Err(TransportError::Io { .. }) => {}
             other => panic!("expected cancel to unblock the read as EOF or an error, got {other:?}"),
