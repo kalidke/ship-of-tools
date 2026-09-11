@@ -321,6 +321,19 @@ fn zombie_children_of(pid: u32) -> usize {
         .count()
 }
 
+/// The supervisor's own direct children right now, live or dead, via
+/// `/proc/<pid>/task/<pid>/children` -- as [`zombie_children_of`], minus
+/// its zombie-state filter. Used to find the leg's own pid (the
+/// supervisor's ONE child at a time) rather than a name-matching scrape.
+#[cfg(target_os = "linux")]
+fn direct_children_of(pid: u32) -> Vec<u32> {
+    std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|s| s.parse().ok())
+        .collect()
+}
+
 /// As [`wait_for_exit`], but on timeout makes ONE best-effort attempt to
 /// reconnect and report whatever `status` still claims, so a future CI
 /// failure NAMES the stuck lifecycle state instead of just timing out
@@ -1226,6 +1239,108 @@ fn start_reaches_ready_promptly() {
     assert!(elapsed < Duration::from_secs(30), "expected Ready well within the generous 30s bound, took {elapsed:?}");
 
     let _ = command(&conn, "start-reaches-ready-stop", SupervisorOp::Stop);
+    let child = guard.0.take().unwrap();
+    let _ = wait_for_exit(child, Duration::from_secs(30));
+}
+
+/// ADR 0043 decision 34: a leg forks from the SUPERVISOR's own running
+/// image via `/proc/self/exe`, never a path string resolved fresh off
+/// disk at spawn time -- so an `sot-apply`-style rename of a new binary
+/// over the old launch path cannot make an already-running supervisor
+/// hand a freshly spawned leg the NEW build. Proven by launching a
+/// supervisor from a COPY of the built `sot-capsule`, renaming that copy
+/// away once a leg is up, then killing the leg so the supervisor's own
+/// anti-flap respawn fires a fresh spawn under the (now binary-less)
+/// launch path: the respawned leg's `/proc/<pid>/exe` -- the kernel's own
+/// live-mapping identity, immune to the very rename this test performs --
+/// must still match the SUPERVISOR's own (dev, ino), not whatever (or
+/// nothing) now sits at the renamed-away path.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_leg_spawned_after_the_binary_is_renamed_runs_the_supervisors_own_inode() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    // A COPY, launched from a path this test can rename out from under --
+    // the built binary itself (`capsule_exe()`) must stay put for every
+    // other test in this file.
+    let copy_path = dir.path().join("sot-capsule-copy");
+    std::fs::copy(capsule_exe(), &copy_path).expect("copy sot-capsule for a renameable launch path");
+    std::fs::set_permissions(&copy_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut cmd = Command::new(&copy_path);
+    cmd.arg("supervise")
+        .arg(&state_dir)
+        .arg("--start")
+        .arg("--assume-no-rollback-target")
+        .arg("--")
+        .args(SHELL)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let mut guard = KillGuard(Some(cmd.spawn().expect("spawn sot-capsule supervise from the copy")));
+    let supervisor_pid = guard.0.as_ref().unwrap().id();
+
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+
+    let original_leg_pid = poll_until(
+        || direct_children_of(supervisor_pid).into_iter().next(),
+        Duration::from_secs(10),
+        "the supervisor's own leg child pid to appear",
+    );
+
+    // The identity every leg spawn must actually run: the running
+    // supervisor's OWN loaded image, read through its own magic
+    // `/proc/<pid>/exe` link (a live-mapping identity, not a path
+    // lookup a rename can redirect).
+    let supervisor_exe = std::fs::metadata(format!("/proc/{supervisor_pid}/exe")).expect("stat the supervisor's own /proc/<pid>/exe");
+    let supervisor_identity = (supervisor_exe.dev(), supervisor_exe.ino());
+
+    // Displace the launch path -- exactly what an `sot-apply` rename-based
+    // install does. The already-running supervisor and its live leg are
+    // unaffected (their own mapped inodes stay open); only a fresh spawn
+    // that re-resolved a PATH would notice anything happened here.
+    std::fs::rename(&copy_path, dir.path().join("sot-capsule-copy.renamed-aside")).expect("rename the launch path away");
+
+    // Kill the LEG (not the supervisor authority) so its own anti-flap
+    // respawn -- one kill, well under `FLAP_THRESHOLD` -- fires a fresh
+    // spawn under the now binary-less launch path: exactly the spawn
+    // this decision protects.
+    unsafe {
+        libc::kill(original_leg_pid as libc::pid_t, libc::SIGKILL);
+    }
+
+    let respawned_leg_pid = poll_until(
+        || direct_children_of(supervisor_pid).into_iter().find(|&pid| pid != original_leg_pid),
+        Duration::from_secs(30),
+        "a respawned leg child pid to appear after the original was killed",
+    );
+    let respawned_exe = std::fs::metadata(format!("/proc/{respawned_leg_pid}/exe"))
+        .expect("stat the respawned leg's own /proc/<pid>/exe");
+    assert_eq!(
+        (respawned_exe.dev(), respawned_exe.ino()),
+        supervisor_identity,
+        "a leg spawned after the launch binary was renamed away must still run the supervisor's OWN inode"
+    );
+
+    // End the run FIRST -- `stop` alone ends only the authority (ADR
+    // 0041 Lifecycle: legs are deliberately outside its job), which would
+    // otherwise leak the respawned leg's own shell as an orphaned process
+    // once this test's tempdir goes away with no supervisor left to
+    // adopt it. Re-waits for Ready: the respawned leg's OWN pid appearing
+    // (already proven above) is not the same fact as the supervisor's
+    // phase having caught up to it -- `end_run` refuses a voyage with no
+    // leg it considers currently running.
+    wait_for_ready(&conn, Duration::from_secs(30));
+    end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
+    let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
+    let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
     let child = guard.0.take().unwrap();
     let _ = wait_for_exit(child, Duration::from_secs(30));
 }

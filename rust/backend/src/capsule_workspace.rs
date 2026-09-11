@@ -1639,7 +1639,7 @@ mod runtime {
                     project_root,
                     agent_name,
                     slug,
-                    workspaces,
+                    workspaces.clone(),
                 )?;
                 (Some(()), phase)
             }
@@ -1651,7 +1651,7 @@ mod runtime {
                     agent_name,
                     slug,
                     project_root,
-                    workspaces,
+                    workspaces.clone(),
                 )?;
                 (Some(()), phase)
             }
@@ -1659,16 +1659,42 @@ mod runtime {
         };
         // One answered phase still has no live leg to attach to:
         // `EndedNoRespawn` (`--resume`/`--start` deliberately never
-        // resurrect it — ADR 0041's own no-resurrection rule). `reset`
-        // is the ONE operation that phase admits; proceed as for a
-        // fresh start (the reset transaction mints the new voyage and
-        // spawns). `resume_locked` never sends it itself — this stays
-        // the one place that does (L3 changes it to attach's retirement
-        // instead).
-        if settled_phase == super::phase_str(sot_log::wire::SupervisorPhase::EndedNoRespawn) {
-            return sot_log::supervisor_client::reset(&state_dir)
-                .map(|_new_voyage| Some(()))
-                .map_err(|e| format!("capsule workspace reset (after an ended run) failed: {e}"));
+        // resurrect it — ADR 0041's own no-resurrection rule). A new run
+        // never starts on a resident authority; replacement requires a
+        // confirmed stop (ADR 0043 decision 34).
+        let ended_phase = super::phase_str(sot_log::wire::SupervisorPhase::EndedNoRespawn);
+        if settled_phase == ended_phase {
+            // Retire the resting authority (attach's own job, not
+            // resume's) before minting a new run over it: the WAITING
+            // `stop` (confirmed exit, never `stop_and_warn`) first -- an
+            // `Err` here leaves the row untouched, nothing replaced --
+            // then a fresh spawn via the same guarded resume body every
+            // other caller uses. Sending `reset` straight to the OLD
+            // resident process (the prior behaviour) would let IT mint
+            // the new voyage and spawn the new leg from whatever binary
+            // it cached at its own start.
+            sot_log::supervisor_client::stop(&state_dir)
+                .map_err(|e| format!("capsule workspace retire (stop before reset) failed: {e}"))?;
+            let argv = agent_argv(agent_kind)?;
+            let retired_phase = start_supervisor(
+                state_root,
+                workspace_id,
+                StartMode::Resume,
+                &argv,
+                project_root,
+                agent_name,
+                slug,
+                workspaces,
+            )?;
+            return if retired_phase == ended_phase {
+                sot_log::supervisor_client::reset(&state_dir)
+                    .map(|_new_voyage| Some(()))
+                    .map_err(|e| format!("capsule workspace reset (after retiring an ended run) failed: {e}"))
+            } else {
+                Err(format!(
+                    "capsule workspace retire: resumed authority settled to {retired_phase} instead of ended_no_respawn"
+                ))
+            };
         }
         Ok(spawned)
     }

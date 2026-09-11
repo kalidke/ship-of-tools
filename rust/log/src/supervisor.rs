@@ -912,6 +912,23 @@ fn build_run_command(
         Survival::Normal => "normal",
         Survival::Degraded => "degraded",
     };
+    // Legs fork from THIS process, so before their own exec resolves it,
+    // `/proc/self/exe` still names the supervisor's own running inode --
+    // immune to an `sot-apply` rename-over-the-path (ADR 0043 decision
+    // 34). `argv[0]` is set to the real resolved path regardless, so
+    // `ps`/`pgrep -f` still find the leg by it (a magic-symlink program
+    // path with no bearing on what `ps` prints). Windows has no such
+    // handle: the launcher's own rename-aside keeps a running image
+    // pinned, and that process boundary is versioned by the mgmt
+    // exchange instead (ADR 0030 §8 table row 5).
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        use std::os::unix::process::CommandExt;
+        let mut c = std::process::Command::new("/proc/self/exe");
+        c.arg0(capsule_exe);
+        c
+    };
+    #[cfg(not(target_os = "linux"))]
     let mut command = std::process::Command::new(capsule_exe);
     command
         .arg("run")
@@ -2701,6 +2718,11 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         retired_legs: Vec::new(),
     };
     let mut conns: HashMap<ConnId, Conn> = HashMap::new();
+    // The real, resolved path -- kept for every OTHER use ([`note`]
+    // diagnostics, and `argv[0]` below so `ps`/`pgrep -f` still find a
+    // leg by this path). [`build_run_command`] is where a Linux leg's
+    // ACTUAL exec target is swapped for `/proc/self/exe` instead (ADR
+    // 0043 decision 34) -- this value alone is not that protection.
     let capsule_exe = std::env::current_exe().map_err(crate::Error::Io)?;
 
     // B1: recovery + pointer discovery, folded into ONE non-blocking
