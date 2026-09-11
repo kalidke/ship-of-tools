@@ -27,6 +27,9 @@ Description=Ship of Tools backend daemon (sotd)
 # falls back to the legacy implicit server). After= orders the boot so the
 # default-workspace create finds the socket present; the daemon additionally
 # starts the keeper on demand if the socket is ever missing.
+# ADR 0043 decision 32: a capsule supervisor leaves THIS unit's own cgroup
+# by requesting its own transient user scope at spawn time (`systemd-run
+# --user --scope`) — KillMode stays default (control-group) here.
 Wants=sot-tmux.service
 After=default.target network-online.target sot-tmux.service
 StartLimitIntervalSec=0

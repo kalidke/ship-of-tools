@@ -647,8 +647,10 @@ mod runtime {
     /// terminal that is itself inside a job) is a context the daemon
     /// cannot change, only report (ADR 0043 decision 32, revised —
     /// survival is the launcher's to grant, never the daemon's to refuse
-    /// over). No Linux analogue: there are no job objects to break away
-    /// from.
+    /// over). Linux's own escape is not a job flag but a transient user
+    /// scope (`systemd-run --user --scope`) — see the Linux twin of
+    /// [`spawn_detached`] below for that platform's attempt-then-contained
+    /// shape.
     #[cfg(windows)]
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
     /// Win32 `ERROR_ACCESS_DENIED` — what a denied breakaway attempt
@@ -806,14 +808,120 @@ mod runtime {
         }
     }
 
-    /// Linux: `pre_exec(setsid)` plus `Stdio::null()` on all three
-    /// streams — set by [`spawn_detached_supervisor`]'s own `build`
-    /// closure already, nothing further needed here. There are no job
-    /// objects on Linux to break away from — this leg's own `setsid` IS
-    /// the whole detachment (ADR 0043 decision 22/14). `state_dir` is
-    /// unused here (only Windows's breakaway-denied mapping names it in
-    /// its log line) — kept as a shared parameter so both platform twins
-    /// have the same signature.
+    /// Bounds a wedged user bus so a launch never hangs.
+    #[cfg(target_os = "linux")]
+    const USER_SCOPE_PROBE_BOUND: Duration = Duration::from_secs(5);
+
+    /// The escape [`spawn_detached`]'s Linux twin attempts before falling
+    /// back to a contained, degraded spawn (ADR 0043 decision 32): does a
+    /// reachable `systemd --user` manager grant a transient scope at all?
+    /// `systemd-run` fails before it ever execs the payload when it
+    /// cannot, indistinguishable from the payload's own instant death, so
+    /// this is a probe of the CAPABILITY (`/bin/true`), never a cache of
+    /// a past answer — a user manager can appear or vanish between
+    /// launches, and a launch is rare next to a whole supervisor's
+    /// lifetime. `Err`'s message is the probe's own stderr, verbatim
+    /// where there is any.
+    #[cfg(target_os = "linux")]
+    fn user_scope_available() -> std::io::Result<()> {
+        let mut command = std::process::Command::new("systemd-run");
+        command
+            .args(["--user", "--scope", "--quiet", "--", "/bin/true"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn()?;
+        let deadline = Instant::now() + USER_SCOPE_PROBE_BOUND;
+        let status = loop {
+            if let Some(s) = child.try_wait()? {
+                break s;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(
+                    ErrorKind::TimedOut,
+                    format!("systemd-run --user --scope did not answer within {USER_SCOPE_PROBE_BOUND:?}"),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        if status.success() {
+            return Ok(());
+        }
+        let mut stderr = String::new();
+        if let Some(mut e) = child.stderr.take() {
+            let _ = std::io::Read::read_to_string(&mut e, &mut stderr);
+        }
+        let stderr = stderr.trim();
+        Err(std::io::Error::other(if stderr.is_empty() {
+            format!("systemd-run --user --scope exited {status} with no stderr")
+        } else {
+            stderr.to_string()
+        }))
+    }
+
+    /// Rewrites `inner` — a fully built `sot-capsule supervise …` command
+    /// targeting [`CAPSULE_EXE`] directly, exactly as a contained
+    /// (degraded) spawn would run it — into `systemd-run --user --scope
+    /// … -- <same program> <same args>`, the transient-scope escape a
+    /// successful [`user_scope_available`] probe just proved available.
+    /// Replays `inner`'s program, args, env and working directory through
+    /// the small stable accessor surface an already-built
+    /// `std::process::Command` exposes ([`Command::as_std`], then
+    /// `get_program`/`get_args`/`get_envs`/`get_current_dir`) rather than
+    /// building `supervise`'s own argv a second time — that list stays
+    /// owned, once, by [`spawn_detached_supervisor`]'s `build` closure.
+    /// Stdio has no such accessor (`std::process::Command` exposes none),
+    /// so it is set fresh here, identically to `build`'s own three lines;
+    /// `supervisor_stderr()` reopens the SAME log path on every call, so
+    /// the descriptor `inner` itself opened — and now drops unspawned —
+    /// is harmless waste, not drift between the two.
+    #[cfg(target_os = "linux")]
+    fn wrap_in_user_scope(inner: Command, workspace_id: &str) -> Command {
+        let std_inner = inner.as_std();
+        let mut cmd = Command::new("systemd-run");
+        cmd.arg("--user")
+            .arg("--scope")
+            .arg("--quiet")
+            .arg("--collect")
+            .arg("--description")
+            .arg(format!("sot-capsule {workspace_id}"))
+            .arg("--")
+            .arg(std_inner.get_program())
+            .args(std_inner.get_args())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(supervisor_stderr());
+        for (k, v) in std_inner.get_envs() {
+            match v {
+                Some(v) => cmd.env(k, v),
+                None => cmd.env_remove(k),
+            };
+        }
+        if let Some(dir) = std_inner.get_current_dir() {
+            cmd.current_dir(dir);
+        }
+        cmd
+    }
+
+    /// Linux: attempts the platform's escape from the daemon's own kill
+    /// domain — a transient user scope, probed once per launch by
+    /// [`user_scope_available`]. A granted probe launches wrapped in that
+    /// scope, `--survival normal`, one info line; a denied probe launches
+    /// bare (`build("degraded")`, exactly [`spawn_detached_supervisor`]'s
+    /// own direct `sot-capsule` command), `--survival degraded`, one warn
+    /// line naming `state_dir` and the denial (ADR 0043 decision 32 —
+    /// replaces the old "setsid IS the whole detachment" claim: Linux CAN
+    /// run degraded now). `pre_exec(setsid)` runs on EITHER head: a
+    /// `systemd-run --scope` child execs the supervisor in place
+    /// (verified on systemd 249), so the session id set here before
+    /// `systemd-run`'s OWN exec survives into the supervisor unchanged,
+    /// same as the bare spawn. A spawn error after a GRANTED probe
+    /// propagates here unchanged — never a retry into the bare branch.
+    /// `state_dir`'s own leaf IS the workspace id ([`state_dir_for`]), read
+    /// back rather than threaded as a new parameter so this arm's diff
+    /// touches nothing the Windows twin shares.
     ///
     /// `setsid`'s failure is PROPAGATED (review round, reproduced): in a
     /// FRESH fork child, immediately post-fork, pre-exec, it cannot fail
@@ -827,8 +935,26 @@ mod runtime {
     /// silently breaking the whole point of detaching it.
     #[cfg(target_os = "linux")]
     fn spawn_detached(build: impl Fn(&str) -> Command, state_dir: &Path) -> std::io::Result<Child> {
-        let _ = state_dir;
-        let mut cmd = build("normal");
+        let workspace_id = state_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        let mut cmd = match user_scope_available() {
+            Ok(()) => {
+                tracing::info!(
+                    workspace_id,
+                    "capsule supervisor: launching in a transient user scope (ADR 0043 decision 32)"
+                );
+                wrap_in_user_scope(build("normal"), workspace_id)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    workspace_id,
+                    state_dir = ?state_dir,
+                    error = %e,
+                    "capsule supervisor: no transient user scope available; this supervisor \
+                     shares the daemon's kill domain (ADR 0043 decision 32)"
+                );
+                build("degraded")
+            }
+        };
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() == -1 {
