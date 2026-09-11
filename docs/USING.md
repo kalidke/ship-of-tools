@@ -103,15 +103,19 @@ reachable `systemd --user` manager it runs `--survival degraded` instead
 (a warn line in `sotd.log` names why) and shares the daemon's own kill
 domain there.
 
-## Windows: never launch from inside a capsule shell
+## Windows: never launch the daemon from an agent's shell
 
-Never launch the frontend or the daemon from a shell running inside a
-capsule row — that shell's own job forbids breakaway, so a daemon started
-there could never free the supervisors it spawns. Breakaway is attempted
-for every supervisor spawn; where the daemon's own job forbids it, the
-supervisor is contained in that job instead and shares its lifetime,
-reported once in the daemon log — launch the daemon outside any job for
-capsule survival.
+Never launch the frontend or the daemon from a shell running under an
+agent (a Claude pane, a capsule row's shell): the agent process puts
+itself in a job object that forbids breakaway, every descendant inherits
+it, and a daemon started there can never free the supervisors it spawns.
+Breakaway is attempted for every supervisor spawn; where the daemon's own
+job forbids it, the supervisor is contained in that job instead and shares
+its lifetime, reported once in the daemon log (`this daemon's own job
+forbids breakaway`) — launch the daemon from the launcher or a plain
+shell outside any job for capsule survival. A contained daemon also fakes
+a failed survival proof: rows die with it for a reason unrelated to the
+lane gate.
 
 ## Extending it
 
