@@ -8539,8 +8539,16 @@ mod workspace_destroy_default_row_tests {
         // to lean on `mark_capsule_terminal`'s now-deleted unguarded fast
         // path instead point `sot_log::state_dir::sot_state_dir()` at a
         // scratch root so `destroy_capsule_workspace`'s real guarded path
-        // finds a hermetic, provably-absent state dir there.
+        // finds a hermetic, provably-absent state dir there. Both vars are
+        // saved/restored on every platform even though `sot_state_dir()`
+        // only ever reads ONE of them per platform (`XDG_STATE_HOME` on
+        // Unix, `LOCALAPPDATA` on Windows — see `pin_local_state_root`
+        // below): a fixture that pinned only `XDG_STATE_HOME` used to be
+        // silently ignored by the resolver on Windows CI, which is exactly
+        // how the terminal/confirmed-end tests below used to fail there —
+        // the fixture built a state dir nobody ever looked at.
         xdg_state_home: Option<std::ffi::OsString>,
+        localappdata: Option<std::ffi::OsString>,
         sot_state_host: Option<std::ffi::OsString>,
         sot_comm_home: Option<std::ffi::OsString>,
     }
@@ -8550,6 +8558,7 @@ mod workspace_destroy_default_row_tests {
             for (key, val) in [
                 ("XDG_CONFIG_HOME", &self.xdg_config_home),
                 ("XDG_STATE_HOME", &self.xdg_state_home),
+                ("LOCALAPPDATA", &self.localappdata),
                 ("SOT_STATE_HOST", &self.sot_state_host),
                 ("SOT_COMM_HOME", &self.sot_comm_home),
             ] {
@@ -8569,10 +8578,30 @@ mod workspace_destroy_default_row_tests {
         EnvGuard {
             xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
             xdg_state_home: std::env::var_os("XDG_STATE_HOME"),
+            localappdata: std::env::var_os("LOCALAPPDATA"),
             sot_state_host: std::env::var_os("SOT_STATE_HOST"),
             sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
             _serial: serial,
         }
+    }
+
+    /// Points wherever `sot_log::state_dir::sot_state_dir()` ACTUALLY reads
+    /// on this platform (`LOCALAPPDATA` on Windows, `XDG_STATE_HOME`
+    /// elsewhere — that function's own doc has the precedence) at `dir`,
+    /// then returns the root by calling that SAME resolver rather than
+    /// hand-building `dir.join("sot")` here — the one seam every fixture
+    /// below must agree with `destroy_capsule_workspace` about. Caller
+    /// holds an `EnvGuard` (`env_guarded()`) first so both vars this may
+    /// touch are restored on drop, and `dir` need not exist yet — nothing
+    /// here creates it; `state_dir_missing` fixtures rely on exactly that.
+    #[cfg(any(windows, target_os = "linux"))]
+    fn pin_local_state_root(dir: &std::path::Path) -> std::path::PathBuf {
+        #[cfg(windows)]
+        std::env::set_var("LOCALAPPDATA", dir);
+        #[cfg(not(windows))]
+        std::env::set_var("XDG_STATE_HOME", dir);
+        sot_log::state_dir::sot_state_dir()
+            .expect("state root must resolve once pinned to a scratch dir")
     }
 
     /// Builds a hermetic on-disk state dir that `destroy_capsule_
@@ -8581,24 +8610,23 @@ mod workspace_destroy_default_row_tests {
     /// nothing ever holds `supervisor.lock`, and a published pointer
     /// names a voyage whose own `writer.lock` exists and is free — so
     /// `end_run`'s `Unheld` arm reports `Removable` with no live process
-    /// anywhere. Caller must first point `XDG_STATE_HOME` (under
-    /// `env_guarded`) at `state_root`. Replaces this module's old
-    /// reliance on `mark_capsule_terminal`'s deleted unguarded fast path
-    /// (Codex review, 2026-09-11: that path returned `Removable` on the
-    /// daemon's own say-so alone, with no proof at all) — same technique
-    /// `capsule_workspace`'s own absence-proof unit tests use. Really
-    /// `#[cfg]`-gated, not merely `allow(dead_code)`: the body reaches
-    /// `sot_log::supervisor`, a module gated `#![cfg(any(windows,
-    /// target_os = "linux"))]` at its own root (`log/src/supervisor.rs`)
-    /// — nonexistent on every other host, not merely unused.
+    /// anywhere. Caller must first call `pin_local_state_root` (under
+    /// `env_guarded`) and pass ITS return value as `state_root` — the
+    /// resolved root `sot_log::state_dir::sot_state_dir()` itself reports,
+    /// never a hand-built path, so this fixture lands exactly where
+    /// `destroy_capsule_workspace` (via `state_dir_for`) actually looks.
+    /// Replaces this module's old reliance on `mark_capsule_terminal`'s
+    /// deleted unguarded fast path (Codex review, 2026-09-11: that path
+    /// returned `Removable` on the daemon's own say-so alone, with no
+    /// proof at all) — same technique `capsule_workspace`'s own
+    /// absence-proof unit tests use. Really `#[cfg]`-gated, not merely
+    /// `allow(dead_code)`: the body reaches `sot_log::supervisor`, a
+    /// module gated `#![cfg(any(windows, target_os = "linux"))]` at its
+    /// own root (`log/src/supervisor.rs`) — nonexistent on every other
+    /// host, not merely unused.
     #[cfg(any(windows, target_os = "linux"))]
-    fn seed_provably_unheld_state_dir(xdg_state_home: &std::path::Path, workspace_id: &str) {
-        // `sot_log::state_dir::sot_state_dir()` resolves to
-        // `$XDG_STATE_HOME/sot`, never `$XDG_STATE_HOME` itself -- joined
-        // here so every caller can just pass whatever it pointed
-        // `XDG_STATE_HOME` at, matching the real resolver exactly.
-        let state_root = xdg_state_home.join("sot");
-        let state_dir = crate::capsule_workspace::state_dir_for(&state_root, workspace_id);
+    fn seed_provably_unheld_state_dir(state_root: &std::path::Path, workspace_id: &str) {
+        let state_dir = crate::capsule_workspace::state_dir_for(state_root, workspace_id);
         std::fs::create_dir_all(&state_dir).expect("create the fake state dir");
         let voyage_id = "a1b2c3d4-e5f6-4890-9abc-def012345678";
         sot_log::pointer::publish(&state_dir, voyage_id).expect("publish the pointer");
@@ -8694,8 +8722,32 @@ mod workspace_destroy_default_row_tests {
     // compile at all (e.g. macOS), the portable fallback arm reports the
     // generic code instead — the outward `Kept` shape is the same either
     // way, only the code differs.
+    // Pinned hermetic (Codex review, 2026-09-11): this test used to read
+    // `sot_log::state_dir::sot_state_dir()`'s REAL, unpinned environment —
+    // fine on a dev box whose shell always exports a stable, qualified
+    // `XDG_STATE_HOME`, but on CI (nothing exported) it read whatever the
+    // ambient state root happened to resolve to, unguarded against every
+    // OTHER test in this module that mutates the SAME process-global vars
+    // under `env_guarded()`'s lock. Pinning to a fresh, never-created
+    // scratch root — same resolver, same lock — makes "no state dir on
+    // disk for this workspace" true by construction, not by luck.
     #[tokio::test]
     async fn default_capsule_workspace_takes_the_real_end_run_path_not_the_flat_refusal() {
+        let _guard = env_guarded();
+        #[cfg(any(windows, target_os = "linux"))]
+        let scratch = std::env::temp_dir().join(format!(
+            "sot-ws-destroy-missing-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // Nothing is created under `scratch` — the point of this test is
+        // that the resolved state dir does not exist on disk at all.
+        #[cfg(any(windows, target_os = "linux"))]
+        pin_local_state_root(&scratch);
+
         let (reg, id) = seed_default("capsule");
         let payload = destroy(&reg, &id).await;
         assert_ne!(
@@ -8713,6 +8765,9 @@ mod workspace_destroy_default_row_tests {
             "payload: {payload:?}"
         );
         assert!(reg.resolve(Some(&id)).is_some(), "the default row is never removed either way");
+
+        #[cfg(any(windows, target_os = "linux"))]
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     // ADR 0043 decision 33 (BLOCKER, Codex review, 2026-09-11): a row the
@@ -8743,7 +8798,7 @@ mod workspace_destroy_default_row_tests {
     #[cfg(any(windows, target_os = "linux"))]
     async fn a_capsule_workspace_marked_terminal_still_needs_the_absence_proof() {
         let _guard = env_guarded();
-        let state_root = std::env::temp_dir().join(format!(
+        let scratch = std::env::temp_dir().join(format!(
             "sot-ws-destroy-terminal-proof-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -8751,7 +8806,7 @@ mod workspace_destroy_default_row_tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::env::set_var("XDG_STATE_HOME", &state_root);
+        let state_root = pin_local_state_root(&scratch);
 
         let (reg, id) = seed_default("capsule");
         reg.mark_capsule_terminal(&id);
@@ -8783,7 +8838,7 @@ mod workspace_destroy_default_row_tests {
             }
         }
 
-        let _ = std::fs::remove_dir_all(&state_root);
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     // The full field defect this lane fixes: a default row carrying an
@@ -8818,8 +8873,7 @@ mod workspace_destroy_default_row_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         std::env::set_var("SOT_STATE_HOST", "reset-test-host");
-        let state_root = dir.join("state");
-        std::env::set_var("XDG_STATE_HOME", &state_root);
+        let state_root = pin_local_state_root(&dir.join("state"));
 
         let (reg, id, slug) = seed_default_with_agent("claude", "kal-local");
         assert!(
@@ -8915,8 +8969,9 @@ mod workspace_destroy_default_row_tests {
         std::env::set_var("XDG_CONFIG_HOME", &config_dir);
         std::env::set_var("SOT_COMM_HOME", &comm_dir);
         std::env::set_var("SOT_STATE_HOST", "leave-test-host");
-        let state_root = std::env::temp_dir().join(format!("sot-ws-destroy-default-leave-state-{stamp}"));
-        std::env::set_var("XDG_STATE_HOME", &state_root);
+        let scratch_state =
+            std::env::temp_dir().join(format!("sot-ws-destroy-default-leave-state-{stamp}"));
+        let state_root = pin_local_state_root(&scratch_state);
 
         let handle = "default-row-leave-handle";
         std::fs::write(
@@ -8955,7 +9010,7 @@ mod workspace_destroy_default_row_tests {
 
         let _ = std::fs::remove_dir_all(&config_dir);
         let _ = std::fs::remove_dir_all(&comm_dir);
-        let _ = std::fs::remove_dir_all(&state_root);
+        let _ = std::fs::remove_dir_all(&scratch_state);
     }
 
     // A lane still `Starting` is never "not running" -- retryable
