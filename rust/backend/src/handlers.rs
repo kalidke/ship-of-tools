@@ -4557,20 +4557,6 @@ pub async fn handle_workspace_create(
     );
     ws_seed.runtime = runtime;
     let ws_handle = workspaces.insert(ws_seed);
-    // ADR 0043 decision 33: this row's own guard, held from here through
-    // the capsule spawn attempt below — closes the exact race `pty.open`'s
-    // own `ensure_started` could otherwise win against this handler's
-    // still-in-flight spawn (the field latency map's own ordering:
-    // `ensure_started` can reach this SAME freshly-minted workspace_id
-    // within milliseconds of the row becoming visible via `insert` just
-    // above). Every other lifecycle mutation of a capsule row takes the
-    // SAME guard (`ensure_started`, `resume_if_absent`, the watchdog's own
-    // restart) — this is that discipline's create-time entry. Taken
-    // unconditionally, even for a tmux row: nothing else ever contends
-    // this particular id's guard in that case, so the cost is a single
-    // uncontended lock/unlock.
-    let capsule_guard = workspaces.capsule_guard(&ws_handle.workspace_id);
-    let _capsule_guard_held = capsule_guard.lock().await;
     if let Err(e) = crate::workspaces::save(&ws_handle) {
         tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
     }
@@ -4610,13 +4596,36 @@ pub async fn handle_workspace_create(
         // earlier check ran and would have already returned on failure);
         // the `None` arm stays as a defensive fallback, never actually hit.
         // ADR 0043 decision 29: a process spawn never runs on a Tokio
-        // worker. ADR 0043 decision 33: no claim to take here any more —
-        // `_capsule_guard_held`, taken right after `insert` above, already
-        // covers this whole spawn attempt (`start_supervisor`'s own doc:
-        // "the caller holds the row guard"), so a concurrent `pty.open`'s
-        // `ensure_started` for this same freshly-minted workspace_id
-        // simply waits for that same guard instead of racing this spawn.
-        let spawn_result: std::result::Result<(), String> = match capsule_state_root {
+        // worker.
+        //
+        // ADR 0043 decision 33 (Codex review, 2026-09-11): this row's own
+        // guard, taken HERE — inside the capsule arm only, never for a
+        // tmux row (nothing else ever contends a tmux id's guard) — and
+        // held across the spawn attempt below, closing the exact race
+        // `pty.open`'s own `ensure_started` could otherwise win against
+        // this handler's still-in-flight spawn (the field latency map's
+        // own ordering: `ensure_started` can reach this SAME
+        // freshly-minted workspace_id within milliseconds of the row
+        // becoming visible via `insert` above). Every other lifecycle
+        // mutation of a capsule row takes the SAME guard (`ensure_started`,
+        // `resume_if_absent`, the watchdog's own restart, `resume_all`) —
+        // this is that discipline's create-time entry. `capsule_guard`
+        // itself already refuses to mint a guard for an absent row; the
+        // membership recheck right after (under the lock, not before it)
+        // catches one that vanished WHILE this waited for it — deciding
+        // under the guard rather than starting unconditionally, the same
+        // discipline every other guarded mutation follows.
+        let capsule_guard = workspaces.capsule_guard(&ws_handle.workspace_id);
+        let _capsule_guard_held = match &capsule_guard {
+            Some(g) => Some(g.lock().await),
+            None => None,
+        };
+        let still_registered = capsule_guard.is_some()
+            && workspaces.list().iter().any(|ws| ws.workspace_id == ws_handle.workspace_id);
+        let spawn_result: std::result::Result<(), String> = if !still_registered {
+            Err("workspace was removed before its capsule supervisor could be started".to_string())
+        } else {
+            match capsule_state_root {
             None => Err(format!(
                 "could not resolve this machine's state root ({} unset)",
                 crate::capsule_workspace::STATE_ROOT_HINT
@@ -4640,9 +4649,9 @@ pub async fn handle_workspace_create(
                 // pre-spawn probe runs here anymore): the row guard is
                 // held by the CALLING async fn's own frame for this whole
                 // `.await`, not by this closure — a panic in here is
-                // caught by `spawn_blocking` itself and never unwinds past
-                // that guard, so there is nothing to release on the error
-                // path below beyond reporting it.
+                // caught by `spawn_blocking` itself and never unwinds
+                // past that guard, so there is nothing to release on the
+                // error path below beyond reporting it.
                 tokio::task::spawn_blocking(move || {
                     crate::capsule_workspace::start_supervisor(
                         &state_root,
@@ -4657,6 +4666,8 @@ pub async fn handle_workspace_create(
                 })
                 .await
                 .unwrap_or_else(|join_err| Err(format!("capsule spawn task panicked: {join_err}")))
+                .map(|_phase| ())
+            }
             }
         };
         match spawn_result {
@@ -4998,8 +5009,17 @@ async fn destroy_capsule_workspace(
             // ADR 0043 decision 33: this row's own guard, taken OWNED so
             // it survives this closure's return and stays held by the
             // caller through the row's actual removal/reset — see this
-            // function's own doc.
-            let held = workspaces_for_guard.capsule_guard(&workspace_id).blocking_lock_owned();
+            // function's own doc. `None` (Codex review, 2026-09-11:
+            // `capsule_guard` itself now refuses to mint one for a row
+            // that is not currently registered) means a concurrent
+            // remover already won this race — nothing left here to end.
+            let Some(guard) = workspaces_for_guard.capsule_guard(&workspace_id) else {
+                return (
+                    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "unknown workspace")),
+                    None,
+                );
+            };
+            let held = guard.blocking_lock_owned();
             if let Err(e) = crate::capsule_workspace::resume_locked(
                 &state_root,
                 &workspace_id,
@@ -5015,25 +5035,33 @@ async fn destroy_capsule_workspace(
                 );
             }
             let result = crate::capsule_workspace::end_run(&state_dir, &reason);
-            (result, held)
+            (result, Some(held))
         })
         .await;
         match outcome {
-            Ok((Ok(o), held)) => (capsule_destroy_outcome_of(o), Some(held)),
+            Ok((Ok(o), held)) => (capsule_destroy_outcome_of(o), held),
             // `end_run`'s own `state_dir_missing` (ADR 0043 decision 33's
             // destroy proof: a missing state dir proves nothing and is
             // reported, never recreated) gets its own typed code rather
             // than folding into the generic "lane unreachable" detail —
             // `capsule_end_not_reached_payload` reads it back off this
-            // exact sentinel string.
+            // exact sentinel string. A `None` guard here is the "row
+            // already gone" race above, reusing the SAME NotFound kind —
+            // never mistaken for a missing state dir.
+            Ok((Err(e), held)) if held.is_none() && e.kind() == std::io::ErrorKind::NotFound => (
+                CapsuleDestroyOutcome::Kept {
+                    detail: "workspace was removed before its capsule run could be ended".to_string(),
+                },
+                None,
+            ),
             Ok((Err(e), held)) if e.kind() == std::io::ErrorKind::NotFound => {
-                (CapsuleDestroyOutcome::Kept { detail: "state_dir_missing".to_string() }, Some(held))
+                (CapsuleDestroyOutcome::Kept { detail: "state_dir_missing".to_string() }, held)
             }
             Ok((Err(e), held)) => (
                 CapsuleDestroyOutcome::Kept {
                     detail: format!("supervisor lane unreachable: {e}"),
                 },
-                Some(held),
+                held,
             ),
             Err(join_err) => (
                 CapsuleDestroyOutcome::Kept {

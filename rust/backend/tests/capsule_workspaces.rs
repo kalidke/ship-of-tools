@@ -2933,6 +2933,189 @@ async fn create_from_inside_a_job_that_forbids_breakaway_still_reaches_ready() {
     env.kill_daemon_bounded().await;
 }
 
+/// ADR 0043 decision 32 (lane L2), test 1: the actual proof the Linux
+/// escape works — a supervisor spawned under a REAL `systemd --user`
+/// service (never the live `sotd`; a uniquely-named scratch unit this
+/// test alone starts and stops) survives that unit being stopped, because
+/// it left the unit's own cgroup for its own transient scope at spawn
+/// time (`systemd-run --user --scope`). Skips loudly (never silently)
+/// when this host has no reachable `systemd --user` manager at all (a
+/// bare CI container, commonly) — the ONE test in this suite that needs a
+/// real answer to that question; force it with
+/// `SOT_TEST_REQUIRE_USER_MANAGER=1` wherever a real user manager is
+/// expected to exist.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn capsule_supervisor_survives_a_real_user_service_stop() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+    if let Err(e) = user_manager_available_for_test() {
+        if std::env::var("SOT_TEST_REQUIRE_USER_MANAGER").as_deref() == Ok("1") {
+            panic!("SOT_TEST_REQUIRE_USER_MANAGER=1 but no user manager is reachable: {e}");
+        }
+        eprintln!("SKIPPED: no user manager: {e}");
+        return;
+    }
+
+    let env = Env::new("uss");
+    let (unit, daemon_pid) = env.spawn_sotd_as_user_service();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "uss-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
+    let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
+
+    let (status, process) = tokio::task::spawn_blocking({
+        let dir = state_dir.clone();
+        move || sot_log::supervisor_client::query_status(&dir)
+    })
+    .await
+    .unwrap()
+    .expect("query_status before stopping the daemon's own unit");
+    let leg_before = status.leg.expect("a leg epoch on a ready row");
+    let pid = process.pid();
+    drop(process);
+
+    // The supervisor left the DAEMON's own unit's cgroup for its own
+    // transient scope at spawn time (ADR 0043 decision 32) -- proven
+    // BEFORE the stop, not merely inferred from surviving it.
+    let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .unwrap_or_else(|e| panic!("read /proc/{pid}/cgroup: {e}"));
+    let last_segment = cgroup.trim().rsplit('/').next().unwrap_or("");
+    assert!(
+        last_segment.starts_with("run-") && last_segment.ends_with(".scope"),
+        "supervisor's own cgroup does not end in a run-*.scope (still inside the daemon's own unit?): {cgroup:?}"
+    );
+    assert!(
+        !cgroup.contains(&unit),
+        "supervisor's own cgroup still names the daemon's own unit {unit:?}: {cgroup:?}"
+    );
+
+    stop_user_service(&unit, daemon_pid);
+    env.forget_user_service();
+
+    // 3 s SUSTAINED (never a single lucky sample): the supervisor's own
+    // lane keeps answering and its leg keeps running for the WHOLE
+    // window, proving survival actually crossed the unit stop rather than
+    // merely outliving it by a race.
+    let run_pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "run", &env.state_root);
+    let sustain_deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let alive = try_query_status(state_dir.clone()).await.is_some() && any_process_matches(&run_pattern);
+        assert!(alive, "supervisor lane or its leg went away within 3s of the daemon's own unit stopping");
+        if Instant::now() >= sustain_deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    drop(conn);
+    env.spawn_sotd();
+    let (mut conn2, mut next_id2) = connect_and_hello(&env.socket_path).await;
+    poll_for_phase(&mut conn2, &mut next_id2, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
+
+    let leg_after = tokio::task::spawn_blocking({
+        let dir = state_dir.clone();
+        move || sot_log::supervisor_client::query_status(&dir).expect("query_status after restart").0.leg
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        leg_after,
+        Some(leg_before),
+        "the leg epoch changed across the daemon restart -- a fresh leg was spawned, not adopted"
+    );
+
+    env.kill_daemon_bounded().await;
+}
+
+/// ADR 0043 decision 32 (lane L2), test 2: on a host that denies the
+/// escape (a stubbed `systemd-run` standing in for "no reachable
+/// `systemd --user` manager", so this runs deterministically regardless
+/// of whether a REAL one exists here too), the row still reaches "ready"
+/// — contained, degraded, but never refused — and the daemon reports
+/// exactly why: the LEG's own mgmt status reports `survival: Degraded`
+/// on the wire ([`leg_survival`] — Codex SHOULD-FIX: cmdline text proves
+/// only what was typed on the command line, not what the process
+/// actually configured or reported; restoring the deleted Unix survival
+/// clamp would still leave a cmdline-only check green), and the daemon's
+/// own log names the probe's stderr.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn capsule_launch_degrades_when_no_user_scope_is_available() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("deg");
+    let stub_dir = env.seed_stub_systemd_run();
+    env.spawn_sotd_with_prepended_path(&stub_dir);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "deg-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(
+        create_res.payload.get("error").is_none(),
+        "a denied user scope must never refuse the launch: {:?}",
+        create_res.payload
+    );
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
+    let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
+
+    let (status, process) = tokio::task::spawn_blocking({
+        let dir = state_dir.clone();
+        move || sot_log::supervisor_client::query_status(&dir)
+    })
+    .await
+    .unwrap()
+    .expect("query_status on the degraded row");
+    drop(process);
+    let voyage_id = status.voyage.expect("a voyage id on a ready row");
+
+    let survival = leg_survival(&voyage_id).await;
+    assert_eq!(
+        survival,
+        sot_log::wire::Survival::Degraded,
+        "the leg's own mgmt status must report survival=degraded when the user scope is denied"
+    );
+
+    let log_path = env.state_root.join("sot").join("sotd.log");
+    let log_contents = std::fs::read_to_string(&log_path)
+        .unwrap_or_else(|e| panic!("could not read the daemon's own log {log_path:?}: {e}"));
+    assert!(
+        log_contents.contains("stub: no user manager"),
+        "expected {log_path:?} to contain the stub systemd-run's own stderr; got:\n{log_contents}"
+    );
+
+    env.kill_daemon_bounded().await;
+}
 // --- ADR 0043 decision 33 (lane L1a): the per-row guard, resume_if_absent,
 // and the watchdog's guard-through-backoff restart --- //
 
@@ -2980,17 +3163,30 @@ fn kill_leg_only(state_root: &Path) {
 
 /// The number of live processes whose command line matches `pattern` —
 /// [`any_process_matches`]'s counting twin, needed by the stale-attach
-/// test below to prove "at most ONE," not merely "at least one."
+/// test below to prove "at most ONE," not merely "at least one." `Err`
+/// only when `pgrep` itself could not be run at all (Codex review,
+/// 2026-09-11: a query failure must fail the test, never silently count
+/// as "zero processes" — a false "at most one" proves nothing). `pgrep`
+/// exiting 1 (no match) is a normal, successful `Ok(0)`, not an error.
 #[cfg(target_os = "linux")]
-fn count_matching_processes(pattern: &str) -> usize {
-    Command::new("pgrep")
+fn count_matching_processes(pattern: &str) -> std::io::Result<usize> {
+    let output = Command::new("pgrep")
         .arg("-f")
         .arg(pattern)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.trim().is_empty()).count())
-        .unwrap_or(0)
+        .output()?;
+    Ok(String::from_utf8_lossy(&output.stdout).lines().filter(|l| !l.trim().is_empty()).count())
+}
+
+/// How many times `needle` appears in `sotd.log` so far — used to
+/// synchronize on a NEW occurrence of a specific watchdog log line
+/// (Codex review, 2026-09-11) rather than a fixed sleep, which proves
+/// nothing about whether the watchdog has actually reached the point in
+/// its own code that line marks.
+#[cfg(target_os = "linux")]
+fn count_log_occurrences(log_path: &Path, needle: &str) -> usize {
+    std::fs::read_to_string(log_path).map(|s| s.matches(needle).count()).unwrap_or(0)
 }
 
 /// Decision 33: an ADOPTED row (`resume_all`'s boot scan found the
@@ -3450,6 +3646,15 @@ async fn capsule_destroy_on_a_missing_state_dir_reports_and_creates_nothing() {
 /// leg (a SIGKILL of the authority alone never touches it, ADR 0041
 /// Lifecycle) is ADOPTED by the resume, not replaced: the leg epoch is
 /// unchanged.
+///
+/// Codex review (2026-09-11): the authority is first ADOPTED across a
+/// daemon restart (`restart_daemon_and_prove_adoption`,
+/// `AuthorityAtRestart::Alive`) BEFORE it is killed — an authority this
+/// daemon merely adopted at boot gets no watchdog at all (decision 33),
+/// so the ONLY thing that can bring the row back is whatever
+/// `pty.input` itself does. Without this, the row's ORIGINAL watchdog
+/// (installed by `workspace.create`) would race to restart it on its
+/// own, and this test could pass even with `resume_if_absent` deleted.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
@@ -3504,6 +3709,19 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     .await
     .unwrap()
     .expect("a ready capsule has a leg");
+
+    // Adopt across a daemon restart FIRST -- the authority survives, this
+    // daemon lifetime never spawned it, so no watchdog exists for it.
+    let (mut conn, mut next_id) = restart_daemon_and_prove_adoption(
+        &env,
+        conn,
+        &workspace_id,
+        &state_dir,
+        &state_dir_path,
+        leg_before,
+        AuthorityAtRestart::Alive,
+    )
+    .await;
 
     kill_supervisor_only(&env.state_root);
 
@@ -3565,6 +3783,13 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
 /// reporting its OWN ended phase — never resurrected to "ready," and its
 /// durable voyage pointer must be byte-identical (only `reset` — attach's
 /// own retirement path, unchanged by this lane — ever rewrites it).
+///
+/// Codex review (2026-09-11): the authority is first ADOPTED across a
+/// daemon restart (own inline restart, not
+/// `restart_daemon_and_prove_adoption` — that helper polls for "ready",
+/// which an `EndedNoRespawn` row never reaches) BEFORE it is killed, so
+/// no watchdog exists for it and the ONLY thing that can answer the
+/// headless op afterward is `resume_if_absent` itself.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn capsule_resume_never_resets_an_ended_row() {
@@ -3629,6 +3854,15 @@ async fn capsule_resume_never_resets_an_ended_row() {
     let pointer_path = sot_log::pointer::pointer_path(&state_dir_path);
     let pointer_before = std::fs::read(&pointer_path).expect("read the pointer before killing the authority");
 
+    // Adopt across a daemon restart FIRST -- the resting authority
+    // survives (ADR 0041 Lifecycle: `EndedNoRespawn` persists until an
+    // explicit `stop`), this daemon lifetime never spawned it, so no
+    // watchdog exists for it.
+    env.kill_daemon_bounded().await;
+    drop(conn);
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
     kill_supervisor_only(&env.state_root);
 
     use base64::engine::general_purpose::STANDARD;
@@ -3682,6 +3916,12 @@ async fn capsule_resume_never_resets_an_ended_row() {
 /// supervisor's own recovery rule, never a `reset`'s fresh one. Proven by
 /// a strictly higher leg epoch (a genuinely new leg process) alongside an
 /// unchanged voyage id.
+///
+/// Codex review (2026-09-11): the authority is first ADOPTED across a
+/// daemon restart (`restart_daemon_and_prove_adoption`,
+/// `AuthorityAtRestart::Alive`) BEFORE it (and its leg) are killed, so no
+/// watchdog exists for this row and the ONLY thing that can re-execute
+/// the leg afterward is `pty.input`'s own `resume_if_absent` call.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
@@ -3727,9 +3967,8 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     let (leg_before, voyage_before) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            let report = sot_log::supervisor_client::query_status(&dir)
-                .expect("query_status before killing supervisor and leg")
-                .0;
+            let (report, _process) = sot_log::supervisor_client::query_status(&dir)
+                .expect("query_status before killing supervisor and leg");
             (
                 report.leg.expect("a ready capsule has a leg"),
                 report.voyage.expect("a ready capsule has a voyage"),
@@ -3738,6 +3977,20 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     })
     .await
     .unwrap();
+
+    // Adopt across a daemon restart FIRST -- the authority survives,
+    // this daemon lifetime never spawned it, so no watchdog exists for
+    // it.
+    let (mut conn, mut next_id) = restart_daemon_and_prove_adoption(
+        &env,
+        conn,
+        &workspace_id,
+        &state_dir,
+        &state_dir_path,
+        leg_before,
+        AuthorityAtRestart::Alive,
+    )
+    .await;
 
     kill_supervisor_only(&env.state_root);
     kill_leg_only(&env.state_root);
@@ -3771,9 +4024,8 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     let (leg_after, voyage_after) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            let report = sot_log::supervisor_client::query_status(&dir)
-                .expect("query_status after the re-execution")
-                .0;
+            let (report, _process) = sot_log::supervisor_client::query_status(&dir)
+                .expect("query_status after the re-execution");
             (report.leg, report.voyage)
         }
     })
@@ -3852,37 +4104,63 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
     }
 
     let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
+    let log_path = env.state_root.join("sot").join("sotd.log");
+    let backoff_needle = "capsule supervisor watchdog: crashed, restarting with --resume";
 
     // Continuous background sampler — the claim under test is about
     // EVERY instant across the whole run below, not a handful of
-    // point-in-time checks.
+    // point-in-time checks. A query failure FAILS the test (Codex
+    // review, 2026-09-11) rather than silently counting as "zero
+    // processes" — a false "at most one" proves nothing.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let max_seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sampler_error = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let sampler = {
         let stop = stop.clone();
         let max_seen = max_seen.clone();
+        let sampler_error = sampler_error.clone();
         let pattern = pattern.clone();
         tokio::spawn(async move {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 let pattern = pattern.clone();
-                let n = tokio::task::spawn_blocking(move || count_matching_processes(&pattern))
-                    .await
-                    .unwrap_or(0);
-                max_seen.fetch_max(n, std::sync::atomic::Ordering::Relaxed);
+                let outcome = tokio::task::spawn_blocking(move || count_matching_processes(&pattern)).await;
+                match outcome {
+                    Ok(Ok(n)) => max_seen.fetch_max(n, std::sync::atomic::Ordering::Relaxed),
+                    Ok(Err(e)) => {
+                        *sampler_error.lock().unwrap() = Some(format!("pgrep failed: {e}"));
+                        return;
+                    }
+                    Err(join_err) => {
+                        *sampler_error.lock().unwrap() = Some(format!("sampler task panicked: {join_err}"));
+                        return;
+                    }
+                };
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
     };
 
     for _cycle in 0..3 {
+        let backoff_seen_before = count_log_occurrences(&log_path, backoff_needle);
         kill_supervisor_only(&env.state_root);
 
-        // A short settle so the watchdog has actually classified the
-        // exit and entered its own backoff sleep before this lands —
-        // the test's own assertions hold regardless of exact timing
-        // (the guard makes this safe either way), but landing mid-
-        // backoff is the scenario this test means to exercise.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Synchronize on the watchdog's OWN backoff log line (Codex
+        // review, 2026-09-11) — a NEW occurrence of the line the Crash
+        // arm logs immediately before its backoff sleep — rather than a
+        // fixed sleep, which proves nothing about whether the watchdog
+        // has actually reached that point by the time this test fires
+        // its own stale attach.
+        let backoff_deadline = Instant::now() + BOUND;
+        loop {
+            if count_log_occurrences(&log_path, backoff_needle) > backoff_seen_before {
+                break;
+            }
+            assert!(
+                Instant::now() < backoff_deadline,
+                "timed out waiting for the watchdog's own backoff log line to appear"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         let pty_req = serde_json::json!({
             "cols": 80, "rows": 24, "user_switch": true, "target": target,
         });
@@ -3900,12 +4178,14 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = sampler.await;
 
+    if let Some(e) = sampler_error.lock().unwrap().take() {
+        panic!("process sampler failed: {e}");
+    }
     assert!(
         max_seen.load(std::sync::atomic::Ordering::Relaxed) <= 1,
         "more than one supervise process matched at some sampled instant across the SIGKILL/backoff cycles"
     );
 
-    let log_path = env.state_root.join("sot").join("sotd.log");
     let log_contents = std::fs::read_to_string(&log_path)
         .unwrap_or_else(|e| panic!("could not read the daemon's own log {log_path:?}: {e}"));
     assert!(
@@ -3915,190 +4195,6 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
 
     let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
     let _ = tokio::task::spawn_blocking(move || sot_log::supervisor_client::stop(&state_dir)).await;
-
-    env.kill_daemon_bounded().await;
-}
-
-/// ADR 0043 decision 32 (lane L2), test 1: the actual proof the Linux
-/// escape works — a supervisor spawned under a REAL `systemd --user`
-/// service (never the live `sotd`; a uniquely-named scratch unit this
-/// test alone starts and stops) survives that unit being stopped, because
-/// it left the unit's own cgroup for its own transient scope at spawn
-/// time (`systemd-run --user --scope`). Skips loudly (never silently)
-/// when this host has no reachable `systemd --user` manager at all (a
-/// bare CI container, commonly) — the ONE test in this suite that needs a
-/// real answer to that question; force it with
-/// `SOT_TEST_REQUIRE_USER_MANAGER=1` wherever a real user manager is
-/// expected to exist.
-#[tokio::test]
-#[cfg(target_os = "linux")]
-async fn capsule_supervisor_survives_a_real_user_service_stop() {
-    let _serial = SERIAL.lock().await;
-    assert!(
-        sot_capsule_exe().is_file(),
-        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
-         this test's own sotd[.exe] was built into",
-        sot_capsule_exe()
-    );
-    if let Err(e) = user_manager_available_for_test() {
-        if std::env::var("SOT_TEST_REQUIRE_USER_MANAGER").as_deref() == Ok("1") {
-            panic!("SOT_TEST_REQUIRE_USER_MANAGER=1 but no user manager is reachable: {e}");
-        }
-        eprintln!("SKIPPED: no user manager: {e}");
-        return;
-    }
-
-    let env = Env::new("uss");
-    let (unit, daemon_pid) = env.spawn_sotd_as_user_service();
-    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
-
-    let create_req = serde_json::json!({
-        "label": "uss-workspace",
-        "project_root": env.workspace_project_root.to_string_lossy(),
-        "runtime": "capsule",
-    });
-    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
-    next_id += 1;
-    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
-    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-
-    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
-    let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
-
-    let (status, process) = tokio::task::spawn_blocking({
-        let dir = state_dir.clone();
-        move || sot_log::supervisor_client::query_status(&dir)
-    })
-    .await
-    .unwrap()
-    .expect("query_status before stopping the daemon's own unit");
-    let leg_before = status.leg.expect("a leg epoch on a ready row");
-    let pid = process.pid();
-    drop(process);
-
-    // The supervisor left the DAEMON's own unit's cgroup for its own
-    // transient scope at spawn time (ADR 0043 decision 32) -- proven
-    // BEFORE the stop, not merely inferred from surviving it.
-    let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
-        .unwrap_or_else(|e| panic!("read /proc/{pid}/cgroup: {e}"));
-    let last_segment = cgroup.trim().rsplit('/').next().unwrap_or("");
-    assert!(
-        last_segment.starts_with("run-") && last_segment.ends_with(".scope"),
-        "supervisor's own cgroup does not end in a run-*.scope (still inside the daemon's own unit?): {cgroup:?}"
-    );
-    assert!(
-        !cgroup.contains(&unit),
-        "supervisor's own cgroup still names the daemon's own unit {unit:?}: {cgroup:?}"
-    );
-
-    stop_user_service(&unit, daemon_pid);
-    env.forget_user_service();
-
-    // 3 s SUSTAINED (never a single lucky sample): the supervisor's own
-    // lane keeps answering and its leg keeps running for the WHOLE
-    // window, proving survival actually crossed the unit stop rather than
-    // merely outliving it by a race.
-    let run_pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "run", &env.state_root);
-    let sustain_deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let alive = try_query_status(state_dir.clone()).await.is_some() && any_process_matches(&run_pattern);
-        assert!(alive, "supervisor lane or its leg went away within 3s of the daemon's own unit stopping");
-        if Instant::now() >= sustain_deadline {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-
-    drop(conn);
-    env.spawn_sotd();
-    let (mut conn2, mut next_id2) = connect_and_hello(&env.socket_path).await;
-    poll_for_phase(&mut conn2, &mut next_id2, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
-
-    let leg_after = tokio::task::spawn_blocking({
-        let dir = state_dir.clone();
-        move || sot_log::supervisor_client::query_status(&dir).expect("query_status after restart").0.leg
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        leg_after,
-        Some(leg_before),
-        "the leg epoch changed across the daemon restart -- a fresh leg was spawned, not adopted"
-    );
-
-    env.kill_daemon_bounded().await;
-}
-
-/// ADR 0043 decision 32 (lane L2), test 2: on a host that denies the
-/// escape (a stubbed `systemd-run` standing in for "no reachable
-/// `systemd --user` manager", so this runs deterministically regardless
-/// of whether a REAL one exists here too), the row still reaches "ready"
-/// — contained, degraded, but never refused — and the daemon reports
-/// exactly why: the LEG's own mgmt status reports `survival: Degraded`
-/// on the wire ([`leg_survival`] — Codex SHOULD-FIX: cmdline text proves
-/// only what was typed on the command line, not what the process
-/// actually configured or reported; restoring the deleted Unix survival
-/// clamp would still leave a cmdline-only check green), and the daemon's
-/// own log names the probe's stderr.
-#[tokio::test]
-#[cfg(target_os = "linux")]
-async fn capsule_launch_degrades_when_no_user_scope_is_available() {
-    let _serial = SERIAL.lock().await;
-    assert!(
-        sot_capsule_exe().is_file(),
-        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
-         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
-         this test's own sotd[.exe] was built into",
-        sot_capsule_exe()
-    );
-
-    let env = Env::new("deg");
-    let stub_dir = env.seed_stub_systemd_run();
-    env.spawn_sotd_with_prepended_path(&stub_dir);
-    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
-
-    let create_req = serde_json::json!({
-        "label": "deg-workspace",
-        "project_root": env.workspace_project_root.to_string_lossy(),
-        "runtime": "capsule",
-    });
-    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
-    next_id += 1;
-    assert!(
-        create_res.payload.get("error").is_none(),
-        "a denied user scope must never refuse the launch: {:?}",
-        create_res.payload
-    );
-    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-
-    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
-    let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
-
-    let (status, process) = tokio::task::spawn_blocking({
-        let dir = state_dir.clone();
-        move || sot_log::supervisor_client::query_status(&dir)
-    })
-    .await
-    .unwrap()
-    .expect("query_status on the degraded row");
-    drop(process);
-    let voyage_id = status.voyage.expect("a voyage id on a ready row");
-
-    let survival = leg_survival(&voyage_id).await;
-    assert_eq!(
-        survival,
-        sot_log::wire::Survival::Degraded,
-        "the leg's own mgmt status must report survival=degraded when the user scope is denied"
-    );
-
-    let log_path = env.state_root.join("sot").join("sotd.log");
-    let log_contents = std::fs::read_to_string(&log_path)
-        .unwrap_or_else(|e| panic!("could not read the daemon's own log {log_path:?}: {e}"));
-    assert!(
-        log_contents.contains("stub: no user manager"),
-        "expected {log_path:?} to contain the stub systemd-run's own stderr; got:\n{log_contents}"
-    );
 
     env.kill_daemon_bounded().await;
 }
