@@ -32,10 +32,19 @@
 //! row is gone from `workspace.list`.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use sot_protocol::{codec, op, Frame};
+use sot_protocol::op;
+// Linux-only: every `Command`/`Stdio` call site left in this file after
+// the ADR 0045 lane B4b support-module lift (`kill_supervisor_only`,
+// `kill_leg_only`, `count_matching_processes`) and every `Frame`/`codec::`
+// call site (the `lane.connect` fixtures) live inside
+// `#[cfg(target_os = "linux")]` helpers -- an unguarded import here would
+// warn unused on Windows.
+#[cfg(target_os = "linux")]
+use std::process::{Command, Stdio};
+#[cfg(target_os = "linux")]
+use sot_protocol::{codec, Frame};
 // LU5a: only the Linux-only unqualified-state-root refusal test below
 // needs this -- Windows has no tmpfs-as-state-root concern (its own
 // NTFS-only preflight is unrelated and unchanged), so an unguarded import
