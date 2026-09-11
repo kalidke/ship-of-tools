@@ -915,12 +915,14 @@ fn build_run_command(
     // Legs fork from THIS process, so before their own exec resolves it,
     // `/proc/self/exe` still names the supervisor's own running inode --
     // immune to an `sot-apply` rename-over-the-path (ADR 0043 decision
-    // 34). `argv[0]` is set to the real resolved path regardless, so
-    // `ps`/`pgrep -f` still find the leg by it (a magic-symlink program
-    // path with no bearing on what `ps` prints). Windows has no such
-    // handle: the launcher's own rename-aside keeps a running image
-    // pinned, and that process boundary is versioned by the mgmt
-    // exchange instead (ADR 0030 §8 table row 5).
+    // 33's retirement clause). `argv[0]` is set to the real resolved
+    // path regardless, so `ps`/`pgrep -f` still find the leg by it (a
+    // magic-symlink program path has no bearing on what `ps` prints).
+    // Windows has no such handle: the leg is spawned from the path, and
+    // `VoyageMgmtExchange` (the supervisor<->leg management exchange,
+    // `exchange.rs`) is NOT versioned -- permanently pinned `SOM0`, no
+    // `proto` negotiation or build gate -- so a cross-build supervisor/
+    // leg pair is unsupported there until that exchange is versioned.
     #[cfg(target_os = "linux")]
     let mut command = {
         use std::os::unix::process::CommandExt;
@@ -2718,11 +2720,8 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         retired_legs: Vec::new(),
     };
     let mut conns: HashMap<ConnId, Conn> = HashMap::new();
-    // The real, resolved path -- kept for every OTHER use ([`note`]
-    // diagnostics, and `argv[0]` below so `ps`/`pgrep -f` still find a
-    // leg by this path). [`build_run_command`] is where a Linux leg's
-    // ACTUAL exec target is swapped for `/proc/self/exe` instead (ADR
-    // 0043 decision 34) -- this value alone is not that protection.
+    // The real, resolved path; [`build_run_command`] swaps the ACTUAL
+    // exec target for `/proc/self/exe` on Linux (see its own comment).
     let capsule_exe = std::env::current_exe().map_err(crate::Error::Io)?;
 
     // B1: recovery + pointer discovery, folded into ONE non-blocking

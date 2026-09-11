@@ -1243,7 +1243,7 @@ fn start_reaches_ready_promptly() {
     let _ = wait_for_exit(child, Duration::from_secs(30));
 }
 
-/// ADR 0043 decision 34: a leg forks from the SUPERVISOR's own running
+/// ADR 0043 decision 33's retirement clause: a leg forks from the SUPERVISOR's own running
 /// image via `/proc/self/exe`, never a path string resolved fresh off
 /// disk at spawn time -- so an `sot-apply`-style rename of a new binary
 /// over the old launch path cannot make an already-running supervisor

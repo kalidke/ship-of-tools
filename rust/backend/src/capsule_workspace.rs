@@ -1661,7 +1661,7 @@ mod runtime {
         // `EndedNoRespawn` (`--resume`/`--start` deliberately never
         // resurrect it — ADR 0041's own no-resurrection rule). A new run
         // never starts on a resident authority; replacement requires a
-        // confirmed stop (ADR 0043 decision 34).
+        // confirmed stop (ADR 0043 decision 33's retirement clause).
         let ended_phase = super::phase_str(sot_log::wire::SupervisorPhase::EndedNoRespawn);
         if settled_phase == ended_phase {
             // Retire the resting authority (attach's own job, not
