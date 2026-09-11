@@ -122,12 +122,14 @@ pub enum ChallengeOutcome<P> {
 /// half is not — shares the identical wire behavior instead of each
 /// independently re-implementing it.
 ///
-/// `cfg_attr`: no non-Windows caller exists yet — `challenge_win::challenge`
-/// is the only one today, until LU1c's `challenge_unix.rs` lands (same
-/// device LU0 used for `transport.rs`'s own hoisted-but-not-yet-called
-/// items).
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn exchange_identity(
+/// Both platforms' own `challenge()` call this today (`challenge_win.rs`,
+/// `challenge_unix.rs`). ADR 0045 decision 3: `pub`, not `pub(crate)` — a
+/// THIRD caller now lives outside this crate entirely,
+/// `sot-protocol`'s `DaemonLaneEndpoint::challenge` (`lane_client.rs`),
+/// which runs the identical steps 4-5 over the bridged pipe and binds
+/// the result against the daemon's own `(pid, created)` report rather
+/// than an OS-level check of its own.
+pub fn exchange_identity(
     conn: &dyn ChallengeableConnection,
     exchange: &mut dyn IdentityExchange,
     reply_deadline: Instant,
@@ -189,12 +191,14 @@ pub enum PeerAuthOutcome {
     Undetermined,
 }
 
-/// `exchange_identity`'s own failure vocabulary for its bounded body —
-/// `pub(crate)` (L1-unix LU1a): every platform's own `challenge()` module
-/// matches on it after calling `exchange_identity`. `cfg_attr`: same
-/// no-non-Windows-caller-yet reasoning as `exchange_identity` above.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) enum StatusFailure {
+/// `exchange_identity`'s own failure vocabulary for its bounded body.
+/// `pub` (ADR 0045 decision 3, widened alongside `exchange_identity`
+/// itself, L1-unix LU1a's original `pub(crate)`): `exchange_identity`
+/// returning this in its `Result::Err` would otherwise be unnameable —
+/// and unmatchable — from `sot-protocol`'s own `DaemonLaneEndpoint::
+/// challenge`, which needs `Foreign` and `Undetermined` to mean two
+/// different [`ChallengeOutcome`] arms, not one.
+pub enum StatusFailure {
     Foreign,
     Undetermined,
 }

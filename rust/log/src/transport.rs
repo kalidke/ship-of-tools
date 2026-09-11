@@ -502,6 +502,37 @@ pub enum TransportError {
     /// Windows.
     #[error("{0}")]
     Unsupported(&'static str),
+    /// ADR 0045 decision 4: the daemon behind a lane-bridge dial
+    /// (`sot-protocol`'s `DaemonLaneEndpoint`) answered `lane.connect`
+    /// with a REFUSAL — `code` is the wire value verbatim
+    /// (`unknown_workspace`, `not_capsule`, `bad_lane`, `unauthenticated`,
+    /// `foreign`, or `no_bridge` for a reply that did not even carry a
+    /// recognizable `lane.connect` result, e.g. an old daemon's
+    /// unknown-op answer). Terminal: never retried as if the daemon
+    /// might change its mind.
+    #[error("the daemon refused the lane ({code}): {detail}")]
+    Refused { code: String, detail: String },
+    /// ADR 0045 decision 4: the lane-bridge dial or handshake itself
+    /// failed — connect timed out/refused, or the daemon never answered
+    /// within the handshake bound. Distinct from [`Self::Io`] (which
+    /// [`Self::is_endpoint_absent`] can read as a genuine absence):
+    /// transport uncertainty must never be charged to that absence
+    /// window, so callers match this BEFORE any conversion that would
+    /// unwrap it back into a bare `io::Error`.
+    #[error("the daemon's lane bridge is unreachable: {0}")]
+    Unreachable(std::io::Error),
+    /// ADR 0045 decision 4: the daemon's OWN dial answered
+    /// `undetermined` — its steps-1-3 identity check on the lane IT
+    /// dialed could not complete. Deliberately named `BridgeUndetermined`
+    /// rather than reusing [`Self::Undetermined`] above: that unit
+    /// variant is THIS process's own steps-1-3 outcome on a direct
+    /// platform connect (never produced by a lane-bridge dial, which
+    /// never runs its own OS-level identity check — decision 3 lets the
+    /// daemon do that instead) — two distinct failures, at two different
+    /// steps, on two different connections, must never collapse into one
+    /// variant a caller cannot tell apart.
+    #[error("the daemon could not determine the lane's own peer identity: {0}")]
+    BridgeUndetermined(String),
 }
 
 impl TransportError {

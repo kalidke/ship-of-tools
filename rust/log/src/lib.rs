@@ -118,15 +118,14 @@ mod host_handshake;
 // ADR 0041 step 6, unit U0 round-1: the three-state deadline race
 // `challenge::exchange_identity`'s bounded body uses. Portable -- no OS
 // dependency at all -- so its own tests run everywhere, not merely on
-// Windows. Crate-private (round-2 finding 7): no caller outside this
-// crate needs it yet -- challenge.rs is a sibling module, not an
-// external consumer. L1-unix LU1a: `exchange_identity` itself is now
-// ungated, but ITS only caller (each platform's own `challenge()`) is
-// still Windows-only until LU1c's `challenge_unix.rs` lands -- so, same
-// `cfg_attr` reasoning as `host_handshake` just above, a non-Windows
-// build still has no caller reaching this module yet.
-#[cfg_attr(not(windows), allow(dead_code))]
-mod deadline;
+// Windows. ADR 0045 decision 3: `pub`, widened from the original
+// crate-private (round-2 finding 7) -- `sot-protocol`'s own
+// `DaemonLaneEndpoint::dial` (`lane_client.rs`) is now a second,
+// EXTERNAL caller of `run_with_deadline`, bounding its own Unix-socket
+// connect the identical way `exchange_identity`'s wire round trip
+// already bounds itself; `run_with_deadline_traced` stays `pub(crate)`
+// -- only the traced variant tests reach.
+pub mod deadline;
 pub mod envelope;
 // ADR 0041 step 6, unit U0 round-1 (blocker 3): the public facade over
 // fsutil::lock_supervisor -- fsutil itself is a private module, invisible
