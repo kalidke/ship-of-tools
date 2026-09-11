@@ -4547,6 +4547,29 @@ pub async fn handle_workspace_create(
     };
     #[cfg(not(any(windows, target_os = "linux")))]
     let capsule_state_root: Option<std::path::PathBuf> = None;
+    // A second refusal at the same before-any-mutation moment: a state
+    // root resolving INSIDE this workspace's own project root would sit
+    // under this daemon's project-root file watcher, whose open
+    // directory handles block a Windows rename underneath them (field
+    // defect: `sot-capsule supervise` exiting terminal 69 on
+    // `MoveFileExW`). Same predicate `spawn_detached_supervisor` checks
+    // again right before it spawns; this copy just gets a clean `code`
+    // here instead of a rollback after a partial row insert.
+    if let Some(root) = &capsule_state_root {
+        if crate::capsule_workspace::state_root_inside_project(root, &project_root) {
+            let payload = json!({
+                "error": format!(
+                    "state root {root:?} lies inside the project root {project_root:?}: a \
+                     capsule's state tree must never sit inside a directory this workspace watches"
+                ),
+                "code": "state_root_inside_project",
+            });
+            return Ok(vec![(
+                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                None,
+            )]);
+        }
+    }
     let mut ws_seed = crate::workspaces::Workspace::from_label(
         &req.label,
         project_root.clone(),

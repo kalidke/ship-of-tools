@@ -116,6 +116,23 @@ pub fn qualified_state_root() -> Result<PathBuf, String> {
     Ok(root)
 }
 
+/// The invariant [`qualified_state_root`] alone cannot enforce (it never
+/// sees a project root): a workspace's file watcher recursively watches
+/// `project_root`, holding directory handles under it, and on Windows an
+/// open handle blocks a rename of the directory it is in -- so
+/// `voyages\<uuid>` publication fails with a sharing violation whenever a
+/// capsule's state tree sits inside a directory this daemon watches. A
+/// capsule row's state directory must never lie inside (or at) its
+/// project root. Each side is canonicalized first, falling back to its
+/// given spelling if that fails, so a symlinked root is judged by what it
+/// resolves to, not its spelling.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+pub fn state_root_inside_project(state_dir: &Path, project_root: &Path) -> bool {
+    let state_dir = std::fs::canonicalize(state_dir).unwrap_or_else(|_| state_dir.to_path_buf());
+    let project_root = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+    crate::paths::path_within_root(&state_dir, &project_root)
+}
+
 /// LU5a: the daemon's OWN volatile-filesystem deny list plus the raw
 /// `statfs` call it is judged against — split into its own tiny module so
 /// [`qualified_state_root`] above (portable) can gate just this one
@@ -765,6 +782,11 @@ mod runtime {
     /// fresh resolution matching `handlers.rs`'s own earlier check for a
     /// `workspace.create` (both resolve the SAME env-derived root, so they
     /// agree by construction, not by sharing a value across the wire).
+    ///
+    /// A second refusal right after it: [`super::state_root_inside_project`]
+    /// against `cwd` (every caller passes its `project_root` here) —
+    /// unlike the root check above this one DOES need `state_dir`, since
+    /// nesting is a property of THIS row, not of the machine.
     fn spawn_detached_supervisor(
         sot_capsule_exe: &Path,
         state_dir: &Path,
@@ -776,6 +798,18 @@ mod runtime {
         slug: &str,
     ) -> std::io::Result<Child> {
         super::qualified_state_root().map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
+        if super::state_root_inside_project(state_dir, cwd) {
+            return Err(std::io::Error::new(
+                ErrorKind::Unsupported,
+                format!(
+                    "state directory {state_dir:?} lies inside the project root {cwd:?}: this \
+                     workspace's own file watcher would hold directory handles under it, and on \
+                     Windows an open handle blocks the renames capsule publication depends on \
+                     (point this machine's state root, {}, outside the project tree)",
+                    super::STATE_ROOT_HINT
+                ),
+            ));
+        }
         let build = |survival: &str, scoped: bool| -> Command {
             let mut cmd = if scoped {
                 let mut c = Command::new("systemd-run");
@@ -2366,6 +2400,54 @@ mod tests {
             state_dir_for(root, "ws-alpha-1a2b"),
             PathBuf::from("/tmp/sot-state-root/workspaces/ws-alpha-1a2b")
         );
+    }
+
+    // Field defect: a scratch daemon watched a project root that
+    // CONTAINED its own state root, so the daemon's file watcher held
+    // directory handles inside it; on Windows an open directory handle
+    // blocks a rename, so `voyages\<uuid>` publication failed with a
+    // sharing violation and the supervisor exited terminal 69. These
+    // cover the predicate that now refuses that layout up front, at
+    // capsule create and again right before every spawn.
+    #[test]
+    fn state_root_inside_project_true_when_a_descendant() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        let state_root = project_root.join("state").join("workspaces").join("ws-1");
+        std::fs::create_dir_all(&state_root).unwrap();
+        assert!(state_root_inside_project(&state_root, &project_root));
+    }
+
+    #[test]
+    fn state_root_inside_project_true_when_equal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("shared-root");
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(state_root_inside_project(&root, &root));
+    }
+
+    #[test]
+    fn state_root_inside_project_false_for_a_same_prefix_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        let state_root = dir.path().join("project-state"); // same prefix, NOT nested
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::create_dir_all(&state_root).unwrap();
+        assert!(!state_root_inside_project(&state_root, &project_root));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn state_root_inside_project_resolves_a_symlinked_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_project = dir.path().join("real-project");
+        let state_root = real_project.join("state");
+        std::fs::create_dir_all(&state_root).unwrap();
+        let link = dir.path().join("project-link");
+        std::os::unix::fs::symlink(&real_project, &link).unwrap();
+        // The caller passes the SYMLINK as the project root; the state
+        // root is a real descendant of what it resolves to.
+        assert!(state_root_inside_project(&state_root, &link));
     }
 
     // Field defect (v0.6.0-rc.12): a supervisor that died out from under
