@@ -1275,15 +1275,15 @@ async fn poll_for_phase(conn: &mut Conn, next_id: &mut u64, workspace_id: &str, 
     }
 }
 
-/// ADR 0030 §8 decision 31c (cross-referenced as ADR 0043 decision 31):
-/// `phase_of` reports `"foreign"` for a capsule row whose supervisor lane
-/// answered but refused THIS daemon's build (typed as
+/// ADR 0030 §8 decision 31c (cross-referenced as ADR 0043 decision 31;
+/// the gate itself is superseded by ADR 0045 decision 7 -- `proto`, not
+/// build): `phase_of` reports `"foreign"` for a capsule row whose
+/// supervisor lane answered but refused this daemon's protocol (typed as
 /// `sot_log::Error::VersionSkew`, never a text match). Reproduces the
 /// field incident's OBSERVABLE shape (a row an operator finds already
-/// held by another build, not one this daemon started that way — this
-/// daemon's own `check_pair` would refuse to spawn a mismatched pair
-/// itself) using [`spawn_lane_refusal_fixture`] in place of a real
-/// foreign build.
+/// held by a foreign lane, not one this daemon started that way -- this
+/// daemon would never spawn one itself) using
+/// [`spawn_lane_refusal_fixture`] in place of a real foreign peer.
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn phase_reports_foreign_for_a_version_skew_refusal() {

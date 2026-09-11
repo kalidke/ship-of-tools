@@ -747,6 +747,10 @@ latency" claim.
     own build-boundary machinery (`pair_verdict`, `check_pair`,
     `SUPERVISOR_LANE_BUILD_ID`) is exactly what decision 31 makes visible on
     the wire, so it is cross-referenced here rather than duplicated.
+    **Superseded 2026-09-11:** that build-boundary machinery
+    (`pair_verdict`, `check_pair`, decision 22's pre-spawn probe) is
+    deleted by ADR 0045 decision 7/8 — the lane gate is the protocol
+    integer alone; `SUPERVISOR_LANE_BUILD_ID` remains a diagnostic only.
 
 ## What this deletes
 

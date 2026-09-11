@@ -554,6 +554,22 @@ pub fn connect_and_challenge_with_build_for_test(
     Ok((conn, outcome))
 }
 
+/// ADR 0045 decision 7: the lane gate is the `proto` integer, not
+/// `build` (see [`connect_and_challenge_with_build_for_test`] above, now
+/// kept only to prove a different build id is fine) — this is the one
+/// way to drive a genuine proto mismatch in a test.
+#[cfg(any(test, feature = "test-support"))]
+pub fn connect_and_challenge_with_proto_for_test(
+    h: &str,
+    proto: u32,
+) -> crate::Result<(Client, ChallengeOutcome<Process>)> {
+    let conn = PlatformEndpoint::connect_supervisor_unchallenged(h)?;
+    let mut exchange =
+        crate::exchange::SupervisorLaneExchange::with_proto_for_test(crate::exchange::SUPERVISOR_LANE_BUILD_ID, proto);
+    let outcome = PlatformEndpoint::challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
+    Ok((conn, outcome))
+}
+
 /// L1-unix LU3b: [`crate::supervisor_client::connect_and_challenge`] is
 /// now the production analog of
 /// [`connect_and_challenge_with_build_for_test`] — connect the supervisor
@@ -2370,8 +2386,12 @@ fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId,
         let (frames, err) = conn.splitter.feed(bytes);
         for frame in frames {
             match frame {
-                DecodedFrame::SupervisorRequest(SupervisorRequest::Hello { proto, build }) if !conn.hello_ok => {
-                    if proto != wire::SUPERVISOR_PROTO_V1 || build != crate::exchange::SUPERVISOR_LANE_BUILD_ID {
+                DecodedFrame::SupervisorRequest(SupervisorRequest::Hello { proto, build: _ }) if !conn.hello_ok => {
+                    // ADR 0045 decision 7: the gate is the protocol
+                    // integer alone; `build` rides the wire as
+                    // information only and is never compared.
+                    if proto != wire::SUPERVISOR_PROTO_V1 {
+                        note(format_args!("hello refused: lane proto {proto}, ours {}", wire::SUPERVISOR_PROTO_V1));
                         let reply = wire::encode_supervisor_reply(&SupervisorReply::Refused {
                             reason: wire::SupervisorRefusedReason::VersionSkew,
                         })

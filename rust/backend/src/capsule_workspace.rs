@@ -65,9 +65,9 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 /// before it is ever allowed to touch disk on the row's behalf — called by
 /// `handlers.rs`'s `workspace.create` so it can refuse an unqualified root
 /// BEFORE any row persists, and again by [`runtime::spawn_detached_supervisor`]
-/// beside its own `check_pair`, the one mechanism every later launch
-/// (attach start-on-attach, boot resume, the watchdog's own restart)
-/// shares. This FUNCTION is portable (no platform gate on the item
+/// — the one mechanism every later launch (attach start-on-attach, boot
+/// resume, the watchdog's own restart) shares. This FUNCTION is portable
+/// (no platform gate on the item
 /// itself — every host `mod capsule_workspace` compiles for must be able
 /// to typecheck it), but every real CALLER stays gated to Windows and
 /// Linux exactly like the capsule runtime's own availability elsewhere in
@@ -349,12 +349,17 @@ pub enum StartMode {
 pub const UNREACHABLE_PHASE: &str = "unreachable";
 
 /// The wire phase string for a capsule workspace whose supervisor lane
-/// DID answer — but with `version_skew`: it is held by a supervisor of
-/// ANOTHER build (ADR 0030 §8 decision 31c, ADR 0043 decision 31; ADR
-/// 0041 build boundary). This daemon can never attach, adopt, end, or
-/// destroy such a row — see `pair_verdict`'s own doc for the operator
-/// recovery. Deliberately its own phase rather than folding into
-/// [`UNREACHABLE_PHASE`]: the lane DID answer, which is exactly the fact
+/// DID answer — but with `version_skew`: it is held by a supervisor
+/// speaking ANOTHER lane protocol (ADR 0030 §8 decision 31c, ADR 0043
+/// decision 31; ADR 0045 decision 7 — the gate is `proto` alone now, not
+/// build; decision 9: adopting a supervisor of another BUILD is
+/// ordinary, only a proto mismatch is foreign). This daemon can never
+/// attach, adopt, end, or destroy such a row: end the row from a client
+/// of the proto it speaks, or kill only its `sot-capsule supervise`
+/// process and attach again — the leg and the agent in it survive and
+/// the next attach's `ensure_started` resumes and adopts. Deliberately
+/// its own phase rather than folding into [`UNREACHABLE_PHASE`]: the
+/// lane DID answer, which is exactly the fact
 /// `note_if_foreign` already detected and used to be discarded one line
 /// before the wire (2026-09-08 field incident) — this is that fact,
 /// finally on the wire. `phase_of` sets it on the SAME branch
@@ -600,34 +605,6 @@ pub enum EndRunOutcome {
     Unheld,
 }
 
-/// The pair invariant, decided from what `sot-capsule.exe build-id`
-/// printed (`reported`, `None` when it printed nothing usable -- a binary
-/// that predates the subcommand answers with its usage on stderr and exit
-/// 2) against this daemon's own lane build id. Both halves of the pair
-/// carry `sot_log::exchange::SUPERVISOR_LANE_BUILD_ID`; the supervisor
-/// hello refuses a mismatch as `version_skew` (ADR 0041 build boundary),
-/// so a capsule spawned from a binary of another build could never be
-/// attached, adopted, ended or destroyed by this daemon -- a dead row that
-/// looked started (field day 2026-09-05: a launcher pair rebuild that had
-/// to leave a pinned `sot-capsule.exe` behind produced exactly that for
-/// every capsule spawned afterwards, with no error anywhere until attach).
-/// Portable so the verdict text is unit-tested on every host.
-pub(crate) fn pair_verdict(reported: Option<&str>, own: &str) -> Result<(), String> {
-    match reported {
-        Some(got) if got == own => Ok(()),
-        got => Err(format!(
-            "sot-capsule.exe build {} does not match this daemon's build {own}: rebuild the pair \
-             (cargo build --release -p sot-backend -p sot-log; a sot-capsule.exe pinned by running \
-             supervisors must be renamed aside first). Rows still held by supervisors of the old \
-             build: end them from a frontend of that build, or kill only their `sot-capsule \
-             supervise` process and attach the row again -- the run leg and the agent in it \
-             survive, and the new supervisor adopts them (the management exchange is not \
-             build-gated); this daemon never adopts or respawns a foreign supervisor on its own",
-            got.unwrap_or("unknown (binary predates `build-id`)")
-        )),
-    }
-}
-
 /// The daemon's capsule runtime — spawning, watching, querying, and
 /// ending a supervisor over `sot_log::supervisor_client`. Platform
 /// chosen by exactly TWO forks inside (ADR 0043 decision 22): the
@@ -715,69 +692,6 @@ mod runtime {
         Ok(dir.join(CAPSULE_EXE))
     }
 
-    /// Refuse to spawn a capsule from a binary of another build -- see
-    /// `super::pair_verdict`. Runs `sot-capsule build-id` (one line,
-    /// exits at once; no window on Windows) under a hard bound: the probe
-    /// is killed and reaped if it has not exited within
-    /// `PAIR_PROBE_BOUND`, so a wedged binary can never hold a runtime
-    /// worker or a `starting` claim open. A mismatch is
-    /// `ErrorKind::Unsupported` -- the one kind the watchdog treats as
-    /// terminal at once rather than a crash to retry. Spawns are rare
-    /// (attach, boot resume, watchdog restart), so the extra process per
-    /// spawn is not worth a cache. `CREATE_NO_WINDOW` is the one
-    /// Windows-only piece of this call — the rest is portable as is.
-    const PAIR_PROBE_BOUND: Duration = Duration::from_secs(5);
-    fn check_pair(sot_capsule_exe: &Path) -> std::io::Result<()> {
-        let mut command = std::process::Command::new(sot_capsule_exe);
-        command
-            .arg("build-id")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
-        let mut child = command.spawn()?;
-        let deadline = Instant::now() + PAIR_PROBE_BOUND;
-        let status = loop {
-            if let Some(s) = child.try_wait()? {
-                break s;
-            }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(std::io::Error::new(
-                    ErrorKind::TimedOut,
-                    format!("{CAPSULE_EXE} build-id did not answer within {PAIR_PROBE_BOUND:?}"),
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        if let Some(mut o) = child.stdout.take() {
-            let _ = std::io::Read::read_to_string(&mut o, &mut stdout);
-        }
-        if let Some(mut e) = child.stderr.take() {
-            let _ = std::io::Read::read_to_string(&mut e, &mut stderr);
-        }
-        let reported = stdout.trim();
-        if !status.success() && !stderr.contains("usage:") {
-            // Not the pre-`build-id` binary answering with its usage line:
-            // a real failure to run the probe -- report it as such.
-            return Err(std::io::Error::other(format!(
-                "{CAPSULE_EXE} build-id failed ({status}): {}",
-                stderr.trim()
-            )));
-        }
-        let reported = (status.success() && !reported.is_empty()).then_some(reported);
-        super::pair_verdict(reported, sot_log::exchange::SUPERVISOR_LANE_BUILD_ID)
-            .map_err(|m| std::io::Error::new(ErrorKind::Unsupported, m))
-    }
-
     /// ADR 0043 decision 25: the supervisor's stderr is the daemon's OWN
     /// log — a FRESH `O_APPEND` open onto it per spawn (the daemon need
     /// not share its handle; `main.rs`'s `open_private_log_file` already
@@ -814,10 +728,10 @@ mod runtime {
     /// only how it is actually detached — [`spawn_detached`], the second
     /// of decision 22's three forks — differs.
     ///
-    /// ADR 0043 decision 23: [`super::qualified_state_root`] runs beside
-    /// [`check_pair`], BEFORE the build — this is the ONE mechanism every
-    /// capsule launch shares (create, attach start-on-attach, boot resume,
-    /// the watchdog's own restart), so each of those paths refuses an
+    /// ADR 0043 decision 23: [`super::qualified_state_root`] runs BEFORE
+    /// the build — this is the ONE mechanism every capsule launch shares
+    /// (create, attach start-on-attach, boot resume, the watchdog's own
+    /// restart), so each of those paths refuses an
     /// unqualified root exactly here rather than needing its own copy of
     /// the check. `state_dir` (a subdirectory of the qualified root) is
     /// deliberately NOT what gets checked — the root itself is, via a
@@ -834,7 +748,6 @@ mod runtime {
         workspace_id: &str,
         slug: &str,
     ) -> std::io::Result<Child> {
-        check_pair(sot_capsule_exe)?;
         super::qualified_state_root().map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
         let build = |survival: &str| -> Command {
             let mut cmd = Command::new(sot_capsule_exe);
@@ -971,12 +884,17 @@ mod runtime {
         }
     }
 
-    /// Log ONCE per row per daemon lifetime that a capsule row is held by
-    /// a supervisor of ANOTHER build (ADR 0030 §8 decision 31c) — called
+    /// Log ONCE per row per daemon lifetime that a capsule row's
+    /// supervisor refused this daemon's hello (ADR 0030 §8 decision 31c;
+    /// the gate itself is superseded by ADR 0045 decision 7) — called
     /// only once the caller has ALREADY typed-matched
     /// `sot_log::Error::VersionSkew`, so this never fires on a merely
-    /// unreachable lane. `phase_of` is also the list poll's own probe, so
-    /// this dedupes on `state_dir` rather than logging every poll.
+    /// unreachable lane. Wording covers BOTH migration-window causes
+    /// (Codex review, 2026-09-11): a genuine lane-protocol mismatch, or
+    /// an OLD (pre-ADR-0045) supervisor still refusing on build — this
+    /// daemon cannot tell which from the wire alone, so it never claims
+    /// to. `phase_of` is also the list poll's own probe, so this dedupes
+    /// on `state_dir` rather than logging every poll.
     fn note_version_skew(state_dir: &Path) {
         use std::sync::{Mutex, OnceLock};
         static NOTED: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
@@ -984,9 +902,9 @@ mod runtime {
         if noted.insert(state_dir.to_path_buf()) {
             tracing::warn!(
                 state_dir = ?state_dir,
-                "capsule row is held by a supervisor from ANOTHER build; this daemon cannot attach, adopt, end \
-                 or destroy it. Recovery: end it from a frontend of that build, or kill only its `sot-capsule \
-                 supervise` process and attach the row again (the run leg and its agent survive and are adopted)"
+                "the row's supervisor refused this client (another lane protocol, or a supervisor from before \
+                 the protocol-only gate); end the row and recreate it, or kill only its `sot-capsule supervise` \
+                 process and attach the row again (the run leg and its agent survive and are adopted)"
             );
         }
     }
@@ -1677,14 +1595,13 @@ mod runtime {
                                 leg_opt = Some(child);
                             }
                             Ok(Err(e)) if e.kind() == ErrorKind::Unsupported => {
-                                // `check_pair` refused (another build next to this
-                                // daemon) OR `qualified_state_root` refused (ADR
-                                // 0043 decision 23: the state root went unqualified
+                                // `qualified_state_root` refused (ADR 0043
+                                // decision 23: the state root went unqualified
                                 // out from under a live row -- an `XDG_STATE_HOME`
                                 // change, a remounted volume). No retry can change
-                                // either without operator action -- mark terminal
+                                // that without operator action -- mark terminal
                                 // now (the error names the recovery).
-                                tracing::error!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: pair mismatch or unqualified state root -- marking terminal, no restart");
+                                tracing::error!(workspace_id = %workspace_id, error = %e, "capsule supervisor watchdog: unqualified state root -- marking terminal, no restart");
                                 workspaces.mark_capsule_terminal(&workspace_id);
                                 return;
                             }
@@ -2591,28 +2508,5 @@ mod tests {
         std::env::remove_var("HOME");
         std::env::remove_var("USERPROFILE");
         assert_eq!(capsule_comm_home_str(), None);
-    }
-}
-
-#[cfg(test)]
-mod pair_verdict_tests {
-    use super::pair_verdict;
-
-    #[test]
-    fn matching_build_ids_pass() {
-        assert!(pair_verdict(Some("abc123"), "abc123").is_ok());
-    }
-
-    #[test]
-    fn a_different_build_is_refused_with_the_recovery() {
-        let e = pair_verdict(Some("97deece7"), "9f774f74").unwrap_err();
-        assert!(e.contains("97deece7") && e.contains("9f774f74"), "{e}");
-        assert!(e.contains("renamed aside") && e.contains("attach the row again") && e.contains("only their"), "{e}");
-    }
-
-    #[test]
-    fn a_binary_that_predates_the_subcommand_is_refused_too() {
-        let e = pair_verdict(None, "9f774f74").unwrap_err();
-        assert!(e.contains("predates"), "{e}");
     }
 }

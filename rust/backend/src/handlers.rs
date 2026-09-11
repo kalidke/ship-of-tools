@@ -342,6 +342,7 @@ pub async fn handle_version_query(
         app_version: sot_protocol::app_version(),
         protocol: sot_protocol::PROTOCOL_VERSION,
         lane_build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
+        lane_proto: sot_log::wire::SUPERVISOR_PROTO_V1,
     };
     let snap = clients.snapshot_with_active();
     let clients = snap
@@ -4635,12 +4636,13 @@ pub async fn handle_workspace_create(
                 let agent_name = req.agent_name.clone();
                 let slug = ws_handle.slug.clone();
                 let workspaces_for_spawn = workspaces.clone();
-                // BLOCKING (process spawn, `check_pair`'s probe): the row
-                // guard is held by the CALLING async fn's own frame for
-                // this whole `.await`, not by this closure — a panic in
-                // here is caught by `spawn_blocking` itself and never
-                // unwinds past that guard, so there is nothing to release
-                // on the error path below beyond reporting it.
+                // BLOCKING (process spawn, superseded by ADR 0045: no
+                // pre-spawn probe runs here anymore): the row guard is
+                // held by the CALLING async fn's own frame for this whole
+                // `.await`, not by this closure — a panic in here is
+                // caught by `spawn_blocking` itself and never unwinds past
+                // that guard, so there is nothing to release on the error
+                // path below beyond reporting it.
                 tokio::task::spawn_blocking(move || {
                     crate::capsule_workspace::start_supervisor(
                         &state_root,

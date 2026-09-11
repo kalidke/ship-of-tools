@@ -148,7 +148,7 @@ run_version() {
 # --- cases -----------------------------------------------------------------
 
 case_matching_pair_prints_the_phase_verbatim() {
-    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def"},"clients":[{"client_id":"fe-1","app_version":"0.6.0-dev+abc1234","protocol":1,"connected_at":1}]}}'
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[{"client_id":"fe-1","app_version":"0.6.0-dev+abc1234","protocol":1,"connected_at":1}]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[{"workspace_id":"ws1","slug":"research","label":"","project_root":"/p","tmux_session":"t","kernel_running":false,"is_default":false,"runtime":"capsule","state_dir":"/sd","phase":"ready"}]}}'
     start_stub_daemon
     run_version
@@ -157,10 +157,28 @@ case_matching_pair_prints_the_phase_verbatim() {
     [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
     contains "$VER_OUT" "unix:$SOCK" || { echo "  daemon row must be labeled by the resolved endpoint: $VER_OUT"; return 1; }
     contains "$VER_OUT" "abc1234def" || { echo "  missing daemon lane_build: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "lane proto 1" || { echo "  missing daemon lane_proto: $VER_OUT"; return 1; }
     contains "$VER_OUT" "client fe-1" || { echo "  missing attached-client row: $VER_OUT"; return 1; }
     contains "$VER_OUT" "row research" || { echo "  missing capsule row: $VER_OUT"; return 1; }
     contains "$VER_OUT" "ready" || { echo "  expected the row's phase printed verbatim: $VER_OUT"; return 1; }
     contains "$VER_OUT" "matches" && { echo "  no derived verdict column expected: $VER_OUT"; return 1; }
+    return 0
+}
+
+case_legacy_daemon_without_lane_proto_prints_a_placeholder() {
+    # A daemon new enough to answer version.query but predating ADR 0045's
+    # lane_proto field (`#[serde(default)]` on the Rust side; here, simply
+    # omitted from the staged JSON) must still exit 0 -- and the build
+    # column falls back to "lane proto ?" rather than a blank or a crash.
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def"},"clients":[]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    start_stub_daemon
+    run_version
+    stop_stub_daemon
+
+    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    contains "$VER_OUT" "abc1234def" || { echo "  missing daemon lane_build: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "lane proto ?" || { echo "  expected a lane proto ? placeholder: $VER_OUT"; return 1; }
     return 0
 }
 
@@ -169,7 +187,7 @@ case_active_and_idle_frontends_print_their_state() {
     # "frontend <handle> ... active|idle" row instead of the generic
     # "client <id>" one. No idle AGE (deleted 2026-09-08 review, finding 6):
     # the roster only ever says which one, if any, is active.
-    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def"},"clients":[{"client_id":"fe-a","app_version":"0.6.0-dev+abc1234","protocol":1,"fe_handle":"win-fe-a","active":true},{"client_id":"fe-b","app_version":"0.6.0-dev+abc1234","protocol":1,"fe_handle":"win-fe-b","active":false}]}}'
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[{"client_id":"fe-a","app_version":"0.6.0-dev+abc1234","protocol":1,"fe_handle":"win-fe-a","active":true},{"client_id":"fe-b","app_version":"0.6.0-dev+abc1234","protocol":1,"fe_handle":"win-fe-b","active":false}]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
     start_stub_daemon
     run_version
@@ -227,7 +245,7 @@ case_untargeted_relaunch_with_resolved_target_exits_0() {
 }
 
 case_foreign_row_prints_the_phase_with_no_derived_verdict() {
-    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def"},"clients":[]}}'
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[{"workspace_id":"ws2","slug":"scratch","label":"","project_root":"/p2","tmux_session":"t2","kernel_running":false,"is_default":false,"runtime":"capsule","state_dir":"/sd2","phase":"foreign"}]}}'
     start_stub_daemon
     run_version
@@ -261,7 +279,7 @@ case_workspace_list_failure_after_successful_version_query_exits_2() {
     # daemon new enough to answer version.query has no excuse for a failed
     # workspace.list -- capsule rows must never silently vanish into a
     # successful-looking, exit-0 output.
-    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0","protocol":1,"lane_build":"xyz"},"clients":[]}}'
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0","protocol":1,"lane_build":"xyz","lane_proto":1},"clients":[]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"error":"kaboom","code":"internal"}}'
     start_stub_daemon
     run_version
@@ -274,7 +292,7 @@ case_workspace_list_failure_after_successful_version_query_exits_2() {
 }
 
 case_comm_scripts_row_reads_the_installed_version_file() {
-    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0","protocol":1,"lane_build":"xyz"},"clients":[]}}'
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0","protocol":1,"lane_build":"xyz","lane_proto":1},"clients":[]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
     printf 'deadbeef9\n' > "$SOT_COMM_HOME/VERSION"
     start_stub_daemon
@@ -287,7 +305,7 @@ case_comm_scripts_row_reads_the_installed_version_file() {
 }
 
 case_comm_scripts_row_prints_unknown_when_the_stamp_is_missing() {
-    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0","protocol":1,"lane_build":"xyz"},"clients":[]}}'
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0","protocol":1,"lane_build":"xyz","lane_proto":1},"clients":[]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
     rm -f "$SOT_COMM_HOME/VERSION"
     start_stub_daemon
@@ -303,6 +321,7 @@ case_comm_scripts_row_prints_unknown_when_the_stamp_is_missing() {
 # --- run ---------------------------------------------------------------
 
 check "a matching pair prints daemon/client rows and the row's phase verbatim, no verdict" case_matching_pair_prints_the_phase_verbatim
+check "a daemon predating lane_proto prints a 'lane proto ?' placeholder and still exits 0" case_legacy_daemon_without_lane_proto_prints_a_placeholder
 check "an active and an idle frontend print their handle and active|idle state"            case_active_and_idle_frontends_print_their_state
 check "an untargeted relaunch sends no target and exits 2 without a resolved_target"        case_untargeted_relaunch_carries_no_target_field_and_exits_2_without_resolved_target
 check "an untargeted relaunch with a resolved_target in the ack exits 0"                    case_untargeted_relaunch_with_resolved_target_exits_0
