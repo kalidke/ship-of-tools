@@ -138,8 +138,10 @@ where
     // `build_run_command`'s `--survival`), never inferred — defaults to
     // `Normal` for a bare manual invocation, matching every existing
     // caller of this harness that predates the flag. ADR 0043 decision
-    // 16: Unix has no job-breakaway concept at all, so survival is always
-    // `Normal` there regardless of what (if anything) `--survival` named.
+    // 32: both platforms attempt an escape from their own kill domain and
+    // report a denial as `degraded` rather than refusing or clamping it —
+    // `--survival` is honored verbatim on Unix too (Linux's own escape is
+    // a transient user scope, not a job).
     let mut survival_flag: Option<sot_log::wire::Survival> = None;
     loop {
         match rest.first().map(String::as_str) {
@@ -252,23 +254,13 @@ where
     #[cfg(unix)]
     let producer_kind = "raw-terminal";
 
-    #[cfg(windows)]
+    // ADR 0043 decision 32: both platforms attempt the escape from the
+    // daemon's own kill domain and report a denial rather than refusing or
+    // silently overriding it -- `--survival` is whatever the spawner
+    // actually achieved (Linux: a transient user scope; Windows: job
+    // breakaway), always honored, never clamped to `Normal` on either
+    // platform.
     let survival = survival_flag.unwrap_or(sot_log::wire::Survival::Normal);
-    // ADR 0043 decision 16: no per-platform knob -- Unix survival is
-    // ALWAYS `Normal` (no job breakaway exists to report). `--survival` is
-    // still accepted by the flag loop above (one shared grammar), but an
-    // explicit value is honestly reported as inert rather than silently
-    // dropped.
-    #[cfg(unix)]
-    let survival = {
-        if let Some(v) = survival_flag {
-            run_note(format_args!(
-                "--survival {v:?} has no effect on unix -- survival is always Normal there (ADR \
-                 0043 decision 16: no job-breakaway concept exists to report)"
-            ));
-        }
-        sot_log::wire::Survival::Normal
-    };
 
     #[cfg(windows)]
     let parent_lease = parent_lease_name.map(sot_log::producer::ParentLease::NamedMutex);
@@ -283,10 +275,9 @@ where
         argv,
         cols,
         rows,
-        // ADR 0042 slice L1a: supplied by `--survival` on Windows (a real
-        // spawner -- `build_run_command` -- now sets it); a bare manual
-        // invocation still defaults to the honest `Normal`. Always
-        // `Normal` on Unix (decision 16).
+        // ADR 0042 slice L1a: supplied by `--survival` from a real spawner
+        // (`build_run_command`) on either platform; a bare manual
+        // invocation still defaults to the honest `Normal` (decision 32).
         survival,
         rollout_evidence,
         parent_lease,
