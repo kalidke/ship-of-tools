@@ -97,8 +97,8 @@ ownership check compares them.
 ## Survival
 
 On Linux, a capsule supervisor runs in its own transient user scope
-(`systemd-cgls --user` shows it as `sot-capsule <workspace-id>`, not under
-`sotd`'s own unit) and survives a daemon restart. On a host with no
+(`systemctl --user list-units --type=scope` lists it, not under `sotd`'s
+own unit) and survives a daemon restart. On a host with no
 reachable `systemd --user` manager it runs `--survival degraded` instead
 (a warn line in `sotd.log` names why) and shares the daemon's own kill
 domain there.

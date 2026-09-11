@@ -718,15 +718,27 @@ mod runtime {
     /// argv>` DETACHED, so the supervisor authority survives the
     /// daemon's own exit — the daemon must not be its kill domain (ADR
     /// 0042 L1a). `--survival` is decided by [`spawn_detached`]'s own
-    /// breakaway attempt, never guessed here.
+    /// escape attempt, never guessed here; on Linux that SAME attempt
+    /// also decides `scoped`, `build`'s second parameter — whether the
+    /// head this closure constructs is `systemd-run --user --scope … --
+    /// <sot-capsule>` (the escape) or `<sot-capsule>` directly (bare) —
+    /// so the shared tail (`supervise`, `state_dir`, mode, survival,
+    /// `--assume-no-rollback-target`, argv, cwd, stdio, env) is written
+    /// ONCE regardless of which head it lands on (Codex review deletion:
+    /// the earlier design built the bare command first and REWROTE it
+    /// into the scoped one via `Command::as_std()` accessors afterward —
+    /// gone; this closure just branches on `scoped` up front instead, so
+    /// there is no second log-file open, no workspace id reconstructed
+    /// from a path, and no future `env_clear` call that replay could ever
+    /// silently lose). `scoped` is always `false` on Windows (no scope
+    /// concept there) — only how the head is built differs; only how the
+    /// result is actually detached — [`spawn_detached`], the second of
+    /// decision 22's three forks — differs per platform.
     /// `--assume-no-rollback-target` is mandatory: `sot_log::supervisor::supervise`
     /// itself refuses (exit 69) without it pre-U4. The nesting env vars
     /// are scrubbed and `SOT_COMM_NAME` exported (Codex review finding
     /// 9) — the same contract `boot_wrapper_command`'s tmux path already
-    /// gives every autostart workspace. Builds the SAME `Command` on both
-    /// platforms (this function, parameterized on the survival value);
-    /// only how it is actually detached — [`spawn_detached`], the second
-    /// of decision 22's three forks — differs.
+    /// gives every autostart workspace.
     ///
     /// ADR 0043 decision 23: [`super::qualified_state_root`] runs BEFORE
     /// the build — this is the ONE mechanism every capsule launch shares
@@ -749,8 +761,21 @@ mod runtime {
         slug: &str,
     ) -> std::io::Result<Child> {
         super::qualified_state_root().map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
-        let build = |survival: &str| -> Command {
-            let mut cmd = Command::new(sot_capsule_exe);
+        let build = |survival: &str, scoped: bool| -> Command {
+            let mut cmd = if scoped {
+                let mut c = Command::new("systemd-run");
+                c.arg("--user")
+                    .arg("--scope")
+                    .arg("--quiet")
+                    .arg("--collect")
+                    .arg("--description")
+                    .arg(format!("sot-capsule {workspace_id}"))
+                    .arg("--")
+                    .arg(sot_capsule_exe);
+                c
+            } else {
+                Command::new(sot_capsule_exe)
+            };
             cmd.arg("supervise")
                 .arg(state_dir)
                 .arg(mode_flag(mode))
@@ -771,7 +796,7 @@ mod runtime {
             }
             cmd
         };
-        spawn_detached(build, state_dir)
+        spawn_detached(build, state_dir, workspace_id)
     }
 
     /// Decision 22's second fork: how a built `Command` is actually
@@ -788,10 +813,19 @@ mod runtime {
     /// spawn is retried without the flag, logged once, and launched
     /// `--survival degraded` — the daemon reports its containment, it
     /// never fabricates it as an error (ADR 0043 decision 32, revised).
-    /// Any OTHER spawn error propagates unchanged.
+    /// Any OTHER spawn error propagates unchanged. `scoped` has no
+    /// Windows meaning (no scope concept there) — `build` is always
+    /// called with `false`; `workspace_id` is the Linux twin's own
+    /// concern (its scoped `--description` string), unused here but
+    /// shared across the signature both platforms call through.
     #[cfg(windows)]
-    fn spawn_detached(build: impl Fn(&str) -> Command, state_dir: &Path) -> std::io::Result<Child> {
-        let mut cmd = build("normal");
+    fn spawn_detached(
+        build: impl Fn(&str, bool) -> Command,
+        state_dir: &Path,
+        workspace_id: &str,
+    ) -> std::io::Result<Child> {
+        let _ = workspace_id;
+        let mut cmd = build("normal", false);
         cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
         match cmd.spawn() {
             Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
@@ -800,7 +834,7 @@ mod runtime {
                     "capsule supervisor: this daemon's own job forbids breakaway; the supervisor \
                      is contained in it and will not outlive it (ADR 0043 decision 32)"
                 );
-                let mut cmd = build("degraded");
+                let mut cmd = build("degraded", false);
                 cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
                 cmd.spawn()
             }
@@ -812,6 +846,38 @@ mod runtime {
     #[cfg(target_os = "linux")]
     const USER_SCOPE_PROBE_BOUND: Duration = Duration::from_secs(5);
 
+    /// Bounds draining a probe child's stderr AFTER it has already
+    /// exited (Codex review, reproduced: extracted code took 7 s when a
+    /// wrapper exited but left stderr inherited by a still-running
+    /// GRANDCHILD — `read_to_string` blocks until EVERY holder of the
+    /// pipe's write end closes it, not just the immediate child whose own
+    /// exit [`USER_SCOPE_PROBE_BOUND`]'s loop already observed). A
+    /// separate bound from that one: the process-exit wait and the
+    /// stderr drain can each hang for their own, independent reason.
+    #[cfg(target_os = "linux")]
+    const STDERR_DRAIN_BOUND: Duration = Duration::from_secs(1);
+
+    /// Drains `pipe` to EOF or [`STDERR_DRAIN_BOUND`], whichever comes
+    /// first, by reading it on a throwaway thread and joining that with a
+    /// bounded `recv_timeout` — the only way to cap a blocking
+    /// `read_to_string` without relying on the pipe's own non-blocking
+    /// mode. Past the bound the read is simply abandoned (its thread
+    /// leaks, but harmlessly: nothing else waits on it, and the pipe's
+    /// own fd closes when the thread eventually finishes or the process
+    /// exits) — the caller gets whatever text arrived in time, which for
+    /// a probe's own diagnostic stderr is "none" in the timeout case,
+    /// never a hang.
+    #[cfg(target_os = "linux")]
+    fn drain_stderr_bounded(mut pipe: impl std::io::Read + Send + 'static, bound: Duration) -> String {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            let _ = pipe.read_to_string(&mut buf);
+            let _ = tx.send(buf);
+        });
+        rx.recv_timeout(bound).unwrap_or_default()
+    }
+
     /// The escape [`spawn_detached`]'s Linux twin attempts before falling
     /// back to a contained, degraded spawn (ADR 0043 decision 32): does a
     /// reachable `systemd --user` manager grant a transient scope at all?
@@ -821,7 +887,8 @@ mod runtime {
     /// a past answer — a user manager can appear or vanish between
     /// launches, and a launch is rare next to a whole supervisor's
     /// lifetime. `Err`'s message is the probe's own stderr, verbatim
-    /// where there is any.
+    /// where there is any, drained under its own separate bound
+    /// ([`drain_stderr_bounded`]).
     #[cfg(target_os = "linux")]
     fn user_scope_available() -> std::io::Result<()> {
         let mut command = std::process::Command::new("systemd-run");
@@ -849,10 +916,11 @@ mod runtime {
         if status.success() {
             return Ok(());
         }
-        let mut stderr = String::new();
-        if let Some(mut e) = child.stderr.take() {
-            let _ = std::io::Read::read_to_string(&mut e, &mut stderr);
-        }
+        let stderr = child
+            .stderr
+            .take()
+            .map(|pipe| drain_stderr_bounded(pipe, STDERR_DRAIN_BOUND))
+            .unwrap_or_default();
         let stderr = stderr.trim();
         Err(std::io::Error::other(if stderr.is_empty() {
             format!("systemd-run --user --scope exited {status} with no stderr")
@@ -861,67 +929,21 @@ mod runtime {
         }))
     }
 
-    /// Rewrites `inner` — a fully built `sot-capsule supervise …` command
-    /// targeting [`CAPSULE_EXE`] directly, exactly as a contained
-    /// (degraded) spawn would run it — into `systemd-run --user --scope
-    /// … -- <same program> <same args>`, the transient-scope escape a
-    /// successful [`user_scope_available`] probe just proved available.
-    /// Replays `inner`'s program, args, env and working directory through
-    /// the small stable accessor surface an already-built
-    /// `std::process::Command` exposes ([`Command::as_std`], then
-    /// `get_program`/`get_args`/`get_envs`/`get_current_dir`) rather than
-    /// building `supervise`'s own argv a second time — that list stays
-    /// owned, once, by [`spawn_detached_supervisor`]'s `build` closure.
-    /// Stdio has no such accessor (`std::process::Command` exposes none),
-    /// so it is set fresh here, identically to `build`'s own three lines;
-    /// `supervisor_stderr()` reopens the SAME log path on every call, so
-    /// the descriptor `inner` itself opened — and now drops unspawned —
-    /// is harmless waste, not drift between the two.
-    #[cfg(target_os = "linux")]
-    fn wrap_in_user_scope(inner: Command, workspace_id: &str) -> Command {
-        let std_inner = inner.as_std();
-        let mut cmd = Command::new("systemd-run");
-        cmd.arg("--user")
-            .arg("--scope")
-            .arg("--quiet")
-            .arg("--collect")
-            .arg("--description")
-            .arg(format!("sot-capsule {workspace_id}"))
-            .arg("--")
-            .arg(std_inner.get_program())
-            .args(std_inner.get_args())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(supervisor_stderr());
-        for (k, v) in std_inner.get_envs() {
-            match v {
-                Some(v) => cmd.env(k, v),
-                None => cmd.env_remove(k),
-            };
-        }
-        if let Some(dir) = std_inner.get_current_dir() {
-            cmd.current_dir(dir);
-        }
-        cmd
-    }
-
     /// Linux: attempts the platform's escape from the daemon's own kill
     /// domain — a transient user scope, probed once per launch by
-    /// [`user_scope_available`]. A granted probe launches wrapped in that
-    /// scope, `--survival normal`, one info line; a denied probe launches
-    /// bare (`build("degraded")`, exactly [`spawn_detached_supervisor`]'s
-    /// own direct `sot-capsule` command), `--survival degraded`, one warn
-    /// line naming `state_dir` and the denial (ADR 0043 decision 32 —
-    /// replaces the old "setsid IS the whole detachment" claim: Linux CAN
-    /// run degraded now). `pre_exec(setsid)` runs on EITHER head: a
-    /// `systemd-run --scope` child execs the supervisor in place
-    /// (verified on systemd 249), so the session id set here before
-    /// `systemd-run`'s OWN exec survives into the supervisor unchanged,
-    /// same as the bare spawn. A spawn error after a GRANTED probe
-    /// propagates here unchanged — never a retry into the bare branch.
-    /// `state_dir`'s own leaf IS the workspace id ([`state_dir_for`]), read
-    /// back rather than threaded as a new parameter so this arm's diff
-    /// touches nothing the Windows twin shares.
+    /// [`user_scope_available`]. A granted probe launches `build("normal",
+    /// true)` — the SAME closure that would have built the bare command,
+    /// just pointed at the `systemd-run … --scope` head instead (Codex
+    /// review deletion: no second construction, no
+    /// `Command::as_std()` replay of an already-built command); a denied
+    /// probe launches `build("degraded", false)`, one warn line naming
+    /// `workspace_id`, `state_dir` and the denial (ADR 0043 decision 32).
+    /// `pre_exec(setsid)` runs on EITHER head: a `systemd-run --scope`
+    /// child execs the supervisor in place (verified on systemd 249), so
+    /// the session id set here before `systemd-run`'s OWN exec survives
+    /// into the supervisor unchanged, same as the bare spawn. A spawn
+    /// error after a GRANTED probe propagates here unchanged — never a
+    /// retry into the bare branch.
     ///
     /// `setsid`'s failure is PROPAGATED (review round, reproduced): in a
     /// FRESH fork child, immediately post-fork, pre-exec, it cannot fail
@@ -934,15 +956,18 @@ mod runtime {
     /// stay attached to the daemon's own controlling terminal/session,
     /// silently breaking the whole point of detaching it.
     #[cfg(target_os = "linux")]
-    fn spawn_detached(build: impl Fn(&str) -> Command, state_dir: &Path) -> std::io::Result<Child> {
-        let workspace_id = state_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+    fn spawn_detached(
+        build: impl Fn(&str, bool) -> Command,
+        state_dir: &Path,
+        workspace_id: &str,
+    ) -> std::io::Result<Child> {
         let mut cmd = match user_scope_available() {
             Ok(()) => {
                 tracing::info!(
                     workspace_id,
                     "capsule supervisor: launching in a transient user scope (ADR 0043 decision 32)"
                 );
-                wrap_in_user_scope(build("normal"), workspace_id)
+                build("normal", true)
             }
             Err(e) => {
                 tracing::warn!(
@@ -952,7 +977,7 @@ mod runtime {
                     "capsule supervisor: no transient user scope available; this supervisor \
                      shares the daemon's kill domain (ADR 0043 decision 32)"
                 );
-                build("degraded")
+                build("degraded", false)
             }
         };
         unsafe {

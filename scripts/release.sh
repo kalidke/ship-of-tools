@@ -108,7 +108,13 @@ fi
 
 # ---- test ------------------------------------------------------------------
 if [[ $SKIP_TESTS -eq 0 ]]; then
-    (cd rust && cargo test --workspace --locked)
+    # SOT_TEST_REQUIRE_USER_MANAGER=1 (ADR 0043 decision 32, Codex
+    # SHOULD-FIX): a release is always cut on the backend host, which has
+    # a real `systemd --user` manager -- so the real survival proof
+    # (capsule_supervisor_survives_a_real_user_service_stop) must actually
+    # RUN here, panicking rather than silently SKIPPED:-ing forever the
+    # way a bare hosted CI runner (no user manager) is allowed to.
+    (cd rust && SOT_TEST_REQUIRE_USER_MANAGER=1 cargo test --workspace --locked)
 fi
 
 # ---- commit, tag, push -----------------------------------------------------
