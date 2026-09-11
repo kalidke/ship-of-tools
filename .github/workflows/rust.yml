@@ -68,6 +68,27 @@ jobs:
       # making the sweeps' actual coverage invisible (review finding).
       - name: Test workspace
         run: cargo test --workspace --locked -- --nocapture
+
+      # ADR 0045 lane B4b: the eight cross-process proofs that an FE attach
+      # client reaches a real capsule row THROUGH a real `sotd` in the
+      # middle, over a test-owned TCP -> Unix relay standing in for the
+      # loopback tunnel `DaemonLaneEndpoint::LaneDial::Tcp` dials in
+      # production. `#![cfg(target_os = "linux")]` (the relay dials a real
+      # Unix socket) -- `ubuntu-latest` only, same reasoning and shape as
+      # `capsule_workspaces` gets its own dedicated, budgeted step on the
+      # Windows real-process job below: two of these eight (a genuinely
+      # absent row's own health window, and a busy pane over a throttled
+      # link) each run past two real minutes on their own, well beyond
+      # what the blanket "Test workspace" step above (which also picks
+      # this suite up, with no per-suite budget) should be trusted to
+      # bound alone. "Build workspace" above already builds `sot-capsule`
+      # alongside `sotd` (same `cargo build --workspace`), so no separate
+      # companion-binary step is needed here the way the Windows job's
+      # own dedicated real-process steps need one.
+      - name: Test lane_bridge (ADR 0045 lane B4b -- FE attach client through a real daemon, real process)
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 25
+        run: cargo test -p sot-backend --test lane_bridge -- --nocapture
       # The PowerShell scripts are executed by nothing in CI, and no dev box in
       # the Linux fleet has pwsh — so before this step, a ps1 syntax error
       # shipped to main was first discovered by the next FE LAUNCH (launchers
