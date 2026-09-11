@@ -187,14 +187,59 @@ left exactly as it was, and the error's first line names `dst` and the
 underlying cause: a launcher that only surfaces the tail of a crash's stderr
 still needs the useful part to survive truncation.
 """
-function install_file(src::AbstractString, dst::AbstractString)
+function install_file(src::AbstractString, dst::AbstractString;
+                      rename = Base.Filesystem.rename)
     tmp = dst * ".tmp"
     try
         cp(src, tmp; force = true)
-        Base.Filesystem.rename(tmp, dst)
+        try
+            rename(tmp, dst)
+        catch first_err
+            # Windows refuses to rename over a file another process holds
+            # open — and the file a live inbox watcher holds open IS
+            # comm-watch.sh, so the install that carries a watcher fix could
+            # never land it (field report 2026-09-11). The old file is moved
+            # ASIDE, never deleted: the running process keeps its inode, the
+            # name is freed, the new file lands, and the aside copy is pruned
+            # by the next install (`_prune_stale`). Only a FILE is moved
+            # aside; anything else at dst (a directory) stays an error, as
+            # before, and if the second rename fails too the old file is put
+            # back so dst is never missing.
+            isfile(dst) || rethrow(first_err)
+            aside = dst * ".stale-" * string(rand(UInt32); base = 16)
+            rename(dst, aside)
+            try
+                rename(tmp, dst)
+            catch second_err
+                try
+                    rename(aside, dst)
+                catch
+                end
+                rethrow(second_err)
+            end
+        end
     catch err
         isfile(tmp) && rm(tmp; force = true)
         error("install_file: $dst: $(sprint(showerror, err))")
+    end
+    return nothing
+end
+
+"""
+    _prune_stale(dstdir)
+
+Remove the `*.stale-*` copies a previous [`install_file`](@ref) moved aside.
+Best effort: a copy a process still holds open cannot be removed on Windows
+and simply waits for a later install.
+"""
+function _prune_stale(dstdir::AbstractString)
+    isdir(dstdir) || return nothing
+    for name in readdir(dstdir)
+        occursin(".stale-", name) || continue
+        try
+            rm(joinpath(dstdir, name); force = true)
+        catch
+        end
     end
     return nothing
 end
@@ -246,6 +291,7 @@ survive.
 """
 function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
                          executable = Returns(false))
+    _prune_stale(dstdir)
     problems = String[]
     for f in files
         dst = joinpath(dstdir, f)
@@ -298,7 +344,15 @@ function install_comm(; clis = [:claude, :codex])
     srcscripts = joinpath(COMM_SRC, "core", "scripts")
     isdir(srcscripts) || error("comm scripts not found at $srcscripts")
     srcfiles = readdir(srcscripts)
-    _install_files(srcscripts, bin, srcfiles; executable = endswith(".sh"))
+    # Every stage runs; failures are collected and raised together at the
+    # end, so one refused file (a running comm-watch.sh on Windows, field
+    # report 2026-09-11) no longer leaves the skills and hooks un-updated.
+    problems = String[]
+    try
+        _install_files(srcscripts, bin, srcfiles; executable = endswith(".sh"))
+    catch err
+        push!(problems, sprint(showerror, err))
+    end
     # Remove orphans left by past renames/deletions (see COMM_DEPRECATED_BIN),
     # so a pull + update_comm doesn't leave a stale binary on the machine.
     for f in COMM_DEPRECATED_BIN
@@ -311,8 +365,13 @@ function install_comm(; clis = [:claude, :codex])
     @info "Installed comm scripts" dir = bin count = length(readdir(bin))
 
     for cli in clis
-        _install_adapter(Symbol(cli))
+        try
+            _install_adapter(Symbol(cli))
+        catch err
+            push!(problems, "adapter $cli: $(sprint(showerror, err))")
+        end
     end
+    isempty(problems) || error("sot-comm install incomplete: $(join(problems, "; "))")
 
     # Published LAST, only once every copy above has actually succeeded —
     # invariant "the scripts on this box came from commit X" (dirty-

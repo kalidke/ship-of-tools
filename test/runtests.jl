@@ -215,6 +215,53 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
         end
     end
 
+    @testset "install_file: a refused FILE destination is moved aside, never deleted" begin
+        # Windows refuses a rename over a file another process holds open
+        # (a live inbox watcher holds comm-watch.sh). Modeled through the
+        # `rename` seam: the first rename onto dst is refused, everything
+        # else behaves. The old file must survive under an aside name (the
+        # holder keeps it), dst must carry the new bytes, and a later
+        # install prunes the aside copy.
+        mktempdir() do dir
+            src = joinpath(dir, "new.sh"); write(src, "NEW")
+            dst = joinpath(dir, "held.sh"); write(dst, "OLD")
+            refused = Ref(true)
+            fake_rename(a, b) = begin
+                if refused[] && b == dst && endswith(a, ".tmp")
+                    refused[] = false
+                    error("rename($a, $b): permission denied (EACCES)")
+                end
+                Base.Filesystem.rename(a, b)
+            end
+            ShipTools.install_file(src, dst; rename = fake_rename)
+            @test read(dst, String) == "NEW"
+            asides = filter(n -> startswith(n, "held.sh.stale-"), readdir(dir))
+            @test length(asides) == 1
+            @test read(joinpath(dir, asides[1]), String) == "OLD"
+            @test !isfile(dst * ".tmp")
+            ShipTools._prune_stale(dir)
+            @test !any(n -> occursin(".stale-", n), readdir(dir))
+
+            # A refusal that persists even after the aside: the old file is
+            # put back and the error names dst.
+            write(dst, "OLD2")
+            # Refuse every PUBLISH onto dst (a .tmp source); the restore of
+            # the aside copy targets a now-free name and goes through, as it
+            # would on Windows.
+            always_refuse(a, b) = (b == dst && endswith(a, ".tmp")) ? error("still refused") : Base.Filesystem.rename(a, b)
+            err = try
+                ShipTools.install_file(src, dst; rename = always_refuse)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin(dst, err.msg)
+            @test read(dst, String) == "OLD2"
+            @test !isfile(dst * ".tmp")
+        end
+    end
+
     @testset "_check_installed" begin
         # Contract: returns a list of problem descriptions, never throws —
         # callers (_install_files) fold it into one combined report.
