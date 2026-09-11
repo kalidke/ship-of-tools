@@ -783,22 +783,20 @@ fn a_second_supervisor_adopts_a_leg_left_behind_by_a_killed_first_one() {
     let _ = wait_for_exit(second, Duration::from_secs(60));
 }
 
-/// ADR 0041 Lifecycle "Build boundary": a mismatched build is answered
-/// `refused {version_skew}` and the connection is closed.
-///
-/// F3 (Codex review round): the wrong-build connection is refused and
-/// closed, but the SUPERVISOR (and the leg it already spawned) are both
-/// still alive afterward -- reproduced as a real harness defect (pre-
-/// existing on Windows too, carried over by the ungating, not new to
-/// Linux): the version-skew probe alone never ends the run, so a
-/// `KillGuard` that only kills the SUPERVISOR at scope exit strands the
-/// leg (a live `SHELL`) for however long it takes the temp state dir to
-/// be reclaimed. Fixed the same way every other test in this file that
-/// starts a real leg does: reconnect with the RIGHT build, wait for
-/// Ready, then end the run and stop the authority before the guard ever
-/// runs.
+/// ADR 0045 decision 7/9 (retiring ADR 0041 Lifecycle "Build boundary",
+/// which used to refuse exactly this as `refused {version_skew}`): the
+/// lane gate is the protocol integer alone -- `build` rides the wire as
+/// information only and is never compared, so
+/// adopting a supervisor (or, as here, being adopted BY one) of another
+/// build is ordinary, not foreign. Renamed from the old (pre-ADR-0045)
+/// `a_mismatched_build_id_is_refused_and_the_connection_closes`, whose
+/// own F3 fixture (Codex review round) this reuses: same rig -- a
+/// connection that echoes a DIFFERENT build id is now `Proven`, not
+/// refused, and stays open -- so this test drives the row straight
+/// through it (wait for Ready, end the run, stop the authority) rather
+/// than needing a second "reconnect with the right build" connection.
 #[test]
-fn a_mismatched_build_id_is_refused_and_the_connection_closes() {
+fn a_different_build_id_with_the_same_proto_is_proven() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -814,13 +812,53 @@ fn a_mismatched_build_id_is_refused_and_the_connection_closes() {
         "the supervisor lane to accept a connection",
     );
     assert!(
+        matches!(outcome, sot_log::challenge::ChallengeOutcome::Proven(_)),
+        "a different build id (same proto) must be Proven -- ADR 0045 decision 7: the gate is proto alone, got {outcome:?}"
+    );
+
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
+    let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
+    assert_eq!(command(&conn, "cleanup-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
+    let child = guard.0.take().unwrap();
+    let _ = wait_for_exit(child, Duration::from_secs(30));
+}
+
+/// ADR 0045 decision 7: the ONE thing a lane peer still refuses is a
+/// mismatched PROTOCOL integer -- `hello_refused{version_skew}`, closing
+/// the connection, exactly the shape [`a_different_build_id_with_the_same_proto_is_proven`]
+/// above proves a mismatched BUILD no longer triggers. Reuses that test's
+/// F3 fixture (Codex review round): the SUPERVISOR (and the leg it
+/// already spawned) must still be alive and serving after the refusal, so
+/// this reconnects with the RIGHT proto (this build's own), waits for
+/// Ready, then ends the run and stops the authority before the
+/// `KillGuard` ever runs -- otherwise a `KillGuard` that only kills the
+/// supervisor at scope exit strands the leg (a live `SHELL`) for however
+/// long it takes the temp state dir to be reclaimed.
+#[test]
+fn a_mismatched_lane_proto_is_refused_and_the_connection_closes() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let child = spawn_supervisor(&state_dir, "--start", SHELL);
+    let mut guard = KillGuard(Some(child));
+    let (conn, outcome) = poll_until(
+        || sot_log::supervisor::connect_and_challenge_with_proto_for_test(&h, 999).ok(),
+        Duration::from_secs(30),
+        "the supervisor lane to accept a connection",
+    );
+    assert!(
         matches!(outcome, sot_log::challenge::ChallengeOutcome::Foreign),
-        "a wrong build must be classified Foreign (refused{{version_skew}}), got {outcome:?}"
+        "a wrong lane proto must be classified Foreign (refused{{version_skew}}), got {outcome:?}"
     );
     expect_connection_closes(conn, Duration::from_secs(5));
 
     // F3: the authority itself must still be alive and serving after the
-    // version-skew refusal -- a FRESH connection with the RIGHT build
+    // version-skew refusal -- a FRESH connection with the RIGHT proto
     // proves it, then ends the run and stops the authority before the
     // guard kills anything, so no leg is stranded.
     let conn2 = wait_for_lane(&h, Duration::from_secs(10));

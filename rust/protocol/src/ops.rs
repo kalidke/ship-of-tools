@@ -1951,15 +1951,21 @@ pub struct ProxyConnectRes {
 pub struct VersionQueryReq {}
 
 /// This daemon's own version triple, as `version.query` reports it.
-/// `lane_build` is `sot_log::exchange::SUPERVISOR_LANE_BUILD_ID` — what this
-/// daemon demands of any supervisor it attaches, adopts, or spawns; distinct
-/// from `app_version`, which is the product version (ADR 0030 §1) and never
-/// gates a capsule attach.
+/// `lane_proto` is the supervisor-lane wire protocol integer this daemon
+/// gates on (ADR 0045 decision 7: `wire::SUPERVISOR_PROTO_V1`, compared
+/// against any supervisor it attaches, adopts, or spawns); `lane_build`
+/// is `sot_log::exchange::SUPERVISOR_LANE_BUILD_ID`, carried alongside
+/// as an informational build stamp only — never compared. Both are
+/// distinct from `app_version`, which is the product version (ADR 0030
+/// §1) and never gates a capsule attach. `#[serde(default)]` on
+/// `lane_proto`: a daemon predating ADR 0045 answers without it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonVersion {
     pub app_version: String,
     pub protocol: u32,
     pub lane_build: String,
+    #[serde(default)]
+    pub lane_proto: u32,
 }
 
 /// One attached frontend, as `version.query` reports it — sourced from the
@@ -2112,6 +2118,7 @@ mod version_query_tests {
                 app_version: "0.6.0-dev+abc1234".into(),
                 protocol: 1,
                 lane_build: "abc1234def".into(),
+                lane_proto: 1,
             },
             clients: vec![ClientVersion {
                 client_id: "fe-1".into(),
@@ -2124,6 +2131,7 @@ mod version_query_tests {
         let json = serde_json::to_string(&res).unwrap();
         let back: VersionQueryRes = serde_json::from_str(&json).unwrap();
         assert_eq!(back.daemon.lane_build, "abc1234def");
+        assert_eq!(back.daemon.lane_proto, 1);
         assert_eq!(back.clients.len(), 1);
         assert_eq!(back.clients[0].client_id, "fe-1");
         assert_eq!(back.clients[0].fe_handle.as_deref(), Some("win-fe-a"));
@@ -2150,13 +2158,16 @@ mod version_query_tests {
     fn version_query_res_missing_clients_deserializes_to_empty() {
         // Mirrors `legacy_hello_res_defaults_to_preversioning`: a peer that
         // answers this op but omits the roster must still deserialize
-        // rather than failing the whole response.
+        // rather than failing the whole response. Also omits `lane_proto`
+        // (a daemon predating ADR 0045) -- `#[serde(default)]` must supply
+        // 0 rather than failing the whole payload.
         let json = serde_json::json!({
             "daemon": { "app_version": "0.6.0", "protocol": 1, "lane_build": "abc" },
         });
         let res: VersionQueryRes = serde_json::from_value(json).expect("legacy payload deserializes");
         assert!(res.clients.is_empty());
         assert_eq!(res.daemon.app_version, "0.6.0");
+        assert_eq!(res.daemon.lane_proto, 0);
     }
 }
 

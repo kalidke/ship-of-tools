@@ -120,14 +120,14 @@ impl IdentityExchange for VoyageMgmtExchange {
     }
 }
 
-/// This build's own identity, carried in the supervisor lane's `hello`
-/// (ADR 0041 Lifecycle "Build boundary"): "a build identity is
-/// compatibility data, not a credential." A bare crate version is NOT
-/// enough — two different commits can share one `Cargo.toml` version
-/// between releases, and "file replacement is not process replacement"
-/// (an old, still-live supervisor answering under a newly-replaced
-/// binary must not be treated as compatible with a client built against
-/// the new one) needs a value that actually changes commit-to-commit.
+/// This build's own identity: an informational build stamp carried in
+/// the supervisor lane's `hello`/`hello_ok` — never compared (ADR 0045
+/// decision 7 retires the "Build boundary" gate this constant used to
+/// enforce; the lane gate is the `proto` integer alone, see
+/// [`SupervisorLaneExchange::feed`]). Kept as a diagnostic: `build-id`
+/// and the log/pane lines that name a peer's build still read this. A
+/// bare crate version would not serve even that purpose — two different
+/// commits can share one `Cargo.toml` version between releases — so
 /// `build.rs` stamps `SOT_LOG_BUILD_SHA` from the FULL `git rev-parse
 /// HEAD`, `-dirty`-suffixed over an uncommitted tree — the same
 /// git-sha-capture pattern `rust/protocol/build.rs` uses for
@@ -136,19 +136,21 @@ impl IdentityExchange for VoyageMgmtExchange {
 /// FAILS the build rather than emitting an empty/ambiguous value when no
 /// git repository is found (Codex review round 2, finding M9: silently
 /// falling back to the bare package version here made two different
-/// commits sharing one pre-release version indistinguishable — exactly
-/// what this identity exists to prevent) — this constant can therefore
-/// simply trust the env var is always a real, nonempty identity, with no
-/// runtime fallback branch of its own. A stronger, executable-hash-based
-/// identity is explicitly out of scope ("Executable attestation —
-/// excluded by the threat model, not deferred").
+/// commits sharing one pre-release version indistinguishable) — this
+/// constant can therefore simply trust the env var is always a real,
+/// nonempty identity, with no runtime fallback branch of its own. A
+/// stronger, executable-hash-based identity is explicitly out of scope
+/// ("Executable attestation — excluded by the threat model, not
+/// deferred").
 pub const SUPERVISOR_LANE_BUILD_ID: &str = env!("SOT_LOG_BUILD_SHA");
 
 /// The supervisor lane's own `IdentityExchange` (ADR 0041 Lifecycle "The
 /// challenge", steps 4-5): `hello {proto, build}` request, `hello_ok`
-/// reply — this lane's identity-yielding exchange AND its build-boundary
-/// check in one round trip, per [`wire::SupervisorRequest::Hello`]'s own
-/// doc ("doubles as the same-connection challenge's own steps 4-5").
+/// reply — this lane's identity-yielding exchange AND its protocol gate
+/// (ADR 0045 decision 7: the gate is `proto` alone, `build` is
+/// informational) in one round trip, per
+/// [`wire::SupervisorRequest::Hello`]'s own doc ("doubles as the
+/// same-connection challenge's own steps 4-5").
 /// `hello_refused {version_skew}`, or anything else that is not a clean,
 /// solitary `hello_ok`, is `Foreign` — an unproven server, exactly like
 /// [`VoyageMgmtExchange`]'s own handling of a wrong reply. Structurally
@@ -159,17 +161,24 @@ pub const SUPERVISOR_LANE_BUILD_ID: &str = env!("SOT_LOG_BUILD_SHA");
 pub struct SupervisorLaneExchange {
     /// Bounded at construction (see [`Self::new`]) so [`Self::encode_request`]'s
     /// `expect` — this trait has no `Result` to return one through — can
-    /// never actually fail.
+    /// never actually fail. Carried on the wire as information only
+    /// (ADR 0045 decision 7) — never compared.
     build: String,
+    /// The wire protocol integer this exchange gates on (ADR 0045
+    /// decision 7: "the gate is the protocol integer"). Normally
+    /// [`wire::SUPERVISOR_PROTO_V1`]; only [`Self::with_proto_for_test`]
+    /// ever sets it to anything else.
+    proto: u32,
     splitter: wire::FrameSplitter,
     done: bool,
     /// `true` iff the terminal `Foreign` this exchange reached was
     /// SPECIFICALLY a `Refused { reason: VersionSkew }` reply (ADR 0030
     /// §8 decision 31c) — the one `Foreign` cause that means "another
-    /// build", as opposed to a malformed reply, trailing bytes, a wrong
-    /// pid/creation, or any other corruption `feed` also classifies
-    /// `Foreign`. `connect_and_challenge` (`supervisor_client.rs`) reads
-    /// this via [`Self::is_version_skew`] after the challenge concludes.
+    /// lane protocol", as opposed to a malformed reply, trailing bytes, a
+    /// wrong pid/creation, or any other corruption `feed` also
+    /// classifies `Foreign`. `connect_and_challenge` (`supervisor_client.rs`)
+    /// reads this via [`Self::is_version_skew`] after the challenge
+    /// concludes.
     version_skew: bool,
 }
 
@@ -195,7 +204,17 @@ impl SupervisorLaneExchange {
             }
             build.truncate(cut);
         }
-        Self { build, splitter: wire::FrameSplitter::new(), done: false, version_skew: false }
+        Self { build, proto: wire::SUPERVISOR_PROTO_V1, splitter: wire::FrameSplitter::new(), done: false, version_skew: false }
+    }
+
+    /// Test-only: an exchange that requests (and only accepts) a
+    /// SPECIFIC `proto` instead of this build's own
+    /// [`wire::SUPERVISOR_PROTO_V1`] — the one way to exercise a proto
+    /// mismatch without a second real wire value. `build` still goes
+    /// through [`Self::new`]'s own truncation.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_proto_for_test(build: impl Into<String>, proto: u32) -> Self {
+        Self { proto, ..Self::new(build) }
     }
 
     /// See [`Self::version_skew`]'s own doc. Only meaningful once `feed`
@@ -208,7 +227,7 @@ impl SupervisorLaneExchange {
 impl IdentityExchange for SupervisorLaneExchange {
     fn encode_request(&self) -> Vec<u8> {
         wire::encode_supervisor_request(&SupervisorRequest::Hello {
-            proto: wire::SUPERVISOR_PROTO_V1,
+            proto: self.proto,
             build: self.build.clone(),
         })
         .expect("build is bounded at construction; encoding cannot fail")
@@ -233,28 +252,29 @@ impl IdentityExchange for SupervisorLaneExchange {
                 match &frames[0] {
                     DecodedFrame::SupervisorReply(SupervisorReply::HelloOk {
                         proto,
-                        build,
+                        build: _,
                         pid,
                         created,
                     }) => {
-                        // The boundary is mutual (ADR 0041 Lifecycle "Build
-                        // boundary"): this lane's request already carries
-                        // OUR proto/build for the server to check; a
-                        // `hello_ok` that doesn't echo them back is not
+                        // The gate is the protocol integer alone (ADR
+                        // 0045 decision 7): this lane's request already
+                        // carries OUR proto for the server to check; a
+                        // `hello_ok` that doesn't echo it back is not
                         // proof of anything either — it could be a stale
                         // peer's reply to a DIFFERENT client's `hello`
                         // (or corruption) surviving just long enough to
-                        // parse. Treat a mismatch exactly like any other
-                        // wrong reply: `Foreign`, not `Identity`.
-                        if *proto == wire::SUPERVISOR_PROTO_V1 && *build == self.build {
+                        // parse. `build` rides along as information only
+                        // and is never compared — a different echoed
+                        // build is fine.
+                        if *proto == self.proto {
                             ExchangeDecode::Identity { pid: *pid, created: *created }
                         } else {
                             ExchangeDecode::Foreign
                         }
                     }
                     // The ONE `Foreign` cause that specifically means
-                    // "another build" — see `version_skew`'s own doc.
-                    // Every other well-formed-but-wrong reply below
+                    // "another lane protocol" — see `version_skew`'s own
+                    // doc. Every other well-formed-but-wrong reply below
                     // (a premature `StatusOk`, `Operation`, or a second
                     // `HelloOk`/`Refused`) stays plain `Foreign`.
                     DecodedFrame::SupervisorReply(SupervisorReply::Refused {
@@ -528,14 +548,13 @@ mod tests {
     // build replying without ever checking what it received.
 
     #[test]
-    fn supervisor_hello_ok_with_wrong_build_is_foreign_not_identity() {
+    fn supervisor_hello_ok_with_a_different_build_id_is_identity_not_foreign() {
+        // ADR 0045 decision 7: the gate is the proto integer alone; a
+        // different echoed build is fine -- build rides the wire as
+        // information only and is never compared.
         let mut ex = SupervisorLaneExchange::new("b");
         let bytes = hello_ok_bytes_with(wire::SUPERVISOR_PROTO_V1, "different-build", 1, 2);
-        assert!(matches!(ex.feed(&bytes), ExchangeDecode::Foreign));
-        // ADR 0030 §8 decision 31c: a mismatched `HelloOk` echo is
-        // corruption/a stale reply, never version skew -- only an actual
-        // `Refused { VersionSkew }` sets this.
-        assert!(!ex.is_version_skew());
+        assert!(matches!(ex.feed(&bytes), ExchangeDecode::Identity { pid: 1, created: 2 }));
     }
 
     #[test]

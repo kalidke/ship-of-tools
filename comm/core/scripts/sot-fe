@@ -841,7 +841,7 @@ send_version() {
         exit 2
     fi
     verr="$(printf '%s' "$vresp" | jq -r '.payload.error // empty')"
-    local daemon_version daemon_build
+    local daemon_version daemon_build daemon_lane_proto
     if [ -n "$verr" ]; then
         # The ONE shape every daemon this verb must never fail against:
         # the generic unknown-op reply (server.rs's `other =>` catch-all,
@@ -858,6 +858,8 @@ send_version() {
     else
         daemon_version="$(printf '%s' "$vresp" | jq -r '.payload.daemon.app_version')"
         daemon_build="$(printf '%s' "$vresp" | jq -r '.payload.daemon.lane_build')"
+        daemon_lane_proto="$(printf '%s' "$vresp" | jq -r '.payload.daemon.lane_proto // "?"')"
+        daemon_build="${daemon_build} (lane proto ${daemon_lane_proto})"
     fi
 
     printf '%-20s %-28s %s\n' "component" "version" "build"
