@@ -7,8 +7,10 @@
 //! `pipe_win::PipeClient`): every type in this module that used to name
 //! `PipeClient`/`ChallengedProcess` directly now names `E::Client`/
 //! `E::Process`, and every call that used to go straight to
-//! `pipe_win`/`challenge_win` now goes through `E`'s own associated
-//! functions — the concrete platform is chosen exactly once, by
+//! `pipe_win`/`challenge_win` now goes through an `endpoint: &E` value's
+//! own methods (ADR 0045 decision 5: an `Endpoint` is a value, so a
+//! caller can eventually hold a bridged one alongside a platform one) —
+//! the concrete platform is chosen exactly once, by
 //! [`crate::client::PlatformEndpoint`], which is what the frontend
 //! instantiates this module's public type with (see [`FeAttachClient`]'s
 //! own doc for its default type parameter). The client code itself is
@@ -94,14 +96,12 @@
 //!   silent "attached".
 
 use crate::challenge::{ChallengeOutcome, PeerAuthOutcome};
-use crate::client::{transport_error_to_io, Client, Endpoint, PeerProcess, PlatformEndpoint};
+use crate::client::{transport_error_to_io, Client, Endpoint, PeerIdentity, PlatformEndpoint};
 use crate::exchange::{SupervisorLaneExchange, VoyageMgmtExchange, SUPERVISOR_LANE_BUILD_ID};
 use crate::fe_client::{
     self, FeDownBaseline, InputWireOutcome, OutstandingSlot, QuitDispatcher, QuitState,
     ReconnectDecision, ReconnectState, Role, TakeAction, TakeTransaction,
 };
-use crate::pointer::{self, PointerState};
-use crate::state_dir::state_dir_hash;
 use crate::wire::{
     self, AttachClient, AttachServer, DecodedFrame, ResizeRefusedReason, SupervisorOp,
     SupervisorPhase, SupervisorReply, SupervisorRequest, TakeRefusedReason,
@@ -109,7 +109,6 @@ use crate::wire::{
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex};
@@ -286,14 +285,14 @@ impl FrameReader {
 /// Connect the supervisor lane and run the full same-connection
 /// challenge with this crate's own build identity — the production
 /// analog of `supervisor::connect_and_challenge_for_test` (test-support
-/// only), reusing the SAME primitives (`E::connect_supervisor_unchallenged`,
-/// `E::challenge`, `SupervisorLaneExchange`) rather than depending on
-/// that test-gated helper.
-fn connect_supervisor_lane<E: Endpoint>(h: &str) -> Result<(E::Client, E::Process), LaneError> {
-    let conn = E::connect_supervisor_unchallenged(h).map_err(|e| LaneError::Io(transport_error_to_io(e)))?;
+/// only), reusing the SAME primitives (`Endpoint::connect_supervisor_
+/// unchallenged`, `Endpoint::challenge`, `SupervisorLaneExchange`) rather
+/// than depending on that test-gated helper.
+fn connect_supervisor_lane<E: Endpoint>(endpoint: &E, h: &str) -> Result<(E::Client, E::Process), LaneError> {
+    let conn = endpoint.connect_supervisor_unchallenged(h).map_err(|e| LaneError::Io(transport_error_to_io(e)))?;
     let mut exchange = SupervisorLaneExchange::new(SUPERVISOR_LANE_BUILD_ID);
     let deadline = Instant::now() + HELLO_BUDGET;
-    match E::challenge(&conn, &mut exchange, deadline) {
+    match endpoint.challenge(&conn, &mut exchange, deadline) {
         ChallengeOutcome::Proven(process) => Ok((conn, process)),
         // The shared challenge machinery folds "SID mismatch" (Windows) /
         // "not same-uid" (Linux) and "a well-formed WRONG reply" into the
@@ -346,17 +345,20 @@ fn supervisor_status<E: Endpoint>(
 /// attach interval, doubling only after a first attach) makes that a
 /// brief, bounded gap, not a stall.
 ///
-/// ADR 0043 decision 28: `voyage` is now OPTIONAL — the pointer is no
-/// longer read as authoritative before the supervisor's own word (see
-/// `converge_on_ready`'s pointer check, which runs AFTER `Ready`), so an
-/// episode reaching this path may not have one yet. A missing pointer
-/// starts the health accounting exactly as an absent supervisor does
-/// (there is nothing to probe with, so this cannot distinguish "the
-/// capsule survives headless" from "nothing exists yet" — both retry
-/// under the same clock); an answered `Status` on a later round still
-/// clears the unresponsive count via `ReconnectState::attached` or
+/// ADR 0043 decision 28, ADR 0045 decision 6: `voyage` is now OPTIONAL —
+/// the attach client converges on the supervisor's own word only, never a
+/// pointer file, so this probes the voyage id the supervisor LAST
+/// REPORTED to this client (`run_worker`'s own `voyage_uuid`, carried
+/// across episodes) rather than reading anything off disk; an episode
+/// reaching this path may not have one yet. A missing id starts the
+/// health accounting exactly as an absent supervisor does (there is
+/// nothing to probe with, so this cannot distinguish "the capsule
+/// survives headless" from "nothing exists yet" — both retry under the
+/// same clock); an answered `Status` on a later round still clears the
+/// unresponsive count via `ReconnectState::attached` or
 /// `clear_unresponsive`, whichever path reaches it.
 fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
+    endpoint: &E,
     reconnect: &mut ReconnectState,
     voyage: Option<&str>,
     now: Instant,
@@ -364,7 +366,12 @@ fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
     let Some(voyage) = voyage else {
         return reconnect.classify_unresponsive(now);
     };
-    match E::connect_voyage_unchallenged(voyage) {
+    // No supervisor lane is live at this probe (that is exactly why it is
+    // being called), so there is no `h`/lane name in scope to pass —
+    // `voyage` doubles as the trait's `lane` argument, which today's
+    // platform endpoints ignore regardless (only the daemon-lane endpoint,
+    // B4a, will ever read it).
+    match endpoint.connect_voyage_unchallenged(voyage, voyage) {
         Ok(_probe) => {
             reconnect.clear_unresponsive();
             ReconnectDecision::Retry
@@ -383,8 +390,8 @@ fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
 /// supervisor-lane connection it was given back (the caller keeps using
 /// it, first for the "voyage changed" reconciliation, then for a latched
 /// `Quit` in the steady-state loop — no second connect+hello) plus the
-/// voyage id [`pointer::validate`] confirmed against the supervisor's own
-/// report AND the already-connected voyage lane itself — Codex review
+/// voyage id the supervisor's own `Ready` report named AND the
+/// already-connected voyage lane itself — Codex review
 /// round finding 1: the voyage-lane connect is now made INSIDE this
 /// loop, one attempt per `Ready` round, so its own absence returns to
 /// `Status` polling on the SAME connection instead of an independent
@@ -428,21 +435,20 @@ fn drain_pending_control(cmd_rx: &Receiver<WorkerMsg>, latched_quit_reason: &mut
     }
 }
 
-/// ADR 0043 decision 28: the attach client converges on the supervisor's
-/// OWN word, never on the voyage pipe. Given an already-connected,
-/// already-`hello`'d supervisor lane, polls `Status` on that SAME
-/// connection every [`fe_client::RECONNECT_BACKOFF_INITIAL`] (a FIXED
-/// interval — Codex review round finding 6: this loop is steady-state
-/// polling of a lane that is actively ANSWERING, never a reconnect
-/// attempt, so [`ReconnectState::retry_with_backoff`]'s doubling — which
-/// stays reserved for genuine reconnect waits in [`run_worker`]'s own
-/// outer episode loop — never applies here) until the report says
-/// `Ready` with a voyage id AND `drawer.voyage` on disk validates
-/// against it AND the voyage lane itself accepts a connection. Every
-/// answered `Status`, whatever its phase, clears
-/// [`ReconnectState::clear_unresponsive`] (finding 2) — an outage that
-/// already resolved must not keep aging through however many "still
-/// starting" rounds follow. Three things happen INSIDE this loop, all
+/// ADR 0043 decision 28, ADR 0045 decision 6: the attach client converges
+/// on the supervisor's OWN word ONLY, never on a pointer file. Given an
+/// already-connected, already-`hello`'d supervisor lane, polls `Status`
+/// on that SAME connection every [`fe_client::RECONNECT_BACKOFF_INITIAL`]
+/// (a FIXED interval — Codex review round finding 6: this loop is
+/// steady-state polling of a lane that is actively ANSWERING, never a
+/// reconnect attempt, so [`ReconnectState::retry_with_backoff`]'s
+/// doubling — which stays reserved for genuine reconnect waits in
+/// [`run_worker`]'s own outer episode loop — never applies here) until
+/// the report says `Ready` with a voyage id AND the voyage lane itself
+/// accepts a connection. Every answered `Status`, whatever its phase,
+/// clears [`ReconnectState::clear_unresponsive`] (finding 2) — an outage
+/// that already resolved must not keep aging through however many "still
+/// starting" rounds follow. Two things happen INSIDE this loop, both
 /// because they need only the supervisor lane and (once known) the
 /// voyage id — never a second connect+hello of the supervisor lane
 /// itself:
@@ -453,20 +459,7 @@ fn drain_pending_control(cmd_rx: &Receiver<WorkerMsg>, latched_quit_reason: &mut
 ///   blocks for as long as the ending transaction takes, so the `Status`
 ///   this round already read is stale by the time it returns — the loop
 ///   re-polls fresh rather than act on it.
-/// - The pointer check (decision 28's own text): absent or naming
-///   another voyage while this is the FIRST round reporting `Ready` (the
-///   pointer may not have propagated yet, even though
-///   `discover_or_mint_voyage` publishes it before `Ready` — a benign
-///   observation race, not a fault) is "not yet", one more poll;
-///   unchanged across TWO consecutive `Ready` rounds (both read through
-///   this SAME top-of-loop `supervisor_status` call and its own Terminal
-///   classification — Codex review round finding 9: no separate,
-///   unclassified "recheck" round) is INCONSISTENT — a typed status,
-///   reported once per spell and re-polled forever, never `Terminal` for
-///   this case alone. `Corrupt`/`OtherIo` are unrelated malformed-content
-///   or real I/O failures and stay loud, immediate stops, exactly as
-///   before this lane.
-/// - Once the pointer validates, ONE voyage-lane connect attempt
+/// - Once `Ready` names a voyage id, ONE voyage-lane connect attempt
 ///   (finding 1): success finalizes `Ready`; an absent/refused pipe is
 ///   "not yet" and returns to polling `Status` on the SAME connection
 ///   (so a supervisor loss or terminal phase between rounds is caught by
@@ -479,9 +472,9 @@ fn drain_pending_control(cmd_rx: &Receiver<WorkerMsg>, latched_quit_reason: &mut
 /// respawned leg the next `Status` reports); this function invents none
 /// of its own.
 fn converge_on_ready<E: Endpoint>(
+    endpoint: &E,
     mut conn: E::Client,
     mut sup_reader: FrameReader,
-    state_dir: &Path,
     h: &str,
     cmd_rx: &Receiver<WorkerMsg>,
     reconnect: &mut ReconnectState,
@@ -491,16 +484,9 @@ fn converge_on_ready<E: Endpoint>(
     emit: &dyn Fn(ClientEvent),
 ) -> ReadyOutcome<E> {
     // Emitted at most once per "still starting" spell — re-armed every
-    // time a latched Quit or a resolved pointer makes the NEXT status
+    // time a latched Quit or a fresh Ready round makes the NEXT status
     // worth announcing again as a fresh wait.
     let mut emitted_starting = false;
-    // Emitted at most once per "inconsistent" spell, same idea.
-    let mut emitted_inconsistent = false;
-    // How many CONSECUTIVE `Ready` rounds (this connection, no reconnect
-    // in between) have read a pointer that does not yet name this id --
-    // two in a row is what decision 28 calls "an unchanged Ready", the
-    // inconsistent case.
-    let mut ready_pointer_mismatches: u32 = 0;
 
     loop {
         let (sv, _leg, phase) = match supervisor_status::<E>(&conn, &mut sup_reader) {
@@ -522,13 +508,11 @@ fn converge_on_ready<E: Endpoint>(
         // starting.
         if let Some(id) = sv.clone() {
             if let Some(reason) = latched_quit_reason.take() {
-                run_quit::<E>(&mut conn, &mut sup_reader, h, &id, reason, quit, outstanding, emit);
+                run_quit::<E>(endpoint, &mut conn, &mut sup_reader, h, &id, reason, quit, outstanding, emit);
                 if quit.should_exit() {
                     return ReadyOutcome::ShouldExit;
                 }
                 emitted_starting = false;
-                emitted_inconsistent = false;
-                ready_pointer_mismatches = 0;
                 continue;
             }
         }
@@ -538,8 +522,6 @@ fn converge_on_ready<E: Endpoint>(
             // normally happen -- `discover_or_mint_voyage` publishes
             // before `Ready` -- handled the same as "starting" rather
             // than assumed).
-            ready_pointer_mismatches = 0;
-            emitted_inconsistent = false;
             if !emitted_starting {
                 emit(ClientEvent::Status("supervisor starting \u{2014} waiting\u{2026}".to_string()));
                 emitted_starting = true;
@@ -550,64 +532,38 @@ fn converge_on_ready<E: Endpoint>(
             }
         };
 
-        match pointer::validate(state_dir) {
-            PointerState::Valid(pid) if pid == id => {
-                ready_pointer_mismatches = 0;
-                emitted_inconsistent = false;
-                // Finding 7: drain and latch any control command already
-                // queued before committing to the attach transition below
-                // — a Quit that arrived while this round's Status/pointer
-                // checks ran must never be allowed to sail through
-                // unread.
-                if let Some(WaitOutcome::Shutdown) = drain_pending_control(cmd_rx, latched_quit_reason) {
-                    return ReadyOutcome::Shutdown;
-                }
-                if let Some(reason) = latched_quit_reason.take() {
-                    run_quit::<E>(&mut conn, &mut sup_reader, h, &id, reason, quit, outstanding, emit);
-                    if quit.should_exit() {
-                        return ReadyOutcome::ShouldExit;
-                    }
-                    emitted_starting = false;
-                    continue;
-                }
-                // Finding 1: the voyage-lane connect is ONE attempt per
-                // round, folded into this SAME loop -- "not yet" returns
-                // to Status polling above rather than an independent,
-                // unbounded retry loop that never sees a supervisor
-                // Terminal phase or health accounting again.
-                match E::connect_voyage_unchallenged(&id) {
-                    Ok(voyage_conn) => {
-                        return ReadyOutcome::Ready { conn, sup_reader, voyage_id: id, voyage_conn };
-                    }
-                    Err(e) => {
-                        let io = transport_error_to_io(e);
-                        if is_access_denied(&io) {
-                            return ReadyOutcome::Terminal("voyage pipe: access denied".to_string());
-                        }
-                        emit(ClientEvent::Status(format!("voyage pipe not yet available: {io}")));
-                        match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, latched_quit_reason) {
-                            WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
-                            WaitOutcome::Continue => continue,
-                        }
-                    }
-                }
+        // Decision 6: the supervisor's own `Ready{voyage}` is authoritative
+        // by itself now -- no pointer-file read gates it. Finding 7: drain
+        // and latch any control command already queued before committing
+        // to the attach transition below — a Quit that arrived while this
+        // round's Status check ran must never be allowed to sail through
+        // unread.
+        if let Some(WaitOutcome::Shutdown) = drain_pending_control(cmd_rx, latched_quit_reason) {
+            return ReadyOutcome::Shutdown;
+        }
+        if let Some(reason) = latched_quit_reason.take() {
+            run_quit::<E>(endpoint, &mut conn, &mut sup_reader, h, &id, reason, quit, outstanding, emit);
+            if quit.should_exit() {
+                return ReadyOutcome::ShouldExit;
             }
-            PointerState::Corrupt | PointerState::OtherIo(_) => {
-                return ReadyOutcome::Terminal("drawer.voyage is corrupt \u{2014} retry or reset".to_string());
+            emitted_starting = false;
+            continue;
+        }
+        // Finding 1: the voyage-lane connect is ONE attempt per round,
+        // folded into this SAME loop -- "not yet" returns to Status
+        // polling above rather than an independent, unbounded retry loop
+        // that never sees a supervisor Terminal phase or health
+        // accounting again.
+        match endpoint.connect_voyage_unchallenged(h, &id) {
+            Ok(voyage_conn) => {
+                return ReadyOutcome::Ready { conn, sup_reader, voyage_id: id, voyage_conn };
             }
-            absent_or_mismatched => {
-                ready_pointer_mismatches += 1;
-                if ready_pointer_mismatches >= 2 && !emitted_inconsistent {
-                    let detail = match absent_or_mismatched {
-                        PointerState::NotFound => "absent".to_string(),
-                        PointerState::Valid(other) => format!("names another voyage ({other})"),
-                        PointerState::Corrupt | PointerState::OtherIo(_) => unreachable!("handled above"),
-                    };
-                    emit(ClientEvent::Status(format!(
-                        "supervisor reports Ready but drawer.voyage is {detail}"
-                    )));
-                    emitted_inconsistent = true;
+            Err(e) => {
+                let io = transport_error_to_io(e);
+                if is_access_denied(&io) {
+                    return ReadyOutcome::Terminal("voyage pipe: access denied".to_string());
                 }
+                emit(ClientEvent::Status(format!("voyage pipe not yet available: {io}")));
                 match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, latched_quit_reason) {
                     WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                     WaitOutcome::Continue => continue,
@@ -626,11 +582,11 @@ fn converge_on_ready<E: Endpoint>(
 /// own `status_ok.pid`/`.created` report the SUPERVISOR process itself
 /// (`supervisor.rs`'s own doc: "`pid`/`created` are this process's own
 /// identity"), never the leg, so that reply can never stand in for this.
-fn capsule_identity_via_mgmt<E: Endpoint>(voyage: &str) -> Result<E::Process, LaneError> {
-    let conn = E::connect_voyage_unchallenged(voyage).map_err(|e| LaneError::Io(transport_error_to_io(e)))?;
+fn capsule_identity_via_mgmt<E: Endpoint>(endpoint: &E, h: &str, voyage: &str) -> Result<E::Process, LaneError> {
+    let conn = endpoint.connect_voyage_unchallenged(h, voyage).map_err(|e| LaneError::Io(transport_error_to_io(e)))?;
     let mut exchange = VoyageMgmtExchange::default();
     let deadline = Instant::now() + STATUS_BUDGET;
-    match E::challenge(&conn, &mut exchange, deadline) {
+    match endpoint.challenge(&conn, &mut exchange, deadline) {
         ChallengeOutcome::Proven(process) => Ok(process),
         ChallengeOutcome::Foreign => Err(LaneError::Protocol("voyage mgmt: foreign")),
         ChallengeOutcome::Undetermined => Err(LaneError::Protocol("voyage mgmt: undetermined")),
@@ -934,25 +890,28 @@ pub enum InputOutcome {
 }
 
 impl<E: Endpoint> FeAttachClient<E> {
-    /// Reads `drawer.voyage` under `state_dir` and starts the background
-    /// worker; the worker itself performs the connect/hello/status/
-    /// attach/checkpoint sequence and every reconnect thereafter — this
-    /// constructor never blocks on the network, matching
-    /// `LocalTerminal::spawn`'s own "returns once the reader thread is
-    /// running" contract. `state_dir` is the CALLER's resolved value
-    /// (`state_dir::sot_state_dir()` for the real frontend; an isolated
-    /// tempdir for `tests/fe_client.rs`) — this constructor takes it
-    /// rather than resolving it itself, the same way `sot-capsule
-    /// supervise <state_dir>` takes it as an explicit argument rather
-    /// than an internal env-var lookup, so a real client and a test can
-    /// point at different trees in the same process without racing a
-    /// shared env var. `fe_down_last_evidence` is likewise the CALLER's
-    /// own read of `fe-inbox.jsonl`, taken at FE PROCESS START (Codex
-    /// review round, finding 10) — this constructor never reads that
-    /// file itself, so a drawer opened long after startup still reports
-    /// the SAME baseline the process began with.
+    /// Connects through `endpoint` and starts the background worker; the
+    /// worker itself performs the connect/hello/status/attach/checkpoint
+    /// sequence and every reconnect thereafter — this constructor never
+    /// blocks on the network, matching `LocalTerminal::spawn`'s own
+    /// "returns once the reader thread is running" contract. `lane` is
+    /// the supervisor lane's name in `endpoint`'s own namespace (ADR 0045
+    /// decision 5 — the state-dir hash for the platform endpoints) and is
+    /// the CALLER's resolved value (`state_dir::state_dir_hash` of
+    /// `state_dir::sot_state_dir()` for the real frontend; an isolated
+    /// tempdir's hash for `tests/fe_client.rs`) — this constructor takes
+    /// it rather than resolving it itself, the same way `sot-capsule
+    /// supervise <state_dir>` takes its state dir as an explicit argument
+    /// rather than an internal env-var lookup, so a real client and a
+    /// test can point at different trees in the same process without
+    /// racing a shared env var. `fe_down_last_evidence` is likewise the
+    /// CALLER's own read of `fe-inbox.jsonl`, taken at FE PROCESS START
+    /// (Codex review round, finding 10) — this constructor never reads
+    /// that file itself, so a drawer opened long after startup still
+    /// reports the SAME baseline the process began with.
     pub fn attach(
-        state_dir: PathBuf,
+        endpoint: E,
+        lane: String,
         cols: u16,
         rows: u16,
         controller_id: String,
@@ -961,10 +920,12 @@ impl<E: Endpoint> FeAttachClient<E> {
         wake: Box<dyn Fn() + Send + 'static>,
     ) -> Result<Self, FeAttachError>
     where
+        E: Send + 'static,
         E::Client: 'static,
     {
         Self::attach_inner(
-            state_dir,
+            endpoint,
+            lane,
             cols,
             rows,
             controller_id,
@@ -988,10 +949,12 @@ impl<E: Endpoint> FeAttachClient<E> {
     /// [`fe_client::TakeTransaction::new_headless`] — it sends no `Resize`,
     /// ever.
     pub fn attach_headless(
-        state_dir: PathBuf,
+        endpoint: E,
+        lane: String,
         controller_id: String,
     ) -> Result<Self, FeAttachError>
     where
+        E: Send + 'static,
         E::Client: 'static,
     {
         // Placeholder viewport: wholesale-replaced by the first checkpoint
@@ -1001,7 +964,8 @@ impl<E: Endpoint> FeAttachClient<E> {
         // number here is never rendered or reported.
         const PLACEHOLDER_SIZE: u16 = 24;
         Self::attach_inner(
-            state_dir,
+            endpoint,
+            lane,
             PLACEHOLDER_SIZE,
             PLACEHOLDER_SIZE,
             controller_id.clone(),
@@ -1013,7 +977,8 @@ impl<E: Endpoint> FeAttachClient<E> {
     }
 
     fn attach_inner(
-        state_dir: PathBuf,
+        endpoint: E,
+        lane: String,
         cols: u16,
         rows: u16,
         controller_id: String,
@@ -1023,6 +988,7 @@ impl<E: Endpoint> FeAttachClient<E> {
         headless: bool,
     ) -> Result<Self, FeAttachError>
     where
+        E: Send + 'static,
         E::Client: 'static,
     {
         let rows = rows.max(2);
@@ -1044,7 +1010,8 @@ impl<E: Endpoint> FeAttachClient<E> {
             .name("sot-fe-attach-worker".to_string())
             .spawn(move || {
                 run_worker::<E>(
-                    state_dir,
+                    endpoint,
+                    lane,
                     controller_id,
                     fe_down_to_handle,
                     fe_down,
@@ -1418,7 +1385,8 @@ enum TakeIntent {
 
 #[allow(clippy::too_many_arguments)]
 fn run_worker<E: Endpoint>(
-    state_dir: PathBuf,
+    endpoint: E,
+    lane: String,
     controller_id: String,
     fe_down_to_handle: String,
     mut fe_down: FeDownBaseline,
@@ -1433,9 +1401,9 @@ fn run_worker<E: Endpoint>(
     headless: bool,
     wake: Box<dyn Fn() + Send + 'static>,
 ) where
+    E: Send + 'static,
     E::Client: 'static,
 {
-    let h = state_dir_hash(&state_dir);
     let mut reconnect = ReconnectState::new();
     let mut take = if headless { TakeTransaction::new_headless() } else { TakeTransaction::new() };
     let mut outstanding = OutstandingSlot::new();
@@ -1477,13 +1445,13 @@ fn run_worker<E: Endpoint>(
 
         // --- supervisor lane: hello (build identity) once, then converge
         // on Ready (ADR 0043 decision 28) -------------------------------
-        let supervisor_ready = match connect_supervisor_lane::<E>(&h) {
+        let supervisor_ready = match connect_supervisor_lane::<E>(&endpoint, &lane) {
             Ok((conn, _proven)) => {
                 match converge_on_ready::<E>(
+                    &endpoint,
                     conn,
                     FrameReader::new(),
-                    &state_dir,
-                    &h,
+                    &lane,
                     &cmd_rx,
                     &mut reconnect,
                     &mut latched_quit_reason,
@@ -1543,24 +1511,10 @@ fn run_worker<E: Endpoint>(
                 // Finding 2: resolved FRESH here, not cached from the top
                 // of the episode -- `converge_on_ready` may have polled
                 // for a long while before reporting `LaneDown`/failing to
-                // connect at all, during which `discover_or_mint_voyage`
-                // could have published the pointer this health check
-                // needs. `Corrupt`/`OtherIo` remain loud, immediate
-                // stops -- malformed content or a real I/O failure, never
-                // "not yet" -- exactly as before this lane; only
-                // `NotFound` degrades to the missing-pointer case the
-                // health check already treats like an absent supervisor.
-                let health_pointer = match pointer::validate(&state_dir) {
-                    PointerState::Valid(id) => Some(id),
-                    PointerState::NotFound => None,
-                    PointerState::Corrupt | PointerState::OtherIo(_) => {
-                        emit(ClientEvent::Terminal(
-                            "drawer.voyage is absent or corrupt \u{2014} retry or reset".to_string(),
-                        ));
-                        return;
-                    }
-                };
-                match on_supervisor_absent_or_unresponsive::<E>(&mut reconnect, health_pointer.as_deref(), Instant::now()) {
+                // connect at all. Decision 6: the probe uses `voyage_uuid`
+                // -- the voyage id the supervisor last reported to THIS
+                // client, carried across episodes -- never a pointer file.
+                match on_supervisor_absent_or_unresponsive::<E>(&endpoint, &mut reconnect, voyage_uuid.as_deref(), Instant::now()) {
                     ReconnectDecision::Terminal(reason) => {
                         emit(ClientEvent::Terminal(format!("supervisor lane unreachable: {reason:?}")));
                         return;
@@ -1601,7 +1555,7 @@ fn run_worker<E: Endpoint>(
         // `converge_on_ready` made that ONE attempt itself (finding 1),
         // folded into its own Status-polling loop rather than an
         // independent retry here.
-        let attach_identity = match E::authenticate_server(&voyage_conn) {
+        let attach_identity = match endpoint.authenticate_server(&voyage_conn) {
             PeerAuthOutcome::Authenticated(a) => (a.pid, a.created),
             PeerAuthOutcome::Foreign => {
                 emit(ClientEvent::Terminal("voyage pipe: foreign".to_string()));
@@ -1680,10 +1634,10 @@ fn run_worker<E: Endpoint>(
         // mismatch, re-read the mgmt identity once and proceed without a
         // notice
         // rather than looping forever.
-        let mgmt_identity = capsule_identity_via_mgmt::<E>(&voyage)
+        let mgmt_identity = capsule_identity_via_mgmt::<E>(&endpoint, &lane, &voyage)
             .ok()
             .map(|p| (p.pid(), p.created()))
-            .or_else(|| capsule_identity_via_mgmt::<E>(&voyage).ok().map(|p| (p.pid(), p.created())));
+            .or_else(|| capsule_identity_via_mgmt::<E>(&endpoint, &lane, &voyage).ok().map(|p| (p.pid(), p.created())));
         if let Some(mgmt_leg) = mgmt_identity {
             if fe_client::legs_match(mgmt_leg, attach_identity) {
                 emit(ClientEvent::Notice(fe_client::attach_notice_text(&format!("{}", mgmt_leg.1))));
@@ -1763,10 +1717,11 @@ fn run_worker<E: Endpoint>(
 
         // --- steady state ------------------------------------------
         let episode_result = run_steady_state::<E>(
+            &endpoint,
             &cmd_rx,
             &events_tx,
             &wake,
-            &h,
+            &lane,
             &shared_conn,
             &mut supervisor_conn,
             &mut sup_reader,
@@ -2092,6 +2047,7 @@ pub(crate) fn run_end_run_and_wait<E: Endpoint>(
 /// here.
 #[allow(clippy::too_many_arguments)]
 fn run_quit<E: Endpoint>(
+    endpoint: &E,
     supervisor_conn: &mut E::Client,
     sup_reader: &mut FrameReader,
     h: &str,
@@ -2118,7 +2074,7 @@ fn run_quit<E: Endpoint>(
     run_end_run_and_wait::<E>(
         supervisor_conn,
         sup_reader,
-        |conn, reader| reconnect_supervisor_lane_for_quit::<E>(conn, reader, h),
+        |conn, reader| reconnect_supervisor_lane_for_quit::<E>(endpoint, conn, reader, h),
         quit,
         operation_id,
         reason,
@@ -2133,8 +2089,13 @@ fn run_quit<E: Endpoint>(
 /// bounded overall by `QuitDispatcher::tick`'s 90 s cutoff -- there is
 /// no separate retry budget to manage here, unlike the reconnect EPISODE
 /// loop the rest of this module drives for the attach lane.
-fn reconnect_supervisor_lane_for_quit<E: Endpoint>(supervisor_conn: &mut E::Client, sup_reader: &mut FrameReader, h: &str) -> bool {
-    match connect_supervisor_lane::<E>(h) {
+fn reconnect_supervisor_lane_for_quit<E: Endpoint>(
+    endpoint: &E,
+    supervisor_conn: &mut E::Client,
+    sup_reader: &mut FrameReader,
+    h: &str,
+) -> bool {
+    match connect_supervisor_lane::<E>(endpoint, h) {
         Ok((conn, _proven)) => {
             *supervisor_conn = conn;
             *sup_reader = FrameReader::new();
@@ -2301,6 +2262,7 @@ fn run_attach_reader<E: Endpoint>(
 
 #[allow(clippy::too_many_arguments)]
 fn run_steady_state<E: Endpoint>(
+    endpoint: &E,
     cmd_rx: &Receiver<WorkerMsg>,
     events_tx: &Sender<ClientEvent>,
     wake: &(dyn Fn() + Send),
@@ -2377,7 +2339,7 @@ fn run_steady_state<E: Endpoint>(
                 // see its own doc for why verification cannot depend on
                 // this steady-state loop running again (the attach
                 // connection dies with the capsule end_run tears down).
-                run_quit::<E>(supervisor_conn, sup_reader, h, voyage, reason, quit, outstanding, &emit);
+                run_quit::<E>(endpoint, supervisor_conn, sup_reader, h, voyage, reason, quit, outstanding, &emit);
             }
             Ok(WorkerMsg::Frame(frame)) => {
                 match handle_attach_frame::<E>(
@@ -3025,5 +2987,108 @@ mod tests {
         events_tx.send(ClientEvent::Checkpoint(good_checkpoint())).expect("send checkpoint 3 (good)");
         client.pump();
         assert!(client.restore_ok(), "checkpoint 3 (good) must report restore_ok again, not inherit checkpoint 2's");
+    }
+
+    // -----------------------------------------------------------------
+    // ADR 0045 decision 6: the health probe uses the voyage id the
+    // supervisor last reported to THIS client, never a pointer file.
+    // -----------------------------------------------------------------
+
+    /// A do-nothing [`Client`] — [`TestEndpoint::connect_voyage_unchallenged`]
+    /// is the only method this test ever exercises, and it never touches
+    /// the connection it returns.
+    struct TestClient;
+    impl Client for TestClient {
+        fn write_all(&self, _bytes: &[u8]) -> Result<(), crate::transport::TransportError> {
+            Ok(())
+        }
+        fn read(&self, _buf: &mut [u8]) -> Result<usize, crate::transport::TransportError> {
+            Ok(0)
+        }
+        fn cancel(&self) {}
+    }
+
+    /// A do-nothing [`PeerIdentity`] — never actually produced by this
+    /// test's [`TestEndpoint`] (its `challenge`/`authenticate_server` are
+    /// unreachable stubs), but [`Endpoint::Process`] still needs a
+    /// concrete type to name.
+    struct TestProcess;
+    impl PeerIdentity for TestProcess {
+        fn pid(&self) -> u32 {
+            0
+        }
+        fn created(&self) -> u64 {
+            0
+        }
+    }
+
+    /// Records the id [`Endpoint::connect_voyage_unchallenged`] was asked
+    /// for and always answers as if the voyage pipe were reachable
+    /// (`Ok`) — proving [`on_supervisor_absent_or_unresponsive`] probes
+    /// the SAME id its caller passed in, never a pointer file it reads
+    /// itself. `connect_supervisor_unchallenged`/`challenge`/
+    /// `authenticate_server` are unreachable: this test never drives the
+    /// supervisor lane.
+    struct TestEndpoint {
+        last_voyage_probed: Mutex<Option<String>>,
+    }
+    impl Endpoint for TestEndpoint {
+        type Client = TestClient;
+        type Process = TestProcess;
+
+        fn connect_voyage_unchallenged(
+            &self,
+            _lane: &str,
+            voyage_id: &str,
+        ) -> Result<Self::Client, crate::transport::TransportError> {
+            *self.last_voyage_probed.lock().unwrap() = Some(voyage_id.to_string());
+            Ok(TestClient)
+        }
+
+        fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            unreachable!("health_probe_uses_the_last_reported_voyage_id never drives the supervisor lane")
+        }
+
+        fn challenge(
+            &self,
+            _conn: &Self::Client,
+            _exchange: &mut dyn crate::exchange::IdentityExchange,
+            _deadline: Instant,
+        ) -> ChallengeOutcome<Self::Process> {
+            unreachable!("health_probe_uses_the_last_reported_voyage_id never challenges")
+        }
+
+        fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
+            unreachable!("health_probe_uses_the_last_reported_voyage_id never authenticates")
+        }
+    }
+
+    #[test]
+    fn health_probe_uses_the_last_reported_voyage_id() {
+        let ep = TestEndpoint { last_voyage_probed: Mutex::new(None) };
+        let mut reconnect = ReconnectState::new();
+        let now = Instant::now();
+        let voyage_id = "11111111-1111-1111-1111-111111111111";
+
+        let decision = on_supervisor_absent_or_unresponsive::<TestEndpoint>(&ep, &mut reconnect, Some(voyage_id), now);
+        assert_eq!(decision, ReconnectDecision::Retry, "a reachable voyage pipe must retry, never go terminal");
+        assert_eq!(
+            ep.last_voyage_probed.lock().unwrap().as_deref(),
+            Some(voyage_id),
+            "the probe must connect to the id its caller passed in, not one it reads itself"
+        );
+
+        // `None`: no id to probe with — the health clock starts exactly
+        // as it would for an absent supervisor, and a second call
+        // `HEALTH_WINDOW` later is `Terminal`.
+        let decision = on_supervisor_absent_or_unresponsive::<TestEndpoint>(&ep, &mut reconnect, None, now);
+        assert_eq!(decision, ReconnectDecision::Retry, "the clock merely starting is never itself terminal");
+        let later = now + fe_client::HEALTH_WINDOW + Duration::from_secs(1);
+        let decision = on_supervisor_absent_or_unresponsive::<TestEndpoint>(&ep, &mut reconnect, None, later);
+        assert_eq!(
+            decision,
+            ReconnectDecision::Terminal(fe_client::TerminalReason::HealthWindowExpired),
+            "the clock started by the first None call must expire after HEALTH_WINDOW"
+        );
     }
 }

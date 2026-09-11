@@ -2608,21 +2608,29 @@ impl crate::challenge_win::PipeChallengeable for PipeClient {
 /// struct (the concrete pipe/socket family is the type itself, not a
 /// value any instance carries) delegating straight to the free functions
 /// this module already exposes.
+#[derive(Clone, Copy, Default)]
 pub struct PipeEndpoint;
 
 impl Endpoint for PipeEndpoint {
     type Client = PipeClient;
     type Process = crate::challenge_win::ChallengedProcess;
 
-    fn connect_voyage_unchallenged(voyage_id: &str) -> Result<Self::Client, TransportError> {
+    fn connect_voyage_unchallenged(
+        &self,
+        _lane: &str,
+        voyage_id: &str,
+    ) -> Result<Self::Client, TransportError> {
+        // The Windows voyage pipe is named by voyage id alone; `_lane` is
+        // the daemon-lane endpoint's namespace, unused here.
         connect_voyage_pipe_unchallenged(voyage_id)
     }
 
-    fn connect_supervisor_unchallenged(h: &str) -> Result<Self::Client, TransportError> {
-        connect_supervisor_pipe_unchallenged(h)
+    fn connect_supervisor_unchallenged(&self, lane: &str) -> Result<Self::Client, TransportError> {
+        connect_supervisor_pipe_unchallenged(lane)
     }
 
     fn challenge(
+        &self,
         conn: &Self::Client,
         exchange: &mut dyn crate::exchange::IdentityExchange,
         reply_deadline: Instant,
@@ -2630,7 +2638,7 @@ impl Endpoint for PipeEndpoint {
         crate::challenge_win::challenge(conn, exchange, reply_deadline)
     }
 
-    fn authenticate_server(conn: &Self::Client) -> crate::challenge::PeerAuthOutcome {
+    fn authenticate_server(&self, conn: &Self::Client) -> crate::challenge::PeerAuthOutcome {
         crate::challenge_win::authenticate_server(conn)
     }
 }

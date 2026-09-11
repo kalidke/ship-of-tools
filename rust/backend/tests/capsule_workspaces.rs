@@ -1468,7 +1468,8 @@ async fn capsule_pty_input_and_screen_reach_a_real_row_and_leave_the_lane_clean(
     let state_dir = crate::state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
     let (_woke, wake) = wake_flag_for_test();
     let mut test_client = sot_log::fe_client_io::FeAttachClient::<sot_log::client::PlatformEndpoint>::attach(
-        state_dir,
+        sot_log::client::PlatformEndpoint::default(),
+        sot_log::state_dir::state_dir_hash(&state_dir),
         80,
         24,
         "lu6c-test-post-check".to_string(),

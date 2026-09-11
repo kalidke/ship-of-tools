@@ -15,7 +15,7 @@ use crate::challenge::{
     exchange_identity, ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome, PeerAuthenticated,
     StatusFailure,
 };
-use crate::client::PeerProcess;
+use crate::client::{PeerIdentity, PeerProcess};
 use crate::exchange::IdentityExchange;
 use crate::fsutil;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
@@ -139,7 +139,7 @@ impl ChallengedProcess {
 /// (decisions 8/19): Linux's own counterpart returns `Option<i32>`, not
 /// a `u32` — the platforms disagree on the TYPE, not merely the
 /// mechanism.
-impl PeerProcess for ChallengedProcess {
+impl PeerIdentity for ChallengedProcess {
     fn pid(&self) -> u32 {
         ChallengedProcess::pid(self)
     }
@@ -147,7 +147,9 @@ impl PeerProcess for ChallengedProcess {
     fn created(&self) -> u64 {
         ChallengedProcess::created(self)
     }
+}
 
+impl PeerProcess for ChallengedProcess {
     fn reverify(&self) -> std::io::Result<bool> {
         ChallengedProcess::reverify(self)
     }

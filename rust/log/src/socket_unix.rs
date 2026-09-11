@@ -1981,6 +1981,7 @@ impl crate::challenge_unix::SocketChallengeable for SocketClient {
 /// Unix has no `Endpoint` implementor for this transport at all, matching
 /// `connect_voyage_socket`'s own Linux-only body.
 #[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Default)]
 pub struct SocketEndpoint;
 
 #[cfg(target_os = "linux")]
@@ -1988,15 +1989,22 @@ impl Endpoint for SocketEndpoint {
     type Client = SocketClient;
     type Process = crate::challenge_unix::ChallengedProcess;
 
-    fn connect_voyage_unchallenged(voyage_id: &str) -> Result<Self::Client, TransportError> {
+    fn connect_voyage_unchallenged(
+        &self,
+        _lane: &str,
+        voyage_id: &str,
+    ) -> Result<Self::Client, TransportError> {
+        // The Linux voyage socket is named by voyage id alone; `_lane` is
+        // the daemon-lane endpoint's namespace, unused here.
         connect_voyage_socket_unchallenged(voyage_id)
     }
 
-    fn connect_supervisor_unchallenged(h: &str) -> Result<Self::Client, TransportError> {
-        connect_supervisor_socket_unchallenged(h)
+    fn connect_supervisor_unchallenged(&self, lane: &str) -> Result<Self::Client, TransportError> {
+        connect_supervisor_socket_unchallenged(lane)
     }
 
     fn challenge(
+        &self,
         conn: &Self::Client,
         exchange: &mut dyn crate::exchange::IdentityExchange,
         reply_deadline: Instant,
@@ -2004,7 +2012,7 @@ impl Endpoint for SocketEndpoint {
         crate::challenge_unix::challenge(conn, exchange, reply_deadline)
     }
 
-    fn authenticate_server(conn: &Self::Client) -> crate::challenge::PeerAuthOutcome {
+    fn authenticate_server(&self, conn: &Self::Client) -> crate::challenge::PeerAuthOutcome {
         crate::challenge_unix::authenticate_server(conn)
     }
 }

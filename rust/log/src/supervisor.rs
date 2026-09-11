@@ -244,9 +244,11 @@
 //! to satisfy identically, without this state machine itself needing to
 //! be generic in the type-parameter sense. Every `pipe_win::connect_*`/
 //! `challenge_win::challenge` call this file used to make instead goes
-//! through `PlatformEndpoint::..` (an actual trait method call, since
-//! `PipeEndpoint`/`SocketEndpoint` have no inherent methods of their
-//! own). [`crate::transport::TransportError::is_endpoint_absent`] is the
+//! through `PlatformEndpoint::default().method(..)` (ADR 0045 decision 5:
+//! an `Endpoint` is a value, so its four trait functions take `&self` —
+//! `PlatformEndpoint` is a type alias, so its own unit value is reached
+//! via `default()` rather than the alias name itself).
+//! [`crate::transport::TransportError::is_endpoint_absent`] is the
 //! ONE absence predicate [`end_run_over_mgmt_lane`]/
 //! [`probe_writer_liveness`] use on both platforms now, instead of a
 //! Windows-shaped inline `NotFound` guard.
@@ -548,9 +550,9 @@ pub fn connect_and_challenge_with_build_for_test(
     h: &str,
     build: &str,
 ) -> crate::Result<(Client, ChallengeOutcome<Process>)> {
-    let conn = PlatformEndpoint::connect_supervisor_unchallenged(h)?;
+    let conn = PlatformEndpoint::default().connect_supervisor_unchallenged(h)?;
     let mut exchange = crate::exchange::SupervisorLaneExchange::new(build.to_string());
-    let outcome = PlatformEndpoint::challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
+    let outcome = PlatformEndpoint::default().challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
     Ok((conn, outcome))
 }
 
@@ -563,10 +565,10 @@ pub fn connect_and_challenge_with_proto_for_test(
     h: &str,
     proto: u32,
 ) -> crate::Result<(Client, ChallengeOutcome<Process>)> {
-    let conn = PlatformEndpoint::connect_supervisor_unchallenged(h)?;
+    let conn = PlatformEndpoint::default().connect_supervisor_unchallenged(h)?;
     let mut exchange =
         crate::exchange::SupervisorLaneExchange::with_proto_for_test(crate::exchange::SUPERVISOR_LANE_BUILD_ID, proto);
-    let outcome = PlatformEndpoint::challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
+    let outcome = PlatformEndpoint::default().challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
     Ok((conn, outcome))
 }
 
@@ -584,6 +586,7 @@ pub fn connect_and_challenge_with_proto_for_test(
 #[cfg(any(test, feature = "test-support"))]
 pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(Client, Process)> {
     crate::supervisor_client::connect_and_challenge::<PlatformEndpoint>(
+        &PlatformEndpoint::default(),
         h,
         crate::exchange::SUPERVISOR_LANE_BUILD_ID,
         Instant::now() + Duration::from_secs(2),
@@ -990,8 +993,8 @@ enum EndRunOutcome {
 /// ADR 0041 capability matrix's "healthy" row, and EndRun "invoked by the
 /// authority on its own behalf": challenge afresh, retain the handle,
 /// send `shutdown{reason}` on the SAME connection, and wait its ack.
-fn end_run_over_mgmt_lane(voyage_id: &str, reason: &str) -> crate::Result<EndRunOutcome> {
-    let conn = match PlatformEndpoint::connect_voyage_unchallenged(voyage_id) {
+fn end_run_over_mgmt_lane(h: &str, voyage_id: &str, reason: &str) -> crate::Result<EndRunOutcome> {
+    let conn = match PlatformEndpoint::default().connect_voyage_unchallenged(h, voyage_id) {
         Ok(c) => c,
         // ADR 0043 decision 21: the ONE absence predicate, shared with
         // Windows -- see `TransportError::is_endpoint_absent`'s own doc.
@@ -1001,7 +1004,7 @@ fn end_run_over_mgmt_lane(voyage_id: &str, reason: &str) -> crate::Result<EndRun
         Err(e) => return Err(e.into()),
     };
     let mut exchange = crate::exchange::VoyageMgmtExchange::default();
-    match PlatformEndpoint::challenge(&conn, &mut exchange, Instant::now() + END_RUN_CHALLENGE_BOUND) {
+    match PlatformEndpoint::default().challenge(&conn, &mut exchange, Instant::now() + END_RUN_CHALLENGE_BOUND) {
         ChallengeOutcome::Foreign => Ok(EndRunOutcome::Foreign),
         ChallengeOutcome::Undetermined => Ok(EndRunOutcome::Pending),
         ChallengeOutcome::Proven(process) => {
@@ -1062,7 +1065,11 @@ enum WriterLiveness {
 /// (`Ambiguous`, fail-closed, exactly like every other undetermined
 /// case here); only a genuinely free fence reaches `Absent`.
 fn probe_writer_liveness(state_dir: &Path, voyage_id: &str) -> WriterLiveness {
-    let conn = match PlatformEndpoint::connect_voyage_unchallenged(voyage_id) {
+    // The caller has no `h` of its own to pass -- derived here from the
+    // `state_dir` this function already receives, rather than fanning the
+    // parameter out through every caller above it.
+    let h = crate::state_dir::state_dir_hash(state_dir);
+    let conn = match PlatformEndpoint::default().connect_voyage_unchallenged(&h, voyage_id) {
         Ok(c) => c,
         // ADR 0043 decision 21: the ONE absence predicate, shared with
         // Windows -- see `TransportError::is_endpoint_absent`'s own doc.
@@ -1079,7 +1086,7 @@ fn probe_writer_liveness(state_dir: &Path, voyage_id: &str) -> WriterLiveness {
         Err(_) => return WriterLiveness::Ambiguous,
     };
     let mut exchange = crate::exchange::VoyageMgmtExchange::default();
-    match PlatformEndpoint::challenge(&conn, &mut exchange, Instant::now() + LIVENESS_PROBE_BUDGET) {
+    match PlatformEndpoint::default().challenge(&conn, &mut exchange, Instant::now() + LIVENESS_PROBE_BUDGET) {
         ChallengeOutcome::Proven(_) => WriterLiveness::Alive,
         ChallengeOutcome::Foreign | ChallengeOutcome::Undetermined => WriterLiveness::Ambiguous,
     }
@@ -1786,8 +1793,11 @@ fn reissue_and_reconcile_end_run(
     reason: &str,
     on_closed: Option<&mpsc::Sender<EndingProgress>>,
 ) -> crate::Result<EndRunReconciliation> {
+    // Computed once, outside the reissue loop: the row does not change
+    // hash between retries.
+    let h = crate::state_dir::state_dir_hash(state_dir);
     loop {
-        match end_run_over_mgmt_lane(voyage_id, reason) {
+        match end_run_over_mgmt_lane(&h, voyage_id, reason) {
             Ok(EndRunOutcome::Ended(process)) => {
                 return finish_end_run_with_process(state_dir, op_id, voyage_id, epoch, process, on_closed);
             }
@@ -3171,7 +3181,7 @@ fn endrun_inner(state_dir: &Path, voyage: Option<String>, reason: String) -> cra
             return Ok(EXIT_TERMINAL);
         }
     };
-    let outcome = end_run_over_mgmt_lane(&voyage_id, &reason)?;
+    let outcome = end_run_over_mgmt_lane(&crate::state_dir::state_dir_hash(state_dir), &voyage_id, &reason)?;
     match outcome {
         EndRunOutcome::Absent => {
             // N2 (Codex review round 4): raw pipe-NotFound alone is NOT

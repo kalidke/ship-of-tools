@@ -419,7 +419,8 @@ fn attach_as_watcher_receives_the_checkpoint() {
 
     let (woke, wake) = wake_flag();
     let mut client = FeAttachClient::attach(
-        state_dir.clone(),
+        PlatformEndpoint::default(),
+        h.clone(),
         80,
         24,
         "fe-client-win-test-a".to_string(),
@@ -460,7 +461,8 @@ fn first_input_takes_the_pen_and_resize_precedes_the_flush() {
 
     let (_woke, wake) = wake_flag();
     let mut client = FeAttachClient::attach(
-        state_dir.clone(),
+        PlatformEndpoint::default(),
+        h.clone(),
         80,
         24,
         "fe-client-win-test-b".to_string(),
@@ -557,7 +559,8 @@ fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
 
     let (_woke, wake) = wake_flag();
     let mut client = FeAttachClient::attach(
-        state_dir.clone(),
+        PlatformEndpoint::default(),
+        h.clone(),
         80,
         24,
         "fe-client-win-test-c".to_string(),
@@ -665,7 +668,8 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkp
 
     let (_woke, wake) = wake_flag();
     let mut client = FeAttachClient::attach(
-        state_dir.clone(),
+        PlatformEndpoint::default(),
+        h.clone(),
         80,
         24,
         "fe-client-win-test-d".to_string(),
@@ -765,7 +769,7 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
-    let mut client = FeAttachClient::<PlatformEndpoint>::attach_headless(state_dir.clone(), "lu6c-headless-test".to_string())
+    let mut client = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), "lu6c-headless-test".to_string())
         .expect("attach_headless");
 
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -849,7 +853,7 @@ fn headless_screen_read_never_takes_the_pen() {
     // The headless watcher: attach, wait for the checkpoint, then drop —
     // exactly `screen_of`'s own shape, minus the wrapper.
     {
-        let mut watcher = FeAttachClient::<PlatformEndpoint>::attach_headless(state_dir.clone(), "lu6c-headless-watcher".to_string())
+        let mut watcher = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), "lu6c-headless-watcher".to_string())
             .expect("attach_headless");
         let deadline = Instant::now() + Duration::from_secs(30);
         while !watcher.is_checkpointed() {
@@ -866,7 +870,8 @@ fn headless_screen_read_never_takes_the_pen() {
     // pen and never released it, this would stall waiting for `take_ok`.
     let (_woke, wake) = wake_flag();
     let mut client = FeAttachClient::attach(
-        state_dir.clone(),
+        PlatformEndpoint::default(),
+        h.clone(),
         80,
         24,
         "lu6c-post-watcher-driver".to_string(),
@@ -909,8 +914,12 @@ fn headless_attach_against_a_pointerless_state_dir_waits_and_shutdown_closes_the
     let state_dir = dir.path().join("state-with-no-supervisor-ever-run");
     std::fs::create_dir_all(&state_dir).unwrap();
 
-    let mut client = FeAttachClient::<PlatformEndpoint>::attach_headless(state_dir, "lu6c-headless-deadline-test".to_string())
-        .expect("attach_headless (the constructor itself never touches the network)");
+    let mut client = FeAttachClient::<PlatformEndpoint>::attach_headless(
+        PlatformEndpoint::default(),
+        state_dir_hash(&state_dir),
+        "lu6c-headless-deadline-test".to_string(),
+    )
+    .expect("attach_headless (the constructor itself never touches the network)");
 
     // A spell long enough for several fail-fast connect rounds and their
     // backoffs; the client must still be waiting, not dead, not checkpointed.
@@ -961,7 +970,8 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
     // 1. Driver A attaches and becomes DRIVING.
     let (_woke, wake) = wake_flag();
     let mut driver_a = FeAttachClient::attach(
-        state_dir.clone(),
+        PlatformEndpoint::default(),
+        h.clone(),
         80,
         24,
         "lu6c-driver-a".to_string(),
@@ -982,7 +992,7 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
 
     // 2. A headless write lands on the SAME row while driver_a still holds
     // the pen — must demote driver_a and succeed on its own.
-    let mut headless = FeAttachClient::<PlatformEndpoint>::attach_headless(state_dir.clone(), "lu6c-headless-b".to_string())
+    let mut headless = FeAttachClient::<PlatformEndpoint>::attach_headless(PlatformEndpoint::default(), h.clone(), "lu6c-headless-b".to_string())
         .expect("attach_headless");
     let deadline = Instant::now() + Duration::from_secs(30);
     while !headless.is_checkpointed() {
@@ -1101,6 +1111,7 @@ fn attach_converges_on_the_supervisors_word() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
 
     let started = Instant::now();
     let child = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "sleep 60"]);
@@ -1108,7 +1119,8 @@ fn attach_converges_on_the_supervisors_word() {
 
     let (_woke, wake) = wake_flag();
     let mut client = FeAttachClient::attach(
-        state_dir.clone(),
+        PlatformEndpoint::default(),
+        h,
         80,
         24,
         "fe-client-lu6b-a".to_string(),
@@ -1149,6 +1161,7 @@ fn quit_is_dispatched_before_ready() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
 
     // A slow producer (brief's own suggested shape) -- belt and braces
     // against a loaded runner, though a real measurement (LU6b's own
@@ -1161,7 +1174,8 @@ fn quit_is_dispatched_before_ready() {
 
     let (_woke, wake) = wake_flag();
     let mut client: FeAttachClient = FeAttachClient::attach(
-        state_dir.clone(),
+        PlatformEndpoint::default(),
+        h,
         80,
         24,
         "fe-client-lu6b-b".to_string(),
@@ -1238,7 +1252,8 @@ fn unresponsive_supervisor_expires_the_health_window() {
 
     let (_woke, wake) = wake_flag();
     let mut client: FeAttachClient = FeAttachClient::attach(
-        state_dir.clone(),
+        PlatformEndpoint::default(),
+        h,
         80,
         24,
         "fe-client-lu6b-c".to_string(),
