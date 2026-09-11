@@ -1207,6 +1207,24 @@ where
                 )
                 .await;
             }
+            // ADR 0045 decision 2: capsule-runtime-gated exactly like
+            // `lane_bridge.rs` itself — on a host with no capsule runtime
+            // at all (macOS), `lane.connect` is not specially peeked and
+            // falls into the ordinary control loop below, which answers
+            // whatever "unknown op" every other unrouted op string
+            // already does.
+            #[cfg(any(windows, target_os = "linux"))]
+            if f.kind == Kind::Req && f.op == op::LANE_CONNECT {
+                tracing::info!(transport, "lane.connect — leaving control loop for a raw pipe");
+                return crate::lane_bridge::handle_lane_connect(
+                    buffered,
+                    tx,
+                    f,
+                    expected_token.as_deref(),
+                    &workspaces,
+                )
+                .await;
+            }
             Some((f, blob))
         }
         Err(e) => {

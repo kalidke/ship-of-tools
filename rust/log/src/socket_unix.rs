@@ -1892,6 +1892,18 @@ impl SocketClient {
         }
     }
 
+    /// ADR 0045 decision 2 (the daemon-side lane bridge): hand the raw
+    /// socket off to a caller that will pipe raw bytes on its own
+    /// runtime — for a caller that will pipe raw bytes on its own
+    /// runtime; the client's cancel contract ends here. Moves `stream`
+    /// out; the slots/flags (`cancelled`, `read_slot`, `write_slot`, the
+    /// test-only entered flags, `connect_anchor_boot_ticks`) simply drop
+    /// — nothing about them survives past this call, and nothing needs
+    /// to.
+    pub fn into_stream(self) -> UnixStream {
+        self.stream
+    }
+
     /// TEST-SUPPORT ONLY (review round 2, replacing an earlier
     /// `try_lock`-based version): `true` once a `read` has genuinely
     /// ENTERED its critical section at any point in this client's life —
