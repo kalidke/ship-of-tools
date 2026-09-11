@@ -2,7 +2,7 @@
 
 **Status:** LU1–LU4 implemented (#212–#221); LU5 proposed (2026-09-06; amended the same day after one Codex design
 round — twelve findings, every one discharged in the text below; LU1b's landed
-mechanism folded into decisions 1–3; the LU2 decisions 11–16 and the LU3 decisions 17–20 added 2026-09-07; the LU5 decisions 23–26 added 2026-09-07 evening after the first backend trial and two Codex rounds; the LU6b decisions 27–30 (attach convergence) added 2026-09-07 late, from the measured local-session create latency — decision 24 reverses decision 16's survival clause and amends decision 21's kill-domain sentence; decision 31, added 2026-09-08, lives in ADR 0030 §8 — this is only its cross-reference). Design pass for the lane series that makes
+mechanism folded into decisions 1–3; the LU2 decisions 11–16 and the LU3 decisions 17–20 added 2026-09-07; the LU5 decisions 23–26 added 2026-09-07 evening after the first backend trial and two Codex rounds; the LU6b decisions 27–30 (attach convergence) added 2026-09-07 late, from the measured local-session create latency — decision 24 reverses decision 16's survival clause and amends decision 21's kill-domain sentence; decision 31, added 2026-09-08, lives in ADR 0030 §8 — this is only its cross-reference; decisions 32–35, added 2026-09-11 from the lifecycle track's L1a/L1c/L2/L4/L5 amendment (rev 3, after a second Codex design round) — decision 32 REPLACES decision 24, decision 33 REPLACES decision 26, decision 34 is superseded into ADR 0045 decisions 6–8, decision 35 merged as 4cca1859; L4 merged as aedbe509 + 1677d24c, L2 is PR #232, L1a is PR #231 with L1c following). Design pass for the lane series that makes
 ADR 0042's rule — "the capsule is the default runtime for every NEW session on
 EVERY host" — true on the Linux backend hosts, where today every row is still
 a tmux row and no session leaves a Ship's Log record. Builds on ADR 0037 (P1:
@@ -611,6 +611,9 @@ own comm bootstrap → adoption across a daemon restart → a verified end.
     developer runs without a user manager may skip it loudly. Killing the daemon pid by hand
     is not a survival proof.
 
+    **Replaced by decision 32** (2026-09-11): one rule for both platforms —
+    containment is reported, never refused — subsumes this decision's Linux-only text.
+
 25. **The supervisor's stderr is the daemon's own log.** `spawn_detached_supervisor` hands
     the supervisor an append-mode descriptor on the daemon's `sotd.log` as stderr (a fresh
     `O_APPEND` open per spawn; the daemon need not share its handle); stdout stays null;
@@ -643,6 +646,9 @@ own comm bootstrap → adoption across a daemon restart → a verified end.
     carried through destroy — sustained lane absence, no `supervise` process for the state
     dir, the fence free, no "treating as a crash" line — with deterministic races for the
     record against generation replacement and the backoff recheck.
+
+    **Replaced by decision 33** (2026-09-11): the per-row guard's single resume path
+    subsumes this decision's watchdog-cancellation mechanism.
 
 ## Decisions for LU6b (attach convergence) — added 2026-09-07
 
@@ -751,6 +757,90 @@ latency" claim.
     (`pair_verdict`, `check_pair`, decision 22's pre-spawn probe) is
     deleted by ADR 0045 decision 7/8 — the lane gate is the protocol
     integer alone; `SUPERVISOR_LANE_BUILD_ID` remains a diagnostic only.
+
+## Decisions 32–35 (added 2026-09-11) — the lifecycle track (L1a, L1c, L2, L4, L5)
+
+Rev 3 of the lifecycle design, after a second Codex design round (every finding
+discharged). Carries
+forward from the design pass's own R1/R2/R3/R4; see that document for the full
+argument. Decision 32 REPLACES decision 24; decision 33 REPLACES decision 26,
+rule D's claim and the contention re-probe; decision 34 is superseded into ADR
+0045 rather than restated; decision 35 needs no predecessor.
+
+32. **Survival is attempted; containment is reported, never refused — REPLACES
+    decision 24.** One rule on both platforms: the daemon attempts the
+    platform's escape from its own kill domain — Linux: a transient user scope
+    (`systemd-run --user --scope --quiet --collect --description "sot-capsule
+    <workspace_id>" -- <sot-capsule> supervise …`, execing in place, `setsid`
+    kept, the capability probed once per launch, no cache); Windows:
+    `CREATE_BREAKAWAY_FROM_JOB` on the leg job. When the environment denies it
+    (a failed scope probe; `ERROR_ACCESS_DENIED`), the supervisor is spawned
+    CONTAINED with `--survival degraded` and one warn line; the supervisor
+    reports its own survival, no bool is plumbed back to the daemon, and the
+    daemon never refuses a launch over containment it cannot change — containment
+    is reported, never refused. A failure after a granted escape is a launch
+    failure, never a silent downgrade. The leg job permits breakaway; `KillMode`
+    stays default; no cgroup classifier is added. Proof: a real user-service
+    stop (the supervisor's cgroup is a `run-*.scope`, not the unit; the service
+    stops, the lane and leg stay alive, a new daemon adopts); a stub
+    `systemd-run` that exits 1 reaches `ready` with `--survival degraded` on the
+    wire and the warn line in `sotd.log`; a Windows breakaway from inside a leg
+    job. Tests skip loudly (`SKIPPED:`) where the escape is unavailable and fail
+    under `SOT_TEST_REQUIRE_USER_MANAGER=1`; every other suite runs degraded, as
+    CI does. Invariant: survival is the launcher's to grant and the record's to
+    report; the field evidence (a hosted runner without `BREAKAWAY_OK`, every
+    Windows capsule suite failing under the old refuse-on-denial rule) is what
+    forced one rule instead of a per-platform refusal/report split. **Merged:**
+    Windows as aedbe509 (unconditional breakaway, refuses on denial) +
+    1677d24c (the fix — a denied breakaway is contained, not refused). Linux is
+    **L2, PR #232**.
+
+33. **One guard, one resume path; the daemon watches only what it spawned —
+    REPLACES decision 26, rule D's claim and the contention re-probe.** A
+    per-row guard (`Workspaces` replaces `starting: HashSet<String>` with a
+    per-row `Arc<tokio::sync::Mutex<()>>`, `capsule_guard(id)`, created on
+    demand, dropped with the row) serializes every lifecycle mutation of that
+    row — resume (probe → spawn → settle), retirement (stop → resume → reset),
+    destroy (from the first probe through `remove_by_id`), and a spawned
+    watchdog from the moment it classifies an exit until it has restarted or
+    returned, backoff included — and every mutation RECHECKS under the guard
+    that the row is still registered, not terminal, and what its lane says now,
+    so a stale attach can never restart a destroyed row. Adopted watching is
+    deleted: a watchdog exists only for a `Child` the daemon itself spawned —
+    `PIDFD_GET_INFO` answers `ENOTTY` on every fleet kernel today, so a guess is
+    not a status. A row whose lane has stopped answering is resumed through
+    `resume_if_absent(state_dir, …) -> settled phase` — called from
+    `lane.connect` (ADR 0045 decision 2), attach, the headless ops, and destroy
+    before `end_run` — with RESUME-ONLY intent (it never sends `reset`); a leg
+    that ended without an end marker is re-executed within its own voyage, the
+    supervisor's own recovery rule. Destroy removes a row only after a
+    confirmed end or an independently proven absence of both authority (the
+    fence is acquirable) and leg (the voyage's `writer.lock` is acquirable); a
+    missing state dir is reported as `state_dir_missing`, never recreated. One
+    shared spawn path establishes lane reachability — the newly spawned or
+    resumed authority answering on its own lane — before the guard is
+    released, so no caller ever observes a row mid-mutation. Deleted with this
+    decision: `try_begin`/`end`/`is_capsule_start`, `spawn_starting_release_poll`,
+    `WatchedLeg` (collapsed to `Child`), `watch_adopted_leg`, the adopted wait
+    loop, the contention re-probe and its consts, and — readerless — the
+    challenged-process exit-status accessors and the pidfd ioctl machinery in
+    `challenge_unix.rs`/`challenge_win.rs` (the producer's own exit machinery
+    stays). Invariant: I2 (one authority per state dir, addressed only through
+    its lane and mutated only under its guard) and I3 (recoverability — a dead
+    authority is re-established from the state dir alone, before the daemon
+    acts on the row). **L1a is PR #231**; **L1c** (the destroy proof, same
+    decision) follows it.
+
+34. **Superseded into ADR 0045 decisions 6–8** — the protocol-versioned gate
+    and the deleted pre-spawn pair probe this decision specified now live
+    there; see that ADR rather than this entry.
+
+35. **Comm teardown follows ownership.** The registry row is the workspace's:
+    the default row's end prunes it, exactly as `workspace.destroy` does. The
+    bridge is the handle's: `comm-leave.sh` runs `comm-listen.sh --stop` before
+    removing its identity. The watcher is the agent's and dies with it.
+    Invariant: teardown mirrors ownership — no orphaned registry row or bridge
+    outlives the process that owned it. **Merged: 4cca1859.**
 
 ## What this deletes
 
