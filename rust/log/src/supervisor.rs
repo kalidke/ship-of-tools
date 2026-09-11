@@ -202,17 +202,13 @@
 //! moment it observes the exit (nothing further Stage A needs to read
 //! off it); a leg identified by a [`challenge_unix::ChallengedProcess`]
 //! (adopted, or promoted from a `SpawnedChild` once its own pipe
-//! answers) instead reaps inside `exit_status_after_confirmed_exit`,
-//! right after that call's own `PIDFD_GET_INFO` read — deferred that far
-//! because reaping any earlier would destroy the exit-status information
-//! the read needs — and, as the reaper of LAST RESORT for a leg that
-//! reached `Ready` and was never asked for its exit status at all (the
-//! supervisor's own main loop only ever calls `wait`, never the exit-
-//! status accessor, once a leg simply ends on its own), the
-//! `ChallengedProcess`'s own `Drop` impl reaps it too, non-blocking,
-//! never a kill. `ECHILD` at every one of these is ignored: a leg inherited from a
-//! DIFFERENT, earlier supervisor is not this process's child at all —
-//! its own parent reaps it, not us.
+//! answers) instead reaps via the explicit, owner-called
+//! `ChallengedProcess::reap()`, once this process's own main loop has
+//! observed the exit (`wait` returned `true`) and read everything it
+//! needs — never implicitly on drop (dropping only closes the pidfd, via
+//! `OwnedFd`'s own `Drop`). `ECHILD` at every one of these is ignored: a
+//! leg inherited from a DIFFERENT, earlier supervisor is not this
+//! process's child at all — its own parent reaps it, not us.
 //!
 //! The parent-death lease (`LegLease`/[`SpawnLease`], replacing the
 //! Windows-only `lease` module here) is a `pipe2(O_CLOEXEC)`: this
@@ -616,7 +612,11 @@ fn voyages_dir(state_dir: &Path) -> PathBuf {
     state_dir.join("voyages")
 }
 
-fn voyage_root_path(state_dir: &Path, voyage_id: &str) -> PathBuf {
+/// `pub` (ADR 0043 decision 33): exported for the daemon's own leg-absence
+/// probe (`sot-backend`'s `capsule_workspace::runtime::leg_absent`) — the
+/// destroy proof's LEG half needs the exact same voyage root this module
+/// uses internally, never a second, possibly-drifting derivation.
+pub fn voyage_root_path(state_dir: &Path, voyage_id: &str) -> PathBuf {
     voyages_dir(state_dir).join(voyage_id)
 }
 

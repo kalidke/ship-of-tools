@@ -159,10 +159,37 @@ pub fn write_frame_blocking<W: std::io::Write>(w: &mut W, frame: &Frame) -> Resu
 /// The blocking twin of [`read_frame`] — see [`write_frame_blocking`]'s
 /// own doc for why this exists and why it never reads a blob tail.
 pub fn read_frame_blocking<R: std::io::BufRead>(r: &mut R) -> Result<Frame> {
+    // Capped DURING the read, not after: `read_until` itself has no
+    // limit, so accumulating a whole `\n`-terminated line first and only
+    // THEN checking its length would let a peer that never sends `\n`
+    // grow `line` without bound before this function ever gets to
+    // refuse it (ADR 0045 lane B4a Codex review blocker). `fill_buf`/
+    // `consume` reads in the underlying `BufRead`'s own chunk sizes,
+    // scanning each chunk for the terminator and checking the running
+    // total against the cap before ever asking for more.
     let mut line = Vec::with_capacity(256);
-    let n = r.read_until(b'\n', &mut line).context("read envelope")?;
-    if n == 0 {
-        return Err(anyhow!("eof"));
+    loop {
+        let chunk = r.fill_buf().context("read envelope")?;
+        if chunk.is_empty() {
+            return Err(anyhow!(
+                "eof after {} byte(s) with no terminating newline",
+                line.len()
+            ));
+        }
+        if let Some(pos) = chunk.iter().position(|&b| b == b'\n') {
+            line.extend_from_slice(&chunk[..=pos]);
+            r.consume(pos + 1);
+            break;
+        }
+        line.extend_from_slice(chunk);
+        let consumed = chunk.len();
+        r.consume(consumed);
+        if line.len() > MAX_ENVELOPE_BYTES {
+            return Err(anyhow!(
+                "envelope exceeds {} bytes before a terminating newline arrived",
+                MAX_ENVELOPE_BYTES
+            ));
+        }
     }
     if line.len() > MAX_ENVELOPE_BYTES {
         return Err(anyhow!(

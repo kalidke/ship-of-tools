@@ -197,6 +197,15 @@ pub mod wire;
 
 mod fsutil;
 
+// ADR 0043 decision 33: the destroy proof's LEG half (`sot-backend`'s
+// `capsule_workspace::runtime::leg_absent`) needs the SAME bounded,
+// non-blocking writer-fence primitive `voyage.rs`'s own
+// `open_for_writing` uses on `writer.lock` -- `fsutil` itself stays
+// private (see `fence.rs`'s own doc on why a `pub fn` inside a private
+// module is unreachable from another crate), so this is its facade,
+// mirroring `fence::lock_supervisor`'s own one-function reach-through.
+pub use fsutil::lock_writer;
+
 pub use envelope::*;
 pub use record::{RecordKind, TailClass, CODEC_JSON, MAGIC, PRELUDE_LEN, RECORD_MAX_BODY};
 pub use segment::{SegmentIdentity, SegmentReader, SegmentState, SegmentWriter};

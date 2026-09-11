@@ -125,9 +125,8 @@ use std::time::{Duration, Instant};
 /// crate's pinned `libc` for a plain glibc/musl Linux target (only its
 /// `android`/`fuchsia`/`l4re` modules declare it), so this crate defines
 /// the value locally — the same device `challenge_unix.rs` already uses
-/// for `SO_PEERPIDFD`/`PIDFD_INFO_EXIT` (ADR 0043 decision 8's own
-/// precedent): a stable UAPI constant, not something that varies by
-/// architecture.
+/// for `SO_PEERPIDFD` (ADR 0043 decision 8's own precedent): a stable
+/// UAPI constant, not something that varies by architecture.
 #[cfg(target_os = "linux")]
 const PR_SET_PDEATHSIG: libc::c_int = 1;
 
