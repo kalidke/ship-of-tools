@@ -11,6 +11,13 @@
 
 pub mod codec;
 pub mod ir;
+// ADR 0045 decision 3: `DaemonLaneEndpoint` — the attach client's own
+// `sot_log::client::Endpoint` for the lane bridge (`lane.connect`),
+// alongside the platform pipe/socket endpoints `sot-log` itself owns.
+// Lives here, not in `sot-log`, because it is a WIRE client of this
+// crate's own `LaneConnectReq`/`LaneConnectRes` op — `sot-log` has no
+// dependency on `sot-protocol` to build against.
+pub mod lane_client;
 pub mod ops;
 pub mod session_socket;
 

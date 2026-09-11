@@ -2261,7 +2261,19 @@ fn capture_connect_anchor_boot_ticks() -> u64 {
 /// that attempt, and proven by a later one (or by the caller's own
 /// outer retry, once this whole call returns `Undetermined` up through
 /// `authenticate_server`/`challenge`).
-fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, TransportError> {
+///
+/// ADR 0045 decision 3 (`sot-protocol`'s `DaemonLaneEndpoint`): `pub`,
+/// widened from this module's own `pub(crate)` siblings above — the lane
+/// bridge dials a socket PATH handed to it on the wire (`LaneDial::
+/// Local`), never a name this crate derives from a voyage id or a
+/// state-dir hash itself, and its caller is `sot-protocol`, a different
+/// crate. Reused rather than reimplemented: this is the SAME bounded,
+/// non-blocking, pid-anchored connector every other Unix caller gets —
+/// a caller that rolled its own blocking `UnixStream::connect` wrapped
+/// in an external deadline would leak the blocked connect thread past
+/// that deadline on a full listen backlog, which this loop's own
+/// non-blocking `connect(2)` + bounded poll never does.
+pub fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, TransportError> {
     let addr_bytes = path.as_os_str().as_bytes();
     let deadline = Instant::now() + CONNECT_BOUND;
     loop {
@@ -2378,6 +2390,9 @@ fn map_peer_auth_outcome(outcome: crate::challenge::PeerAuthOutcome) -> Result<(
     match outcome {
         crate::challenge::PeerAuthOutcome::Authenticated(_) => Ok(()),
         crate::challenge::PeerAuthOutcome::Foreign => Err(TransportError::Foreign),
-        crate::challenge::PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined),
+        crate::challenge::PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined {
+            via: "direct",
+            detail: "peer identity authentication could not be completed".to_string(),
+        }),
     }
 }
