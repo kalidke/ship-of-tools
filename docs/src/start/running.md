@@ -1,8 +1,8 @@
 # Running & Relaunch
 
-This page covers starting Ship of Tools, the Terminal drawer that hosts your dev
-session, reconnecting after a drop, and the self-relaunch loop that lets the
-frontend rebuild and restart itself.
+This page covers starting Ship of Tools, the Terminal drawer, reconnecting
+after a drop, and the self-relaunch loop that lets the frontend rebuild and
+restart itself.
 
 ## Launching
 
@@ -77,8 +77,10 @@ own pane, and pressing the other key swaps the content.
 | `Ctrl+J` | → REPL | → closed | → REPL |
 | `Ctrl+T` | → Terminal | → closed | → Terminal |
 
-When Ship of Tools is developed on itself, the dev `claude` session runs **inside this
-Terminal drawer**.
+When Ship of Tools is developed on itself, the dev `claude` session that
+drives the frontend runs as a **first-class local capsule session** (create
+one from the Sessions view with agent `claude`), not inside this drawer —
+the drawer itself just runs a plain shell.
 
 ## Reconnecting
 
@@ -143,32 +145,27 @@ parts:
   relaunch-request sentinel file; on seeing it, the frontend exits 75 and the
   supervisor re-stages the (freshly built) binary and respawns with
   `--relaunched`.
-- **`claude --continue` resume.** On `--relaunched`, the frontend opens straight
-  into the Terminal drawer and runs the configured `[terminal] resume_command`
-  as the shell's first command. The default resumes the dev session without
-  prompts:
-
-  ```toml
-  [terminal]
-  resume_command = "claude --permission-mode auto --continue /sot-fe-session-start"
-  ```
-
-  Session continuity is decoupled from process survival: the terminal session
-  does not need to live through the restart because `claude --continue` resumes
-  it from its own store.
+- **The drawer reopens plain.** On `--relaunched`, the frontend opens straight
+  into the Terminal drawer with a plain shell and runs nothing automatically —
+  the old `[terminal] resume_command` setting that used to prime it is
+  retired. A session that needs to survive frontend relaunches (the dev
+  driver above is one) is a first-class **local capsule session** instead: it
+  is adopted by its own supervisor independent of the frontend process, so it
+  rides through the relaunch untouched and needs no priming command.
 
 The one-command driver is `scripts/relaunch-sot.ps1`: it runs
 `cargo build --release` and drops the relaunch sentinel **only on a green
 build** — a failed build leaves the running app untouched.
 
-## Do not kill the frontend to restart it
+## Prefer the relaunch loop over killing the frontend
 
-!!! warning "Never kill the frontend process"
-    When Ship of Tools is being developed on itself, the dev `claude` runs **inside the
-    frontend's Terminal drawer**. Killing the frontend process therefore kills
-    your own session along with it. To restart, always use the relaunch loop —
+!!! warning "Use the relaunch loop, not a process kill"
+    The dev `claude` session that drives frontend development is a local
+    capsule session, not a passenger of the frontend process, so it survives
+    either way. Still restart through the relaunch loop —
     `scripts/relaunch-sot.ps1` (build → sentinel → exit-75 → re-stage →
-    respawn), never a process kill.
+    respawn) — rather than a process kill: it re-stages the freshly built
+    binary and keeps the supervisor's SSH tunnel alive across the swap.
 
 Note that changes to the *supervisor script itself* (`launch-sot.ps1`) are not
 picked up by the exit-75 in-place loop — those require a full restart of the

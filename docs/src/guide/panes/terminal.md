@@ -27,19 +27,16 @@ Two escape hatches keep full-screen apps working:
 The mouse wheel scrolls the same ring, or is forwarded as SGR mouse events
 when the running app has enabled mouse tracking (`vim`, `htop`).
 
-## The dev session lives here
+## The dev session lives in a local capsule, not here
 
-When Ship of Tools is developed on itself, the dev `claude` session runs **inside
-this Terminal drawer**. Two consequences worth internalizing:
+When Ship of Tools is developed on itself, the dev `claude` session that drives
+the frontend runs as a **first-class local capsule session** — created from
+the Sessions view with agent `claude` — not inside this drawer. This drawer
+just runs a plain shell: on a self-relaunch it reopens fresh and runs nothing,
+while the capsule-held driver session rides through the relaunch on its own
+and reattaches independently.
 
-- **Never kill the frontend process to restart it** — that kills your own session
-  along with it. Use the self-relaunch loop (build → sentinel → exit-75 → re-stage
-  → respawn) instead.
-- On a self-relaunch, the frontend reopens straight into this drawer and runs the
-  configured `[terminal] resume_command` (`claude --continue …`) as its first
-  command, so the session resumes from its own store without prompts.
-
-Both are covered in [Running & Relaunch](../../start/running.md).
+Covered in [Running & Relaunch](../../start/running.md).
 
 ## See also
 
