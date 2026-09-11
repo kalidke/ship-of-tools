@@ -4549,16 +4549,10 @@ struct State {
     /// forwarded as SGR sequences instead. Reset to 0 (live tail) on input.
     term_scroll: u16,
     /// Local repo root (`$SOT_REPO_DIR`, set by the supervisor). Used as
-    /// the Terminal drawer's working directory so `claude --continue`
-    /// resumes the right project's session. `None` when launched outside
-    /// the supervisor (then the shell inherits the frontend's cwd). ADR 0017.
+    /// the Terminal drawer's working directory, so the plain shell it spawns
+    /// starts in the project root. `None` when launched outside the
+    /// supervisor (then the shell inherits the frontend's cwd). ADR 0017.
     repo_dir: Option<std::path::PathBuf>,
-    /// One-shot command run in the Terminal drawer on its first spawn after
-    /// a `--relaunched` start (the configured `[terminal] resume_command`,
-    /// default [`crate::settings::DEFAULT_RESUME_COMMAND`]). `take()`n on
-    /// first use so a later
-    /// Ctrl+T reopen doesn't re-run it. ADR 0017.
-    pending_resume_command: Option<String>,
     /// Set by the relaunch-watcher thread when the sentinel file
     /// (`%LOCALAPPDATA%\sot\relaunch.request`) appears: `0` = no request,
     /// `75` = plain relaunch, `76` = converge (self-update prelude + freshness
@@ -5704,40 +5698,18 @@ impl State {
 
         // Self-relaunch wiring (ADR 0017). `$SOT_REPO_DIR` is set by the
         // supervisor and points at the local repo root; the Terminal drawer
-        // uses it as its cwd so `claude --continue` resumes the right
-        // project's session.
+        // uses it as its cwd. The ADR-0017 supervisor exports SOT_REPO_DIR so
+        // the drawer's shell lands in the repo dir rather than $HOME (the
+        // wrong-folder relaunch, observed 2026-06-25).
         //
-        // Open the drawer + arm the one-shot resume command on startup when
-        // EITHER we're resuming a self-relaunch (`--relaunched`) OR a
-        // `[terminal] resume_command` is configured — so a plain user
-        // start/restart also bootstraps the dogfood session (e.g. re-arming
-        // fast comm via `/sot-fe-session-start`), not just the exit-75 loop.
-        // With neither, the FE opens clean (drawer closed).
-        // (`settings` is loaded once at the top of this fn — the adapter
-        // request needs it well before this point.)
-        // The ADR-0017 supervisor exports SOT_REPO_DIR so the resume shell lands
-        // in the repo dir rather than $HOME (the wrong-folder relaunch, observed
-        // 2026-06-25).
+        // Open the drawer on startup when resuming a self-relaunch
+        // (`--relaunched`) — it runs a plain shell (ADR 0041/0042 retired
+        // the resume-command ritual; the frontend driver now lives in its
+        // own local capsule session, not this drawer). With no relaunch,
+        // the FE opens clean (drawer closed).
         let repo_dir = std::env::var_os("SOT_REPO_DIR").map(std::path::PathBuf::from);
-        // Harness instances (--ephemeral / --capture) must NEVER run the
-        // resume command: a driver FE that runs `claude --continue` spawns a
-        // SECOND live instance of the primary FE's claude session inside a
-        // hidden window — observed 2026-06-11, where the in-drawer session
-        // ended up hosted by its own minimized test driver while the real
-        // supervised FE got culled as the "stale" duplicate.
         let harness = cli.ephemeral || cli.capture.is_some();
-        let want_terminal_init =
-            !harness && (cli.relaunched || settings.terminal_resume_command.is_some());
-        let pending_resume_command = if want_terminal_init {
-            Some(
-                settings
-                    .terminal_resume_command
-                    .clone()
-                    .unwrap_or_else(|| crate::settings::DEFAULT_RESUME_COMMAND.to_string()),
-            )
-        } else {
-            None
-        };
+        let want_terminal_init = !harness && cli.relaunched;
 
         let mut state = Self {
             window,
@@ -6018,17 +5990,14 @@ impl State {
                     }
                 })
                 .unwrap_or(1.6),
-            // Open straight into the Terminal drawer (so the resume command
-            // runs) on a self-relaunch OR any start with a configured
-            // resume_command — see `want_terminal_init` above.
+            // Open straight into the Terminal drawer on a self-relaunch —
+            // see `want_terminal_init` above.
             drawer: if cli.start_monitor {
                 // `--start-monitor` (capture harness) wins over the
-                // resume-command terminal default: an explicit capture ask
-                // beats the relaunch convenience, and it also keeps the
-                // capture run from spawning the resume command. The
-                // subscribe + history prefill for this startup-opened
-                // drawer is sent right after construction, where `req_tx`
-                // is wired up.
+                // relaunch terminal default: an explicit capture ask beats
+                // the relaunch convenience. The subscribe + history prefill
+                // for this startup-opened drawer is sent right after
+                // construction, where `req_tx` is wired up.
                 DrawerContent::Monitor
             } else if want_terminal_init {
                 DrawerContent::Terminal
@@ -6060,7 +6029,6 @@ impl State {
             term_size: None,
             term_scroll: 0,
             repo_dir,
-            pending_resume_command,
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             presence_last_sent: None,
             fe_commands: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
@@ -15961,17 +15929,14 @@ impl State {
             if self.local_term.is_none() {
                 let shell = crate::term::resolve_shell(self.settings.terminal_shell.as_deref());
                 let waker = self.window.clone();
-                // cwd = repo root (so `claude --continue` finds the project's
-                // session); resume command runs only on the first spawn after
-                // a `--relaunched` start, then is cleared. ADR 0017.
+                // cwd = repo root, so the plain shell starts in the
+                // project directory. ADR 0017.
                 let cwd = self.repo_dir.clone();
-                let resume = self.pending_resume_command.take();
                 match crate::term::LocalTerminal::spawn(
                     &shell,
                     80,
                     24,
                     cwd.as_deref(),
-                    resume.as_deref(),
                     Box::new(move || waker.request_redraw()),
                 ) {
                     Ok(t) => {
