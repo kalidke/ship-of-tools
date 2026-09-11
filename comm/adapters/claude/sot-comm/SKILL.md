@@ -23,7 +23,7 @@ already done.
 | Direct message | `comm-send.sh @<name> "message"` |
 | Broadcast | `comm-send.sh --broadcast "message"` |
 | Check inbox | `comm-poll.sh` |
-| Leave | `comm-leave.sh` |
+| Leave (removes the row and stops this handle's relay bridge) | `comm-leave.sh` |
 | Bootstrap an unjoined session | `comm-bootstrap.sh <tmux-target> [name]` (pastes a join+reply nudge) |
 | Spawn a new agent for a task | `comm-spawn.sh <name> <repo-path> --expertise "..." --task "..."` |
 | Tear down a spawned agent | `comm-despawn.sh <name\|slug>` |

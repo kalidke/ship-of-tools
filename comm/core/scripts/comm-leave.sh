@@ -30,6 +30,7 @@ if [ -n "$WHO" ] && [ "$WHO" != "$NAME" ]; then
 fi
 
 [ -z "$NAME" ] && { echo "Not joined — nothing to do."; exit 0; }
+"$SCRIPT_DIR/comm-listen.sh" --stop >/dev/null 2>&1 || true   # the bridge is the handle's
 with_lock registry_del "$NAME"
 rm -f "$SELF_FILE"
 echo "Left sot-comm (@$NAME removed)."

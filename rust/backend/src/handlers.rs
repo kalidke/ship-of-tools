@@ -4824,15 +4824,37 @@ fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> Cap
 /// `false` confirmed_ended is a no-op: `default_row_end_response` already
 /// built the typed-error response for a `Kept` outcome, and neither the
 /// row nor its toml may change under a refusal.
-fn end_default_row_run(
+///
+/// ADR 0043 decision 35: also prunes the row's sot-comm registry entries,
+/// the same way `workspace.destroy`'s non-default path does below — a
+/// killed default-row agent can't run its own `comm-leave`, so without
+/// this its row lingered as a ghost `workspace.list` merges back in.
+async fn end_default_row_run(
     workspaces: &Workspaces,
     ws_events: &broadcast::Sender<WorkspaceChanged>,
     workspace_id: &str,
     slug: &str,
+    agent_name: &str,
+    tmux_session: &str,
     confirmed_ended: bool,
 ) {
     if !confirmed_ended {
         return;
+    }
+    let reg_agent = agent_name.to_string();
+    let reg_session = tmux_session.to_string();
+    let reg_host = crate::workspaces::state_host();
+    let comm_removed = tokio::task::spawn_blocking(move || {
+        remove_comm_agents_for_workspace(&reg_session, &reg_agent, &reg_host)
+    })
+    .await
+    .unwrap_or_default();
+    if !comm_removed.is_empty() {
+        tracing::info!(
+            removed = ?comm_removed,
+            slug = %slug,
+            "pruned sot-comm registry rows for the default row's ended run"
+        );
     }
     if let Some(reset) = workspaces.reset_agent_to_none(workspace_id) {
         if let Err(e) = crate::workspaces::save(&reset) {
@@ -5027,7 +5049,16 @@ pub async fn handle_workspace_destroy(
             default_row_end_response(&ws.workspace_id, &ws.slug, &ws.label, outcome);
         tracing::info!(workspace_id = %ws.workspace_id, confirmed_ended, "workspace.destroy: default row's capsule run outcome; row kept");
 
-        end_default_row_run(workspaces, ws_events, &ws.workspace_id, &ws.slug, confirmed_ended);
+        end_default_row_run(
+            workspaces,
+            ws_events,
+            &ws.workspace_id,
+            &ws.slug,
+            &ws.agent_name,
+            &ws.tmux_session,
+            confirmed_ended,
+        )
+        .await;
 
         return Ok(vec![(
             Frame::res(req_id, op::WORKSPACE_DESTROY, payload),
@@ -8241,6 +8272,7 @@ mod workspace_destroy_default_row_tests {
         _serial: std::sync::MutexGuard<'static, ()>,
         xdg_config_home: Option<std::ffi::OsString>,
         sot_state_host: Option<std::ffi::OsString>,
+        sot_comm_home: Option<std::ffi::OsString>,
     }
 
     impl Drop for EnvGuard {
@@ -8248,6 +8280,7 @@ mod workspace_destroy_default_row_tests {
             for (key, val) in [
                 ("XDG_CONFIG_HOME", &self.xdg_config_home),
                 ("SOT_STATE_HOST", &self.sot_state_host),
+                ("SOT_COMM_HOME", &self.sot_comm_home),
             ] {
                 match val {
                     Some(v) => std::env::set_var(key, v),
@@ -8264,6 +8297,7 @@ mod workspace_destroy_default_row_tests {
         EnvGuard {
             xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
             sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
             _serial: serial,
         }
     }
@@ -8478,6 +8512,75 @@ mod workspace_destroy_default_row_tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ADR 0043 decision 35: the default row's end prunes its sot-comm
+    // registry row the same way `workspace.destroy`'s non-default path
+    // already does (`remove_comm_agents_for_workspace_host_tests` proves
+    // that path in isolation) -- before this lane, only the destroy path
+    // pruned, so a Windows default-row end left a ghost row that
+    // `workspace.list` merged back in. Two rows share the agent's handle
+    // string on the shared registry, one on this test's host and one on
+    // another, to prove the prune is host-scoped exactly like the
+    // destroy-path prune it mirrors.
+    #[tokio::test]
+    async fn default_row_end_prunes_the_rows_registry_row() {
+        let _guard = env_guarded();
+        let stamp = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let config_dir =
+            std::env::temp_dir().join(format!("sot-ws-destroy-default-leave-cfg-{stamp}"));
+        let comm_dir =
+            std::env::temp_dir().join(format!("sot-ws-destroy-default-leave-comm-{stamp}"));
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::create_dir_all(&comm_dir).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &config_dir);
+        std::env::set_var("SOT_COMM_HOME", &comm_dir);
+        std::env::set_var("SOT_STATE_HOST", "leave-test-host");
+
+        let handle = "default-row-leave-handle";
+        std::fs::write(
+            comm_dir.join("registry.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "agents": {
+                    handle: {"tmux": "", "host": "leave-test-host"},
+                    "other-host-handle": {"tmux": "", "host": "another-host"},
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let (reg, id, _slug) = seed_default_with_agent("claude", handle);
+        reg.mark_capsule_terminal(&id);
+        let payload = destroy(&reg, &id).await;
+        assert!(
+            payload.get("error").is_none(),
+            "a confirmed end must not error: {payload:?}"
+        );
+
+        let after: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(comm_dir.join("registry.json")).unwrap(),
+        )
+        .unwrap();
+        let agents = after.get("agents").unwrap().as_object().unwrap();
+        assert!(
+            !agents.contains_key(handle),
+            "the default row's own handle must be pruned on a confirmed end: {agents:?}"
+        );
+        assert!(
+            agents.contains_key("other-host-handle"),
+            "another host's same-named-session row must survive: {agents:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&config_dir);
+        let _ = std::fs::remove_dir_all(&comm_dir);
     }
 
     // A lane still `Starting` is never "not running" -- retryable
