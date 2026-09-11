@@ -733,19 +733,19 @@ unsafe fn connect_raw_surviving_exec(path_bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The full lifecycle a proof's retained pidfd supports, exercised
-/// through `ChallengedProcess`'s own REAL public methods (via the
-/// test-support `from_pinned_for_test` constructor, since a `sleep`
-/// child cannot itself speak the wire protocol a full `challenge()` would
-/// need): `wait` reports `false` while the child is alive, `terminate`
-/// kills it, `wait` then reports `true`, and
-/// `exit_status_after_confirmed_exit` is `Ok(_)` either way (kernel-
-/// dependent whether the exit code is actually available -- `PIDFD_GET_INFO`
-/// is 6.15+ -- but the CALL itself must never error once death is
-/// confirmed).
+/// The lifecycle a proof's retained pidfd supports, exercised through
+/// `ChallengedProcess`'s own REAL public methods (via the test-support
+/// `from_pinned_for_test` constructor, since a `sleep` child cannot
+/// itself speak the wire protocol a full `challenge()` would need):
+/// `wait` reports `false` while the child is alive, `terminate` kills
+/// it, and `wait` then reports `true` -- death is CONFIRMED. ADR 0043
+/// decision 33: the challenged-process exit-status accessor this test
+/// used to exercise past that point (`exit_status_after_confirmed_exit`,
+/// `PIDFD_GET_INFO`) is deleted outright (readerless), so this stops at
+/// the confirmed-death proof.
 #[test]
-fn terminate_then_wait_then_exit_status_is_some_or_none_by_kernel() {
-    if !run_isolated("terminate_then_wait_then_exit_status_is_some_or_none_by_kernel") {
+fn terminate_then_wait_confirms_death() {
+    if !run_isolated("terminate_then_wait_confirms_death") {
         return;
     }
     let mut child = std::process::Command::new("sleep")
@@ -782,12 +782,4 @@ fn terminate_then_wait_then_exit_status_is_some_or_none_by_kernel() {
         "expected the pidfd to become readable (process exited) within 5s"
     );
     let _ = child.wait(); // reap the zombie
-
-    match proof.exit_status_after_confirmed_exit() {
-        Ok(Some(code)) => println!("PIDFD_GET_INFO reported exit_code={code}"),
-        Ok(None) => println!(
-            "PIDFD_GET_INFO unavailable or did not report PIDFD_INFO_EXIT on this kernel; exit status is None"
-        ),
-        Err(e) => panic!("exit_status_after_confirmed_exit must be Ok once death is confirmed, got {e}"),
-    }
 }

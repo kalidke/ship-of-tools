@@ -185,63 +185,6 @@ pub fn boot_ticks_now() -> io::Result<u64> {
 /// (not currently supported targets).
 const SO_PEERPIDFD: libc::c_int = 77;
 
-/// `PIDFD_INFO_EXIT` (`include/uapi/linux/pidfd.h`).
-const PIDFD_INFO_EXIT: u64 = 1 << 3;
-
-/// `struct pidfd_info` (`include/uapi/linux/pidfd.h`), the exact v0
-/// layout `PIDFD_GET_INFO` fills in. Only `mask` (in/out) and `exit_code`
-/// (out) are meaningfully read by this module; the rest exist so the
-/// struct's SIZE (and therefore the ioctl's own encoded size field)
-/// matches what the kernel expects to write into.
-#[repr(C)]
-#[derive(Default)]
-#[allow(dead_code)] // byte-layout-only fields; see the struct's own doc
-struct PidfdInfo {
-    mask: u64,
-    cgroupid: u64,
-    pid: u32,
-    tgid: u32,
-    ppid: u32,
-    ruid: u32,
-    rgid: u32,
-    euid: u32,
-    egid: u32,
-    suid: u32,
-    sgid: u32,
-    fsuid: u32,
-    fsgid: u32,
-    exit_code: i32,
-}
-
-const PIDFS_IOCTL_MAGIC: u32 = 0xFF;
-
-/// `PIDFD_GET_INFO` (`include/uapi/linux/pidfd.h`): `_IOWR(0xFF, 11,
-/// struct pidfd_info)`. Encoded by hand via the generic
-/// `include/uapi/asm-generic/ioctl.h` `_IOC` formula (dir=`_IOC_READ|
-/// _IOC_WRITE`=3, nrbits=8, typebits=8, sizebits=14, dirbits=2 -- the
-/// "else" branch every architecture but sparc/mips/powerpc/alpha uses):
-/// `(dir << 30) | (size << 16) | (type << 8) | nr`. Verified on this host
-/// (kernel 5.15, which lacks the ioctl itself) to reach the pidfd ioctl
-/// dispatcher and fail `ENOTTY` -- not `EINVAL`/`ENOSYS` -- confirming the
-/// encoding is at least well-formed for a pidfd, before this module's own
-/// `ENOTTY` fallback was written against it.
-const PIDFD_GET_INFO: libc::Ioctl = {
-    let size = std::mem::size_of::<PidfdInfo>() as u32;
-    (((3u32) << 30) | (size << 16) | (PIDFS_IOCTL_MAGIC << 8) | 11) as libc::Ioctl
-};
-
-/// Decode a kernel wait-status encoding (the same `int status`
-/// `waitpid(2)`/`PIDFD_GET_INFO`'s own `exit_code` field fill in — NOT
-/// already a plain exit code) into the exit code a normal exit reports,
-/// or `None` for a signal death (there is no exit code to report).
-/// Factored out for its own unit tests: `std::process::ExitStatus` has no
-/// public constructor other than `ExitStatusExt::from_raw`, so this is
-/// the one place that raw integer shape is named at all.
-fn decode_wait_status(raw: i32) -> Option<i32> {
-    use std::os::unix::process::ExitStatusExt;
-    std::process::ExitStatus::from_raw(raw).code()
-}
-
 /// `pidfd_open(2)`: no safe wrapper function exists in `libc` (only the
 /// syscall NUMBER is exported), so this goes through the raw `syscall(2)`
 /// the ADR names. `pub(crate)` (ADR 0043 decision 21): `probe_unix.rs`'s
@@ -451,10 +394,9 @@ impl ChallengedProcess {
     /// TEST-SUPPORT ONLY: wrap an already-pinned pidfd (from
     /// [`pin_peer_for_test`]) into a real `ChallengedProcess`, so a test
     /// against a peer that cannot itself speak the wire protocol (a
-    /// spawned `sleep` child, say) can still exercise `wait`/`terminate`/
-    /// `exit_status_after_confirmed_exit` through their REAL public
-    /// methods instead of duplicating this module's own ioctl/syscall
-    /// encodings a second time.
+    /// spawned `sleep` child, say) can still exercise `wait`/`terminate`
+    /// through their REAL public methods instead of duplicating this
+    /// module's own ioctl/syscall encodings a second time.
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_pinned_for_test(pidfd: OwnedFd, pid: u32, created: u64) -> Self {
         Self { pidfd, pid, created }
@@ -496,9 +438,8 @@ impl ChallengedProcess {
     /// Deliberately does NOT reap (ADR 0043 decision 21): a leg this
     /// `ChallengedProcess` identifies may be ADOPTED (not this
     /// supervisor's own child at all), and reaping is only safe once the
-    /// caller has read everything it needs — see
-    /// [`Self::exit_status_after_confirmed_exit`], which reaps right
-    /// after its own read.
+    /// caller has read everything it needs — see [`Self::reap`], the
+    /// explicit, owner-called reap once a caller has observed the exit.
     pub fn wait(&self, timeout: Duration) -> io::Result<bool> {
         poll_pidfd_readable(self.pidfd.as_raw_fd(), timeout)
     }
@@ -520,56 +461,6 @@ impl ChallengedProcess {
             return Err(io::Error::last_os_error());
         }
         Ok(())
-    }
-
-    /// `PIDFD_GET_INFO` with `PIDFD_INFO_EXIT` (kernel 6.15+ — reproduced
-    /// review round: 6.13 does not carry the exit status past a reap
-    /// either, per the UAPI headers), mirroring
-    /// `ChallengedProcess::exit_code_after_confirmed_exit`'s own
-    /// precondition: the caller must have already observed
-    /// [`wait`](Self::wait) return `true`. Returns the EXIT CODE, decoded
-    /// from the kernel's own wait-status encoding via
-    /// [`decode_wait_status`] — `info.exit_code` is NOT already a plain
-    /// exit code (review round, reproduced): it is the raw `int status`
-    /// shape `waitpid(2)` fills in (exit 69 encodes as `17664`, 70 as
-    /// `17920`), so handing it through unmodified made the daemon's own
-    /// watchdog classify EVERY terminal/contended exit of an adopted
-    /// Linux supervisor as a crash and restart it. `Ok(None)` -- "exited,
-    /// status unknown" -- covers a kernel too old for the ioctl at all
-    /// (`ENOTTY`/`EINVAL`/`ENOSYS`), a kernel that answers but did not
-    /// actually set `PIDFD_INFO_EXIT` in the returned mask, AND a signal
-    /// death (no exit code exists to report); `Ok(Some(_))` is only ever
-    /// returned once the kernel has affirmatively reported a real exit
-    /// code. Read-only: this accessor READS, it does not reap — see
-    /// [`Self::reap`] for the explicit, owner-called reap this used to
-    /// perform implicitly here (single-owner reaping, an earlier review
-    /// round: two independent owners — this daemon-side handle's own
-    /// `Drop` and a separately held `tokio::process::Child` — could both
-    /// reap the SAME pid, and whichever won first silently stole the
-    /// OTHER's real exit code).
-    pub fn exit_status_after_confirmed_exit(&self) -> io::Result<Option<i32>> {
-        let mut info = PidfdInfo {
-            mask: PIDFD_INFO_EXIT,
-            ..Default::default()
-        };
-        let rc = unsafe {
-            libc::ioctl(
-                self.pidfd.as_raw_fd(),
-                PIDFD_GET_INFO,
-                std::ptr::addr_of_mut!(info),
-            )
-        };
-        if rc != 0 {
-            let err = io::Error::last_os_error();
-            match err.raw_os_error() {
-                Some(libc::ENOTTY) | Some(libc::EINVAL) | Some(libc::ENOSYS) => Ok(None),
-                _ => Err(err),
-            }
-        } else if info.mask & PIDFD_INFO_EXIT == 0 {
-            Ok(None)
-        } else {
-            Ok(decode_wait_status(info.exit_code))
-        }
     }
 
     /// The single, explicit reap point (review round, replacing decision
@@ -612,10 +503,7 @@ impl ChallengedProcess {
 /// L1-unix LU3a (ADR 0043 decision 19): the seam trait every concrete
 /// `ChallengedProcess` implements — `pid`/`created`/`reverify`/`wait`/
 /// `terminate` already have these exact signatures, so this is pure
-/// delegation. `exit_status_after_confirmed_exit` stays OUT of the trait
-/// (decisions 8/19): it returns `Option<i32>` here, a plain `u32` on
-/// Windows — the platforms disagree on the TYPE, not merely the
-/// mechanism.
+/// delegation.
 impl PeerIdentity for ChallengedProcess {
     fn pid(&self) -> u32 {
         ChallengedProcess::pid(self)
@@ -728,7 +616,7 @@ pub fn pin_peer_for_test(
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_wait_status, parse_start_ticks, ChallengedProcess};
+    use super::{parse_start_ticks, ChallengedProcess};
     use std::io;
     use std::time::Duration;
 
@@ -755,27 +643,6 @@ mod tests {
     #[test]
     fn rejects_a_line_with_too_few_fields_after_comm() {
         assert_eq!(parse_start_ticks("1234 (comm) S 1 1"), None);
-    }
-
-    /// Review round, reproduced: `PIDFD_GET_INFO`'s own `exit_code` is the
-    /// kernel's WAIT-STATUS encoding, not a plain exit code — 69 and 70
-    /// (`EXIT_TERMINAL`/`EXIT_CONTENDED`, `capsule_workspace.rs`) encode
-    /// as `69 << 8` and `70 << 8` respectively (`WIFEXITED`'s own shape:
-    /// low byte 0, high byte the exit code).
-    #[test]
-    fn decode_wait_status_handles_normal_exit_codes() {
-        assert_eq!(decode_wait_status(0), Some(0));
-        assert_eq!(decode_wait_status(17664), Some(69), "69 << 8 == 17664 (EXIT_TERMINAL)");
-        assert_eq!(decode_wait_status(17920), Some(70), "70 << 8 == 17920 (EXIT_CONTENDED)");
-    }
-
-    /// A raw status whose low 7 bits are non-zero and not `0x7f` is
-    /// `WIFSIGNALED`, not `WIFEXITED` — there is no exit code to decode,
-    /// so this must be `None` (decision 8's "unknown" bucket), never
-    /// misread as "exit code 9".
-    #[test]
-    fn decode_wait_status_returns_none_for_a_signal_death() {
-        assert_eq!(decode_wait_status(9), None, "raw 9 encodes \"terminated by signal 9\" (SIGKILL)");
     }
 
     /// Single-owner reaping (review round): `ChallengedProcess::reap` is
