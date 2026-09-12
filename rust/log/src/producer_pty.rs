@@ -347,6 +347,17 @@ impl Producer for PtyProducer {
 
         let mut cmd = Command::new(&argv[0]);
         cmd.args(&argv[1..]);
+        // The pty owner declares the terminal it emulates — the same two
+        // lines the daemon's own tmux spawn and the frontend's drawer pty
+        // set. Nothing upstream can: the supervisor inherits the daemon's
+        // environment, and a daemon under a service manager has no TERM
+        // at all, so without this the agent ran colourless (a white
+        // status line, no markup) in every capsule row. The frontend's
+        // own vt100 renders 256-colour and RGB, so both claims are true.
+        // Windows needs no counterpart: ConPTY clients detect VT support
+        // from the console itself, never from TERM.
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
         let slave_raw = slave.as_raw_fd();
         // SAFETY: this closure runs on the forked child, between fork and
         // exec — only async-signal-safe calls, per `pre_exec`'s own
@@ -978,6 +989,27 @@ mod drop_and_domain_tests {
     /// `close_output_side`/teardown entirely). `sleep 600` as the
     /// producer: silent forever, so the reader's blocking `read` is
     /// GENUINELY still parked (not merely lucky timing) when we drop.
+    /// The leg's child sees the terminal the pty owner declares — read
+    /// back through the pty itself, not from the producer's own process.
+    #[test]
+    fn the_child_sees_a_256_colour_truecolor_terminal() {
+        let argv = ["/bin/sh", "-c", "printf '%s|%s' \"$TERM\" \"$COLORTERM\""].map(String::from);
+        let mut producer = PtyProducer::spawn(&argv, 80, 24).unwrap();
+        let mut output = producer.take_output();
+        assert!(producer.wait(Duration::from_secs(10)).unwrap(), "the shell must exit");
+        producer.close_output_side();
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 256];
+        while let Ok(n) = output.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            seen.extend_from_slice(&buf[..n]);
+        }
+        let seen = String::from_utf8_lossy(&seen);
+        assert!(seen.contains("xterm-256color|truecolor"), "pty output was {seen:?}");
+    }
+
     #[test]
     fn drop_before_phase_b_does_not_strand_the_reader() {
         let mut producer = PtyProducer::spawn(&["sleep".to_string(), "600".to_string()], 80, 24).unwrap();
