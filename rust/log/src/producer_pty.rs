@@ -991,23 +991,34 @@ mod drop_and_domain_tests {
     /// GENUINELY still parked (not merely lucky timing) when we drop.
     /// The leg's child sees the terminal the pty owner declares — read
     /// back through the pty itself, not from the producer's own process.
+    /// Only the bytes are asserted (a reader thread, as the early-Drop
+    /// test below): the child's exit is not part of the claim.
     #[test]
     fn the_child_sees_a_256_colour_truecolor_terminal() {
-        let argv = ["/bin/sh", "-c", "printf '%s|%s' \"$TERM\" \"$COLORTERM\""].map(String::from);
+        let argv = ["/bin/sh", "-c", "printf '<%s|%s>' \"$TERM\" \"$COLORTERM\""].map(String::from);
         let mut producer = PtyProducer::spawn(&argv, 80, 24).unwrap();
         let mut output = producer.take_output();
-        assert!(producer.wait(Duration::from_secs(10)).unwrap(), "the shell must exit");
-        producer.close_output_side();
-        let mut seen = Vec::new();
-        let mut buf = [0u8; 256];
-        while let Ok(n) = output.read(&mut buf) {
-            if n == 0 {
-                break;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 256];
+            loop {
+                match output.read(&mut buf) {
+                    Ok(n) if n > 0 => {
+                        seen.extend_from_slice(&buf[..n]);
+                        if seen.ends_with(b">") {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
             }
-            seen.extend_from_slice(&buf[..n]);
-        }
-        let seen = String::from_utf8_lossy(&seen);
-        assert!(seen.contains("xterm-256color|truecolor"), "pty output was {seen:?}");
+            let _ = tx.send(String::from_utf8_lossy(&seen).into_owned());
+        });
+        let seen = rx.recv_timeout(Duration::from_secs(10)).expect("the pty never delivered the marker");
+        assert!(seen.contains("<xterm-256color|truecolor>"), "pty output was {seen:?}");
+        drop(producer);
+        reader.join().unwrap();
     }
 
     #[test]
