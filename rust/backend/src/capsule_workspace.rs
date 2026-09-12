@@ -574,6 +574,28 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
         env.push(("SOT_COMM_HOME".to_string(), comm_home));
         env.push(("SOT_COMM_SELF_FILE".to_string(), self_file));
     }
+    // The `ccb` launcher's own PATH rule, promoted to the daemon: a leg
+    // inherits the SERVICE's PATH, which has no `~/.local/bin` (CLAUDE.md's
+    // documented gotcha — the same reason [`claude_argv`] full-paths
+    // `claude`), so a capsule session found neither `gh`, the comm
+    // launchers, nor any user-installed tool a tmux row's login shell
+    // sees (found 2026-09-12: the first capsule-row release cut failed
+    // its preflight on the system's ancient `gh`). Prepend it once, only
+    // when absent. Windows relies on the daemon's own PATH already
+    // reaching everything, as `claude_argv` documents.
+    #[cfg(not(windows))]
+    if let Some(home) = std::env::var_os("HOME") {
+        let local_bin = Path::new(&home).join(".local").join("bin");
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        if !inherited.split(':').any(|dir| Path::new(dir) == local_bin) {
+            let joined = if inherited.is_empty() {
+                local_bin.display().to_string()
+            } else {
+                format!("{}:{inherited}", local_bin.display())
+            };
+            env.push(("PATH".to_string(), joined));
+        }
+    }
     env
 }
 
@@ -2841,6 +2863,7 @@ mod tests {
         userprofile: Option<std::ffi::OsString>,
         sot_comm_home: Option<std::ffi::OsString>,
         sot_state_host: Option<std::ffi::OsString>,
+        path: Option<std::ffi::OsString>,
     }
 
     impl Drop for SelfFileEnvGuard {
@@ -2850,6 +2873,7 @@ mod tests {
                 ("USERPROFILE", &self.userprofile),
                 ("SOT_COMM_HOME", &self.sot_comm_home),
                 ("SOT_STATE_HOST", &self.sot_state_host),
+                ("PATH", &self.path),
             ] {
                 match val {
                     Some(v) => std::env::set_var(key, v),
@@ -2868,8 +2892,26 @@ mod tests {
             userprofile: std::env::var_os("USERPROFILE"),
             sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
             sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            path: std::env::var_os("PATH"),
             _serial: serial,
         }
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn capsule_supervisor_env_prepends_local_bin_to_path_once() {
+        // The ccb launcher's PATH rule: the service's PATH has no
+        // ~/.local/bin, so the leg gets it prepended — and a PATH that
+        // already reaches it is left alone (no duplicate entry).
+        let _guard = self_file_env_guarded();
+        std::env::set_var("HOME", "/fake-home");
+        std::env::set_var("PATH", "/usr/bin:/bin");
+        let env = capsule_supervisor_env("ws-p-1", "p", Path::new("/fake-home/p"), "");
+        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("PATH"), Some("/fake-home/.local/bin:/usr/bin:/bin"));
+        std::env::set_var("PATH", "/fake-home/.local/bin:/usr/bin");
+        let env = capsule_supervisor_env("ws-p-1", "p", Path::new("/fake-home/p"), "");
+        assert!(env.iter().all(|(key, _)| key != "PATH"), "already on PATH: nothing to stamp");
     }
 
     #[test]
