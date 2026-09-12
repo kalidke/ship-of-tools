@@ -198,8 +198,17 @@ mod linux_only {
 /// ADR 0041's own drawer capsule is deliberately a RAW TERMINAL voyage,
 /// not yet wired to any launcher either — U4, the drawer cutover, is
 /// still unbuilt). `"claude"` gets the closest honest equivalent: the
-/// same flags `ccb` itself execs with (`claude --permission-mode auto
-/// /sot-session-start`); on Windows this relies on `claude` being on the
+/// same flags `ccb --continue` execs with (`claude --permission-mode auto
+/// --continue /sot-session-start`). `--continue` is unconditional: a
+/// row's conversation lives in claude's own store keyed by the root, so
+/// every leg the supervisor spawns for that root — the first, a respawn
+/// after the operator exits, a watchdog restart — resumes the newest
+/// conversation there, and a root with none starts fresh (claude treats
+/// a missing conversation as a fresh start, verified 2026-09-12). This is
+/// what ADR 0017 already relies on for the drawer: continuity is
+/// decoupled from process survival. Without it a capsule row could never
+/// resume — the fixed argv re-ran as a fresh session on every exit. On
+/// Windows this relies on `claude` being on the
 /// daemon's own PATH (a detached child inherits it, same as any spawned
 /// process), on Linux it is resolved to an ABSOLUTE path first
 /// ([`resolve_claude`] — the tmux launchers' own full-path rule: a
@@ -242,6 +251,7 @@ fn claude_argv() -> Result<Vec<String>, String> {
         "claude".to_string(),
         "--permission-mode".to_string(),
         "auto".to_string(),
+        "--continue".to_string(),
         "/sot-session-start".to_string(),
     ])
 }
@@ -255,6 +265,7 @@ fn claude_argv() -> Result<Vec<String>, String> {
         claude,
         "--permission-mode".to_string(),
         "auto".to_string(),
+        "--continue".to_string(),
         "/sot-session-start".to_string(),
     ])
 }
@@ -2572,7 +2583,7 @@ mod tests {
     fn agent_argv_claude_matches_ccbs_own_flags() {
         assert_eq!(
             agent_argv("claude").unwrap(),
-            vec!["claude", "--permission-mode", "auto", "/sot-session-start"]
+            vec!["claude", "--permission-mode", "auto", "--continue", "/sot-session-start"]
         );
     }
 
