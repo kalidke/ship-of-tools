@@ -666,9 +666,10 @@ pub async fn run(opts: Opts) -> Result<()> {
     // Linux only (ADR 0043 decision 22): on any other host
     // `workspace.create` never marks a workspace `"capsule"` (see
     // `handlers.rs`), so there is nothing to resume there. On Linux this
-    // naturally resumes nothing on a fresh install either (the Linux
-    // platform default stays "tmux" until the bridge) — it only ever
-    // finds candidates a caller explicitly asked to be `"capsule"`.
+    // now finds the same kind of candidates it always found on Windows —
+    // every NEW workspace defaults to `"capsule"` there too (ADR 0042
+    // L6 / this repo's B6 lane) — plus any surviving `"tmux"` row from
+    // before the flip, which this scan still ignores exactly as before.
     #[cfg(any(windows, target_os = "linux"))]
     if let Some(state_root) = sot_log::state_dir::sot_state_dir() {
         tokio::spawn(crate::capsule_workspace::resume_all(state_root, workspaces.clone()));

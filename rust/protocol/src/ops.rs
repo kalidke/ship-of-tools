@@ -1279,19 +1279,18 @@ pub struct WorkspaceCreateReq {
     /// empty string when absent).
     #[serde(default)]
     pub task: String,
-    /// ADR 0043 decision 22: which runtime hosts this workspace's agent
-    /// pane — `""` (absent on the wire; `#[serde(default)]`) means this
-    /// host's platform default (`"capsule"` on Windows, `"tmux"`
-    /// elsewhere); `"capsule"` asks for a capsule row explicitly on
-    /// either platform; `"tmux"` is refused on Windows (the no-knob
-    /// rule — Windows has no tmux runtime at all). The Linux platform
-    /// default stays `"tmux"` even now that the capsule runtime compiles
-    /// and runs there (LU4): a capsule row's attach is `attach_direct` —
-    /// same-machine only, since the frontend connects to the supervisor
-    /// lane directly — so a Linux backend's capsule rows have no attach
-    /// path from a remote frontend until the bridge lands. This field is
-    /// the honest way for a same-machine test, a local Linux frontend,
-    /// or later the bridge to ask for one anyway.
+    /// ADR 0042's rule (ADR 0043 decision 22, flipped by L6 / this
+    /// repo's B6 lane now that the bridge — ADR 0045 — gives a capsule
+    /// row a remote attach path): which runtime hosts this workspace's
+    /// agent pane — `""` (absent on the wire; `#[serde(default)]`)
+    /// means this host's own platform default, which is `"capsule"` on
+    /// every host where the capsule runtime compiles (`cfg(any(windows,
+    /// target_os = "linux"))`) and `"tmux"` only where it doesn't
+    /// (macOS, for now); `"capsule"` still asks for a capsule row
+    /// explicitly on either platform; `"tmux"` is still accepted
+    /// explicitly on Linux (an operator's deliberate ask — existing
+    /// tmux rows retire by attrition) but refused on Windows (the
+    /// no-knob rule — Windows has no tmux runtime at all).
     #[serde(default)]
     pub runtime: String,
     // NOTE (ADR 0023 §3): the daemon-boot trigger travels as an extra wire field

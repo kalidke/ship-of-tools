@@ -510,11 +510,14 @@ surfaces. So LU3 is three lanes, the first two provably behaviour-preserving on 
     where decision 8's "exited, status unknown" is a `Crash`, never a panic). The daemon's
     `cfg(windows)` gates on the capsule path — boot `resume_all`, `pty.open` start-on-attach,
     the spawn on create, destroy, `workspace.list` phases — open to both platforms, and every
-    "%LOCALAPPDATA% unset" text names the Linux state root too. **The default runtime does not
-    flip on Linux**: a capsule row's attach is `attach_direct` — the frontend connects to the
-    supervisor lane itself, which is same-machine only — so a Linux backend's capsule rows have
-    no attach path from a remote frontend until the bridge lands; `Workspace::runtime` keeps its
-    platform default (capsule on Windows, tmux on Linux). Instead `workspace.create` gains an
+    "%LOCALAPPDATA% unset" text names the Linux state root too. **The default runtime did not
+    flip on Linux at LU4 time — it does now (ADR 0042 L6, this repo's B6 lane, gated on the
+    bridge landing)**: a capsule row's attach was `attach_direct` — the frontend connecting to
+    the supervisor lane itself, same-machine only — so before the bridge a Linux backend's
+    capsule rows had no attach path from a remote frontend; with the bridge (ADR 0045) merged,
+    `workspace.create`'s absent-runtime default now resolves to `capsule` wherever the runtime
+    compiles (`cfg(any(windows, target_os = "linux"))`), matching Windows, and `Workspace::runtime`
+    follows suit. Instead `workspace.create` gains an
     optional `runtime` field (`"capsule" | "tmux"`; absent = the platform default; `"tmux"` is
     refused on Windows exactly as today's no-knob rule requires) — the honest way for the Linux
     backend test, a local Linux frontend, and later the bridge to ask for a capsule row. The

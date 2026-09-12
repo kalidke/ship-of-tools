@@ -8,10 +8,11 @@
 // — everything else in that module is byte-identical on both platforms.
 // `runtime: "tmux"`
 // rows stay exactly what they are today; this module never touches
-// them, and the Linux default row is STILL "tmux" (ADR 0043 decision
-// 22: attach for a capsule row is same-machine-only until the bridge) —
-// `workspace.create`'s own explicit `runtime` field is the only way to
-// ask for a capsule row there today.
+// them. ADR 0042's rule now holds on Linux too (L6 / this repo's B6
+// lane, once the bridge gave a capsule row a remote attach path):
+// `workspace.create`'s absent `runtime` resolves to "capsule" here
+// just as it does on Windows; `"tmux"` still exists for an operator's
+// explicit ask, and old rows retire by attrition.
 //
 // Split deliberately into PURE helpers (no OS call: the state-dir path
 // arithmetic, the phase-to-wire-string mapping, the agent argv choice)
