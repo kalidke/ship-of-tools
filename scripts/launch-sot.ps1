@@ -1511,6 +1511,20 @@ function Set-LaunchNoticeEnv {
     }
 }
 Set-LaunchNoticeEnv
+# ADR 0045 decision 1 (Codex review): one FE-instance id per SUPERVISOR
+# invocation, set once here (same "env vars set on this process are
+# inherited by every child it spawns" rule as SOT_LAUNCH_NOTICE above) —
+# every exit-75/-76 respawn inside the do/while loop below inherits the
+# SAME value, while a fresh `launch-sot.ps1` invocation (a genuinely
+# independent frontend, not a relaunch of this one) mints its own. The
+# frontend folds this into its supervisor-lane controller id
+# (`gpu.rs`'s `fe_instance_component`) so the durable record can tell
+# two frontends on one machine apart even though their comm handle
+# (hostname-based) is identical. Respects an existing value so a caller
+# can pin one explicitly; never overwritten by a converge/relaunch.
+if (-not $env:SOT_FE_INSTANCE) {
+    $env:SOT_FE_INSTANCE = [guid]::NewGuid().ToString('N')
+}
 $relaunchNext = [bool]$Relaunched
 # The splash covers the INITIAL launch only. Exit-75 relaunches keep the tunnel
 # and skip freshness, and happen while the user is already in the app, so they

@@ -91,6 +91,17 @@ pub enum IncomingEvt {
         /// `--socket <local> --tcp <addr>` remote config, which falls back to
         /// tcp, is correctly detected as remote.
         remote: bool,
+        /// ADR 0045 decision 1 (Codex review, lane B5 discharge): the
+        /// resolved peer address of THIS tcp connection (`TcpStream::
+        /// peer_addr()`, captured before the stream is split) — `Some`
+        /// exactly when `remote` is `true`. The capsule lane bridge dials
+        /// through the SAME resolved endpoint the control transport
+        /// actually chose (never a second guess at `config.tcp`'s own
+        /// hostname string, which `SocketAddr`'s own parser cannot resolve
+        /// anyway — `localhost:PORT` and friends need real resolution,
+        /// which `TcpStream::connect`'s own successful connect already
+        /// did here).
+        tcp_peer: Option<std::net::SocketAddr>,
         /// The backend's product version (`HelloRes::app_version`), e.g.
         /// `0.5.8` or `0.5.8-dev+a1b2c3d`. Painted next to the FE's own
         /// version on the bottom chrome edge so a running FE/BE skew is
@@ -465,14 +476,13 @@ pub enum IncomingEvt {
     /// the reconnect re-fire racing a runtime flip). `target` is what
     /// this specific reply is ABOUT — never assume it's whatever row is
     /// currently selected, which a later switch can have changed by the
-    /// time a stale reply lands (L1b fix 1). `state_dir` is the daemon's
-    /// own resolution of the path when it could compute one; `None` if
-    /// it couldn't (no state root configured). The chrome switches that
-    /// row's session pane to the attach path using this instead of
-    /// waiting for the next `workspace.list` to self-correct.
+    /// time a stale reply lands (L1b fix 1). ADR 0045 decision 1: the
+    /// chrome now attaches every capsule row through its own daemon's
+    /// `lane.connect` bridge, so this reply no longer needs a state dir —
+    /// the daemon keeps emitting one on the wire (until the next
+    /// `PROTOCOL_VERSION` bump) but it is simply ignored here.
     PtyAttachDirect {
         target: Option<String>,
-        state_dir: Option<String>,
     },
     /// Raw event we don't handle in the spike yet — kept for visibility.
     Event {
@@ -669,12 +679,6 @@ pub struct WorkspaceInfo {
     /// lives in the drawer). `""` from a daemon that predates L1a reads
     /// as neither and is simply never filtered.
     pub runtime: String,
-    /// The capsule's state directory (host-local absolute path) —
-    /// `Some` only for `runtime == "capsule"` rows. L1b is single-host:
-    /// the frontend attaches to this path directly on the SAME machine
-    /// the daemon runs on (no host indirection yet — that's L2/L3).
-    #[allow(dead_code)]
-    pub state_dir: Option<String>,
     /// The supervisor-lane phase (ADR 0041 Lifecycle, snake_case),
     /// `"stopped"` (its state directory was never created — no supervisor
     /// has ever run for it), or `"unreachable"` (the lane could not be
@@ -1641,6 +1645,7 @@ async fn connect_and_run(
                     &window,
                     backoff_ms,
                     false, // via_tcp: this is the local pipe
+                    None,  // tcp_peer: no resolved tcp endpoint on the pipe path
                 )
                 .await;
             }
@@ -1668,7 +1673,15 @@ async fn connect_and_run(
         if let Err(e) = stream.set_nodelay(true) {
             tracing::warn!(error = %e, "set_nodelay failed on tcp stream");
         }
-        tracing::info!(%host, %tcp_addr, "connected via tcp");
+        // ADR 0045 decision 1 (Codex review): the RESOLVED peer address
+        // this connect actually used — `tcp_addr` itself may be a
+        // hostname:port a lane dial cannot re-derive with a bare
+        // `SocketAddr` parse, so this is captured here, once, from the
+        // connect that already did the real resolution, and carried
+        // through to `IncomingEvt::Connected` rather than re-resolved
+        // anywhere downstream.
+        let tcp_peer = stream.peer_addr().ok();
+        tracing::info!(%host, %tcp_addr, ?tcp_peer, "connected via tcp");
         let (rx, tx) = stream.into_split();
         let rx = codec::buffered(rx);
         return run_protocol(
@@ -1681,6 +1694,7 @@ async fn connect_and_run(
             &window,
             backoff_ms,
             true, // via_tcp: this is the remote TCP control tunnel
+            tcp_peer,
         )
         .await;
     }
@@ -1865,6 +1879,11 @@ async fn run_protocol<R, W>(
     // `--socket <local> --tcp <addr>` remote config has BOTH set and falls
     // back to tcp, so a CLI-shape guess would wrongly read as local).
     via_tcp: bool,
+    // ADR 0045 decision 1: the resolved peer address `connect_and_run`'s
+    // own tcp branch captured from the live `TcpStream` — `Some` exactly
+    // when `via_tcp` is true, carried straight through to `Connected`
+    // rather than re-derived here or downstream.
+    tcp_peer: Option<std::net::SocketAddr>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -2030,6 +2049,7 @@ where
         project_root: hello_res.project_root.clone(),
         proxy: hello_res.proxy,
         remote: via_tcp,
+        tcp_peer,
         backend_version: hello_res.app_version.clone(),
     });
     window.request_redraw();
@@ -2995,23 +3015,15 @@ where
     }
 }
 
-/// ADR 0042 slice L1b: is `payload` a `pty.open` refusal carrying
-/// `code: "attach_direct"` (the daemon's answer for a capsule-runtime
-/// workspace, `rust/backend/src/server.rs`'s `PTY_OPEN` arm)? `Some(dir)`
-/// (possibly `None` inside, when the daemon couldn't resolve a state root)
-/// when it is; `None` for every other response shape — an ordinary size
-/// confirmation, a DIFFERENT error code, or anything unparseable — so the
-/// caller falls through to the normal `PtyOpenRes` parse for those.
-fn attach_direct_state_dir(payload: &Value) -> Option<Option<String>> {
-    if payload.get("code").and_then(|v| v.as_str()) != Some("attach_direct") {
-        return None;
-    }
-    Some(
-        payload
-            .get("state_dir")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-    )
+/// ADR 0042 slice L1b, revised by ADR 0045 decision 1: is `payload` a
+/// `pty.open` refusal carrying `code: "attach_direct"` (the daemon's
+/// answer for a capsule-runtime workspace, `rust/backend/src/server.rs`'s
+/// `PTY_OPEN` arm)? The daemon still emits a `state_dir` alongside it
+/// (until the next `PROTOCOL_VERSION` bump) but the frontend no longer
+/// reads it — every capsule row is attached through its own daemon's
+/// `lane.connect` bridge, keyed by `target` alone.
+fn is_attach_direct(payload: &Value) -> bool {
+    payload.get("code").and_then(|v| v.as_str()) == Some("attach_direct")
 }
 
 /// Route a frame to the right `IncomingEvt`. Replies look up `id` in the
@@ -3695,8 +3707,8 @@ fn handle_response_frame(
                 // `target` is THIS request's own target (fix 1) — the
                 // chrome corrects/attaches that row, not whatever is
                 // currently selected.
-                if let Some(state_dir) = attach_direct_state_dir(&frame.payload) {
-                    emit(IncomingEvt::PtyAttachDirect { target, state_dir });
+                if is_attach_direct(&frame.payload) {
+                    emit(IncomingEvt::PtyAttachDirect { target });
                     return;
                 }
                 match serde_json::from_value::<PtyOpenRes>(frame.payload) {
@@ -3809,7 +3821,6 @@ fn handle_response_frame(
                                 agent_status_at: w.agent_status_at,
                                 repl_state: w.repl_state,
                                 runtime: w.runtime,
-                                state_dir: w.state_dir,
                                 phase: w.phase,
                             })
                             .collect();
@@ -4761,50 +4772,39 @@ mod tests {
     // --- ADR 0042 slice L1b: the attach_direct switch. ---
 
     #[test]
-    fn attach_direct_state_dir_extracts_the_path_when_present() {
-        let payload = serde_json::json!({
+    fn is_attach_direct_declines_every_other_response_shape() {
+        let attach = serde_json::json!({
             "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
             "code": "attach_direct",
             "state_dir": "/state/workspaces/ws-1",
         });
-        assert_eq!(
-            attach_direct_state_dir(&payload),
-            Some(Some("/state/workspaces/ws-1".to_string()))
-        );
-    }
-
-    #[test]
-    fn attach_direct_state_dir_tolerates_a_missing_path() {
-        // Still an attach_direct refusal — the daemon just couldn't
-        // resolve a state root — not "no refusal at all".
-        let payload = serde_json::json!({
+        assert!(is_attach_direct(&attach));
+        // Still recognized when the daemon couldn't resolve a state root —
+        // the code alone gates this now, not the (ignored) path.
+        let attach_no_dir = serde_json::json!({
             "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
             "code": "attach_direct",
             "state_dir": serde_json::Value::Null,
         });
-        assert_eq!(attach_direct_state_dir(&payload), Some(None));
-    }
-
-    #[test]
-    fn attach_direct_state_dir_declines_every_other_response_shape() {
+        assert!(is_attach_direct(&attach_no_dir));
         // An ordinary size-confirmation reply.
         let ok = serde_json::json!({"cols": 80, "rows": 24, "pane_command": null});
-        assert_eq!(attach_direct_state_dir(&ok), None);
+        assert!(!is_attach_direct(&ok));
         // A DIFFERENT error code must not be mistaken for attach_direct —
         // only the exact literal switches the pane to the attach path.
         let other_error = serde_json::json!({"error": "boom", "code": "bad_target"});
-        assert_eq!(attach_direct_state_dir(&other_error), None);
+        assert!(!is_attach_direct(&other_error));
     }
 
     /// Real-seam regression, same shape as `figure_get_error_envelope_...`
     /// above: an `attach_direct` refusal to `pty.open`, driven through the
     /// actual `handle_response_frame` dispatcher, must produce exactly one
-    /// `PtyAttachDirect` carrying the daemon's `state_dir` AND the exact
-    /// `target` this request's own `PendingKind::PtyOpen` entry named —
-    /// L1b fix 1's whole point: the reply is about THAT row, not whatever
-    /// the pending map happened to be keyed against. Must NOT fall through
-    /// to a `pty.open res parse failed` warn-and-drop (the pre-L1b
-    /// behavior for any unparseable `PtyOpenRes`).
+    /// `PtyAttachDirect` carrying the exact `target` this request's own
+    /// `PendingKind::PtyOpen` entry named — L1b fix 1's whole point: the
+    /// reply is about THAT row, not whatever the pending map happened to
+    /// be keyed against. Must NOT fall through to a `pty.open res parse
+    /// failed` warn-and-drop (the pre-L1b behavior for any unparseable
+    /// `PtyOpenRes`).
     #[test]
     fn attach_direct_reply_emits_exactly_one_pty_attach_direct_with_its_own_target() {
         let (evt_tx, evt_rx) = std::sync::mpsc::channel();
@@ -4834,10 +4834,9 @@ mod tests {
             "exactly one event for one attach_direct reply, got {events:?}"
         );
         match &events[0] {
-            (h, IncomingEvt::PtyAttachDirect { target, state_dir }) => {
+            (h, IncomingEvt::PtyAttachDirect { target }) => {
                 assert_eq!(h, &host);
                 assert_eq!(target.as_deref(), Some("sot-be-alpha"));
-                assert_eq!(state_dir.as_deref(), Some("/state/workspaces/ws-9"));
             }
             other => panic!("expected PtyAttachDirect, got {other:?}"),
         }
