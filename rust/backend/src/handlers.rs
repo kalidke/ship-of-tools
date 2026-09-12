@@ -4461,15 +4461,20 @@ pub async fn handle_workspace_create(
     };
     let autostart = agent_kind != "none";
 
-    // ADR 0043 decision 22: the runtime is now an explicit VALUE, not a
-    // platform cfg — `""` (absent on the wire) means this host's own
-    // platform default, `"capsule"` asks for one explicitly on either
-    // platform, `"tmux"` is refused on Windows (the no-knob rule: no
-    // tmux runtime exists there at all). The Linux platform default
-    // stays "tmux" (a capsule row's attach is same-machine only until
-    // the bridge — see `ops.rs`'s own doc on this field).
+    // ADR 0042's rule, flipped here (L6 / this repo's B6 lane) now that
+    // the bridge (ADR 0045) gives a capsule row a remote attach path:
+    // `""` (absent on the wire) resolves to "capsule" on every host
+    // where the capsule runtime compiles (`cfg(any(windows,
+    // target_os = "linux"))`, matching `capsule_workspace::mod
+    // runtime`'s own gate) — macOS, with no capsule runtime at all,
+    // keeps "tmux" as its default. `"capsule"` still asks for one
+    // explicitly either way; `"tmux"` is still accepted explicitly on
+    // Linux (an operator can create one on purpose) but refused on
+    // Windows (the no-knob rule: no tmux runtime exists there at all).
+    // Existing tmux rows keep running; the daemon just stops creating
+    // new ones by default — they retire by attrition.
     let runtime: String = match req.runtime.as_str() {
-        "" => if cfg!(windows) { "capsule" } else { "tmux" }.to_string(),
+        "" => if cfg!(any(windows, target_os = "linux")) { "capsule" } else { "tmux" }.to_string(),
         "capsule" => "capsule".to_string(),
         "tmux" if !cfg!(windows) => "tmux".to_string(),
         "tmux" => {

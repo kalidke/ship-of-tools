@@ -10,8 +10,10 @@
 //! `conpty-windows-2022` and `ubuntu-latest` jobs; production locates it
 //! the identical way, next to the daemon's own executable). Every
 //! `workspace.create` in this file requests `"runtime": "capsule"`
-//! explicitly (the field exists for exactly this — see `ops.rs`'s own
-//! doc); the Linux platform default stays "tmux" until the bridge.
+//! explicitly for clarity — since ADR 0042 L6 (this repo's B6 lane) it
+//! is also this host's own default on Linux, same as Windows, but every
+//! fixture here stays explicit so it reads on its own (see `ops.rs`'s
+//! own doc on the field).
 //!
 //! Every wait below is a BOUNDED poll or `tokio::time::timeout` for an
 //! external, observable fact (the socket accepting a connection, a
@@ -4007,8 +4009,10 @@ async fn lane_connect_refusals() {
     assert_eq!(res["code"].as_str(), Some("unknown_workspace"), "{res:?}");
     assert_lane_connect_closes(&mut s).await;
 
-    // The tmux default row -- Linux stays "tmux" until the bridge (ADR
-    // 0043 decision 22).
+    // The anchor/default row -- its runtime is decided by
+    // `default_row_runtime`, independent of ADR 0042's L6 flip, and it
+    // stays "tmux" on a fresh Linux install regardless (ADR 0043
+    // decision 22).
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
     next_id += 1;
     let default_row = list_payload["workspaces"]
