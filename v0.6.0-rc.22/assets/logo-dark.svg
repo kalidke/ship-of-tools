@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Ship of Tools">
+  <title>Ship of Tools</title>
+  <!-- ship's helm: drive agents (dark-mode variant, gray spokes) -->
+  <g stroke="#939dad" stroke-width="7" fill="none" stroke-linecap="round">
+    <circle cx="64" cy="64" r="36"/>
+    <line x1="64" y1="16" x2="64" y2="112"/>
+    <line x1="16" y1="64" x2="112" y2="64"/>
+    <line x1="29" y1="29" x2="99" y2="99"/>
+    <line x1="99" y1="29" x2="29" y2="99"/>
+  </g>
+  <g fill="#939dad">
+    <circle cx="64" cy="116" r="7"/>
+    <circle cx="12" cy="64" r="7"/>
+    <circle cx="116" cy="64" r="7"/>
+    <circle cx="101" cy="27" r="7"/>
+    <circle cx="27" cy="27" r="7"/>
+  </g>
+  <!-- canonical Julia orientation: green top, red bottom-left, purple bottom-right.
+       Enlarged (r 7.5 -> 12) so the Julia colours survive the downscale to the
+       miniature nav-strip logo, where r=7.5 knobs shrank to invisible dots. -->
+  <circle cx="64" cy="12" r="12" fill="#389826"/>
+  <circle cx="27" cy="101" r="12" fill="#cb3c33"/>
+  <circle cx="101" cy="101" r="12" fill="#9558b2"/>
+  <circle cx="64" cy="64" r="9" fill="#939dad"/>
+</svg>
