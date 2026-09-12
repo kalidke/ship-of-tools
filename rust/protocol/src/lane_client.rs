@@ -661,10 +661,23 @@ mod tests {
 
     #[test]
     fn a_silent_daemon_is_unreachable_within_two_seconds() {
-        // Case 1: nothing ever accepts the connect — the dial bound.
+        // Case 1: accepts the connect, then never speaks — the
+        // handshake bound. NOT a dropped/unaccepted port: on Windows
+        // loopback, a client's own ephemeral port can coincide with a
+        // just-freed listener port and complete a TCP *self*-connect,
+        // reading back its own request frame instead of seeing a
+        // refused connect. A real listener that accepts and stays
+        // silent (held open in a thread until this case is done)
+        // exercises the same "no daemon answers" outcome without that
+        // race.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        drop(listener); // nothing listens; the OS refuses the connect immediately
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
+            drop(conn);
+        });
         let endpoint = DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None };
         let started = Instant::now();
         // `.map(|_| ())`: `DaemonLaneClient` carries no `Debug` impl (a
@@ -673,6 +686,8 @@ mod tests {
         let result = endpoint.dial("row-1", "supervisor", None).map(|_| ());
         assert!(matches!(result, Err(TransportError::Unreachable(_))), "got {result:?}");
         assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        let _ = release_tx.send(());
+        handle.join().unwrap();
 
         // Case 2: accepts, then never answers — the handshake bound.
         let started = Instant::now();
