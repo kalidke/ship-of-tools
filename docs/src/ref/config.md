@@ -53,17 +53,10 @@ out-of-range values warn and fall back to the default.
 
 ### `[terminal]`
 
-| Key | Type | Default | Meaning |
-|-----|------|---------|---------|
-| `resume_command` | string | `claude --permission-mode auto --continue /sot-fe-session-start` | Command auto-run in the Terminal drawer when the supervisor respawns the frontend after a self-relaunch (`--relaunched`). It resumes the session without permission prompts. |
-
-The `resume_command` is spelled out in full (not a personal shell shortcut) so it
-is portable to any machine with `claude` on `PATH`. The trailing positional
-`/sot-fe-session-start` is submitted as the resumed session's first
-interactive turn, which re-arms the fast-comm inbox monitor and catches the
-relaunch deaf-window gap — a resumed `--continue` is reactive and cannot self-arm
-a monitor, so the frontend bootstraps it via this prompt. Iterate on the
-bootstrap steps in that skill, not in this command.
+Retired (ADR 0041's amendment retired the resume ritual; ADR 0042's amendment
+moved the frontend driver out of the drawer into its own local capsule
+session). The Terminal drawer runs a plain shell now; there is no
+`resume_command` setting to configure, so no new box should copy it back in.
 
 ### `[gpu]`
 
@@ -118,8 +111,8 @@ widths        = "0.167,0.333,0.5"
 drawer        = "repl"
 drawer_height = "0.35"
 
-[terminal]
-resume_command = "claude --permission-mode auto --continue /sot-fe-session-start"
+# The Terminal drawer runs a plain shell — the [terminal] resume_command
+# setting is retired and gone; no new box should copy it back in.
 
 [gpu]
 power_preference = "low"        # low (integrated, default) | high (discrete)

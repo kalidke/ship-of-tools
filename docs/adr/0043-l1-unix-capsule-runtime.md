@@ -2,7 +2,7 @@
 
 **Status:** LU1–LU4 implemented (#212–#221); LU5 proposed (2026-09-06; amended the same day after one Codex design
 round — twelve findings, every one discharged in the text below; LU1b's landed
-mechanism folded into decisions 1–3; the LU2 decisions 11–16 and the LU3 decisions 17–20 added 2026-09-07; the LU5 decisions 23–26 added 2026-09-07 evening after the first backend trial and two Codex rounds; the LU6b decisions 27–30 (attach convergence) added 2026-09-07 late, from the measured local-session create latency — decision 24 reverses decision 16's survival clause and amends decision 21's kill-domain sentence; decision 31, added 2026-09-08, lives in ADR 0030 §8 — this is only its cross-reference; decisions 32–35, added 2026-09-11 from the lifecycle track's L1a/L1c/L2/L4/L5 amendment (rev 3, after a second Codex design round) — decision 32 REPLACES decision 24, decision 33 REPLACES decision 26, decision 34 is superseded into ADR 0045 decisions 6–8, decision 35 merged as 4cca1859; L4 merged as aedbe509 + 1677d24c, L2 is PR #232, L1a is PR #231 with L1c following). Design pass for the lane series that makes
+mechanism folded into decisions 1–3; the LU2 decisions 11–16 and the LU3 decisions 17–20 added 2026-09-07; the LU5 decisions 23–26 added 2026-09-07 evening after the first backend trial and two Codex rounds; the LU6b decisions 27–30 (attach convergence) added 2026-09-07 late, from the measured local-session create latency — decision 24 reverses decision 16's survival clause and amends decision 21's kill-domain sentence; decision 31, added 2026-09-08, lives in ADR 0030 §8 — this is only its cross-reference; decisions 32–35, added 2026-09-11 from the lifecycle track's L1a/L1c/L2/L4/L5 amendment (rev 3, after a second Codex design round) — decision 32 REPLACES decision 24, decision 33 REPLACES decision 26, decision 34's gate half is superseded into ADR 0045 decisions 6–8 (the retirement half is decision 36), decision 35 merged as 4cca1859; decision 36, added 2026-09-11 from lane L3 (PR #237), restates decision 34's retirement and own-inode-leg rules that ADR 0045 does not carry — L1a is PR #231 merged, L1c is PR #233 merged, L2 is PR #232 merged, L4 merged as aedbe509 + 1677d24c, L5 merged as 4cca1859, L3 is PR #237). Design pass for the lane series that makes
 ADR 0042's rule — "the capsule is the default runtime for every NEW session on
 EVERY host" — true on the Linux backend hosts, where today every row is still
 a tmux row and no session leaves a Ship's Log record. Builds on ADR 0037 (P1:
@@ -831,9 +831,12 @@ rule D's claim and the contention re-probe; decision 34 is superseded into ADR
     acts on the row). **L1a is PR #231**; **L1c** (the destroy proof, same
     decision) follows it.
 
-34. **Superseded into ADR 0045 decisions 6–8** — the protocol-versioned gate
-    and the deleted pre-spawn pair probe this decision specified now live
-    there; see that ADR rather than this entry.
+34. **The gate half is superseded into ADR 0045 decisions 6–8; the
+    retirement half is decision 36.** The protocol-versioned gate and the
+    deleted pre-spawn pair probe this decision specified now live in ADR
+    0045 — see that ADR for the gate. The row-retirement and own-inode-leg
+    rules this decision also specified are NOT in ADR 0045; they are
+    restated, not deleted, as decision 36 below.
 
 35. **Comm teardown follows ownership.** The registry row is the workspace's:
     the default row's end prunes it, exactly as `workspace.destroy` does. The
@@ -841,6 +844,26 @@ rule D's claim and the contention re-probe; decision 34 is superseded into ADR
     removing its identity. The watcher is the agent's and dies with it.
     Invariant: teardown mirrors ownership — no orphaned registry row or bridge
     outlives the process that owned it. **Merged: 4cca1859.**
+
+36. **Retirement on a stale-authority attach, and own-inode legs — the two
+    decision-34 rules ADR 0045 does not carry.** (a) RETIREMENT: an attach to
+    a row whose authority has ended (`EndedNoRespawn`) retires it — stop →
+    resume → reset, run under the row's guard (decision 33) using the WAITING
+    stop — so a new run never starts on a resident authority; a failed or
+    timed-out stop leaves the row in place with an honest reason rather than
+    forcing a reset over an authority that may still be live. (b) OWN-INODE
+    LEGS: a Linux supervisor execs its leg from `/proc/self/exe`, not the
+    on-disk binary path — `argv[0]` stays the readable resolved path so
+    process lookups still match it — so an apply that replaces the binary
+    path on disk cannot make an already-running supervisor launch a new-build
+    leg out from under itself. On Windows the leg is still spawned from the
+    binary path (no `/proc/self/exe` analogue); the supervisor↔leg
+    management exchange is pinned (`SOM0`, no negotiation), so a supervisor
+    and leg of different builds are unsupported there until that exchange
+    carries a version — an OPEN ITEM, stated as such, not solved here.
+    Invariant: every process boundary is a versioned protocol; binaries need
+    not be immutable — Linux holds this today, Windows does not yet.
+    **L3, PR #237.**
 
 ## What this deletes
 

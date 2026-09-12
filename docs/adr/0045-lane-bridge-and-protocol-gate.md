@@ -2,8 +2,14 @@
 
 **Status:** B1 (the gate) merged — e6c025c4 lands the proto-only gate,
 f181d039 the same-day follow-up discharging a Codex review round as
-shape fixes. B2–B5 in flight; B6 not started. Design pass 2026-09-11,
-revised twice the same day after two Codex text rounds (see
+shape fixes. B3 (`lane.connect`, PR #234), B4a (`DaemonLaneEndpoint`, PR
+#235) and B4b (eight cross-process proofs) merged; B5 (the frontend, PR
+#236) is open, pending its Windows acceptance; B6 (the flip) not
+started. Decision 10 FIELD-PROVEN 2026-09-11 on a Windows frontend box
+against a scratch daemon: two capsule rows stayed ready with unchanged
+supervisor pids across a daemon rebuild (different build id, same lane
+protocol) and restart — no kill, no foreign phase. Design pass
+2026-09-11, revised twice the same day after two Codex text rounds (see
 `codex-design-verdict.md`/`-verdict2.md`), each finding cited at the
 decision it fixed.
 **Date:** 2026-09-11
@@ -204,6 +210,10 @@ the reopened direct-dial question (decision 1 settles it). **Kept:**
 `FOREIGN_PHASE`, `Error::VersionSkew`, the attach lane's negotiation,
 and — until the next `PROTOCOL_VERSION` bump —
 `attach_direct.state_dir`/`workspace.list.state_dir` at zero cost.
+Field-found and now enforced: a capsule row whose state root lies inside
+its watched project root is refused at create
+(`state_root_inside_project`), since an open directory handle over the
+state tree blocks the voyage rename on Windows.
 
 ## Lanes
 
@@ -211,10 +221,10 @@ and — until the next `PROTOCOL_VERSION` bump —
 |------|-------|--------|
 | B1 | The gate: proto-only comparison, `check_pair` deleted, `version.query.lane_proto` | Merged (e6c025c4, follow-up f181d039) |
 | B2 | `Endpoint` by value, `PeerIdentity` split, unit endpoints, pointer deletions | In flight |
-| B3 | `lane.connect` op + `lane_bridge.rs`; depends on the lifecycle track's L1a for `resume_if_absent` and the per-row guard | In flight |
-| B4a | `DaemonLaneEndpoint`, the three `TransportError` variants | In flight |
-| B4b | Cross-process proofs over a test-owned TCP→Unix relay (Linux job) | In flight |
-| B5 | The frontend: `DaemonLaneEndpoint` wiring, `state_dir` reads deleted | In flight |
+| B3 | `lane.connect` op + `lane_bridge.rs`; depends on the lifecycle track's L1a for `resume_if_absent` and the per-row guard | Merged (PR #234) |
+| B4a | `DaemonLaneEndpoint`, the three `TransportError` variants | Merged (PR #235) |
+| B4b | Cross-process proofs over a test-owned TCP→Unix relay (Linux job) | Merged (eight cross-process proofs) |
+| B5 | The frontend: `DaemonLaneEndpoint` wiring, `state_dir` reads deleted | Open (PR #236), pending Windows acceptance |
 | B6 | The flip — after B5, B4b, and the lifecycle track's service-stop proofs | Not started |
 
 Order: B1 → (B2 ∥ lifecycle L1a) → B3 → B4a → B4b → B5 → B6.

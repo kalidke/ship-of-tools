@@ -59,7 +59,7 @@
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use sot_log::challenge::{ChallengeOutcome, PeerAuthOutcome, PeerAuthenticated, StatusFailure};
 use sot_log::client::{Client, Endpoint, PeerIdentity};
@@ -124,9 +124,40 @@ impl PeerIdentity for BridgedPeer {
 /// (a `shutdown` racing a blocked read/write can otherwise surface as a
 /// generic `ConnectionAborted` instead of `Cancelled`), `cancel()` doing
 /// `shutdown(Both)`.
+///
+/// `shutdown(Both)` alone is not the whole mechanism: on Winsock it does
+/// NOT unblock a `recv` a peer thread already has parked (only closing
+/// the socket does, and closing here would race that thread's own
+/// borrowed `&TcpStream`) — Unix delivers the ordered EOF at once, but a
+/// Windows reader would otherwise hang until the peer itself closes.
+/// [`TcpClient::read`] is bounded instead: the same poll-a-cancel-flag-
+/// between-bounded-waits shape `connect_pipe_path_unchallenged` already
+/// uses for cancelling a dial in flight (B4a), applied here to the
+/// blocking read every platform shares — one mechanism, not a per-OS
+/// branch, and a no-op cost on Unix, where `shutdown` still wins the
+/// race well inside one poll tick.
 struct TcpClient {
     stream: TcpStream,
     cancelled: AtomicBool,
+}
+
+/// [`TcpClient::read`]'s poll granularity: small enough that `cancel()`'s
+/// worst-case latency stays far inside every deadline a caller bounds a
+/// read with (the lane handshake's own 2 s `CONNECT_BOUND`; this test
+/// suite's `< 2s` assertion), large enough not to busy-spin the reader
+/// thread while idle.
+const READ_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+impl TcpClient {
+    /// Sets the read timeout once, at construction, rather than on every
+    /// `read()` call — the poll-and-recheck loop is `read`'s concern, not
+    /// a repeated syscall per byte.
+    fn new(stream: TcpStream) -> Result<Self, TransportError> {
+        stream
+            .set_read_timeout(Some(READ_POLL_INTERVAL))
+            .map_err(|source| TransportError::Io { op: "lane read", source })?;
+        Ok(Self { stream, cancelled: AtomicBool::new(false) })
+    }
 }
 
 impl Client for TcpClient {
@@ -145,21 +176,36 @@ impl Client for TcpClient {
     }
 
     fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
-        if self.cancelled.load(Ordering::SeqCst) {
-            return Err(TransportError::Cancelled);
-        }
         use std::io::Read;
-        (&self.stream).read(buf).map_err(|source| {
+        loop {
             if self.cancelled.load(Ordering::SeqCst) {
-                TransportError::Cancelled
-            } else {
-                TransportError::Io { op: "lane read", source }
+                return Err(TransportError::Cancelled);
             }
-        })
+            match (&self.stream).read(buf) {
+                Ok(n) => return Ok(n),
+                // The poll tick expiring with nothing to read — not a
+                // real failure, just another lap to re-check `cancelled`
+                // (`WouldBlock`/`TimedOut`: which one a platform's own
+                // `set_read_timeout` actually surfaces is not portably
+                // specified, so both are treated identically here).
+                Err(source) if matches!(source.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
+                Err(source) => {
+                    return Err(if self.cancelled.load(Ordering::SeqCst) {
+                        TransportError::Cancelled
+                    } else {
+                        TransportError::Io { op: "lane read", source }
+                    });
+                }
+            }
+        }
     }
 
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
+        // Unblocks a Unix reader at once (ordered EOF); on Windows the
+        // bounded poll loop in `read` above is what actually completes
+        // the cancel — this call still matters there too, since it is
+        // what the poll loop's own `cancelled` check observes.
         let _ = self.stream.shutdown(std::net::Shutdown::Both);
     }
 }
@@ -429,7 +475,7 @@ impl DaemonLaneEndpoint {
         let stream = match &self.dial {
             LaneDial::Tcp(addr) => {
                 let stream = TcpStream::connect_timeout(addr, CONNECT_BOUND).map_err(TransportError::Unreachable)?;
-                LaneStream::Tcp(TcpClient { stream, cancelled: AtomicBool::new(false) })
+                LaneStream::Tcp(TcpClient::new(stream)?)
             }
             #[cfg(unix)]
             LaneDial::Local(path) => {
@@ -615,10 +661,23 @@ mod tests {
 
     #[test]
     fn a_silent_daemon_is_unreachable_within_two_seconds() {
-        // Case 1: nothing ever accepts the connect — the dial bound.
+        // Case 1: accepts the connect, then never speaks — the
+        // handshake bound. NOT a dropped/unaccepted port: on Windows
+        // loopback, a client's own ephemeral port can coincide with a
+        // just-freed listener port and complete a TCP *self*-connect,
+        // reading back its own request frame instead of seeing a
+        // refused connect. A real listener that accepts and stays
+        // silent (held open in a thread until this case is done)
+        // exercises the same "no daemon answers" outcome without that
+        // race.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        drop(listener); // nothing listens; the OS refuses the connect immediately
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
+            drop(conn);
+        });
         let endpoint = DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None };
         let started = Instant::now();
         // `.map(|_| ())`: `DaemonLaneClient` carries no `Debug` impl (a
@@ -627,6 +686,8 @@ mod tests {
         let result = endpoint.dial("row-1", "supervisor", None).map(|_| ());
         assert!(matches!(result, Err(TransportError::Unreachable(_))), "got {result:?}");
         assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        let _ = release_tx.send(());
+        handle.join().unwrap();
 
         // Case 2: accepts, then never answers — the handshake bound.
         let started = Instant::now();

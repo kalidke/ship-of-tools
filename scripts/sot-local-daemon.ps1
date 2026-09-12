@@ -360,7 +360,10 @@ foreach ($f in @($daemonStdout, $daemonStderr)) {
 # project root or pipe path with a space silently splits into stray argv.
 # A single string is passed through to CreateProcess's command line as-is,
 # quotes intact.
-$daemonArgLine = '--socket "{0}" --project-root "{1}" --label local' -f $PipePath, $ProjectRoot
+# --adopt-legacy-registry: only THE canonical per-user daemon (this script)
+# may run the one-time legacy-registry adoption (workspaces.rs); a
+# scratch/test daemon must never pass this (field defect).
+$daemonArgLine = '--socket "{0}" --project-root "{1}" --label local --adopt-legacy-registry' -f $PipePath, $ProjectRoot
 Write-LocalDaemonLog "starting: $daemonExe $daemonArgLine"
 try {
     $proc = Start-Process -FilePath $daemonExe -ArgumentList $daemonArgLine `

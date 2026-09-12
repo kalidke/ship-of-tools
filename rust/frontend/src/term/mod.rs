@@ -100,37 +100,6 @@ fn resolve_shell_auto() -> ResolvedShell {
     ResolvedShell { program: "cmd.exe".to_string(), args: vec![] }
 }
 
-/// Build the argument list that makes `shell` run `command` on startup and
-/// then stay interactive. Used by the `--relaunched` resume path so a
-/// `claude --continue` (or any configured `resume_command`) reattaches in
-/// the freshly spawned terminal.
-///
-/// Injecting via shell args (rather than writing to the PTY's stdin after
-/// spawn) sidesteps the timing race where input arrives before the shell's
-/// first prompt is ready — the shell parses these at launch.
-///
-/// - PowerShell / pwsh: `-NoExit -Command <cmd>` (run, then drop to prompt).
-/// - cmd.exe:           `/K <cmd>` (run, then keep the session).
-/// - POSIX shells:      `-c "<cmd>; exec <shell>"` (run, then replace the
-///   process with a fresh interactive shell so the pane stays usable).
-#[allow(dead_code)]
-fn resume_command_args(program: &str, command: &str) -> Vec<String> {
-    let prog_lower = program.to_ascii_lowercase();
-    let base = std::path::Path::new(&prog_lower)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(&prog_lower);
-    if base.contains("powershell") || base.contains("pwsh") {
-        vec!["-NoExit".into(), "-Command".into(), command.into()]
-    } else if base.contains("cmd") {
-        vec!["/K".into(), command.into()]
-    } else {
-        // POSIX: run the command, then exec an interactive shell so the
-        // terminal doesn't exit when the command returns.
-        vec!["-c".into(), format!("{command}; exec {program}")]
-    }
-}
-
 /// Minimal PATH probe: check whether `name` exists as an executable on
 /// the current `PATH`. We avoid the `which` crate to keep the dep graph
 /// lean — this is a simple existence check, not full `execvp` resolution.
@@ -190,11 +159,10 @@ pub struct LocalTerminal {
 impl LocalTerminal {
     /// Spawn `shell` in a PTY sized `cols × rows`.
     ///
-    /// `cwd` sets the shell's working directory (e.g. the repo root so
-    /// `claude --continue` resumes the right project's session); `None`
-    /// inherits the frontend's cwd. `initial_command`, when set, is run on
-    /// startup via [`resume_command_args`] and the shell then stays
-    /// interactive.
+    /// `cwd` sets the shell's working directory (e.g. the repo root); `None`
+    /// inherits the frontend's cwd. The shell always starts plain and
+    /// interactive — no auto-run command (the resume-command ritual is
+    /// retired, ADR 0041/0042).
     ///
     /// `wake` is called by the reader thread after each chunk arrives so
     /// the UI event loop can schedule a redraw without polling.
@@ -204,7 +172,6 @@ impl LocalTerminal {
         cols: u16,
         rows: u16,
         cwd: Option<&std::path::Path>,
-        initial_command: Option<&str>,
         wake: Box<dyn Fn() + Send + 'static>,
     ) -> Result<Self> {
         // 2, not 1: the vt100 fork refuses anything smaller (its
@@ -224,20 +191,8 @@ impl LocalTerminal {
             .map_err(|e| anyhow!("openpty: {e}"))?;
 
         let mut cmd = CommandBuilder::new(&shell.program);
-        // An initial command replaces the plain interactive invocation with
-        // a "run-then-stay-interactive" arg form; otherwise use the shell's
-        // own (typically empty) args.
-        match initial_command {
-            Some(c) if !c.trim().is_empty() => {
-                for arg in resume_command_args(&shell.program, c.trim()) {
-                    cmd.arg(arg);
-                }
-            }
-            _ => {
-                for arg in &shell.args {
-                    cmd.arg(arg);
-                }
-            }
+        for arg in &shell.args {
+            cmd.arg(arg);
         }
         if let Some(dir) = cwd {
             cmd.cwd(dir);
@@ -480,29 +435,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resume_command_args_per_shell() {
-        // PowerShell family → -NoExit -Command <cmd>.
-        assert_eq!(
-            resume_command_args("powershell.exe", "claude --continue"),
-            vec!["-NoExit", "-Command", "claude --continue"]
-        );
-        assert_eq!(
-            resume_command_args("C:\\Program Files\\PowerShell\\7\\pwsh.exe", "x"),
-            vec!["-NoExit", "-Command", "x"]
-        );
-        // cmd.exe → /K <cmd>.
-        assert_eq!(
-            resume_command_args("cmd.exe", "claude --continue"),
-            vec!["/K", "claude --continue"]
-        );
-        // POSIX → -c "<cmd>; exec <shell>".
-        assert_eq!(
-            resume_command_args("/bin/bash", "claude --continue"),
-            vec!["-c", "claude --continue; exec /bin/bash"]
-        );
-    }
-
-    #[test]
     fn resolve_shell_honours_override() {
         // An explicit override is returned verbatim (no PATH check).
         let s = resolve_shell(Some("/usr/bin/fish"));
@@ -544,7 +476,6 @@ mod tests {
             &shell,
             80,
             24,
-            None,
             None,
             Box::new(move || woke_c.store(true, Ordering::Relaxed)),
         )
@@ -597,7 +528,6 @@ mod tests {
             &shell,
             80,
             24,
-            None,
             None,
             Box::new(move || woke_c.store(true, Ordering::Relaxed)),
         )

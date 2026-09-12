@@ -194,6 +194,8 @@ Usage: sotd [OPTIONS]
                           (default: $SOT_PROJECT_ROOT, else the cwd)
   --label <name>         human-friendly backend label (Sessions mode
                           matches the running daemon to it)
+  --adopt-legacy-registry  allow the Windows one-time legacy registry
+                          adoption (installed launchers only)
 
 Pure queries (no startup side effects, answered before any of the above):
   --version, -V           print the version line and exit
@@ -209,6 +211,13 @@ Pure queries (no startup side effects, answered before any of the above):
     }
 
     apply_umask();
+    // Defect fix (field-proven, Windows; see `sot_log::winhandle`'s module
+    // doc): harden this process's own inherited stdio before anything is
+    // spawned, so it can never leak into a supervisor/leg that outlives us.
+    #[cfg(windows)]
+    if let Err(e) = sot_log::winhandle::harden_own_stdio(true) {
+        eprintln!("sotd: could not harden inherited stdio ({e}); continuing");
+    }
     let log_file = open_private_log_file();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -248,12 +257,18 @@ pub struct Opts {
     /// into the per-backend toml the frontend writes and helps Sessions
     /// mode match the running daemon to its on-disk metadata.
     pub label: Option<String>,
+    /// `--adopt-legacy-registry` (`workspaces::scan_disk`'s own gate):
+    /// `false` unless passed, so a scratch/test daemon can never steal a
+    /// box's pending legacy adoption (field-proven). Only
+    /// `sot-local-daemon.ps1` passes it.
+    pub adopt_legacy_registry: bool,
 }
 
 fn parse_args() -> Result<Opts> {
     let mut socket: Option<PathBuf> = None;
     let mut project_root_arg: Option<PathBuf> = None;
     let mut label: Option<String> = None;
+    let mut adopt_legacy_registry = false;
 
     // `--version`/`-V` and `tmux-socket-path` are handled earlier, in
     // `main()`, before any startup side effect — see the comment there.
@@ -277,6 +292,9 @@ fn parse_args() -> Result<Opts> {
             }
             "--label" => {
                 label = Some(args.next().context("--label requires a name")?);
+            }
+            "--adopt-legacy-registry" => {
+                adopt_legacy_registry = true;
             }
             // Removed in 0.4.0 with the daemon TCP listener; named here so a
             // stale launcher gets a pointed error instead of "unrecognised".
@@ -317,6 +335,7 @@ fn parse_args() -> Result<Opts> {
         socket,
         project_root,
         label,
+        adopt_legacy_registry,
     })
 }
 

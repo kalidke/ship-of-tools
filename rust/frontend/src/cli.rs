@@ -175,11 +175,9 @@ pub struct Cli {
     pub contrast_mode: String,
     /// Set by the supervisor (`launch-sot.ps1`) when it respawns the
     /// frontend after a self-relaunch (exit code 75) or a converge (exit
-    /// code 76). Opens the Terminal drawer at startup and runs the configured
-    /// `[terminal] resume_command`
-    /// (default `settings::DEFAULT_RESUME_COMMAND`) in it, so a `claude`
-    /// session driving the rebuild loop reattaches itself in the fresh
-    /// process. See ADR 0017.
+    /// code 76). Opens the Terminal drawer at startup (a plain shell — the
+    /// resume-command ritual is retired, ADR 0041/0042: the frontend driver
+    /// now lives in its own local capsule session). See ADR 0017.
     pub relaunched: bool,
 }
 

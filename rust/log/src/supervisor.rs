@@ -502,6 +502,14 @@ pub struct SuperviseConfig {
 /// every expected failure maps to [`EXIT_TERMINAL`], every success path
 /// to [`EXIT_CLEAN`].
 pub fn supervise(config: SuperviseConfig) -> i32 {
+    // Defect fix (field-proven, see `winhandle`'s module doc): harden this
+    // process's own inherited stdin/stdout before the first leg spawn, so
+    // `build_run_command`'s default-inherit stdio never carries anything
+    // past its own, intentionally-shared stderr (decision 25). Non-fatal.
+    #[cfg(windows)]
+    if let Err(e) = crate::winhandle::harden_own_stdio(false) {
+        note(format_args!("could not harden inherited stdin/stdout ({e}); continuing"));
+    }
     if !config.assume_no_rollback_target {
         note(format_args!(
             "no rollout evidence available — this build cannot open a feature-bearing segment \
@@ -912,6 +920,25 @@ fn build_run_command(
         Survival::Normal => "normal",
         Survival::Degraded => "degraded",
     };
+    // Legs fork from THIS process, so before their own exec resolves it,
+    // `/proc/self/exe` still names the supervisor's own running inode --
+    // immune to an `sot-apply` rename-over-the-path (ADR 0043 decision
+    // 33's retirement clause). `argv[0]` is set to the real resolved
+    // path regardless, so `ps`/`pgrep -f` still find the leg by it (a
+    // magic-symlink program path has no bearing on what `ps` prints).
+    // Windows has no such handle: the leg is spawned from the path, and
+    // `VoyageMgmtExchange` (the supervisor<->leg management exchange,
+    // `exchange.rs`) is NOT versioned -- permanently pinned `SOM0`, no
+    // `proto` negotiation or build gate -- so a cross-build supervisor/
+    // leg pair is unsupported there until that exchange is versioned.
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        use std::os::unix::process::CommandExt;
+        let mut c = std::process::Command::new("/proc/self/exe");
+        c.arg0(capsule_exe);
+        c
+    };
+    #[cfg(not(target_os = "linux"))]
     let mut command = std::process::Command::new(capsule_exe);
     command
         .arg("run")
@@ -2701,6 +2728,8 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         retired_legs: Vec::new(),
     };
     let mut conns: HashMap<ConnId, Conn> = HashMap::new();
+    // The real, resolved path; [`build_run_command`] swaps the ACTUAL
+    // exec target for `/proc/self/exe` on Linux (see its own comment).
     let capsule_exe = std::env::current_exe().map_err(crate::Error::Io)?;
 
     // B1: recovery + pointer discovery, folded into ONE non-blocking

@@ -104,22 +104,24 @@ new remote is one entry here — no launcher edit.
 
 ### `settings.toml` — frontend settings
 
-The layout preset and the Terminal drawer's resume command (used by the
-self-relaunch loop — see [Running & Relaunch](running.md)). Any value missing or
+The layout preset (see [Running & Relaunch](running.md)). Any value missing or
 out of range silently falls back to the built-in default; a malformed settings
 file never crashes the chrome.
 
 ```toml
 [layout]
 preset = "auto"   # auto | ultrawide | laptop | portrait
-
-[terminal]
-resume_command = "claude --permission-mode auto --continue /sot-fe-session-start"
 ```
 
 Discovery order: `$SOT_SETTINGS` → `<repo-root>/.sot/settings.toml` →
 `$HOME/.config/sot/settings.toml` → built-in defaults. Keybindings live in a
 sibling `.sot/keybindings.toml` with the same layered pattern.
+
+The Terminal drawer itself just runs a plain shell — the retired `[terminal]
+resume_command` setting has nothing left to configure (see
+[Configuration Files](../ref/config.md)). A session that needs to survive
+frontend relaunches is a first-class local capsule session, created from the
+Sessions view with agent `claude`, not a drawer command.
 
 ## After setup
 

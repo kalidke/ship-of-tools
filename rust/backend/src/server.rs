@@ -501,7 +501,8 @@ pub async fn run(opts: Opts) -> Result<()> {
     // roots, and continuing with whatever landed at the new root (empty or
     // partial) would silently seed a fresh registry beside a stranded one.
     // So this is a boot error, not a warning.
-    let n = workspaces::scan_disk(&workspaces).context("scanning the workspace registry")?;
+    let n = workspaces::scan_disk(&workspaces, opts.adopt_legacy_registry)
+        .context("scanning the workspace registry")?;
     tracing::info!(count = n, "workspaces scanned from disk");
     let default_label = opts
         .label
