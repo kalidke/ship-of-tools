@@ -98,4 +98,30 @@ fi
 # the flag really does execute an untrusted hook — a /hooks panel reading
 # Active=0 reflects PERSISTED trust and does not predict behaviour under this
 # flag. See comm/adapters/codex/hooks.README.md.
-exec "$CODEX_BIN" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust "You are the comm-aware agent @$SOT_COMM_NAME on the sot-comm network. House conventions are in your GLOBAL $CODEX_HOME_DIR/AGENTS.md (plus the project's own AGENTS.md when it has one, and \$SOT_MANUAL/docs/USING.md for product help). Then run: $COMM/comm-poll.sh — and handle anything queued. Inbound messages will be typed into this session prefixed '[relay]'."
+# Resume, like ccb's `claude --continue`: unless `--fresh`, continue the
+# most recent Codex session recorded for THIS directory (rollouts live under
+# $CODEX_HOME_DIR/sessions; the session_meta carries the cwd). `--resume <id>`
+# names one explicitly. A killed pane thereby comes back mid-conversation
+# instead of as a stranger.
+RESUME_ID=""; FRESH=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --fresh) FRESH=1 ;;
+        --resume) RESUME_ID="$2"; shift ;;
+        --continue) ;;   # accepted for launcher parity with ccb; resume is the default
+    esac
+    shift
+done
+if [ "$FRESH" = 0 ] && [ -z "$RESUME_ID" ]; then
+    for f in $(ls -t "$CODEX_HOME_DIR"/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -300); do
+        if head -c 4096 "$f" | grep -q "\"cwd\":\"$PWD\""; then
+            RESUME_ID="$(head -c 4096 "$f" | grep -o '"id":"[0-9a-f-]\{36\}"' | head -1 | cut -d'"' -f4)"
+            break
+        fi
+    done
+fi
+PROMPT="You are the comm-aware agent @$SOT_COMM_NAME on the sot-comm network. House conventions are in your GLOBAL $CODEX_HOME_DIR/AGENTS.md (plus the project's own AGENTS.md when it has one, and \$SOT_MANUAL/docs/USING.md for product help). Then run: $COMM/comm-poll.sh — and handle anything queued. Inbound messages will be typed into this session prefixed '[relay]'."
+if [ -n "$RESUME_ID" ]; then
+    exec "$CODEX_BIN" resume "$RESUME_ID" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust "Your pane was restarted; this is the same conversation resumed. $PROMPT Then continue exactly where you left off."
+fi
+exec "$CODEX_BIN" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust "$PROMPT"
