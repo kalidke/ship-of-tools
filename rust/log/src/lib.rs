@@ -140,13 +140,18 @@ pub mod exchange;
 // machines (the six FE rulings from "Step 6 as specified") -- portable,
 // like `pointer`/`exchange`/`rollout`: no OS call, so it is genuinely
 // tested on every CI platform. The runtime that wires these to a real
-// `Endpoint` (Windows: `PipeEndpoint`; Linux: `SocketEndpoint`) lives in
-// `fe_client_io`, gated by its own `#![cfg(any(windows, target_os =
-// "linux"))]` (L1-unix LU3b: renamed from `fe_client_win`, generic over
-// `client::Endpoint` -- no platform name in this module's own name
-// anymore).
+// `Endpoint` (Windows: `PipeEndpoint`; Linux: `SocketEndpoint`; any other
+// platform: whatever the caller names, e.g. `sot-protocol`'s
+// `DaemonLaneEndpoint`) lives in `fe_client_io` (L1-unix LU3b: renamed
+// from `fe_client_win`, generic over `client::Endpoint` -- no platform
+// name in this module's own name anymore).
 pub mod fe_client;
-#[cfg(any(windows, target_os = "linux"))]
+// ADR 0045 decision 1: ungated. `FeAttachClient` is a state machine OVER
+// an `Endpoint` (decision 3), not a Windows/Linux primitive itself, so a
+// macOS frontend attaching through a caller-named `Endpoint` (e.g.
+// `DaemonLaneEndpoint`) needs the module too -- only the
+// `PlatformEndpoint`-typed default and the tests that construct it stay
+// cfg-gated, inside the module itself.
 pub mod fe_client_io;
 // ADR 0041 step 6, unit U2: the supervisor's own durable operation
 // journal (`operation_id`/`.active`/`.terminal`, recovery-first

@@ -1,4 +1,3 @@
-#![cfg(any(windows, target_os = "linux"))]
 //! L1-unix LU3b (ADR 0043 decision 20): the FE attach-only client's
 //! RUNTIME — wires `fe_client`'s pure state machines (the six FE
 //! rulings) to a real [`crate::client::Endpoint`], a real supervisor
@@ -10,11 +9,13 @@
 //! `pipe_win`/`challenge_win` now goes through an `endpoint: &E` value's
 //! own methods (ADR 0045 decision 5: an `Endpoint` is a value, so a
 //! caller can eventually hold a bridged one alongside a platform one) —
-//! the concrete platform is chosen exactly once, by
-//! [`crate::client::PlatformEndpoint`], which is what the frontend
-//! instantiates this module's public type with (see [`FeAttachClient`]'s
-//! own doc for its default type parameter). The client code itself is
-//! otherwise the SAME kind of thin I/O wrapper `term::LocalTerminal`
+//! the module itself is portable (ADR 0045 decision 1: this is what lets
+//! a Linux or macOS frontend attach for free): Windows and Linux still
+//! get a [`crate::client::PlatformEndpoint`] default (see
+//! [`FeAttachClient`]'s own doc), but every other caller (e.g. the
+//! frontend's `DaemonLaneEndpoint`) simply names its `Endpoint` — the
+//! platform tie moved from this module to that one type. The client code
+//! itself is otherwise the SAME kind of thin I/O wrapper `term::LocalTerminal`
 //! already is over its own PTY: a background reader thread forwards
 //! bytes/frames, the caller drains them non-blockingly via `pump()`.
 //!
@@ -96,7 +97,13 @@
 //!   silent "attached".
 
 use crate::challenge::{ChallengeOutcome, PeerAuthOutcome};
-use crate::client::{transport_error_to_io, Client, Endpoint, PeerIdentity, PlatformEndpoint};
+use crate::client::{transport_error_to_io, Client, Endpoint, PeerIdentity};
+// `PlatformEndpoint` only EXISTS on Windows/Linux (`client.rs`'s own
+// cfg) -- it is this module's one remaining platform tie, confined to
+// `FeAttachClient`'s default type parameter and the unit tests below
+// that construct it directly.
+#[cfg(any(windows, target_os = "linux"))]
+use crate::client::PlatformEndpoint;
 use crate::exchange::{SupervisorLaneExchange, VoyageMgmtExchange, SUPERVISOR_LANE_BUILD_ID};
 use crate::fe_client::{
     self, FeDownBaseline, InputWireOutcome, OutstandingSlot, QuitDispatcher, QuitState,
@@ -870,7 +877,10 @@ impl std::fmt::Display for FeAttachError {
 /// thread's own stack, moved into its closure at [`attach`](Self::attach)
 /// time) — `E` is carried only as a marker so `attach` knows which
 /// [`run_worker`] to spawn.
-pub struct FeAttachClient<E: Endpoint = PlatformEndpoint> {
+pub struct FeAttachClient<
+    #[cfg(any(windows, target_os = "linux"))] E: Endpoint = PlatformEndpoint,
+    #[cfg(not(any(windows, target_os = "linux")))] E: Endpoint,
+> {
     _endpoint: PhantomData<E>,
     parser: vt100_ctt::Parser,
     /// The pane's current `(rows, cols)` — the CALLER's rect, tracked
@@ -2882,6 +2892,8 @@ mod tests {
     /// privacy lets the struct literal reach every private field, and
     /// `pump` neither knows nor cares whether `events_tx` belongs to a
     /// worker thread or a test.
+    // `PlatformEndpoint` only exists on Windows/Linux.
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn checkpoint_event_marks_the_client_checkpointed() {
         let (events_tx, events_rx) = mpsc::channel();
@@ -2926,6 +2938,8 @@ mod tests {
     /// `is_checkpointed` still goes `true` (LU6a's own "the checkpoint
     /// EVENT landed either way") -- the exact gap `restore_ok` exists to
     /// close for a caller's instrumentation.
+    // `PlatformEndpoint` only exists on Windows/Linux.
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn checkpoint_event_with_undecodable_bytes_marks_checkpointed_but_not_restore_ok() {
         let (events_tx, events_rx) = mpsc::channel();
@@ -3047,6 +3061,8 @@ mod tests {
     /// the worker's own mgmt-lane lookup for the NEW leg has produced its
     /// own `Notice` -- would see leg A's stale text rendered over leg B's
     /// freshly restored screen.
+    // `PlatformEndpoint` only exists on Windows/Linux.
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn checkpoint_event_clears_a_notice_left_over_from_the_previous_leg() {
         let (events_tx, events_rx) = mpsc::channel();
@@ -3098,6 +3114,8 @@ mod tests {
     /// each report `restore_ok` for THEIR OWN restore, not a value stuck
     /// from an earlier one -- proven here across three in a row:
     /// success, failure, success again.
+    // `PlatformEndpoint` only exists on Windows/Linux.
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn restore_ok_reflects_only_the_most_recent_checkpoint_across_several_in_a_row() {
         let (events_tx, events_rx) = mpsc::channel();
