@@ -78,9 +78,8 @@ pub enum IncomingEvt {
         /// side) — `Some("myhost")` when a backend reports itself, `None`
         /// for older backends. `HostKey` (the dial label this connection
         /// is tagged with, `hosts.toml`-configured) is NEVER re-homed to
-        /// this value — the GPU thread records it separately for display
-        /// and its one duplicate-detection decision
-        /// (`crate::gpu::is_duplicate_declaration`).
+        /// this value — the GPU thread records it separately, for display
+        /// only (`crate::gpu::host_label`, the one display projection).
         host: Option<String>,
         /// `--project-root` the backend was started with, so the chrome
         /// can show "myhost:Ship of Tools" rather than just the host.
@@ -2056,9 +2055,9 @@ where
     // by months of stable session).
     *backoff_ms = 200;
     // ADR 0046 decision 1: the daemon's declared host travels on this
-    // event for display and duplicate-detection only (see
-    // `App::record_declared_host_and_check_duplicate`) — the DIAL label
-    // (`host`) stays this connection's tag for its whole lifetime.
+    // event for display only (see `App::record_declared_host` and
+    // `crate::gpu::host_label`) — the DIAL label (`host`) stays this
+    // connection's tag for its whole lifetime.
     emit(IncomingEvt::Connected {
         session_id: hello_res.session_id.clone(),
         revision: hello_res.revision,
@@ -2070,7 +2069,13 @@ where
         backend_version: hello_res.app_version.clone(),
     });
     window.request_redraw();
+    // Manager review (round 2, finding 14): the declaration, not only the
+    // dial label — this is the exact instant the declared host becomes
+    // known, so it belongs in this line's own fields, not only the tree/
+    // status-line projection (`host_label`) that reads it back later.
     tracing::info!(
+        dial = %host,
+        declared = ?hello_res.host,
         session_id = %hello_res.session_id,
         revision = hello_res.revision,
         snapshot_pending = hello_res.snapshot_pending,
