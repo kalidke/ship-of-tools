@@ -342,13 +342,15 @@ the label does not serve (measured in lane A: roughly 640 lines).
 | B1 | The observer (shared lane connection), `phase` from memory, the async activation on `pty.open`, the blocking preflight deleted | persistent supervisor client |
 | B2a | `record_dir` at create, lazy migration by evidence, the reconstructions deleted | A |
 | B2c | `result {path, caption, rev}`, one publication path, `sot-nav.sh` migrated, `seen_rev` | B2a |
-| B3a | Transport-worker extraction, bounded ingress, `capsule.evt` framing and vocabulary | — |
-| B3b1 | Attach proto v3 owner events; `attach_unsupported` | — |
-| B3b2 | Relay: cutover with input completion, budgets, terminal exhaustion, `dropped` | B1, B3a, B3b1 |
-| B3b3 | Input/control wiring: the command queue, off-loop completion, `pty.resize` routing | B3b2 |
-| B3c | Frontend: per-row parsers, local switch, the dial deleted, capability from hello | A, B3b3 |
+| B3a | Transport-worker extraction as a pure move (the worker's vocabulary is exactly what the rendering client consumed, plus the quit family); bounded ingress that never drops a single input on an idle queue | — |
+| B3b1 | Attach proto v3 owner events; the worker's `Take` command and pen/geometry events; `attach_unsupported` | — |
+| B3b2 | Relay: the `capsule.evt` framing, chunked checkpoint forwarding with a begin/abort boundary, `Reattach`, cutover with input completion, budgets, terminal exhaustion, `dropped` | B1, B3a, B3b1 |
+| B3b3 | Input/control wiring: the command queue, per-request outcomes carried inside the take transaction's own queue entries, off-loop completion, `pty.resize` routing | B3b2 |
+| B3c | Frontend: the `CapsuleEvt` event, per-row parsers, local switch, the dial deleted, capability from hello | A, B3b3 |
 | D | `sotd agent-exec`; `ccb`/`ccbe` one line | — |
 | E | `"tmux"` refused on capsule-capable hosts; the conditional install prerequisite | — |
+
+New vocabulary lands with the lane that first consumes it: B3a was reviewed down to a pure extraction, and each later lane introduces the events and commands it is the first to use.
 
 Order: A ∥ B1 ∥ B3a ∥ B3b1 ∥ D ∥ E → B2a → B2c; B3b1 → B3b2 → B3b3 →
 B3c. Each lane: brief, implementation, manager review, CI, a live proof
