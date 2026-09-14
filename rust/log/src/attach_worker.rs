@@ -16,13 +16,20 @@
 //! The one genuine addition is bounded ingress:
 //! [`AttachWorker::send_input`] reserves `bytes.len()` against a fixed
 //! byte budget before the command channel is ever touched, refusing
-//! with [`IngressRefused`] rather than queuing unbounded. The
-//! reservation is OWNERSHIP-based ([`IngressReservation`]): it rides
-//! inside the queued command itself and releases in `Drop`, so it is
-//! freed correctly however that command is disposed of — consumed
-//! normally, discarded mid-drain, or still sitting in the channel when
-//! the whole worker (and its `Receiver`) exits — without any call site
-//! needing to remember to release it by hand.
+//! with [`IngressRefused`] rather than queuing unbounded — but the bound
+//! limits ACCUMULATION, never a single send: an input is admitted
+//! unconditionally whenever nothing else is currently reserved, even one
+//! bigger than the bound itself, and refused only when something is
+//! already queued and admitting this one too would push the total past
+//! the bound (see that method's own doc — a large paste or a long
+//! `sot-fe type --stdin` must never silently vanish for being bigger
+//! than a bound sized for steady-state typing). The reservation is
+//! OWNERSHIP-based ([`IngressReservation`]): it rides inside the queued
+//! command itself and releases in `Drop`, so it is freed correctly
+//! however that command is disposed of — consumed normally, discarded
+//! mid-drain, or still sitting in the channel when the whole worker (and
+//! its `Receiver`) exits — without any call site needing to remember to
+//! release it by hand.
 //!
 //! `fe_client_io::FeAttachClient` is the thin wrapper: it owns the
 //! `vt100_ctt::Parser` and `pump()`'s UI bookkeeping, subscribing an
@@ -101,7 +108,8 @@ const WORKER_TICK: Duration = Duration::from_millis(100);
 /// STOPS READING THE PIPE." (Codex review round, finding 7: the first
 /// landing's counter was local to the reader thread and released
 /// immediately, never actually shared with the consumer — see
-/// [`FeAttachClient::pump`]'s own doc for the real, shared half.)
+/// [`crate::fe_client_io::FeAttachClient::pump`]'s own doc for the real,
+/// shared half.)
 const READER_QUEUE_CAP_BYTES: usize = 4 * 1024 * 1024;
 
 // -----------------------------------------------------------------------
@@ -885,14 +893,20 @@ impl<E: Endpoint> AttachWorker<E> {
     }
 
     /// Reserves `bytes.len()` against this worker's own ingress bound
-    /// BEFORE the command channel is ever touched (never queued
-    /// unbounded — see this module's own top doc). Empty input is a
-    /// silent no-op: it types nothing and would otherwise let a caller
-    /// enqueue an unlimited number of zero-charge commands despite the
-    /// advertised memory bound. A send to an already-exited worker is
-    /// not itself a refusal — the reservation is released the moment the
-    /// undelivered message (returned by the channel) drops, same as any
-    /// other disposal.
+    /// BEFORE the command channel is ever touched — but the bound limits
+    /// ACCUMULATION, never a single send: an input is admitted
+    /// unconditionally whenever the queue is otherwise idle, even one
+    /// bigger than the bound itself (a large paste, or a long `sot-fe
+    /// type --stdin`, must never silently vanish just for being bigger
+    /// than a bound sized for steady-state typing); it is refused only
+    /// when something is ALREADY reserved and admitting this one too
+    /// would push the total past the bound (see this module's own top
+    /// doc). Empty input is a silent no-op: it types nothing and would
+    /// otherwise let a caller enqueue an unlimited number of zero-charge
+    /// commands despite the advertised memory bound. A send to an
+    /// already-exited worker is not itself a refusal — the reservation
+    /// is released the moment the undelivered message (returned by the
+    /// channel) drops, same as any other disposal.
     pub fn send_input(&self, bytes: Vec<u8>) -> Result<(), IngressRefused> {
         if bytes.is_empty() {
             return Ok(());
@@ -900,10 +914,18 @@ impl<E: Endpoint> AttachWorker<E> {
         let n = bytes.len();
         let mut cur = self.ingress_bytes.load(Ordering::Acquire);
         loop {
-            if cur.saturating_add(n) > self.ingress_bound {
+            // The bound limits ACCUMULATION, not a single send: admit
+            // unconditionally whenever nothing is currently reserved (an
+            // idle queue), even if this one input alone exceeds the
+            // bound — a large paste, or a long `sot-fe type --stdin`,
+            // must never silently vanish just because it is bigger than
+            // the bound a caller chose for steady-state typing. Refuse
+            // only when something is ALREADY reserved and admitting this
+            // one too would push the total past the bound.
+            if cur > 0 && cur.saturating_add(n) > self.ingress_bound {
                 return Err(IngressRefused);
             }
-            match self.ingress_bytes.compare_exchange_weak(cur, cur + n, Ordering::AcqRel, Ordering::Acquire) {
+            match self.ingress_bytes.compare_exchange_weak(cur, cur.saturating_add(n), Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => break,
                 Err(actual) => cur = actual,
             }
@@ -1765,10 +1787,11 @@ fn reconnect_supervisor_lane_for_quit<E: Endpoint>(
 /// bytes are never counted — those are consumed earlier, by
 /// `attach_and_collect_checkpoint` on the same connection, before this
 /// reader exists) and blocks its own next `read()` while it is at or above
-/// [`READER_QUEUE_CAP_BYTES`]; [`FeAttachClient::pump`] decrements it as
-/// it actually consumes `Output` bytes — the ONLY place it is ever
+/// [`READER_QUEUE_CAP_BYTES`]; [`crate::fe_client_io::FeAttachClient::
+/// pump`] decrements it, via [`AttachWorker::ack_output_consumed`], as it
+/// actually consumes `Output` bytes — the ONLY place it is ever
 /// decremented, which is what makes the accounting real (see
-/// [`FeAttachClient::queued_bytes`]'s own doc).
+/// [`AttachWorker::ack_output_consumed`]'s own doc).
 ///
 /// switch-latency Phase 1: the reader used to enforce the block with a
 /// `thread::sleep(20ms)` poll loop. The count itself stays a plain
@@ -1861,9 +1884,9 @@ impl QueuedBytes {
 /// to the worker. Gates its OWN next `read()` call on the SHARED
 /// [`QueuedBytes`] counter (Codex review round, finding 7: "the FE STOPS
 /// READING THE PIPE" is now real — this is the SAME `Arc` clone
-/// [`FeAttachClient::pump`] decrements, not a private, immediately-
-/// released one). `stop` breaks the backpressure wait itself (a notified
-/// wait `cancel()` cannot reach); a normal teardown sets it and calls
+/// [`AttachWorker::ack_output_consumed`] decrements, not a private,
+/// immediately-released one). `stop` breaks the backpressure wait itself
+/// (a notified wait `cancel()` cannot reach); a normal teardown sets it and calls
 /// [`QueuedBytes::notify_stop`] just before calling `cancel()`.
 /// `Keepalive` is answered directly here (bounced back byte-identical),
 /// never round-tripped through the worker.
@@ -1893,7 +1916,7 @@ fn run_attach_reader<E: Endpoint>(
         }
         if let DecodedFrame::AttachServer(AttachServer::Output { bytes }) = &frame {
             // The ONLY increment of the shared byte-account — paired
-            // with `FeAttachClient::pump`'s own decrement.
+            // with `AttachWorker::ack_output_consumed`'s own decrement.
             queued_bytes.add(bytes.len());
         }
         if tx.send(WorkerMsg::Frame(frame)).is_err() {
@@ -2336,6 +2359,58 @@ fn handle_attach_frame<E: Endpoint>(
 mod tests {
     use super::*;
     use crate::client::PeerIdentity;
+
+    /// The manager's own ruling on top of Codex round 2: the ingress
+    /// bound limits ACCUMULATION, never a single send. An input bigger
+    /// than the bound is admitted outright when nothing else is queued
+    /// (a large paste, or a long `sot-fe type --stdin`, must never
+    /// silently vanish just for being bigger than a bound sized for
+    /// steady-state typing); once it is sitting in the channel
+    /// un-consumed, a second send that would push the total past the
+    /// bound is refused, and draining the first (releasing its
+    /// reservation, exactly as the worker's own loop would when it pops
+    /// the message) makes the bound honest again.
+    #[test]
+    fn an_oversize_input_is_admitted_alone_but_blocks_further_sends_until_drained() {
+        let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
+        let worker = AttachWorker::<TestEndpoint> {
+            msg_tx,
+            ingress_bytes: Arc::new(AtomicUsize::new(0)),
+            ingress_bound: 64,
+            queued_bytes: Arc::new(QueuedBytes::new()),
+            worker_handle: None,
+            _endpoint: PhantomData,
+        };
+
+        // Bigger than the 64-byte bound, but the queue is idle -- admitted.
+        assert_eq!(
+            worker.send_input(vec![0u8; 100]),
+            Ok(()),
+            "a single oversize input must be admitted when nothing else is queued"
+        );
+
+        // Nothing has drained the channel yet, so the first reservation
+        // is still outstanding: a second send is refused, even a tiny one.
+        assert_eq!(
+            worker.send_input(vec![0u8; 1]),
+            Err(IngressRefused),
+            "a second send while the first is still queued must be refused"
+        );
+
+        // Draining the channel (as the worker's own loop would, popping
+        // the message and letting its reservation drop) releases the
+        // first charge.
+        match msg_rx.recv().expect("the first send's own message is queued") {
+            WorkerMsg::Input(bytes, _reservation) => assert_eq!(bytes.len(), 100),
+            _ => panic!("expected WorkerMsg::Input"),
+        }
+
+        assert_eq!(
+            worker.send_input(vec![0u8; 1]),
+            Ok(()),
+            "the bound must be honest again once the outstanding reservation is released"
+        );
+    }
 
     /// Codex round on #194, finding 3: a per-frame deadline that keeps
     /// re-arming itself, forever, is not a bound at all. This proves the

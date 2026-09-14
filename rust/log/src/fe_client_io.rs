@@ -160,7 +160,8 @@ pub struct FeAttachClient<
     /// screen TO `pane_size` (there is no real viewport size to reflow to).
     /// The take transaction's own headless behavior (never sending
     /// `Resize`) is a separate, independent flag on [`fe_client::
-    /// TakeTransaction`] itself, chosen by [`run_worker`] at construction —
+    /// TakeTransaction`] itself, chosen by `attach_worker::run_worker` at
+    /// construction (private there, so not a linkable path from here) —
     /// this field never reaches that decision directly.
     headless: bool,
     /// Sum of the byte lengths of every `input` this client has seen

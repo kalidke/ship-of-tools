@@ -26,7 +26,7 @@
 //! to force multiple wire chunks needs its own producer this lane has
 //! no reason to build.
 
-use sot_log::attach_worker::{AttachWorker, IngressRefused, WorkerEvent};
+use sot_log::attach_worker::{AttachWorker, WorkerEvent};
 use sot_log::client::{Endpoint, PlatformEndpoint};
 use sot_log::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
@@ -248,8 +248,21 @@ fn recv_until<T>(rx: &Receiver<WorkerEvent>, timeout: Duration, mut f: impl FnMu
 // Bounded ingress
 // -----------------------------------------------------------------------
 
+/// The bound limits ACCUMULATION, never a single send — see
+/// `AttachWorker::send_input`'s own doc for the full argument (a large
+/// paste, or a long `sot-fe type --stdin`, must never silently vanish
+/// just for being bigger than a bound sized for steady-state typing).
+/// Proven here end to end, against a real worker thread, that a real
+/// oversize send is genuinely admitted rather than refused; the
+/// REFUSAL half of the rule (something already queued, and admitting a
+/// second send too would push the total past the bound) is proven
+/// deterministically, with a held channel receiver standing in for "not
+/// yet drained," by `attach_worker::tests::
+/// an_oversize_input_is_admitted_alone_but_blocks_further_sends_until_drained`
+/// — a real worker thread would race to drain it, which is exactly the
+/// kind of timing dependency this file avoids.
 #[test]
-fn an_ingress_overflow_is_refused() {
+fn an_oversize_input_is_admitted_when_the_queue_is_idle() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
     let dir = tempfile::tempdir().unwrap();
@@ -262,22 +275,15 @@ fn an_ingress_overflow_is_refused() {
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
-    // A bound smaller than a single ordinary send: the refusal is
-    // synchronous and needs no live connection or timing race to prove
-    // ("never queued unbounded" holds from the very first call).
+    // A bound smaller than the single send below.
     let (worker, _rx) = spawn_worker(h.clone(), 80, 24, "attach-worker-test-ingress", 4);
 
     let result = worker.send_input(vec![0u8; 10]);
-    assert_eq!(result, Err(IngressRefused), "a send exceeding the ingress bound must be refused, not queued");
+    assert_eq!(result, Ok(()), "a single input bigger than the bound must be admitted when the queue is idle, not refused");
 
     // Empty input is never enqueued and never refused -- it types
     // nothing and must not itself consume any of the bound.
     assert_eq!(worker.send_input(Vec::new()), Ok(()), "empty input must be a silent no-op, not a refusal");
-
-    // The bound is still intact after the refusal above: a send that
-    // fits now succeeds, proving the refused 10-byte attempt above left
-    // no stale reservation behind.
-    assert_eq!(worker.send_input(vec![0u8; 4]), Ok(()), "a send within the bound must still succeed after an earlier refusal");
 
     drop(worker);
     end_run_and_wait_verified(&conn, &voyage);
