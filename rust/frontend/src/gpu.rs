@@ -552,6 +552,18 @@ enum NavPrompt {
     },
 }
 
+/// Outcome of a Ctrl+N create round-trip, as `finish_pending_create` needs
+/// it: `FileWriteResult`'s `Ok`/`Conflict`/`Error` and `DirCreateResult`'s
+/// `Ok`/`Error` collapse onto these three cases — a conflicting `file.write`
+/// and an `already_exists` `dir.create` both mean the same thing here (the
+/// name existed on disk already), so callers fold them onto the same variant
+/// rather than `finish_pending_create` re-deriving it from a `code` string.
+enum CreateOutcome<'a> {
+    Ok,
+    AlreadyExists,
+    Error(&'a str),
+}
+
 /// Active concept-annotation edit. `None` when the preview pane is in
 /// read-only view mode (the default); `Some` when the user pressed `e`
 /// on a cursored annotation. Carries enough context to fire a
@@ -1736,7 +1748,7 @@ fn build_new_file_node_id(dir_node_id: &str, name: &str) -> Result<String, &'sta
 /// Whether typing `c` onto the live Ctrl+N prompt buffer `buf` is allowed.
 /// `\` is never a name character here. `/` is accepted only as a single
 /// TRAILING character — it's the "make this a directory" marker that
-/// `confirm_create_file` strips before validating the rest of the name via
+/// `split_create_name` strips before validating the rest of the name via
 /// `build_new_file_node_id` — so a second `/`, or any character typed after
 /// one, is refused. Pure so the invariant ("at most one `/`, and only at the
 /// end") is testable without a live prompt buffer.
@@ -1748,6 +1760,18 @@ fn nav_prompt_name_char_allowed(buf: &str, c: char) -> bool {
         return !buf.is_empty() && !buf.ends_with('/');
     }
     !buf.ends_with('/')
+}
+
+/// Splits the Ctrl+N prompt's trimmed input into "is this a directory" and
+/// the bare name to hand `build_new_file_node_id`. A single trailing `/` —
+/// `nav_prompt_name_char_allowed` guarantees the buffer can carry at most
+/// one, and only trailing — marks a directory and is stripped; anything
+/// else is a file name, unchanged.
+fn split_create_name(name: &str) -> (bool, String) {
+    match name.strip_suffix('/') {
+        Some(bare) => (true, bare.to_string()),
+        None => (false, name.to_string()),
+    }
 }
 
 /// Whether a Files-mode tree node is a directory for delete-refusal purposes.
@@ -11279,16 +11303,7 @@ impl State {
             }
             _ => return,
         };
-        // A trailing `/` means "create a directory" rather than a file.
-        // Strip it before the shared name validation below — which still
-        // rejects an EMBEDDED `/`, but `nav_prompt_push_char` already
-        // guarantees the buffer can carry at most one, and only trailing.
-        let is_dir = name.ends_with('/');
-        let bare_name = if is_dir {
-            name.trim_end_matches('/').to_string()
-        } else {
-            name
-        };
+        let (is_dir, bare_name) = split_create_name(&name);
         let kind = if is_dir { "new dir" } else { "new file" };
         let new_id = match build_new_file_node_id(&dir_node_id, &bare_name) {
             Ok(id) => id,
@@ -11305,34 +11320,67 @@ impl State {
             self.window.request_redraw();
             return;
         }
-        if is_dir {
-            if let Err(e) = self.send(OutgoingReq::DirCreate {
+        let req = if is_dir {
+            OutgoingReq::DirCreate {
                 node_id: new_id.clone(),
                 workspace_id: self.active_workspace_id.clone(),
-            }) {
-                tracing::warn!(error = %e, %new_id, "drop dir.create for new dir — channel closed");
-                self.status = "new dir · channel closed".to_string();
-                self.window.request_redraw();
-                return;
             }
-            tracing::info!(%new_id, "navtree.create_dir → dir.create");
         } else {
-            if let Err(e) = self.send(OutgoingReq::FileWrite {
+            OutgoingReq::FileWrite {
                 node_id: new_id.clone(),
                 content: String::new(),
                 expected_version: None,
                 workspace_id: self.active_workspace_id.clone(),
-            }) {
-                tracing::warn!(error = %e, %new_id, "drop file.write for new file — channel closed");
-                self.status = "new file · channel closed".to_string();
-                self.window.request_redraw();
-                return;
             }
-            tracing::info!(%new_id, "navtree.create_file → file.write");
+        };
+        if let Err(e) = self.send(req) {
+            tracing::warn!(error = %e, %new_id, is_dir, "drop {kind} — channel closed");
+            self.status = format!("{kind} · channel closed");
+            self.window.request_redraw();
+            return;
         }
+        tracing::info!(%new_id, is_dir, "navtree.create → {kind}");
         self.pending_created_node_id = Some(new_id);
         self.nav_prompt = None;
         self.status = format!("creating {bare_name}…");
+        self.window.request_redraw();
+    }
+
+    /// The shared tail of a Ctrl+N create round-trip: does nothing unless
+    /// `node_id` matches the pending create (a late reply for an
+    /// abandoned/superseded request is ignored), otherwise clears the
+    /// pending marker and reports `outcome` on the status line. Called from
+    /// both `file.write`'s and `dir.create`'s reply handling —
+    /// `FileWriteResult`'s `Conflict` and `DirCreateResult`'s
+    /// `already_exists` error both collapse to `AlreadyExists` here, since
+    /// both mean "the name existed on disk already".
+    fn finish_pending_create(&mut self, node_id: &str, outcome: CreateOutcome) {
+        if self.pending_created_node_id.as_deref() != Some(node_id) {
+            return;
+        }
+        self.pending_created_node_id = None;
+        match outcome {
+            CreateOutcome::Ok => {
+                // Re-list the parent dir so the new entry appears without a
+                // manual re-expand — same tree.children refresh the
+                // delete/upload paths use.
+                let parent = parent_files_node_id(node_id);
+                if let Err(e) = self.send(crate::transport::OutgoingReq::TreeChildren {
+                    parent_id: parent,
+                    workspace_id: self.active_workspace_id.clone(),
+                }) {
+                    tracing::warn!(error = %e, "drop post-create tree.children refresh");
+                }
+                let name = node_id.rsplit(['/', ':']).next().unwrap_or(node_id);
+                self.status = format!("created · {name}");
+            }
+            CreateOutcome::AlreadyExists => {
+                self.status = "new · already exists on disk".to_string();
+            }
+            CreateOutcome::Error(message) => {
+                self.status = format!("new failed · {message}");
+            }
+        }
         self.window.request_redraw();
     }
 
@@ -14207,11 +14255,6 @@ impl State {
                         .as_ref()
                         .and_then(|e| e.file_node_id.as_deref())
                         == Some(node_id.as_str());
-                    // Ctrl+N new-file round-trip: did this reply close out the
-                    // file we just asked the backend to create? If so, refresh
-                    // the new file's parent dir so the row shows up.
-                    let matches_create =
-                        self.pending_created_node_id.as_deref() == Some(node_id.as_str());
                     match result {
                         crate::transport::FileWriteResult::Ok { path, version } => {
                             tracing::info!(%node_id, %path, %version, "file.write ok");
@@ -14236,28 +14279,9 @@ impl State {
                                 self.status = format!("saved · {name}");
                                 self.window.request_redraw();
                             }
-                            if matches_create {
-                                self.pending_created_node_id = None;
-                                // Re-list the parent dir so the new file
-                                // appears without a manual re-expand — same
-                                // tree.children refresh the upload path uses.
-                                let parent = parent_files_node_id(&node_id);
-                                if let Err(e) =
-                                    self.send(crate::transport::OutgoingReq::TreeChildren {
-                                        parent_id: parent,
-                                        workspace_id: self.active_workspace_id.clone(),
-                                    })
-                                {
-                                    tracing::warn!(error = %e,
-                                        "drop post-create tree.children refresh");
-                                }
-                                let name = node_id
-                                    .rsplit(['/', ':'])
-                                    .next()
-                                    .unwrap_or(node_id.as_str());
-                                self.status = format!("created · {name}");
-                                self.window.request_redraw();
-                            }
+                            // Ctrl+N new-file round-trip: does nothing unless
+                            // `node_id` is the pending create.
+                            self.finish_pending_create(&node_id, CreateOutcome::Ok);
                         }
                         crate::transport::FileWriteResult::Conflict {
                             current_version, ..
@@ -14277,14 +14301,10 @@ impl State {
                                         .to_string();
                                 self.window.request_redraw();
                             }
-                            if matches_create {
-                                // The name collided on disk (a file the tree
-                                // didn't list yet). Drop the pending id and
-                                // surface it.
-                                self.pending_created_node_id = None;
-                                self.status = "new file · already exists on disk".to_string();
-                                self.window.request_redraw();
-                            }
+                            // A conflicting write means the name collided on
+                            // disk (a file the tree didn't list yet) when
+                            // this was a Ctrl+N create.
+                            self.finish_pending_create(&node_id, CreateOutcome::AlreadyExists);
                         }
                         crate::transport::FileWriteResult::Error { code, message } => {
                             tracing::error!(%node_id, %code, %message, "file.write failed");
@@ -14299,11 +14319,7 @@ impl State {
                                     format!("SAVE FAILED · {message} (edit kept in buffer)");
                                 self.window.request_redraw();
                             }
-                            if matches_create {
-                                self.pending_created_node_id = None;
-                                self.status = format!("new file failed · {message}");
-                                self.window.request_redraw();
-                            }
+                            self.finish_pending_create(&node_id, CreateOutcome::Error(&message));
                         }
                     }
                 }
@@ -14358,49 +14374,22 @@ impl State {
                     }
                 }
                 crate::transport::IncomingEvt::DirCreateDone { node_id, result } => {
-                    // Ctrl+N new-dir round-trip: did this reply close out the
-                    // directory we just asked the backend to create? Late
-                    // replies for an abandoned/superseded request are ignored.
-                    let matches_create =
-                        self.pending_created_node_id.as_deref() == Some(node_id.as_str());
+                    // Ctrl+N new-dir round-trip: does nothing unless
+                    // `node_id` is the pending create (a late reply for an
+                    // abandoned/superseded request is ignored).
                     match result {
                         crate::transport::DirCreateResult::Ok { path } => {
                             tracing::info!(%node_id, %path, "dir.create ok");
-                            if matches_create {
-                                self.pending_created_node_id = None;
-                                // Re-list the parent dir so the new directory
-                                // appears without a manual re-expand — same
-                                // tree.children refresh the file create /
-                                // delete / upload paths use.
-                                let parent = parent_files_node_id(&node_id);
-                                if let Err(e) =
-                                    self.send(crate::transport::OutgoingReq::TreeChildren {
-                                        parent_id: parent,
-                                        workspace_id: self.active_workspace_id.clone(),
-                                    })
-                                {
-                                    tracing::warn!(error = %e,
-                                        "drop post-create tree.children refresh");
-                                }
-                                let name = node_id
-                                    .rsplit(['/', ':'])
-                                    .next()
-                                    .unwrap_or(node_id.as_str());
-                                self.status = format!("created · {name}");
-                                self.window.request_redraw();
-                            }
+                            self.finish_pending_create(&node_id, CreateOutcome::Ok);
                         }
                         crate::transport::DirCreateResult::Error { code, message } => {
                             tracing::error!(%node_id, %code, %message, "dir.create failed");
-                            if matches_create {
-                                self.pending_created_node_id = None;
-                                self.status = if code == "already_exists" {
-                                    "new dir · already exists on disk".to_string()
-                                } else {
-                                    format!("new dir failed · {message}")
-                                };
-                                self.window.request_redraw();
-                            }
+                            let outcome = if code == "already_exists" {
+                                CreateOutcome::AlreadyExists
+                            } else {
+                                CreateOutcome::Error(&message)
+                            };
+                            self.finish_pending_create(&node_id, outcome);
                         }
                     }
                 }
@@ -26335,6 +26324,21 @@ mod tests {
         // separator via "sub/" + "x" → "sub/x").
         assert!(!nav_prompt_name_char_allowed("sub/", '/'));
         assert!(!nav_prompt_name_char_allowed("sub/", 'x'));
+    }
+
+    #[test]
+    fn split_create_name_takes_a_trailing_slash_as_a_directory_marker() {
+        assert_eq!(split_create_name("a.txt"), (false, "a.txt".to_string()));
+        assert_eq!(split_create_name("sub/"), (true, "sub".to_string()));
+        // Chained through the id builder, this is what actually reaches the
+        // wire in `OutgoingReq::DirCreate`: "sub/" typed under `files:x`
+        // becomes a create for `files:x/sub`.
+        let (is_dir, bare) = split_create_name("sub/");
+        assert!(is_dir);
+        assert_eq!(
+            build_new_file_node_id("files:x", &bare),
+            Ok("files:x/sub".to_string())
+        );
     }
 
     #[test]

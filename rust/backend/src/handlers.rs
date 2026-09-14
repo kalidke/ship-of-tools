@@ -25,7 +25,7 @@ use sot_protocol::{
     VideoOpenReq, VideoOpenRes,
 };
 
-use crate::file_io::{self, CreateDirResult, WriteResult};
+use crate::file_io::{self, WriteResult};
 use crate::files_mode::{mime_for_path, FilesMode};
 use crate::kernel::Kernel;
 use crate::mathjax::MathJax;
@@ -1939,9 +1939,10 @@ pub async fn handle_file_delete(
 }
 
 /// Create a directory from Files-mode nav (FE Ctrl+N, a name ending in `/`).
-/// Non-recursive: `file_io::create_dir` refuses to create missing parents,
-/// mirroring `file.write`'s new-file contract. An existing file or directory
-/// at the target path is refused with `code: "already_exists"` rather than
+/// Non-recursive (`std::fs::create_dir`, not `create_dir_all`): a missing
+/// parent fails loudly instead of being silently created, mirroring
+/// `file.write`'s new-file contract. An existing file or directory at the
+/// target path is refused with `code: "already_exists"` rather than
 /// silently succeeding. Bumps the session revision like file.write/delete so
 /// the watcher and reconnecting clients refresh.
 pub async fn handle_dir_create(
@@ -1969,8 +1970,8 @@ pub async fn handle_dir_create(
         Err(out) => return Ok(out),
     };
 
-    match file_io::create_dir(&path) {
-        Ok(CreateDirResult::Created) => {
+    match std::fs::create_dir(&path) {
+        Ok(()) => {
             let res = DirCreateRes {
                 node_id: req.node_id.clone(),
                 path: path.to_string_lossy().to_string(),
@@ -1983,7 +1984,7 @@ pub async fn handle_dir_create(
                 None,
             )])
         }
-        Ok(CreateDirResult::AlreadyExists) => Ok(vec![(
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(vec![(
             Frame::res(
                 req_id,
                 op::DIR_CREATE,

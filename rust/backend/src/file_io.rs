@@ -141,31 +141,6 @@ pub fn write_file(abs: &Path, content: &str, expected: Option<&str>) -> Result<W
     })
 }
 
-/// Outcome of a directory-create attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CreateDirResult {
-    /// Created.
-    Created,
-    /// Refused: something (a file or a directory) already exists at this
-    /// path. Reported distinctly rather than as an `Err` so the handler can
-    /// surface a clean "already exists" instead of a raw IO error string.
-    AlreadyExists,
-}
-
-/// Create a single directory at `abs`. Non-recursive (`std::fs::create_dir`,
-/// not `create_dir_all`) — mirrors `file.write`'s new-file contract: the
-/// parent must already exist, so a typo in a multi-level name fails loudly
-/// instead of silently creating intermediate directories nobody asked for.
-pub fn create_dir(abs: &Path) -> Result<CreateDirResult> {
-    match std::fs::create_dir(abs) {
-        Ok(()) => Ok(CreateDirResult::Created),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            Ok(CreateDirResult::AlreadyExists)
-        }
-        Err(e) => Err(anyhow!("create_dir {}: {e}", abs.display())),
-    }
-}
-
 /// Move `abs` to trash — never hard-unlinks (the file.delete v1 contract:
 /// every delete is recoverable). System trash first (`gio trash`); a missing
 /// gio or non-zero exit routes to the in-workspace fallback. Returns `None`
@@ -347,37 +322,5 @@ mod tests {
         assert_ne!(d1, d2);
         assert_eq!(std::fs::read_to_string(&d1).unwrap(), "one");
         assert_eq!(std::fs::read_to_string(&d2).unwrap(), "two");
-    }
-
-    #[test]
-    fn create_dir_makes_a_new_directory() {
-        let s = Scratch::new("mkdir_new");
-        let p = s.path("sub");
-        assert_eq!(create_dir(&p).unwrap(), CreateDirResult::Created);
-        assert!(p.is_dir());
-    }
-
-    #[test]
-    fn create_dir_on_existing_dir_is_already_exists_not_err() {
-        let s = Scratch::new("mkdir_dup_dir");
-        let p = s.path("sub");
-        std::fs::create_dir(&p).unwrap();
-        assert_eq!(create_dir(&p).unwrap(), CreateDirResult::AlreadyExists);
-    }
-
-    #[test]
-    fn create_dir_on_existing_file_is_already_exists_not_err() {
-        let s = Scratch::new("mkdir_dup_file");
-        let p = s.path("sub");
-        std::fs::write(&p, "not a dir").unwrap();
-        assert_eq!(create_dir(&p).unwrap(), CreateDirResult::AlreadyExists);
-    }
-
-    #[test]
-    fn create_dir_is_not_recursive() {
-        let s = Scratch::new("mkdir_no_parents");
-        let p = s.path("missing/sub");
-        assert!(create_dir(&p).is_err());
-        assert!(!p.exists());
     }
 }
