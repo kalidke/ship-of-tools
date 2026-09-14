@@ -1,4 +1,5 @@
 #!/bin/bash
+# sot-capsule-capable: 1
 # ccx — start a comm-aware CODEX session for any project (ADR 0031).
 #
 # Codex counterpart of ccb. Unlike ccb (whose claude session bootstraps its
@@ -9,14 +10,14 @@
 #      infix keeps a codex session from colliding with a claude session on
 #      the same repo);
 #   2. start the durable relay listener (files inbound into the inbox);
-#   3. start codex-watch.sh — the pane-injection wake: it polls the inbox
-#      (NFS! poll, never tail -F) and types new directed frames into THIS
-#      tmux pane, which is how an idle codex session gets woken by comm.
+#   3. start codex-watch.sh — the wake: polls the inbox (NFS! poll, never
+#      tail -F), delivers into THIS session (tmux pane, or a capsule's pty.input).
 # Then exec codex, which reads AGENTS.md (identity, comm CLI usage, state
 # discipline) from the repo/checkout natively.
 #
 # Source of truth: comm/adapters/codex/bin/ccx in Ship of Tools, deployed to
 # ~/.local/bin by `ShipTools.update_comm()`. Edit it there.
+# The marker above is a static grep target -- never runs this script to ask.
 
 # Same env scrub as ccb: a daemon-spawned pane inherits the tmux SERVER env,
 # which may carry another agent's nesting markers.
@@ -42,6 +43,19 @@ fi
 # next to codex in the nvm bin dir; put that dir on PATH.
 export PATH="$(dirname "$CODEX_BIN"):$PATH"
 
+# $CAPSULE keys ONLY on this argv flag, never an inherited env var (argv
+# does not inherit into a hand-run ccx typed inside a capsule row).
+RESUME_ID=""; FRESH=0; CONTINUE=0; CAPSULE=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --fresh) FRESH=1 ;;
+        --resume) RESUME_ID="$2"; shift ;;
+        --continue) CONTINUE=1 ;;
+        --capsule) CAPSULE=1 ;;
+    esac
+    shift
+done
+
 COMM="${SOT_COMM_HOME:-$HOME/.sot-comm}/bin"
 
 # Default handle: <repo>-cx-<host>. SOT_COMM_NAME (set by the daemon's boot
@@ -56,8 +70,14 @@ export SOT_COMM_NAME
 if [ -x "$COMM/comm-join.sh" ]; then
     "$COMM/comm-join.sh" --name "$SOT_COMM_NAME" >/dev/null 2>&1 || true
     "$COMM/comm-listen.sh" >/dev/null 2>&1 || true
-    # The wake half: pane injection. Backgrounded; dies with the pane.
-    if [ -x "$COMM/codex-watch.sh" ] && [ -n "${TMUX_PANE:-}" ]; then
+    # The wake half. Backgrounded; dies with the pane/leg. --capsule checked
+    # FIRST: a daemon started from inside a tmux pane leaks TMUX_PANE into
+    # the leg, so a capsule row must never fall into tmux mode against
+    # that foreign pane just because the var happens to be set.
+    if [ -x "$COMM/codex-watch.sh" ] && [ "$CAPSULE" = 1 ]; then
+        nohup "$COMM/codex-watch.sh" "$SOT_COMM_NAME" \
+            >/dev/null 2>&1 &
+    elif [ -x "$COMM/codex-watch.sh" ] && [ -n "${TMUX_PANE:-}" ]; then
         nohup "$COMM/codex-watch.sh" "$SOT_COMM_NAME" "$TMUX_PANE" \
             >/dev/null 2>&1 &
     fi
@@ -98,21 +118,14 @@ fi
 # the flag really does execute an untrusted hook — a /hooks panel reading
 # Active=0 reflects PERSISTED trust and does not predict behaviour under this
 # flag. See comm/adapters/codex/hooks.README.md.
-# Resume, like ccb's `claude --continue`: unless `--fresh`, continue the
-# most recent Codex session recorded for THIS directory (rollouts live under
-# $CODEX_HOME_DIR/sessions; the session_meta carries the cwd). `--resume <id>`
-# names one explicitly. A killed pane thereby comes back mid-conversation
-# instead of as a stranger.
-RESUME_ID=""; FRESH=0
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --fresh) FRESH=1 ;;
-        --resume) RESUME_ID="$2"; shift ;;
-        --continue) ;;   # accepted for launcher parity with ccb; resume is the default
-    esac
-    shift
-done
-if [ "$FRESH" = 0 ] && [ -z "$RESUME_ID" ]; then
+# --capsule starts FRESH (only --continue scans); a bare ccx resumes as before.
+SCAN=0
+if [ "$CAPSULE" = 1 ]; then
+    [ "$CONTINUE" = 1 ] && [ "$FRESH" = 0 ] && [ -z "$RESUME_ID" ] && SCAN=1
+else
+    [ "$FRESH" = 0 ] && [ -z "$RESUME_ID" ] && SCAN=1
+fi
+if [ "$SCAN" = 1 ]; then
     for f in $(ls -t "$CODEX_HOME_DIR"/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -300); do
         if head -c 4096 "$f" | grep -q "\"cwd\":\"$PWD\""; then
             RESUME_ID="$(head -c 4096 "$f" | grep -o '"id":"[0-9a-f-]\{36\}"' | head -1 | cut -d'"' -f4)"

@@ -115,7 +115,8 @@
 #              a bare Enter (or anything) to a pane you have not read with
 #              `screen` first — claude's own trust prompt defaults to "No,
 #              exit", so a blind Enter can end a session instead of
-#              advancing it. Prints `ok bytes=<n> runtime=<r>` on success;
+#              advancing it. Prints `ok bytes=<n> runtime=<r> enter_sent=<bool>`
+#              on success (enter_sent:false means unconfirmed, not failed);
 #              exit 2 on a daemon-reported error (unknown workspace,
 #              non-UTF8 text on a tmux row, a not-ready or wedged capsule
 #              row, ...).
@@ -788,7 +789,7 @@ send_pty_input() {
         echo "ERROR: $err [$code]" >&2
         exit 2
     fi
-    printf '%s' "$resp" | jq -r '.payload | "ok bytes=\(.bytes) runtime=\(.runtime)"'
+    printf '%s' "$resp" | jq -r '.payload | "ok bytes=\(.bytes) runtime=\(.runtime) enter_sent=\(.enter_sent)"'
 }
 
 # ADR 0042 amendment (2026-09-07): the CURRENT screen of a named row — no
