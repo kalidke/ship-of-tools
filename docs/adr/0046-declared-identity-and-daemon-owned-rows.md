@@ -133,28 +133,36 @@ tmux; a capsule-capable install needs no tmux.
      liveness interval (`fe_client_io.rs:166`). When a resident worker
      (decision 3) is attached, ITS liveness poll on the SAME connection is
      the observation, failures included — a supervisor-lane connection per
-     row; the observer polls on its own for rows without a resident. Settle
-     and watchdog observations are fed INTO the observer with an ownership
-     check (the observation's spawn generation must be the row's current
-     one) and never write `phase` directly. `unreachable` needs two
-     consecutive failed, deadline-bounded rounds (success resets the
-     count); `ended_no_respawn`/`terminal` LATCH — no later observation in
-     the same generation clears one, only a new spawn generation does. Lane
-     events are not available (the supervisor wire has no lifecycle
-     subscription, `wire.rs:665`) and are not pursued.
-   - **Selection is the one start intent.** `pty.open` on a capsule row
-     answers `attach_direct` at once from the phase cell and, when the
-     phase is not `ready`, runs the existing guarded activation helper
-     (`ensure_started`, `capsule_workspace.rs:1647`: first start, resume,
-     the stop → resume → reset retirement, the inert-anchor protection —
-     unchanged) asynchronously, never awaited by the request. A failed
-     activation's error is kept (in memory, like `phase`) on
-     `workspace.list` until the next attempt — never implying `Terminal`.
-     Only the blocking `phase_of` preflight (`server.rs:1961-2064`) is
-     deleted. The raw-lane bridge's dial (`lane_bridge.rs:119`) uses that
-     same helper. `workspace.list` is pure memory. The observer and the
+     row; the observer polls on its own for rows without a resident.
+     Settle and watchdog observations are fed INTO the observer, never
+     writing `phase` directly. The cell holds ONE current supervisor
+     identity (pid + process creation time), set ONLY by the daemon's own
+     spawn or its own adoption of an already-live authority, always under
+     the row's guard — never by comparing timestamps (two different
+     processes can share a creation tick). An observation naming any OTHER
+     supervisor is ignored outright. `terminal` is supervisor-scoped and
+     ALWAYS applies from the current supervisor, any voyage or none — only
+     a fresh epoch (spawn or adoption) ever clears it. Every other phase is
+     voyage-scoped within the current epoch: `unreachable` needs two
+     consecutive failed rounds carrying no identity; `ended_no_respawn`
+     latches for its voyage, cleared only by a strictly newer one — exactly
+     what a successful `reset` produces. Lane events are not available (the
+     supervisor wire has no lifecycle subscription, `wire.rs:665`) and are
+     not pursued.
+   - **Selection and reconnection are two intents on one activation
+     boundary.** `pty.open` on a capsule row answers `attach_direct` at
+     once from the phase cell and ALWAYS fires the guarded activation
+     helper (`ensure_started`, `capsule_workspace.rs`) asynchronously,
+     never awaited by the request and never skipped on a cached phase —
+     the helper's own guarded revalidation decides. `ensure_started` takes
+     an intent: `Selection` (`pty.open`) may resume an unreachable lane and
+     may retire+reset a resting `EndedNoRespawn` authority; `Reconnect`
+     (the raw-lane bridge's dial, `lane_bridge.rs`) may only resume, never
+     reset — ADR 0045 decision 2's resume-only rule for a passive path. The
+     inert-anchor refusal and `activation_error` bookkeeping (clear on
+     attempt, record on failure) both live inside the guard, for both
+     intents. `workspace.list` is pure memory. The observer and the
      resident never start work; a passive resync never restarts ended work.
-     This is a smaller change than the bridge rewrite round 1 proposed.
    - **Record location.** `record_dir` is persisted, written at create for
      new rows from the qualified state root of that moment. Existing rows
      migrate LAZILY: when the daemon next finds the row's supervisor lane
