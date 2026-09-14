@@ -1033,6 +1033,12 @@ sot_host() {
         return 1
     fi
     raw="${raw%%.*}"
+    # Trim whitespace the same way Rust's host_name() does (`.trim()`
+    # after taking the first label) — manager review round 2: the two
+    # implementations must apply the SAME rule, not two independently
+    # coded near-matches.
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
     if [ -z "$raw" ]; then
         echo "sot_host: no SOT_SELF_HOST override and hostname returned no usable label" >&2
         return 1
