@@ -295,14 +295,21 @@ if [ -n "$H" ] && _survived "$H"; then
     # (that's the whole point of "survived" — nothing was re-joined), so
     # this is the ONLY place a --continue restart re-declares to the
     # daemon. Idempotent (the daemon just overwrites the same value) and
-    # best-effort: a failure here is silent, recovered by the NEXT
+    # best-effort: a failed declaration is recovered by the NEXT
     # comm-session-start the same way a fresh join's own agent.join retry
-    # works.
+    # works — but (manager review, round 2) the failure itself must be
+    # VISIBLE, checking the acknowledgment and warning exactly like
+    # comm-join.sh's own fresh join does, not discarded silently.
     if [ -n "${SOT_WORKSPACE_ID:-}" ]; then
         if ENDPOINT="$(sot_daemon_endpoint 2>/dev/null)" && [ -n "$ENDPOINT" ]; then
             join_frame="$(jq -nc --arg ws "$SOT_WORKSPACE_ID" --arg h "$H" \
                 '{v:1, id:1, kind:"req", op:"agent.join", payload:{workspace_id:$ws, handle:$h}}')"
-            sot_oneshot_request "$join_frame" "agent.join" >/dev/null 2>&1 || true
+            join_res="$(sot_oneshot_request "$join_frame" "agent.join" || true)"
+            if [ -z "$join_res" ] || ! printf '%s' "$join_res" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
+                echo "comm-session-start.sh: WARNING — could not declare '@$H' to the daemon (agent.join); it will retry at the next comm-session-start." >&2
+            fi
+        else
+            echo "comm-session-start.sh: WARNING — SOT_WORKSPACE_ID is set but no daemon endpoint could be resolved; the daemon won't learn '@$H' until the next comm-session-start." >&2
         fi
     fi
     _context_block "$H"
@@ -317,13 +324,14 @@ fi
 # (--name arg > $SOT_COMM_NAME env > self-file NAME > derive) already slots
 # this correctly BELOW a validated self-file and ABOVE plain basename
 # derivation — an explicit --name would instead rank ABOVE self-file, which
-# is backwards. Manager review (S13, Codex finding S13): the host half
-# goes through the ONE shared `sot_host` resolver (comm-lib.sh) — an
-# inline `hostname -s` here ignored `$SOT_SELF_HOST` and used the whole
-# `hostname -s` output rather than sot_host's first-label rule (reproduced:
-# an empty-host hello resulted whenever the two diverged).
+# is backwards. Manager review (round 2): this is an ADDRESS, not a
+# display value — S1 means no address change this sprint, so it stays
+# main's own `hostname -s` derivation, deliberately independent of
+# `sot_host`/`$SOT_SELF_HOST` (the declared, display-only identity). An
+# earlier draft routed this through `sot_host`, which changes existing
+# frontend addresses under an explicit override — reverted.
 if [ -z "$PIN_NAME" ] && [ -z "${NAME:-}" ] && [ "$IS_FE_ROLE" = 1 ]; then
-    export SOT_COMM_NAME="win-fe-$(sot_host)"
+    export SOT_COMM_NAME="win-fe-$( (hostname -s 2>/dev/null || hostname) | tr '[:upper:]' '[:lower:]' )"
 fi
 
 JOIN_OUT="$("$SCRIPT_DIR/comm-join.sh" 2>&1)" || true
