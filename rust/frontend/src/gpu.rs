@@ -1466,6 +1466,22 @@ fn parent_files_node_id(node_id: &str) -> String {
     }
 }
 
+/// Every expanded `files:` directory row (root included) — the listings a
+/// restored parked Files tree must re-fetch on entry. A parked tree learns
+/// nothing while parked: watcher refreshes touch only the ACTIVE tree
+/// (`refresh_tree_dir_if_expanded`), and the daemon fans `preview.changed`
+/// out only to connections whose active view is that workspace, so a file
+/// created in a workspace the user isn't looking at is absent from its
+/// parked tree on return. Collapsed dirs are left alone: a background
+/// refresh must not reopen what the user closed (`apply_children` drops a
+/// collapsed parent's reply anyway).
+fn expanded_files_dirs(rows: &[TreeRow]) -> Vec<String> {
+    rows.iter()
+        .filter(|r| r.expanded && r.node.id.starts_with("files:"))
+        .map(|r| r.node.id.clone())
+        .collect()
+}
+
 /// Translate a backend-absolute file path into the ACTIVE workspace's
 /// `files:<rel>` node id, when the path lies inside `root`. Returns `None`
 /// for paths outside the root, the root itself, and lookalike siblings
@@ -7450,30 +7466,8 @@ impl State {
                     }) {
                         tracing::warn!(error = %e, "drop tree.root request — channel closed");
                     }
-                } else if self
-                    .tree
-                    .rows
-                    .iter()
-                    .any(|r| r.node.id == "files:" && r.expanded)
-                {
-                    // Restored parked view with an EXPANDED root: refresh the
-                    // root listing so files created while another mode was up
-                    // (watcher refreshes gate on Files) appear on return — the
-                    // parked view used to come back stale and stay stale
-                    // (2026-08-17 report). Safe since apply_children became a
-                    // MERGE (2026-08-18): expanded subtrees and a nested
-                    // cursor survive the refresh. A COLLAPSED root is left
-                    // alone (codex review): the user closed it, and a
-                    // background refresh must not reopen it — the reply-side
-                    // collapsed-parent gate would drop the reply anyway.
-                    // Expanded subdirs' own listings keep the accepted
-                    // staleness residual (only the root level re-lists here).
-                    if let Err(e) = self.send(OutgoingReq::TreeChildren {
-                        parent_id: "files:".to_string(),
-                        workspace_id: self.active_workspace_id.clone(),
-                    }) {
-                        tracing::warn!(error = %e, "drop tree.children (files-entry refresh)");
-                    }
+                } else {
+                    self.refresh_restored_files_tree();
                 }
             }
             Mode::Modules => {
@@ -7703,6 +7697,27 @@ impl State {
             workspace_id: self.active_workspace_id.clone(),
         }) {
             tracing::warn!(error = %e, %dir_id, "drop tree.children (watcher refresh)");
+        }
+    }
+
+    /// Re-list every expanded dir of a restored parked Files tree (see
+    /// `expanded_files_dirs`). Fired on BOTH entries to a parked Files view —
+    /// mode return (`enter_mode`) and workspace return
+    /// (`switch_to_workspace`) — since either way the view comes back
+    /// exactly as it was parked, having heard no watcher event meanwhile
+    /// (the parked view used to come back stale and stay stale: 2026-08-17
+    /// report for the mode case, 2026-09-14 for the workspace case). Lossless
+    /// since `apply_children` became a MERGE: expanded subtrees and a nested
+    /// cursor survive, rows re-anchor by node id, so a preview of a file
+    /// created while the tree was parked keeps a row to sit on.
+    fn refresh_restored_files_tree(&mut self) {
+        for dir_id in expanded_files_dirs(&self.tree.rows) {
+            if let Err(e) = self.send(crate::transport::OutgoingReq::TreeChildren {
+                parent_id: dir_id.clone(),
+                workspace_id: self.active_workspace_id.clone(),
+            }) {
+                tracing::warn!(error = %e, %dir_id, "drop tree.children (restored-tree refresh)");
+            }
         }
     }
 
@@ -8982,6 +8997,13 @@ impl State {
                     self.select_active_host();
                 }
             }
+        } else if self.mode == Mode::Files {
+            // Revisit: the parked Files tree came back as it was left, and
+            // nothing could have updated it meanwhile (watcher refreshes
+            // reach only the active view). Re-list its open dirs so files
+            // created in this workspace while it was parked appear — same
+            // shape as the mode-return refresh in `enter_mode`.
+            self.refresh_restored_files_tree();
         }
         // Refresh the workspace list so kernel_running / new rows stay
         // current — cheap and not user-facing if Sessions mode isn't
@@ -26324,6 +26346,32 @@ mod tests {
         // separator via "sub/" + "x" → "sub/x").
         assert!(!nav_prompt_name_char_allowed("sub/", '/'));
         assert!(!nav_prompt_name_char_allowed("sub/", 'x'));
+    }
+
+    #[test]
+    fn expanded_files_dirs_lists_root_and_open_subdirs_only() {
+        let mut t = TreeView::new();
+        t.set_root(
+            node("files:", "root", true),
+            vec![
+                node("files:src", "src", true),
+                node("files:docs", "docs", true),
+                node("files:a.jl", "a.jl", false),
+            ],
+        );
+        t.rows[1].expanded = true;
+        t.apply_children("files:src", vec![node("files:src/x.jl", "x.jl", false)]);
+        // Root + the one open subdir; the collapsed `docs` and every file
+        // row stay out (a refresh must not reopen a closed dir).
+        assert_eq!(expanded_files_dirs(&t.rows), vec!["files:", "files:src"]);
+        // Collapsing everything leaves nothing to refresh — the user closed it.
+        t.rows[0].expanded = false;
+        t.rows[1].expanded = false;
+        assert!(expanded_files_dirs(&t.rows).is_empty());
+        // A parked non-Files tree (session rows) never triggers a Files refresh.
+        let mut s = TreeView::new();
+        s.set_root(node("sessions:", "hosts", true), vec![node("session_host:a", "a", true)]);
+        assert!(expanded_files_dirs(&s.rows).is_empty());
     }
 
     #[test]
