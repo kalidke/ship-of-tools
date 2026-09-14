@@ -271,12 +271,9 @@ resolve_endpoint() {
 # would otherwise EXIT a non-interactive shell outright (same class as the
 # comm-relay.sh /dev/tcp fix).
 # App-level auth (ADR 0010 hardening): the daemon requires a token-valid hello
-# before serving any op, so prepend one to every connection. Empty token = open
+# before serving any op — `sot_oneshot_request` prepends `sot_hello_frame`
+# (comm-lib.sh, ADR 0046 decision 1) to every connection. Empty token = open
 # mode (gate off). The hello reply is ignored — sot_send greps by op.
-_sot_hello() {
-    local tok; tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
-    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":1,"app_version":"comm","token":"%s"}}\n' "$tok"
-}
 sot_send() {
     # Delegates to comm-lib's hardened one-shot (poll-file read, writer
     # linger) — the old inline `writer | nc | grep -m1` raced the response
@@ -864,23 +861,28 @@ send_version() {
 
     printf '%-20s %-28s %s\n' "component" "version" "build"
     if [ -z "$verr" ]; then
-        # A client with a self-reported fe_handle is a real frontend --
-        # printed on its own row (never collapsed, each box is distinct) as
-        # "frontend <handle>  <version>  active|idle". No idle AGE is shown
-        # (deleted 2026-09-08 review, finding 6): the daemon's expiry/tie
-        # policy is the only thing entitled to decide "how idle" something
-        # is, so this script only ever asks "which one, if any, is active"
-        # and prints that. Everything else (a client_id with no handle --
-        # every comm-script connection registers as "sot-comm") keeps the
-        # pre-existing collapse: identical (client_id, version) pairs fold
-        # into one row with a count, since a busy backend has a dozen of
-        # those at once.
+        # A client with a self-reported declared handle -- `.fe_handle`
+        # (a frontend, unchanged from before ADR 0046: no wire rename this
+        # sprint) or `.name` (ADR 0046 decision 1: a bridge/cli/agent
+        # connection's own declared handle, a distinct field, never an
+        # alias of fe_handle) -- is printed on its own row (never
+        # collapsed, each box is distinct) as "role name@host  version
+        # active|idle" -- the declaration, not a re-derivation. No idle AGE
+        # is shown (deleted 2026-09-08 review, finding 6): the daemon's
+        # expiry/tie policy is the only thing entitled to decide "how
+        # idle" something is, so this script only ever asks "which one, if
+        # any, is active" and prints that. Everything else (a client_id
+        # with no declared handle -- every comm-script connection registers
+        # as "sot-comm") keeps the pre-existing collapse: identical
+        # (client_id, version) pairs fold into one row with a count, since
+        # a busy backend has a dozen of those at once.
         printf '%s' "$vresp" | jq -r '(.payload.clients // []) as $c
-            | ( $c | map(select(.fe_handle != null and .fe_handle != "")) | .[]
-                | "frontend " + .fe_handle + "\t" + .app_version + "\t"
+            | ( $c | map(select((.fe_handle // .name) != null and (.fe_handle // .name) != "")) | .[]
+                | ((.role // "fe") + " " + (.fe_handle // .name) + (if .host then "@" + .host else "" end))
+                    + "\t" + .app_version + "\t"
                     + (if .active then "active" else "idle" end)
               ),
-              ( $c | map(select(.fe_handle == null or .fe_handle == ""))
+              ( $c | map(select((.fe_handle // .name) == null or (.fe_handle // .name) == ""))
                 | group_by(.client_id + "\u0000" + .app_version) | .[]
                 | "client " + .[0].client_id + (if length > 1 then " ×" + (length|tostring) else "" end) + "\t" + .[0].app_version + "\t—"
               )' \

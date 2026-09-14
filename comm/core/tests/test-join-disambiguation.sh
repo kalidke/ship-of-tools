@@ -229,14 +229,10 @@ registry_has_root_key() {  # NAME -> "yes" if the row has a `root` KEY at all (e
 
 contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
-# _sot_hello — a minimal hello frame for the LU6e pipe: cases below, which
-# call sot_oneshot_request DIRECTLY (not through sot-fe/comm-relay.sh, each
-# of which defines its own copy of this function after sourcing
-# comm-lib.sh — sot_oneshot_request calls it unqualified, relying on
-# whatever the caller's scope defines).
-_sot_hello() {
-    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm-test","last_seen_revision":0,"protocol":1,"app_version":"test","token":""}}\n'
-}
+# ADR 0046 decision 1: `sot_oneshot_request` (comm-lib.sh) now calls the
+# ONE shared `sot_hello_frame` directly — this test used to carry its own
+# `_sot_hello` copy purely to satisfy that function's old "the caller's
+# scope defines it" contract, which no longer exists.
 
 # --- cases -----------------------------------------------------------
 

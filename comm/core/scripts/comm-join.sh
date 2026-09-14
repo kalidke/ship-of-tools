@@ -204,6 +204,30 @@ fi
 # so an existing inbox is never truncated.
 : >> "$INBOX_DIR/$NAME.jsonl"
 
+# ADR 0046 decision 1: declare this handle to the daemon that pinned this
+# session's env, through the EXISTING `sot_daemon_endpoint` resolution
+# (manager review, S4: SOT_SOCKET first on Unix, the local pipe on
+# Windows — never a second, typed-only resolver) — never
+# $SOT_RELAY_ENDPOINT, which is cross-machine DELIVERY routing, a
+# different concern from "which local daemon owns my workspace". Only
+# reachable inside a daemon-spawned pane/capsule (SOT_WORKSPACE_ID set);
+# a bare shell join has no workspace to declare into. Best-effort: the
+# sot-comm registry join above already succeeded and is this command's
+# real job — a failed agent.join is one warning, recovered by the next
+# comm-session-start's own retry, never fatal to comm-join.sh itself.
+if [ -n "${SOT_WORKSPACE_ID:-}" ]; then
+    if ENDPOINT="$(sot_daemon_endpoint 2>/dev/null)" && [ -n "$ENDPOINT" ]; then
+        join_frame="$(jq -nc --arg ws "$SOT_WORKSPACE_ID" --arg h "$NAME" \
+            '{v:1, id:1, kind:"req", op:"agent.join", payload:{workspace_id:$ws, handle:$h}}')"
+        join_res="$(sot_oneshot_request "$join_frame" "agent.join" || true)"
+        if [ -z "$join_res" ] || ! printf '%s' "$join_res" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
+            echo "comm-join.sh: WARNING — could not declare '@$NAME' to the daemon (agent.join); it will retry at the next comm-session-start." >&2
+        fi
+    else
+        echo "comm-join.sh: WARNING — SOT_WORKSPACE_ID is set but no daemon endpoint could be resolved; the daemon won't learn '@$NAME' until the next comm-session-start." >&2
+    fi
+fi
+
 # No legacy self-file sweep: unnecessary disk hygiene, not safety-load-
 # bearing — an abandoned legacy file only matters if its exact path is
 # read again, and a rightful owner's self-file self-heals (or is freshly

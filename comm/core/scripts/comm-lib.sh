@@ -995,6 +995,85 @@ claim_derived_handle() {  # MODE ROOT HOST OBJ_JSON
 }
 
 
+# sot_json_escape STR — STR as one JSON-quoted string, surrounding quotes
+# included (S19: `sot_hello_frame`'s hand-rolled `"%s"` interpolation
+# produced invalid JSON for a declared value containing a quote or
+# backslash — reproduced against a quoted SOT_SELF_HOST override). `jq
+# -Rs .` reads STR as raw text (R), slurps the whole input into one
+# string even across embedded newlines (s), and prints it back as a
+# single JSON string literal — the general escaping jq's own JSON writer
+# already gets right, never a hand-rolled sed/printf substitution.
+sot_json_escape() {
+    printf '%s' "$1" | jq -Rs .
+}
+
+# sot_host — this shell's DECLARED host name for the wire only (ADR 0046
+# decision 1, manager review S1/S2): the ONE resolver matching
+# sot_log::state_dir::host_name() on the Rust side exactly — `$SOT_SELF_HOST`
+# verbatim if set and non-empty (a NEW variable: `SOT_HOST` already means
+# the SSH target a remote frontend dials, `scripts/launch-sot.ps1`/
+# `launch-sot.sh` — reusing it here would silently rename a frontend's
+# declared identity to whatever it dials), else the first `.`-label of
+# `hostname -s`, lowercased. Feeds ONLY `sot_hello_frame`'s wire `host`
+# field and display/logs — never an address or on-disk namespace: no
+# on-disk namespace changes this sprint (S1), so comm-context.sh's own
+# `HOST` (the self-file key, handle derivation) does NOT call this;
+# `hostname -s` there stays completely independent, exactly as on main.
+# Fails loudly (S19) rather than printing empty when neither source
+# resolves — a hello with an empty declared host is worse than a hello
+# that never sent one at all.
+sot_host() {
+    if [ -n "${SOT_SELF_HOST:-}" ]; then
+        printf '%s\n' "$SOT_SELF_HOST"
+        return 0
+    fi
+    local raw
+    if ! raw="$(hostname -s 2>/dev/null || hostname 2>/dev/null)"; then
+        echo "sot_host: no SOT_SELF_HOST override and hostname failed -- cannot declare an identity" >&2
+        return 1
+    fi
+    raw="${raw%%.*}"
+    if [ -z "$raw" ]; then
+        echo "sot_host: no SOT_SELF_HOST override and hostname returned no usable label" >&2
+        return 1
+    fi
+    printf '%s\n' "$raw" | tr '[:upper:]' '[:lower:]'
+}
+
+# sot_hello_frame [ROLE] — the ONE hello frame every comm script sends
+# before any other op (ADR 0046 decision 1: a connection declares
+# `{host, role, name}` once, and the daemon binds it — never recomputed
+# downstream). Replaces six pasted copies of this exact literal frame
+# (comm-relay.sh, comm-despawn.sh, comm-listen.sh, comm-spawn.sh, sot-fe,
+# and the join-disambiguation test's own fixture) that predated `host`/
+# `role`/`name` entirely and so declared nothing about the sender.
+#
+# ROLE overrides the default inference: comm-listen.sh's reconnect-loop
+# bridge passes "bridge" explicitly (that loop's own lifetime IS what
+# "bridge" means — nothing else in this tree ever is one). Every other
+# caller lets this infer "agent" ($SOT_WORKSPACE set — a session running
+# inside a daemon-owned workspace) or "cli" (a bare shell invocation, the
+# common case for comm-relay.sh/comm-despawn.sh/comm-spawn.sh/sot-fe).
+#
+# `host`: `sot_host` — works whether or not the caller ran comm-context.sh
+# first (comm-despawn.sh doesn't). `name`: `$NAME` when comm-context.sh
+# resolved one (empty for a not-yet-joined shell — an anonymous hello,
+# exactly today's behavior).
+sot_hello_frame() {
+    local role="${1:-}"
+    if [ -z "$role" ]; then
+        if [ -n "${SOT_WORKSPACE:-}" ]; then role="agent"; else role="cli"; fi
+    fi
+    local tok host
+    tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
+    host="$(sot_host)" || return 1
+    # JSON-escape every interpolated string (S19, Codex finding S19): an
+    # unescaped quote or backslash in a declared host/name/token would
+    # otherwise produce invalid JSON the daemon's own parser rejects.
+    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":1,"app_version":"comm","token":%s,"host":%s,"role":%s,"name":%s}}\n' \
+        "$(sot_json_escape "$tok")" "$(sot_json_escape "$host")" "$(sot_json_escape "$role")" "$(sot_json_escape "${NAME:-}")"
+}
+
 # sot_oneshot_request FRAME OP — one-shot request/response on a fresh daemon
 # connection: send hello + FRAME, return (stdout) the first COMPLETE line
 # whose op matches OP. Hardened after a live intermittent failure
@@ -1028,7 +1107,7 @@ sot_oneshot_request() {
             command -v nc >/dev/null 2>&1 || {
                 echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2
                 rm -f "$tmp"; return 1; }
-            { _sot_hello; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
+            { sot_hello_frame; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
                 | timeout "$timeout_s" nc -U "${ENDPOINT#unix:}" > "$tmp" 2>/dev/null &
             ncpid=$!
             ;;
@@ -1036,7 +1115,7 @@ sot_oneshot_request() {
             local hp="${ENDPOINT#tcp:}" host port
             host="${hp%:*}"; port="${hp##*:}"
             if command -v nc >/dev/null 2>&1; then
-                { _sot_hello; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
+                { sot_hello_frame; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
                     | timeout "$timeout_s" nc "$host" "$port" > "$tmp" 2>/dev/null &
                 ncpid=$!
             else
@@ -1044,7 +1123,7 @@ sot_oneshot_request() {
                 # so the EOF race does not exist here — plain bounded read.
                 (
                     exec 9<>"/dev/tcp/$host/$port" || exit 1
-                    { _sot_hello; printf '%s\n' "$frame"; } >&9
+                    { sot_hello_frame; printf '%s\n' "$frame"; } >&9
                     timeout "$timeout_s" cat <&9
                     exec 9<&- 9>&- 2>/dev/null || true
                 ) > "$tmp" 2>/dev/null &
@@ -1069,7 +1148,7 @@ sot_oneshot_request() {
             [ -f "$ps1" ] || {
                 echo "ERROR: comm-pipe-request.ps1 not found next to the comm scripts (looked in ${SCRIPT_DIR:-.})" >&2
                 rm -f "$tmp"; return 1; }
-            { _sot_hello; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
+            { sot_hello_frame; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
                 | timeout "$timeout_s" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
                     -File "$ps1" -PipeName "$pipename" -Mode Oneshot -Op "$op" -TimeoutSec "$timeout_s" \
                     > "$tmp" 2>/dev/null &

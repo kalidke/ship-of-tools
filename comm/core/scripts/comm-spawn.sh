@@ -335,16 +335,13 @@ resolve_endpoint() {
 }
 
 # Send a frame to the daemon, return the first response line matching op $2.
-# App-level auth (ADR 0010 hardening): daemon requires a token-valid hello first.
-_sot_hello() {
-    local tok; tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
-    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":1,"app_version":"comm","token":"%s"}}\n' "$tok"
-}
+# App-level auth (ADR 0010 hardening): daemon requires a token-valid hello
+# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1).
 sot_send() {
     local frame="$1" op="$2" hp
     case "$ENDPOINT" in
         tcp:*)  hp="${ENDPOINT#tcp:}"
-                { _sot_hello; printf '%s\n' "$frame"; } | timeout 6 nc "${hp%:*}" "${hp##*:}" 2>/dev/null | grep -m1 "\"op\":\"$op\"" ;;
+                { sot_hello_frame; printf '%s\n' "$frame"; } | timeout 6 nc "${hp%:*}" "${hp##*:}" 2>/dev/null | grep -m1 "\"op\":\"$op\"" ;;
         unix:*) sot_oneshot_request "$frame" "$op" ;;
         *)      return 1 ;;
     esac

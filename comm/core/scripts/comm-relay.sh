@@ -44,6 +44,13 @@ case "$SUB" in
     send|ask) sot_require_routable_identity || exit 1 ;;
 esac
 
+# ADR 0046 decision 1: the `bridge` subcommand's held connection IS what
+# "bridge" means (comm-listen.sh's reconnect loop execs exactly this,
+# `_sot_bridge_pattern`'s own anchor) — every other subcommand lets
+# `sot_hello_frame` infer its role.
+HELLO_ROLE=""
+[ "$SUB" = "bridge" ] && HELLO_ROLE="bridge"
+
 ENDPOINT="${SOT_RELAY_ENDPOINT:-}"
 resolve_endpoint() {
     sot_relay_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
@@ -73,11 +80,9 @@ esac
 # Token source: $SOT_TOKEN, else the 0600 token file in the (700) home. Empty in
 # open-config mode — an empty token still authenticates there (gate is off). The
 # hello reply is an extra line on the wire, but every caller greps by op, so it
-# is ignored. client_id "sot-comm" so the roster/logs show what it is.
-_sot_hello() {
-    local tok; tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
-    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":1,"app_version":"comm","token":"%s"}}\n' "$tok"
-}
+# is ignored. client_id "sot-comm" so the roster/logs show what it is. The
+# frame itself is `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1),
+# stamped with $HELLO_ROLE above.
 
 # nc_out: send the single frame on stdin, return immediately (capture any reply line)
 nc_send() {
@@ -87,12 +92,12 @@ nc_send() {
         local ps1="$SCRIPT_DIR/comm-pipe-request.ps1"
         [ -f "$ps1" ] || {
             echo "ERROR: comm-pipe-request.ps1 not found next to comm-relay.sh ($SCRIPT_DIR)" >&2; return 1; }
-        { _sot_hello; cat; } | timeout 5 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+        { sot_hello_frame "$HELLO_ROLE"; cat; } | timeout 5 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
             -File "$ps1" -PipeName "$EP_PIPE" -Mode Oneshot -Op agent.send -TimeoutSec 5
         return
     fi
     if [ "$HAVE_NC" = 1 ]; then
-        if [ -n "$EP_UNIX" ]; then { _sot_hello; cat; } | timeout 5 nc -U "$EP_UNIX"; else { _sot_hello; cat; } | timeout 5 nc "$EP_HOST" "$EP_PORT"; fi
+        if [ -n "$EP_UNIX" ]; then { sot_hello_frame "$HELLO_ROLE"; cat; } | timeout 5 nc -U "$EP_UNIX"; else { sot_hello_frame "$HELLO_ROLE"; cat; } | timeout 5 nc "$EP_HOST" "$EP_PORT"; fi
     elif [ -n "$EP_HOST" ]; then
         # nc-free fallback: bash /dev/tcp. Forward the frame on stdin to the
         # socket, then read the reply for up to 5s. fd 9 stays RW so the daemon
@@ -104,7 +109,7 @@ nc_send() {
         (
             exec 9<>"/dev/tcp/$EP_HOST/$EP_PORT" 2>/dev/null \
                 || { echo "ERROR: /dev/tcp connect to $EP_HOST:$EP_PORT failed" >&2; exit 1; }
-            { _sot_hello; cat; } >&9
+            { sot_hello_frame "$HELLO_ROLE"; cat; } >&9
             timeout 5 cat <&9
             exec 9<&- 9>&- 2>/dev/null || true
         ) || return 1
@@ -141,13 +146,13 @@ nc_hold() {
         local ps1="$SCRIPT_DIR/comm-pipe-request.ps1"
         [ -f "$ps1" ] || {
             echo "ERROR: comm-pipe-request.ps1 not found next to comm-relay.sh ($SCRIPT_DIR)" >&2; return 1; }
-        _sot_hello | timeout "$secs" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+        sot_hello_frame "$HELLO_ROLE" | timeout "$secs" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
             -File "$ps1" -PipeName "$EP_PIPE" -Mode Hold -TimeoutSec "$secs"
         return
     fi
     if [ -n "$EP_HOST" ]; then
         if exec 9<>"/dev/tcp/$EP_HOST/$EP_PORT" 2>/dev/null; then
-            _sot_hello >&9   # authenticate the connection before holding it open
+            sot_hello_frame "$HELLO_ROLE" >&9   # authenticate the connection before holding it open
             if [ -n "$secs" ]; then timeout "$secs" cat <&9; else cat <&9; fi
             exec 9<&- 9>&- 2>/dev/null || true
             return 0
@@ -155,16 +160,16 @@ nc_hold() {
         # bash built without /dev/tcp: fall back to nc. NOTE: this form does NOT
         # self-heal on a graceful close — prefer a /dev/tcp-capable bash for bridges.
         if [ "$HAVE_NC" = 1 ]; then
-            if [ -n "$secs" ]; then { _sot_hello; tail -f /dev/null; } | timeout "$secs" nc "$EP_HOST" "$EP_PORT"
-            else { _sot_hello; tail -f /dev/null; } | nc "$EP_HOST" "$EP_PORT"; fi
+            if [ -n "$secs" ]; then { sot_hello_frame "$HELLO_ROLE"; tail -f /dev/null; } | timeout "$secs" nc "$EP_HOST" "$EP_PORT"
+            else { sot_hello_frame "$HELLO_ROLE"; tail -f /dev/null; } | nc "$EP_HOST" "$EP_PORT"; fi
             return 0
         fi
         echo "ERROR: cannot open /dev/tcp/$EP_HOST/$EP_PORT and nc not found" >&2; return 1
     fi
     # Unix-socket endpoint: requires nc -U (/dev/tcp can't speak AF_UNIX).
     if [ -n "$EP_UNIX" ] && [ "$HAVE_NC" = 1 ]; then
-        if [ -n "$secs" ]; then { _sot_hello; tail -f /dev/null; } | timeout "$secs" nc -U "$EP_UNIX"
-        else { _sot_hello; tail -f /dev/null; } | nc -U "$EP_UNIX"; fi
+        if [ -n "$secs" ]; then { sot_hello_frame "$HELLO_ROLE"; tail -f /dev/null; } | timeout "$secs" nc -U "$EP_UNIX"
+        else { sot_hello_frame "$HELLO_ROLE"; tail -f /dev/null; } | nc -U "$EP_UNIX"; fi
         return 0
     fi
     echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2; return 1

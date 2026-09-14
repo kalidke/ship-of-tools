@@ -64,13 +64,6 @@ done
 # Shared _sot_is_windows (comm-lib.sh) — this script already sources it, so
 # it uses the ONE canonical platform test rather than its own copy.
 #
-# _selftest_hello is shared between this branch and the Linux `selftest)`
-# case below (Codex review finding: duplicate hello/TCP builders) — defined
-# once, here, ahead of both call sites.
-_selftest_hello() {
-    local _tok; _tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
-    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":1,"app_version":"comm","token":"%s"}}\n' "$_tok"
-}
 if _sot_is_windows; then
     # Mirrors comm-session-skill.sh's fe_inbox construction exactly
     # (gpu.rs::sot_state_dir): %LOCALAPPDATA%\sot on Windows. Built from
@@ -108,7 +101,7 @@ if _sot_is_windows; then
         # rejection looked identical to a benign cold-start retry.
         _win_probe_once() {
             exec 8<>"/dev/tcp/$SH/$SP" 2>/dev/null || { echo unreachable; return 0; }
-            _selftest_hello >&8
+            sot_hello_frame >&8
             printf '%s\n' "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"agent.send\",\"payload\":{\"from\":\"__selftest__\",\"to\":\"$NAME\",\"text\":\"$1\"}}" >&8
             local out; out="$(cat <&8 2>/dev/null)"
             exec 8<&- 8>&- 2>/dev/null || true
@@ -132,8 +125,12 @@ if _sot_is_windows; then
         # connect is a shell builtin (/dev/tcp), so an external `timeout`
         # can only bound it by wrapping a whole bash process, not the
         # builtin directly.
-        export -f _win_probe_once _selftest_hello
-        export SH SP NAME SOT_TOKEN XDG_CONFIG_HOME
+        # sot_hello_frame's own dependencies (S13, Codex finding S13) must
+        # travel with it: sot_host (the declared-host resolver) and
+        # sot_json_escape (S19's JSON-safe interpolation) — a child bash
+        # missing either produces an empty-host hello (reproduced).
+        export -f _win_probe_once sot_hello_frame sot_host sot_json_escape
+        export SH SP NAME SOT_TOKEN XDG_CONFIG_HOME SOT_SELF_HOST HOST SOT_WORKSPACE
         _win_probe() {
             local r; r="$(timeout 5 bash -c '_win_probe_once "$1"' _ "$1" 2>/dev/null)"
             printf '%s' "${r:-unreachable}"
@@ -239,10 +236,8 @@ case "$MODE" in
             unix:*) SU="${EP#unix:}" ;;
             *) echo "selftest @$NAME: bad daemon endpoint '$EP'" >&2; exit 1 ;;
         esac
-        # _selftest_hello is defined once, near the top of this file, shared
-        # with the Windows branch above.
         _selftest_frames() {
-            _selftest_hello
+            sot_hello_frame
             printf '%s\n' "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"agent.send\",\"payload\":{\"from\":\"__selftest__\",\"to\":\"$NAME\",\"text\":\"receive-path self-test\"}}"
         }
         _inject() {
@@ -290,7 +285,7 @@ case "$MODE" in
             fi
             [ -S "$SU" ] || return 1
             command -v nc >/dev/null 2>&1 || return 1
-            if _selftest_hello | timeout 3 nc -U "$SU" >/dev/null 2>&1; then
+            if sot_hello_frame | timeout 3 nc -U "$SU" >/dev/null 2>&1; then
                 return 0
             else
                 rc=$?
