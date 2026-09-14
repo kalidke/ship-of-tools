@@ -45,6 +45,15 @@ ST="$SCRIPTS_DIR/comm-status.sh"
 W() { printf '%s' "$1" | bash "$HOOKS_DIR/comm-status-working.sh"; }
 I() { printf '{}' | bash "$HOOKS_DIR/comm-status-idle.sh"; }
 # IT TEXT [stop_hook_active]: Stop with a transcript whose last assistant message is TEXT.
+# ITL TEXT PAYLOAD_MSG — the transcript holds only an earlier text record; the
+# closing reply exists solely as the Stop payload's last_assistant_message
+# (the hook fired before the transcript flush).
+ITL() {
+    local tr="$WORK/transcript.jsonl"
+    { jq -nc '{type:"user",message:{content:"go"}}'
+      jq -nc --arg t "$1" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'; } > "$tr"
+    jq -nc --arg p "$tr" --arg m "$2" '{transcript_path:$p, stop_hook_active:false, last_assistant_message:$m}' | bash "$HOOKS_DIR/comm-status-idle.sh"
+}
 IT() {
     local tr="$WORK/transcript.jsonl"
     { jq -nc '{type:"user",message:{content:"go"}}'
@@ -154,6 +163,13 @@ case_marker_split_across_assistant_records_still_stamps() {
         'One more thing: will report back once it lands.')"
     [ -z "$out" ] || { echo "    unexpected nudge: '$out'"; return 1; }
     expect waiting/user/sticky state && [ "$(summary)" = "the suite is rerunning in the background" ] || { echo "    summary '$(summary)'"; return 1; }
+}
+case_marker_only_in_stop_payload_still_stamps() {
+    seed idle; W "$GENUINE"
+    local out
+    out="$(ITL 'Working on it.' 'SITREP-WAITING: the build is running')"
+    [ -z "$out" ] || { echo "    unexpected nudge: '$out'"; return 1; }
+    expect waiting/user/sticky state && [ "$(summary)" = "the build is running" ] || { echo "    summary '$(summary)'"; return 1; }
 }
 case_parked_user_turn_without_marker_is_nudged_once() {
     seed idle; W "$GENUINE"; "$ST" waiting "job"
@@ -373,6 +389,7 @@ check "SITREP-QUESTION: (bold-wrapped) stamps red with the question" case_marker
 check "SITREP-WAITING: alone takes the next line and sets sticky purple" case_marker_waiting_stamps_sticky_purple
 check "a marker in a stop-hook continuation still stamps, no nudge" case_marker_in_continuation_still_stamps
 check "a marker split across two assistant records still stamps, no nudge" case_marker_split_across_assistant_records_still_stamps
+check "a marker present only in the Stop payload still stamps, no nudge" case_marker_only_in_stop_payload_still_stamps
 check "a human turn ending parked without a marker is nudged once, row untouched" case_parked_user_turn_without_marker_is_nudged_once
 check "a machine turn ending parked without a marker is not nudged" case_parked_machine_turn_without_marker_is_not_nudged
 check "a plain human answer without a marker floors blue, no nudge" case_plain_user_turn_without_marker_floors_blue_unnudged

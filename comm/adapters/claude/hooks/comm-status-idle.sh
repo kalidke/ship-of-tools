@@ -126,6 +126,15 @@ if [ -n "$tp" ] && [ -r "$tp" ]; then
     turn_tools="$(printf '%s' "$turn_json" | jq -r '.tools // 0' 2>/dev/null)"
     turn_secs="$(printf '%s' "$turn_json" | jq -r '.secs // 0' 2>/dev/null)"
     last_text="$(printf '%s' "$turn_json" | jq -r '.text // ""' 2>/dev/null)"
+fi
+# The Stop payload's own `last_assistant_message` is appended (2026-09-14): the
+# hook can fire before the final reply record reaches the transcript, and a
+# marker in that unflushed reply was nudged as missing. The transcript slice
+# still covers a reply split across records; the payload covers the race.
+lam="$(jqget '.last_assistant_message // empty')"
+if [ -n "$lam" ]; then
+    last_text="${last_text}
+${lam}"
     case "$turn_tools" in ''|*[!0-9]*) turn_tools=0 ;; esac
     case "$turn_secs" in ''|*[!0-9]*) turn_secs=0 ;; esac
 fi
