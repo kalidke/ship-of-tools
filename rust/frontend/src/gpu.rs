@@ -2245,12 +2245,69 @@ fn resolve_default_host(
         .unwrap_or(fallback)
 }
 
+/// This frontend process's own declared identity (ADR 0046 decision 1):
+/// `{host, instance, name, role: "fe"}`, constructed ONCE and shared by
+/// every connection, reconnect and input attribution — replacing
+/// `self_comm_handle`/`fe_instance_component`'s old per-call
+/// recomputation (the latter literally re-sampled the clock on every
+/// call when `SOT_FE_INSTANCE` was unset, so two calls in the same
+/// process could mint two different fallback instances).
+#[derive(Debug, Clone)]
+pub(crate) struct FrontendIdentity {
+    pub host: String,
+    pub instance: String,
+    pub name: String,
+}
+
+impl FrontendIdentity {
+    pub const ROLE: &'static str = "fe";
+}
+
+/// Cached singleton, mirroring the backend's own `declared_host()`
+/// (`sot-backend`'s `workspaces.rs`) — one resolver, called once, read
+/// everywhere after. `sot_log::state_dir::host_name()` failing means this
+/// process has no nameable host at all; fatal, same posture the backend
+/// takes at boot, rather than limping on with a guessed address no peer
+/// could actually reach it by.
+pub(crate) fn frontend_identity() -> &'static FrontendIdentity {
+    static IDENTITY: std::sync::OnceLock<FrontendIdentity> = std::sync::OnceLock::new();
+    IDENTITY.get_or_init(|| {
+        let host = sot_log::state_dir::host_name().unwrap_or_else(|e| {
+            panic!("cannot start: no declared host (ADR 0046 decision 1): {e}");
+        });
+        let env = std::env::var("SOT_FE_INSTANCE").ok();
+        let fallback = format!(
+            "{:x}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let instance = resolve_fe_instance_component(env.as_deref(), &fallback);
+        // A Windows frontend keeps win-fe-<host> (ADR 0046 decision 1,
+        // "must not change"); every other platform is fe-<host> — a
+        // Linux frontend previously declared itself win-fe-<host> too,
+        // an inherited-from-Windows-only-days quirk this lane corrects.
+        let name = if cfg!(windows) {
+            format!("win-fe-{host}")
+        } else {
+            format!("fe-{host}")
+        };
+        FrontendIdentity { host, instance, name }
+    })
+}
+
+
 /// One host's `session_host` node in the Sessions tree (ADR 0042 L2a) —
 /// pure, no `State` dependency, so `build_sessions_tree`'s "every configured
 /// host shows up, connected or not" behavior is directly unit-testable.
 /// `has_list` (not `connected`) drives `has_children`: a host can be
 /// connected but simply not have answered `workspace.list` yet, and either
-/// way there's nothing to expand into until it has.
+/// way there's nothing to expand into until it has. `host` stays the
+/// routing key (id, payload) — `display` (manager review S9: resolved by
+/// the caller via `host_label`, the ONE display projection) is what
+/// actually appears in the label text.
 ///
 /// First live shakedown fix: `badges` alone never reached the screen —
 /// nothing renders the tree's generic `badges` vec (see `capsule_phase_tag`'s
@@ -2264,7 +2321,7 @@ fn resolve_default_host(
 /// is deleted (Codex round, PR #172): nothing ever read it, and computing
 /// it alongside the SAME status this label already carries was pure
 /// duplication — the label is the one source of truth now.
-fn host_tree_node(host: &HostKey, connected: bool, has_list: bool, is_active: bool) -> TreeNode {
+fn host_tree_node(host: &HostKey, display: &str, connected: bool, has_list: bool, is_active: bool) -> TreeNode {
     let mut tags = Vec::new();
     if !connected {
         tags.push("[unreachable]");
@@ -2273,9 +2330,9 @@ fn host_tree_node(host: &HostKey, connected: bool, has_list: bool, is_active: bo
         tags.push("[current]");
     }
     let label = if tags.is_empty() {
-        format!("{HOST_DIVIDER_GLYPH} {host}")
+        format!("{HOST_DIVIDER_GLYPH} {display}")
     } else {
-        format!("{HOST_DIVIDER_GLYPH} {host} {}", tags.join(" "))
+        format!("{HOST_DIVIDER_GLYPH} {display} {}", tags.join(" "))
     };
     let mut payload = serde_json::Map::new();
     payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
@@ -2297,7 +2354,13 @@ fn host_tree_node(host: &HostKey, connected: bool, has_list: bool, is_active: bo
 /// bracketed tags, the same way `host_tree_node` bakes its own status
 /// (Codex round, PR #172) — `badges` is deleted for the same reason: it's
 /// unread, and duplicated exactly what the label already says.
-fn hosts_mode_row(name: &str, connected: bool, is_active: bool, is_default: bool) -> TreeNode {
+///
+/// `declared` (ADR 0046 decision 1, revised): the daemon's own declared
+/// identity for this dial (`App::declared_host`), shown alongside `name`
+/// whenever it differs — `name` (the dial label / `hosts.toml` section)
+/// is never replaced by it, only annotated, so the row still says what
+/// the user actually configured.
+fn hosts_mode_row(name: &str, display: &str, connected: bool, is_active: bool, is_default: bool) -> TreeNode {
     let status_word = if connected {
         "connected"
     } else {
@@ -2311,9 +2374,9 @@ fn hosts_mode_row(name: &str, connected: bool, is_active: bool, is_default: bool
         tags.push("[current]");
     }
     let label = if tags.is_empty() {
-        format!("{name} · {status_word}")
+        format!("{display} · {status_word}")
     } else {
-        format!("{name} · {status_word} {}", tags.join(" "))
+        format!("{display} · {status_word} {}", tags.join(" "))
     };
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -2328,6 +2391,19 @@ fn hosts_mode_row(name: &str, connected: bool, is_active: bool, is_default: bool
         badges: Vec::new(),
         payload,
     }
+}
+
+/// ONE display projection for every host-keyed UI surface (ADR 0046
+/// decision 1, manager review S9/finding S14): the daemon's own
+/// declaration for `dial` if it has reported one, else `dial` itself (the
+/// `hosts.toml` label). Display only — routing keys (`conns`,
+/// `host_connected`, and every other host-keyed map) are never re-homed
+/// and never read through this. Used by Hosts mode rows, Sessions
+/// labels, the status line, and connect/disconnect log lines — the one
+/// place any of them decides what a host is CALLED on screen; no
+/// separate truncation or composite display anywhere else.
+fn host_label<'a>(declared_host: &'a HashMap<HostKey, String>, dial: &'a HostKey) -> &'a str {
+    declared_host.get(dial).map(String::as_str).unwrap_or(dial.as_str())
 }
 
 /// Guard + mutation core of `try_expand_hosts_root_local` (Codex round,
@@ -4163,6 +4239,12 @@ struct State {
     /// lane dials the SAME endpoint, never a second independent guess.
     /// Absent for a host that hasn't connected yet.
     host_resolved_dial: HashMap<crate::hosts::HostKey, ResolvedDial>,
+    /// ADR 0046 decision 1 (revised): the daemon's own declared identity
+    /// for each dial — `HostKey` stays the stable dial label; this is
+    /// purely informational (shown in Hosts mode, the status line, and
+    /// log lines) plus the input to `is_duplicate_declaration`'s one
+    /// decision. Absent for a host that hasn't completed hello yet.
+    declared_host: HashMap<crate::hosts::HostKey, String>,
     /// The connection every "current view" operation targets — cursor
     /// state, the active tree, `active_workspace_id`. The pair
     /// `(active_host, active_workspace_id)` names the current workspace
@@ -5931,6 +6013,7 @@ impl State {
             // each host's transport task — empty here only briefly.
             host_transports: HashMap::new(),
             host_resolved_dial: HashMap::new(),
+            declared_host: HashMap::new(),
             active_host,
             scale,
             cell_w,
@@ -8022,7 +8105,8 @@ impl State {
                 let connected = self.host_connected.get(&name).copied().unwrap_or(false);
                 let is_active = name == self.active_host;
                 let is_default = self.hosts_config.default_host.as_deref() == Some(name.as_str());
-                hosts_mode_row(&name, connected, is_active, is_default)
+                let display = host_label(&self.declared_host, &name);
+                hosts_mode_row(&name, display, connected, is_active, is_default)
             })
             .collect()
     }
@@ -8092,6 +8176,24 @@ impl State {
     /// nothing to contribute to the caches, but it still gets a tree node.
     fn ordered_hosts(&self) -> Vec<HostKey> {
         self.conns.iter().map(|(h, _)| h.clone()).collect()
+    }
+
+    /// Record dial `label`'s declared identity (ADR 0046 decision 1) for
+    /// display only (Hosts mode, Sessions labels, the status line, and
+    /// connect/disconnect logs — see `host_label`) — `HostKey` itself is
+    /// never re-homed, and this map feeds no other decision. Manager
+    /// review (S8, Codex finding B1): a duplicate declaration is NOT
+    /// refused here — refusing it would require actually closing the
+    /// newcomer's transport, and no such shutdown path exists today (a
+    /// spawned transport task's `JoinHandle` is discarded; there is no
+    /// cancellation mechanism reachable from the GPU thread). Restoring a
+    /// half-built lifecycle around a decision this code cannot enforce
+    /// would be worse than not detecting the collision at all — the
+    /// static same-port skip in `hosts::resolve_connections` is what
+    /// prevents two dials from ever reaching the same daemon in the first
+    /// place, restored for exactly this reason.
+    fn record_declared_host(&mut self, label: &HostKey, declared: String) {
+        self.declared_host.insert(label.clone(), declared);
     }
 
     /// Clear + rebuild every workspace-scoped cache from the union of every
@@ -8319,7 +8421,8 @@ impl State {
                 let connected = self.host_connected.get(&host).copied().unwrap_or(false);
                 let has_list = self.workspace_lists.contains_key(&host);
                 let is_active = host == self.active_host;
-                host_tree_node(&host, connected, has_list, is_active)
+                let display = host_label(&self.declared_host, &host);
+                host_tree_node(&host, display, connected, has_list, is_active)
             })
             .collect();
         (root, children)
@@ -9449,7 +9552,7 @@ impl State {
         let endpoint = sot_protocol::lane_client::DaemonLaneEndpoint { dial, token };
         // Invariant: the record names the frontend that typed —
         // `fe_instance_component`'s own doc.
-        let controller_id = format!("{}#{}", self_comm_handle(), fe_instance_component());
+        let controller_id = format!("{}#{}", self_comm_handle(), frontend_identity().instance);
         let fe_down_to = self_comm_handle();
         let waker = self.window.clone();
         match sot_log::fe_client_io::FeAttachClient::attach(
@@ -12262,6 +12365,17 @@ impl State {
 
     fn drain_events(&mut self) {
         while let Ok((event_host, evt)) = self.evt_rx.try_recv() {
+            // ADR 0046 decision 1: `HostKey` is never re-homed —
+            // `event_host` (the dial label) stays the key for everything
+            // below, unshadowed. The declared host is recorded for
+            // display only (`host_label`) — manager review, S8: closing a
+            // duplicate dial here was rejected (no transport shutdown
+            // path exists to actually enforce it); the static same-port
+            // skip in `hosts::resolve_connections` is what prevents a
+            // same-daemon collision from ever dialing twice.
+            if let crate::transport::IncomingEvt::Connected { host: Some(declared), .. } = &evt {
+                self.record_declared_host(&event_host, declared.clone());
+            }
             // ADR 0042 L2a: every host's transport tags its own sends, so
             // per-host connection status is exactly this — no new wire
             // signal, just watching the two evts that already exist.
@@ -12301,7 +12415,11 @@ impl State {
                 crate::transport::IncomingEvt::Connected {
                     session_id,
                     revision,
-                    host,
+                    // Already recorded into `self.declared_host` above,
+                    // before this match, keyed by `event_host` -- read
+                    // back through `host_label` below rather than a
+                    // second binding of the same payload field.
+                    host: _,
                     project_root,
                     proxy,
                     remote,
@@ -12355,9 +12473,12 @@ impl State {
                     // order. Listener teardown-on-downgrade is a follow-up.
                     // Cache host + daemon root basename so the chrome can
                     // rebuild the connection status every time the active
-                    // workspace changes — not just at hello time. Strip
-                    // FQDN to short hostname ("myhost", not "myhost.example
-                    // .org") so it fits the nav status row.
+                    // workspace changes — not just at hello time. Manager
+                    // review (S9, finding S14): no separate truncation
+                    // here — `host_label` (already updated above for
+                    // `event_host`, from this same `Connected` event) is
+                    // the ONE display projection every host-keyed surface
+                    // uses.
                     //
                     // ADR 0042 L2a: these four fields describe the ACTIVE
                     // connection's status line, not every connection — a
@@ -12366,11 +12487,7 @@ impl State {
                     // must not overwrite what the status line shows for the
                     // host the user is actually looking at.
                     if event_host == self.active_host {
-                        self.host = host
-                            .as_deref()
-                            .and_then(|h| h.split('.').next())
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_string);
+                        self.host = Some(host_label(&self.declared_host, &event_host).to_string());
                         self.daemon_root_basename = project_root.as_deref().and_then(|p| {
                             p.rsplit(['/', '\\'])
                                 .next()
@@ -12590,7 +12707,15 @@ impl State {
                     if event_host == self.active_host {
                         self.status = format!("disconnected · {reason}");
                     } else {
-                        tracing::info!(host = %event_host, %reason, "non-active host disconnected");
+                        // Manager review (S9, finding S14): `host_label`,
+                        // not the bare dial key, so a log line names a
+                        // host the same way the tree/status line does.
+                        // (Named `shown`, not `display`: tracing's `%`
+                        // shorthand expands to `tracing::field::display`
+                        // and a same-named local does not play well with
+                        // that macro's hygiene.)
+                        let shown = host_label(&self.declared_host, &event_host);
+                        tracing::info!(host = %shown, %reason, "non-active host disconnected");
                     }
                 }
                 crate::transport::IncomingEvt::ProtocolMismatch { message } => {
@@ -19128,21 +19253,16 @@ fn parse_nav_envelope(text: &str) -> Option<NavEnvelope> {
     Some(NavEnvelope { workspace, path })
 }
 
-/// This FE's deterministic sot-comm handle (ADR 0025 target filter). Mirrors
-/// `state_persistence::state_path`'s hostname logic exactly: `$HOSTNAME` (Linux)
-/// else `$COMPUTERNAME` (Windows) else "unknown", lowercased, as
-/// `win-fe-<host>`. The daemon scopes an `FE_COMMAND`'s `target` to one FE by
-/// this handle; we self-filter against it. `pub(crate)` because
-/// `transport.rs` also sends this same value as `HelloReq::fe_handle`, so
-/// the daemon can name this connection without a second derivation to
-/// keep in sync.
+/// This FE's deterministic sot-comm handle (ADR 0025 target filter) — a
+/// read of `frontend_identity().name` (ADR 0046 decision 1), kept as a
+/// named function since it has call sites all over this file predating
+/// that identity. The daemon scopes an `FE_COMMAND`'s `target` to one FE
+/// by this handle; we self-filter against it. `pub(crate)` because
+/// `transport.rs` also sends this same value as `HelloReq::name`, so the
+/// daemon can name this connection without a second derivation to keep
+/// in sync.
 pub(crate) fn self_comm_handle() -> String {
-    let host = std::env::var("HOSTNAME")
-        .ok()
-        .or_else(|| std::env::var("COMPUTERNAME").ok())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
-    format!("win-fe-{}", host.to_lowercase())
+    frontend_identity().name.clone()
 }
 
 /// ADR 0045 decision 1 (Codex review, lane B5 discharge): pure core of
@@ -19154,40 +19274,6 @@ fn resolve_fe_instance_component(env: Option<&str>, fallback: &str) -> String {
         Some(v) if !v.is_empty() => v.to_string(),
         _ => fallback.to_string(),
     }
-}
-
-/// Invariant: **the durable record names the frontend that typed** — not
-/// merely the machine. `self_comm_handle()` alone is HOSTNAME-based
-/// (stable across a managed relaunch, ADR 0017, but shared by every FE
-/// process on one machine): two independently launched frontends would
-/// otherwise report the IDENTICAL controller id to the supervisor lane's
-/// own record (ADR 0045 decision 1), indistinguishable in it forever
-/// after. This is the per-process component `spawn_pane_attach_term`
-/// folds onto that handle instead.
-///
-/// `SOT_FE_INSTANCE` is set ONCE per `launch-sot.ps1` supervisor
-/// invocation, before its exit-75/-76 respawn loop (env vars set on a
-/// process propagate to every child it spawns) — so a MANAGED relaunch
-/// keeps the SAME component (the supervisor process, and its env, never
-/// restarts), while a genuinely independent launch (a second
-/// `launch-sot.ps1`, or any run outside it) gets its own fresh one.
-/// Falls back to this process's own pid + start time when unset (a dev/
-/// manual run, or a launcher build that predates this) — unique among
-/// whatever else is alive on the machine right now, though unlike the
-/// env var it does NOT survive a relaunch (a fresh OS process mints a
-/// fresh one) — the launched, supervised case is the one this exists
-/// for.
-fn fe_instance_component() -> String {
-    let env = std::env::var("SOT_FE_INSTANCE").ok();
-    let fallback = format!(
-        "{:x}-{:x}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    );
-    resolve_fe_instance_component(env.as_deref(), &fallback)
 }
 
 /// Pure routing decision for an `FE_COMMAND` evt (ADR 0025): apply the target
@@ -25703,12 +25789,18 @@ mod tests {
     }
 
     #[test]
-    fn self_comm_handle_is_win_fe_lowercased_host() {
-        // Deterministic shape: win-fe-<lowercased host>. We don't assert the
-        // exact host (env-dependent) but the prefix + lowercasing invariant.
+    fn self_comm_handle_prefix_matches_this_platform() {
+        // ADR 0046 decision 1: a Windows frontend keeps win-fe-<host>;
+        // every other platform is fe-<host> (a non-Windows frontend used
+        // to declare win-fe-<host> too — an inherited-from-Windows-only
+        // -days quirk this lane corrects). `frontend_identity()` is a
+        // process-wide cache (mirrors the backend's `declared_host()`),
+        // so this can't pin an exact expected host without racing
+        // whichever test in this binary calls it first — only the
+        // platform-determined prefix is asserted here.
         let h = self_comm_handle();
-        assert!(h.starts_with("win-fe-"), "got {h:?}");
-        assert_eq!(h, h.to_lowercase(), "handle is lowercased");
+        let want_prefix = if cfg!(windows) { "win-fe-" } else { "fe-" };
+        assert!(h.starts_with(want_prefix), "got {h:?}, want prefix {want_prefix:?}");
     }
 
     #[test]
@@ -27681,6 +27773,33 @@ mod tests {
     }
 
     #[test]
+    fn frontend_identity_is_constructed_once_per_process() {
+        // ADR 0046 decision 1: every caller shares ONE identity -- in
+        // particular `instance` must never re-mint across calls the way
+        // the old bare `fe_instance_component()` could when
+        // `SOT_FE_INSTANCE` was unset (two calls could disagree).
+        let a = frontend_identity();
+        let b = frontend_identity();
+        assert_eq!(a.host, b.host);
+        assert_eq!(a.instance, b.instance);
+        assert_eq!(a.name, b.name);
+        assert!(!a.instance.is_empty());
+        assert!(!a.name.is_empty());
+        assert_eq!(FrontendIdentity::ROLE, "fe");
+    }
+
+    // --- ADR 0046 decision 1: the declared-host label (display only) ---
+    //
+    // Manager review (S8, Codex finding B1): duplicate refusal was
+    // rejected here — no transport shutdown path exists to actually close
+    // a newcomer's connection, so `App::record_declared_host` (a plain
+    // `HashMap::insert`, no branch worth a dedicated unit test) feeds
+    // display only (Hosts mode, Sessions labels, the status line,
+    // connect/disconnect logs — see `host_label` below). The static
+    // same-port skip in `hosts::resolve_connections` (restored) is what
+    // prevents two dials from ever reaching the same daemon.
+
+    #[test]
     fn every_configured_host_shows_up_even_without_a_list_yet() {
         // ADR 0042 L2's acceptance: an unreachable (or still-mid-hello)
         // host is a VISIBLE node marked unreachable, not an absent one.
@@ -27698,7 +27817,7 @@ mod tests {
             .map(|host| {
                 let connected = host_connected.get(host).copied().unwrap_or(false);
                 let has_list = lists.contains_key(host);
-                host_tree_node(host, connected, has_list, host == "alpha")
+                host_tree_node(host, host, connected, has_list, host == "alpha")
             })
             .collect();
 
@@ -27732,15 +27851,15 @@ mod tests {
         // badges are gone, the label is the one source of truth), and
         // (crucially for `set_root`'s cursor/expansion preservation) the
         // id itself never changes across the flip.
-        let before = host_tree_node(&"alpha".to_string(), false, false, true);
-        let after = host_tree_node(&"alpha".to_string(), true, true, true);
+        let before = host_tree_node(&"alpha".to_string(), "alpha", false, false, true);
+        let after = host_tree_node(&"alpha".to_string(), "alpha", true, true, true);
         assert_eq!(before.id, after.id, "same host → same row id, always");
         assert!(before.label.contains("[unreachable]"));
         assert!(after.label.contains("[current]"));
         assert!(!after.label.contains("[unreachable]"));
 
         // And the reverse direction (a live Disconnected).
-        let dropped = host_tree_node(&"alpha".to_string(), false, true, true);
+        let dropped = host_tree_node(&"alpha".to_string(), "alpha", false, true, true);
         assert_eq!(dropped.id, after.id);
         assert!(dropped.label.contains("[unreachable]"));
     }
@@ -27752,22 +27871,22 @@ mod tests {
         // non-active host must say nothing extra, while `unreachable` and
         // `current` must show up as bracketed tags IN THE LABEL — the same
         // way every other status in this tree actually draws.
-        let quiet = host_tree_node(&"alpha".to_string(), true, true, false);
+        let quiet = host_tree_node(&"alpha".to_string(), "alpha", true, true, false);
         assert_eq!(quiet.label, format!("{HOST_DIVIDER_GLYPH} alpha"));
 
-        let unreachable = host_tree_node(&"alpha".to_string(), false, true, false);
+        let unreachable = host_tree_node(&"alpha".to_string(), "alpha", false, true, false);
         assert_eq!(
             unreachable.label,
             format!("{HOST_DIVIDER_GLYPH} alpha [unreachable]")
         );
 
-        let current = host_tree_node(&"alpha".to_string(), true, true, true);
+        let current = host_tree_node(&"alpha".to_string(), "alpha", true, true, true);
         assert_eq!(
             current.label,
             format!("{HOST_DIVIDER_GLYPH} alpha [current]")
         );
 
-        let both = host_tree_node(&"alpha".to_string(), false, true, true);
+        let both = host_tree_node(&"alpha".to_string(), "alpha", false, true, true);
         assert_eq!(
             both.label,
             format!("{HOST_DIVIDER_GLYPH} alpha [unreachable] [current]")
@@ -27784,19 +27903,41 @@ mod tests {
         // this row-builder itself never touches `hosts_config`, matching
         // `hosts_tree_children`'s contract that `local` (no `hosts.toml`
         // entry) gets a row exactly like any configured host.
-        let row = hosts_mode_row("local", true, true, false);
+        let row = hosts_mode_row("local", "local", true, true, false);
         assert_eq!(row.id, "hosts:local");
         assert_eq!(row.kind, "host");
         assert!(!row.has_children);
         assert_eq!(row.label, "local · connected [current]");
         assert!(row.badges.is_empty());
 
-        let unreachable_default = hosts_mode_row("beta", false, false, true);
+        let unreachable_default = hosts_mode_row("beta", "beta", false, false, true);
         assert_eq!(unreachable_default.label, "beta · unreachable [default]");
         assert!(unreachable_default.badges.is_empty());
 
-        let quiet = hosts_mode_row("gamma", true, false, false);
+        let quiet = hosts_mode_row("gamma", "gamma", true, false, false);
         assert_eq!(quiet.label, "gamma · connected");
+    }
+
+    #[test]
+    fn hosts_mode_row_displays_whatever_the_caller_resolved_via_host_label() {
+        // ADR 0046 decision 1, manager review S9: hosts_mode_row itself
+        // has no opinion on dial-vs-declared -- it displays exactly the
+        // string the caller resolved via `host_label`.
+        let differs = hosts_mode_row("myserver", "realhost", true, false, false);
+        assert_eq!(differs.label, "realhost · connected");
+    }
+
+    #[test]
+    fn host_label_falls_back_to_the_dial_key_when_undeclared() {
+        let declared_host: HashMap<HostKey, String> = HashMap::new();
+        assert_eq!(host_label(&declared_host, &"myserver".to_string()), "myserver");
+    }
+
+    #[test]
+    fn host_label_prefers_the_declaration_when_present() {
+        let mut declared_host: HashMap<HostKey, String> = HashMap::new();
+        declared_host.insert("myserver".to_string(), "realhost".to_string());
+        assert_eq!(host_label(&declared_host, &"myserver".to_string()), "realhost");
     }
 
     #[test]

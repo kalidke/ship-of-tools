@@ -73,9 +73,14 @@ pub enum IncomingEvt {
     Connected {
         session_id: String,
         revision: u64,
-        /// Hostname the backend reported via `gethostname` in HelloRes —
-        /// `Some("myhost")` when a remote backend reports itself, `None`
-        /// for older backends.
+        /// The backend's declared host (`HelloRes.host`, ADR 0046 decision
+        /// 1 — resolved once by `sot_log::state_dir::host_name()` on that
+        /// side) — `Some("myhost")` when a backend reports itself, `None`
+        /// for older backends. `HostKey` (the dial label this connection
+        /// is tagged with, `hosts.toml`-configured) is NEVER re-homed to
+        /// this value — the GPU thread records it separately for display
+        /// and its one duplicate-detection decision
+        /// (`crate::gpu::is_duplicate_declaration`).
         host: Option<String>,
         /// `--project-root` the backend was started with, so the chrome
         /// can show "myhost:Ship of Tools" rather than just the host.
@@ -1946,11 +1951,19 @@ where
         // a mismatch error.
         protocol: sot_protocol::PROTOCOL_VERSION,
         app_version: sot_protocol::app_version(),
-        // This FE's own sot-comm handle — the same value the daemon's
-        // `--fe <handle>` target matches against — so the daemon can name
+        // This FE's own declared identity (ADR 0046 decision 1, manager
+        // review: no wire rename this sprint) — `fe_handle` is the SAME
+        // field/value as before this lane, the one the daemon's
+        // `--fe <handle>` target matches against, so the daemon can name
         // "the frontend a person is at" (`fe.presence`) without a second
-        // derivation.
-        fe_handle: Some(crate::gpu::self_comm_handle()),
+        // derivation; `host`/`role`/`instance` are new declarations this
+        // lane adds. `name` stays `None` here — that field is for a
+        // NON-frontend connection's own declared handle.
+        host: Some(crate::gpu::frontend_identity().host.clone()),
+        role: crate::gpu::FrontendIdentity::ROLE.to_string(),
+        instance: Some(crate::gpu::frontend_identity().instance.clone()),
+        fe_handle: Some(crate::gpu::frontend_identity().name.clone()),
+        name: None,
     };
     codec::write_frame(
         &mut tx,
@@ -2042,6 +2055,10 @@ where
     // unrelated reconnect cycle left it (e.g. wifi flicker followed
     // by months of stable session).
     *backoff_ms = 200;
+    // ADR 0046 decision 1: the daemon's declared host travels on this
+    // event for display and duplicate-detection only (see
+    // `App::record_declared_host_and_check_duplicate`) — the DIAL label
+    // (`host`) stays this connection's tag for its whole lifetime.
     emit(IncomingEvt::Connected {
         session_id: hello_res.session_id.clone(),
         revision: hello_res.revision,
@@ -4485,7 +4502,11 @@ mod tests {
                     token: None,
                     protocol: sot_protocol::PROTOCOL_VERSION,
                     app_version: sot_protocol::app_version(),
+                    host: None,
+                    role: String::new(),
+                    instance: None,
                     fe_handle: None,
+                    name: None,
                 })
                 .unwrap(),
             ),
