@@ -1459,6 +1459,11 @@ pub struct WorkspaceListEntry {
     /// `runtime == "capsule"` rows, same reasoning as `state_dir`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
+    /// Detail of the most recent FAILED start-on-attach activation, kept
+    /// until the next attempt. Never implies `phase == "terminal"`.
+    /// Present only for `runtime == "capsule"` rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

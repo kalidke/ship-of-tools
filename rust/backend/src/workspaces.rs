@@ -59,6 +59,68 @@ pub struct AgentMessage {
     pub ts: String,
 }
 
+/// `Default` is `Stopped`: no observation yet reads as "never started".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Phase {
+    #[default]
+    Stopped,
+    Starting,
+    Ready,
+    Ending,
+    EndedNoRespawn,
+    Terminal,
+    Unreachable,
+    Foreign,
+}
+
+impl Phase {
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            Phase::Stopped => "stopped",
+            Phase::Starting => "starting",
+            Phase::Ready => "ready",
+            Phase::Ending => "ending",
+            Phase::EndedNoRespawn => "ended_no_respawn",
+            Phase::Terminal => "terminal",
+            Phase::Unreachable => "unreachable",
+            Phase::Foreign => "foreign",
+        }
+    }
+
+    /// `Terminal` latches for its supervisor, `EndedNoRespawn` for its
+    /// voyage — see [`Workspace::apply_phase_observation`].
+    fn is_latched(self) -> bool {
+        matches!(self, Phase::EndedNoRespawn | Phase::Terminal)
+    }
+}
+
+/// A capsule authority's identity (pid + creation time). Compared by
+/// EQUALITY only, never ordering — two processes can share a creation tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SupervisorIdentity {
+    pub pid: u32,
+    pub created: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum Observation {
+    /// `None` voyage keeps the cell's last-seen voyage rather than clearing it.
+    Phase { phase: Phase, supervisor: SupervisorIdentity, voyage: Option<uuid::Uuid> },
+    Stopped,
+    Foreign,
+    Failed,
+}
+
+/// One lock: a rejection check and the write it gates share one critical section.
+#[derive(Debug, Clone, Copy, Default)]
+struct PhaseCell {
+    phase: Phase,
+    supervisor: Option<SupervisorIdentity>,
+    voyage: Option<uuid::Uuid>,
+    /// Reaching 2 sets `Unreachable` (unless already latched).
+    consecutive_failures: u8,
+}
+
 /// One workspace = one project under daemon supervision. The struct
 /// owns both metadata (id, slug, label, paths) and lazily-constructed
 /// per-workspace resources (file walker, concept store, kernel, repl).
@@ -82,13 +144,12 @@ pub struct Workspace {
     /// workspace's session. Plain metadata field; persisted in the toml
     /// and defaulted to false for older tomls that lack the key.
     pub autostart_claude: bool,
-    /// Which agent this workspace auto-starts (ADR 0031): "claude" |
-    /// "codex" | "none". Persisted; drives the boot wrapper's launcher
-    /// branch (ccb / ccx / none) and the FE's row sigil.
-    pub agent: String,
-    /// The sot-comm handle the spawned agent should join as. Plain
-    /// metadata; persisted in the toml and defaulted to "" when absent.
-    pub agent_name: String,
+    /// Which agent this workspace auto-starts: "claude" | "codex" |
+    /// "none". Mutex so `reset_agent_to_none` can edit in place without
+    /// discarding the row's phase cell, activation error, or observer task.
+    pub(crate) agent: Mutex<String>,
+    /// The sot-comm handle the spawned agent should join as. Same reasoning as `agent`.
+    pub(crate) agent_name: Mutex<String>,
     /// The initial instruction the FE delivers to the spawned agent after
     /// auto-starting claude. Plain metadata; persisted in the toml and
     /// defaulted to "" when absent.
@@ -118,6 +179,23 @@ pub struct Workspace {
     /// `Workspace` (`from_toml`, test fixtures), never for reading the
     /// live value, which needs the getter's poison-recovery.
     pub(crate) agent_handle: Mutex<String>,
+    /// Never persisted; written only through [`Workspace::apply_phase_observation`].
+    phase_cell: Mutex<PhaseCell>,
+    /// `Some` for exactly as long as a watchdog task owns restarting this
+    /// row's own daemon-spawned child — updated to the watchdog's own
+    /// CURRENT child on every respawn; cleared by a compare-and-clear
+    /// (`Workspace::clear_watchdog_identity_if`) that only ever erases
+    /// what that same task itself last wrote, so a superseded watchdog's
+    /// own belated cleanup can never erase a replacement's ownership.
+    /// The one fact `ensure_started_locked`/`resume_locked` consult
+    /// before spawning a resume, so activation never races the
+    /// watchdog's own backoff/restart budget. `None` for a row with no
+    /// watchdog: never started, terminal, or a live authority merely
+    /// ADOPTED at boot.
+    watchdog_identity: Mutex<Option<SupervisorIdentity>>,
+    /// The most recent FAILED start-on-attach activation's detail, kept
+    /// until the next attempt — never implies `phase == Terminal`.
+    activation_error: Mutex<Option<String>>,
     files_mode: OnceLock<Arc<FilesMode>>,
     concept: OnceLock<Arc<ConceptStore>>,
     kernel: OnceLock<Kernel>,
@@ -145,11 +223,14 @@ impl std::fmt::Debug for Workspace {
             .field("tmux_session", &self.tmux_session)
             .field("created", &self.created)
             .field("autostart_claude", &self.autostart_claude)
-            .field("agent", &self.agent)
-            .field("agent_name", &self.agent_name)
+            .field("agent", &self.agent())
+            .field("agent_name", &self.agent_name())
             .field("task", &self.task)
             .field("runtime", &self.runtime)
             .field("agent_handle", &self.agent_handle())
+            .field("phase", &self.phase())
+            .field("watchdog_identity", &self.watchdog_identity())
+            .field("activation_error", &self.activation_error())
             .field("files_mode_built", &self.files_mode.get().is_some())
             .field("concept_built", &self.concept.get().is_some())
             .field("kernel_built", &self.kernel.get().is_some())
@@ -180,8 +261,8 @@ impl Workspace {
             tmux_session,
             created,
             autostart_claude,
-            agent,
-            agent_name,
+            agent: Mutex::new(agent),
+            agent_name: Mutex::new(agent_name),
             task,
             // This platform's ordinary workspace runtime — "tmux", except
             // on Windows, where tmux never runs at all (#177) and "tmux"
@@ -193,6 +274,9 @@ impl Workspace {
             // key, `insert`, workspace.create).
             runtime: if cfg!(windows) { "capsule" } else { "tmux" }.to_string(),
             agent_handle: Mutex::new(String::new()),
+            phase_cell: Mutex::new(PhaseCell::default()),
+            watchdog_identity: Mutex::new(None),
+            activation_error: Mutex::new(None),
             files_mode: OnceLock::new(),
             concept: OnceLock::new(),
             kernel: OnceLock::new(),
@@ -206,6 +290,130 @@ impl Workspace {
     /// interior-mutable `agent_handle` cell; see that field's own doc.
     pub fn agent_handle(&self) -> String {
         self.agent_handle.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn agent(&self) -> String {
+        self.agent.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn agent_name(&self) -> String {
+        self.agent_name.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Mutates in place, on the SAME `Arc`, rather than replacing it through `insert`.
+    fn reset_agent_in_place(&self) {
+        *self.agent.lock().unwrap_or_else(|e| e.into_inner()) = "none".to_string();
+        *self.agent_name.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
+    }
+
+    pub fn phase(&self) -> Phase {
+        self.phase_cell.lock().unwrap_or_else(|e| e.into_inner()).phase
+    }
+
+    /// The ONLY way `phase_cell.supervisor` changes. Resets phase/voyage/failure-count
+    /// fresh — the only thing that clears a `Terminal` latch.
+    pub(crate) fn begin_supervisor_epoch(&self, identity: SupervisorIdentity) {
+        let mut cell = self.phase_cell.lock().unwrap_or_else(|e| e.into_inner());
+        *cell = PhaseCell { supervisor: Some(identity), ..PhaseCell::default() };
+    }
+
+    /// Whether a watchdog currently owns this row's restarts — see the
+    /// field's own doc. Read by [`crate::capsule_workspace::runtime::
+    /// resume_locked`] before ever spawning a resume.
+    pub(crate) fn watchdog_identity(&self) -> Option<SupervisorIdentity> {
+        *self.watchdog_identity.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The watchdog task's own announcement — called on install and on
+    /// every respawn it performs itself. Always a plain overwrite: the
+    /// caller is by construction the CURRENT watchdog announcing its own
+    /// latest child.
+    pub(crate) fn set_watchdog_identity(&self, identity: SupervisorIdentity) {
+        *self.watchdog_identity.lock().unwrap_or_else(|e| e.into_inner()) = Some(identity);
+    }
+
+    /// Compare-and-clear: `None`s the field only if it still holds
+    /// `expected` — a superseded watchdog's own belated cleanup can
+    /// never erase a replacement's ownership set after it.
+    pub(crate) fn clear_watchdog_identity_if(&self, expected: SupervisorIdentity) {
+        let mut cell = self.watchdog_identity.lock().unwrap_or_else(|e| e.into_inner());
+        if *cell == Some(expected) {
+            *cell = None;
+        }
+    }
+
+    pub(crate) fn current_supervisor(&self) -> Option<SupervisorIdentity> {
+        self.phase_cell.lock().unwrap_or_else(|e| e.into_inner()).supervisor
+    }
+
+    /// The observer's single write path. Rejects unless `supervisor`
+    /// EQUALS the cell's current epoch (never an ordering comparison);
+    /// within an epoch, phases are voyage-ordered and `Terminal`/
+    /// `EndedNoRespawn` latches reject anything but a strictly newer
+    /// voyage.
+    pub(crate) fn apply_phase_observation(&self, observation: Observation) -> bool {
+        let mut cell = self.phase_cell.lock().unwrap_or_else(|e| e.into_inner());
+        match observation {
+            Observation::Phase { phase, supervisor, voyage } => {
+                if cell.supervisor != Some(supervisor) {
+                    return false;
+                }
+                if phase == Phase::Terminal {
+                    cell.phase = Phase::Terminal;
+                    if let Some(v) = voyage {
+                        cell.voyage = Some(v);
+                    }
+                    cell.consecutive_failures = 0;
+                    return true;
+                }
+                if cell.phase == Phase::Terminal {
+                    return false;
+                }
+                if let (Some(v), Some(held_v)) = (voyage, cell.voyage) {
+                    if v < held_v {
+                        return false;
+                    }
+                }
+                if cell.phase == Phase::EndedNoRespawn
+                    && !matches!((voyage, cell.voyage), (Some(v), Some(held_v)) if v > held_v)
+                {
+                    return false;
+                }
+                cell.phase = phase;
+                if let Some(v) = voyage {
+                    cell.voyage = Some(v);
+                }
+                cell.consecutive_failures = 0;
+                true
+            }
+            Observation::Stopped | Observation::Foreign => {
+                if cell.phase.is_latched() {
+                    return false;
+                }
+                cell.phase = if matches!(observation, Observation::Stopped) { Phase::Stopped } else { Phase::Foreign };
+                cell.consecutive_failures = 0;
+                true
+            }
+            Observation::Failed => {
+                if cell.phase.is_latched() {
+                    return false;
+                }
+                cell.consecutive_failures = cell.consecutive_failures.saturating_add(1);
+                if cell.consecutive_failures >= 2 {
+                    cell.phase = Phase::Unreachable;
+                }
+                true
+            }
+        }
+    }
+
+    pub fn activation_error(&self) -> Option<String> {
+        self.activation_error.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Never touches `phase`.
+    pub fn set_activation_error(&self, detail: Option<String>) {
+        *self.activation_error.lock().unwrap_or_else(|e| e.into_inner()) = detail;
     }
 
     /// Lazily get this workspace's `FilesMode`, constructing it (and
@@ -392,22 +600,9 @@ struct Inner {
     /// is no longer bumped onto the session ring — see `watcher.rs`'s header
     /// comment.
     watch_bus: Option<broadcast::Sender<PreviewChanged>>,
-    /// ADR 0042 slice L1a (Codex review finding 6): workspace ids whose
-    /// capsule supervisor watchdog gave up — the ADR 0041 launcher
-    /// restart sequence (1/3/7/15/30s, at most 5 in 60s) exhausted
-    /// without a live authority, OR (rule F, shrink round) a leg exited
-    /// terminal (69) outright with no restart attempted at all.
-    /// `workspace.list` reads this BEFORE ever querying that workspace's
-    /// (confirmed-gone) lane again, reporting `phase: "terminal"` loudly
-    /// rather than a misleading fresh `"unreachable"` that implies the
-    /// next probe might succeed. Never cleared automatically — only a
-    /// fresh `workspace.create`/resume (a new watchdog) or daemon restart
-    /// starts over. Rule E (shrink round): a `pty.open` start-on-attach
-    /// spawn failure does NOT mark this — that would conflate "the
-    /// supervisor itself reached a terminal outcome" with "one launch
-    /// attempt failed"; the row stays retryable and the caller answers
-    /// `capsule_spawn_failed` instead.
-    capsule_terminal: std::collections::HashSet<String>,
+    /// One lifecycle-observer task per capsule row; the paired closure cancels its
+    /// held connection since `abort()` alone can't stop a round blocked in `spawn_blocking`.
+    observers: HashMap<String, (tokio::task::JoinHandle<()>, Arc<dyn Fn() + Send + Sync>)>,
     /// ADR 0043 decision 33: one guard per capsule row. Every lifecycle
     /// mutation of a row — spawn, resume, a watchdog's restart, destroy —
     /// holds this mutex for its WHOLE duration and rechecks membership
@@ -465,8 +660,8 @@ impl Workspaces {
                     ws.tmux_session.clone(),
                     ws.created,
                     ws.autostart_claude,
-                    ws.agent.clone(),
-                    ws.agent_name.clone(),
+                    ws.agent(),
+                    ws.agent_name(),
                     ws.task.clone(),
                 );
                 // `meta_only` defaults `runtime` to "tmux" — the incoming
@@ -583,36 +778,33 @@ impl Workspaces {
         g.pane_activity.get(session).cloned().unwrap_or_default()
     }
 
-    /// ADR 0042 slice L1a: mark `workspace_id`'s capsule supervisor
-    /// watchdog as having given up — the restart budget exhausted with no
-    /// live authority, or (rule F, shrink round) a leg exited terminal
-    /// (69) with no restart attempted at all. See `Inner::
-    /// capsule_terminal`'s own doc (rule E: a one-shot `pty.open`
-    /// start-on-attach spawn failure does NOT call this).
-    /// `#[cfg_attr(not(windows), allow(dead_code))]`: pure, portable
-    /// bookkeeping, but its only real caller is the Windows-only
-    /// watchdog (`capsule_workspace.rs`) — matching that module's own
-    /// precedent for a function whose ONLY callers are windows-gated.
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub fn mark_capsule_terminal(&self, workspace_id: &str) {
-        let mut g = self.inner.write().expect("workspaces lock");
-        g.capsule_terminal.insert(workspace_id.to_string());
-    }
-
-    /// `true` iff `mark_capsule_terminal` was ever called for this id.
-    pub fn is_capsule_terminal(&self, workspace_id: &str) -> bool {
+    /// A finished handle reads as absent.
+    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+    pub(crate) fn has_observer(&self, workspace_id: &str) -> bool {
         let g = self.inner.read().expect("workspaces lock");
-        g.capsule_terminal.contains(workspace_id)
+        g.observers.get(workspace_id).map(|(h, _)| !h.is_finished()).unwrap_or(false)
     }
 
-    /// Clears a previously-marked terminal flag — a fresh
-    /// `workspace.create`/resume (a new watchdog) starts over. No-op if
-    /// never marked. Same windows-only-caller reasoning as
-    /// `mark_capsule_terminal` above.
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub fn clear_capsule_terminal(&self, workspace_id: &str) {
+    /// Checked against the SAME registry lock `remove_by_id` uses: a row removed
+    /// mid-spawn gets its handle aborted immediately instead of stored.
+    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+    pub(crate) fn install_observer(
+        &self,
+        workspace_id: &str,
+        handle: tokio::task::JoinHandle<()>,
+        cancel: Arc<dyn Fn() + Send + Sync>,
+    ) -> bool {
         let mut g = self.inner.write().expect("workspaces lock");
-        g.capsule_terminal.remove(workspace_id);
+        if !g.by_id.contains_key(workspace_id) {
+            cancel();
+            handle.abort();
+            return false;
+        }
+        if let Some((prev, prev_cancel)) = g.observers.insert(workspace_id.to_string(), (handle, cancel)) {
+            prev_cancel();
+            prev.abort();
+        }
+        true
     }
 
     /// This row's lifecycle guard (ADR 0043 decision 33) — despite the
@@ -660,7 +852,7 @@ impl Workspaces {
     /// does not claim its root against a real session (the duplicate-root
     /// gate). Ship of Tools development happens in a `ship-of-tools` row.
     pub fn is_inert_default_anchor(&self, ws: &Workspace) -> bool {
-        ws.agent == "none" && self.default_id().as_deref() == Some(ws.workspace_id.as_str())
+        ws.agent() == "none" && self.default_id().as_deref() == Some(ws.workspace_id.as_str())
     }
 
     /// Reset `workspace_id`'s `agent`/`agent_name` back to the inert-anchor
@@ -670,37 +862,16 @@ impl Workspaces {
     /// from `workspace.list` instead of surviving forever with a stale
     /// `agent` from before the run ended (field defect, v0.6.0-rc.12: a
     /// row whose agent predated the "nothing runs in the anchor" rule
-    /// never went inert again after its run was ended). Every other
-    /// field is carried over unchanged via `insert`'s own id-preserving
-    /// same-slug refresh — the same mechanism an ordinary metadata edit
-    /// (e.g. `workspace.create`'s duplicate-slug path) already relies on.
-    /// `None` if `workspace_id` is no longer registered (not reachable on
-    /// the caller's own path today, but this stays total rather than
-    /// panicking). A no-op re-insert when the row is already inert avoids
-    /// a needless toml rewrite.
+    /// never went inert again after its run was ended). Mutates `agent`/`agent_name`
+    /// IN PLACE, never via `insert`'s replacement path, so the phase cell, activation
+    /// error and observer task survive.
     pub fn reset_agent_to_none(&self, workspace_id: &str) -> Option<Arc<Workspace>> {
         let ws = {
             let g = self.inner.read().expect("workspaces lock");
             g.by_id.get(workspace_id)?.clone()
         };
-        if ws.agent == "none" && ws.agent_name.is_empty() {
-            return Some(ws);
-        }
-        let mut fresh = Workspace::meta_only(
-            ws.workspace_id.clone(),
-            ws.slug.clone(),
-            ws.label.clone(),
-            ws.project_root.clone(),
-            ws.tmux_session.clone(),
-            ws.created,
-            ws.autostart_claude,
-            "none".to_string(),
-            String::new(),
-            ws.task.clone(),
-        );
-        fresh.runtime = ws.runtime.clone();
-        fresh.agent_handle = Mutex::new(ws.agent_handle());
-        Some(self.insert(fresh))
+        ws.reset_agent_in_place();
+        Some(ws)
     }
 
     /// Record the sot-comm handle a session inside `workspace_id` DECLARED
@@ -816,6 +987,11 @@ impl Workspaces {
         // handing out the same, now-retired mutex; a fresh id reuse
         // starts with a fresh one.
         g.capsule_guards.remove(id);
+        // Cancel before abort: a round blocked in `spawn_blocking` only returns via the cancelled connection.
+        if let Some((h, cancel)) = g.observers.remove(id) {
+            cancel();
+            h.abort();
+        }
         if g.default_id.as_deref() == Some(id) {
             g.default_id = None;
         }
@@ -1129,7 +1305,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
         "autostart_claude = {}\n",
         ws.autostart_claude
     ));
-    body.push_str(&format!("agent         = {}\n", toml_quote(&ws.agent)));
+    body.push_str(&format!("agent         = {}\n", toml_quote(&ws.agent())));
     // agent_name / task are free text — quote+escape them exactly as
     // `label` is via `toml_quote` (handles quotes, backslashes, and
     // \n/\r/\t). The load side pairs `strip_quotes` with `toml_unquote`
@@ -1137,7 +1313,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
     // now round-trips exactly (field defect fixed 2026-09-04: the reader
     // used to only strip the surrounding quotes, leaving every escape
     // literal — see `toml_unquote`'s doc).
-    body.push_str(&format!("agent_name    = {}\n", toml_quote(&ws.agent_name)));
+    body.push_str(&format!("agent_name    = {}\n", toml_quote(&ws.agent_name())));
     body.push_str(&format!("task          = {}\n", toml_quote(&ws.task)));
     body.push_str(&format!("runtime       = {}\n", toml_quote(&ws.runtime)));
     body.push_str(&format!(
@@ -1925,17 +2101,22 @@ mod tests {
             .reset_agent_to_none(&row.workspace_id)
             .expect("the row is registered");
         assert_eq!(reset.workspace_id, original_id, "reset must preserve the id");
-        assert_eq!(reset.agent, "none");
-        assert_eq!(reset.agent_name, "");
+        assert_eq!(reset.agent(), "none");
+        assert_eq!(reset.agent_name(), "");
         assert_eq!(reset.runtime, "capsule", "unrelated metadata must survive the reset");
         assert!(
             reg.is_inert_default_anchor(&reset),
             "with agent reset to none, the default row must be inert again"
         );
+        assert!(
+            Arc::ptr_eq(&reset, &row),
+            "reset must mutate the EXISTING row's Arc in place, never replace it"
+        );
         // The registry's own row (not just the returned handle) reflects
         // the reset -- resolve() must see it too.
         let resolved = reg.resolve(Some(&original_id)).unwrap();
         assert!(reg.is_inert_default_anchor(&resolved));
+        assert!(Arc::ptr_eq(&resolved, &row), "resolve() must return the SAME Arc too");
     }
 
     /// ADR 0046 decision 1: `agent.join`'s persistence target. Mirrors
@@ -2385,8 +2566,8 @@ started      = 1600000000
         let ws = reg.resolve(Some("local")).unwrap();
         assert_eq!(ws.runtime, "capsule");
         assert!(ws.autostart_claude);
-        assert_eq!(ws.agent, "claude");
-        assert_eq!(ws.agent_name, "kal-local");
+        assert_eq!(ws.agent(), "claude");
+        assert_eq!(ws.agent_name(), "kal-local");
         assert_eq!(ws.task, "hello");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2560,7 +2741,7 @@ cursor_path = "src/lib.jl"
         );
         let toml_path = save(&ws).unwrap();
         let loaded = load_toml(&toml_path, false).unwrap().unwrap();
-        assert_eq!(loaded.agent_name, ws.agent_name);
+        assert_eq!(loaded.agent_name(), ws.agent_name());
         assert_eq!(loaded.task, ws.task);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3192,6 +3373,63 @@ runtime       = "tmux"
         assert!(
             new_root.join("workspaces").is_dir(),
             "non-empty legacy dir must not be removed"
+        );
+    }
+
+    #[test]
+    fn every_phase_has_a_distinct_wire_string() {
+        let all = [
+            Phase::Stopped,
+            Phase::Starting,
+            Phase::Ready,
+            Phase::Ending,
+            Phase::EndedNoRespawn,
+            Phase::Terminal,
+            Phase::Unreachable,
+            Phase::Foreign,
+        ];
+        let strings: std::collections::HashSet<&str> = all.iter().map(|p| p.as_wire_str()).collect();
+        assert_eq!(strings.len(), all.len(), "every Phase must have its own distinct wire string");
+    }
+
+    #[tokio::test]
+    async fn remove_by_id_aborts_the_row_s_observer_task() {
+        let reg = Workspaces::new();
+        let ws = Workspace::from_label("obs", PathBuf::from("/p/obs"), false, "none".into(), String::new(), String::new());
+        let id = ws.workspace_id.clone();
+        reg.insert(ws);
+        assert!(!reg.has_observer(&id), "no observer installed yet");
+
+        let ticks = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let ticks_for_task = ticks.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                ticks_for_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled_for_closure = cancelled.clone();
+        let cancel: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            cancelled_for_closure.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        reg.install_observer(&id, handle, cancel);
+        assert!(reg.has_observer(&id));
+
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(ticks.load(std::sync::atomic::Ordering::SeqCst) > 0, "the task must actually be running");
+
+        reg.remove_by_id(&id);
+        assert!(!reg.has_observer(&id), "removal must forget the handle");
+        assert!(cancelled.load(std::sync::atomic::Ordering::SeqCst), "removal must call the paired cancel closure too");
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let after_removal = ticks.load(std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(
+            ticks.load(std::sync::atomic::Ordering::SeqCst),
+            after_removal,
+            "the observer task must stop ticking once its row is removed"
         );
     }
 }

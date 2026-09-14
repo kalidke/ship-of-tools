@@ -42,6 +42,20 @@ crc32fast = "1"
 # `umask(2)` (main.rs, security review) isn't exposed by std; already in the
 # lock as a transitive dep, so direct use compiles nothing new.
 libc = "0.2"
+# ADR 0046 decision 2 R3: voyage ids compare as `Uuid` (UUIDv7 is
+# time-ordered) in the phase cell's own identity-based rejection.
+# Already in the lock as a transitive dep of `sot-log`, so direct use
+# compiles nothing new.
+uuid = { workspace = true }
+
+# ADR 0046 decision 2 R3: the watchdog's own zero-network identity read
+# of a child it just spawned itself (`capsule_workspace::runtime::
+# spawned_identity`) needs `HANDLE` to call `sot_log::challenge_win::
+# creation_filetime_bits` directly -- the same version already pinned
+# under `[target.'cfg(windows)'.dev-dependencies]` below, promoted to a
+# real (non-dev) dependency since production code now names the type too.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation"] }
 
 [[bin]]
 name = "sotd"
