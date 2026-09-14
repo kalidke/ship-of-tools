@@ -1433,6 +1433,118 @@ fn first_leg_without_strips_a_token_from_the_first_leg_and_an_unstable_respawn()
     let _ = wait_for_exit(child, Duration::from_secs(30));
 }
 
+/// `sot_log::supervisor_client::Persistent` reconnects transparently
+/// across REAL processes: (a) the held connection survives the
+/// supervisor process being killed and a fresh one adopting the same
+/// leg over the same state dir, and (b) it survives the supervisor's
+/// own idle-connection expiry (`LANE_IDLE_DEADLINE`, 5s) with no
+/// process change at all.
+#[test]
+fn persistent_client_survives_a_supervisor_restart_and_a_5s_idle_expiry() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let first = spawn_supervisor(&state_dir, "--start", SHELL);
+    let mut first_guard = KillGuard(Some(first));
+    // Wait for the lane over the raw helper first, proving the row is up before `Persistent` connects.
+    let raw_conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, leg) = wait_for_ready(&raw_conn, Duration::from_secs(90));
+    drop(raw_conn);
+
+    let mut persistent = sot_log::supervisor_client::Persistent::new(&state_dir);
+    let report = persistent.status().expect("first status on a freshly-ready row");
+    assert_eq!(report.voyage.as_deref(), Some(voyage.as_str()));
+    assert_eq!(report.leg, Some(leg));
+    assert_eq!(report.phase, SupervisorPhase::Ready);
+
+    // (a) Kill the supervisor only (the leg survives) and spawn a second one over the same state dir.
+    let mut first = first_guard.0.take().unwrap();
+    first.kill().unwrap();
+    first.wait().unwrap();
+
+    let second = spawn_supervisor(&state_dir, "--start", SHELL);
+    let mut second_guard = KillGuard(Some(second));
+    // The old connection is now dead; give the new supervisor's lane a moment to bind.
+    let raw_conn2 = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage2, leg2) = wait_for_ready(&raw_conn2, Duration::from_secs(30));
+    drop(raw_conn2);
+    assert_eq!(voyage2, voyage, "the SAME voyage -- adopted, never re-minted");
+    assert_eq!(leg2, leg, "the SAME leg epoch -- adopted, never a fresh spawn");
+
+    let report2 = persistent
+        .status()
+        .expect("Persistent must transparently reconnect across a supervisor restart");
+    assert_eq!(report2.voyage.as_deref(), Some(voyage.as_str()));
+    assert_eq!(report2.leg, Some(leg));
+    assert_eq!(report2.phase, SupervisorPhase::Ready);
+
+    // (b) Idle expiry: let the same held connection sit past the supervisor's own 5s deadline, then ask again.
+    std::thread::sleep(Duration::from_secs(6));
+    let report3 = persistent
+        .status()
+        .expect("Persistent must transparently reconnect across the supervisor's own 5s idle expiry");
+    assert_eq!(report3.voyage.as_deref(), Some(voyage.as_str()));
+    assert_eq!(report3.leg, Some(leg));
+    assert_eq!(report3.phase, SupervisorPhase::Ready);
+
+    // Clean up through the raw helper -- `Persistent`'s own internals are private.
+    let conn3 = wait_for_lane(&h, Duration::from_secs(30));
+    end_run_and_expect_record_closed(&conn3, "cleanup-end", "cleanup", voyage);
+    let _ = poll_to_terminal(&conn3, "cleanup-end", Duration::from_secs(60));
+    let _ = command(&conn3, "cleanup-stop", SupervisorOp::Stop);
+    let second = second_guard.0.take().unwrap();
+    let _ = wait_for_exit(second, Duration::from_secs(60));
+}
+
+/// `cancel()` and publishing a fresh connection share one lock, so a
+/// cancel landing inside that race window is never missed — proven
+/// deterministically via a test-support hook, with no thread or sleep.
+#[test]
+fn a_cancel_landing_between_connect_and_publish_is_never_missed() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let child = spawn_supervisor(&state_dir, "--start", SHELL);
+    let mut guard = KillGuard(Some(child));
+    let raw_conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&raw_conn, Duration::from_secs(90));
+    drop(raw_conn);
+
+    let mut persistent = sot_log::supervisor_client::Persistent::new(&state_dir);
+    let cancel_handle = persistent.cancel_handle();
+    persistent.set_test_hook_after_connect_before_publish(move || cancel_handle.cancel());
+
+    let result = persistent.status();
+    assert!(
+        result.is_err(),
+        "a connect published after a cancel landed inside the race window must still refuse"
+    );
+
+    // Cancellation is persistent, never a one-shot refusal of just the racing call.
+    for _ in 0..3 {
+        assert!(
+            persistent.status().is_err(),
+            "a cancelled Persistent must refuse every subsequent status() too, not just the one that raced"
+        );
+    }
+
+    drop(persistent);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
+    let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
+    let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
+    let child = guard.0.take().unwrap();
+    let _ = wait_for_exit(child, Duration::from_secs(30));
+}
+
 /// The self-heal buys one clean retry, never an exemption: a producer
 /// that fails fast for a reason that has NOTHING to do with the stripped
 /// token (every leg dies the same way regardless) must still trip the

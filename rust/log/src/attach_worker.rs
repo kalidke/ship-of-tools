@@ -49,7 +49,7 @@ use crate::fe_client::{
     self, FeDownBaseline, InputWireOutcome, OutstandingSlot, QuitDispatcher, QuitState,
     ReconnectDecision, ReconnectState, Role, TakeAction, TakeTransaction,
 };
-use crate::transport::TransportError;
+use crate::transport::{TransportError, TEARDOWN_AGGREGATE_DEADLINE};
 use crate::wire::{
     self, AttachClient, AttachServer, DecodedFrame, ResizeRefusedReason, SupervisorOp,
     SupervisorPhase, SupervisorReply, SupervisorRequest, TakeRefusedReason,
@@ -430,6 +430,10 @@ fn drain_pending_control(cmd_rx: &Receiver<WorkerMsg>, latched_quit_reason: &mut
     }
 }
 
+/// How long a first attach tolerates `EndedNoRespawn` before treating it
+/// as terminal -- sized to the daemon's own dominant retire cost.
+const FIRST_ATTACH_ENDED_NO_RESPAWN_BOUND: Duration = TEARDOWN_AGGREGATE_DEADLINE;
+
 /// ADR 0043 decision 28, ADR 0045 decision 6: the attach client converges
 /// on the supervisor's OWN word ONLY, never on a pointer file. Given an
 /// already-connected, already-`hello`'d supervisor lane, polls `Status`
@@ -476,6 +480,7 @@ fn converge_on_ready<E: Endpoint>(
     latched_quit_reason: &mut Option<String>,
     quit: &mut QuitDispatcher,
     outstanding: &mut OutstandingSlot,
+    first_attach_deadline: Option<Instant>,
     emit: &dyn Fn(WorkerEvent),
 ) -> ReadyOutcome<E> {
     // Emitted at most once per "still starting" spell — re-armed every
@@ -493,8 +498,13 @@ fn converge_on_ready<E: Endpoint>(
         // now -- clear the clock unconditionally, before any Terminal
         // classification or gating below.
         reconnect.clear_unresponsive();
-        if let ReconnectDecision::Terminal(reason) = reconnect.classify_supervisor_phase(phase) {
-            return ReadyOutcome::Terminal(format!("supervisor: {reason:?}"));
+        // Tolerate EndedNoRespawn only within the first attach's deadline.
+        let tolerate_ended_no_respawn = phase == SupervisorPhase::EndedNoRespawn
+            && first_attach_deadline.is_some_and(|d| Instant::now() < d);
+        if !tolerate_ended_no_respawn {
+            if let ReconnectDecision::Terminal(reason) = reconnect.classify_supervisor_phase(phase) {
+                return ReadyOutcome::Terminal(format!("supervisor: {reason:?}"));
+            }
         }
 
         // Path (ii): a latched Quit needs only the supervisor lane and a
@@ -1047,6 +1057,10 @@ fn run_worker<E: Endpoint>(
     let mut cols = initial_cols;
     let mut rows = initial_rows;
     let mut voyage_uuid: Option<String> = None;
+    // Owned by the worker, not re-derived per call: a rendering client
+    // gets a deadline once; headless never tolerates EndedNoRespawn.
+    let mut first_attach_deadline =
+        (!headless).then(|| Instant::now() + FIRST_ATTACH_ENDED_NO_RESPAWN_BOUND);
     let mut take_epoch: u64 = 0;
     let mut shutdown = false;
     // Ruling (b), Codex review round finding 4: set when
@@ -1089,6 +1103,7 @@ fn run_worker<E: Endpoint>(
                     &mut latched_quit_reason,
                     &mut quit,
                     &mut outstanding,
+                    first_attach_deadline,
                     &emit,
                 ) {
                     ReadyOutcome::Ready { conn, sup_reader, voyage_id, voyage_conn } => {
@@ -1281,6 +1296,8 @@ fn run_worker<E: Endpoint>(
         // checkpoint emit, delaying first paint by a whole extra
         // connection + challenge for no reason the client's own state
         // needed.
+        // First completed attach: never tolerate EndedNoRespawn again.
+        first_attach_deadline = None;
         emit(WorkerEvent::Checkpoint(checkpoint));
         emit(WorkerEvent::Status("attached".to_string()));
         reconnect.attached();
@@ -2726,5 +2743,115 @@ mod tests {
             ReconnectDecision::Terminal(fe_client::TerminalReason::HealthWindowExpired),
             "the fresh window started at t2 must still expire after its own full HEALTH_WINDOW"
         );
+    }
+
+    /// Serves a scripted sequence of already wire-encoded supervisor-lane
+    /// reply frames, one per `read()` call.
+    struct ScriptedReadyClient {
+        replies: Mutex<VecDeque<Vec<u8>>>,
+    }
+    impl ScriptedReadyClient {
+        fn new(replies: Vec<SupervisorReply>) -> Self {
+            Self {
+                replies: Mutex::new(replies.into_iter().map(|r| wire::encode_supervisor_reply(&r).expect("encode")).collect()),
+            }
+        }
+    }
+    impl Client for ScriptedReadyClient {
+        fn write_all(&self, _bytes: &[u8]) -> Result<(), crate::transport::TransportError> {
+            Ok(())
+        }
+        fn read(&self, buf: &mut [u8]) -> Result<usize, crate::transport::TransportError> {
+            let mut q = self.replies.lock().unwrap();
+            let frame = q.pop_front().expect("scripted supervisor replies exhausted before the test finished driving it");
+            buf[..frame.len()].copy_from_slice(&frame);
+            Ok(frame.len())
+        }
+        fn cancel(&self) {}
+    }
+
+    /// Scripts [`Endpoint::connect_voyage_unchallenged`] with one queued
+    /// outcome per call — first `Unreachable`, then success.
+    struct ScriptedVoyageEndpoint {
+        voyage_connects: Mutex<VecDeque<Result<(), crate::transport::TransportError>>>,
+    }
+    impl Endpoint for ScriptedVoyageEndpoint {
+        type Client = ScriptedReadyClient;
+        type Process = TestProcess;
+
+        fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            match self.voyage_connects.lock().unwrap().pop_front().expect("voyage-connect script exhausted") {
+                Ok(()) => Ok(ScriptedReadyClient::new(Vec::new())),
+                Err(e) => Err(e),
+            }
+        }
+        fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            unreachable!("converge_on_ready never reconnects the supervisor lane itself")
+        }
+        fn challenge(
+            &self,
+            _conn: &Self::Client,
+            _exchange: &mut dyn crate::exchange::IdentityExchange,
+            _deadline: Instant,
+        ) -> ChallengeOutcome<Self::Process> {
+            unreachable!("converge_on_ready never challenges")
+        }
+        fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
+            unreachable!("converge_on_ready never authenticates")
+        }
+    }
+
+    /// A first attach that sees `Ready`, then fails mid-connect while the
+    /// row resets underneath it, still reaches the NEW voyage — only
+    /// because `EndedNoRespawn` is tolerated rather than terminal here.
+    #[test]
+    fn a_first_attach_that_fails_mid_connect_still_reaches_the_voyage_a_reset_mints_next() {
+        let v1 = "11111111-1111-1111-1111-111111111111";
+        let v2 = "22222222-2222-2222-2222-222222222222";
+
+        let conn = ScriptedReadyClient::new(vec![
+            SupervisorReply::StatusOk { pid: 1, created: 1, voyage: Some(v1.to_string()), leg: Some(1), phase: SupervisorPhase::Ready },
+            SupervisorReply::StatusOk { pid: 1, created: 1, voyage: Some(v1.to_string()), leg: Some(1), phase: SupervisorPhase::EndedNoRespawn },
+            SupervisorReply::StatusOk { pid: 2, created: 2, voyage: Some(v2.to_string()), leg: Some(1), phase: SupervisorPhase::Ready },
+        ]);
+        let ep = ScriptedVoyageEndpoint {
+            voyage_connects: Mutex::new(VecDeque::from([
+                Err(crate::transport::TransportError::Unreachable(std::io::Error::new(ErrorKind::TimedOut, "leg not up yet"))),
+                Ok(()),
+            ])),
+        };
+
+        let (_msg_tx, cmd_rx) = mpsc::channel::<WorkerMsg>();
+        let mut reconnect = ReconnectState::new();
+        let mut latched_quit_reason: Option<String> = None;
+        let mut quit = QuitDispatcher::new();
+        let mut outstanding = OutstandingSlot::new();
+        // Generous relative to the scripted backoff waits; the deadline's
+        // own expiry isn't what this test exercises.
+        let first_attach_deadline = Some(Instant::now() + Duration::from_secs(30));
+
+        let outcome = converge_on_ready::<ScriptedVoyageEndpoint>(
+            &ep,
+            conn,
+            FrameReader::new(),
+            "sot-capsule-row-r4d",
+            &cmd_rx,
+            &mut reconnect,
+            &mut latched_quit_reason,
+            &mut quit,
+            &mut outstanding,
+            first_attach_deadline,
+            &|_e| {},
+        );
+
+        match outcome {
+            ReadyOutcome::Ready { voyage_id, .. } => {
+                assert_eq!(voyage_id, v2, "a first attach that failed mid-connect, across a reset, must still land on the NEW voyage");
+            }
+            ReadyOutcome::Terminal(msg) => panic!("expected Ready(v2), got Terminal({msg})"),
+            ReadyOutcome::LaneDown => panic!("expected Ready(v2), got LaneDown"),
+            ReadyOutcome::ShouldExit => panic!("expected Ready(v2), got ShouldExit"),
+            ReadyOutcome::Shutdown => panic!("expected Ready(v2), got Shutdown"),
+        }
     }
 }

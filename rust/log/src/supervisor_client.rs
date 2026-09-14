@@ -46,7 +46,8 @@ use crate::transport::TEARDOWN_AGGREGATE_DEADLINE;
 use crate::wire::{
     self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The retained-process type every `pub fn` below returns/accepts —
@@ -71,11 +72,12 @@ const CONNECT_AND_HELLO_BUDGET: Duration = Duration::from_secs(2);
 /// `fe_client_io.rs`'s own `STATUS_BUDGET`.
 const STATUS_BUDGET: Duration = Duration::from_secs(5);
 
-/// What a `status` round trip reports — [`wire::SupervisorPhase`] reused
-/// directly rather than a second local enum, since this module adds no
-/// meaning to it beyond relaying it.
+/// What a `status` round trip reports. `pid`/`created` are the reporting
+/// supervisor's own identity, off the same reply.
 #[derive(Debug, Clone)]
 pub struct StatusReport {
+    pub pid: u32,
+    pub created: u64,
     pub voyage: Option<String>,
     pub leg: Option<u64>,
     pub phase: SupervisorPhase,
@@ -149,7 +151,9 @@ pub fn query_status(state_dir: &Path) -> crate::Result<(StatusReport, Challenged
     let deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
     let (conn, process) = connect(state_dir, deadline)?;
     match send_and_read(&conn, &SupervisorRequest::Status, Instant::now() + STATUS_BUDGET)? {
-        SupervisorReply::StatusOk { voyage, leg, phase, .. } => Ok((StatusReport { voyage, leg, phase }, process)),
+        SupervisorReply::StatusOk { pid, created, voyage, leg, phase } => {
+            Ok((StatusReport { pid, created, voyage, leg, phase }, process))
+        }
         other => Err(err_state(format!("expected status_ok, got {other:?}"))),
     }
 }
@@ -339,6 +343,135 @@ pub fn reset(state_dir: &Path) -> crate::Result<String> {
     }
 }
 
+/// [`Persistent`]'s connection + cancelled flag, read/written together.
+struct Shared {
+    client: Option<Arc<<PlatformEndpoint as Endpoint>::Client>>,
+    /// Latched by [`CancelHandle::cancel`]; never cleared, so a cancelled client never reconnects.
+    cancelled: bool,
+}
+
+/// A held connection to one capsule row's supervisor lane, reused across [`Persistent::status`] calls.
+pub struct Persistent {
+    state_dir: PathBuf,
+    conn: Option<(Arc<<PlatformEndpoint as Endpoint>::Client>, ChallengedProcess)>,
+    /// Lets [`Persistent::cancel_handle`] reach the current connection from another thread.
+    shared: Arc<Mutex<Shared>>,
+    /// Test-support only: fires between connect and publish, to land a cancel deterministically.
+    #[cfg(any(test, feature = "test-support"))]
+    after_connect_before_publish: Option<Box<dyn FnMut() + Send>>,
+}
+
+#[derive(Clone)]
+pub struct CancelHandle(Arc<Mutex<Shared>>);
+
+impl CancelHandle {
+    /// Sets `cancelled` and takes+shuts the published client under the SAME lock, so a concurrent
+    /// [`Persistent::publish`] either installs first (and gets shut here) or sees `cancelled` and never installs.
+    pub fn cancel(&self) {
+        let mut shared = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        shared.cancelled = true;
+        if let Some(client) = shared.client.take() {
+            client.cancel();
+        }
+    }
+}
+
+impl Persistent {
+    pub fn new(state_dir: &Path) -> Self {
+        Persistent {
+            state_dir: state_dir.to_path_buf(),
+            conn: None,
+            shared: Arc::new(Mutex::new(Shared { client: None, cancelled: false })),
+            #[cfg(any(test, feature = "test-support"))]
+            after_connect_before_publish: None,
+        }
+    }
+
+    pub fn cancel_handle(&self) -> CancelHandle {
+        CancelHandle(self.shared.clone())
+    }
+
+    /// Test-support only: runs `hook` once, synchronously, between connect and publish.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_test_hook_after_connect_before_publish(&mut self, hook: impl FnMut() + Send + 'static) {
+        self.after_connect_before_publish = Some(Box::new(hook));
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.shared.lock().unwrap_or_else(|e| e.into_inner()).cancelled
+    }
+
+    /// One `status` round; retried once on a fresh connection if the held one fails.
+    pub fn status(&mut self) -> crate::Result<StatusReport> {
+        if self.is_cancelled() {
+            return Err(err_state("cancelled".to_string()));
+        }
+        if self.conn.is_none() {
+            let fresh = self.fresh_connection()?;
+            self.publish(fresh)?;
+        }
+        match self.status_on_held_connection() {
+            Ok(report) => Ok(report),
+            Err(_first_attempt_err) => {
+                // Presume the held connection is dead; a second failure is reported as-is, below.
+                self.clear_conn();
+                let fresh = self.fresh_connection()?;
+                self.publish(fresh)?;
+                let result = self.status_on_held_connection();
+                if result.is_err() {
+                    self.clear_conn();
+                }
+                result
+            }
+        }
+    }
+
+    /// Discards the held connection without touching `cancelled` — never a cancellation path.
+    fn clear_conn(&mut self) {
+        self.shared.lock().unwrap_or_else(|e| e.into_inner()).client = None;
+        self.conn = None;
+    }
+
+    /// Installs a fresh client as held/published — unless `cancelled` is already set under the SAME
+    /// lock, in which case the connection is shut and discarded: the one gate a connect becomes visible through.
+    fn publish(&mut self, conn: (<PlatformEndpoint as Endpoint>::Client, ChallengedProcess)) -> crate::Result<()> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(hook) = self.after_connect_before_publish.as_mut() {
+            hook();
+        }
+        let (client, process) = conn;
+        let client = Arc::new(client);
+        let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        if shared.cancelled {
+            drop(shared);
+            client.cancel();
+            return Err(err_state("cancelled".to_string()));
+        }
+        shared.client = Some(client.clone());
+        drop(shared);
+        self.conn = Some((client, process));
+        Ok(())
+    }
+
+    fn fresh_connection(&self) -> crate::Result<(<PlatformEndpoint as Endpoint>::Client, ChallengedProcess)> {
+        let deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
+        connect(&self.state_dir, deadline)
+    }
+
+    fn status_on_held_connection(&self) -> crate::Result<StatusReport> {
+        let (conn, _process) = self
+            .conn
+            .as_ref()
+            .expect("status_on_held_connection: caller just ensured a connection");
+        match send_and_read(conn.as_ref(), &SupervisorRequest::Status, Instant::now() + STATUS_BUDGET)? {
+            SupervisorReply::StatusOk { pid, created, voyage, leg, phase } => {
+                Ok(StatusReport { pid, created, voyage, leg, phase })
+            }
+            other => Err(err_state(format!("expected status_ok, got {other:?}"))),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------
 // L1-unix LU3b: the client-side supervisor-lane helpers, moved here from
 // `supervisor.rs` (ADR 0043 decision 20) — a supervisor-lane CLIENT's own
@@ -381,6 +514,26 @@ pub(crate) fn connect_and_challenge<E: Endpoint>(
     }
 }
 
+/// The blocking read loop shared by [`read_one_frame`] and
+/// [`send_and_read`] — no deadline of its own.
+fn read_next_frame<C: Client>(conn: &C) -> crate::Result<DecodedFrame> {
+    let mut splitter = wire::FrameSplitter::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = conn.read(&mut buf)?;
+        if n == 0 {
+            return Err(err_state("connection closed before a reply arrived"));
+        }
+        let (frames, err) = splitter.feed(&buf[..n]);
+        if let Some(e) = err {
+            return Err(err_state(format!("wire error waiting for a reply: {e}")));
+        }
+        if let Some(frame) = frames.into_iter().next() {
+            return Ok(frame);
+        }
+    }
+}
+
 /// Encode `request`, write it, and read back exactly one reply — the one
 /// request/reply round trip every supervisor-lane caller needs after its
 /// own connect+challenge, factored out so `supervisor::request_for_test`
@@ -389,17 +542,27 @@ pub(crate) fn connect_and_challenge<E: Endpoint>(
 /// [`Client`] alone (not [`Endpoint`]): sending and reading a reply needs
 /// no Endpoint-level operation, so any concrete client either platform's
 /// `Endpoint::Client` names satisfies this directly.
+///
+/// The write and the read both run inside ONE `run_with_deadline` — a
+/// stalled write is cancellable exactly like a stalled read.
 pub(crate) fn send_and_read<C: Client>(
     conn: &C,
     request: &SupervisorRequest,
     deadline: Instant,
 ) -> crate::Result<SupervisorReply> {
     let bytes = wire::encode_supervisor_request(request).map_err(|e| err_state(format!("{e}")))?;
-    conn.write_all(&bytes)?;
-    match read_one_frame(conn, deadline)? {
-        DecodedFrame::SupervisorReply(reply) => Ok(reply),
-        other => Err(err_state(format!("expected a SupervisorReply, got {other:?}"))),
-    }
+    let result = crate::deadline::run_with_deadline(
+        deadline,
+        || conn.cancel(),
+        move || -> crate::Result<SupervisorReply> {
+            conn.write_all(&bytes)?;
+            match read_next_frame(conn)? {
+                DecodedFrame::SupervisorReply(reply) => Ok(reply),
+                other => Err(err_state(format!("expected a SupervisorReply, got {other:?}"))),
+            }
+        },
+    );
+    result.unwrap_or_else(|| Err(err_state("timed out waiting for a reply")))
 }
 
 /// `pub(crate)`: `supervisor.rs`'s own `end_run_over_mgmt_lane` (a
@@ -407,27 +570,7 @@ pub(crate) fn send_and_read<C: Client>(
 /// reads the mgmt-lane shutdown ack with this SAME primitive, so it
 /// needs crate visibility, not merely module-private.
 pub(crate) fn read_one_frame<C: Client>(conn: &C, deadline: Instant) -> crate::Result<DecodedFrame> {
-    let result = crate::deadline::run_with_deadline(
-        deadline,
-        || conn.cancel(),
-        move || -> crate::Result<DecodedFrame> {
-            let mut splitter = wire::FrameSplitter::new();
-            let mut buf = [0u8; 4096];
-            loop {
-                let n = conn.read(&mut buf)?;
-                if n == 0 {
-                    return Err(err_state("connection closed before a reply arrived"));
-                }
-                let (frames, err) = splitter.feed(&buf[..n]);
-                if let Some(e) = err {
-                    return Err(err_state(format!("wire error waiting for a reply: {e}")));
-                }
-                if let Some(frame) = frames.into_iter().next() {
-                    return Ok(frame);
-                }
-            }
-        },
-    );
+    let result = crate::deadline::run_with_deadline(deadline, || conn.cancel(), move || read_next_frame(conn));
     result.unwrap_or_else(|| Err(err_state("timed out waiting for a reply")))
 }
 
