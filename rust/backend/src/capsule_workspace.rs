@@ -311,28 +311,33 @@ fn claude_argv() -> Result<Vec<String>, String> {
 /// never spawned as a child. Shares [`claude_recipe`] with the capsule
 /// spawn path above (`resume: false` — `agent-exec` never adds
 /// `--continue` itself; that stays the daemon's own default for a
-/// capsule row, in [`claude_argv`]) and [`resolve_claude`] (via
-/// [`agent_argv`], so an unresolvable binary surfaces THAT SAME error
-/// text, not a second copy of it). `extra` lands between the fixed
-/// flags and the bootstrap skill, in the order given — `ccb`'s own
-/// `"$@"`. Only `"claude"` has a recipe here: `"none"` is a legitimate
-/// [`agent_argv`] kind for a capsule spawn (the bare platform shell, no
-/// flags, no skill) but shares no recipe shape with `"claude"`'s
-/// `--permission-mode`/skill argv, so `agent-exec` refuses it same as
-/// any kind [`agent_argv`] itself does not know; either failure prints
-/// [`agent_argv`]'s own error text and this returns `Err` for the caller
-/// to exit 2 on.
-#[cfg_attr(windows, allow(dead_code))]
+/// capsule row, in [`claude_argv`]) but calls [`resolve_claude`]
+/// DIRECTLY for `"claude"`, never through [`agent_argv`]/[`claude_argv`]:
+/// those exist to gate the CAPSULE launcher, which is a narrower,
+/// separate question (ADR 0043 decision 22: no validated capsule
+/// resolution rule off Windows/Linux) from "can this Unix host resolve
+/// and exec a real `claude` binary" — routing through them made capsule
+/// availability into agent-exec availability, breaking `agent-exec`
+/// (and so `ccb` itself, which execs through it) on every Unix
+/// [`claude_argv`] refuses (macOS today), found by CI going red there.
+/// `extra` lands between the fixed flags and the bootstrap skill, in the
+/// order given — `ccb`'s own `"$@"`. Only `"claude"` has a recipe here:
+/// `"none"` is a legitimate [`agent_argv`] kind for a capsule spawn (the
+/// bare platform shell, no flags, no skill) but shares no recipe shape
+/// with `"claude"`'s `--permission-mode`/skill argv, so `agent-exec`
+/// refuses it — same as any kind [`agent_argv`] itself does not know —
+/// by routing THOSE two cases (and only those) through `agent_argv`,
+/// whose own error text surfaces verbatim for a truly unknown kind.
+#[cfg(unix)]
 pub fn agent_exec_argv(kind: &str, extra: &[String]) -> Result<Vec<String>, String> {
     match kind {
         "claude" => {
-            let argv = agent_argv("claude")?;
-            let claude_bin = argv
-                .into_iter()
-                .next()
-                .expect("agent_argv always returns a non-empty argv");
+            let claude = resolve_claude(
+                std::env::var_os("PATH").as_deref(),
+                std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+            )?;
             let mut recipe = claude_recipe(false, extra);
-            recipe[0] = claude_bin;
+            recipe[0] = claude;
             Ok(recipe)
         }
         other => {
@@ -349,19 +354,24 @@ pub fn agent_exec_argv(kind: &str, extra: &[String]) -> Result<Vec<String>, Stri
     }
 }
 
-/// Linux only: search `path_var` (a `PATH`-shaped env value), then
-/// `<home>/.local/bin` and `<home>/.claude/local`, for an executable
-/// file named `claude` — the tmux launchers' own full-path rule (a
-/// daemon-spawned process inherits the SERVICE's PATH, which lacks
-/// `~/.local/bin`; CLAUDE.md's own documented gotcha). Returns the
-/// ABSOLUTE path so the eventual capsule producer never repeats a PATH
-/// search of its own (`sot_log::producer_pty`'s own
-/// `executable_is_resolvable` treats an absolute path as a direct
+/// Any Unix (widened from Linux-only, ADR 0046 decision 4 CI fix): search
+/// `path_var` (a `PATH`-shaped env value), then `<home>/.local/bin` and
+/// `<home>/.claude/local`, for an executable file named `claude` — the
+/// tmux launchers' own full-path rule (a daemon-spawned process inherits
+/// the SERVICE's PATH, which lacks `~/.local/bin`; CLAUDE.md's own
+/// documented gotcha). Returns the ABSOLUTE path so the eventual capsule
+/// producer never repeats a PATH search of its own (`sot_log::producer_pty`'s
+/// own `executable_is_resolvable` treats an absolute path as a direct
 /// existence+executable check, never a second PATH walk). Takes its
 /// inputs explicitly (never reads `std::env` itself) so it is testable
-/// without mutating global process state — [`claude_argv`] is the one
-/// real caller, which supplies the process's own `PATH`/`HOME`.
-#[cfg(target_os = "linux")]
+/// without mutating global process state — [`claude_argv`]'s Linux arm
+/// and [`agent_exec_argv`]'s `"claude"` arm are the two real callers,
+/// each supplying the process's own `PATH`/`HOME`; `claude_argv` itself
+/// stays Linux-only ABOVE (the capsule launcher's own, narrower,
+/// unvalidated-elsewhere restriction, unchanged by this widening) —
+/// widening this shared helper is what lets `agent_exec_argv` resolve a
+/// real `claude` on any Unix WITHOUT going through that restriction.
+#[cfg(unix)]
 fn resolve_claude(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<String, String> {
     // Review round, reproduced: a RELATIVE `PATH` entry resolves against
     // the daemon's own current directory (`execve`'s own rule for a
@@ -407,8 +417,9 @@ fn resolve_claude(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Re
 /// producer performs before ever forking), so a path this returns is
 /// never rejected there for a reason this check could have caught
 /// first. A duplicated ~6 lines rather than a cross-crate refactor — not
-/// worth it for this one call site.
-#[cfg(target_os = "linux")]
+/// worth it for this one call site. Widened alongside [`resolve_claude`],
+/// its only caller, from Linux-only to any Unix.
+#[cfg(unix)]
 fn is_executable_file(path: &Path) -> bool {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_file() => {}
@@ -2711,12 +2722,15 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn agent_exec_argv_claude_never_adds_continue() {
         // ADR 0046 decision 4's own invariant: `agent-exec` never adds
         // `--continue` itself (that stays the daemon's own default for a
         // capsule spawn, in `claude_argv`) — it builds the SAME recipe
-        // shape with `resume: false` and the caller's own flags.
+        // shape with `resume: false` and the caller's own flags. Widened
+        // from Linux-only to any Unix (CI fix): this is the exact case
+        // that broke on macOS when `agent_exec_argv` routed resolution
+        // through the capsule launcher's own, narrower refusal there.
         let _guard = self_file_env_guarded();
         let dir = tempfile::tempdir().expect("tempdir");
         let claude = dir.path().join("claude");
@@ -2748,7 +2762,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn agent_exec_argv_none_is_refused_it_has_no_shared_recipe() {
         // "none" is a legitimate `agent_argv` kind (the bare platform
         // shell) but shares no `--permission-mode`/skill recipe shape
@@ -2759,7 +2773,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn agent_exec_argv_unknown_kind_prints_agent_argvs_own_error() {
         assert_eq!(
             agent_exec_argv("bogus", &[]).unwrap_err(),
@@ -2849,7 +2863,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn resolve_claude_finds_an_executable_on_path() {
         let dir = tempfile_test_dir();
         let claude = dir.path().join("claude");
@@ -2861,7 +2875,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn resolve_claude_falls_back_to_local_bin_under_home() {
         let dir = tempfile_test_dir();
         let local_bin = dir.path().join(".local/bin");
@@ -2875,7 +2889,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn resolve_claude_ignores_a_non_executable_file() {
         let dir = tempfile_test_dir();
         let claude = dir.path().join("claude");
@@ -2886,14 +2900,14 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn resolve_claude_names_every_directory_it_searched() {
         let err = resolve_claude(None, None).unwrap_err();
         assert!(err.contains("claude not found"), "{err}");
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn resolve_claude_skips_a_same_named_directory_for_a_later_real_file() {
         // Review round, reproduced: a directory named `claude` passes
         // `access(X_OK)` (the execute bit on a directory means
@@ -2912,7 +2926,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn resolve_claude_skips_a_relative_path_entry() {
         // Review round, reproduced: a relative PATH entry resolves
         // against the daemon's own current directory, not the eventual
@@ -2924,12 +2938,12 @@ mod tests {
         assert!(!err.contains("relative/bin"), "a relative entry must never even be searched: {err}");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn tempfile_test_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn set_executable(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();

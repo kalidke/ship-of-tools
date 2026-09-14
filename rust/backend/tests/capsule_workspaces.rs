@@ -2053,10 +2053,15 @@ async fn capsule_create_is_refused_on_an_unqualified_state_root() {
         "a refused create must mint no workspace_id: {:?}", create_res.payload
     );
 
-    // workspace.list: no row for this (never-created) workspace.
+    // workspace.list: no row for this (never-created) workspace. Getting a
+    // real answer back at all (rather than a dead connection) is itself the
+    // proof the refusal above was per-request, never a daemon-wide wedge —
+    // no separate create-on-the-same-daemon round trip is needed for that
+    // (a "tmux" one no longer would even succeed here: ADR 0046 decision 5
+    // refuses a NEW tmux row wherever the capsule runtime compiles, this
+    // Linux leg included).
     let ws_slug = slug(label);
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
-    next_id += 1;
     let has_row = list_payload["workspaces"]
         .as_array()
         .into_iter()
@@ -2070,22 +2075,6 @@ async fn capsule_create_is_refused_on_an_unqualified_state_root() {
         .join(format!("workspaces-{TEST_STATE_HOST}"))
         .join(format!("{ws_slug}.toml"));
     assert!(!toml_path.exists(), "a refused create must not persist a toml: {toml_path:?}");
-
-    // The daemon stays healthy: a tmux-runtime create on the SAME daemon
-    // still succeeds (the refusal above is per-request, never a
-    // daemon-wide wedge).
-    let tmux_project_root = env._tmp.path().join("tmux-workspace-project");
-    std::fs::create_dir_all(&tmux_project_root).expect("mkdir tmux_project_root");
-    let tmux_create_req = serde_json::json!({
-        "label": "cur-tmux-workspace",
-        "project_root": tmux_project_root.to_string_lossy(),
-        "runtime": "tmux",
-    });
-    let tmux_create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, tmux_create_req).await;
-    assert!(
-        tmux_create_res.payload.get("error").is_none(),
-        "tmux create on the same daemon failed: {:?}", tmux_create_res.payload
-    );
 
     env.kill_daemon_bounded().await;
 }
