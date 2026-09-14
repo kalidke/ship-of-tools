@@ -3846,7 +3846,6 @@ dependencies = [
  "base64",
  "crc32fast",
  "futures-util",
- "gethostname 0.5.0",
  "getrandom 0.3.4",
  "image",
  "interprocess",
@@ -3919,6 +3918,7 @@ name = "sot-log"
 version = "0.6.0-rc.25"
 dependencies = [
  "crc32c",
+ "gethostname 0.5.0",
  "getrandom 0.3.4",
  "libc",
  "serde",

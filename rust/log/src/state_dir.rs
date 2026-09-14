@@ -62,6 +62,40 @@ pub fn sot_state_dir() -> Option<std::path::PathBuf> {
     Some(dir.join("sot"))
 }
 
+/// The declared identity's `host` component (ADR 0046 decision 1): one
+/// resolver, replacing the five independent guesses that used to disagree
+/// (`gpu.rs`'s per-call mint, the backend's own `gethostname` call, this
+/// crate's `state_host()`, the comm digest, and the frontend's `hosts.rs`
+/// label) — every one of them fixed a wrong answer with another resolver
+/// tier or override env instead of declaring the fact once.
+///
+/// `SOT_SELF_HOST` wins when set and non-empty, taken verbatim (an
+/// explicit override needs no further massaging) — a NEW variable, not
+/// `SOT_HOST`: the launchers already use `SOT_HOST` for the SSH target a
+/// remote frontend dials (`scripts/launch-sot.ps1`, `launch-sot.sh`), and
+/// this declaration is a different fact (who a process IS, not where it
+/// dials). Otherwise `gethostname`'s first `.`-delimited label, lowercased.
+/// Feeds hello, logs, and display ONLY — it does not touch `state_host()`'s
+/// on-disk namespace (`workspaces_dir()` keeps today's own derivation;
+/// no migration is scheduled this sprint).
+///
+/// `Err` — never a fallback string — when neither source yields a usable
+/// label: a process with no nameable host has nothing honest to declare.
+pub fn host_name() -> Result<String, String> {
+    if let Some(v) = std::env::var_os("SOT_SELF_HOST") {
+        let v = v.to_string_lossy().into_owned();
+        if !v.is_empty() {
+            return Ok(v);
+        }
+    }
+    let raw = gethostname::gethostname().to_string_lossy().into_owned();
+    let label = raw.split('.').next().unwrap_or("").trim().to_lowercase();
+    if label.is_empty() {
+        return Err("host_name: no SOT_SELF_HOST override and gethostname returned no usable label".to_string());
+    }
+    Ok(label)
+}
+
 /// LU5a (ADR 0043 decision 23): the store's own volume preflight
 /// (`fsutil::preflight_volume`), exposed here as the narrow public seam
 /// the daemon's own `qualified_state_root` needs — `fsutil` itself stays
@@ -280,6 +314,7 @@ mod tests {
         home: Option<std::ffi::OsString>,
         localappdata: Option<std::ffi::OsString>,
         userprofile: Option<std::ffi::OsString>,
+        sot_self_host: Option<std::ffi::OsString>,
     }
 
     impl Drop for EnvGuard {
@@ -289,6 +324,7 @@ mod tests {
                 ("HOME", &self.home),
                 ("LOCALAPPDATA", &self.localappdata),
                 ("USERPROFILE", &self.userprofile),
+                ("SOT_SELF_HOST", &self.sot_self_host),
             ] {
                 match val {
                     Some(v) => std::env::set_var(key, v),
@@ -305,6 +341,7 @@ mod tests {
             home: std::env::var_os("HOME"),
             localappdata: std::env::var_os("LOCALAPPDATA"),
             userprofile: std::env::var_os("USERPROFILE"),
+            sot_self_host: std::env::var_os("SOT_SELF_HOST"),
             _serial: serial,
         }
     }
@@ -399,6 +436,38 @@ mod tests {
         std::env::remove_var("LOCALAPPDATA");
         std::env::remove_var("USERPROFILE");
         assert_eq!(sot_state_dir(), None);
+    }
+
+    #[test]
+    fn host_name_prefers_sot_self_host_when_set() {
+        let _guard = guarded();
+        std::env::set_var("SOT_SELF_HOST", "test-host");
+        assert_eq!(host_name(), Ok("test-host".to_string()));
+    }
+
+    #[test]
+    fn host_name_takes_sot_self_host_verbatim_uncased() {
+        // An explicit override is trusted as given -- unlike the
+        // gethostname fallback below, it is never lowercased.
+        let _guard = guarded();
+        std::env::set_var("SOT_SELF_HOST", "Test-Host");
+        assert_eq!(host_name(), Ok("Test-Host".to_string()));
+    }
+
+    #[test]
+    fn host_name_falls_back_to_gethostname_when_sot_self_host_is_empty() {
+        let _guard = guarded();
+        std::env::set_var("SOT_SELF_HOST", "");
+        let name = host_name().expect("gethostname fallback must resolve");
+        assert_eq!(name, name.to_lowercase(), "fallback must be lowercased");
+        assert!(!name.contains('.'), "fallback must be the first label only");
+    }
+
+    #[test]
+    fn host_name_falls_back_to_gethostname_when_sot_self_host_is_unset() {
+        let _guard = guarded();
+        std::env::remove_var("SOT_SELF_HOST");
+        assert!(host_name().is_ok(), "a real host always has a gethostname label");
     }
 }
 

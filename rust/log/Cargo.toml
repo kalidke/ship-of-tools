@@ -23,6 +23,10 @@ sha2 = { workspace = true }
 crc32c = { workspace = true }
 uuid = { workspace = true }
 thiserror = "2"
+# ADR 0046 decision 1: `host_name()` is the one declared-identity resolver
+# (hello, logs, the frontend's HostKey binding) -- moved here from
+# `sot-backend`, which called this crate directly for the same fact.
+gethostname = "0.5"
 getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From impl
 # ADR 0030 §8 "Where it is shown": mirror an FE attach client's terminal
 # reason to `tracing` (`fe_client_io.rs`), not only the pane's own status
