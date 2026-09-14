@@ -200,69 +200,55 @@ installer_role_flag() {  # role -> the flag that asks for it, for messages
 }
 
 # ---- ADR 0046 decision 5: tmux only where an existing row still needs it --
-# This host's short state-host label — mirrors `sot_log`'s own
-# `workspaces::state_host()` (rust/backend/src/workspaces.rs:1110) EXACTLY
-# (`SOT_STATE_HOST` verbatim when set; else `/etc/hostname`'s first line,
-# else `$HOSTNAME`; first label before a dot, lowercased; "host" when that's
-# still empty) so `installer_tmux_required` below reads the SAME per-host
-# workspace tomls the daemon itself would load. Moves together with B2a if
-# that host-derivation rule ever changes.
-sot_state_host() {
-    if [ -n "${SOT_STATE_HOST:-}" ]; then
-        printf '%s\n' "$SOT_STATE_HOST"
-        return 0
-    fi
-    local raw
-    raw="$(sed -n '1p' /etc/hostname 2>/dev/null | tr -d '[:space:]')"
-    [ -n "$raw" ] || raw="${HOSTNAME:-}"
-    raw="${raw%%.*}"
-    raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-    if [ -n "$raw" ]; then
-        printf '%s\n' "$raw"
-    else
-        printf 'host\n'
-    fi
-}
-
 # "yes" | "no" — whether THIS install needs tmux at all (ADR 0046 decision
 # 5: nothing NEW runs on tmux; a fresh capsule-capable install needs none).
 # "yes" when <os> has no capsule runtime at all (Darwin — the runtime
 # compiles only for Windows and Linux, capsule_workspace.rs:277) OR any
-# existing workspace toml under <config>/workspaces-<host>/ still asks for
-# it explicitly (`runtime = "tmux"`) or predates the runtime key entirely
-# (a legacy toml — `#[serde(default)]` on that field means an absent key
-# reads as `""`, which `default_row_runtime`/`load_toml` resolve to "tmux"
-# on every host that isn't Windows, so a pre-this-decision row IS a tmux
-# row even though its own file never says so). Pure (stdin/env untouched,
-# <config> passed explicitly) — testable without a real install
-# (scripts/tests/installer-state.sh).
+# existing workspace toml under ANY <config>/workspaces-*/ still asks for it
+# explicitly (`runtime = "tmux"`) or predates the runtime key entirely (a
+# legacy toml — `#[serde(default)]` on that field means an absent key reads
+# as `""`, which `default_row_runtime`/`load_toml` resolve to "tmux" on
+# every host that isn't Windows, so a pre-this-decision row IS a tmux row
+# even though its own file never says so).
+#
+# Deliberately globs EVERY host's per-host dir, not just this one: computing
+# "this host's own label" here would be a SECOND copy of the daemon's own
+# `workspaces::state_host()` rule (rust/backend/src/workspaces.rs:1110) that
+# a future change to that rule could silently drift out of step with — the
+# exact anti-pattern ADR 0046 exists to delete. The one accepted consequence:
+# on a shared $HOME, another host's tmux row makes THIS install ask for tmux
+# too, even if this host's own rows are all capsule. That is a deliberate
+# over-approximation — it can only ask for tmux where it turns out not to be
+# strictly needed, it can never miss a row that DOES need it, and it removes
+# any host-derivation rule from the installer entirely.
+#
+# Pure (stdin/env untouched, <config> passed explicitly) — testable without
+# a real install (scripts/tests/installer-state.sh).
 installer_tmux_required() {  # <os> <config-dir>
     local os="$1" config="$2"
     if [ "$os" = Darwin ]; then
         printf 'yes\n'
         return 0
     fi
-    local dir="$config/workspaces-$(sot_state_host)" f
-    if [ -d "$dir" ]; then
-        for f in "$dir"/*.toml; do
-            [ -e "$f" ] || continue
-            if grep -qE '^runtime[[:space:]]*=[[:space:]]*"tmux"' "$f"; then
-                printf 'yes\n'
-                return 0
-            fi
-            if ! grep -qE '^runtime[[:space:]]*=' "$f"; then
-                printf 'yes\n'
-                return 0
-            fi
-        done
-    fi
+    local f
+    for f in "$config"/workspaces-*/*.toml; do
+        [ -e "$f" ] || continue
+        if grep -qE '^runtime[[:space:]]*=[[:space:]]*"tmux"' "$f"; then
+            printf 'yes\n'
+            return 0
+        fi
+        if ! grep -qE '^runtime[[:space:]]*=' "$f"; then
+            printf 'yes\n'
+            return 0
+        fi
+    done
     printf 'no\n'
 }
 
 # scripts/tests/hosts-toml-role.sh and scripts/tests/installer-state.sh both
 # source this file to exercise the functions above in isolation (the latter
-# also covers `sot_state_host`/`installer_tmux_required` just above). Nothing
-# else sets this, `curl | bash` included.
+# also covers `installer_tmux_required` just above). Nothing else sets this,
+# `curl | bash` included.
 if [ "${SOT_INSTALL_SOURCE_ONLY:-}" = 1 ]; then return 0; fi
 
 # ---- 0. heal a forbidden depot config (owner ruling 2026-09-02: no depot
