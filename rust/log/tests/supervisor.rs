@@ -1344,3 +1344,142 @@ fn a_leg_spawned_after_the_binary_is_renamed_runs_the_supervisors_own_inode() {
     let child = guard.0.take().unwrap();
     let _ = wait_for_exit(child, Duration::from_secs(30));
 }
+
+/// `--first-leg-without <token>` (docs/adr/0042 §1's 2026-09-12/09-14
+/// amendments) strips the token from the very first leg this supervisor
+/// process spawns, AND from any leg that follows one classified unstable
+/// (the self-heal). A SIGKILL moments after Ready is by construction an
+/// unstable death (`leg_was_stable` needs `STABILITY_INTERVAL`, 60s, of
+/// uptime), so the respawn it forces must ALSO come back without the
+/// token -- never the stale argv a plain "first leg only" rule would hand
+/// back. The producer appends its own argv to a file and sleeps, rather
+/// than self-exiting, so each leg's own line is unambiguous; the leg is
+/// killed directly (as the rename test above does) for a fast, direct
+/// respawn signal instead of waiting out a timed self-exit.
+#[cfg(target_os = "linux")]
+#[test]
+fn first_leg_without_strips_a_token_from_the_first_leg_and_an_unstable_respawn() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+    let log_path = dir.path().join("argv.log");
+
+    // Quoted `"$*"` is always exactly one word (empty when there are no
+    // positional params), so `printf` writes exactly one line per leg
+    // regardless of whether `--continue` survived.
+    let script = format!("printf '%s\\n' \"$*\" >> '{}'; exec sleep 300", log_path.display());
+    let mut cmd = Command::new(capsule_exe());
+    cmd.arg("supervise")
+        .arg(&state_dir)
+        .arg("--start")
+        .arg("--first-leg-without")
+        .arg("--continue")
+        .arg("--assume-no-rollback-target")
+        .arg("--")
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(&script)
+        .arg("leg")
+        .arg("--continue")
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let mut guard = KillGuard(Some(cmd.spawn().expect("spawn sot-capsule supervise")));
+    let supervisor_pid = guard.0.as_ref().unwrap().id();
+
+    let read_lines = |path: &Path| -> Option<Vec<String>> {
+        std::fs::read_to_string(path).ok().map(|c| c.lines().map(str::to_string).collect())
+    };
+
+    let lines = poll_until(
+        || read_lines(&log_path).filter(|l| !l.is_empty()),
+        Duration::from_secs(30),
+        "the first leg to record its own argv",
+    );
+    assert_eq!(lines[0], "", "the first leg must have --continue stripped from its argv");
+
+    let original_leg_pid = poll_until(
+        || direct_children_of(supervisor_pid).into_iter().next(),
+        Duration::from_secs(10),
+        "the supervisor's own first leg child pid to appear",
+    );
+    unsafe {
+        libc::kill(original_leg_pid as libc::pid_t, libc::SIGKILL);
+    }
+    poll_until(
+        || direct_children_of(supervisor_pid).into_iter().find(|&pid| pid != original_leg_pid),
+        Duration::from_secs(30),
+        "a respawned leg child pid to appear after the original was killed",
+    );
+
+    let lines = poll_until(
+        || read_lines(&log_path).filter(|l| l.len() >= 2),
+        Duration::from_secs(30),
+        "the respawned leg to record its own argv",
+    );
+    assert_eq!(
+        lines[1], "",
+        "a respawn that follows an UNSTABLE leg must also have --continue stripped (the self-heal)"
+    );
+
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
+    end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
+    let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
+    let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
+    let child = guard.0.take().unwrap();
+    let _ = wait_for_exit(child, Duration::from_secs(30));
+}
+
+/// The self-heal buys one clean retry, never an exemption: a producer
+/// that fails fast for a reason that has NOTHING to do with the stripped
+/// token (every leg dies the same way regardless) must still trip the
+/// anti-flap bound and end the supervisor Terminal -- exactly
+/// [`a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound`]
+/// above, with `--first-leg-without <token>` also configured, proving the
+/// flag does not disable the bound it shares `leg_was_stable`'s own
+/// classification with.
+#[cfg(target_os = "linux")]
+#[test]
+fn first_leg_without_does_not_exempt_a_real_crash_loop_from_the_anti_flap_bound() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let mut cmd = Command::new(capsule_exe());
+    cmd.arg("supervise")
+        .arg(&state_dir)
+        .arg("--start")
+        .arg("--first-leg-without")
+        .arg("--continue")
+        .arg("--assume-no-rollback-target")
+        .arg("--")
+        .args(SELF_EXITING_PRODUCER)
+        .arg("--continue")
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let mut guard = KillGuard(Some(cmd.spawn().expect("spawn sot-capsule supervise")));
+
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    poll_until(
+        || {
+            let (_voyage, _leg, phase) = status(&conn);
+            (phase == SupervisorPhase::Ready).then_some(true)
+        },
+        Duration::from_secs(60),
+        "the leg to reach Ready at least once before its own timed self-exit",
+    );
+    drop(conn);
+
+    let status = wait_for_exit_with_diagnostics(guard.0.as_mut().unwrap(), &h, Duration::from_secs(180));
+    assert_eq!(
+        status.code(),
+        Some(sot_log::supervisor::EXIT_TERMINAL),
+        "a producer that fails regardless of the token must still trip the anti-flap bound"
+    );
+}

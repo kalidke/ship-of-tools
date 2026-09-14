@@ -496,6 +496,20 @@ pub struct SuperviseConfig {
     /// Defaults to `Normal` for every existing manual invocation that
     /// predates this field.
     pub survival: Survival,
+    /// Tokens (`sot-capsule supervise`'s repeatable `--first-leg-without
+    /// <token>`) stripped from `producer_argv` for the very first leg THIS
+    /// PROCESS spawns, and again for any leg that follows one
+    /// [`leg_was_stable`] classified unstable — the self-heal that lets a
+    /// producer flag failing fast on stale argv (e.g. an agent's
+    /// `--continue` against a store with nothing to continue) get one
+    /// fresh retry rather than flapping the row terminal. Never applied
+    /// after a STABLE leg's respawn, a leg after a reset, or a later
+    /// voyage: [`respawn_or_terminal`] and the spawn sites for those cases
+    /// read this list too, but only under the exact conditions each names.
+    /// This module stays agent-agnostic: it knows nothing about `claude`
+    /// or `--continue`, only that the caller wants some tokens gone from
+    /// an unstable leg's own argv.
+    pub first_leg_without: Vec<String>,
 }
 
 /// `sot-capsule supervise`'s own entry point — never panics by design;
@@ -2584,13 +2598,19 @@ fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId,
 /// `Spawning` attempt for the CURRENT voyage — read fresh off
 /// `authority` every time, never a value captured before the loop began
 /// (a live `reset` can change it; a stale local was a real bug this
-/// crate already shipped once).
+/// crate already shipped once). `unstable` is the SAME classification the
+/// caller just counted against `consecutive_unstable_legs` — when `true`,
+/// this respawn strips `config.first_leg_without`'s tokens too (the
+/// self-heal: a leg that failed fast on stale argv gets one clean retry).
+/// A stable leg's respawn never strips anything, so a healthy row that
+/// happens to restart never loses argv it was never wrong to keep.
 fn respawn_or_terminal(
     consecutive_unstable_legs: &mut u32,
     capsule_exe: &Path,
     config: &SuperviseConfig,
     lease: &LegLease,
     authority: &AuthorityState,
+    unstable: bool,
 ) -> Lifecycle {
     if *consecutive_unstable_legs >= FLAP_THRESHOLD {
         note(format_args!(
@@ -2615,6 +2635,11 @@ fn respawn_or_terminal(
     };
     let voyage_id = authority.voyage_id.clone().expect("respawn is only reachable once voyage_id is Some");
     let voyage_root = voyage_root_path(&authority.state_dir, &voyage_id);
+    let argv = if unstable {
+        strip_first_leg_tokens(&config.producer_argv, &config.first_leg_without)
+    } else {
+        config.producer_argv.clone()
+    };
     let (rx, handle) = spawn_owned_spawn_attempt(
         capsule_exe.to_path_buf(),
         voyage_root,
@@ -2623,7 +2648,7 @@ fn respawn_or_terminal(
         config.rows,
         spawn_lease,
         config.survival,
-        config.producer_argv.clone(),
+        argv,
     );
     Lifecycle::Spawning { rx, handle, started_at: Instant::now() }
 }
@@ -2652,6 +2677,19 @@ fn note(args: fmt::Arguments<'_>) {
     let prefix = NOTE_PREFIX.get().map(String::as_str).unwrap_or("sot-capsule supervise");
     let line = format!("{prefix}: {args}\n");
     let _ = std::io::stderr().write_all(line.as_bytes());
+}
+
+/// `producer_argv` with every element equal to one of `tokens` removed —
+/// called at the very first leg this process ever spawns (unconditionally)
+/// and, via `respawn_or_terminal`, at any later leg that follows one
+/// classified unstable. Never called for a leg after a reset or for a
+/// later voyage's own first spawn — those sites clone `producer_argv`
+/// directly.
+fn strip_first_leg_tokens(producer_argv: &[String], tokens: &[String]) -> Vec<String> {
+    if tokens.is_empty() {
+        return producer_argv.to_vec();
+    }
+    producer_argv.iter().filter(|a| !tokens.contains(a)).cloned().collect()
 }
 
 fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
@@ -2810,6 +2848,9 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                         Ok(true) => match lease.for_spawn() {
                             Ok(spawn_lease) => {
                                 let voyage_root = voyage_root_path(&config.state_dir, &voyage_id);
+                                // The very first leg THIS PROCESS spawns --
+                                // see `strip_first_leg_tokens`'s own doc.
+                                let argv = strip_first_leg_tokens(&config.producer_argv, &config.first_leg_without);
                                 let (rx, handle) = spawn_owned_spawn_attempt(
                                     capsule_exe.clone(),
                                     voyage_root,
@@ -2818,7 +2859,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                                     config.rows,
                                     spawn_lease,
                                     config.survival,
-                                    config.producer_argv.clone(),
+                                    argv,
                                 );
                                 Lifecycle::Spawning { rx, handle, started_at: now }
                             }
@@ -2885,7 +2926,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     note(format_args!(
                         "leg failed to spawn: {e} (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}"
                     ));
-                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
+                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, true)
                 }
                 Ok(ProbeOutcome::KilledAfterTimeout | ProbeOutcome::LegEnded) => {
                     join_and_warn(handle, "spawn");
@@ -2893,7 +2934,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     note(format_args!(
                         "leg ended before reaching Ready (unstable=true) consecutive_unstable_legs={consecutive_unstable_legs}"
                     ));
-                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
+                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, true)
                 }
                 Ok(ProbeOutcome::Foreign) => {
                     // Codex review round 2, finding M8: identity-
@@ -2961,7 +3002,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     note(format_args!(
                         "leg ended (unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
                     ));
-                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
+                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, unstable)
                 }
                 Ok(false) => Lifecycle::Ready { process },
                 Err(e) => Lifecycle::Terminal {
@@ -3020,7 +3061,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     note(format_args!(
                         "leg ended (end_run not durably accepted; unstable={unstable}) consecutive_unstable_legs={consecutive_unstable_legs}"
                     ));
-                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority)
+                    respawn_or_terminal(&mut consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, unstable)
                 }
                 Ok(EndingProgress::Final(EndRunWorkerResult::Fatal(detail))) => {
                     join_and_warn(handle, "end_run");

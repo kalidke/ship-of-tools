@@ -313,14 +313,20 @@ where
 }
 
 /// `sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
-/// [--rows <n>] --assume-no-rollback-target -- <cmd> [args...]` (ADR
-/// 0041 step 6 U2): the authority. `--assume-no-rollback-target` is
+/// [--rows <n>] [--first-leg-without <token>]... --assume-no-rollback-target
+/// -- <cmd> [args...]` (ADR 0041 step 6 U2): the authority. `--assume-no-rollback-target` is
 /// mandatory here for the exact reason `run`'s own copy of it is — see
-/// `sot_log::supervisor`'s own module doc.
+/// `sot_log::supervisor`'s own module doc. `--first-leg-without` is
+/// repeatable and agent-agnostic: this binary knows nothing about `claude`
+/// or `--continue`, only that the caller wants a given token stripped from
+/// the very first leg's own argv, and again from any later leg that
+/// follows one this process classified unstable — see
+/// `SuperviseConfig::first_leg_without`.
 #[cfg(any(windows, target_os = "linux"))]
 fn cmd_supervise(args: &[String]) {
     let usage = "usage: sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
-[--rows <n>] [--survival <normal|degraded>] --assume-no-rollback-target -- <cmd> [args...]";
+[--rows <n>] [--survival <normal|degraded>] [--first-leg-without <token>]... \
+--assume-no-rollback-target -- <cmd> [args...]";
     if args.len() < 3 {
         eprintln!("{usage}");
         std::process::exit(2);
@@ -344,6 +350,7 @@ fn cmd_supervise(args: &[String]) {
     // manual invocation, matching every existing caller of this CLI that
     // predates the flag.
     let mut survival = sot_log::wire::Survival::Normal;
+    let mut first_leg_without: Vec<String> = Vec::new();
     loop {
         match rest.first().map(String::as_str) {
             Some("--cols") if rest.len() > 1 => {
@@ -371,6 +378,10 @@ fn cmd_supervise(args: &[String]) {
                 };
                 rest = &rest[2..];
             }
+            Some("--first-leg-without") if rest.len() > 1 => {
+                first_leg_without.push(rest[1].clone());
+                rest = &rest[2..];
+            }
             Some("--assume-no-rollback-target") => {
                 assume_no_rollback_target = true;
                 rest = &rest[1..];
@@ -391,6 +402,7 @@ fn cmd_supervise(args: &[String]) {
         rows,
         assume_no_rollback_target,
         survival,
+        first_leg_without,
     };
     std::process::exit(sot_log::supervisor::supervise(config));
 }
