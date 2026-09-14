@@ -2247,11 +2247,23 @@ fn resolve_default_host(
 
 /// This frontend process's own declared identity (ADR 0046 decision 1):
 /// `{host, instance, name, role: "fe"}`, constructed ONCE and shared by
-/// every connection, reconnect and input attribution — replacing
-/// `self_comm_handle`/`fe_instance_component`'s old per-call
-/// recomputation (the latter literally re-sampled the clock on every
-/// call when `SOT_FE_INSTANCE` was unset, so two calls in the same
-/// process could mint two different fallback instances).
+/// every connection, reconnect and input attribution — `instance`
+/// replaces `fe_instance_component`'s old per-call recomputation (which
+/// literally re-sampled the clock on every call when `SOT_FE_INSTANCE`
+/// was unset, so two calls in the same process could mint two different
+/// fallback instances).
+///
+/// `name` is this frontend's ADDRESS — its sot-comm handle, the value the
+/// daemon's `--fe <handle>` target matches on — and is DELIBERATELY NOT
+/// derived from `host` (manager review, round 2: S1 means no address
+/// change this sprint, full stop; a first attempt built `name` from the
+/// declared host and flipped the non-Windows prefix from `win-fe-` to
+/// `fe-`, silently breaking every existing explicit `--fe` target).
+/// `name` keeps main's EXACT pre-ADR-0046 derivation byte-for-byte:
+/// `win-fe-<$HOSTNAME|$COMPUTERNAME|"unknown", lowercased>`, unconditionally
+/// (not just on Windows) — known-imperfect on Linux, and deliberately left
+/// exactly that way; unifying it with `host` is a later, explicit address
+/// migration, not a side effect of this one.
 #[derive(Debug, Clone)]
 pub(crate) struct FrontendIdentity {
     pub host: String,
@@ -2268,7 +2280,9 @@ impl FrontendIdentity {
 /// everywhere after. `sot_log::state_dir::host_name()` failing means this
 /// process has no nameable host at all; fatal, same posture the backend
 /// takes at boot, rather than limping on with a guessed address no peer
-/// could actually reach it by.
+/// could actually reach it by. This only ever feeds `host` (wire/display);
+/// `name` (the address) is resolved completely independently — see
+/// `FrontendIdentity`'s own doc.
 pub(crate) fn frontend_identity() -> &'static FrontendIdentity {
     static IDENTITY: std::sync::OnceLock<FrontendIdentity> = std::sync::OnceLock::new();
     IDENTITY.get_or_init(|| {
@@ -2285,15 +2299,14 @@ pub(crate) fn frontend_identity() -> &'static FrontendIdentity {
                 .unwrap_or(0)
         );
         let instance = resolve_fe_instance_component(env.as_deref(), &fallback);
-        // A Windows frontend keeps win-fe-<host> (ADR 0046 decision 1,
-        // "must not change"); every other platform is fe-<host> — a
-        // Linux frontend previously declared itself win-fe-<host> too,
-        // an inherited-from-Windows-only-days quirk this lane corrects.
-        let name = if cfg!(windows) {
-            format!("win-fe-{host}")
-        } else {
-            format!("fe-{host}")
-        };
+        // Main's EXACT address derivation (see FrontendIdentity's own
+        // doc) — independent of `host` above.
+        let addr_host = std::env::var("HOSTNAME")
+            .ok()
+            .or_else(|| std::env::var("COMPUTERNAME").ok())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "unknown".to_string());
+        let name = format!("win-fe-{}", addr_host.to_lowercase());
         FrontendIdentity { host, instance, name }
     })
 }
@@ -4241,9 +4254,9 @@ struct State {
     host_resolved_dial: HashMap<crate::hosts::HostKey, ResolvedDial>,
     /// ADR 0046 decision 1 (revised): the daemon's own declared identity
     /// for each dial — `HostKey` stays the stable dial label; this is
-    /// purely informational (shown in Hosts mode, the status line, and
-    /// log lines) plus the input to `is_duplicate_declaration`'s one
-    /// decision. Absent for a host that hasn't completed hello yet.
+    /// purely informational, read by `host_label` (the one display
+    /// projection) for Hosts mode, Sessions labels, the status line, and
+    /// log lines. Absent for a host that hasn't completed hello yet.
     declared_host: HashMap<crate::hosts::HostKey, String>,
     /// The connection every "current view" operation targets — cursor
     /// state, the active tree, `active_workspace_id`. The pair
@@ -8751,6 +8764,13 @@ impl State {
         // snapshot-restore below has settled the entering mode.
         let old_tree_key = self.active_tree_key();
         self.active_host = host;
+        // Manager review (round 2, finding 14): project the declaration
+        // into the status line HERE too, not only in `drain_events`'s own
+        // `Connected` handling — switching to a host that is ALREADY
+        // connected fires no new `Connected` event, so without this
+        // `self.host` kept showing whatever the PREVIOUSLY active host
+        // had declared until its own next reconnect.
+        self.host = Some(host_label(&self.declared_host, &self.active_host).to_string());
         // ADR 0042 L2a: preview_fatal is a lazily-rebuilt PROJECTION of
         // protocol_mismatch for whichever host is active (rebuild_fatal_overlay
         // only refills it when it's None) -- an active-host switch must
@@ -19258,9 +19278,9 @@ fn parse_nav_envelope(text: &str) -> Option<NavEnvelope> {
 /// named function since it has call sites all over this file predating
 /// that identity. The daemon scopes an `FE_COMMAND`'s `target` to one FE
 /// by this handle; we self-filter against it. `pub(crate)` because
-/// `transport.rs` also sends this same value as `HelloReq::name`, so the
-/// daemon can name this connection without a second derivation to keep
-/// in sync.
+/// `transport.rs` also sends this same value as `HelloReq::fe_handle`
+/// (unchanged field, no wire rename this sprint), so the daemon can name
+/// this connection without a second derivation to keep in sync.
 pub(crate) fn self_comm_handle() -> String {
     frontend_identity().name.clone()
 }
@@ -25789,18 +25809,17 @@ mod tests {
     }
 
     #[test]
-    fn self_comm_handle_prefix_matches_this_platform() {
-        // ADR 0046 decision 1: a Windows frontend keeps win-fe-<host>;
-        // every other platform is fe-<host> (a non-Windows frontend used
-        // to declare win-fe-<host> too — an inherited-from-Windows-only
-        // -days quirk this lane corrects). `frontend_identity()` is a
-        // process-wide cache (mirrors the backend's `declared_host()`),
-        // so this can't pin an exact expected host without racing
-        // whichever test in this binary calls it first — only the
-        // platform-determined prefix is asserted here.
+    fn self_comm_handle_is_win_fe_lowercased_host() {
+        // Manager review, round 2: main's exact address derivation,
+        // independent of the declared `host` — win-fe-<host>
+        // unconditionally, not just on Windows (known-imperfect on
+        // Linux, deliberately left for a later, explicit address
+        // migration; see FrontendIdentity's own doc). Deterministic
+        // shape: win-fe-<lowercased host>. We don't assert the exact
+        // host (env-dependent) but the prefix + lowercasing invariant.
         let h = self_comm_handle();
-        let want_prefix = if cfg!(windows) { "win-fe-" } else { "fe-" };
-        assert!(h.starts_with(want_prefix), "got {h:?}, want prefix {want_prefix:?}");
+        assert!(h.starts_with("win-fe-"), "got {h:?}");
+        assert_eq!(h, h.to_lowercase(), "handle is lowercased");
     }
 
     #[test]
