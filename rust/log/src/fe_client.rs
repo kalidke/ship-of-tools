@@ -288,8 +288,19 @@ impl TakeTransaction {
     /// precisely because it is no longer current, so a fresh `take` is
     /// what learns the CURRENT one. TAKING, queue untouched (whatever
     /// was already queued behind the stale input stays queued).
+    ///
+    /// [`Self::headless`] SKIPS the re-take entirely ("each write happens
+    /// at most once") — auto-recontesting here would move this
+    /// transaction onto a new epoch the caller never asked for. Drops to
+    /// WATCHING; the queue is discarded (a headless caller sends one
+    /// input at a time and never leaves bytes queued across a refusal).
     pub fn retake_while_driving(&mut self) -> Vec<TakeAction> {
         debug_assert_eq!(self.role, Role::Driving);
+        if self.headless {
+            self.role = Role::Watching;
+            self.queue.clear();
+            return vec![];
+        }
         self.role = Role::Taking;
         self.checkpoint_retry_started_at = None;
         self.next_retry_at = None;
@@ -1094,6 +1105,17 @@ mod tests {
         let actions = t.retake_while_driving();
         assert_eq!(actions, vec![TakeAction::SendTake]);
         assert_eq!(t.role(), Role::Taking);
+    }
+
+    #[test]
+    fn headless_retake_while_driving_never_re_takes() {
+        let mut t = TakeTransaction::new_headless();
+        t.on_input_while_watching(b"x");
+        t.on_take_ok(1, 1); // headless: promotes straight to Driving
+        assert_eq!(t.role(), Role::Driving);
+        let actions = t.retake_while_driving();
+        assert_eq!(actions, vec![], "a headless transaction never sends a fresh take on its own");
+        assert_eq!(t.role(), Role::Watching);
     }
 
     #[test]

@@ -853,6 +853,7 @@ impl<E: Endpoint> AttachWorker<E> {
         ingress_bound: usize,
         recorded_bytes: Arc<AtomicU64>,
         last_input_outcome: Arc<Mutex<Option<InputOutcome>>>,
+        take_epoch_pub: Arc<AtomicU64>,
         sink: impl Fn(WorkerEvent) + Send + 'static,
     ) -> Result<Self, std::io::Error>
     where
@@ -885,6 +886,7 @@ impl<E: Endpoint> AttachWorker<E> {
                     worker_queued_bytes,
                     recorded_bytes,
                     last_input_outcome,
+                    take_epoch_pub,
                     headless,
                 );
             })?;
@@ -1044,6 +1046,7 @@ fn run_worker<E: Endpoint>(
     queued_bytes: Arc<QueuedBytes>,
     recorded_bytes: Arc<AtomicU64>,
     last_input_outcome: Arc<Mutex<Option<InputOutcome>>>,
+    take_epoch_pub: Arc<AtomicU64>,
     headless: bool,
 ) where
     E: Send + 'static,
@@ -1402,6 +1405,7 @@ fn run_worker<E: Endpoint>(
             &mut last_liveness_poll,
             &recorded_bytes,
             &last_input_outcome,
+            &take_epoch_pub,
         );
 
         // Tear down this episode's connections before deciding what's
@@ -1968,6 +1972,7 @@ fn run_steady_state<E: Endpoint>(
     last_liveness_poll: &mut Instant,
     recorded_bytes: &Arc<AtomicU64>,
     last_input_outcome: &Arc<Mutex<Option<InputOutcome>>>,
+    take_epoch_pub: &Arc<AtomicU64>,
 ) -> SteadyOutcome {
     loop {
         match cmd_rx.recv_timeout(WORKER_TICK) {
@@ -2024,7 +2029,7 @@ fn run_steady_state<E: Endpoint>(
             Ok(WorkerMsg::Frame(frame)) => {
                 match handle_attach_frame::<E>(
                     frame, attach_conn, take, take_intent, outstanding, take_epoch, controller_id, voyage, *cols,
-                    *rows, &emit, recorded_bytes, last_input_outcome,
+                    *rows, &emit, recorded_bytes, last_input_outcome, take_epoch_pub,
                 ) {
                     FrameOutcome::ReattachRequested => return SteadyOutcome::ReconnectPreserveTake,
                     FrameOutcome::Handled | FrameOutcome::Ignored => {}
@@ -2225,6 +2230,7 @@ fn handle_attach_frame<E: Endpoint>(
     emit: &dyn Fn(WorkerEvent),
     recorded_bytes: &Arc<AtomicU64>,
     last_input_outcome: &Arc<Mutex<Option<InputOutcome>>>,
+    take_epoch_pub: &Arc<AtomicU64>,
 ) -> FrameOutcome {
     match frame {
         DecodedFrame::AttachServer(AttachServer::Output { bytes }) => {
@@ -2233,6 +2239,9 @@ fn handle_attach_frame<E: Endpoint>(
         }
         DecodedFrame::AttachServer(AttachServer::TakeOk { take_epoch: epoch }) => {
             *take_epoch = epoch;
+            // Published even for a re-take this worker granted itself
+            // (a reconnect) — a headless caller pins this across a write.
+            take_epoch_pub.store(epoch, Ordering::Release);
             if *take_intent == TakeIntent::ReconnectResend {
                 if let fe_client::ReconnectResendDecision::Cancel { canceled } =
                     outstanding.resend_after_reconnect(voyage, epoch)

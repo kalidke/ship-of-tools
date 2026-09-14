@@ -1146,12 +1146,16 @@ pub struct PtyInputReq {
 /// bytes to the row's own input path (tmux `send-keys`, or a capsule's
 /// `InputRecorded`); `bytes` is the payload length delivered (the `enter`
 /// byte, if requested, is not counted — it rides the runtime's own
-/// separate mechanism, not the payload).
+/// separate mechanism, not the payload). `enter_sent` (additive) is
+/// `true` iff the Enter byte was written and recorded — never a claim
+/// the row treated it as a submitted turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtyInputRes {
     pub ok: bool,
     pub runtime: String,
     pub bytes: usize,
+    #[serde(default)]
+    pub enter_sent: bool,
 }
 
 /// `op::PTY_SCREEN` request: the row to read, by workspace_id (accepted as
@@ -2681,12 +2685,23 @@ mod pty_input_screen_tests {
 
     #[test]
     fn pty_input_res_round_trips() {
-        let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: 5 };
+        let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: 5, enter_sent: false };
         let json = serde_json::to_value(&res).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({ "ok": true, "runtime": "capsule", "bytes": 5 })
+            serde_json::json!({ "ok": true, "runtime": "capsule", "bytes": 5, "enter_sent": false })
         );
+    }
+
+    #[test]
+    fn pty_input_res_enter_sent_is_additive_and_defaults_false() {
+        let json = serde_json::json!({ "ok": true, "runtime": "tmux", "bytes": 5 });
+        let res: PtyInputRes = serde_json::from_value(json).expect("minimal PtyInputRes parses");
+        assert!(!res.enter_sent);
+
+        let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: 5, enter_sent: true };
+        let json = serde_json::to_value(&res).unwrap();
+        assert_eq!(json["enter_sent"], serde_json::json!(true));
     }
 
     #[test]

@@ -171,6 +171,11 @@ pub struct FeAttachClient<
     /// rather than trusting a single increment-only tick). Shared with the
     /// worker thread, which is the only writer.
     recorded_bytes: Arc<AtomicU64>,
+    /// Most recent `take_epoch` granted (`take_ok`), including one from
+    /// the worker's own transparent reconnect. `0` before the first
+    /// grant; a change means the pen moved to a different attach.
+    /// Shared with the worker thread, the only writer.
+    take_epoch: Arc<AtomicU64>,
     /// The wire's terminal answer to the MOST RECENT `input` this client
     /// sent (`Recorded` / `RefusedStale` / `DeliveryUnknown` — ADR 0041's
     /// own "three terminal answers," restated as [`InputOutcome`]). `None`
@@ -296,6 +301,7 @@ impl<E: Endpoint> FeAttachClient<E> {
         };
         let recorded_bytes = Arc::new(AtomicU64::new(0));
         let last_input_outcome = Arc::new(Mutex::new(None));
+        let take_epoch = Arc::new(AtomicU64::new(0));
 
         let worker = AttachWorker::spawn(
             endpoint,
@@ -309,6 +315,7 @@ impl<E: Endpoint> FeAttachClient<E> {
             DEFAULT_INGRESS_BOUND_BYTES,
             Arc::clone(&recorded_bytes),
             Arc::clone(&last_input_outcome),
+            Arc::clone(&take_epoch),
             sink,
         )
         .map_err(FeAttachError::SpawnWorkerThread)?;
@@ -328,6 +335,7 @@ impl<E: Endpoint> FeAttachClient<E> {
             pending_fe_down_markers: VecDeque::new(),
             headless,
             recorded_bytes,
+            take_epoch,
             last_input_outcome,
         })
     }
@@ -598,6 +606,12 @@ impl<E: Endpoint> FeAttachClient<E> {
         self.recorded_bytes.load(Ordering::Acquire)
     }
 
+    /// The most recent `take_epoch` this client's worker has been
+    /// granted — see the field's own doc for what a change means.
+    pub fn take_epoch(&self) -> u64 {
+        self.take_epoch.load(Ordering::Acquire)
+    }
+
     /// The wire's terminal answer to the most recent `input` this client
     /// sent — see [`InputOutcome`]'s own doc. A poisoned lock (a prior
     /// panic while holding it) reads as `None` rather than panicking here
@@ -655,6 +669,7 @@ mod tests {
             pending_fe_down_markers: VecDeque::new(),
             headless: false,
             recorded_bytes: Arc::new(AtomicU64::new(0)),
+            take_epoch: Arc::new(AtomicU64::new(0)),
             last_input_outcome: Arc::new(Mutex::new(None)),
         };
         assert!(!client.is_checkpointed(), "a fresh client must not report checkpointed");
@@ -697,6 +712,7 @@ mod tests {
             pending_fe_down_markers: VecDeque::new(),
             headless: false,
             recorded_bytes: Arc::new(AtomicU64::new(0)),
+            take_epoch: Arc::new(AtomicU64::new(0)),
             last_input_outcome: Arc::new(Mutex::new(None)),
         };
 
@@ -737,6 +753,7 @@ mod tests {
             pending_fe_down_markers: VecDeque::new(),
             headless: false,
             recorded_bytes: Arc::new(AtomicU64::new(0)),
+            take_epoch: Arc::new(AtomicU64::new(0)),
             last_input_outcome: Arc::new(Mutex::new(None)),
         };
 
@@ -786,6 +803,7 @@ mod tests {
             pending_fe_down_markers: VecDeque::new(),
             headless: false,
             recorded_bytes: Arc::new(AtomicU64::new(0)),
+            take_epoch: Arc::new(AtomicU64::new(0)),
             last_input_outcome: Arc::new(Mutex::new(None)),
         };
         let good_checkpoint = || {

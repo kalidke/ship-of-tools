@@ -189,47 +189,19 @@ mod linux_only {
     }
 }
 
-/// The agent argv `sot-capsule supervise` spawns as its producer (ADR
-/// 0042 L1a: "the same launcher the drawer's autostart uses when
-/// `autostart_claude` is set; otherwise the platform shell"). No Windows
-/// equivalent of the Unix `ccb`/`ccx` launchers exists anywhere in this
-/// repo (both are bash scripts — `comm/adapters/claude/bin/ccb`,
-/// `comm/adapters/codex/bin/ccx` — with no `.ps1`/`.exe` counterpart, and
-/// ADR 0041's own drawer capsule is deliberately a RAW TERMINAL voyage,
-/// not yet wired to any launcher either — U4, the drawer cutover, is
-/// still unbuilt). `"claude"` gets the closest honest equivalent: the
-/// same flags `ccb --continue` execs with (`claude --permission-mode auto
-/// --continue /sot-session-start`). A row's conversation lives in claude's
-/// own store keyed by the root; against a root with nothing stored,
-/// `--continue` prints an error and exits within ~2s rather than starting
-/// fresh. A row's first-ever leg therefore omits it
-/// (`--first-leg-without --continue`, [`StartMode::Start`] only — see
-/// [`runtime::spawn_detached_supervisor`]), and `sot_log::supervisor`'s own
-/// self-heal omits it again for any later leg that follows one it
-/// classifies unstable, so a `--continue` that fails fast gets one clean
-/// retry instead of flapping the row terminal; every leg that follows a
-/// STABLE one keeps `--continue` and resumes it. This is what ADR 0017
-/// already relies on for the drawer: continuity is decoupled from process
-/// survival. Without the first-leg omission a capsule row could never
-/// resume — the fixed argv re-ran as a fresh session on every exit. On
-/// Windows this relies on `claude` being on the
-/// daemon's own PATH (a detached child inherits it, same as any spawned
-/// process), on Linux it is resolved to an ABSOLUTE path first
-/// ([`resolve_claude`] — the tmux launchers' own full-path rule: a
-/// daemon-spawned process inherits the SERVICE's PATH, which lacks
-/// `~/.local/bin`). `"none"` is the explicit bare platform shell. Every
-/// other kind (`"codex"` included — no known launcher exists on either
-/// platform) is REFUSED (ADR 0042 L1a, Codex review finding 9): silently
-/// substituting a bare shell for a kind the caller explicitly asked for
-/// would launch something the caller never requested and never learn
-/// about it.
+/// The agent argv `sot-capsule supervise` spawns as its producer.
+/// `"claude"` and `"codex"` (Linux only) each get their own launcher
+/// recipe, sharing ONE resume token, `--continue`, stripped from a row's
+/// first-ever leg ([`first_leg_without_continue`]). `"none"` is the bare
+/// platform shell; every other kind is refused, never substituted.
 #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn agent_argv(agent_kind: &str) -> Result<Vec<String>, String> {
     match agent_kind {
         "none" => Ok(vec![none_argv()]),
         "claude" => claude_argv(),
+        "codex" => codex_argv(),
         other => Err(format!(
-            "agent {other:?} has no capsule launcher yet (only \"claude\" and \"none\" are supported on this host)"
+            "agent {other:?} has no capsule launcher yet (only \"claude\", \"codex\", and \"none\" are supported on this host)"
         )),
     }
 }
@@ -263,9 +235,9 @@ fn none_argv() -> String {
 /// callers already has its own resolved binary to substitute in; this
 /// builder only owns the FLAG shape, not the binary path. Windows
 /// absolute resolution stays out of scope (`claude_argv`'s Windows arm,
-/// below, keeps the literal name); no other kind (`"codex"` included)
-/// shares this builder — `agent_argv` refuses every kind but `"claude"`/
-/// `"none"` before either caller reaches here.
+/// below, keeps the literal name); `"codex"` has its own, much smaller,
+/// recipe ([`codex_argv`]) rather than sharing this one — its flag shape
+/// (`--continue`, no skill argv) is unrelated to claude's.
 fn claude_recipe(resume: bool, extra: &[String]) -> Vec<String> {
     let mut argv = vec![
         "claude".to_string(),
@@ -284,9 +256,7 @@ fn claude_recipe(resume: bool, extra: &[String]) -> Vec<String> {
 /// `claude` to an ABSOLUTE path is Linux-only ([`resolve_claude`]) —
 /// Windows keeps the literal name from [`claude_recipe`] and relies on
 /// the daemon's own `PATH` (a detached child inherits it); that stays
-/// out of scope here, not a gap this decision closes. `"codex"` is not,
-/// and has never been, a supported [`agent_argv`] kind on either
-/// platform — nothing in this decision changes that.
+/// out of scope here, not a gap this decision closes.
 #[cfg(windows)]
 fn claude_argv() -> Result<Vec<String>, String> {
     Ok(claude_recipe(true, &[]))
@@ -308,6 +278,56 @@ fn claude_argv() -> Result<Vec<String>, String> {
 #[cfg(not(any(windows, target_os = "linux")))]
 fn claude_argv() -> Result<Vec<String>, String> {
     Err("claude has no capsule launcher on this host".to_string())
+}
+
+/// `"codex"`'s capsule recipe: `ccx --capsule --continue`. `--capsule`
+/// keys `ccx`'s capsule behavior directly (never an inherited env var)
+/// and is never stripped; `--continue` is the shared first-leg token.
+#[cfg(target_os = "linux")]
+fn codex_argv() -> Result<Vec<String>, String> {
+    let ccx = resolve_ccx(
+        std::env::var_os("PATH").as_deref(),
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    )?;
+    check_capsule_capable(&ccx)?;
+    Ok(vec![ccx, "--capsule".to_string(), "--continue".to_string()])
+}
+
+/// The declared-capability line [`check_capsule_capable`] greps for.
+#[cfg(target_os = "linux")]
+const CAPSULE_CAPABLE_MARKER: &str = "# sot-capsule-capable: 1";
+
+/// Refuses a codex capsule recipe when `ccx`/`codex-watch.sh` predate
+/// capsule support — greps each file's text, STATIC only, never executes.
+#[cfg(target_os = "linux")]
+fn check_capsule_capable(ccx: &str) -> Result<(), String> {
+    check_marker_present(Path::new(ccx))?;
+    let comm_home = crate::paths::sot_comm_home().ok_or_else(|| {
+        "could not resolve this machine's comm home (SOT_COMM_HOME/HOME unset) to check codex-watch.sh".to_string()
+    })?;
+    check_marker_present(&comm_home.join("bin").join("codex-watch.sh"))
+}
+
+#[cfg(target_os = "linux")]
+fn check_marker_present(path: &Path) -> Result<(), String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("could not read {path:?} to check capsule capability: {e}"))?;
+    if content.lines().any(|l| l.trim() == CAPSULE_CAPABLE_MARKER) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{path:?} predates capsule support (missing {CAPSULE_CAPABLE_MARKER:?}); \
+             redeploy comm scripts before creating a codex capsule row"
+        ))
+    }
+}
+#[cfg(windows)]
+fn codex_argv() -> Result<Vec<String>, String> {
+    Err("codex has no capsule launcher on Windows (ccx is a bash script with no .ps1 counterpart)".to_string())
+}
+#[cfg(not(any(windows, target_os = "linux")))]
+fn codex_argv() -> Result<Vec<String>, String> {
+    Err("codex has no capsule launcher on this host".to_string())
 }
 
 /// Unix-only argv for `sotd agent-exec <kind> [flags…]` (ADR 0046
@@ -406,6 +426,33 @@ fn resolve_claude(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Re
     }
     Err(format!(
         "claude not found (searched: {})",
+        searched.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+    ))
+}
+
+/// [`codex_argv`]'s resolver: same PATH-then-`~/.local/bin` search as
+/// [`resolve_claude`], minus its claude-only `.claude/local` fallback.
+#[cfg(target_os = "linux")]
+fn resolve_ccx(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<String, String> {
+    let mut dirs: Vec<PathBuf> = path_var
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .filter(|dir| dir.is_absolute())
+        .collect();
+    if let Some(home) = home {
+        dirs.push(home.join(".local/bin"));
+    }
+    let mut searched: Vec<PathBuf> = Vec::with_capacity(dirs.len());
+    for dir in dirs {
+        let candidate = dir.join("ccx");
+        if is_executable_file(&candidate) {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
+        searched.push(candidate);
+    }
+    Err(format!(
+        "ccx not found (searched: {})",
         searched.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
     ))
 }
@@ -3023,18 +3070,26 @@ pub mod headless {
             client.shutdown(SHUTDOWN_WAIT);
             return Err(e);
         }
+        let result = send_and_wait_recorded(&mut client, bytes, deadline);
+        client.shutdown(SHUTDOWN_WAIT);
+        result
+    }
 
+    /// The send/wait-for-verdict loop, factored out of [`type_into`] so
+    /// [`write_and_enter`] can call it twice (text, then Enter) on ONE
+    /// continuous attach — a mid-sequence pen loss then surfaces as an
+    /// ordinary `RefusedStale`/`is_dead()` on the same client.
+    fn send_and_wait_recorded(client: &mut Client, bytes: &[u8], deadline: Instant) -> Result<usize, HeadlessError> {
         let expected = bytes.len() as u64;
         let before = client.recorded_bytes();
         client.send_input(bytes);
-
-        let result = loop {
+        loop {
             client.pump();
             if let Some(outcome) = client.last_input_outcome() {
                 match outcome {
                     InputOutcome::Recorded => {
                         if client.recorded_bytes().saturating_sub(before) >= expected {
-                            break Ok(bytes.len());
+                            return Ok(bytes.len());
                         }
                         // A single `send_input` call is always flushed as
                         // ONE input frame in practice (the payload already
@@ -3044,7 +3099,7 @@ pub mod headless {
                         // polling for the rest, bounded by the same
                         // deadline, rather than declaring victory early.
                         if Instant::now() >= deadline {
-                            break Err(HeadlessError {
+                            return Err(HeadlessError {
                                 phase: "record",
                                 detail: "deadline exceeded before the whole payload was recorded"
                                     .to_string(),
@@ -3054,7 +3109,7 @@ pub mod headless {
                         std::thread::sleep(POLL_INTERVAL);
                     }
                     InputOutcome::RefusedStale => {
-                        break Err(HeadlessError {
+                        return Err(HeadlessError {
                             phase: "input",
                             detail: "input refused as stale (the take epoch changed); \
                                      this op is never retried"
@@ -3063,7 +3118,7 @@ pub mod headless {
                         });
                     }
                     InputOutcome::DeliveryUnknown => {
-                        break Err(HeadlessError {
+                        return Err(HeadlessError {
                             phase: "record",
                             detail: "input delivery unknown".to_string(),
                             submitted: true,
@@ -3073,23 +3128,118 @@ pub mod headless {
                 continue;
             }
             if client.is_dead() {
-                break Err(HeadlessError {
+                return Err(HeadlessError {
                     phase: "take",
                     detail: client.status_line().to_string(),
                     submitted: true,
                 });
             }
             if Instant::now() >= deadline {
-                break Err(HeadlessError {
+                return Err(HeadlessError {
                     phase: "record",
                     detail: "deadline exceeded waiting for the input to be recorded".to_string(),
                     submitted: true,
                 });
             }
             std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    /// A capsule row's SPLIT `enter: true` write: text, a bounded PACING
+    /// wait, then Enter as its own write — makes NO submission claim (a
+    /// screen snapshot cannot prove one) and never retries either write.
+    ///
+    /// 1. [`type_into`]'s own size gate runs first, before any attach.
+    /// 2. Writes the text — a hard error, never retried, on any failure.
+    /// 3. PACES only (claims nothing): waits for the screen to hold still
+    ///    `quiet_budget`, bounded overall at `pacing_budget`.
+    /// 4. Writes Enter under the text's own grant (headless never
+    ///    re-takes): a pen change in between is refused stale by the
+    ///    supervisor, so `enter_sent: false`. Once the text is recorded
+    ///    (step 2), this ALWAYS answers `Ok`: any Enter failure means
+    ///    `enter_sent: false`, never a hard `Err` (a retried caller could
+    ///    double the text).
+    /// 5. Never retries: the worker's auto-retake after a stale refusal
+    ///    is disabled for headless transactions.
+    ///
+    /// RESIDUAL RISK: this never checks whether a human already has an
+    /// unsent draft here (parity with the old tmux path, which never did
+    /// either) — a real check needs attach-proto v3's pen-holder signal
+    /// (`PenSnapshot`/`holder`), left to the Stage 2 resident-attach lanes.
+    ///
+    /// Returns `(bytes_written, enter_sent)`: `enter_sent` says only that
+    /// the Enter byte was written and recorded, never that codex treated
+    /// it as a submitted turn.
+    pub fn write_and_enter(
+        state_dir: &Path,
+        controller_id: &str,
+        text: &[u8],
+        op_budget: Duration,
+        quiet_budget: Duration,
+        pacing_budget: Duration,
+    ) -> Result<(usize, bool), HeadlessError> {
+        if text.len() > TAKE_QUEUE_CAP {
+            return Err(HeadlessError {
+                phase: "size",
+                detail: format!(
+                    "payload is {} bytes, exceeding the take queue cap of {TAKE_QUEUE_CAP} bytes",
+                    text.len()
+                ),
+                submitted: false,
+            });
+        }
+
+        let mut client = attach(state_dir, controller_id)?;
+        if let Err(e) = wait_for_checkpoint(&mut client, Instant::now() + op_budget) {
+            client.shutdown(SHUTDOWN_WAIT);
+            return Err(e);
+        }
+
+        let n = if text.is_empty() {
+            0
+        } else {
+            match send_and_wait_recorded(&mut client, text, Instant::now() + op_budget) {
+                Ok(n) => n,
+                Err(e) => {
+                    client.shutdown(SHUTDOWN_WAIT);
+                    return Err(e);
+                }
+            }
         };
+        // `SOT_TEST_PACING_HOLD` (test-only, the `SOT_TEST_ACTIVATION_BARRIER`
+        // convention): hold pacing to its full bound. Terminal output batches,
+        // so a scripted test load cannot keep the screen changing every poll.
+        let pacing_hold = std::env::var_os("SOT_TEST_PACING_HOLD").is_some();
+
+        let pacing_deadline = Instant::now() + pacing_budget;
+        let mut previous = current_lines(&client);
+        let mut last_change_at = Instant::now();
+        loop {
+            let quiet_elapsed = !pacing_hold && Instant::now().duration_since(last_change_at) >= quiet_budget;
+            if quiet_elapsed || Instant::now() >= pacing_deadline {
+                break;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+            client.pump();
+            let lines = current_lines(&client);
+            if lines != previous {
+                previous = lines;
+                last_change_at = Instant::now();
+            }
+        }
+
+        // Doc above: once the text is recorded, always Ok.
+        let enter_sent = send_and_wait_recorded(&mut client, &[0x0d], Instant::now() + op_budget).is_ok();
+
         client.shutdown(SHUTDOWN_WAIT);
-        result
+        Ok((n, enter_sent))
+    }
+
+    /// Current screen lines, top to bottom, trailing spaces trimmed —
+    /// [`screen_of`]'s own shape, off an already-pumped client.
+    fn current_lines(client: &Client) -> Vec<String> {
+        let (_, cols) = client.screen().size();
+        client.screen().rows(0, cols).map(|line| line.trim_end().to_string()).collect()
     }
 
     /// Reads the current, visible screen of the row at `state_dir` as a
@@ -3152,7 +3302,7 @@ mod headless_size_gate_tests {
     // dir on disk, and no real process at all — a nonexistent path is
     // fine, and a real attach attempt against it would prove the test
     // wrong (the size gate must short-circuit before that).
-    use super::headless::type_into;
+    use super::headless::{type_into, write_and_enter};
     use std::path::Path;
     use std::time::{Duration, Instant};
 
@@ -3187,6 +3337,16 @@ mod headless_size_gate_tests {
         let n = type_into(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", &[], deadline())
             .expect("an empty payload succeeds trivially, with nothing to attach for");
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn write_and_enter_oversized_payload_is_refused_before_any_attach() {
+        let bytes = vec![b'x'; sot_log::fe_client::TAKE_QUEUE_CAP + 1];
+        let budget = Duration::from_secs(5);
+        let err = write_and_enter(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", &bytes, budget, budget, budget)
+            .expect_err("oversized payload must be refused");
+        assert_eq!(err.phase, "size");
+        assert!(!err.submitted);
     }
 }
 
@@ -3494,8 +3654,118 @@ mod tests {
 
     #[test]
     fn agent_argv_rejects_unsupported_kinds() {
-        assert!(agent_argv("codex").is_err());
         assert!(agent_argv("bogus").is_err());
+    }
+
+    /// Guards PATH/HOME/SOT_COMM_HOME for one `agent_argv("codex")` call.
+    #[cfg(target_os = "linux")]
+    fn with_codex_env<T>(path: Option<&std::path::Path>, home: Option<&std::path::Path>, comm_home: Option<&std::path::Path>, f: impl FnOnce() -> T) -> T {
+        let _guard = self_file_env_guarded();
+        let prior = (std::env::var_os("PATH"), std::env::var_os("HOME"), std::env::var_os("SOT_COMM_HOME"));
+        match path {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        match home {
+            Some(p) => std::env::set_var("HOME", p),
+            None => std::env::remove_var("HOME"),
+        }
+        match comm_home {
+            Some(p) => std::env::set_var("SOT_COMM_HOME", p),
+            None => std::env::remove_var("SOT_COMM_HOME"),
+        }
+        let result = f();
+        match prior.0 {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        match prior.1 {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match prior.2 {
+            Some(v) => std::env::set_var("SOT_COMM_HOME", v),
+            None => std::env::remove_var("SOT_COMM_HOME"),
+        }
+        result
+    }
+
+    #[cfg(target_os = "linux")]
+    fn write_capsule_capable_ccx(path: &Path) {
+        std::fs::write(path, format!("#!/bin/sh\n{CAPSULE_CAPABLE_MARKER}\nexit 0\n")).unwrap();
+        set_executable(path);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_argv_codex_resolves_ccx_and_ends_in_capsule_continue() {
+        let dir = tempfile_test_dir();
+        let ccx = dir.path().join("ccx");
+        write_capsule_capable_ccx(&ccx);
+        let comm_home = tempfile_test_dir();
+        std::fs::create_dir_all(comm_home.path().join("bin")).unwrap();
+        std::fs::write(
+            comm_home.path().join("bin").join("codex-watch.sh"),
+            format!("#!/usr/bin/env bash\n{CAPSULE_CAPABLE_MARKER}\n"),
+        )
+        .unwrap();
+
+        let result = with_codex_env(Some(dir.path()), None, Some(comm_home.path()), || agent_argv("codex"));
+        assert_eq!(
+            result.unwrap(),
+            vec![ccx.to_string_lossy().into_owned(), "--capsule".to_string(), "--continue".to_string()]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_argv_codex_refuses_a_stale_ccx_without_ever_executing_it() {
+        let dir = tempfile_test_dir();
+        let ccx = dir.path().join("ccx");
+        let sentinel = dir.path().join("ccx-was-executed");
+        // No marker: `sentinel` proves whether this ever actually ran it.
+        std::fs::write(&ccx, format!("#!/bin/sh\ntouch {sentinel:?}\nsleep 999\n")).unwrap();
+        set_executable(&ccx);
+
+        let result = with_codex_env(Some(dir.path()), None, None, || agent_argv("codex"));
+        let err = result.expect_err("a ccx missing the capability marker must refuse");
+        assert!(err.contains("CAPSULE_CAPABLE_MARKER") || err.contains("sot-capsule-capable"), "got: {err}");
+        assert!(!sentinel.exists(), "the marker check must never execute ccx");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_argv_codex_refuses_when_codex_watch_lacks_the_marker() {
+        let dir = tempfile_test_dir();
+        let ccx = dir.path().join("ccx");
+        write_capsule_capable_ccx(&ccx);
+        let comm_home = tempfile_test_dir();
+        std::fs::create_dir_all(comm_home.path().join("bin")).unwrap();
+        std::fs::write(comm_home.path().join("bin").join("codex-watch.sh"), "#!/usr/bin/env bash\n").unwrap();
+
+        let result = with_codex_env(Some(dir.path()), None, Some(comm_home.path()), || agent_argv("codex"));
+        let err = result.expect_err("codex-watch.sh missing the marker must refuse the whole recipe");
+        assert!(err.contains("codex-watch.sh"), "got: {err}");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_argv_codex_fails_closed_when_nothing_resolves() {
+        let result = with_codex_env(None, None, None, || agent_argv("codex"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn agent_argv_codex_is_refused_on_windows() {
+        let err = agent_argv("codex").unwrap_err();
+        assert!(err.contains("ccx"), "got: {err}");
+    }
+
+    #[test]
+    #[cfg(not(any(windows, target_os = "linux")))]
+    fn agent_argv_codex_is_refused_off_windows_and_linux() {
+        assert!(agent_argv("codex").is_err());
     }
 
     #[test]
@@ -3572,6 +3842,36 @@ mod tests {
         let err = resolve_claude(Some(&path_var), None).unwrap_err();
         assert!(err.contains("claude not found"), "{err}");
         assert!(!err.contains("relative/bin"), "a relative entry must never even be searched: {err}");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn resolve_ccx_finds_an_executable_on_path() {
+        let dir = tempfile_test_dir();
+        let ccx = dir.path().join("ccx");
+        std::fs::write(&ccx, b"#!/bin/sh\nexit 0\n").unwrap();
+        set_executable(&ccx);
+        let path_var = std::ffi::OsString::from(dir.path());
+        assert_eq!(resolve_ccx(Some(&path_var), None).unwrap(), ccx.to_string_lossy());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn resolve_ccx_falls_back_to_local_bin_under_home() {
+        let dir = tempfile_test_dir();
+        let local_bin = dir.path().join(".local/bin");
+        std::fs::create_dir_all(&local_bin).unwrap();
+        let ccx = local_bin.join("ccx");
+        std::fs::write(&ccx, b"#!/bin/sh\nexit 0\n").unwrap();
+        set_executable(&ccx);
+        assert_eq!(resolve_ccx(None, Some(dir.path())).unwrap(), ccx.to_string_lossy());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn resolve_ccx_names_every_directory_it_searched() {
+        let err = resolve_ccx(None, None).unwrap_err();
+        assert!(err.contains("ccx not found"), "{err}");
     }
 
     #[cfg(unix)]

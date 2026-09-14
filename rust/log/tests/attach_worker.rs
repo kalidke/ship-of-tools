@@ -217,6 +217,7 @@ fn spawn_worker(h: String, cols: u16, rows: u16, controller_id: &str, ingress_bo
         ingress_bound,
         Arc::new(std::sync::atomic::AtomicU64::new(0)),
         Arc::new(Mutex::new(None)),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
         move |e| {
             let _ = tx.send(e);
         },

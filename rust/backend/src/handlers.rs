@@ -3944,6 +3944,13 @@ const MAX_PTY_INPUT_ORIGIN_LEN: usize = 128;
 #[cfg(any(windows, target_os = "linux"))]
 const CAPSULE_OP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Bounds for [`crate::capsule_workspace::headless::write_and_enter`]'s
+/// pacing wait — never a confirmation, only pacing.
+#[cfg(any(windows, target_os = "linux"))]
+const CAPSULE_WRITE_QUIET_BUDGET: std::time::Duration = std::time::Duration::from_millis(300);
+#[cfg(any(windows, target_os = "linux"))]
+const CAPSULE_WRITE_PACING_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// What a capsule-runtime `pty.input`/`pty.screen` op's `spawn_blocking`
 /// closure reports — computed OFF the async runtime (the phase probe and
 /// the headless client both make blocking IPC calls), then translated to a
@@ -4116,7 +4123,7 @@ pub async fn handle_pty_input(
             .context("spawn_blocking pty.input tmux")?;
             match result {
                 Ok(()) => {
-                    let res = PtyInputRes { ok: true, runtime: "tmux".into(), bytes: byte_len };
+                    let res = PtyInputRes { ok: true, runtime: "tmux".into(), bytes: byte_len, enter_sent: enter };
                     Ok(vec![(
                         Frame::res(req_id, op::PTY_INPUT, serde_json::to_value(res)?),
                         None,
@@ -4180,30 +4187,32 @@ pub async fn handle_pty_input(
                     if phase != ready_phase {
                         return CapsuleOpOutcome::NotReady(phase);
                     }
-                    // `--enter` on a capsule row: a literal CR (0x0d)
-                    // appended to the payload — the byte a terminal itself
-                    // sends for Enter — never a converted trailing newline
-                    // inside the caller's own text (`ops.rs`'s own doc).
-                    let mut payload_bytes = bytes;
+                    // Split write+pace+enter: `write_and_enter`'s own doc.
                     if enter {
-                        payload_bytes.push(0x0d);
-                    }
-                    let deadline = std::time::Instant::now() + CAPSULE_OP_DEADLINE;
-                    match crate::capsule_workspace::headless::type_into(
-                        &state_dir,
-                        &controller_id,
-                        &payload_bytes,
-                        deadline,
-                    ) {
-                        Ok(n) => CapsuleOpOutcome::Ok(n),
-                        Err(e) => CapsuleOpOutcome::Headless(e),
+                        match crate::capsule_workspace::headless::write_and_enter(
+                            &state_dir,
+                            &controller_id,
+                            &bytes,
+                            CAPSULE_OP_DEADLINE,
+                            CAPSULE_WRITE_QUIET_BUDGET,
+                            CAPSULE_WRITE_PACING_BUDGET,
+                        ) {
+                            Ok((_n, enter_sent)) => CapsuleOpOutcome::Ok(enter_sent),
+                            Err(e) => CapsuleOpOutcome::Headless(e),
+                        }
+                    } else {
+                        let deadline = std::time::Instant::now() + CAPSULE_OP_DEADLINE;
+                        match crate::capsule_workspace::headless::type_into(&state_dir, &controller_id, &bytes, deadline) {
+                            Ok(_n) => CapsuleOpOutcome::Ok(false),
+                            Err(e) => CapsuleOpOutcome::Headless(e),
+                        }
                     }
                 })
                 .await
                 .context("spawn_blocking pty.input capsule")?;
                 match outcome {
-                    CapsuleOpOutcome::Ok(_) => {
-                        let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: byte_len };
+                    CapsuleOpOutcome::Ok(enter_sent) => {
+                        let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: byte_len, enter_sent };
                         Ok(vec![(
                             Frame::res(req_id, op::PTY_INPUT, serde_json::to_value(res)?),
                             None,
@@ -4577,7 +4586,8 @@ pub async fn handle_workspace_create(
     // the same function the spawn itself uses, so this is the real
     // check, not a second guess at it — "codex" (no known launcher on
     // either platform) is refused here rather than silently launching a
-    // bare shell nobody asked for.
+    // bare shell nobody asked for. Codex's check is a plain file read (no
+    // spawn), so this stays a direct call, no `spawn_blocking`.
     let capsule_argv: Vec<String> = if runtime == "capsule" {
         match crate::capsule_workspace::agent_argv(&agent_kind) {
             Ok(argv) => argv,

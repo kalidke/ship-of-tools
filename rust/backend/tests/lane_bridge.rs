@@ -1121,7 +1121,22 @@ async fn headless_write_while_a_bridged_client_is_driving_demotes_it_without_dup
     let count_for = |cid: &str| {
         frames.iter().filter(|f| f.class == sot_log::envelope::Class::Input && f.source.actor.controller_id.as_deref() == Some(cid)).count()
     };
-    assert_eq!(count_for("lb8-headless"), 1, "the headless write must appear EXACTLY once in the sealed record");
+    // TWO frames, not one: write_and_enter writes text and Enter as separate
+    // wire ops, each its own sealed frame -- pinned by LENGTH, not just
+    // count, so "text twice" or "Enter twice" (same total of 2) still fails.
+    let headless_len = |want: usize| {
+        frames
+            .iter()
+            .filter(|f| {
+                f.class == sot_log::envelope::Class::Input
+                    && f.source.actor.controller_id.as_deref() == Some("lb8-headless")
+                    && f.payload.as_ref().and_then(|p| p.get("length")?.as_u64()).map(|l| l as usize) == Some(want)
+            })
+            .count()
+    };
+    assert_eq!(headless_len(headless_text.len()), 1, "exactly one headless frame must carry the text's own length");
+    assert_eq!(headless_len(1), 1, "exactly one headless frame must carry length 1, the lone Enter byte");
+    assert_eq!(count_for("lb8-headless"), 2, "the headless write must appear as exactly two frames (text, then Enter), never duplicated");
     assert_eq!(count_for("lb8-driver"), 3, "the driver's record: A1 (clean) + A2RETAKE's refused-stale attempt + A2RETAKE's successful retry");
     let refused_stale_count = frames
         .iter()
