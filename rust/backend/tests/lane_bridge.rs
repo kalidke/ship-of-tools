@@ -476,7 +476,7 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
         assert!(Instant::now() < resumed_deadline, "the daemon never resumed the dropped row");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert_eq!(count_matching_processes(&pattern).unwrap_or(99), 1, "resume_if_absent must spawn exactly one new supervise process");
+    assert_eq!(count_matching_processes(&pattern).unwrap_or(99), 1, "ensure_started must spawn exactly one new supervise process");
 
     // Functional recovery, not merely a resumed process: a fresh input
     // through the SAME client lands, and the leg identity is unchanged.
@@ -493,6 +493,90 @@ async fn a_lane_only_drop_is_resumed_by_the_next_dial() {
     }
     assert_eq!(client.notice().map(|s| s.to_string()), leg_notice, "notice() must still name the SAME leg after a lane-only drop");
     assert!(!client.is_dead(), "the client must never have gone terminal across the drop");
+
+    drop(client);
+    relay.cut();
+    env.kill_daemon_bounded().await;
+}
+
+// -----------------------------------------------------------------------
+// (iii-b) R4c: the bridge's `Reconnect` intent permits only Resume, never a never-started row's first start.
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
+    let _serial = SERIAL.lock().await;
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found — build it first");
+
+    let env = Env::new("lb3b");
+    // Pre-seeded, never touched by `workspace.create` — its supervisor
+    // has never been spawned by anything (`workspace.create` always
+    // spawns synchronously, so this precondition can't come from it).
+    env.seed_capsule_toml("ws-lb3b-preseeded", "lb3b-preseeded", &env.workspace_project_root, "none");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let row = find_row(&list_payload, "ws-lb3b-preseeded").expect("the pre-seeded row is registered");
+    assert_eq!(row["phase"].as_str(), Some("stopped"), "row must be genuinely never-started: {row:?}");
+    let target = row["tmux_session"].as_str().expect("tmux_session").to_string();
+
+    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
+    assert_eq!(count_matching_processes(&pattern).unwrap_or(99), 0, "no supervise process must exist before the dial");
+
+    let relay = Relay::start(env.socket_path.clone()).await;
+    let (_woke, wake) = wake_flag_for_test();
+    let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
+        daemon_lane_endpoint(&relay),
+        target,
+        80,
+        24,
+        "test-fe".to_string(),
+        "test-fe".to_string(),
+        None,
+        wake,
+    )
+    .expect("attach");
+
+    // R4c: `Reconnect` permits only `StartMode::Resume` — a dial on an
+    // unpublished pointer starts nothing and answers absent. Proven over
+    // a bounded window, not by waiting for the client to go terminal
+    // (main's own behavior too: that needs the full client-side
+    // HEALTH_WINDOW, unrelated to this ruling): across ~10s, the bridge
+    // keeps answering absent (never attaches, never goes dead on its
+    // own), the row's phase never moves off "stopped", and no supervise
+    // process for it ever exists.
+    let window_deadline = Instant::now() + Duration::from_secs(10);
+    let mut saw_absent_answer = false;
+    loop {
+        client.pump();
+        assert!(
+            !client.is_dead(),
+            "a never-started row's bridge dial must not go terminal on its own: {}",
+            client.status_line()
+        );
+        if client.status_line().contains("not answering") {
+            saw_absent_answer = true;
+        }
+        assert_eq!(
+            count_matching_processes(&pattern).unwrap_or(99),
+            0,
+            "a bridge dial must never start a row's first-ever run"
+        );
+        let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        next_id += 1;
+        let row = find_row(&list_payload, "ws-lb3b-preseeded").expect("the pre-seeded row is registered");
+        assert_eq!(
+            row["phase"].as_str(),
+            Some("stopped"),
+            "the row must stay stopped while the bridge keeps answering absent: {row:?}"
+        );
+        if Instant::now() >= window_deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(saw_absent_answer, "the bridge must have answered absent at least once: {}", client.status_line());
 
     drop(client);
     relay.cut();

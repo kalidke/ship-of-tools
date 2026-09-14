@@ -597,6 +597,126 @@ async fn phase_stays_unreachable_for_a_malformed_reply() {
     env.kill_daemon_bounded().await;
 }
 
+/// Kills only the supervisor authority (leg survives); adopted first so no
+/// watchdog exists, proving the observer alone carries ready -> unreachable -> ready.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_pty_open_recovers_it() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("obskill");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "obskill-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+
+    let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
+    let state_dir = loop {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        if let Some(row) = find_row(&payload, &workspace_id) {
+            if let (Some(sd), Some("ready")) = (row["state_dir"].as_str(), row["phase"].as_str()) {
+                break sd.to_string();
+            }
+        }
+        assert!(Instant::now() < list_deadline, "timed out waiting for the new capsule workspace to reach \"ready\"");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let state_dir_path = PathBuf::from(&state_dir);
+
+    let leg_before = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::query_status(&dir).expect("query_status before killing the supervisor").0.leg
+    })
+    .await
+    .unwrap()
+    .expect("a ready capsule has a leg");
+
+    // Adopts first, stripping this lifetime's own watchdog.
+    let (mut conn, mut next_id) = restart_daemon_and_prove_adoption(
+        &env,
+        conn,
+        &workspace_id,
+        &state_dir,
+        &state_dir_path,
+        leg_before,
+        AuthorityAtRestart::Alive,
+    )
+    .await;
+
+    kill_supervisor_only(&env.state_root);
+
+    // No watchdog exists (adopted, not spawned); killing just the authority
+    // never marks the row terminal along the way.
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "unreachable", BOUND.max(Duration::from_secs(30))).await;
+
+    // ADR 0046 decision 2: workspace.list reads pure memory -- even with the
+    // row genuinely unreachable, back-to-back calls must answer near-instantly.
+    let log_path_for_list_check = env.state_root.join("sot").join("sotd.log");
+    let unreachable_lines_before = count_log_occurrences(&log_path_for_list_check, "supervisor lane unreachable");
+    let list_burst_started = Instant::now();
+    for _ in 0..10 {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        assert_eq!(
+            find_row(&payload, &workspace_id).and_then(|r| r["phase"].as_str().map(str::to_string)),
+            Some("unreachable".to_string()),
+            "the row must keep reading \"unreachable\" from memory across the burst"
+        );
+    }
+    let list_burst_elapsed = list_burst_started.elapsed();
+    assert!(
+        list_burst_elapsed < Duration::from_millis(200),
+        "ten workspace.list calls took {list_burst_elapsed:?}; a pure-memory read must answer near-instantly, \
+         not pay a lane round trip per call"
+    );
+    // The burst must not itself provoke a new lane probe; +2 slack covers
+    // the observer's own background cadence landing during the window.
+    let unreachable_lines_after = count_log_occurrences(&log_path_for_list_check, "supervisor lane unreachable");
+    assert!(
+        unreachable_lines_after <= unreachable_lines_before + 2,
+        "workspace.list must never itself probe the lane: {unreachable_lines_before} -> {unreachable_lines_after} \
+         occurrences of the phase_of debug line across a 10-call burst"
+    );
+
+    // Resumes via `ensure_started`, answering attach_direct regardless of phase.
+    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(30))).await;
+
+    // Recovery is a fresh leg (ADR 0043 decision 33 spawns anew, never resurrects).
+    let leg_after = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::query_status(&dir).expect("query_status after recovery").0.leg
+    })
+    .await
+    .unwrap();
+    assert!(leg_after.is_some(), "the recovered row must have a real leg");
+
+    env.kill_daemon_bounded().await;
+}
+
 /// ADR 0042 amendment (2026-09-07), "a session types into and reads a
 /// sibling row": the daemon-side proof that `pty.input`/`pty.screen`
 /// actually reach a real capsule row over the wire, end to end — the
@@ -969,7 +1089,10 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
         &env.workspace_project_root,
         "none",
     );
-    env.spawn_sotd();
+    // Real test-only barrier: activation blocks until this file exists,
+    // turning the "reply before state dir exists" race into a certainty.
+    let barrier = env._tmp.path().join("car-activation-barrier");
+    env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -997,8 +1120,12 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
         "the pre-seeded row's phase must read \"stopped\" before its first attach: {row:?}"
     );
 
+    // pty.open must answer at once from phase, never awaiting the activation --
+    // order-only proof since spawning a real sot-capsule is far slower.
     let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
+    let pty_start = Instant::now();
     let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    let pty_elapsed = pty_start.elapsed();
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
     let expected_state_dir = state_dir_path.to_string_lossy().into_owned();
@@ -1007,9 +1134,24 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
         Some(expected_state_dir.as_str()),
         "pty.open's attach_direct state_dir should be this row's own capsule state dir"
     );
+    assert!(
+        pty_elapsed < Duration::from_secs(1),
+        "pty.open must answer at once from the row's phase, never await the activation it kicks off \
+         (order-only: this reply took {pty_elapsed:?}, spawning a real sot-capsule process is far slower)"
+    );
+    assert!(
+        !barrier.exists(),
+        "test bug: the barrier must not have been released yet"
+    );
+    assert!(
+        !state_dir_path.is_dir(),
+        "the reply must arrive while the activation is still held, before it has had any chance \
+         to create the state dir"
+    );
 
-    // The state dir appears on disk — start-on-attach actually spawned
-    // something, not just answered a stale path.
+    std::fs::write(&barrier, b"go").expect("release the activation barrier");
+
+    // Appears once released -- proof of a real spawn, not a stale path.
     let dir_deadline = Instant::now() + BOUND;
     while !state_dir_path.is_dir() {
         assert!(
@@ -1161,6 +1303,75 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     env.kill_daemon_bounded().await;
 }
 
+/// pty.open fires activation unconditionally even when the cached phase still
+/// reads Ready; a deleted "skip if phase != Ready" guard would latch the row forever.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn capsule_attach_right_after_run_end_activates_despite_a_stale_cached_ready_phase() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("carc");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "carc-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let state_dir_path = env.state_root.join("sot").join("workspaces").join(&workspace_id);
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
+
+    let (status, _process) =
+        sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
+    let original_voyage = status.voyage.expect("a ready capsule has a voyage");
+    sot_log::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end").expect("end_run over the lane");
+
+    // end_run went straight to the lane, bypassing the daemon, so the phase
+    // cell is still stale Ready; the guarded helper's fresh probe must decide.
+    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open right after end_run: {:?}", pty_res.payload);
+
+    // A NEW voyage is proof the guarded activation ran retire->resume->reset,
+    // not a no-op against the stale cached phase.
+    let ready_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
+    let new_voyage = loop {
+        if let Some(report) = try_query_status(state_dir_path.clone()).await {
+            if report.phase == sot_log::wire::SupervisorPhase::Ready {
+                break report.voyage.expect("a ready capsule has a voyage");
+            }
+        }
+        assert!(
+            Instant::now() < ready_deadline,
+            "timed out waiting for the row to recover to Ready despite a stale cached Ready phase at attach time"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_ne!(new_voyage, original_voyage, "reset must mint a NEW voyage, not resurrect the ended one");
+
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::stop(&dir)
+    })
+    .await;
+    env.kill_daemon_bounded().await;
+}
+
 /// ADR 0043 decision 33's guard covers its own retirement clause exactly
 /// like every other lifecycle mutation: two `pty.open` requests, on two
 /// separate connections, racing the SAME resting `EndedNoRespawn` row
@@ -1184,7 +1395,10 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     );
 
     let env = Env::new("caes");
-    env.spawn_sotd();
+    // Holds every activation until released, guaranteeing both are blocked
+    // together for genuine contention, not scheduling luck.
+    let barrier = env._tmp.path().join("caes-activation-barrier");
+    env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let create_req = serde_json::json!({
@@ -1205,18 +1419,9 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
         sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
     let voyage = status.voyage.expect("a ready capsule has a voyage");
     sot_log::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
-    poll_until(
-        || {
-            let dir = state_dir_path.clone();
-            async move {
-                let report = try_query_status(dir).await?;
-                (report.phase == sot_log::wire::SupervisorPhase::EndedNoRespawn).then_some(())
-            }
-        },
-        BOUND,
-        "the ended row's authority to settle into EndedNoRespawn",
-    )
-    .await;
+    // Wait for the daemon's observer, not a raw lane probe -- pty.open decides
+    // from that cached phase, so a stale read here would skip activation entirely.
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
 
     let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
     let log_path = env.state_root.join("sot").join("sotd.log");
@@ -1266,7 +1471,43 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     assert_eq!(res_a.payload["code"], "attach_direct", "first concurrent pty.open on an ended row: {:?}", res_a.payload);
     assert_eq!(res_b.payload["code"], "attach_direct", "second concurrent pty.open on an ended row: {:?}", res_b.payload);
 
+    // R4f: wait for both activations to arrive at the barrier (one marker each) --
+    // a count, not a sleep, proving contention rather than merely inferring it.
+    let arrivals_dir = std::path::PathBuf::from(format!("{}.arrivals", barrier.to_string_lossy()));
+    poll_until(
+        || {
+            let dir = arrivals_dir.clone();
+            async move { (count_dir_entries(&dir) >= 2).then_some(()) }
+        },
+        BOUND,
+        "both concurrent activations to arrive at the barrier",
+    )
+    .await;
+
+    // Both tasks are provably held at the barrier; exactly ONE process exists --
+    // the old resting authority, not yet retired (retirement is inside the guard).
+    assert!(!barrier.exists(), "test bug: the barrier must not have been released yet");
+    assert_eq!(
+        count_matching_processes(&pattern).expect("pgrep"),
+        1,
+        "only the old resting authority may exist while both activations are still held at the barrier"
+    );
+
+    std::fs::write(&barrier, b"go").expect("release the activation barrier");
+
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
+
+    // R4f: wait for both activations' completion markers before sampling.
+    let completions_dir = std::path::PathBuf::from(format!("{}.completions", barrier.to_string_lossy()));
+    poll_until(
+        || {
+            let dir = completions_dir.clone();
+            async move { (count_dir_entries(&dir) >= 2).then_some(()) }
+        },
+        BOUND,
+        "both concurrent activations to complete",
+    )
+    .await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Err(join_err) = sampler.await {
@@ -1284,6 +1525,349 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     assert!(
         !log_contents.contains("contended (70)"),
         "sotd.log has a contended (70) line — two concurrent attaches raced the retirement into the fence"
+    );
+
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::stop(&dir)
+    })
+    .await;
+    env.kill_daemon_bounded().await;
+}
+
+/// Shared setup for the three round-7 tests below: a fresh capsule row,
+/// Ready, then ended over the lane -- leaving its OWN resident supervisor
+/// serving `ended_no_respawn`, still alive and still tracked by the
+/// watchdog this daemon installed for it (ADR 0043 decision 33). Returns
+/// everything a test needs to then kill that resting authority and race
+/// its recovery against a fresh Selection.
+#[cfg(target_os = "linux")]
+async fn setup_ended_row(env: &Env, label: &str) -> (Conn, u64, String, String, PathBuf, String) {
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let create_req = serde_json::json!({
+        "label": label,
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let state_dir_path = env.state_root.join("sot").join("workspaces").join(&workspace_id);
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
+
+    let (status, _process) =
+        sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
+    let original_voyage = status.voyage.expect("a ready capsule has a voyage");
+    sot_log::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end").expect("end_run over the lane");
+    // The daemon's own observer, not a raw lane probe -- `pty.open`
+    // decides from that cached phase.
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
+
+    (conn, next_id, workspace_id, target, state_dir_path, original_voyage)
+}
+
+/// Shared conclusion: the row must converge on Ready under a FRESH
+/// voyage -- never the original, never stuck `ended_no_respawn`.
+#[cfg(target_os = "linux")]
+async fn assert_ends_in_a_fresh_voyage(
+    conn: &mut Conn,
+    next_id: &mut u64,
+    workspace_id: &str,
+    state_dir_path: &Path,
+    original_voyage: &str,
+) {
+    poll_for_phase(conn, next_id, workspace_id, "ready", BOUND.max(Duration::from_secs(60))).await;
+    let (status2, _process2) =
+        sot_log::supervisor_client::query_status(state_dir_path).expect("query_status after the race resolved");
+    let new_voyage = status2.voyage.expect("a ready capsule has a voyage");
+    assert_ne!(
+        new_voyage, original_voyage,
+        "a Selection racing the watchdog must still mint a NEW voyage, never resurrect the ended one"
+    );
+}
+
+/// Codex review round 5/6 BLOCKER (and its round-8 follow-up, see the
+/// fourth case below): an activation must never drop the caller's own
+/// intent, and must never decide from a transient phase snapshot --
+/// including a phase read AFTER the activation's own spawn, not just
+/// the first probe. An ended run's resting authority is killed, so its
+/// OWN watchdog crash-restarts it -- racing a Selection (`pty.open`).
+/// The four cases below replace one uncontrolled race (round 6
+/// SHOULD-FIX: an unbarriered race can repeatedly exercise only one
+/// ordering) with deterministic control over which side reaches the
+/// row's guard first, using two independent test barriers:
+/// `SOT_TEST_ACTIVATION_BARRIER` (pty.open's own activation, existing)
+/// and `<that path>.watchdog-restart` (the watchdog's own restart
+/// attempt, round 7). Cases 1 and 3 order themselves against a THIRD
+/// signal, `<that path>.waitforsettle/` -- one marker file per reprobe
+/// cycle, written from inside `ensure_started`'s own loop (round 8:
+/// replaces a guessed sleep with a count of the loop's own observable
+/// progress).
+///
+/// Case 1: Selection reaches the guard first. The watchdog is held at
+/// its own barrier the whole time Selection makes its first (transient)
+/// check, waits, and is only then allowed through.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn a_selection_that_reaches_the_guard_first_still_retires_and_resets() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("ssf");
+    let barrier = env._tmp.path().join("ssf-activation-barrier");
+    let watchdog_barrier = PathBuf::from(format!("{}.watchdog-restart", barrier.to_string_lossy()));
+    env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
+
+    let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_voyage) =
+        setup_ended_row(&env, "ssf-workspace").await;
+
+    // Neither barrier is released yet: killing the resting authority
+    // lands the watchdog at ITS OWN barrier (never reaching the guard),
+    // while pty.open's own activation is held at the OTHER barrier.
+    kill_supervisor_only(&env.state_root);
+    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+
+    // Release Selection's OWN barrier first -- with the watchdog still
+    // held at its own, Selection's activation is the only one that can
+    // possibly reach the guard right now, proving this ordering rather
+    // than merely hoping for it.
+    std::fs::write(&barrier, b"go").expect("release the activation barrier");
+    // Wait for a marker proving `ensure_started`'s own loop reached
+    // `LockedStep::WaitForSettle` at least once -- not a guessed sleep --
+    // before letting the watchdog move.
+    let waitforsettle_dir = PathBuf::from(format!("{}.waitforsettle", barrier.to_string_lossy()));
+    poll_until(
+        || {
+            let dir = waitforsettle_dir.clone();
+            async move { (count_dir_entries(&dir) >= 1).then_some(()) }
+        },
+        BOUND,
+        "Selection's activation to reach its first WaitForSettle cycle",
+    )
+    .await;
+    std::fs::write(&watchdog_barrier, b"go").expect("release the watchdog restart barrier");
+
+    assert_ends_in_a_fresh_voyage(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_voyage).await;
+
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::stop(&dir)
+    })
+    .await;
+    env.kill_daemon_bounded().await;
+}
+
+/// Case 2: the watchdog reaches the guard first, runs its whole restart
+/// (backoff, spawn, settle) to completion, and only THEN is Selection
+/// allowed to check at all.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn a_watchdog_that_reaches_the_guard_first_still_lets_the_selection_retire_and_reset() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("wsf");
+    let barrier = env._tmp.path().join("wsf-activation-barrier");
+    env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
+    // The watchdog's own barrier file is never created: `SOT_TEST_
+    // ACTIVATION_BARRIER` is set, so `wait_for_test_watchdog_restart_
+    // barrier` polls for it forever (until its own 30s bound) unless we
+    // write it -- so write it immediately, letting the watchdog run
+    // completely unheld while Selection stays parked.
+    let watchdog_barrier = PathBuf::from(format!("{}.watchdog-restart", barrier.to_string_lossy()));
+    std::fs::write(&watchdog_barrier, b"go").expect("release the watchdog restart barrier up front");
+
+    let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_voyage) =
+        setup_ended_row(&env, "wsf-workspace").await;
+
+    let backoff_needle = "capsule supervisor watchdog: crashed, restarting with --resume";
+    let log_path = env.state_root.join("sot").join("sotd.log");
+    let backoff_seen_before = count_log_occurrences(&log_path, backoff_needle);
+
+    kill_supervisor_only(&env.state_root);
+
+    // The backoff line only proves the watchdog decided to restart, not
+    // that `poll_for_phase` below isn't reading a stale pre-kill
+    // `ended_no_respawn`; `assert_ends_in_a_fresh_voyage` is the real proof.
+    let backoff_deadline = Instant::now() + BOUND;
+    loop {
+        if count_log_occurrences(&log_path, backoff_needle) > backoff_seen_before {
+            break;
+        }
+        assert!(Instant::now() < backoff_deadline, "timed out waiting for the watchdog's own backoff log line");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
+
+    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+    std::fs::write(&barrier, b"go").expect("release the activation barrier");
+
+    assert_ends_in_a_fresh_voyage(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_voyage).await;
+
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::stop(&dir)
+    })
+    .await;
+    env.kill_daemon_bounded().await;
+}
+
+/// Case 3: Selection reaches the guard first (as in case 1), but this
+/// time the watchdog's own restart is held for well over one activation
+/// re-probe interval before being released -- proving the wait loop
+/// survives MULTIPLE transient re-checks (not just one) before the row
+/// finally settles, exactly the shape of the round-6 blocker (the
+/// watchdog's own settle read a still-transient phase, and only later
+/// did the row actually land on `ended_no_respawn`).
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn a_selection_that_waits_through_several_reprobe_cycles_still_resets() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("smr");
+    let barrier = env._tmp.path().join("smr-activation-barrier");
+    let watchdog_barrier = PathBuf::from(format!("{}.watchdog-restart", barrier.to_string_lossy()));
+    env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
+
+    let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_voyage) =
+        setup_ended_row(&env, "smr-workspace").await;
+
+    kill_supervisor_only(&env.state_root);
+    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+
+    std::fs::write(&barrier, b"go").expect("release the activation barrier");
+    // A marker is written every time the wait loop re-enters
+    // `LockedStep::WaitForSettle` -- waiting for SEVERAL (not just one)
+    // proves the loop actually cycles, re-checking and finding the row
+    // still unsettled each time, rather than merely surviving one pass,
+    // before the watchdog is finally let through.
+    let waitforsettle_dir = PathBuf::from(format!("{}.waitforsettle", barrier.to_string_lossy()));
+    poll_until(
+        || {
+            let dir = waitforsettle_dir.clone();
+            async move { (count_dir_entries(&dir) >= 3).then_some(()) }
+        },
+        BOUND,
+        "Selection's activation to cycle through several WaitForSettle reprobes",
+    )
+    .await;
+    std::fs::write(&watchdog_barrier, b"go").expect("release the watchdog restart barrier");
+
+    assert_ends_in_a_fresh_voyage(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_voyage).await;
+
+    let _ = tokio::task::spawn_blocking({
+        let dir = state_dir_path.clone();
+        move || sot_log::supervisor_client::stop(&dir)
+    })
+    .await;
+    env.kill_daemon_bounded().await;
+}
+
+/// Case 4 (Codex review round 8 BLOCKER, round 9's own convergence
+/// fix): an ended row's supervisor was ADOPTED at boot
+/// (`restart_daemon_and_prove_adoption`'s own `Alive` scenario below),
+/// so no watchdog owns it (ADR 0043 decision 33); that supervisor is
+/// then killed outright; a Selection probes `unreachable` with no
+/// watchdog -- resting, per `is_resting_phase` -- and picks `Resume`;
+/// the fresh `--resume` supervisor's own recovery
+/// (`sot_log::supervisor::spawn_recovery`, wired externally through
+/// `Lifecycle::Recovering` as `Starting`) is held open past
+/// `SPAWN_SETTLE_DEADLINE` (2s) by `SOT_TEST_RECOVERY_DELAY_MS` (its own
+/// env var, inert unless set, applies to EVERY spawn -- round 9 deleted
+/// the once-per-row sentinel that used to live here) instead of needing
+/// a real crash-loop recovery window (`RECOVERY_WATCHDOG`, up to about
+/// 70s in production) to prove the same thing. Every `--resume` this
+/// row's own retire arm spawns is delayed the same way, proving the
+/// round-9 fix converges (via `own_spawn`'s identity check) without
+/// ever needing a SECOND spawn to settle fast.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_and_a_direct_reset() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("arr");
+    env.spawn_sotd();
+    let (conn, _next_id, workspace_id, target, state_dir_path, original_voyage) =
+        setup_ended_row(&env, "arr-workspace").await;
+
+    // Adopt: kill only the DAEMON, leaving the ended-but-still-resident
+    // supervisor alive, then reboot with the recovery-delay hook armed.
+    // Decision 33: a row this (new) daemon never itself spawned gets no
+    // watchdog at all, so ONLY a Selection can ever act on it again.
+    drop(conn);
+    env.kill_daemon_bounded().await;
+    env.spawn_sotd_with_env(&[("SOT_TEST_RECOVERY_DELAY_MS", "3000")]);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND.max(Duration::from_secs(60))).await;
+
+    // Kill the resident (adopted) supervisor itself -- no watchdog exists
+    // to notice or restart it, and an already-resting `ended_no_respawn`
+    // row gets no background reprobe cadence either, so `workspace.list`
+    // alone would never notice this kill: go straight to `pty.open`
+    // (as cases 1 and 3 above do) and let ITS OWN fresh probe discover
+    // the row is now unreachable, exactly like a real Selection would.
+    kill_supervisor_only(&env.state_root);
+
+    // A Selection now finds `unreachable` with no watchdog -- resting --
+    // and picks `Resume`. The fresh `--resume` supervisor's own recovery
+    // is held open past `SPAWN_SETTLE_DEADLINE` by the env var set
+    // above, so `settle_after_spawn` cannot possibly read anything but a
+    // transient `starting` snapshot the first time it looks: exactly the
+    // round-8 blocker's own window.
+    let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
+    let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+    assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+
+    // Proven the same way every other case in this file is: a FRESH
+    // voyage, never the original, never stuck `ended_no_respawn`.
+    assert_ends_in_a_fresh_voyage(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_voyage).await;
+
+    // Ruling 5: prove this test actually hit the transient-settle
+    // window it exists to exercise, not merely that the row eventually
+    // recovered some other way.
+    let log_path = env.state_root.join("sot").join("sotd.log");
+    assert!(
+        count_log_occurrences(&log_path, "did not settle within the post-spawn deadline") >= 1,
+        "expected at least one post-spawn settle-deadline warning in sotd.log"
     );
 
     let _ = tokio::task::spawn_blocking({
@@ -1352,18 +1936,9 @@ async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
     let voyage = status.voyage.expect("a ready capsule has a voyage");
     let original_pid = original_process.pid();
     sot_log::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
-    poll_until(
-        || {
-            let dir = state_dir_path.clone();
-            async move {
-                let report = try_query_status(dir).await?;
-                (report.phase == sot_log::wire::SupervisorPhase::EndedNoRespawn).then_some(())
-            }
-        },
-        BOUND,
-        "the ended row's authority to settle into EndedNoRespawn",
-    )
-    .await;
+    // Wait for the daemon's observer, not a raw lane probe -- a stale "ready"
+    // here would skip activation and miss this test's own fault injection.
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
     let pointer_path = sot_log::pointer::pointer_path(&state_dir_path);
     let pointer_before = std::fs::read(&pointer_path).expect("a resident EndedNoRespawn authority has a published pointer");
 
@@ -1390,15 +1965,34 @@ async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
     // `phase_of`'s own initial probe read UNREACHABLE_PHASE and route
     // through the RESUME path instead, never reaching this arm's retire
     // logic at all.
+    //
+    // pty.open now answers attach_direct unconditionally; a Stop that cannot
+    // complete surfaces asynchronously as the row's own activation_error, polled below.
     let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
     let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
     next_id += 1;
     assert_eq!(
-        pty_res.payload["code"], "capsule_spawn_failed",
-        "pty.open against an ended row whose stop cannot complete must fail to start, not attach_direct: {:?}",
+        pty_res.payload["code"], "attach_direct",
+        "pty.open must answer attach_direct at once, never awaiting its own async activation: {:?}",
         pty_res.payload
     );
-    let error_text = pty_res.payload["error"].as_str().unwrap_or_default();
+
+    let activation_error_deadline = Instant::now() + BOUND;
+    let error_text = loop {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        if let Some(row) = find_row(&payload, &workspace_id) {
+            if let Some(detail) = row["activation_error"].as_str() {
+                break detail.to_string();
+            }
+        }
+        assert!(
+            Instant::now() < activation_error_deadline,
+            "timed out waiting for the failed activation to surface as activation_error"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
     assert!(
         error_text.contains("retire (stop before reset) failed") && error_text.contains("expected Operation(Stopping)"),
         "expected stop()'s own mismatch report (proof a Stop, never a Reset, reached the authority): {error_text:?}"
@@ -1694,6 +2288,9 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
         "the stopped supervisor's own lane to go silent",
     )
     .await;
+    // Wait for the daemon's observer too -- a stale "ready" here would skip
+    // the spawn attempt this test exists to prove.
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "unreachable", BOUND).await;
 
     // The fake lock holder itself: held for this test's whole remaining
     // body, released only at the very end. The state dir already exists
@@ -2419,6 +3016,13 @@ fn count_matching_processes(pattern: &str) -> std::io::Result<usize> {
 #[cfg(target_os = "linux")]
 fn count_log_occurrences(log_path: &Path, needle: &str) -> usize {
     std::fs::read_to_string(log_path).map(|s| s.matches(needle).count()).unwrap_or(0)
+}
+
+/// Count of marker files under `dir` (R4f arrival/completion count). Missing
+/// dir reads as zero, not an error.
+#[cfg(target_os = "linux")]
+fn count_dir_entries(dir: &Path) -> usize {
+    std::fs::read_dir(dir).map(|entries| entries.filter_map(|e| e.ok()).count()).unwrap_or(0)
 }
 
 /// Decision 33: an ADOPTED row (`resume_all`'s boot scan found the
@@ -3509,6 +4113,20 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
         );
 
         poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(45))).await;
+
+        // A stale "ready" could let poll_for_phase above pass without proving
+        // anything; wait for a real OS-level process count instead.
+        let process_deadline = Instant::now() + BOUND;
+        loop {
+            if count_matching_processes(&pattern).unwrap_or(0) == 1 {
+                break;
+            }
+            assert!(
+                Instant::now() < process_deadline,
+                "timed out waiting for a real supervise process to exist after cycle {_cycle}'s recovery"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);

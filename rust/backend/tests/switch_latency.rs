@@ -35,6 +35,10 @@
 //! needs to be stateful (a POSIX-portable equivalent batch script isn't
 //! practical; the supervisor logic under test is itself platform-agnostic
 //! and covered on Windows by `cargo check --tests` compiling this file).
+//!
+//! A third module, `capsule_pty_open_answers_before_activation`, uses the shared `tests/support` fixture instead of this file's local `Env`, since it needs a real capsule row.
+
+mod support;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -776,5 +780,78 @@ mod pty_not_starved {
             "pty.screen took {pty_elapsed:?} while a real slow kernel.request was pending, \
              expected well under the 3s kernel-startup delay ({PTY_REPLY_BOUND:?} bound)"
         );
+    }
+}
+
+/// `pty.open` on a capsule row answers `attach_direct` immediately, never
+/// awaiting the activation it kicks off in the background.
+#[cfg(target_os = "linux")]
+mod capsule_pty_open_answers_before_activation {
+    use crate::support::{
+        any_process_matches, call, connect_and_hello, find_row, sot_capsule_exe, Env, BOUND as SUPPORT_BOUND,
+        CAPSULE_EXE_NAME,
+    };
+    use sot_protocol::op;
+    use std::time::{Duration, Instant};
+
+    /// Ceiling on `pty.open`'s own reply — a phase-cell read plus a
+    /// `tokio::spawn` has no business taking anywhere near this long.
+    const REPLY_BOUND: Duration = Duration::from_millis(500);
+
+    #[tokio::test]
+    async fn pty_open_answers_with_no_lane_traffic_before_the_reply() {
+        assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found — build it first");
+
+        let env = Env::new("swlat-capsule-order");
+        env.seed_capsule_toml("ws-preseeded-order", "order", &env.workspace_project_root, "none");
+        // The background activation task blocks until this file exists.
+        let barrier = env._tmp.path().join("activation-barrier");
+        env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
+        let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+        let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        next_id += 1;
+        let row = find_row(&list_payload, "ws-preseeded-order").expect("the pre-seeded row is registered");
+        assert_eq!(row["phase"].as_str(), Some("stopped"), "row: {row:?}");
+        let target = row["tmux_session"].as_str().expect("tmux_session").to_string();
+        let workspace_id = row["workspace_id"].as_str().expect("workspace_id").to_string();
+        // `sot-capsule supervise <state_dir>` carries the state dir in argv.
+        let state_dir = env.state_root.join("sot").join("workspaces").join(&workspace_id);
+        let state_dir_pattern = state_dir.to_string_lossy().into_owned();
+        assert!(
+            !any_process_matches(&state_dir_pattern),
+            "no sot-capsule process for this row may exist before pty.open was even sent"
+        );
+
+        let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
+        let started = Instant::now();
+        let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+        let elapsed = started.elapsed();
+        assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
+        assert!(
+            elapsed < REPLY_BOUND,
+            "pty.open took {elapsed:?} to answer attach_direct; it must never await its own \
+             async activation (bound {REPLY_BOUND:?})"
+        );
+
+        // Barrier still absent — the activation is provably still blocked.
+        assert!(!barrier.exists(), "test bug: the barrier must not have been released yet");
+        assert!(
+            !any_process_matches(&state_dir_pattern),
+            "the reply must arrive while the activation is still held, before any lane traffic is possible"
+        );
+
+        std::fs::write(&barrier, b"go").expect("release the activation barrier");
+
+        let deadline = Instant::now() + SUPPORT_BOUND;
+        loop {
+            if any_process_matches(&state_dir_pattern) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the async activation never spawned its own sot-capsule process");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        env.kill_daemon_bounded().await;
     }
 }

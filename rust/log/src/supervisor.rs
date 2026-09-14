@@ -1687,6 +1687,16 @@ fn reap_retired_legs(retired_legs: &mut Vec<Process>) {
 fn spawn_recovery(state_dir: PathBuf, mode: StartMode) -> (mpsc::Receiver<RecoveryOutcome>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || {
+        // Test-only: artificially holds recovery (the wire phase
+        // `Lifecycle::Recovering` reports as `Starting`) open past a
+        // caller's own settle deadline, so a test can prove that caller
+        // waits for the row to actually rest rather than deciding from
+        // a snapshot mid-recovery. Inert unless `SOT_TEST_RECOVERY_
+        // DELAY_MS` names a positive delay; its own env var, never
+        // shared with any other test barrier. Applies to EVERY spawn.
+        if let Ok(ms) = std::env::var("SOT_TEST_RECOVERY_DELAY_MS").unwrap_or_default().parse::<u64>() {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
         let outcome = (|| -> crate::Result<RecoveryOutcome> {
             let summary = reconcile_journal_on_startup(&state_dir)?;
             let voyage_id = discover_or_mint_voyage(&state_dir, mode)?;

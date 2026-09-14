@@ -518,6 +518,33 @@ impl Env {
         debug_assert!(previous.is_none(), "spawn_sotd_with_prepended_path called while a prior daemon was still tracked");
     }
 
+    /// [`Env::spawn_sotd`], plus `extra` env vars — for a test-only knob
+    /// (e.g. `SOT_TEST_SLOW_CAPSULE_ACTIVATION_MS`) that only one test
+    /// needs, without adding a parameter to the shared `spawn_sotd`.
+    /// Portable like `spawn_sotd` itself — must still compile on Windows.
+    pub fn spawn_sotd_with_env(&self, extra: &[(&str, &str)]) {
+        let mut cmd = Command::new(sotd_exe());
+        cmd.arg("--socket")
+            .arg(&self.socket_path)
+            .arg("--project-root")
+            .arg(&self.daemon_project_root)
+            .env("LOCALAPPDATA", &self.state_root)
+            .env("XDG_STATE_HOME", &self.state_root)
+            .env("XDG_CONFIG_HOME", &self.config_root)
+            .env("SOT_STATE_HOST", TEST_STATE_HOST)
+            .env("SOT_RUNTIME_DIR", self._runtime_tmp.path())
+            .env("SOT_TMUX_SOCK", self.tmux_sock())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for (k, v) in extra {
+            cmd.env(k, v);
+        }
+        let child = cmd.spawn().expect("spawn sotd");
+        let previous = self.daemon.borrow_mut().replace(child);
+        debug_assert!(previous.is_none(), "spawn_sotd_with_env called while a prior daemon was still tracked");
+    }
+
     /// ADR 0043 decision 32 (lane L2), test 1's own precondition: launches
     /// THIS env's daemon as a REAL `systemd --user` service — never the
     /// live `sotd`, a uniquely-named scratch unit
