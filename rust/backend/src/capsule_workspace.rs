@@ -199,14 +199,18 @@ mod linux_only {
 /// not yet wired to any launcher either — U4, the drawer cutover, is
 /// still unbuilt). `"claude"` gets the closest honest equivalent: the
 /// same flags `ccb --continue` execs with (`claude --permission-mode auto
-/// --continue /sot-session-start`). `--continue` is unconditional: a
-/// row's conversation lives in claude's own store keyed by the root, so
-/// every leg the supervisor spawns for that root — the first, a respawn
-/// after the operator exits, a watchdog restart — resumes the newest
-/// conversation there, and a root with none starts fresh (claude treats
-/// a missing conversation as a fresh start, verified 2026-09-12). This is
-/// what ADR 0017 already relies on for the drawer: continuity is
-/// decoupled from process survival. Without it a capsule row could never
+/// --continue /sot-session-start`). A row's conversation lives in claude's
+/// own store keyed by the root; against a root with nothing stored,
+/// `--continue` prints an error and exits within ~2s rather than starting
+/// fresh. A row's first-ever leg therefore omits it
+/// (`--first-leg-without --continue`, [`StartMode::Start`] only — see
+/// [`runtime::spawn_detached_supervisor`]), and `sot_log::supervisor`'s own
+/// self-heal omits it again for any later leg that follows one it
+/// classifies unstable, so a `--continue` that fails fast gets one clean
+/// retry instead of flapping the row terminal; every leg that follows a
+/// STABLE one keeps `--continue` and resumes it. This is what ADR 0017
+/// already relies on for the drawer: continuity is decoupled from process
+/// survival. Without the first-leg omission a capsule row could never
 /// resume — the fixed argv re-ran as a fresh session on every exit. On
 /// Windows this relies on `claude` being on the
 /// daemon's own PATH (a detached child inherits it, same as any spawned
@@ -430,6 +434,20 @@ fn is_executable_file(path: &Path) -> bool {
         return false;
     };
     unsafe { libc::access(c_path.as_ptr(), libc::X_OK) == 0 }
+}
+
+/// `sot-capsule supervise`'s own `--first-leg-without --continue`, passed
+/// only for [`StartMode::Start`] (a row's first-ever run) so that leg's own
+/// producer argv starts a fresh claude conversation. The daemon never
+/// passes it again for a resumed or restarted supervisor; the supervisor's
+/// own self-heal, using this SAME token, is what strips `--continue` a
+/// second time for a leg that follows an unstable one (see
+/// [`agent_argv`]'s own doc).
+pub fn first_leg_without_continue(mode: StartMode) -> &'static [&'static str] {
+    match mode {
+        StartMode::Start => &["--first-leg-without", "--continue"],
+        StartMode::Resume => &[],
+    }
 }
 
 /// `sot-capsule supervise`'s own start-mode flag.
@@ -794,9 +812,9 @@ pub enum EndRunOutcome {
 #[cfg(any(windows, target_os = "linux"))]
 mod runtime {
     use super::{
-        agent_argv, capsule_supervisor_env, mode_flag, StartMode, LANE_CONCURRENCY,
-        MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB, NEVER_STARTED_PHASE, RESTART_BACKOFFS,
-        RESTART_WINDOW, UNREACHABLE_PHASE,
+        agent_argv, capsule_supervisor_env, first_leg_without_continue, mode_flag, StartMode,
+        LANE_CONCURRENCY, MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB, NEVER_STARTED_PHASE,
+        RESTART_BACKOFFS, RESTART_WINDOW, UNREACHABLE_PHASE,
     };
     use crate::workspaces::Workspaces;
     use std::io::ErrorKind;
@@ -978,6 +996,7 @@ mod runtime {
                 .arg("--survival")
                 .arg(survival)
                 .arg("--assume-no-rollback-target")
+                .args(first_leg_without_continue(mode))
                 .arg("--")
                 .args(agent_argv)
                 .current_dir(cwd)
@@ -2961,6 +2980,12 @@ mod tests {
     fn mode_flag_matches_the_sot_capsule_cli() {
         assert_eq!(mode_flag(StartMode::Start), "--start");
         assert_eq!(mode_flag(StartMode::Resume), "--resume");
+    }
+
+    #[test]
+    fn first_leg_without_continue_only_on_start() {
+        assert_eq!(first_leg_without_continue(StartMode::Start), ["--first-leg-without", "--continue"]);
+        assert!(first_leg_without_continue(StartMode::Resume).is_empty());
     }
 
     #[test]

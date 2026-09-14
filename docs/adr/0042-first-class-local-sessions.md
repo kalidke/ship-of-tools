@@ -90,14 +90,21 @@ new is added to the daemon, the protocol, or the workspace toml:
    self-contained by inlining the two steps it currently points at in the
    FE skill; nothing else changes in it. *(Amended 2026-09-12: the capsule
    launch line is `claude --permission-mode auto --continue
-   /sot-session-start` — `--continue` unconditional. A capsule row's
-   conversation is claude's own store keyed by the root, so every leg the
-   supervisor spawns for that root resumes the newest conversation there
-   and a root with none starts fresh. Without it the fixed argv re-ran as a
+   /sot-session-start`. A capsule row's conversation is claude's own store
+   keyed by the root, so every leg the supervisor spawns for that root
+   resumes the newest conversation there; a root with nothing stored fails
+   fast instead — `claude --continue` prints an error and exits within
+   ~2s, not a fresh start. Without `--continue` the fixed argv re-ran as a
    fresh session on every exit and a row could never be resumed — the rows
-   reopened after the 2026-09-12 close were fresh sessions, not the resumes
-   the handoff recorded. Carried by v0.6.0-rc.24; rows created before it
-   keep their old line until cycled.)*
+   reopened after the 2026-09-12 close were fresh sessions, not the
+   resumes the handoff recorded. Carried by v0.6.0-rc.24; rows created
+   before it keep their old line until cycled. Amended 2026-09-14:
+   `--continue` is no longer unconditional — the supervisor omits it for a
+   row's first-ever leg (`--first-leg-without --continue`, `StartMode::Start`
+   only) and again for any later leg that follows one it classifies
+   unstable, so a fast-failing `--continue` gets one clean retry instead of
+   flapping the row terminal; every leg that follows a stable one still
+   keeps it.)*
 2. **Identity stays `win-fe-<host>`, pinned through `agent_name`.** The
    frontend PROCESS derives its own command-routing identity as
    `win-fe-<lowercased hostname>` (`self_comm_handle`, `route_fe_command`),
