@@ -425,7 +425,12 @@ struct Inner {
     /// across an `.await` without holding the registry's own `RwLock` —
     /// blocking callers (`resume_if_absent`, `ensure_started`) take
     /// `blocking_lock`, the watchdog's restart arm takes `lock().await`,
-    /// `resume_all` takes `try_lock` and skips a row already busy.
+    /// `resume_all` takes `try_lock` and skips a row already busy. Named
+    /// for its original capsule use, but `capsule_guard` mints/returns
+    /// one for ANY registered row regardless of runtime — `agent.join`
+    /// and `workspace.destroy`'s tmux arm both take it too now (manager
+    /// review round 3), so it guards every row's lifecycle, not only a
+    /// capsule's.
     capsule_guards: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
@@ -610,18 +615,22 @@ impl Workspaces {
         g.capsule_terminal.remove(workspace_id);
     }
 
-    /// This row's capsule lifecycle guard (ADR 0043 decision 33) —
-    /// created on demand under the SAME write lock the registry itself
-    /// uses, so two concurrent first-callers for one never-before-seen id
-    /// can never mint two different mutexes for it. Every lifecycle
-    /// mutation of a capsule row holds the returned `Arc` for its whole
-    /// duration and rechecks membership/phase once it actually has the
-    /// lock. `None` when `workspace_id` is not currently registered
-    /// (Codex review, 2026-09-11): checked under this SAME write lock
-    /// before inserting, so a caller that races `remove_by_id` never
-    /// mints an orphan entry for a row already gone — the one thing
-    /// `remove_by_id`'s own cleanup cannot prevent on its own, since it
-    /// runs under a DIFFERENT acquisition of this lock.
+    /// This row's lifecycle guard (ADR 0043 decision 33) — despite the
+    /// name, mints/returns one for ANY registered row, tmux included
+    /// (manager review round 3: `workspace.destroy`'s tmux arm and
+    /// `agent.join` both take it, closing the same join-vs-destroy race
+    /// for every runtime, not only capsules) — created on demand under
+    /// the SAME write lock the registry itself uses, so two concurrent
+    /// first-callers for one never-before-seen id can never mint two
+    /// different mutexes for it. Every lifecycle mutation of a row holds
+    /// the returned `Arc` for its whole duration and rechecks
+    /// membership/phase once it actually has the lock. `None` when
+    /// `workspace_id` is not currently registered (Codex review,
+    /// 2026-09-11): checked under this SAME write lock before inserting,
+    /// so a caller that races `remove_by_id` never mints an orphan entry
+    /// for a row already gone — the one thing `remove_by_id`'s own
+    /// cleanup cannot prevent on its own, since it runs under a
+    /// DIFFERENT acquisition of this lock.
     pub fn capsule_guard(&self, workspace_id: &str) -> Option<Arc<tokio::sync::Mutex<()>>> {
         let mut g = self.inner.write().expect("workspaces lock");
         if !g.by_id.contains_key(workspace_id) {

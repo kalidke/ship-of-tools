@@ -5358,12 +5358,13 @@ pub async fn handle_workspace_destroy(
     let tmux_session = ws.tmux_session.clone();
     let agent_name = ws.agent_name.clone();
 
-    // This row's guard, if `destroy_capsule_workspace` took one — HELD
-    // (ADR 0043 decision 33, Codex review round 2) across the removal
-    // below, past the `if`, so a watchdog can never restart the row
-    // between a confirmed end and `remove_by_id`. Dropped explicitly
-    // once removal is done; stays `None` for a tmux row (no capsule
-    // guard applies) or a `Kept` outcome (nothing is removed).
+    // This row's guard, taken below by whichever arm runs — HELD (ADR
+    // 0043 decision 33, Codex review round 2; tmux arm added round 3,
+    // finding B) across the removal below, past the `if`, so neither a
+    // watchdog restart nor a racing `agent.join` can land between a
+    // confirmed end and `remove_by_id`. Dropped explicitly once removal
+    // is done; stays `None` only for a `Kept` outcome (nothing is
+    // removed) or a row that was already gone by the time its arm asked.
     let mut destroy_guard: Option<tokio::sync::OwnedMutexGuard<()>> = None;
 
     // ADR 0042 slice L1a, Codex review finding 3: a capsule workspace has
@@ -5405,6 +5406,20 @@ pub async fn handle_workspace_destroy(
             }
         }
     } else {
+        // Manager review round 3 (Codex finding B): a tmux row must take
+        // the SAME per-row lifecycle guard the capsule arm above does —
+        // otherwise a concurrent agent.join can resolve this row, this
+        // destroy can remove the toml + registry entry, and the join's
+        // own save then recreates the toml for a row the registry no
+        // longer has (the identical race the guard exists to close,
+        // exposed here because only the capsule arm took it). Acquiring
+        // the guard for a tmux row is harmless — `capsule_guard` mints
+        // one for any registered row regardless of runtime (see its own
+        // doc) — held across the toml removal + `remove_by_id` below,
+        // same as the capsule arm's `destroy_guard`.
+        if let Some(guard) = workspaces.capsule_guard(&workspace_id) {
+            destroy_guard = Some(guard.lock_owned().await);
+        }
         // Kill the tmux session. Failure is non-fatal — usually means the
         // session wasn't running anyway. We surface the bool so the
         // frontend can decide whether to surface the discrepancy.
@@ -5470,9 +5485,10 @@ pub async fn handle_workspace_destroy(
     // those processes alive until they finish.
     let _ = workspaces.remove_by_id(&workspace_id);
     // Only now may this row's guard (if any) release — see its own doc
-    // above: held from `destroy_capsule_workspace`'s end/stop call
-    // through this exact removal, so a watchdog waiting on the same
-    // guard can never restart a row that is already gone.
+    // above: held from whichever arm took it (capsule end/stop, or the
+    // tmux arm's own acquisition, round 3) through this exact removal,
+    // so neither a watchdog restart nor a waiting `agent.join` can act
+    // on a row that is already gone.
     drop(destroy_guard);
 
     // Live-push to every connected frontend so the Sessions strip refreshes
@@ -5756,56 +5772,76 @@ mod agent_join_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[tokio::test]
-    async fn agent_join_interleaved_with_destroy_never_recreates_the_toml() {
-        // Manager review round 2 (Codex finding B1): agent.join must take
-        // the SAME per-row lifecycle guard `destroy_capsule_workspace`
-        // takes (ADR 0043 decision 33) -- otherwise a destroy that deletes
-        // the toml and removes the registry entry can interleave with a
-        // join's own read-then-write, and the join's save recreates the
-        // toml for a row the registry no longer has. This test drives the
-        // REAL guard (`Workspaces::capsule_guard`), not a copy of the
-        // orchestration: hold it here exactly the way destroy does,
-        // perform destroy's own two actions (toml removal, then
-        // `remove_by_id`) while holding it, spawn a real `handle_agent_join`
-        // that must block on the SAME guard, then release and prove it
-        // refused cleanly with nothing recreated on disk.
+    // Manager review round 3 (Codex): the round-2 version of this test was
+    // ineffective -- it removed the row from the registry (and the toml)
+    // BEFORE spawning `handle_agent_join`, so the handler's very first
+    // `capsule_guard` lookup returned `None` immediately and the join
+    // never actually contended for the held mutex at all; the test passed
+    // even with the round-2 B1 fix fully reverted. Rebuilt here to match
+    // the real race: the row stays registered and the toml stays on disk
+    // while we hold the guard and spawn the REAL handler, we prove that
+    // spawned join is genuinely PENDING (a bounded timeout that must
+    // elapse -- deterministic, not a sleep-and-hope, because a task
+    // blocked on a held `tokio::sync::Mutex` cannot complete regardless of
+    // how long we wait), and only THEN do we perform destroy's own two
+    // actions (toml removal, `remove_by_id`) while STILL holding the
+    // guard, exactly the way `handle_workspace_destroy` holds
+    // `destroy_guard` across that same sequence for both its capsule arm
+    // and (round 3 finding B) its tmux arm. Releasing the guard only after
+    // that is what proves the join, once unblocked, refuses cleanly
+    // instead of resurrecting what destroy just removed. Run for both a
+    // capsule row and a tmux row: `capsule_guard` mints/returns a guard
+    // for any registered row regardless of runtime (see its own doc
+    // comment), and round 3's fix made the tmux destroy arm take it too,
+    // so the same interleaving must be closed for both.
+    async fn agent_join_blocks_on_held_guard_then_destroy_wins(runtime: &str, slug: &str) {
         let (_g, dir) = env_guarded();
         let workspaces = Workspaces::new();
-        let mut ws = mk_ws("agentjoin-race");
-        ws.runtime = "capsule".to_string();
+        let mut ws = mk_ws(slug);
+        ws.runtime = runtime.to_string();
         let id = workspaces.insert(ws).workspace_id.clone();
         crate::workspaces::save(&workspaces.resolve(Some(&id)).unwrap()).expect("seed save");
-        let toml_path = crate::workspaces::toml_path_for("agentjoin-race");
+        let toml_path = crate::workspaces::toml_path_for(slug);
         assert!(toml_path.exists(), "test setup: the seed toml must exist");
 
-        // Take the row's own guard -- exactly what `destroy_capsule_workspace`
-        // holds across its own toml-delete + remove_by_id sequence.
+        // 1 + 2: the row stays registered; take and hold its guard exactly
+        // the way `handle_workspace_destroy` does (both arms, since round
+        // 3) across its own toml-delete + remove_by_id sequence.
         let guard = workspaces.capsule_guard(&id).expect("row is registered");
         let held = guard.lock().await;
 
-        // Perform destroy's own two actions while holding the guard.
-        std::fs::remove_file(&toml_path).expect("remove seed toml");
-        workspaces.remove_by_id(&id);
-        assert!(!toml_path.exists(), "test setup: toml must be gone before the join is even attempted");
-        assert!(workspaces.resolve(Some(&id)).is_none(), "test setup: the row must be gone from the registry");
-
-        // Spawn the REAL handler concurrently -- it must block trying to
-        // acquire the SAME guard, since we're still holding it.
+        // 3: spawn the REAL handler while the row is STILL registered and
+        // the guard is STILL held -- it must block trying to acquire the
+        // same guard.
         let workspaces_for_join = workspaces.clone();
         let (ws_events_tx, mut ws_events_rx) = tokio::sync::broadcast::channel(4);
         let id_for_join = id.clone();
-        let join_task = tokio::spawn(async move {
-            let payload = serde_json::json!({"workspace_id": id_for_join, "handle": "agentjoin-race-testhost"});
+        let handle_for_join = format!("{slug}-testhost");
+        let mut join_task = tokio::spawn(async move {
+            let payload = serde_json::json!({"workspace_id": id_for_join, "handle": handle_for_join});
             handle_agent_join(1, payload, &workspaces_for_join, &ws_events_tx).await
         });
-        // Give the spawned task a real chance to reach (and block on) the
-        // guard before we release it -- a bounded yield, not a sleep-and-
-        // hope: if this task somehow ran to completion despite the held
-        // guard, that itself would be the bug this test exists to catch.
-        tokio::task::yield_now().await;
 
-        // Release destroy's guard -- only now can the join proceed.
+        // Prove it is genuinely PENDING: this bounded wait must elapse,
+        // not race-and-hope -- a task truly blocked on the held guard
+        // cannot complete no matter how long we wait, so a timeout here
+        // is a deterministic proof, not a flaky one.
+        let still_pending =
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut join_task).await;
+        assert!(
+            still_pending.is_err(),
+            "join must still be blocked on the held guard, not completed"
+        );
+
+        // 4: perform destroy's own two actions while STILL holding the
+        // guard -- the exact interleaving the guard exists to serialize
+        // against.
+        std::fs::remove_file(&toml_path).expect("remove seed toml");
+        workspaces.remove_by_id(&id);
+        assert!(!toml_path.exists(), "test setup: toml must be gone before the guard is released");
+        assert!(workspaces.resolve(Some(&id)).is_none(), "test setup: the row must be gone from the registry");
+
+        // 5: release the guard -- only now can the join proceed.
         drop(held);
 
         let out = join_task.await.expect("join task must not panic").expect("handler must not error");
@@ -5824,6 +5860,76 @@ mod agent_join_tests {
             "the destroyed row must stay gone from the registry"
         );
         assert!(ws_events_rx.try_recv().is_err(), "no workspace.changed for a refused join");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn agent_join_interleaved_with_destroy_never_recreates_the_toml_capsule() {
+        agent_join_blocks_on_held_guard_then_destroy_wins("capsule", "agentjoin-race-capsule").await;
+    }
+
+    #[tokio::test]
+    async fn agent_join_interleaved_with_destroy_never_recreates_the_toml_tmux() {
+        agent_join_blocks_on_held_guard_then_destroy_wins("tmux", "agentjoin-race-tmux").await;
+    }
+
+    // Coordinator follow-up to round 3: the two tests above prove the
+    // SHARED guard mechanism (any held guard blocks a concurrent
+    // `agent.join`) but never call the real `handle_workspace_destroy` --
+    // they stand in for "destroy" by taking the guard and replaying its
+    // two actions directly, per the coordinator's own recipe. That leaves
+    // the tmux arm's OWN `capsule_guard` acquisition (finding B's fix,
+    // the `else` branch of `handle_workspace_destroy` above) unexercised
+    // by them: reverting just that acquisition would not move either test.
+    // This test closes that gap directly: pre-hold the row's guard, spawn
+    // the REAL handler for a tmux row, and prove IT blocks on the held
+    // guard (same bounded-timeout technique -- deterministic, not a
+    // sleep-and-hope) before releasing and confirming it then proceeds.
+    #[tokio::test]
+    async fn workspace_destroy_tmux_arm_blocks_on_a_held_guard() {
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let mut ws = mk_ws("destroy-tmux-guard");
+        ws.runtime = "tmux".to_string();
+        let id = workspaces.insert(ws).workspace_id.clone();
+        crate::workspaces::save(&workspaces.resolve(Some(&id)).unwrap()).expect("seed save");
+        let toml_path = crate::workspaces::toml_path_for("destroy-tmux-guard");
+        assert!(toml_path.exists(), "test setup: the seed toml must exist");
+
+        let guard = workspaces.capsule_guard(&id).expect("row is registered");
+        let held = guard.lock().await;
+
+        let workspaces_for_destroy = workspaces.clone();
+        let (ws_events_tx, _ws_events_rx) = tokio::sync::broadcast::channel(4);
+        let id_for_destroy = id.clone();
+        let mut destroy_task = tokio::spawn(async move {
+            let session = Session::new();
+            let payload = serde_json::json!({"workspace_id": id_for_destroy});
+            handle_workspace_destroy(1, payload, &session, &workspaces_for_destroy, &ws_events_tx)
+                .await
+        });
+
+        let still_pending =
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut destroy_task).await;
+        assert!(
+            still_pending.is_err(),
+            "destroy's tmux arm must block on the held guard, not proceed while it's held"
+        );
+
+        drop(held);
+
+        let out = destroy_task
+            .await
+            .expect("destroy task must not panic")
+            .expect("handler must not error");
+        assert!(
+            out[0].0.payload.get("error").is_none(),
+            "destroy must succeed once the guard is released: {:?}",
+            out[0].0.payload
+        );
+        assert!(!toml_path.exists(), "destroy must remove the toml");
+        assert!(workspaces.resolve(Some(&id)).is_none(), "destroy must remove the row");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
