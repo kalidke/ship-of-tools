@@ -890,6 +890,9 @@ async fn capsule_pty_input_and_screen_reach_a_real_row_and_leave_the_lane_clean(
 /// mimicking that status line, confirms it is visible, then sends a
 /// SECOND pty.input against that same non-blank screen and asserts it
 /// still delivers (`enter_sent: true`) and actually runs.
+/// Unix only: the status line is set through `PS1` in a POSIX shell; the
+/// Windows capsule shell is cmd.exe, which has no such prompt variable.
+#[cfg(unix)]
 #[tokio::test]
 async fn capsule_pty_input_lands_despite_a_nonblank_status_line_on_screen() {
     let _serial = SERIAL.lock().await;
