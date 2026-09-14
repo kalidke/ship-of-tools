@@ -74,6 +74,9 @@
 //! | SOA0 | S→C | `0x8a` | `input_delivery_unknown` | (none) |
 //! | SOA0 | S→C | `0x8b` | `resize_ok`              | (none) |
 //! | SOA0 | S→C | `0x8c` | `resize_refused`         | `reason`:u8 (closed enum) |
+//! | SOA0 | S→C | `0x8d` | `pen_snapshot`           | v3 only: `holder`: presence u8 + (len u8 + UTF-8, ≤128 B) if present, `take_epoch`:u64-LE |
+//! | SOA0 | S→C | `0x8e` | `pen_changed`            | v3 only: same shape as `pen_snapshot` |
+//! | SOA0 | S→C | `0x8f` | `geometry`               | v3 only: `cols`:u16-LE, `rows`:u16-LE |
 //!
 //! There is deliberately no `attach_ok`: the first `checkpoint_chunk` IS
 //! the attach success signal (one fewer frame type). Both lanes are
@@ -281,6 +284,20 @@ pub const ATTACH_PROTO_V1: u32 = 1;
 /// which format version to encode.
 pub const ATTACH_PROTO_V2: u32 = 2;
 
+/// The current attach-lane protocol version (ADR 0046 decision 3, lane
+/// B3b1): the capsule additionally emits, to a v3 watcher only,
+/// [`AttachServer::PenSnapshot`]/[`AttachServer::PenChanged`]/
+/// [`AttachServer::Geometry`] — the pen and geometry declared as the
+/// voyage's own facts, never inferred by a watcher from output. Bound to
+/// NOTHING new in the checkpoint format itself — `ATTACH_PROTO_V3`
+/// promises these three extra event shapes MAY follow; checkpoint format
+/// stays v2 either way (unlike the v1→v2 bump, this version does not
+/// change what `BeginCheckpoint` encodes). v3 is REQUIRED for resident
+/// service (ADR 0046 decision 3): a daemon relay refuses to serve a leg
+/// that negotiated below it. `negotiate` accepts v1, v2, or v3 from a
+/// client, echoing back exactly whichever one it asked for.
+pub const ATTACH_PROTO_V3: u32 = 3;
+
 /// The proven worst-case encoded size of a vt100-fork checkpoint (ADR
 /// 0041 "Terminal state", step 3 as built, plus the scrollback ring
 /// revision) — see the module doc for why this is a pinned literal rather
@@ -337,6 +354,12 @@ const TAG_ATTACH_REP_INPUT_REFUSED_STALE: u8 = 0x89;
 const TAG_ATTACH_REP_INPUT_DELIVERY_UNKNOWN: u8 = 0x8a;
 const TAG_ATTACH_REP_RESIZE_OK: u8 = 0x8b;
 const TAG_ATTACH_REP_RESIZE_REFUSED: u8 = 0x8c;
+/// ADR 0046 decision 3, lane B3b1: v3-only, owner-emitted pen/geometry
+/// events (see `AttachServer::PenSnapshot`'s own doc for the three new
+/// shapes these tags carry).
+const TAG_ATTACH_REP_PEN_SNAPSHOT: u8 = 0x8d;
+const TAG_ATTACH_REP_PEN_CHANGED: u8 = 0x8e;
+const TAG_ATTACH_REP_GEOMETRY: u8 = 0x8f;
 
 const TAG_SV_REQ_HELLO: u8 = 0x01;
 const TAG_SV_REQ_COMMAND: u8 = 0x02;
@@ -609,23 +632,27 @@ pub enum Negotiated {
     Refused { supported: u32 },
 }
 
-/// Pure hello negotiation: this build speaks [`ATTACH_PROTO_V1`] and
-/// [`ATTACH_PROTO_V2`], echoing back exactly whichever one the client
-/// asked for (never silently upgrading it) — called BEFORE any
-/// checkpoint byte is generated, so an incompatible pair is refused
-/// here, not partway through a multi-MiB transfer. A refusal reports the
-/// NEWEST version this build speaks, matching the existing
-/// oldest-first-fallback shape a client already retries through: a
-/// future, still-newer client refused here learns to try
-/// `ATTACH_PROTO_V2` next, the same way today's client falls back to
-/// `ATTACH_PROTO_V1` against an older capsule.
+/// Pure hello negotiation: this build's CAPSULE speaks [`ATTACH_PROTO_V1`],
+/// [`ATTACH_PROTO_V2`] and [`ATTACH_PROTO_V3`], echoing back exactly
+/// whichever one the client asked for (never silently upgrading it) —
+/// called BEFORE any checkpoint byte is generated, so an incompatible
+/// pair is refused here, not partway through a multi-MiB transfer. A
+/// refusal reports the NEWEST version this build speaks, matching the
+/// existing oldest-first-fallback shape a client already retries
+/// through: a future, still-newer client refused here learns to try the
+/// next older version down. ADR 0046 decision 3 (lane B3b1) is
+/// CAPSULE-side only: `attach_worker::attach_lane_hello`'s own client
+/// still asks for `ATTACH_PROTO_V2` first today (unchanged by this
+/// lane), falling back to `ATTACH_PROTO_V1` against a pre-scrollback-ring
+/// capsule — v3-first negotiation is a resident worker's job (B3b2),
+/// added with its own first consumer.
 #[must_use]
 pub fn negotiate(client_proto: u32) -> Negotiated {
-    if client_proto == ATTACH_PROTO_V1 || client_proto == ATTACH_PROTO_V2 {
+    if client_proto == ATTACH_PROTO_V1 || client_proto == ATTACH_PROTO_V2 || client_proto == ATTACH_PROTO_V3 {
         Negotiated::Accepted(client_proto)
     } else {
         Negotiated::Refused {
-            supported: ATTACH_PROTO_V2,
+            supported: ATTACH_PROTO_V3,
         }
     }
 }
@@ -831,6 +858,48 @@ pub enum AttachServer {
     ResizeRefused {
         reason: ResizeRefusedReason,
     },
+    /// ADR 0046 decision 3 (lane B3b1): a v3 watcher's OWN first v3
+    /// event, always — sent right after that watcher's LAST checkpoint
+    /// chunk, before any `PenChanged`. `holder` is the CURRENT driving
+    /// connection's controller, or `None` if nobody currently holds the
+    /// pen — this is the ephemeral, in-memory `AttachProto::driver`
+    /// state, deliberately NOT the durable historical holder a resumed
+    /// voyage's journal may still remember from a driver that has since
+    /// disconnected (see `attach_proto`'s own doc on `DriverState` for
+    /// why the two are distinct). `take_epoch` is `0` when `holder` is
+    /// `None` — either because nobody has taken the pen yet this
+    /// process's lifetime, OR because a previous driver already
+    /// disconnected: the ephemeral state this reads cannot distinguish
+    /// the two (losing the driver clears it with no durable trace, same
+    /// as before this lane), so a watcher attaching after a disconnect
+    /// sees the SAME `{None, 0}` a fresh voyage would, not the epoch a
+    /// prior driver actually reached. v1/v2 watchers never receive this.
+    PenSnapshot {
+        holder: Option<String>,
+        take_epoch: u64,
+    },
+    /// As `PenSnapshot`, sent to every v3 watcher whenever the pen
+    /// changes hands: `Some(controller)` on a committed `take`, `None`
+    /// when the driving connection disconnects (capability-only EOF —
+    /// no durable transition, ADR 0041). Queued behind an in-flight
+    /// checkpoint transfer for a watcher not yet `Done`, drained in
+    /// order right after that watcher's own final chunk (never applied
+    /// before `restore_screen`, so it can never be silently overwritten
+    /// by the checkpoint's own baked-in state).
+    PenChanged {
+        holder: Option<String>,
+        take_epoch: u64,
+    },
+    /// Sent to every v3 watcher after a successful resize — the SAME
+    /// queue-behind-an-in-flight-checkpoint treatment as `PenChanged`
+    /// (see its own doc): a watcher still mid-transfer never applies
+    /// this before its own checkpoint's `restore_screen`, which would
+    /// otherwise silently overwrite it with the checkpoint's own,
+    /// possibly older, encoded dimensions.
+    Geometry {
+        cols: u16,
+        rows: u16,
+    },
 }
 
 /// What [`FrameSplitter::feed`] decoded a body into — the lane and
@@ -913,6 +982,19 @@ fn push_bounded_bytes(
     // caller of this helper.
     push_u16(out, bytes.len() as u16);
     out.extend_from_slice(bytes);
+    Ok(())
+}
+
+/// Shared by `AttachServer::PenSnapshot`/`PenChanged`: an optional
+/// holder string, encoded exactly like `SupervisorOp::Reset`'s optional
+/// `voyage` field — a presence flag byte, then the bounded string only
+/// if present. Reuses [`MAX_CONTROLLER_ID_LEN`]: a `holder` IS a
+/// `controller_id`, just observed from the other side of the wire.
+fn push_holder(body: &mut Vec<u8>, holder: &Option<String>) -> Result<(), WireError> {
+    body.push(holder.is_some() as u8);
+    if let Some(holder) = holder {
+        push_bounded_string(body, holder, MAX_CONTROLLER_ID_LEN, "holder", true)?;
+    }
     Ok(())
 }
 
@@ -1008,6 +1090,17 @@ impl<'a> Reader<'a> {
         std::str::from_utf8(bytes)
             .map(str::to_owned)
             .map_err(|_| WireError::InvalidUtf8(field))
+    }
+
+    /// The decode side of [`push_holder`]: a presence flag, then the
+    /// bounded string only if present.
+    fn holder(&mut self, field: &'static str) -> Result<Option<String>, WireError> {
+        let present = self.bool_flag("holder.present")?;
+        if present {
+            Ok(Some(self.bounded_string(MAX_CONTROLLER_ID_LEN, field, true)?))
+        } else {
+            Ok(None)
+        }
     }
 
     fn bounded_bytes(&mut self, max: usize, field: &'static str) -> Result<Vec<u8>, WireError> {
@@ -1311,6 +1404,21 @@ pub fn encode_attach_server(frame: &AttachServer) -> Result<Vec<u8>, WireError> 
             body.push(TAG_ATTACH_REP_RESIZE_REFUSED);
             body.push(*reason as u8);
         }
+        AttachServer::PenSnapshot { holder, take_epoch } => {
+            body.push(TAG_ATTACH_REP_PEN_SNAPSHOT);
+            push_holder(&mut body, holder)?;
+            push_u64(&mut body, *take_epoch);
+        }
+        AttachServer::PenChanged { holder, take_epoch } => {
+            body.push(TAG_ATTACH_REP_PEN_CHANGED);
+            push_holder(&mut body, holder)?;
+            push_u64(&mut body, *take_epoch);
+        }
+        AttachServer::Geometry { cols, rows } => {
+            body.push(TAG_ATTACH_REP_GEOMETRY);
+            push_u16(&mut body, *cols);
+            push_u16(&mut body, *rows);
+        }
     }
     wrap(ATTACH_MAGIC, body)
 }
@@ -1568,6 +1676,24 @@ fn decode_attach_body(body: &[u8]) -> Result<DecodedFrame, WireError> {
             let reason = ResizeRefusedReason::try_from(r.u8("resize_refused.reason")?)?;
             r.finish("resize_refused")?;
             DecodedFrame::AttachServer(AttachServer::ResizeRefused { reason })
+        }
+        TAG_ATTACH_REP_PEN_SNAPSHOT => {
+            let holder = r.holder("pen_snapshot.holder")?;
+            let take_epoch = r.u64("pen_snapshot.take_epoch")?;
+            r.finish("pen_snapshot")?;
+            DecodedFrame::AttachServer(AttachServer::PenSnapshot { holder, take_epoch })
+        }
+        TAG_ATTACH_REP_PEN_CHANGED => {
+            let holder = r.holder("pen_changed.holder")?;
+            let take_epoch = r.u64("pen_changed.take_epoch")?;
+            r.finish("pen_changed")?;
+            DecodedFrame::AttachServer(AttachServer::PenChanged { holder, take_epoch })
+        }
+        TAG_ATTACH_REP_GEOMETRY => {
+            let cols = r.u16("geometry.cols")?;
+            let rows = r.u16("geometry.rows")?;
+            r.finish("geometry")?;
+            DecodedFrame::AttachServer(AttachServer::Geometry { cols, rows })
         }
         other => return Err(WireError::UnknownTag(other)),
     };
@@ -2204,6 +2330,108 @@ mod tests {
         );
     }
 
+    // ---- ADR 0046 decision 3 (lane B3b1): owner-emitted pen/geometry ----
+
+    #[test]
+    fn golden_pen_snapshot_with_holder() {
+        let wire = encode_attach_server(&AttachServer::PenSnapshot {
+            holder: Some("bob".to_string()),
+            take_epoch: 9,
+        })
+        .unwrap();
+        assert_golden(
+            wire.clone(),
+            &[
+                0x53, 0x4f, 0x41, 0x30, 0x0e, 0x00, 0x00, 0x00, 0x8d, 0x01, 0x03, 0x62, 0x6f,
+                0x62, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+        let mut s = FrameSplitter::new();
+        assert_eq!(
+            feed_ok(&mut s, &wire),
+            vec![DecodedFrame::AttachServer(AttachServer::PenSnapshot {
+                holder: Some("bob".to_string()),
+                take_epoch: 9
+            })]
+        );
+    }
+
+    #[test]
+    fn golden_pen_snapshot_no_holder() {
+        let wire = encode_attach_server(&AttachServer::PenSnapshot { holder: None, take_epoch: 0 }).unwrap();
+        assert_golden(
+            wire.clone(),
+            &[0x53, 0x4f, 0x41, 0x30, 0x0a, 0x00, 0x00, 0x00, 0x8d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        );
+        let mut s = FrameSplitter::new();
+        assert_eq!(
+            feed_ok(&mut s, &wire),
+            vec![DecodedFrame::AttachServer(AttachServer::PenSnapshot { holder: None, take_epoch: 0 })]
+        );
+    }
+
+    #[test]
+    fn golden_pen_changed_with_holder() {
+        let wire = encode_attach_server(&AttachServer::PenChanged {
+            holder: Some("bob".to_string()),
+            take_epoch: 9,
+        })
+        .unwrap();
+        assert_golden(
+            wire.clone(),
+            &[
+                0x53, 0x4f, 0x41, 0x30, 0x0e, 0x00, 0x00, 0x00, 0x8e, 0x01, 0x03, 0x62, 0x6f,
+                0x62, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+        let mut s = FrameSplitter::new();
+        assert_eq!(
+            feed_ok(&mut s, &wire),
+            vec![DecodedFrame::AttachServer(AttachServer::PenChanged {
+                holder: Some("bob".to_string()),
+                take_epoch: 9
+            })]
+        );
+    }
+
+    #[test]
+    fn golden_pen_changed_no_holder() {
+        let wire = encode_attach_server(&AttachServer::PenChanged { holder: None, take_epoch: 9 }).unwrap();
+        assert_golden(
+            wire.clone(),
+            &[0x53, 0x4f, 0x41, 0x30, 0x0a, 0x00, 0x00, 0x00, 0x8e, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        );
+        let mut s = FrameSplitter::new();
+        assert_eq!(
+            feed_ok(&mut s, &wire),
+            vec![DecodedFrame::AttachServer(AttachServer::PenChanged { holder: None, take_epoch: 9 })]
+        );
+    }
+
+    #[test]
+    fn golden_geometry() {
+        let wire = encode_attach_server(&AttachServer::Geometry { cols: 120, rows: 40 }).unwrap();
+        assert_golden(
+            wire.clone(),
+            &[0x53, 0x4f, 0x41, 0x30, 0x05, 0x00, 0x00, 0x00, 0x8f, 0x78, 0x00, 0x28, 0x00],
+        );
+        let mut s = FrameSplitter::new();
+        assert_eq!(
+            feed_ok(&mut s, &wire),
+            vec![DecodedFrame::AttachServer(AttachServer::Geometry { cols: 120, rows: 40 })]
+        );
+    }
+
+    /// A holder longer than [`MAX_CONTROLLER_ID_LEN`] is refused at encode
+    /// time -- the same bound `controller_id` itself is held to
+    /// (`push_holder` reuses it: "a holder IS a controller_id").
+    #[test]
+    fn pen_changed_holder_over_bound_is_refused() {
+        let too_long = "a".repeat(MAX_CONTROLLER_ID_LEN + 1);
+        let err = encode_attach_server(&AttachServer::PenChanged { holder: Some(too_long), take_epoch: 1 }).unwrap_err();
+        assert!(matches!(err, WireError::FieldTooLarge { field: "holder", .. }));
+    }
+
     // ---- lane binding ---------------------------------------------------
 
     #[test]
@@ -2486,16 +2714,25 @@ mod tests {
         );
     }
 
+    /// ADR 0046 decision 3, lane B3b1: v3 lands alongside the owner-
+    /// emitted pen/geometry events, with NO checkpoint-format
+    /// consequence (unlike v1→v2) — `negotiate` still echoes back
+    /// exactly what was asked, accepting v3 as its own version.
+    #[test]
+    fn negotiate_accepts_v3() {
+        assert_eq!(negotiate(ATTACH_PROTO_V3), Negotiated::Accepted(ATTACH_PROTO_V3));
+    }
+
     #[test]
     fn negotiate_refuses_anything_else() {
         assert_eq!(
-            negotiate(3),
-            Negotiated::Refused { supported: ATTACH_PROTO_V2 }
+            negotiate(4),
+            Negotiated::Refused { supported: ATTACH_PROTO_V3 }
         );
         assert_eq!(
             negotiate(0),
             Negotiated::Refused {
-                supported: ATTACH_PROTO_V2
+                supported: ATTACH_PROTO_V3
             }
         );
     }
