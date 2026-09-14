@@ -83,10 +83,15 @@
 //!   pipe is ALSO absent, checked via `on_supervisor_absent_or_unresponsive`;
 //!   access-denied on either pipe is terminal immediately
 //!   (`ReconnectState::classify_access_denied`, now wired).
-//! - Attach notice (finding 9): the capsule's own identity comes from a
-//!   THROWAWAY voyage mgmt-lane challenge (`capsule_identity_via_mgmt`),
-//!   never the supervisor's own `status_ok` (which reports the
-//!   SUPERVISOR process, not the leg).
+//! - Attach notice (finding 9, revised 2026-09-13): the notice is worded
+//!   from the attach connection's OWN daemon-authenticated identity
+//!   (`authenticate_server`'s pid + created for the voyage process, the
+//!   same trust basis ADR 0045 gives every bridged peer) — never the
+//!   supervisor's own `status_ok` (which reports the SUPERVISOR process,
+//!   not the leg), and no longer via a throwaway mgmt-lane dial: that
+//!   dial (up to two connections + challenges) ran on this worker between
+//!   "attached" and the reader spawn, so keystrokes were not serviced
+//!   until it finished — up to ~420 ms over a 70 ms link.
 //! - `fe_down` (finding 10): markers land in a small foreground
 //!   `VecDeque` `pump` itself appends to, never a second, racing drain of
 //!   the same channel; the baseline is captured by the caller at FE
@@ -97,14 +102,14 @@
 //!   silent "attached".
 
 use crate::challenge::{ChallengeOutcome, PeerAuthOutcome};
-use crate::client::{transport_error_to_io, Client, Endpoint, PeerIdentity};
+use crate::client::{transport_error_to_io, Client, Endpoint};
 // `PlatformEndpoint` only EXISTS on Windows/Linux (`client.rs`'s own
 // cfg) -- it is this module's one remaining platform tie, confined to
 // `FeAttachClient`'s default type parameter and the unit tests below
 // that construct it directly.
 #[cfg(any(windows, target_os = "linux"))]
 use crate::client::PlatformEndpoint;
-use crate::exchange::{SupervisorLaneExchange, VoyageMgmtExchange, SUPERVISOR_LANE_BUILD_ID};
+use crate::exchange::{SupervisorLaneExchange, SUPERVISOR_LANE_BUILD_ID};
 use crate::fe_client::{
     self, FeDownBaseline, InputWireOutcome, OutstandingSlot, QuitDispatcher, QuitState,
     ReconnectDecision, ReconnectState, Role, TakeAction, TakeTransaction,
@@ -676,33 +681,6 @@ fn converge_on_ready<E: Endpoint>(
                 _ => unreachable!("classify_transport only ever produces Io/Refused/Unreachable/Undetermined"),
             },
         }
-    }
-}
-
-/// Ruling (e), Codex review round finding 9: the CAPSULE'S OWN identity,
-/// proven via a THROWAWAY connection to the voyage pipe's mgmt sub-lane
-/// (`probe`/`status`/`shutdown` — the step-5 lane, distinct from the
-/// attach lane) and the full same-connection challenge
-/// (`VoyageMgmtExchange`, already built for exactly this: "the voyage
-/// mgmt lane's own `IdentityExchange`"). The merged U2 supervisor lane's
-/// own `status_ok.pid`/`.created` report the SUPERVISOR process itself
-/// (`supervisor.rs`'s own doc: "`pid`/`created` are this process's own
-/// identity"), never the leg, so that reply can never stand in for this.
-fn capsule_identity_via_mgmt<E: Endpoint>(endpoint: &E, h: &str, voyage: &str) -> Result<E::Process, LaneError> {
-    // ADR 0045 decision 4 (SHOULD-FIX, lane B4a Codex review): routed
-    // through `classify_transport` like every other connect site, even
-    // though this whole call is best-effort (its own caller discards the
-    // error via `.ok()` -- see that call site's own doc) -- "every path"
-    // means every path, and a future caller that stops discarding this
-    // Result must not inherit a bare `Io` that already lost the refusal
-    // code / uncertainty distinction.
-    let conn = endpoint.connect_voyage_unchallenged(h, voyage).map_err(classify_transport)?;
-    let mut exchange = VoyageMgmtExchange::default();
-    let deadline = Instant::now() + STATUS_BUDGET;
-    match endpoint.challenge(&conn, &mut exchange, deadline) {
-        ChallengeOutcome::Proven(process) => Ok(process),
-        ChallengeOutcome::Foreign => Err(LaneError::Protocol("voyage mgmt: foreign")),
-        ChallengeOutcome::Undetermined => Err(LaneError::Protocol("voyage mgmt: undetermined")),
     }
 }
 
@@ -1769,22 +1747,12 @@ fn run_worker<E: Endpoint>(
         emit(ClientEvent::Status("attached".to_string()));
         reconnect.attached();
 
-        // Ruling (e), Codex review round finding 9: the attach notice
-        // compares the CAPSULE's own identity (a throwaway voyage
-        // mgmt-lane challenge) against the attach connection's own
-        // challenge-proven identity -- never the supervisor's. On
-        // mismatch, re-read the mgmt identity once and proceed without a
-        // notice
-        // rather than looping forever.
-        let mgmt_identity = capsule_identity_via_mgmt::<E>(&endpoint, &lane, &voyage)
-            .ok()
-            .map(|p| (p.pid(), p.created()))
-            .or_else(|| capsule_identity_via_mgmt::<E>(&endpoint, &lane, &voyage).ok().map(|p| (p.pid(), p.created())));
-        if let Some(mgmt_leg) = mgmt_identity {
-            if fe_client::legs_match(mgmt_leg, attach_identity) {
-                emit(ClientEvent::Notice(fe_client::attach_notice_text(&format!("{}", mgmt_leg.1))));
-            }
-        }
+        // The attach notice names the leg from the attach connection's own
+        // daemon-authenticated identity (ADR 0045: the daemon's OS-level
+        // observation of the voyage process, bound to this connection).
+        // A second, throwaway mgmt-lane dial used to re-prove the same
+        // (pid, created) here and blocked input until it finished.
+        emit(ClientEvent::Notice(fe_client::attach_notice_text(&format!("{}", attach_identity.1))));
 
         // Ruling (b), Codex review round finding 4: a `not_attached`
         // reattach preserves the take transaction instead of resetting
@@ -2857,6 +2825,7 @@ fn handle_attach_frame<E: Endpoint>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::PeerIdentity;
 
     /// Codex round on #194, finding 3: a per-frame deadline that keeps
     /// re-arming itself, forever, is not a bound at all. This proves the

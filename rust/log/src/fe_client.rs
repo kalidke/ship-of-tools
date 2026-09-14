@@ -28,7 +28,7 @@
 //!
 //! Each ruling below is lettered to match the ADR's own list:
 //! (a) [`QuitDispatcher`], (b) [`TakeTransaction`], (c) [`OutstandingSlot`],
-//! (d) [`ReconnectState`], (e) [`legs_match`], (f) [`FeDownBaseline`] /
+//! (d) [`ReconnectState`], (e) [`attach_notice_text`], (f) [`FeDownBaseline`] /
 //! [`build_fe_down_marker`].
 
 use crate::wire::{self, ResizeRefusedReason, SupervisorOperationState, SupervisorPhase, SupervisorRefusedReason};
@@ -702,20 +702,6 @@ impl ReconnectState {
 // (e) The attach notice is bound to the leg it describes
 // ---------------------------------------------------------------------
 
-/// `true` iff the CAPSULE'S OWN identity as proven on the mgmt sub-lane
-/// (a `status_ok` reply's pid + creation-time bits, bound to a REPLY via
-/// the full same-connection challenge — the merged U2 supervisor lane's
-/// own `status_ok.pid`/`.created` report the SUPERVISOR process, never
-/// the leg, so that reply can never be the `mgmt` argument here) matches
-/// the attach connection's own SID-proven identity — `(pid,
-/// creation-time bits)` compared on both. On a mismatch the caller
-/// re-reads the mgmt-lane status rather than rendering the notice at all
-/// ("a leg dying between them would let the FE render leg A's start time
-/// over leg B's restored screen").
-pub fn legs_match(mgmt: (u32, u64), attach: (u32, u64)) -> bool {
-    mgmt.0 == attach.0 && mgmt.1 == attach.1
-}
-
 /// The one truthful attach-notice message, given the confirmed leg's own
 /// creation time formatted by the caller (this module carries no clock
 /// formatting opinion — the runtime supplies an already-rendered
@@ -1354,14 +1340,7 @@ mod tests {
         assert_eq!(r.classify_unresponsive(t1), ReconnectDecision::Retry);
     }
 
-    // ---- (e) legs_match ---------------------------------------------------
-
-    #[test]
-    fn legs_match_requires_both_pid_and_creation_time() {
-        assert!(legs_match((10, 100), (10, 100)));
-        assert!(!legs_match((10, 100), (10, 101)));
-        assert!(!legs_match((10, 100), (11, 100)));
-    }
+    // ---- (e) attach notice ------------------------------------------------
 
     #[test]
     fn attach_notice_text_is_the_pinned_wording() {
