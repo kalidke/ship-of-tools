@@ -1,6 +1,6 @@
 ---
 name: sot-setup
-description: One-shot, cross-OS onboarding for a Ship of Tools machine (Windows / Linux / macOS). Walks the user through a Q&A (machine role + backend server info), then does USER-LEVEL installs of every dependency (Rust via rustup, Julia via juliaup when needed), builds the rust/ workspace, writes hosts.toml + settings.toml from the answers, installs the Claude statusline INCLUDING the Windows `bash -c` forward-slash fix, installs + joins sot-comm, and creates a launcher/shortcut. Use for "set up Ship of Tools", "Ship of Tools setup", "onboard this machine", "install the dev env", "new machine setup", "set up rust/julia/statusline for Ship of Tools". Supersedes the older Windows-only setup flow.
+description: One-shot, cross-OS onboarding for a Ship of Tools machine (Windows / Linux / macOS). Walks the user through a Q&A (machine role + backend server info), then does USER-LEVEL installs of every dependency (Rust via rustup, Julia via juliaup when needed), builds the rust/ workspace, writes hosts.toml + settings.toml from the answers, installs the Claude statusline via /sot-statusline-setup, installs + joins sot-comm, and creates a launcher/shortcut. Use for "set up Ship of Tools", "Ship of Tools setup", "onboard this machine", "install the dev env", "new machine setup", "set up rust/julia/statusline for Ship of Tools". Supersedes the older Windows-only setup flow.
 ---
 
 # sot-setup
@@ -82,7 +82,7 @@ Echo the collected answers back as a short plan before proceeding.
   - Windows → MSVC or GNU (see §2a)
   - macOS → Xcode Command Line Tools: `xcode-select --install` (user-prompted)
   - Linux → `cc`/`gcc` (usually present; else system pkg)
-- **`jq` + `awk`** for the Linux/mac statusline (§8b) — usually present; `jq` may
+- **`jq` + `awk`** for the Linux/mac statusline (§8) — usually present; `jq` may
   need a user-level/system install.
 
 ---
@@ -297,108 +297,13 @@ preset = "auto"   # auto | ultrawide | laptop | portrait
 
 ---
 
-## 8. Statusline (incl. the Windows `bash -c` fix)
+## 8. Statusline
 
-Claude Code runs the configured statusLine command **through a shell**: when
-`process.env.SHELL` is set it runs `SHELL -c "<command>"` (and on Windows it will
-even auto-discover git-bash and set `SHELL` itself). **Consequence:** inside the
-Ship of Tools Terminal drawer (which inherits `SHELL=/bin/bash.exe` from a MINGW64 launch
-chain) a Windows command path with **backslashes** gets mangled by bash
-(`C:\Users\...` → `C:Users...`, exit 127) and the statusLine **silently never
-renders** — no error, no output, no footer line. The fix is to use **forward
-slashes** in the configured command, which survive both `bash -c` and `cmd /c`.
-
-### 8a. Windows — write the scripts to `~/.claude/`, then configure with FORWARD slashes
-
-Write `%USERPROFILE%\.claude\statusline.bat` (thin wrapper):
-```bat
-@echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0statusline.ps1"
-```
-Write `%USERPROFILE%\.claude\statusline.ps1` (ASCII-only literals — Windows
-PowerShell 5.1 reads .ps1 as CP1252; non-ASCII in a string breaks the parse):
-```powershell
-# Claude Code statusLine (Windows) - 2 lines, single PowerShell pass.
-$ErrorActionPreference = 'SilentlyContinue'
-$esc = [char]27
-function Col([string]$c,[string]$t){ "$esc[${c}m$t$esc[0m" }
-function Fmt([int64]$n){ if($n -ge 1000){ "$([math]::Floor($n/1000))k" } else { "$n" } }
-$j = $null; try { $j = [Console]::In.ReadToEnd() | ConvertFrom-Json } catch {}
-$model = if ($j.model.display_name) { [string]$j.model.display_name } else { 'model?' }
-$sid = [string]$j.session_id; $sess = if ($sid.Length -ge 8) { $sid.Substring(0,8) } else { $sid }
-$effort = $j.effort.level
-$think = if ($j.thinking.enabled -ne $true) { 'off' } elseif ($effort) { [string]$effort } else { 'on' }
-$thinkSeg = if ($think -eq 'off') { Col '90' "think:$think" } else { Col '35' "think:$think" }
-$ver = if ($j.version) { Col '33' "v$($j.version)" } else { '' }
-$cur = if ($j.workspace.current_dir) { [string]$j.workspace.current_dir } else { '.' }
-Push-Location $cur 2>$null
-$branch = git branch --show-current 2>$null
-if ($branch) { $repo = "$(Split-Path $cur -Leaf):$branch"; $unc = @(git status --porcelain 2>$null).Count }
-else { $repo = 'no-git'; $unc = 0 }
-Pop-Location 2>$null
-$uncCol = if ($unc -eq 0) { '32' } else { '31' }
-$l1 = @((Col '34' $model) + ' ' + (Col '90' "[$sess]"), $thinkSeg)
-if ($ver) { $l1 += $ver }
-$l1 += (Col '38;5;208' $repo); $l1 += (Col $uncCol "$unc uncommitted")
-$inT = [int64]$j.context_window.total_input_tokens; $outT = [int64]$j.context_window.total_output_tokens
-$cost = [double]$j.cost.total_cost_usd
-$costCol = if ($cost -gt 0.50) { '31' } elseif ($cost -gt 0.10) { '33' } else { '32' }
-$l2 = (Col '36' "Session: $(Fmt ($inT+$outT)) (in:$(Fmt $inT) out:$(Fmt $outT))") + ' | ' + (Col $costCol ('${0:N2}' -f $cost))
-[Console]::Out.Write([string]::Join(' | ', $l1) + "`n" + $l2)
-```
-Then set the command in `%USERPROFILE%\.claude\settings.json` — **forward slashes**:
-```json
-{ "statusLine": { "type": "command", "command": "C:/Users/<you>/.claude/statusline.bat" } }
-```
-Merge into existing settings.json (preserve other keys). CC hot-reloads it — no
-restart needed.
-
-### 8b. Linux / macOS — `~/.claude/statusline.sh`
-Full parity with the Windows `statusline.ps1` (same 2-line format + colors).
-**No transcript-model read** — CC's per-session JSON already carries the right
-model, so the old `statusline-session-model.sh` transcript-grep workaround is
-obsolete (and was its main cost). Requires `jq` + `awk` (both ubiquitous).
-```sh
-#!/usr/bin/env bash
-# Claude Code statusLine (Linux/macOS) - mirrors the Windows statusline.ps1.
-j="$(cat)"; e=$'\033'
-col(){ printf '%s[%sm%s%s[0m' "$e" "$1" "$2" "$e"; }
-get(){ printf '%s' "$j" | jq -r "$1 // empty" 2>/dev/null; }
-fmt(){ local n=${1:-0}; if [ "$n" -ge 1000 ] 2>/dev/null; then echo "$((n/1000))k"; else echo "$n"; fi; }
-model="$(get .model.display_name)"; [ -z "$model" ] && model='model?'
-sid="$(get .session_id)"; sess="${sid:0:8}"; ver="$(get .version)"
-eff="$(get .effort.level)"; th="$(get .thinking.enabled)"
-if [ "$th" != "true" ]; then think=off; tc=90; elif [ -n "$eff" ]; then think="$eff"; tc=35; else think=on; tc=35; fi
-cur="$(get .workspace.current_dir)"; [ -z "$cur" ] && cur=.
-br="$(git -C "$cur" branch --show-current 2>/dev/null)"
-if [ -n "$br" ]; then repo="$(basename "$cur"):$br"; unc="$(git -C "$cur" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"; else repo=no-git; unc=0; fi
-[ "${unc:-0}" -eq 0 ] && uc=32 || uc=31
-inT="$(get .context_window.total_input_tokens)"; outT="$(get .context_window.total_output_tokens)"
-cost="$(get .cost.total_cost_usd)"; cost=${cost:-0}
-cc=32; awk "BEGIN{exit !($cost>0.10)}" && cc=33; awk "BEGIN{exit !($cost>0.50)}" && cc=31
-l1="$(col 34 "$model") $(col 90 "[$sess]") | $(col "$tc" "think:$think")"
-[ -n "$ver" ] && l1="$l1 | $(col 33 "v$ver")"
-l1="$l1 | $(col '38;5;208' "$repo") | $(col "$uc" "$unc uncommitted")"
-printf '%s\n%s | %s\n' "$l1" \
-  "$(col 36 "Session: $(fmt $(( ${inT:-0} + ${outT:-0} ))) (in:$(fmt ${inT:-0}) out:$(fmt ${outT:-0}))")" \
-  "$(col "$cc" "$(printf '$%.2f' "$cost")")"
-```
-`chmod +x ~/.claude/statusline.sh`; settings.json command = the **absolute
-path** `"/home/<you>/.claude/statusline.sh"` (the §8 forward-slash gotcha is
-Windows-only — POSIX paths are native, no `bash -c` mangling). **On an optional
-shared-home deployment** the maintained `statusline-session-model.sh` may already
-exist at `~/.claude/` and settings.json there may point at it — leave that in
-place; write this stub only on a fresh machine that needs it.
-
-### 8c. Verify the statusline actually fires
-Pipe sample JSON and confirm it prints two colored lines, then confirm CC invokes
-it (temporarily add a debug line that appends `$raw` to a log, watch for a real
-session id — full UUID, not a hand-typed test value — then remove it):
-```sh
-echo '{"model":{"display_name":"Opus 4.8"},"session_id":"abc","version":"x","workspace":{"current_dir":"'$PWD'"},"context_window":{"total_input_tokens":120000,"total_output_tokens":34000},"cost":{"total_cost_usd":0.42}}' \
-  | bash -c "<the exact command from settings.json>"     # must exit 0 and print 2 lines
-```
-If it works under `bash -c` with the configured path, it'll work in the drawer.
+Run `/sot-statusline-setup`. It copies the maintained Windows/Linux/macOS
+statusline scripts from its own payload into `~/.claude` (or
+`%USERPROFILE%\.claude`) and points `settings.json` at them — the
+forward-slash `bash -c` fix for Windows is handled inside it, so this step
+never hand-writes or regenerates the scripts here.
 
 ---
 
