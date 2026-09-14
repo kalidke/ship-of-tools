@@ -5570,6 +5570,39 @@ pub async fn handle_agent_join(
             None,
         )]);
     }
+    // Manager review round 2 (Codex finding B1): take the SAME per-row
+    // lifecycle guard `destroy_capsule_workspace` takes (ADR 0043
+    // decision 33) — held across the mutate+persist below, exactly the
+    // way destroy holds it across its own toml-delete + registry-removal
+    // sequence, so the two can never interleave. Without this, a
+    // concurrent destroy could delete the toml and remove the registry
+    // entry AFTER `set_agent_handle`'s own read but BEFORE this save,
+    // and the save would recreate the toml for a workspace_id the
+    // registry no longer has — a resurrection destroy's caller believes
+    // it prevented. `capsule_guard` mints/returns `None` under its own
+    // write lock if the row isn't currently registered, so a row already
+    // gone by the time we ask for the guard refuses immediately, same as
+    // before.
+    let Some(guard) = workspaces.capsule_guard(&req.workspace_id) else {
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::AGENT_JOIN,
+                json!({
+                    "error": format!("unknown workspace: {:?}", req.workspace_id),
+                    "code": "unknown_workspace",
+                }),
+            ),
+            None,
+        )]);
+    };
+    let _held = guard.lock().await;
+    // Re-check under the guard: `capsule_guard`'s own registration check
+    // ran before we actually acquired the lock above — a destroy that
+    // was already mid-flight (holding this same guard) could have
+    // finished removing the row in the interim. `set_agent_handle` does
+    // its own fresh lookup, so this one call is both the re-check and
+    // the mutation.
     let Some(ws) = workspaces.set_agent_handle(&req.workspace_id, &req.handle) else {
         return Ok(vec![(
             Frame::res(
@@ -5591,7 +5624,9 @@ pub async fn handle_agent_join(
     // `set_agent_handle` has already applied the in-memory update by this
     // point (guarded in-place, S6) — a save failure is reported, not
     // rolled back, so the caller can retry the SAME join rather than
-    // re-deriving a value that already matches memory.
+    // re-deriving a value that already matches memory. Still under
+    // `_held`: the save that recreates the toml must finish before a
+    // waiting destroy can start deleting it.
     if let Err(e) = crate::workspaces::save(&ws) {
         tracing::warn!(error = %e, workspace_id = %req.workspace_id, "agent.join: toml persist failed");
         return Ok(vec![(
@@ -5717,6 +5752,78 @@ mod agent_join_tests {
         // workspace.changed published so the FE re-lists.
         let evt = ws_events_rx.try_recv().expect("workspace.changed must be published");
         assert_eq!(evt.workspace_id, id);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn agent_join_interleaved_with_destroy_never_recreates_the_toml() {
+        // Manager review round 2 (Codex finding B1): agent.join must take
+        // the SAME per-row lifecycle guard `destroy_capsule_workspace`
+        // takes (ADR 0043 decision 33) -- otherwise a destroy that deletes
+        // the toml and removes the registry entry can interleave with a
+        // join's own read-then-write, and the join's save recreates the
+        // toml for a row the registry no longer has. This test drives the
+        // REAL guard (`Workspaces::capsule_guard`), not a copy of the
+        // orchestration: hold it here exactly the way destroy does,
+        // perform destroy's own two actions (toml removal, then
+        // `remove_by_id`) while holding it, spawn a real `handle_agent_join`
+        // that must block on the SAME guard, then release and prove it
+        // refused cleanly with nothing recreated on disk.
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let mut ws = mk_ws("agentjoin-race");
+        ws.runtime = "capsule".to_string();
+        let id = workspaces.insert(ws).workspace_id.clone();
+        crate::workspaces::save(&workspaces.resolve(Some(&id)).unwrap()).expect("seed save");
+        let toml_path = crate::workspaces::toml_path_for("agentjoin-race");
+        assert!(toml_path.exists(), "test setup: the seed toml must exist");
+
+        // Take the row's own guard -- exactly what `destroy_capsule_workspace`
+        // holds across its own toml-delete + remove_by_id sequence.
+        let guard = workspaces.capsule_guard(&id).expect("row is registered");
+        let held = guard.lock().await;
+
+        // Perform destroy's own two actions while holding the guard.
+        std::fs::remove_file(&toml_path).expect("remove seed toml");
+        workspaces.remove_by_id(&id);
+        assert!(!toml_path.exists(), "test setup: toml must be gone before the join is even attempted");
+        assert!(workspaces.resolve(Some(&id)).is_none(), "test setup: the row must be gone from the registry");
+
+        // Spawn the REAL handler concurrently -- it must block trying to
+        // acquire the SAME guard, since we're still holding it.
+        let workspaces_for_join = workspaces.clone();
+        let (ws_events_tx, mut ws_events_rx) = tokio::sync::broadcast::channel(4);
+        let id_for_join = id.clone();
+        let join_task = tokio::spawn(async move {
+            let payload = serde_json::json!({"workspace_id": id_for_join, "handle": "agentjoin-race-testhost"});
+            handle_agent_join(1, payload, &workspaces_for_join, &ws_events_tx).await
+        });
+        // Give the spawned task a real chance to reach (and block on) the
+        // guard before we release it -- a bounded yield, not a sleep-and-
+        // hope: if this task somehow ran to completion despite the held
+        // guard, that itself would be the bug this test exists to catch.
+        tokio::task::yield_now().await;
+
+        // Release destroy's guard -- only now can the join proceed.
+        drop(held);
+
+        let out = join_task.await.expect("join task must not panic").expect("handler must not error");
+        assert_eq!(
+            out[0].0.payload.get("code").and_then(|v| v.as_str()),
+            Some("unknown_workspace"),
+            "a join that loses the race to a destroy must refuse, never resurrect: {:?}",
+            out[0].0.payload
+        );
+        assert!(
+            !toml_path.exists(),
+            "the destroyed row's toml must never be recreated by a losing join"
+        );
+        assert!(
+            workspaces.resolve(Some(&id)).is_none(),
+            "the destroyed row must stay gone from the registry"
+        );
+        assert!(ws_events_rx.try_recv().is_err(), "no workspace.changed for a refused join");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
