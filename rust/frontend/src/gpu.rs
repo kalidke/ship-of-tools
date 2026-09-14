@@ -1958,8 +1958,15 @@ impl TreeView {
         } else {
             HashMap::new()
         };
+        // The root is open unless the USER closed it. An EMPTY listing is
+        // still an open folder: seeding it collapsed made a fresh/empty
+        // project deaf to every live refresh (`refresh_tree_dir_if_expanded`
+        // and `apply_children` both require an expanded parent), and the
+        // same-root re-seed above then inherited that collapse forever —
+        // the first files created in a new project never appeared until a
+        // manual expand (owner report, 2026-09-14).
         let mut rows = vec![TreeRow {
-            expanded: !root_collapsed && !children.is_empty(),
+            expanded: !root_collapsed,
             node: root,
             depth: 0,
         }];
@@ -26336,6 +26343,28 @@ mod tests {
         assert!(t.rows[1].expanded, "surviving child keeps its expansion");
         assert!(!t.rows[5].expanded, "newcomer arrives collapsed");
         assert_eq!(t.selected_node_id().as_deref(), Some("a/2"));
+    }
+
+    #[test]
+    fn set_root_empty_listing_stays_open_for_live_refresh() {
+        // A fresh/empty project: the root row must seed OPEN so a watcher-
+        // driven `apply_children` (and a later same-root re-seed) can land
+        // the first files — only a user collapse closes the root.
+        let mut t = TreeView::new();
+        t.set_root(node("files:", "root", true), Vec::new());
+        assert_eq!(t.rows.len(), 1);
+        assert!(t.rows[0].expanded, "an empty root is an open folder");
+        t.apply_children("files:", vec![node("files:new.jl", "new.jl", false)]);
+        assert_eq!(
+            t.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>(),
+            vec!["files:", "files:new.jl"]
+        );
+        // Same-root re-seed after the listing filled in: children shown.
+        let mut u = TreeView::new();
+        u.set_root(node("files:", "root", true), Vec::new());
+        u.set_root(node("files:", "root", true), vec![node("files:a", "a", false)]);
+        assert_eq!(u.rows.len(), 2);
+        assert!(u.rows[0].expanded);
     }
 
     #[test]
