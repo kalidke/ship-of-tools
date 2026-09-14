@@ -29,6 +29,7 @@ anyhow = { workspace = true }
 base64 = "0.22"
 futures-util = "0.3"
 getrandom = "0.3"
+gethostname = "0.5"
 portable-pty = "0.9"
 image = { workspace = true }
 # PNG `pHYs` CRC validation (ADR 0034 tier 2): corrupt embedded calibration
