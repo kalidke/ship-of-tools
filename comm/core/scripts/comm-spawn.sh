@@ -91,6 +91,7 @@ SOT_TMUX_SOCK="$(sot_tmux_socket)" \
 SPAWNER="$NAME"
 
 NAME=""; REPO_PATH=""; EXPERTISE=""; TASK=""; LABEL=""; DISPLAY_LABEL=""; ENDPOINT=""; NO_WS=false; AGENT="claude"
+WSID=""   # the row workspace.create answered with; comm-spawn never destroys it (see below)
 NAME_FLAG=""; POSITIONAL=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -231,6 +232,11 @@ rm -f "$PROV_ROOT_FILE"
 SPAWN_SUCCEEDED=false
 _spawn_rollback_report() {
     [ "$SPAWN_SUCCEEDED" = true ] && return 0
+    # This is the ONLY rollback: the provisional sot-comm handle. A
+    # workspace row, once workspace.create answers, is never destroyed —
+    # another caller can win the same slug between a list and a create
+    # (Workspaces::insert preserves ITS id), so no signal available here
+    # can prove this spawn is the row's sole owner.
     [ -n "${NAME:-}" ] || return 0
     local rc
     with_lock registry_del_if_provisional "$NAME" "$CANON_ROOT" "$PROV_NONCE"
@@ -347,6 +353,14 @@ sot_send() {
     esac
 }
 
+# comm-spawn never destroys a workspace row itself, on any failure after
+# create answers: another caller can win the same slug between a list and
+# a create (Workspaces::insert keeps THAT caller's id), so nothing this
+# script can observe ever proves sole ownership. Report and leave it.
+_row_left_running() {  # reason
+    echo "ERROR: $1 — the row was left running (comm-spawn never destroys one); to remove it: $COMM_HOME/bin/comm-despawn.sh $WSID" >&2
+}
+
 TARGET=""   # tmux target to launch claude into
 
 # Provisional registry row + inbox, so the agent is addressable FROM SPAWN TIME:
@@ -456,21 +470,66 @@ else
         '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:$p,autostart_claude:true,agent:$ag,agent_name:$an,task:"",boot:true}}')"
     rm -f "$SPAWN_LABEL_FILE" "$SPAWN_PATH_FILE"
     RESP="$(sot_send "$REQ" workspace.create || true)"
+    CREATE_ERR="$(printf '%s' "$RESP" | jq -r '.payload.error // empty' 2>/dev/null || true)"
     SLUG="$(printf '%s' "$RESP" | jq -r '.payload.slug // empty' 2>/dev/null || true)"
     TARGET="$(printf '%s' "$RESP" | jq -r '.payload.tmux_session // empty' 2>/dev/null || true)"
-    if [ -z "$SLUG" ] || [ -z "$TARGET" ]; then
+    WSID="$(printf '%s' "$RESP" | jq -r '.payload.workspace_id // empty' 2>/dev/null || true)"
+    if [ -n "$CREATE_ERR" ] || [ -z "$SLUG" ] || [ -z "$WSID" ]; then
         echo "ERROR: workspace.create failed via $ENDPOINT" >&2
         [ -n "$RESP" ] && printf '  daemon said: %s\n' "$(printf '%s' "$RESP" | jq -c '.payload' 2>/dev/null || printf '%s' "$RESP")" >&2
         exit 1
     fi
-    echo "Created workspace '$LABEL' (slug=$SLUG, tmux=$TARGET) via $ENDPOINT"
-    tmux -S "$SOT_TMUX_SOCK" has-session -t "$TARGET" 2>/dev/null || { echo "ERROR: daemon reported $TARGET but tmux session is missing" >&2; exit 1; }
-    # Workspace mode's actionable work is done and verified — nothing left
-    # in this branch can fail (the reporting below is tolerant/WARN-only,
-    # matching the async-boot gap documented at the top of this file). Set
-    # here, not shared with the --no-workspace branch below (Codex review
-    # PR #148 round 2, finding 2): --no-workspace's real "did it launch"
-    # moment is `tmux send-keys`, further down, not tmux session creation.
+    echo "Created workspace '$LABEL' (slug=$SLUG, id=$WSID) via $ENDPOINT"
+
+    # workspace.create's own response never echoes `runtime`
+    # (WorkspaceCreateRes has no such field); only workspace.list does.
+    # Poll it, bounded, to learn the row's runtime and, for a capsule row
+    # (no tmux session backs one at all), wait for phase "ready".
+    RUNTIME=""; PHASE=""; FOUND=false
+    CAPSULE_WAIT="${SOT_COMM_SPAWN_CAPSULE_WAIT:-90}"
+    CAPSULE_DEADLINE=$(( $(date +%s) + CAPSULE_WAIT ))
+    while :; do
+        LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list || true)"
+        ENTRY="$(printf '%s' "$LIST" | jq -c --arg id "$WSID" '(.payload.workspaces // [])[]? | select(.workspace_id == $id)' 2>/dev/null || true)"
+        if [ -n "$ENTRY" ]; then
+            FOUND=true
+            RUNTIME="$(printf '%s' "$ENTRY" | jq -r '.runtime // empty' 2>/dev/null || true)"
+            PHASE="$(printf '%s' "$ENTRY" | jq -r '.phase // empty' 2>/dev/null || true)"
+            [ "$RUNTIME" = "capsule" ] || break
+            case "$PHASE" in
+                ready) break ;;
+                ended_no_respawn|terminal|foreign)
+                    _row_left_running "capsule row for '$LABEL' (id=$WSID) settled to phase '$PHASE' instead of 'ready'"
+                    exit 1
+                    ;;
+            esac
+        fi
+        if [ "$(date +%s)" -ge "$CAPSULE_DEADLINE" ]; then
+            if [ "$FOUND" = true ]; then
+                _row_left_running "capsule row for '$LABEL' (id=$WSID) is still starting (phase '${PHASE:-unknown}') after ${CAPSULE_WAIT}s"
+            else
+                _row_left_running "workspace.list never reported id=$WSID within ${CAPSULE_WAIT}s"
+            fi
+            exit 1
+        fi
+        sleep 1
+    done
+
+    if [ "$RUNTIME" = "capsule" ]; then
+        echo "Capsule row ready (id=$WSID, phase=ready)"
+    else
+        # Bounded (a wedged tmux server must not hang this script); every
+        # outcome is reported, none destructive: 1 is missing, 124 is a
+        # timeout, anything else (126/127/a signal) is unverifiable.
+        tmux_rc=0
+        timeout 5 tmux -S "$SOT_TMUX_SOCK" has-session -t "$TARGET" 2>/dev/null || tmux_rc=$?
+        case "$tmux_rc" in
+            0) ;;
+            1)   _row_left_running "daemon reported $TARGET but tmux session is missing"; exit 1 ;;
+            124) _row_left_running "tmux has-session for '$TARGET' timed out"; exit 1 ;;
+            *)   _row_left_running "tmux has-session for '$TARGET' exited $tmux_rc — could not verify it"; exit 1 ;;
+        esac
+    fi
     SPAWN_SUCCEEDED=true
 fi
 
