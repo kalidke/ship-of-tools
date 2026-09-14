@@ -39,8 +39,9 @@ mean 140 KB/s, peak 3.4 MB/s in a build burst.
 
 ## The decision in one paragraph
 
-A process declares who it is once, at hello, and every log line, roster
-and key uses that declaration. The daemon that spawned a row owns the
+A process declares who it is once, at hello, and every log line and
+roster surfaces that declaration — never a routing key, and never an
+on-disk address, this sprint. The daemon that spawned a row owns the
 row's facts — phase, the agent's handle, the latest result, the record
 location — observed or declared to it, persisted, served from memory. The
 daemon keeps a watcher on every ready capsule row and relays the voyage's
@@ -52,55 +53,63 @@ tmux; a capsule-capable install needs no tmux.
 
 ## Decisions
 
-1. **A connection declares one identity, `{host, role, instance, name}`,
-   and the daemon binds it once.** Invariant: a fact about a peer is read
-   from the peer's declaration on the connection being served — never
-   recomputed, never fetched over a second connection.
-   - One resolver, `sot_log::host_name()`, beside `state_dir`: `SOT_HOST`
-     if set, else `gethostname`'s first label lowercased; empty is a
-     startup error. It feeds hello, logs and the frontend's `HostKey`
-     ONLY: no on-disk namespace changes this sprint — `workspaces_dir()`
-     (`workspaces.rs:1239`) keeps today's host derivation until B2a's
-     migration lands. The daemon exports `SOT_HOST` in the awareness env
-     of every pane and capsule (`pty.rs:523`); `comm-context.sh` reads it.
+1. **A connection declares its identity on the wire, for display and
+   `agent.join` only — no address or on-disk namespace change this
+   sprint.** Invariant: a fact about a peer is read from its own
+   declaration on the connection being served, never recomputed — but a
+   DECLARATION is not yet an ADDRESS: handle derivation, self-file keys
+   and on-disk filenames keep main's exact rules until that migration is
+   its own later decision (manager review: Codex found nine blockers
+   turning on exactly this conflation).
+   - One resolver, `sot_log::host_name()`: `SOT_SELF_HOST` if set, else
+     `gethostname`'s first label lowercased; empty is a startup error. A
+     NEW variable — `SOT_HOST` already means the SSH target a remote
+     frontend dials (`launch-sot.ps1`/`.sh`); reusing it here silently
+     renamed a frontend to wherever it dials (Codex-reproduced). Feeds
+     hello, logs and display ONLY — `state_host()`'s on-disk namespace,
+     comm's `hostname -s`-based handle derivation, and the frontend's
+     persisted-state filename all keep their own resolver untouched. Not
+     pinned into a spawned pane/capsule's env: an override on the
+     daemon's own process already reaches every child by inheritance.
    - `HelloReq` gains `host`, `role ∈ {fe, bridge, cli, agent}`,
-     `instance`; `fe_handle` becomes `name` (old key read as an alias; a
-     legacy `fe_handle` with no `role` implies `fe` for the compatibility
-     period). `HelloRes` is unchanged. `role`: `fe` a frontend; `bridge` a
-     session's listener loop; `cli` a one-shot call from a shell; `agent`
-     a one-shot call from inside a session. Names are opaque addresses;
-     behaviour follows `role` — a Windows frontend keeps `win-fe-<host>`,
-     a non-Windows frontend is `fe-<host>`; a unified spelling is a later,
-     explicit address migration.
+     `instance`, and `name` (a NON-frontend's own declared handle).
+     `fe_handle` is untouched — no rename, no alias; unifying it with
+     `name` is sprint 2's `PROTOCOL_VERSION` bump. `role` gates
+     active-frontend selection/audience as an EXTRA check on `fe_handle`
+     (present and not `"fe"` excludes; absent falls back to `fe_handle`
+     alone, as before this lane). `HelloRes` is unchanged.
    - The frontend constructs one `FrontendIdentity {host, instance, name,
      role}` at process start (`instance` from `SOT_FE_INSTANCE`, else one
-     mint per process — `gpu.rs:19180` today re-samples the clock per
-     call); every connection, reconnect and input attribution shares it.
-   - The frontend keys each connection by its dial (the hosts.toml section,
-     configuration only) and carries the declared host as that connection's
-     label: shown wherever a host is named, logged, and used for one
-     decision — a second dial whose hello declares a host already declared
-     by another live dial is closed as a duplicate (replacing the same-port
-     skip). The declaration is a label, not a key: the same shape as the
-     daemon's opaque client_id plus its declared name.
-   - The log line and `version.query`'s roster print the declaration. Six
-     pasted comm hello lines become one `sot_hello_frame`. The comm
-     digest tier (`comm-lib.sh:897`) is deleted together with the lossy
-     clamp (`:895`): the host component is validated and carried lossless;
-     an over-long derived handle fails clearly, asking for `--name`.
+     mint per process, replacing a bare function that re-sampled the
+     clock per call); every connection, reconnect and input attribution
+     shares it.
+   - The frontend keys each connection by its dial (the hosts.toml
+     section) — NEVER re-homed to the declaration (tried and rejected,
+     below). One map records what each dial declared, read by ONE
+     display projection (`host_label`: the declaration if known, else the
+     dial key) used everywhere a host is named — Hosts mode, Sessions,
+     the status line, connect/disconnect logs — no separate truncation.
+     It feeds no refusal: a duplicate declaration cannot be closed
+     without a real transport-shutdown path, which does not exist, so
+     `hosts.rs`'s static same-port skip stays the one thing preventing two
+     dials from reaching the same daemon.
+   - The log line and `version.query`'s roster print the declaration
+     alongside the unchanged `fe_handle`. Six pasted comm hello lines
+     become one `sot_hello_frame`; `comm-lib.sh` gains one `sot_host` (the
+     same rule, JSON-escaped on the wire) the two share — comm's own
+     handle derivation (clamp, digest-suffix) is untouched.
    - **`agent.join {workspace_id, handle}`**, one op: `comm-join.sh`
-     declares the session's handle to the daemon that pinned its env, over
-     the typed owner endpoint `SOT_SOCKET` (`unix:<path>`, `pipe:<name>`; a
-     bare path stays a legacy Unix path — the one slice of family C pulled
-     forward; `SOT_RELAY_ENDPOINT` keeps delivery routing, ADR 0042 decision
-     3 amended by this typed form only). The daemon persists `agent_handle`
-     and deletes its self-file read-back (`capsule_comm_handle`,
-     `handlers.rs:5923`); the self-file pin (`capsule_workspace.rs:573`) and
-     the targeted registry prune (`handlers.rs:5384`) stay until family H.
-     The mgmt identity dial is already deleted (merged, fecb5737).
-   Deletes: four resolvers, `SOT_COMM_TEST_HOST`, the `unknown` fallback,
-   the clamp and digest, six hello copies, the self-file read-back. About
-   170 lines added, 260 removed. Wire: additive.
+     declares the session's handle through the EXISTING
+     `sot_daemon_endpoint` resolution (`SOT_SOCKET` first on Unix, its
+     pre-existing bare-path meaning; the local pipe on Windows). The
+     daemon applies a GUARDED IN-PLACE update of the existing row (never
+     a replacement, never a resurrection of a row destroyed mid-call) and
+     answers `ok` only once durably persisted; a save failure is
+     reported, not swallowed. The self-file read-back
+     (`capsule_comm_handle`) stays as the FALLBACK for an undeclared row
+     — deleted only with family H, once every row has cycled.
+   Net across the branch: about 1975 lines added, 350 removed. Wire:
+   additive.
 
 2. **The daemon that spawned a row is the owner of record for its facts.**
    Invariant: one authority per fact, observed or declared to the row's
@@ -269,14 +278,13 @@ tmux; a capsule-capable install needs no tmux.
 
 ## Consequences
 
-- **Wire, additive.** `HelloReq {host, role, instance, name}` (alias
-  `fe_handle`); `WorkspaceListEntry {agent_handle, result?}` beside
-  `phase`; `agent.join`; `capsule.evt` with blob tails; `{workspace_id,
-  rev}` on the command event; `pty.resize.workspace_id`; attach proto v3.
-  `PROTOCOL_VERSION` stays 1. A legacy frontend keeps active selection
-  through the `fe_handle` inference; a new frontend against an old daemon
-  is told so by the hello; the converge order — daemon, then frontends —
-  and the v3 row-cycling release cover the rest.
+- **Wire, additive.** `HelloReq {host, role, instance, name}` alongside
+  the unrenamed `fe_handle`; `WorkspaceListEntry {agent_handle, result?}`
+  beside `phase`; `agent.join`; `capsule.evt` with blob tails;
+  `{workspace_id, rev}` on the command event; `pty.resize.workspace_id`;
+  attach proto v3. `PROTOCOL_VERSION` stays 1. A legacy frontend keeps
+  active selection through `fe_handle`, untouched; the converge order —
+  daemon, then frontends — and the v3 row-cycling release cover the rest.
 - **Persistence.** The row toml gains `record_dir`, `agent_handle`,
   `result_path`, `result_caption`, `result_rev`; each defaults when
   absent. `phase` is never persisted. No directory is renamed this sprint.
@@ -319,7 +327,7 @@ the label does not serve (measured in lane A: roughly 640 lines).
 
 | Lane | Scope | Depends on |
 |------|-------|------------|
-| A | `host_name()`, `FrontendIdentity`, the hello declaration, the roster/log, `sot_hello_frame`, lossless handle components, `agent.join` + typed `SOT_SOCKET`. **Gate:** the declared-host label (dial-keyed, not a rekey) | — |
+| A | `host_name()`/`SOT_SELF_HOST`, `FrontendIdentity`, the hello declaration, the roster/log, `sot_hello_frame`/`sot_host`, `agent.join` (guarded update, existing `SOT_SOCKET`). **Gate:** display-only `host_label`, dial-keyed, never a rekey | — |
 | B1 | The observer (shared lane connection), `phase` from memory, the async activation on `pty.open`, the blocking preflight deleted | persistent supervisor client |
 | B2a | `record_dir` at create, lazy migration by evidence, the reconstructions deleted | A |
 | B2c | `result {path, caption, rev}`, one publication path, `sot-nav.sh` migrated, `seen_rev` | B2a |
