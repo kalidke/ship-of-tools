@@ -1,15 +1,18 @@
 #!/bin/bash
 # ccb — start (or resume) a comm-aware backend Claude session for ANY project.
 #
-# Thin launcher: runs `claude --permission-mode auto` and bakes the
-# /sot-session-start bootstrap skill in as the first-turn prompt, so the session
-# comes up already RECEIVING fast-comm on the sot-comm network (durable relay
-# listener + the inbox Monitor that wakes it). Project-agnostic: use it for any
-# backend session that should receive cross-session messages.
+# ADR 0046 decision 4: the launch recipe (the scrub list, the ~/.local/bin
+# PATH rule, the flag shape) has ONE owner now — the daemon's own
+# `agent_argv`/`claude_recipe` (rust/backend/src/capsule_workspace.rs) — and
+# this script only resolves `sotd` and execs THROUGH it via `sotd agent-exec`.
+# `sotd agent-exec claude` bakes in `--permission-mode auto` and appends the
+# /sot-session-start bootstrap skill last, so the session comes up already
+# RECEIVING fast-comm (durable relay listener + the inbox Monitor that wakes
+# it). Project-agnostic: use it for any backend session that should receive
+# cross-session messages.
 #
-# For Ship of Tools *backend* sessions use `ccbe` instead — it runs /sot-be-session-start,
-# which does everything /sot-session-start does and adds sot-specific checks
-# (frontend reachability, FE count, the .claude-bus git fallback).
+# For Ship of Tools *backend* sessions use `ccbe` instead (currently
+# identical — see its own header).
 #
 # Usage:
 #   ccb               # fresh comm-aware session
@@ -17,24 +20,16 @@
 #                     # do NOT survive `claude --continue`, so the bootstrap re-runs)
 #   ccb <flags...>    # any extra flags are forwarded to claude, before the skill
 #
-# The skill MUST stay the LAST positional arg so it lands as claude's first-turn
-# prompt AFTER any --continue / flags. Self-contained (no `ccdspy` dependency).
+# `sotd agent-exec` places the skill LAST (after every flag given here), so
+# it lands as claude's first-turn prompt AFTER any --continue / flags.
 # Source of truth: comm/adapters/claude/bin/ccb in Ship of Tools, deployed to
 # ~/.local/bin by `ShipTools.update_comm()`. Edit it there, not in ~/.local/bin.
-# Scrub teammate/fork/nesting env that leaks from a spawning parent (or the tmux
-# server env) into this otherwise-standalone session. CLAUDE_CODE_{FORK_SUBAGENT,
-# CHILD_SESSION,TEAMMATE_MODE,EXPERIMENTAL_AGENT_TEAMS} make a fresh claude
-# mis-detect itself as a nested/forked teammate; CLAUDECODE + AI_AGENT +
-# CLAUDE_CODE_SESSION_ID make it mis-detect itself as NESTED inside another claude
-# and exit cleanly at init. The daemon-boot path (ADR 0023) exposed this: a daemon
-# restarted from within a claude session propagates CLAUDECODE into every spawned
-# tmux pane, so a daemon-booted ccb's claude saw CLAUDECODE=1 and exited silently.
-# A ccb session is a fresh top-level session; claude repopulates what it needs.
-unset CLAUDE_CODE_FORK_SUBAGENT CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_TEAMMATE_MODE CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS CLAUDECODE AI_AGENT CLAUDE_CODE_SESSION_ID
-# A daemon-spawned tmux pane does NOT inherit a login PATH (it lacks ~/.local/bin),
-# so a bare `exec claude` fails with "claude: not found" → the pane dies in <1s and
-# the daemon-boot fails. Put ~/.local/bin on PATH and call claude by full path (the
-# same reason ccb itself is invoked by full path); the export also covers any
-# ~/.local/bin tools the spawned session uses.
-export PATH="$HOME/.local/bin:$PATH"
-exec "$HOME/.local/bin/claude" --permission-mode auto "$@" /sot-session-start
+sotd_bin="${SOTD_BIN:-}"
+[ -n "$sotd_bin" ] && [ -x "$sotd_bin" ] || sotd_bin="$(command -v sotd 2>/dev/null || true)"
+[ -n "$sotd_bin" ] && [ -x "$sotd_bin" ] || sotd_bin="$HOME/.local/share/sot/bin/sotd"
+[ -x "$sotd_bin" ] || sotd_bin="$HOME/.local/bin/sotd"
+if [ ! -x "$sotd_bin" ]; then
+    echo "ccb: sotd not found (checked \$SOTD_BIN, PATH, and the install paths)" >&2
+    exit 1
+fi
+exec "$sotd_bin" agent-exec claude "$@"

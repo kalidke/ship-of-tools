@@ -245,15 +245,47 @@ fn none_argv() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
 }
 
-#[cfg(windows)]
-fn claude_argv() -> Result<Vec<String>, String> {
-    Ok(vec![
+/// The one shared builder for claude's launch flags (ADR 0046 decision
+/// 4): a capsule spawn ([`claude_argv`], always `resume: true`, no extra
+/// flags — a supervised row always resumes its root's own conversation)
+/// and `sotd agent-exec` (`main.rs`, `resume: false`, the caller's own
+/// flags — `--continue` is `agent-exec`'s caller's choice, never added
+/// for it) build the SAME shape from here, so the two can never drift
+/// the way two independent copies of this argv already had (`ccb`
+/// carried its own literal copy before this decision). Returns argv with
+/// a LITERAL `"claude"` in position 0 — never resolved here — because
+/// resolution is platform-specific ([`resolve_claude`] on Linux, the
+/// daemon's own `PATH` on Windows) and each of this function's two real
+/// callers already has its own resolved binary to substitute in; this
+/// builder only owns the FLAG shape, not the binary path. Windows
+/// absolute resolution stays out of scope (`claude_argv`'s Windows arm,
+/// below, keeps the literal name); no other kind (`"codex"` included)
+/// shares this builder — `agent_argv` refuses every kind but `"claude"`/
+/// `"none"` before either caller reaches here.
+fn claude_recipe(resume: bool, extra: &[String]) -> Vec<String> {
+    let mut argv = vec![
         "claude".to_string(),
         "--permission-mode".to_string(),
         "auto".to_string(),
-        "--continue".to_string(),
-        "/sot-session-start".to_string(),
-    ])
+    ];
+    if resume {
+        argv.push("--continue".to_string());
+    }
+    argv.extend(extra.iter().cloned());
+    argv.push("/sot-session-start".to_string());
+    argv
+}
+
+/// ADR 0046 decision 4, stated once for both arms below: resolving
+/// `claude` to an ABSOLUTE path is Linux-only ([`resolve_claude`]) —
+/// Windows keeps the literal name from [`claude_recipe`] and relies on
+/// the daemon's own `PATH` (a detached child inherits it); that stays
+/// out of scope here, not a gap this decision closes. `"codex"` is not,
+/// and has never been, a supported [`agent_argv`] kind on either
+/// platform — nothing in this decision changes that.
+#[cfg(windows)]
+fn claude_argv() -> Result<Vec<String>, String> {
+    Ok(claude_recipe(true, &[]))
 }
 #[cfg(target_os = "linux")]
 fn claude_argv() -> Result<Vec<String>, String> {
@@ -261,13 +293,9 @@ fn claude_argv() -> Result<Vec<String>, String> {
         std::env::var_os("PATH").as_deref(),
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
     )?;
-    Ok(vec![
-        claude,
-        "--permission-mode".to_string(),
-        "auto".to_string(),
-        "--continue".to_string(),
-        "/sot-session-start".to_string(),
-    ])
+    let mut argv = claude_recipe(true, &[]);
+    argv[0] = claude;
+    Ok(argv)
 }
 /// ADR 0043 decision 22: no known Windows-style launcher exists for
 /// `claude` on any Unix other than Linux either — macOS stays
@@ -276,6 +304,49 @@ fn claude_argv() -> Result<Vec<String>, String> {
 #[cfg(not(any(windows, target_os = "linux")))]
 fn claude_argv() -> Result<Vec<String>, String> {
     Err("claude has no capsule launcher on this host".to_string())
+}
+
+/// Unix-only argv for `sotd agent-exec <kind> [flags…]` (ADR 0046
+/// decision 4) — the argv `main.rs` execs THIS process into directly,
+/// never spawned as a child. Shares [`claude_recipe`] with the capsule
+/// spawn path above (`resume: false` — `agent-exec` never adds
+/// `--continue` itself; that stays the daemon's own default for a
+/// capsule row, in [`claude_argv`]) and [`resolve_claude`] (via
+/// [`agent_argv`], so an unresolvable binary surfaces THAT SAME error
+/// text, not a second copy of it). `extra` lands between the fixed
+/// flags and the bootstrap skill, in the order given — `ccb`'s own
+/// `"$@"`. Only `"claude"` has a recipe here: `"none"` is a legitimate
+/// [`agent_argv`] kind for a capsule spawn (the bare platform shell, no
+/// flags, no skill) but shares no recipe shape with `"claude"`'s
+/// `--permission-mode`/skill argv, so `agent-exec` refuses it same as
+/// any kind [`agent_argv`] itself does not know; either failure prints
+/// [`agent_argv`]'s own error text and this returns `Err` for the caller
+/// to exit 2 on.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn agent_exec_argv(kind: &str, extra: &[String]) -> Result<Vec<String>, String> {
+    match kind {
+        "claude" => {
+            let argv = agent_argv("claude")?;
+            let claude_bin = argv
+                .into_iter()
+                .next()
+                .expect("agent_argv always returns a non-empty argv");
+            let mut recipe = claude_recipe(false, extra);
+            recipe[0] = claude_bin;
+            Ok(recipe)
+        }
+        other => {
+            // Every kind besides "claude"/"none" is already Err from
+            // `agent_argv` itself (propagated verbatim, `?`); "none" is
+            // the one kind that succeeds there but still has no recipe
+            // HERE (see doc above), so it falls through to its own
+            // refusal below.
+            agent_argv(other)?;
+            Err(format!(
+                "agent-exec has no recipe for {other:?} yet (only \"claude\" is supported)"
+            ))
+        }
+    }
 }
 
 /// Linux only: search `path_var` (a `PATH`-shaped env value), then
@@ -580,23 +651,46 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
     // `claude`), so a capsule session found neither `gh`, the comm
     // launchers, nor any user-installed tool a tmux row's login shell
     // sees (found 2026-09-12: the first capsule-row release cut failed
-    // its preflight on the system's ancient `gh`). Prepend it once, only
-    // when absent. Windows relies on the daemon's own PATH already
-    // reaching everything, as `claude_argv` documents.
+    // its preflight on the system's ancient `gh`). Windows relies on the
+    // daemon's own PATH already reaching everything, as `claude_argv`
+    // documents.
     #[cfg(not(windows))]
-    if let Some(home) = std::env::var_os("HOME") {
-        let local_bin = Path::new(&home).join(".local").join("bin");
-        let inherited = std::env::var("PATH").unwrap_or_default();
-        if !inherited.split(':').any(|dir| Path::new(dir) == local_bin) {
-            let joined = if inherited.is_empty() {
-                local_bin.display().to_string()
-            } else {
-                format!("{}:{inherited}", local_bin.display())
-            };
-            env.push(("PATH".to_string(), joined));
-        }
-    }
+    env.extend(agent_env(
+        std::env::var_os("PATH").as_deref(),
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    ));
     env
+}
+
+/// `~/.local/bin` on `PATH`, prepended once — the ONE copy of this rule
+/// (ADR 0046 decision 4), shared by every Unix agent-launch path: a
+/// capsule supervisor spawn ([`capsule_supervisor_env`] above) and `sotd
+/// agent-exec` (`main.rs`, execing THIS process into the agent directly)
+/// both call it rather than keeping two copies of "prepend once, only
+/// when absent." Pure — takes `PATH`/`HOME` explicitly rather than
+/// reading `std::env` itself (mirrors [`resolve_claude`]'s own
+/// testability rule) — so it is unit-tested without mutating global
+/// process state. Returns a single `PATH` entry to add, or nothing when
+/// `~/.local/bin` is already on it or there is no `HOME` to derive it
+/// from. Windows relies on the daemon's/`claude`'s own `PATH` already
+/// reaching everything (`claude_argv`'s doc) — this is never called
+/// there.
+#[cfg(not(windows))]
+pub fn agent_env(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Vec<(String, String)> {
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    let local_bin = home.join(".local").join("bin");
+    let inherited = path_var.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    if inherited.split(':').any(|dir| Path::new(dir) == local_bin) {
+        return Vec::new();
+    }
+    let joined = if inherited.is_empty() {
+        local_bin.display().to_string()
+    } else {
+        format!("{}:{inherited}", local_bin.display())
+    };
+    vec![("PATH".to_string(), joined)]
 }
 
 /// Outcome of [`runtime::end_run`] — the daemon's own portable
@@ -2601,8 +2695,87 @@ mod tests {
     }
 
     #[test]
+    fn claude_recipe_places_extra_flags_before_the_skill() {
+        assert_eq!(
+            claude_recipe(false, &["--x".to_string()]),
+            vec!["claude", "--permission-mode", "auto", "--x", "/sot-session-start"]
+        );
+    }
+
+    #[test]
+    fn claude_recipe_resume_keeps_continue_before_the_skill() {
+        assert_eq!(
+            claude_recipe(true, &[]),
+            vec!["claude", "--permission-mode", "auto", "--continue", "/sot-session-start"]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_exec_argv_claude_never_adds_continue() {
+        // ADR 0046 decision 4's own invariant: `agent-exec` never adds
+        // `--continue` itself (that stays the daemon's own default for a
+        // capsule spawn, in `claude_argv`) — it builds the SAME recipe
+        // shape with `resume: false` and the caller's own flags.
+        let _guard = self_file_env_guarded();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let claude = dir.path().join("claude");
+        std::fs::write(&claude, b"#!/bin/sh\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("PATH", dir.path());
+        std::env::remove_var("HOME");
+        let argv = agent_exec_argv(
+            "claude",
+            &["--continue".to_string(), "--x".to_string()],
+        )
+        .unwrap();
+        // The caller MAY pass its own "--continue" through `extra` (as
+        // `ccb --continue` does) -- `agent_exec_argv` never adds a SECOND
+        // one of its own; this only asserts the recipe's fixed shape
+        // around whatever the caller supplied.
+        assert_eq!(
+            argv,
+            vec![
+                claude.to_string_lossy().into_owned(),
+                "--permission-mode".to_string(),
+                "auto".to_string(),
+                "--continue".to_string(),
+                "--x".to_string(),
+                "/sot-session-start".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_exec_argv_none_is_refused_it_has_no_shared_recipe() {
+        // "none" is a legitimate `agent_argv` kind (the bare platform
+        // shell) but shares no `--permission-mode`/skill recipe shape
+        // with "claude" -- `agent-exec` refuses it regardless of whether
+        // PATH/HOME would resolve anything, so neither is touched here.
+        let err = agent_exec_argv("none", &[]).unwrap_err();
+        assert!(err.contains("none"), "got: {err}");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_exec_argv_unknown_kind_prints_agent_argvs_own_error() {
+        assert_eq!(
+            agent_exec_argv("bogus", &[]).unwrap_err(),
+            agent_argv("bogus").unwrap_err()
+        );
+    }
+
+    #[test]
     #[cfg(windows)]
-    fn agent_argv_claude_matches_ccbs_own_flags() {
+    fn agent_argv_claude_matches_the_daemons_own_recipe() {
+        // Renamed (ADR 0046 decision 4): `ccb` no longer bakes these
+        // flags in itself -- it execs through `sotd agent-exec claude
+        // "$@"`, which shares this SAME `claude_recipe` builder. This
+        // still pins the Windows capsule-spawn shape (`claude_recipe(true,
+        // &[])` verbatim, no absolute-path resolution -- Windows relies
+        // on the daemon's own `PATH`, `claude_argv`'s own doc).
         assert_eq!(
             agent_argv("claude").unwrap(),
             vec!["claude", "--permission-mode", "auto", "--continue", "/sot-session-start"]
@@ -2899,19 +3072,31 @@ mod tests {
 
     #[test]
     #[cfg(not(windows))]
-    fn capsule_supervisor_env_prepends_local_bin_to_path_once() {
-        // The ccb launcher's PATH rule: the service's PATH has no
-        // ~/.local/bin, so the leg gets it prepended — and a PATH that
-        // already reaches it is left alone (no duplicate entry).
-        let _guard = self_file_env_guarded();
-        std::env::set_var("HOME", "/fake-home");
-        std::env::set_var("PATH", "/usr/bin:/bin");
-        let env = capsule_supervisor_env("ws-p-1", "p", Path::new("/fake-home/p"), "");
+    fn agent_env_prepends_local_bin_to_path_once() {
+        // The ccb launcher's PATH rule, now the ONE shared function (ADR
+        // 0046 decision 4): PATH with no ~/.local/bin gets it prepended
+        // -- and a PATH that already reaches it is left alone (no
+        // duplicate entry). Pure/DI'd (mirrors `resolve_claude`'s own
+        // tests) -- no env mutation, no guard needed.
+        let env = agent_env(
+            Some(std::ffi::OsStr::new("/usr/bin:/bin")),
+            Some(Path::new("/fake-home")),
+        );
         let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
         assert_eq!(get("PATH"), Some("/fake-home/.local/bin:/usr/bin:/bin"));
-        std::env::set_var("PATH", "/fake-home/.local/bin:/usr/bin");
-        let env = capsule_supervisor_env("ws-p-1", "p", Path::new("/fake-home/p"), "");
-        assert!(env.iter().all(|(key, _)| key != "PATH"), "already on PATH: nothing to stamp");
+
+        let env = agent_env(
+            Some(std::ffi::OsStr::new("/fake-home/.local/bin:/usr/bin")),
+            Some(Path::new("/fake-home")),
+        );
+        assert!(env.is_empty(), "already on PATH: nothing to stamp");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn agent_env_is_empty_with_no_home_to_derive_it_from() {
+        let env = agent_env(Some(std::ffi::OsStr::new("/usr/bin:/bin")), None);
+        assert!(env.is_empty());
     }
 
     #[test]
