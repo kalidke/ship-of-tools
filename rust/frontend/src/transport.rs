@@ -1636,7 +1636,12 @@ async fn connect_and_run(
     if let Some(pipe_path) = config.pipe.as_ref() {
         match connect_pipe(pipe_path).await {
             Ok(stream) => {
-                tracing::info!(%host, ?pipe_path, "connected via local socket");
+                // Pre-hello: the daemon hasn't declared its host yet, so
+                // `host` here is only this connection's DIAL key, not a
+                // claim about identity (ADR 0046 decision 1) — label it
+                // plainly so it's never misread as the declared value the
+                // later `"connected"` line's `declared` field carries.
+                tracing::info!(dial = %host, ?pipe_path, "connected via local socket");
                 let (rx, tx) = stream.split();
                 let rx = codec::buffered(rx);
                 return run_protocol(
@@ -1685,7 +1690,11 @@ async fn connect_and_run(
         // through to `IncomingEvt::Connected` rather than re-resolved
         // anywhere downstream.
         let tcp_peer = stream.peer_addr().ok();
-        tracing::info!(%host, %tcp_addr, ?tcp_peer, "connected via tcp");
+        // Same as the local-socket branch above: pre-hello, `host` is only
+        // this connection's DIAL key (ADR 0046 decision 1), not yet the
+        // declared identity — labeled explicitly, not left as an
+        // ambiguous bare `host` field.
+        tracing::info!(dial = %host, %tcp_addr, ?tcp_peer, "connected via tcp");
         let (rx, tx) = stream.into_split();
         let rx = codec::buffered(rx);
         return run_protocol(
@@ -2055,7 +2064,7 @@ where
     // by months of stable session).
     *backoff_ms = 200;
     // ADR 0046 decision 1: the daemon's declared host travels on this
-    // event for display only (see `App::record_declared_host` and
+    // event for display only (see `State::record_declared_host` and
     // `crate::gpu::host_label`) — the DIAL label (`host`) stays this
     // connection's tag for its whole lifetime.
     emit(IncomingEvt::Connected {
