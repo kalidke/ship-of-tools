@@ -91,34 +91,41 @@ fi
 
 tp="$(jqget '.transcript_path // empty')"
 
-# The WHOLE text of the last assistant message (the closing reply). The
-# legacy code took only its last line, which is where the marker never is.
-last_text=""
-if [ -n "$tp" ] && [ -r "$tp" ]; then
-    last_text="$(tail -n 400 "$tp" 2>/dev/null \
-        | jq -c 'select(.type=="assistant") | [.message.content[]? | select(.type=="text") | .text] | join("\n")' 2>/dev/null \
-        | tail -n 1 | jq -r '.' 2>/dev/null)"
-fi
-
-# The turn's size: tool calls and wall seconds since the last HUMAN prompt
-# (a `user` record whose content is a string / carries no tool_result —
-# tool results are `user` records too). A prompt not found in the tail means
-# the turn is longer than the tail: an effort by construction.
+# The current turn's slice: everything after the last HUMAN/machine prompt (a
+# `user` record whose content is a string / carries no tool_result -- tool
+# results are `user` records too). One jq pass over that slice feeds two
+# things: the effort counter (tool calls + wall seconds) and the closing text
+# the marker check below searches. A prompt not found in the tail means the
+# turn is longer than the tail: an effort by construction (tools/secs pinned
+# to a 9999 sentinel, as before) -- but the text is still joined from
+# whatever the tail holds, since a stale prefix beats a missed marker.
+#
+# The text is EVERY assistant text block in the slice, joined in order, not
+# just the last assistant record's (2026-09-14, live incident: a long reply
+# opened with SITREP-WAITING: but the hook nudged "no closing marker" anyway).
+# A long reply can stream across several assistant transcript records for one
+# logical turn, and a marker opening an earlier record was silently dropped
+# when only the last record was read.
 EFFORT_TOOLS=8; EFFORT_SECS=300
-turn_tools=0; turn_secs=0
+turn_tools=0; turn_secs=0; last_text=""
 if [ -n "$tp" ] && [ -r "$tp" ]; then
-    read -r turn_tools turn_secs < <(tail -n 3000 "$tp" 2>/dev/null | jq -sr '
+    turn_json="$(tail -n 3000 "$tp" 2>/dev/null | jq -sc '
         def is_prompt: .type=="user" and ((.message.content|type)=="string"
             or (([.message.content[]? | .type] | index("tool_result")) == null));
         def secs: sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch 0);
         ([to_entries[] | select(.value | is_prompt) | .key] | last) as $h
-        | if $h == null then "9999 9999"
-          else (.[$h+1:]) as $turn
-            | ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")] | length) as $n
+        | (if $h == null then . else .[$h+1:] end) as $turn
+        | ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text] | join("\n")) as $text
+        | if $h == null then {tools: 9999, secs: 9999, text: $text}
+          else
+            ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")] | length) as $n
             | ((.[$h].timestamp // "") | if . == "" then 0 else secs end) as $t0
             | (([$turn[] | select(.type=="assistant") | .timestamp // empty] | last // "") | if . == "" then 0 else secs end) as $t1
-            | "\($n) \(if $t0 > 0 and $t1 > $t0 then $t1 - $t0 else 0 end)"
-          end' 2>/dev/null || echo "0 0")
+            | {tools: $n, secs: (if $t0 > 0 and $t1 > $t0 then $t1 - $t0 else 0 end), text: $text}
+          end' 2>/dev/null)"
+    turn_tools="$(printf '%s' "$turn_json" | jq -r '.tools // 0' 2>/dev/null)"
+    turn_secs="$(printf '%s' "$turn_json" | jq -r '.secs // 0' 2>/dev/null)"
+    last_text="$(printf '%s' "$turn_json" | jq -r '.text // ""' 2>/dev/null)"
     case "$turn_tools" in ''|*[!0-9]*) turn_tools=0 ;; esac
     case "$turn_secs" in ''|*[!0-9]*) turn_secs=0 ;; esac
 fi

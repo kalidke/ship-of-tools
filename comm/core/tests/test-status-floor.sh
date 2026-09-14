@@ -51,6 +51,16 @@ IT() {
       jq -nc --arg t "$1" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'; } > "$tr"
     jq -nc --arg p "$tr" --argjson a "${2:-false}" '{transcript_path:$p, stop_hook_active:$a}' | bash "$HOOKS_DIR/comm-status-idle.sh"
 }
+# IT2 TEXT1 TEXT2 [stop_hook_active]: like IT, but the closing reply is split
+# across TWO separate assistant transcript records (TEXT1 then TEXT2), as a
+# streaming harness can do for one logical turn.
+IT2() {
+    local tr="$WORK/transcript.jsonl"
+    { jq -nc '{type:"user",message:{content:"go"}}'
+      jq -nc --arg t "$1" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'
+      jq -nc --arg t "$2" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'; } > "$tr"
+    jq -nc --arg p "$tr" --argjson a "${3:-false}" '{transcript_path:$p, stop_hook_active:$a}' | bash "$HOOKS_DIR/comm-status-idle.sh"
+}
 summary() { jq -r --arg n "$NAME" '.agents[$n].summary // ""' "$REGISTRY"; }
 # ITX TOOLS SECS TEXT [stop_hook_active]: Stop with a transcript whose turn ran TOOLS
 # tool calls over SECS wall seconds after the human prompt, ending in TEXT.
@@ -129,6 +139,17 @@ case_marker_in_continuation_still_stamps() {
     local out; out="$(IT $'SITREP-QUESTION: which port?' true)"
     [ -z "$out" ] || { echo "    unexpected output '$out'"; return 1; }
     expect blocked/user/- state && [ "$(summary)" = "which port?" ]
+}
+# 2026-09-14 live incident: a long reply's closing SITREP-WAITING: line was
+# missed and nudged as "no closing marker" -- the reply streamed across two
+# assistant transcript records and only the LAST record was ever searched.
+case_marker_split_across_assistant_records_still_stamps() {
+    seed idle; W "$GENUINE"
+    local out
+    out="$(IT2 $'Some analysis of the failure...\n\nSITREP-WAITING: the suite is rerunning in the background' \
+        'One more thing: will report back once it lands.')"
+    [ -z "$out" ] || { echo "    unexpected nudge: '$out'"; return 1; }
+    expect waiting/user/sticky state && [ "$(summary)" = "the suite is rerunning in the background" ] || { echo "    summary '$(summary)'"; return 1; }
 }
 case_parked_user_turn_without_marker_is_nudged_once() {
     seed idle; W "$GENUINE"; "$ST" waiting "job"
@@ -345,6 +366,7 @@ check "SITREP: stamps blue with the headline as summary" case_marker_done_stamps
 check "SITREP-QUESTION: (bold-wrapped) stamps red with the question" case_marker_question_stamps_red
 check "SITREP-WAITING: alone takes the next line and sets sticky purple" case_marker_waiting_stamps_sticky_purple
 check "a marker in a stop-hook continuation still stamps, no nudge" case_marker_in_continuation_still_stamps
+check "a marker split across two assistant records still stamps, no nudge" case_marker_split_across_assistant_records_still_stamps
 check "a human turn ending parked without a marker is nudged once, row untouched" case_parked_user_turn_without_marker_is_nudged_once
 check "a machine turn ending parked without a marker is not nudged" case_parked_machine_turn_without_marker_is_not_nudged
 check "a plain human answer without a marker floors blue, no nudge" case_plain_user_turn_without_marker_floors_blue_unnudged
