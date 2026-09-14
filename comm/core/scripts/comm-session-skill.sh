@@ -21,28 +21,30 @@
 #      `self_comm_handle()` (gpu.rs) formats `win-fe-<lowercased host>`, and the
 #      FE skill derives the same handle in lockstep, so this prefix is definitive
 #      whenever the session has joined or exported SOT_COMM_NAME.
-#   2. no tmux AND an `fe-inbox.jsonl` exists -> FRONTEND. This box runs an FE.
-#      Both halves are required: the inbox alone would misfire for a backend tmux
-#      session on a box that also runs a local FE; BE sessions always live in
-#      tmux (comm-context is keyed by tmux pane id), so the tmux test separates
-#      them.
-#   3. no tmux AND Windows AND the repo is Ship of Tools -> FRONTEND. Covers the
+#   2. no tmux AND Windows AND the repo is Ship of Tools -> FRONTEND. Covers the
 #      COLD FE — `fe-inbox.jsonl` is created LAZILY, by the first `agent.message`
 #      the FE receives (gpu.rs::append_agent_message opens it with `create(true)`
 #      on append), so a freshly-installed frontend that has never been messaged
-#      has NO inbox file and rule 2 misses it. Without this rule that FE fell
-#      through to the repo test and was told to run the BACKEND bootstrap — the
-#      exact misroute this script exists to prevent. Scoped to the SoT repo so a
-#      plain Windows session in some unrelated checkout stays generic.
-#   4. the repo is Ship of Tools -> `/sot-be-session-start`, the sot-flavored
+#      has NO inbox file. Without this rule that FE fell through to the repo
+#      test and was told to run the BACKEND bootstrap — the exact misroute this
+#      script exists to prevent. Scoped to the SoT repo so a plain Windows
+#      session in some unrelated checkout stays generic.
+#   3. the repo is Ship of Tools -> `/sot-be-session-start`, the sot-flavored
 #      backend superset.
-#   5. anything else -> `/sot-session-start`, the project-agnostic bootstrap.
+#   4. anything else -> `/sot-session-start`, the project-agnostic bootstrap.
 #
-# "Is it Ship of Tools at all" is decided by repo IDENTITY, not directory name —
-# see `_is_sot_repo`.
-#
-# The fe-inbox path mirrors gpu.rs::sot_state_dir() exactly: `%LOCALAPPDATA%\sot`
-# on Windows, `$XDG_STATE_HOME/sot` (or `$HOME/.local/state/sot`) elsewhere.
+# There is deliberately NO "an `fe-inbox.jsonl` exists" rule (removed
+# 2026-09-14). The file is a leftover, not a liveness signal: the frontend
+# creates it, drains and truncates it, and never removes it at exit, and it
+# writes no pid/lock file either — nothing under the state dir is true only
+# while a frontend runs. With that rule, one Linux frontend launch left an
+# empty inbox behind and every later non-tmux session on the box (daemon-
+# spawned capsule rows, plain shell sessions) was classified as the frontend
+# driver, derived the `win-fe-<host>` handle, and stole the frontend's
+# messages. The driver on a non-Windows box is PINNED to `win-fe-<host>` by
+# its launcher (ADR 0042 §2, `agent_name` -> `SOT_COMM_NAME`), which rule 1
+# catches; a cold Windows frontend is rule 2. Nothing else on a box is the
+# frontend.
 #
 # Source of truth: comm/core/scripts/comm-session-skill.sh in Ship of Tools,
 # deployed to ~/.sot-comm/bin by ShipTools.update_comm().
@@ -171,9 +173,16 @@ if [ "${1:-}" = "--selftest" ]; then
           "$(CLAUDE_PROJECT_DIR="$tmp/renamed" "$self")"
     _case "BE: tmux wins on a box that runs an FE" "$BE_SKILL" \
           "$(cd "$sot" && TMUX="${TMUX:-fake}" XDG_STATE_HOME="$tmp/fe-state" "$self")"
+    # A leftover inbox is NOT a frontend: a Linux box that once ran an FE
+    # keeps an empty fe-inbox.jsonl forever, and a plain non-tmux session
+    # there (a capsule row, a shell claude) must stay backend.
+    _case "BE: leftover fe-inbox, no tmux, non-Windows (REGRESSION)" "$BE_SKILL" \
+          "$(cd "$sot" && env -u TMUX -u OS -u OSTYPE XDG_STATE_HOME="$tmp/fe-state" "$self")"
     _case "FE: joined win-fe handle" "$FE_SKILL" "$(SOT_COMM_NAME=win-fe-devbox "$self")"
-    _case "FE: no tmux, fe-inbox exists" "$FE_SKILL" \
-          "$(cd "$sot" && env -u TMUX XDG_STATE_HOME="$tmp/fe-state" "$self")"
+    # The live non-Windows frontend driver: its launcher pins the handle
+    # (ADR 0042 §2) — that pin, not the inbox file, is what makes it the FE.
+    _case "FE: pinned driver on a non-Windows box" "$FE_SKILL" \
+          "$(cd "$sot" && env -u TMUX -u OS -u OSTYPE XDG_STATE_HOME="$tmp/fe-state" SOT_COMM_NAME=win-fe-devbox "$self")"
     _case "FE: COLD windows FE, no inbox yet (REGRESSION)" "$FE_SKILL" \
           "$(cd "$sot" && env -u TMUX OS=Windows_NT XDG_STATE_HOME="$tmp/empty-state" "$self")"
     _case "generic: windows, no tmux, NON-SoT repo" "$GENERIC_SKILL" \
@@ -215,27 +224,15 @@ case "$handle" in
     win-fe*) echo "$FE_SKILL"; exit 0 ;;
 esac
 
-if [ -n "${LOCALAPPDATA:-}" ]; then
-    fe_inbox="$LOCALAPPDATA/sot/fe-inbox.jsonl"
-else
-    fe_inbox="${XDG_STATE_HOME:-$HOME/.local/state}/sot/fe-inbox.jsonl"
-fi
-
 repo_dir="$(_repo_dir)"
 
-# --- 2. this box runs a frontend, and we're not a tmux backend ----------------
-if [ -z "${TMUX:-}" ] && [ -f "$fe_inbox" ]; then
-    echo "$FE_SKILL"
-    exit 0
-fi
-
-# --- 3. cold frontend: Windows, no tmux, in the SoT checkout, no inbox yet ----
+# --- 2. cold frontend: Windows, no tmux, in the SoT checkout, no inbox yet ----
 if [ -z "${TMUX:-}" ] && _is_windows && _is_sot_repo "$repo_dir"; then
     echo "$FE_SKILL"
     exit 0
 fi
 
-# --- 4/5. backend superset vs project-agnostic bootstrap ---------------------
+# --- 3/4. backend superset vs project-agnostic bootstrap ---------------------
 if _is_sot_repo "$repo_dir"; then
     echo "$BE_SKILL"
 else

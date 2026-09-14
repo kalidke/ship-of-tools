@@ -330,8 +330,18 @@ fi
 # `sot_host`/`$SOT_SELF_HOST` (the declared, display-only identity). An
 # earlier draft routed this through `sot_host`, which changes existing
 # frontend addresses under an explicit override — reverted.
+# Windows only: on any other box the frontend driver is PINNED to
+# `win-fe-<host>` by its launcher (ADR 0042 §2), so an unpinned session that
+# derived it would be a second holder of the frontend's address — the
+# 2026-09-14 misroute, where three plain Linux sessions shared the slot and
+# swallowed the frontend's messages. Such a session keeps its derived
+# `<slug>-<host>` handle and says so.
 if [ -z "$PIN_NAME" ] && [ -z "${NAME:-}" ] && [ "$IS_FE_ROLE" = 1 ]; then
-    export SOT_COMM_NAME="win-fe-$( (hostname -s 2>/dev/null || hostname) | tr '[:upper:]' '[:lower:]' )"
+    if [ "$IS_WINDOWS" = 1 ]; then
+        export SOT_COMM_NAME="win-fe-$( (hostname -s 2>/dev/null || hostname) | tr '[:upper:]' '[:lower:]' )"
+    else
+        echo "comm-session-start: FE role on a non-Windows host without a pinned handle; not deriving win-fe-<host> (the frontend driver is pinned by its launcher)" >&2
+    fi
 fi
 
 JOIN_OUT="$("$SCRIPT_DIR/comm-join.sh" 2>&1)" || true
