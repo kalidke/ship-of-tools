@@ -165,6 +165,37 @@ const DR = ShipToolsRepl
         @test occursin("no such file", String(res.payload.error))
     end
 
+    @testset "serve: run_file include announces a browser frame mid-include" begin
+        # A --fresh run reaches the shim as a fresh=false run_file after the
+        # daemon bounced the child; the include runs INSIDE stream_eval_frames,
+        # so a serve in the file (wglshow / a wrapper that swallows the return
+        # value) must stream its browser frame like any mid-eval announce.
+        path = tempname() * ".jl"
+        write(path, """
+            ShipToolsRepl.announce_browserview(ShipToolsRepl.BrowserView("http://127.0.0.1:59994/"))
+            println("served")
+            nothing
+            """)
+        bs_in, bs_out, _ = drive(String[])
+        req = JSON3.write(Dict(
+            :v => 1, :id => 11, :op => "repl.run_file",
+            :payload => Dict(:eval_id => 78, :path => path, :fresh => false),
+        ))
+        write(bs_in, req * "\n")
+        flush(bs_in)
+        envs = read_until_res(bs_out)
+        close(bs_in)
+        rm(path; force = true)
+        evts = [e for e in envs if get(e, :kind, "") == "evt" && e.op == "repl.frame"]
+        framekinds = [e.payload.frame.kind for e in evts]
+        @test "browser" in framekinds
+        @test "stdout" in framekinds
+        @test last(framekinds) == "done"
+        bf = evts[findfirst(==("browser"), framekinds)].payload.frame
+        @test bf.url == "http://127.0.0.1:59994/" && bf.open == true
+        @test all(e -> e.payload.eval_id == 78, evts)
+    end
+
     @testset "serve: repl.interrupt cancels a running eval" begin
         bs_in, bs_out, _ = drive(String[])
         # A long, yielding eval so the dispatch loop stays responsive to interrupt.
