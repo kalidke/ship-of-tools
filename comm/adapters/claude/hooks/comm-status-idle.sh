@@ -26,6 +26,14 @@
 #       Any nudge on a turn that already has its block is a duplicate by
 #       construction; the language rules live in the sitrep skill only.
 #
+#       ARTIFACT AUDIT EXCEPTION (2026-09-14, owner: "the hook should eval if
+#       something should be displayed in the preview" -- a session announced a
+#       design brief in a file but never showed it). A marker still stamps the
+#       row and ends the flow, EXCEPT: before exiting it runs the artifact-only
+#       tier of comm-turn-auditor.sh once, and blocks with a show-result
+#       reminder if that finds an unsurfaced result -- the row stays stamped
+#       from the marker, only the missed badge gets a nudge.
+#
 #   (1) NUDGE (reinforce self-report). If a JOINED comm agent ends a turn whose
 #       last reply contains a `?` and it did NOT already self-mark blocked/waiting,
 #       remind it — via a Stop `decision:block` whose reason is fed back to the
@@ -138,6 +146,30 @@ if [ -n "$marker_state" ]; then
     # Explicit (not soft): the marker IS the model's report. `waiting` sets
     # the sticky purple; `blocked` keeps a marker underneath as today.
     [ -x "$STATUS" ] && "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || true
+
+    # ARTIFACT AUDIT EXCEPTION (2026-09-14): the row is already stamped from
+    # the marker above -- this only catches a result the closing block named
+    # (or produced) but never badged into the nav pane. Loop guard first: a
+    # stop-hook continuation never gets a second nudge.
+    [ "$(jqget '.stop_hook_active // false')" = "true" ] && exit 0
+    AUDITOR="$SELF_DIR/comm-turn-auditor.sh"
+    if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
+        findings="$(SOT_AUDITOR_CHECKS=artifact "$AUDITOR" "$NAME" "$tp" 2>/dev/null)"; arc=$?
+        if [ "$arc" -eq 0 ] && [ -n "$findings" ]; then
+            # Same MSYS2 argv-conversion guard as the general auditor path
+            # below: findings is free text and must not reach jq via --arg.
+            _findings_file="$(mktemp "${TMPDIR:-/tmp}/sot-comm-idle-marker-findings.XXXXXX" 2>/dev/null)"
+            if [ -n "$_findings_file" ] && printf '%s' "$findings" > "$_findings_file" 2>/dev/null; then
+                jq -nc --rawfile f "$_findings_file" '{
+                  decision: "block",
+                  reason: ("Your closing block names a result that was never surfaced: " + $f + " -- badge it now via the show-result skill (show-result <path>), then end the turn. Your row is already stamped from the marker -- do not write a second sitrep block.")
+                }'
+                rm -f "$_findings_file"
+                exit 0
+            fi
+            rm -f "$_findings_file" 2>/dev/null
+        fi
+    fi
     exit 0
 fi
 

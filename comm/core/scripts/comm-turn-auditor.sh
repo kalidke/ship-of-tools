@@ -31,6 +31,12 @@
 # Kill switch: SOT_TURN_AUDITOR=0 (env) or ~/.sot-comm/auditor.off (file).
 # Model override: SOT_AUDITOR_MODEL (default claude-haiku-4-5-20251001).
 # Rate limit: identical finding-candidates within 30 min are not re-judged.
+# Scoped call: SOT_AUDITOR_CHECKS=<comma list> (e.g. `artifact`) restricts
+# tier 1 to those candidate kinds only -- `artifact` also enables
+# `blind-badge`, since both are about a result being SHOWN -- and the tier 2
+# prompt lists only the enabled checks' descriptions. Unset (default) runs
+# every check, exactly as before (2026-09-14, the marker-turn artifact audit
+# in comm-status-idle.sh calls this scoped).
 #
 # Source of truth: comm/core/scripts/comm-turn-auditor.sh in Ship of Tools,
 # deployed to ~/.sot-comm/bin by ShipTools.update_comm(). Edit it there.
@@ -41,6 +47,15 @@ COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 REGISTRY="$COMM_HOME/registry.json"
 STATE_DIR="$COMM_HOME/state"; mkdir -p "$STATE_DIR" 2>/dev/null || true
 MODEL="${SOT_AUDITOR_MODEL:-claude-haiku-4-5-20251001}"
+CHECKS="${SOT_AUDITOR_CHECKS:-}"
+# $1: a candidate kind. Empty CHECKS (default) enables every kind, as before.
+# A set CHECKS is a comma list; "artifact" also enables "blind-badge".
+checks_enabled() {
+    [ -z "$CHECKS" ] && return 0
+    case ",$CHECKS," in *",$1,"*) return 0 ;; esac
+    [ "$1" = blind-badge ] && case ",$CHECKS," in *",artifact,"*) return 0 ;; esac
+    return 1
+}
 
 [ -n "$NAME" ] && [ -n "$TP" ] && [ -r "$TP" ] || exit 3
 [ "${SOT_TURN_AUDITOR:-1}" = 0 ] && exit 3
@@ -68,14 +83,24 @@ tools="$(printf '%s\n' "$tail_lines" \
 row_state="$(jq -r --arg n "$NAME" '.agents[$n] | (.state // "?") + " sticky=" + (.sticky // "-")' "$REGISTRY" 2>/dev/null)"
 
 # ---- tier 1: candidate filters ----------------------------------------------
-ARTIFACT_RE='\.(png|svg|jpe?g|gif|pdf|mp4|html)\b'
+# .md is common in tool args that are plain reads (CLAUDE.md, README.md,
+# SKILL.md) — the artifact match below is restricted to tool calls that
+# WRITE or RUN, so an .md read alone never trips it (2026-09-14).
+ARTIFACT_RE='\.(png|svg|jpe?g|gif|pdf|mp4|html|md)\b'
 SHOWN_RE='show-result|sot-fe preview|sot-nav'
 candidates=()
 
-case "$last_text" in *\?*) candidates+=("question") ;; esac
+case "$last_text" in *\?*) checks_enabled question && candidates+=("question") ;; esac
 
-if printf '%s\n%s' "$tools" "$last_text" | grep -qE "$ARTIFACT_RE"; then
-    printf '%s' "$tools" | grep -qE "$SHOWN_RE" || candidates+=("artifact")
+if checks_enabled artifact; then
+    # A candidate only when the artifact path was WRITTEN (Write/Edit/
+    # NotebookEdit), produced via a Bash command, or named in the final
+    # text -- a Read of an ARTIFACT_RE path (e.g. CLAUDE.md) does not count
+    # (2026-09-14: reads alone must not fire this, now that .md is in scope).
+    artifact_tools="$(printf '%s' "$tools" | grep -E '^(Write|Edit|NotebookEdit|Bash)  ')"
+    if printf '%s\n%s' "$artifact_tools" "$last_text" | grep -qE "$ARTIFACT_RE"; then
+        printf '%s' "$tools" | grep -qE "$SHOWN_RE" || candidates+=("artifact")
+    fi
 fi
 
 # Stale waiting: the row carries a sticky waiting marker, but this turn
@@ -84,7 +109,8 @@ fi
 # false purple with a dead summary between turns (a peer session, 2026-07-04).
 case "$row_state" in
   *sticky=[!-]*)
-    if printf '%s\n%s' "$tools" "$last_text" | grep -qiE "task-notification|completed|finished" \
+    if checks_enabled stale-waiting \
+        && printf '%s\n%s' "$tools" "$last_text" | grep -qiE "task-notification|completed|finished" \
         && ! printf '%s' "$tools" | grep -qE 'RUN_IN_BACKGROUND|^Monitor '; then
         candidates+=("stale-waiting")
     fi ;;
@@ -93,7 +119,7 @@ esac
 # Blind badge: an image WAS surfaced this turn, but no Read/view of an image
 # appears in the turn context — the session badged what a filename suggested,
 # not what it saw (2026-07-03 incident: three near-black renders in a row).
-if printf '%s' "$tools" | grep -E "$SHOWN_RE" | grep -qiE "$ARTIFACT_RE"; then
+if checks_enabled blind-badge && printf '%s' "$tools" | grep -E "$SHOWN_RE" | grep -qiE "$ARTIFACT_RE"; then
     printf '%s' "$tools" | grep -E "^Read " | grep -qiE "$ARTIFACT_RE" \
         || candidates+=("blind-badge")
 fi
@@ -105,7 +131,7 @@ fi
 # It still counts as "re-armed something" for the stale-waiting check above —
 # suppressing a nudge is the conservative direction.
 bg_tools="$(printf '%s' "$tools" | grep -vE 'comm-watch\.sh')"
-if printf '%s' "$bg_tools" | grep -qE 'RUN_IN_BACKGROUND|^Monitor |^Agent |^Task '; then
+if checks_enabled background && printf '%s' "$bg_tools" | grep -qE 'RUN_IN_BACKGROUND|^Monitor |^Agent |^Task '; then
     case "$row_state" in waiting*|blocked*|*sticky=[!-]*) ;; *) candidates+=("background") ;; esac
 fi
 
@@ -126,6 +152,70 @@ fi
 printf '%s %s\n' "$sig" "$(date +%s)" > "$sigfile" 2>/dev/null || true
 
 # ---- tier 2: one conservative Haiku judgment ---------------------------------
+# Each check's full description, looked up by kind; only the ENABLED kinds'
+# text reaches the prompt below (SOT_AUDITOR_CHECKS scoping, 2026-09-14), so a
+# scoped call (e.g. the marker-turn artifact audit) doesn't hand the judge
+# checks it was never asked to run.
+describe_check() {
+    case "$1" in
+    question) cat <<'Q'
+- question: the final text asks the USER a real, turn-ending question they must
+  answer (not rhetorical, not already answered, not "let me know if...") AND the
+  work-state below is not already blocked. Finding message: tell the session to
+  (a) run comm-status.sh blocked "<the question RESTATED as one clear standalone
+  sentence>" and (b) end its continuation by restating that question plainly to
+  the user — the user must see, at a glance, exactly what is being asked.
+Q
+        ;;
+    artifact) cat <<'A'
+- artifact: the turn produced a clearly NEW user-facing result (fresh plot,
+  figure, screenshot, render, PDF, report, design brief, or plan written to a
+  file for the user) and it was NOT surfaced in the user's nav/preview pane (no
+  show-result / sot-fe preview call). The rule (per the maintainer): a new
+  result MUST be shown in the nav pane — naming the path in text is not showing
+  it. A design brief, report or plan written to a file for the user IS a
+  result; CLAUDE.md/README/skill files edited as part of the work are not.
+  Intermediate/temp/test files do not count; when clearly a new result, DO
+  intervene. Finding message: tell the session to badge <path> into the nav
+  pane via the show-result skill NOW.
+A
+        ;;
+    background) cat <<'B'
+- background: the turn armed a background task/watcher/subagent that is still
+  running at turn end, and the work-state below is not waiting/blocked. A task
+  whose completion notification already appears in the turn does NOT count.
+  Finding message: tell the session to run comm-status.sh waiting "<one clear
+  sentence: WHAT is being monitored and what completion looks like>" and to
+  state that same sentence to the user in its continuation.
+B
+        ;;
+    stale-waiting) cat <<'S'
+- stale-waiting: the registry row carries a sticky waiting marker, but this
+  turn consumed the completion of the awaited work (task-notification handled)
+  and armed nothing new — the marker is now stale and paints a false purple
+  with a dead summary between turns. Finding message: tell the session to run
+  comm-status.sh working "<current activity>" (or idle/done) to CLEAR the
+  finished wait — or, if it genuinely still waits on something else, to
+  re-state it: comm-status.sh waiting "<the actual current wait>".
+S
+        ;;
+    blind-badge) cat <<'BB'
+- blind-badge: an image WAS surfaced this turn (show-result / sot-fe preview)
+  but no Read/view of an image appears in the turn context — the session
+  badged what a filename suggested, not what it saw. NEVER suggest un-showing
+  or delaying a badge (showing is unconditional). Finding message: tell the
+  session to Read-view the surfaced file NOW and tell the user what they are
+  looking at (a one-line critical read of the figure); if a different export
+  is the legible one, badge that too and say which is which.
+BB
+        ;;
+    esac
+}
+check_descriptions=""
+for k in question artifact background stale-waiting blind-badge; do
+    checks_enabled "$k" && check_descriptions="$check_descriptions$(describe_check "$k")"$'\n'
+done
+
 prompt="$(cat <<EOF
 You audit the END of a coding-assistant session turn for housekeeping misses.
 Be CONSERVATIVE: report a finding ONLY when clearly confident; when unsure, drop
@@ -135,40 +225,7 @@ Empty findings array when clean.
 
 Checks (only these; candidates pre-flagged by cheap filters — judge each):
 $(printf -- '- %s\n' "${candidates[@]}")
-- question: the final text asks the USER a real, turn-ending question they must
-  answer (not rhetorical, not already answered, not "let me know if...") AND the
-  work-state below is not already blocked. Finding message: tell the session to
-  (a) run comm-status.sh blocked "<the question RESTATED as one clear standalone
-  sentence>" and (b) end its continuation by restating that question plainly to
-  the user — the user must see, at a glance, exactly what is being asked.
-- artifact: the turn produced a clearly NEW user-facing result (fresh plot,
-  figure, screenshot, render, PDF, report) and it was NOT surfaced in the
-  user's nav/preview pane (no show-result / sot-fe preview call). The rule
-  (per the maintainer): a new result MUST be shown in the nav pane — naming the path in
-  text is not showing it. Intermediate/temp/test files do not count; when
-  clearly a new result, DO intervene. Finding message: tell the session to
-  badge <path> into the nav pane via the show-result skill NOW.
-- background: the turn armed a background task/watcher/subagent that is still
-  running at turn end, and the work-state below is not waiting/blocked. A task
-  whose completion notification already appears in the turn does NOT count.
-  Finding message: tell the session to run comm-status.sh waiting "<one clear
-  sentence: WHAT is being monitored and what completion looks like>" and to
-  state that same sentence to the user in its continuation.
-- stale-waiting: the registry row carries a sticky waiting marker, but this
-  turn consumed the completion of the awaited work (task-notification handled)
-  and armed nothing new — the marker is now stale and paints a false purple
-  with a dead summary between turns. Finding message: tell the session to run
-  comm-status.sh working "<current activity>" (or idle/done) to CLEAR the
-  finished wait — or, if it genuinely still waits on something else, to
-  re-state it: comm-status.sh waiting "<the actual current wait>".
-- blind-badge: an image WAS surfaced this turn (show-result / sot-fe preview)
-  but no Read/view of an image appears in the turn context — the session
-  badged what a filename suggested, not what it saw. NEVER suggest un-showing
-  or delaying a badge (showing is unconditional). Finding message: tell the
-  session to Read-view the surfaced file NOW and tell the user what they are
-  looking at (a one-line critical read of the figure); if a different export
-  is the legible one, badge that too and say which is which.
-
+$check_descriptions
 Work-state registry row: $row_state
 
 Recent tool calls (name + arg excerpt):

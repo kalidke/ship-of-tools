@@ -193,6 +193,78 @@ case_turn_with_a_block_is_never_nudged_twice() {
     expect waiting/user/sticky stamped
 }
 
+# ---- artifact audit on a closing marker (2026-09-14, owner: "the hook
+# should eval if something should be displayed in the preview" -- a session
+# announced a design brief in a file but never showed it). A marker still
+# stamps the row (below); this only covers the extra artifact-only auditor
+# pass that now runs before the hook exits. A stub `claude` on PATH stands in
+# for the Haiku tier so these stay hermetic and free.
+# ITT TOOLSPEC TEXT [stop_hook_active]: like IT, but the turn also ran the
+# tool_use calls in TOOLSPEC (comma-separated "NAME:::ARG" entries; ARG
+# becomes .input.command for Bash, .input.file_path otherwise) before ending
+# on the closing marker TEXT.
+ITT() {
+    local tr="$WORK/transcript.jsonl" spec="$1" i=0 entry name arg key
+    local -a entries=()
+    IFS=',' read -ra entries <<< "$spec"
+    { jq -nc '{type:"user",message:{content:"go"}}'
+      for entry in "${entries[@]}"; do
+        name="${entry%%:::*}"; arg="${entry#*:::}"
+        [ "$name" = Bash ] && key=command || key=file_path
+        jq -nc --arg n "$name" --arg k "$key" --arg v "$arg" --arg id "t$i" \
+            '{type:"assistant",message:{content:[{type:"tool_use",id:$id,name:$n,input:({($k):$v})}]}}'
+        jq -nc --arg id "t$i" '{type:"user",message:{content:[{type:"tool_result",tool_use_id:$id,content:"ok"}]}}'
+        i=$((i+1))
+      done
+      jq -nc --arg t "$2" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'; } > "$tr"
+    jq -nc --arg p "$tr" --argjson a "${3:-false}" '{transcript_path:$p, stop_hook_active:$a}' | bash "$FLAT_BIN_DIR/comm-status-idle.sh"
+}
+# The hook locates the auditor next to ITSELF ($SELF_DIR/comm-turn-auditor.sh),
+# which only resolves once hooks and scripts are deployed flat into one
+# ~/.sot-comm/bin/ (update_comm) -- true in production, not in this checkout
+# where hooks/ and core/scripts/ are separate directories. Run the hook from a
+# flattened symlink dir so ITT exercises the auditor call the way it deploys.
+FLAT_BIN_DIR="$WORK/flat-bin"; mkdir -p "$FLAT_BIN_DIR"
+ln -s "$HOOKS_DIR/comm-status-idle.sh" "$FLAT_BIN_DIR/comm-status-idle.sh"
+ln -s "$SCRIPTS_DIR/comm-turn-auditor.sh" "$FLAT_BIN_DIR/comm-turn-auditor.sh"
+CLAUDE_STUB_DIR="$WORK/claude-stub"; mkdir -p "$CLAUDE_STUB_DIR"
+cat > "$CLAUDE_STUB_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+if [ -n "${SOT_TEST_CLAUDE_FINDINGS:-}" ]; then
+    printf '%s' "$SOT_TEST_CLAUDE_FINDINGS"
+else
+    printf '%s' '{"findings":[]}'
+fi
+STUB
+chmod +x "$CLAUDE_STUB_DIR/claude"
+case_marker_artifact_audit_blocks_unsurfaced_result() {
+    seed idle; W "$GENUINE"
+    local out
+    out="$(PATH="$CLAUDE_STUB_DIR:$PATH" SOT_TEST_CLAUDE_FINDINGS='{"findings":[{"kind":"artifact","message":"badge /tmp/brief.md"}]}' \
+        ITT "Write:::/tmp/brief.md" $'SITREP: wrote the design brief\n\nThe plan is in /tmp/brief.md.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("show-result")) and (.reason|test("never surfaced"))' >/dev/null \
+        || { echo "    no artifact-audit block: '$out'"; return 1; }
+    expect done/user/- state
+}
+case_marker_artifact_audit_clean_when_shown() {
+    seed idle; W "$GENUINE"
+    local out
+    out="$(PATH="$CLAUDE_STUB_DIR:$PATH" \
+        ITT "Write:::/tmp/brief.md,Read:::/tmp/brief.md,Bash:::show-result /tmp/brief.md" \
+        $'SITREP: wrote and showed the design brief\n\nDone.')"
+    [ -z "$out" ] || { echo "    unexpected block: '$out'"; return 1; }
+    expect done/user/- state
+}
+case_marker_artifact_audit_skipped_in_continuation() {
+    seed idle; W "$GENUINE"; "$ST" blocked "q?"
+    local out
+    out="$(PATH="$CLAUDE_STUB_DIR:$PATH" SOT_TEST_CLAUDE_FINDINGS='{"findings":[{"kind":"artifact","message":"badge it"}]}' \
+        ITT "Write:::/tmp/brief.md" 'SITREP-QUESTION: which port?' true)"
+    [ -z "$out" ] || { echo "    nudged a stop-hook continuation: '$out'"; return 1; }
+    expect blocked/user/- state && [ "$(summary)" = "which port?" ]
+}
+
 # ---- races: the floor decides against the row as it is UNDER the lock ----
 # Hold the registry lock, start the floor (it blocks on the lock; the barrier
 # seam tells us it got there), commit a competing write, release, and assert
@@ -282,6 +354,9 @@ check "a short exchange step is never nudged" case_short_exchange_turn_is_never_
 check "an effort on a machine wake is not nudged" case_effort_machine_turn_is_not_nudged
 check "marker variants (bold closing before the colon, a heading) still stamp" case_marker_variants_bold_after_and_heading_still_stamp
 check "a turn that already has its block is never nudged, whatever the block says" case_turn_with_a_block_is_never_nudged_twice
+check "a marker naming an unsurfaced result is blocked by the artifact audit" case_marker_artifact_audit_blocks_unsurfaced_result
+check "a marker whose result was read and show-result'd is not blocked" case_marker_artifact_audit_clean_when_shown
+check "the artifact audit does not re-fire in a stop-hook continuation" case_marker_artifact_audit_skipped_in_continuation
 check "race: a done committed while the floor waits for the lock is kept" case_race_done_committed_while_floor_waits_is_kept
 check "race: a machine start committed while the floor waits ends gray, not blue" case_race_machine_start_while_floor_waits_ends_gray
 check "a failed state write exits non-zero and leaves the row untouched" case_failed_state_write_exits_nonzero
