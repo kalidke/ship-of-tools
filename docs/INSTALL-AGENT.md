@@ -55,10 +55,15 @@ command -v tmux && tmux -V # REQUIRED on any host that RUNS the backend (local /
   sidecar deps with a warning and math in markdown previews shows raw LaTeX.
   Tell the human; if they want math, install node and re-run (or run
   `npm ci` in `<checkout>/rust/backend/sidecars/mathjax`).
-- **tmux** → a **hard backend dependency**: the daemon hosts the LLM pane in a
-  tmux session. Any host that runs `sotd` (a `--local` or `--be-only` install)
-  needs it; a **frontend-only** `--backend <alias>` host does not (its daemon is
-  remote). **Absent → fatal** (the installer now stops with a clear message).
+- **tmux** → a **conditional backend dependency** (ADR 0046 decision 5): on a
+  host where the capsule runtime compiles (Linux, Windows) a **fresh**
+  `--local`/`--be-only` install needs no tmux at all — the installer only
+  requires it there when an existing row on this host is still on the `tmux`
+  runtime, and unconditionally on a host with no capsule runtime at all
+  (macOS, for now). A **frontend-only** `--backend <alias>` host never needs
+  it (its daemon is remote). **Required and absent → fatal** (the installer
+  stops with a clear message); not required → the installer says so and
+  moves on.
   **tmux < 3.2 → graceful degrade, not an error**: `new-session -e` (used to
   stamp the pane's `SOT_*` awareness env) is a 3.2 flag, and on older tmux (e.g.
   3.0a on Ubuntu 20.04) it was rejected at arg-parse — which historically drove a

@@ -1281,16 +1281,18 @@ pub struct WorkspaceCreateReq {
     pub task: String,
     /// ADR 0042's rule (ADR 0043 decision 22, flipped by L6 / this
     /// repo's B6 lane now that the bridge — ADR 0045 — gives a capsule
-    /// row a remote attach path): which runtime hosts this workspace's
-    /// agent pane — `""` (absent on the wire; `#[serde(default)]`)
-    /// means this host's own platform default, which is `"capsule"` on
-    /// every host where the capsule runtime compiles (`cfg(any(windows,
-    /// target_os = "linux"))`) and `"tmux"` only where it doesn't
-    /// (macOS, for now); `"capsule"` still asks for a capsule row
-    /// explicitly on either platform; `"tmux"` is still accepted
-    /// explicitly on Linux (an operator's deliberate ask — existing
-    /// tmux rows retire by attrition) but refused on Windows (the
-    /// no-knob rule — Windows has no tmux runtime at all).
+    /// row a remote attach path; ADR 0046 decision 5 closes the last
+    /// gap): which runtime hosts this workspace's agent pane — `""`
+    /// (absent on the wire; `#[serde(default)]`) means this host's own
+    /// platform default, which is `"capsule"` on every host where the
+    /// capsule runtime compiles (`cfg(any(windows, target_os =
+    /// "linux"))`) and `"tmux"` only where it doesn't (macOS, for now);
+    /// `"capsule"` still asks for a capsule row explicitly on either
+    /// platform. `"tmux"` is refused wherever the capsule runtime
+    /// compiles — Windows AND, as of decision 5, Linux too (the no-knob
+    /// rule: nothing NEW runs on tmux on a capsule-capable host; existing
+    /// tmux rows keep running and retire by attrition) — and accepted
+    /// only on a host with no capsule runtime at all (macOS).
     #[serde(default)]
     pub runtime: String,
     // NOTE (ADR 0023 §3): the daemon-boot trigger travels as an extra wire field

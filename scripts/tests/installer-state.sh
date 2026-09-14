@@ -132,6 +132,51 @@ check "the manifest exposes no alias to reuse" \
     "" "$(jq -r '.ssh_alias // ""' <<<'{"schema":1,"role":"remote"}')"
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+case_start "tmux requirement (ADR 0046 decision 5: nothing new runs on tmux)"
+# `installer_tmux_required <os> <config-dir>` reads
+# <config-dir>/workspaces-<host>/*.toml -- pin the host so every case below
+# reads the SAME scratch directory it writes to, regardless of the real
+# machine running this suite.
+export SOT_STATE_HOST=testhost
+
+d="$WORK/tmux-no-rows"; mkdir -p "$d/workspaces-testhost"
+check "no workspace tomls at all: not required on Linux" \
+    "no" "$(installer_tmux_required Linux "$d")"
+
+d="$WORK/tmux-no-dir"
+check "the workspaces-<host> dir itself absent: not required on Linux" \
+    "no" "$(installer_tmux_required Linux "$d")"
+
+d="$WORK/tmux-capsule-only"; mkdir -p "$d/workspaces-testhost"
+printf 'slug          = "a"\nruntime       = "capsule"\n' > "$d/workspaces-testhost/a.toml"
+check "every existing row already capsule: not required" \
+    "no" "$(installer_tmux_required Linux "$d")"
+
+d="$WORK/tmux-explicit"; mkdir -p "$d/workspaces-testhost"
+printf 'slug          = "a"\nruntime       = "tmux"\n' > "$d/workspaces-testhost/a.toml"
+check "an existing row explicitly on tmux requires it" \
+    "yes" "$(installer_tmux_required Linux "$d")"
+
+d="$WORK/tmux-legacy"; mkdir -p "$d/workspaces-testhost"
+printf 'slug          = "a"\nlabel         = "a"\n' > "$d/workspaces-testhost/a.toml"
+check "a legacy toml predating the runtime key requires it" \
+    "yes" "$(installer_tmux_required Linux "$d")"
+
+d="$WORK/tmux-mixed"; mkdir -p "$d/workspaces-testhost"
+printf 'slug          = "a"\nruntime       = "capsule"\n' > "$d/workspaces-testhost/a.toml"
+printf 'slug          = "b"\nruntime       = "tmux"\n' > "$d/workspaces-testhost/b.toml"
+check "one tmux row among several capsule rows still requires it" \
+    "yes" "$(installer_tmux_required Linux "$d")"
+
+d="$WORK/tmux-darwin"; mkdir -p "$d/workspaces-testhost"
+printf 'slug          = "a"\nruntime       = "capsule"\n' > "$d/workspaces-testhost/a.toml"
+check "Darwin always requires it, even with only capsule rows on disk" \
+    "yes" "$(installer_tmux_required Darwin "$d")"
+
+unset SOT_STATE_HOST
+
+# ---------------------------------------------------------------------------
 case_start "unit ownership: ExecStart path extraction (old + wrapped forms)"
 # Codex round on PR #164: installer_unit_owner_path used to take the FIRST
 # WORD of ExecStart, which was the sotd path in the old direct form but

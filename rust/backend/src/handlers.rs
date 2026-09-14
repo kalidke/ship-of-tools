@@ -4468,18 +4468,21 @@ pub async fn handle_workspace_create(
     // target_os = "linux"))`, matching `capsule_workspace::mod
     // runtime`'s own gate) — macOS, with no capsule runtime at all,
     // keeps "tmux" as its default. `"capsule"` still asks for one
-    // explicitly either way; `"tmux"` is still accepted explicitly on
-    // Linux (an operator can create one on purpose) but refused on
-    // Windows (the no-knob rule: no tmux runtime exists there at all).
-    // Existing tmux rows keep running; the daemon just stops creating
-    // new ones by default — they retire by attrition.
+    // explicitly either way. ADR 0046 decision 5: nothing NEW runs on
+    // tmux on a host where the capsule runtime compiles — an explicit
+    // `"tmux"` ask is now refused there too (Windows already refused it;
+    // this extends the SAME refusal to Linux), leaving only a host
+    // without the capsule runtime at all (macOS) still able to create
+    // one. Existing tmux rows keep running unaffected; the daemon just
+    // stops CREATING new ones anywhere it has a capsule alternative —
+    // they retire by attrition.
     let runtime: String = match req.runtime.as_str() {
         "" => if cfg!(any(windows, target_os = "linux")) { "capsule" } else { "tmux" }.to_string(),
         "capsule" => "capsule".to_string(),
-        "tmux" if !cfg!(windows) => "tmux".to_string(),
+        "tmux" if !cfg!(any(windows, target_os = "linux")) => "tmux".to_string(),
         "tmux" => {
             let payload = json!({
-                "error": "no tmux runtime on Windows".to_string(),
+                "error": "no new tmux rows on a capsule-capable host (ADR 0042); existing tmux rows keep running".to_string(),
                 "code": "runtime_not_available",
             });
             return Ok(vec![(
@@ -4836,6 +4839,46 @@ pub async fn handle_workspace_create(
         Frame::res(req_id, op::WORKSPACE_CREATE, serde_json::to_value(res)?).with_rev(rev),
         None,
     )])
+}
+
+#[cfg(test)]
+mod workspace_create_runtime_tests {
+    // ADR 0046 decision 5: nothing NEW runs on tmux wherever the capsule
+    // runtime compiles. This test runs on every host this suite runs on
+    // (`cfg(any(windows, target_os = "linux"))` — CI's macOS leg does
+    // not compile this arm at all, matching `handle_workspace_create`'s
+    // own gate, so it is never silently skipped there either).
+    use super::*;
+    use tokio::sync::broadcast;
+
+    #[tokio::test]
+    #[cfg(any(windows, target_os = "linux"))]
+    async fn workspace_create_refuses_tmux_where_the_capsule_runtime_compiles() {
+        let workspaces = Workspaces::new();
+        let session = Session::new();
+        let (tx, _rx) = broadcast::channel(16);
+        let payload = json!({
+            "label": "t",
+            "project_root": std::env::temp_dir().to_string_lossy(),
+            "runtime": "tmux",
+        });
+        let out = handle_workspace_create(1, payload, &session, &workspaces, &tx)
+            .await
+            .expect("handler must not error");
+        assert_eq!(out.len(), 1, "workspace.create always answers with exactly one frame");
+        let payload = &out[0].0.payload;
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("runtime_not_available")
+        );
+        let msg = payload.get("error").and_then(|v| v.as_str()).unwrap_or_default();
+        assert!(
+            msg.contains("existing tmux rows keep running"),
+            "got: {msg}"
+        );
+        // Never partially applied: the refused request never inserted a row.
+        assert!(workspaces.list().is_empty());
+    }
 }
 
 /// ADR 0042 slice L1a (Codex review finding 3): whether a capsule
