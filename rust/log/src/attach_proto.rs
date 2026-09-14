@@ -97,7 +97,14 @@
 //!   `DriverState.controller_id`/`take_epoch` are deleted — they had
 //!   producers but no consumers; the durable holder/epoch lives
 //!   capsule-side (`FrameCtx.holder`/`take_epoch` in `capsule_win.rs`), and
-//!   nothing here ever needed a second copy.
+//!   nothing here ever needed a second copy. UPDATE (ADR 0046 decision 3,
+//!   lane B3b1): `DriverState.controller_id`/`take_epoch` are reintroduced
+//!   — a v3 watcher's `PenSnapshot` needs the CURRENT driving connection's
+//!   controller, which is ephemeral, in-memory state this module already
+//!   owns (`self.driver`) and now has its first real consumer for; see
+//!   `DriverState`'s own doc for why this is still not a second copy of
+//!   the durable value. `WatcherState.controller_id` stays deleted —
+//!   nothing reads a per-watcher identity, only the current driver's.
 //!
 //! # What this module owns, and what it explicitly does not
 //!
@@ -403,6 +410,33 @@ enum CheckpointProgress {
     Done,
 }
 
+/// One event queued behind an in-flight checkpoint transfer for a
+/// watcher not yet `Done` — `output_committed`'s own mechanism (finding
+/// 3), extended by ADR 0046 decision 3 (lane B3b1) to carry
+/// `PenChanged`/`Geometry` alongside `Output`, in the exact order
+/// emitted, so a watcher still mid-transfer never applies a pen/geometry
+/// change before its own checkpoint's `restore_screen` (which would
+/// otherwise silently overwrite `Geometry` with the checkpoint's own
+/// baked-in dimensions — the bug this queue extension exists to close).
+/// Drained, in order, immediately after that watcher's own final
+/// checkpoint chunk (see `AttachProto::sent`'s `CheckpointChunk` arm).
+#[derive(Debug, Clone)]
+enum QueuedPostWatermark {
+    Output(Vec<u8>),
+    PenChanged { holder: Option<String>, take_epoch: u64 },
+    Geometry { cols: u16, rows: u16 },
+}
+
+impl QueuedPostWatermark {
+    fn into_attach_server(self) -> AttachServer {
+        match self {
+            Self::Output(bytes) => AttachServer::Output { bytes },
+            Self::PenChanged { holder, take_epoch } => AttachServer::PenChanged { holder, take_epoch },
+            Self::Geometry { cols, rows } => AttachServer::Geometry { cols, rows },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct WatcherState {
     /// The `attach` request this connection is still owed a reply for —
@@ -411,13 +445,20 @@ struct WatcherState {
     /// that far (ground timeout, subscriber cap).
     attach_request_id: RequestId,
     checkpoint: CheckpointProgress,
-    /// LIVE output only, budget-checked (see module doc's "Queue
-    /// accounting") — tracked regardless of checkpoint state.
+    /// Budget-checked (see module doc's "Queue accounting") — tracked
+    /// regardless of checkpoint state. Originally live output only;
+    /// lane B3b1's `PenChanged`/`Geometry` additions are charged here
+    /// too (Codex review round, should-fix 5), by their own encoded
+    /// size, via the exact same `AttachProto::bytes_queued` call and
+    /// overflow path ordinary output already uses — "rare and small" is
+    /// not itself a bound, so they share the ONE budget rather than
+    /// riding an unbounded list of their own.
     queued_live_bytes: u64,
-    /// Output committed while `checkpoint` is not yet `Done` (finding 3):
+    /// Events committed while `checkpoint` is not yet `Done` (finding 3,
+    /// extended by lane B3b1 — see [`QueuedPostWatermark`]'s own doc):
     /// queued behind the transfer, never dropped, flushed in order once
     /// the final chunk's completion marks this watcher `Done`.
-    pending_post_watermark: VecDeque<Vec<u8>>,
+    pending_post_watermark: VecDeque<QueuedPostWatermark>,
 }
 
 #[derive(Debug, Clone)]
@@ -477,9 +518,28 @@ struct Conn {
     attach_proto_version: u32,
 }
 
+/// ADR 0046 decision 3 (lane B3b1): `controller_id`/`take_epoch`
+/// reintroduced here — finding 15 (this module's own rework-round doc)
+/// deleted them as dead fields with "producers but no consumers," since
+/// the durable holder/epoch lived only capsule-side (`FrameCtx::holder`/
+/// `take_epoch`). This lane is their first consumer: a v3 watcher's
+/// `PenSnapshot` (sent on ITS OWN attach, after its final checkpoint
+/// chunk) must report who is driving RIGHT NOW, which is exactly this
+/// ephemeral, in-memory state — deliberately NOT the same thing as the
+/// durable historical holder a resumed voyage's journal may still
+/// remember from a driver that has since disconnected (`remove_connection`
+/// clears this on EOF with no durable transition, same as before this
+/// lane; a fresh `AttachProto` after a capsule restart starts with
+/// `driver: None` regardless of what the journal says). A caller wanting
+/// the durable value still reads `FrameCtx::holder` — this module never
+/// duplicates that; it only tracks the ephemeral capability, one step
+/// further than before, now that something (`PenSnapshot`/`PenChanged`)
+/// actually reads it back.
 #[derive(Debug, Clone)]
 struct DriverState {
     conn: ConnId,
+    controller_id: String,
+    take_epoch: u64,
     keepalive_outstanding: Option<u64>,
     /// Armed only once the ping's sent-completion is reported (ADR 0041:
     /// "not at enqueue").
@@ -690,6 +750,29 @@ pub struct AttachProto {
     /// mgmt are unaffected; this module has no opinion on whether the
     /// caller keeps feeding it events past this point.
     teardown: bool,
+    /// True while `output_committed`/`broadcast_pen_changed`/
+    /// `broadcast_geometry` is actively iterating its own connection
+    /// snapshot — see [`AttachProto::begin_broadcast`]'s own doc for why
+    /// a broadcast must never be re-entered while one is already
+    /// running.
+    broadcasting: bool,
+    /// A driver eviction [`AttachProto::remove_connection`] discovered
+    /// WHILE `broadcasting` (Codex round-2 review, blocker): an overflow
+    /// closing the NEW driver's own connection mid-broadcast used to
+    /// recurse into `broadcast_pen_changed(None, ..)` immediately, and
+    /// the OUTER broadcast then resumed publishing its own now-stale
+    /// `Some(holder)` to watchers it had not reached yet — a surviving
+    /// watcher could see `None` then `Some(the connection that was just
+    /// evicted)`, wrong indefinitely. Deferred here instead;
+    /// [`AttachProto::end_broadcast`] drains and publishes it as a
+    /// FRESH, non-nested broadcast once the outer one has fully settled,
+    /// so every watcher sees at most one transition, in the correct
+    /// final order. At most one entry is ever pending: only one
+    /// connection can be `self.driver` at a time, and evicting it clears
+    /// `self.driver` immediately (this field defers only the
+    /// ANNOUNCEMENT, never the state change itself), so no second
+    /// driver eviction can occur before this one is drained.
+    deferred_driver_eviction: Option<u64>,
 }
 
 impl AttachProto {
@@ -706,6 +789,8 @@ impl AttachProto {
             nonce_counter: 0,
             next_request_id: 0,
             teardown: false,
+            broadcasting: false,
+            deferred_driver_eviction: None,
         }
     }
 
@@ -758,8 +843,7 @@ impl AttachProto {
     /// (ADR 0041's spec-gate deletion of the local-grant/EOF-clears-holder
     /// behavior).
     pub fn connection_closed(&mut self, conn: ConnId, now: Instant) -> Vec<Action> {
-        self.remove_connection(conn, now);
-        vec![]
+        self.remove_connection(conn, now)
     }
 
     /// One decoded frame arrived on `conn`, in order. May return zero, one,
@@ -857,13 +941,16 @@ impl AttachProto {
             SentMarker::Reply { request_id } => self.clear_outstanding_and_replay(conn, request_id, now),
             SentMarker::ReplyThenClose { request_id } => {
                 self.clear_outstanding_if_matches(conn, request_id);
-                self.remove_connection(conn, now);
-                vec![Action::Close(conn)]
+                let mut actions = self.remove_connection(conn, now);
+                actions.push(Action::Close(conn));
+                actions
             }
             SentMarker::ShutdownAck { request_id, reason } => {
                 self.clear_outstanding_if_matches(conn, request_id);
-                self.remove_connection(conn, now);
-                vec![Action::Shutdown { reason }, Action::Close(conn)]
+                let mut actions = self.remove_connection(conn, now);
+                actions.push(Action::Shutdown { reason });
+                actions.push(Action::Close(conn));
+                actions
             }
             SentMarker::CheckpointChunk { clears_request, is_last } => {
                 // Only `Reply`/`CheckpointChunk`'s first-chunk completion
@@ -885,6 +972,7 @@ impl AttachProto {
                 // client that read it can have a `take` already held; a
                 // replay against still-in-flight state falsely refuses it
                 // with CheckpointInFlight (review-reproduced race).
+                let proto_version = self.conns.get(&conn).map(|c| c.attach_proto_version);
                 let pending = match self.conns.get_mut(&conn).map(|c| &mut c.role) {
                     Some(Role::Watcher(w)) => {
                         w.checkpoint = CheckpointProgress::Done;
@@ -896,17 +984,65 @@ impl AttachProto {
                     self.checkpoint_slot = None;
                     self.advance_checkpoint_queue(now);
                 }
-                // Replay only now, against the fully-completed state.
-                let mut actions = match clears_request {
-                    Some(rid) => self.clear_outstanding_and_replay(conn, rid, now),
-                    None => Vec::new(),
-                };
-                for bytes in pending {
-                    let n = bytes.len() as u64;
-                    let encoded = wire::encode_attach_server(&AttachServer::Output { bytes })
-                        .expect("output frame within the outer 1 MiB cap is the loop's own responsibility");
+                // Codex review round, blocker 1: this watcher's OWN
+                // completion -- PenSnapshot, then everything queued
+                // behind the transfer -- must be FULLY built before any
+                // REPLAYED held request runs. A replayed `CommitTake`/
+                // `ApplyResize`'s own loop-side handling (`capsule.rs`'s
+                // `flush_output!`) publishes MORE output to this SAME,
+                // now-`Done` watcher inline, the moment the caller's
+                // action loop reaches it -- which, positioned first as
+                // before this fix, could physically reach the wire ahead
+                // of a `PenSnapshot`/queued item still sitting LATER in
+                // the very same returned action list (reproduced: "later
+                // Output -> PenSnapshot -> Geometry -> older Output").
+                // Building this watcher's own completion FIRST and
+                // replaying LAST means nothing a replay can trigger is
+                // ever queued for the transport ahead of this watcher's
+                // already-committed history.
+                let mut actions = Vec::new();
+                // ADR 0046 decision 3 (lane B3b1): a v3 watcher's OWN
+                // FIRST v3 event, always, before any queued `PenChanged`
+                // — the CURRENT driving connection's controller (this
+                // module's own ephemeral `self.driver`, never the
+                // durable historical holder; see `DriverState`'s own
+                // doc), synthesized fresh right here rather than queued,
+                // since it must reflect the pen as of THIS moment, not as
+                // of whenever the checkpoint itself was captured.
+                if proto_version == Some(wire::ATTACH_PROTO_V3) {
+                    let (holder, take_epoch) = match &self.driver {
+                        Some(d) => (Some(d.controller_id.clone()), d.take_epoch),
+                        None => (None, 0),
+                    };
+                    let snapshot = wire::encode_attach_server(&AttachServer::PenSnapshot { holder, take_epoch })
+                        .expect("PenSnapshot is a bounded-shape body, always within MAX_BODY_LEN");
+                    actions.push(self.make_send(conn, snapshot, None, now));
+                }
+                // v1/v2 watchers only ever queued `Output` entries (lane
+                // B3b1's `send_or_queue_pen_geometry` refuses anything
+                // else for them) -- draining generically here is exactly
+                // the pre-existing Output-only flush for them, unchanged.
+                // `n` matches whatever `bytes_queued` was charged at
+                // enqueue time for this SAME entry (`output_committed`'s
+                // raw payload length for `Output`; `send_or_queue_pen_
+                // geometry`'s own encoded length otherwise) so the
+                // eventual `Sent(OutputBytes)` completion decrements
+                // `queued_live_bytes` by exactly what was charged.
+                for item in pending {
+                    let output_len = match &item {
+                        QueuedPostWatermark::Output(bytes) => Some(bytes.len() as u64),
+                        QueuedPostWatermark::PenChanged { .. } | QueuedPostWatermark::Geometry { .. } => None,
+                    };
+                    let encoded = wire::encode_attach_server(&item.into_attach_server())
+                        .expect("queued post-watermark frame within the outer 1 MiB cap is the loop's own responsibility");
+                    let n = output_len.unwrap_or(encoded.len() as u64);
                     actions.push(self.make_send(conn, encoded, Some(SentMarker::OutputBytes { n }), now));
                 }
+                // Replay LAST -- see this block's own note above.
+                actions.extend(match clears_request {
+                    Some(rid) => self.clear_outstanding_and_replay(conn, rid, now),
+                    None => Vec::new(),
+                });
                 actions
             }
             SentMarker::Keepalive { nonce } => {
@@ -1176,10 +1312,27 @@ impl AttachProto {
             // after capture, from a charge belonging to bytes that no
             // longer exist anywhere but the checkpoint. Release it
             // atomically with the same clear that retires the bytes.
-            let cleared_bytes: u64 = w.pending_post_watermark.iter().map(|b| b.len() as u64).sum();
-            w.pending_post_watermark.clear();
+            //
+            // Lane B3b1: this purge is `Output`-only. A `PenChanged`/
+            // `Geometry` entry queued before this capture is NOT
+            // redundant with `bytes` the way queued output is — the
+            // checkpoint encodes screen content (and, incidentally, its
+            // own capture-time geometry), never "who holds the pen," so
+            // dropping a queued `PenChanged` here would be a real fact
+            // this watcher would otherwise never learn. Both ride through
+            // untouched, to be drained (still in order) once this watcher
+            // reaches `Done` — see `sent`'s `CheckpointChunk` arm.
+            let cleared_bytes: u64 = w
+                .pending_post_watermark
+                .iter()
+                .filter_map(|e| match e {
+                    QueuedPostWatermark::Output(bytes) => Some(bytes.len() as u64),
+                    QueuedPostWatermark::PenChanged { .. } | QueuedPostWatermark::Geometry { .. } => None,
+                })
+                .sum();
+            w.pending_post_watermark.retain(|e| !matches!(e, QueuedPostWatermark::Output(_)));
             w.queued_live_bytes = w.queued_live_bytes.checked_sub(cleared_bytes).expect(
-                "pending_post_watermark's own contribution cannot exceed the connection's total queued_live_bytes",
+                "pending_post_watermark's own Output contribution cannot exceed the connection's total queued_live_bytes",
             );
         }
         self.emit_next_checkpoint_chunk(conn, shared, 0, now)
@@ -1191,15 +1344,36 @@ impl AttachProto {
     /// connection's own `Watcher` entry is untouched; its keepalive nonce,
     /// if any, is simply discarded — see the module doc's keepalive
     /// section for why a late echo for it is then ignored rather than
-    /// fatal).
-    pub fn take_committed(&mut self, conn: ConnId, new_take_epoch: u64, request_id: RequestId, now: Instant) -> Vec<Action> {
-        self.driver = Some(DriverState { conn, keepalive_outstanding: None, keepalive_deadline: None });
+    /// fatal). `controller_id` is the SAME string the loop's own
+    /// `CommitTake` action carried (ADR 0046 decision 3, lane B3b1):
+    /// stored on `DriverState` now that something reads it back — see
+    /// that struct's own doc — and broadcast as `PenChanged` to every v3
+    /// watcher, `conn`'s own included (uniformly with every other
+    /// watcher: the voyage declares the fact to everyone who can hear
+    /// it, not just the ones who didn't already know).
+    pub fn take_committed(
+        &mut self,
+        conn: ConnId,
+        controller_id: String,
+        new_take_epoch: u64,
+        request_id: RequestId,
+        now: Instant,
+    ) -> Vec<Action> {
+        self.driver = Some(DriverState {
+            conn,
+            controller_id: controller_id.clone(),
+            take_epoch: new_take_epoch,
+            keepalive_outstanding: None,
+            keepalive_deadline: None,
+        });
         if let Some(c) = self.conns.get_mut(&conn) {
             c.last_activity = now;
         }
         let bytes = wire::encode_attach_server(&AttachServer::TakeOk { take_epoch: new_take_epoch })
             .expect("TakeOk is a fixed-shape body, always within MAX_BODY_LEN");
-        vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)]
+        let mut actions = vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)];
+        actions.extend(self.broadcast_pen_changed(Some(controller_id), new_take_epoch, now));
+        actions
     }
 
     /// The loop ran the input WAL for `conn`'s `input` frame and reports the
@@ -1219,8 +1393,15 @@ impl AttachProto {
     }
 
     /// The loop ran the ordered resize exchange for `conn` and reports
-    /// whether the geometry was in budget.
-    pub fn resize_outcome(&mut self, conn: ConnId, ok: bool, request_id: RequestId, now: Instant) -> Vec<Action> {
+    /// whether the geometry was in budget. `cols`/`rows` are the SAME
+    /// values the loop's own `Action::ApplyResize` carried — not stored
+    /// anywhere on this module (geometry is externally OS-determined,
+    /// unlike the pen; see the module doc's "Not owned" list), just
+    /// round-tripped through, the same shape `new_take_epoch` already
+    /// is for `take_committed`. On success (ADR 0046 decision 3, lane
+    /// B3b1), broadcasts `Geometry` to every v3 watcher — never on
+    /// refusal, which changed nothing about the actual terminal size.
+    pub fn resize_outcome(&mut self, conn: ConnId, ok: bool, cols: u16, rows: u16, request_id: RequestId, now: Instant) -> Vec<Action> {
         if let Some(c) = self.conns.get_mut(&conn) {
             c.last_activity = now;
         }
@@ -1233,7 +1414,11 @@ impl AttachProto {
         };
         let bytes =
             wire::encode_attach_server(&frame).expect("resize reply is a fixed-shape body, always within MAX_BODY_LEN");
-        vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)]
+        let mut actions = vec![self.make_send(conn, bytes, Some(SentMarker::Reply { request_id }), now)];
+        if ok {
+            actions.extend(self.broadcast_geometry(cols, rows, now));
+        }
+        actions
     }
 
     /// Live producer output just committed (the watermark). For every
@@ -1242,16 +1427,9 @@ impl AttachProto {
     /// checkpoint transfer (finding 3) — flushed once that watcher reaches
     /// `Done`.
     pub fn output_committed(&mut self, bytes: &[u8], now: Instant) -> Vec<Action> {
-        let targets: Vec<ConnId> = self
-            .conns
-            .iter()
-            .filter_map(|(id, c)| match &c.role {
-                Role::Watcher(_) => Some(*id),
-                _ => None,
-            })
-            .collect();
+        let was_broadcasting = self.begin_broadcast();
         let mut actions = Vec::new();
-        for conn in targets {
+        for conn in self.watcher_conns() {
             actions.extend(self.bytes_queued(conn, bytes.len() as u64, now));
             match self.conns.get(&conn).and_then(watcher_checkpoint) {
                 Some(CheckpointProgress::Done) => {
@@ -1266,12 +1444,138 @@ impl AttachProto {
                 }
                 Some(_) => {
                     if let Some(Role::Watcher(w)) = self.conns.get_mut(&conn).map(|c| &mut c.role) {
-                        w.pending_post_watermark.push_back(bytes.to_vec());
+                        w.pending_post_watermark.push_back(QueuedPostWatermark::Output(bytes.to_vec()));
                     }
                 }
                 None => {} // closed by bytes_queued's own overflow handling, or not a watcher
             }
         }
+        actions.extend(self.end_broadcast(was_broadcasting, now));
+        actions
+    }
+
+    // -- ADR 0046 decision 3 (lane B3b1): owner-emitted pen/geometry -----
+
+    /// Sends `event` to `conn` right now if its checkpoint transfer is
+    /// already `Done`, or queues it on `pending_post_watermark`
+    /// (drained, in order, right after that watcher's own final chunk —
+    /// see `sent`'s `CheckpointChunk` arm) otherwise. A no-op for
+    /// anything but a v3 `Watcher`: v1/v2 have no wire shape for either
+    /// event, so their `pending_post_watermark` only ever holds `Output`
+    /// (the pre-existing, unchanged behavior for them).
+    /// Codex review round, should-fix 5 (capsule half): a queued
+    /// `PenChanged`/`Geometry` is charged against the SAME per-watcher
+    /// `queued_live_bytes` budget as ordinary output, via the SAME
+    /// `bytes_queued` call `output_committed` already makes for every
+    /// live byte — "rare and small" is not itself a bound, and
+    /// exhaustion takes the identical visible-termination path
+    /// (`bytes_queued`'s own `QueueOverflow`/`DriverQueueOverflow`
+    /// close), never a second, unbounded list. Mirrors
+    /// `output_committed`'s own shape exactly: charge first, THEN
+    /// decide send-now vs. queue against whatever role/checkpoint state
+    /// remains — `None` covers both "closed by that charge's own
+    /// overflow" and "not a watcher," with nothing further to do either
+    /// way.
+    fn send_or_queue_pen_geometry(&mut self, conn: ConnId, event: QueuedPostWatermark, now: Instant) -> Vec<Action> {
+        let Some(c) = self.conns.get(&conn) else { return vec![] };
+        if c.attach_proto_version != wire::ATTACH_PROTO_V3 {
+            return vec![];
+        }
+        let encoded = wire::encode_attach_server(&event.clone().into_attach_server())
+            .expect("pen/geometry events are fixed-shape bodies, always within MAX_BODY_LEN");
+        let n = encoded.len() as u64;
+        let mut actions = self.bytes_queued(conn, n, now);
+        match self.conns.get(&conn).and_then(watcher_checkpoint) {
+            Some(CheckpointProgress::Done) => {
+                actions.push(self.make_send(conn, encoded, Some(SentMarker::OutputBytes { n }), now));
+            }
+            Some(_) => {
+                if let Some(Role::Watcher(w)) = self.conns.get_mut(&conn).map(|c| &mut c.role) {
+                    w.pending_post_watermark.push_back(event);
+                }
+            }
+            None => {} // closed by bytes_queued's own overflow handling, or not a watcher
+        }
+        actions
+    }
+
+    /// Every currently-registered `Watcher` connection id — the shared
+    /// target set for [`Self::broadcast_pen_changed`]/
+    /// [`Self::broadcast_geometry`], collected up front (as
+    /// `output_committed` already does) so the broadcast loop never
+    /// borrows `self.conns` while also mutating it.
+    fn watcher_conns(&self) -> Vec<ConnId> {
+        self.conns
+            .iter()
+            .filter_map(|(id, c)| match &c.role {
+                Role::Watcher(_) => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Codex round-2 review, blocker: marks a broadcast
+    /// (`output_committed`/`broadcast_pen_changed`/`broadcast_geometry`)
+    /// as in progress, returning whatever `broadcasting` already was.
+    /// Pass the result back to [`Self::end_broadcast`] so a broadcast
+    /// invoked from within another one still nests correctly — only the
+    /// OUTERMOST pair actually toggles the flag and drains the deferred
+    /// eviction, an inner one is a no-op past setting `broadcasting`
+    /// (already `true`) and restoring it. This is the guard that makes
+    /// [`Self::remove_connection`]'s driver-eviction branch defer its
+    /// own `PenChanged` announcement rather than recursing into a
+    /// broadcast that is still iterating its own connection snapshot —
+    /// see [`Self::deferred_driver_eviction`]'s own doc for the bug this
+    /// closes.
+    fn begin_broadcast(&mut self) -> bool {
+        std::mem::replace(&mut self.broadcasting, true)
+    }
+
+    /// Restores `broadcasting` to `was_broadcasting` (the value
+    /// [`Self::begin_broadcast`] returned) and, only for the OUTERMOST
+    /// call (`was_broadcasting` was `false`), drains and publishes any
+    /// driver eviction deferred during the broadcast that just finished
+    /// — a fresh, top-level `broadcast_pen_changed(None, ..)` against
+    /// the now fully-settled state, reaching every surviving watcher
+    /// exactly once with the CURRENT truth. An inner call leaves the
+    /// deferred eviction for its own outer caller to publish.
+    fn end_broadcast(&mut self, was_broadcasting: bool, now: Instant) -> Vec<Action> {
+        self.broadcasting = was_broadcasting;
+        if was_broadcasting {
+            return vec![];
+        }
+        match self.deferred_driver_eviction.take() {
+            Some(take_epoch) => self.broadcast_pen_changed(None, take_epoch, now),
+            None => vec![],
+        }
+    }
+
+    /// `PenChanged` to every v3 `Watcher`, `conn`'s own included where
+    /// `conn` is itself a watcher (uniformly — see `take_committed`'s own
+    /// doc for why the new driver is not special-cased out of its own
+    /// broadcast).
+    fn broadcast_pen_changed(&mut self, holder: Option<String>, take_epoch: u64, now: Instant) -> Vec<Action> {
+        let was_broadcasting = self.begin_broadcast();
+        let mut actions = Vec::new();
+        for conn in self.watcher_conns() {
+            actions.extend(self.send_or_queue_pen_geometry(
+                conn,
+                QueuedPostWatermark::PenChanged { holder: holder.clone(), take_epoch },
+                now,
+            ));
+        }
+        actions.extend(self.end_broadcast(was_broadcasting, now));
+        actions
+    }
+
+    /// `Geometry` to every v3 `Watcher` — see [`Self::broadcast_pen_changed`].
+    fn broadcast_geometry(&mut self, cols: u16, rows: u16, now: Instant) -> Vec<Action> {
+        let was_broadcasting = self.begin_broadcast();
+        let mut actions = Vec::new();
+        for conn in self.watcher_conns() {
+            actions.extend(self.send_or_queue_pen_geometry(conn, QueuedPostWatermark::Geometry { cols, rows }, now));
+        }
+        actions.extend(self.end_broadcast(was_broadcasting, now));
         actions
     }
 
@@ -1726,9 +2030,14 @@ impl AttachProto {
         }
     }
 
-    fn remove_connection(&mut self, conn: ConnId, now: Instant) {
+    /// Returns whatever this removal itself provokes — today, only ever
+    /// the ADR 0046 decision 3 `PenChanged { holder: None }` broadcast
+    /// when `conn` was the current driver (lane B3b1): every OTHER
+    /// consequence of removal is pure bookkeeping with no wire action of
+    /// its own.
+    fn remove_connection(&mut self, conn: ConnId, now: Instant) -> Vec<Action> {
         let Some(c) = self.conns.remove(&conn) else {
-            return;
+            return vec![];
         };
         match c.role {
             Role::Unclassified { .. } | Role::Mgmt | Role::PostHello { .. } => {
@@ -1745,19 +2054,45 @@ impl AttachProto {
         }
         if self.driver.as_ref().map(|d| d.conn) == Some(conn) {
             // Capability-only EOF -- no durable transition (ADR 0041).
+            // The durable epoch is unaffected by losing the connection,
+            // so the broadcast echoes the LAST committed epoch, not a
+            // reset one — lane B3b1: every remaining v3 watcher learns
+            // the pen is gone from the voyage itself, never by inferring
+            // it from a stalled stream.
+            let take_epoch = self.driver.as_ref().map_or(0, |d| d.take_epoch);
             self.driver = None;
+            // Codex round-2 review, blocker: if THIS removal was itself
+            // discovered while charging a broadcast already in progress
+            // (an overflow closing the connection a `PenChanged`/
+            // `Geometry`/`Output` broadcast is still iterating over —
+            // e.g. charging the new driver's own copy of its OWN
+            // `PenChanged(Some(holder))`), publishing the loss HERE
+            // would recurse into that still-running broadcast: the
+            // recursive call reaches every watcher first, correctly,
+            // but the OUTER broadcast then resumes and overwrites it
+            // with its own now-stale `Some(holder)` for whichever
+            // watchers it had not reached yet. Defer instead — `self.
+            // driver` is already cleared above, so every OTHER decision
+            // in this same pass already sees the truth; only the
+            // ANNOUNCEMENT waits for `end_broadcast` to publish it once
+            // the outer broadcast has fully settled.
+            if self.broadcasting {
+                self.deferred_driver_eviction = Some(take_epoch);
+                return vec![];
+            }
+            return self.broadcast_pen_changed(None, take_epoch, now);
         }
+        vec![]
     }
 
     fn close_with_refusal(&mut self, conn: ConnId, reason: RefusalReason, now: Instant) -> Vec<Action> {
-        self.remove_connection(conn, now);
-        vec![
-            Action::RecordRefusal {
-                conn: Some(conn),
-                reason,
-            },
-            Action::Close(conn),
-        ]
+        let mut actions = self.remove_connection(conn, now);
+        actions.push(Action::RecordRefusal {
+            conn: Some(conn),
+            reason,
+        });
+        actions.push(Action::Close(conn));
+        actions
     }
 }
 
@@ -1794,7 +2129,11 @@ mod tests {
     }
 
     fn hello_frame() -> DecodedFrame {
-        decode_one(&encode_attach_client(&AttachClient::Hello { proto: wire::ATTACH_PROTO_V1 }).unwrap())
+        hello_frame_at(wire::ATTACH_PROTO_V1)
+    }
+
+    fn hello_frame_at(proto: u32) -> DecodedFrame {
+        decode_one(&encode_attach_client(&AttachClient::Hello { proto }).unwrap())
     }
 
     fn attach_frame(controller_id: &str) -> DecodedFrame {
@@ -1850,8 +2189,20 @@ mod tests {
     /// Drives one connection all the way to a `Done` watcher: connection_opened
     /// -> hello -> attach -> ground_reached -> a streamed one-chunk checkpoint.
     fn attach_to_done(p: &mut AttachProto, conn: ConnId, now: Instant) {
+        attach_to_done_at(p, conn, wire::ATTACH_PROTO_V1, now);
+    }
+
+    /// As `attach_to_done`, negotiating `proto` explicitly (ADR 0046
+    /// decision 3, lane B3b1's own v3 tests) — the returned actions
+    /// through `sent`'s final chunk are DISCARDED here (unlike
+    /// `attach_to_done`'s v1 callers, a v3 attach's final-chunk actions
+    /// carry the new `PenSnapshot`, which most callers of this v3 helper
+    /// want to assert on themselves rather than have silently dropped by
+    /// a shared helper); use [`drive_checkpoint_to_done_capturing_final`]
+    /// directly instead of this helper when that assertion matters.
+    fn attach_to_done_at(p: &mut AttachProto, conn: ConnId, proto: u32, now: Instant) {
         assert_eq!(p.connection_opened(conn, now), vec![]);
-        let a = p.frame(conn, hello_frame(), now);
+        let a = p.frame(conn, hello_frame_at(proto), now);
         assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
         p.sent(conn, a[0].send_marker(), now);
         let a = p.frame(conn, attach_frame("ctrl"), now);
@@ -1859,6 +2210,28 @@ mod tests {
         let a = p.ground_reached(now);
         assert!(matches!(a.as_slice(), [Action::BeginCheckpoint { conn: c }] if *c == conn));
         drive_checkpoint_to_done(p, conn, vec![0xAB], now);
+    }
+
+    /// As `drive_checkpoint_to_done`, but returns the FINAL chunk's own
+    /// completion actions instead of discarding them — what a v3 test
+    /// asserting on `PenSnapshot`/a drained queue needs to see.
+    fn drive_checkpoint_to_done_capturing_final(
+        p: &mut AttachProto,
+        conn: ConnId,
+        checkpoint_bytes: Vec<u8>,
+        now: Instant,
+    ) -> Vec<Action> {
+        let mut actions = p.checkpoint_ready(conn, checkpoint_bytes, now);
+        loop {
+            assert_eq!(actions.len(), 1, "expected exactly one Send per checkpoint step: {actions:?}");
+            let marker = actions[0].send_marker();
+            let is_last = matches!(marker, Some(SentMarker::CheckpointChunk { is_last: true, .. }));
+            let next = p.sent(conn, marker, now);
+            if is_last {
+                return next;
+            }
+            actions = next;
+        }
     }
 
     /// Drives `take` to completion: frame -> CommitTake -> take_committed
@@ -1870,7 +2243,7 @@ mod tests {
             [Action::CommitTake { request_id, .. }] => *request_id,
             other => panic!("expected CommitTake: {other:?}"),
         };
-        let a = p.take_committed(conn, epoch, request_id, now);
+        let a = p.take_committed(conn, controller_id.to_string(), epoch, request_id, now);
         assert!(matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]));
         p.sent(conn, a[0].send_marker(), now);
     }
@@ -2199,7 +2572,7 @@ mod tests {
         assert_eq!(
             decoded,
             DecodedFrame::AttachServer(AttachServer::HelloRefused {
-                supported: wire::ATTACH_PROTO_V2
+                supported: wire::ATTACH_PROTO_V3
             })
         );
         // The connection only actually closes once this reply's
@@ -3114,7 +3487,7 @@ mod tests {
             [Action::ApplyResize { request_id, conn, .. }] if *conn == DRIVER => *request_id,
             other => panic!("expected ApplyResize for the driver, got: {other:?}"),
         };
-        let a = p.resize_outcome(DRIVER, true, request_id, now);
+        let a = p.resize_outcome(DRIVER, true, 100, 40, request_id, now);
         assert!(
             matches!(
                 a.as_slice(),
@@ -3159,7 +3532,7 @@ mod tests {
             [Action::ApplyResize { request_id, conn, .. }] if *conn == DRIVER => *request_id,
             other => panic!("expected ApplyResize for the driver: {other:?}"),
         };
-        let a = p.resize_outcome(DRIVER, true, request_id, later);
+        let a = p.resize_outcome(DRIVER, true, 100, 40, request_id, later);
         assert!(
             matches!(
                 a.as_slice(),
@@ -3214,5 +3587,458 @@ mod tests {
         p.connection_opened(2, now);
         let a = p.frame(2, decode_one(&encode_mgmt_request(&MgmtRequest::Probe).unwrap()), now);
         assert!(matches!(a.as_slice(), [Action::Send { .. }]), "mgmt must still be serviced during teardown: {a:?}");
+    }
+
+    // -- ADR 0046 decision 3 (lane B3b1): owner-emitted pen/geometry -----
+
+    #[test]
+    fn pen_snapshot_sent_after_final_chunk_with_none_when_no_driver() {
+        let mut p = proto();
+        let now = t0();
+        assert_eq!(p.connection_opened(1, now), vec![]);
+        let a = p.frame(1, hello_frame_at(wire::ATTACH_PROTO_V3), now);
+        p.sent(1, a[0].send_marker(), now);
+        let a = p.frame(1, attach_frame("ctrl"), now);
+        assert!(a.is_empty());
+        let a = p.ground_reached(now);
+        assert!(matches!(a.as_slice(), [Action::BeginCheckpoint { conn: 1 }]));
+        let final_actions = drive_checkpoint_to_done_capturing_final(&mut p, 1, vec![0xAB], now);
+
+        assert_eq!(final_actions.len(), 1, "expected exactly one PenSnapshot Send: {final_actions:?}");
+        let decoded = decode_one(final_actions[0].send_bytes());
+        assert_eq!(
+            decoded,
+            DecodedFrame::AttachServer(AttachServer::PenSnapshot { holder: None, take_epoch: 0 }),
+            "a v3 watcher's FIRST v3 event, always -- None when nobody has ever taken the pen"
+        );
+    }
+
+    #[test]
+    fn pen_changed_broadcasts_to_every_v3_watcher_on_take_and_none_on_driver_eof() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done_at(&mut p, 1, wire::ATTACH_PROTO_V3, now);
+        attach_to_done_at(&mut p, 2, wire::ATTACH_PROTO_V3, now);
+
+        // conn 1 takes -- both conn 1 (the new driver, still underneath a
+        // Watcher) and conn 2 (a plain watcher) hear about it, uniformly.
+        let a = p.frame(1, take_frame("alice"), now);
+        let request_id = match a.as_slice() {
+            [Action::CommitTake { request_id, .. }] => *request_id,
+            other => panic!("expected CommitTake: {other:?}"),
+        };
+        let a = p.take_committed(1, "alice".to_string(), 1, request_id, now);
+        let expected = DecodedFrame::AttachServer(AttachServer::PenChanged {
+            holder: Some("alice".to_string()),
+            take_epoch: 1,
+        });
+        let saw_conn1_pen_changed = a
+            .iter()
+            .any(|act| matches!(act, Action::Send { conn: 1, frame_bytes, .. } if decode_one(frame_bytes) == expected));
+        let conn2_frame = a.iter().find_map(|act| match act {
+            Action::Send { conn: 2, frame_bytes, .. } => Some(decode_one(frame_bytes)),
+            _ => None,
+        });
+        assert!(saw_conn1_pen_changed, "expected the new driver's OWN connection to also receive PenChanged: {a:?}");
+        assert_eq!(conn2_frame, Some(expected), "expected the other v3 watcher to receive PenChanged: {a:?}");
+
+        for action in &a {
+            if let Action::Send { conn, marker, .. } = action {
+                p.sent(*conn, marker.clone(), now);
+            }
+        }
+
+        // The driver (conn 1) disconnects -- capability-only EOF, no
+        // durable transition, but every REMAINING v3 watcher learns the
+        // pen is gone from the voyage itself.
+        let eof_actions = p.connection_closed(1, now);
+        assert_eq!(eof_actions.len(), 1, "expected exactly one PenChanged{{None}} Send to conn 2: {eof_actions:?}");
+        match &eof_actions[0] {
+            Action::Send { conn: 2, frame_bytes, .. } => {
+                assert_eq!(
+                    decode_one(frame_bytes),
+                    DecodedFrame::AttachServer(AttachServer::PenChanged { holder: None, take_epoch: 1 })
+                );
+            }
+            other => panic!("expected a PenChanged Send to conn 2: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn geometry_reaches_a_done_v3_watcher_immediately_and_ahead_of_the_next_output() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done_at(&mut p, 1, wire::ATTACH_PROTO_V3, now);
+
+        let a = p.frame(1, take_frame("alice"), now);
+        let request_id = match a.as_slice() {
+            [Action::CommitTake { request_id, .. }] => *request_id,
+            other => panic!("expected CommitTake: {other:?}"),
+        };
+        let a = p.take_committed(1, "alice".to_string(), 1, request_id, now);
+        for action in &a {
+            if let Action::Send { conn, marker, .. } = action {
+                p.sent(*conn, marker.clone(), now);
+            }
+        }
+
+        let resize = decode_one(&encode_attach_client(&AttachClient::Resize { cols: 120, rows: 45 }).unwrap());
+        let a = p.frame(1, resize, now);
+        let request_id = match a.as_slice() {
+            [Action::ApplyResize { request_id, conn: 1, .. }] => *request_id,
+            other => panic!("expected ApplyResize: {other:?}"),
+        };
+        let a = p.resize_outcome(1, true, 120, 45, request_id, now);
+        let has_geometry = a.iter().any(|act| {
+            matches!(
+                act,
+                Action::Send { conn: 1, frame_bytes, .. }
+                    if decode_one(frame_bytes) == DecodedFrame::AttachServer(AttachServer::Geometry { cols: 120, rows: 45 })
+            )
+        });
+        assert!(has_geometry, "expected an immediate Geometry Send for the already-Done watcher: {a:?}");
+        for action in &a {
+            if let Action::Send { conn, marker, .. } = action {
+                p.sent(*conn, marker.clone(), now);
+            }
+        }
+
+        // The next output, committed strictly AFTER the resize's own
+        // Geometry, arrives as an ordinary Output -- Geometry is never
+        // delayed behind it for a watcher that is already Done.
+        let out = p.output_committed(b"hi", now);
+        assert!(
+            matches!(out.as_slice(), [Action::Send { conn: 1, marker: Some(SentMarker::OutputBytes { n: 2 }), .. }]),
+            "{out:?}"
+        );
+        assert_eq!(
+            decode_one(out[0].send_bytes()),
+            DecodedFrame::AttachServer(AttachServer::Output { bytes: b"hi".to_vec() })
+        );
+    }
+
+    /// The ordering fix this lane makes: a `PenChanged`/`Geometry` sent
+    /// while a watcher is still mid-transfer is queued behind its
+    /// checkpoint and drained, in order, right after that watcher's OWN
+    /// final chunk -- `PenSnapshot` (synthesized fresh, reflecting the
+    /// driver as of THAT moment) is always first, ahead of anything
+    /// drained from the queue, so it can legitimately restate a fact the
+    /// queued `PenChanged` also carries. Never applied before this
+    /// watcher's own checkpoint `restore_screen`, so `Geometry` can never
+    /// be silently overwritten by the checkpoint's own baked-in
+    /// dimensions (the bug this queue extension exists to close).
+    #[test]
+    fn pen_changed_and_geometry_mid_transfer_are_queued_and_drained_in_order_after_pen_snapshot() {
+        let mut p = proto();
+        let now = t0();
+        // conn 1 reaches Done first and becomes the driver.
+        attach_to_done_at(&mut p, 1, wire::ATTACH_PROTO_V3, now);
+
+        // conn 2: a SECOND v3 watcher, held mid-transfer -- its one and
+        // only chunk has been SENT but not yet reported completed.
+        assert_eq!(p.connection_opened(2, now), vec![]);
+        let a = p.frame(2, hello_frame_at(wire::ATTACH_PROTO_V3), now);
+        p.sent(2, a[0].send_marker(), now);
+        let a = p.frame(2, attach_frame("watcher"), now);
+        assert!(a.is_empty());
+        let a = p.ground_reached(now);
+        assert!(matches!(a.as_slice(), [Action::BeginCheckpoint { conn: 2 }]));
+        let chunk = p.checkpoint_ready(2, vec![0xCD], now);
+        let marker = chunk[0].send_marker();
+        assert!(
+            matches!(marker, Some(SentMarker::CheckpointChunk { is_last: true, .. })),
+            "expected a one-chunk transfer: {marker:?}"
+        );
+
+        // conn 1 takes -- conn 2 is mid-transfer and must receive NOTHING
+        // yet, not even queued as a visible Send.
+        let a = p.frame(1, take_frame("alice"), now);
+        let request_id = match a.as_slice() {
+            [Action::CommitTake { request_id, .. }] => *request_id,
+            other => panic!("expected CommitTake: {other:?}"),
+        };
+        let a = p.take_committed(1, "alice".to_string(), 1, request_id, now);
+        assert!(
+            !a.iter().any(|act| matches!(act, Action::Send { conn: 2, .. })),
+            "conn 2 must not receive anything while its own transfer is still in flight: {a:?}"
+        );
+        for action in &a {
+            if let Action::Send { conn, marker, .. } = action {
+                p.sent(*conn, marker.clone(), now);
+            }
+        }
+
+        // conn 1 (now driver) resizes -- conn 2 still sees nothing yet.
+        let resize = decode_one(&encode_attach_client(&AttachClient::Resize { cols: 120, rows: 45 }).unwrap());
+        let a = p.frame(1, resize, now);
+        let request_id = match a.as_slice() {
+            [Action::ApplyResize { request_id, conn: 1, .. }] => *request_id,
+            other => panic!("expected ApplyResize: {other:?}"),
+        };
+        let a = p.resize_outcome(1, true, 120, 45, request_id, now);
+        assert!(
+            !a.iter().any(|act| matches!(act, Action::Send { conn: 2, .. })),
+            "conn 2 must still see nothing while its own transfer is still in flight: {a:?}"
+        );
+        for action in &a {
+            if let Action::Send { conn, marker, .. } = action {
+                p.sent(*conn, marker.clone(), now);
+            }
+        }
+
+        // NOW complete conn 2's transfer: PenSnapshot first (reflecting
+        // the ALREADY-committed take), then the queued PenChanged, then
+        // the queued Geometry -- in the order they were emitted.
+        let final_actions = p.sent(2, marker, now);
+        let decoded: Vec<DecodedFrame> = final_actions.iter().map(|a| decode_one(a.send_bytes())).collect();
+        assert_eq!(
+            decoded,
+            vec![
+                DecodedFrame::AttachServer(AttachServer::PenSnapshot {
+                    holder: Some("alice".to_string()),
+                    take_epoch: 1
+                }),
+                DecodedFrame::AttachServer(AttachServer::PenChanged {
+                    holder: Some("alice".to_string()),
+                    take_epoch: 1
+                }),
+                DecodedFrame::AttachServer(AttachServer::Geometry { cols: 120, rows: 45 }),
+            ],
+            "PenSnapshot must be first, then the queued PenChanged and Geometry in emission order: {final_actions:?}"
+        );
+    }
+
+    /// Codex review round, should-fix 5 (capsule half): a queued
+    /// `PenChanged`/`Geometry` shares the SAME `queued_live_bytes`
+    /// budget as ordinary output, not a second, unbounded list --
+    /// exhaustion takes the identical visible-termination path. Proven
+    /// the same way the pre-existing `queue_overflow_closes_with_no_
+    /// wire_frame` proves it for output: pre-load the budget to exactly
+    /// its cap via the same public `bytes_queued` call, then show that
+    /// queuing ONE more event (here, a `Geometry` broadcast reaching a
+    /// watcher still mid-transfer) is what tips it over and closes the
+    /// connection.
+    #[test]
+    fn queued_geometry_shares_the_watcher_live_queue_budget_and_overflows_the_same_way() {
+        let mut p = proto();
+        let now = t0();
+
+        // conn 2: reaches Done and becomes the driver first, alone --
+        // its own take's broadcast has nobody else to reach yet.
+        attach_to_done_at(&mut p, 2, wire::ATTACH_PROTO_V3, now);
+        let a = p.frame(2, take_frame("bob"), now);
+        let request_id = match a.as_slice() {
+            [Action::CommitTake { request_id, .. }] => *request_id,
+            other => panic!("expected CommitTake: {other:?}"),
+        };
+        let a = p.take_committed(2, "bob".to_string(), 1, request_id, now);
+        for action in &a {
+            if let Action::Send { conn, marker, .. } = action {
+                p.sent(*conn, marker.clone(), now);
+            }
+        }
+
+        // conn 1: a SECOND v3 watcher, held mid-transfer (Sending, not
+        // Done) so a broadcast queues for it rather than sending.
+        assert_eq!(p.connection_opened(1, now), vec![]);
+        let a = p.frame(1, hello_frame_at(wire::ATTACH_PROTO_V3), now);
+        p.sent(1, a[0].send_marker(), now);
+        let a = p.frame(1, attach_frame("watcher"), now);
+        assert!(a.is_empty());
+        let a = p.ground_reached(now);
+        assert!(matches!(a.as_slice(), [Action::BeginCheckpoint { conn: 1 }]));
+        let chunk = p.checkpoint_ready(1, vec![0xCD], now);
+        assert!(matches!(chunk[0].send_marker(), Some(SentMarker::CheckpointChunk { is_last: true, .. })));
+        // conn 1's own final-chunk `sent` is deliberately never called
+        // here -- it stays Sending for the rest of this test.
+
+        // Pre-load conn 1 right up to the cap, exactly as the ordinary-
+        // output overflow test does.
+        let a = p.bytes_queued(1, WATCHER_LIVE_QUEUE_BUDGET_BYTES, now);
+        assert!(a.is_empty(), "exactly at budget must not overflow yet: {a:?}");
+
+        // conn 2 (the driver) resizes -- Geometry broadcasts to both
+        // watchers: conn 2 (Done) gets it immediately; conn 1
+        // (mid-transfer, already at the cap) gets it QUEUED, and that
+        // charge is what tips conn 1 over budget.
+        let resize = decode_one(&encode_attach_client(&AttachClient::Resize { cols: 100, rows: 40 }).unwrap());
+        let a = p.frame(2, resize, now);
+        let request_id = match a.as_slice() {
+            [Action::ApplyResize { request_id, conn: 2, .. }] => *request_id,
+            other => panic!("expected ApplyResize: {other:?}"),
+        };
+        let a = p.resize_outcome(2, true, 100, 40, request_id, now);
+
+        assert!(
+            a.iter().any(|act| matches!(act, Action::Close(1))),
+            "conn 1 must be closed once the queued Geometry tips it over budget: {a:?}"
+        );
+        assert!(
+            a.iter().any(|act| matches!(
+                act,
+                Action::RecordRefusal { conn: Some(1), reason: RefusalReason::QueueOverflow }
+            )),
+            "expected the SAME visible-termination reason ordinary output overflow uses: {a:?}"
+        );
+        assert!(
+            !a.iter().any(|act| matches!(act, Action::Send { conn: 1, .. })),
+            "no wire frame exists for eviction, by design (same as ordinary output overflow): {a:?}"
+        );
+        // conn 2 (the driver, Done, not over budget) still gets its own
+        // ResizeOk reply and Geometry broadcast normally.
+        assert!(a.iter().any(|act| matches!(act, Action::Send { conn: 2, marker: Some(SentMarker::Reply { .. }), .. })));
+    }
+
+    /// Codex round-2 review, blocker: reproduces the exact defect --
+    /// during a take's `PenChanged(Some(holder))` broadcast, an overflow
+    /// evicting the NEW DRIVER'S OWN connection recursed into a
+    /// `PenChanged(None)` broadcast immediately, and the OUTER broadcast
+    /// then resumed publishing its own now-stale `Some(holder)` to
+    /// watchers it had not reached yet -- a surviving watcher saw `None`
+    /// then `Some(the connection that was just evicted)`, wrong
+    /// indefinitely.
+    ///
+    /// `broadcast_pen_changed`'s own loop iterates `self.watcher_conns()`,
+    /// backed by a `HashMap` whose iteration order is not controllable
+    /// (a randomized per-process hasher) -- unrolled by hand here,
+    /// calling the SAME private methods that loop calls
+    /// (`begin_broadcast`, `send_or_queue_pen_geometry`, `end_broadcast`),
+    /// in the ONE order that actually exercises the bug (the driver's own
+    /// charge processed BEFORE the bystander's), so this reproduces
+    /// deterministically regardless of hash seed rather than depending on
+    /// which order a real `take` would happen to visit connections in.
+    #[test]
+    fn overflow_evicting_the_driver_mid_broadcast_defers_its_announcement_past_the_broadcast() {
+        let mut p = proto();
+        let now = t0();
+        const D: ConnId = 1;
+        const W: ConnId = 2;
+        attach_to_done_at(&mut p, D, wire::ATTACH_PROTO_V3, now);
+        attach_to_done_at(&mut p, W, wire::ATTACH_PROTO_V3, now);
+
+        // Install D as the current driver directly -- this test targets
+        // the re-entrancy guard itself, not take's own admission path
+        // (covered elsewhere, e.g. take_demotes_the_previous_driver_
+        // which_stays_a_watcher).
+        p.driver = Some(DriverState {
+            conn: D,
+            controller_id: "d".to_string(),
+            take_epoch: 1,
+            keepalive_outstanding: None,
+            keepalive_deadline: None,
+        });
+
+        // Pre-load D right up to the cap -- its OWN PenChanged charge
+        // below is what tips it over.
+        let pre = p.bytes_queued(D, WATCHER_LIVE_QUEUE_BUDGET_BYTES, now);
+        assert!(pre.is_empty(), "exactly at budget must not overflow yet: {pre:?}");
+
+        // Unrolled `broadcast_pen_changed(Some("d"), 1, now)`, D visited
+        // first: charging D's OWN copy of its own PenChanged overflows
+        // it, evicting D -- deferred (not published immediately) because
+        // `broadcasting` is held for the whole unrolled sequence below,
+        // exactly as it would be for the real loop's whole duration.
+        let was_broadcasting = p.begin_broadcast();
+        assert!(!was_broadcasting, "this IS the outermost broadcast");
+        let mut actions = p.send_or_queue_pen_geometry(
+            D,
+            QueuedPostWatermark::PenChanged { holder: Some("d".to_string()), take_epoch: 1 },
+            now,
+        );
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::Close(c) if *c == D)),
+            "D's own charge must overflow and close it: {actions:?}"
+        );
+        assert!(
+            p.deferred_driver_eviction.is_some(),
+            "the eviction must be DEFERRED, not published while still inside this broadcast"
+        );
+        // The outer broadcast "resumes" with the bystander -- still using
+        // the SAME (now-stale) Some("d") parameter, exactly as
+        // broadcast_pen_changed's own loop would for a connection it
+        // reaches AFTER the one that just overflowed.
+        actions.extend(p.send_or_queue_pen_geometry(
+            W,
+            QueuedPostWatermark::PenChanged { holder: Some("d".to_string()), take_epoch: 1 },
+            now,
+        ));
+        actions.extend(p.end_broadcast(was_broadcasting, now));
+        assert!(p.deferred_driver_eviction.is_none(), "end_broadcast must drain the deferred eviction");
+
+        // W's own frames, in the order they were sent.
+        let w_frames: Vec<DecodedFrame> = actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Send { conn, frame_bytes, .. } if *conn == W => Some(decode_one(frame_bytes)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            w_frames,
+            vec![
+                DecodedFrame::AttachServer(AttachServer::PenChanged {
+                    holder: Some("d".to_string()),
+                    take_epoch: 1
+                }),
+                DecodedFrame::AttachServer(AttachServer::PenChanged { holder: None, take_epoch: 1 }),
+            ],
+            "W must see Some(new driver) then None (the eviction) -- never the reverse, and never a stale \
+             Some(evicted driver) resurrected after the None that already superseded it: {w_frames:?}"
+        );
+    }
+
+    #[test]
+    fn v2_watcher_receives_no_pen_or_geometry_events() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done_at(&mut p, 1, wire::ATTACH_PROTO_V2, now);
+        let a = p.frame(1, take_frame("alice"), now);
+        let request_id = match a.as_slice() {
+            [Action::CommitTake { request_id, .. }] => *request_id,
+            other => panic!("expected CommitTake: {other:?}"),
+        };
+        let a = p.take_committed(1, "alice".to_string(), 1, request_id, now);
+        assert!(
+            matches!(a.as_slice(), [Action::Send { marker: Some(SentMarker::Reply { .. }), .. }]),
+            "a v2 watcher must receive nothing beyond its own TakeOk reply: {a:?}"
+        );
+        assert_eq!(
+            decode_one(a[0].send_bytes()),
+            DecodedFrame::AttachServer(AttachServer::TakeOk { take_epoch: 1 })
+        );
+    }
+
+    #[test]
+    fn a_v3_watcher_receives_pen_changed_alongside_a_v2_watcher_that_does_not() {
+        let mut p = proto();
+        let now = t0();
+        attach_to_done_at(&mut p, 1, wire::ATTACH_PROTO_V2, now);
+        attach_to_done_at(&mut p, 2, wire::ATTACH_PROTO_V3, now);
+        attach_to_done_at(&mut p, 3, wire::ATTACH_PROTO_V3, now);
+
+        // conn 3 takes -- conns 1 and 2 are both pure bystanders.
+        let a = p.frame(3, take_frame("carol"), now);
+        let request_id = match a.as_slice() {
+            [Action::CommitTake { request_id, .. }] => *request_id,
+            other => panic!("expected CommitTake: {other:?}"),
+        };
+        let a = p.take_committed(3, "carol".to_string(), 1, request_id, now);
+
+        assert!(
+            !a.iter().any(|act| matches!(act, Action::Send { conn: 1, .. })),
+            "the v2 watcher must receive nothing: {a:?}"
+        );
+        let conn2_frame = a.iter().find_map(|act| match act {
+            Action::Send { conn: 2, frame_bytes, .. } => Some(decode_one(frame_bytes)),
+            _ => None,
+        });
+        assert_eq!(
+            conn2_frame,
+            Some(DecodedFrame::AttachServer(AttachServer::PenChanged {
+                holder: Some("carol".to_string()),
+                take_epoch: 1
+            })),
+            "the v3 watcher must receive PenChanged: {a:?}"
+        );
     }
 }

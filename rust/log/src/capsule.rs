@@ -1584,11 +1584,11 @@ pub fn run<P: Producer>(
                         let f = ctx.capsule_frame(
                             Class::Lifecycle,
                             json!({"kind": "take_state",
-                                   "take": {"take_epoch": ctx.take_epoch, "holder": controller_id}}),
+                                   "take": {"take_epoch": ctx.take_epoch, "holder": controller_id.clone()}}),
                         );
                         w.append(&f, Commit::Immediate)?;
                         frames_written += 1;
-                        queue.extend(attach_proto.take_committed(conn, ctx.take_epoch, request_id, Instant::now()));
+                        queue.extend(attach_proto.take_committed(conn, controller_id, ctx.take_epoch, request_id, Instant::now()));
                     }
                     AttachAction::ForwardInput {
                         conn,
@@ -1658,7 +1658,7 @@ pub fn run<P: Producer>(
                         w.append(&out, Commit::Immediate)?;
                         frames_written += 1;
                         maybe_rotate!(w);
-                        queue.extend(attach_proto.resize_outcome(conn, ok, request_id, Instant::now()));
+                        queue.extend(attach_proto.resize_outcome(conn, ok, cols, rows, request_id, Instant::now()));
                     }
                     AttachAction::RunEndRequested { reason } => {
                         // Codex round-1 Blocker 1 discharge: record the
