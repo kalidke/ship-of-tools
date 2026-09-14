@@ -206,6 +206,17 @@ pub mod op {
     /// carries `{from, to, text, ts}`; the frontend appends it as one JSON line
     /// to `<state-dir>/fe-inbox.jsonl`.
     pub const AGENT_MESSAGE: &str = "agent.message";
+    /// Client→daemon request: a session inside a workspace declares its
+    /// sot-comm handle to the daemon that spawned/pinned its env (ADR
+    /// 0046 decision 1), over the typed owner endpoint (`SOT_SOCKET`) —
+    /// never the relay. Payload `AgentJoinReq { workspace_id, handle }`.
+    /// The daemon persists `Workspace.agent_handle`, publishes
+    /// `workspace.changed`, and answers `AgentJoinRes { ok }`; refusals
+    /// (`unknown_workspace`, `bad_handle`) ride the standard error
+    /// payload. Replaces the daemon's own self-file read-back
+    /// (`capsule_comm_handle`) — the session declares once instead of the
+    /// daemon re-deriving it from disk on every read.
+    pub const AGENT_JOIN: &str = "agent.join";
     /// Client→daemon request: drive the frontend(s) with an imperative UI command
     /// (ADR 0025). Mirrors `AGENT_SEND`'s publish leg — the daemon re-emits the
     /// body as an `FE_COMMAND` evt to connected FEs. Unlike the relay `nav.preview`
@@ -385,6 +396,26 @@ pub struct HelloReq {
     /// sees both sides' versions.
     #[serde(default)]
     pub app_version: String,
+    /// This connection's declared host (ADR 0046 decision 1) —
+    /// `sot_log::state_dir::host_name()`'s own value, self-reported by
+    /// every client kind, not only frontends. `#[serde(default)]` → `None`
+    /// for a pre-this-field peer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// This connection's declared role: `"fe"` a frontend, `"bridge"` a
+    /// session's listener loop, `"cli"` a one-shot call from a shell,
+    /// `"agent"` a one-shot call from inside a session (ADR 0046 decision
+    /// 1). `#[serde(default)]` → `""` for a pre-this-field peer; a legacy
+    /// hello carrying `name`/`fe_handle` with no `role` at all implies
+    /// `"fe"` for the compatibility period (`Clients::register`).
+    #[serde(default)]
+    pub role: String,
+    /// Opaque per-process instance discriminator (ADR 0046 decision 1) —
+    /// the frontend's own `FrontendIdentity::instance`, minted once per
+    /// process rather than resampled per connection. `None` for a role
+    /// with no notion of instance, or a pre-this-field peer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
     /// This frontend's own sot-comm handle (`win-fe-<host>`), self-reported
     /// — the same derivation the frontend's `route_fe_command` target
     /// filter already matches on. `#[serde(default)]` → `None` for a
@@ -393,9 +424,21 @@ pub struct HelloReq {
     /// frontend" (see `Clients::snapshot_with_active`), but it still
     /// receives a genuine broadcast (no active frontend resolved) same as
     /// any other connection, and a pre-this-field frontend still
-    /// self-filters against an explicit `--fe <handle>` client-side.
+    /// self-filters against an explicit `--fe <handle>` client-side. NO
+    /// WIRE RENAME this sprint (manager review): unifying this with `name`
+    /// below is deferred to sprint 2's `PROTOCOL_VERSION` bump.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fe_handle: Option<String>,
+    /// A NON-frontend connection's own declared sot-comm handle (ADR 0046
+    /// decision 1) — a bridge's listener loop, a one-shot `cli` call, or
+    /// an `agent` call from inside a session. Distinct field from
+    /// `fe_handle` above (no serde alias between them): a frontend keeps
+    /// sending `fe_handle` exactly as before; this is new wire surface for
+    /// the client kinds that previously declared nothing at all.
+    /// `#[serde(default)]` → `None` for a pre-this-field peer or a
+    /// frontend (which declares itself via `fe_handle` instead).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1350,6 +1393,14 @@ pub struct WorkspaceListEntry {
     /// workspace.list — no fe-inbox correlation. Empty string = unset.
     #[serde(default)]
     pub agent_name: String,
+    /// The sot-comm handle the session inside this workspace actually
+    /// declared to this daemon via `agent.join` (ADR 0046 decision 1) —
+    /// distinct from `agent_name` above, which is only the handle the
+    /// workspace was CREATED to expect. Empty string = never joined.
+    /// `#[serde(default)]` so a daemon that predates the field still
+    /// deserializes.
+    #[serde(default)]
+    pub agent_handle: String,
     /// The initial instruction the FE delivers to the spawned agent after
     /// auto-starting claude. Empty string = unset.
     #[serde(default)]
@@ -1497,6 +1548,23 @@ pub struct AgentSendReq {
 /// with no subscribers still acks ok).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSendRes {
+    pub ok: bool,
+}
+
+/// `agent.join` request (ADR 0046 decision 1) — a session declares its
+/// sot-comm handle to the daemon that owns its workspace. `handle` is
+/// validated against the same charset `comm-lib.sh`'s `--name` derivation
+/// uses; a request naming a workspace the daemon doesn't have refuses
+/// `unknown_workspace`, an invalid `handle` refuses `bad_handle`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentJoinReq {
+    pub workspace_id: String,
+    pub handle: String,
+}
+
+/// `agent.join` response — a simple ack.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentJoinRes {
     pub ok: bool,
 }
 
@@ -2059,12 +2127,33 @@ pub struct ClientVersion {
     pub client_id: String,
     pub app_version: String,
     pub protocol: u32,
+    /// This client's self-reported `HelloReq::host` (ADR 0046 decision 1)
+    /// — `None` for a peer that predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// This client's self-reported `HelloReq::role` — `""` for a peer
+    /// that predates the field (the legacy `fe_handle`-implies-`fe`
+    /// inference still applies; see `Clients::register`).
+    #[serde(default)]
+    pub role: String,
+    /// This client's self-reported `HelloReq::instance` — `None` for a
+    /// role with no notion of instance, or a peer that predates the
+    /// field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
     /// This client's self-reported `HelloReq::fe_handle` — `None` for a
     /// non-FE client or one that predates the field. `#[serde(default)]`
     /// so a daemon that predates this field still deserializes for an
-    /// older caller.
+    /// older caller. NO WIRE RENAME this sprint (manager review): field
+    /// name unchanged from before ADR 0046.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fe_handle: Option<String>,
+    /// This client's self-reported `HelloReq::name` (ADR 0046 decision 1)
+    /// — a non-frontend connection's own declared handle (bridge/cli/agent).
+    /// `None` for a frontend (which reports `fe_handle` instead) or a peer
+    /// that predates the field. Distinct field, no alias to `fe_handle`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// True for the one connection (at most, identified by SERIAL, never
     /// merely by a matching handle — see `Clients::snapshot_with_active`)
     /// that an untargeted `fe.command.send` would be delivered to right
@@ -2193,7 +2282,11 @@ mod hello_version_tests {
             token: None,
             protocol: 2,
             app_version: "0.2.0-dev+abc".into(),
+            host: None,
+            role: String::new(),
+            instance: None,
             fe_handle: None,
+            name: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: HelloReq = serde_json::from_str(&json).unwrap();
@@ -2205,14 +2298,23 @@ mod hello_version_tests {
     fn legacy_hello_req_without_fe_handle_defaults_to_none() {
         // A pre-"active frontend" frontend's HelloReq omits fe_handle
         // entirely — must still deserialize, reading None rather than
-        // failing the whole hello.
+        // failing the whole hello. Manager review (no wire rename this
+        // sprint): fe_handle is its own field, untouched from before ADR
+        // 0046 -- the NEW host/role/instance/name fields default alongside
+        // it, never in place of it.
         let json = r#"{"client_id":"c3","last_seen_revision":0}"#;
         let req: HelloReq = serde_json::from_str(json).expect("legacy HelloReq deserializes");
         assert_eq!(req.fe_handle, None);
+        assert_eq!(req.name, None);
+        assert_eq!(req.host, None);
+        assert_eq!(req.role, "");
     }
 
     #[test]
     fn hello_req_fe_handle_round_trips() {
+        // fe_handle keeps its EXACT pre-ADR-0046 shape -- no alias, no
+        // rename. A frontend sends this field; `name` (a separate field,
+        // below) is for non-FE senders only.
         let req = HelloReq {
             client_id: "c4".into(),
             session_id: None,
@@ -2220,11 +2322,57 @@ mod hello_version_tests {
             token: None,
             protocol: 2,
             app_version: "0.2.0-dev+abc".into(),
+            host: None,
+            role: String::new(),
+            instance: None,
             fe_handle: Some("win-fe-a".into()),
+            name: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: HelloReq = serde_json::from_str(&json).unwrap();
         assert_eq!(back.fe_handle.as_deref(), Some("win-fe-a"));
+    }
+
+    #[test]
+    fn hello_req_declared_identity_round_trips_alongside_fe_handle() {
+        // ADR 0046 decision 1: host/role/instance travel on every hello;
+        // `name` is the NON-frontend declared handle -- a frontend hello
+        // carries `fe_handle`, never `name`, for the two to stay distinct
+        // on the wire (no rename, no alias, per manager review).
+        let req = HelloReq {
+            client_id: "c5".into(),
+            session_id: None,
+            last_seen_revision: 0,
+            token: None,
+            protocol: 2,
+            app_version: "0.2.0-dev+abc".into(),
+            host: Some("test-host".into()),
+            role: "agent".into(),
+            instance: Some("i1".into()),
+            fe_handle: None,
+            name: Some("test-host-agent".into()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"name\":\"test-host-agent\""));
+        assert!(!json.contains("\"fe_handle\""));
+        let back: HelloReq = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name.as_deref(), Some("test-host-agent"));
+        assert_eq!(back.host.as_deref(), Some("test-host"));
+        assert_eq!(back.role, "agent");
+        assert_eq!(back.instance.as_deref(), Some("i1"));
+        assert_eq!(back.fe_handle, None);
+    }
+
+    #[test]
+    fn agent_join_req_round_trips() {
+        let req = super::AgentJoinReq {
+            workspace_id: "ws-1".into(),
+            handle: "test-host-agent".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: super::AgentJoinReq = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.workspace_id, "ws-1");
+        assert_eq!(back.handle, "test-host-agent");
     }
 }
 
@@ -2245,7 +2393,11 @@ mod version_query_tests {
                 client_id: "fe-1".into(),
                 app_version: "0.6.0-dev+abc1234".into(),
                 protocol: 1,
+                host: Some("test-host".into()),
+                role: "fe".into(),
+                instance: Some("i1".into()),
                 fe_handle: Some("win-fe-a".into()),
+                name: None,
                 active: true,
             }],
         };
@@ -2256,6 +2408,8 @@ mod version_query_tests {
         assert_eq!(back.clients.len(), 1);
         assert_eq!(back.clients[0].client_id, "fe-1");
         assert_eq!(back.clients[0].fe_handle.as_deref(), Some("win-fe-a"));
+        assert_eq!(back.clients[0].host.as_deref(), Some("test-host"));
+        assert_eq!(back.clients[0].role, "fe");
         assert!(back.clients[0].active);
     }
 
@@ -2272,7 +2426,29 @@ mod version_query_tests {
         let cv: ClientVersion =
             serde_json::from_value(json).expect("legacy ClientVersion deserializes");
         assert_eq!(cv.fe_handle, None);
+        assert_eq!(cv.name, None);
+        assert_eq!(cv.host, None);
+        assert_eq!(cv.role, "");
         assert!(!cv.active);
+    }
+
+    #[test]
+    fn client_version_name_is_a_separate_field_from_fe_handle() {
+        // ADR 0046 decision 1 (manager review, no wire rename this
+        // sprint): a non-FE connection's declared handle rides `name`,
+        // never aliased onto `fe_handle` -- the two coexist independently.
+        let json = serde_json::json!({
+            "client_id": "agent-1",
+            "app_version": "0.6.0",
+            "protocol": 1,
+            "role": "agent",
+            "name": "test-host-agent",
+        });
+        let cv: ClientVersion =
+            serde_json::from_value(json).expect("name-bearing ClientVersion deserializes");
+        assert_eq!(cv.name.as_deref(), Some("test-host-agent"));
+        assert_eq!(cv.fe_handle, None);
+        assert_eq!(cv.role, "agent");
     }
 
     #[test]

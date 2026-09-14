@@ -24,7 +24,7 @@ pub mod session_socket;
 pub use codec::{read_frame, write_frame};
 pub use ir::{BlobDescriptor, PreviewPayload, TreeNode};
 pub use ops::{
-    op, AgentSendReq, AgentSendRes, ClientVersion, ConceptListRes, ConceptReadReq, ConceptReadRes,
+    op, AgentJoinReq, AgentJoinRes, AgentSendReq, AgentSendRes, ClientVersion, ConceptListRes, ConceptReadReq, ConceptReadRes,
     ConceptWriteReq, ConceptWriteRes, DaemonVersion, DirectoryEntry, DirectoryListReq,
     DirectoryListRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq, FeCommandSendRes,
     FePresenceReq, FePresenceRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq,
