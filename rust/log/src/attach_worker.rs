@@ -2331,7 +2331,16 @@ fn handle_attach_frame<E: Endpoint>(
         DecodedFrame::AttachServer(AttachServer::AttachRefused { .. })
         | DecodedFrame::AttachServer(AttachServer::HelloOk { .. })
         | DecodedFrame::AttachServer(AttachServer::HelloRefused { .. })
-        | DecodedFrame::AttachServer(AttachServer::CheckpointChunk { .. }) => FrameOutcome::Ignored,
+        | DecodedFrame::AttachServer(AttachServer::CheckpointChunk { .. })
+        // ADR 0046 decision 3: the capsule (attach_proto.rs) speaks these
+        // to any v3 client, but this worker still asks for v2 (unchanged
+        // by this lane -- see wire.rs's own history) and so never
+        // receives them for real; listed here only so this match stays
+        // exhaustive over `AttachServer`. Consuming them belongs to
+        // B3b2/B3b3, not this arm.
+        | DecodedFrame::AttachServer(AttachServer::PenSnapshot { .. })
+        | DecodedFrame::AttachServer(AttachServer::PenChanged { .. })
+        | DecodedFrame::AttachServer(AttachServer::Geometry { .. }) => FrameOutcome::Ignored,
         DecodedFrame::Keepalive { .. } => FrameOutcome::Ignored, // answered by the reader thread directly
         DecodedFrame::MgmtRequest(_)
         | DecodedFrame::MgmtReply(_)
