@@ -730,13 +730,15 @@ pub fn load_hosts(project_root: &std::path::Path) -> Vec<MonitorHost> {
     }]
 }
 
+/// Delegates to `sot_log::state_dir::host_name()` (ADR 0046 decision 1) so
+/// this daemon's own monitor roster names itself with the SAME resolved
+/// identity the hello handshake declares — not a sixth, independently
+/// coded copy of the SOT_HOST-or-gethostname rule. `host_name()` is fatal
+/// on a genuinely unusable host (no override and gethostname yields
+/// nothing); this call site is best-effort display only, so it falls back
+/// to "local" rather than taking down the monitor sampler for that.
 fn local_host_name() -> String {
-    gethostname::gethostname()
-        .to_string_lossy()
-        .split('.')
-        .next()
-        .unwrap_or("local")
-        .to_string()
+    sot_log::state_dir::host_name().unwrap_or_else(|_| "local".to_string())
 }
 
 fn parse_monitor_section(text: &str, local: &str) -> Vec<MonitorHost> {

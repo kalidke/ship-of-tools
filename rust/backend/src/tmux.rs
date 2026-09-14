@@ -167,7 +167,9 @@ impl TmuxClient {
     /// sessions), stamped — with the rest of the `SOT_*` awareness env
     /// (`pty::awareness_env`) — into the session so processes in the pane
     /// know which workspace they are in (`sot-nav.sh` et al. key on
-    /// `SOT_WORKSPACE`). On tmux >= 3.2 the env rides `-e` on `new-session`,
+    /// `SOT_WORKSPACE`). `workspace_id` (ADR 0046 decision 1) stamps
+    /// `SOT_WORKSPACE_ID` the same way — `None` for non-workspace sessions,
+    /// same as `slug`. On tmux >= 3.2 the env rides `-e` on `new-session`,
     /// which the initial pane process inherits too; older tmux gets a
     /// post-create `set-environment` (future processes only — the boot
     /// wrapper's session-env re-read covers the pane command there, but a
@@ -179,6 +181,7 @@ impl TmuxClient {
         command: Option<&str>,
         cwd: Option<&Path>,
         slug: Option<&str>,
+        workspace_id: Option<&str>,
     ) -> Result<()> {
         let mut args: Vec<String> = vec!["new-session".into(), "-d".into(), "-s".into(), name.into()];
         if let Some(p) = cwd {
@@ -186,7 +189,7 @@ impl TmuxClient {
             args.push("-c".into());
             args.push(s.into());
         }
-        let env = crate::pty::awareness_env(slug, cwd);
+        let env = crate::pty::awareness_env(slug, cwd, workspace_id);
         let supports_e = crate::pty::tmux_supports_dash_e();
         if supports_e {
             for (k, v) in &env {
@@ -731,7 +734,7 @@ mod tests {
     fn integration_round_trip() {
         let c = TmuxClient::new();
         let name = format!("sot-test-{}", std::process::id());
-        c.create_session(&name, None, None, None).expect("create");
+        c.create_session(&name, None, None, None, None).expect("create");
         let sessions = c.list_sessions().expect("list-sessions");
         assert!(sessions.iter().any(|s| s.name == name));
         let panes = c.list_panes(Some(&name)).expect("list-panes");

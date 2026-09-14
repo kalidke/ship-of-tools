@@ -124,17 +124,21 @@ impl Pty {
     ///
     /// `slug` is the owning workspace's slug (`sot-be-<slug>` → `slug`),
     /// stamped into the session env as `SOT_WORKSPACE`. `None` for the
-    /// home-base default.
+    /// home-base default. `workspace_id` (manager review, S15) is the
+    /// same workspace's id, stamped as `SOT_WORKSPACE_ID` — threaded
+    /// through to every (re)spawn, first create or auto-respawn alike, so
+    /// `agent.join` always has something to declare into.
     pub fn spawn(
         cols: u16,
         rows: u16,
         target: Option<&str>,
         cwd: Option<&Path>,
         slug: Option<&str>,
+        workspace_id: Option<&str>,
     ) -> Result<Self> {
         let target_name = target.unwrap_or(DEFAULT_TMUX_TARGET).to_string();
         let TmuxPair { master, writer, child, reader } =
-            spawn_tmux_pair(cols, rows, &target_name, cwd, slug)?;
+            spawn_tmux_pair(cols, rows, &target_name, cwd, slug, workspace_id)?;
         let master = Arc::new(Mutex::new(master));
         let writer = Arc::new(Mutex::new(writer));
         // The child is NOT shared: the reader thread is its sole owner (spawn,
@@ -161,6 +165,10 @@ impl Pty {
         // cleared on the home-base fallback, so a respawn there carries no
         // stale workspace identity.
         let slug_for_reader = slug.map(|s| s.to_string());
+        // Same lifecycle again (S15, manager review): a respawned session
+        // needs its workspace_id too, or a session recreated after EOF
+        // silently loses `agent.join`'s only way to declare into it.
+        let workspace_id_for_reader = workspace_id.map(|w| w.to_string());
         // Blocking reader on a dedicated thread — portable-pty's
         // master reader is sync `Read`, not async, so we use
         // `task::spawn_blocking` to keep it off the runtime. The
@@ -179,6 +187,7 @@ impl Pty {
                 stopping_for_reader,
                 cwd_for_reader,
                 slug_for_reader,
+                workspace_id_for_reader,
             );
         });
 
@@ -391,6 +400,7 @@ fn spawn_tmux_pair(
     target: &str,
     cwd: Option<&Path>,
     slug: Option<&str>,
+    workspace_id: Option<&str>,
 ) -> Result<TmuxPair> {
     // tmux never runs on Windows (no `tmux.exe`) — refuse immediately,
     // before any path work, mirroring `TmuxClient::run`'s gate
@@ -467,7 +477,12 @@ fn spawn_tmux_pair(
         // on it, and fail CLOSED — an unknown/absent/unparseable version omits `-e`
         // rather than risk the storm.
         let supports_e = tmux_supports_dash_e();
-        let env = awareness_env(slug, cwd);
+        // S15 (Codex finding S15): `workspace_id` threaded through from the
+        // caller so `agent.join` still has something to declare into on a
+        // RECREATED session (this path runs whenever the session doesn't
+        // yet exist — first spawn, or an auto-respawn after EOF/a dead
+        // tmux server — not only the very first `-A` create).
+        let env = awareness_env(slug, cwd, workspace_id);
         if supports_e {
             for (k, v) in &env {
                 cmd.arg("-e");
@@ -516,16 +531,52 @@ fn spawn_tmux_pair(
     }
 }
 
-/// The `SOT_*` awareness env for a tmux session the daemon owns: `SOT_SESSION=1`
-/// ("you are inside Ship of Tools"), the owning workspace's slug + project root,
-/// and the product checkout for the help persona. The one builder shared by
-/// every session-creation path (`Pty::spawn`'s `new-session -A`,
-/// `TmuxClient::create_session`, and the boot-time repair sweep) so the paths
-/// can't drift on WHAT gets stamped.
-pub(crate) fn awareness_env(slug: Option<&str>, cwd: Option<&Path>) -> Vec<(String, String)> {
+/// This daemon's own listener path, BARE (manager review, S4: `SOT_SOCKET`
+/// keeps its pre-existing meaning, a plain Unix socket path — no typed
+/// `unix:`/`pipe:` prefix; that would break every consumer still expecting
+/// a bare path, e.g. the frontend/daemon CLI parsers and older comm
+/// scripts that already prepend their own `unix:`). Set ONCE at boot
+/// (`server::run`, before any session can be spawned) from `Opts.socket`
+/// — the daemon binds exactly one listener per process, so a second
+/// `set_own_endpoint` call is a no-op by construction, never a real race.
+static OWN_ENDPOINT: OnceLock<String> = OnceLock::new();
+
+pub(crate) fn set_own_endpoint(socket_path: &Path) {
+    let _ = OWN_ENDPOINT.set(socket_path.display().to_string());
+}
+
+/// The `SOT_*` awareness env for a tmux session or capsule producer the
+/// daemon owns: `SOT_SESSION=1` ("you are inside Ship of Tools"), the
+/// owning workspace's slug + project root, `SOT_SOCKET` (ADR 0046 decision
+/// 1 — every pane/capsule alike, so `comm-join.sh`'s `agent.join` can
+/// always find its owner daemon), `SOT_WORKSPACE_ID` when the caller has
+/// one, and the product checkout for the help persona. The one builder
+/// shared by every session-creation path (`Pty::spawn`'s `new-session -A`,
+/// `TmuxClient::create_session`, `capsule_workspace::capsule_supervisor_env`,
+/// and the boot-time repair sweep) so the paths can't drift on WHAT gets
+/// stamped. Manager review: no `SOT_SELF_HOST` pin here — a caller that set
+/// that override on the DAEMON's own process already has it reach every
+/// child this spawns through ordinary env inheritance; nothing to stamp.
+pub(crate) fn awareness_env(
+    slug: Option<&str>,
+    cwd: Option<&Path>,
+    workspace_id: Option<&str>,
+) -> Vec<(String, String)> {
     let mut env = vec![("SOT_SESSION".to_string(), "1".to_string())];
+    // Unix only (S4): a bare path is meaningless as a Windows named-pipe
+    // address for `agent.join`'s resolution, which already falls back to
+    // the local pipe there through `sot_daemon_endpoint`'s existing
+    // platform order — nothing to pin on that platform.
+    if cfg!(unix) {
+        if let Some(endpoint) = OWN_ENDPOINT.get() {
+            env.push(("SOT_SOCKET".to_string(), endpoint.clone()));
+        }
+    }
     if let Some(slug) = slug {
         env.push(("SOT_WORKSPACE".to_string(), slug.to_string()));
+    }
+    if let Some(id) = workspace_id {
+        env.push(("SOT_WORKSPACE_ID".to_string(), id.to_string()));
     }
     if let Some(dir) = cwd {
         env.push(("SOT_WORKSPACE_ROOT".to_string(), dir.to_string_lossy().into_owned()));
@@ -784,6 +835,10 @@ pub async fn boot_workspace_claude(
             &session_spawn,
             Some(cwd_spawn.as_path()),
             Some(slug_spawn.as_str()),
+            // `-e` (and `-c`) are ignored on `-A` attach, same as cwd/slug
+            // just above — this always attaches to a session `create_session`
+            // already created and stamped with the real workspace_id.
+            None,
         )
     })
     .await
@@ -908,7 +963,7 @@ pub fn boot_wrapper_command(session: &str, agent_name: &str, agent_kind: &str) -
     // with `awareness_env` (pinned by a test). Session names pass
     // `valid_name` ([A-Za-z0-9._-]), so the single-quoted embedding is safe.
     w.push_str(
-        "for _v in SOT_SESSION SOT_WORKSPACE SOT_WORKSPACE_ROOT SOT_MANUAL; do \
+        "for _v in SOT_SESSION SOT_SOCKET SOT_WORKSPACE SOT_WORKSPACE_ID SOT_WORKSPACE_ROOT SOT_MANUAL; do \
          eval \"$(tmux show-environment -s -t '",
     );
     w.push_str(session);
@@ -997,6 +1052,9 @@ fn run_reader_loop(
     mut cwd: Option<PathBuf>,
     // Owning workspace slug (`SOT_WORKSPACE`), same lifecycle as `cwd`.
     mut slug: Option<String>,
+    // Owning workspace id (`SOT_WORKSPACE_ID`), same lifecycle as `cwd`/
+    // `slug` (S15, manager review).
+    mut workspace_id: Option<String>,
 ) {
     let mut buf = [0u8; 8192];
     // When the current child was spawned — for the short-lived classification.
@@ -1106,6 +1164,7 @@ fn run_reader_loop(
                 // a workspace it no longer represents.
                 cwd = None;
                 slug = None;
+                workspace_id = None;
                 DEFAULT_TMUX_TARGET.to_string()
             } else {
                 cur_target
@@ -1131,7 +1190,7 @@ fn run_reader_loop(
             }
 
             tracing::warn!(cols, rows, target = %cur_target, consecutive, "pty EOF — respawning tmux");
-            match spawn_tmux_pair(cols, rows, &cur_target, cwd.as_deref(), slug.as_deref()) {
+            match spawn_tmux_pair(cols, rows, &cur_target, cwd.as_deref(), slug.as_deref(), workspace_id.as_deref()) {
                 Ok(TmuxPair {
                     master: new_master,
                     writer: new_writer,
@@ -1227,19 +1286,44 @@ mod tests {
 
     #[test]
     fn awareness_env_shapes() {
-        // SOT_SESSION is always present and first; slug/cwd add their vars.
-        // (SOT_MANUAL is checkout-dependent, so no assertion on it here.)
+        // SOT_SESSION is always present and first; slug/cwd/workspace_id add
+        // their vars. (SOT_MANUAL is checkout-dependent and SOT_SOCKET
+        // depends on whether this process ever called set_own_endpoint --
+        // no exact-value assertion on either here; see the dedicated test
+        // below. No SOT_SELF_HOST pin at all -- manager review: an
+        // override set on the daemon's own process already reaches every
+        // child through ordinary env inheritance.)
         let find = |env: &[(String, String)], k: &str| -> Option<String> {
             env.iter().find(|(ek, _)| ek == k).map(|(_, v)| v.clone())
         };
-        let bare = awareness_env(None, None);
+        let bare = awareness_env(None, None, None);
         assert_eq!(bare[0], ("SOT_SESSION".to_string(), "1".to_string()));
         assert_eq!(find(&bare, "SOT_WORKSPACE"), None);
+        assert_eq!(find(&bare, "SOT_WORKSPACE_ID"), None);
         assert_eq!(find(&bare, "SOT_WORKSPACE_ROOT"), None);
 
-        let full = awareness_env(Some("alpha"), Some(Path::new("/proj/alpha")));
+        let full = awareness_env(Some("alpha"), Some(Path::new("/proj/alpha")), Some("ws-alpha-1"));
         assert_eq!(find(&full, "SOT_WORKSPACE").as_deref(), Some("alpha"));
+        assert_eq!(find(&full, "SOT_WORKSPACE_ID").as_deref(), Some("ws-alpha-1"));
         assert_eq!(find(&full, "SOT_WORKSPACE_ROOT").as_deref(), Some("/proj/alpha"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn awareness_env_carries_own_endpoint_once_set() {
+        // set_own_endpoint is idempotent by construction (the daemon binds
+        // exactly one listener per process) and process-global (`OnceLock`),
+        // so this asserts the BARE SHAPE, never an exact path another test
+        // in this binary may have already pinned it to. Manager review
+        // (S4): SOT_SOCKET keeps its pre-existing meaning, a bare Unix
+        // socket path -- no typed unix:/pipe: prefix, pinned on Unix only.
+        set_own_endpoint(Path::new("/tmp/sot-test/sot.sock"));
+        let env = awareness_env(None, None, None);
+        let socket = env.iter().find(|(k, _)| k == "SOT_SOCKET").map(|(_, v)| v.clone());
+        assert!(
+            socket.as_deref().is_some_and(|s| !s.starts_with("unix:") && !s.starts_with("pipe:")),
+            "SOT_SOCKET must be a bare path, got {socket:?}"
+        );
     }
 
     #[test]
@@ -1261,7 +1345,7 @@ mod tests {
         // grep — that was eval-injectable via hostile var names and broke
         // multiline values). A new awareness var without a wrapper entry
         // fails here.
-        for (k, _) in awareness_env(Some("alpha"), Some(Path::new("/proj/alpha"))) {
+        for (k, _) in awareness_env(Some("alpha"), Some(Path::new("/proj/alpha")), Some("ws-alpha-1")) {
             assert!(
                 w.contains(&k),
                 "awareness var {k} missing from the wrapper's re-read name list"

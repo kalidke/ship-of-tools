@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -104,6 +104,20 @@ pub struct Workspace {
     /// stable identifier `pty.open`'s `target` field addresses a
     /// workspace by, for both runtimes uniformly.
     pub runtime: String,
+    /// The sot-comm handle the session inside this workspace actually
+    /// DECLARED via `agent.join` (ADR 0046 decision 1) — distinct from
+    /// `agent_name` above, which is only the handle the workspace was
+    /// CREATED to expect. `""` (never joined) for a fresh row or an older
+    /// toml that lacks the key. Interior-mutable (manager review, S6):
+    /// `Workspaces::set_agent_handle` mutates THIS SAME cell on the
+    /// SHARED `Arc<Workspace>` in place — never a replacement `insert` —
+    /// so a join can never discard the resource caches living alongside
+    /// it on the same struct instance. Read through the `agent_handle()`
+    /// method outside this module — the field itself stays `pub(crate)`
+    /// only for same-crate construction of a freshly built, not-yet-shared
+    /// `Workspace` (`from_toml`, test fixtures), never for reading the
+    /// live value, which needs the getter's poison-recovery.
+    pub(crate) agent_handle: Mutex<String>,
     files_mode: OnceLock<Arc<FilesMode>>,
     concept: OnceLock<Arc<ConceptStore>>,
     kernel: OnceLock<Kernel>,
@@ -135,6 +149,7 @@ impl std::fmt::Debug for Workspace {
             .field("agent_name", &self.agent_name)
             .field("task", &self.task)
             .field("runtime", &self.runtime)
+            .field("agent_handle", &self.agent_handle())
             .field("files_mode_built", &self.files_mode.get().is_some())
             .field("concept_built", &self.concept.get().is_some())
             .field("kernel_built", &self.kernel.get().is_some())
@@ -177,12 +192,20 @@ impl Workspace {
             // value set it on the returned row (`load_toml`'s `runtime`
             // key, `insert`, workspace.create).
             runtime: if cfg!(windows) { "capsule" } else { "tmux" }.to_string(),
+            agent_handle: Mutex::new(String::new()),
             files_mode: OnceLock::new(),
             concept: OnceLock::new(),
             kernel: OnceLock::new(),
             repl: OnceLock::new(),
             watcher: OnceLock::new(),
         }
+    }
+
+    /// The sot-comm handle this workspace's session has DECLARED (ADR
+    /// 0046 decision 1) — `""` if never joined. The one reader for the
+    /// interior-mutable `agent_handle` cell; see that field's own doc.
+    pub fn agent_handle(&self) -> String {
+        self.agent_handle.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Lazily get this workspace's `FilesMode`, constructing it (and
@@ -667,7 +690,35 @@ impl Workspaces {
             ws.task.clone(),
         );
         fresh.runtime = ws.runtime.clone();
+        fresh.agent_handle = Mutex::new(ws.agent_handle());
         Some(self.insert(fresh))
+    }
+
+    /// Record the sot-comm handle a session inside `workspace_id` DECLARED
+    /// via `agent.join` (ADR 0046 decision 1) — the daemon is told once
+    /// instead of re-deriving it from a self-file read-back on every
+    /// `workspace.list`/`clear_comm_unread` call. `None` if `workspace_id`
+    /// is not registered (the `agent.join` handler reports this as
+    /// `unknown_workspace`).
+    ///
+    /// Manager review (S6, Codex finding B5): a GUARDED IN-PLACE update,
+    /// never a replacement `insert`. The row is looked up once under the
+    /// registry's read lock; the write lands on the row's OWN interior
+    /// `agent_handle` cell (the SAME `Arc<Workspace>`, resource caches —
+    /// kernel, repl, watcher — untouched), not on a freshly reconstructed
+    /// `Workspace` that would start every cache cold. This also closes the
+    /// destroy race the old replace-based version had: since this method
+    /// never touches `by_id`/`by_slug`, a `destroy` that removes the row
+    /// between the lookup and this write leaves the row destroyed — the
+    /// write lands on an orphaned `Arc` nobody can `resolve()` to anymore,
+    /// never a resurrection.
+    pub fn set_agent_handle(&self, workspace_id: &str, handle: &str) -> Option<Arc<Workspace>> {
+        let ws = {
+            let g = self.inner.read().expect("workspaces lock");
+            g.by_id.get(workspace_id)?.clone()
+        };
+        *ws.agent_handle.lock().unwrap_or_else(|e| e.into_inner()) = handle.to_string();
+        Some(ws)
     }
 
     /// Resolve an optional workspace_id to a workspace handle. `None`
@@ -914,6 +965,11 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         if let Some(r) = kv.get("runtime") {
             ws.runtime = r.clone();
         }
+        // ADR 0046 decision 1. An older toml predates this key → "" (never
+        // joined), matching `meta_only`'s own default.
+        if let Some(h) = kv.get("agent_handle") {
+            ws.agent_handle = Mutex::new(h.clone());
+        }
         return Ok(Some(ws));
     }
 
@@ -1075,6 +1131,10 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
     body.push_str(&format!("agent_name    = {}\n", toml_quote(&ws.agent_name)));
     body.push_str(&format!("task          = {}\n", toml_quote(&ws.task)));
     body.push_str(&format!("runtime       = {}\n", toml_quote(&ws.runtime)));
+    body.push_str(&format!(
+        "agent_handle  = {}\n",
+        toml_quote(&ws.agent_handle())
+    ));
 
     let final_text = if preserved.trim().is_empty() {
         body
@@ -1128,6 +1188,25 @@ pub(crate) fn state_host() -> String {
     } else {
         short
     }
+}
+
+/// This daemon's declared `host` (ADR 0046 decision 1) — `sot_log::state_dir::
+/// host_name()`, resolved ONCE and cached, fatal at boot. Feeds `HelloRes.host`,
+/// the "client connected" log line, and the awareness env this daemon pins on
+/// every pane/capsule (`pty::awareness_env`) — deliberately separate from
+/// `state_host()` above: that function keeps naming `workspaces-<host>` on
+/// disk until B2a's migration lands, so a change here must never touch it.
+/// `run()` calls this once at startup so an unresolvable host fails the
+/// daemon immediately instead of surfacing as a mysterious per-hello error
+/// deep in a handler.
+pub(crate) fn declared_host() -> &'static str {
+    static DECLARED_HOST: OnceLock<String> = OnceLock::new();
+    DECLARED_HOST.get_or_init(|| {
+        sot_log::state_dir::host_name().unwrap_or_else(|e| {
+            tracing::error!(error = %e, "cannot start: no declared host (ADR 0046 decision 1)");
+            std::process::exit(1);
+        })
+    })
 }
 
 /// One-time migration: rename the legacy UNSUFFIXED state dirs to this
@@ -1639,6 +1718,7 @@ fn strip_canonical_top_and_kernel(text: &str) -> String {
         "agent_name",
         "task",
         "runtime",
+        "agent_handle",
     ];
     let mut out = String::new();
     let mut in_top = true;
@@ -1847,6 +1927,112 @@ mod tests {
         // the reset -- resolve() must see it too.
         let resolved = reg.resolve(Some(&original_id)).unwrap();
         assert!(reg.is_inert_default_anchor(&resolved));
+    }
+
+    /// ADR 0046 decision 1: `agent.join`'s persistence target. Mirrors
+    /// `reset_agent_to_none_makes_a_carried_over_default_row_inert_again`'s
+    /// shape — mutate through the registry, then prove BOTH the returned
+    /// handle and a fresh `resolve()` see it, and that unrelated metadata
+    /// (here `runtime`) survives the `insert()` round trip unchanged.
+    #[test]
+    fn set_agent_handle_persists_in_the_registry_and_preserves_other_fields() {
+        let reg = Workspaces::new();
+        let mut row = Workspace::from_label(
+            "capsuleprobe",
+            PathBuf::from("/home/u/capsuleprobe"),
+            false,
+            "claude".into(),
+            String::new(),
+            String::new(),
+        );
+        row.runtime = "capsule".to_string();
+        let row = reg.insert(row);
+        let original_id = row.workspace_id.clone();
+        assert_eq!(row.agent_handle(), "", "a fresh row has never joined");
+
+        let joined = reg
+            .set_agent_handle(&row.workspace_id, "capsuleprobe-testhost")
+            .expect("the row is registered");
+        assert_eq!(joined.workspace_id, original_id, "set_agent_handle must preserve the id");
+        assert_eq!(joined.agent_handle(), "capsuleprobe-testhost");
+        assert_eq!(joined.runtime, "capsule", "unrelated metadata must survive the update");
+
+        // The registry's own row (not just the returned handle) reflects
+        // the join -- resolve() must see it too.
+        let resolved = reg.resolve(Some(&original_id)).unwrap();
+        assert_eq!(resolved.agent_handle(), "capsuleprobe-testhost");
+    }
+
+    #[test]
+    fn set_agent_handle_on_an_unknown_workspace_is_none() {
+        let reg = Workspaces::new();
+        assert!(reg.set_agent_handle("nope", "someone").is_none());
+    }
+
+    #[test]
+    fn set_agent_handle_mutates_the_same_arc_never_a_replacement() {
+        // Manager review (S6, Codex finding B5): the row's resource caches
+        // live on the SAME struct instance as agent_handle -- a guarded
+        // in-place update must never discard them by reconstructing the
+        // Workspace. Constructing the kernel handle BEFORE the join, then
+        // checking it is still built afterward, proves no replacement
+        // happened (a `meta_only`-rebuilt row would start with a cold,
+        // unbuilt kernel cache).
+        let reg = Workspaces::new();
+        let row = Workspace::from_label(
+            "capsuleprobe2",
+            PathBuf::from("/home/u/capsuleprobe2"),
+            false,
+            "claude".into(),
+            String::new(),
+            String::new(),
+        );
+        let row = reg.insert(row);
+        let _ = row.kernel();
+        assert!(row.kernel_built(), "test setup: the kernel cache must be built before the join");
+
+        let joined = reg.set_agent_handle(&row.workspace_id, "capsuleprobe2-testhost").unwrap();
+        assert!(
+            joined.kernel_built(),
+            "a guarded in-place update must never discard a live resource cache"
+        );
+        assert!(
+            Arc::ptr_eq(&row, &joined),
+            "set_agent_handle must mutate the SAME Arc, never hand back a replacement"
+        );
+    }
+
+    #[test]
+    fn set_agent_handle_after_the_row_is_destroyed_never_resurrects_it() {
+        // Manager review (S6, Codex finding B5): the old replace-based
+        // implementation read the row, then reinserted a fresh copy --
+        // a destroy landing between those two steps got resurrected by
+        // the reinsert. The guarded in-place version never touches
+        // by_id/by_slug at all, so this is structurally impossible: a
+        // destroyed row simply has no entry for a later join to find.
+        let reg = Workspaces::new();
+        let row = Workspace::from_label(
+            "capsuleprobe3",
+            PathBuf::from("/home/u/capsuleprobe3"),
+            false,
+            "claude".into(),
+            String::new(),
+            String::new(),
+        );
+        let row = reg.insert(row);
+        let id = row.workspace_id.clone();
+
+        reg.remove_by_id(&id);
+        assert!(reg.resolve(Some(&id)).is_none(), "test setup: the row must actually be gone");
+
+        assert!(
+            reg.set_agent_handle(&id, "capsuleprobe3-testhost").is_none(),
+            "a join against a destroyed workspace_id must report unknown_workspace, never resurrect the row"
+        );
+        assert!(
+            reg.resolve(Some(&id)).is_none(),
+            "the destroyed row must stay gone -- no resurrection"
+        );
     }
 
     #[test]
@@ -2367,6 +2553,55 @@ cursor_path = "src/lib.jl"
         let loaded = load_toml(&toml_path, false).unwrap().unwrap();
         assert_eq!(loaded.agent_name, ws.agent_name);
         assert_eq!(loaded.task, ws.task);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ADR 0046 decision 1: `agent_handle` round-trips through `save()`/
+    /// `load_toml()` like every other canonical field, and an older toml
+    /// written before this key existed loads it as "" (never joined)
+    /// rather than failing.
+    #[test]
+    fn save_load_round_trips_agent_handle() {
+        let _guard = env_guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-ws-test-roundtrip-agent-handle-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        std::env::set_var("LOCALAPPDATA", &dir);
+        std::env::remove_var("USERPROFILE");
+        std::env::set_var("SOT_STATE_HOST", "roundtrip-test");
+
+        let mut ws = Workspace::meta_only(
+            "ws-rt-3".to_string(),
+            "rt-agent-handle".to_string(),
+            "RoundTrip3.jl".to_string(),
+            PathBuf::from("/home/u/RoundTrip3.jl"),
+            "sot-be-rt-agent-handle".to_string(),
+            1700000000,
+            false,
+            "claude".to_string(),
+            String::new(),
+            String::new(),
+        );
+        ws.agent_handle = Mutex::new("rt-agent-handle-testhost".to_string());
+        let toml_path = save(&ws).unwrap();
+        let loaded = load_toml(&toml_path, false).unwrap().unwrap();
+        assert_eq!(loaded.agent_handle(), "rt-agent-handle-testhost");
+
+        // An older toml predating the key: strip the line, reload, expect "".
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        let stripped: String = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("agent_handle"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        std::fs::write(&toml_path, stripped).unwrap();
+        let reloaded = load_toml(&toml_path, false).unwrap().unwrap();
+        assert_eq!(reloaded.agent_handle(), "", "an older toml with no key defaults to never-joined");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

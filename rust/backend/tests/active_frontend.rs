@@ -14,7 +14,7 @@
 //!    `workspace.activate{read:true}`, `pty.write`) — EVERY op an earlier
 //!    design stamped presence from — leave a connection's activity
 //!    untouched; only `fe.presence` does.
-//! 2. Two connections sharing an `fe_handle` (a stale reconnect, or a
+//! 2. Two connections sharing a declared `name` (a stale reconnect, or a
 //!    genuine hostname collision) never both receive an untargeted
 //!    `fe.command.send` — exactly one does, by connection identity.
 
@@ -156,9 +156,11 @@ async fn poll_until_connected(socket_path: &std::path::Path) -> Conn {
     }
 }
 
-/// Connect + hello (with `fe_handle`), returning the connection and the next
-/// free request id (2, since id 1 is hello).
-async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, fe_handle: &str) -> (Conn, u64) {
+/// Connect + hello (declaring `{host, role, fe_handle}` per ADR 0046
+/// decision 1 -- `fe_handle` unchanged from before that lane, manager
+/// review: no wire rename this sprint), returning the connection and the
+/// next free request id (2, since id 1 is hello).
+async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, name: &str) -> (Conn, u64) {
     let mut conn = poll_until_connected(socket_path).await;
     let hello = HelloReq {
         client_id: client_id.to_string(),
@@ -167,7 +169,11 @@ async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, fe_ha
         token: None,
         protocol: sot_protocol::PROTOCOL_VERSION,
         app_version: sot_protocol::app_version(),
-        fe_handle: Some(fe_handle.to_string()),
+        host: Some("test-host".to_string()),
+        role: "fe".to_string(),
+        instance: Some("test-instance".to_string()),
+        fe_handle: Some(name.to_string()),
+        name: None,
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await
@@ -255,6 +261,28 @@ async fn navigation_and_typing_ops_never_stamp_presence_only_fe_presence_does() 
             Some(true),
             "fe.presence must stamp this connection active: {v2}"
         );
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// ADR 0046 decision 1: a real hello declaring `{host, role, fe_handle}`
+/// is echoed VERBATIM by `version.query`'s roster — read from the
+/// connection's own declaration, never recomputed daemon-side. `fe_handle`
+/// unchanged from before this lane (manager review: no wire rename this
+/// sprint) — `name` is reserved for a non-FE connection's own declared
+/// handle and stays absent on a frontend's row.
+#[tokio::test]
+async fn version_query_echoes_the_declared_host_and_role() {
+    let env = Env::spawn("declare");
+    let (mut conn, id) = connect_and_hello(&env.socket_path, "declare-test", "fe-declare-test").await;
+
+    let body = async {
+        let v = call(&mut conn, id, op::VERSION_QUERY, serde_json::json!({})).await;
+        let row = client_row(&v, "declare-test").expect("this connection's own roster row");
+        assert_eq!(row.get("host").and_then(|v| v.as_str()), Some("test-host"), "{v}");
+        assert_eq!(row.get("role").and_then(|v| v.as_str()), Some("fe"), "{v}");
+        assert_eq!(row.get("fe_handle").and_then(|v| v.as_str()), Some("fe-declare-test"), "{v}");
+        assert_eq!(row.get("instance").and_then(|v| v.as_str()), Some("test-instance"), "{v}");
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }

@@ -479,6 +479,18 @@ fn project_comm_registry(bytes: &[u8]) -> String {
 }
 
 pub async fn run(opts: Opts) -> Result<()> {
+    // ADR 0046 decision 1: resolve this daemon's declared host ONCE, fatal
+    // at boot if it can't be named — every later hello/log read reads it,
+    // never recomputing. Pin the (bare, S4) own-listener endpoint the same
+    // way, from `opts.socket` before it's consumed by value below; both
+    // caches are read by `pty::awareness_env` for every pane/capsule this
+    // daemon ever spawns (SOT_SOCKET only — the declared host is never
+    // pinned into a spawned child's env; see `awareness_env`'s own doc).
+    crate::workspaces::declared_host();
+    if let Some(path) = opts.socket.as_deref() {
+        crate::pty::set_own_endpoint(path);
+    }
+
     let session = Session::new();
     let (sid, _) = session.snapshot().await;
     tracing::info!(session_id = %sid, "session ready");
@@ -611,6 +623,14 @@ pub async fn run(opts: Opts) -> Result<()> {
         existing_default.as_deref().map(|w| w.runtime.as_str()),
         &default_ws_seed.runtime,
     );
+    // Manager review (S16, Codex finding S16): carry the existing row's
+    // declared `agent_handle` (ADR 0046 decision 1's `agent.join`)
+    // forward the same way `runtime` is above — `from_label` seeds a
+    // fresh row with none at all, so without this every boot silently
+    // wiped a default row's already-joined handle on the very next save.
+    if let Some(existing) = &existing_default {
+        default_ws_seed.agent_handle = std::sync::Mutex::new(existing.agent_handle());
+    }
     workspaces.insert(default_ws_seed);
     let default_ws = workspaces
         .resolve(Some(&paths::slug(&default_label)))
@@ -637,12 +657,14 @@ pub async fn run(opts: Opts) -> Result<()> {
         let tmux_name = default_ws.tmux_session.clone();
         let cwd = default_ws.project_root.clone();
         let slug = default_ws.slug.clone();
+        let ws_id = default_ws.workspace_id.clone();
         let _ = tokio::task::spawn_blocking(move || {
             match crate::tmux::TmuxClient::new().create_session(
                 &tmux_name,
                 None,
                 Some(&cwd),
                 Some(&slug),
+                Some(&ws_id),
             ) {
                 Ok(()) => tracing::info!(tmux = %tmux_name, "default workspace tmux session ready"),
                 Err(e) => tracing::warn!(error = %e, tmux = %tmux_name, "default workspace tmux session create failed"),
@@ -711,7 +733,7 @@ pub async fn run(opts: Opts) -> Result<()> {
                 }
                 client.set_session_env_all(
                     &ws.tmux_session,
-                    &crate::pty::awareness_env(Some(&ws.slug), Some(&ws.project_root)),
+                    &crate::pty::awareness_env(Some(&ws.slug), Some(&ws.project_root), Some(&ws.workspace_id)),
                 );
                 healed += 1;
             }
@@ -1580,6 +1602,10 @@ where
                             req.app_version,
                             req.protocol,
                             req.fe_handle,
+                            req.role,
+                            req.host,
+                            req.instance,
+                            req.name,
                         ));
                     }
                 }
@@ -1876,6 +1902,10 @@ where
             op::AGENT_SEND => {
                 handlers::handle_agent_send(frame.id, frame.payload, &agent_events_tx).await
             }
+            op::AGENT_JOIN => {
+                handlers::handle_agent_join(frame.id, frame.payload, &workspaces, &ws_events_tx)
+                    .await
+            }
             op::FE_COMMAND_SEND => {
                 handlers::handle_fe_command_send(frame.id, frame.payload, &fe_command_tx, &clients)
                     .await
@@ -1952,6 +1982,13 @@ where
                 // can gate FE nav commands on its workspace. `None` for the
                 // home-base default (no matching workspace).
                 let requested_slug = workspaces.slug_for_tmux(requested_target);
+                // Manager review (S15): the same workspace's id, stamped as
+                // SOT_WORKSPACE_ID on a (re)spawned pane — `Pty::spawn`'s
+                // own auto-respawn-on-EOF path recreates the tmux session
+                // through this SAME call, so a recreated pane must not
+                // skip `agent.join` just because it wasn't the FIRST spawn.
+                let requested_workspace_id =
+                    workspaces.workspace_for_tmux(requested_target).map(|ws| ws.workspace_id.clone());
                 // ADR 0042 slice L1a: a capsule workspace has no tmux
                 // session to attach `Pty::spawn` to at all — refused
                 // before any of the tmux logic below runs (existing-pty
@@ -2116,6 +2153,7 @@ where
                             Some(requested_target),
                             requested_cwd.as_deref(),
                             requested_slug.as_deref(),
+                            requested_workspace_id.as_deref(),
                         ) {
                             Ok(p) => {
                                 tracing::info!(
@@ -2182,6 +2220,7 @@ where
                         Some(requested_target),
                         requested_cwd.as_deref(),
                         requested_slug.as_deref(),
+                        requested_workspace_id.as_deref(),
                     ) {
                         Ok(p) => {
                             tracing::info!(

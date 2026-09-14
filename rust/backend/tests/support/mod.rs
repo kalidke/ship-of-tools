@@ -979,7 +979,11 @@ pub async fn connect_and_hello(socket_path: &Path) -> (Conn, u64) {
         token: None,
         protocol: sot_protocol::PROTOCOL_VERSION,
         app_version: sot_protocol::app_version(),
+        host: None,
+        role: String::new(),
+        instance: None,
         fe_handle: None,
+        name: None,
     };
     let reply = call(&mut conn, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
     assert!(reply.payload.get("error").is_none(), "hello refused: {:?}", reply.payload);

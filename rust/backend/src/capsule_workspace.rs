@@ -621,32 +621,40 @@ fn capsule_comm_home_str() -> Option<String> {
 /// without `SOT_COMM_HOME`/`SOT_COMM_SELF_FILE` it fell back to the
 /// shared per-host `__nopane` slot, colliding with any other no-pane
 /// session on the same host (e.g. the frontend itself — the field bug
-/// this fixes). `SOT_WORKSPACE` (and `SOT_WORKSPACE_ROOT`/`SOT_SESSION`/
-/// `SOT_MANUAL`) reuse [`crate::pty::awareness_env`] verbatim — ONE
-/// builder, not a second copy that could drift — keyed on `slug` (Codex
-/// round finding 1: the frontend keys results and the active workspace by
-/// SLUG, not the internal `ws-<slug>-<hex>` id; `workspace_id` is used
-/// ONLY below, for the state dir and self-file paths, where stability
-/// and uniqueness matter more than the display shape). `SOT_COMM_NAME` is
-/// set ONLY for an explicitly requested `agent_name` (Codex round finding
-/// 2: a synthesized default here would become an explicit pin that
-/// OVERWRITES any existing registry row of that name — exactly what
-/// PROTOCOL.md's "never reuse a handle" forbids, and a hand-started
-/// session in the same repo on the same host derives precisely
-/// `<slug>-<host>` on its own). `SOT_COMM_SELF_FILE`
+/// this fixes). Bare `SOT_SOCKET` (ADR 0046 decision 1, S4: no typed
+/// prefix, Unix only), `SOT_WORKSPACE`/`SOT_WORKSPACE_ID` (and
+/// `SOT_WORKSPACE_ROOT`/
+/// `SOT_SESSION`/`SOT_MANUAL`) reuse [`crate::pty::awareness_env`]
+/// verbatim — ONE builder, not a second copy that could drift — keyed on
+/// `slug` (Codex round finding 1: the frontend keys results and the
+/// active workspace by SLUG, not the internal `ws-<slug>-<hex>` id;
+/// `workspace_id` is used ALSO below, for the state dir and self-file
+/// paths, where stability and uniqueness matter more than the display
+/// shape). `SOT_COMM_NAME` is set ONLY for an explicitly requested
+/// `agent_name` (Codex round finding 2: a synthesized default here would
+/// become an explicit pin that OVERWRITES any existing registry row of
+/// that name — exactly what PROTOCOL.md's "never reuse a handle" forbids,
+/// and a hand-started session in the same repo on the same host derives
+/// precisely `<slug>-<host>` on its own). `SOT_COMM_SELF_FILE`
 /// (`<comm_home>/self/<host>__<workspace_id>.txt`, comm-lib.sh's EXISTING
 /// pin-the-self-file-path seam — already used by its own test suite, and
 /// already honoured unchanged by both `comm-context.sh`, the reader, and
 /// `comm-join.sh`, the writer) is what actually gives the capsule its own
 /// slot: `comm-join.sh`'s #148 auto-disambiguating derivation decides the
-/// handle and writes it there; the daemon later reads that same file's
-/// first line back to learn it (`handlers::capsule_comm_handle`). Pure
-/// (no I/O beyond env reads): exercised by the cross-platform test suite
-/// even though [`runtime::spawn_detached_supervisor`], its only caller,
-/// is gated to Windows and Linux only.
+/// handle and writes it there. The session inside the capsule now also
+/// DECLARES it via `agent.join` over this same pinned `SOT_SOCKET`
+/// (`Workspace.agent_handle`, `handlers::handle_agent_join`); a declared
+/// `agent_handle` wins when present, but the daemon's OWN read-back of
+/// that same file (`handlers::capsule_comm_handle`) stays as the
+/// FALLBACK for a row with no declaration yet (manager review, S5) —
+/// deleted only with family H once every row has cycled onto `agent.join`.
+/// Pure (no I/O beyond env reads): exercised by
+/// the cross-platform test suite even though
+/// [`runtime::spawn_detached_supervisor`], its only caller, is gated to
+/// Windows and Linux only.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
-    let mut env = crate::pty::awareness_env(Some(slug), Some(cwd));
+    let mut env = crate::pty::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
     if !agent_name.is_empty() {
         env.push(("SOT_COMM_NAME".to_string(), agent_name.to_string()));
     }
@@ -3122,6 +3130,17 @@ mod tests {
         // (comm-lib.sh's existing pin-the-self-file seam) are stamped
         // unconditionally so a capsule never falls back to the shared
         // per-host __nopane slot.
+        //
+        // ADR 0046 decision 1 (manager review, S2/S4): the leg ALSO
+        // carries a bare SOT_SOCKET and SOT_WORKSPACE_ID — every
+        // pane/capsule alike, so `comm-join.sh`'s `agent.join` can always
+        // find its owner daemon. No SOT_SELF_HOST pin (an override on the
+        // daemon's own process already reaches this child by inheritance).
+        // `set_own_endpoint` is idempotent (the daemon binds exactly one
+        // listener per process) and process-global (`OnceLock`), so this
+        // pins the value itself here rather than trusting whatever another
+        // test in this binary may have already set it to.
+        crate::pty::set_own_endpoint(Path::new("/fake-home/.local/state/sot/session.sock"));
         let _guard = self_file_env_guarded();
         std::env::set_var("SOT_STATE_HOST", "testhost");
         std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
@@ -3133,9 +3152,24 @@ mod tests {
         );
         let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
         assert_eq!(get("SOT_WORKSPACE"), Some("myrepo"));
+        assert_eq!(get("SOT_WORKSPACE_ID"), Some("ws-myrepo-1a2b"));
         assert_eq!(get("SOT_WORKSPACE_ROOT"), Some("/home/me/myrepo"));
         assert_eq!(get("SOT_COMM_NAME"), Some("myrepo-myhost"));
         assert_eq!(get("SOT_SESSION"), Some("1"));
+        assert_eq!(get("SOT_HOST"), None, "no SOT_SELF_HOST pin -- inheritance carries an override, if any");
+        if cfg!(unix) {
+            // `OWN_ENDPOINT` is process-global (`OnceLock`) -- another test
+            // in this binary may have already pinned it to a different
+            // exact path, so this asserts the BARE SHAPE only (S4: no
+            // typed unix:/pipe: prefix), never an exact value.
+            assert!(
+                get("SOT_SOCKET").is_some_and(|s| !s.starts_with("unix:") && !s.starts_with("pipe:")),
+                "SOT_SOCKET must be a bare path, got {:?}",
+                get("SOT_SOCKET")
+            );
+        } else {
+            assert_eq!(get("SOT_SOCKET"), None, "S4: SOT_SOCKET is pinned on Unix only");
+        }
         assert_eq!(get("SOT_COMM_HOME"), Some("/fake-home/.sot-comm"));
         assert_eq!(
             get("SOT_COMM_SELF_FILE"),

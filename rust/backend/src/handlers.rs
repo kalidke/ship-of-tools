@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 use sot_protocol::{
-    op, AgentSendReq, AgentSendRes, BlobDescriptor, ConceptListRes, ConceptReadReq, ConceptReadRes,
+    op, AgentJoinReq, AgentJoinRes, AgentSendReq, AgentSendRes, BlobDescriptor, ConceptListRes, ConceptReadReq, ConceptReadRes,
     ConceptWriteReq, ConceptWriteRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
     FeCommandSendRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq,
     FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
@@ -278,13 +278,10 @@ pub async fn handle_hello(
     );
 
     // Surface backend identity to the chrome so users can tell where
-    // they're connected. `gethostname` falls back to "unknown" on the
-    // off chance the kernel returns an error; `root_path` is the
-    // configured --project-root (absolute, canonicalised on startup).
-    let host = gethostname::gethostname()
-        .into_string()
-        .ok()
-        .filter(|s| !s.is_empty());
+    // they're connected — the one declared host (ADR 0046 decision 1),
+    // resolved once at boot, never recomputed per hello. `root_path` is
+    // the configured --project-root (absolute, canonicalised on startup).
+    let host = Some(crate::workspaces::declared_host().to_string());
     let project_root = Some(files_mode.root_path().display().to_string());
 
     let res = HelloRes {
@@ -328,7 +325,8 @@ pub async fn handle_hello(
 /// their hellos. Never fails: an empty `clients` list from a daemon with
 /// zero OTHER attached frontends is a legitimate answer, not an error.
 ///
-/// Each row also carries `fe_handle`/`active`: ONE `snapshot_with_active()`
+/// Each row also carries the connection's declared `host`/`role`/`instance`/
+/// `name` (ADR 0046 decision 1) plus `active`: ONE `snapshot_with_active()`
 /// call supplies both the roster and the winner from the same lock + the
 /// same `now` (2026-09-08 review, finding 6 — two separate reads could
 /// disagree under concurrent `fe.presence` traffic), and `active` is set by
@@ -352,7 +350,11 @@ pub async fn handle_version_query(
             client_id: c.client_id.clone(),
             app_version: c.app_version.clone(),
             protocol: c.protocol,
+            host: c.host.clone(),
+            role: c.role.clone(),
+            instance: c.instance.clone(),
             fe_handle: c.fe_handle.clone(),
+            name: c.name.clone(),
             active: snap.is_active_serial(c.serial),
         })
         .collect();
@@ -3765,9 +3767,10 @@ pub async fn handle_tmux_create_session(
     let cwd = req.cwd.clone();
     let result = tokio::task::spawn_blocking(move || {
         let cwd_path = cwd.as_ref().map(std::path::PathBuf::from);
-        // Generic (non-workspace) session — no slug; still stamped with
-        // SOT_SESSION/SOT_WORKSPACE_ROOT/SOT_MANUAL awareness.
-        TmuxClient::new().create_session(&name, command.as_deref(), cwd_path.as_deref(), None)
+        // Generic (non-workspace) session — no slug, no workspace_id; still
+        // stamped with SOT_SESSION/SOT_HOST/SOT_WORKSPACE_ROOT/SOT_MANUAL
+        // awareness.
+        TmuxClient::new().create_session(&name, command.as_deref(), cwd_path.as_deref(), None, None)
     })
     .await
     .context("spawn_blocking create-session")?;
@@ -4766,6 +4769,7 @@ pub async fn handle_workspace_create(
         let tmux_session = ws_handle.tmux_session.clone();
         let cwd = project_root.clone();
         let ws_slug = ws_handle.slug.clone();
+        let ws_id = ws_handle.workspace_id.clone();
         let boot_cmd: Option<String> = if autostart || boot {
             Some(crate::pty::boot_wrapper_command(
                 &tmux_session,
@@ -4781,6 +4785,7 @@ pub async fn handle_workspace_create(
                 boot_cmd.as_deref(),
                 Some(&cwd),
                 Some(&ws_slug),
+                Some(&ws_id),
             )
         })
         .await
@@ -5530,6 +5535,295 @@ pub async fn handle_agent_send(
     )])
 }
 
+/// `agent.join` (ADR 0046 decision 1): a session inside `req.workspace_id`
+/// declares its sot-comm handle to this daemon — read by every later
+/// `workspace.list`/`clear_comm_unread` call ahead of the self-file
+/// read-back fallback (`capsule_comm_handle`, S5: stays until family H).
+/// `handle` is validated against the same charset `workspace.create`'s own
+/// `valid_name` already enforces (comm-lib.sh's derived handles are built
+/// to satisfy exactly this). `set_agent_handle` (S6) is a guarded
+/// in-place update of the existing row — never a replacement, never a
+/// resurrection of a destroyed one. `ok: true` only after
+/// `Workspace.agent_handle` is durably persisted (S7): a save failure is
+/// reported as `persist_failed`, not swallowed as a warning, since a
+/// declared handle with nothing on disk would not survive a daemon
+/// restart. Publishes `workspace.changed` so the FE re-lists on success.
+/// Refuses `bad_handle` for an invalid handle, `unknown_workspace` for a
+/// workspace this daemon doesn't have (destroyed or never existed).
+pub async fn handle_agent_join(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    workspaces: &Workspaces,
+    ws_events_tx: &broadcast::Sender<WorkspaceChanged>,
+) -> Result<HandlerOutput> {
+    let req: AgentJoinReq = serde_json::from_value(payload_json).context("agent.join payload")?;
+    if !valid_name(&req.handle) {
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::AGENT_JOIN,
+                json!({
+                    "error": format!("invalid handle: {:?}", req.handle),
+                    "code": "bad_handle",
+                }),
+            ),
+            None,
+        )]);
+    }
+    let Some(ws) = workspaces.set_agent_handle(&req.workspace_id, &req.handle) else {
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::AGENT_JOIN,
+                json!({
+                    "error": format!("unknown workspace: {:?}", req.workspace_id),
+                    "code": "unknown_workspace",
+                }),
+            ),
+            None,
+        )]);
+    };
+    // Manager review (S7, Codex finding B9): `ok` depends on the save
+    // actually succeeding — a persisted daemon restart with no toml
+    // record would otherwise lose the only authoritative handle (the
+    // self-file read-back this replaces is a fallback, not a second
+    // source of truth to fall back on for a row that DID declare).
+    // `set_agent_handle` has already applied the in-memory update by this
+    // point (guarded in-place, S6) — a save failure is reported, not
+    // rolled back, so the caller can retry the SAME join rather than
+    // re-deriving a value that already matches memory.
+    if let Err(e) = crate::workspaces::save(&ws) {
+        tracing::warn!(error = %e, workspace_id = %req.workspace_id, "agent.join: toml persist failed");
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::AGENT_JOIN,
+                json!({
+                    "error": format!("{e:#}"),
+                    "code": "persist_failed",
+                }),
+            ),
+            None,
+        )]);
+    }
+    tracing::info!(workspace_id = %req.workspace_id, handle = %req.handle, "agent.join");
+    let _ = ws_events_tx.send(WorkspaceChanged {
+        action: "agent_joined".into(),
+        slug: ws.slug.clone(),
+        workspace_id: ws.workspace_id.clone(),
+    });
+    Ok(vec![(
+        Frame::res(
+            req_id,
+            op::AGENT_JOIN,
+            serde_json::to_value(AgentJoinRes { ok: true })?,
+        ),
+        None,
+    )])
+}
+
+#[cfg(test)]
+mod agent_join_tests {
+    use super::*;
+
+    // `handle_agent_join` persists through `crate::workspaces::save` —
+    // isolate every var `app_config_dir` reads (manager review, S18:
+    // Windows persistence ignores XDG_CONFIG_HOME entirely and uses
+    // LOCALAPPDATA/USERPROFILE instead — guarding only the Unix var let
+    // this test module write into a real app-config root on Windows).
+    // Mirrors `workspaces.rs`'s own round-trip test's exact setup.
+    struct EnvGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        xdg_config_home: Option<std::ffi::OsString>,
+        home: Option<std::ffi::OsString>,
+        localappdata: Option<std::ffi::OsString>,
+        userprofile: Option<std::ffi::OsString>,
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, val) in [
+                ("XDG_CONFIG_HOME", &self.xdg_config_home),
+                ("HOME", &self.home),
+                ("LOCALAPPDATA", &self.localappdata),
+                ("USERPROFILE", &self.userprofile),
+            ] {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+    fn env_guarded() -> (EnvGuard, std::path::PathBuf) {
+        let serial = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "sot-agent-join-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = EnvGuard {
+            xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
+            home: std::env::var_os("HOME"),
+            localappdata: std::env::var_os("LOCALAPPDATA"),
+            userprofile: std::env::var_os("USERPROFILE"),
+            _serial: serial,
+        };
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        std::env::set_var("LOCALAPPDATA", &dir);
+        std::env::remove_var("USERPROFILE");
+        (g, dir)
+    }
+
+    fn mk_ws(label: &str) -> Workspace {
+        Workspace::from_label(
+            label,
+            std::path::PathBuf::from("/p"),
+            false,
+            "none".into(),
+            String::new(),
+            String::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn agent_join_persists_and_list_merges_by_the_declared_handle() {
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let id = workspaces.insert(mk_ws("agentjoin")).workspace_id.clone();
+        let (ws_events_tx, mut ws_events_rx) = tokio::sync::broadcast::channel(4);
+
+        let payload = serde_json::json!({"workspace_id": id, "handle": "agentjoin-testhost"});
+        let out = handle_agent_join(1, payload, &workspaces, &ws_events_tx)
+            .await
+            .expect("handler must not error");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0.payload.get("ok").and_then(|v| v.as_bool()), Some(true));
+
+        // Persisted in the in-memory registry, readable back via resolve().
+        let resolved = workspaces.resolve(Some(&id)).expect("workspace still registered");
+        assert_eq!(resolved.agent_handle(), "agentjoin-testhost");
+
+        // `workspace.list`'s own row-binding rule merges by the declared
+        // handle — this is what makes the join visible there.
+        let merged = comm_handle_for_workspace(&resolved, None, "anyhost");
+        assert_eq!(merged, "agentjoin-testhost");
+
+        // workspace.changed published so the FE re-lists.
+        let evt = ws_events_rx.try_recv().expect("workspace.changed must be published");
+        assert_eq!(evt.workspace_id, id);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn agent_join_refuses_unknown_workspace() {
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let (ws_events_tx, _rx) = tokio::sync::broadcast::channel(4);
+
+        let payload = serde_json::json!({"workspace_id": "ws-does-not-exist", "handle": "somehandle"});
+        let out = handle_agent_join(1, payload, &workspaces, &ws_events_tx)
+            .await
+            .expect("handler must not error");
+        assert_eq!(out[0].0.payload.get("code").and_then(|v| v.as_str()), Some("unknown_workspace"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn agent_join_refuses_bad_handle_and_persists_nothing() {
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let id = workspaces.insert(mk_ws("badhandle")).workspace_id.clone();
+        let (ws_events_tx, _rx) = tokio::sync::broadcast::channel(4);
+
+        let payload = serde_json::json!({"workspace_id": id, "handle": "not a valid handle!"});
+        let out = handle_agent_join(1, payload, &workspaces, &ws_events_tx)
+            .await
+            .expect("handler must not error");
+        assert_eq!(out[0].0.payload.get("code").and_then(|v| v.as_str()), Some("bad_handle"));
+
+        let resolved = workspaces.resolve(Some(&id)).expect("workspace still registered");
+        assert_eq!(resolved.agent_handle(), "", "a refused join must persist nothing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn agent_join_reports_persist_failed_and_never_returns_ok_on_a_save_failure() {
+        // Manager review (S7, Codex finding B9): ok:true must depend on
+        // the save actually succeeding. Occupy the "sot" config
+        // subdirectory with a plain FILE instead of a directory --
+        // `crate::workspaces::save`'s `create_dir_all` necessarily fails
+        // under it, regardless of the host-derived `workspaces-<host>`
+        // segment.
+        let (_g, dir) = env_guarded();
+        std::fs::write(dir.join("sot"), b"not a directory").unwrap();
+
+        let workspaces = Workspaces::new();
+        let id = workspaces.insert(mk_ws("agentjoin-persist-fail")).workspace_id.clone();
+        let (ws_events_tx, mut ws_events_rx) = tokio::sync::broadcast::channel(4);
+
+        let payload =
+            serde_json::json!({"workspace_id": id, "handle": "agentjoin-persist-fail-testhost"});
+        let out = handle_agent_join(1, payload, &workspaces, &ws_events_tx)
+            .await
+            .expect("a save failure is a wire-level refusal, not a Rust error");
+        assert_eq!(out.len(), 1);
+        assert_ne!(
+            out[0].0.payload.get("ok").and_then(|v| v.as_bool()),
+            Some(true),
+            "ok:true must never be returned when persistence failed"
+        );
+        assert_eq!(out[0].0.payload.get("code").and_then(|v| v.as_str()), Some("persist_failed"));
+
+        // The in-memory update still landed (S6's guarded in-place update
+        // runs before the save attempt) -- only the DURABILITY claim is
+        // refused.
+        let resolved = workspaces.resolve(Some(&id)).expect("workspace still registered");
+        assert_eq!(resolved.agent_handle(), "agentjoin-persist-fail-testhost");
+
+        // No workspace.changed on a failed persist -- the FE would
+        // re-list to a handle that isn't actually durable yet.
+        assert!(
+            ws_events_rx.try_recv().is_err(),
+            "must not publish workspace.changed on a failed persist"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn agent_join_after_the_workspace_is_destroyed_reports_unknown_never_resurrects() {
+        // Manager review (S6, Codex finding B5): the destroy race at the
+        // handler level -- a join against a workspace_id the registry no
+        // longer has must refuse cleanly, never bring the row back.
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let id = workspaces.insert(mk_ws("agentjoin-destroyed")).workspace_id.clone();
+        workspaces.remove_by_id(&id);
+        assert!(workspaces.resolve(Some(&id)).is_none(), "test setup: the row must actually be gone");
+
+        let (ws_events_tx, mut ws_events_rx) = tokio::sync::broadcast::channel(4);
+        let payload = serde_json::json!({"workspace_id": id, "handle": "agentjoin-destroyed-testhost"});
+        let out = handle_agent_join(1, payload, &workspaces, &ws_events_tx)
+            .await
+            .expect("handler must not error");
+        assert_eq!(out[0].0.payload.get("code").and_then(|v| v.as_str()), Some("unknown_workspace"));
+        assert!(workspaces.resolve(Some(&id)).is_none(), "the destroyed row must stay gone -- no resurrection");
+        assert!(ws_events_rx.try_recv().is_err(), "no workspace.changed for a refused join");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// `fe.command.send` (ADR 0025): parse the imperative UI command, build an
 /// `FeCommandEvt { v:1, cmd, args, target }`, publish it onto the FE-command
 /// broadcast channel (each connection turns it into an `fe.command` evt), and
@@ -5574,7 +5868,7 @@ pub async fn handle_agent_send(
 /// a second connection shares that handle; an explicit `--fe <handle>` stays
 /// a handle-matched broadcast, so its audience IS the handle count (0 when
 /// nothing carries it — the incident above); `target: None` counts every row
-/// with a non-empty `fe_handle` (the badge-floor broadcast's audience); the
+/// with a non-empty declared `name` (the badge-floor broadcast's audience); the
 /// unresolved-relaunch early return below is `Some(0)` — it published
 /// nothing. This never changes WHAT gets published, only what the ack
 /// truthfully reports about it.
@@ -5627,17 +5921,23 @@ pub async fn handle_fe_command_send(
         (Some(_), _) => 1,
         // An explicit `--fe <handle>` stays a handle-matched broadcast —
         // every connection carrying that handle self-filters as a match,
-        // so the handle count IS the audience.
+        // so the handle count IS the audience. Manager review: gated on
+        // `role` too when present -- a newly declared bridge/cli/agent
+        // connection's `name` (ADR 0046 decision 1) must never inflate a
+        // frontend-targeted count, even on the rare coincidence of a
+        // matching string.
         (None, Some(handle)) => snap
             .clients
             .iter()
-            .filter(|c| c.fe_handle.as_deref() == Some(handle))
+            .filter(|c| c.fe_handle.as_deref() == Some(handle) && (c.role.is_empty() || c.role == "fe"))
             .count(),
         // The badge floor: every attached, handle-bearing frontend acts.
         (None, None) => snap
             .clients
             .iter()
-            .filter(|c| c.fe_handle.as_deref().is_some_and(|h| !h.is_empty()))
+            .filter(|c| {
+                c.fe_handle.as_deref().is_some_and(|h| !h.is_empty()) && (c.role.is_empty() || c.role == "fe")
+            })
             .count(),
     };
 
@@ -5721,8 +6021,8 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_send_counts_the_exclusive_connection_not_the_shared_handle() {
         let clients = Clients::new();
-        let stale = clients.register("c-stale", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        let stale = clients.register("c-stale", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
@@ -5752,8 +6052,8 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_send_with_an_active_client_delivers_to_it_only() {
         let clients = Clients::new();
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
-        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, Some("win-fe-b".into()));
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
+        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, Some("win-fe-b".into()), String::new(), None, None, None);
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
@@ -5791,8 +6091,8 @@ mod fe_command_send_tests {
     async fn untargeted_send_with_no_active_client_broadcasts_as_before() {
         let clients = Clients::new();
         // Registered but never touched by a person -> no active frontend.
-        let _idle_a = clients.register("c-idle-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
-        let _idle_b = clients.register("c-idle-b", "local", None, "0.6.0", 1, Some("win-fe-b".into()));
+        let _idle_a = clients.register("c-idle-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
+        let _idle_b = clients.register("c-idle-b", "local", None, "0.6.0", 1, Some("win-fe-b".into()), String::new(), None, None, None);
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
@@ -5822,7 +6122,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn explicit_target_is_never_overridden_by_active_resolution() {
         let clients = Clients::new();
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
@@ -5846,7 +6146,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn explicit_target_that_is_attached_delivers_to_it() {
         let clients = Clients::new();
-        let _target = clients.register("c-target", "local", None, "0.6.0", 1, Some("win-fe-target".into()));
+        let _target = clients.register("c-target", "local", None, "0.6.0", 1, Some("win-fe-target".into()), String::new(), None, None, None);
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("notify", Some("win-fe-target")), &tx, &clients)
@@ -5868,7 +6168,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_relaunch_with_no_active_frontend_publishes_nothing() {
         let clients = Clients::new();
-        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
@@ -5887,7 +6187,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_relaunch_with_an_active_frontend_delivers_to_it_only() {
         let clients = Clients::new();
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()));
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
@@ -5952,17 +6252,17 @@ pub(crate) fn comm_registry_path() -> Option<std::path::PathBuf> {
     Some(p)
 }
 
-/// A capsule row's comm handle, read back from the SAME self-file
-/// `capsule_workspace::capsule_supervisor_env` pinned into its producer's
-/// env (`SOT_COMM_SELF_FILE`) — Codex round finding 2/companion: since
-/// the daemon no longer synthesizes/pins a name for an un-pinned capsule,
-/// `comm-join.sh`'s own #148 auto-disambiguating derivation is what
-/// actually decides the handle, and it writes that decision as the
-/// self-file's first line. `resolve_handle`'s tmux-session match (below)
-/// can never find a capsule row at all — a capsule has no tmux pane, so
-/// its own comm-join.sh row's `tmux` field is always empty. `""` on any
-/// failure (not yet joined, unreadable, empty file) — callers already
-/// fall back to the stored `agent_name` exactly as the tmux path does.
+/// Read a capsule row's own pinned self-file back to learn its sot-comm
+/// handle — `comm-join.sh`'s auto-disambiguating derivation writes it
+/// there (`capsule_workspace::capsule_supervisor_env`'s doc: `SOT_COMM_
+/// SELF_FILE`, `<comm_home>/self/<host>__<workspace_id>.txt`). Manager
+/// review (S5, Codex finding B8): this is the FALLBACK `comm_handle_for_
+/// workspace` reaches for once a row's declared `agent_handle` (ADR 0046
+/// decision 1's `agent.join`) is empty — an older `comm-join.sh` that
+/// never sends `agent.join`, or a session mid-startup that has written
+/// its self-file but not yet declared, both still resolve correctly.
+/// Empty (never "unknown") on any read failure — an absent/unreadable
+/// file is the ordinary case for a workspace nothing has joined yet.
 fn capsule_comm_handle(workspace_id: &str) -> String {
     let Some(comm_home) = crate::paths::sot_comm_home() else {
         return String::new();
@@ -6076,11 +6376,17 @@ fn resolve_comm_handle(
 /// this rather than each encoding their own copy of the rule, so they can
 /// never disagree about which row a workspace owns.
 ///
-/// - `runtime == "capsule"`: no tmux pane exists at all, so the tmux-based
-///   match below can never discover it (Codex round finding 2/companion)
-///   — read its OWN pinned self-file back instead (`capsule_comm_handle`),
-///   falling back to the stored `agent_name` only when that file is
-///   empty/absent (an un-pinned capsule with no explicit name).
+/// - `agent_handle` set (ADR 0046 decision 1: the session inside `ws`
+///   DECLARED this via `agent.join`) wins outright, on every runtime —
+///   the daemon is told once instead of re-deriving it.
+/// - otherwise `runtime == "capsule"`: no tmux pane exists at all, so the
+///   tmux-based match below can never discover it (Codex round finding
+///   2/companion) — read its OWN pinned self-file back instead
+///   (`capsule_comm_handle`), falling back to the stored `agent_name`
+///   only when that file is empty/absent. Manager review (S5, Codex
+///   finding B8): this read-back STAYS as the fallback for a row that
+///   has not (yet, or ever, for an older comm-join.sh) declared via
+///   `agent.join` — deleted only with family H once every row has cycled.
 /// - every other runtime: the live tmux occupant (`resolve_comm_handle`
 ///   above), same fallback.
 fn comm_handle_for_workspace(
@@ -6088,6 +6394,10 @@ fn comm_handle_for_workspace(
     agents: Option<&serde_json::Value>,
     host: &str,
 ) -> String {
+    let declared = ws.agent_handle();
+    if !declared.is_empty() {
+        return declared;
+    }
     if ws.runtime == "capsule" {
         let h = capsule_comm_handle(&ws.workspace_id);
         if h.is_empty() {
@@ -6297,8 +6607,8 @@ fn remove_comm_agents_for_workspace_bounded(
 /// finishing a job.
 ///
 /// Two phases, both filtered through `comm_handle_for_workspace` — THE SAME
-/// row-binding rule `handle_workspace_list` uses (capsule self-file first,
-/// else the live tmux occupant / stored `agent_name`), so a capsule
+/// row-binding rule `handle_workspace_list` uses (declared `agent_handle`
+/// first, else the live tmux occupant / stored `agent_name`), so a capsule
 /// workspace's blue clears exactly the same way a tmux one's does:
 ///
 /// 1. **Unlocked pre-check** — read the registry once, resolve the handle,
@@ -6561,6 +6871,7 @@ pub async fn handle_workspace_list(
                 } else {
                     handle.clone()
                 },
+                agent_handle: ws.agent_handle(),
                 task: ws.task.clone(),
                 agent_state,
                 agent_summary: agent_str(&handle, "summary"),
@@ -7494,15 +7805,18 @@ mod preview_downsample_tests {
     }
 }
 
+
 #[cfg(test)]
 mod capsule_comm_handle_tests {
-    // Codex round finding 2/companion: `capsule_comm_handle` reads back
-    // the handle `comm-join.sh`'s own derivation wrote into the
-    // self-file the daemon pinned via `SOT_COMM_SELF_FILE` — the daemon
-    // itself no longer synthesizes/persists a name, so this read-back is
-    // the ONLY way a capsule row's handle is ever discovered (a capsule
-    // has no tmux pane, so `resolve_handle`'s tmux-session match never
-    // finds it).
+    // Manager review (S5, Codex finding B8): `capsule_comm_handle` reads
+    // back the handle `comm-join.sh`'s own derivation wrote into the
+    // self-file the daemon pinned via `SOT_COMM_SELF_FILE` — restored as
+    // the FALLBACK `comm_handle_for_workspace` reaches for once a row's
+    // declared `agent_handle` (ADR 0046 decision 1's `agent.join`) is
+    // empty, so an older `comm-join.sh` (never sends `agent.join`) or a
+    // not-yet-declared session still resolves correctly (a capsule has no
+    // tmux pane, so `resolve_handle`'s tmux-session match never finds it
+    // either way).
     use super::capsule_comm_handle;
 
     struct EnvGuard {
@@ -7992,7 +8306,7 @@ mod clear_comm_unread_tests {
         );
         // These rows are tmux rows on every platform: a label-built
         // workspace defaults to "capsule" on Windows, which would route the
-        // clear through the self-file branch instead of the seeded tmux row.
+        // clear through the capsule branch instead of the seeded tmux row.
         ws.runtime = "tmux".to_string();
         ws
     }
@@ -8150,14 +8464,16 @@ mod clear_comm_unread_tests {
     }
 
     #[test]
-    fn capsule_row_resolved_via_self_file_clears_to_idle() {
-        // A capsule workspace has no tmux pane and (unless explicitly
-        // requested) no stored `agent_name` either — the ONLY way to its
-        // registry row is `capsule_comm_handle`'s self-file read-back.
-        // `comm_handle_for_workspace` must try that path FIRST for a
-        // capsule row, same as `handle_workspace_list` does, or these rows
-        // — the ones that actually pile up blue for a capsule-only user —
-        // would never clear.
+    fn capsule_row_resolved_via_declared_agent_handle_clears_to_idle() {
+        // ADR 0046 decision 1: a capsule workspace has no tmux pane and
+        // (unless explicitly requested) no stored `agent_name` either —
+        // the ONLY way to its registry row is the handle the session
+        // DECLARED via `agent.join` (`Workspace.agent_handle`), never a
+        // daemon-side self-file read-back any more. `comm_handle_for_workspace`
+        // must try that field FIRST for every runtime, same as
+        // `handle_workspace_list` does, or these rows — the ones that
+        // actually pile up blue for a capsule-only user — would never
+        // clear.
         let _guard = guarded();
         let dir = temp_home("capsule");
         let registry_path = write_registry(
@@ -8176,13 +8492,7 @@ mod clear_comm_unread_tests {
 
         let mut ws = mk_ws("capsuleprobe", "");
         ws.runtime = "capsule".to_string();
-        let self_dir = dir.join("self");
-        std::fs::create_dir_all(&self_dir).unwrap();
-        std::fs::write(
-            self_dir.join(format!("kitt__{}.txt", ws.workspace_id)),
-            "capsule-handle-x\n",
-        )
-        .unwrap();
+        ws.agent_handle = std::sync::Mutex::new("capsule-handle-x".to_string());
 
         clear_comm_unread(&ws, "kitt");
 
@@ -8197,10 +8507,11 @@ mod clear_comm_unread_tests {
     }
 
     #[test]
-    fn capsule_row_with_empty_agent_name_and_no_self_file_is_a_no_op() {
+    fn capsule_row_with_empty_agent_name_and_no_declared_handle_is_a_no_op() {
         // The fallback half of `comm_handle_for_workspace`'s capsule arm:
-        // no self-file AND an empty stored `agent_name` resolves to an
-        // empty handle, same as the tmux path's "nothing to bind to".
+        // no declared `agent_handle` AND an empty stored `agent_name`
+        // resolves to an empty handle, same as the tmux path's "nothing
+        // to bind to".
         let _guard = guarded();
         let dir = temp_home("capsule-unbound");
         let registry_path = write_registry(
@@ -8220,7 +8531,7 @@ mod clear_comm_unread_tests {
 
         let mut ws = mk_ws("capsuleprobe2", "");
         ws.runtime = "capsule".to_string();
-        // No self-file written at all.
+        // No agent_handle declared at all.
 
         clear_comm_unread(&ws, "kitt");
 
@@ -8291,7 +8602,10 @@ mod workspace_activate_read_tests {
 
     // A `runtime = "capsule"` row: no tmux pane, no stored `agent_name`
     // (the owner's actual capsule sessions — the ones piling up blue).
-    fn seed_capsule_workspace(label: &str) -> (Workspaces, String) {
+    // `agent_handle` seeds `Workspace.agent_handle` directly (ADR 0046
+    // decision 1's `agent.join` persistence target) — "" for a row that
+    // has never joined.
+    fn seed_capsule_workspace(label: &str, agent_handle: &str) -> (Workspaces, String) {
         let reg = Workspaces::new();
         let mut ws = Workspace::from_label(
             label,
@@ -8302,6 +8616,7 @@ mod workspace_activate_read_tests {
             String::new(),
         );
         ws.runtime = "capsule".to_string();
+        ws.agent_handle = std::sync::Mutex::new(agent_handle.to_string());
         let id = ws.workspace_id.clone();
         reg.insert(ws);
         (reg, id)
@@ -8385,12 +8700,14 @@ mod workspace_activate_read_tests {
     }
 
     #[tokio::test]
-    async fn capsule_row_read_true_clears_via_self_file() {
-        // The manager-review case: a capsule workspace's row is found ONLY
-        // through its pinned self-file (`capsule_comm_handle`), never
-        // through a tmux match or a stored `agent_name` (both empty/absent
-        // here) — this is what the owner's actual local capsule sessions
-        // look like, so this path clearing is the whole point of the fix.
+    async fn capsule_row_read_true_clears_via_declared_agent_handle() {
+        // ADR 0046 decision 1: a capsule workspace's row is found ONLY
+        // through its DECLARED `agent_handle` (`agent.join`'s persistence
+        // target), never through a tmux match, a stored `agent_name`
+        // (both empty/absent here), or a daemon-side self-file read-back
+        // (deleted) — this is what the owner's actual local capsule
+        // sessions look like, so this path clearing is the whole point of
+        // the fix.
         let _guard = guarded();
         let dir = std::env::temp_dir().join(format!(
             "sot-workspace-activate-capsule-read-test-{}-{}",
@@ -8405,18 +8722,7 @@ mod workspace_activate_read_tests {
         std::env::set_var("SOT_STATE_HOST", "kitt");
         let registry_path = dir.join("registry.json");
 
-        let (reg, id) = seed_capsule_workspace("activate-capsule-x");
-
-        // The self-file `capsule_comm_handle` reads back — pinned under the
-        // SAME scratch SOT_COMM_HOME, naming a handle that has no tmux row
-        // and no relation to the workspace's (empty) stored `agent_name`.
-        let self_dir = dir.join("self");
-        std::fs::create_dir_all(&self_dir).unwrap();
-        std::fs::write(
-            self_dir.join(format!("kitt__{id}.txt")),
-            "kitt-activate-capsule-x\n",
-        )
-        .unwrap();
+        let (reg, id) = seed_capsule_workspace("activate-capsule-x", "kitt-activate-capsule-x");
 
         std::fs::write(
             &registry_path,
