@@ -77,6 +77,8 @@ ITX() {
 HB() { printf '{"tool_name":"Bash"}' | bash "$HOOKS_DIR/comm-status-heartbeat.sh"; }
 GENUINE='{"prompt":"please do the thing"}'
 RELAY='{"prompt":"[relay] from peer: ack"}'
+TEAMMATE='{"prompt":"Another Claude session sent a message:\\n<teammate-message teammate_id=x>done</teammate-message>"}'
+STOPBACK='{"prompt":"Stop hook feedback:\\nYour row ends this turn as waiting"}'
 
 seed() {  # STATE [turn_origin]
     jq -n --arg n "$NAME" --arg st "$1" --arg o "${2-}" \
@@ -99,6 +101,8 @@ check() {
 # ---- the state scenarios ----
 case_user_turn_ends_blue() { seed idle; W "$GENUINE"; expect working/user/- start && I && expect done/user/- end; }
 case_machine_turn_ends_gray() { seed idle; W "$RELAY"; expect working/machine/- start && I && expect idle/machine/- end; }
+case_teammate_report_is_a_machine_turn() { seed idle; W "$TEAMMATE"; expect working/machine/- start && I && expect idle/machine/- end; }
+case_stop_hook_sendback_is_a_machine_turn() { seed idle; W "$STOPBACK"; expect working/machine/- start && I && expect idle/machine/- end; }
 case_soft_done_holds_blue() { seed done; COMM_STATUS_SOFT=1 "$ST" done; expect done/-/- held; }
 case_soft_done_holds_red() { seed blocked; COMM_STATUS_SOFT=1 "$ST" done; expect blocked/-/- held; }
 # A live sticky marker: a HUMAN prompt paints green for the turn (marker kept),
@@ -346,6 +350,8 @@ case_stop_hook_sends_done_only_to_a_floor_aware_script() {
 
 check "a genuine user turn ends blue" case_user_turn_ends_blue
 check "a machine-started turn ends gray" case_machine_turn_ends_gray
+check "a harness teammate report is a machine turn" case_teammate_report_is_a_machine_turn
+check "a Stop hook send-back is a machine turn" case_stop_hook_sendback_is_a_machine_turn
 check "the floor holds an explicit done" case_soft_done_holds_blue
 check "the floor holds blocked" case_soft_done_holds_red
 check "sticky waiting paints green through a user turn and returns to purple at the floor" case_sticky_waiting_survives_user_turn

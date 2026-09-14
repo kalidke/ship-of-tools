@@ -46,6 +46,13 @@ ORIGIN=user
 case "$prompt" in
     "[SYSTEM NOTIFICATION"*|*"<task-notification>"*|"[relay] from"*|\[*:*\]\ *)   # teammate messages arrive as "[handle:team] ..."
         ORIGIN=machine ;;
+    # The harness's own wrappers (2026-09-14, owner: "the stop hook is
+    # triggering an almost identical rehash of the SITREP"): a subagent or
+    # peer-session report, a cross-session message, and the Stop hook's own
+    # send-back are machine wakes too -- a human typed none of them, so none
+    # of them owes a closing block at turn end.
+    "Another Claude session sent a message"*|*"<teammate-message"*|*"<agent-message"*|*"<cross-session-message"*|"Stop hook feedback:"*)
+        ORIGIN=machine ;;
 esac
 COMM_STATUS_SOFT=1 COMM_STATUS_ORIGIN="$ORIGIN" "$STATUS" working >/dev/null 2>&1 || true
 exit 0
