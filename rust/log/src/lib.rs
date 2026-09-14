@@ -153,6 +153,12 @@ pub mod fe_client;
 // `PlatformEndpoint`-typed default and the tests that construct it stay
 // cfg-gated, inside the module itself.
 pub mod fe_client_io;
+// ADR 0046 decision 3 (lane B3a): the attach lane's transport half,
+// extracted out of `fe_client_io` into a reusable worker with an event
+// sink and bounded ingress — see that module's own top doc. Ungated for
+// the same reason `fe_client_io` is: a state machine over an `Endpoint`,
+// not a platform primitive itself.
+pub mod attach_worker;
 // ADR 0041 step 6, unit U2: the supervisor's own durable operation
 // journal (`operation_id`/`.active`/`.terminal`, recovery-first
 // reconciliation) — portable, like `pointer`/`rollout`, since it reuses

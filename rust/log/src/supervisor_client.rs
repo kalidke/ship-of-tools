@@ -3,11 +3,13 @@
 //! 20): a small, PRODUCTION supervisor-lane client for a caller OUTSIDE
 //! this crate that is not the FE — today, the backend daemon's own
 //! capsule workspace runtime (`sot-backend`'s `capsule_workspace.rs`).
-//! `fe_client_io.rs` already runs this exact connect+hello(build
-//! identity)+challenge procedure (`connect_and_challenge`, moved HERE
-//! from `supervisor.rs` this lane) and its own `status` round trip
-//! (`fe_client_io::supervisor_status`, still private there — right, since
-//! the FE's own six rulings own everything downstream of it there). This
+//! `attach_worker.rs` (ADR 0046 decision 3; formerly `fe_client_io.rs`,
+//! before that lane's extraction) already runs this exact
+//! connect+hello(build identity)+challenge procedure
+//! (`connect_and_challenge`, moved HERE from `supervisor.rs` this lane)
+//! and its own `status` round trip (`attach_worker::supervisor_status`,
+//! still private there — right, since the attach worker's own six
+//! rulings own everything downstream of it there). This
 //! module is the SAME procedure's production entry point for a caller
 //! that only ever needs `status`/`stop`/`end_run`/`reset`: it adds no new
 //! wire behavior, only the external-facing functions that did not exist
@@ -37,9 +39,9 @@
 //! `Endpoint::challenge`, `exchange::{SupervisorLaneExchange,
 //! SUPERVISOR_LANE_BUILD_ID}`, and `wire`'s supervisor-lane frames.
 
+use crate::attach_worker::{run_end_run_and_wait, FrameReader};
 use crate::client::{Client, Endpoint, PlatformEndpoint};
 use crate::fe_client::{QuitDispatcher, QuitState};
-use crate::fe_client_io::{run_end_run_and_wait, FrameReader};
 use crate::transport::TEARDOWN_AGGREGATE_DEADLINE;
 use crate::wire::{
     self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest,
