@@ -352,6 +352,46 @@ fn test_slow_concept_read_delay() -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
+/// Writes one marker file per arrival/completion/wait-for-settle-cycle
+/// under `<barrier path>.<kind>/`, so a test can poll an exact count
+/// instead of inferring one from timing. `pub(crate)` -- also called
+/// from `capsule_workspace::ensure_started`'s own reprobe loop (kind
+/// `"waitforsettle"`), which is a different module but shares this
+/// exact barrier-path convention. No-op unless `SOT_TEST_ACTIVATION_
+/// BARRIER` is set.
+#[cfg(any(windows, target_os = "linux"))]
+pub(crate) fn record_test_activation_marker(kind: &str) {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let Ok(barrier_path) = std::env::var("SOT_TEST_ACTIVATION_BARRIER") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(format!("{barrier_path}.{kind}"));
+    let _ = std::fs::create_dir_all(&dir);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::write(dir.join(format!("{}-{seq}", std::process::id())), b"");
+}
+
+/// Test-only barrier at the top of `pty.open`'s activation task: when
+/// `SOT_TEST_ACTIVATION_BARRIER` names a path, blocks until the test
+/// creates that file (not a guessed sleep), giving up past a 30s bound.
+/// No-op in production.
+#[cfg(any(windows, target_os = "linux"))]
+async fn wait_for_test_activation_barrier() {
+    let Ok(path) = std::env::var("SOT_TEST_ACTIVATION_BARRIER") else {
+        return;
+    };
+    record_test_activation_marker("arrivals");
+    let path = std::path::PathBuf::from(path);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !path.is_file() {
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!(path = ?path, "capsule activation test barrier: released by timeout, not by the test");
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 /// Derive an agent's work-state from a snapshot of its live tmux pane (the
 /// claude TUI footer). Authoritative for working/idle; needs no hook or model
 /// cooperation — the `Stop` hook only ever reports idle.
@@ -556,10 +596,10 @@ pub async fn run(opts: Opts) -> Result<()> {
     // so at boot, once, naming the remedy; never rewrite the row (it may be
     // a session the user is relying on).
     if let Some(existing) = &existing_default {
-        if existing.runtime == "capsule" && existing.agent != "none" {
+        if existing.runtime == "capsule" && existing.agent() != "none" {
             tracing::warn!(
                 workspace_id = %existing.workspace_id,
-                agent = %existing.agent,
+                agent = %existing.agent(),
                 toml = %workspaces::toml_path_for(&existing.slug).display(),
                 "default workspace carries an agent, so it lists and starts as an ordinary session \
                  (a pre-2026-09-04 seed, or a deliberate choice); to make it the inert anchor: stop \
@@ -580,13 +620,15 @@ pub async fn run(opts: Opts) -> Result<()> {
     // decision — and the Windows corrupted-row re-seed's OWN identical
     // fallback — is made, so it stays unit-testable without a live
     // registry.
+    let existing_agent = existing_default.as_ref().map(|e| e.agent());
+    let existing_agent_name = existing_default.as_ref().map(|e| e.agent_name());
     let (seed_autostart, seed_agent, seed_agent_name, seed_task) =
         workspaces::default_row_launch_seed(existing_default.as_deref().map(|e| {
             (
                 e.runtime.as_str(),
                 e.autostart_claude,
-                e.agent.as_str(),
-                e.agent_name.as_str(),
+                existing_agent.as_deref().unwrap_or_default(),
+                existing_agent_name.as_deref().unwrap_or_default(),
                 e.task.as_str(),
             )
         }));
@@ -1998,100 +2040,56 @@ where
                 if let Some(ws) = workspaces.workspace_for_tmux(requested_target) {
                     if ws.runtime == "capsule" {
                         let state_root = sot_log::state_dir::sot_state_dir();
-                        // Field finding (v0.6.0-rc.2 shakedown): `workspace.create`
-                        // was the ONLY path that ever spawned a capsule's
-                        // supervisor. A workspace registered but never created
-                        // through it (the Windows default/home row, ADR 0042
-                        // L1a Codex finding 5) answered `attach_direct` against
-                        // a supervisor that had never been started, parking the
-                        // frontend on an empty pane with no way to start the
-                        // session. Start it here — sharing `workspace.create`'s
-                        // own spawn path (`capsule_workspace::start_supervisor`
-                        // via `ensure_started`) — before ever answering
-                        // `attach_direct` below. `ensure_started` is a no-op
-                        // when a supervisor already answers.
-                        //
-                        // 2026-09-04 amendment: EXCEPT for the default
-                        // CAPSULE row when it carries no agent — the inert
-                        // anchor (see the seed arms in this file's startup
-                        // routine). `agent_argv("none")` is a REAL leg (the
-                        // bare platform shell), so skipping this
-                        // unconditionally for every `agent == "none"` row
-                        // would silently stop starting the bare shell every
-                        // OTHER capsule row can still ask for; only the
-                        // default row's own anchor semantics make "no
-                        // agent" mean "nothing to start" here (the anchor
-                        // is the same on every runtime, 2026-09-06; this
-                        // branch sits inside `ws.runtime == "capsule"`
-                        // regardless — ADR 0043 decision 22: the capsule
-                        // start path is gated to Windows and Linux only,
-                        // not Windows alone). The frontend never sends
-                        // `pty.open` for this row at all (it isn't even
-                        // listed), so this is belt-and-suspenders against a
-                        // stale/other client — falls through to the SAME
-                        // `attach_direct` answer an unstarted row gets
-                        // today, naming a `state_dir` nothing has published
-                        // to yet.
+                        // `attach_direct` answers at once from memory, no
+                        // lane probe here -- `ensure_started` runs
+                        // fire-and-forget in the background under its own
+                        // guard, so a stale cached `Ready` never blocks it.
                         #[cfg(any(windows, target_os = "linux"))]
-                        let is_inert_default_anchor = workspaces.is_inert_default_anchor(&ws);
-                        #[cfg(any(windows, target_os = "linux"))]
-                        if !is_inert_default_anchor {
-                            let ensure_result = match state_root.clone() {
-                                None => Err(format!(
-                                    "could not resolve this machine's state root ({} unset)",
-                                    crate::capsule_workspace::STATE_ROOT_HINT
-                                )),
+                        {
+                            match state_root.clone() {
+                                None => {
+                                    ws.set_activation_error(Some(format!(
+                                        "could not resolve this machine's state root ({} unset)",
+                                        crate::capsule_workspace::STATE_ROOT_HINT
+                                    )));
+                                }
                                 Some(root) => {
                                     let workspace_id = ws.workspace_id.clone();
-                                    let agent_kind = ws.agent.clone();
-                                    let agent_name = ws.agent_name.clone();
+                                    let workspace_id_for_log = workspace_id.clone();
+                                    let agent_kind = ws.agent();
+                                    let agent_name = ws.agent_name();
                                     let slug = ws.slug.clone();
                                     let project_root = ws.project_root.clone();
                                     let workspaces_for_start = workspaces.clone();
-                                    tokio::task::spawn_blocking(move || {
-                                        crate::capsule_workspace::ensure_started(
-                                            &root,
-                                            &workspace_id,
-                                            &agent_kind,
-                                            &agent_name,
-                                            &slug,
-                                            &project_root,
-                                            workspaces_for_start,
-                                        )
-                                    })
-                                    .await
-                                    .unwrap_or_else(|e| {
-                                        Err(format!("capsule start-on-attach task panicked: {e}"))
-                                    })
-                                }
-                            };
-                            match ensure_result {
-                                Ok(Some(())) => {
-                                    tracing::info!(
-                                        workspace_id = %ws.workspace_id,
-                                        "pty.open: capsule supervisor started on attach"
-                                    );
-                                }
-                                Ok(None) => {}
-                                Err(detail) => {
-                                    tracing::warn!(
-                                        workspace_id = %ws.workspace_id, error = %detail,
-                                        "pty.open: capsule supervisor start-on-attach failed"
-                                    );
-                                    // Rule E (shrink round): no terminal mark
-                                    // for a one-shot failure — that flag is
-                                    // reserved for the supervisor's OWN
-                                    // terminal outcome (the watchdog giving
-                                    // up, or a leg exiting terminal/69). The
-                                    // row stays retryable: the next attach
-                                    // attempt tries again from scratch.
-                                    let payload = serde_json::json!({
-                                        "error": format!("capsule workspace could not be started: {detail}"),
-                                        "code": "capsule_spawn_failed",
+                                    tokio::spawn(async move {
+                                        wait_for_test_activation_barrier().await;
+                                        let result = tokio::task::spawn_blocking(move || {
+                                            crate::capsule_workspace::ensure_started(
+                                                &root,
+                                                &workspace_id,
+                                                &agent_kind,
+                                                &agent_name,
+                                                &slug,
+                                                &project_root,
+                                                crate::capsule_workspace::ActivationIntent::Selection,
+                                                workspaces_for_start,
+                                            )
+                                        })
+                                        .await
+                                        .unwrap_or_else(|e| {
+                                            Err(format!("capsule start-on-attach task panicked: {e}"))
+                                        });
+                                        match result {
+                                            Ok(Some(())) => {
+                                                tracing::info!(workspace_id = %workspace_id_for_log, "pty.open: capsule supervisor started on attach");
+                                            }
+                                            Ok(None) => {}
+                                            Err(detail) => {
+                                                tracing::warn!(workspace_id = %workspace_id_for_log, error = %detail, "pty.open: capsule supervisor start-on-attach failed");
+                                            }
+                                        }
+                                        record_test_activation_marker("completions");
                                     });
-                                    write_frame_to(&mut tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
-                                        .await?;
-                                    continue;
                                 }
                             }
                         }

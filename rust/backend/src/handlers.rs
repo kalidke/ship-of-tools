@@ -4089,8 +4089,8 @@ pub async fn handle_pty_input(
                 // is logged and folds into `UNREACHABLE_PHASE`, same
                 // shape `phase_of` itself always reported for a dead lane.
                 let workspace_id = ws.workspace_id.clone();
-                let agent_kind = ws.agent.clone();
-                let agent_name = ws.agent_name.clone();
+                let agent_kind = ws.agent();
+                let agent_name = ws.agent_name();
                 let slug = ws.slug.clone();
                 let project_root = ws.project_root.clone();
                 let workspaces_for_resume = workspaces.clone();
@@ -4250,8 +4250,8 @@ pub async fn handle_pty_screen(
                 // ADR 0043 decision 33: `resume_if_absent` in place of a
                 // bare `phase_of` read — see `pty.input`'s own comment.
                 let workspace_id = ws.workspace_id.clone();
-                let agent_kind = ws.agent.clone();
-                let agent_name = ws.agent_name.clone();
+                let agent_kind = ws.agent();
+                let agent_name = ws.agent_name();
                 let slug = ws.slug.clone();
                 let project_root = ws.project_root.clone();
                 let workspaces_for_resume = workspaces.clone();
@@ -4707,6 +4707,8 @@ pub async fn handle_workspace_create(
         match spawn_result {
             Ok(()) => {
                 tracing::info!(workspace_id = %ws_handle.workspace_id, "workspace.create: capsule supervisor spawned");
+                // Starts this row's lifecycle observer for its ongoing periodic poll.
+                crate::capsule_workspace::observer::ensure_running(&workspaces, &ws_handle);
             }
             Err(detail) => {
                 tracing::warn!(workspace_id = %ws_handle.workspace_id, error = %detail, "workspace.create: capsule spawn failed; rolling back");
@@ -5019,19 +5021,8 @@ async fn end_default_row_run(
 /// call — `end_run`'s own arms decide the outcome regardless.
 ///
 /// Every mutation runs under the row's own guard, from the first probe
-/// through the outcome this returns (ADR 0043 decision 33) — a row the
-/// watchdog already marked `workspaces.is_capsule_terminal` takes the
-/// SAME guarded path as every other row: `resume_locked`'s own internal
-/// check still reports that phase without a live round trip (no wasted
-/// probe against an authority that is almost always already gone — see
-/// its own doc), but `end_run`'s fresh `query_status` then independently
-/// proves the row's fence AND leg both absent before this reports
-/// `Removable` (BLOCKER, Codex review, 2026-09-11: an earlier revision
-/// short-circuited straight to `Removable` on `is_capsule_terminal`
-/// alone, bypassing the guard and this proof entirely — `is_capsule_
-/// terminal` records that the watchdog's OWN `child.wait()` confirmed
-/// the AUTHORITY exited, never that a leg the watchdog's restart budget
-/// left running, or a failed adoption, is also gone).
+/// through the outcome this returns — a terminal `Phase` mark alone
+/// proves the authority exited, never that a leg is also gone.
 ///
 /// Returns the row's own guard alongside the outcome, still HELD
 /// (`None` only when no real lane call was ever attempted) — Codex
@@ -5320,8 +5311,8 @@ pub async fn handle_workspace_destroy(
         let (outcome, held_guard) = destroy_capsule_workspace(
             &ws.workspace_id,
             "run ended by the user",
-            &ws.agent,
-            &ws.agent_name,
+            &ws.agent(),
+            &ws.agent_name(),
             &ws.slug,
             &ws.project_root,
             workspaces,
@@ -5339,7 +5330,7 @@ pub async fn handle_workspace_destroy(
             ws_events,
             &ws.workspace_id,
             &ws.slug,
-            &ws.agent_name,
+            &ws.agent_name(),
             &ws.tmux_session,
             confirmed_ended,
             held_guard,
@@ -5356,7 +5347,7 @@ pub async fn handle_workspace_destroy(
     let label = ws.label.clone();
     let workspace_id = ws.workspace_id.clone();
     let tmux_session = ws.tmux_session.clone();
-    let agent_name = ws.agent_name.clone();
+    let agent_name = ws.agent_name();
 
     // This row's guard, taken below by whichever arm runs — HELD (ADR
     // 0043 decision 33, Codex review round 2; tmux arm added round 3,
@@ -5380,7 +5371,7 @@ pub async fn handle_workspace_destroy(
         let (outcome, held) = destroy_capsule_workspace(
             &workspace_id,
             &reason,
-            &ws.agent,
+            &ws.agent(),
             &agent_name,
             &slug,
             &ws.project_root,
@@ -6614,12 +6605,12 @@ fn comm_handle_for_workspace(
     if ws.runtime == "capsule" {
         let h = capsule_comm_handle(&ws.workspace_id);
         if h.is_empty() {
-            ws.agent_name.clone()
+            ws.agent_name()
         } else {
             h
         }
     } else {
-        resolve_comm_handle(agents, &ws.tmux_session, &ws.agent_name, host)
+        resolve_comm_handle(agents, &ws.tmux_session, &ws.agent_name(), host)
     }
 }
 
@@ -6954,55 +6945,7 @@ pub async fn handle_workspace_list(
     // actual matching (shared with `clear_comm_unread` below — one rule, not a
     // copy).
     let ws_list = workspaces.list();
-    // ADR 0042 slice L1a, Codex review finding 11: query every capsule
-    // workspace's supervisor lane under FIXED-WIDTH concurrency (a
-    // semaphore, the same `LANE_CONCURRENCY` bound the startup
-    // resume-scan uses — finding 10) and ONE absolute deadline over the
-    // WHOLE gather, never a fresh per-row budget (which let total call
-    // time grow unboundedly with row count, and handed a wedged task a
-    // brand-new allowance every time its own handle happened to be
-    // reached). A workspace already marked `capsule_terminal` (finding 6
-    // — its watchdog gave up) is never queried at all; its phase is
-    // "terminal", not a fresh "unreachable" that would misleadingly
-    // imply the next probe might succeed. `capsule_workspace::phase_of`
-    // is gated to Windows and Linux only (ADR 0043 decision 22); on any
-    // other host no workspace ever has `runtime == "capsule"`, so the
-    // query set there is always empty.
-    #[cfg(any(windows, target_os = "linux"))]
-    let phases: std::collections::HashMap<String, String> = {
-        let candidates: Vec<(String, std::path::PathBuf)> = match sot_log::state_dir::sot_state_dir() {
-            Some(root) => ws_list
-                .iter()
-                .filter(|ws| ws.runtime == "capsule" && !workspaces.is_capsule_terminal(&ws.workspace_id))
-                .map(|ws| (ws.workspace_id.clone(), crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id)))
-                .collect(),
-            None => Vec::new(),
-        };
-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(crate::capsule_workspace::LANE_CONCURRENCY));
-        let mut handles = Vec::with_capacity(candidates.len());
-        for (id, dir) in candidates {
-            let permit = semaphore.clone();
-            handles.push(tokio::spawn(async move {
-                let _permit = permit.acquire_owned().await;
-                let phase = tokio::task::spawn_blocking(move || crate::capsule_workspace::phase_of(&dir))
-                    .await
-                    .unwrap_or(crate::capsule_workspace::UNREACHABLE_PHASE);
-                (id, phase.to_string())
-            }));
-        }
-        let mut out = std::collections::HashMap::new();
-        let gather = async {
-            for h in handles {
-                if let Ok((id, phase)) = h.await {
-                    out.insert(id, phase);
-                }
-            }
-        };
-        let _ = tokio::time::timeout(crate::capsule_workspace::LIST_LANE_DEADLINE, gather).await;
-        out
-    };
-    #[cfg(not(any(windows, target_os = "linux")))]
-    let phases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // Pure memory: kept current by the row's lifecycle observer, no lane query.
     let mut entries: Vec<WorkspaceListEntry> = ws_list
         .into_iter()
         .map(|ws| {
@@ -7040,32 +6983,15 @@ pub async fn handle_workspace_list(
             } else {
                 reg
             };
-            // ADR 0042 slice L1a: `state_dir` is a pure function of the
-            // state root + workspace_id (no I/O, no query) so it's
-            // available even when the phase query below failed or timed
-            // out. `phase` — Codex review finding 6 — checks
-            // `capsule_terminal` FIRST: a workspace whose watchdog gave
-            // up is never re-queried, and reports "terminal" (loud and
-            // final) rather than a fresh "unreachable" that misleadingly
-            // implies the next probe might still succeed; otherwise it
-            // falls back to "unreachable" for an unresolved/failed query
-            // ("failure -> unreachable" — see `capsule_workspace`'s own
-            // doc). Both stay `None` for a `"tmux"` row.
+            // `phase` is read straight off the row's own cell; both stay
+            // `None` for a `"tmux"` row.
             let (state_dir, phase) = if ws.runtime == "capsule" {
                 let state_dir = sot_log::state_dir::sot_state_dir().map(|root| {
                     crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id)
                         .to_string_lossy()
                         .into_owned()
                 });
-                let phase = if workspaces.is_capsule_terminal(&ws.workspace_id) {
-                    crate::capsule_workspace::phase_str(sot_log::wire::SupervisorPhase::Terminal).to_string()
-                } else {
-                    phases
-                        .get(&ws.workspace_id)
-                        .cloned()
-                        .unwrap_or_else(|| crate::capsule_workspace::UNREACHABLE_PHASE.to_string())
-                };
-                (state_dir, Some(phase))
+                (state_dir, Some(ws.phase().as_wire_str().to_string()))
             } else {
                 (None, None)
             };
@@ -7078,9 +7004,9 @@ pub async fn handle_workspace_list(
                 kernel_running: ws.kernel_built(),
                 is_default: default_id.as_deref() == Some(ws.workspace_id.as_str()),
                 autostart_claude: ws.autostart_claude,
-                agent: ws.agent.clone(),
+                agent: ws.agent(),
                 agent_name: if handle.is_empty() {
-                    ws.agent_name.clone()
+                    ws.agent_name()
                 } else {
                     handle.clone()
                 },
@@ -7093,6 +7019,7 @@ pub async fn handle_workspace_list(
                 runtime: ws.runtime.clone(),
                 state_dir,
                 phase,
+                activation_error: ws.activation_error(),
             }
         })
         .collect();
@@ -7379,7 +7306,7 @@ mod duplicate_root_tests {
         // Control: the default row WITH an agent is a real session and is
         // still caught (same-slug insert keeps the id, so it stays default).
         let mut sot = ws("local", &root);
-        sot.agent = "claude".to_string();
+        sot.agent = std::sync::Mutex::new("claude".to_string());
         existing.insert(sot);
         assert!(find_other_workspace_with_root(&canon, "home-session", &existing).is_some());
     }
@@ -9376,11 +9303,20 @@ mod workspace_destroy_default_row_tests {
         let state_root = pin_local_state_root(&scratch);
 
         let (reg, id) = seed_default("capsule");
-        reg.mark_capsule_terminal(&id);
+        // An epoch must begin before an observation about it is accepted,
+        // so seed one before forcing the phase cell to Terminal.
+        let ws = reg.resolve(Some(id.as_str())).expect("row just seeded");
+        let identity = crate::workspaces::SupervisorIdentity { pid: 1, created: 1 };
+        ws.begin_supervisor_epoch(identity);
+        ws.apply_phase_observation(crate::workspaces::Observation::Phase {
+            phase: crate::workspaces::Phase::Terminal,
+            supervisor: identity,
+            voyage: None,
+        });
         seed_provably_unheld_state_dir(&state_root, &id);
 
         // `/p/local`/`"local"` are placeholders (`resume_locked`'s own
-        // `is_capsule_terminal` check returns before any agent argv is
+        // `Phase::Terminal` check returns before any agent argv is
         // resolved) -- only `state_root`'s on-disk fixture is real.
         let (outcome, held) = destroy_capsule_workspace(
             &id,
@@ -9470,8 +9406,8 @@ mod workspace_destroy_default_row_tests {
             .resolve(Some(&id))
             .expect("the default row is never removed");
         assert_eq!(after.workspace_id, id);
-        assert_eq!(after.agent, "none");
-        assert_eq!(after.agent_name, "");
+        assert_eq!(after.agent(), "none");
+        assert_eq!(after.agent_name(), "");
         assert!(
             reg.is_inert_default_anchor(&after),
             "with agent reset to none, the default row must be inert again"

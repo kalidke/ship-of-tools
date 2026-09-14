@@ -6,9 +6,9 @@
 //! capsule row's supervisor or voyage lane — the `proxy.connect`
 //! mechanism (ADR 0035), verbatim, for lane endpoints instead of a
 //! loopback port. The daemon's dial is also the recovery trigger: an
-//! absent supervisor lane on a resumable row is resumed
-//! (`resume_if_absent`, decision 33 of the lifecycle track) before the
-//! dial is answered. Once the pipe starts, the daemon never decodes a
+//! absent supervisor lane on a resumable row is resumed (`ensure_started`
+//! with `Reconnect` intent, which may resume but never resets a row) before
+//! the dial is answered. Once the pipe starts, the daemon never decodes a
 //! lane frame again — the frontend runs its own end-to-end `hello`
 //! (steps 4-5 of the challenge) over the pipe, bound against the `pid`/
 //! `created` this module reports from ITS OWN dial (steps 1-3).
@@ -114,7 +114,7 @@ fn check_voyage_ownership(state_dir: &Path, voyage_id: &str) -> Result<(), DialF
 /// recovery trigger). Then runs `authenticate_server` (steps 1-3 of the
 /// challenge — no wire I/O; the daemon never decodes a lane frame).
 /// BLOCKING throughout (`phase_of`/`query_status`/a process spawn inside
-/// `resume_if_absent`, the pointer read, and the connect/authenticate
+/// `ensure_started`, the pointer read, and the connect/authenticate
 /// calls themselves): the caller runs this via `spawn_blocking`.
 fn dial_and_authenticate(
     root: PathBuf,
@@ -146,22 +146,23 @@ fn dial_and_authenticate(
         Lane::Supervisor => match ep.connect_supervisor_unchallenged(&h) {
             Ok(c) => c,
             Err(e) if e.is_endpoint_absent() => {
-                if workspaces.is_capsule_terminal(&workspace_id) {
+                let is_terminal = workspaces
+                    .resolve(Some(workspace_id.as_str()))
+                    .map(|ws| ws.phase() == crate::workspaces::Phase::Terminal)
+                    .unwrap_or(false);
+                if is_terminal {
                     return Err(DialFail::Absent { kind: absent_kind(&e), detail: "the row is terminal".into() });
                 }
-                // ADR 0043 decision 33: resume-only, never `reset`, one
-                // launch in flight per row under the per-row guard —
-                // `resume_if_absent` takes that guard itself for its
-                // whole duration, so a second `lane.connect` racing this
-                // one simply waits for the SAME resume rather than
-                // spawning a second authority.
-                if let Err(detail) = crate::capsule_workspace::resume_if_absent(
+                // `ensure_started` holds the row's own guard for its whole
+                // duration, so a racing `lane.connect` waits for this same attempt.
+                if let Err(detail) = crate::capsule_workspace::ensure_started(
                     &root,
                     &workspace_id,
                     &agent_kind,
                     &agent_name,
                     &slug,
                     &project_root,
+                    crate::capsule_workspace::ActivationIntent::Reconnect,
                     workspaces.clone(),
                 ) {
                     return Err(DialFail::Absent { kind: absent_kind(&e), detail: format!("resume failed: {detail}") });
@@ -255,8 +256,8 @@ where
     let state_dir = crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id);
 
     let workspace_id = ws.workspace_id.clone();
-    let agent_kind = ws.agent.clone();
-    let agent_name = ws.agent_name.clone();
+    let agent_kind = ws.agent();
+    let agent_name = ws.agent_name();
     let slug = ws.slug.clone();
     let project_root = ws.project_root.clone();
     let workspaces_for_dial = workspaces.clone();
