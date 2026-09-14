@@ -41,7 +41,7 @@ use interprocess::local_socket::{
 use serde_json::Value;
 use sot_protocol::{
     codec, op, AgentSendReq, ConceptReadReq, ConceptReadRes, ConceptWriteReq, ConceptWriteRes,
-    DocsOpenReq, DocsOpenRes, FePresenceReq, FileChunk, FileDeleteReq, FileDeleteRes,
+    DirCreateReq, DirCreateRes, DocsOpenReq, DocsOpenRes, FePresenceReq, FileChunk, FileDeleteReq, FileDeleteRes,
     FileDownloadReq, FileReadReq, FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq,
     FileWriteRes, Frame,
     HelloReq, HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
@@ -306,6 +306,14 @@ pub enum IncomingEvt {
     FileDeleteDone {
         node_id: String,
         result: FileDeleteResult,
+    },
+    /// `dir.create` reply (FE Ctrl+N with a trailing `/`): happy path or an
+    /// `{error, code}` failure — see `DirCreateResult`. The chrome matches
+    /// `node_id` against `pending_created_node_id`, refreshes the parent dir,
+    /// and clears the pending marker on either outcome.
+    DirCreateDone {
+        node_id: String,
+        result: DirCreateResult,
     },
     /// `kernel.request file.parse` reply for `path`. `ast_hash` is the
     /// SHA-256 of raw file bytes per ADR 0005 — the value the frontend
@@ -787,6 +795,19 @@ pub enum FileDeleteResult {
     Error { code: String, message: String },
 }
 
+/// Outcome of a `dir.create` request, mirroring the backend's two response
+/// shapes (success / error, incl. `code: "already_exists"`).
+#[derive(Debug, Clone)]
+pub enum DirCreateResult {
+    /// Directory created; `path` is the absolute path on disk.
+    #[allow(dead_code)]
+    Ok { path: String },
+    /// Any backend error — `code` is the protocol code (`bad_node_id`,
+    /// `already_exists`, `dir_create_failed`, …), `message` detail.
+    #[allow(dead_code)]
+    Error { code: String, message: String },
+}
+
 /// Outcome of a `concept.write` request.
 #[derive(Debug, Clone)]
 pub enum ConceptWriteResult {
@@ -1036,6 +1057,13 @@ pub enum OutgoingReq {
     /// the prompt never opens on a dir row. Reply →
     /// `IncomingEvt::FileDeleteDone`.
     FileDelete {
+        node_id: String,
+        workspace_id: Option<String>,
+    },
+    /// Create a directory from Files-mode nav (Ctrl+N, a name ending in `/`).
+    /// Non-recursive server-side — the parent must already exist. Reply →
+    /// `IncomingEvt::DirCreateDone`.
+    DirCreate {
         node_id: String,
         workspace_id: Option<String>,
     },
@@ -1352,6 +1380,9 @@ enum PendingKind {
         node_id: String,
     },
     FileDelete {
+        node_id: String,
+    },
+    DirCreate {
         node_id: String,
     },
     MathRender {
@@ -2541,6 +2572,28 @@ where
                         .await?;
                         pending.insert(id, PendingKind::FileDelete { node_id });
                     }
+                    OutgoingReq::DirCreate { node_id, workspace_id } => {
+                        tracing::debug!(
+                            %node_id,
+                            ?workspace_id,
+                            id,
+                            "→ dir.create"
+                        );
+                        codec::write_frame(
+                            &mut tx,
+                            &Frame::req(
+                                id,
+                                op::DIR_CREATE,
+                                serde_json::to_value(DirCreateReq {
+                                    node_id: node_id.clone(),
+                                    workspace_id,
+                                })?,
+                            ),
+                            None,
+                        )
+                        .await?;
+                        pending.insert(id, PendingKind::DirCreate { node_id });
+                    }
                     OutgoingReq::FileParse { path, workspace_id } => {
                         tracing::debug!(%path, ?workspace_id, id, "→ kernel.request file.parse");
                         codec::write_frame(
@@ -3443,6 +3496,35 @@ fn handle_response_frame(
                     }
                 };
                 emit(IncomingEvt::FileDeleteDone { node_id, result });
+            }
+            PendingKind::DirCreate { node_id } => {
+                // Mirror the backend's two shapes: happy-path DirCreateRes or
+                // any `{error, code}` failure (`already_exists`, `bad_node_id`, …).
+                let result = if let Some(code) = frame.payload.get("code").and_then(|v| v.as_str())
+                {
+                    let message = frame
+                        .payload
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("(no message)")
+                        .to_string();
+                    DirCreateResult::Error {
+                        code: code.to_string(),
+                        message,
+                    }
+                } else {
+                    match serde_json::from_value::<DirCreateRes>(frame.payload) {
+                        Ok(res) => DirCreateResult::Ok { path: res.path },
+                        Err(e) => {
+                            tracing::warn!(error = %e, %node_id, "dir.create res parse failed");
+                            DirCreateResult::Error {
+                                code: "parse_failed".to_string(),
+                                message: e.to_string(),
+                            }
+                        }
+                    }
+                };
+                emit(IncomingEvt::DirCreateDone { node_id, result });
             }
             PendingKind::FileParse { path, workspace_id } => {
                 // `file.parse` returns either {ast_hash, path, definitions}

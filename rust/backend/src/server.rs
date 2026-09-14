@@ -1870,6 +1870,9 @@ where
             op::FILE_DELETE => {
                 handlers::handle_file_delete(frame.id, frame.payload, &session, &workspaces).await
             }
+            op::DIR_CREATE => {
+                handlers::handle_dir_create(frame.id, frame.payload, &session, &workspaces).await
+            }
             op::REPL_EVAL => {
                 handlers::handle_repl_eval(frame.id, frame.payload, &session, &workspaces).await
             }

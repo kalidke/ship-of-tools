@@ -102,7 +102,7 @@ actions! {
     SessionCreate, "session.create", ["Enter"], "Create with Claude", "Create a workspace in the selected folder with a Claude Code agent.", "Picker", Picker;
     Quit, "quit", ["Ctrl+q"], "Quit SoT", "Close the frontend from navigation focus.", "Navigation", Nav;
     CopyPath, "files.copy_path", ["Ctrl+c", "c"], "Copy path", "Copy the selected file's backend path to the clipboard.", "Files", FileNav;
-    NewFile, "files.new", ["Ctrl+n"], "New file", "Create a file in the selected directory after entering its name.", "Files", Files;
+    NewFile, "files.new", ["Ctrl+n"], "New file or folder", "Create a file, or a folder when the name ends with /, in the selected directory.", "Files", Files;
     DeleteFile, "files.delete", ["Ctrl+d"], "Delete file", "Delete the selected file after confirmation. Directories are refused.", "Files", FileNav;
     NavDown, "nav.down", ["ArrowDown"], "Move down", "Select the next row.", "Navigation", Navigation;
     NavUp, "nav.up", ["ArrowUp"], "Move up", "Select the previous row.", "Navigation", Navigation;

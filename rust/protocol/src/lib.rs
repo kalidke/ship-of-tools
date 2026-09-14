@@ -25,8 +25,9 @@ pub use codec::{read_frame, write_frame};
 pub use ir::{BlobDescriptor, PreviewPayload, TreeNode};
 pub use ops::{
     op, AgentJoinReq, AgentJoinRes, AgentSendReq, AgentSendRes, ClientVersion, ConceptListRes, ConceptReadReq, ConceptReadRes,
-    ConceptWriteReq, ConceptWriteRes, DaemonVersion, DirectoryEntry, DirectoryListReq,
-    DirectoryListRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq, FeCommandSendRes,
+    ConceptWriteReq, ConceptWriteRes, DaemonVersion, DirCreateReq, DirCreateRes, DirectoryEntry,
+    DirectoryListReq, DirectoryListRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
+    FeCommandSendRes,
     FePresenceReq, FePresenceRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq,
     FileReadReq, FileReadRes,
     FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, GpuSample, HelloReq, HelloRes,

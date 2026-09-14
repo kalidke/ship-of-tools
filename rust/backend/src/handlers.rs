@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use sot_protocol::{
     op, AgentJoinReq, AgentJoinRes, AgentSendReq, AgentSendRes, BlobDescriptor, ConceptListRes, ConceptReadReq, ConceptReadRes,
-    ConceptWriteReq, ConceptWriteRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
+    ConceptWriteReq, ConceptWriteRes, DirCreateReq, DirCreateRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
     FeCommandSendRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq,
     FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
     HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
@@ -25,7 +25,7 @@ use sot_protocol::{
     VideoOpenReq, VideoOpenRes,
 };
 
-use crate::file_io::{self, WriteResult};
+use crate::file_io::{self, CreateDirResult, WriteResult};
 use crate::files_mode::{mime_for_path, FilesMode};
 use crate::kernel::Kernel;
 use crate::mathjax::MathJax;
@@ -1938,10 +1938,74 @@ pub async fn handle_file_delete(
     }
 }
 
+/// Create a directory from Files-mode nav (FE Ctrl+N, a name ending in `/`).
+/// Non-recursive: `file_io::create_dir` refuses to create missing parents,
+/// mirroring `file.write`'s new-file contract. An existing file or directory
+/// at the target path is refused with `code: "already_exists"` rather than
+/// silently succeeding. Bumps the session revision like file.write/delete so
+/// the watcher and reconnecting clients refresh.
+pub async fn handle_dir_create(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    session: &Session,
+    workspaces: &Workspaces,
+) -> Result<HandlerOutput> {
+    let req: DirCreateReq = serde_json::from_value(payload_json).context("dir.create payload")?;
+    tracing::info!(
+        node_id = %req.node_id,
+        workspace_id = req.workspace_id.as_deref().unwrap_or("<default>"),
+        "dir.create"
+    );
+
+    let path = match resolve_file_node(
+        op::DIR_CREATE,
+        req_id,
+        &req.node_id,
+        req.workspace_id.as_deref(),
+        workspaces,
+        true,
+    ) {
+        Ok(p) => p,
+        Err(out) => return Ok(out),
+    };
+
+    match file_io::create_dir(&path) {
+        Ok(CreateDirResult::Created) => {
+            let res = DirCreateRes {
+                node_id: req.node_id.clone(),
+                path: path.to_string_lossy().to_string(),
+            };
+            let rev = session
+                .bump("dir.created", json!({ "node_id": req.node_id }))
+                .await;
+            Ok(vec![(
+                Frame::res(req_id, op::DIR_CREATE, serde_json::to_value(res)?).with_rev(rev),
+                None,
+            )])
+        }
+        Ok(CreateDirResult::AlreadyExists) => Ok(vec![(
+            Frame::res(
+                req_id,
+                op::DIR_CREATE,
+                json!({ "error": "already exists", "code": "already_exists", "node_id": req.node_id }),
+            ),
+            None,
+        )]),
+        Err(e) => Ok(vec![(
+            Frame::res(
+                req_id,
+                op::DIR_CREATE,
+                json!({ "error": format!("{e:#}"), "code": "dir_create_failed", "node_id": req.node_id }),
+            ),
+            None,
+        )]),
+    }
+}
+
 /// Shared workspace → FilesMode → safe path resolution for the file.read /
-/// file.write / file.delete handlers. On any failure returns the error
-/// `HandlerOutput` to send back (tagged with `op`); on success returns the
-/// resolved absolute path. Both resolvers reject `..`/absolute ids;
+/// file.write / file.delete / dir.create handlers. On any failure returns the
+/// error `HandlerOutput` to send back (tagged with `op`); on success returns
+/// the resolved absolute path. Both resolvers reject `..`/absolute ids;
 /// `confined` selects the WRITE resolver (`node_id_to_path_confined`, the
 /// symlink escape guard — mutations can't leave the project root) vs the
 /// READ resolver (follows user symlinks, e.g. NAS mounts — see

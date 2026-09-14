@@ -51,6 +51,11 @@ pub mod op {
     /// hard-unlinks: system trash (`gio trash`) when available, else a move
     /// to `<workspace_root>/.sot-trash/` — recoverable either way.
     pub const FILE_DELETE: &str = "file.delete";
+    /// Create a directory from Files-mode nav (Ctrl+N with a trailing `/` in
+    /// the typed name). Non-recursive — the parent must already exist — so a
+    /// typo in a multi-level name fails loudly instead of silently creating
+    /// intermediate directories.
+    pub const DIR_CREATE: &str = "dir.create";
     pub const REPL_EVAL: &str = "repl.eval";
     /// Run a `.jl` file either in the persistent REPL (`fresh:false`,
     /// via `include`) or in a fresh `julia` subprocess (`fresh:true`).
@@ -757,6 +762,23 @@ pub struct FileDeleteRes {
     /// went to the system trash (`gio trash`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trash_path: Option<String>,
+}
+
+/// Create a directory from Files-mode nav (FE Ctrl+N, a name ending in `/`).
+/// Non-recursive: the parent must already exist, mirroring `file.write`'s
+/// new-file contract. An existing file or directory at `node_id` is refused
+/// with `code: "already_exists"` rather than silently succeeding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirCreateReq {
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirCreateRes {
+    pub node_id: String,
+    pub path: String,
 }
 
 /// Submit a chunk of Julia code to the persistent REPL. Phase-1 is

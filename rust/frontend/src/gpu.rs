@@ -509,15 +509,20 @@ struct WorkspacePicker {
 /// renderer, without touching the surrounding nav code.
 #[derive(Clone)]
 enum NavPrompt {
-    /// Ctrl+N in Files mode: type the name of a new file to create in
-    /// `dir_node_id`. Enter confirms (validates + fires `file.write`
-    /// with empty content), Esc cancels. `input` is the live name buffer.
+    /// Ctrl+N in Files mode: type the name of a new file, or — with a
+    /// trailing `/` — a new directory, to create in `dir_node_id`. Enter
+    /// confirms (validates + fires `file.write` with empty content, or
+    /// `dir.create` when the name ends with `/`), Esc cancels. `input` is
+    /// the live name buffer.
     CreateFile {
-        /// `files:`-prefixed id of the directory that will contain the
-        /// new file (`files:` for the project root). The new file's id is
-        /// `build_new_file_node_id(dir_node_id, input)`.
+        /// `files:`-prefixed id of the directory that will contain the new
+        /// entry (`files:` for the project root). The new entry's id is
+        /// `build_new_file_node_id(dir_node_id, input)` after stripping any
+        /// trailing `/`.
         dir_node_id: String,
-        /// Live name buffer, rendered after `new file: ` on the status line.
+        /// Live name buffer, rendered after `new file or dir/: ` on the
+        /// status line. `nav_prompt_push_char` guarantees any `/` in here
+        /// is exactly one trailing character.
         input: String,
     },
     /// Ctrl+D in Files mode: confirm trashing the cursored file. `y`/`Y`
@@ -1701,9 +1706,10 @@ fn preview_image_pane_px(
     )
 }
 
-/// Build + validate the `files:` node id for a new file `name` created inside
-/// the directory `dir_node_id`. The backend's `node_id_to_path` rejects
-/// absolute ids and `..` segments, so the only safe child id is
+/// Build + validate the `files:` node id for a new file (or, after the
+/// caller strips a trailing `/`, a new directory) named `name`, created
+/// inside the directory `dir_node_id`. The backend's `node_id_to_path`
+/// rejects absolute ids and `..` segments, so the only safe child id is
 /// `<dir_id>/<name>` with a bare name — hence the name must not contain a path
 /// separator. The root dir id is `files:` (trailing colon, no segment), so we
 /// suppress the joining `/` in that case: `files:` + `a.txt` → `files:a.txt`;
@@ -1725,6 +1731,23 @@ fn build_new_file_node_id(dir_node_id: &str, name: &str) -> Result<String, &'sta
     // the root; any deeper dir id gets a `/` before the bare name.
     let sep = if dir_node_id.ends_with(':') { "" } else { "/" };
     Ok(format!("{dir_node_id}{sep}{name}"))
+}
+
+/// Whether typing `c` onto the live Ctrl+N prompt buffer `buf` is allowed.
+/// `\` is never a name character here. `/` is accepted only as a single
+/// TRAILING character — it's the "make this a directory" marker that
+/// `confirm_create_file` strips before validating the rest of the name via
+/// `build_new_file_node_id` — so a second `/`, or any character typed after
+/// one, is refused. Pure so the invariant ("at most one `/`, and only at the
+/// end") is testable without a live prompt buffer.
+fn nav_prompt_name_char_allowed(buf: &str, c: char) -> bool {
+    if c == '\\' {
+        return false;
+    }
+    if c == '/' {
+        return !buf.is_empty() && !buf.ends_with('/');
+    }
+    !buf.ends_with('/')
 }
 
 /// Whether a Files-mode tree node is a directory for delete-refusal purposes.
@@ -3661,10 +3684,11 @@ struct State {
     /// handler routes keystrokes into the prompt before any nav shortcut and
     /// the chrome shows the prompt on the status line.
     nav_prompt: Option<NavPrompt>,
-    /// Node id of a file just created via the Ctrl+N prompt, awaiting its
-    /// `file.write` reply. When that reply lands matching this id, we refresh
-    /// the parent dir's listing so the new file appears, then clear this.
-    /// `None` outside a create round-trip.
+    /// Node id of a file or directory just created via the Ctrl+N prompt,
+    /// awaiting its `file.write` (file) or `dir.create` (dir) reply. When
+    /// that reply lands matching this id, we refresh the parent dir's
+    /// listing so the new entry appears, then clear this. `None` outside a
+    /// create round-trip.
     pending_created_node_id: Option<String>,
     /// Node id of a file just deleted via the Ctrl+D confirm prompt, awaiting
     /// its `file.delete` reply. When that reply lands matching this id, we
@@ -11086,11 +11110,11 @@ impl State {
         }
     }
 
-    /// Open the Ctrl+N new-file prompt (Files mode only). Computes the
-    /// directory the file should land in from the cursored row: a directory
-    /// row contains the file directly (use its id); a file row's sibling is
-    /// the new file (use the file's parent dir id); the root falls back to
-    /// `files:`. Returns false (no-op) when the cursor isn't on a `files:`
+    /// Open the Ctrl+N new-file-or-folder prompt (Files mode only). Computes
+    /// the directory the entry should land in from the cursored row: a
+    /// directory row contains it directly (use its id); a file row's sibling
+    /// is the new entry (use the file's parent dir id); the root falls back
+    /// to `files:`. Returns false (no-op) when the cursor isn't on a `files:`
     /// row — the caller leaves the keystroke for the normal nav handler.
     fn begin_create_file(&mut self) -> bool {
         let Some(row) = self.tree.rows.get(self.tree.selected) else {
@@ -11099,9 +11123,9 @@ impl State {
         if !row.node.id.starts_with("files:") {
             return false;
         }
-        // A directory row contains the file directly; a non-directory row
-        // (file / other) is a sibling, so the file goes in its parent dir.
-        // The files root (`files:`) is itself a directory.
+        // A directory row contains the new entry directly; a non-directory
+        // row (file / other) is a sibling, so the entry goes in its parent
+        // dir. The files root (`files:`) is itself a directory.
         let dir_node_id = if row.node.kind == "dir" || row.node.id == "files:" {
             row.node.id.clone()
         } else {
@@ -11111,19 +11135,19 @@ impl State {
             dir_node_id,
             input: String::new(),
         });
-        self.status = "new file: ".to_string();
+        self.status = "new file or dir/: ".to_string();
         self.window.request_redraw();
         true
     }
 
-    /// Append a typed character to the active new-file prompt's name buffer.
-    /// Path separators are rejected at the source (the backend's
-    /// `node_id_to_path` only accepts a bare child segment) so the user
-    /// can't type one in; everything else is allowed and validated on Enter.
+    /// Append a typed character to the active new-file-or-folder prompt's
+    /// name buffer, gated by `nav_prompt_name_char_allowed` (see there for
+    /// the trailing-`/`-only rule). Everything it allows is validated again
+    /// on Enter by `build_new_file_node_id`.
     fn nav_prompt_push_char(&mut self, c: char) {
         match self.nav_prompt.as_mut() {
             Some(NavPrompt::CreateFile { input, .. }) => {
-                if c == '/' || c == '\\' {
+                if !nav_prompt_name_char_allowed(input, c) {
                     return;
                 }
                 input.push(c);
@@ -11241,12 +11265,13 @@ impl State {
         self.window.request_redraw();
     }
 
-    /// Confirm the new-file prompt: validate the name + check for a sibling
-    /// collision, then fire a zero-byte `file.write` for the new id. On an
-    /// invalid name or collision, surface a status message and keep the
-    /// prompt open (nothing is sent). On success, remember the id so the
-    /// `file.write` reply can refresh the dir listing, close the prompt, and
-    /// show a "creating …" status.
+    /// Confirm the new-file-or-folder prompt: validate the name + check for a
+    /// sibling collision, then fire a zero-byte `file.write` for the new id
+    /// — or, when the typed name ends with `/`, a `dir.create` for the name
+    /// with that slash stripped. On an invalid name or collision, surface a
+    /// status message and keep the prompt open (nothing is sent). On
+    /// success, remember the id so the reply can refresh the dir listing,
+    /// close the prompt, and show a "creating …" status.
     fn confirm_create_file(&mut self) {
         let (dir_node_id, name) = match self.nav_prompt.as_ref() {
             Some(NavPrompt::CreateFile { dir_node_id, input }) => {
@@ -11254,10 +11279,21 @@ impl State {
             }
             _ => return,
         };
-        let new_id = match build_new_file_node_id(&dir_node_id, &name) {
+        // A trailing `/` means "create a directory" rather than a file.
+        // Strip it before the shared name validation below — which still
+        // rejects an EMBEDDED `/`, but `nav_prompt_push_char` already
+        // guarantees the buffer can carry at most one, and only trailing.
+        let is_dir = name.ends_with('/');
+        let bare_name = if is_dir {
+            name.trim_end_matches('/').to_string()
+        } else {
+            name
+        };
+        let kind = if is_dir { "new dir" } else { "new file" };
+        let new_id = match build_new_file_node_id(&dir_node_id, &bare_name) {
             Ok(id) => id,
             Err(reason) => {
-                self.status = format!("new file · {reason}");
+                self.status = format!("{kind} · {reason}");
                 self.window.request_redraw();
                 return;
             }
@@ -11265,25 +11301,38 @@ impl State {
         // Sibling-collision guard: refuse if any existing row already carries
         // the would-be id (a file or dir of that name already lives here).
         if self.tree.rows.iter().any(|r| r.node.id == new_id) {
-            self.status = format!("new file · '{name}' already exists");
+            self.status = format!("{kind} · '{bare_name}' already exists");
             self.window.request_redraw();
             return;
         }
-        if let Err(e) = self.send(OutgoingReq::FileWrite {
-            node_id: new_id.clone(),
-            content: String::new(),
-            expected_version: None,
-            workspace_id: self.active_workspace_id.clone(),
-        }) {
-            tracing::warn!(error = %e, %new_id, "drop file.write for new file — channel closed");
-            self.status = "new file · channel closed".to_string();
-            self.window.request_redraw();
-            return;
+        if is_dir {
+            if let Err(e) = self.send(OutgoingReq::DirCreate {
+                node_id: new_id.clone(),
+                workspace_id: self.active_workspace_id.clone(),
+            }) {
+                tracing::warn!(error = %e, %new_id, "drop dir.create for new dir — channel closed");
+                self.status = "new dir · channel closed".to_string();
+                self.window.request_redraw();
+                return;
+            }
+            tracing::info!(%new_id, "navtree.create_dir → dir.create");
+        } else {
+            if let Err(e) = self.send(OutgoingReq::FileWrite {
+                node_id: new_id.clone(),
+                content: String::new(),
+                expected_version: None,
+                workspace_id: self.active_workspace_id.clone(),
+            }) {
+                tracing::warn!(error = %e, %new_id, "drop file.write for new file — channel closed");
+                self.status = "new file · channel closed".to_string();
+                self.window.request_redraw();
+                return;
+            }
+            tracing::info!(%new_id, "navtree.create_file → file.write");
         }
-        tracing::info!(%new_id, "navtree.create_file → file.write");
         self.pending_created_node_id = Some(new_id);
         self.nav_prompt = None;
-        self.status = format!("creating {name}…");
+        self.status = format!("creating {bare_name}…");
         self.window.request_redraw();
     }
 
@@ -14308,6 +14357,53 @@ impl State {
                         }
                     }
                 }
+                crate::transport::IncomingEvt::DirCreateDone { node_id, result } => {
+                    // Ctrl+N new-dir round-trip: did this reply close out the
+                    // directory we just asked the backend to create? Late
+                    // replies for an abandoned/superseded request are ignored.
+                    let matches_create =
+                        self.pending_created_node_id.as_deref() == Some(node_id.as_str());
+                    match result {
+                        crate::transport::DirCreateResult::Ok { path } => {
+                            tracing::info!(%node_id, %path, "dir.create ok");
+                            if matches_create {
+                                self.pending_created_node_id = None;
+                                // Re-list the parent dir so the new directory
+                                // appears without a manual re-expand — same
+                                // tree.children refresh the file create /
+                                // delete / upload paths use.
+                                let parent = parent_files_node_id(&node_id);
+                                if let Err(e) =
+                                    self.send(crate::transport::OutgoingReq::TreeChildren {
+                                        parent_id: parent,
+                                        workspace_id: self.active_workspace_id.clone(),
+                                    })
+                                {
+                                    tracing::warn!(error = %e,
+                                        "drop post-create tree.children refresh");
+                                }
+                                let name = node_id
+                                    .rsplit(['/', ':'])
+                                    .next()
+                                    .unwrap_or(node_id.as_str());
+                                self.status = format!("created · {name}");
+                                self.window.request_redraw();
+                            }
+                        }
+                        crate::transport::DirCreateResult::Error { code, message } => {
+                            tracing::error!(%node_id, %code, %message, "dir.create failed");
+                            if matches_create {
+                                self.pending_created_node_id = None;
+                                self.status = if code == "already_exists" {
+                                    "new dir · already exists on disk".to_string()
+                                } else {
+                                    format!("new dir failed · {message}")
+                                };
+                                self.window.request_redraw();
+                            }
+                        }
+                    }
+                }
                 crate::transport::IncomingEvt::PtyOpened {
                     cols,
                     rows,
@@ -15922,7 +16018,7 @@ impl State {
         // invasive spot (no extra chrome row, no layout shift). A block
         // cursor (▏) marks the insertion point.
         let status = match &self.nav_prompt {
-            Some(NavPrompt::CreateFile { input, .. }) => format!("new file: {input}▏"),
+            Some(NavPrompt::CreateFile { input, .. }) => format!("new file or dir/: {input}▏"),
             Some(NavPrompt::ConfirmDelete { label, .. }) => {
                 format!("delete {label}? [y/N]")
             }
@@ -20747,11 +20843,13 @@ impl ApplicationHandler for App {
                                 }
                             }
                         }
-                        // NavTree text prompt active (Ctrl+N new-file, and
-                        // future delete-confirm). Like the picker, it steals
-                        // every keystroke so the user can type a filename
-                        // without nav shortcuts firing: printable chars
-                        // append (path separators are dropped at the source),
+                        // NavTree text prompt active (Ctrl+N new-file-or-
+                        // folder, and future delete-confirm). Like the
+                        // picker, it steals every keystroke so the user can
+                        // type a name without nav shortcuts firing: printable
+                        // chars append (an embedded path separator is
+                        // rejected at the source; a single trailing `/` is
+                        // allowed as the "make it a directory" marker),
                         // Backspace pops, Enter confirms, Esc cancels, and
                         // any other nav key is swallowed so arrows / mode
                         // switches don't disturb the tree mid-type.
@@ -20844,11 +20942,13 @@ impl ApplicationHandler for App {
                             state.window.request_redraw();
                             return;
                         }
-                        // Ctrl+N: open the new-file prompt. Files mode only,
-                        // and only when the cursor sits on a `files:` row
-                        // (begin_create_file no-ops otherwise and falls
-                        // through to normal nav). Reuses `file.write` with
-                        // empty content — no backend op is added.
+                        // Ctrl+N: open the new-file-or-folder prompt. Files
+                        // mode only, and only when the cursor sits on a
+                        // `files:` row (begin_create_file no-ops otherwise
+                        // and falls through to normal nav). A plain name
+                        // reuses `file.write` with empty content; a name
+                        // ending in `/` fires `dir.create` instead
+                        // (confirm_create_file picks which).
                         if !event.repeat
                             && action == Some(Action::NewFile)
                             && matches!(state.mode, Mode::Files)
@@ -26215,6 +26315,26 @@ mod tests {
         assert!(build_new_file_node_id("files:", "a/b.txt").is_err());
         assert!(build_new_file_node_id("files:", "a\\b.txt").is_err());
         assert!(build_new_file_node_id("files:sub", "../escape.txt").is_err());
+    }
+
+    #[test]
+    fn nav_prompt_name_char_allowed_takes_one_trailing_slash_only() {
+        // `\` is never a name character.
+        assert!(!nav_prompt_name_char_allowed("", '\\'));
+        assert!(!nav_prompt_name_char_allowed("sub", '\\'));
+        // A leading `/` on an empty buffer is refused (a directory still
+        // needs a name).
+        assert!(!nav_prompt_name_char_allowed("", '/'));
+        // Ordinary chars are always fine on an empty or plain buffer.
+        assert!(nav_prompt_name_char_allowed("", 's'));
+        assert!(nav_prompt_name_char_allowed("sub", 'x'));
+        // A single trailing `/` is accepted once the buffer is non-empty.
+        assert!(nav_prompt_name_char_allowed("sub", '/'));
+        // Once the buffer ends with `/`, nothing more is accepted — neither
+        // another `/` (no double slash) nor an ordinary char (no embedded
+        // separator via "sub/" + "x" → "sub/x").
+        assert!(!nav_prompt_name_char_allowed("sub/", '/'));
+        assert!(!nav_prompt_name_char_allowed("sub/", 'x'));
     }
 
     #[test]

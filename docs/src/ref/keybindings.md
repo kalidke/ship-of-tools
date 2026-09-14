@@ -115,7 +115,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `session.create` | `Enter` | Create a workspace in the selected folder with a Claude Code agent. |
 | `quit` | `Ctrl+q` | Close the frontend from navigation focus. |
 | `files.copy_path` | `Ctrl+c` / `c` | Copy the selected file's backend path to the clipboard. |
-| `files.new` | `Ctrl+n` | Create a file in the selected directory after entering its name. |
+| `files.new` | `Ctrl+n` | Create a file, or a folder when the name ends with /, in the selected directory. |
 | `files.delete` | `Ctrl+d` | Delete the selected file after confirmation. Directories are refused. |
 | `nav.down` | `ArrowDown` | Select the next row. |
 | `nav.up` | `ArrowUp` | Select the previous row. |
