@@ -61,53 +61,64 @@ tmux; a capsule-capable install needs no tmux.
    and on-disk filenames keep main's exact rules until that migration is
    its own later decision (manager review: Codex found nine blockers
    turning on exactly this conflation).
-   - One resolver, `sot_log::host_name()`: `SOT_SELF_HOST` if set, else
-     `gethostname`'s first label lowercased; empty is a startup error. A
-     NEW variable — `SOT_HOST` already means the SSH target a remote
-     frontend dials (`launch-sot.ps1`/`.sh`); reusing it here silently
-     renamed a frontend to wherever it dials (Codex-reproduced). Feeds
-     hello, logs and display ONLY — `state_host()`'s on-disk namespace,
-     comm's `hostname -s`-based handle derivation, and the frontend's
-     persisted-state filename all keep their own resolver untouched. Not
-     pinned into a spawned pane/capsule's env: an override on the
-     daemon's own process already reaches every child by inheritance.
+   - One resolver, `sot_log::host_name()` (and its shell mirror,
+     `sot_host`): `SOT_SELF_HOST` if set and NON-EMPTY (empty is unset,
+     falling through, in both), else the first label of
+     `gethostname`/`hostname -s`, trimmed then lowercased identically in
+     both; an empty RESOLVED hostname (never an empty override) is the
+     startup error. A NEW variable — `SOT_HOST` already means the SSH
+     target a remote frontend dials (`launch-sot.ps1`/`.sh`); reusing it
+     silently renamed a frontend to wherever it dials (Codex-reproduced).
+     Feeds hello, logs and display ONLY — `state_host()`, comm's handle
+     derivation, the frontend's own address (below), its persisted-state
+     filename, and the monitor's local-vs-SSH routing keep their own
+     resolver untouched: a display override changing ANY of those is the
+     bug this decision stops. Not pinned into a spawned pane/capsule's
+     env — inheritance already carries an override the daemon has.
    - `HelloReq` gains `host`, `role ∈ {fe, bridge, cli, agent}`,
      `instance`, and `name` (a NON-frontend's own declared handle).
      `fe_handle` is untouched — no rename, no alias; unifying it with
      `name` is sprint 2's `PROTOCOL_VERSION` bump. `role` gates
      active-frontend selection/audience as an EXTRA check on `fe_handle`
      (present and not `"fe"` excludes; absent falls back to `fe_handle`
-     alone, as before this lane). `HelloRes` is unchanged.
+     alone, as before this lane). `HelloRes` is unchanged. The log line
+     and `version.query`'s roster print the declaration alongside
+     `fe_handle`; six pasted comm hello lines become one
+     `sot_hello_frame`.
    - The frontend constructs one `FrontendIdentity {host, instance, name,
      role}` at process start (`instance` from `SOT_FE_INSTANCE`, else one
      mint per process, replacing a bare function that re-sampled the
-     clock per call); every connection, reconnect and input attribution
-     shares it.
+     clock per call); shared by every connection, reconnect and input
+     attribution. `name` (this frontend's ADDRESS) is NOT derived from
+     `host`: main's exact pre-lane `win-fe-<host>` off
+     `$HOSTNAME`/`$COMPUTERNAME`, unconditionally — an early draft built
+     it from the declared host and broke every explicit `--fe` target
+     (Codex-reproduced, round 2).
    - The frontend keys each connection by its dial (the hosts.toml
      section) — NEVER re-homed to the declaration (tried and rejected,
      below). One map records what each dial declared, read by ONE
      display projection (`host_label`: the declaration if known, else the
      dial key) used everywhere a host is named — Hosts mode, Sessions,
-     the status line, connect/disconnect logs — no separate truncation.
-     It feeds no refusal: a duplicate declaration cannot be closed
-     without a real transport-shutdown path, which does not exist, so
-     `hosts.rs`'s static same-port skip stays the one thing preventing two
-     dials from reaching the same daemon.
-   - The log line and `version.query`'s roster print the declaration
-     alongside the unchanged `fe_handle`. Six pasted comm hello lines
-     become one `sot_hello_frame`; `comm-lib.sh` gains one `sot_host` (the
-     same rule, JSON-escaped on the wire) the two share — comm's own
-     handle derivation (clamp, digest-suffix) is untouched.
+     the status line (including on a mere host SWITCH, not only a fresh
+     `Connected`), connect/disconnect logs — no separate truncation. It
+     feeds no refusal: closing a duplicate declaration needs a real
+     transport-shutdown path, which does not exist, so `hosts.rs`'s
+     static same-port skip stays the one thing preventing two dials from
+     reaching the same daemon.
    - **`agent.join {workspace_id, handle}`**, one op: `comm-join.sh`
      declares the session's handle through the EXISTING
      `sot_daemon_endpoint` resolution (`SOT_SOCKET` first on Unix, its
-     pre-existing bare-path meaning; the local pipe on Windows). The
-     daemon applies a GUARDED IN-PLACE update of the existing row (never
-     a replacement, never a resurrection of a row destroyed mid-call) and
-     answers `ok` only once durably persisted; a save failure is
-     reported, not swallowed. The self-file read-back
-     (`capsule_comm_handle`) stays as the FALLBACK for an undeclared row
-     — deleted only with family H, once every row has cycled.
+     pre-existing bare-path meaning; the local pipe on Windows) —
+     `comm-lib.sh`'s `sot_host` shares the identity rule above, JSON
+     -escaped on the wire; comm's own handle derivation (clamp,
+     digest-suffix) is untouched. The daemon applies the mutation under
+     the SAME per-row lifecycle guard `workspace.destroy` holds (ADR 0043
+     decision 33) — a guarded IN-PLACE update, re-checked once the guard
+     is actually held, never a replacement and never a resurrection of a
+     row a concurrent destroy just removed — and answers `ok` only once
+     durably persisted; a save failure is reported, not swallowed. The
+     self-file read-back (`capsule_comm_handle`) stays as the FALLBACK
+     for an undeclared row, deleted only with family H.
    Net across the branch: about 1975 lines added, 350 removed. Wire:
    additive.
 
@@ -282,9 +293,9 @@ tmux; a capsule-capable install needs no tmux.
   the unrenamed `fe_handle`; `WorkspaceListEntry {agent_handle, result?}`
   beside `phase`; `agent.join`; `capsule.evt` with blob tails;
   `{workspace_id, rev}` on the command event; `pty.resize.workspace_id`;
-  attach proto v3. `PROTOCOL_VERSION` stays 1. A legacy frontend keeps
-  active selection through `fe_handle`, untouched; the converge order —
-  daemon, then frontends — and the v3 row-cycling release cover the rest.
+  attach proto v3. `PROTOCOL_VERSION` stays 1; active selection stays on
+  `fe_handle`, untouched, so a legacy frontend needs no converge step for
+  this decision.
 - **Persistence.** The row toml gains `record_dir`, `agent_handle`,
   `result_path`, `result_caption`, `result_rev`; each defaults when
   absent. `phase` is never persisted. No directory is renamed this sprint.
