@@ -23,6 +23,16 @@
 #   --agent       agent kind for the workspace row: claude (default) | codex
 #                 (ADR 0031). The daemon launches ccb or ccx accordingly in
 #                 the row's capsule.
+#   --account     which discovered account (accounts brief, v0.6.0) the
+#                 row's agent runs under — the NAME of a folder that must
+#                 already exist directly in the daemon's home:
+#                 ~/.claude-<name> for a claude row, ~/.codex-<name> for a
+#                 codex row (a name folder logged in there, or not yet —
+#                 either is fine; only the FOLDER must exist). Omit for
+#                 the agent's own default account. The daemon refuses the
+#                 whole create, loudly, with the exact one-line command
+#                 to fix it, if the named folder is missing; a bash
+#                 (--agent none) row refuses ANY --account outright.
 #   --label       FE workspace label (default: basename of repo-path); guarded to
 #                 the repo basename so a session stays findable next to its repo.
 #   --display-label  FE label that deliberately DIFFERS from the repo basename
@@ -79,7 +89,7 @@ ensure_home
 # once TASK is known, rather than handed a placeholder nothing can reach.
 SPAWNER="$NAME"
 
-NAME=""; REPO_PATH=""; EXPERTISE=""; TASK=""; LABEL=""; DISPLAY_LABEL=""; ENDPOINT=""; AGENT="claude"
+NAME=""; REPO_PATH=""; EXPERTISE=""; TASK=""; LABEL=""; DISPLAY_LABEL=""; ENDPOINT=""; AGENT="claude"; ACCOUNT=""
 WSID=""   # the row workspace.create answered with; comm-spawn never destroys it (see below)
 NAME_FLAG=""; POSITIONAL=()
 while [ $# -gt 0 ]; do
@@ -90,6 +100,8 @@ while [ $# -gt 0 ]; do
         --task)          TASK="$2"; shift 2 ;;
         --agent)         AGENT="$2"; shift 2 ;;
         --agent=*)       AGENT="${1#--agent=}"; shift ;;
+        --account)       ACCOUNT="$2"; shift 2 ;;
+        --account=*)     ACCOUNT="${1#--account=}"; shift ;;
         --label)         LABEL="$2"; shift 2 ;;
         --display-label) DISPLAY_LABEL="$2"; shift 2 ;;
         --endpoint)      ENDPOINT="$2"; shift 2 ;;
@@ -421,8 +433,11 @@ SPAWN_PATH_FILE="$(sot_jq_rawfile "$REPO_PATH")" || exit 1
 # agent: explicit kind (ADR 0031) — the daemon's capsule launcher picks ccb/ccx
 # by it; autostart_claude stays true as the legacy fallback an older daemon
 # derives the kind from.
-REQ="$(jq -nc --rawfile l "$SPAWN_LABEL_FILE" --rawfile p "$SPAWN_PATH_FILE" --arg an "$NAME" --arg ag "$AGENT" \
-    '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:$p,autostart_claude:true,agent:$ag,agent_name:$an,task:"",boot:true}}')"
+# account: accounts brief (v0.6.0) — "" (omitted --account) means the
+# agent's own default; jq only sends the key when non-empty, matching
+# `WorkspaceCreateReq.account`'s own "absent or empty = default" contract.
+REQ="$(jq -nc --rawfile l "$SPAWN_LABEL_FILE" --rawfile p "$SPAWN_PATH_FILE" --arg an "$NAME" --arg ag "$AGENT" --arg acc "$ACCOUNT" \
+    '{v:1,id:1,kind:"req",op:"workspace.create",payload:({label:$l,project_root:$p,autostart_claude:true,agent:$ag,agent_name:$an,task:"",boot:true} + (if $acc == "" then {} else {account:$acc} end))}')"
 rm -f "$SPAWN_LABEL_FILE" "$SPAWN_PATH_FILE"
 RESP="$(sot_send "$REQ" workspace.create || true)"
 CREATE_ERR="$(printf '%s' "$RESP" | jq -r '.payload.error // empty' 2>/dev/null || true)"
