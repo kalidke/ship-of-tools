@@ -346,19 +346,39 @@ pub fn relay_endpoint(topo: &Topology, self_host: &str) -> Result<String, String
 pub fn plan(topo: &Topology, self_host: &str) -> Result<String, String> {
     let relay = relay_endpoint(topo, self_host)?;
     let mut out = format!("self {self_host}\nhub {}\nrelay-endpoint {relay}\n", topo.hub);
-    let dialable = || topo.hosts.iter().filter(|h| h.daemon && !h.frontend);
-    for h in dialable() {
-        let port = topo.local_port(&h.name).expect("listed host has a port");
-        if h.name == self_host {
-            out.push_str(&format!("dial {} {}\n", h.name, local_endpoint("sot")));
-        } else {
-            out.push_str(&format!("dial {} tcp:127.0.0.1:{port}\n", h.name));
-        }
+    for (name, endpoint) in dial_endpoints(topo, self_host) {
+        out.push_str(&format!("dial {name} {endpoint}\n"));
     }
-    for h in dialable().filter(|h| h.name != self_host) {
+    for h in dialable_hosts(topo).filter(|h| h.name != self_host) {
         out.push_str(&format!("tunnel {} {}\n", h.name, topo.local_port(&h.name).expect("listed")));
     }
     Ok(out)
+}
+
+/// Every "dialable" host — `daemon && !frontend` (D8: a `frontend` box's
+/// daemon is never dialled from elsewhere) — in file order.
+pub fn dialable_hosts(topo: &Topology) -> impl Iterator<Item = &HostDecl> {
+    topo.hosts.iter().filter(|h| h.daemon && !h.frontend)
+}
+
+/// `(host, endpoint)` for every [`dialable_hosts`] entry, resolved for
+/// `self_host`: its own local socket for itself, `tcp:127.0.0.1:<ordinal
+/// port>` for every other one. This is `plan`'s own `dial` line
+/// resolution, factored out so a caller that wants it as DATA — `sotd
+/// status` (topology plan §E), which actually dials each entry rather than
+/// printing it — shares the identical mapping instead of re-deriving it or
+/// re-parsing `plan`'s text.
+pub fn dial_endpoints(topo: &Topology, self_host: &str) -> Vec<(String, String)> {
+    dialable_hosts(topo)
+        .map(|h| {
+            let endpoint = if h.name == self_host {
+                local_endpoint("sot")
+            } else {
+                format!("tcp:127.0.0.1:{}", topo.local_port(&h.name).expect("listed host has a port"))
+            };
+            (h.name.clone(), endpoint)
+        })
+        .collect()
 }
 
 /// FNV-1a 64-bit hash of the file's exact bytes, lowercase zero-padded
@@ -498,19 +518,30 @@ pub fn apply(topo: &Topology, edit: &TopologyEdit) -> Result<Topology, String> {
     Ok(t)
 }
 
+/// The DECLARED word list for one listed host: `hub`/`daemon`/`frontend`
+/// (any subset, `shell` when none apply), plus `sampled` when it's also a
+/// `[monitor]` target (by label or resolved target — [`Topology::
+/// monitor_targets`]). Exactly the words `status_table` prints per host,
+/// factored out so `sotd status` (topology plan §E's DECLARED column)
+/// prints the identical words instead of re-deriving them.
+pub fn declared_words(topo: &Topology, host: &HostDecl) -> Vec<&'static str> {
+    let mut words = Vec::new();
+    if host.name == topo.hub { words.push("hub") }
+    if host.daemon { words.push("daemon") }
+    if host.frontend { words.push("frontend") }
+    if words.is_empty() { words.push("shell") }
+    if topo.monitor_targets().iter().any(|(l, t)| *l == host.name || *t == host.name) {
+        words.push("sampled")
+    }
+    words
+}
+
 /// `sotd topology status` — the declared table only; live columns come
 /// from `version.query` on each daemon.
 pub fn status_table(topo: &Topology) -> String {
-    let sampled: Vec<&str> = topo.monitor.iter().flat_map(|(l, t)| [l.as_str(), t.as_str()]).collect();
     let mut out = String::from("HOST DECLARED\n");
     for h in &topo.hosts {
-        let mut words = Vec::new();
-        if h.name == topo.hub { words.push("hub") }
-        if h.daemon { words.push("daemon") }
-        if h.frontend { words.push("frontend") }
-        if words.is_empty() { words.push("shell") }
-        if sampled.contains(&h.name.as_str()) { words.push("sampled") }
-        out.push_str(&format!("{} {}\n", h.name, words.join(",")));
+        out.push_str(&format!("{} {}\n", h.name, declared_words(topo, h).join(",")));
     }
     for (label, target) in topo.monitor_targets() {
         if topo.host(&label).is_none() && topo.host(&target).is_none() {

@@ -1,6 +1,6 @@
 ---
 name: sot-comm
-description: Session-to-session messaging for Ship of Tools (cross-session, cross-machine). Use for sending/broadcasting, joining/leaving, checking inbox, listing sessions, spawning/despawning agents, driving the frontend, and answering "what FE am I on" / which frontend / its build (run `sot-fe version`). Activates on receiving "[name:repo] ...".
+description: Session-to-session messaging for Ship of Tools (cross-session, cross-machine). Use for sending/broadcasting, joining/leaving, checking inbox, listing sessions, spawning/despawning agents, driving the frontend, and answering "what FE am I on" / which frontend / its build for THIS box's daemon (run `sot-fe version`; for the whole system use `sotd status` — see the `sot-status` skill). Activates on receiving "[name:repo] ...".
 ---
 
 # sot-comm
@@ -139,7 +139,9 @@ spawning: `references/spawning.md`.
 
 ## Which frontend am I on
 
-One command, authoritative, no log reading:
+For the WHOLE system (every host, every daemon, every row, every attached
+client) use `sotd status` instead — see the `sot-status` skill. For THIS
+box's own daemon only, one command, authoritative, no log reading:
 
 ```bash
 ~/.sot-comm/bin/sot-fe version

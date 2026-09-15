@@ -35,6 +35,7 @@ mod server;
 mod session;
 mod session_state;
 mod site_serve;
+mod status_cli;
 mod topology_cli;
 mod topology_dial;
 mod topology_set;
@@ -217,6 +218,15 @@ async fn main() -> Result<()> {
                 let args: Vec<String> = std::env::args().skip(2).collect();
                 std::process::exit(topology_cli::run(&args));
             }
+            // `sotd status` (topology plan §E): declared + LIVE, fanned out
+            // to every reachable daemon concurrently — unlike `topology`
+            // above this needs the runtime we're already inside (`sotd` is
+            // `#[tokio::main]`), so it's awaited here rather than called as
+            // a plain synchronous query.
+            "status" => {
+                let args: Vec<String> = std::env::args().skip(2).collect();
+                std::process::exit(status_cli::run(&args).await);
+            }
             "--version" | "-V" => {
                 println!("{}", sot_protocol::version_line("sotd"));
                 return Ok(());
@@ -253,7 +263,10 @@ Pure queries (no startup side effects, answered before any of the above):
                           "claude" has a recipe today
   topology <plan|status|relay-endpoint|sync|apply>
                           what this box derives from hosts.toml
-                          (`sotd topology` alone prints the details)"#
+                          (`sotd topology` alone prints the details)
+  status [--json]        declared + LIVE: fans out to every reachable
+                          daemon (topology plan §E; `sotd topology status`
+                          stays the offline, declared-only view)"#
                 );
                 return Ok(());
             }
