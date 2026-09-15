@@ -4672,9 +4672,10 @@ async fn end_default_row_run(
         return;
     }
     let reg_agent = agent_name.to_string();
+    let reg_ws = workspace_id.to_string();
     let reg_host = crate::workspaces::state_host();
     let comm_removed = tokio::task::spawn_blocking(move || {
-        remove_comm_agents_for_workspace(&reg_agent, &reg_host)
+        remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
     })
     .await
     .unwrap_or_default();
@@ -5066,19 +5067,20 @@ pub async fn handle_workspace_destroy(
         }
     };
 
-    // Prune the sot-comm registry. Killing the tmux session takes the agent
+    // Prune the sot-comm registry. Ending the capsule run takes the agent
     // down before it can run its own comm-leave, so the killer must deregister
     // it — otherwise its row lingers as a ghost in `workspace.list`, which
-    // merges the registry (see `resolve_handle`). Mirror that resolver's
-    // matching so we drop exactly the rows this workspace owned: by stored
-    // `agent_name`, and by tmux session-part (covers manually-joined agents
-    // whose `ws.agent_name` was never set, plus any stale duplicate rows on the
-    // same session). Best-effort + blocking (fs + file lock) → spawn_blocking,
-    // non-fatal like the tmux kill above.
+    // merges the registry (see `resolve_handle`). Drop exactly the rows this
+    // workspace owned: by stored `agent_name`, and by the row's own
+    // `workspace_id` (covers a manually-joined handle, e.g. `comm-join.sh
+    // --name other`, whose `ws.agent_name` was never set). Best-effort +
+    // blocking (fs + file lock) → spawn_blocking, non-fatal like the row
+    // teardown above.
     let reg_agent = agent_name.clone();
+    let reg_ws = workspace_id.clone();
     let reg_host = crate::workspaces::state_host();
     let comm_removed = tokio::task::spawn_blocking(move || {
-        remove_comm_agents_for_workspace(&reg_agent, &reg_host)
+        remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
     })
     .await
     .unwrap_or_default();
@@ -6223,7 +6225,10 @@ const CLEAR_COMM_UNREAD_LOCK_BOUND: std::time::Duration = std::time::Duration::f
 /// or (fallback for not-yet-joined `spawning` rows) when its handle equals the
 /// stored `agent_name` AND `host_matches` too (LU5d2: the stored name is
 /// caller-supplied, not proof of ownership — a same-named row stamped by
-/// another host must survive). ALL matching rows are dropped, including stale
+/// another host must survive), or when its own `workspace_id` field equals
+/// this workspace's id AND `host_matches` (covers a manually-joined handle,
+/// e.g. `comm-join.sh --name other`, whose `agent_name` was never set to
+/// this workspace's). ALL matching rows are dropped, including stale
 /// duplicates on the same session.
 ///
 /// Fully best-effort: a missing registry, malformed JSON, a lock that can't be
@@ -6233,8 +6238,8 @@ const CLEAR_COMM_UNREAD_LOCK_BOUND: std::time::Duration = std::time::Duration::f
 /// the registry couldn't be pruned. Writes via a temp file + atomic rename so
 /// a concurrent bash mutator (comm-join / comm-status / …) can't see a torn
 /// file.
-fn remove_comm_agents_for_workspace(agent_name: &str, host: &str) -> Vec<String> {
-    remove_comm_agents_for_workspace_bounded(agent_name, host, COMM_PRUNE_LOCK_BOUND)
+fn remove_comm_agents_for_workspace(agent_name: &str, workspace_id: &str, host: &str) -> Vec<String> {
+    remove_comm_agents_for_workspace_bounded(agent_name, workspace_id, host, COMM_PRUNE_LOCK_BOUND)
 }
 
 /// `remove_comm_agents_for_workspace` with an explicit lock bound — split out
@@ -6244,6 +6249,7 @@ fn remove_comm_agents_for_workspace(agent_name: &str, host: &str) -> Vec<String>
 /// only ever calls the wrapper above.
 fn remove_comm_agents_for_workspace_bounded(
     agent_name: &str,
+    workspace_id: &str,
     host: &str,
     bound: std::time::Duration,
 ) -> Vec<String> {
@@ -6271,7 +6277,10 @@ fn remove_comm_agents_for_workspace_bounded(
             .filter_map(|(handle, entry)| {
                 let by_name =
                     !agent_name.is_empty() && handle == agent_name && host_matches(entry, host);
-                by_name.then(|| handle.clone())
+                let by_workspace = !workspace_id.is_empty()
+                    && entry.get("workspace_id").and_then(|v| v.as_str()) == Some(workspace_id)
+                    && host_matches(entry, host);
+                (by_name || by_workspace).then(|| handle.clone())
             })
             .collect();
         if to_remove.is_empty() {
@@ -7629,7 +7638,7 @@ mod remove_comm_agents_for_workspace_host_tests {
 
         // No live tmux row for this session, so only the `by_name` term is in
         // play; the stored handle matches, but the row's host does not.
-        let removed = remove_comm_agents_for_workspace("same-name", "kitt");
+        let removed = remove_comm_agents_for_workspace("same-name", "", "kitt");
         assert!(removed.is_empty());
 
         let after: serde_json::Value =
@@ -7640,6 +7649,56 @@ mod remove_comm_agents_for_workspace_host_tests {
             .as_object()
             .unwrap()
             .contains_key("same-name"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn by_workspace_id_prunes_a_manually_joined_handle() {
+        // A handle joined by `comm-join.sh --name other` never sets
+        // `ws.agent_name`, so `by_name` alone never matches its row — but
+        // its row carries the workspace's own `workspace_id`, so the
+        // second match term must prune it when that workspace is destroyed.
+        let _guard = guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-comm-registry-by-workspace-id-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOT_COMM_HOME", &dir);
+        let registry_path = dir.join("registry.json");
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "agents": {
+                    "manually-joined": {"tmux": "", "host": "hostA", "workspace_id": "ws-1"},
+                    "other-workspace": {"tmux": "", "host": "hostA", "workspace_id": "ws-2"},
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // The driving agent's own handle differs from the manually-joined
+        // one, so only the `by_workspace` term can catch it.
+        let removed = remove_comm_agents_for_workspace("driver", "ws-1", "hostA");
+        assert_eq!(removed, vec!["manually-joined".to_string()]);
+
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let agents = after.get("agents").unwrap().as_object().unwrap();
+        assert!(
+            !agents.contains_key("manually-joined"),
+            "the manually-joined handle should have been pruned by workspace_id"
+        );
+        assert!(
+            agents.contains_key("other-workspace"),
+            "a row for a different workspace_id must survive"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -7682,7 +7741,7 @@ mod remove_comm_agents_for_workspace_host_tests {
 
         let bound = std::time::Duration::from_millis(150);
         let start = std::time::Instant::now();
-        let removed = remove_comm_agents_for_workspace_bounded("", "kitt", bound);
+        let removed = remove_comm_agents_for_workspace_bounded("", "", "kitt", bound);
         let elapsed = start.elapsed();
 
         assert!(removed.is_empty(), "a contended lock must prune nothing");
