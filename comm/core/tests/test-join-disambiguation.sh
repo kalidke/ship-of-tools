@@ -81,11 +81,14 @@ ensure_home
 # case_lock_closes_derive_write_gap below to simulate a concurrent claim
 # landing WHILE a derived join is blocked waiting for the lock.
 LOCKDIR="$SOT_COMM_HOME/.registry.lock"
-# Isolated tmux server for comm-spawn.sh's --no-workspace path
+# Isolated tmux server for comm-spawn.sh's path
 # (case_spawn_fresh_only_refusal) — exported globally so every comm-spawn.sh
 # invocation in this file picks it up; comm-join.sh never touches tmux, so
 # this is a harmless no-op for every other case.
 export SOT_TMUX_SOCK="$WORK/tmux.sock"
+# comm-spawn.sh always goes through the daemon now: pin a dead endpoint so
+# no case in this suite can ever reach a real sotd.
+export SOT_SPAWN_ENDPOINT="unix:$WORK/no-daemon.sock"
 trap 'tmux -S "$SOT_TMUX_SOCK" kill-server >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
 
 # Pinned, hermetic HOST — see the file header. Deliberately short and
@@ -189,13 +192,13 @@ join_in() {
     JOIN_ERR="$(cat "$errfile" 2>/dev/null || true)"
 }
 
-# spawn_in ROOT [ARGS...] — run comm-spawn.sh in --no-workspace mode (no
+# spawn_in ROOT [ARGS...] — run comm-spawn.sh in mode (no
 # daemon needed) against ROOT. Sets SPAWN_OUT / SPAWN_ERR / SPAWN_RC.
 SPAWN_OUT=""; SPAWN_ERR=""; SPAWN_RC=0
 spawn_in() {
     local root="$1"; shift
     local errfile="$WORK/spawn-stderr.tmp"
-    SPAWN_OUT="$("$SPAWN" "$root" --no-workspace "$@" 2>"$errfile")"
+    SPAWN_OUT="$("$SPAWN" "$root" "$@" 2>"$errfile")"
     SPAWN_RC=$?
     SPAWN_ERR="$(cat "$errfile" 2>/dev/null || true)"
 }
@@ -1288,7 +1291,7 @@ case_spawn_refuses_task_when_spawner_has_no_identity() {
 
     errfile="$WORK/spawn-no-identity-task.err"
     out="$(SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
-        "$SPAWN" "$root" --no-workspace --task "do the thing" 2>"$errfile")"
+        "$SPAWN" "$root" --task "do the thing" 2>"$errfile")"
     rc=$?
     err="$(cat "$errfile" 2>/dev/null || true)"
     [ "$rc" -ne 0 ] || { echo "  comm-spawn.sh --task succeeded with no spawner identity: $out"; return 1; }
@@ -1300,10 +1303,13 @@ case_spawn_refuses_task_when_spawner_has_no_identity() {
     next_self_file; self="$NEXT_SELF_FILE"
     errfile="$WORK/spawn-no-identity-notask.err"
     out="$(SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
-        "$SPAWN" "$root" --no-workspace 2>"$errfile")"
+        "$SPAWN" "$root" 2>"$errfile")"
     rc=$?
     err="$(cat "$errfile" 2>/dev/null || true)"
-    [ "$rc" -eq 0 ] || { echo "  comm-spawn.sh with no --task and no spawner identity unexpectedly failed: rc=$rc, stderr: $err"; return 1; }
+    # No daemon in this suite (dead SOT_SPAWN_ENDPOINT): a no-task spawn passes
+    # the identity gate and fails only later, at the daemon step.
+    contains "$err" "identity did not resolve" && { echo "  no-task spawn was refused on identity: $err"; return 1; }
+    [ "$rc" -ne 0 ] || { echo "  no-task spawn succeeded with no daemon: $out"; return 1; }
     return 0
 }
 
@@ -1327,7 +1333,7 @@ case_spawn_task_refuses_when_spawner_has_no_registry_row() {
 
     errfile="$WORK/spawn-task-no-row.err"
     out="$(cd "$root" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
-        "$SPAWN" "$childroot" --no-workspace --task "do the thing" 2>"$errfile")"
+        "$SPAWN" "$childroot" --task "do the thing" 2>"$errfile")"
     rc=$?
     err="$(cat "$errfile" 2>/dev/null || true)"
     [ "$rc" -ne 0 ] || { echo "  comm-spawn.sh --task succeeded despite a deleted spawner registry row: $out"; return 1; }
