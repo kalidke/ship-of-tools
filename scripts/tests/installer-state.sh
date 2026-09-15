@@ -168,6 +168,37 @@ check "no ExecStart line yields empty" \
     "" "$(printf '%s\n' "$no_execstart" | installer_unit_owner_path)"
 
 # ---------------------------------------------------------------------------
+case_start "retiring the tmux keeper unit on upgrade"
+# v0.6.0 deleted the tmux runtime; an upgrade must remove the old
+# sot-tmux.service unit (ADR 0038, superseded) instead of leaving it behind.
+
+sysdir="$WORK/systemd-user"
+mkdir -p "$sysdir"
+: > "$sysdir/sot-tmux.service"
+
+stubbin="$WORK/stubbin"
+mkdir -p "$stubbin"
+systemctl_log="$WORK/systemctl.log"
+: > "$systemctl_log"
+cat > "$stubbin/systemctl" <<STUBEOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$systemctl_log"
+STUBEOF
+chmod +x "$stubbin/systemctl"
+
+PATH="$stubbin:$PATH" installer_retire_tmux_unit "$sysdir"
+
+check "the unit file is removed" \
+    "0" "$([ -f "$sysdir/sot-tmux.service" ] && echo 1 || echo 0)"
+check "systemctl was called to disable --now the unit" \
+    "--user disable --now sot-tmux.service" "$(cat "$systemctl_log")"
+
+# No unit present → no-op, no systemctl call.
+: > "$systemctl_log"
+installer_retire_tmux_unit "$WORK/no-such-dir"
+check "a missing unit is a no-op" "" "$(cat "$systemctl_log")"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'

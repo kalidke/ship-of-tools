@@ -96,14 +96,18 @@ ownership check compares them.
 
 ## Survival
 
-Every new session, on every host, runs as a capsule row by default (ADR 0042) —
-tmux only when explicitly requested, and existing tmux rows keep running until
-they end. On Linux, a capsule supervisor runs in its own transient user scope
+Every session, on every host, runs as a capsule row (ADR 0042). On Linux, a
+capsule supervisor runs in its own transient user scope
 (`systemctl --user list-units --type=scope` lists it, not under `sotd`'s
 own unit) and survives a daemon restart. On a host with no
 reachable `systemd --user` manager it runs `--survival degraded` instead
 (a warn line in `sotd.log` names why) and shares the daemon's own kill
 domain there.
+
+After upgrading to the release that removed the keeper, rerun
+`/sot-be-session-start` once in each open session so its relay bridge
+restarts as a child of the session (the old bridges lived in the removed
+tmux server).
 
 ## Windows: never launch the daemon from an agent's shell
 

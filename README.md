@@ -41,7 +41,7 @@ layout is designed, not configured.
 - **Copy to the LLM** — send paths, images, and image crop/zooms straight to the agent.
 - **Remote-first** — backend on a remote server, frontend on your machine.
 - **Multiple frontends, one backend** — connect laptop and desktop to the same backend at once.
-- **Sessions persist** — the backend runs in tmux; close the lid and reopen without losing state.
+- **Sessions persist** — each capsule row runs under the daemon's own supervisor in its own scope; close the lid and reopen without losing state.
 - **Keyboard-driven** — navigate, switch panes and modes, and act entirely from the keyboard.
 - **Remappable keybindings** — remap the configurable action chords per-repo (`.sot/keybindings.toml`) or per-user; unlisted actions fall through to the defaults.
 - **Full-screen any pane.**
@@ -101,8 +101,7 @@ bash scripts/install.sh --be-only             # headless backend only
 bash scripts/install.sh --be-only --no-service # shared-home deployment; skip systemd user unit
 ```
 
-Requirements: **git**, **curl**, **tar**; **tmux** on any host that runs the
-backend (fatal if absent); Linux frontend roles need glibc ≥ 2.35, while
+Requirements: **git**, **curl**, **tar**; Linux frontend roles need glibc ≥ 2.35, while
 `--be-only` skips the frontend floor because the backend binary is static.
 Remote layouts require key-based SSH to the backend host. `--version vX.Y.Z`
 pins a specific release and `--prefix <dir>` relocates the install. Changing

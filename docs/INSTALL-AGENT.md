@@ -48,32 +48,14 @@ case "$(uname -s)" in
 esac
 command -v git curl tar   # all required; jq required if gh is absent
 command -v node npm       # OPTIONAL — math rendering in markdown previews
-command -v tmux && tmux -V # REQUIRED on any host that RUNS the backend (local / be-only)
 ```
 
 - **node/npm absent** → not a blocker: the installer skips the MathJax
   sidecar deps with a warning and math in markdown previews shows raw LaTeX.
   Tell the human; if they want math, install node and re-run (or run
   `npm ci` in `<checkout>/rust/backend/sidecars/mathjax`).
-- **tmux** → a **conditional backend dependency** (ADR 0046 decision 5): on a
-  host where the capsule runtime compiles (Linux, Windows) a **fresh**
-  `--local`/`--be-only` install needs no tmux at all — the installer only
-  requires it there when an existing row on this host is still on the `tmux`
-  runtime, and unconditionally on a host with no capsule runtime at all
-  (macOS, for now). A **frontend-only** `--backend <alias>` host never needs
-  it (its daemon is remote). **Required and absent → fatal** (the installer
-  stops with a clear message); not required → the installer says so and
-  moves on.
-  **tmux < 3.2 → graceful degrade, not an error**: `new-session -e` (used to
-  stamp the pane's `SOT_*` awareness env) is a 3.2 flag, and on older tmux (e.g.
-  3.0a on Ubuntu 20.04) it was rejected at arg-parse — which historically drove a
-  respawn storm that forked ~339k zombie tmux clients (a shared Ubuntu 20.04 host, 2026-07-11).
-  The daemon now **version-gates** the flag: on tmux < 3.2 it omits `-e` and falls
-  back to a best-effort `set-environment`. Agent panes still get the `SOT_*`
-  vars (the boot wrapper re-reads the session env before launching the agent);
-  plain shell panes are best-effort and consumers fall back to the session
-  name. For uniform awareness, put a **tmux ≥ 3.2** earlier on the daemon's
-  `PATH` (e.g. a user-local build in `~/.local/bin`).
+- tmux is not used since v0.6.0; an upgrade removes the old sot-tmux.service
+  unit by itself.
 - **Linux x86_64, glibc ≥ 2.35** → full install works.
 - **Linux, older glibc** → only `--be-only` (the backend is static musl);
   the frontend must run on another machine.
@@ -407,8 +389,6 @@ top line of the nav pane always shows the pane-switch keys.**
 | dirty-checkout refusal on upgrade | the human edited `repo/current` → `git -C ... stash` (or commit), re-run |
 | local port 18743 already bound | another tunnel owns it → `--port <n>` |
 | backend socket missing | old TCP-based service unit or failed daemon start → reinstall/restart the socket-based `sotd.service` |
-| `tmux is required` at install | backend host has no tmux → install it (`apt install tmux`, or a user-local tmux ≥ 3.2 in `~/.local/bin`) and re-run |
-| LLM pane never appears / `sotd.log` spams `pty EOF — respawning tmux` then `cooling down` | tmux < 3.2 on the backend (the daemon degrades gracefully now — no more storm — but check the log's `tmux capability probe` line; put tmux ≥ 3.2 earlier on the daemon's PATH for full awareness) |
 | Julia instantiate fails "project and manifest are out of sync" (often naming a stdlib, e.g. `Sockets`) | stale `Manifest.toml` from a previous install left in the checkout's env dirs → re-run the installer (it drops stale manifests since 2026-08-11); manual fix: `rm ~/.local/share/sot/repo/current/julia/{kernel,repl,pluto}/Manifest.toml` and re-run |
 | Julia instantiate slow on first run | normal (precompilation); minutes, once |
 

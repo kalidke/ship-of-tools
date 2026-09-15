@@ -199,6 +199,15 @@ installer_role_flag() {  # role -> the flag that asks for it, for messages
     esac
 }
 
+installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
+    # runtime: retire the keeper unit earlier installs enabled (ADR 0038,
+    # superseded). No-op if the unit was never installed.
+    unit="$1/sot-tmux.service"
+    [ -f "$unit" ] || return 0
+    systemctl --user disable --now sot-tmux.service 2>/dev/null || true
+    rm -f "$unit"
+}
+
 # scripts/tests/hosts-toml-role.sh and scripts/tests/installer-state.sh both
 # source this file to exercise the functions above in isolation. Nothing else sets this,
 # `curl | bash` included.
@@ -615,12 +624,7 @@ if [ "$OS" = Darwin ] && [ "$ROLE" != remote ]; then
 fi
 if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
     mkdir -p "$HOME/.config/systemd/user"
-    # v0.6.0 deleted the tmux runtime: retire the keeper unit earlier
-    # installs enabled (ADR 0038, superseded).
-    if [ -f "$HOME/.config/systemd/user/sot-tmux.service" ]; then
-        systemctl --user disable --now sot-tmux.service 2>/dev/null || true
-        rm -f "$HOME/.config/systemd/user/sot-tmux.service"
-    fi
+    installer_retire_tmux_unit "$HOME/.config/systemd/user"
     sed -e "s|@SOT_BIN@|$PREFIX/bin/sotd|" \
         -e "s|@SOT_APPLY@|$PREFIX/bin/sot-apply|" \
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
