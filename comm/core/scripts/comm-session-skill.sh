@@ -5,48 +5,19 @@
 #
 # Why (2026-07-25, Keith): the lifecycle hooks that tell a context-wiped session
 # to re-bootstrap used to list all three skills and let the model pick. It picks
-# WRONG — observed this session: a `/clear`ed BACKEND session on the Linux box
-# was pointed at `/sot-fe-session-start`, whose steps (win-fe handle, tcp tunnel
-# to a local forward port, `fe-inbox.jsonl` Monitor) describe a machine it isn't
-# on. Nothing in the FE skill's own steps fails loudly there, so the wrong-skill
-# run can leave a session believing it bootstrapped when it didn't. Deciding in
-# shell — where the handle, platform, workspace row, and repo are all knowable —
+# WRONG — deciding in shell, where the workspace row and repo are knowable,
 # removes the guess.
 #
-# Detection, most-specific first (each rule notes the failure it exists to stop):
+# A session's identity is its row's handle everywhere, including on a Windows
+# box (a frontend is a client, addressed by its own label for directed
+# frontend commands, never a comm peer — retired 2026-09-14; see
+# docs/adr/0042-first-class-local-sessions.md). So detection is just:
 #
-#   0. `$SOT_SESSION_ROLE` (fe|be|generic) — explicit override for a topology the
+#   0. `$SOT_SESSION_ROLE` (be|generic) — explicit override for a topology the
 #      heuristics don't cover. Nothing below can contradict it.
-#   1. handle starts with `win-fe` -> FRONTEND. The FE's own Rust
-#      `self_comm_handle()` (gpu.rs) formats `win-fe-<lowercased host>`, and the
-#      FE skill derives the same handle in lockstep, so this prefix is definitive
-#      whenever the session has joined or exported SOT_COMM_NAME.
-#   2. no workspace row (SOT_WORKSPACE_ID unset) AND Windows AND the repo is
-#      Ship of Tools -> FRONTEND. A capsule row on the FE box is a first-class
-#      local session, never the driver. Covers the
-#      COLD FE — `fe-inbox.jsonl` is created LAZILY, by the first `agent.message`
-#      the FE receives (gpu.rs::append_agent_message opens it with `create(true)`
-#      on append), so a freshly-installed frontend that has never been messaged
-#      has NO inbox file. Without this rule that FE fell through to the repo
-#      test and was told to run the BACKEND bootstrap — the exact misroute this
-#      script exists to prevent. Scoped to the SoT repo so a plain Windows
-#      session in some unrelated checkout stays generic.
-#   3. the repo is Ship of Tools -> `/sot-be-session-start`, the sot-flavored
+#   1. the repo is Ship of Tools -> `/sot-be-session-start`, the sot-flavored
 #      backend superset.
-#   4. anything else -> `/sot-session-start`, the project-agnostic bootstrap.
-#
-# There is deliberately NO "an `fe-inbox.jsonl` exists" rule (removed
-# 2026-09-14). The file is a leftover, not a liveness signal: the frontend
-# creates it, drains and truncates it, and never removes it at exit, and it
-# writes no pid/lock file either — nothing under the state dir is true only
-# while a frontend runs. With that rule, one Linux frontend launch left an
-# empty inbox behind and every later session on the box (daemon-
-# spawned capsule rows, plain shell sessions) was classified as the frontend
-# driver, derived the `win-fe-<host>` handle, and stole the frontend's
-# messages. The driver on a non-Windows box is PINNED to `win-fe-<host>` by
-# its launcher (ADR 0042 §2, `agent_name` -> `SOT_COMM_NAME`), which rule 1
-# catches; a cold Windows frontend is rule 2. Nothing else on a box is the
-# frontend.
+#   2. anything else -> `/sot-session-start`, the project-agnostic bootstrap.
 #
 # Source of truth: comm/core/scripts/comm-session-skill.sh in Ship of Tools,
 # deployed to ~/.sot-comm/bin by ShipTools.update_comm().
@@ -54,16 +25,8 @@ set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-FE_SKILL="/sot-fe-session-start"
 BE_SKILL="/sot-be-session-start"
 GENERIC_SKILL="/sot-session-start"
-
-_is_windows() {
-    case "${OS:-}" in Windows_NT) return 0 ;; esac
-    case "${OSTYPE:-}" in msys*|cygwin*|win32) return 0 ;; esac
-    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
-    return 1
-}
 
 # The session's project directory. `$CLAUDE_PROJECT_DIR` is exported by Claude
 # Code for hook processes and names the SESSION's project regardless of the
@@ -147,8 +110,7 @@ if [ "${1:-}" = "--selftest" ]; then
     fi
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
-    mkdir -p "$tmp/empty-state" "$tmp/fe-state/sot" "$tmp/renamed" "$tmp/decoy"
-    : > "$tmp/fe-state/sot/fe-inbox.jsonl"
+    mkdir -p "$tmp/empty-state" "$tmp/renamed" "$tmp/decoy"
     git -C "$tmp/renamed" init -q 2>/dev/null
     git -C "$tmp/renamed" remote add origin https://example.invalid/any-owner/ship-of-tools.git 2>/dev/null
     git -C "$tmp/decoy" init -q 2>/dev/null
@@ -173,19 +135,12 @@ if [ "${1:-}" = "--selftest" ]; then
     fi
     _case "BE: clone in renamed dir (remote identity)" "$BE_SKILL" \
           "$(CLAUDE_PROJECT_DIR="$tmp/renamed" "$self")"
-    _case "BE: capsule row on a Windows box that runs an FE" "$BE_SKILL" \
-          "$(cd "$sot" && SOT_WORKSPACE_ID=ws-row-1 OS=Windows_NT XDG_STATE_HOME="$tmp/fe-state" "$self")"
-    # A leftover inbox is NOT a frontend: a Linux box that once ran an FE
-    # keeps an empty fe-inbox.jsonl forever, and a plain session there (a
-    # capsule row, a shell claude) must stay backend.
-    _case "BE: leftover fe-inbox, no row, non-Windows (REGRESSION)" "$BE_SKILL" \
-          "$(cd "$sot" && env -u SOT_WORKSPACE_ID -u OS -u OSTYPE XDG_STATE_HOME="$tmp/fe-state" "$self")"
-    _case "FE: joined win-fe handle" "$FE_SKILL" "$(SOT_COMM_NAME=win-fe-devbox "$self")"
-    # The live non-Windows frontend driver: its launcher pins the handle
-    # (ADR 0042 §2) — that pin, not the inbox file, is what makes it the FE.
-    _case "FE: pinned driver on a non-Windows box" "$FE_SKILL" \
-          "$(cd "$sot" && env -u SOT_WORKSPACE_ID -u OS -u OSTYPE XDG_STATE_HOME="$tmp/fe-state" SOT_COMM_NAME=win-fe-devbox "$self")"
-    _case "FE: COLD windows FE, no inbox yet (REGRESSION)" "$FE_SKILL" \
+    _case "BE: capsule row on a Windows box (REGRESSION)" "$BE_SKILL" \
+          "$(cd "$sot" && SOT_WORKSPACE_ID=ws-row-1 OS=Windows_NT XDG_STATE_HOME="$tmp/empty-state" "$self")"
+    # A Windows session in a capsule row is just a session, row or no row —
+    # there is no more frontend-driver role to fall into (retired
+    # 2026-09-14: a frontend is a client, never a comm peer).
+    _case "BE: Windows, no row (REGRESSION)" "$BE_SKILL" \
           "$(cd "$sot" && env -u SOT_WORKSPACE_ID OS=Windows_NT XDG_STATE_HOME="$tmp/empty-state" "$self")"
     _case "generic: windows, no row, NON-SoT repo" "$GENERIC_SKILL" \
           "$(cd "$tmp/decoy" && env -u SOT_WORKSPACE_ID OS=Windows_NT XDG_STATE_HOME="$tmp/empty-state" "$self")"
@@ -194,8 +149,6 @@ if [ "${1:-}" = "--selftest" ]; then
           "$(CLAUDE_PROJECT_DIR="$tmp/decoy" "$self")"
     _case "override: SOT_SESSION_ROLE=generic in SoT" "$GENERIC_SKILL" \
           "$(cd "$sot" && SOT_SESSION_ROLE=generic "$self")"
-    _case "override: SOT_SESSION_ROLE=fe in SoT" "$FE_SKILL" \
-          "$(cd "$sot" && SOT_SESSION_ROLE=fe "$self")"
     echo
     echo "comm-session-skill selftest: passed=$_p failed=$_f"
     [ "$_f" -eq 0 ] || exit 1
@@ -204,37 +157,13 @@ fi
 
 # --- 0. explicit override ----------------------------------------------------
 case "${SOT_SESSION_ROLE:-}" in
-    fe|FE)           echo "$FE_SKILL"; exit 0 ;;
     be|BE)           echo "$BE_SKILL"; exit 0 ;;
     generic|GENERIC) echo "$GENERIC_SKILL"; exit 0 ;;
 esac
 
-# comm-context.sh emits %q-quoted `KEY=value` lines — eval it, never sed-scrape
-# (a scrape can capture the literal quotes as a bogus non-empty handle). It also
-# self-invalidates a stale row-keyed identity, so NAME comes back empty rather
-# than wrong when a workspace slot was reused.
-NAME=""
-REPO=""
-if [ -x "$SELF_DIR/comm-context.sh" ]; then
-    eval "$("$SELF_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
-fi
-
-handle="${SOT_COMM_NAME:-${NAME:-}}"
-
-# --- 1. definitive frontend handle -------------------------------------------
-case "$handle" in
-    win-fe*) echo "$FE_SKILL"; exit 0 ;;
-esac
-
 repo_dir="$(_repo_dir)"
 
-# --- 2. cold frontend: Windows, no workspace row, in the SoT checkout ---------
-if [ -z "${SOT_WORKSPACE_ID:-}" ] && _is_windows && _is_sot_repo "$repo_dir"; then
-    echo "$FE_SKILL"
-    exit 0
-fi
-
-# --- 3/4. backend superset vs project-agnostic bootstrap ---------------------
+# --- 1/2. backend superset vs project-agnostic bootstrap ---------------------
 if _is_sot_repo "$repo_dir"; then
     echo "$BE_SKILL"
 else

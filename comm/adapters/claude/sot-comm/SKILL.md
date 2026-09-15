@@ -72,7 +72,10 @@ positive evidence the message was lost (peer was deaf or restarted).
 
 Durable BE peers `<repo-lowercase>-<host>`; a spawned agent on a repo
 checkout is bare `<repo-lowercase>`; a git worktree adds `-wt-<shortname>`
-(via `/worktree` — never hand-add it); FEs are `win-fe-<host>`. Full table:
+(via `/worktree` — never hand-add it). `win-fe-<host>` is the frontend
+PROCESS's own label for directed `fe.command`/`open-url` targeting, never a
+session handle — a session in the FE's own Terminal drawer is a session
+like any other, named the same way as everything above. Full table:
 `comm/PROTOCOL.md` § Naming.
 
 ## Driving the frontend (`sot-fe`)

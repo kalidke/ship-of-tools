@@ -1,9 +1,10 @@
 # show-result from a FRONTEND session
 
 Everything in `SKILL.md` assumes a booted **backend** session. A Claude
-running in the Windows FE Terminal drawer (`win-fe-<host>`, bootstrapped by
-`/sot-fe-session-start`) has neither of the things the auto-discovery relies
-on, and fails in a way that reads like a dead daemon:
+running in the Windows FE Terminal drawer is a session like any other
+(bootstrapped the same as any Ship of Tools session — `win-fe-<host>` names
+the frontend PROCESS, not this session) and has neither of the things the
+auto-discovery relies on, and fails in a way that reads like a dead daemon:
 
 ```
 ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or $SOT_FE_ENDPOINT).

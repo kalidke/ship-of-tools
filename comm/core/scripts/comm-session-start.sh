@@ -54,15 +54,13 @@ esac
 IS_WINDOWS=0
 _sot_is_windows && IS_WINDOWS=1
 
-# Windows FE-family identity is by ROLE, never merely "is this Windows"
-# (Codex review finding 7) — comm-session-skill.sh is the single source of
-# truth for "is this session the frontend driver," already used to route
-# hooks/launchers; reused here instead of re-deriving the same judgment.
+# comm-session-skill.sh is the single source of truth for "is this session
+# in a Ship of Tools checkout" (repo detection, not a role judgment — a
+# session's identity is its row's handle everywhere, Windows included; see
+# comm-join.sh).
 SKILL_NAME="$("$SCRIPT_DIR/comm-session-skill.sh" 2>/dev/null || true)"
 IS_SOT=0
-IS_FE_ROLE=0
 case "$SKILL_NAME" in
-    /sot-fe-session-start) IS_SOT=1; IS_FE_ROLE=1 ;;
     /sot-be-session-start) IS_SOT=1 ;;
 esac
 
@@ -199,11 +197,11 @@ if [ "$MODE" = "catchup" ]; then
         # Windows catch-up reads/cursors fe-inbox.jsonl directly — comm-poll.sh
         # reads the Linux per-handle inbox, the wrong file here entirely
         # (Codex review finding 7), missing every message received while
-        # this session was down. Family-label admission mirrors
-        # comm-watch.sh's own rule: only a win-fe-family handle also wakes on
-        # the bare `win-fe` broadcast label; any other handle sees only
-        # `to:<itself>`. Cursor is an append-position (a line count), not a
-        # timestamp, so it can't skip or duplicate across a race.
+        # this session was down. Admission is `to == this session's own
+        # handle` only — a session's handle is its row's handle everywhere,
+        # Windows included; there is no broadcast-label family to also admit.
+        # Cursor is an append-position (a line count), not a timestamp, so it
+        # can't skip or duplicate across a race.
         FE_INBOX="${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}/sot/fe-inbox.jsonl"
         CURSOR_DIR="${SOT_COMM_HOME:-$HOME/.sot-comm}/read"
         mkdir -p "$CURSOR_DIR" 2>/dev/null || true
@@ -214,13 +212,9 @@ if [ "$MODE" = "catchup" ]; then
         [ "$LAST" -gt "$TOTAL" ] && LAST=0
         POLL_COUNT=0
         if [ "$TOTAL" -gt "$LAST" ]; then
-            case "$H" in
-                win-fe*) fam_filter='(.to // "") == $me or (.to // "") == "win-fe"' ;;
-                *)       fam_filter='(.to // "") == $me' ;;
-            esac
             NEW="$(sed -n "$((LAST + 1)),\$p" "$FE_INBOX" 2>/dev/null | while IFS= read -r l; do
                 printf '%s' "$l" | jq -rc --arg me "$H" \
-                    "select(.from != \$me and ($fam_filter)) | \"[\\(.ts // \"?\")] [\\(.from)] \\(.text)\"" 2>/dev/null
+                    'select(.from != $me and (.to // "") == $me) | "[\(.ts // "?")] [\(.from)] \(.text)"' 2>/dev/null
             done)"
             POLL_COUNT="$(printf '%s\n' "$NEW" | grep -c '^\[' || true)"
             [ "${POLL_COUNT:-0}" -gt 0 ] 2>/dev/null && { echo "BACKLOG:"; printf '%s\n' "$NEW"; }
@@ -239,7 +233,6 @@ if [ "$MODE" = "catchup" ]; then
 
     BUS="n/a"
     if [ "$IS_SOT" = 1 ]; then
-        "$SCRIPT_DIR/comm-relay.sh" send @win-fe "[ack?] $H receive path armed" >/dev/null 2>&1 || true
         # Peek only: `bus.sh sync --count` NEVER advances the bus cursor
         # (Codex review finding 9 — the old version did, permanently hiding
         # entries this verdict line never actually showed anyone). A nonzero
@@ -317,33 +310,9 @@ if [ -n "$H" ] && _survived "$H"; then
 fi
 
 # --- deaf: cold start or --continue restart. Identity + listener only. -----
-# A genuinely fresh FE-role session (nothing pinned, no validated self-file
-# yet) derives the win-fe-<host> family handle — mirrors the Rust frontend's
-# own self_comm_handle() exactly. Set as an ENV pin, never an explicit
-# --name (Codex review finding 1): comm-join.sh's bare-join precedence
-# (--name arg > $SOT_COMM_NAME env > self-file NAME > derive) already slots
-# this correctly BELOW a validated self-file and ABOVE plain basename
-# derivation — an explicit --name would instead rank ABOVE self-file, which
-# is backwards. Manager review (round 2): this is an ADDRESS, not a
-# display value — S1 means no address change this sprint, so it stays
-# main's own `hostname -s` derivation, deliberately independent of
-# `sot_host`/`$SOT_SELF_HOST` (the declared, display-only identity). An
-# earlier draft routed this through `sot_host`, which changes existing
-# frontend addresses under an explicit override — reverted.
-# Windows only: on any other box the frontend driver is PINNED to
-# `win-fe-<host>` by its launcher (ADR 0042 §2), so an unpinned session that
-# derived it would be a second holder of the frontend's address — the
-# 2026-09-14 misroute, where three plain Linux sessions shared the slot and
-# swallowed the frontend's messages. Such a session keeps its derived
-# `<slug>-<host>` handle and says so.
-if [ -z "$PIN_NAME" ] && [ -z "${NAME:-}" ] && [ "$IS_FE_ROLE" = 1 ]; then
-    if [ "$IS_WINDOWS" = 1 ]; then
-        export SOT_COMM_NAME="win-fe-$( (hostname -s 2>/dev/null || hostname) | tr '[:upper:]' '[:lower:]' )"
-    else
-        echo "comm-session-start: FE role on a non-Windows host without a pinned handle; not deriving win-fe-<host> (the frontend driver is pinned by its launcher)" >&2
-    fi
-fi
-
+# A session's handle is its row's handle everywhere, Windows included —
+# comm-join.sh's own precedence (pin > validated self-file > derive) applies
+# unchanged; nothing here derives a family handle for it.
 JOIN_OUT="$("$SCRIPT_DIR/comm-join.sh" 2>&1)" || true
 printf '%s\n' "$JOIN_OUT"
 IDENTITY_MISMATCH=0

@@ -1,8 +1,8 @@
 ---
 name: sot-fe-session-start
-description: Alias of /sot-session-start for a Ship of Tools frontend session — the bootstrap already detects Windows and uses the FE inbox, local tunnel endpoint, and no-bridge rule. Activates for "fe session start", "frontend session start", "rearm fe comm".
+description: Deprecated alias of /sot-be-session-start — there is no more frontend-driver session role (a frontend is a client, never a comm peer); a Windows session is a session like any other. Activates for "fe session start", "frontend session start", "rearm fe comm".
 ---
 
-Run `/sot-session-start` — it already branches on Windows (the FE inbox as
-the watch source, no relay bridge, selftest over the local tunnel). Kept
-only until the FE driver's drawer cutover retires this name.
+Deprecated: the frontend-driver session role this name once meant is
+retired (2026-09-14) — a session's identity is its row's handle everywhere,
+Windows included. Run `/sot-be-session-start`.

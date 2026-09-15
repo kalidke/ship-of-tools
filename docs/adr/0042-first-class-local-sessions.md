@@ -116,6 +116,10 @@ new is added to the daemon, the protocol, or the workspace toml:
    which `comm-join.sh` uses verbatim (ADR 0028 pin precedence). The row's
    label stays its slug (`ship-of-tools`); only its comm handle is pinned.
    Other local sessions on the same box keep the derived `<slug>-<host>`.
+   Retired 2026-09-14: the driver session's OWN comm handle is no longer
+   pinned to `win-fe-<host>` — a frontend is a client, not a comm peer, and
+   `win-fe-<host>` now names only the frontend PROCESS's `fe.command`
+   target label, which stays on the wire unchanged.
 3. **The relay endpoint is launcher env, inherited down.** Without an
    explicit `SOT_RELAY_ENDPOINT`, `comm-lib.sh` scrapes the running `sotd`
    for `--socket` — on a frontend box that is the LOCAL daemon's pipe, so a
