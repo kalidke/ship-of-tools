@@ -1,20 +1,26 @@
 //! Frontend half of the daemon TCP proxy (ADR 0035).
 //!
 //! A REMOTE frontend reaches any backend-served loopback page (Pluto, video,
-//! docs + pool, WGLMakie/Bonito) through the ONE control tunnel it already
-//! holds — no per-port ssh `-L` forward, no launcher edits when a new backend
-//! port appears. The browser still opens a plain `http://127.0.0.1:<port>/…`
-//! URL; this module makes that loopback port resolve by binding a local
-//! listener that pipes each browser connection to the daemon, which dials the
-//! real service (the daemon half validates the port + does the dialing —
-//! `backend/src/proxy.rs`).
+//! docs + pool, WGLMakie/Bonito) through the control tunnel it already holds
+//! for that page's OWNING daemon — no per-port ssh `-L` forward, no launcher
+//! edits when a new backend port appears. A multi-host FE holds one such
+//! tunnel per remote daemon, so each listener carries its OWN target address
+//! (never one baked-in default-host address for every port — that was the
+//! cross-host figure defect: a page served by a non-default host's daemon
+//! had nowhere to proxy through). The browser still opens a plain
+//! `http://127.0.0.1:<port>/…` URL; this module makes that loopback port
+//! resolve by binding a local listener that pipes each browser connection to
+//! the right daemon, which dials the real service (the daemon half validates
+//! the port + does the dialing — `backend/src/proxy.rs`).
 //!
 //! Ownership split that keeps the "bind before the browser launches" ordering
 //! honest without blocking the render thread: the GPU thread binds a
 //! `std::net::TcpListener` SYNCHRONOUSLY (a bind is sub-millisecond, no
 //! `block_on`, so the port is already listening the instant
-//! `open_url_in_browser` runs) and hands the bound listener to the transport
-//! runtime here, which owns the async accept loop + the per-connection pipe.
+//! `open_url_in_browser` runs) and hands the bound listener — tagged with the
+//! target daemon address and token it resolved for that page's host — to the
+//! transport runtime here, which owns the async accept loop + the
+//! per-connection pipe.
 
 use std::net::TcpListener as StdTcpListener;
 
@@ -24,19 +30,19 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 /// Spawn the proxy manager on the transport runtime. It receives bound
-/// listeners from the GPU thread (`ensure_proxy_listener`) and, per listener,
-/// runs an accept loop that pipes each accepted browser connection to the
-/// daemon over a FRESH connection to `daemon_tcp` (the same `127.0.0.1:<fwd>`
-/// address the control transport dials). `token` is forwarded in the handshake
-/// when the daemon has one configured (Unix-socket transports carry none).
+/// listeners from the GPU thread (`State::ensure_proxy_for_url`), each
+/// tagged with `(daemon_tcp, token)` — the exact `127.0.0.1:<fwd>` address
+/// and token resolved for the page's OWNING host, not a single manager-wide
+/// default. Per listener it runs an accept loop that pipes each accepted
+/// browser connection to a FRESH connection to that listener's own
+/// `daemon_tcp`; `token` is forwarded in the handshake when that daemon has
+/// one configured (Unix-socket transports carry none).
 pub fn spawn_proxy_manager(
     rt: &tokio::runtime::Runtime,
-    daemon_tcp: String,
-    token: Option<String>,
-    mut listener_rx: UnboundedReceiver<StdTcpListener>,
+    mut listener_rx: UnboundedReceiver<(StdTcpListener, String, Option<String>)>,
 ) {
     rt.spawn(async move {
-        while let Some(std_listener) = listener_rx.recv().await {
+        while let Some((std_listener, daemon_tcp, token)) = listener_rx.recv().await {
             let port = match std_listener.local_addr() {
                 Ok(a) => a.port(),
                 Err(e) => {
@@ -52,10 +58,8 @@ pub fn spawn_proxy_manager(
                     continue;
                 }
             };
-            let daemon_tcp = daemon_tcp.clone();
-            let token = token.clone();
             tokio::spawn(async move {
-                tracing::info!(port, "proxy: accepting browser connections for backend port");
+                tracing::info!(port, %daemon_tcp, "proxy: accepting browser connections for backend port");
                 loop {
                     match listener.accept().await {
                         Ok((browser, _peer)) => {

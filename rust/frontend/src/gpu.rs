@@ -3304,6 +3304,15 @@ enum ResolvedDial {
     Tcp(std::net::SocketAddr),
 }
 
+/// Outcome of `State::resolve_proxy_target` — see its doc for the three
+/// cases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProxyTarget {
+    NotNeeded,
+    Refused(String),
+    Dial(std::net::SocketAddr, Option<String>),
+}
+
 /// Which `LaneDial` `spawn_pane_attach_term` should use for a host, given
 /// its own `TransportConfig` (for `pipe`/`token`) and the CONTROL
 /// transport's own resolved selection for it (never re-derived: `Tcp`
@@ -4675,21 +4684,30 @@ struct State {
     /// the keyboard handler reaches it via &mut state.
     reconnect_now: Arc<tokio::sync::Notify>,
     /// ADR 0035 daemon TCP proxy — frontend half.
-    /// `proxy_host`: the ONE host whose loopback pages this FE proxies — the
-    /// `default_host` (the launcher's own tcp control tunnel, the only
-    /// endpoint `spawn_proxy_manager` dials), and only once its `Connected`
-    /// evt said it was reached over tcp AND advertised the proxy. Per host,
-    /// never FE-global: a box that also runs a local (pipe) daemon (ADR 0042)
-    /// gets a `Connected{remote:false}` from that one too, and a global flag
-    /// let it silently switch proxying off for the remote host's pages
-    /// (2026-09-10 field incident: every backend page "can't be reached" on
-    /// a FE box with a local sotd, with nothing logged — the gate returned
-    /// before the first log line). `proxy_listener_tx`: hands GPU-thread-bound `std` listeners to
-    /// the runtime accept loop (`None` when not remote / no runtime).
+    /// `proxy_capable_hosts`: every host whose loopback pages this FE will
+    /// proxy — inserted/removed per host from ITS OWN `Connected`/next
+    /// `Connected` evt (`remote && proxy`), never FE-global: a box that also
+    /// runs a local (pipe) daemon (ADR 0042) gets a `Connected{remote:false}`
+    /// from that one too, and a global flag let it silently switch proxying
+    /// off for every OTHER host's pages (2026-09-10 field incident: every
+    /// backend page "can't be reached" on a FE box with a local sotd, with
+    /// nothing logged — the gate returned before the first log line). A later
+    /// gate that scoped this to `default_host` alone fixed that incident but
+    /// broke proxying for every non-default row's figures (cross-host figure
+    /// defect) — per-host tracking fixes both: no host's evt can touch
+    /// another's entry, and no host is structurally excluded. The actual
+    /// dial for a proxy-capable host is read from `host_resolved_dial`
+    /// (ADR 0045 decision 1) at arm time — never re-derived or restricted to
+    /// one host — so `ensure_proxy_for_url` opens the proxy against the SAME
+    /// daemon connection that owns the row, whichever host that is.
+    /// `proxy_listener_tx`: hands GPU-thread-bound `std` listeners to the
+    /// runtime accept loop, each tagged with the daemon address + token to
+    /// dial for that one port (`None` when no host has a runtime at all).
     /// `proxy_ensured`: ports we've already bound OR found already-forwarded
     /// (`AddrInUse` — a legacy launcher `-L` holds it; the two coexist).
-    proxy_host: Option<HostKey>,
-    proxy_listener_tx: Option<tokio::sync::mpsc::UnboundedSender<std::net::TcpListener>>,
+    proxy_capable_hosts: std::collections::HashSet<HostKey>,
+    proxy_listener_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<(std::net::TcpListener, String, Option<String>)>>,
     proxy_ensured: std::collections::HashSet<u16>,
     /// REPL prompt mode. `false` = `julia>` (default), `true` = `pkg>`.
     /// User toggles via `]` at start of empty input (enter) /
@@ -6023,9 +6041,9 @@ impl State {
             current_md_workspace_id: None,
             needs_md_reflow: false,
             reconnect_now: Arc::new(tokio::sync::Notify::new()),
-            // ADR 0035: `proxy_host` is set by the default host's `Connected`
-            // evt (remote + proxy); `resumed()` spawns the listener manager.
-            proxy_host: None,
+            // ADR 0035: each host's `Connected` evt (remote + proxy) adds it
+            // here; `resumed()` spawns the listener manager.
+            proxy_capable_hosts: std::collections::HashSet::new(),
             proxy_listener_tx: None,
             proxy_ensured: std::collections::HashSet::new(),
             repl_pkg_mode: false,
@@ -7288,6 +7306,43 @@ impl State {
         self.persist_resume_state();
     }
 
+    /// Where (if anywhere) a proxy listener for `host`'s pages should dial.
+    /// Pulled out of `ensure_proxy_for_url` so the decision is unit-tested
+    /// without a live `State`/window — same shape as `lane_dial` /
+    /// `resolve_default_host` elsewhere in this file.
+    ///
+    /// `NotNeeded`: `host` isn't a proxy-capable remote (a local daemon, or
+    /// one that never advertised `proxy`/never connected over tcp) — its
+    /// pages resolve directly, silently, same as always.
+    /// `Refused`: `host` IS proxy-capable but this FE holds no resolved tcp
+    /// dial for it right now (`host_resolved_dial` — ADR 0045 decision 1 —
+    /// has no entry, or the entry is `Local`, which cannot coexist with a
+    /// proxy-capable remote and means state has desynced). Visible, not a
+    /// silent drop: the page would otherwise fail with no explanation.
+    /// `Dial`: the exact daemon address (and its token, from
+    /// `host_transports`) to pipe this host's browser connections through —
+    /// the SAME connection the control transport already resolved for this
+    /// host, never a second independent guess.
+    fn resolve_proxy_target(
+        host: &HostKey,
+        proxy_capable_hosts: &std::collections::HashSet<HostKey>,
+        host_resolved_dial: &HashMap<HostKey, ResolvedDial>,
+        host_transports: &HashMap<HostKey, crate::transport::TransportConfig>,
+    ) -> ProxyTarget {
+        if !proxy_capable_hosts.contains(host) {
+            return ProxyTarget::NotNeeded;
+        }
+        match host_resolved_dial.get(host) {
+            Some(ResolvedDial::Tcp(addr)) => {
+                let token = host_transports.get(host).and_then(|c| c.token.clone());
+                ProxyTarget::Dial(*addr, token)
+            }
+            _ => ProxyTarget::Refused(format!(
+                "'{host}' has no resolved connection to proxy its pages through"
+            )),
+        }
+    }
+
     /// ADR 0035: before opening a backend-served loopback URL in the browser,
     /// make sure its port is reachable. On a REMOTE, proxy-capable FE this
     /// lazily binds a local listener (once per port) that pipes to the daemon
@@ -7295,13 +7350,26 @@ impl State {
     /// no-op and the URL resolves directly / via the launcher's ssh forward.
     /// The bind is synchronous (`std::net::TcpListener`, sub-millisecond) so
     /// the port is listening by the time the caller launches the browser.
+    /// `host` is the row's OWNING host (every call site already carries this
+    /// — `event_host` off the announcement, or the `OpenUrl` command's
+    /// `from_host`), so a figure served by a non-default host's daemon is
+    /// proxied against THAT daemon, not silently skipped.
     fn ensure_proxy_for_url(&mut self, host: &HostKey, url: &str) {
-        // Only the proxied host's pages (see `proxy_host`): a local daemon's
-        // page is reached directly, and another remote host's cannot be
-        // reached by this manager at all (it dials only the default tunnel).
-        if self.proxy_host.as_ref() != Some(host) {
-            return;
-        }
+        let (addr, token) = match Self::resolve_proxy_target(
+            host,
+            &self.proxy_capable_hosts,
+            &self.host_resolved_dial,
+            &self.host_transports,
+        ) {
+            ProxyTarget::NotNeeded => return,
+            ProxyTarget::Refused(reason) => {
+                tracing::warn!(%host, %reason, "proxy: refusing — no dial to proxy through");
+                self.status = reason;
+                self.window.request_redraw();
+                return;
+            }
+            ProxyTarget::Dial(addr, token) => (addr, token),
+        };
         let Some(tx) = self.proxy_listener_tx.as_ref() else {
             return;
         };
@@ -7318,12 +7386,12 @@ impl State {
                     self.proxy_ensured.remove(&port);
                     return;
                 }
-                if tx.send(listener).is_err() {
+                if tx.send((listener, addr.to_string(), token)).is_err() {
                     tracing::warn!(port, "proxy: manager gone; not arming");
                     self.proxy_ensured.remove(&port);
                     return;
                 }
-                tracing::info!(port, "proxy: bound local listener for backend page");
+                tracing::info!(port, %addr, "proxy: bound local listener for backend page");
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 // Something already holds the port. Do NOT cache this: un-mark
@@ -12023,19 +12091,25 @@ impl State {
                             tracing::warn!(%event_host, "connected via tcp but its resolved peer address was unavailable");
                         }
                     }
-                    // ADR 0035: arm the proxy only when the daemon can proxy
-                    // (capability) AND this FE actually connected over the tcp
-                    // control tunnel (remote). Keyed on the transport that
-                    // CONNECTED, not the CLI shape — the documented
-                    // `--socket <local> --tcp <addr>` remote config has both
-                    // set and falls back to tcp. A local (pipe) FE reaches the
-                    // daemon's loopback ports directly and never proxies. And
-                    // ONLY the default host's Connected may set it — that is
-                    // the one connection the proxy manager dials; a Connected
-                    // from any other host (the implicit local pipe daemon
-                    // above all) must not touch it.
-                    if event_host == self.default_host() {
-                        self.proxy_host = (proxy && remote).then(|| event_host.clone());
+                    // ADR 0035: arm the proxy for THIS host only when its own
+                    // daemon can proxy (capability) AND this FE actually
+                    // connected to it over the tcp control tunnel (remote).
+                    // Keyed on the transport that CONNECTED, not the CLI
+                    // shape — the documented `--socket <local> --tcp <addr>`
+                    // remote config has both set and falls back to tcp. A
+                    // local (pipe) connection to a host reaches that host's
+                    // loopback ports directly and never proxies. Per-host
+                    // insert/remove, never a single FE-wide flag: every
+                    // host's own Connected evt only ever touches its own
+                    // entry, so a local pipe daemon on this box (remote:
+                    // false) cannot clobber a DIFFERENT host's proxy arming
+                    // (the 2026-09-10 incident), and — the fix here — a
+                    // non-default host's Connected now arms its own entry
+                    // too, instead of being silently ignored.
+                    if proxy && remote {
+                        self.proxy_capable_hosts.insert(event_host.clone());
+                    } else {
+                        self.proxy_capable_hosts.remove(&event_host);
                     }
                     // Residual (accepted, codex): these gates gate NEW binds
                     // only; listeners already bound this process persist across
@@ -18924,31 +18998,28 @@ impl ApplicationHandler for App {
                             state.reconnect_now.clone(),
                         );
                     }
-                    // ADR 0035: spawn the proxy manager whenever a tcp endpoint
-                    // is configured (the manager just waits for listeners). It
-                    // arms only when the transport actually connects over tcp —
-                    // gated at ensure-time by `proxy_host`, set from the DEFAULT
-                    // host's Connected evt (`remote` + `proxy`, the actual
-                    // transport), NOT the CLI shape. The manager owns the async accept loop; the
-                    // GPU thread hands it synchronously-bound listeners so a
-                    // port is listening before the browser launches.
-                    //
-                    // ADR 0042 L2a scope: still tied to the CLI `--tcp` flag
-                    // alone, i.e. `default_host`'s own connection — a REMOTE
-                    // FE's tcp control tunnel is a `default_host` concept
-                    // (the launcher's own tunnel), and per-host proxying for
-                    // every OTHER host is out of scope here (open question
-                    // for a later slice, see the L2a report).
-                    if let Some(daemon_tcp) = self.cli.tcp.clone() {
-                        let (ltx, lrx) = tokio::sync::mpsc::unbounded_channel();
-                        crate::proxy_listen::spawn_proxy_manager(
-                            rt,
-                            daemon_tcp,
-                            self.cli.token.clone(),
-                            lrx,
-                        );
-                        state.proxy_listener_tx = Some(ltx);
-                    }
+                    // ADR 0035: spawn the proxy manager whenever there's a
+                    // runtime at all (i.e. at least one host connection is
+                    // configured) — the manager just waits for listeners and
+                    // costs nothing idle. It arms per port only when THAT
+                    // port's owning host actually connects over tcp and
+                    // advertises the proxy, gated at ensure-time by
+                    // `proxy_capable_hosts` (per host, set from each host's
+                    // own Connected evt), NOT the CLI shape. Each listener now
+                    // carries its own target daemon address + token
+                    // (`ensure_proxy_for_url` resolves both from
+                    // `host_resolved_dial`/`host_transports` for the row's
+                    // OWNING host), so the manager itself no longer bakes in
+                    // one daemon address — the ADR 0042 L2a "tied to the CLI
+                    // `--tcp` flag alone, default_host only" scope note is
+                    // superseded: per-host proxying for every other host is
+                    // now in scope (this is the cross-host figure fix). The
+                    // manager owns the async accept loop; the GPU thread hands
+                    // it synchronously-bound listeners so a port is listening
+                    // before the browser launches.
+                    let (ltx, lrx) = tokio::sync::mpsc::unbounded_channel();
+                    crate::proxy_listen::spawn_proxy_manager(rt, lrx);
+                    state.proxy_listener_tx = Some(ltx);
                 }
                 // If `--start-mode modules` was set, queue a project.scan
                 // request now so the chrome's initial render is the
@@ -27426,6 +27497,94 @@ mod capsule_pane_tests {
         // degrades to no dial rather than panicking.
         let tcp_only = crate::transport::TransportConfig { pipe: None, tcp: Some("x:1".to_string()), token: None };
         assert!(lane_dial(&tcp_only, ResolvedDial::Local).is_none());
+    }
+
+    /// Cross-host figure defect (topology plan step 7): `resolve_proxy_target`
+    /// must open the proxy against the daemon that OWNS the announcing row,
+    /// not only a single default host. A row on a non-default host with a
+    /// resolved tcp dial must proxy through ITS OWN address — this fails
+    /// against the old `proxy_host == Some(default_host)`-only gate, which
+    /// left every non-default host's `Dial` case unreachable.
+    #[test]
+    fn resolve_proxy_target_dials_a_non_default_hosts_own_resolved_address() {
+        let host = "gpu-box".to_string();
+        let mut proxy_capable_hosts = std::collections::HashSet::new();
+        proxy_capable_hosts.insert(host.clone());
+        let resolved_addr: std::net::SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let mut host_resolved_dial = HashMap::new();
+        host_resolved_dial.insert(host.clone(), ResolvedDial::Tcp(resolved_addr));
+        let mut host_transports = HashMap::new();
+        host_transports.insert(
+            host.clone(),
+            crate::transport::TransportConfig {
+                pipe: None,
+                tcp: Some("ignored — resolved wins".to_string()),
+                token: Some("tok-gpu".to_string()),
+            },
+        );
+        match State::resolve_proxy_target(&host, &proxy_capable_hosts, &host_resolved_dial, &host_transports)
+        {
+            ProxyTarget::Dial(addr, token) => {
+                assert_eq!(addr, resolved_addr);
+                assert_eq!(token.as_deref(), Some("tok-gpu"));
+            }
+            other => panic!("expected Dial for a proxy-capable host with a resolved tcp address, got {other:?}"),
+        }
+    }
+
+    /// The default host must still proxy — this fix must not regress the
+    /// existing single-host case, only widen it.
+    #[test]
+    fn resolve_proxy_target_still_dials_the_default_host() {
+        let host = "hub".to_string();
+        let mut proxy_capable_hosts = std::collections::HashSet::new();
+        proxy_capable_hosts.insert(host.clone());
+        let resolved_addr: std::net::SocketAddr = "127.0.0.1:18743".parse().unwrap();
+        let mut host_resolved_dial = HashMap::new();
+        host_resolved_dial.insert(host.clone(), ResolvedDial::Tcp(resolved_addr));
+        let host_transports = HashMap::new();
+        match State::resolve_proxy_target(&host, &proxy_capable_hosts, &host_resolved_dial, &host_transports)
+        {
+            ProxyTarget::Dial(addr, token) => {
+                assert_eq!(addr, resolved_addr);
+                assert_eq!(token, None);
+            }
+            other => panic!("expected Dial for the default host, got {other:?}"),
+        }
+    }
+
+    /// A proxy-capable host with no resolved dial (connected but the tcp
+    /// peer address capture failed, or state otherwise desynced) is a
+    /// visible refusal, never a silent drop — the caller surfaces
+    /// `Refused`'s reason to the status line.
+    #[test]
+    fn resolve_proxy_target_refuses_visibly_when_no_dial_is_held() {
+        let host = "orphan".to_string();
+        let mut proxy_capable_hosts = std::collections::HashSet::new();
+        proxy_capable_hosts.insert(host.clone());
+        let host_resolved_dial = HashMap::new(); // never got a tcp_peer
+        let host_transports = HashMap::new();
+        match State::resolve_proxy_target(&host, &proxy_capable_hosts, &host_resolved_dial, &host_transports)
+        {
+            ProxyTarget::Refused(reason) => assert!(reason.contains(&host)),
+            other => panic!("expected a visible Refused reason, got {other:?}"),
+        }
+    }
+
+    /// A host that never advertised proxy capability (a local daemon, or
+    /// one that hasn't connected over tcp) needs no proxying at all — its
+    /// pages resolve directly, so this stays silent (`NotNeeded`), not a
+    /// refusal.
+    #[test]
+    fn resolve_proxy_target_is_not_needed_for_a_non_proxy_capable_host() {
+        let host = "local-box".to_string();
+        let proxy_capable_hosts = std::collections::HashSet::new();
+        let host_resolved_dial = HashMap::new();
+        let host_transports = HashMap::new();
+        assert_eq!(
+            State::resolve_proxy_target(&host, &proxy_capable_hosts, &host_resolved_dial, &host_transports),
+            ProxyTarget::NotNeeded
+        );
     }
 
     // The `attach_direct` switch itself (parsing the daemon's refusal
