@@ -168,45 +168,45 @@ mod tests {
 
     #[test]
     fn parse_dial_arg_good_unix() {
-        let (host, cfg) = parse_dial_arg("descent=unix:/run/user/1000/sot/sessions/sot.sock")
+        let (host, cfg) = parse_dial_arg("host-2=unix:/run/user/1234/sot/sessions/sot.sock")
             .expect("valid");
-        assert_eq!(host, "descent");
+        assert_eq!(host, "host-2");
         assert_eq!(
             cfg.pipe,
-            Some(PathBuf::from("/run/user/1000/sot/sessions/sot.sock"))
+            Some(PathBuf::from("/run/user/1234/sot/sessions/sot.sock"))
         );
         assert!(cfg.tcp.is_none());
     }
 
     #[test]
     fn parse_dial_arg_good_tcp() {
-        let (host, cfg) = parse_dial_arg("amirarak=tcp:127.0.0.1:18744").expect("valid");
-        assert_eq!(host, "amirarak");
+        let (host, cfg) = parse_dial_arg("host-1=tcp:127.0.0.1:18744").expect("valid");
+        assert_eq!(host, "host-1");
         assert_eq!(cfg.tcp.as_deref(), Some("127.0.0.1:18744"));
         assert!(cfg.pipe.is_none());
     }
 
     #[test]
     fn parse_dial_arg_good_pipe() {
-        let (host, cfg) = parse_dial_arg(r"kitt=pipe:\\.\pipe\sot-kitt").expect("valid");
-        assert_eq!(host, "kitt");
-        assert_eq!(cfg.pipe, Some(PathBuf::from(r"\\.\pipe\sot-kitt")));
+        let (host, cfg) = parse_dial_arg(r"host-4=pipe:\\.\pipe\sot-host-4").expect("valid");
+        assert_eq!(host, "host-4");
+        assert_eq!(cfg.pipe, Some(PathBuf::from(r"\\.\pipe\sot-host-4")));
     }
 
     #[test]
     fn parse_dial_arg_malformed_missing_equals() {
-        assert!(parse_dial_arg("descent-tcp:127.0.0.1:18744").is_err());
+        assert!(parse_dial_arg("host-2-tcp:127.0.0.1:18744").is_err());
     }
 
     #[test]
     fn parse_dial_arg_malformed_unknown_scheme() {
-        assert!(parse_dial_arg("descent=ssh:somewhere").is_err());
+        assert!(parse_dial_arg("host-2=ssh:somewhere").is_err());
     }
 
     #[test]
     fn parse_dial_arg_malformed_empty_endpoint() {
-        assert!(parse_dial_arg("descent=tcp:").is_err());
-        assert!(parse_dial_arg("descent=unix:").is_err());
+        assert!(parse_dial_arg("host-2=tcp:").is_err());
+        assert!(parse_dial_arg("host-2=unix:").is_err());
     }
 
     #[test]
@@ -214,7 +214,7 @@ mod tests {
         // Uppercase, a leading dash, and an embedded space are all outside
         // the plain-host-name grammar `sotd topology plan` emits hosts in.
         assert!(parse_dial_arg("Descent=tcp:127.0.0.1:18744").is_err());
-        assert!(parse_dial_arg("-descent=tcp:127.0.0.1:18744").is_err());
+        assert!(parse_dial_arg("-host-2=tcp:127.0.0.1:18744").is_err());
         assert!(parse_dial_arg("de scent=tcp:127.0.0.1:18744").is_err());
         assert!(parse_dial_arg("=tcp:127.0.0.1:18744").is_err());
     }
@@ -222,8 +222,8 @@ mod tests {
     #[test]
     fn resolve_connections_repeated_dial_last_one_wins() {
         let dials = vec![
-            parse_dial_arg("descent=tcp:127.0.0.1:18744").unwrap(),
-            parse_dial_arg("descent=tcp:127.0.0.1:19999").unwrap(),
+            parse_dial_arg("host-2=tcp:127.0.0.1:18744").unwrap(),
+            parse_dial_arg("host-2=tcp:127.0.0.1:19999").unwrap(),
         ];
         let out = resolve_connections(&dials, &CliOverride::default());
         assert_eq!(out.len(), 1);
@@ -233,12 +233,12 @@ mod tests {
     #[test]
     fn resolve_connections_local_sorts_first() {
         let dials = vec![
-            parse_dial_arg("descent=tcp:127.0.0.1:18744").unwrap(),
-            parse_dial_arg("local=unix:/run/user/1000/sot/sessions/sot.sock").unwrap(),
+            parse_dial_arg("host-2=tcp:127.0.0.1:18744").unwrap(),
+            parse_dial_arg("local=unix:/run/user/1234/sot/sessions/sot.sock").unwrap(),
         ];
         let out = resolve_connections(&dials, &CliOverride::default());
         let names: Vec<&str> = out.iter().map(|(h, _)| h.as_str()).collect();
-        assert_eq!(names, vec!["local", "descent"]);
+        assert_eq!(names, vec!["local", "host-2"]);
     }
 
     #[test]
