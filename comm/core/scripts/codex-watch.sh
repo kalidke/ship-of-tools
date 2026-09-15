@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# sot-capsule-capable: 1
-# codex-watch.sh <handle> [<tmux-pane>] — wake for CODEX sessions (ADR 0031).
+# codex-watch.sh <handle> — wake for CODEX sessions (ADR 0031).
 #
 # Codex has no harness-Monitor primitive, so an idle codex session cannot be
 # woken by an inbox write alone. This daemon POLLS the handle's inbox (~2s;
 # NFS — inotify silently misses writes there, hence poll, same reason the CC
 # Monitor polls) and delivers each new directed frame into the session.
 #
-# A pane arg means tmux mode; no pane arg means capsule mode (the caller
-# already decided that), delivering via `pty.input`.
+# Delivers each frame into the row's capsule via `pty.input`.
 # Filter mirrors comm-watch.sh: own echoes never inject; broadcasts (to:"")
 # file silently for comm-poll on the next natural turn; directed frames and
 # legacy no-`to` lines inject. Selftest frames DO inject (they prove this
@@ -21,54 +19,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=comm-lib.sh
 source "$SCRIPT_DIR/comm-lib.sh"   # _sot_secure_dir / sot_daemon_endpoint / sot_oneshot_request
-
-# sot_tmux_socket — tmux mode only; unlike comm-lib.sh's own version,
-# verifies each candidate against the TARGET PANE.
-sot_tmux_socket() {
-    local uid sock sotd_bin
-    local -a candidates=()
-    uid="$(id -u)"
-
-    [ -n "${SOT_TMUX_SOCK:-}" ] && candidates+=("$SOT_TMUX_SOCK")
-    [ -n "${TMUX:-}" ] && candidates+=("${TMUX%%,*}")
-
-    sotd_bin="$(command -v sotd 2>/dev/null || true)"
-    if [ -n "$sotd_bin" ]; then
-        sock="$("$sotd_bin" tmux-socket-path 2>/dev/null || true)"
-        [ -n "$sock" ] && candidates+=("$sock")
-    fi
-
-    if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ ! -L "$XDG_RUNTIME_DIR" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
-        local xowner xmode
-        xowner="$(stat -c '%u' "$XDG_RUNTIME_DIR" 2>/dev/null || true)"
-        xmode="$(stat -c '%a' "$XDG_RUNTIME_DIR" 2>/dev/null || true)"
-        if [ -n "$xowner" ] && [ "$xowner" = "$uid" ] \
-           && [ -n "$xmode" ] && [ $((0$xmode & 0077)) -eq 0 ]; then
-            candidates+=("$XDG_RUNTIME_DIR/sot/tmux.sock")
-        fi
-    fi
-    [ -d "/run/user/$uid" ] && candidates+=("/run/user/$uid/sot/tmux.sock")
-    candidates+=("/tmp/sot-$uid/tmux.sock")
-    candidates+=("/tmp/tmux-$uid/default")
-
-    local seen=""
-    for sock in "${candidates[@]}"; do
-        [ -n "$sock" ] || continue
-        case " $seen " in
-            *" $sock "*) continue ;;
-        esac
-        seen="$seen $sock"
-        _sot_secure_dir "$(dirname "$sock")" || continue
-        [ -S "$sock" ] || continue
-        if tmux -S "$sock" display-message -t "$PANE" -p '#{pane_id}' >/dev/null 2>&1; then
-            printf '%s\n' "$sock"
-            return 0
-        fi
-    done
-
-    echo "sot_tmux_socket: pane $PANE was not found on candidate tmux sockets:$seen" >&2
-    return 1
-}
 
 # ---- capsule-mode delivery: one request, no local retry -------------------
 _codex_watch_pty_input() {  # WORKSPACE_ID DATA_B64
@@ -134,37 +84,13 @@ EOF
     echo "codex-watch: capsule inject warning: outcome unknown (unconfirmed) from $from: ${payload:0:60}" >&2
     return 0
 }
-
-# _codex_watch_deliver_tmux FROM TEXT -> always 0 (fire-and-forget; the
-# only confirmation tmux offers is the keystrokes landing at all).
-_codex_watch_deliver_tmux() {
-    local from="$1" text="$2"
-    # -l: literal keystrokes (no key-name interpretation); Enter sent
-    # separately so codex submits the injected line as a turn.
-    tmux -S "$SOT_TMUX_SOCK" send-keys -t "$PANE" -l "[relay] from $from: $text" 2>/dev/null
-    # The Codex TUI treats a keystroke burst as a paste and swallows an
-    # Enter that arrives in the same burst as a newline, leaving the frame
-    # unsubmitted at the prompt (field report 2026-09-07: immediate Enter
-    # hung every frame; a 0.5 s pause submitted every one).
-    sleep 0.5
-    tmux -S "$SOT_TMUX_SOCK" send-keys -t "$PANE" Enter 2>/dev/null
-    return 0
-}
-
-# One loop for both modes: mode is decided ONCE before it (pane arg set or
-# not), and the per-line delivery is the only branch inside -- tmux mode's
-# _deliver always returns 0 (advance), capsule's carries the 0/1/2 contract.
+# One loop: the row's capsule is the only delivery target, and each
+# line's inject carries the 0/1/2 contract (advance / retry / row gone).
 _codex_watch_run() {
-    if [ -n "$PANE" ]; then
-        SOT_TMUX_SOCK="$(sot_tmux_socket)" \
-            || { echo "ERROR: could not resolve a secure tmux socket for pane $PANE — see reason above" >&2; exit 1; }
-    else
-        # Checked ONCE here, not inside a command substitution (silent forever-advance on empty reply).
-        : "${SOT_WORKSPACE_ID:?codex-watch: capsule mode needs SOT_WORKSPACE_ID}"
-        ENDPOINT="$(sot_daemon_endpoint)" \
-            || { echo "ERROR: could not resolve the daemon endpoint for capsule delivery" >&2; exit 1; }
-    fi
-
+    # Checked ONCE here, not inside a command substitution (silent forever-advance on empty reply).
+    : "${SOT_WORKSPACE_ID:?codex-watch: needs SOT_WORKSPACE_ID}"
+    ENDPOINT="$(sot_daemon_endpoint)" \
+        || { echo "ERROR: could not resolve the daemon endpoint for capsule delivery" >&2; exit 1; }
     pos=$(wc -l < "$INBOX" 2>/dev/null || echo 0)
 
     # No pane-liveness check in capsule mode: that process is reaped with
@@ -172,10 +98,6 @@ _codex_watch_run() {
     while :; do
         sleep 2
         _codex_watch_bound_log
-        if [ -n "$PANE" ]; then
-            # Pane gone → session over → exit.
-            tmux -S "$SOT_TMUX_SOCK" display-message -t "$PANE" -p '#{pane_id}' >/dev/null 2>&1 || exit 0
-        fi
         [ -f "$INBOX" ] || continue
         total=$(wc -l < "$INBOX" 2>/dev/null || echo 0)
         if [ "$total" -lt "$pos" ]; then pos=0; fi   # inbox rotated/truncated
@@ -196,13 +118,8 @@ _codex_watch_run() {
                 delivered_through=$((pos + lineno))
                 continue
             fi
-            if [ -n "$PANE" ]; then
-                _codex_watch_deliver_tmux "$from" "$text"
-                rc=$?
-            else
-                _codex_watch_capsule_inject "$from" "$text"
-                rc=$?
-            fi
+            _codex_watch_capsule_inject "$from" "$text"
+            rc=$?
             if [ "$rc" -eq 2 ]; then
                 exit 0
             fi
@@ -227,8 +144,7 @@ _codex_watch_bound_log() {
 }
 
 _codex_watch_main() {
-    HANDLE="${1:?usage: codex-watch.sh <handle> [<tmux-pane>]}"
-    PANE="${2:-}"
+    HANDLE="${1:?usage: codex-watch.sh <handle>}"
     COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
     INBOX="$COMM_HOME/inbox/$HANDLE.jsonl"
     STATE_DIR="$COMM_HOME/state"; mkdir -p "$STATE_DIR"

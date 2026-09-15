@@ -235,61 +235,6 @@ case_list_never_reports_id_never_destroys() {
     assert_never_destroyed "$wsid" spawn-nolist
 }
 
-case_tmux_row_still_verified_via_has_session() {
-    rm -f "$WORK/tmux-calls.log" "$WORK/tmux-hang"; echo 0 > "$WORK/tmux-exit-code"
-    local wsid="ws-tmux-ok" slug="tmuxok1"
-    start_stub_daemon "$wsid" "$slug" "$(entry "$wsid" "$slug" tmux "")"
-    run_spawn spawn-tmux-ok
-    stop_stub_daemon
-
-    [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
-    contains "$(cat "$WORK/tmux-calls.log" 2>/dev/null)" "has-session" || { echo "  tmux has-session was never called"; return 1; }
-    registry_has_row "spawn-tmux-ok" || { echo "  registry row missing after success"; return 1; }
-    return 0
-}
-
-case_tmux_row_missing_session_never_destroys() {
-    rm -f "$WORK/tmux-calls.log" "$WORK/tmux-hang"; echo 1 > "$WORK/tmux-exit-code"
-    local wsid="ws-tmux-bad" slug="tmuxbad1"
-    start_stub_daemon "$wsid" "$slug" "$(entry "$wsid" "$slug" tmux "")"
-    run_spawn spawn-tmux-bad
-    local out; out="$SPAWN_ERR"
-    stop_stub_daemon
-
-    contains "$out" "tmux session is missing" || { echo "  stderr: $out"; return 1; }
-    assert_never_destroyed "$wsid" spawn-tmux-bad
-}
-
-case_hung_tmux_times_out_never_destroys() {
-    rm -f "$WORK/tmux-calls.log"; : > "$WORK/tmux-hang"; echo 0 > "$WORK/tmux-exit-code"
-    local wsid="ws-tmux-hang" slug="tmuxhang1"
-    start_stub_daemon "$wsid" "$slug" "$(entry "$wsid" "$slug" tmux "")"
-    run_spawn spawn-tmux-hang
-    local out; out="$SPAWN_ERR"
-    stop_stub_daemon
-    rm -f "$WORK/tmux-hang"
-
-    contains "$out" "timed out" || { echo "  stderr: $out"; return 1; }
-    tmux_was_called || { echo "  tmux has-session was never attempted"; return 1; }
-    assert_never_destroyed "$wsid" spawn-tmux-hang
-}
-
-# A non-0/1/124 exit (a real tmux usage error, 126/127, a signal) must
-# read as "could not verify" — never silently equated with "missing"
-# (Codex should-fix: every non-0/124 code used to mean "missing").
-case_tmux_row_unusual_exit_is_a_verification_error() {
-    rm -f "$WORK/tmux-calls.log" "$WORK/tmux-hang"; echo 2 > "$WORK/tmux-exit-code"
-    local wsid="ws-tmux-weird" slug="tmuxweird1"
-    start_stub_daemon "$wsid" "$slug" "$(entry "$wsid" "$slug" tmux "")"
-    run_spawn spawn-tmux-weird
-    local out; out="$SPAWN_ERR"
-    stop_stub_daemon
-
-    contains "$out" "could not verify it" || { echo "  stderr: $out"; return 1; }
-    contains "$out" "tmux session is missing" && { echo "  an unusual exit must not be reported as 'missing': $out"; return 1; }
-    assert_never_destroyed "$wsid" spawn-tmux-weird
-}
-
 # --- run -----------------------------------------------------------------
 
 check "capsule row reaches phase 'ready' on the second poll: succeeds, never touches tmux" \
@@ -300,14 +245,6 @@ check "capsule row never reaches 'ready' within the wait: TIMEOUT never destroys
     case_capsule_timeout_never_destroys
 check "workspace.list never reports the created id: never destroys, no tmux fallback" \
     case_list_never_reports_id_never_destroys
-check "tmux-runtime row is still verified via tmux has-session (regression)" \
-    case_tmux_row_still_verified_via_has_session
-check "tmux-runtime row with a proven-missing session: never destroys" \
-    case_tmux_row_missing_session_never_destroys
-check "tmux has-session hangs: bounded timeout, reported apart from 'missing', never destroys" \
-    case_hung_tmux_times_out_never_destroys
-check "tmux has-session exits with an unusual code: a verification error, not 'missing'" \
-    case_tmux_row_unusual_exit_is_a_verification_error
 
 echo ""
 echo "$PASS passed, $FAIL failed"

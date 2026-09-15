@@ -6,7 +6,7 @@
 #
 # Usage:
 #   comm-spawn.sh <repo-path> [--name NAME] [--expertise "a, b"] [--task "do X"]
-#                 [--label LABEL] [--endpoint tcp:H:P|unix:PATH] [--no-workspace]
+#                 [--label LABEL] [--endpoint tcp:H:P|unix:PATH]
 #   comm-spawn.sh <name> <repo-path> [...]      (legacy explicit-name form)
 #
 #   <repo-path>   package the agent works in (workspace project root)
@@ -21,8 +21,8 @@
 #                 root. The legacy two-positional form (`<name> <repo-path>`)
 #                 still works and is equivalent to passing --name.
 #   --agent       agent kind for the workspace row: claude (default) | codex
-#                 (ADR 0031). The daemon launches ccb or ccx accordingly on the
-#                 tmux path; --no-workspace mode launches the same pair directly.
+#                 (ADR 0031). The daemon launches ccb or ccx accordingly in
+#                 the row's capsule.
 #   --label       FE workspace label (default: basename of repo-path); guarded to
 #                 the repo basename so a session stays findable next to its repo.
 #   --display-label  FE label that deliberately DIFFERS from the repo basename
@@ -30,14 +30,9 @@
 #                 bypasses the repo-base guard. The comm HANDLE (<name>) stays
 #                 repo-based, so status/clean/sync still group by repo — only the
 #                 displayed label + sort slug change.
-#   --no-workspace  skip the daemon; just make a raw tmux session (headless use)
 #   --endpoint    daemon address; else $SOT_SPAWN_ENDPOINT / $SOT_SOCKET /
 #                 auto-detected from the running sotd
 #
-# Env: SOT_COMM_SPAWN_WAIT (boot wait, default 6s)
-#      SOT_COMM_LAUNCH (default: builds `ccb` — SOT_COMM_NAME=<name>
-#                 $HOME/.local/bin/ccb, see the LAUNCH assignment below;
-#                 ccb itself execs `claude --permission-mode auto`)
 #
 # Rollback contract (Codex review F9, hardened in round 2 findings 1 & 2):
 # an EXIT trap is armed BEFORE either write path can happen (right after
@@ -47,8 +42,7 @@
 # failing there — where a row can exist unprotected. On any SYNCHRONOUS
 # failure this script itself detects — nc missing, the daemon endpoint not
 # resolving, the same-label refusal (F5), a rejected/failed
-# workspace.create, tmux session verification failing, a synchronous
-# launch failure in --no-workspace mode — the trap CONDITIONALLY deletes
+# workspace.create — the trap CONDITIONALLY deletes
 # the row: only if it still matches this exact provisional write (root +
 # nonce + status:"spawning"), never a row that has since been replaced by
 # a real join or an explicit claimant (comm-lib.sh:
@@ -73,11 +67,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 ensure_home
-# Private tmux socket (security review) — daemon-created sessions live here,
-# not on tmux's default server. Resolved once, used on every `tmux` call
-# below via `-S`.
-SOT_TMUX_SOCK="$(sot_tmux_socket)" \
-    || { echo "ERROR: could not resolve/secure the private tmux socket dir — see reason above" >&2; exit 1; }
 
 # Spawner's own handle, captured before arg parsing reuses NAME for the
 # child. Deliberately NOT synthesized into a "spawner-$HOST" placeholder
@@ -90,7 +79,7 @@ SOT_TMUX_SOCK="$(sot_tmux_socket)" \
 # once TASK is known, rather than handed a placeholder nothing can reach.
 SPAWNER="$NAME"
 
-NAME=""; REPO_PATH=""; EXPERTISE=""; TASK=""; LABEL=""; DISPLAY_LABEL=""; ENDPOINT=""; NO_WS=false; AGENT="claude"
+NAME=""; REPO_PATH=""; EXPERTISE=""; TASK=""; LABEL=""; DISPLAY_LABEL=""; ENDPOINT=""; AGENT="claude"
 WSID=""   # the row workspace.create answered with; comm-spawn never destroys it (see below)
 NAME_FLAG=""; POSITIONAL=()
 while [ $# -gt 0 ]; do
@@ -104,7 +93,6 @@ while [ $# -gt 0 ]; do
         --label)         LABEL="$2"; shift 2 ;;
         --display-label) DISPLAY_LABEL="$2"; shift 2 ;;
         --endpoint)      ENDPOINT="$2"; shift 2 ;;
-        --no-workspace)  NO_WS=true; shift ;;
         *)               POSITIONAL+=("$1"); shift ;;
     esac
 done
@@ -132,7 +120,7 @@ fi
 case "${#POSITIONAL[@]}" in
     1) REPO_PATH="${POSITIONAL[0]}" ;;
     2) NAME="${POSITIONAL[0]}"; REPO_PATH="${POSITIONAL[1]}" ;;
-    *) echo "usage: comm-spawn.sh [--name NAME] <repo-path> [--agent claude|codex] [--expertise \"...\"] [--task \"...\"] [--label L] [--no-workspace]" >&2; exit 1 ;;
+    *) echo "usage: comm-spawn.sh [--name NAME] <repo-path> [--agent claude|codex] [--expertise \"...\"] [--task \"...\"] [--label L]" >&2; exit 1 ;;
 esac
 case "$AGENT" in
     claude|codex) ;;
@@ -146,7 +134,7 @@ if [ -n "$NAME_FLAG" ]; then
 fi
 
 if [ -z "$REPO_PATH" ]; then
-    echo "usage: comm-spawn.sh [--name NAME] <repo-path> [--expertise \"...\"] [--task \"...\"] [--label L] [--no-workspace]" >&2; exit 1
+    echo "usage: comm-spawn.sh [--name NAME] <repo-path> [--expertise \"...\"] [--task \"...\"] [--label L]" >&2; exit 1
 fi
 REPO_PATH="${REPO_PATH/#\~/$HOME}"
 [ -d "$REPO_PATH" ] || { echo "ERROR: repo path not found: $REPO_PATH" >&2; exit 1; }
@@ -299,29 +287,6 @@ fi
 if [ "$DERIVED_CLAIM" = false ] && jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
     echo "ERROR: agent '@$NAME' already in registry — pick another name or comm-leave it first" >&2; exit 1
 fi
-# The agent launches via ccb (maintainer decision, 2026-06-12): its first turn is
-# /sot-session-start, so the session joins + listens + arms its own inbox
-# Monitor with no hand-rolled join instructions. The handle is pinned by
-# prefixing the launch with SOT_COMM_NAME=<name> (comm-join env default).
-# ABSOLUTE path because the daemon-created tmux session runs a login shell
-# whose PATH may not include ~/.local/bin — a bare `ccb` silently falls
-# through to bash. SOT_COMM_LAUNCH remains the escape hatch.
-#
-# %q-quoted (Codex review F4): this string is later TYPED into a shell pane
-# via `tmux send-keys` (the --no-workspace path below) and re-parsed by
-# that shell. NAME reaching here has been through sot_sanitize_component
-# when derived (safe already), but an EXPLICIT --name is verbatim by
-# contract and could contain shell metacharacters — unquoted interpolation
-# into a string that gets typed as keystrokes is a command-injection vector
-# regardless of where NAME came from, so this is fixed unconditionally.
-if [ -n "${SOT_COMM_LAUNCH:-}" ]; then
-    LAUNCH="$SOT_COMM_LAUNCH"
-else
-    LAUNCH="SOT_COMM_NAME=$(printf '%q' "$NAME")"
-    [ -n "$EXPERTISE" ] && LAUNCH="$LAUNCH SOT_COMM_EXPERTISE=$(printf '%q' "$EXPERTISE")"
-    LAUNCH="$LAUNCH $HOME/.local/bin/$([ "$AGENT" = codex ] && echo ccx || echo ccb)"
-fi
-WAIT="${SOT_COMM_SPAWN_WAIT:-6}"
 BIN="$COMM_HOME/bin"
 
 # NO spawn brief (maintainer decision, 2026-06-17). A spawned agent gets its context from its
@@ -361,7 +326,6 @@ _row_left_running() {  # reason
     echo "ERROR: $1 — the row was left running (comm-spawn never destroys one); to remove it: $COMM_HOME/bin/comm-despawn.sh $WSID" >&2
 }
 
-TARGET=""   # tmux target to launch claude into
 
 # Provisional registry row + inbox, so the agent is addressable FROM SPAWN TIME:
 # comm-send refuses unregistered handles, and without this the spawner had to
@@ -382,181 +346,141 @@ fi
 # PROV_OBJ was built, above) — before either write path, including this
 # one and the inbox touch just above it.
 
-if [ "$NO_WS" = true ]; then
-    SESSION="$NAME"
-    if tmux -S "$SOT_TMUX_SOCK" has-session -t "$SESSION" 2>/dev/null; then
-        echo "ERROR: tmux session '$SESSION' already exists" >&2; exit 1
-    fi
-    tmux -S "$SOT_TMUX_SOCK" new-session -d -s "$SESSION" -c "$REPO_PATH"
-    TARGET="$SESSION"
-    echo "Created raw tmux session '$SESSION' at $REPO_PATH (no workspace; not in FE strip)"
-else
-    if ! command -v nc >/dev/null 2>&1; then
-        echo "ERROR: nc not found — needed to reach the daemon. Use --no-workspace for a raw session." >&2; exit 1
-    fi
-    if ! ENDPOINT="$(resolve_endpoint)"; then
-        echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT, or use --no-workspace." >&2; exit 1
-    fi
-    # Same-label refusal (Codex review F5, hardened in round 2 finding 3):
-    # an auto-composed display label (base-qualifier) must not be able to
-    # collide with an EXISTING workspace — e.g. a worktree's
-    # '<repo>-wt-<short>' grouping label happening to equal our
-    # qualifier-composed one. workspace.create itself gives no usable
-    # signal for this: same-slug is, BY DESIGN, an id-preserving metadata
-    # refresh (`Workspaces::insert`, `rust/backend/src/workspaces.rs`) that
-    # boot/spawn flows rely on for idempotence, and the duplicate-root gate
-    # explicitly treats a same-slug match as invisible
-    # (`find_other_workspace_with_root`'s doc comment,
-    # `rust/backend/src/handlers.rs`) — a colliding create would silently
-    # rebind the existing workspace's project_root/tmux_session rather than
-    # erroring. So this is a pre-check, not a reply-reaction: list existing
-    # workspaces and refuse before ever calling workspace.create if our
-    # composed label would collide. Only for an AUTO-composed label — an
-    # explicit --display-label is the caller's own informed choice and
-    # keeps today's behavior.
-    #
-    # FAILS CLOSED: a workspace.list that doesn't answer, or answers with
-    # something unparseable, refuses the spawn outright rather than
-    # treating "we couldn't check" as "no collision" — the daemon being
-    # down costs nothing extra here since the create below would fail
-    # anyway, but a TRANSIENT list-only hiccup followed by a working
-    # create must not bypass the guard silently.
-    #
-    # Compared by NORMALIZED SLUG (sot_slug, comm-lib.sh — a verified bash
-    # mirror of `rust/backend/src/paths.rs::slug`), not the raw label
-    # string: workspace.create refreshes by slug, so two labels that only
-    # differ by case, or by a dot vs underscore, resolve to the SAME
-    # workspace and must be caught too, not just a byte-identical match.
-    # An existing entry's OWN `.slug` field is used directly (not
-    # re-derived from its label) — the daemon's own computed value is more
-    # trustworthy than re-slugifying it a second time client-side.
-    #
-    # This remains a list-then-create TOCTOU, not an atomic guarantee — a
-    # BEST-EFFORT human-UX guard against the common case (another comm-spawn
-    # or a worktree create landing moments apart), not a correctness
-    # guarantee against true concurrent creates. An atomic daemon
-    # create-if-absent is the real fix for that and is out of scope here.
-    if [ "$AUTO_DISPLAY_LABEL" = true ]; then
-        if ! LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)"; then
-            echo "ERROR: could not confirm the auto-derived display label '$LABEL' is collision-free (workspace.list did not answer) — refusing to spawn. Pass --name or --display-label, or retry once the daemon answers." >&2
-            exit 1
-        fi
-        if ! printf '%s' "$LIST" | jq -e '.payload.workspaces' >/dev/null 2>&1; then
-            echo "ERROR: workspace.list returned a malformed reply — refusing to spawn with an unverified auto-derived display label '$LABEL'. Pass --name or --display-label, or retry." >&2
-            exit 1
-        fi
-        CANDIDATE_SLUG="$(sot_slug "$LABEL")"
-        if printf '%s' "$LIST" | jq -e --arg s "$CANDIDATE_SLUG" '.payload.workspaces[] | select(.slug == $s)' >/dev/null 2>&1; then
-            echo "ERROR: the auto-derived display label '$LABEL' (slug '$CANDIDATE_SLUG') already names an existing workspace — refusing to risk rebinding it. Pass --name or --display-label to pick a distinct one." >&2
-            exit 1
-        fi
-    fi
-    # task:"" — no brief on the wire; the FE has nothing to paste on attach. Any
-    # --task is sent below as an ordinary durable comm message instead.
-    # boot:true (ADR 0023 §3) — the DAEMON boots claude via a throwaway boot-pty
-    # (no FE attach / no session switch needed), so a background spawn comes up
-    # running claude even if no frontend ever navigates to it. autostart_claude
-    # stays true as the FE-attach fallback (the foreground guard de-dupes).
-    # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): REPO_PATH
-    # is a filesystem path, and LABEL (a free-text --label override, not
-    # just the REPO_PATH-derived default) can also legitimately start with
-    # "/" — neither may reach jq via --arg.
-    SPAWN_LABEL_FILE="$(sot_jq_rawfile "$LABEL")" || exit 1
-    SPAWN_PATH_FILE="$(sot_jq_rawfile "$REPO_PATH")" || exit 1
-    # agent: explicit kind (ADR 0031) — the daemon's tmux launcher picks ccb/ccx
-    # by it; autostart_claude stays true as the legacy fallback an older daemon
-    # derives the kind from.
-    REQ="$(jq -nc --rawfile l "$SPAWN_LABEL_FILE" --rawfile p "$SPAWN_PATH_FILE" --arg an "$NAME" --arg ag "$AGENT" \
-        '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:$p,autostart_claude:true,agent:$ag,agent_name:$an,task:"",boot:true}}')"
-    rm -f "$SPAWN_LABEL_FILE" "$SPAWN_PATH_FILE"
-    RESP="$(sot_send "$REQ" workspace.create || true)"
-    CREATE_ERR="$(printf '%s' "$RESP" | jq -r '.payload.error // empty' 2>/dev/null || true)"
-    SLUG="$(printf '%s' "$RESP" | jq -r '.payload.slug // empty' 2>/dev/null || true)"
-    TARGET="$(printf '%s' "$RESP" | jq -r '.payload.tmux_session // empty' 2>/dev/null || true)"
-    WSID="$(printf '%s' "$RESP" | jq -r '.payload.workspace_id // empty' 2>/dev/null || true)"
-    if [ -n "$CREATE_ERR" ] || [ -z "$SLUG" ] || [ -z "$WSID" ]; then
-        echo "ERROR: workspace.create failed via $ENDPOINT" >&2
-        [ -n "$RESP" ] && printf '  daemon said: %s\n' "$(printf '%s' "$RESP" | jq -c '.payload' 2>/dev/null || printf '%s' "$RESP")" >&2
+if ! command -v nc >/dev/null 2>&1; then
+    echo "ERROR: nc not found — needed to reach the daemon." >&2; exit 1
+fi
+if ! ENDPOINT="$(resolve_endpoint)"; then
+    echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT." >&2; exit 1
+fi
+# Same-label refusal (Codex review F5, hardened in round 2 finding 3):
+# an auto-composed display label (base-qualifier) must not be able to
+# collide with an EXISTING workspace — e.g. a worktree's
+# '<repo>-wt-<short>' grouping label happening to equal our
+# qualifier-composed one. workspace.create itself gives no usable
+# signal for this: same-slug is, BY DESIGN, an id-preserving metadata
+# refresh (`Workspaces::insert`, `rust/backend/src/workspaces.rs`) that
+# boot/spawn flows rely on for idempotence, and the duplicate-root gate
+# explicitly treats a same-slug match as invisible
+# (`find_other_workspace_with_root`'s doc comment,
+# `rust/backend/src/handlers.rs`) — a colliding create would silently
+# rebind the existing workspace's project_root/tmux_session rather than
+# erroring. So this is a pre-check, not a reply-reaction: list existing
+# workspaces and refuse before ever calling workspace.create if our
+# composed label would collide. Only for an AUTO-composed label — an
+# explicit --display-label is the caller's own informed choice and
+# keeps today's behavior.
+#
+# FAILS CLOSED: a workspace.list that doesn't answer, or answers with
+# something unparseable, refuses the spawn outright rather than
+# treating "we couldn't check" as "no collision" — the daemon being
+# down costs nothing extra here since the create below would fail
+# anyway, but a TRANSIENT list-only hiccup followed by a working
+# create must not bypass the guard silently.
+#
+# Compared by NORMALIZED SLUG (sot_slug, comm-lib.sh — a verified bash
+# mirror of `rust/backend/src/paths.rs::slug`), not the raw label
+# string: workspace.create refreshes by slug, so two labels that only
+# differ by case, or by a dot vs underscore, resolve to the SAME
+# workspace and must be caught too, not just a byte-identical match.
+# An existing entry's OWN `.slug` field is used directly (not
+# re-derived from its label) — the daemon's own computed value is more
+# trustworthy than re-slugifying it a second time client-side.
+#
+# This remains a list-then-create TOCTOU, not an atomic guarantee — a
+# BEST-EFFORT human-UX guard against the common case (another comm-spawn
+# or a worktree create landing moments apart), not a correctness
+# guarantee against true concurrent creates. An atomic daemon
+# create-if-absent is the real fix for that and is out of scope here.
+if [ "$AUTO_DISPLAY_LABEL" = true ]; then
+    if ! LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)"; then
+        echo "ERROR: could not confirm the auto-derived display label '$LABEL' is collision-free (workspace.list did not answer) — refusing to spawn. Pass --name or --display-label, or retry once the daemon answers." >&2
         exit 1
     fi
-    echo "Created workspace '$LABEL' (slug=$SLUG, id=$WSID) via $ENDPOINT"
+    if ! printf '%s' "$LIST" | jq -e '.payload.workspaces' >/dev/null 2>&1; then
+        echo "ERROR: workspace.list returned a malformed reply — refusing to spawn with an unverified auto-derived display label '$LABEL'. Pass --name or --display-label, or retry." >&2
+        exit 1
+    fi
+    CANDIDATE_SLUG="$(sot_slug "$LABEL")"
+    if printf '%s' "$LIST" | jq -e --arg s "$CANDIDATE_SLUG" '.payload.workspaces[] | select(.slug == $s)' >/dev/null 2>&1; then
+        echo "ERROR: the auto-derived display label '$LABEL' (slug '$CANDIDATE_SLUG') already names an existing workspace — refusing to risk rebinding it. Pass --name or --display-label to pick a distinct one." >&2
+        exit 1
+    fi
+fi
+# task:"" — no brief on the wire; the FE has nothing to paste on attach. Any
+# --task is sent below as an ordinary durable comm message instead.
+# boot:true (ADR 0023 §3) — the DAEMON boots claude via a throwaway boot-pty
+# (no FE attach / no session switch needed), so a background spawn comes up
+# running claude even if no frontend ever navigates to it. autostart_claude
+# stays true as the FE-attach fallback (the foreground guard de-dupes).
+# MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): REPO_PATH
+# is a filesystem path, and LABEL (a free-text --label override, not
+# just the REPO_PATH-derived default) can also legitimately start with
+# "/" — neither may reach jq via --arg.
+SPAWN_LABEL_FILE="$(sot_jq_rawfile "$LABEL")" || exit 1
+SPAWN_PATH_FILE="$(sot_jq_rawfile "$REPO_PATH")" || exit 1
+# agent: explicit kind (ADR 0031) — the daemon's capsule launcher picks ccb/ccx
+# by it; autostart_claude stays true as the legacy fallback an older daemon
+# derives the kind from.
+REQ="$(jq -nc --rawfile l "$SPAWN_LABEL_FILE" --rawfile p "$SPAWN_PATH_FILE" --arg an "$NAME" --arg ag "$AGENT" \
+    '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:$p,autostart_claude:true,agent:$ag,agent_name:$an,task:"",boot:true}}')"
+rm -f "$SPAWN_LABEL_FILE" "$SPAWN_PATH_FILE"
+RESP="$(sot_send "$REQ" workspace.create || true)"
+CREATE_ERR="$(printf '%s' "$RESP" | jq -r '.payload.error // empty' 2>/dev/null || true)"
+SLUG="$(printf '%s' "$RESP" | jq -r '.payload.slug // empty' 2>/dev/null || true)"
+WSID="$(printf '%s' "$RESP" | jq -r '.payload.workspace_id // empty' 2>/dev/null || true)"
+if [ -n "$CREATE_ERR" ] || [ -z "$SLUG" ] || [ -z "$WSID" ]; then
+    echo "ERROR: workspace.create failed via $ENDPOINT" >&2
+    [ -n "$RESP" ] && printf '  daemon said: %s\n' "$(printf '%s' "$RESP" | jq -c '.payload' 2>/dev/null || printf '%s' "$RESP")" >&2
+    exit 1
+fi
+echo "Created workspace '$LABEL' (slug=$SLUG, id=$WSID) via $ENDPOINT"
 
-    # workspace.create's own response never echoes `runtime`
-    # (WorkspaceCreateRes has no such field); only workspace.list does.
-    # Poll it, bounded, to learn the row's runtime and, for a capsule row
-    # (no tmux session backs one at all), wait for phase "ready".
-    RUNTIME=""; PHASE=""; FOUND=false
-    CAPSULE_WAIT="${SOT_COMM_SPAWN_CAPSULE_WAIT:-90}"
-    CAPSULE_DEADLINE=$(( $(date +%s) + CAPSULE_WAIT ))
-    while :; do
-        LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list || true)"
-        ENTRY="$(printf '%s' "$LIST" | jq -c --arg id "$WSID" '(.payload.workspaces // [])[]? | select(.workspace_id == $id)' 2>/dev/null || true)"
-        if [ -n "$ENTRY" ]; then
-            FOUND=true
-            RUNTIME="$(printf '%s' "$ENTRY" | jq -r '.runtime // empty' 2>/dev/null || true)"
-            PHASE="$(printf '%s' "$ENTRY" | jq -r '.phase // empty' 2>/dev/null || true)"
-            [ "$RUNTIME" = "capsule" ] || break
-            case "$PHASE" in
-                ready) break ;;
-                ended_no_respawn|terminal|foreign)
-                    _row_left_running "capsule row for '$LABEL' (id=$WSID) settled to phase '$PHASE' instead of 'ready'"
-                    exit 1
-                    ;;
-            esac
-        fi
-        if [ "$(date +%s)" -ge "$CAPSULE_DEADLINE" ]; then
-            if [ "$FOUND" = true ]; then
-                _row_left_running "capsule row for '$LABEL' (id=$WSID) is still starting (phase '${PHASE:-unknown}') after ${CAPSULE_WAIT}s"
-            else
-                _row_left_running "workspace.list never reported id=$WSID within ${CAPSULE_WAIT}s"
-            fi
-            exit 1
-        fi
-        sleep 1
-    done
-
-    if [ "$RUNTIME" = "capsule" ]; then
-        echo "Capsule row ready (id=$WSID, phase=ready)"
-    else
-        # Bounded (a wedged tmux server must not hang this script); every
-        # outcome is reported, none destructive: 1 is missing, 124 is a
-        # timeout, anything else (126/127/a signal) is unverifiable.
-        tmux_rc=0
-        timeout 5 tmux -S "$SOT_TMUX_SOCK" has-session -t "$TARGET" 2>/dev/null || tmux_rc=$?
-        case "$tmux_rc" in
-            0) ;;
-            1)   _row_left_running "daemon reported $TARGET but tmux session is missing"; exit 1 ;;
-            124) _row_left_running "tmux has-session for '$TARGET' timed out"; exit 1 ;;
-            *)   _row_left_running "tmux has-session for '$TARGET' exited $tmux_rc — could not verify it"; exit 1 ;;
+# workspace.create's own response never echoes `runtime`
+# (WorkspaceCreateRes has no such field); only workspace.list does.
+# Poll it, bounded, until the capsule row reports phase "ready".
+RUNTIME=""; PHASE=""; FOUND=false
+CAPSULE_WAIT="${SOT_COMM_SPAWN_CAPSULE_WAIT:-90}"
+CAPSULE_DEADLINE=$(( $(date +%s) + CAPSULE_WAIT ))
+while :; do
+    LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list || true)"
+    ENTRY="$(printf '%s' "$LIST" | jq -c --arg id "$WSID" '(.payload.workspaces // [])[]? | select(.workspace_id == $id)' 2>/dev/null || true)"
+    if [ -n "$ENTRY" ]; then
+        FOUND=true
+        RUNTIME="$(printf '%s' "$ENTRY" | jq -r '.runtime // empty' 2>/dev/null || true)"
+        PHASE="$(printf '%s' "$ENTRY" | jq -r '.phase // empty' 2>/dev/null || true)"
+        case "$PHASE" in
+            ready) break ;;
+            ended_no_respawn|terminal|foreign)
+                _row_left_running "capsule row for '$LABEL' (id=$WSID) settled to phase '$PHASE' instead of 'ready'"
+                exit 1
+                ;;
         esac
     fi
-    SPAWN_SUCCEEDED=true
-fi
-
-if [ "$NO_WS" = true ]; then
-    # Headless / no daemon: launch ccb directly. No brief paste — the agent reads
-    # its repo CLAUDE.md and joins comm via /sot-session-start; any --task is
-    # delivered below as a durable comm message, not a startup paste.
-    sleep 0.5
-    tmux -S "$SOT_TMUX_SOCK" send-keys -t "$TARGET" "$LAUNCH" Enter
-    # Only NOW has --no-workspace's actionable work (the launch itself)
-    # happened — a `send-keys` failure above must still roll back.
-    SPAWN_SUCCEEDED=true
-    echo "Launched: $LAUNCH  (waiting ${WAIT}s for boot)"
-    echo "Spawned (raw) @${NAME} on ${REPO_NAME} in session '$TARGET'."
-else
-    # Workspace mode: the workspace carries autostart_claude=true + agent_name on
-    # the wire — task is EMPTY, no brief. The FE reads them off workspace.list
-    # and, on first attach, launches ccb with SOT_COMM_NAME=<agent_name> (it
-    # owns the terminal; a detached session can't init claude). The agent joins
-    # comm + reads its repo CLAUDE.md; nothing is pasted.
-    [ -n "$SPAWNER" ] && with_lock registry_touch "$SPAWNER" 2>/dev/null || true
-    echo "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (agent=${AGENT}, autostart; NO brief — agent uses its repo CLAUDE.md / AGENTS.md)."
-    if [ -n "$SPAWNER" ]; then
-        echo "The daemon/FE auto-starts $([ "$AGENT" = codex ] && echo ccx || echo ccb) on first attach; the agent joins comm (~1 min) and reports to @${SPAWNER}."
-    else
-        echo "The daemon/FE auto-starts $([ "$AGENT" = codex ] && echo ccx || echo ccb) on first attach; the agent joins comm (~1 min). This spawning session has no resolved identity of its own, so give the agent an explicit reply target if one is needed."
+    if [ "$(date +%s)" -ge "$CAPSULE_DEADLINE" ]; then
+        if [ "$FOUND" = true ]; then
+            _row_left_running "capsule row for '$LABEL' (id=$WSID) is still starting (phase '${PHASE:-unknown}') after ${CAPSULE_WAIT}s"
+        else
+            _row_left_running "workspace.list never reported id=$WSID within ${CAPSULE_WAIT}s"
+        fi
+        exit 1
     fi
+    sleep 1
+done
+
+echo "Capsule row ready (id=$WSID, phase=ready)"
+SPAWN_SUCCEEDED=true
+
+# Workspace mode: the workspace carries autostart_claude=true + agent_name on
+# the wire — task is EMPTY, no brief. The FE reads them off workspace.list
+# and, on first attach, launches ccb with SOT_COMM_NAME=<agent_name> (it
+# owns the terminal; a detached session can't init claude). The agent joins
+# comm + reads its repo CLAUDE.md; nothing is pasted.
+[ -n "$SPAWNER" ] && with_lock registry_touch "$SPAWNER" 2>/dev/null || true
+echo "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (agent=${AGENT}, autostart; NO brief — agent uses its repo CLAUDE.md / AGENTS.md)."
+if [ -n "$SPAWNER" ]; then
+    echo "The daemon/FE auto-starts $([ "$AGENT" = codex ] && echo ccx || echo ccb) on first attach; the agent joins comm (~1 min) and reports to @${SPAWNER}."
+else
+    echo "The daemon/FE auto-starts $([ "$AGENT" = codex ] && echo ccx || echo ccb) on first attach; the agent joins comm (~1 min). This spawning session has no resolved identity of its own, so give the agent an explicit reply target if one is needed."
 fi
 # Deliver any --task as an ordinary durable comm message (NOT a startup brief):
 # it queues in the agent's inbox now and is read on its /sot-session-start poll.
