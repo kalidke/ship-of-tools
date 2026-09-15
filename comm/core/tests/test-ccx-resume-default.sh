@@ -93,7 +93,7 @@ started_fresh() {  # -> 0 iff argv.log's 1st line is NOT "resume"
     [ "$(sed -n 1p "$ARGV_LOG")" != "resume" ]
 }
 
-case_tmux_style_env_resumes_by_default() {
+case_row_env_resumes_by_default() {
     rm -f "$ARGV_LOG"
     (
         cd "$PROJECT_DIR" || exit 1
@@ -103,7 +103,7 @@ case_tmux_style_env_resumes_by_default() {
         SOT_COMM_HOME="$EMPTY_COMM_HOME" \
         SOT_COMM_NAME="ccx-resume-test" \
         CODEX_HOME="$CODEX_HOME_DIR" \
-        SOT_WORKSPACE_ID="ws-tmux-row-1" \
+        SOT_WORKSPACE_ID="ws-row-1" \
         "$CCX" >/dev/null 2>"$WORK/stderr.log"
     )
     resumed_this_id
@@ -175,11 +175,11 @@ case_capsule_flag_starts_the_capsule_watcher() {
     done
     [ -f "$WATCH_ARGV_LOG" ] || { echo "  codex-watch.sh stub never ran"; return 1; }
     [ "$(sed -n 1p "$WATCH_ARGV_LOG")" = "ccx-resume-test" ] || { echo "  argv[1] != handle: $(cat "$WATCH_ARGV_LOG")"; return 1; }
-    [ "$(wc -l < "$WATCH_ARGV_LOG")" -eq 1 ] || { echo "  a pane arg was passed (tmux mode), want capsule (none): $(cat "$WATCH_ARGV_LOG")"; return 1; }
+    [ "$(wc -l < "$WATCH_ARGV_LOG")" -eq 1 ] || { echo "  a second arg was passed, want the handle only: $(cat "$WATCH_ARGV_LOG")"; return 1; }
     return 0
 }
 
-case_capsule_flag_starts_the_capsule_watcher_even_with_a_leaked_tmux_pane() {
+case_capsule_flag_starts_the_capsule_watcher_even_with_a_leaked_pane_var() {
     rm -f "$WATCH_ARGV_LOG"
     (
         cd "$PROJECT_DIR" || exit 1
@@ -199,18 +199,18 @@ case_capsule_flag_starts_the_capsule_watcher_even_with_a_leaked_tmux_pane() {
         n=$((n + 1))
     done
     [ -f "$WATCH_ARGV_LOG" ] || { echo "  codex-watch.sh stub never ran"; return 1; }
-    [ "$(wc -l < "$WATCH_ARGV_LOG")" -eq 1 ] || { echo "  a pane arg was passed (tmux mode) despite --capsule: $(cat "$WATCH_ARGV_LOG")"; return 1; }
+    [ "$(wc -l < "$WATCH_ARGV_LOG")" -eq 1 ] || { echo "  a second arg was passed despite --capsule: $(cat "$WATCH_ARGV_LOG")"; return 1; }
     return 0
 }
 
-check "a tmux-style env (SOT_WORKSPACE_ID set, no --capsule) resumes by default" case_tmux_style_env_resumes_by_default
+check "a row env (SOT_WORKSPACE_ID set, no --capsule) resumes by default" case_row_env_resumes_by_default
 check "a hand-run ccx with no SOT_* env at all keeps resuming by default" case_hand_run_ccx_with_no_env_resumes_by_default
 check "a hand-run ccx inside a capsule row's env, without --capsule, keeps its resume default" case_hand_run_ccx_inside_a_capsule_row_keeps_resume_default
 check "--capsule: a bare ccx starts fresh" case_capsule_flag_bare_ccx_starts_fresh
 check "--capsule: --continue triggers the resume scan" case_capsule_flag_with_continue_resumes
 check "--capsule: --fresh wins even alongside --continue" case_capsule_flag_with_fresh_flag_stays_fresh_even_with_continue
 check "--capsule starts codex-watch.sh in capsule mode (no pane arg)" case_capsule_flag_starts_the_capsule_watcher
-check "--capsule wins over a leaked TMUX_PANE, still starts capsule mode" case_capsule_flag_starts_the_capsule_watcher_even_with_a_leaked_tmux_pane
+check "--capsule starts the capsule watcher even with a leaked TMUX_PANE" case_capsule_flag_starts_the_capsule_watcher_even_with_a_leaked_pane_var
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

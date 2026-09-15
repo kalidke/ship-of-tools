@@ -7,8 +7,7 @@
 #
 # Each case runs `_codex_watch_main` in its own `bash -c` subprocess (it
 # can call `exit` without killing this suite), overriding
-# `sleep`/`wc`/`tmux`/`sot_daemon_endpoint`/`_codex_watch_pty_input` as
-# needed. Mode dispatch is by argv shape alone (pane arg = tmux, none = capsule).
+# `sleep`/`wc`/`sot_daemon_endpoint`/`_codex_watch_pty_input` as needed.
 #
 # Usage: comm/core/tests/test-codex-watch-capsule-loop.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -50,30 +49,6 @@ case_capsule_mode_starts_at_eof_ignoring_a_stale_pos_file_and_backlog() {
         _codex_watch_main watchee
     ' 2>/dev/null
     [ ! -f "$attempts" ] || { echo "  the pre-existing backlog was delivered (want silence -- comm-poll's job); attempts:"; cat "$attempts"; return 1; }
-    return 0
-}
-
-case_tmux_mode_starts_at_eof_ignoring_a_stale_pos_file_and_backlog() {
-    local d="$WORK/eof-tmux"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
-    { line "one"; line "two"; line "three"; } > "$d/inbox/watchee.jsonl"
-    printf '0\n' > "$d/state/codex-watch-watchee.pos"
-    local attempts="$d/attempts.log"
-    bash -c '
-        source "'"$WATCH"'"
-        export SOT_COMM_HOME="'"$d"'"
-        sot_tmux_socket() { printf "%s" "/dev/null"; }
-        tmux() {
-            case "$1" in
-                display-message) return 0 ;;
-                send-keys) printf "%s\n" "$*" >> "'"$attempts"'"; return 0 ;;
-                *) return 0 ;;
-            esac
-        }
-        turns=0
-        sleep() { turns=$((turns + 1)); [ "$turns" -le 1 ] || exit 0; }
-        _codex_watch_main watchee some-pane
-    ' 2>/dev/null
-    [ ! -f "$attempts" ] || { echo "  the pre-existing backlog was sent via tmux send-keys (want silence); attempts:"; cat "$attempts"; return 1; }
     return 0
 }
 
@@ -214,7 +189,6 @@ case_log_bound_keeps_appending_correctly_after_truncation() {
 }
 
 check "capsule mode starts at EOF, ignoring a stale .pos file and backlog" case_capsule_mode_starts_at_eof_ignoring_a_stale_pos_file_and_backlog
-check "tmux mode starts at EOF, ignoring a stale .pos file and backlog" case_tmux_mode_starts_at_eof_ignoring_a_stale_pos_file_and_backlog
 check "a message appended between the count and the read is delivered exactly once" case_concurrent_append_is_never_delivered_twice
 check "a row-gone reply ends the outer watch loop, not just the inner read" case_row_gone_ends_the_whole_watcher_not_just_the_inner_loop
 check "the watcher log is bounded to roughly 256 KiB, keeping the tail" case_log_file_is_bounded_to_roughly_256kb

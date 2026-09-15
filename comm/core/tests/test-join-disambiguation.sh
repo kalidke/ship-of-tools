@@ -3,10 +3,10 @@
 # disambiguation feature (ADR 0028 addendum: "derived vs explicit"). No bats
 # dependency. HERMETIC: runs against a temp $SOT_COMM_HOME, a temp self-file
 # per simulated session (via $SOT_COMM_SELF_FILE), a PINNED host (via
-# $SOT_COMM_TEST_HOST — see below), and an isolated tmux server (via
+# $SOT_COMM_TEST_HOST — see below), and a dead daemon endpoint (via
 # $SOT_TMUX_SOCK) for the comm-spawn.sh case — never touches the real
-# ~/.sot-comm or the real per-user tmux socket (a comm-spawn.sh smoke run
-# during this feature's development that omitted the tmux isolation created
+# ~/.sot-comm or a real daemon (a comm-spawn.sh smoke run during this
+# feature's development that omitted the endpoint isolation created
 # real stray sessions on the shared production socket; every
 # spawn-exercising case here sets it).
 #
@@ -81,15 +81,14 @@ ensure_home
 # case_lock_closes_derive_write_gap below to simulate a concurrent claim
 # landing WHILE a derived join is blocked waiting for the lock.
 LOCKDIR="$SOT_COMM_HOME/.registry.lock"
-# Isolated tmux server for comm-spawn.sh's path
-# (case_spawn_fresh_only_refusal) — exported globally so every comm-spawn.sh
-# invocation in this file picks it up; comm-join.sh never touches tmux, so
-# this is a harmless no-op for every other case.
-export SOT_TMUX_SOCK="$WORK/tmux.sock"
-# comm-spawn.sh always goes through the daemon now: pin a dead endpoint so
-# no case in this suite can ever reach a real sotd.
+# comm-spawn.sh always goes through the daemon: pin a dead endpoint so no
+# case in this suite can ever reach a real sotd (a case that needs a daemon
+# starts the stub below and points at it explicitly). A dummy token keeps
+# the hello frame off the real token file.
 export SOT_SPAWN_ENDPOINT="unix:$WORK/no-daemon.sock"
-trap 'tmux -S "$SOT_TMUX_SOCK" kill-server >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
+export SOT_TOKEN="dummy-test-token"
+unset SOT_SOCKET SOT_WORKSPACE_ID
+trap 'stop_stub_daemon; sot_bridge_stop "$FAKE_BRIDGE_HANDLE" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # Pinned, hermetic HOST — see the file header. Deliberately short and
 # already within the allowed charset so it is NEVER transformed by
@@ -108,7 +107,7 @@ SKIP=0
 # 2 = SKIP, anything else = fail), then print the required PASS/FAIL/SKIP
 # line. SKIP is a DISTINCT outcome, never folded into PASS (Codex review
 # round-1 finding 5): a case that can't exercise its guard in this
-# environment (no tmux, an unmockable resource) used to just `return 0`
+# environment (an unmockable resource) used to just `return 0`
 # after printing its own inline "SKIP:" diagnostic, which this function
 # then reported as a bare PASS — an unexecuted guard counted as verified.
 # A case that cannot run its check must say so in the tally, not just in
@@ -192,8 +191,9 @@ join_in() {
     JOIN_ERR="$(cat "$errfile" 2>/dev/null || true)"
 }
 
-# spawn_in ROOT [ARGS...] — run comm-spawn.sh in mode (no
-# daemon needed) against ROOT. Sets SPAWN_OUT / SPAWN_ERR / SPAWN_RC.
+# spawn_in ROOT [ARGS...] — run comm-spawn.sh against ROOT (the daemon is
+# whatever SOT_SPAWN_ENDPOINT names: the dead default, or a case's stub).
+# Sets SPAWN_OUT / SPAWN_ERR / SPAWN_RC.
 SPAWN_OUT=""; SPAWN_ERR=""; SPAWN_RC=0
 spawn_in() {
     local root="$1"; shift
@@ -202,6 +202,57 @@ spawn_in() {
     SPAWN_RC=$?
     SPAWN_ERR="$(cat "$errfile" 2>/dev/null || true)"
 }
+
+# --- stub daemon (nc -klU + FIFO, the test-spawn-capsule-workspace.sh
+# harness) --- answers hello, workspace.create (WSID/SLUG), workspace.list
+# (that one row, phase ready) and pty.input (ok, enter_sent); logs every
+# request to STUB_REQLOG. Started per case, stopped by the case; a real
+# sotd is never reached.
+STUB_SOCK=""; STUB_REQLOG=""; STUB_NC_PID=""; STUB_WATCHER_PID=""; STUBN=0
+start_stub_daemon() {  # WSID SLUG ROOT
+    local wsid="$1" slug="$2" root="$3" fifo hello create list ptyin
+    STUBN=$((STUBN + 1))
+    STUB_SOCK="$WORK/stub-$STUBN.sock"; fifo="$WORK/stub-$STUBN.fifo"; STUB_REQLOG="$WORK/stub-$STUBN.log"
+    mkfifo "$fifo"; : > "$STUB_REQLOG"
+    hello='{"v":1,"id":1,"kind":"res","op":"hello","payload":{"session_id":"s1","revision":0,"snapshot_pending":false}}'
+    create="$(jq -nc --arg id "$wsid" --arg slug "$slug" --arg root "$root" \
+        '{v:1,id:1,kind:"res",op:"workspace.create",payload:{workspace_id:$id,slug:$slug,label:$slug,project_root:$root}}')"
+    list="$(jq -nc --arg id "$wsid" --arg slug "$slug" --arg root "$root" \
+        '{v:1,id:1,kind:"res",op:"workspace.list",payload:{workspaces:[{workspace_id:$id,slug:$slug,label:$slug,project_root:$root,kernel_running:false,is_default:false,autostart_claude:true,agent:"claude",agent_name:"",agent_handle:"",task:"",agent_state:"",agent_summary:"",agent_status_at:"",repl_state:"idle",runtime:"capsule",phase:"ready"}]}}')"
+    ptyin='{"v":1,"id":1,"kind":"res","op":"pty.input","payload":{"ok":true,"bytes":1,"runtime":"capsule","enter_sent":true}}'
+    exec 3<>"$fifo"
+    nc -klU "$STUB_SOCK" < "$fifo" >> "$STUB_REQLOG" &
+    STUB_NC_PID=$!
+    ( tail -n +1 -F "$STUB_REQLOG" 2>/dev/null | while IFS= read -r line; do
+        case "$(printf '%s' "$line" | jq -r '.op // empty' 2>/dev/null)" in
+            hello)            printf '%s\n' "$hello" >&3 ;;
+            workspace.create) printf '%s\n' "$create" >&3 ;;
+            workspace.list)   printf '%s\n' "$list" >&3 ;;
+            pty.input)        printf '%s\n' "$ptyin" >&3 ;;
+        esac
+      done ) &
+    STUB_WATCHER_PID=$!
+    local deadline=$((SECONDS + 5))
+    while [ ! -S "$STUB_SOCK" ]; do [ "$SECONDS" -lt "$deadline" ] || break; sleep 0.05; done
+}
+stop_stub_daemon() {
+    [ -n "$STUB_WATCHER_PID" ] && pkill -TERM -P "$STUB_WATCHER_PID" >/dev/null 2>&1
+    [ -n "$STUB_WATCHER_PID" ] && kill "$STUB_WATCHER_PID" >/dev/null 2>&1
+    [ -n "$STUB_NC_PID" ] && kill "$STUB_NC_PID" >/dev/null 2>&1
+    [ -n "$STUB_WATCHER_PID" ] && wait "$STUB_WATCHER_PID" 2>/dev/null
+    [ -n "$STUB_NC_PID" ] && wait "$STUB_NC_PID" 2>/dev/null
+    exec 3>&- 2>/dev/null || true
+    STUB_NC_PID=""; STUB_WATCHER_PID=""
+}
+
+# A fake relay for bridge cases: comm-lib.sh's sot_bridge_start runs it in
+# the real loop shape, so the pidfile + argv check is exercised for real;
+# it only has to stay alive. FAKE_BRIDGE_HANDLE is whatever the last case
+# started, stopped by the EXIT trap if the case did not.
+# Named comm-relay.sh so sot_bridge_stop's process pattern reaps it too.
+mkdir -p "$WORK/fakebin"; FAKE_RELAY="$WORK/fakebin/comm-relay.sh"
+printf '#!/bin/sh\nsleep 60\n' > "$FAKE_RELAY"; chmod +x "$FAKE_RELAY"
+FAKE_BRIDGE_HANDLE=""
 
 # context_in ROOT SELF — run comm-context.sh DIRECTLY (not through
 # comm-join.sh) with cwd=ROOT and self-file SELF, which may pre-exist
@@ -717,7 +768,7 @@ case_self_heal_write_failure_reported_loudly_file_intact() {
 }
 
 case_nopane_selffile_shared_across_repos_not_healed() {
-    # Coordinator addendum, item 6: a shell with NO tmux pane collapses to
+    # Coordinator addendum, item 6: a shell with NO workspace row collapses to
     # ONE self-file slot per host ("<host>__nopane.txt", see
     # comm-context.sh) shared by every such shell on this host. The
     # repo=/root= check is what makes that sharing safe — a background
@@ -868,7 +919,7 @@ case_nopane_selffile_from_non_repo_cwd_not_healed_and_send_refuses() {
 case_comm_relay_send_refuses_with_no_identity() {
     # Caller-audit follow-up (ruling 5): comm-send.sh's identity refusal is
     # covered above, but comm-relay.sh's OWN refusal (send_frame — a
-    # SEPARATE code path with no --force-target escape hatch) was never
+    # SEPARATE code path) was never
     # exercised. Setting SOT_RELAY_ENDPOINT to a well-formed-but-bogus unix
     # endpoint lets comm-relay.sh resolve an endpoint with no live daemon
     # (sot_daemon_endpoint returns an EXPLICIT endpoint verbatim, no probe)
@@ -890,14 +941,14 @@ case_comm_relay_send_refuses_with_no_identity() {
 
 case_comm_bootstrap_refuses_with_no_identity() {
     # Same caller-audit gap for comm-bootstrap.sh: its NAME check runs
-    # before any tmux target validation, so a bogus target is enough to
-    # exercise the refusal without a real peer session.
+    # before any daemon or workspace lookup, so a bogus target is enough to
+    # exercise the refusal without a daemon or a peer session.
     local self scratch out err rc errfile
     next_self_file; self="$NEXT_SELF_FILE"
     scratch="$(realpath "$WORK")"
     errfile="$WORK/bootstrap-refusal.err"
     out="$(cd "$scratch" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
-        "$SCRIPTS_DIR/comm-bootstrap.sh" "nonexistent-target:0.0" 2>"$errfile")"
+        "$SCRIPTS_DIR/comm-bootstrap.sh" "nonexistent-row" 2>"$errfile")"
     rc=$?
     err="$(cat "$errfile" 2>/dev/null || true)"
     [ "$rc" -ne 0 ] || { echo "  comm-bootstrap.sh succeeded with no identity: $out"; return 1; }
@@ -905,37 +956,52 @@ case_comm_bootstrap_refuses_with_no_identity() {
     return 0
 }
 
-case_comm_send_force_target_exempt_from_identity_refusal() {
-    # Mirror image of the two refusals above: --force-target is
-    # DELIBERATELY identityless (first contact with a session that hasn't
-    # joined the network yet) and must keep working with NO resolved
-    # identity at all — never refused. Uses a real mock tmux target on
-    # this suite's isolated socket, addressed via a target string queried
-    # back from tmux itself (never a hardcoded "0.0" — this suite makes no
-    # assumption about base-index), so the full delivery path is proven
-    # end-to-end, not just "didn't refuse".
-    local self scratch out err rc errfile target
-    next_self_file; self="$NEXT_SELF_FILE"
-    scratch="$(realpath "$WORK")"
+case_send_types_live_into_same_host_row_else_queues() {
+    # Live delivery is the daemon's pty.input on the recipient's workspace
+    # row (the row id its join recorded from SOT_WORKSPACE_ID), Enter
+    # appended and confirmed as enter_sent. With no reachable daemon the
+    # same send still lands in the inbox and says it queued; a recipient
+    # with no row is never typed into.
+    local root_sender root_recipient h_sender h_recipient self_sender errfile out rc err
+    mkdir -p "$WORK/send-live/sender31" "$WORK/send-live/recipient31"
+    root_sender="$(realpath "$WORK/send-live/sender31")"
+    root_recipient="$(realpath "$WORK/send-live/recipient31")"
 
-    tmux -S "$SOT_TMUX_SOCK" new-session -d -s "forcetesttarget" "sleep 60" \
-        || { echo "  could not create a mock tmux target on the isolated socket"; return 1; }
-    target="$(tmux -S "$SOT_TMUX_SOCK" list-panes -t "forcetesttarget" -F '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null | head -n1)"
-    if [ -z "$target" ]; then
-        tmux -S "$SOT_TMUX_SOCK" kill-session -t "forcetesttarget" 2>/dev/null || true
-        echo "  could not resolve the mock target's own session:window.pane string"; return 1
-    fi
+    SOT_WORKSPACE_ID="ws-live-31" join_in "$root_recipient"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  recipient setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    h_recipient="recipient31-${HOST}"
+    [ "$(registry_field "$h_recipient" workspace_id)" = "ws-live-31" ] \
+        || { echo "  join did not record the workspace id: $(registry_field "$h_recipient" workspace_id)"; return 1; }
 
-    errfile="$WORK/force-target.err"
-    out="$(cd "$scratch" && SOT_COMM_SELF_FILE="$self" SOT_COMM_TEST_HOST="$HOST" \
-        "$SEND" --force-target "$target" "hello" 2>"$errfile")"
+    join_in "$root_sender"
+    [ "$JOIN_RC" -eq 0 ] || { echo "  sender setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    h_sender="sender31-${HOST}"; self_sender="$NEXT_SELF_FILE"
+
+    start_stub_daemon "ws-live-31" "recipient31" "$root_recipient"
+    errfile="$WORK/send-live.err"
+    out="$(cd "$root_sender" && SOT_COMM_SELF_FILE="$self_sender" SOT_COMM_TEST_HOST="$HOST" \
+        SOT_SOCKET="$STUB_SOCK" "$SEND" "@$h_recipient" "hello live" 2>"$errfile")"
     rc=$?
     err="$(cat "$errfile" 2>/dev/null || true)"
-    tmux -S "$SOT_TMUX_SOCK" kill-session -t "forcetesttarget" 2>/dev/null || true
+    local req; req="$(grep -m1 '"op":"pty.input"' "$STUB_REQLOG" 2>/dev/null || true)"
+    stop_stub_daemon
+    [ "$rc" -eq 0 ] || { echo "  comm-send.sh failed: rc=$rc, stderr: $err"; return 1; }
+    contains "$out" "delivered live" || { echo "  stdout: $out (want 'delivered live')"; return 1; }
+    [ -n "$req" ] || { echo "  the stub daemon never saw a pty.input request"; return 1; }
+    [ "$(printf '%s' "$req" | jq -r '.payload.workspace_id')" = "ws-live-31" ] \
+        || { echo "  pty.input targeted the wrong row: $req"; return 1; }
+    [ "$(printf '%s' "$req" | jq -r '.payload.enter')" = "true" ] || { echo "  pty.input without enter:true: $req"; return 1; }
+    [ "$(printf '%s' "$req" | jq -r '.payload.data_b64' | base64 -d)" = "[$h_sender:sender31] hello live" ] \
+        || { echo "  typed text is not the formatted message: $(printf '%s' "$req" | jq -r '.payload.data_b64' | base64 -d)"; return 1; }
 
-    [ "$rc" -eq 0 ] || { echo "  comm-send.sh --force-target failed with no identity (should be exempt): rc=$rc, stderr: $err"; return 1; }
-    contains "$err" "identity did not resolve" && { echo "  --force-target was refused for lacking an identity — it must be exempt: $err"; return 1; }
-    contains "$out" "force-target, no registry" || { echo "  stdout: $out (want the force-target delivery confirmation)"; return 1; }
+    # No daemon: queued, never an error.
+    out="$(cd "$root_sender" && SOT_COMM_SELF_FILE="$self_sender" SOT_COMM_TEST_HOST="$HOST" \
+        SOT_SOCKET="$WORK/no-daemon.sock" "$SEND" "@$h_recipient" "hello queued" 2>"$errfile")"
+    rc=$?
+    [ "$rc" -eq 0 ] || { echo "  comm-send.sh failed with no daemon: rc=$rc, stderr: $(cat "$errfile")"; return 1; }
+    contains "$out" "queued to inbox" || { echo "  stdout: $out (want 'queued to inbox' with no daemon)"; return 1; }
+    [ "$(jq -r 'select(.msg == "hello queued") | .from' "$INBOX_DIR/$h_recipient.jsonl")" = "$h_sender" ] \
+        || { echo "  recipient inbox missing the queued message"; return 1; }
     return 0
 }
 
@@ -1105,22 +1171,14 @@ case_join_warns_on_stranding_escalation_when_bridge_running() {
     jq --arg n "$h1" --argjson o "$legacy_obj" '.agents[$n] = $o' "$REGISTRY" > "$REGISTRY.tmp" \
         && mv "$REGISTRY.tmp" "$REGISTRY"
 
-    if ! command -v tmux >/dev/null 2>&1; then
-        echo "  SKIP: no tmux on this host — cannot mock a bridge marker"
-        return 2
-    fi
-    # Mock the bridge marker: comm-listen.sh's own naming, a detached tmux
-    # session "commbridge-<handle>" on this suite's ISOLATED $SOT_TMUX_SOCK
-    # (the same seam case_spawn_fresh_only_refusal already uses) — never
-    # the real per-user socket. `sleep` stands in for the reconnect loop;
-    # comm-join.sh's guard only checks that the session exists.
-    if ! tmux -S "$SOT_TMUX_SOCK" new-session -d -s "commbridge-$h1" "sleep 60" 2>/dev/null; then
-        echo "  SKIP: could not create a mock bridge tmux session on the isolated socket — unmockable in this environment"
-        return 2
-    fi
+    # A real bridge loop for the bare handle (comm-lib.sh's own
+    # sot_bridge_start, pidfile under this suite's isolated comm home) with
+    # the fake relay standing in for comm-relay.sh.
+    sot_bridge_start "$h1" "$FAKE_RELAY"; FAKE_BRIDGE_HANDLE="$h1"
+    sot_bridge_running_for "$h1" || { echo "  setup: sot_bridge_start did not yield a running bridge for @$h1"; return 1; }
 
     join_in "$root"
-    tmux -S "$SOT_TMUX_SOCK" kill-session -t "commbridge-$h1" 2>/dev/null || true
+    sot_bridge_stop "$h1"; FAKE_BRIDGE_HANDLE=""
 
     [ "$JOIN_RC" -eq 0 ] || { echo "  comm-join.sh exited $JOIN_RC: $JOIN_ERR"; return 1; }
     contains "$JOIN_OUT" "Joined sot-comm as @$h2" \
@@ -1135,12 +1193,10 @@ case_join_warns_on_stranding_escalation_when_bridge_running() {
 }
 
 case_join_bridge_probe_exact_match_ignores_prefix_decoy() {
-    # Codex review round-1 finding 4: tmux's target-session grammar falls
-    # BACK to prefix/glob matching without a leading '=', so a bridge
-    # session actually named "commbridge-<h1>-decoy" (a DIFFERENT handle
-    # that merely starts with h1's bridge name) used to false-positive the
-    # has-session probe and fire the stranding warning for a session that
-    # was never stranded. Same registry setup that forces escalation as
+    # A bridge for a DIFFERENT handle that merely starts with h1 (its
+    # pidfile is bridge-<h1>-decoy.pid, its argv names <h1>-decoy) must
+    # never satisfy the probe for h1 and fire the stranding warning for a
+    # session that was never stranded. Same registry setup that forces escalation as
     # case_join_warns_on_stranding_escalation_when_bridge_running above,
     # but the ONLY bridge session present is the prefix decoy — no EXACT
     # "commbridge-<h1>" session exists — so the warning must NOT fire.
@@ -1156,89 +1212,66 @@ case_join_bridge_probe_exact_match_ignores_prefix_decoy() {
     jq --arg n "$h1" --argjson o "$legacy_obj" '.agents[$n] = $o' "$REGISTRY" > "$REGISTRY.tmp" \
         && mv "$REGISTRY.tmp" "$REGISTRY"
 
-    if ! command -v tmux >/dev/null 2>&1; then
-        echo "  SKIP: no tmux on this host — cannot mock a decoy bridge marker"
-        return 2
-    fi
-    if ! tmux -S "$SOT_TMUX_SOCK" new-session -d -s "commbridge-$h1-decoy" "sleep 60" 2>/dev/null; then
-        echo "  SKIP: could not create a mock decoy tmux session on the isolated socket — unmockable in this environment"
-        return 2
-    fi
+    # A bridge for a DIFFERENT handle that merely starts with h1: its own
+    # pidfile, its own argv — the probe for h1 must not see it.
+    sot_bridge_start "$h1-decoy" "$FAKE_RELAY"; FAKE_BRIDGE_HANDLE="$h1-decoy"
+    sot_bridge_running_for "$h1-decoy" || { echo "  setup: no running decoy bridge"; return 1; }
 
     join_in "$root"
-    tmux -S "$SOT_TMUX_SOCK" kill-session -t "commbridge-$h1-decoy" 2>/dev/null || true
+    sot_bridge_stop "$h1-decoy"; FAKE_BRIDGE_HANDLE=""
 
     [ "$JOIN_RC" -eq 0 ] || { echo "  comm-join.sh exited $JOIN_RC: $JOIN_ERR"; return 1; }
     contains "$JOIN_OUT" "Joined sot-comm as @$h2" \
         || { echo "  stdout: $JOIN_OUT (want escalation to @$h2, same as the no-bridge case)"; return 1; }
     contains "$JOIN_ERR" "WARNING" \
-        && { echo "  stranding warning fired against a PREFIX-only decoy bridge (exact-match probe regressed — the '=' prefix pin is missing or broken): $JOIN_ERR"; return 1; }
+        && { echo "  stranding warning fired against a PREFIX-only decoy bridge (the pidfile/argv probe regressed): $JOIN_ERR"; return 1; }
     return 0
 }
 
-case_bridge_detection_finds_directly_started_bridge_with_no_tmux_marker() {
-    # Codex review round-2 finding 5/D: a bridge started directly (no
-    # comm-listen.sh tmux wrapper at all — e.g. run by hand in a plain
-    # shell) has NO "commbridge-<name>" tmux session, so the tmux-only
-    # half of bridge detection misses it entirely. The uid-scoped,
-    # anchored process-table check (sot_bridge_pids_for /
-    # sot_bridge_running_for, comm-lib.sh) must still find it.
+case_listen_start_reaps_a_stray_bridge_and_records_a_pidfile() {
+    # A bridge with no pidfile — one started by hand, or by a previous
+    # release inside a tmux session — is a STRAY: sot_bridge_pids_for finds
+    # it by process pattern, sot_bridge_running_for does not count it, and
+    # comm-listen.sh start kills it before starting the recorded loop, so
+    # no two bridges ever file one frame twice. --status names the pid;
+    # --stop ends the loop and drops the pidfile.
     #
-    # A tiny wrapper script literally NAMED comm-relay.sh (so its own
-    # invocation's argv contains the exact substring the pattern matches)
-    # stands in for the real reconnect-loop process. The trailing `:` stops
-    # the shell from tail-call-exec'ing straight into `sleep` for its last
-    # (and only) real statement, which would replace this process's argv
-    # entirely and erase the very substring being searched for.
-    local handle wrapper pid found tries sock running_result
-    handle="directbridge-$$-${RANDOM:-0}"
+    # The stray is a wrapper literally NAMED comm-relay.sh (its argv carries
+    # the exact substring the pattern matches); the trailing `:` stops the
+    # shell from tail-call-exec'ing into `sleep`, which would replace the
+    # argv being searched for.
+    local handle wrapper stray_pid tries out home
+    handle="straybridge-$$-${RANDOM:-0}"
+    home="$WORK/listen-home"; mkdir -p "$home/bin"
+    cp "$FAKE_RELAY" "$home/bin/comm-relay.sh"   # what the recorded loop will run
     wrapper="$WORK/comm-relay.sh"
-    cat > "$wrapper" <<'EOF'
-#!/bin/sh
-sleep 60
-:
-EOF
-    chmod +x "$wrapper"
-
-    # `{ ... & } 2>/dev/null` around the BACKGROUNDING itself (not the
-    # later `kill`/`wait`, which is where you'd expect to redirect this):
-    # bash's own "Terminated"/"Killed" job-control notice for a background
-    # job later reaped by `wait` after a signal is tied to stderr as it
-    # was AT THE POINT THE JOB WAS BACKGROUNDED, not at kill/wait time —
-    # redirecting only the kill/wait lines does NOT suppress it (verified
-    # empirically); redirecting the `&` itself does.
+    printf '#!/bin/sh\nsleep 60\n:\n' > "$wrapper"; chmod +x "$wrapper"
     { "$wrapper" bridge --name "$handle" & } 2>/dev/null
-    pid=$!
-
+    stray_pid=$!
     tries=0
-    found=""
-    while [ "$tries" -lt 50 ]; do
-        found="$(sot_bridge_pids_for "$handle")"
-        [ -n "$found" ] && break
-        sleep 0.1
-        tries=$((tries + 1))
-    done
+    while [ "$tries" -lt 50 ] && [ -z "$(SOT_COMM_HOME="$home" sot_bridge_pids_for "$handle")" ]; do sleep 0.1; tries=$((tries + 1)); done
+    [ -n "$(sot_bridge_pids_for "$handle")" ] || { pkill -P "$stray_pid"; kill "$stray_pid"; echo "  sot_bridge_pids_for did not find the stray"; return 1; }
+    if COMM_HOME="$home" sot_bridge_running_for "$handle"; then pkill -P "$stray_pid"; kill "$stray_pid"; echo "  a stray with no pidfile counted as running"; return 1; fi
 
-    running_result=1
-    if sock="$(sot_tmux_socket 2>/dev/null)"; then
-        # No tmux session named commbridge-<handle> exists anywhere — this
-        # confirms sot_bridge_running_for finds it via the process signal
-        # ALONE, exactly the "directly-started, no tmux marker" case.
-        sot_bridge_running_for "$handle" "$sock"
-        running_result=$?
-    fi
+    out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" 2>&1)"
+    contains "$out" "started relay listener for @$handle" || { pkill -P "$stray_pid" 2>/dev/null; kill "$stray_pid" 2>/dev/null; echo "  start did not report a started listener: $out"; return 1; }
+    tries=0
+    while [ "$tries" -lt 50 ] && kill -0 "$stray_pid" 2>/dev/null; do sleep 0.1; tries=$((tries + 1)); done
+    if kill -0 "$stray_pid" 2>/dev/null; then pkill -P "$stray_pid"; kill "$stray_pid"; echo "  the stray bridge survived comm-listen.sh start"; return 1; fi
+    wait "$stray_pid" 2>/dev/null || true
+    [ -s "$home/state/bridge-$handle.pid" ] || { echo "  no pidfile after start"; return 1; }
+    COMM_HOME="$home" sot_bridge_running_for "$handle" || { echo "  the recorded loop is not reported running"; return 1; }
+    out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" --status 2>&1)"
+    contains "$out" "RUNNING (pid $(cat "$home/state/bridge-$handle.pid"))" || { echo "  --status: $out"; return 1; }
+    out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" 2>&1)"
+    contains "$out" "already running" || { echo "  a second start did not see the recorded loop: $out"; return 1; }
 
-    # Kill the sleep CHILD first, then the wrapper — a bare `kill "$pid"`
-    # only signals the wrapper shell; its foreground `sleep 60` child is
-    # NOT auto-forwarded the signal, so it would otherwise be orphaned
-    # (reparented, left running for its full 60s) instead of actually
-    # torn down here.
-    pkill -P "$pid" 2>/dev/null || true
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-
-    [ -n "$found" ] || { echo "  sot_bridge_pids_for found no PID for a directly-started (no tmux marker) bridge process"; return 1; }
-    [ "$running_result" -eq 0 ] || { echo "  sot_bridge_running_for missed a directly-started bridge with no tmux marker (process signal alone should have been enough)"; return 1; }
+    out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" --stop 2>&1)"
+    contains "$out" "stopped relay listener" || { echo "  --stop: $out"; return 1; }
+    [ ! -f "$home/state/bridge-$handle.pid" ] || { echo "  pidfile survived --stop"; return 1; }
+    tries=0
+    while [ "$tries" -lt 50 ] && [ -n "$(sot_bridge_pids_for "$handle")" ]; do sleep 0.1; tries=$((tries + 1)); done
+    [ -z "$(sot_bridge_pids_for "$handle")" ] || { echo "  bridge processes survived --stop: $(sot_bridge_pids_for "$handle")"; return 1; }
     return 0
 }
 
@@ -1260,10 +1293,16 @@ case_spawn_fresh_only_refusal() {
     [ "$JOIN_RC" -eq 0 ] || { echo "  setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
     contains "$JOIN_OUT" "Joined sot-comm as @$h1" || { echo "  setup join stdout: $JOIN_OUT"; return 1; }
 
-    spawn_in "$root"
+    # The stub daemon answers the create and reports the row ready; a real
+    # sotd is never reached (the suite-wide endpoint is dead).
+    start_stub_daemon "ws-fresh-1" "$base" "$root"
+    SOT_SPAWN_ENDPOINT="unix:$STUB_SOCK" spawn_in "$root"
+    local created; created="$(grep -c '"op":"workspace.create"' "$STUB_REQLOG" 2>/dev/null || echo 0)"
+    stop_stub_daemon
     [ "$SPAWN_RC" -eq 0 ] || { echo "  comm-spawn.sh exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
-    contains "$SPAWN_OUT" "Spawned (raw) @$h2" \
+    contains "$SPAWN_OUT" "@$h2" \
         || { echo "  spawn stdout: $SPAWN_OUT (want escalation to @$h2, not a reclaim of @$h1)"; return 1; }
+    [ "$created" -eq 1 ] || { echo "  the stub daemon saw $created workspace.create requests (want 1)"; return 1; }
 
     [ "$(registry_field "$h1" status)" = "idle" ] \
         || { echo "  @$h1 (the live row) was overwritten by spawn: status=$(registry_field "$h1" status)"; return 1; }
@@ -1273,8 +1312,6 @@ case_spawn_fresh_only_refusal() {
     [ "$(registry_root "$h2")" = "$root" ] || { echo "  @$h2 root=$(registry_root "$h2"), want $root"; return 1; }
     [ "$(registry_field "$h2" status)" = "spawning" ] \
         || { echo "  @$h2 status=$(registry_field "$h2" status), want spawning"; return 1; }
-    tmux -S "$SOT_TMUX_SOCK" has-session -t "$h2" 2>/dev/null \
-        || { echo "  no isolated tmux session for @$h2"; return 1; }
     return 0
 }
 
@@ -1450,7 +1487,7 @@ case_rollback_survives_replacement_row() {
     # Simulate "the child joined for real" (or an explicit claimant took
     # over) BEFORE the spawner's rollback runs: a live row, no nonce.
     replacement="$(jq -n --arg root "$root" \
-        '{host:"h",tmux:"session:1.1",pane_id:"%1",repo:"r",root:$root,expertise:[],status:"idle",joined:"t1",last_seen:"t1"}')"
+        '{host:"h",workspace_id:"ws-repl-1",repo:"r",root:$root,expertise:[],status:"idle",joined:"t1",last_seen:"t1"}')"
     with_lock registry_put "$name" "$replacement"
 
     with_lock registry_del_if_provisional "$name" "$root" "$nonce"
@@ -1459,8 +1496,8 @@ case_rollback_survives_replacement_row() {
 
     [ "$(registry_field "$name" status)" = "idle" ] \
         || { echo "  the replacement row was deleted/altered: status=$(registry_field "$name" status)"; return 1; }
-    [ "$(registry_field "$name" tmux)" = "session:1.1" ] \
-        || { echo "  the replacement row's tmux field is gone: $(registry_field "$name" tmux)"; return 1; }
+    [ "$(registry_field "$name" workspace_id)" = "ws-repl-1" ] \
+        || { echo "  the replacement row's workspace_id is gone: $(registry_field "$name" workspace_id)"; return 1; }
 
     # Sanity check the OTHER branch too: an UNREPLACED provisional row
     # (matching root+nonce+status) must still be deletable.
@@ -1703,7 +1740,7 @@ case_comm_listen_windows_no_bridge_started() {
     # real git-bash box with neither helpful env var would hit) via the
     # same PATH-prefix seam case_hash_command_failure_fails_loudly uses
     # for a fake sha256sum.
-    local fakebin sock out err rc
+    local fakebin out err rc
     fakebin="$WORK/winuname"
     mkdir -p "$fakebin"
     cat > "$fakebin/uname" <<'FAKEUNAME'
@@ -1711,10 +1748,9 @@ case_comm_listen_windows_no_bridge_started() {
 echo "MINGW64_NT-10.0-19045"
 FAKEUNAME
     chmod +x "$fakebin/uname"
-    sock="$WORK/winnoop-tmux.sock"
 
     out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" SOT_COMM_HOME="$WORK/winnoop-home" \
-        SOT_TMUX_SOCK="$sock" bash "$LISTEN" --name winnoop-handle 2>"$WORK/winnoop.err")"
+        bash "$LISTEN" --name winnoop-handle 2>"$WORK/winnoop.err")"
     rc=$?
     err="$(cat "$WORK/winnoop.err" 2>/dev/null)"
     [ "$rc" -eq 0 ] || { echo "  exited $rc (want 0): stdout=$out stderr=$err"; return 1; }
@@ -1722,17 +1758,14 @@ FAKEUNAME
         || { echo "  missing the FE-inbox receive-path line: $out"; return 1; }
     contains "$out" "no relay bridge is started" \
         || { echo "  missing 'no relay bridge is started': $out"; return 1; }
-    if tmux -S "$sock" has-session -t "=commbridge-winnoop-handle" 2>/dev/null; then
-        echo "  a commbridge-winnoop-handle tmux session was started on a Windows host (must never start one)"
-        tmux -S "$sock" kill-server >/dev/null 2>&1 || true
-        return 1
-    fi
+    [ ! -f "$WORK/winnoop-home/state/bridge-winnoop-handle.pid" ] \
+        || { echo "  a bridge pidfile was written on a Windows host (must never start one)"; return 1; }
     [ -z "$(sot_bridge_pids_for "winnoop-handle")" ] \
         || { echo "  a bridge process for winnoop-handle is running (must never start one on a Windows host)"; return 1; }
 
     # --status reports the same fact, no bridge probing.
     out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" SOT_COMM_HOME="$WORK/winnoop-home" \
-        SOT_TMUX_SOCK="$sock" bash "$LISTEN" --name winnoop-handle --status 2>&1)"
+        bash "$LISTEN" --name winnoop-handle --status 2>&1)"
     rc=$?
     [ "$rc" -eq 0 ] || { echo "  --status exited $rc (want 0): $out"; return 1; }
     contains "$out" "no relay bridge is started" \
@@ -1746,21 +1779,18 @@ FAKEUNAME
     # deterministic: exit 1, and — the actual invariant this case exists to
     # protect — still no bridge, ever, on Windows.
     out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" SOT_COMM_HOME="$WORK/winnoop-home" \
-        SOT_TMUX_SOCK="$sock" SOT_RELAY_ENDPOINT="tcp:127.0.0.1:1" \
+        SOT_RELAY_ENDPOINT="tcp:127.0.0.1:1" \
         bash "$LISTEN" --name winnoop-handle --selftest 2>&1)"
     rc=$?
     [ "$rc" -eq 1 ] || { echo "  --selftest exited $rc (want 1, daemon unreachable): $out"; return 1; }
     contains "$out" "daemon unreachable" \
         || { echo "  --selftest didn't report the daemon as unreachable: $out"; return 1; }
-    if tmux -S "$sock" has-session -t "=commbridge-winnoop-handle" 2>/dev/null; then
-        echo "  a commbridge-winnoop-handle tmux session was started by --selftest on a Windows host (must never start one)"
-        tmux -S "$sock" kill-server >/dev/null 2>&1 || true
-        return 1
-    fi
+    [ ! -f "$WORK/winnoop-home/state/bridge-winnoop-handle.pid" ] \
+        || { echo "  a bridge pidfile was written by --selftest on a Windows host (must never start one)"; return 1; }
     [ -z "$(sot_bridge_pids_for "winnoop-handle")" ] \
         || { echo "  a bridge process for winnoop-handle is running after --selftest (must never start one on a Windows host)"; return 1; }
 
-    rm -rf "$sock" "$WORK/winnoop-home" "$WORK/winnoop.err"
+    rm -rf "$WORK/winnoop-home" "$WORK/winnoop.err"
     return 0
 }
 
@@ -2025,7 +2055,7 @@ check "nopane WITH a matching registry root: heals (round-2 F-A positive path)" 
 check "nopane self-file read from a non-repo cwd: discarded, not healed; a send from there refuses loudly" case_nopane_selffile_from_non_repo_cwd_not_healed_and_send_refuses
 check "comm-relay.sh send refuses with no resolved identity" case_comm_relay_send_refuses_with_no_identity
 check "comm-bootstrap.sh refuses with no resolved identity" case_comm_bootstrap_refuses_with_no_identity
-check "comm-send.sh --force-target stays exempt from the identity refusal" case_comm_send_force_target_exempt_from_identity_refusal
+check "comm-send.sh types live into a same-host row (pty.input, enter) and queues with no daemon" case_send_types_live_into_same_host_row_else_queues
 check "comm-relay.sh send fails loudly with no reachable daemon, never claims 'relayed' (round-3 F3)" case_relay_send_fails_loudly_with_no_reachable_daemon
 check "comm-send.sh succeeds with two genuinely rooted, registered identities (round-3 F8 positive path)" case_send_succeeds_with_rooted_registry_row
 check "comm-send.sh refuses when NAME resolves but has no registry row (round-2 F4/C)" case_send_refuses_when_registry_row_missing_despite_resolved_name
@@ -2033,7 +2063,7 @@ check "comm-send.sh refuses when the registry row belongs to a different project
 check "legacy registry row with no root= is a collision, not a free pass" case_legacy_unknown_root_row
 check "comm-join.sh warns loudly on stranding escalation when a bridge for the bare handle is running" case_join_warns_on_stranding_escalation_when_bridge_running
 check "comm-join.sh bridge probe ignores a prefix-only decoy session (round-1 F4)" case_join_bridge_probe_exact_match_ignores_prefix_decoy
-check "bridge detection finds a directly-started bridge with no tmux marker (round-2 F5/D)" case_bridge_detection_finds_directly_started_bridge_with_no_tmux_marker
+check "comm-listen.sh start reaps a stray bridge, records a pidfile; --status/--stop follow it" case_listen_start_reaps_a_stray_bridge_and_records_a_pidfile
 check "comm-spawn.sh fresh-mode refuses to reclaim a live row (F3)" case_spawn_fresh_only_refusal
 check "comm-spawn.sh --task refuses with no spawner identity, no-task spawn still works (round-2 SHOULD-FIX 3/G)" case_spawn_refuses_task_when_spawner_has_no_identity
 check "comm-spawn.sh --task refuses when the spawner's registry row is gone (round-3 F4)" case_spawn_task_refuses_when_spawner_has_no_registry_row

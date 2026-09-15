@@ -4,9 +4,7 @@
 # workspace row itself (ruling: no signal it can observe proves sole
 # ownership of a row workspace.create answers with — another caller can
 # win the same slug between a list and a create). Stub unix-socket daemon
-# (nc -klU + FIFO + tail -F, as test-agent-join.sh uses) + a tmux SHIM
-# (never the real binary, so no real tmux server is ever touched) that
-# logs and controls every invocation.
+# (nc -klU + FIFO + tail -F, as test-agent-join.sh uses).
 #
 # Usage: comm/core/tests/test-spawn-capsule-workspace.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -22,21 +20,8 @@ if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
     exit 1
 fi
 
-mkdir -p "$WORK/bin"
-cat > "$WORK/bin/tmux" <<EOF
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >> "$WORK/tmux-calls.log"
-[ -f "$WORK/tmux-hang" ] && sleep 8
-code=1
-[ -f "$WORK/tmux-exit-code" ] && code="\$(cat "$WORK/tmux-exit-code")"
-exit "\$code"
-EOF
-chmod +x "$WORK/bin/tmux"
-export PATH="$WORK/bin:$PATH"
-
 export SOT_COMM_TEST_HOST="test-host"
-export SOT_TMUX_SOCK="$WORK/fake-tmux.sock"   # short-circuits sot_tmux_socket
-unset TMUX_PANE TMUX   # never let an ambient pane/session leak into HOST/PANE_ID resolution
+unset SOT_WORKSPACE_ID   # never let an ambient row leak into the self-file slot
 mkdir -p "$WORK/repo"
 REPO_PATH="$WORK/repo"
 
@@ -87,7 +72,7 @@ start_stub_daemon() {
     local hello_reply create_reply
     hello_reply='{"v":1,"id":1,"kind":"res","op":"hello","payload":{"session_id":"s1","revision":0,"snapshot_pending":false}}'
     create_reply="$(jq -nc --arg id "$wsid" --arg slug "$slug" --arg root "$REPO_PATH" \
-        '{v:1,id:1,kind:"res",op:"workspace.create",payload:{workspace_id:$id,slug:$slug,label:$slug,project_root:$root,tmux_session:("sot-be-"+$slug)}}')"
+        '{v:1,id:1,kind:"res",op:"workspace.create",payload:{workspace_id:$id,slug:$slug,label:$slug,project_root:$root}}')"
 
     exec 3<>"$fifo"
     nc -klU "$SOCK" < "$fifo" >> "$REQLOG" &
@@ -136,10 +121,10 @@ entry() {
     local id="$1" slug="$2" runtime="$3" phase="$4"
     if [ -n "$phase" ]; then
         jq -nc --arg id "$id" --arg slug "$slug" --arg root "$REPO_PATH" --arg rt "$runtime" --arg ph "$phase" \
-            '[{workspace_id:$id,slug:$slug,label:$slug,project_root:$root,tmux_session:("sot-be-"+$slug),kernel_running:false,is_default:false,autostart_claude:true,agent:"claude",agent_name:"",agent_handle:"",task:"",agent_state:"",agent_summary:"",agent_status_at:"",repl_state:"idle",runtime:$rt,phase:$ph}]'
+            '[{workspace_id:$id,slug:$slug,label:$slug,project_root:$root,kernel_running:false,is_default:false,autostart_claude:true,agent:"claude",agent_name:"",agent_handle:"",task:"",agent_state:"",agent_summary:"",agent_status_at:"",repl_state:"idle",runtime:$rt,phase:$ph}]'
     else
         jq -nc --arg id "$id" --arg slug "$slug" --arg root "$REPO_PATH" --arg rt "$runtime" \
-            '[{workspace_id:$id,slug:$slug,label:$slug,project_root:$root,tmux_session:("sot-be-"+$slug),kernel_running:false,is_default:false,autostart_claude:true,agent:"claude",agent_name:"",agent_handle:"",task:"",agent_state:"",agent_summary:"",agent_status_at:"",repl_state:"idle",runtime:$rt}]'
+            '[{workspace_id:$id,slug:$slug,label:$slug,project_root:$root,kernel_running:false,is_default:false,autostart_claude:true,agent:"claude",agent_name:"",agent_handle:"",task:"",agent_state:"",agent_summary:"",agent_status_at:"",repl_state:"idle",runtime:$rt}]'
     fi
 }
 
@@ -164,7 +149,6 @@ run_spawn() {
 }
 
 registry_has_row() { jq -e --arg n "$1" '.agents | has($n)' "$SPAWN_HOME/registry.json" >/dev/null 2>&1; }
-tmux_was_called() { [ -s "$WORK/tmux-calls.log" ]; }
 destroy_was_sent_for() { grep -q "\"op\":\"workspace.destroy\".*\"workspace_id\":\"$1\"" "$REQLOG" 2>/dev/null; }
 despawn_cmd_printed_for() { contains "$SPAWN_ERR" "comm-despawn.sh $1"; }
 
@@ -183,7 +167,6 @@ assert_never_destroyed() {
 # --- cases -------------------------------------------------------------
 
 case_capsule_reaches_ready_on_second_poll() {
-    rm -f "$WORK/tmux-calls.log" "$WORK/tmux-hang"
     local wsid="ws-ready" slug="ready1"
     start_stub_daemon "$wsid" "$slug" \
         "$(entry "$wsid" "$slug" capsule starting)" \
@@ -193,13 +176,11 @@ case_capsule_reaches_ready_on_second_poll() {
 
     [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
     contains "$SPAWN_OUT" "Capsule row ready" || { echo "  stdout: $SPAWN_OUT"; return 1; }
-    tmux_was_called && { echo "  tmux was invoked for a capsule row"; return 1; }
     registry_has_row "spawn-ready" || { echo "  registry row missing after success"; return 1; }
     return 0
 }
 
 case_capsule_terminal_phase_never_destroys() {
-    rm -f "$WORK/tmux-calls.log" "$WORK/tmux-hang"
     local wsid="ws-term" slug="term1"
     start_stub_daemon "$wsid" "$slug" "$(entry "$wsid" "$slug" capsule ended_no_respawn)"
     SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn spawn-term
@@ -211,7 +192,6 @@ case_capsule_terminal_phase_never_destroys() {
 }
 
 case_capsule_timeout_never_destroys() {
-    rm -f "$WORK/tmux-calls.log" "$WORK/tmux-hang"
     local wsid="ws-slow" slug="slow1"
     start_stub_daemon "$wsid" "$slug" "$(entry "$wsid" "$slug" capsule starting)"
     SOT_COMM_SPAWN_CAPSULE_WAIT=2 run_spawn spawn-slow
@@ -223,7 +203,6 @@ case_capsule_timeout_never_destroys() {
 }
 
 case_list_never_reports_id_never_destroys() {
-    rm -f "$WORK/tmux-calls.log" "$WORK/tmux-hang"
     local wsid="ws-nolist" slug="nolist1"
     start_stub_daemon "$wsid" "$slug" "[]"
     SOT_COMM_SPAWN_CAPSULE_WAIT=2 run_spawn spawn-nolist
@@ -231,19 +210,18 @@ case_list_never_reports_id_never_destroys() {
     stop_stub_daemon
 
     contains "$out" "never reported id=$wsid" || { echo "  stderr: $out"; return 1; }
-    tmux_was_called && { echo "  must never fall back to a tmux check either"; return 1; }
     assert_never_destroyed "$wsid" spawn-nolist
 }
 
 # --- run -----------------------------------------------------------------
 
-check "capsule row reaches phase 'ready' on the second poll: succeeds, never touches tmux" \
+check "capsule row reaches phase 'ready' on the second poll: succeeds" \
     case_capsule_reaches_ready_on_second_poll
 check "capsule row settles to 'ended_no_respawn': never destroys, prints the despawn command" \
     case_capsule_terminal_phase_never_destroys
 check "capsule row never reaches 'ready' within the wait: TIMEOUT never destroys" \
     case_capsule_timeout_never_destroys
-check "workspace.list never reports the created id: never destroys, no tmux fallback" \
+check "workspace.list never reports the created id: never destroys" \
     case_list_never_reports_id_never_destroys
 
 echo ""
