@@ -1310,14 +1310,16 @@ pub struct WorkspaceCreateReq {
     #[serde(default)]
     pub runtime: String,
     /// Accounts brief (v0.6.0): which discovered account this row's
-    /// agent should run under — the name of a `.claude-<name>` /
-    /// `.codex-<name>` folder in this daemon's own home, or `None`/empty
-    /// for the agent's own default config folder. Resolved once, here,
-    /// at create, and recorded on the row; refused loudly (never a
-    /// silent fallback to the default folder) if the named folder does
-    /// not exist, or if this is a bash (`agent == "none"`) row — a bash
-    /// row has no account to spend. `#[serde(default)]` so existing
-    /// callers / JSON without the field still deserialize.
+    /// agent should run under — the name of a subdirectory of
+    /// `.claude-auth` in this daemon's own home, or `None`/empty for the
+    /// agent's own default config folder. Claude only this release —
+    /// Codex accounts are deferred, so a codex row with a non-default
+    /// account is refused. Resolved once, here, at create, and recorded
+    /// on the row; refused loudly (never a silent fallback to the
+    /// default folder) if the named subdirectory does not exist, or if
+    /// this is a bash (`agent == "none"`) row — a bash row has no account
+    /// to spend. `#[serde(default)]` so existing callers / JSON without
+    /// the field still deserialize.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
     // NOTE (ADR 0023 §3): the daemon-boot trigger travels as an extra wire field

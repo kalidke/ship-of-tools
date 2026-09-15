@@ -24,15 +24,15 @@
 #                 (ADR 0031). The daemon launches ccb or ccx accordingly in
 #                 the row's capsule.
 #   --account     which discovered account (accounts brief, v0.6.0) the
-#                 row's agent runs under — the NAME of a folder that must
-#                 already exist directly in the daemon's home:
-#                 ~/.claude-<name> for a claude row, ~/.codex-<name> for a
-#                 codex row (a name folder logged in there, or not yet —
-#                 either is fine; only the FOLDER must exist). Omit for
-#                 the agent's own default account. The daemon refuses the
+#                 row's agent runs under — the NAME of a subdirectory that
+#                 must already exist under ~/.claude-auth (claude rows
+#                 only; logged in there already, or not yet — either is
+#                 fine, only the subdirectory must exist). Omit for the
+#                 agent's own default account. The daemon refuses the
 #                 whole create, loudly, with the exact one-line command
-#                 to fix it, if the named folder is missing; a bash
-#                 (--agent none) row refuses ANY --account outright.
+#                 to fix it, if the named subdirectory is missing; a bash
+#                 (--agent none) row refuses ANY --account outright, and
+#                 so does a codex row — Codex accounts are deferred.
 #   --label       FE workspace label (default: basename of repo-path); guarded to
 #                 the repo basename so a session stays findable next to its repo.
 #   --display-label  FE label that deliberately DIFFERS from the repo basename

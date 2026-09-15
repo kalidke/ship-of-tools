@@ -4,9 +4,9 @@
 # scripts to ~/.sot-comm/bin and each per-CLI adapter to that CLI's dir
 # (~/.claude/skills, $CODEX_HOME/skills, ~/.local/bin, hooks/plugins) — AND,
 # per-session accounts (owner ruling), into every discovered
-# ~/.claude-<name> account directory alongside the default `~/.claude`, via
-# the same merge logic (`_discover_claude_accounts`, `_install_claude_skills`,
-# `_install_claude_hooks`).
+# ~/.claude-auth/<name> account subdirectory alongside the default
+# `~/.claude`, via the same merge logic (`_discover_claude_accounts`,
+# `_install_claude_skills`, `_install_claude_hooks`).
 # See comm/PROTOCOL.md for the wire contract.
 #
 # The Claude adapter additionally installs three work-state hooks
@@ -55,37 +55,43 @@ codex_home() = _env_dir("CODEX_HOME", joinpath(homedir(), ".codex"))
 "Resolved runtime home for the DEFAULT claude account (honors `\$CLAUDE_CONFIG_DIR`)."
 claude_home() = _env_dir("CLAUDE_CONFIG_DIR", joinpath(homedir(), ".claude"))
 
-# Per-session accounts (owner ruling): an account is nothing more than a
-# folder the user creates and logs into OUTSIDE Ship of Tools —
-# `~/.claude-<name>` for Claude — never a declared entity. Nothing here
-# creates one; discovery only looks at what already exists in $HOME, so a
-# typo or a folder for something else entirely never gets treated as an
-# account by accident (the same `[a-z0-9][a-z0-9_-]*` name rule the daemon
-# uses to discover them). A folder that has never been logged into is a
-# NORMAL account — its pane runs the login on first start — so it's
-# discovered and seeded exactly like any other.
-const _CLAUDE_ACCOUNT_DIR_RE = r"^\.claude-([a-z0-9][a-z0-9_-]*)$"
+# Per-session accounts (owner ruling, later refined): an account is a
+# SUBDIRECTORY of one dedicated parent folder, `~/.claude-auth/<name>` —
+# never a declared entity, and never a sibling `~/.claude-<name>` folder
+# (that scheme is retired: on the maintainer's own home it collided with
+# unrelated folders that merely matched the naming pattern — one holding a
+# single subdirectory named after a session, another holding two
+# subdirectories from an earlier per-account auth layout — with no way to
+# tell those apart from a real account without opening files). Nothing
+# here creates the parent or a subdirectory; discovery only looks at what
+# already exists in $HOME, so a typo or a folder for something else
+# entirely never gets treated as an account by accident (the same
+# `[a-z0-9][a-z0-9_-]*` name rule the daemon uses to discover them). A
+# subdirectory that has never been logged into is a NORMAL account — its
+# pane runs the login on first start — so it's discovered and seeded
+# exactly like any other. Codex accounts are deferred this release (see
+# `rust/backend/src/accounts.rs`); only Claude is discovered here.
+const _CLAUDE_ACCOUNTS_DIR = ".claude-auth"
+const _CLAUDE_ACCOUNT_NAME_RE = r"^[a-z0-9][a-z0-9_-]*$"
 
 """
     _discover_claude_accounts()
 
-Named Claude account directories directly in `homedir()`: every
-`~/.claude-<name>` entry whose `<name>` matches `^[a-z0-9][a-z0-9_-]*\$`.
-Always scans the literal home (not `claude_home()`, which honors
-`\$CLAUDE_CONFIG_DIR` for the ONE directory a caller names) — an account is
-a sibling of the default `~/.claude`, on whichever machine's home this is.
+Named Claude account directories: every direct subdirectory of
+`homedir()/.claude-auth` whose name matches `^[a-z0-9][a-z0-9_-]*\$`. A
+non-directory entry there (e.g. a stray file) is skipped outright.
 Returns `(name, dir)` pairs sorted by name for a deterministic install order.
 """
 function _discover_claude_accounts()
-    home = homedir()
+    parent = joinpath(homedir(), _CLAUDE_ACCOUNTS_DIR)
     out = Tuple{String,String}[]
-    isdir(home) || return out
-    for entry in readdir(home)
-        m = match(_CLAUDE_ACCOUNT_DIR_RE, entry)
+    isdir(parent) || return out
+    for entry in readdir(parent)
+        m = match(_CLAUDE_ACCOUNT_NAME_RE, entry)
         m === nothing && continue
-        dir = joinpath(home, entry)
+        dir = joinpath(parent, entry)
         isdir(dir) || continue
-        push!(out, (String(m.captures[1]), dir))
+        push!(out, (entry, dir))
     end
     sort!(out; by = first)
     return out
@@ -442,7 +448,7 @@ update_comm(; clis = [:claude, :codex]) = install_comm(; clis = clis)
 Copy every skill directory under `srcdir` (one containing a `SKILL.md`) into
 `claude_dir/skills`, replacing any stale destination first. The same logic
 runs for the default `~/.claude` and for every discovered
-`~/.claude-<name>` account directory — `account` only labels the `@info`
+`~/.claude-auth/<name>` account subdirectory — `account` only labels the `@info`
 line so a multi-account install is legible. Returns the list of skill names
 installed (`"/name"`, matching the existing log shape).
 """
@@ -486,7 +492,7 @@ function _install_adapter(cli::Symbol)
         _install_launchers(joinpath(srcdir, "bin"))
         _install_claude_hooks(joinpath(srcdir, "hooks"), claude_home(); account = "default")
         # Per-session accounts (owner ruling): seed every OTHER discovered
-        # `~/.claude-<name>` folder with the same product skills + hook
+        # `~/.claude-auth/<name>` subdirectory with the same product skills + hook
         # registration, via the exact same merge logic as the default
         # folder above — never overwriting a user's unrelated settings.
         # A folder that has never been logged into still gets them (it's a
@@ -642,7 +648,7 @@ Install the comm hook script(s) from `srchooks` into `\$SOT_COMM_HOME/bin`
 (next to the comm-*.sh scripts they shell out to — shared across every
 account, so this repeats harmlessly), then idempotently register the
 work-state hooks in `claude_dir/settings.json`. Called once for the default
-`~/.claude` and once per discovered `~/.claude-<name>` account directory
+`~/.claude` and once per discovered `~/.claude-auth/<name>` account subdirectory
 (`_install_adapter`) — same merge logic every time.
 
 The work-state hooks make state **event-driven — instant, automatic, and free of

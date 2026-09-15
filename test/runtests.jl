@@ -372,32 +372,66 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
     end
 
     @testset "per-session accounts: discovery + installer seeding" begin
-        # Owner ruling: an account is a FOLDER the user creates and logs
-        # into OUTSIDE Ship of Tools — never a declared entity. Discovery
-        # only looks at what already exists in a temp $HOME, so this suite
-        # never touches the real machine's accounts.
-        @testset "_discover_claude_accounts: name rule + non-directories" begin
+        # Owner ruling, later refined: an account is a SUBDIRECTORY of one
+        # dedicated parent folder, `~/.claude-auth/<name>` — never a
+        # sibling `~/.claude-<name>` folder (that scheme is retired: it
+        # collided with unrelated folders that merely matched the naming
+        # pattern). Discovery only looks at what already exists in a temp
+        # $HOME, so this suite never touches the real machine's accounts.
+        @testset "_discover_claude_accounts: name rule + non-directories, under the auth parent" begin
             mktempdir() do home
-                for name in (".claude-team", ".claude-a1", ".claude-BAD", ".claude_nodash",
-                             ".claude-", ".notclaude-x")
-                    mkpath(joinpath(home, name))
+                parent = joinpath(home, ".claude-auth")
+                for name in ("team", "a1", "BAD", "_nodash")
+                    mkpath(joinpath(parent, name))
                 end
-                # A file (not a directory) matching the pattern must not count.
-                write(joinpath(home, ".claude-filelikethis"), "not a dir")
+                # A file (not a directory) inside the parent must not count.
+                write(joinpath(parent, "filelikethis"), "not a dir")
                 withenv("HOME" => home) do
                     found = ShipTools._discover_claude_accounts()
-                    @test found == [("a1", joinpath(home, ".claude-a1")), ("team", joinpath(home, ".claude-team"))]
+                    @test found == [("a1", joinpath(parent, "a1")), ("team", joinpath(parent, "team"))]
                 end
             end
         end
 
-        # The installer's own test: seeding a SECOND account folder with the
-        # same skills + hook registration as the default, leaving an
-        # unrelated existing setting untouched, and doing nothing new on a
-        # second run.
+        # The retired sibling scheme must never be discovered any more --
+        # this is exactly the ambiguity the dedicated parent deletes.
+        @testset "_discover_claude_accounts: a sibling .claude-<name> folder does not count" begin
+            mktempdir() do home
+                mkpath(joinpath(home, ".claude-team"))
+                withenv("HOME" => home) do
+                    @test isempty(ShipTools._discover_claude_accounts())
+                end
+            end
+        end
+
+        # An empty subdirectory of the parent is a valid, not-yet-logged-in
+        # account; one with a `.credentials.json` counts too (discovery
+        # doesn't gate on login state, only on being a directory there).
+        @testset "_discover_claude_accounts: an empty subdirectory and a logged-in one both count" begin
+            mktempdir() do home
+                parent = joinpath(home, ".claude-auth")
+                mkpath(joinpath(parent, "fresh")) # empty -- never logged in here yet
+                loggedin = joinpath(parent, "loggedin")
+                mkpath(loggedin)
+                write(joinpath(loggedin, ".credentials.json"), "{}")
+
+                withenv("HOME" => home) do
+                    found = ShipTools._discover_claude_accounts()
+                    @test found == [
+                        ("fresh", joinpath(parent, "fresh")),
+                        ("loggedin", joinpath(parent, "loggedin")),
+                    ]
+                end
+            end
+        end
+
+        # The installer's own test: seeding a SECOND account subdirectory
+        # with the same skills + hook registration as the default, leaving
+        # an unrelated existing setting untouched, doing nothing new on a
+        # second run, and never writing outside the dedicated parent.
         @testset "update_comm seeds a discovered account like the default" begin
             mktempdir() do home
-                acct_dir = joinpath(home, ".claude-team")
+                acct_dir = joinpath(home, ".claude-auth", "team")
                 mkpath(acct_dir)
                 # Pre-existing, unrelated content the installer must never
                 # clobber — the "never overwrite a user's unrelated
@@ -415,6 +449,10 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
 
                     acct_settings = joinpath(acct_dir, "settings.json")
                     @test isfile(acct_settings)
+
+                    # The installer touches only the one account
+                    # subdirectory that was actually discovered.
+                    @test readdir(joinpath(home, ".claude-auth")) == ["team"]
 
                     if !isnothing(Sys.which("jq"))
                         # Hook registration landed exactly as it does for
@@ -445,13 +483,13 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
         end
 
         # A never-logged-in (freshly created, otherwise EMPTY) account
-        # folder is a NORMAL account (owner ruling), not an error state —
-        # it must still get seeded, creating only what the installer itself
-        # owns (skills/ and the hook registration), nothing that would look
-        # like a login.
-        @testset "update_comm seeds an empty, never-logged-in account folder" begin
+        # subdirectory is a NORMAL account (owner ruling), not an error
+        # state — it must still get seeded, creating only what the
+        # installer itself owns (skills/ and the hook registration),
+        # nothing that would look like a login.
+        @testset "update_comm seeds an empty, never-logged-in account subdirectory" begin
             mktempdir() do home
-                acct_dir = joinpath(home, ".claude-fresh")
+                acct_dir = joinpath(home, ".claude-auth", "fresh")
                 mkpath(acct_dir) # nothing inside — never logged in here
 
                 withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
@@ -460,6 +498,23 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
                     @test isdir(joinpath(acct_dir, "skills"))
                     @test !isempty(readdir(joinpath(acct_dir, "skills")))
                     @test isfile(joinpath(acct_dir, "settings.json"))
+                end
+            end
+        end
+
+        # A folder that only matches the retired sibling naming pattern is
+        # not an account any more, so the installer must never write into
+        # it -- the "install writes only into the parent's subdirectories"
+        # rule.
+        @testset "update_comm does not write into a retired sibling .claude-<name> folder" begin
+            mktempdir() do home
+                stray = joinpath(home, ".claude-team")
+                mkpath(stray)
+
+                withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                        "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                    ShipTools.update_comm(clis = [:claude])
+                    @test isempty(readdir(stray))
                 end
             end
         end

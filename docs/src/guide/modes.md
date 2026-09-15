@@ -88,18 +88,21 @@ subscription — a team account, say, kept separate from your personal one — a
 an account outside Ship of Tools first:
 
 ```sh
-mkdir ~/.claude-team
-CLAUDE_CONFIG_DIR=~/.claude-team claude
+mkdir -p ~/.claude-auth/team
+CLAUDE_CONFIG_DIR=~/.claude-auth/team claude
 # then, inside that claude session: /login
 ```
 
-Once that folder exists it appears as a choice in the session picker (`Tab`
-cycles it) — Ship of Tools discovers accounts, it never declares or creates
-them, and it never stores a credential of any kind. A folder you haven't
-logged into yet still shows up and is still selectable — the row's own pane
-runs the login on its first start. Sessions running under a non-default
-account show a short `· <name>` suffix in the Sessions list so you can tell
-at a glance which subscription each one spends.
+Once that subdirectory exists it appears as a choice in the session picker
+(`Tab` cycles it) — Ship of Tools discovers accounts, it never declares or
+creates them, and it never stores a credential of any kind. A subdirectory
+you haven't logged into yet still shows up and is still selectable — the
+row's own pane runs the login on its first start. Sessions running under a
+non-default account show a short `· <name>` suffix in the Sessions list so
+you can tell at a glance which subscription each one spends.
+
+Claude only, this release — Codex accounts are deferred, so a codex row
+always runs the default login.
 
 ### Hosts mode (`h`)
 
