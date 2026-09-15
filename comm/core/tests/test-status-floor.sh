@@ -60,6 +60,17 @@ IT() {
       jq -nc --arg t "$1" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'; } > "$tr"
     jq -nc --arg p "$tr" --argjson a "${2:-false}" '{transcript_path:$p, stop_hook_active:$a}' | bash "$HOOKS_DIR/comm-status-idle.sh"
 }
+# ITP PROMPT TEXT [stop_hook_active]: like IT, but the transcript's OWN prompt
+# record carries PROMPT instead of the literal "go" -- simulates a turn whose
+# UserPromptSubmit hook never fired (a harness-injected wake that skipped the
+# hook), so the registry's turn_origin is whatever an EARLIER genuine prompt
+# left it while the actual prompt record here is machine-shaped.
+ITP() {
+    local tr="$WORK/transcript.jsonl"
+    { jq -nc --arg p "$1" '{type:"user",message:{content:$p}}'
+      jq -nc --arg t "$2" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'; } > "$tr"
+    jq -nc --arg p "$tr" --argjson a "${3:-false}" '{transcript_path:$p, stop_hook_active:$a}' | bash "$HOOKS_DIR/comm-status-idle.sh"
+}
 # IT2 TEXT1 TEXT2 [stop_hook_active]: like IT, but the closing reply is split
 # across TWO separate assistant transcript records (TEXT1 then TEXT2), as a
 # streaming harness can do for one logical turn.
@@ -185,6 +196,29 @@ case_parked_machine_turn_without_marker_is_not_nudged() {
     local out; out="$(IT 'ack received')"
     [ -z "$out" ] || { echo "    nudged a machine turn: '$out'"; return 1; }
     expect blocked/machine/- end
+}
+# 2026-09-15: the prompt hook missed this wake entirely (a harness-injected
+# machine message that never fired UserPromptSubmit) -- the registry still
+# says turn_origin=user from the earlier genuine prompt, but the transcript's
+# own last prompt record is machine-shaped. The Stop hook must classify it
+# itself: no nudge, and the registry's origin gets corrected too (so the
+# floor paints gray, not blue, on a later turn).
+case_parked_row_with_missed_prompt_hook_is_not_nudged() {
+    seed idle; W "$GENUINE"; "$ST" waiting "job"
+    local out
+    out="$(ITP 'Another Claude session sent a message: <teammate-message teammate_id=x>report</teammate-message>' 'ack, noted.')"
+    [ -z "$out" ] || { echo "    nudged despite a machine-shaped prompt record: '$out'"; return 1; }
+    expect waiting/machine/sticky end
+}
+# Same shape, but the transcript's last prompt record IS a genuine human
+# prompt -- the existing nudged-once case already covers this exact scenario
+# (case_parked_user_turn_without_marker_is_nudged_once), so this only checks
+# that ITP itself (unlike IT) doesn't accidentally suppress a real nudge.
+case_parked_row_with_genuine_last_prompt_is_still_nudged() {
+    seed idle; W "$GENUINE"; "$ST" waiting "job"
+    local out; out="$(ITP 'please keep going' 'I launched the job and will report.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("SITREP-WAITING"))' >/dev/null || { echo "    no nudge: '$out'"; return 1; }
+    expect waiting/user/sticky end
 }
 case_plain_user_turn_without_marker_floors_blue_unnudged() {
     seed idle; W "$GENUINE"
@@ -392,6 +426,8 @@ check "a marker split across two assistant records still stamps, no nudge" case_
 check "a marker present only in the Stop payload still stamps, no nudge" case_marker_only_in_stop_payload_still_stamps
 check "a human turn ending parked without a marker is nudged once, row untouched" case_parked_user_turn_without_marker_is_nudged_once
 check "a machine turn ending parked without a marker is not nudged" case_parked_machine_turn_without_marker_is_not_nudged
+check "a parked row whose prompt hook was missed (machine-shaped transcript prompt) is not nudged, origin corrected" case_parked_row_with_missed_prompt_hook_is_not_nudged
+check "a parked row with a genuine last prompt record is still nudged" case_parked_row_with_genuine_last_prompt_is_still_nudged
 check "a plain human answer without a marker floors blue, no nudge" case_plain_user_turn_without_marker_floors_blue_unnudged
 check "an effort turn (many tool calls) ending green with no marker gets one soft nudge, then floors" case_effort_user_turn_without_marker_gets_one_soft_nudge
 check "a long quiet turn is an effort by duration" case_long_quiet_user_turn_is_an_effort_by_duration

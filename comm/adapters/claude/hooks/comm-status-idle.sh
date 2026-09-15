@@ -107,25 +107,32 @@ tp="$(jqget '.transcript_path // empty')"
 # logical turn, and a marker opening an earlier record was silently dropped
 # when only the last record was read.
 EFFORT_TOOLS=8; EFFORT_SECS=300
-turn_tools=0; turn_secs=0; last_text=""
+turn_tools=0; turn_secs=0; last_text=""; prompt_text=""
 if [ -n "$tp" ] && [ -r "$tp" ]; then
     turn_json="$(tail -n 3000 "$tp" 2>/dev/null | jq -sc '
         def is_prompt: .type=="user" and ((.message.content|type)=="string"
             or (([.message.content[]? | .type] | index("tool_result")) == null));
         def secs: sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch 0);
+        def prompt_of: (.message.content) as $c
+            | if ($c|type)=="string" then $c
+              else ([$c[]? | select(.type=="text") | .text] | join("\n")) end;
         ([to_entries[] | select(.value | is_prompt) | .key] | last) as $h
         | (if $h == null then . else .[$h+1:] end) as $turn
         | ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text] | join("\n")) as $text
-        | if $h == null then {tools: 9999, secs: 9999, text: $text}
+        | if $h == null then {tools: 9999, secs: 9999, text: $text, prompt: ""}
           else
             ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")] | length) as $n
             | ((.[$h].timestamp // "") | if . == "" then 0 else secs end) as $t0
             | (([$turn[] | select(.type=="assistant") | .timestamp // empty] | last // "") | if . == "" then 0 else secs end) as $t1
-            | {tools: $n, secs: (if $t0 > 0 and $t1 > $t0 then $t1 - $t0 else 0 end), text: $text}
+            | {tools: $n, secs: (if $t0 > 0 and $t1 > $t0 then $t1 - $t0 else 0 end), text: $text, prompt: (.[$h] | prompt_of)}
           end' 2>/dev/null)"
     turn_tools="$(printf '%s' "$turn_json" | jq -r '.tools // 0' 2>/dev/null)"
     turn_secs="$(printf '%s' "$turn_json" | jq -r '.secs // 0' 2>/dev/null)"
     last_text="$(printf '%s' "$turn_json" | jq -r '.text // ""' 2>/dev/null)"
+    # Last prompt record's own text (2026-09-15, turn-origin correction below):
+    # empty when the turn is longer than the tail ($h was null) -- the origin
+    # override is skipped in that case, same as before this change.
+    prompt_text="$(printf '%s' "$turn_json" | jq -r '.prompt // ""' 2>/dev/null)"
 fi
 # The Stop payload's own `last_assistant_message` is appended (2026-09-14): the
 # hook can fire before the final reply record reaches the transcript, and a
@@ -200,6 +207,33 @@ fi
 # wake (relay, Monitor, notification) never nudges: floor and end.
 cur="$(jq -r --arg n "$NAME" '.agents[$n] | (.state // "") + "|" + (.turn_origin // "")' "$REGISTRY" 2>/dev/null || echo "|")"
 origin="${cur#*|}"; cur="${cur%%|*}"
+stored_origin="$origin"
+
+# TURN ORIGIN CORRECTION (2026-09-15): UserPromptSubmit does not fire for
+# every harness-injected wake -- a subagent/peer report or idle notice
+# arriving AS a prompt, a cross-session message, this hook's own send-back --
+# so $origin above can still be a stale "user" left by the last HUMAN prompt.
+# Classify the transcript's own last-prompt-record text the same way
+# comm-status-working.sh classifies hook stdin (that script is this check's
+# twin -- keep both pattern lists in sync by hand; no shared library, both
+# hooks stay standalone by design). $prompt_text is "" when the turn is
+# longer than the tail ($h was null above), so this never fires there --
+# $origin is left exactly as read, same as before this change.
+case "$prompt_text" in
+    "[SYSTEM NOTIFICATION"*|*"<task-notification>"*|"[relay] from"*|\[*:*\]\ *)
+        origin=machine ;;
+    "Another Claude session sent a message"*|*"<teammate-message"*|*"<agent-message"*|*"<cross-session-message"*|"Stop hook feedback:"*)
+        origin=machine ;;
+esac
+# Correct the registry too, not just this run's decision, so the plain
+# turn-end floor (reached on every OTHER path below) also paints gray
+# rather than blue -- it re-reads turn_origin fresh, not this script's
+# $origin. Reuses comm-status.sh's own soft-working origin write (see its
+# header): with $cur parked or "working", this can only hold the row and
+# stamp turn_origin -- it never flips the state.
+if [ "$origin" = machine ] && [ "$stored_origin" != machine ] && [ -x "$STATUS" ]; then
+    COMM_STATUS_SOFT=1 COMM_STATUS_ORIGIN=machine "$STATUS" working >/dev/null 2>&1 || true
+fi
 case "$cur" in
     blocked|waiting|done)
         if [ "$origin" = user ]; then

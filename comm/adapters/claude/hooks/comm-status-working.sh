@@ -43,6 +43,9 @@ STATUS="$COMM_HOME/bin/comm-status.sh"
 [ -x "$STATUS" ] || exit 0
 prompt="$(jq -r '.prompt // ""' 2>/dev/null || true)"   # consumes hook stdin
 ORIGIN=user
+# Twin copy (2026-09-15): comm-status-idle.sh's turn-origin correction
+# classifies a transcript prompt record with this same pattern list, kept in
+# sync by hand -- both hooks stay standalone, no shared library.
 case "$prompt" in
     "[SYSTEM NOTIFICATION"*|*"<task-notification>"*|"[relay] from"*|\[*:*\]\ *)   # teammate messages arrive as "[handle:team] ..."
         ORIGIN=machine ;;
