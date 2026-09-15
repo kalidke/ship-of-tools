@@ -185,41 +185,49 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
     }
 }
 
-/// Pure: given the declared topology (if any) and this box's own name, does
-/// it want a backend prepared for the staged release (Julia envs, the
-/// MathJax sidecar)? `None`, or a topology that doesn't list `me`, defaults
-/// to `true` — see `backend_role_wanted`'s doc for why. Split out from it so
-/// the decision is testable against a fixture, with no env vars or files
-/// involved (`scripts/tests/installer-state.sh`'s `installer_running_daemon_decision`
+/// Pure: given the declared topology (if any), this box's own name, and
+/// install.json's own recorded `daemon` bit (if any), does this box want a
+/// backend prepared for the staged release (Julia envs, the MathJax
+/// sidecar)? Priority order — see `backend_role_wanted`'s doc for why:
+/// 1. the declared topology, when it names this host — canonical, can
+///    change without a reinstall (D9, dev/output/topology-plan.md §D);
+/// 2. else `recorded_daemon` — what THIS install was actually given at
+///    install time (the list, or the flags), persisted for exactly a
+///    listless box the topology can't answer for;
+/// 3. else `true` — the old default for every role but `remote`, and the
+///    only sane answer for a manifest from before this field shipped.
+/// Split out from `backend_role_wanted` so the decision is testable against
+/// a fixture, with no env vars or files involved
+/// (`scripts/tests/installer-state.sh`'s `installer_running_daemon_decision`
 /// is the same split, for the same reason).
-fn backend_role_from_topology(topo: Option<&sot_protocol::topology::Topology>, me: &str) -> bool {
-    match topo {
-        Some(t) => t.host(me).map(|h| h.daemon).unwrap_or(true),
-        None => true,
+fn backend_role_from_topology(
+    topo: Option<&sot_protocol::topology::Topology>,
+    me: &str,
+    recorded_daemon: Option<bool>,
+) -> bool {
+    match topo.and_then(|t| t.host(me)) {
+        Some(h) => h.daemon,
+        None => recorded_daemon.unwrap_or(true),
     }
 }
 
 /// Does THIS box want a backend prepared for the staged release? Used to be
 /// `install.role != "remote"` — install.json no longer records a role (plan
-/// step 6, dev/output/topology-plan.md §D), so this asks the same question
-/// the installer now does, in-process: the declared topology's `daemon` flag
-/// for this host (`sot_protocol::topology`, read directly here — no
-/// subprocess, unlike the installer's own `sotd topology status`). A box the
-/// topology doesn't name (no hosts.toml, or one that doesn't list this host —
-/// the listless-install case, where nothing persists which flag was given)
-/// defaults to `true`: this code only runs inside a live sotd daemon, so "no
-/// backend wanted here" would already be a contradiction, and `true` matches
-/// the old default for every role but `remote` — the one role whose daemon
-/// this code path never actually runs under (installed with no local unit
-/// and none started).
-fn backend_role_wanted() -> bool {
+/// step 6, dev/output/topology-plan.md §D); the declared topology is now
+/// asked first, in-process (`sot_protocol::topology`, read directly here —
+/// no subprocess, unlike the installer's own `sotd topology status`), and
+/// `install.daemon` — what THIS install was actually given, whether from the
+/// topology or the flags, at install time — is the fallback for a listless
+/// box the topology has no entry for (a real shape: a frontend-only-over-ssh
+/// install with no hosts.toml at all).
+fn backend_role_wanted(install: &InstallManifest) -> bool {
     let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
     let me = sot_log::state_dir::host_name().unwrap_or_default();
-    backend_role_from_topology(topo.as_ref(), &me)
+    backend_role_from_topology(topo.as_ref(), &me, install.daemon)
 }
 
 fn prepare_spec(install: &InstallManifest, cfg: &UpdaterConfig, id: &ReleaseIdentity) -> PrepareSpec {
-    let backend_role = backend_role_wanted();
+    let backend_role = backend_role_wanted(install);
     PrepareSpec {
         identity: id.clone(),
         repo_dir: install.prefix.join("repo"),
@@ -516,7 +524,8 @@ mod tests {
     // The regression this pins: `install.role != "remote"` used to decide
     // this; install.json carries no role any more (plan step 6), so a
     // daemon box and a frontend-only box must still take the branch they
-    // always did, now read from the declared topology instead.
+    // always did, now read from the declared topology first, install.json's
+    // recorded `daemon` bit second (a listless box), `true` last.
 
     #[test]
     fn a_daemon_box_still_prepares_julia_and_npm() {
@@ -527,7 +536,7 @@ mod tests {
              [host.host-2]\n\
              daemon = true\n",
         );
-        assert!(backend_role_from_topology(Some(&t), "host-2"));
+        assert!(backend_role_from_topology(Some(&t), "host-2", None));
     }
 
     #[test]
@@ -539,17 +548,47 @@ mod tests {
              [host.laptop]\n\
              frontend = true\n",
         );
-        assert!(!backend_role_from_topology(Some(&t), "laptop"));
+        assert!(!backend_role_from_topology(Some(&t), "laptop", None));
     }
 
     #[test]
-    fn a_box_the_topology_does_not_name_defaults_to_true() {
+    fn a_box_the_topology_does_not_name_falls_back_to_the_recorded_bit() {
         let t = topo("hub = \"hubbox\"\n[host.hubbox]\ndaemon = true\n");
-        assert!(backend_role_from_topology(Some(&t), "nowhere"));
+        assert!(backend_role_from_topology(Some(&t), "nowhere", None));
     }
 
     #[test]
-    fn no_topology_at_all_defaults_to_true() {
-        assert!(backend_role_from_topology(None, "anything"));
+    fn no_topology_and_no_recorded_bit_defaults_to_true() {
+        assert!(backend_role_from_topology(None, "anything", None));
+    }
+
+    // The ruling this closes: a listless frontend-only-over-ssh install has
+    // no hosts.toml at all, so nothing but install.json's own recorded
+    // `daemon: false` can tell the update path to skip Julia/npm here.
+    #[test]
+    fn a_listless_frontend_only_box_uses_its_recorded_bit() {
+        assert!(!backend_role_from_topology(None, "laptop", Some(false)));
+    }
+
+    #[test]
+    fn a_listless_daemon_box_uses_its_recorded_bit() {
+        assert!(backend_role_from_topology(None, "host-2", Some(true)));
+    }
+
+    // The declared topology is canonical and can change without a
+    // reinstall — a stale recorded bit from install time must never win
+    // over what the list says NOW.
+    #[test]
+    fn the_declared_topology_wins_over_a_stale_recorded_bit() {
+        let t = topo(
+            "hub = \"hubbox\"\n\
+             [host.hubbox]\n\
+             daemon = true\n\
+             [host.host-2]\n\
+             daemon = true\n",
+        );
+        // install.json still says "daemon: false" from an install run
+        // before this host was added to the list as a daemon.
+        assert!(backend_role_from_topology(Some(&t), "host-2", Some(false)));
     }
 }

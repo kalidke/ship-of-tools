@@ -72,8 +72,8 @@ pub fn spawn_startup_selfcheck() {
         );
         return;
     };
-    if backend_owns_updates_here() {
-        tracing::info!("fe self-update: the backend on this machine owns updates (declared topology, or the default), skipping");
+    if backend_owns_updates_here(&install) {
+        tracing::info!("fe self-update: the backend on this machine owns updates (declared topology, install.json, or the default), skipping");
         return;
     }
     let spawned = std::thread::Builder::new()
@@ -93,24 +93,35 @@ pub fn spawn_startup_selfcheck() {
     }
 }
 
-/// Pure: given the declared topology (if any) and this box's own name, does
-/// the backend on this machine own the update pipeline? `None`, or a
-/// topology that doesn't list `me`, defaults to `true` — the old default
-/// for every role but `remote`.
-fn backend_owns_updates(topo: Option<&sot_protocol::topology::Topology>, me: &str) -> bool {
-    match topo {
-        Some(t) => t.host(me).map(|h| h.daemon).unwrap_or(true),
-        None => true,
+/// Pure: given the declared topology (if any), this box's own name, and
+/// install.json's own recorded `daemon` bit (if any), does the backend on
+/// this machine own the update pipeline? Priority order — mirrors
+/// `sot-backend`'s own `update::backend_role_from_topology` (duplicated, not
+/// shared: `sot-updater` is mechanism only, this is policy):
+/// 1. the declared topology, when it names this host — canonical, can
+///    change without a reinstall;
+/// 2. else `recorded_daemon` — what THIS install was actually given at
+///    install time, for a listless box the topology can't answer for (a
+///    real shape: a frontend-only-over-ssh install with no hosts.toml);
+/// 3. else `true` — the old default for every role but `remote`.
+fn backend_owns_updates(
+    topo: Option<&sot_protocol::topology::Topology>,
+    me: &str,
+    recorded_daemon: Option<bool>,
+) -> bool {
+    match topo.and_then(|t| t.host(me)) {
+        Some(h) => h.daemon,
+        None => recorded_daemon.unwrap_or(true),
     }
 }
 
 /// Does the backend on THIS machine own the update pipeline, so the FE
 /// should stay out of it? See `backend_owns_updates` for the decision and
 /// `spawn_startup_selfcheck`'s doc comment for the guard order this sits in.
-fn backend_owns_updates_here() -> bool {
+fn backend_owns_updates_here(install: &InstallManifest) -> bool {
     let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
     let me = sot_log::state_dir::host_name().unwrap_or_default();
-    backend_owns_updates(topo.as_ref(), &me)
+    backend_owns_updates(topo.as_ref(), &me, install.daemon)
 }
 
 async fn run(install: InstallManifest, current: String) {
@@ -181,7 +192,8 @@ mod tests {
     // The regression this pins: `install.role != "remote"` used to decide
     // this; install.json carries no role any more (plan step 6), so a
     // daemon box and a frontend-only box must still take the branch they
-    // always did, now read from the declared topology instead.
+    // always did, now read from the declared topology first, install.json's
+    // recorded `daemon` bit second (a listless box), `true` last.
 
     #[test]
     fn a_daemon_box_leaves_updates_to_the_backend() {
@@ -192,7 +204,7 @@ mod tests {
              [host.host-2]\n\
              daemon = true\n",
         );
-        assert!(backend_owns_updates(Some(&t), "host-2"));
+        assert!(backend_owns_updates(Some(&t), "host-2", None));
     }
 
     #[test]
@@ -204,17 +216,47 @@ mod tests {
              [host.laptop]\n\
              frontend = true\n",
         );
-        assert!(!backend_owns_updates(Some(&t), "laptop"));
+        assert!(!backend_owns_updates(Some(&t), "laptop", None));
     }
 
     #[test]
-    fn a_box_the_topology_does_not_name_defaults_to_the_backend_owning_it() {
+    fn a_box_the_topology_does_not_name_falls_back_to_the_recorded_bit() {
         let t = topo("hub = \"hubbox\"\n[host.hubbox]\ndaemon = true\n");
-        assert!(backend_owns_updates(Some(&t), "nowhere"));
+        assert!(backend_owns_updates(Some(&t), "nowhere", None));
     }
 
     #[test]
-    fn no_topology_at_all_defaults_to_the_backend_owning_it() {
-        assert!(backend_owns_updates(None, "anything"));
+    fn no_topology_and_no_recorded_bit_defaults_to_the_backend_owning_it() {
+        assert!(backend_owns_updates(None, "anything", None));
+    }
+
+    // The ruling this closes: a listless frontend-only-over-ssh install has
+    // no hosts.toml at all, so nothing but install.json's own recorded
+    // `daemon: false` can tell the FE it owns its own updates here.
+    #[test]
+    fn a_listless_frontend_only_box_self_updates_per_its_recorded_bit() {
+        assert!(!backend_owns_updates(None, "laptop", Some(false)));
+    }
+
+    #[test]
+    fn a_listless_daemon_box_leaves_updates_to_the_backend_per_its_recorded_bit() {
+        assert!(backend_owns_updates(None, "host-2", Some(true)));
+    }
+
+    // The declared topology is canonical and can change without a
+    // reinstall — a stale recorded bit from install time must never win
+    // over what the list says NOW.
+    #[test]
+    fn the_declared_topology_wins_over_a_stale_recorded_bit() {
+        let t = topo(
+            "hub = \"hubbox\"\n\
+             [host.hubbox]\n\
+             daemon = true\n\
+             [host.laptop]\n\
+             frontend = true\n",
+        );
+        // install.json still says "daemon: true" from before this host was
+        // switched to frontend-only on the list.
+        assert!(!backend_owns_updates(Some(&t), "laptop", Some(true)));
     }
 }

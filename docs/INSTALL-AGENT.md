@@ -87,7 +87,10 @@ systemctl --user is-active --quiet sotd.service && systemctl --user cat sotd.ser
 ```
 
 - **A schema-1 manifest** → this is an UPGRADE. Same command (bump `--version`
-  or omit it for latest); role is derived fresh each run.
+  or omit it for latest); role is derived fresh each run (the declared list,
+  else the role flag/interactive answer) — the manifest's own `daemon`/
+  `frontend` bits just record what got installed, for a listless box's own
+  self-update check to fall back on, same list-first order.
 - **An ACTIVE unit whose `ExecStart` is outside `~/.local/share/sot/`** →
   something else owns the backend here (a source checkout, or another
   `--prefix`) — installing would replace or disable it. Stop and tell the

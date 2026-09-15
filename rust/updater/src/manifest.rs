@@ -6,10 +6,16 @@
 //! layout instead of guessing from XDG env vars (Codex review, MUST-FIX 10):
 //! the updates root, the checkout, and the bin dir all hang off `prefix`.
 //! No role: the installer derives what to run from the declared topology
-//! (`sot_protocol::topology`) or, listless, its own flags — neither is a
-//! fact about the INSTALL worth persisting here (plan step 6, dev/output/
-//! topology-plan.md §D). A reader that needs "does this box run a backend"
-//! asks the topology directly (see `update.rs`'s `backend_role_wanted`).
+//! (`sot_protocol::topology`) or, listless, its own flags (plan step 6,
+//! dev/output/topology-plan.md §D). `daemon`/`frontend` here are NOT that
+//! role reborn — they record WHAT THIS INSTALL ACTUALLY INSTALLED (whichever
+//! source decided it at install time), a plain fact about the install, not
+//! a live source of truth and nothing a user is meant to hand-edit. A reader
+//! that needs "does this box run a backend" asks the declared topology
+//! FIRST (it can change without a reinstall) and falls back to these two
+//! bits only for a listless box with no entry to ask
+//! (see `update.rs`'s `backend_role_wanted`, `selfupdate.rs`'s
+//! `backend_owns_updates_here`).
 //!
 //! **Ready manifest** (`<updates-root>/<tag>/manifest.json`, written LAST by
 //! a stage): the staged release's full identity. "Staged" means the manifest
@@ -48,6 +54,17 @@ pub struct InstallManifest {
     /// Commit the checkout was verified at during install.
     #[serde(default)]
     pub commit: Option<String>,
+    /// Did this install set up a backend here (systemd unit or the
+    /// all-in-one launcher's on-demand start)? What decided it, in order:
+    /// the declared topology if it named this host at install time, else
+    /// the role flag / interactive answer. `None` only for a pre-existing
+    /// manifest from before this field shipped.
+    #[serde(default)]
+    pub daemon: Option<bool>,
+    /// Did this install wire up a frontend launcher (desktop entry +
+    /// `sot-launch`)? Same "what decided it" as `daemon`.
+    #[serde(default)]
+    pub frontend: Option<bool>,
 }
 
 impl InstallManifest {
@@ -285,9 +302,9 @@ mod tests {
 
     #[test]
     fn install_manifest_parses_with_unknown_fields() {
-        // `role` (schema 1's own dropped field) and `hub` (the plan's local
-        // declaration, dev/output/topology-plan.md §D) are both unknown to
-        // this struct now — same as any future key a newer installer adds.
+        // `role` (schema 1's own dropped field) is unknown to this struct
+        // now, same as any future key a newer installer adds; `hub`,
+        // `daemon` and `frontend` are real fields this fixture also checks.
         let text = r#"{
             "schema": 1,
             "role": "local",
@@ -298,17 +315,24 @@ mod tests {
             "version": "0.6.0",
             "tag": "v0.6.0",
             "commit": "abc123",
+            "daemon": true,
+            "frontend": false,
             "future_field": {"x": 1}
         }"#;
         let m: InstallManifest = serde_json::from_str(text).unwrap();
         assert_eq!(m.updates_root(), PathBuf::from("/home/u/.local/share/sot/updates"));
+        assert_eq!(m.daemon, Some(true));
+        assert_eq!(m.frontend, Some(false));
     }
 
     #[test]
     fn install_manifest_parses_without_a_role_field() {
         // The regression this pins: scripts/install.sh (plan step 6) no
         // longer writes `role` at all — a manifest missing the key
-        // entirely, not just an empty one, must still parse.
+        // entirely, not just an empty one, must still parse. `daemon` and
+        // `frontend` are also absent here (a pre-existing manifest from
+        // before those fields shipped) and must default to `None`, not a
+        // parse error.
         let text = r#"{
             "schema": 1,
             "prefix": "/home/u/.local/share/sot",
@@ -316,5 +340,7 @@ mod tests {
         }"#;
         let m: InstallManifest = serde_json::from_str(text).unwrap();
         assert_eq!(m.prefix, PathBuf::from("/home/u/.local/share/sot"));
+        assert_eq!(m.daemon, None);
+        assert_eq!(m.frontend, None);
     }
 }

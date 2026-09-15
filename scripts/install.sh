@@ -157,12 +157,22 @@ json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
 # $PREFIX/install.json (schema 1) body. No `role` key: this schema no longer
 # records one — a box the declared topology names asks the list again next
-# run, a listless box re-derives from its own flags. `hub` is the plan's one
-# local declaration, for a box that does not share the hub's home; empty
-# string when this box has none. Extracted to a pure function so
-# scripts/tests/installer-state.sh can check its shape without a real install.
-installer_manifest_json() {  # <prefix> <config> <service> <version> <tag> <commit> <installed_at> <hub>
+# run. `daemon`/`frontend` are NOT that role reborn: they record WHAT THIS
+# INSTALL ACTUALLY INSTALLED (whichever source decided it — the list, or the
+# flags — at this run), a plain fact about the install, not a live source of
+# truth and nothing a user is meant to hand-edit. A reader asks the declared
+# topology FIRST (it can change with no reinstall) and falls back to these
+# two bits only for a listless box with no entry to ask (rust/backend/src/
+# update.rs's `backend_role_wanted`, rust/frontend/src/selfupdate.rs's
+# `backend_owns_updates_here`). `hub` is the plan's one local declaration,
+# for a box that does not share the hub's home; empty string when this box
+# has none. Extracted to a pure function so scripts/tests/installer-state.sh
+# can check its shape without a real install.
+installer_manifest_json() {  # <prefix> <config> <service> <version> <tag> <commit> <installed_at> <hub> <daemon 0|1> <frontend 0|1>
     local prefix="$1" config="$2" service="$3" version="$4" tag="$5" commit="$6" installed_at="$7" hub="$8"
+    local daemon_json=false frontend_json=false
+    [ "$9" = 1 ] && daemon_json=true
+    [ "${10}" = 1 ] && frontend_json=true
     cat <<EOF
 {
   "schema": 1,
@@ -173,7 +183,9 @@ installer_manifest_json() {  # <prefix> <config> <service> <version> <tag> <comm
   "tag": "$tag",
   "commit": "$commit",
   "installed_at": "$installed_at",
-  "hub": "$(json_str "$hub")"
+  "hub": "$(json_str "$hub")",
+  "daemon": $daemon_json,
+  "frontend": $frontend_json
 }
 EOF
 }
@@ -865,7 +877,7 @@ SERVICE="none"
 COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
 # Temp file plus rename: a heredoc straight onto the live path truncates it
 # first, so an interrupt would leave the machine with no readable manifest.
-installer_manifest_json "$PREFIX" "$CONFIG" "$SERVICE" "${VERSION#v}" "$VERSION" "$COMMIT" "$(date -u +%FT%TZ)" "$HUB_ALIAS" \
+installer_manifest_json "$PREFIX" "$CONFIG" "$SERVICE" "${VERSION#v}" "$VERSION" "$COMMIT" "$(date -u +%FT%TZ)" "$HUB_ALIAS" "$WANT_DAEMON" "$WANT_FRONTEND" \
     > "$PREFIX/install.json.new"
 mv "$PREFIX/install.json.new" "$PREFIX/install.json"
 say "wrote $PREFIX/install.json (schema 1, daemon=$WANT_DAEMON frontend=$WANT_FRONTEND, service=$SERVICE)"

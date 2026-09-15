@@ -46,7 +46,7 @@ case_start "deriving role from the declared topology (installer_topology_role)"
 # Plain-line `sotd topology status` output (rust/protocol/src/topology.rs
 # status_table) — this reads THAT table, not hosts.toml itself; the one
 # parser stays the one parser.
-STATUS_TABLE="$(printf 'HOST DECLARED\nhub-box hub,daemon\nkitt daemon,frontend\ndescent daemon\nexpectations shell\nlaptop frontend\n')"
+STATUS_TABLE="$(printf 'HOST DECLARED\nhub-box hub,daemon\nhost-4 daemon,frontend\nhost-2 daemon\nhost-3 shell\nlaptop frontend\n')"
 
 check "a host listed daemon-only" \
     "daemon:1 frontend:0" "$(installer_topology_role "$STATUS_TABLE" host-2)"
@@ -69,15 +69,19 @@ check "--be-only"          "daemon:1 frontend:0" "$(installer_role_from_flags be
 check "--backend <alias>"  "daemon:0 frontend:1" "$(installer_role_from_flags remote)"
 
 # ---------------------------------------------------------------------------
-case_start "install.json: hub recorded, no role field (installer_manifest_json)"
+case_start "install.json: hub + daemon/frontend recorded, no role field (installer_manifest_json)"
 
-json="$(installer_manifest_json "$WORK/prefix" "$WORK/config" systemd 0.6.0 v0.6.0 abc123 2026-09-15T00:00:00Z myhub)"
+json="$(installer_manifest_json "$WORK/prefix" "$WORK/config" systemd 0.6.0 v0.6.0 abc123 2026-09-15T00:00:00Z myhub 1 0)"
 check "hub recorded"          1 "$(printf '%s' "$json" | grep -c '"hub": "myhub"')"
 check "no role key"           0 "$(printf '%s' "$json" | grep -c '"role"')"
 check "other fields kept"     1 "$(printf '%s' "$json" | grep -c '"schema": 1')"
+check "daemon recorded true"  1 "$(printf '%s' "$json" | grep -c '"daemon": true')"
+check "frontend recorded false" 1 "$(printf '%s' "$json" | grep -c '"frontend": false')"
 
-nohub="$(installer_manifest_json "$WORK/prefix" "$WORK/config" none 0.6.0 v0.6.0 abc123 2026-09-15T00:00:00Z "")"
+nohub="$(installer_manifest_json "$WORK/prefix" "$WORK/config" none 0.6.0 v0.6.0 abc123 2026-09-15T00:00:00Z "" 0 1)"
 check "hub is empty when not given" 1 "$(printf '%s' "$nohub" | grep -c '"hub": ""')"
+check "daemon recorded false"       1 "$(printf '%s' "$nohub" | grep -c '"daemon": false')"
+check "frontend recorded true"      1 "$(printf '%s' "$nohub" | grep -c '"frontend": true')"
 
 # ---------------------------------------------------------------------------
 case_start "unit ownership: ExecStart path extraction (old + wrapped forms)"
