@@ -2775,6 +2775,10 @@ where
                                     // sends nothing new here, unchanged
                                     // behavior on every host.
                                     runtime: String::new(),
+                                    // Accounts brief (v0.6.0): no picker yet
+                                    // (D7) — an FE-created row always takes
+                                    // the default account.
+                                    account: None,
                                 })?,
                             ),
                             None,

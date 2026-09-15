@@ -146,6 +146,10 @@ pub mod op {
     /// kernel-handle-constructed flag). The default workspace is
     /// included in the list and marked via `is_default`.
     pub const WORKSPACE_LIST: &str = "workspace.list";
+    /// Accounts brief (v0.6.0): enumerate every account this daemon's
+    /// own home discovers RIGHT NOW — nothing declared, nothing cached.
+    /// Empty request payload; response is `AccountsListRes`.
+    pub const ACCOUNTS_LIST: &str = "accounts.list";
     /// Client→daemon: explicitly names the workspace THIS CONNECTION is now
     /// viewing/acting in. Sent by the frontend's single "switch chrome"
     /// entry point (`switch_to_workspace`, gpu.rs) UNCONDITIONALLY as the
@@ -1305,6 +1309,17 @@ pub struct WorkspaceCreateReq {
     /// only on a host with no capsule runtime at all (macOS).
     #[serde(default)]
     pub runtime: String,
+    /// Accounts brief (v0.6.0): which discovered account this row's
+    /// agent should run under — the name of a `.claude-<name>` /
+    /// `.codex-<name>` folder in this daemon's own home, or `None`/empty
+    /// for the agent's own default config folder. Resolved once, here,
+    /// at create, and recorded on the row; refused loudly (never a
+    /// silent fallback to the default folder) if the named folder does
+    /// not exist, or if this is a bash (`agent == "none"`) row — a bash
+    /// row has no account to spend. `#[serde(default)]` so existing
+    /// callers / JSON without the field still deserialize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     // NOTE (ADR 0023 §3): the daemon-boot trigger travels as an extra wire field
     // `boot: bool` on this op's payload, but is intentionally NOT a struct field
     // here — `handle_workspace_create` reads it straight off the raw JSON. Adding
@@ -1435,11 +1450,46 @@ pub struct WorkspaceListEntry {
     /// Present only for `runtime == "capsule"` rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation_error: Option<String>,
+    /// Accounts brief (v0.6.0): the discovered account this row's agent
+    /// runs under, `""` for the agent's own default config folder (the
+    /// common case — kept a plain `String`, never `Option`, so an older
+    /// daemon's `#[serde(default)]` empty string and "explicitly
+    /// default" are the same value, never two). The sessions list
+    /// appends `·<name>` only when this is non-empty.
+    #[serde(default)]
+    pub account: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceListRes {
     pub workspaces: Vec<WorkspaceListEntry>,
+}
+
+/// `accounts.list` has no fields — the daemon always discovers and
+/// returns every account in its own home fresh, at request time (no
+/// declaration to filter by). Kept as a struct, same convention as
+/// `WorkspaceListReq`, so an additive filter can land later without a
+/// wire-shape break.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AccountsListReq {}
+
+/// One discovered account (accounts brief, v0.6.0): a name plus which
+/// agent kinds had a folder found for it, and — for those same kinds
+/// only — whether that folder's own credentials file exists.
+/// `logged_in` is DISPLAY-ONLY information (the picker, `sotd status`):
+/// it never gates `workspace.create`, which refuses solely on the named
+/// folder being absent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountEntry {
+    pub name: String,
+    pub kinds: Vec<String>,
+    pub logged_in: std::collections::BTreeMap<String, bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AccountsListRes {
+    /// Sorted with "default" first, then the rest alphabetically.
+    pub accounts: Vec<AccountEntry>,
 }
 
 /// `workspace.activate` request. See `op::WORKSPACE_ACTIVATE` for who sends
