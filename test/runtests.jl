@@ -385,6 +385,7 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
                     "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
                 ShipTools.update_comm(clis = [:claude])
                 @test isempty(readdir(acct_dir))
+                @test readdir(joinpath(home, ".claude-auth")) == ["acct"]
             end
         end
     end

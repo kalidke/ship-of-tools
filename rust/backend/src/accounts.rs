@@ -29,6 +29,19 @@
 // refuses a named account on a codex row outright rather than pretending
 // to support it. Adding Codex accounts later is a matter of mirroring the
 // claude half of this module, not a redesign.
+//
+// The sharing ruling (2026-09-15): a named account folder shares
+// EVERYTHING the default `.claude` folder carries except the login —
+// symlinked in by [`ensure_account_links`] the first time a row spawns
+// against that account, so a folder made with a bare `mkdir` is fully
+// linked before its first session starts. It is an ALLOWLIST
+// ([`SHARED_ENTRIES`]), not a denylist: an unknown or new entry stays
+// per-account by default, and the OAuth identity plus any runtime state a
+// live process owns are never on that list — sharing those would let two
+// accounts' processes collide on the same lock file, or let a session
+// spend another account's login. An entry the account folder already has,
+// in any form, is left exactly as it is: it deliberately overrides the
+// shared one rather than being replaced by it.
 
 use std::path::{Path, PathBuf};
 
@@ -50,12 +63,11 @@ const CLAUDE_CREDENTIALS_FILE: &str = ".credentials.json";
 /// for the default codex account (the only one this release has).
 const CODEX_CREDENTIALS_FILE: &str = "auth.json";
 
-/// Owner ruling (2026-09-15): a named account folder shares EVERYTHING the
-/// default `.claude` folder carries except the login. This is an
-/// ALLOWLIST, not a denylist — an unknown or new entry stays per-account
-/// by default, never shared by accident. Each name here is linked (see
-/// [`ensure_account_links`]) only if the default folder actually has it.
-/// Grouped by the invariant each group serves:
+/// The allowlist behind the sharing ruling (see the module doc) — each
+/// name is linked (see [`ensure_account_links`]) only if the default
+/// folder actually has it, and every other entry stays per-account by
+/// default, never shared by accident. Grouped by the invariant each group
+/// serves:
 ///
 /// - what a session reads to know how to behave, independent of which
 ///   subscription it spends: `CLAUDE.md`, `settings.json` (hooks,
@@ -72,6 +84,12 @@ const CODEX_CREDENTIALS_FILE: &str = "auth.json";
 /// `sessions`, `teams`, `tasks`, `jobs`, `ide`, caches) — sharing those
 /// would let two accounts' processes collide on the same lock file or
 /// session state while running under different credentials.
+///
+/// `settings.json` is shared as written, so it must never carry a
+/// credential-selecting setting (`apiKeyHelper`, `env.ANTHROPIC_API_KEY`,
+/// `forceLoginOrgUUID`) — any of those would let the shared file itself
+/// pick which login a session spends, defeating the separate-login
+/// invariant this whole module exists for.
 const SHARED_ENTRIES: &[&str] = &[
     "CLAUDE.md",
     "settings.json",
@@ -96,6 +114,22 @@ pub fn is_account_name(name: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+/// Refuse a syntactically invalid account name before it ever reaches a
+/// path join — the one guard both [`account_env`] (create and spawn) and
+/// [`ensure_account_links`] run at their very top, so `".."`,
+/// `"../.claude"`, an absolute path, or a name with a `/` in it can never
+/// resolve outside `.claude-auth/<name>` (an empty account or `"default"`
+/// never reaches this check — both return earlier as no-ops).
+fn check_account_name(account: &str) -> Result<(), String> {
+    if is_account_name(account) {
+        return Ok(());
+    }
+    Err(format!(
+        "invalid account name {account:?}: an account name is lowercase letters, digits, \
+         '-' and '_' only, starting with a letter or digit"
+    ))
 }
 
 /// One discovered account: which agent kinds had a folder found for this
@@ -203,6 +237,7 @@ pub fn account_env(agent_kind: &str, account: &str, home: &Path) -> Result<Vec<(
     if account.is_empty() || account == "default" {
         return Ok(Vec::new());
     }
+    check_account_name(account)?;
     match agent_kind {
         "claude" => {
             let dir = home.join(CLAUDE_ACCOUNTS_DIR).join(account);
@@ -224,8 +259,8 @@ pub fn account_env(agent_kind: &str, account: &str, home: &Path) -> Result<Vec<(
 }
 
 /// Unix half of the one symlink [`ensure_account_links`] creates per
-/// entry: `target` is the RELATIVE `../../.claude/<entry>` path, `link` is
-/// where it lands inside the account folder.
+/// entry: `target` is the ABSOLUTE `<home>/.claude/<entry>` path, `link`
+/// is where it lands inside the account folder.
 #[cfg(unix)]
 fn make_shared_link(target: &Path, link: &Path, _target_is_dir: bool) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, link)
@@ -244,32 +279,38 @@ fn make_shared_link(target: &Path, link: &Path, target_is_dir: bool) -> std::io:
 }
 
 /// Link `home/.claude-auth/<account>` up to the default `home/.claude`
-/// folder for every [`SHARED_ENTRIES`] name — the mechanism behind the
-/// owner's "shares everything but the login" ruling. Called once, from
-/// the spawn path
+/// folder for every [`SHARED_ENTRIES`] name (see the module doc for the
+/// sharing ruling this implements). Called once, from the spawn path
 /// ([`crate::capsule_workspace::runtime::spawn_detached_supervisor`]),
 /// right after [`account_env`] succeeds, so a folder made with a bare
 /// `mkdir` is fully linked on its very first session — no separate
 /// installer step to forget, and nothing here writes to the DEFAULT
 /// folder, only into the account's own.
 ///
-/// One relative symlink per entry (`../../.claude/<entry>`, valid because
-/// an account folder is always exactly `home/.claude-auth/<name>` — two
-/// levels under `home`, matching the two `..` segments): a no-op for an
-/// empty account or `"default"`; an entry the default folder does not
-/// have is never linked (never produce a dangling symlink); an entry that
-/// already exists in the account folder in ANY form — real file or
-/// directory, an existing symlink, even a dangling one
-/// (`symlink_metadata` succeeding is the test, not `exists`, which
-/// follows and would miss a dangling link) — is left alone: it
-/// deliberately overrides the shared one, and is NEVER replaced or
-/// removed. Any creation error refuses the whole call — a half-linked
+/// Refuses an invalid account name before any path join, same check as
+/// [`account_env`] (see [`check_account_name`]) — public, so it must not
+/// trust a caller to have validated `account` already. One ABSOLUTE
+/// symlink per entry, `<home>/.claude/<entry>` built from the `home` this
+/// function is given (never a relative `../../.claude/<entry>`, which
+/// resolves to the wrong place when `.claude-auth` or the account folder
+/// is itself a symlink): a no-op for an empty account or `"default"`; an
+/// entry the default folder does not have is never linked (never produce
+/// a dangling symlink); an entry that already exists in the account
+/// folder in ANY form — real file or directory, an existing symlink,
+/// even a dangling one (`symlink_metadata` succeeding is the test, not
+/// `exists`, which follows and would miss a dangling link) — is left
+/// alone: it deliberately overrides the shared one, and is NEVER
+/// replaced or removed. A sibling spawn racing to link the SAME entry
+/// between our existence check and the OS call is tolerated
+/// (`ErrorKind::AlreadyExists` — see `resume_all`'s parallel spawns);
+/// any other creation error refuses the whole call: a half-linked
 /// account folder starting a degraded session is worse than a refused
 /// spawn.
 pub fn ensure_account_links(home: &Path, account: &str) -> Result<(), String> {
     if account.is_empty() || account == "default" {
         return Ok(());
     }
+    check_account_name(account)?;
     let default_dir = home.join(CLAUDE_DIR_PREFIX);
     let account_dir = home.join(CLAUDE_ACCOUNTS_DIR).join(account);
     for name in SHARED_ENTRIES {
@@ -281,11 +322,25 @@ pub fn ensure_account_links(home: &Path, account: &str) -> Result<(), String> {
         if std::fs::symlink_metadata(&link).is_ok() {
             continue; // something is already there -- never replace it
         }
-        let relative = Path::new("..").join("..").join(CLAUDE_DIR_PREFIX).join(name);
-        make_shared_link(&relative, &link, source.is_dir())
+        link_or_skip_if_racing(&source, &link, source.is_dir())
             .map_err(|err| format!("could not link {name} into account {account:?}: {err}"))?;
     }
     Ok(())
+}
+
+/// [`make_shared_link`], tolerating a sibling spawn that created the SAME
+/// link between two callers' existence checks and this call:
+/// `ErrorKind::AlreadyExists` from the OS call itself means the entry is
+/// already linked, not a failure (`resume_all` spawns rows in parallel,
+/// so two rows on one brand-new account both pass the existence check
+/// before either has linked anything). Any other OS error still refuses
+/// the whole [`ensure_account_links`] call.
+fn link_or_skip_if_racing(target: &Path, link: &Path, target_is_dir: bool) -> std::io::Result<()> {
+    match make_shared_link(target, link, target_is_dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 #[cfg(test)]
@@ -445,6 +500,25 @@ mod tests {
     }
 
     #[test]
+    fn account_env_refuses_an_invalid_account_name_before_any_path_join() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Each of these would otherwise resolve outside .claude-auth/<name>
+        // (a directory traversal, or clean out of the join entirely) --
+        // refused before account_env ever builds a path from it.
+        for bad in ["..", "../.claude", "/etc/passwd", "a/b", "Bad.Name"] {
+            let err = account_env("claude", bad, tmp.path()).unwrap_err();
+            assert!(err.contains("invalid account name"), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn account_env_keeps_empty_and_default_as_no_ops_despite_the_name_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(account_env("claude", "", tmp.path()), Ok(Vec::new()));
+        assert_eq!(account_env("claude", "default", tmp.path()), Ok(Vec::new()));
+    }
+
+    #[test]
     fn ensure_account_links_links_every_shared_entry_the_default_has() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
@@ -464,10 +538,12 @@ mod tests {
             let link = account_dir.join(name);
             let meta = std::fs::symlink_metadata(&link).unwrap();
             assert!(meta.file_type().is_symlink(), "{name} should be a symlink");
+            let target = std::fs::read_link(&link).unwrap();
+            assert!(target.is_absolute(), "{name}'s link target should be absolute: {target:?}");
             assert_eq!(
-                std::fs::canonicalize(&link).unwrap(),
-                std::fs::canonicalize(home.join(".claude").join(name)).unwrap(),
-                "{name} should resolve to the default's own entry"
+                target,
+                home.join(".claude").join(name),
+                "{name} should point straight at the default's own entry"
             );
         }
         for name in ["agents", "commands", "plugins", "output-styles", "projects"] {
@@ -525,19 +601,32 @@ mod tests {
     }
 
     #[test]
-    fn ensure_account_links_is_idempotent() {
+    fn ensure_account_links_refuses_an_invalid_account_name() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         touch_dir(&home.join(".claude"));
-        touch_file(&home.join(".claude").join("CLAUDE.md"));
-        let account_dir = home.join(".claude-auth").join("team");
-        touch_dir(&account_dir);
+        for bad in ["..", "../.claude", "/etc/passwd", "a/b", "Bad.Name"] {
+            let err = ensure_account_links(home, bad).unwrap_err();
+            assert!(err.contains("invalid account name"), "{bad:?}: {err}");
+        }
+    }
 
-        ensure_account_links(home, "team").unwrap();
-        let first = std::fs::read_link(account_dir.join("CLAUDE.md")).unwrap();
-        assert_eq!(ensure_account_links(home, "team"), Ok(()), "second call must still succeed");
-        let second = std::fs::read_link(account_dir.join("CLAUDE.md")).unwrap();
-        assert_eq!(first, second, "second call must change nothing");
+    #[test]
+    fn link_or_skip_if_racing_tolerates_a_link_already_created_by_a_sibling() {
+        // The race resume_all's parallel spawns hit: two rows on one new
+        // account both pass ensure_account_links' existence check before
+        // either has linked anything, so the slower one's own OS call
+        // must not fail just because the link now exists.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target-file");
+        touch_file(&target);
+        let link = tmp.path().join("link");
+
+        link_or_skip_if_racing(&target, &link, false).unwrap();
+        assert!(
+            link_or_skip_if_racing(&target, &link, false).is_ok(),
+            "a second call on the same link must not fail"
+        );
     }
 
     #[test]

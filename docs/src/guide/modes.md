@@ -108,10 +108,15 @@ runtime state (sessions, caches, and the like). Everything else — `CLAUDE.md`,
 prompt history (`history.jsonl`) — is **shared with the default folder**: on
 the first session in a new account, the daemon links each of those entries in
 from `~/.claude`, so the account starts with the same instructions, hooks,
-and history as the default login. An entry you create yourself in the account
-folder overrides the shared one instead of being replaced by it. User-scope
-MCP servers live with the per-account state, so add them separately for each
-account you want to use them from.
+and history as the default login. An entry already present in the account
+folder — created by you, or from an earlier session — is kept as is and
+overrides the shared one; to use the shared one instead, remove the
+account's own copy. User-scope MCP servers live with the per-account
+state, so add them separately for each account you want to use them from.
+
+An account name is lowercase letters, digits, `-`, and `_` only, and must
+start with a letter or digit — `team`, `team-2`, and `a_b` all work,
+`Team` and `../etc` do not.
 
 Claude only, this release — Codex accounts are deferred, so a codex row
 always runs the default login.

@@ -1035,16 +1035,13 @@ mod runtime {
             Some(home) => {
                 let extra = crate::accounts::account_env(agent_kind, account, &home)
                     .map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
-                // Accounts brief: a named claude account shares the default
-                // folder by link (everything but the login) -- linked here,
-                // once account_env has proved the account folder exists, so
-                // a folder made with a bare mkdir is fully linked on its
-                // very first session. Same refusal shape as account_env's
-                // own error just above: no degraded session.
-                if agent_kind == "claude" && !(account.is_empty() || account == "default") {
-                    crate::accounts::ensure_account_links(&home, account)
-                        .map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
-                }
+                // Accounts brief: link the shared entries now that account_env
+                // has proved the folder exists (sharing ruling: accounts.rs
+                // module doc). Same refusal shape as account_env's own error
+                // just above; ensure_account_links itself no-ops for an empty
+                // account or "default", so no guard is needed here.
+                crate::accounts::ensure_account_links(&home, account)
+                    .map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
                 extra
             }
             None if account.is_empty() || account == "default" => Vec::new(),
