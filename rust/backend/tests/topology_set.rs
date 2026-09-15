@@ -80,7 +80,6 @@ impl Env {
             .env("XDG_STATE_HOME", &state_root)
             .env("XDG_CONFIG_HOME", &config_root)
             .env("SOT_SELF_HOST", self_host)
-            .env("SOT_SELF_HOST", format!("toposet-{tag}"))
             .env("SOT_RUNTIME_DIR", runtime_tmp.path())
             .env("SOT_HOSTS", &hosts_toml)
             .stdin(Stdio::null())
