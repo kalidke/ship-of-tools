@@ -62,7 +62,7 @@ case_dead_pid_is_not_survived() {
 }
 case_no_session_id_in_env_trusts_liveness() {
     local p; p="$(sleeper)"; printf '%s\nsess-OLD\n' "$p" > "$MARKER"
-    local out; out="$(bash "$SCRIPTS_DIR/comm-session-start.sh" --context 2>/dev/null | head -n1)"
+    local out; out="$(env -u CLAUDE_CODE_SESSION_ID bash "$SCRIPTS_DIR/comm-session-start.sh" --context 2>/dev/null | head -n1)"
     [ "$out" = "SURVIVED handle=$NAME" ] || { echo "    got '$out'"; return 1; }
 }
 
