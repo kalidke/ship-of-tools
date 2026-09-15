@@ -338,6 +338,7 @@ pub async fn handle_version_query(
         protocol: sot_protocol::PROTOCOL_VERSION,
         lane_build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
         lane_proto: sot_log::wire::SUPERVISOR_PROTO_V1,
+        host: crate::workspaces::declared_host().to_string(),
     };
     let snap = clients.snapshot_with_active();
     let clients = snap

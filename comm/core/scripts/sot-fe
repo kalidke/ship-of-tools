@@ -127,10 +127,13 @@
 #              0030 §8 decision 31, ADR 0043 decision 31). One
 #              version.query + one workspace.list (never fans out to a
 #              second daemon — pass --endpoint again for the other side).
-#              Table rows: `frontend <handle>` per attached FE with
-#              `active`/`idle` (a client with no self-reported handle prints
-#              as `client <id>` instead), one row labeled by the RESOLVED
-#              ENDPOINT with its app_version + lane_build,
+#              Table rows: `<role>@<host>` per attached FE/bridge client
+#              declaring a host (topology plan §F step 1 — a client with no
+#              self-reported handle prints as `client <id>` instead, and one
+#              declaring a handle but no host, a daemon skew case, falls
+#              back to `<role> <handle>`), one row labeled by the RESOLVED
+#              ENDPOINT with its app_version + lane_build + the daemon's own
+#              declared host,
 #              `row <slug>` per capsule workspace with its phase and no
 #              derived verdict (this script never challenged the lane —
 #              "foreign" already IS the verdict), and `comm scripts` from
@@ -834,7 +837,7 @@ send_version() {
         exit 2
     fi
     verr="$(printf '%s' "$vresp" | jq -r '.payload.error // empty')"
-    local daemon_version daemon_build daemon_lane_proto
+    local daemon_version daemon_build daemon_lane_proto daemon_host
     if [ -n "$verr" ]; then
         # The ONE shape every daemon this verb must never fail against:
         # the generic unknown-op reply (server.rs's `other =>` catch-all,
@@ -844,6 +847,7 @@ send_version() {
         if [ "$verr" = "unknown op: version.query" ]; then
             daemon_version="unknown"
             daemon_build="unknown"
+            daemon_host="unknown"
         else
             echo "ERROR: the daemon refused version.query: $verr [$(printf '%s' "$vresp" | jq -r '.payload.code // "?"')]" >&2
             exit 2
@@ -852,7 +856,13 @@ send_version() {
         daemon_version="$(printf '%s' "$vresp" | jq -r '.payload.daemon.app_version')"
         daemon_build="$(printf '%s' "$vresp" | jq -r '.payload.daemon.lane_build')"
         daemon_lane_proto="$(printf '%s' "$vresp" | jq -r '.payload.daemon.lane_proto // "?"')"
-        daemon_build="${daemon_build} (lane proto ${daemon_lane_proto})"
+        # topology plan §F step 1: `DaemonVersion.host`, `#[serde(default)]`
+        # on the Rust side -- a daemon predating this field answers without
+        # it, so `// "?"` mirrors the lane_proto placeholder rather than a
+        # blank cell.
+        daemon_host="$(printf '%s' "$vresp" | jq -r '.payload.daemon.host // "?"')"
+        [ -n "$daemon_host" ] || daemon_host="?"
+        daemon_build="${daemon_build} (lane proto ${daemon_lane_proto}, host ${daemon_host})"
     fi
 
     printf '%-20s %-28s %s\n' "component" "version" "build"
@@ -862,9 +872,18 @@ send_version() {
         # sprint) or `.name` (ADR 0046 decision 1: a bridge/cli/agent
         # connection's own declared handle, a distinct field, never an
         # alias of fe_handle) -- is printed on its own row (never
-        # collapsed, each box is distinct) as "role name@host  version
-        # active|idle" -- the declaration, not a re-derivation. No idle AGE
-        # is shown (deleted 2026-09-08 review, finding 6): the daemon's
+        # collapsed, each box is distinct). topology plan §F step 1: when
+        # the client also declared a `.host`, the row is labeled
+        # `<role>@<host>` -- the declared handle itself is dropped from
+        # the label (this is what makes "which frontend am I on"
+        # answerable without reading a log; disambiguating two FEs on the
+        # SAME host by `instance` is later grammar-v2 work, not this
+        # step). A client that declared a handle but no host (daemon
+        # skew: an old backend answering fe_handle with no ADR 0046 host
+        # field) falls back to the pre-existing "role handle" label so it
+        # is never silently dropped. Either way the row still ends
+        # "\tversion\tactive|idle" -- the declaration, not a re-derivation.
+        # No idle AGE is shown (deleted 2026-09-08 review, finding 6): the daemon's
         # expiry/tie policy is the only thing entitled to decide "how
         # idle" something is, so this script only ever asks "which one, if
         # any, is active" and prints that. Everything else (a client_id
@@ -874,7 +893,8 @@ send_version() {
         # a busy backend has a dozen of those at once.
         printf '%s' "$vresp" | jq -r '(.payload.clients // []) as $c
             | ( $c | map(select((.fe_handle // .name) != null and (.fe_handle // .name) != "")) | .[]
-                | ((.role // "fe") + " " + (.fe_handle // .name) + (if .host then "@" + .host else "" end))
+                | (if .host then (.role // "fe") + "@" + .host
+                   else (.role // "fe") + " " + (.fe_handle // .name) end)
                     + "\t" + .app_version + "\t"
                     + (if .active then "active" else "idle" end)
               ),
@@ -888,7 +908,10 @@ send_version() {
     fi
     # Labeled by the RESOLVED endpoint itself -- never a "local"/"backend"
     # guess (Codex review: an explicit local unix endpoint and a remote
-    # endpoint from an env fallback are indistinguishable from here).
+    # endpoint from an env fallback are indistinguishable from here). The
+    # build cell also carries the daemon's own declared host (topology
+    # plan §F step 1) alongside lane proto -- same 3-cell row shape as
+    # every other line, no new column.
     printf '%-20s %-28s %s\n' "$ENDPOINT" "$daemon_version" "$daemon_build"
 
     # workspace.list -- capsule rows only, phase printed VERBATIM, no

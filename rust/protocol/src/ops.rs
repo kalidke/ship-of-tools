@@ -2035,6 +2035,15 @@ pub struct VersionQueryReq {}
 /// distinct from `app_version`, which is the product version (ADR 0030
 /// §1) and never gates a capsule attach. `#[serde(default)]` on
 /// `lane_proto`: a daemon predating ADR 0045 answers without it.
+///
+/// `host` (topology plan §F step 1) is this daemon's own declared host —
+/// `crate::workspaces::declared_host()` on the backend side, the same
+/// `sot_log::state_dir::host_name()` resolution ADR 0046 uses for
+/// `HelloRes.host` and `ClientVersion.host`. `#[serde(default)]`: a
+/// daemon predating this field answers without it and an old client
+/// parsing a new daemon's extra field is unaffected either way — this is
+/// what lets `sot-fe version` answer "which host is this daemon on"
+/// without reading a log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonVersion {
     pub app_version: String,
@@ -2042,6 +2051,8 @@ pub struct DaemonVersion {
     pub lane_build: String,
     #[serde(default)]
     pub lane_proto: u32,
+    #[serde(default)]
+    pub host: String,
 }
 
 /// One attached frontend, as `version.query` reports it — sourced from the
@@ -2313,6 +2324,7 @@ mod version_query_tests {
                 protocol: 1,
                 lane_build: "abc1234def".into(),
                 lane_proto: 1,
+                host: "test-host".into(),
             },
             clients: vec![ClientVersion {
                 client_id: "fe-1".into(),
@@ -2330,6 +2342,7 @@ mod version_query_tests {
         let back: VersionQueryRes = serde_json::from_str(&json).unwrap();
         assert_eq!(back.daemon.lane_build, "abc1234def");
         assert_eq!(back.daemon.lane_proto, 1);
+        assert_eq!(back.daemon.host, "test-host");
         assert_eq!(back.clients.len(), 1);
         assert_eq!(back.clients[0].client_id, "fe-1");
         assert_eq!(back.clients[0].fe_handle.as_deref(), Some("win-fe-a"));
@@ -2381,8 +2394,9 @@ mod version_query_tests {
         // Mirrors `legacy_hello_res_defaults_to_preversioning`: a peer that
         // answers this op but omits the roster must still deserialize
         // rather than failing the whole response. Also omits `lane_proto`
-        // (a daemon predating ADR 0045) -- `#[serde(default)]` must supply
-        // 0 rather than failing the whole payload.
+        // (a daemon predating ADR 0045) and `host` (topology plan §F step
+        // 1, a daemon predating that field) -- `#[serde(default)]` must
+        // supply 0 / "" rather than failing the whole payload.
         let json = serde_json::json!({
             "daemon": { "app_version": "0.6.0", "protocol": 1, "lane_build": "abc" },
         });
@@ -2390,6 +2404,7 @@ mod version_query_tests {
         assert!(res.clients.is_empty());
         assert_eq!(res.daemon.app_version, "0.6.0");
         assert_eq!(res.daemon.lane_proto, 0);
+        assert_eq!(res.daemon.host, "");
     }
 }
 
