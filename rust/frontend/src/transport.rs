@@ -479,6 +479,20 @@ pub enum IncomingEvt {
     PtyAttachDirect {
         target: Option<String>,
     },
+    /// A `pty.open` reply came back neither `attach_direct` nor parseable
+    /// as one — this build's daemon has no other success case to offer
+    /// (see `PtyAttachDirect`'s own doc), so anything else is a failure
+    /// the chrome must surface rather than silently drop. `target` mirrors
+    /// `PtyOpenReq.target` (via `PendingKind::PtyOpen`), same as
+    /// `PtyAttachDirect`; `error` is the reply's own `code` field, or
+    /// `"unsupported daemon reply"` when the payload carries none —
+    /// routed through the pane's existing persistent-reason path
+    /// (`pane_dial_error`) so a pane left `Pending` by this reply says why
+    /// instead of sitting mute with buffered keystrokes.
+    PtyOpenFailed {
+        target: Option<String>,
+        error: String,
+    },
     /// Raw event we don't handle in the spike yet — kept for visibility.
     Event {
         op: String,
@@ -2967,6 +2981,18 @@ fn is_attach_direct(payload: &Value) -> bool {
     payload.get("code").and_then(|v| v.as_str()) == Some("attach_direct")
 }
 
+/// The reason text `PtyOpenFailed` carries for a `pty.open` reply that
+/// isn't `attach_direct` — the reply's own `code` field, or a generic
+/// fallback when the payload carries none (a malformed frame, or a
+/// success shape this build no longer expects).
+fn pty_open_failure_reason(payload: &Value) -> String {
+    payload
+        .get("code")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "unsupported daemon reply".to_string())
+}
+
 /// Route a frame to the right `IncomingEvt`. Replies look up `id` in the
 /// pending map to decide how to deserialize; everything else falls through
 /// to the catch-all `Event` evt so the GPU thread can at least see it.
@@ -3680,7 +3706,9 @@ fn handle_response_frame(
                 if is_attach_direct(&frame.payload) {
                     emit(IncomingEvt::PtyAttachDirect { target });
                 } else {
-                    tracing::warn!(?target, payload = ?frame.payload, "pty.open res was not attach_direct");
+                    let error = pty_open_failure_reason(&frame.payload);
+                    tracing::warn!(?target, %error, payload = ?frame.payload, "pty.open res was not attach_direct");
+                    emit(IncomingEvt::PtyOpenFailed { target, error });
                 }
             }
             PendingKind::DirectoryList => {
@@ -4707,6 +4735,14 @@ mod tests {
         assert!(!is_attach_direct(&other_error));
     }
 
+    #[test]
+    fn pty_open_failure_reason_prefers_code_falls_back_when_absent() {
+        let coded = serde_json::json!({"error": "boom", "code": "bad_target"});
+        assert_eq!(pty_open_failure_reason(&coded), "bad_target");
+        let uncoded = serde_json::json!({"cols": 80, "rows": 24});
+        assert_eq!(pty_open_failure_reason(&uncoded), "unsupported daemon reply");
+    }
+
     /// Real-seam regression, same shape as `figure_get_error_envelope_...`
     /// above: an `attach_direct` refusal to `pty.open`, driven through the
     /// actual `handle_response_frame` dispatcher, must produce exactly one
@@ -4752,11 +4788,13 @@ mod tests {
     }
 
     #[test]
-    fn non_attach_direct_pty_open_reply_emits_no_event() {
+    fn non_attach_direct_pty_open_reply_emits_pty_open_failed() {
         // This build's daemon never answers `pty.open` with anything but
-        // an `attach_direct` refusal (every row is a capsule) — a
-        // malformed or unexpected reply shape is warned-and-dropped
-        // rather than producing a stale `PtyOpened`-shaped event.
+        // an `attach_direct` refusal (every row is a capsule) — anything
+        // else used to be warned-and-dropped, leaving the pane `Pending`
+        // forever with buffered keystrokes and no visible explanation.
+        // It must now surface as `PtyOpenFailed` so the chrome can show
+        // a reason.
         let (evt_tx, evt_rx) = std::sync::mpsc::channel();
         let mut pending: HashMap<u64, PendingKind> = HashMap::new();
         pending.insert(
@@ -4770,7 +4808,41 @@ mod tests {
         handle_response_frame(frame, None, &mut pending, &evt_tx, &host);
 
         let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
-        assert!(events.is_empty(), "got {events:?}");
+        assert_eq!(events.len(), 1, "got {events:?}");
+        match &events[0] {
+            (h, IncomingEvt::PtyOpenFailed { target, error }) => {
+                assert_eq!(h, &host);
+                assert_eq!(target.as_deref(), Some("sot-be-beta"));
+                assert_eq!(error, "unsupported daemon reply");
+            }
+            other => panic!("expected PtyOpenFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_attach_direct_pty_open_reply_uses_the_replys_own_code_as_the_reason() {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+        pending.insert(
+            12,
+            PendingKind::PtyOpen {
+                target: Some("sot-be-gamma".to_string()),
+            },
+        );
+        let frame = Frame::res(
+            12,
+            op::PTY_OPEN,
+            serde_json::json!({"error": "boom", "code": "bad_target"}),
+        );
+        let host = "test-host".to_string();
+        handle_response_frame(frame, None, &mut pending, &evt_tx, &host);
+
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
+        assert_eq!(events.len(), 1, "got {events:?}");
+        match &events[0] {
+            (_, IncomingEvt::PtyOpenFailed { error, .. }) => assert_eq!(error, "bad_target"),
+            other => panic!("expected PtyOpenFailed, got {other:?}"),
+        }
     }
 
     // --- Switch-latency Phase 1: the generation/owner fields transport.rs

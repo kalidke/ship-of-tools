@@ -13866,6 +13866,26 @@ impl State {
                     }
                     self.window.request_redraw();
                 }
+                crate::transport::IncomingEvt::PtyOpenFailed { target, error } => {
+                    // Mirrors `PtyAttachDirect`'s own `still_selected`
+                    // check: only the row this specific reply is ABOUT,
+                    // and only while it's still the one on screen, gets
+                    // the reason — a stale reply for a row the user has
+                    // since left must not retitle whatever they're
+                    // looking at now.
+                    let still_selected = target.is_some()
+                        && event_host == self.active_host
+                        && self.bl_pane_target.as_ref()
+                            == Some(&(event_host.clone(), target.clone().unwrap_or_default()));
+                    if still_selected {
+                        let msg = format!("pty.open failed: {error}");
+                        tracing::warn!(?target, %error, "pty.open reply surfaced as a pane reason");
+                        self.pane_dial_error = Some(msg.clone());
+                        self.status = msg;
+                        self.pane_feed = PaneFeed::Pending;
+                    }
+                    self.window.request_redraw();
+                }
                 crate::transport::IncomingEvt::Event { op, payload } => {
                     if op == sot_protocol::op::WORKSPACE_CHANGED {
                         // Server pushed a workspace create/destroy; re-list so
