@@ -977,7 +977,6 @@ pub async fn connect_and_hello(socket_path: &Path) -> (Conn, u64) {
         host: None,
         role: String::new(),
         instance: None,
-        fe_handle: None,
         name: None,
     };
     let reply = call(&mut conn, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;

@@ -2,8 +2,8 @@
 
 Everything in `SKILL.md` assumes a booted **backend** session. A Claude
 running in the Windows FE Terminal drawer is a session like any other
-(bootstrapped the same as any Ship of Tools session — `win-fe-<host>` names
-the frontend PROCESS, not this session) and has neither of the things the
+(bootstrapped the same as any Ship of Tools session — `fe@<host>` is the
+frontend PROCESS's address, not this session's handle) and has neither of the things the
 auto-discovery relies on, and fails in a way that reads like a dead daemon:
 
 ```

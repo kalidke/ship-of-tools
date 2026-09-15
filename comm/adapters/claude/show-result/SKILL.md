@@ -21,7 +21,7 @@ otherwise *name a path* or *paste a URL*), and on "open it in the browser",
 
 `open-url` is http(s)-only, no workspace. `docs` needs an ABSOLUTE backend
 path (confined to a workspace root) — use it for anything that must actually
-run (JS/WebGL). Both broadcast; `--fe <handle>` targets one FE.
+run (JS/WebGL). Both broadcast; `--fe <host>` targets the FE on that host.
 
 ## How
 

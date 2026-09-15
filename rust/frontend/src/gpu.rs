@@ -2314,17 +2314,10 @@ fn resolve_default_host(
 /// was unset, so two calls in the same process could mint two different
 /// fallback instances).
 ///
-/// `name` is this frontend's ADDRESS — its sot-comm handle, the value the
-/// daemon's `--fe <handle>` target matches on — and is DELIBERATELY NOT
-/// derived from `host` (manager review, round 2: S1 means no address
-/// change this sprint, full stop; a first attempt built `name` from the
-/// declared host and flipped the non-Windows prefix from `win-fe-` to
-/// `fe-`, silently breaking every existing explicit `--fe` target).
-/// `name` keeps main's EXACT pre-ADR-0046 derivation byte-for-byte:
-/// `win-fe-<$HOSTNAME|$COMPUTERNAME|"unknown", lowercased>`, unconditionally
-/// (not just on Windows) — known-imperfect on Linux, and deliberately left
-/// exactly that way; unifying it with `host` is a later, explicit address
-/// migration, not a side effect of this one.
+/// `name` is this frontend's ADDRESS, `fe@<host>` (topology plan §A):
+/// the value a `--fe <host>` target (`fe.command.send` `target`) matches
+/// on, derived from the one declared `host` — no second host resolver.
+/// Two frontends on one box share the address and differ by `instance`.
 #[derive(Debug, Clone)]
 pub(crate) struct FrontendIdentity {
     pub host: String,
@@ -2341,9 +2334,13 @@ impl FrontendIdentity {
 /// everywhere after. `sot_log::state_dir::host_name()` failing means this
 /// process has no nameable host at all; fatal, same posture the backend
 /// takes at boot, rather than limping on with a guessed address no peer
-/// could actually reach it by. This only ever feeds `host` (wire/display);
-/// `name` (the address) is resolved completely independently — see
-/// `FrontendIdentity`'s own doc.
+/// could actually reach it by.
+/// The address a frontend on `host` answers to: `fe@<host>`. The same
+/// shape `sot-fe --fe <host>` builds its wire `target` from.
+pub(crate) fn frontend_address(host: &str) -> String {
+    format!("fe@{host}")
+}
+
 pub(crate) fn frontend_identity() -> &'static FrontendIdentity {
     static IDENTITY: std::sync::OnceLock<FrontendIdentity> = std::sync::OnceLock::new();
     IDENTITY.get_or_init(|| {
@@ -2360,14 +2357,7 @@ pub(crate) fn frontend_identity() -> &'static FrontendIdentity {
                 .unwrap_or(0)
         );
         let instance = resolve_fe_instance_component(env.as_deref(), &fallback);
-        // Main's EXACT address derivation (see FrontendIdentity's own
-        // doc) — independent of `host` above.
-        let addr_host = std::env::var("HOSTNAME")
-            .ok()
-            .or_else(|| std::env::var("COMPUTERNAME").ok())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "unknown".to_string());
-        let name = format!("win-fe-{}", addr_host.to_lowercase());
+        let name = frontend_address(&host);
         FrontendIdentity { host, instance, name }
     })
 }
@@ -18572,14 +18562,13 @@ fn parse_nav_envelope(text: &str) -> Option<NavEnvelope> {
     Some(NavEnvelope { workspace, path })
 }
 
-/// This FE's deterministic sot-comm handle (ADR 0025 target filter) — a
-/// read of `frontend_identity().name` (ADR 0046 decision 1), kept as a
-/// named function since it has call sites all over this file predating
-/// that identity. The daemon scopes an `FE_COMMAND`'s `target` to one FE
-/// by this handle; we self-filter against it. `pub(crate)` because
-/// `transport.rs` also sends this same value as `HelloReq::fe_handle`
-/// (unchanged field, no wire rename this sprint), so the daemon can name
-/// this connection without a second derivation to keep in sync.
+/// This FE's address (ADR 0025 target filter) — a read of
+/// `frontend_identity().name` (`fe@<host>`), kept as a named function
+/// since it has call sites all over this file predating that identity.
+/// The daemon scopes an `FE_COMMAND`'s `target` to one FE by this
+/// address; we self-filter against it. `pub(crate)` because
+/// `transport.rs` sends this same value as `HelloReq::name`, so the
+/// daemon can name this connection without a second derivation.
 pub(crate) fn self_comm_handle() -> String {
     frontend_identity().name.clone()
 }
@@ -24527,7 +24516,7 @@ mod tests {
             serde_json::json!({"workspace": "ws", "path": "src/a.jl"}),
             None,
         );
-        let cmd = route_fe_command(&evt, "win-fe-host");
+        let cmd = route_fe_command(&evt, "fe@host-a");
         assert!(matches!(cmd, Some(FeCommand::Preview { .. })));
     }
 
@@ -24536,9 +24525,9 @@ mod tests {
         let evt = fe_evt(
             "preview",
             serde_json::json!({"workspace": "ws", "path": "src/a.jl"}),
-            Some("win-fe-host"),
+            Some("fe@host-a"),
         );
-        let cmd = route_fe_command(&evt, "win-fe-host");
+        let cmd = route_fe_command(&evt, "fe@host-a");
         assert!(matches!(cmd, Some(FeCommand::Preview { .. })));
     }
 
@@ -24549,9 +24538,9 @@ mod tests {
         let evt = fe_evt(
             "preview",
             serde_json::json!({"workspace": "ws", "path": "src/a.jl"}),
-            Some("win-fe-other"),
+            Some("fe@host-b"),
         );
-        assert!(route_fe_command(&evt, "win-fe-host").is_none());
+        assert!(route_fe_command(&evt, "fe@host-a").is_none());
     }
 
     #[test]
@@ -24561,9 +24550,9 @@ mod tests {
         let evt = fe_evt(
             "preview",
             serde_json::json!({"workspace": "ws", "path": "src/a.jl", "urgent": true}),
-            Some("win-fe-host"),
+            Some("fe@host-a"),
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Preview {
                 workspace,
                 path,
@@ -24590,7 +24579,7 @@ mod tests {
             serde_json::json!({"workspace": "ws", "path": "src/a.jl", "urgent": true}),
             None,
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Preview { urgent, .. }) => assert!(
                 !urgent,
                 "broadcast urgent is stripped — badge floor only, never force-show"
@@ -24601,9 +24590,9 @@ mod tests {
         let evt = fe_evt(
             "preview",
             serde_json::json!({"workspace": "ws", "path": "src/a.jl"}),
-            Some("win-fe-host"),
+            Some("fe@host-a"),
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Preview { urgent, .. }) => assert!(!urgent),
             other => panic!("expected Preview, got {other:?}"),
         }
@@ -24619,7 +24608,7 @@ mod tests {
             serde_json::json!({"workspace": "ws", "path": "/abs/site/index.html"}),
             None,
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Docs { workspace, path }) => {
                 assert_eq!(workspace, "ws");
                 assert_eq!(path, "/abs/site/index.html");
@@ -24628,7 +24617,7 @@ mod tests {
         }
         // Missing path → None (required arg bails the parse).
         let evt = fe_evt("docs", serde_json::json!({"workspace": "ws"}), None);
-        assert!(route_fe_command(&evt, "win-fe-host").is_none());
+        assert!(route_fe_command(&evt, "fe@host-a").is_none());
     }
 
     #[test]
@@ -24637,9 +24626,9 @@ mod tests {
         let evt = fe_evt(
             "reveal",
             serde_json::json!({"workspace": "ws", "path": "src/a.jl", "urgent": true}),
-            Some("win-fe-host"),
+            Some("fe@host-a"),
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Reveal {
                 workspace,
                 path,
@@ -24668,7 +24657,7 @@ mod tests {
             }),
             None,
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Preview { roi, .. }) => assert_eq!(
                 roi,
                 Some(RoiRect {
@@ -24693,7 +24682,7 @@ mod tests {
                 serde_json::json!({"workspace": "ws", "path": "p.png", "roi": bad}),
                 None,
             );
-            match route_fe_command(&evt, "win-fe-host") {
+            match route_fe_command(&evt, "fe@host-a") {
                 Some(FeCommand::Preview { roi, .. }) => {
                     assert_eq!(roi, None, "bad roi is ignored, not fatal")
                 }
@@ -24709,7 +24698,7 @@ mod tests {
             }),
             None,
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Reveal { roi, .. }) => assert_eq!(
                 roi,
                 Some(RoiRect {
@@ -24733,7 +24722,7 @@ mod tests {
             }),
             None,
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Preview { caption, .. }) => {
                 assert_eq!(caption.as_deref(), Some("Recovery vs. SNR, 3 densities"))
             }
@@ -24745,7 +24734,7 @@ mod tests {
             serde_json::json!({"workspace": "ws", "path": "p.png", "caption": "hi"}),
             None,
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Reveal { caption, .. }) => {
                 assert_eq!(caption.as_deref(), Some("hi"))
             }
@@ -24766,7 +24755,7 @@ mod tests {
             }),
             None,
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Preview { caption, .. }) => {
                 assert_eq!(caption.as_deref(), Some("line one line two tabbed"))
             }
@@ -24786,7 +24775,7 @@ mod tests {
                 serde_json::json!({"workspace": "ws", "path": "p.png", "caption": bad}),
                 None,
             );
-            match route_fe_command(&evt, "win-fe-host") {
+            match route_fe_command(&evt, "fe@host-a") {
                 Some(FeCommand::Preview { caption, path, .. }) => {
                     assert_eq!(caption, None, "bad caption is ignored, not fatal");
                     assert_eq!(path, "p.png", "the preview itself still happens");
@@ -24818,7 +24807,7 @@ mod tests {
             serde_json::json!({"workspace": "ws", "path": "p.png", "caption": "b".repeat(5000)}),
             None,
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Preview { caption, .. }) => {
                 assert_eq!(caption.unwrap().chars().count(), CAPTION_MAX_CHARS)
             }
@@ -24867,7 +24856,7 @@ mod tests {
             serde_json::json!({"workspace": "demo"}),
             None,
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Workspace { slug, boot }) => {
                 assert_eq!(slug.as_deref(), Some("demo"));
                 assert!(!boot, "boot defaults false when arg absent");
@@ -24927,9 +24916,9 @@ mod tests {
         let evt = fe_evt(
             "goto_workspace",
             serde_json::json!({"workspace": "demo", "boot": true}),
-            Some("win-fe-host"),
+            Some("fe@host-a"),
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Workspace { slug, boot }) => {
                 assert_eq!(slug.as_deref(), Some("demo"));
                 assert!(boot, "boot:true must thread through");
@@ -24941,7 +24930,7 @@ mod tests {
     #[test]
     fn route_goto_mode_maps_to_mode() {
         let evt = fe_evt("goto_mode", serde_json::json!({"mode": "modules"}), None);
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Mode { mode }) => assert_eq!(mode, "modules"),
             other => panic!("expected Mode, got {other:?}"),
         }
@@ -24954,7 +24943,7 @@ mod tests {
             serde_json::json!({"text": "build done", "level": "info"}),
             None,
         );
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Notify { text, level }) => {
                 assert_eq!(text, "build done");
                 assert_eq!(level.as_deref(), Some("info"));
@@ -24963,7 +24952,7 @@ mod tests {
         }
         // level is optional.
         let evt = fe_evt("notify", serde_json::json!({"text": "hi"}), None);
-        match route_fe_command(&evt, "win-fe-host") {
+        match route_fe_command(&evt, "fe@host-a") {
             Some(FeCommand::Notify { level, .. }) => assert!(level.is_none()),
             other => panic!("expected Notify, got {other:?}"),
         }
@@ -24972,37 +24961,32 @@ mod tests {
     #[test]
     fn route_unknown_cmd_is_ignored() {
         let evt = fe_evt("explode", serde_json::json!({}), None);
-        assert!(route_fe_command(&evt, "win-fe-host").is_none());
+        assert!(route_fe_command(&evt, "fe@host-a").is_none());
     }
 
     #[test]
     fn route_missing_required_arg_is_ignored() {
         // preview without path.
         let evt = fe_evt("preview", serde_json::json!({"workspace": "ws"}), None);
-        assert!(route_fe_command(&evt, "win-fe-host").is_none());
+        assert!(route_fe_command(&evt, "fe@host-a").is_none());
         // preview without workspace.
         let evt = fe_evt("preview", serde_json::json!({"path": "src/a.jl"}), None);
-        assert!(route_fe_command(&evt, "win-fe-host").is_none());
+        assert!(route_fe_command(&evt, "fe@host-a").is_none());
         // goto_workspace without workspace.
         let evt = fe_evt("goto_workspace", serde_json::json!({}), None);
-        assert!(route_fe_command(&evt, "win-fe-host").is_none());
+        assert!(route_fe_command(&evt, "fe@host-a").is_none());
         // notify without text.
         let evt = fe_evt("notify", serde_json::json!({"level": "info"}), None);
-        assert!(route_fe_command(&evt, "win-fe-host").is_none());
+        assert!(route_fe_command(&evt, "fe@host-a").is_none());
     }
 
     #[test]
-    fn self_comm_handle_is_win_fe_lowercased_host() {
-        // Manager review, round 2: main's exact address derivation,
-        // independent of the declared `host` — win-fe-<host>
-        // unconditionally, not just on Windows (known-imperfect on
-        // Linux, deliberately left for a later, explicit address
-        // migration; see FrontendIdentity's own doc). Deterministic
-        // shape: win-fe-<lowercased host>. We don't assert the exact
-        // host (env-dependent) but the prefix + lowercasing invariant.
+    fn self_comm_handle_is_fe_at_the_declared_host() {
+        // Topology plan §A: the address is derived from the ONE declared
+        // host, `fe@<host>` — no second resolver, no platform prefix.
         let h = self_comm_handle();
-        assert!(h.starts_with("win-fe-"), "got {h:?}");
-        assert_eq!(h, h.to_lowercase(), "handle is lowercased");
+        assert_eq!(h, format!("fe@{}", frontend_identity().host), "got {h:?}");
+        assert_eq!(frontend_address("host-a"), "fe@host-a");
     }
 
     #[test]

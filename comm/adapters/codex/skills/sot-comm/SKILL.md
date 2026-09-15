@@ -17,7 +17,7 @@ daemon protocol logic.
 ~/.sot-comm/bin/comm-list.sh                           # registered sessions
 ~/.sot-comm/bin/comm-status.sh waiting "watching X"    # sticky purple
 ~/.sot-comm/bin/comm-status.sh blocked "need Y"        # red
-~/.sot-comm/bin/comm-relay.sh send @win-fe "message"   # daemon relay to attached FEs
+~/.sot-comm/bin/sot-fe notify "message"                # toast on the attached FE(s)
 ~/.sot-comm/bin/sot-fe preview <workspace> <path>      # badge/show result in FE
 ```
 

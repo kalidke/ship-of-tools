@@ -72,9 +72,9 @@ positive evidence the message was lost (peer was deaf or restarted).
 
 Durable BE peers `<repo-lowercase>-<host>`; a spawned agent on a repo
 checkout is bare `<repo-lowercase>`; a git worktree adds `-wt-<shortname>`
-(via `/worktree` — never hand-add it). `win-fe-<host>` is the frontend
-PROCESS's own label for directed `fe.command`/`open-url` targeting, never a
-session handle — a session in the FE's own Terminal drawer is a session
+(via `/worktree` — never hand-add it). `fe@<host>` is the frontend
+PROCESS's own address (`sot-fe --fe <host>`) for directed
+`fe.command`/`open-url` targeting, never a session handle — a session in the FE's own Terminal drawer is a session
 like any other, named the same way as everything above. Full table:
 `comm/PROTOCOL.md` § Naming.
 
@@ -83,7 +83,7 @@ like any other, named the same way as everything above. Full table:
 The show verbs (`preview`, `reveal`, `goto`, `mode`, `notify`, `open-url`)
 go to whichever FE the owner is active on (the daemon resolves this itself;
 falls back to broadcast when no frontend is active) unless scoped with
-`--fe <handle>`; `repl`, `type` and `screen` are daemon requests answered to
+`--fe <host>`; `repl`, `type` and `screen` are daemon requests answered to
 you. Full reference: `sot-fe --help`; rarer essays: `references/fe-verbs.md`.
 
 | Verb | Does |

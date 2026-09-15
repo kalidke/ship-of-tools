@@ -30,7 +30,10 @@ $hostName = $matches[1]
 $portNum = [int]$matches[2]
 
 if (-not $From) {
-    $From = 'win-fe-' + $env:COMPUTERNAME.ToLowerInvariant()
+    $From = $env:SOT_COMM_NAME
+}
+if (-not $From) {
+    throw "comm-relay.ps1: pass -From <handle> or set SOT_COMM_NAME (a frontend is a client, not a comm peer; there is no derived handle)"
 }
 if ($To.StartsWith('@')) {
     $To = $To.Substring(1)

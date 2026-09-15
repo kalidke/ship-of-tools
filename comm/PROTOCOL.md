@@ -131,7 +131,7 @@ task**. A task-named anything is unfindable next to its repo-named siblings
 | Durable BE peer handle | `<repo-lowercase>-<host>` | `myrepo-myhost` (Ship of Tools on the backend host), `lldevtools-myhost` |
 | Spawned agent — repo checkout | `<repo-lowercase>` (bare, **no** descriptor) | `myrepo` |
 | Spawned agent — git **worktree** | `<repo>-wt-<shortname>` (the `-wt-` infix is reserved for worktrees and groups them next to the parent; `<shortname>` names the WORKTREE, never the task). Created via the `/worktree` skill. | `MyAnalysis-wt-rotation` (worktree `rotation`) |
-| FE handle | `win-fe-<host>` — the frontend PROCESS's own self-reported label for directed `fe.command`/`open-url` targeting; the frontend is a client, never a comm peer, and no session derives or joins as this handle | `win-fe-laptop` |
+| Frontend address | `fe@<host>` — the frontend PROCESS's declared hello `name`, the target `sot-fe --fe <host>` scopes a directed `fe.command`/`open-url` to (two frontends on one box differ by `instance`); the frontend is a client, never a comm peer, and no session derives or joins as this name | `fe@laptop` |
 | Workspace label | repo basename (comm-spawn default; task-named labels are **rejected**) | `MyPackage` |
 | Workspace slug (the row's name) | derived from the label by the daemon | `mypackage` |
 | Second workspace on one repo | `<Repo>-<suffix>` label, deliberately | `MyPackage-2` |

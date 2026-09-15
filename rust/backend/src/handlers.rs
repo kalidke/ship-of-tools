@@ -133,27 +133,17 @@ fn is_bounded_output_plugin(path: &std::path::Path) -> bool {
 enum ProtocolGate {
     /// Client protocol equals ours — proceed cleanly.
     Accept,
-    /// Client is pre-versioning (protocol == 0) and we're still at
-    /// PROTOCOL_VERSION 1 — accept under the one-time transition grace, but
-    /// warn so the skew is visible.
-    AcceptLegacy,
     /// Protocols differ — reject the hello with a structured mismatch error.
     Reject,
 }
 
-/// Gate the handshake on protocol integer equality (ADR 0030 §2).
-///
-/// Accepts when the client's protocol equals ours. As a one-time transition
-/// grace, a pre-versioning frontend (`protocol == 0`, i.e. it predates the
-/// versioned handshake and simply omitted the field) is also accepted WHILE
-/// our `PROTOCOL_VERSION` is still 1. The moment we bump to protocol 2, that
-/// grace evaporates and `0` is rejected like any other mismatch: a peer that
-/// can't even name its protocol can't be trusted on a v2 wire.
+/// Gate the handshake on protocol integer equality (ADR 0030 §2). The
+/// protocol-1 grace for a pre-versioning peer (`protocol == 0`) ended with
+/// the bump to 2: a peer that cannot name its protocol is rejected like
+/// any other mismatch, with both versions named.
 fn protocol_gate(client_protocol: u32) -> ProtocolGate {
     if client_protocol == sot_protocol::PROTOCOL_VERSION {
         ProtocolGate::Accept
-    } else if client_protocol == 0 && sot_protocol::PROTOCOL_VERSION == 1 {
-        ProtocolGate::AcceptLegacy
     } else {
         ProtocolGate::Reject
     }
@@ -205,14 +195,6 @@ pub async fn handle_hello(
     // instead of failing on a later op with a cryptic frame-parse error.
     match protocol_gate(req.protocol) {
         ProtocolGate::Accept => {}
-        ProtocolGate::AcceptLegacy => {
-            tracing::warn!(
-                client_id = %req.client_id,
-                client_protocol = req.protocol,
-                backend_protocol = sot_protocol::PROTOCOL_VERSION,
-                "hello: pre-versioning frontend accepted under ADR 0030 transition grace"
-            );
-        }
         ProtocolGate::Reject => {
             let frontend_version = if req.app_version.is_empty() {
                 "<pre-versioning>".to_string()
@@ -368,7 +350,6 @@ pub async fn handle_version_query(
             host: c.host.clone(),
             role: c.role.clone(),
             instance: c.instance.clone(),
-            fe_handle: c.fe_handle.clone(),
             name: c.name.clone(),
             active: snap.is_active_serial(c.serial),
         })
@@ -5712,25 +5693,21 @@ pub async fn handle_fe_command_send(
         // of an exclusive delivery: the same lie in miniature that this
         // field exists to end.
         (Some(_), _) => 1,
-        // An explicit `--fe <handle>` stays a handle-matched broadcast —
-        // every connection carrying that handle self-filters as a match,
-        // so the handle count IS the audience. Manager review: gated on
-        // `role` too when present -- a newly declared bridge/cli/agent
-        // connection's `name` (ADR 0046 decision 1) must never inflate a
-        // frontend-targeted count, even on the rare coincidence of a
-        // matching string.
+        // An explicit `--fe <host>` (`target = fe@<host>`) stays a
+        // name-matched broadcast — every frontend carrying that name
+        // self-filters as a match, so the name count IS the audience.
+        // Gated on `role`: a bridge/cli/agent's `name` never inflates a
+        // frontend-targeted count, even on a coincidental string match.
         (None, Some(handle)) => snap
             .clients
             .iter()
-            .filter(|c| c.fe_handle.as_deref() == Some(handle) && (c.role.is_empty() || c.role == "fe"))
+            .filter(|c| c.role == "fe" && c.name.as_deref() == Some(handle))
             .count(),
-        // The badge floor: every attached, handle-bearing frontend acts.
+        // The badge floor: every attached, named frontend acts.
         (None, None) => snap
             .clients
             .iter()
-            .filter(|c| {
-                c.fe_handle.as_deref().is_some_and(|h| !h.is_empty()) && (c.role.is_empty() || c.role == "fe")
-            })
+            .filter(|c| c.role == "fe" && c.name.as_deref().is_some_and(|h| !h.is_empty()))
             .count(),
     };
 
@@ -5830,15 +5807,15 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_send_counts_the_exclusive_connection_not_the_shared_handle() {
         let clients = Clients::new();
-        let stale = clients.register("c-stale", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
+        let stale = clients.register("c-stale", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
             .await
             .expect("handler ok");
-        assert_eq!(resolved_target_of(&out).as_deref(), Some("win-fe-a"));
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
         assert_eq!(
             delivered_to_of(&out),
             Some(1),
@@ -5861,15 +5838,15 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_send_with_an_active_client_delivers_to_it_only() {
         let clients = Clients::new();
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
-        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, Some("win-fe-b".into()), String::new(), None, None, None);
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
             .await
             .expect("handler ok");
-        assert_eq!(resolved_target_of(&out).as_deref(), Some("win-fe-a"));
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
         assert_eq!(
             delivered_to_of(&out),
             Some(1),
@@ -5879,7 +5856,7 @@ mod fe_command_send_tests {
         let evt = rx.try_recv().expect("exactly one evt published");
         assert_eq!(
             evt.target.as_deref(),
-            Some("win-fe-a"),
+            Some("fe@host-a"),
             "resolves to the active frontend, not a broadcast"
         );
         assert_eq!(
@@ -5900,8 +5877,8 @@ mod fe_command_send_tests {
     async fn untargeted_send_with_no_active_client_broadcasts_as_before() {
         let clients = Clients::new();
         // Registered but never touched by a person -> no active frontend.
-        let _idle_a = clients.register("c-idle-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
-        let _idle_b = clients.register("c-idle-b", "local", None, "0.6.0", 1, Some("win-fe-b".into()), String::new(), None, None, None);
+        let _idle_a = clients.register("c-idle-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let _idle_b = clients.register("c-idle-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
@@ -5924,21 +5901,21 @@ mod fe_command_send_tests {
     /// and stays a handle-matched broadcast (`target_serial` unset).
     ///
     /// This is the exact shape of the 2026-09-09 field incident: no
-    /// attached connection has the handle "win-fe-explicit" (only
-    /// "win-fe-a" is registered), yet the ack was `ok:true` regardless —
+    /// attached connection has the handle "fe@host-explicit" (only
+    /// "fe@host-a" is registered), yet the ack was `ok:true` regardless —
     /// `delivered_to == Some(0)` is the fix, the ground truth the old ack
     /// could not report.
     #[tokio::test]
     async fn explicit_target_is_never_overridden_by_active_resolution() {
         let clients = Clients::new();
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", Some("win-fe-explicit")), &tx, &clients)
+        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-explicit")), &tx, &clients)
             .await
             .expect("handler ok");
-        assert_eq!(resolved_target_of(&out).as_deref(), Some("win-fe-explicit"));
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-explicit"));
         assert_eq!(
             delivered_to_of(&out),
             Some(0),
@@ -5946,7 +5923,7 @@ mod fe_command_send_tests {
         );
 
         let evt = rx.try_recv().expect("exactly one evt published");
-        assert_eq!(evt.target.as_deref(), Some("win-fe-explicit"));
+        assert_eq!(evt.target.as_deref(), Some("fe@host-explicit"));
         assert!(evt.target_serial.is_none(), "explicit --fe stays a handle-matched broadcast");
     }
 
@@ -5955,17 +5932,17 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn explicit_target_that_is_attached_delivers_to_it() {
         let clients = Clients::new();
-        let _target = clients.register("c-target", "local", None, "0.6.0", 1, Some("win-fe-target".into()), String::new(), None, None, None);
+        let _target = clients.register("c-target", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-target".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
-        let out = handle_fe_command_send(1, req_json("notify", Some("win-fe-target")), &tx, &clients)
+        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-target")), &tx, &clients)
             .await
             .expect("handler ok");
-        assert_eq!(resolved_target_of(&out).as_deref(), Some("win-fe-target"));
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-target"));
         assert_eq!(delivered_to_of(&out), Some(1));
 
         let evt = rx.try_recv().expect("exactly one evt published");
-        assert_eq!(evt.target.as_deref(), Some("win-fe-target"));
+        assert_eq!(evt.target.as_deref(), Some("fe@host-target"));
     }
 
     /// Design point E: an untargeted `relaunch` with NO active frontend
@@ -5977,7 +5954,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_relaunch_with_no_active_frontend_publishes_nothing() {
         let clients = Clients::new();
-        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
+        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
@@ -5996,14 +5973,14 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_relaunch_with_an_active_frontend_delivers_to_it_only() {
         let clients = Clients::new();
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
             .await
             .expect("handler ok");
-        assert_eq!(resolved_target_of(&out).as_deref(), Some("win-fe-a"));
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
         assert_eq!(delivered_to_of(&out), Some(1));
 
         let evt = rx.try_recv().expect("exactly one evt published");
@@ -6862,26 +6839,18 @@ mod protocol_gate_tests {
             protocol_gate(sot_protocol::PROTOCOL_VERSION),
             ProtocolGate::Accept
         );
-        // Concretely, protocol 1 is accepted today.
-        assert_eq!(protocol_gate(1), ProtocolGate::Accept);
-    }
-
-    #[test]
-    fn accepts_preversioning_under_grace_at_v1() {
-        // A pre-versioning frontend (protocol == 0) is accepted under the
-        // one-time transition grace WHILE PROTOCOL_VERSION is 1. This test is
-        // meaningful only at v1; it documents the grace and will need updating
-        // when we bump to v2 (at which point 0 must reject — see the next test's
-        // rationale).
-        assert_eq!(sot_protocol::PROTOCOL_VERSION, 1, "grace is v1-only");
-        assert_eq!(protocol_gate(0), ProtocolGate::AcceptLegacy);
+        // Concretely, protocol 2 is accepted today.
+        assert_eq!(protocol_gate(2), ProtocolGate::Accept);
     }
 
     #[test]
     fn rejects_mismatched_protocol() {
-        // A newer frontend on protocol 2 (or any non-equal, non-0 value) is
-        // rejected — the FE renders the "update needed" screen.
-        assert_eq!(protocol_gate(2), ProtocolGate::Reject);
+        // The previous protocol (a frontend box that has not converged),
+        // a pre-versioning peer (0: the v1 grace ended with the bump to
+        // 2) and a newer one are all rejected — the FE renders the
+        // "update needed" screen naming both sides.
+        assert_eq!(protocol_gate(sot_protocol::PROTOCOL_VERSION - 1), ProtocolGate::Reject);
+        assert_eq!(protocol_gate(0), ProtocolGate::Reject);
         assert_eq!(protocol_gate(99), ProtocolGate::Reject);
     }
 }

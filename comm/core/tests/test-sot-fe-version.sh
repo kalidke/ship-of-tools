@@ -190,7 +190,7 @@ case_active_and_idle_frontends_print_their_state() {
     # frontend am I on" without reading a log. No idle AGE (deleted
     # 2026-09-08 review, finding 6): the roster only ever says which one,
     # if any, is active.
-    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[{"client_id":"fe-a","app_version":"0.6.0-dev+abc1234","protocol":1,"host":"host-a","role":"fe","name":"win-fe-a","active":true},{"client_id":"fe-b","app_version":"0.6.0-dev+abc1234","protocol":1,"host":"host-b","role":"fe","name":"win-fe-b","active":false}]}}'
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[{"client_id":"fe-a","app_version":"0.6.0-dev+abc1234","protocol":1,"host":"host-a","role":"fe","name":"fe@host-a","active":true},{"client_id":"fe-b","app_version":"0.6.0-dev+abc1234","protocol":1,"host":"host-b","role":"fe","name":"fe@host-b","active":false}]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
     start_stub_daemon
     run_version
@@ -199,7 +199,6 @@ case_active_and_idle_frontends_print_their_state() {
     [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
     contains "$VER_OUT" "fe@host-a" || { echo "  missing the active frontend's row: $VER_OUT"; return 1; }
     contains "$VER_OUT" "fe@host-b" || { echo "  missing the idle frontend's row: $VER_OUT"; return 1; }
-    contains "$VER_OUT" "win-fe-a" && { echo "  the declared handle must be dropped from the label once a host is known: $VER_OUT"; return 1; }
     contains "$VER_OUT" "active" || { echo "  expected the active frontend marked active: $VER_OUT"; return 1; }
     contains "$VER_OUT" "idle" || { echo "  expected the other frontend marked idle: $VER_OUT"; return 1; }
     return 0
@@ -236,24 +235,6 @@ case_version_daemon_predating_host_field_prints_a_placeholder() {
     return 0
 }
 
-case_legacy_fe_handle_client_prints_under_the_generic_fe_role() {
-    # A daemon predating ADR 0046 decision 1 still answers with the
-    # retired `fe_handle` key and no `role`/`host` at all -- the roster
-    # must still show it as a frontend row ("fe <handle>", no "@host"
-    # suffix since none was declared), never silently drop it into the
-    # generic "client <id>" bucket.
-    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0","protocol":1,"lane_build":"xyz","lane_proto":1},"clients":[{"client_id":"fe-c","app_version":"0.6.0","protocol":1,"fe_handle":"win-fe-c","active":true}]}}'
-    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
-    start_stub_daemon
-    run_version
-    stop_stub_daemon
-
-    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
-    contains "$VER_OUT" "fe win-fe-c" || { echo "  missing the legacy fe_handle client's row: $VER_OUT"; return 1; }
-    contains "$VER_OUT" "win-fe-c@" && { echo "  no host was declared -- must not print a bare '@': $VER_OUT"; return 1; }
-    return 0
-}
-
 case_untargeted_relaunch_carries_no_target_field_and_exits_2_without_resolved_target() {
     # --fe is OPTIONAL for relaunch. With none given, the wire request must
     # carry NO `target` field at all -- the daemon fills one in from the
@@ -286,7 +267,7 @@ case_untargeted_relaunch_with_resolved_target_exits_0() {
     # The happy path this daemon's ack claims: an active frontend WAS
     # resolved, so relaunch went somewhere real -- exits 0 same as any
     # other successfully-delivered verb.
-    stage_reply "fe.command.send" '{"v":1,"id":1,"kind":"res","op":"fe.command.send","payload":{"ok":true,"resolved_target":"win-fe-a"}}'
+    stage_reply "fe.command.send" '{"v":1,"id":1,"kind":"res","op":"fe.command.send","payload":{"ok":true,"resolved_target":"fe@host-a"}}'
     start_stub_daemon
     local out rc
     out="$("$SOT_FE" relaunch --endpoint "unix:$SOCK" --timeout 5 2>&1)"
@@ -378,7 +359,6 @@ check "a daemon predating lane_proto prints a 'lane proto ?' placeholder and sti
 check "an active and an idle frontend print their role@host and active|idle state"          case_active_and_idle_frontends_print_their_state
 check "the version reply names the daemon's own declared host"                             case_version_names_the_daemons_own_host
 check "a daemon predating the host field prints a placeholder and still exits 0"           case_version_daemon_predating_host_field_prints_a_placeholder
-check "a legacy fe_handle-only client still prints as a frontend row"                       case_legacy_fe_handle_client_prints_under_the_generic_fe_role
 check "an untargeted relaunch sends no target and exits 2 without a resolved_target"        case_untargeted_relaunch_carries_no_target_field_and_exits_2_without_resolved_target
 check "an untargeted relaunch with a resolved_target in the ack exits 0"                    case_untargeted_relaunch_with_resolved_target_exits_0
 check "a foreign-phase capsule row prints its phase with no derived verdict column"        case_foreign_row_prints_the_phase_with_no_derived_verdict

@@ -1411,38 +1411,33 @@ where
                         // ELIGIBLE for the read-deadline reaper -- exactly
                         // the two long-lived roles, `fe` and `bridge`
                         // (`cli`/`agent` are one-shot and stay ungated).
-                        // Mirrors `Clients::register`'s own legacy
-                        // inference (a hello carrying `fe_handle` and no
-                        // `role` at all predates `role` entirely, so it can
-                        // only have been a frontend) — computed here
-                        // against `req` BEFORE its fields move into
-                        // `register` below, so this gates on the exact same
-                        // role resolution the roster itself uses. This does
-                        // NOT arm the deadline itself (manager compatibility
-                        // fix, post-review) — only this connection's FIRST
-                        // `ping` does that (`op::PING` arm below), so a
-                        // peer too old to send one keeps today's behaviour
-                        // exactly, never reaped by this path.
-                        let effective_role: &str = if req.role.is_empty() && req.fe_handle.is_some()
-                        {
-                            "fe"
-                        } else {
-                            req.role.as_str()
-                        };
-                        is_long_lived_role = matches!(effective_role, "fe" | "bridge");
-                        hello_host = req.host.clone();
-                        client_guard = Some(clients.register(
-                            req.client_id,
-                            transport,
-                            peer.clone(),
-                            req.app_version,
-                            req.protocol,
-                            req.fe_handle,
-                            req.role,
-                            req.host,
-                            req.instance,
-                            req.name,
-                        ));
+                        // This does NOT arm the deadline itself (manager
+                        // compatibility fix, post-review) — only this
+                        // connection's FIRST `ping` does that (`op::PING`
+                        // arm below), so a peer too old to send one keeps
+                        // today's behaviour exactly, never reaped by this
+                        // path.
+                        // A peer on another protocol is about to be
+                        // refused by `handle_hello`'s gate: never enter
+                        // the roster (it would be counted as a directed
+                        // command's audience and listed by `version.query`
+                        // while its hello stands refused). It gets the
+                        // structured mismatch reply and nothing else.
+                        if req.protocol == sot_protocol::PROTOCOL_VERSION {
+                            is_long_lived_role = matches!(req.role.as_str(), "fe" | "bridge");
+                            hello_host = req.host.clone();
+                            client_guard = Some(clients.register(
+                                req.client_id,
+                                transport,
+                                peer.clone(),
+                                req.app_version,
+                                req.protocol,
+                                req.role,
+                                req.host,
+                                req.instance,
+                                req.name,
+                            ));
+                        }
                     }
                 }
                 // Flip the per-connection auth flag based on THIS hello's token

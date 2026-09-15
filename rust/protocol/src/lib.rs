@@ -57,7 +57,7 @@ pub use session_socket::{current_uid, runtime_sot_dir, session_socket_path, slug
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Product version embedded at build time (ADR 0030 §1, §8 decisions 31a
 /// and 31c). Exactly one form means "this is an official release build":

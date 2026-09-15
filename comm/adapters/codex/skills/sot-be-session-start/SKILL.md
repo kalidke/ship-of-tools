@@ -10,13 +10,11 @@ Run `sot-session-start` first (its two-phase arm/catch-up flow) —
 `bus.sh sync` peek) whenever it detects this repo, so there is nothing
 sot-specific left to do here beyond that.
 
-## Frontend Ping
+## Frontends
 
-Attached FEs receive daemon relay broadcasts even with no `win-fe-*` row in
-this backend host's registry. The bootstrap already sends one `@win-fe`
-advisory ping; a later FE reply arrives as a directed `[relay] from
-win-fe-<host>:` line if your Codex wake path is armed. Do not block on `ask`
-during bootstrap.
+A frontend is a client of its daemon, never a comm peer: it has no
+registry row and no handle to `ask`. Drive it with `sot-fe` (`--fe <host>`
+scopes a command to the frontend on one host).
 
 ## Report State
 

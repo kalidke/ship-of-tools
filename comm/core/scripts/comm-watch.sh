@@ -36,11 +36,8 @@
 # every session on the host — including traffic addressed to a SIBLING
 # handle (the `to` field is advisory, not enforced routing; the daemon
 # broadcasts to every connection). So the Windows wake filter checks `to`
-# against OUR exact handle always, and ALSO the bare `win-fe` family label
-# only when THIS handle is itself part of that family (starts with
-# `win-fe`) — Codex review finding 7: a plain non-FE `<repo>-<host>`
-# Windows capsule must wake only on `to:<me>`, never on FE-family
-# broadcasts meant for the frontend driver. The frame carries the message
+# against OUR exact handle only (a frontend is a client, never a comm
+# peer, so there is no FE-family label to honour). The frame carries the message
 # under `.text` (the raw `agent.message` payload), not `.msg`
 # (comm-relay.sh bridge's transformed field, Linux-only).
 #
@@ -75,10 +72,7 @@ _sot_comm_watch_is_windows() {
 
 if _sot_comm_watch_is_windows; then
     inbox="${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}/sot/fe-inbox.jsonl"
-    case "$handle" in
-        win-fe*) wake_filter='select(.from != $me and ((.to // "") == $me or (.to // "") == "win-fe")) | "[relay] from \(.from): \(.text)"' ;;
-        *)       wake_filter='select(.from != $me and (.to // "") == $me) | "[relay] from \(.from): \(.text)"' ;;
-    esac
+    wake_filter='select(.from != $me and (.to // "") == $me) | "[relay] from \(.from): \(.text)"'
 else
     # Honor $SOT_COMM_HOME (Codex review finding 8): a capsule with a
     # non-default comm home must watch that home's inbox, not always

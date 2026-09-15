@@ -1628,8 +1628,8 @@ case_pinned_comm_name_never_adopts_selffile_identity() {
     # self-file identity, a pinned SOT_COMM_NAME must still win. Before
     # this fix, comm-join.sh only consulted $SOT_COMM_NAME when NAME was
     # EMPTY — a resolved-but-wrong self-file identity silently outranked
-    # the pin (the exact field bug: a capsule adopted the frontend's
-    # win-fe-<host> handle from a shared self-file slot).
+    # the pin (the exact field bug: a capsule adopted another session's
+    # handle from a shared self-file slot).
     local root self crafted
     mkdir -p "$WORK/pinned-never-adopts/proj22"
     root="$(realpath "$WORK/pinned-never-adopts/proj22")"

@@ -128,7 +128,6 @@ async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, host:
         host: Some(host.to_string()),
         role: "cli".to_string(),
         instance: None,
-        fe_handle: None,
         name: Some(client_id.to_string()),
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)

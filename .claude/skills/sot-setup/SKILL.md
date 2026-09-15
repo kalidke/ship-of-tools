@@ -51,7 +51,7 @@ user only what you can't derive. Use `AskUserQuestion` with these:
      instead of a separate hands-on pass on the Linux box. See §6b.
 
 3. **sot-comm handle** — short stable name for this session
-   (e.g. `win-fe`, `mac-fe`, `myhost-be`). Default `<repo>-<host>`.
+   (e.g. `myrepo-hub-box`, `lab-box-be`). Default `<repo>-<host>`.
 
 4. **Statusline?** (yes/no, default yes) — install the 2-line Claude statusline.
 

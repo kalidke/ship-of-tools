@@ -143,10 +143,9 @@ async fn poll_until_connected(socket_path: &std::path::Path) -> Conn {
     }
 }
 
-/// Connect + hello (declaring `{host, role, fe_handle}` per ADR 0046
-/// decision 1 -- `fe_handle` unchanged from before that lane, manager
-/// review: no wire rename this sprint), returning the connection and the
-/// next free request id (2, since id 1 is hello).
+/// Connect + hello (declaring `{host, role, instance, name}` per ADR 0046
+/// decision 1; `name` is the frontend's `fe@<host>` address), returning
+/// the connection and the next free request id (2, since id 1 is hello).
 async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, name: &str) -> (Conn, u64) {
     let mut conn = poll_until_connected(socket_path).await;
     let hello = HelloReq {
@@ -159,8 +158,7 @@ async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, name:
         host: Some("test-host".to_string()),
         role: "fe".to_string(),
         instance: Some("test-instance".to_string()),
-        fe_handle: Some(name.to_string()),
-        name: None,
+        name: Some(name.to_string()),
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await
@@ -213,7 +211,7 @@ fn client_row<'a>(version_res: &'a serde_json::Value, client_id: &str) -> Option
 #[tokio::test]
 async fn navigation_and_typing_ops_never_stamp_presence_only_fe_presence_does() {
     let env = Env::spawn("nav");
-    let (mut conn, mut id) = connect_and_hello(&env.socket_path, "presence-test", "win-fe-nav").await;
+    let (mut conn, mut id) = connect_and_hello(&env.socket_path, "presence-test", "fe@host-nav").await;
 
     let body = async {
         // Every op an earlier design stamped presence from — none of them
@@ -252,12 +250,9 @@ async fn navigation_and_typing_ops_never_stamp_presence_only_fe_presence_does() 
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }
 
-/// ADR 0046 decision 1: a real hello declaring `{host, role, fe_handle}`
-/// is echoed VERBATIM by `version.query`'s roster — read from the
-/// connection's own declaration, never recomputed daemon-side. `fe_handle`
-/// unchanged from before this lane (manager review: no wire rename this
-/// sprint) — `name` is reserved for a non-FE connection's own declared
-/// handle and stays absent on a frontend's row.
+/// ADR 0046 decision 1: a real hello declaring `{host, role, name}` is
+/// echoed VERBATIM by `version.query`'s roster — read from the
+/// connection's own declaration, never recomputed daemon-side.
 #[tokio::test]
 async fn version_query_echoes_the_declared_host_and_role() {
     let env = Env::spawn("declare");
@@ -268,13 +263,14 @@ async fn version_query_echoes_the_declared_host_and_role() {
         let row = client_row(&v, "declare-test").expect("this connection's own roster row");
         assert_eq!(row.get("host").and_then(|v| v.as_str()), Some("test-host"), "{v}");
         assert_eq!(row.get("role").and_then(|v| v.as_str()), Some("fe"), "{v}");
-        assert_eq!(row.get("fe_handle").and_then(|v| v.as_str()), Some("fe-declare-test"), "{v}");
+        assert_eq!(row.get("name").and_then(|v| v.as_str()), Some("fe-declare-test"), "{v}");
+        assert!(row.get("fe_handle").is_none(), "fe_handle left the wire at protocol 2: {v}");
         assert_eq!(row.get("instance").and_then(|v| v.as_str()), Some("test-instance"), "{v}");
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }
 
-/// Finding 5 (2026-09-08 review): two connections sharing one `fe_handle`
+/// Finding 5 (2026-09-08 review): two connections sharing one `name`
 /// (a stale reconnect, or a genuine hostname collision) must never both
 /// receive an untargeted `fe.command.send` — resolution is by connection
 /// SERIAL, and delivery is filtered server-side before the frame is ever
@@ -283,8 +279,8 @@ async fn version_query_echoes_the_declared_host_and_role() {
 #[tokio::test]
 async fn duplicate_handle_connections_get_exactly_one_delivery() {
     let env = Env::spawn("dup");
-    let (mut conn_a, mut id_a) = connect_and_hello(&env.socket_path, "dup-a", "win-fe-dup").await;
-    let (mut conn_b, _id_b) = connect_and_hello(&env.socket_path, "dup-b", "win-fe-dup").await;
+    let (mut conn_a, mut id_a) = connect_and_hello(&env.socket_path, "dup-a", "fe@host-dup").await;
+    let (mut conn_b, _id_b) = connect_and_hello(&env.socket_path, "dup-b", "fe@host-dup").await;
 
     let body = async {
         // Make conn_a the active frontend.
@@ -304,7 +300,7 @@ async fn duplicate_handle_connections_get_exactly_one_delivery() {
         assert_eq!(ack.get("ok").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(
             ack.get("resolved_target").and_then(|v| v.as_str()),
-            Some("win-fe-dup"),
+            Some("fe@host-dup"),
             "must resolve to the active handle: {ack}"
         );
 
@@ -341,6 +337,52 @@ async fn duplicate_handle_connections_get_exactly_one_delivery() {
             saw_command.is_err(),
             "the non-active duplicate connection must receive NO fe.command, got: {saw_command:?}"
         );
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// The hello gate is integer equality on `protocol`, and its refusal
+/// names BOTH sides: a frontend still on the previous protocol (a box
+/// that has not converged) is turned away with the daemon's version and
+/// its own in the payload, never registered, never silently degraded.
+/// The frontend-side half of the same skew (a new frontend against an
+/// old daemon) is `transport::protocol_mismatch_message`'s unit test.
+#[tokio::test]
+async fn hello_from_the_previous_protocol_is_refused_naming_both_versions() {
+    let env = Env::spawn("proto-skew");
+    let mut conn = poll_until_connected(&env.socket_path).await;
+    let old = sot_protocol::PROTOCOL_VERSION - 1;
+    let hello = HelloReq {
+        client_id: "old-frontend".to_string(),
+        session_id: None,
+        last_seen_revision: 0,
+        token: None,
+        protocol: old,
+        app_version: "0.5.9".to_string(),
+        host: Some("test-host".to_string()),
+        role: "fe".to_string(),
+        instance: None,
+        name: Some("fe@test-host".to_string()),
+    };
+    let body = async {
+        codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
+            .await
+            .expect("write hello");
+        let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read hello reply");
+        assert_eq!(frame.id, 1);
+        let p = &frame.payload;
+        assert_eq!(p.get("code").and_then(|v| v.as_str()), Some("protocol_mismatch"), "{p}");
+        assert_eq!(p.get("backend_protocol").and_then(|v| v.as_u64()), Some(u64::from(sot_protocol::PROTOCOL_VERSION)), "{p}");
+        assert_eq!(p.get("frontend_protocol").and_then(|v| v.as_u64()), Some(u64::from(old)), "{p}");
+        assert_eq!(p.get("frontend_version").and_then(|v| v.as_str()), Some("0.5.9"), "{p}");
+        let msg = p.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(msg.contains(&format!("protocol {}", sot_protocol::PROTOCOL_VERSION)), "{msg}");
+        assert!(msg.contains(&format!("protocol {old}")), "{msg}");
+        // Never registered: a second, well-formed connection's roster
+        // does not list it.
+        let (mut conn2, id) = connect_and_hello(&env.socket_path, "new-frontend", "fe@test-host").await;
+        let v = call(&mut conn2, id, op::VERSION_QUERY, serde_json::json!({})).await;
+        assert!(client_row(&v, "old-frontend").is_none(), "refused hello must not register: {v}");
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }

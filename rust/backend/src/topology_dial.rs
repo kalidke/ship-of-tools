@@ -119,7 +119,6 @@ pub fn dial_and_call(endpoint: &str, self_host: &str, req_op: &str, payload: ser
         host: Some(self_host.to_string()),
         role: "cli".to_string(),
         instance: None,
-        fe_handle: None,
         name: Some(self_host.to_string()),
     };
     let hello_payload = serde_json::to_value(hello).map_err(|e| e.to_string())?;

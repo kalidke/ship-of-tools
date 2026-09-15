@@ -23,8 +23,8 @@ Split so the code reaches the user before the blocking poll:
    Otherwise prints `SOT_GH_USER_CODE=…`, `SOT_GH_VERIFY_URL=…`,
    `SOT_GH_EXPIRES_IN=…`.
 2. **Surface the code to the user**: "Open https://github.com/login/device
-   and enter `XXXX-XXXX` (any browser). Expires in ~15 min." Relay it to an
-   attached frontend too if one exists: `comm-relay.sh send @win-fe "..."`.
+   and enter `XXXX-XXXX` (any browser). Expires in ~15 min." Show it on
+   the attached frontend too if one exists: `sot-fe notify "..."`.
 3. **Poll to completion**: `sot-gh-auth.sh poll` (blocks until authorized,
    runs `gh auth setup-git`, prints `gh auth status`). Report the
    authenticated login + scopes.

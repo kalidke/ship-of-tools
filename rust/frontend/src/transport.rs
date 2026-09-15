@@ -1964,19 +1964,14 @@ where
         // a mismatch error.
         protocol: sot_protocol::PROTOCOL_VERSION,
         app_version: sot_protocol::app_version(),
-        // This FE's own declared identity (ADR 0046 decision 1, manager
-        // review: no wire rename this sprint) — `fe_handle` is the SAME
-        // field/value as before this lane, the one the daemon's
-        // `--fe <handle>` target matches against, so the daemon can name
-        // "the frontend a person is at" (`fe.presence`) without a second
-        // derivation; `host`/`role`/`instance` are new declarations this
-        // lane adds. `name` stays `None` here — that field is for a
-        // NON-frontend connection's own declared handle.
+        // This FE's own declared identity (ADR 0046 decision 1): `name`
+        // is its address, `fe@<host>` — the value a `--fe <host>` target
+        // matches against, so the daemon can name "the frontend a person
+        // is at" (`fe.presence`) without a second derivation.
         host: Some(crate::gpu::frontend_identity().host.clone()),
         role: crate::gpu::FrontendIdentity::ROLE.to_string(),
         instance: Some(crate::gpu::frontend_identity().instance.clone()),
-        fe_handle: Some(crate::gpu::frontend_identity().name.clone()),
-        name: None,
+        name: Some(crate::gpu::frontend_identity().name.clone()),
     };
     codec::write_frame(
         &mut tx,
@@ -2015,29 +2010,7 @@ where
             // still bail afterward so the reconnect loop keeps the socket warm
             // — a re-hello re-affirms the same overlay, idempotently, until one
             // side is updated.
-            let p = &frame.payload;
-            let get_str = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or("");
-            let get_u32 = |k: &str| p.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
-            let backend_version = {
-                let v = get_str("backend_version");
-                if v.is_empty() {
-                    "<unknown>".to_string()
-                } else {
-                    v.to_string()
-                }
-            };
-            let frontend_version = sot_protocol::app_version();
-            let message = format!(
-                "Update needed — FE/BE protocol mismatch\n\n\
-                 backend:  {}  (protocol {})\n\
-                 frontend: {}  (protocol {})\n\n\
-                 dev: git pull + rebuild + relaunch · see docs/adr/0030\n\n\
-                 ({err_msg})",
-                backend_version,
-                get_u32("backend_protocol"),
-                frontend_version,
-                sot_protocol::PROTOCOL_VERSION,
-            );
+            let message = protocol_mismatch_message(&frame.payload, err_msg);
             tracing::error!(code, "hello rejected: {err_msg}");
             emit(IncomingEvt::ProtocolMismatch { message });
             window.request_redraw();
@@ -4254,6 +4227,35 @@ fn parse_scan_entity(v: &Value) -> ScanEntity {
     }
 }
 
+/// The blocking "update needed" body for a `protocol_mismatch` hello
+/// refusal (ADR 0030 §2), naming BOTH sides from the daemon's structured
+/// payload and this build's own constants — so an old daemon and a new
+/// frontend fail as loudly as the reverse skew, which the daemon's own
+/// hello gate names (`sot-backend`'s `handle_hello`).
+pub(crate) fn protocol_mismatch_message(payload: &serde_json::Value, err_msg: &str) -> String {
+    let get_str = |k: &str| payload.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    let get_u32 = |k: &str| payload.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+    let backend_version = {
+        let v = get_str("backend_version");
+        if v.is_empty() {
+            "<unknown>".to_string()
+        } else {
+            v.to_string()
+        }
+    };
+    format!(
+        "Update needed — FE/BE protocol mismatch\n\n\
+         backend:  {}  (protocol {})\n\
+         frontend: {}  (protocol {})\n\n\
+         dev: git pull + rebuild + relaunch · see docs/adr/0030\n\n\
+         ({err_msg})",
+        backend_version,
+        get_u32("backend_protocol"),
+        sot_protocol::app_version(),
+        sot_protocol::PROTOCOL_VERSION,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4467,7 +4469,6 @@ mod tests {
                     host: None,
                     role: String::new(),
                     instance: None,
-                    fe_handle: None,
                     name: None,
                 })
                 .unwrap(),
@@ -5028,4 +5029,21 @@ mod tests {
             other => panic!("expected PreviewGetFailed, got {other:?}"),
         }
     }
+    #[test]
+    fn protocol_mismatch_message_names_both_sides_of_the_skew() {
+        // A NEW frontend against an OLD daemon: the daemon's gate answers
+        // with its own version; this build adds its own. Both must appear.
+        let payload = serde_json::json!({
+            "code": "protocol_mismatch",
+            "backend_protocol": sot_protocol::PROTOCOL_VERSION - 1,
+            "backend_version": "0.5.9",
+        });
+        let msg = super::protocol_mismatch_message(&payload, "protocol mismatch");
+        assert!(msg.contains(&format!("backend:  0.5.9  (protocol {})", sot_protocol::PROTOCOL_VERSION - 1)), "{msg}");
+        assert!(
+            msg.contains(&format!("frontend: {}  (protocol {})", sot_protocol::app_version(), sot_protocol::PROTOCOL_VERSION)),
+            "{msg}"
+        );
+    }
+
 }

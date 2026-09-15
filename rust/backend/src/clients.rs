@@ -70,41 +70,26 @@ pub struct ClientInfo {
     /// This client's `HelloReq::protocol`, same capture timing as
     /// `app_version`.
     pub protocol: u32,
-    /// This client's `HelloReq::fe_handle`: the frontend's own
-    /// `win-fe-<host>` sot-comm handle, self-reported at hello. `None` for
-    /// a non-FE client (a comm script's `sot-comm` hello) or a
-    /// pre-this-field frontend — such a connection can never be SELECTED
-    /// as the active frontend (`snapshot_with_active` requires a handle),
-    /// but that only removes it from the exclusive-delivery path: a
-    /// genuine broadcast (no active frontend resolved at all) still
-    /// reaches it exactly like every other connection, and a
-    /// pre-this-field FRONTEND still self-filters correctly against an
-    /// explicit `--fe <handle>` client-side, since that match never
-    /// depended on what the daemon knows about it. NO WIRE RENAME this
-    /// sprint (manager review): unchanged from before ADR 0046.
-    pub fe_handle: Option<String>,
     /// This connection's declared `HelloReq::host` (ADR 0046 decision 1) —
     /// read from the peer's own declaration, never recomputed. `None` for
     /// a pre-this-field peer. Display/log surface only.
     pub host: Option<String>,
     /// This connection's declared `HelloReq::role`: `"fe"` a frontend,
     /// `"bridge"` a session's listener loop, `"cli"` a one-shot shell
-    /// call, `"agent"` a one-shot in-session call. `""` for a pre-this-
-    /// field peer. Used only as an EXTRA gate on top of `fe_handle` for
-    /// active-frontend selection/audience (manager review): a connection
-    /// with a `fe_handle` but a role that is present and not `"fe"` is
-    /// excluded; a peer with no role at all (legacy) is judged on
-    /// `fe_handle` alone, exactly as before this field existed.
+    /// call, `"agent"` a one-shot in-session call. Only `"fe"` rows are
+    /// ever selected as the active frontend or counted as a directed
+    /// command's audience.
     pub role: String,
     /// This connection's declared `HelloReq::instance` (ADR 0046 decision
     /// 1) — opaque per-process discriminator, `None` for a role with no
     /// notion of instance or a pre-this-field peer. Display/log only.
     pub instance: Option<String>,
-    /// A NON-frontend connection's declared `HelloReq::name` (ADR 0046
-    /// decision 1) — a bridge/cli/agent's own sot-comm handle. Distinct
-    /// field from `fe_handle` (no wire rename this sprint): a frontend's
-    /// own handle is `fe_handle`, never `name`. Display/log only; never
-    /// consulted by active-frontend selection.
+    /// This connection's declared `HelloReq::name`: `fe@<host>` for a
+    /// frontend (the address `--fe <host>` scopes a command to), a
+    /// bridge/cli/agent's own sot-comm handle otherwise. `None` for a
+    /// role that declared nothing — such a frontend can never be
+    /// SELECTED as the active frontend (`snapshot_with_active`), though a
+    /// genuine broadcast still reaches it like every other connection.
     pub name: Option<String>,
     /// Monotonic instant of the most recent `fe.presence` this connection
     /// sent (2026-09-08 review rework) — `None` until the first one.
@@ -149,17 +134,11 @@ impl Clients {
         peer: Option<String>,
         app_version: impl Into<String>,
         protocol: u32,
-        fe_handle: Option<String>,
         role: String,
         host: Option<String>,
         instance: Option<String>,
         name: Option<String>,
     ) -> ClientGuard {
-        // Legacy inference (ADR 0046 decision 1): a hello carrying
-        // `fe_handle` (the ONLY handle shape before this lane) and no
-        // `role` at all predates `role` entirely — it can only have been
-        // a frontend, `fe_handle`'s one caller.
-        let role = if role.is_empty() && fe_handle.is_some() { "fe".to_string() } else { role };
         let serial = self.next_serial.fetch_add(1, Ordering::Relaxed);
         let info = ClientInfo {
             serial,
@@ -169,7 +148,6 @@ impl Clients {
             connected_at: now_secs(),
             app_version: app_version.into(),
             protocol,
-            fe_handle,
             role,
             host,
             instance,
@@ -183,7 +161,6 @@ impl Clients {
         };
         tracing::info!(
             client_id = %info.client_id,
-            fe_handle = ?info.fe_handle,
             name = ?info.name,
             role = %info.role,
             host = ?info.host,
@@ -232,14 +209,9 @@ impl Clients {
         ClientsSnapshot { clients, active }
     }
 
-    /// Pure resolution: the fe_handle'd connection with the most recent
-    /// `last_person_input_at` within `ACTIVE_WINDOW` of `now` — stays keyed
-    /// on `fe_handle` exactly as before ADR 0046 (manager review: no wire
-    /// rename this sprint). `role` is consulted only as an EXTRA gate when
-    /// present: a connection whose `role` is present and not `"fe"` is
-    /// excluded even if it happens to carry a `fe_handle`; a peer with no
-    /// role at all (legacy, predating this field) is judged on
-    /// `fe_handle` alone, unchanged from main. Ties resolve to the
+    /// Pure resolution: the `"fe"`-role, named connection with the most
+    /// recent `last_person_input_at` within `ACTIVE_WINDOW` of `now`. A
+    /// bridge/cli/agent's `name` never qualifies. Ties resolve to the
     /// LATER-REGISTERED connection — `serial` is monotonically increasing,
     /// so ordering by `(instant, serial)` picks it automatically on an
     /// exact `Instant` tie — without a separate tie-break rule. Factored
@@ -250,10 +222,10 @@ impl Clients {
         clients
             .iter()
             .filter_map(|c| {
-                let handle = c.fe_handle.as_ref()?;
-                if !c.role.is_empty() && c.role != "fe" {
+                if c.role != "fe" {
                     return None;
                 }
+                let handle = c.name.as_ref()?;
                 let at = c.last_person_input_at?;
                 (now.saturating_duration_since(at) <= ACTIVE_WINDOW).then_some((at, c.serial, handle))
             })
@@ -372,10 +344,10 @@ mod tests {
         let clients = Clients::new();
         assert_eq!(clients.count(), 0);
 
-        let g1 = clients.register("client-a", "tcp", Some("127.0.0.1:5000".into()), "0.6.0", 1, None, String::new(), None, None, None);
+        let g1 = clients.register("client-a", "tcp", Some("127.0.0.1:5000".into()), "0.6.0", 1, String::new(), None, None, None);
         assert_eq!(clients.count(), 1);
 
-        let g2 = clients.register("client-b", "local", None, "0.6.0", 1, None, String::new(), None, None, None);
+        let g2 = clients.register("client-b", "local", None, "0.6.0", 1, String::new(), None, None, None);
         assert_eq!(clients.count(), 2);
         assert_eq!(clients.snapshot_with_active().clients.len(), 2);
 
@@ -388,8 +360,8 @@ mod tests {
     #[test]
     fn same_client_id_two_connections_are_distinct() {
         let clients = Clients::new();
-        let g1 = clients.register("client-a", "tcp", None, "0.6.0", 1, None, String::new(), None, None, None);
-        let g2 = clients.register("client-a", "tcp", None, "0.6.0", 1, None, String::new(), None, None, None);
+        let g1 = clients.register("client-a", "tcp", None, "0.6.0", 1, String::new(), None, None, None);
+        let g2 = clients.register("client-a", "tcp", None, "0.6.0", 1, String::new(), None, None, None);
         // Two live connections, one distinct client.
         assert_eq!(clients.count(), 2);
         assert_eq!(distinct_client_ids(&clients.inner.lock().unwrap().by_conn), "client-a");
@@ -404,7 +376,7 @@ mod tests {
         // Decision 31b: this is exactly what `version.query`'s `clients[]`
         // roster reads — sourced from registration, not a new probe.
         let clients = Clients::new();
-        let g = clients.register("client-a", "tcp", None, "0.6.0-dev+abc1234", 1, None, String::new(), None, None, None);
+        let g = clients.register("client-a", "tcp", None, "0.6.0-dev+abc1234", 1, String::new(), None, None, None);
         let snap = clients.snapshot_with_active();
         assert_eq!(snap.clients.len(), 1);
         assert_eq!(snap.clients[0].app_version, "0.6.0-dev+abc1234");
@@ -415,8 +387,8 @@ mod tests {
     #[test]
     fn touch_person_input_stamps_only_the_named_serial() {
         let clients = Clients::new();
-        let g1 = clients.register("client-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
-        let _g2 = clients.register("client-b", "local", None, "0.6.0", 1, Some("win-fe-b".into()), String::new(), None, None, None);
+        let g1 = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let _g2 = clients.register("client-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
 
         assert!(clients
             .snapshot_with_active()
@@ -435,7 +407,7 @@ mod tests {
     #[test]
     fn touch_person_input_on_a_departed_serial_is_a_harmless_noop() {
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         let serial = g.serial();
         drop(g);
         // Must not panic on a serial that no longer has an entry.
@@ -447,38 +419,24 @@ mod tests {
     fn active_frontend_requires_both_a_handle_and_a_fresh_stamp() {
         let clients = Clients::new();
         // No handle at all: never active, even though it's touched.
-        let no_handle = clients.register("client-a", "local", None, "0.6.0", 1, None, String::new(), None, None, None);
+        let no_handle = clients.register("client-a", "local", None, "0.6.0", 1, String::new(), None, None, None);
         clients.touch_person_input(no_handle.serial());
         assert_eq!(
             clients.snapshot_with_active().active(),
             None,
-            "a client with no fe_handle is never active"
+            "a client with no name is never active"
         );
 
         // A handle but never touched: not active either.
-        let untouched = clients.register("client-b", "local", None, "0.6.0", 1, Some("win-fe-b".into()), String::new(), None, None, None);
+        let untouched = clients.register("client-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
         let _ = &untouched;
         assert_eq!(clients.snapshot_with_active().active(), None);
     }
 
     #[test]
-    fn legacy_hello_with_fe_handle_and_no_role_registers_as_fe() {
-        // ADR 0046 decision 1 (manager review, no wire rename): a hello
-        // carrying `fe_handle` and no `role` at all predates `role`
-        // entirely -- it can only ever have been a frontend, `fe_handle`'s
-        // one caller before this lane.
-        let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, Some("win-fe-a".into()), String::new(), None, None, None);
-        let snap = clients.snapshot_with_active();
-        let info = snap.clients.iter().find(|c| c.serial == g.serial()).unwrap();
-        assert_eq!(info.role, "fe");
-    }
-
-    #[test]
-    fn active_excludes_a_fe_handle_when_role_is_present_and_not_fe() {
-        // `role` is an EXTRA gate on top of `fe_handle`, never a
-        // replacement for it: a connection whose role is present and not
-        // "fe" is excluded even if it happens to carry a `fe_handle`.
+    fn active_excludes_a_named_connection_whose_role_is_not_fe() {
+        // `name` alone never makes a connection a frontend: a cli/agent/
+        // bridge's declared handle is not an address a command lands on.
         let clients = Clients::new();
         let g = clients.register(
             "client-a",
@@ -486,25 +444,23 @@ mod tests {
             None,
             "0.6.0",
             1,
-            Some("not-really-a-frontend".into()),
             "cli".to_string(),
             None,
             None,
-            None,
+            Some("not-really-a-frontend".into()),
         );
         clients.touch_person_input(g.serial());
         assert_eq!(
             clients.snapshot_with_active().active(),
             None,
-            "a non-fe role is never active even with a fe_handle and a fresh touch"
+            "a non-fe role is never active even with a name and a fresh touch"
         );
     }
 
     #[test]
-    fn active_ignores_the_new_name_field_fe_handle_is_the_only_selection_key() {
-        // ADR 0046 decision 1 (manager review, no wire rename): `name` is
-        // the NON-frontend declared handle -- it must never make a
-        // connection selectable as the active frontend, touched or not.
+    fn active_requires_the_fe_role_even_when_named_and_touched() {
+        // An agent's declared `name` must never make its connection
+        // selectable as the active frontend, touched or not.
         let clients = Clients::new();
         let g = clients.register(
             "client-a",
@@ -512,7 +468,6 @@ mod tests {
             None,
             "0.6.0",
             1,
-            None,
             "agent".to_string(),
             None,
             None,
@@ -522,7 +477,7 @@ mod tests {
         assert_eq!(
             clients.snapshot_with_active().active(),
             None,
-            "a declared `name` with no fe_handle is never active"
+            "a declared `name` on a non-fe role is never active"
         );
     }
 
@@ -540,11 +495,10 @@ mod tests {
             connected_at: 0,
             app_version: "0.6.0".into(),
             protocol: 1,
-            fe_handle: Some(handle.to_string()),
             role: "fe".to_string(),
             host: None,
             instance: None,
-            name: None,
+            name: Some(handle.to_string()),
             last_person_input_at,
         }
     }
@@ -556,13 +510,13 @@ mod tests {
         // slept 1.1s to dodge a same-second tie).
         let now = Instant::now();
         let clients = vec![
-            ci(1, "win-fe-a", Some(now - Duration::from_secs(10))),
-            ci(2, "win-fe-b", Some(now - Duration::from_secs(1))),
+            ci(1, "fe@host-a", Some(now - Duration::from_secs(10))),
+            ci(2, "fe@host-b", Some(now - Duration::from_secs(1))),
         ];
         let active = Clients::resolve_active(&clients, now);
         assert_eq!(
             active,
-            Some(ActiveFrontend { serial: 2, handle: "win-fe-b".to_string() }),
+            Some(ActiveFrontend { serial: 2, handle: "fe@host-b".to_string() }),
             "the more recently touched frontend wins, identified by its serial"
         );
     }
@@ -573,11 +527,11 @@ mod tests {
         // registration order is `serial`, which `resolve_active`'s
         // `(instant, serial)` ordering uses as its tie-break.
         let tie = Instant::now();
-        let clients = vec![ci(1, "win-fe-a", Some(tie)), ci(2, "win-fe-b", Some(tie))];
+        let clients = vec![ci(1, "fe@host-a", Some(tie)), ci(2, "fe@host-b", Some(tie))];
         let active = Clients::resolve_active(&clients, tie);
         assert_eq!(
             active,
-            Some(ActiveFrontend { serial: 2, handle: "win-fe-b".to_string() }),
+            Some(ActiveFrontend { serial: 2, handle: "fe@host-b".to_string() }),
             "an exact tie goes to the later-registered (higher-serial) connection"
         );
     }
@@ -585,13 +539,13 @@ mod tests {
     #[test]
     fn active_frontend_window_boundary_exactly_in_then_one_past() {
         let now = Instant::now();
-        let exactly_at_window = vec![ci(1, "win-fe-a", Some(now - ACTIVE_WINDOW))];
+        let exactly_at_window = vec![ci(1, "fe@host-a", Some(now - ACTIVE_WINDOW))];
         assert!(
             Clients::resolve_active(&exactly_at_window, now).is_some(),
             "a stamp exactly ACTIVE_WINDOW old is still active (inclusive boundary)"
         );
 
-        let one_past_window = vec![ci(1, "win-fe-a", Some(now - ACTIVE_WINDOW - Duration::from_millis(1)))];
+        let one_past_window = vec![ci(1, "fe@host-a", Some(now - ACTIVE_WINDOW - Duration::from_millis(1)))];
         assert!(
             Clients::resolve_active(&one_past_window, now).is_none(),
             "one millisecond past the window no longer counts as \"a person is here\""
@@ -605,8 +559,8 @@ mod tests {
         // — `is_active_serial` must be true for that one and false for the
         // other, never both (2026-09-08 review, finding 5).
         let clients = Clients::new();
-        let a = clients.register("client-a", "local", None, "0.6.0", 1, Some("win-fe-dup".into()), String::new(), None, None, None);
-        let b = clients.register("client-b", "local", None, "0.6.0", 1, Some("win-fe-dup".into()), String::new(), None, None, None);
+        let a = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-dup".into()));
+        let b = clients.register("client-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-dup".into()));
         clients.touch_person_input(a.serial());
 
         let snap = clients.snapshot_with_active();
