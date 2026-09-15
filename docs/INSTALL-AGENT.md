@@ -362,10 +362,15 @@ missing-`nc` box:
 
 ```bash
 sock="$(~/.local/share/sot/bin/sotd session-socket-path sot)"
+# Ask the binary what wire protocol it speaks -- don't hard-code the
+# number here (the `protocol <N>` at the end of `sotd --version`'s
+# parenthetical exists exactly so out-of-tree probes like this one never
+# have to; see version_line's doc comment in rust/protocol/src/lib.rs).
+proto="$(~/.local/share/sot/bin/sotd --version | grep -oE 'protocol [0-9]+' | grep -oE '[0-9]+')"
 tmp="$(mktemp "${TMPDIR:-/tmp}/sot-hello.XXXXXX")"
 (
-  printf '%s\n' \
-    '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"install-check","last_seen_revision":0,"protocol":1,"app_version":"agent-install"}}' \
+  printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"install-check","last_seen_revision":0,"protocol":%s,"app_version":"agent-install"}}\n' \
+    "$proto" \
     | nc -U "$sock" > "$tmp"
 ) &
 pid=$!

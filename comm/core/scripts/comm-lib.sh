@@ -1012,7 +1012,16 @@ sot_hello_frame() {
     # JSON-escape every interpolated string (S19, Codex finding S19): an
     # unescaped quote or backslash in a declared host/name/token would
     # otherwise produce invalid JSON the daemon's own parser rejects.
-    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":1,"app_version":"comm","token":%s,"host":%s,"role":%s,"name":%s}}\n' \
+    #
+    # The `"protocol":2` literal below is sotd's WIRE protocol
+    # (`sot_protocol::PROTOCOL_VERSION`, rust/protocol/src/lib.rs) — not
+    # this file's own `$PROTOCOL_VERSION` (registry.json schema version,
+    # unrelated). It went stale against a live daemon when the wire
+    # protocol bumped 1 -> 2 and nothing here asked the binary; bump it by
+    # hand alongside every future `PROTOCOL_VERSION` change until this
+    # reads `sotd --version`'s trailing `protocol <N>` instead (see that
+    # function's doc comment).
+    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":2,"app_version":"comm","token":%s,"host":%s,"role":%s,"name":%s}}\n' \
         "$(sot_json_escape "$tok")" "$(sot_json_escape "$host")" "$(sot_json_escape "$role")" "$(sot_json_escape "${NAME:-}")"
 }
 

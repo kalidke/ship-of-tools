@@ -70,7 +70,12 @@ try {
         payload = [pscustomobject]@{
             client_id = 'sot-comm-ps'
             last_seen_revision = 0
-            protocol = 1
+            # sotd's WIRE protocol (sot_protocol::PROTOCOL_VERSION,
+            # rust/protocol/src/lib.rs), not a comm-registry version -- keep
+            # this in step with comm-lib.sh's sot_hello_frame() by hand
+            # until this reads `sotd --version`'s trailing `protocol <N>`
+            # instead (see that function's doc comment).
+            protocol = 2
             app_version = 'comm-ps'
             token = if ($Token) { $Token } else { '' }
         }

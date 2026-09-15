@@ -154,15 +154,30 @@ fn format_app_version(pkg: &str, sha: &str, on_tag: bool, dirty: bool, ci: bool)
     }
 }
 
-/// One-line `--version` output: `<bin> <version> (<sha> <date>)`, or
-/// `<bin> <version>` when built without git.
+/// One-line `--version` output: `<bin> <version> (<sha> <date>, protocol
+/// <PROTOCOL_VERSION>)`, or `<bin> <version> (protocol <PROTOCOL_VERSION>)`
+/// when built without git.
+///
+/// The trailing `protocol <N>` exists so nothing outside this crate ever
+/// has to hard-code `PROTOCOL_VERSION` to learn what a built binary speaks
+/// — the release smoke test asks `sotd --version` instead of writing the
+/// number into its own hello frame, and any other out-of-tree client
+/// (install scripts, health checks) can do the same. It is appended inside
+/// the existing parenthetical rather than as a new subcommand or field
+/// because every parser found in-tree (the release/CI smoke jobs, the
+/// installer, `scripts/install-manifest.ps1`, `scripts/launch-sot.ps1`)
+/// only reads the second whitespace-delimited token (the version) or
+/// checks a `"<bin> <version> ("` prefix — appending text at the end of
+/// the parens is invisible to all of them. Keep it that way: don't insert
+/// new tokens *before* `protocol`, and don't drop the leading space before
+/// the opening paren.
 pub fn version_line(bin: &str) -> String {
     let sha = env!("SOT_BUILD_SHA");
     let date = env!("SOT_BUILD_DATE");
     if sha.is_empty() {
-        format!("{bin} {}", app_version())
+        format!("{bin} {} (protocol {PROTOCOL_VERSION})", app_version())
     } else {
-        format!("{bin} {} ({sha} {date})", app_version())
+        format!("{bin} {} ({sha} {date}, protocol {PROTOCOL_VERSION})", app_version())
     }
 }
 

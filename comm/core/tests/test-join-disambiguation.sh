@@ -2006,7 +2006,7 @@ case_windows_relay_endpoint_is_the_tunnel_even_with_a_live_local_pipe() {
     [ -x "$fakebin/uname" ] && [ -x "$appdata/sot/bin/sotd.exe" ] \
         || { echo "  depends on case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep's fakes"; return 1; }
     out="$(
-        unset OS OSTYPE SOT_SOCKET SOTD_BIN SOT_PORT
+        unset OS OSTYPE SOT_SOCKET SOTD_BIN SOT_PORT SOT_RELAY_ENDPOINT
         PATH="$fakebin:$PATH"
         LOCALAPPDATA="$appdata"
         sot_relay_endpoint
@@ -2014,7 +2014,7 @@ case_windows_relay_endpoint_is_the_tunnel_even_with_a_live_local_pipe() {
     [ "$out" = "tcp:127.0.0.1:18743" ] \
         || { echo "  expected the backend tunnel tcp:127.0.0.1:18743 for relay traffic, got: $out"; return 1; }
     out="$(
-        unset OS OSTYPE SOT_SOCKET SOTD_BIN
+        unset OS OSTYPE SOT_SOCKET SOTD_BIN SOT_RELAY_ENDPOINT
         PATH="$fakebin:$PATH"
         LOCALAPPDATA="$appdata"
         SOT_PORT=18750 sot_relay_endpoint

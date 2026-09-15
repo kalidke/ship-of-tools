@@ -236,6 +236,13 @@ jobs:
               *)          case "$got" in "$b $expected ("*) ;; *) echo "VERSION MISMATCH for $b: $got"; exit 1;; esac ;;
             esac
           done
+          # Ask the binary what wire protocol it speaks rather than writing
+          # the number into this script's own hello frame — a hard-coded
+          # literal here is exactly the class of bug that broke this smoke
+          # when PROTOCOL_VERSION went 1 -> 2 (rust/protocol/src/lib.rs
+          # documents the invariant on `version_line`).
+          proto="$(echo "$got" | grep -oE 'protocol [0-9]+' | grep -oE '[0-9]+')"
+          [ -n "$proto" ] || { echo "could not read a protocol version from: $got"; exit 1; }
           mkdir -p scratch
           # 0.4.0 removed the daemon TCP listener: assert the pointed error
           # (a stale launcher must fail loudly, not silently bind nothing).
@@ -248,12 +255,13 @@ jobs:
           "$d/sotd" --project-root ./scratch --label smoke > sotd.log 2>&1 &
           for i in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
           [ -S "$sock" ] || { echo "socket not created: $sock"; exit 1; }
-          python3 - "$sock" <<'EOF'
+          python3 - "$sock" "$proto" <<'EOF'
           import json, socket, sys
           s = socket.socket(socket.AF_UNIX)
           s.settimeout(10)
           s.connect(sys.argv[1])
-          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke","last_seen_revision":0,"protocol":1,"app_version":"smoke"}}
+          proto = int(sys.argv[2])
+          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke","last_seen_revision":0,"protocol":proto,"app_version":"smoke"}}
           s.sendall((json.dumps(f)+"\n").encode())
           line = b""
           while not line.endswith(b"\n"):
@@ -333,6 +341,7 @@ jobs:
           # nothing downstream would notice. Checking one of the pair leaves
           # the frontend — the half that self-updates on a remote box —
           # unverified.
+          proto=""
           for b in sotd sot; do
             got="$("$d/$b" --version)"
             echo "$b --version: $got (expected version: $expected)"
@@ -341,7 +350,15 @@ jobs:
               0.0.0-ci.*) case "$got" in "$b "*) ;; *) echo "BROKEN --version OUTPUT for $b"; exit 1;; esac ;;
               *)          case "$got" in "$b $expected ("*) ;; *) echo "VERSION MISMATCH for $b: $got"; exit 1;; esac ;;
             esac
+            # Ask sotd what wire protocol it speaks rather than writing the
+            # number into this script's own hello frame below — see the
+            # invariant documented on `version_line` in
+            # rust/protocol/src/lib.rs.
+            if [ "$b" = "sotd" ]; then
+              proto="$(echo "$got" | grep -oE 'protocol [0-9]+' | grep -oE '[0-9]+')"
+            fi
           done
+          [ -n "$proto" ] || { echo "could not read a protocol version from sotd --version"; exit 1; }
           mkdir -p scratch
           sock="$("$d/sotd" session-socket-path smoke-macos)"
           rm -f "$sock"
@@ -352,13 +369,14 @@ jobs:
             sleep 1
           done
           [ -S "$sock" ] || { echo "socket not created: $sock"; exit 1; }
-          python3 - "$sock" <<'EOF'
+          python3 - "$sock" "$proto" <<'EOF'
           import json, socket, sys
           sock = sys.argv[1]
+          proto = int(sys.argv[2])
           s = socket.socket(socket.AF_UNIX)
           s.settimeout(10)
           s.connect(sock)
-          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke-macos","last_seen_revision":0,"protocol":1,"app_version":"smoke"}}
+          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke-macos","last_seen_revision":0,"protocol":proto,"app_version":"smoke"}}
           s.sendall((json.dumps(f)+"\n").encode())
           line = b""
           while not line.endswith(b"\n"):
