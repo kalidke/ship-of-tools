@@ -3330,6 +3330,64 @@ fn lane_dial(
     }
 }
 
+type PaneAttachClient = sot_log::fe_client_io::FeAttachClient<sot_protocol::lane_client::DaemonLaneEndpoint>;
+
+/// Attach clients parked when the session pane leaves their row, so a
+/// switch back reuses the live lane instead of dialing again (a remote
+/// dial is several tunnel round trips). Newest last; per-host bound =
+/// that host's row count, capped at [`WARM_ATTACH_CAP`].
+struct WarmAttachPool<C> {
+    entries: Vec<((crate::hosts::HostKey, String), C)>,
+}
+
+const WARM_ATTACH_CAP: usize = 16;
+
+impl<C> WarmAttachPool<C> {
+    fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    fn take(&mut self, key: &(crate::hosts::HostKey, String)) -> Option<C> {
+        let i = self.entries.iter().position(|(k, _)| k == key)?;
+        Some(self.entries.remove(i).1)
+    }
+
+    /// Parks `client` under `key`; returns the clients evicted to keep
+    /// the key's host within `bound` — the caller shuts those down.
+    fn park(&mut self, key: (crate::hosts::HostKey, String), client: C, bound: usize) -> Vec<C> {
+        let mut evicted = Vec::new();
+        if let Some(old) = self.take(&key) {
+            evicted.push(old);
+        }
+        let host = key.0.clone();
+        self.entries.push((key, client));
+        let bound = bound.clamp(1, WARM_ATTACH_CAP);
+        while self.entries.iter().filter(|(k, _)| k.0 == host).count() > bound {
+            let i = self.entries.iter().position(|(k, _)| k.0 == host).expect("over bound");
+            evicted.push(self.entries.remove(i).1);
+        }
+        evicted
+    }
+
+    /// Drops every entry of `host` whose row `is_live` rejects (destroyed
+    /// rows); returns them for shutdown.
+    fn retain_rows(&mut self, host: &crate::hosts::HostKey, is_live: impl Fn(&str) -> bool) -> Vec<C> {
+        let (dead, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .partition(|(k, _)| &k.0 == host && !is_live(&k.1));
+        self.entries = live;
+        dead.into_iter().map(|(_, c)| c).collect()
+    }
+}
+
+fn shutdown_detached(clients: Vec<PaneAttachClient>) {
+    for mut c in clients {
+        std::thread::spawn(move || {
+            c.shutdown(std::time::Duration::from_millis(250));
+        });
+    }
+}
+
 /// ADR 0042 slice L1b: the capsule row's supervisor phase (ADR 0041
 /// Lifecycle, snake_case, plus `"unreachable"` and, since ADR 0030 §8
 /// decision 31c, `"foreign"`), folded into the Sessions-row glance line —
@@ -4371,7 +4429,8 @@ struct State {
     /// the row's own daemon (`DaemonLaneEndpoint`) on every platform, not
     /// only Windows — `None` whenever the selected row is a tmux
     /// workspace.
-    pane_attach_term: Option<sot_log::fe_client_io::FeAttachClient<sot_protocol::lane_client::DaemonLaneEndpoint>>,
+    pane_attach_term: Option<PaneAttachClient>,
+    warm_attach: WarmAttachPool<PaneAttachClient>,
     /// LU6a: the pane's last content, held across a capsule switch until
     /// the new client's checkpoint lands — see `HeldPaneScreen`'s own doc
     /// and `pane_screen_choice`. Captured by `attach_session_to_bl` when
@@ -5923,6 +5982,7 @@ impl State {
             #[cfg(windows)]
             attach_term: None,
             pane_attach_term: None,
+            warm_attach: WarmAttachPool::new(),
             pane_hold: None,
             pane_dial_error: None,
             read_mark: None,
@@ -9216,8 +9276,12 @@ impl State {
                 .take()
                 .unwrap_or_else(std::time::Instant::now),
         );
-        if let Some(t) = self.pane_attach_term.take() {
+        if let Some(mut t) = self.pane_attach_term.take() {
             self.pane_hold = Some(HeldPaneScreen(t.screen().clone()));
+            match self.bl_pane_target.clone() {
+                Some(key) if t.is_checkpointed() && !t.is_dead() => self.park_warm_attach(key, t),
+                _ => {}
+            }
         }
         // SHOULD-FIX (Codex review, lane B5 discharge): a dial
         // configuration error belongs to the DEPARTING row only — the
@@ -9308,6 +9372,27 @@ impl State {
             std::thread::spawn(move || {
                 old.shutdown(std::time::Duration::from_millis(250));
             });
+        }
+        if let Some(mut c) = self.warm_attach.take(&(host.clone(), target.to_string())) {
+            if c.is_dead() {
+                shutdown_detached(vec![c]);
+            } else {
+                if c.screen().size() != (rows, cols) {
+                    c.resize(cols, rows);
+                }
+                let since_request_ms = self
+                    .pane_attach_requested_at
+                    .map(|s| s.elapsed().as_millis() as u64)
+                    .unwrap_or(0);
+                tracing::info!(since_request_ms, "session pane: warm capsule client reused");
+                self.pane_attach_term = Some(c);
+                self.pane_dial_error = None;
+                self.pane_hold = None;
+                self.pane_attach_started_at = Some(std::time::Instant::now());
+                self.pane_attach_episode_warnings = 0;
+                self.pane_attach_presented = false;
+                return true;
+            }
         }
         // SHOULD-FIX (Codex review, lane B5 discharge): distinguish a
         // genuine configuration error (persistent, no auto-retry — set
@@ -9571,6 +9656,24 @@ impl State {
     /// one we asked the backend about, fire a fresh `concept.read`. Called
     /// from `redraw` so cursor moves and event-driven tree updates both
     /// trigger refresh without each caller having to remember.
+    fn park_warm_attach(&mut self, key: (HostKey, String), client: PaneAttachClient) {
+        let bound = self
+            .workspace_lists
+            .get(&key.0)
+            .map(|l| l.iter().filter(|w| !w.is_inert_anchor()).count())
+            .unwrap_or(1);
+        shutdown_detached(self.warm_attach.park(key, client, bound));
+    }
+
+    fn prune_warm_attach(&mut self, host: &HostKey) {
+        let live: std::collections::HashSet<String> = self
+            .workspace_lists
+            .get(host)
+            .map(|l| l.iter().map(|w| w.tmux_session.clone()).collect())
+            .unwrap_or_default();
+        shutdown_detached(self.warm_attach.retain_rows(host, |row| live.contains(row)));
+    }
+
     fn maybe_fire_concept_read(&mut self) {
         let Some(row) = self.tree.rows.get(self.tree.selected) else {
             return;
@@ -14659,6 +14762,7 @@ impl State {
                     // whole union in one pass.
                     self.workspace_lists.insert(event_host.clone(), workspaces);
                     self.rebuild_workspace_caches();
+                    self.prune_warm_attach(&event_host);
                     // --capture-cycle <N>: simulate N Ctrl+PgDn presses
                     // (negative = Ctrl+PgUp) on the first workspace.list
                     // reply. Consumed once so a re-fetch from a later
@@ -27258,6 +27362,31 @@ mod capsule_pane_tests {
     /// handles fine). `LaneDial` has no `Debug`/`PartialEq` (its own
     /// doc: an endpoint value names one dial, nothing to compare
     /// structurally), so each case matches the variant directly.
+    #[test]
+    fn a_switch_back_to_a_warm_row_takes_the_parked_client_without_a_new_dial() {
+        let host = || "h".to_string();
+        let a = (host(), "sot-be-a".to_string());
+        let b = (host(), "sot-be-b".to_string());
+        let c = (host(), "sot-be-c".to_string());
+        let mut pool: WarmAttachPool<&'static str> = WarmAttachPool::new();
+        let dials = std::cell::Cell::new(0);
+        let attach = |pool: &mut WarmAttachPool<&'static str>, key: &(String, String)| -> &'static str {
+            pool.take(key).unwrap_or_else(|| {
+                dials.set(dials.get() + 1);
+                "dialed"
+            })
+        };
+        assert!(pool.park(a.clone(), "client-a", 2).is_empty());
+        let on_b = attach(&mut pool, &b);
+        assert_eq!((on_b, dials.get()), ("dialed", 1));
+        assert!(pool.park(b.clone(), on_b, 2).is_empty());
+        assert_eq!((attach(&mut pool, &a), dials.get()), ("client-a", 1));
+        assert!(pool.park(a.clone(), "client-a", 2).is_empty());
+        assert_eq!(pool.park(c, "client-c", 2), vec!["dialed"]);
+        assert_eq!(pool.retain_rows(&host(), |row| row == "sot-be-c"), vec!["client-a"]);
+        assert!(pool.take(&a).is_none());
+    }
+
     #[test]
     fn lane_dial_matches_the_resolved_control_transport_selection() {
         let both = crate::transport::TransportConfig {
