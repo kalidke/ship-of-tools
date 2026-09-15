@@ -164,6 +164,13 @@ pub struct Workspace {
     /// and, for an older toml that lacks the key, defaulted to `"capsule"`
     /// by `meta_only`.
     pub runtime: String,
+    /// Accounts brief: which discovered account this row's agent runs
+    /// under -- `""` (never persisted as `"default"`) means the agent's
+    /// own default config folder, today's behaviour exactly. Resolved
+    /// ONCE, at `workspace.create`, and recorded here; nothing later
+    /// re-derives or edits it this release (no `workspace.set` yet). An
+    /// older toml predates this key and loads as `""`, same default.
+    pub account: String,
     /// The sot-comm handle the session inside this workspace actually
     /// DECLARED via `agent.join` (ADR 0046 decision 1) — distinct from
     /// `agent_name` above, which is only the handle the workspace was
@@ -226,6 +233,7 @@ impl std::fmt::Debug for Workspace {
             .field("agent_name", &self.agent_name())
             .field("task", &self.task)
             .field("runtime", &self.runtime)
+            .field("account", &self.account)
             .field("agent_handle", &self.agent_handle())
             .field("phase", &self.phase())
             .field("watchdog_identity", &self.watchdog_identity())
@@ -266,6 +274,11 @@ impl Workspace {
             // Callers with a decided value set it on the returned row
             // (`load_toml`'s `runtime` key, `insert`, workspace.create).
             runtime: "capsule".to_string(),
+            // Same pattern as `runtime` just above: a caller with a
+            // decided value (`load_toml`'s `account` key, `insert`,
+            // `workspace.create`'s own resolution) sets it after
+            // construction. `""` here is the default account.
+            account: String::new(),
             agent_handle: Mutex::new(String::new()),
             phase_cell: Mutex::new(PhaseCell::default()),
             watchdog_identity: Mutex::new(None),
@@ -660,6 +673,7 @@ impl Workspaces {
                 // `ws`'s own value (not that default) is the new metadata
                 // that should win here, same as every other field above.
                 w.runtime = ws.runtime.clone();
+                w.account = ws.account.clone();
                 w
             }
             None => ws,
@@ -1100,6 +1114,11 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         if let Some(h) = kv.get("agent_handle") {
             ws.agent_handle = Mutex::new(h.clone());
         }
+        // Accounts brief: an older toml predates this key too → "" (the
+        // default account), matching `meta_only`'s own default.
+        if let Some(a) = kv.get("account") {
+            ws.account = a.clone();
+        }
         return Ok(Some(ws));
     }
 
@@ -1239,6 +1258,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
         "agent_handle  = {}\n",
         toml_quote(&ws.agent_handle())
     ));
+    body.push_str(&format!("account       = {}\n", toml_quote(&ws.account)));
 
     let final_text = if preserved.trim().is_empty() {
         body
@@ -2226,6 +2246,58 @@ created      = 1700000000
         // (Codex review, PR #175 — see `load_toml`'s own comment: tmux
         // never runs on Windows at all).
         assert_eq!(ws.runtime, "capsule");
+        // Accounts brief: a toml predating the `account` key loads as
+        // the default account, "".
+        assert_eq!(ws.account, "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Accounts brief: `save`/`load_toml` round-trip a non-default
+    /// `account`, and an older toml written before this key existed
+    /// loads it as "" (the default account) rather than failing --
+    /// same shape as [`save_load_round_trips_agent_handle`]'s own test.
+    #[test]
+    fn save_load_round_trips_account() {
+        let _guard = env_guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-ws-test-roundtrip-account-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        std::env::set_var("LOCALAPPDATA", &dir);
+        std::env::remove_var("USERPROFILE");
+        std::env::set_var("SOT_SELF_HOST", "roundtrip-test");
+
+        let mut ws = Workspace::meta_only(
+            "ws-rt-4".to_string(),
+            "rt-account".to_string(),
+            "RoundTrip4.jl".to_string(),
+            PathBuf::from("/home/u/RoundTrip4.jl"),
+            "sot-be-rt-account".to_string(),
+            1700000000,
+            false,
+            "claude".to_string(),
+            String::new(),
+            String::new(),
+        );
+        ws.account = "team".to_string();
+        let toml_path = save(&ws).unwrap();
+        let loaded = load_toml(&toml_path, false).unwrap().unwrap();
+        assert_eq!(loaded.account, "team");
+
+        // An older toml predating the key: strip the line, reload, expect "".
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        let stripped: String = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("account"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        std::fs::write(&toml_path, stripped).unwrap();
+        let reloaded = load_toml(&toml_path, false).unwrap().unwrap();
+        assert_eq!(reloaded.account, "", "an older toml with no key defaults to the default account");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

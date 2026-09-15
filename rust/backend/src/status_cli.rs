@@ -100,9 +100,11 @@ pub struct Row {
     pub host: String,
     pub declared: String,
     pub daemon: DaemonCell,
-    /// `None` when there was no daemon to ask; `Some((total, by_phase))`
-    /// otherwise — `by_phase` sorted by phase name for a stable render.
-    pub rows: Option<(usize, Vec<(String, usize)>)>,
+    /// `None` when there was no daemon to ask; `Some((total, by_phase,
+    /// by_account))` otherwise — both sorted by name for a stable
+    /// render; `by_account` carries only non-default rows ([`phase_counts`]'s
+    /// own doc).
+    pub rows: Option<(usize, Vec<(String, usize)>, Vec<(String, usize)>)>,
     pub clients: Vec<ClientGroup>,
 }
 
@@ -192,17 +194,26 @@ fn group_clients<'a>(clients: impl Iterator<Item = &'a ClientVersion>) -> Vec<Cl
     groups.into_iter().map(|((role, host), (count, active))| ClientGroup { role, host, count, active }).collect()
 }
 
-/// `(total, by_phase)` — `by_phase` buckets `WorkspaceListEntry::phase`
+/// `(total, by_phase, by_account)` — `by_phase` buckets `WorkspaceListEntry::phase`
 /// (lower-cased; a `None` phase — an ordinary `tmux`-runtime row, which
 /// carries no supervisor-lane phase at all — buckets as `"tmux"`, never
 /// dropped), sorted by phase name so the render is deterministic.
-fn phase_counts(rows: &[WorkspaceListEntry]) -> (usize, Vec<(String, usize)>) {
+/// `by_account` (accounts brief, v0.6.0) buckets `WorkspaceListEntry::account`
+/// the SAME way, but ONLY the non-default rows — an empty `account`
+/// (the common case) is never counted at all, so a host with no
+/// non-default rows adds nothing to the table (item: "keeping the
+/// table compact").
+fn phase_counts(rows: &[WorkspaceListEntry]) -> (usize, Vec<(String, usize)>, Vec<(String, usize)>) {
     let mut by_phase: BTreeMap<String, usize> = BTreeMap::new();
+    let mut by_account: BTreeMap<String, usize> = BTreeMap::new();
     for r in rows {
         let key = r.phase.clone().unwrap_or_else(|| "tmux".to_string()).to_lowercase();
         *by_phase.entry(key).or_insert(0) += 1;
+        if !r.account.is_empty() {
+            *by_account.entry(r.account.clone()).or_insert(0) += 1;
+        }
     }
-    (rows.len(), by_phase.into_iter().collect())
+    (rows.len(), by_phase.into_iter().collect(), by_account.into_iter().collect())
 }
 
 /// Pure: [`Report`] -> the printed table (item 2's columns) plus the final
@@ -220,13 +231,21 @@ pub fn render_text(r: &Report) -> String {
         };
         let rows = match &row.rows {
             None => "-".to_string(),
-            Some((total, by_phase)) => {
-                if by_phase.is_empty() {
+            Some((total, by_phase, by_account)) => {
+                let mut cell = if by_phase.is_empty() {
                     total.to_string()
                 } else {
                     let detail = by_phase.iter().map(|(p, n)| format!("{p}:{n}")).collect::<Vec<_>>().join(", ");
                     format!("{total} ({detail})")
+                };
+                // Accounts brief: only non-default rows ever reach
+                // `by_account` (`phase_counts`'s own doc) — a host with
+                // none adds nothing to the cell.
+                if !by_account.is_empty() {
+                    let detail = by_account.iter().map(|(a, n)| format!("{a}:{n}")).collect::<Vec<_>>().join(", ");
+                    cell.push_str(&format!(" accounts: {detail}"));
                 }
+                cell
             }
         };
         let clients = if row.clients.is_empty() {
@@ -266,6 +285,7 @@ pub fn render_json(r: &Report) -> String {
         daemon_unreachable_reason: Option<&'a str>,
         rows_total: Option<usize>,
         rows_by_phase: &'a [(String, usize)],
+        rows_by_account: &'a [(String, usize)],
         clients: Vec<serde_json::Value>,
     }
     let empty: Vec<(String, usize)> = Vec::new();
@@ -279,7 +299,8 @@ pub fn render_json(r: &Report) -> String {
                 DaemonCell::Unreachable(why) => ("unreachable", None, None, Some(why.as_str())),
                 DaemonCell::Up { build, reported_host } => ("up", Some(build.as_str()), Some(reported_host.as_str()), None),
             };
-            let (total, by_phase) = row.rows.as_ref().map(|(t, p)| (Some(*t), p)).unwrap_or((None, &empty));
+            let (total, by_phase, by_account) =
+                row.rows.as_ref().map(|(t, p, a)| (Some(*t), p, a)).unwrap_or((None, &empty, &empty));
             JsonRow {
                 host: &row.host,
                 declared: &row.declared,
@@ -289,6 +310,7 @@ pub fn render_json(r: &Report) -> String {
                 daemon_unreachable_reason: reason,
                 rows_total: total,
                 rows_by_phase: by_phase,
+                rows_by_account: by_account,
                 clients: row
                     .clients
                     .iter()
@@ -427,7 +449,7 @@ mod tests {
         }
     }
 
-    fn ws(phase: Option<&str>) -> WorkspaceListEntry {
+    fn ws(phase: Option<&str>, account: &str) -> WorkspaceListEntry {
         WorkspaceListEntry {
             workspace_id: "ws-1".to_string(),
             slug: "proj".to_string(),
@@ -449,6 +471,7 @@ mod tests {
             state_dir: None,
             phase: phase.map(str::to_string),
             activation_error: None,
+            account: account.to_string(),
         }
     }
 
@@ -477,7 +500,7 @@ mod tests {
                 build: "0.6.0-rc.29".to_string(),
                 reported_host: "hub-a".to_string(),
                 clients: vec![cv("fe", "desktop", true), cv("fe", "laptop", false), cv("bridge", "server-a", false), cv("bridge", "server-a", false)],
-                rows: vec![ws(Some("READY")); 3],
+                rows: vec![ws(Some("READY"), ""); 3],
             },
         );
         // `laptop` never gets a `Probe` at all: it is `daemon=true` but
@@ -493,6 +516,36 @@ mod tests {
         assert!(text.contains("fe@laptop"), "laptop should show attached-to-hub-as-fe from the hub's own roster: {text}");
         assert!(text.contains("fe@desktop \u{d7}1 ACTIVE") || text.contains("fe@desktop ACTIVE"), "the active fe must be marked: {text}");
         assert!(text.ends_with("active frontend of the hub: fe@desktop\n"), "{text}");
+    }
+
+    /// Accounts brief (v0.6.0): the ROWS cell names a non-default
+    /// account, but a table with only default-account rows stays exactly
+    /// as compact as it always has (no trailing "accounts: " noise at
+    /// all — never an empty parenthetical).
+    #[test]
+    fn rows_cell_names_a_non_default_account_but_stays_compact_without_one() {
+        let topo = Topology { hub: "hub-a".to_string(), hosts: vec![host("hub-a", true, false)], monitor: Vec::new(), warnings: Vec::new() };
+        let mut probes = BTreeMap::new();
+        probes.insert(
+            "hub-a".to_string(),
+            Probe::Up {
+                build: "0.6.0-rc.29".to_string(),
+                reported_host: "hub-a".to_string(),
+                clients: Vec::new(),
+                rows: vec![ws(Some("READY"), ""), ws(Some("READY"), "team"), ws(Some("READY"), "team")],
+            },
+        );
+        let text = render_text(&report(&topo, &probes));
+        assert!(text.contains("3 (ready:3) accounts: team:2"), "{text}");
+
+        let mut default_only_probes = BTreeMap::new();
+        default_only_probes.insert(
+            "hub-a".to_string(),
+            Probe::Up { build: "0.6.0-rc.29".to_string(), reported_host: "hub-a".to_string(), clients: Vec::new(), rows: vec![ws(Some("READY"), ""); 2] },
+        );
+        let default_only_text = render_text(&report(&topo, &default_only_probes));
+        assert!(default_only_text.contains("2 (ready:2) -\n"), "{default_only_text}");
+        assert!(!default_only_text.contains("accounts:"), "{default_only_text}");
     }
 
     #[test]
@@ -532,7 +585,7 @@ mod tests {
     fn json_round_trips_the_same_facts_as_the_text_table() {
         let topo = example_topology();
         let mut probes = BTreeMap::new();
-        probes.insert("hub-a".to_string(), Probe::Up { build: "0.6.0-rc.29".to_string(), reported_host: "hub-a".to_string(), clients: vec![cv("fe", "desktop", true)], rows: vec![ws(None)] });
+        probes.insert("hub-a".to_string(), Probe::Up { build: "0.6.0-rc.29".to_string(), reported_host: "hub-a".to_string(), clients: vec![cv("fe", "desktop", true)], rows: vec![ws(None, "")] });
         let rep = report(&topo, &probes);
         let json = render_json(&rep);
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");

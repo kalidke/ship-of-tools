@@ -992,6 +992,8 @@ mod runtime {
         agent_name: &str,
         workspace_id: &str,
         slug: &str,
+        agent_kind: &str,
+        account: &str,
     ) -> std::io::Result<Child> {
         super::qualified_state_root().map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
         if super::state_root_inside_project(state_dir, cwd) {
@@ -1006,6 +1008,25 @@ mod runtime {
                 ),
             ));
         }
+        // Accounts brief: the SAME refusal `workspace.create` already
+        // ran once, re-run here so a folder that vanished BETWEEN create
+        // and this spawn (or a watchdog restart) refuses loudly instead
+        // of silently starting on the default directory. `ErrorKind::
+        // Unsupported` (never retried by the watchdog -- see its own
+        // "no retry, marking terminal" arm) matches `qualified_state_root`'s
+        // own classification just above: both are operator-fixable, not
+        // transient.
+        let account_env_extra = match crate::accounts::account_home() {
+            Some(home) => crate::accounts::account_env(agent_kind, account, &home)
+                .map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?,
+            None if account.is_empty() || account == "default" => Vec::new(),
+            None => {
+                return Err(std::io::Error::new(
+                    ErrorKind::Unsupported,
+                    format!("no home directory to resolve account {account:?} against"),
+                ));
+            }
+        };
         let build = |survival: &str, scoped: bool| -> Command {
             let mut cmd = if scoped {
                 let mut c = Command::new("systemd-run");
@@ -1040,6 +1061,9 @@ mod runtime {
             for (k, v) in capsule_supervisor_env(workspace_id, slug, cwd, agent_name) {
                 cmd.env(k, v);
             }
+            for (k, v) in &account_env_extra {
+                cmd.env(k, v);
+            }
             cmd
         };
         spawn_detached(build, state_dir, workspace_id)
@@ -1055,8 +1079,12 @@ mod runtime {
         agent_name: &str,
         workspace_id: &str,
         slug: &str,
+        agent_kind: &str,
+        account: &str,
     ) -> std::io::Result<(Child, crate::workspaces::SupervisorIdentity)> {
-        let mut child = spawn_detached_supervisor(sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, workspace_id, slug)?;
+        let mut child = spawn_detached_supervisor(
+            sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, workspace_id, slug, agent_kind, account,
+        )?;
         match spawned_identity(&child) {
             Some(identity) => Ok((child, identity)),
             None => {
@@ -1597,9 +1625,24 @@ mod runtime {
         slug: String,
         workspaces: Workspaces,
     ) -> std::io::Result<()> {
+        // Accounts brief: resolved from the registry HERE, the one place
+        // every spawn path (create, resume, the watchdog's own restart
+        // below) already converges with both `workspace_id` and
+        // `workspaces` in hand -- rather than threading two more scalars
+        // through every caller up the chain (`start_supervisor`,
+        // `resume_locked`, `ensure_started`, …), which never otherwise
+        // need to know an agent's KIND, only its already-resolved argv.
+        // `unwrap_or_default` (kind "", account "") on a row gone by now
+        // degrades to `account_env`'s own empty-account no-op below --
+        // never worse than the row simply not existing.
+        let (agent_kind, account) = workspaces
+            .resolve(Some(&workspace_id))
+            .map(|ws| (ws.agent(), ws.account.clone()))
+            .unwrap_or_default();
         // A fresh spawn begins a fresh epoch (R4b: identity must be readable or this is a failed spawn).
-        let (child, identity) =
-            spawn_detached_supervisor_with_identity(sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug)?;
+        let (child, identity) = spawn_detached_supervisor_with_identity(
+            sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug, &agent_kind, &account,
+        )?;
         if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
             ws.begin_supervisor_epoch(identity);
         }
@@ -1611,6 +1654,8 @@ mod runtime {
             cwd.to_path_buf(),
             agent_name.to_string(),
             slug,
+            agent_kind,
+            account,
             child,
             identity,
             workspaces,
@@ -2361,6 +2406,13 @@ mod runtime {
         cwd: PathBuf,
         agent_name: String,
         slug: String,
+        // Accounts brief: captured once, at the same spot `argv`/`cwd`/
+        // `agent_name` already are (the row's own resolved values at
+        // spawn time -- account never changes mid-row this release, no
+        // `workspace.set` yet), and carried unchanged into every
+        // crash-restart spawn below.
+        agent_kind: String,
+        account: String,
         child: Child,
         initial_identity: crate::workspaces::SupervisorIdentity,
         workspaces: Workspaces,
@@ -2477,6 +2529,8 @@ mod runtime {
                         let agent_name_for_spawn = agent_name.clone();
                         let workspace_id_for_spawn = workspace_id.clone();
                         let slug_for_spawn = slug.clone();
+                        let agent_kind_for_spawn = agent_kind.clone();
+                        let account_for_spawn = account.clone();
                         let spawn_result = tokio::task::spawn_blocking(move || {
                             spawn_detached_supervisor_with_identity(
                                 &exe,
@@ -2487,6 +2541,8 @@ mod runtime {
                                 &agent_name_for_spawn,
                                 &workspace_id_for_spawn,
                                 &slug_for_spawn,
+                                &agent_kind_for_spawn,
+                                &account_for_spawn,
                             )
                         })
                         .await;

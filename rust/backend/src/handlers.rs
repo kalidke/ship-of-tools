@@ -4373,6 +4373,34 @@ pub async fn handle_workspace_create(
             )]);
         }
     }
+    // Accounts brief (v0.6.0): resolved once, HERE, and recorded on the
+    // row — never re-derived later. `""`/absent is the default account,
+    // a no-op. A non-default account is checked with the SAME pure
+    // resolver the spawn path itself calls ([`crate::accounts::account_env`]),
+    // so a create-time refusal and a later spawn-time one (the folder
+    // vanishing in between) can never disagree. Refuses loudly, before
+    // any state mutation (the same moment `capsule_argv`/the state-root
+    // checks above already established) — never a silent fallback to
+    // the default folder: a bash (`agent == "none"`) row is refused the
+    // same way a claude/codex row with a missing folder is, both
+    // surfacing `account_env`'s own exact-command message.
+    let account: String = req.account.clone().unwrap_or_default();
+    if !account.is_empty() && account != "default" {
+        let home = crate::accounts::account_home();
+        let check = home
+            .ok_or_else(|| "no home directory to resolve an account against".to_string())
+            .and_then(|home| crate::accounts::account_env(&agent_kind, &account, &home));
+        if let Err(detail) = check {
+            let payload = json!({
+                "error": detail,
+                "code": "unknown_account",
+            });
+            return Ok(vec![(
+                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                None,
+            )]);
+        }
+    }
     let mut ws_seed = crate::workspaces::Workspace::from_label(
         &req.label,
         project_root.clone(),
@@ -4382,6 +4410,7 @@ pub async fn handle_workspace_create(
         req.task.clone(),
     );
     ws_seed.runtime = runtime;
+    ws_seed.account = account;
     let ws_handle = workspaces.insert(ws_seed);
     if let Err(e) = crate::workspaces::save(&ws_handle) {
         tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
@@ -6522,6 +6551,7 @@ pub async fn handle_workspace_list(
                 state_dir,
                 phase,
                 activation_error: ws.activation_error(),
+                account: ws.account.clone(),
             }
         })
         .collect();
@@ -6535,6 +6565,34 @@ pub async fn handle_workspace_list(
     };
     Ok(vec![(
         Frame::res(req_id, op::WORKSPACE_LIST, serde_json::to_value(res)?),
+        None,
+    )])
+}
+
+/// `accounts.list` (accounts brief, v0.6.0): discover, fresh, every
+/// account this daemon's own home has right now — no declaration to
+/// read, no cache. `None` home (unresolvable `$HOME`/`%USERPROFILE%`)
+/// answers the empty list rather than an error: nothing to discover is
+/// an honest, non-fatal answer, and `workspace.create`'s own account
+/// check hits the same "no home" case as its own refusal if it matters
+/// there.
+pub async fn handle_accounts_list(req_id: u64, _payload_json: serde_json::Value) -> Result<HandlerOutput> {
+    use sot_protocol::{AccountEntry, AccountsListRes};
+    let accounts = crate::accounts::account_home()
+        .map(|home| crate::accounts::discover_accounts(&home))
+        .unwrap_or_default();
+    let res = AccountsListRes {
+        accounts: accounts
+            .into_iter()
+            .map(|a| AccountEntry {
+                name: a.name,
+                kinds: a.kinds,
+                logged_in: a.logged_in,
+            })
+            .collect(),
+    };
+    Ok(vec![(
+        Frame::res(req_id, op::ACCOUNTS_LIST, serde_json::to_value(res)?),
         None,
     )])
 }

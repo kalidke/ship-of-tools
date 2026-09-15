@@ -1692,6 +1692,7 @@ where
             op::WORKSPACE_LIST => {
                 handlers::handle_workspace_list(frame.id, frame.payload, &workspaces).await
             }
+            op::ACCOUNTS_LIST => handlers::handle_accounts_list(frame.id, frame.payload).await,
             op::WORKSPACE_ACTIVATE => {
                 // Update `active_workspace` (declared above) HERE, inline —
                 // same pattern as HELLO's auth flag just above: peek the raw
