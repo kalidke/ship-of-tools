@@ -48,8 +48,7 @@ use sot_protocol::{
     MonitorHistoryReq, MonitorHistoryRes, MonitorSubscribeRes, MonitorTickEvt, PlutoOpenReq,
     PlutoOpenRes, PreviewGetReq, PreviewGetRes, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyScrollReq,
     PtyWriteReq, QuartoOpenReq, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt, ReplRunFileReq,
-    ReplRunFileRes, TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxListPanesReq, TmuxListPanesRes,
-    TmuxPane, ToggleHiddenReq, TreeChildrenReq, TreeChildrenRes, TreeNode, TreeRootReq,
+    ReplRunFileRes, ToggleHiddenReq, TreeChildrenReq, TreeChildrenRes, TreeNode, TreeRootReq,
     TreeRootRes, VideoOpenReq, VideoOpenRes, WorkspaceActivateReq, WorkspaceListReq,
     WorkspaceListRes,
 };
@@ -510,23 +509,6 @@ pub enum IncomingEvt {
     /// sender — ADR 0014 moved Sessions mode onto the daemon's workspace
     /// registry instead of scanning tmux, before this spike-era plumbing
     /// was ever wired up.
-    #[allow(dead_code)]
-    TmuxPanes {
-        /// Echoes the request scope; `None` when the request was server-wide.
-        session: Option<String>,
-        panes: Vec<TmuxPane>,
-    },
-    /// `tmux.capture_pane` reply: scrollback bytes for the requested target.
-    /// Used by Sessions-mode col-3 live tail.
-    #[allow(dead_code)]
-    TmuxPaneCaptured {
-        target: String,
-        text: String,
-    },
-    /// `directory.list` reply for the workspace picker. `path` echoes
-    /// the request so the chrome can route to the right tree node;
-    /// `entries` is the immediate-subdirectory list rendered as picker
-    /// rows.
     DirectoryList {
         path: String,
         entries: Vec<crate::transport::DirEntry>,
@@ -1216,16 +1198,6 @@ pub enum OutgoingReq {
     /// wired up. `TmuxListPanes`/`TmuxCapturePane` stay: both are live,
     /// host-qualified (ADR 0042 L2a), and fired from Sessions-mode row
     /// expansion / the live-tail preview.
-    #[allow(dead_code)]
-    TmuxListPanes {
-        /// `None` lists across the whole server; `Some(name)` scopes to one session.
-        session: Option<String>,
-    },
-    #[allow(dead_code)]
-    TmuxCapturePane { target: String, lines: u32 },
-    /// List subdirectories of `path`. Used by the Sessions-mode workspace
-    /// picker so the user can pick an existing directory as the new
-    /// workspace's project_root.
     DirectoryList { path: String, include_hidden: bool },
     /// Register a new workspace with the daemon and create its tmux
     /// session (ADR 0014). Fired when the user confirms a directory in
@@ -1432,12 +1404,6 @@ enum PendingKind {
     /// time the reply lands.
     PtyOpen {
         target: Option<String>,
-    },
-    TmuxListPanes {
-        session: Option<String>,
-    },
-    TmuxCapturePane {
-        target: String,
     },
     DirectoryList,
     WorkspaceCreate,
@@ -2811,39 +2777,6 @@ where
                         )
                         .await?;
                     }
-                    OutgoingReq::TmuxListPanes { session } => {
-                        tracing::debug!(?session, id, "→ tmux.list_panes");
-                        codec::write_frame(
-                            &mut tx,
-                            &Frame::req(
-                                id,
-                                op::TMUX_LIST_PANES,
-                                serde_json::to_value(TmuxListPanesReq {
-                                    session: session.clone(),
-                                })?,
-                            ),
-                            None,
-                        )
-                        .await?;
-                        pending.insert(id, PendingKind::TmuxListPanes { session });
-                    }
-                    OutgoingReq::TmuxCapturePane { target, lines } => {
-                        tracing::debug!(%target, lines, id, "→ tmux.capture_pane");
-                        codec::write_frame(
-                            &mut tx,
-                            &Frame::req(
-                                id,
-                                op::TMUX_CAPTURE_PANE,
-                                serde_json::to_value(TmuxCapturePaneReq {
-                                    target: target.clone(),
-                                    lines,
-                                })?,
-                            ),
-                            None,
-                        )
-                        .await?;
-                        pending.insert(id, PendingKind::TmuxCapturePane { target });
-                    }
                     OutgoingReq::DirectoryList { path, include_hidden } => {
                         tracing::debug!(%path, include_hidden, id, "→ directory.list");
                         codec::write_frame(
@@ -3834,32 +3767,6 @@ fn handle_response_frame(
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "pty.open res parse failed");
-                    }
-                }
-            }
-            PendingKind::TmuxListPanes { session } => {
-                match serde_json::from_value::<TmuxListPanesRes>(frame.payload) {
-                    Ok(res) => {
-                        emit(IncomingEvt::TmuxPanes {
-                            session,
-                            panes: res.panes,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "tmux.list_panes res parse failed");
-                    }
-                }
-            }
-            PendingKind::TmuxCapturePane { target } => {
-                match serde_json::from_value::<TmuxCapturePaneRes>(frame.payload) {
-                    Ok(res) => {
-                        emit(IncomingEvt::TmuxPaneCaptured {
-                            target,
-                            text: res.text,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "tmux.capture_pane res parse failed");
                     }
                 }
             }

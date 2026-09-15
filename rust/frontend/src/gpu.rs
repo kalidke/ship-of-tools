@@ -425,11 +425,6 @@ struct WorkspaceUiSnapshot {
     /// hashes from workspace A don't leak into workspace B's tree.
     file_ast_hashes: std::collections::HashMap<String, String>,
     file_parse_fired: std::collections::HashSet<String>,
-    /// Sessions-mode dedup memo — which (host, pane) we last fired
-    /// `tmux.capture_pane` for so swap-back doesn't refire. ADR 0042 L2a
-    /// codex review, item K: host-qualified -- tmux pane ids ("%3") are
-    /// per-daemon counters, so two hosts' panes can share the same id.
-    tmux_capture_fired_for: Option<(HostKey, String)>,
     /// Concept-write modal state (header / buffer / dirty flag /
     /// banners). Captured so swap-back returns the user to mid-edit
     /// without losing typed content. preview_edit is *not* in the
@@ -2608,63 +2603,6 @@ fn resplice_expanded_session_hosts(
     }
 }
 
-/// Build the `(parent_id, pane rows)` a `tmux.list_panes` reply for
-/// `session` on `host` splices into the Sessions tree (ADR 0042 L2a). Pure
-/// — no `State` dependency — so "the row built from host B's reply carries
-/// host B, not whichever host happens to share the session name" is
-/// directly unit-testable. `parent_id` and every row id are host-qualified
-/// to match `build_session_row`'s session-row id scheme; every row's
-/// `payload.host` is `host` — the REPLYING connection, not a name lookup.
-fn pane_tree_children(
-    host: &HostKey,
-    session: &str,
-    panes: Vec<sot_protocol::TmuxPane>,
-) -> (String, Vec<TreeNode>) {
-    let parent_id = format!("sessions:{host}:{session}");
-    let children = panes
-        .into_iter()
-        .map(|p| {
-            let mut payload = serde_json::Map::new();
-            payload.insert(
-                "session".to_string(),
-                serde_json::Value::String(p.session.clone()),
-            );
-            payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
-            payload.insert(
-                "window_index".to_string(),
-                serde_json::json!(p.window_index),
-            );
-            payload.insert("pane_index".to_string(), serde_json::json!(p.pane_index));
-            payload.insert(
-                "command".to_string(),
-                serde_json::Value::String(p.command.clone()),
-            );
-            payload.insert("pid".to_string(), serde_json::json!(p.pid));
-            payload.insert("width".to_string(), serde_json::json!(p.width));
-            payload.insert("height".to_string(), serde_json::json!(p.height));
-            payload.insert("active".to_string(), serde_json::json!(p.active));
-            payload.insert(
-                "tmux_pane_id".to_string(),
-                serde_json::Value::String(p.id.clone()),
-            );
-            let label = if p.title.is_empty() {
-                format!("{} · {}", p.id, p.command)
-            } else {
-                format!("{} · {} ({})", p.id, p.title, p.command)
-            };
-            TreeNode {
-                id: format!("sessions:{host}:{session}/{}", p.id),
-                label,
-                kind: "pane".to_string(),
-                has_children: false,
-                badges: Vec::new(),
-                payload,
-            }
-        })
-        .collect();
-    (parent_id, children)
-}
-
 /// Pure core of the ADR 0042 L2a workspace-cache rebuild: given the union
 /// (`ordered_hosts` for display order, `lists` for each host's last-known
 /// `workspace.list`) and `active_host`, computes every workspace-scoped
@@ -3918,14 +3856,6 @@ struct State {
     /// when the cursor is on the already-pinned row clears the pin.
     /// Per-workspace via [`WorkspaceUiSnapshot`].
     pinned_preview_node_id: Option<String>,
-    /// Sessions-mode (ADR 0013) per-pane capture dedup. Stores the
-    /// (host, pane_id) we last fired `tmux.capture_pane` for; cursor
-    /// moves clear it when we want a re-fetch. Cleared on mode-switch into
-    /// Sessions so the first cursored pane fires fresh. Host-qualified
-    /// (ADR 0042 L2a codex review, item K): tmux pane ids are per-daemon
-    /// counters, so a bare id can't tell two hosts' panes apart, and the
-    /// request must route to the OWNING host, not whatever's active.
-    tmux_capture_fired_for: Option<(HostKey, String)>,
     /// Owning host + tmux session the BL pane is attached to (ADR 0042
     /// L2a codex review, item D). `None` until the first `pty.open`
     /// reply lands; defaults to `sot-llm` semantically. Sessions-mode
@@ -6006,7 +5936,6 @@ impl State {
             preview_anchor_line: None,
             preview_anchored_to: None,
             pinned_preview_node_id: None,
-            tmux_capture_fired_for: None,
             // Restored BL target so the first pty.open re-attaches to
             // wherever the last session left off. None → DEFAULT (sot-llm).
             // Only restored when we actually resumed onto the host it was
@@ -6470,16 +6399,6 @@ impl State {
             // registry. Per ADR 0014 the row source is workspace.list,
             // not tmux.list_sessions.
             Some(crate::transport::OutgoingReq::WorkspaceList)
-        } else if row.node.kind == "session" {
-            // Sessions-mode session row → fetch its panes scoped to this
-            // session. apply_children splices them under the session.
-            row.node
-                .payload
-                .get("name")
-                .and_then(|v| v.as_str())
-                .map(|name| crate::transport::OutgoingReq::TmuxListPanes {
-                    session: Some(name.to_string()),
-                })
         } else if row.node.kind == "module" {
             row.node
                 .payload
@@ -7488,7 +7407,6 @@ impl State {
             // Sessions' parked slot deliberately goes stale between visits
             // (populated parks drop refreshes under the empty-only rule).
             Mode::Sessions => {
-                self.tmux_capture_fired_for = None;
                 // ADR 0042 L2a codex review, item A: Sessions mode's tree
                 // spans EVERY connected host (host-grouped), so entering
                 // it is exactly the "explicit global refresh" case — fan
@@ -8473,7 +8391,7 @@ impl State {
             id: format!("sessions:{host}:{}", w.tmux_session),
             label,
             kind: "session".to_string(),
-            has_children: true,
+            has_children: false,
             badges,
             payload,
         }
@@ -8642,7 +8560,6 @@ impl State {
                 concept: self.concept.clone(),
                 file_ast_hashes: self.file_ast_hashes.clone(),
                 file_parse_fired: self.file_parse_fired.clone(),
-                tmux_capture_fired_for: self.tmux_capture_fired_for.clone(),
                 edit_state: self.edit_state.clone(),
             },
         );
@@ -8690,7 +8607,6 @@ impl State {
         // restore is cheap and correct.
         self.file_parse_fired
             .retain(|p| self.file_ast_hashes.contains_key(p));
-        self.tmux_capture_fired_for = snap.tmux_capture_fired_for;
         // Restore the edit modal — including dirty/discard/stale
         // banners — and re-shape its preview from the buffer.
         self.edit_state = snap.edit_state;
@@ -8945,7 +8861,6 @@ impl State {
             self.concept_target_fired = None;
             self.file_ast_hashes.clear();
             self.file_parse_fired.clear();
-            self.tmux_capture_fired_for = None;
             self.edit_state = None;
             self.preview_edit = None;
         }
@@ -10194,56 +10109,6 @@ impl State {
             &self.active_host.clone(),
             crate::transport::OutgoingReq::PtyWrite { bytes },
         );
-    }
-
-    /// Sessions-mode (ADR 0013): when the cursored row is a `pane`, fire a
-    /// fresh `tmux.capture_pane` so the preview pane shows its live tail.
-    /// Dedupes per pane (`tmux_pane_id` payload field) so cursor hovers
-    /// don't spam requests. Called from `redraw` alongside the other
-    /// cursor-driven maybe_fire_* hooks.
-    fn maybe_fire_tmux_capture(&mut self) {
-        if !matches!(self.mode, Mode::Sessions) {
-            return;
-        }
-        let Some(row) = self.tree.rows.get(self.tree.selected) else {
-            return;
-        };
-        if row.node.kind != "pane" {
-            return;
-        }
-        let Some(pane_id) = row
-            .node
-            .payload
-            .get("tmux_pane_id")
-            .and_then(|v| v.as_str())
-        else {
-            return;
-        };
-        // ADR 0042 L2a codex review, item K: the row carries its OWN
-        // host (every Sessions row does, since the tree spans every
-        // connection) -- request via that host, not whatever's active.
-        // A tmux pane id ("%3") is a per-daemon counter, so the dedup key
-        // must carry the host too, or a same-numbered pane on a
-        // different host would be mistaken for "already captured".
-        let Some(host) = row.node.payload.get("host").and_then(|v| v.as_str()) else {
-            return;
-        };
-        let owner: HostKey = host.to_string();
-        if self.tmux_capture_fired_for.as_ref() == Some(&(owner.clone(), pane_id.to_string())) {
-            return;
-        }
-        let target = pane_id.to_string();
-        if let Err(e) = self.send_to(
-            &owner,
-            crate::transport::OutgoingReq::TmuxCapturePane {
-                target: target.clone(),
-                lines: 200,
-            },
-        ) {
-            tracing::warn!(error = %e, %target, "drop tmux.capture_pane request — channel closed");
-            return;
-        }
-        self.tmux_capture_fired_for = Some((owner, target));
     }
 
     /// If the selected tree row's annotation target differs from the last
@@ -14844,62 +14709,6 @@ impl State {
                 // been actively wrong had it somehow fired. Panes stay:
                 // `tmux.list_panes` (a session's pane list, fired on
                 // Sessions-tree row expansion) is live and host-qualified.
-                crate::transport::IncomingEvt::TmuxPanes { session, panes } => {
-                    let Some(session) = session else {
-                        // Server-wide list isn't consumed by the UI today;
-                        // log and ignore.
-                        tracing::debug!(count = panes.len(), "tmux.panes (server-wide)");
-                        continue;
-                    };
-                    // ADR 0042 L2a: this reply is tagged with the host that
-                    // answered it (`event_host`) — `pane_tree_children`
-                    // stamps it on every row and host-qualifies both the
-                    // splice target and each row's id, matching a session
-                    // by bare NAME alone picks whichever host happens to
-                    // have one (every host's default workspace is
-                    // `sot-be-<slug>` too — exactly the collision this
-                    // slice exists to remove).
-                    let (parent_id, children) = pane_tree_children(&event_host, &session, panes);
-                    // Same Global-key routing as TmuxSessions.
-                    let reply_key: TreeKey = (Mode::Sessions, TreeScope::Global);
-                    if reply_key != self.active_tree_key() {
-                        self.tree_store
-                            .slot_mut(reply_key)
-                            .view
-                            .apply_children(&parent_id, children);
-                        continue;
-                    }
-                    self.tree.apply_children(&parent_id, children);
-                }
-                crate::transport::IncomingEvt::TmuxPaneCaptured { target, text } => {
-                    // Route through render_preview_source as plain text so
-                    // the existing markdown-plain renderer shapes it into
-                    // the preview pane the same as a text file would.
-                    // Drop the result if the cursor has moved off the
-                    // target since the request fired — avoids racing
-                    // captures painting stale panes. ADR 0042 L2a codex
-                    // review, item K: the pane id alone isn't enough — a
-                    // tmux pane id ("%3") is a per-daemon counter, so two
-                    // hosts can report the SAME id for two different
-                    // panes; the row's own "host" must match event_host
-                    // too, or a same-numbered pane on a different host
-                    // could paint its capture into this row.
-                    let still_current =
-                        self.tree.rows.get(self.tree.selected).map_or(false, |row| {
-                            row.node
-                                .payload
-                                .get("tmux_pane_id")
-                                .and_then(|v| v.as_str())
-                                == Some(target.as_str())
-                                && row.node.payload.get("host").and_then(|v| v.as_str())
-                                    == Some(event_host.as_str())
-                        });
-                    if still_current {
-                        self.render_preview_source("text/plain", text.as_bytes());
-                    } else {
-                        tracing::debug!(%target, "drop stale tmux.capture_pane reply");
-                    }
-                }
                 crate::transport::IncomingEvt::DirectoryList { path, entries } => {
                     // Only consume if it matches the picker we have open
                     // — late replies for a previously-drilled directory
@@ -15884,7 +15693,6 @@ impl State {
             self.cursor_moved_at = None;
             self.maybe_fire_concept_read();
             self.maybe_fire_preview();
-            self.maybe_fire_tmux_capture();
         }
         // Drive `--auto-expand` exactly once, after the initial selection
         // has been applied (i.e., the first TreeRoot/ModulesList landed).
@@ -27709,34 +27517,6 @@ mod tests {
     }
 
     #[test]
-    fn tmux_capture_dedup_and_stale_check_are_host_qualified() {
-        // ADR 0042 L2a codex review, item K: tmux pane ids ("%3") are
-        // per-daemon counters -- two hosts can both report pane "%3", so
-        // both the fired-for dedup memo and the "is this reply still for
-        // the cursored row" staleness check must compare the FULL
-        // (host, pane_id) pair, not the bare id alone.
-        let fired_for: Option<(HostKey, String)> = Some(("alpha".to_string(), "%3".to_string()));
-
-        // Same pane id, different host: must NOT read as already-fired.
-        let beta_same_id: (HostKey, String) = ("beta".to_string(), "%3".to_string());
-        assert_ne!(
-            fired_for.as_ref(),
-            Some(&beta_same_id),
-            "the same pane id on a different host is a different pane"
-        );
-
-        // The staleness check mirrors this: a reply tagged with beta's
-        // event_host must not be accepted for a row whose own "host" is
-        // alpha, even when both report tmux_pane_id "%3".
-        let row_host: HostKey = "alpha".to_string();
-        let reply_event_host: HostKey = "beta".to_string();
-        assert_ne!(
-            row_host, reply_event_host,
-            "a same-numbered pane's reply from a non-owning host must be dropped, not painted"
-        );
-    }
-
-    #[test]
     fn upload_owner_gate_ignores_a_non_owning_hosts_ack() {
         // ADR 0042 L2a codex review, item F: an UploadState pins the
         // host it's uploading to at start (reusing the field slot that
@@ -28158,49 +27938,6 @@ mod tests {
         let mut declared_host: HashMap<HostKey, String> = HashMap::new();
         declared_host.insert("myserver".to_string(), "realhost".to_string());
         assert_eq!(host_label(&declared_host, &"myserver".to_string()), "realhost");
-    }
-
-    #[test]
-    fn pane_row_host_matches_the_replying_connection_not_a_same_named_session_elsewhere() {
-        // Every host's default workspace tmux session is named
-        // "sot-be-sot" — matching a row to a host by NAME ALONE cannot
-        // tell two hosts' rows apart. The row must carry whichever host's
-        // OWN reply built it, not a lookup that could land on either.
-        fn pane(id: &str) -> sot_protocol::TmuxPane {
-            sot_protocol::TmuxPane {
-                id: id.to_string(),
-                session: "sot-be-sot".to_string(),
-                window_index: 0,
-                pane_index: 0,
-                title: String::new(),
-                command: "julia".to_string(),
-                pid: 1,
-                width: 80,
-                height: 24,
-                active: true,
-            }
-        }
-        let (parent_a, rows_a) =
-            pane_tree_children(&"alpha".to_string(), "sot-be-sot", vec![pane("%1")]);
-        let (parent_b, rows_b) =
-            pane_tree_children(&"beta".to_string(), "sot-be-sot", vec![pane("%1")]);
-
-        assert_ne!(
-            parent_a, parent_b,
-            "same session name, different hosts → different splice targets"
-        );
-        assert_eq!(
-            rows_a[0].payload.get("host").and_then(|v| v.as_str()),
-            Some("alpha")
-        );
-        assert_eq!(
-            rows_b[0].payload.get("host").and_then(|v| v.as_str()),
-            Some("beta")
-        );
-        // The row built from B's reply must never be attributable to A —
-        // this is the actual collision the fix removes.
-        assert_ne!(rows_b[0].payload.get("host"), rows_a[0].payload.get("host"));
-        assert_ne!(rows_a[0].id, rows_b[0].id, "row ids are host-qualified too");
     }
 
     #[test]

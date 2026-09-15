@@ -136,14 +136,6 @@ pub mod op {
     /// notify-based watcher and bumped on the session ring so a reconnecting
     /// client catches changes that happened while it was away.
     pub const PREVIEW_CHANGED: &str = "preview.changed";
-    /// Backend-sessions registry per ADR 0013. Shells out to the host
-    /// tmux server. Sessions mode (frontend) consumes these to enumerate
-    /// live backends, spawn new ones, kill, and live-tail panes.
-    pub const TMUX_LIST_SESSIONS: &str = "tmux.list_sessions";
-    pub const TMUX_LIST_PANES: &str = "tmux.list_panes";
-    pub const TMUX_CREATE_SESSION: &str = "tmux.create_session";
-    pub const TMUX_KILL_SESSION: &str = "tmux.kill_session";
-    pub const TMUX_CAPTURE_PANE: &str = "tmux.capture_pane";
     /// List the immediate subdirectories of `path`. Used by the Sessions-
     /// mode workspace picker so the user can browse the filesystem
     /// instead of typing a path. Returns one entry per directory: name
@@ -1211,85 +1203,6 @@ pub struct MathRenderRes {
     pub blob: BlobDescriptor,
     pub ex: f32,
     pub display: bool,
-}
-
-// ─── Backend-sessions / tmux registry (ADR 0013) ────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TmuxSession {
-    pub name: String,
-    /// Unix epoch seconds.
-    pub created: i64,
-    pub attached: bool,
-    pub windows: u32,
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TmuxPane {
-    /// `%N`-form pane id; addressing target.
-    pub id: String,
-    pub session: String,
-    pub window_index: u32,
-    pub pane_index: u32,
-    pub title: String,
-    pub command: String,
-    pub pid: u32,
-    pub width: u32,
-    pub height: u32,
-    pub active: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TmuxListSessionsRes {
-    pub sessions: Vec<TmuxSession>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TmuxListPanesReq {
-    /// Specific session; omit to list panes across the whole server.
-    #[serde(default)]
-    pub session: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TmuxListPanesRes {
-    pub panes: Vec<TmuxPane>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TmuxCreateSessionReq {
-    pub name: String,
-    /// First-window command to run. Omit for a default shell.
-    #[serde(default)]
-    pub command: Option<String>,
-    /// Working directory for the session.
-    #[serde(default)]
-    pub cwd: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TmuxKillSessionReq {
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TmuxCapturePaneReq {
-    /// Pane id (`%N`) or `<session>:<window>.<pane>` form.
-    pub target: String,
-    /// Lines back from the bottom. Capped at 5000 backend-side.
-    #[serde(default = "default_capture_lines")]
-    pub lines: u32,
-}
-
-fn default_capture_lines() -> u32 {
-    200
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TmuxCapturePaneRes {
-    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

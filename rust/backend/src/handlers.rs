@@ -8023,25 +8023,6 @@ mod workspace_activate_read_tests {
         }
     }
 
-    fn seed_workspace(label: &str) -> (Workspaces, String, String) {
-        let reg = Workspaces::new();
-        let mut ws = Workspace::from_label(
-            label,
-            std::path::PathBuf::from("/p/x"),
-            false,
-            "none".into(),
-            String::new(),
-            String::new(),
-        );
-        // A tmux row on every platform (Windows defaults a label-built
-        // workspace to "capsule").
-        ws.runtime = "tmux".to_string();
-        let id = ws.workspace_id.clone();
-        let tmux_session = ws.tmux_session.clone();
-        reg.insert(ws);
-        (reg, id, tmux_session)
-    }
-
     // A `runtime = "capsule"` row: no tmux pane, no stored `agent_name`
     // (the owner's actual capsule sessions — the ones piling up blue).
     // `agent_handle` seeds `Workspace.agent_handle` directly (ADR 0046
