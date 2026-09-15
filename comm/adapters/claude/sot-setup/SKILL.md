@@ -288,7 +288,7 @@ remote_home = "/home/<user>"
 ADR-0017 resume command:
 ```toml
 [terminal]
-resume_command = "claude --permission-mode auto --continue /sot-fe-session-start"
+resume_command = "claude --permission-mode auto --continue /sot-session-start"
 # shell = "..."   # optional override; default auto-resolves (pwsh→powershell→cmd / $SHELL→bash→sh)
 
 [layout]
@@ -336,7 +336,7 @@ box; the relay still bridges sessions across machines over the tunnel.
 
 (Windows: the FE writes inbound relay messages to
 `%LOCALAPPDATA%\sot\fe-inbox.jsonl`; the in-drawer session watches that file
-via a Monitor — `/sot-fe-session-start` re-arms it on each relaunch.) Installing
+via a Monitor — `/sot-session-start` re-arms it on each relaunch.) Installing
 new skills requires a Claude Code **restart** to load them.
 
 ---

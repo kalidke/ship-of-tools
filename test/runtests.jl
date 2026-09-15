@@ -389,4 +389,40 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             end
         end
     end
+
+    @testset "installer prunes the retired session-start aliases and ccbe" begin
+        # COMM_DEPRECATED_SKILLS / COMM_DEPRECATED_LAUNCHERS: exact names
+        # only. A skill or launcher the repo stopped shipping (a prior
+        # install left it on disk) must be removed from BOTH the Claude and
+        # Codex skills dirs, and from the shared launcher dir, on every
+        # install — while an unrelated user skill/launcher in the same
+        # directories survives untouched.
+        mktempdir() do home
+            claude_skills = joinpath(home, ".claude", "skills")
+            codex_skills = joinpath(home, ".codex", "skills")
+            bindir = joinpath(home, ".local", "bin")
+            for skills in (claude_skills, codex_skills)
+                for name in ("sot-be-session-start", "sot-fe-session-start", "my-user-skill")
+                    mkpath(joinpath(skills, name))
+                    write(joinpath(skills, name, "SKILL.md"), "---\nname: $name\n---\nstub\n")
+                end
+            end
+            mkpath(bindir)
+            write(joinpath(bindir, "ccbe"), "#!/bin/sh\necho stale\n")
+            write(joinpath(bindir, "my-launcher"), "#!/bin/sh\necho keepme\n")
+
+            withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                    "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                ShipTools.update_comm(clis = [:claude, :codex])
+            end
+
+            for skills in (claude_skills, codex_skills)
+                @test !isdir(joinpath(skills, "sot-be-session-start"))
+                @test !isdir(joinpath(skills, "sot-fe-session-start"))
+                @test isdir(joinpath(skills, "my-user-skill"))
+            end
+            @test !isfile(joinpath(bindir, "ccbe"))
+            @test isfile(joinpath(bindir, "my-launcher"))
+        end
+    end
 end

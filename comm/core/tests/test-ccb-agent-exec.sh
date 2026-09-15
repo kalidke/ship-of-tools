@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-ccb-agent-exec.sh — ADR 0046 decision 4: `ccb`/`ccbe` reduce to one
+# test-ccb-agent-exec.sh — ADR 0046 decision 4: `ccb` reduces to one
 # line, `exec sotd agent-exec claude "$@"`, resolving `sotd` the same way
 # `comm-lib.sh`'s `_try_sotd_socket_bin` candidates do ($SOTD_BIN, PATH, the
 # two install paths). This suite proves the resolved `sotd` is invoked with
@@ -31,10 +31,10 @@ check() {
     fi
 }
 
-# A `sotd` stub that records its own argv, one per line, and exits 0. `ccb`/
-# `ccbe` themselves `exec` INTO whatever this resolves to, so the stub is
-# the last thing that ever runs -- recording argv is enough to prove what
-# `ccb` handed it.
+# A `sotd` stub that records its own argv, one per line, and exits 0. `ccb`
+# itself `exec`s INTO whatever this resolves to, so the stub is the last
+# thing that ever runs -- recording argv is enough to prove what `ccb`
+# handed it.
 STUB_DIR="$WORK/stubbin"
 mkdir -p "$STUB_DIR"
 ARGV_LOG="$WORK/argv.log"
@@ -74,13 +74,6 @@ case_ccb_forwards_flags_in_order_to_agent_exec() {
     assert_argv_is agent-exec claude --continue --x
 }
 
-case_ccbe_matches_ccbs_own_recipe_exactly() {
-    rm -f "$ARGV_LOG"
-    ARGV_LOG_PATH="$ARGV_LOG" SOTD_BIN="" PATH="$STUB_DIR:$PATH" \
-        "$BIN_DIR/ccbe" --continue --x >/dev/null 2>"$WORK/stderr.log"
-    assert_argv_is agent-exec claude --continue --x
-}
-
 case_a_bare_ccb_forwards_no_flags() {
     rm -f "$ARGV_LOG"
     ARGV_LOG_PATH="$ARGV_LOG" SOTD_BIN="" PATH="$STUB_DIR:$PATH" \
@@ -98,7 +91,6 @@ case_no_sotd_found_fails_with_one_clear_error_line() {
 }
 
 check "ccb forwards its flags, in order, to sotd agent-exec claude"       case_ccb_forwards_flags_in_order_to_agent_exec
-check "ccbe matches ccb's own recipe exactly (ADR 0046: one recipe)"      case_ccbe_matches_ccbs_own_recipe_exactly
 check "a bare ccb (no flags) still reaches agent-exec claude"             case_a_bare_ccb_forwards_no_flags
 check "no sotd resolvable anywhere fails with one clear error line"       case_no_sotd_found_fails_with_one_clear_error_line
 

@@ -21,9 +21,8 @@ this** — same house rules, your dialect.
 - Codex-specific Ship of Tools skills are installed by `ShipTools.update_comm()`
   under `$CODEX_HOME/skills/` (default `~/.codex/skills/`, but this deployment
   points `CODEX_HOME` elsewhere — check the env, don't assume the default):
-  use `sot-comm` for messaging, `sot-session-start`
-  for generic backend Codex bootstrap, `sot-be-session-start` for Ship of Tools
-  backend sessions, and `sot-fe-session-start` for frontend-local Codex sessions.
+  use `sot-comm` for messaging and `sot-session-start` for backend Codex
+  bootstrap — one skill for every session, Ship of Tools repo or not.
 - Socket-only mode is the default: the backend normally listens on the private
   Unix socket from `sotd session-socket-path ${SOT_BACKEND_LABEL:-sot}`. Do not
   expect a remote `127.0.0.1:18743` TCP listener; that port is only a

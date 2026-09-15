@@ -172,8 +172,8 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             // ADR 0046 decision 4: the daemon's `agent_argv` is the ONE
-            // owner of the launch recipe; `ccb`/`ccbe` exec THROUGH this
-            // rather than each carrying their own copy of the scrub
+            // owner of the launch recipe; `ccb` execs THROUGH this
+            // rather than carrying its own copy of the scrub
             // list, the `~/.local/bin` PATH rule, and the flags. Unix
             // only (no wrapper anywhere on Windows — `claude_argv`'s own
             // Windows arm never resolves an absolute path, so there is

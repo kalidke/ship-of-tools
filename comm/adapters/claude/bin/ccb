@@ -11,9 +11,6 @@
 # it). Project-agnostic: use it for any backend session that should receive
 # cross-session messages.
 #
-# For Ship of Tools *backend* sessions use `ccbe` instead (currently
-# identical — see its own header).
-#
 # Usage:
 #   ccb               # fresh comm-aware session
 #   ccb --continue    # resume the last session AND re-arm comm (harness Monitors

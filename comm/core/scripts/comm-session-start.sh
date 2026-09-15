@@ -57,12 +57,10 @@ _sot_is_windows && IS_WINDOWS=1
 # comm-session-skill.sh is the single source of truth for "is this session
 # in a Ship of Tools checkout" (repo detection, not a role judgment — a
 # session's identity is its row's handle everywhere, Windows included; see
-# comm-join.sh).
-SKILL_NAME="$("$SCRIPT_DIR/comm-session-skill.sh" 2>/dev/null || true)"
+# comm-join.sh). `--is-sot-repo` answers by exit code — the printed skill
+# name is now the same for every session, so it's no longer a valid signal.
 IS_SOT=0
-case "$SKILL_NAME" in
-    /sot-be-session-start) IS_SOT=1 ;;
-esac
+"$SCRIPT_DIR/comm-session-skill.sh" --is-sot-repo 2>/dev/null && IS_SOT=1
 
 _watch_marker() { printf '%s/state/%s.watch\n' "${SOT_COMM_HOME:-$HOME/.sot-comm}" "$1"; }
 

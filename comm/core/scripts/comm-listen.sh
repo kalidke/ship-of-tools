@@ -53,7 +53,7 @@ done
 
 # On a Windows host the frontend already files every inbound relay frame
 # into its own fe-inbox.jsonl (gpu.rs::append_agent_message) and the
-# session's Monitor tails that — see /sot-fe-session-start. A durable
+# session's Monitor tails that — see /sot-session-start. A durable
 # reconnect-loop bridge has no receive role there, and starting one is
 # actively harmful: its `while true; do comm-relay.sh bridge …; done` loop
 # never exits, so bash keeps this script's own file open for the life of
@@ -194,7 +194,7 @@ case "$MODE" in
         echo "that POLLS your inbox so new messages wake you — POLL, not 'tail -F' (the inbox is on"
         echo "NFS, where inotify silently misses/delays writes). Monitor command:"
         echo "  comm-watch.sh $NAME"
-        echo "(see /sot-session-start or /sot-be-session-start). Inbox it watches:"
+        echo "(see /sot-session-start). Inbox it watches:"
         echo "  $INBOX_DIR/$NAME.jsonl"
         ;;
     selftest)

@@ -21,9 +21,9 @@ is spawning:
   workspace mode — the daemon + FE autostart give claude a clean env and a
   real attach.
 - **A human at a shell**: create the row from the FE Sessions mode (or run
-  `comm-spawn.sh`); the daemon starts `ccb` (`ccbe` for a Ship of Tools
-  backend) in the row's capsule. Never take a registry handle that already
-  exists, even one that looks stale.
+  `comm-spawn.sh`); the daemon no longer starts `ccb` — it runs the agent
+  recipe directly via `sotd agent-exec` in the row's capsule. Never take a
+  registry handle that already exists, even one that looks stale.
 
 ## Git worktrees
 

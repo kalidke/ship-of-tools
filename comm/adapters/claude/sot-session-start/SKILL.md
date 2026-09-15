@@ -62,5 +62,4 @@ A background job never makes you idle; `blocked` (red) only when the user must
 act. Mechanics: the sot-comm skill's `references/work-state.md`.
 
 A Ship of Tools checkout gets the sot-specific layer (FE ping, bus count)
-folded into phase 2 for free — no separate skill. `ccb`/`ccbe` both launch
-this skill.
+folded into phase 2 for free — no separate skill. `ccb` launches this skill.

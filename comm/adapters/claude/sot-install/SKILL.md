@@ -21,7 +21,7 @@ Drop `--project=.` if Ship of Tools is in the global env instead of a local
 checkout. This copies `comm/core/scripts/*` → `~/.sot-comm/bin/`, each
 Claude/Codex skill's whole directory (so a skill's own `resources/`/
 `references/` travels with it) into the respective skills dir, installs
-launcher commands (`ccb`, `ccbe`, `ccx`) into `~/.local/bin/`, installs the
+launcher commands (`ccb`, `ccx`) into `~/.local/bin/`, installs the
 state-nav hooks, and stamps/checks the protocol version.
 
 ## After install

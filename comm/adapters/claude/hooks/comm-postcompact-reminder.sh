@@ -25,18 +25,12 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 REGISTRY="$COMM_HOME/registry.json"
 
-# Self-gate: only a comm-participating session gets a reminder. The FRONTEND
-# is exempt from the registry test (shared with comm-postclear-reminder.sh —
-# Codex review finding 16, this hook used to be stricter than that one for
-# no reason): it doesn't share the backend's registry, and a cold FE that
-# hasn't joined yet is exactly the session that most needs this.
-SKILL="$("$SELF_DIR/comm-session-skill.sh" 2>/dev/null || true)"
-if [ "$SKILL" != "/sot-fe-session-start" ]; then
-    NAME=""
-    [ -x "$SELF_DIR/comm-context.sh" ] && eval "$(SOT_COMM_READONLY=1 "$SELF_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
-    [ -n "${NAME:-}" ] || exit 0
-    [ -f "$REGISTRY" ] || exit 0
-    jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || exit 0
-fi
+# Self-gate: only a comm-participating session gets a reminder (a registry
+# membership check, shared with comm-postclear-reminder.sh).
+NAME=""
+[ -x "$SELF_DIR/comm-context.sh" ] && eval "$(SOT_COMM_READONLY=1 "$SELF_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
+[ -n "${NAME:-}" ] || exit 0
+[ -f "$REGISTRY" ] || exit 0
+jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || exit 0
 
 "$SELF_DIR/comm-session-start.sh" --context

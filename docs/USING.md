@@ -106,7 +106,7 @@ reachable `systemd --user` manager it runs `--survival degraded` instead
 domain there.
 
 After upgrading to the release that removed the keeper, rerun
-`/sot-be-session-start` once in each open session so its relay bridge
+`/sot-session-start` once in each open session so its relay bridge
 restarts as a child of the session (the old bridges lived in the removed
 tmux server).
 
