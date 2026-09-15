@@ -30,118 +30,6 @@ LOCKDIR="$COMM_HOME/.registry.lock"
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-# _sot_secure_dir DIR — create-or-verify DIR as ours EXCLUSIVELY. Mirrors
-# paths.rs::secure_private_dir EXACTLY (security review, F1): the old
-# `mkdir -p`+`chmod` sequence trusted whatever was already at DIR — a
-# hostile local user who can write into DIR's parent (`/tmp`, or a shared
-# runtime dir) could pre-create DIR, or plant a SYMLINK there, as their
-# own, and `mkdir -p` (no-op on an existing path) + `chmod` (follows a
-# symlink to its target) would have accepted either without complaint —
-# landing this user's tmux socket inside a directory the attacker
-# controls. Prints nothing; returns 0 only if DIR is now verified private,
-# 1 (with a reason on stderr) otherwise. Callers MUST treat a nonzero
-# return as FATAL — no silent fallback to an unverified dir.
-#   - absent  -> `mkdir -m 700` (no `-p`: DIR's parent — $XDG_RUNTIME_DIR,
-#     /run/user/<uid>, or /tmp — is assumed to already exist, same
-#     assumption the Rust side makes). Plain `mkdir` maps to a single
-#     `mkdir(2)`, which fails atomically with EEXIST if anything (dir,
-#     file, symlink) is already there — no create-then-chmod race window.
-#   - present -> verified via `[ -L ]` (reject a symlink outright, checked
-#     BEFORE any `-d`/`-e` test since those follow symlinks) then `stat`
-#     for owner (`%u` must equal `id -u`) and mode (`%a` must be
-#     owner-only, `mode & 0077 == 0`). Any failed check is a hard reject.
-_sot_secure_dir() {
-    local dir="$1"
-    if [ -L "$dir" ]; then
-        echo "sot_tmux_socket: refusing $dir — it's a symlink (possible hijack by another local user)" >&2
-        return 1
-    fi
-    if [ -e "$dir" ]; then
-        if [ ! -d "$dir" ]; then
-            echo "sot_tmux_socket: refusing $dir — not a directory" >&2
-            return 1
-        fi
-        local owner; owner="$(stat -c '%u' "$dir" 2>/dev/null || true)"
-        if [ -z "$owner" ] || [ "$owner" != "$(id -u)" ]; then
-            echo "sot_tmux_socket: refusing $dir — owned by uid '${owner:-?}' (expected $(id -u); possible hijack)" >&2
-            return 1
-        fi
-        local mode; mode="$(stat -c '%a' "$dir" 2>/dev/null || true)"
-        if [ -z "$mode" ] || [ $((0$mode & 0077)) -ne 0 ]; then
-            echo "sot_tmux_socket: refusing $dir — mode '${mode:-?}' is group/other-accessible" >&2
-            return 1
-        fi
-        return 0
-    fi
-    if ! mkdir -m 700 "$dir" 2>/dev/null; then
-        echo "sot_tmux_socket: could not create private dir $dir" >&2
-        return 1
-    fi
-    return 0
-}
-
-# sot_tmux_socket — resolve the daemon's PRIVATE per-user tmux server socket
-# (security review, ADR: tmux-socket isolation). Before this, every comm
-# script talked to tmux's default server, but the Rust daemon (`sotd`)
-# creates workspace sessions on a private, non-default socket
-# (`paths::tmux_socket_path`) — a comm script targeting the default server
-# would silently miss those sessions (`tmux has-session` false, `tmux
-# send-keys` into nothing). ALWAYS resolve through this before any `tmux`
-# call in a script that might touch a daemon-created session; a caller-set
-# `$SOT_TMUX_SOCK` (e.g. a test harness) is honoured as-is, unchecked — the
-# caller owns that responsibility.
-#
-# Prefers querying `sotd` directly (`sotd tmux-socket-path`) — the single
-# source of truth for the resolution logic, so it can never drift from the
-# Rust side. Falls back to a shell mirror of the EXACT same tiers, in the
-# same order, only when `sotd` isn't on `$PATH` or the query fails:
-#   1. $XDG_RUNTIME_DIR/sot/tmux.sock — set, existing, NOT a symlink,
-#      owned by us, and owner-only (mode & 0077 == 0) — the same
-#      symlink-rejection + ownership + mode posture the Rust side's
-#      `is_private_dir` applies.
-#   2. /run/user/<uid>/sot/tmux.sock — same convention by well-known path,
-#      for a shell that didn't inherit the env var.
-#   3. /tmp/sot-<uid>/tmux.sock — last resort; /tmp is always a LOCAL mount
-#      (unlike $HOME, which is NFS-shared across this lab's boxes and where
-#      a unix-domain socket doesn't work).
-# The socket's parent dir is then created-or-verified via `_sot_secure_dir`
-# (mirrors the Rust side's `secure_private_dir`) — NOT a blind
-# `mkdir -p`+`chmod`. On failure this returns 1 and prints NOTHING to
-# stdout (the reason goes to stderr via `_sot_secure_dir`); callers MUST
-# check the exit status, not just emptiness, and treat failure as fatal.
-sot_tmux_socket() {
-    if [ -n "${SOT_TMUX_SOCK:-}" ]; then
-        printf '%s\n' "$SOT_TMUX_SOCK"
-        return 0
-    fi
-    local sock="" sotd_bin
-    sotd_bin="$(command -v sotd 2>/dev/null || true)"
-    if [ -n "$sotd_bin" ]; then
-        sock="$("$sotd_bin" tmux-socket-path 2>/dev/null || true)"
-    fi
-    if [ -z "$sock" ]; then
-        local uid; uid="$(id -u)"
-        if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ ! -L "$XDG_RUNTIME_DIR" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
-            local xowner xmode
-            xowner="$(stat -c '%u' "$XDG_RUNTIME_DIR" 2>/dev/null || true)"
-            xmode="$(stat -c '%a' "$XDG_RUNTIME_DIR" 2>/dev/null || true)"
-            if [ -n "$xowner" ] && [ "$xowner" = "$uid" ] \
-               && [ -n "$xmode" ] && [ $((0$xmode & 0077)) -eq 0 ]; then
-                sock="$XDG_RUNTIME_DIR/sot/tmux.sock"
-            fi
-        fi
-        if [ -z "$sock" ] && [ -d "/run/user/$uid" ]; then
-            sock="/run/user/$uid/sot/tmux.sock"
-        fi
-        [ -z "$sock" ] && sock="/tmp/sot-$uid/tmux.sock"
-    fi
-    if ! _sot_secure_dir "$(dirname "$sock")"; then
-        return 1
-    fi
-    printf '%s\n' "$sock"
-}
-
-
 # _sot_windows_local_pipe — the LOCAL daemon's named pipe, resolved and
 # proven live (ADR 0042 amendment, decision 5, corrected 2026-09-07): asks
 # the daemon binary itself for its pipe path — the SAME query
@@ -451,7 +339,7 @@ registry_del_if_provisional() {
 # copies that could drift.
 #
 # No cross-process lock: the self-file's "nopane" slot is deliberately
-# SHARED across every no-tmux-context shell on a host (see
+# SHARED across every no-workspace shell on a host (see
 # comm-context.sh's nopane note) and is last-writer-wins BY DESIGN — every
 # read of it is independently re-validated (against root=, or against
 # repo=/the registry for a legacy file), so a slot two shells raced to
@@ -483,74 +371,106 @@ sot_write_self_file() {
     return 0
 }
 
-# --- bridge detection (shared by comm-join.sh's stranding guard and
-# comm-listen.sh's --status/--stop/start-check) ---
+# --- relay bridge (started by comm-listen.sh; checked by comm-join.sh's
+# stranding guard and comm-listen.sh's --status/--stop/start-check) ---
 #
-# Codex review round-2 finding 5/D: comm-listen.sh's own bridge check was
-# `pgrep -f "comm-relay.sh bridge --name $NAME"` — UNANCHORED (a substring
-# match, so NAME="foo" also matches a live "...--name foo-bar" process),
-# REGEX-SENSITIVE (a literal '.' in NAME, common in real repo names like
-# "MyOrg.github.io-myhost", matches any character), and NOT scoped to this
-# uid (a shared host's `pgrep`/`pkill -f` with no `-u` can false-match, or
-# even KILL, another user's process). Meanwhile comm-join.sh's tmux-only
-# check misses a bridge someone started directly, with no tmux wrapper at
-# all. ONE implementation now covers both signals and both callers.
+# The bridge is the reconnect loop `comm-relay.sh bridge --name <handle>`,
+# run as a plain background child of the session's own process tree. It
+# lives in the capsule leg: the leg's process group is killed when the leg
+# ends, so the bridge dies with its session and nothing reaps it. Its loop
+# pid is recorded in a pidfile under the comm state dir; "running" means
+# that pid is alive AND is our loop for this handle (argv checked field by
+# field, so a reused pid never counts). There is never a bridge on Windows
+# (the frontend files inbound frames itself).
+#
+# The loop is started with a fixed argv shape — `bash -c <script>
+# sot-bridge <comm-relay.sh> <handle>` — so identification is an exact
+# argv comparison, not a regex over a command line.
+BRIDGE_ARGV0="sot-bridge"
+BRIDGE_LOOP='while :; do "$1" bridge --name "$2"; sleep 2; done'
 
-# _sot_bridge_pattern NAME — the exact, escaped, end-anchored pgrep -f
-# pattern for a reconnect-loop bridge serving NAME. Escapes EVERY
-# character that isn't `[A-Za-z0-9]` (not just '.', for safety — sanitized
-# handles only ever contain `.`/`-`/`_` besides alphanumerics, but this
-# doesn't rely on that staying true) by backslash-prefixing it, the
-# standard "escape a string for use as a literal regex" idiom: a
-# backslash before an ORDINARY (non-metacharacter) character like `-` or
-# `_` is a no-op in every regex engine pgrep is built on in practice, so
-# this is a strict superset of "escape only the metacharacters" with no
-# risk of missing one (extended-regex metacharacters like `(`, `)`, `+`,
-# `?`, `{`, `}`, `|` are just as real a hazard here as `.`, even though
-# today's sanitizer never produces them). End-anchored with `$` so a
-# shorter handle can never match a longer sibling's command line.
-_sot_bridge_pattern() {
-    local name="$1" escaped
-    escaped="$(printf '%s' "$name" | sed 's/[^A-Za-z0-9]/\\&/g')"
-    printf 'comm-relay\.sh bridge --name %s$' "$escaped"
+sot_bridge_pidfile() { printf '%s/state/bridge-%s.pid\n' "$COMM_HOME" "$1"; }
+
+# sot_bridge_pid_for NAME — print the live loop pid for NAME (rc 0), or
+# nothing (rc 1) when the pidfile is absent, stale, or names another process.
+sot_bridge_pid_for() {
+    local name="$1" pid
+    _sot_is_windows && return 1
+    pid="$(cat "$(sot_bridge_pidfile "$name")" 2>/dev/null)" || return 1
+    [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] || return 1
+    local -a argv=()
+    mapfile -d '' argv < "/proc/$pid/cmdline" 2>/dev/null
+    [ "${argv[3]:-}" = "$BRIDGE_ARGV0" ] && [ "${argv[5]:-}" = "$name" ] || return 1
+    printf '%s\n' "$pid"
 }
 
-# sot_bridge_pids_for NAME — space-separated PIDs (possibly empty) of a
-# bridge for NAME running under THIS uid only. Catches a bridge started
-# EITHER via comm-listen.sh's tmux wrapper OR run directly with no tmux
-# marker at all — this is a process-table check, independent of tmux.
-#
-# Windows GUARD, not just avoidance (Codex review finding 6): there is never
-# a comm-relay.sh bridge on Windows (comm-listen.sh's own no-op branch never
-# starts one), so the correct answer is unconditionally "none" — this also
-# means no caller anywhere in the tree reaches pgrep on a Windows host via
-# this path, cold-capsule disambiguation included. Mirrors pgrep's own
-# not-found convention: empty output, nonzero return.
+sot_bridge_running_for() { sot_bridge_pid_for "$1" >/dev/null; }
+
+# _sot_bridge_pattern NAME — end-anchored pgrep -f pattern matching every
+# `comm-relay.sh bridge --name NAME` process under this uid: the loop's
+# child, a bridge someone ran by hand, and the loop of a bridge a previous
+# release wrapped in a tmux session (its shell quoted the handle, hence the
+# optional quotes). Every non-alphanumeric character of NAME is escaped.
+_sot_bridge_pattern() {
+    local escaped; escaped="$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/\\&/g')"
+    printf "comm-relay\\\\.sh'? bridge --name '?%s'?(;|\$)" "$escaped"
+}
+
+# sot_bridge_pids_for NAME — pids (this uid only) of every bridge process
+# for NAME OTHER than the recorded loop: the loop's own relay child plus any
+# stray. comm-listen.sh kills these on --stop and before starting a fresh
+# loop, so a bridge from before the pidfile (or one whose pidfile was lost)
+# never files the same frame twice next to the new one.
 sot_bridge_pids_for() {
     local name="$1"
     _sot_is_windows && return 1
     pgrep -u "$(id -u)" -f "$(_sot_bridge_pattern "$name")" 2>/dev/null
 }
 
-# sot_bridge_running_for NAME [SOCK] — true if a bridge for NAME is up,
-# checking BOTH signals: the EXACT tmux marker session
-# `=commbridge-<name>` (`=` pins tmux to exact-name matching — Codex
-# review round-1 finding 4 / round-2 finding 5: without it tmux falls back
-# to prefix/glob matching) on SOCK (resolved via sot_tmux_socket if not
-# given), AND the uid-scoped anchored process check above (catches a
-# directly-started bridge with no tmux marker). Best-effort on the tmux
-# half: an unresolvable socket just skips it rather than aborting the
-# caller over a purely advisory guard.
-sot_bridge_running_for() {
-    local name="$1" sock="${2:-}"
-    _sot_is_windows && return 1
-    [ -n "$sock" ] || sock="$(sot_tmux_socket 2>/dev/null || true)"
-    if [ -n "$sock" ] && tmux -S "$sock" has-session -t "=commbridge-$name" 2>/dev/null; then
-        return 0
-    fi
-    [ -n "$(sot_bridge_pids_for "$name")" ]
+# sot_bridge_stop NAME — stop the loop (first, so it cannot respawn its
+# child), then every bridge process for NAME, and drop the pidfile.
+sot_bridge_stop() {
+    local name="$1" pid
+    if pid="$(sot_bridge_pid_for "$name")"; then kill "$pid" 2>/dev/null || true; fi
+    # shellcheck disable=SC2046
+    kill $(sot_bridge_pids_for "$name") 2>/dev/null || true
+    rm -f "$(sot_bridge_pidfile "$name")"
 }
 
+# sot_bridge_start NAME RELAY_SH — stop any stray first, then start the
+# loop detached from this shell's stdio (a caller's pipe must never be held
+# open by it) and record its pid. Output goes to state/bridge-NAME.log,
+# truncated at each start.
+sot_bridge_start() {
+    local name="$1" relay="$2" log
+    sot_bridge_stop "$name"
+    mkdir -p "$COMM_HOME/state"
+    log="$COMM_HOME/state/bridge-$name.log"
+    : > "$log"
+    bash -c "$BRIDGE_LOOP" "$BRIDGE_ARGV0" "$relay" "$name" </dev/null >>"$log" 2>&1 &
+    printf '%s\n' "$!" > "$(sot_bridge_pidfile "$name")"
+}
+
+# --- live delivery into a workspace row (comm-send.sh, comm-bootstrap.sh,
+# codex-watch.sh) ---
+#
+# sot_pty_input WORKSPACE_ID DATA_B64 — one `pty.input` request (enter:true)
+# to the daemon at ENDPOINT (caller's scope); prints the response line.
+# The daemon types the text into the row's capsule and appends Enter, and
+# reports `enter_sent`. This is the only live-delivery path: a message
+# reaches a session by its workspace row or stays in the durable inbox.
+sot_pty_input() {
+    local wsid="$1" data="$2" frame
+    # base64 can begin with "/" (MSYS2 path conversion): --rawfile, never --arg.
+    local _data_file; _data_file="$(sot_jq_rawfile "$data")" || return 1
+    frame="$(jq -nc --arg w "$wsid" --rawfile d "$_data_file" \
+        '{v:1,id:1,kind:"req",op:"pty.input",payload:{workspace_id:$w,data_b64:$d,enter:true}}')"
+    local rc=$?
+    rm -f "$_data_file"
+    [ "$rc" -eq 0 ] || return 1
+    # ~18s is the daemon's own worst case for one enter=true write.
+    SOT_SEND_TIMEOUT="${SOT_SEND_TIMEOUT:-20}" sot_oneshot_request "$frame" "pty.input"
+}
 # --- MSYS2 argv-conversion guard for jq values that can legitimately
 # start with "/" ---
 #
@@ -815,7 +735,7 @@ sot_registry_entry_status() {
 #             row for the resolved name — even one sharing my root — is
 #             someone/something else's from spawn's point of view and must
 #             never be silently absorbed (Codex review F3: this used to
-#             erase a LIVE agent's tmux/pane/status fields when spawning a
+#             erase a LIVE agent's workspace_id/status fields when spawning a
 #             second time against the same project root).
 _sot_tier_claimable() {
     local mode="$1" root="$2" status="$3" held="$4"

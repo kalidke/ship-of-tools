@@ -116,9 +116,9 @@ exp_json="$(printf '%s' "$EXPERTISE" \
 root_file="$(sot_jq_rawfile "$PROJECT_ROOT")" || exit 1
 trap 'rm -f "$root_file"' EXIT
 obj="$(jq -n \
-    --arg host "$HOST" --arg tmux "$TMUX_TARGET" --arg pane "$PANE_ID" \
+    --arg host "$HOST" --arg ws "$WORKSPACE_ID" \
     --arg repo "$REPO" --rawfile root "$root_file" --argjson exp "$exp_json" --arg ts "$ts" \
-    '{host:$host, tmux:$tmux, pane_id:$pane, repo:$repo, root:$root, expertise:$exp,
+    '{host:$host, workspace_id:$ws, repo:$repo, root:$root, expertise:$exp,
       status:"idle", joined:$ts, last_seen:$ts}')"
 
 if [ "$NEED_DERIVE" = true ]; then
@@ -186,8 +186,7 @@ fi
 # project root (ADR 0028 addendum — additive; a self-file without a root=
 # line predates this feature and is treated as unknown-root on read). The
 # repo line is used by comm-context to detect a stale identity in a
-# RECYCLED tmux pane (pane ids are reused after a server restart) and
-# discard it instead of letting a fresh session inherit another session's
+# REUSED workspace slot and discard it instead of letting a fresh session inherit another session's
 # handle. Written via the shared atomic writer (comm-lib.sh) — same
 # same-directory-tmp-plus-mv contract comm-context.sh's self-heal uses
 # (Codex review round-1 finding 3) — and its failure is FATAL here: the

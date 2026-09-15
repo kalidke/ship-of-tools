@@ -10,7 +10,7 @@
 # to a local forward port, `fe-inbox.jsonl` Monitor) describe a machine it isn't
 # on. Nothing in the FE skill's own steps fails loudly there, so the wrong-skill
 # run can leave a session believing it bootstrapped when it didn't. Deciding in
-# shell — where the handle, platform, tmux context, and repo are all knowable —
+# shell — where the handle, platform, workspace row, and repo are all knowable —
 # removes the guess.
 #
 # Detection, most-specific first (each rule notes the failure it exists to stop):
@@ -21,7 +21,9 @@
 #      `self_comm_handle()` (gpu.rs) formats `win-fe-<lowercased host>`, and the
 #      FE skill derives the same handle in lockstep, so this prefix is definitive
 #      whenever the session has joined or exported SOT_COMM_NAME.
-#   2. no tmux AND Windows AND the repo is Ship of Tools -> FRONTEND. Covers the
+#   2. no workspace row (SOT_WORKSPACE_ID unset) AND Windows AND the repo is
+#      Ship of Tools -> FRONTEND. A capsule row on the FE box is a first-class
+#      local session, never the driver. Covers the
 #      COLD FE — `fe-inbox.jsonl` is created LAZILY, by the first `agent.message`
 #      the FE receives (gpu.rs::append_agent_message opens it with `create(true)`
 #      on append), so a freshly-installed frontend that has never been messaged
@@ -38,7 +40,7 @@
 # creates it, drains and truncates it, and never removes it at exit, and it
 # writes no pid/lock file either — nothing under the state dir is true only
 # while a frontend runs. With that rule, one Linux frontend launch left an
-# empty inbox behind and every later non-tmux session on the box (daemon-
+# empty inbox behind and every later session on the box (daemon-
 # spawned capsule rows, plain shell sessions) was classified as the frontend
 # driver, derived the `win-fe-<host>` handle, and stole the frontend's
 # messages. The driver on a non-Windows box is PINNED to `win-fe-<host>` by
@@ -171,22 +173,22 @@ if [ "${1:-}" = "--selftest" ]; then
     fi
     _case "BE: clone in renamed dir (remote identity)" "$BE_SKILL" \
           "$(CLAUDE_PROJECT_DIR="$tmp/renamed" "$self")"
-    _case "BE: tmux wins on a box that runs an FE" "$BE_SKILL" \
-          "$(cd "$sot" && TMUX="${TMUX:-fake}" XDG_STATE_HOME="$tmp/fe-state" "$self")"
+    _case "BE: capsule row on a Windows box that runs an FE" "$BE_SKILL" \
+          "$(cd "$sot" && SOT_WORKSPACE_ID=ws-row-1 OS=Windows_NT XDG_STATE_HOME="$tmp/fe-state" "$self")"
     # A leftover inbox is NOT a frontend: a Linux box that once ran an FE
-    # keeps an empty fe-inbox.jsonl forever, and a plain non-tmux session
-    # there (a capsule row, a shell claude) must stay backend.
-    _case "BE: leftover fe-inbox, no tmux, non-Windows (REGRESSION)" "$BE_SKILL" \
-          "$(cd "$sot" && env -u TMUX -u OS -u OSTYPE XDG_STATE_HOME="$tmp/fe-state" "$self")"
+    # keeps an empty fe-inbox.jsonl forever, and a plain session there (a
+    # capsule row, a shell claude) must stay backend.
+    _case "BE: leftover fe-inbox, no row, non-Windows (REGRESSION)" "$BE_SKILL" \
+          "$(cd "$sot" && env -u SOT_WORKSPACE_ID -u OS -u OSTYPE XDG_STATE_HOME="$tmp/fe-state" "$self")"
     _case "FE: joined win-fe handle" "$FE_SKILL" "$(SOT_COMM_NAME=win-fe-devbox "$self")"
     # The live non-Windows frontend driver: its launcher pins the handle
     # (ADR 0042 §2) — that pin, not the inbox file, is what makes it the FE.
     _case "FE: pinned driver on a non-Windows box" "$FE_SKILL" \
-          "$(cd "$sot" && env -u TMUX -u OS -u OSTYPE XDG_STATE_HOME="$tmp/fe-state" SOT_COMM_NAME=win-fe-devbox "$self")"
+          "$(cd "$sot" && env -u SOT_WORKSPACE_ID -u OS -u OSTYPE XDG_STATE_HOME="$tmp/fe-state" SOT_COMM_NAME=win-fe-devbox "$self")"
     _case "FE: COLD windows FE, no inbox yet (REGRESSION)" "$FE_SKILL" \
-          "$(cd "$sot" && env -u TMUX OS=Windows_NT XDG_STATE_HOME="$tmp/empty-state" "$self")"
-    _case "generic: windows, no tmux, NON-SoT repo" "$GENERIC_SKILL" \
-          "$(cd "$tmp/decoy" && env -u TMUX OS=Windows_NT XDG_STATE_HOME="$tmp/empty-state" "$self")"
+          "$(cd "$sot" && env -u SOT_WORKSPACE_ID OS=Windows_NT XDG_STATE_HOME="$tmp/empty-state" "$self")"
+    _case "generic: windows, no row, NON-SoT repo" "$GENERIC_SKILL" \
+          "$(cd "$tmp/decoy" && env -u SOT_WORKSPACE_ID OS=Windows_NT XDG_STATE_HOME="$tmp/empty-state" "$self")"
     _case "generic: plain non-repo dir" "$GENERIC_SKILL" "$(cd "$tmp" && "$self")"
     _case "generic: decoy repo ship-of-tools-plugins" "$GENERIC_SKILL" \
           "$(CLAUDE_PROJECT_DIR="$tmp/decoy" "$self")"
@@ -209,8 +211,8 @@ esac
 
 # comm-context.sh emits %q-quoted `KEY=value` lines — eval it, never sed-scrape
 # (a scrape can capture the literal quotes as a bogus non-empty handle). It also
-# self-invalidates a stale pane-keyed identity, so NAME comes back empty rather
-# than wrong when tmux has recycled the pane id.
+# self-invalidates a stale row-keyed identity, so NAME comes back empty rather
+# than wrong when a workspace slot was reused.
 NAME=""
 REPO=""
 if [ -x "$SELF_DIR/comm-context.sh" ]; then
@@ -226,8 +228,8 @@ esac
 
 repo_dir="$(_repo_dir)"
 
-# --- 2. cold frontend: Windows, no tmux, in the SoT checkout, no inbox yet ----
-if [ -z "${TMUX:-}" ] && _is_windows && _is_sot_repo "$repo_dir"; then
+# --- 2. cold frontend: Windows, no workspace row, in the SoT checkout ---------
+if [ -z "${SOT_WORKSPACE_ID:-}" ] && _is_windows && _is_sot_repo "$repo_dir"; then
     echo "$FE_SKILL"
     exit 0
 fi

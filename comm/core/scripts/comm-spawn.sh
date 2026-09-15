@@ -54,7 +54,7 @@
 # ASYNCHRONOUSLY after workspace.create already returned success (a
 # throwaway boot-pty, ADR 0023 §3) — if THAT fails or hangs after this
 # script has already reported success and exited, the provisional row
-# (tmux:"" — never updated, because the real /sot-session-start join never
+# (workspace_id:"" — never updated, because the real /sot-session-start join never
 # ran) is left behind, and since a derived NAME generally differs from the
 # workspace slug (it carries "-HOST"; the slug doesn't), `comm-despawn.sh`
 # cannot recover the slug from the handle to clean up the orphaned
@@ -151,7 +151,7 @@ fi
 [ -z "$LABEL" ] && LABEL="$(basename "$REPO_PATH")"
 
 # Sessions are named after the REPO (maintainer decision, 2026-06-12): the label drives the
-# workspace slug and the tmux session name (sot-be-<slug>), and a
+# workspace slug, and a
 # task-named session is unfindable next to its repo-named siblings (a spawn
 # labeled 'edge-classify' hid the MyPackage agent from the user). The
 # label must be the repo basename, optionally suffixed ('<Repo>-2') for a
@@ -197,7 +197,7 @@ PROV_NONCE="$$-${RANDOM}-${RANDOM}"
 # so a successful rollback would misreport "something else claimed it".
 PROV_ROOT_FILE="$(sot_jq_rawfile "$CANON_ROOT")" || exit 1
 PROV_OBJ="$(jq -n --arg host "$HOST" --arg repo "$REPO_BASE" --rawfile root "$PROV_ROOT_FILE" --arg ts "$PROV_TS" --arg nonce "$PROV_NONCE" \
-    '{host:$host, tmux:"", pane_id:"", repo:$repo, root:$root, expertise:[],
+    '{host:$host, workspace_id:"", repo:$repo, root:$root, expertise:[],
       status:"spawning", joined:$ts, last_seen:$ts, nonce:$nonce}')"
 rm -f "$PROV_ROOT_FILE"
 
@@ -243,7 +243,7 @@ trap _spawn_rollback_report EXIT
 # FRESH mode (Codex review F3): an existing row for the resolved candidate,
 # even one sharing my own root, is a REFUSAL at that tier, not a reclaim.
 # comm-spawn creates a NEW agent; silently absorbing an existing row would
-# erase a LIVE agent's tmux/pane/status fields. `set -e` makes an outright
+# erase a LIVE agent's workspace_id/status fields. `set -e` makes an outright
 # derivation failure (every tier already taken by something else; Codex
 # review F6) abort here with sot_derive_handle's own clear stderr reason.
 #
@@ -271,7 +271,7 @@ if [ -n "$DISPLAY_LABEL" ]; then
     # Explicit FE label that deliberately differs from the repo basename — e.g.
     # the /worktree tool's '.SoT-wt-<short>' grouping prefix, or the
     # qualifier-composed one just above. It becomes the workspace label
-    # (driving slug + sort + tmux name) while the comm HANDLE ($NAME) stays
+    # (driving slug + sort) while the comm HANDLE ($NAME) stays
     # repo-based, so status/clean/sync still group by repo. Bypasses the
     # repo-base guard (already checked above, before any claim) — that
     # guard exists to stop *task*-named labels (e.g. 'edge-classify') from
@@ -363,7 +363,7 @@ fi
 # explicitly treats a same-slug match as invisible
 # (`find_other_workspace_with_root`'s doc comment,
 # `rust/backend/src/handlers.rs`) — a colliding create would silently
-# rebind the existing workspace's project_root/tmux_session rather than
+# rebind the existing workspace's project_root rather than
 # erroring. So this is a pre-check, not a reply-reaction: list existing
 # workspaces and refuse before ever calling workspace.create if our
 # composed label would collide. Only for an AUTO-composed label — an

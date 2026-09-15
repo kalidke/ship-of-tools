@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # comm-despawn.sh — tear down a spawned agent: remove it from sot-comm (if
-# registered) and destroy its sot workspace (kills sot-be-<slug> tmux +
-# removes the workspace toml, so the FE strip row goes away).
+# registered) and destroy its workspace row (the daemon ends the row's
+# capsule leg and removes the workspace toml, so the FE strip row goes away).
 #
 # Usage: comm-despawn.sh <name|slug|workspace_id> [--endpoint tcp:H:P|unix:PATH]
 #
@@ -36,18 +36,16 @@ sot_send() {
 }
 
 # 1) deregister from sot-comm if WHO is a known agent name.
-#    Capture the agent's workspace SLUG from its registry row FIRST (the row's
-#    tmux target is `sot-be-<slug>:<win>.<pane>`), because deregistering drops the
-#    row and step 2 would then have nothing to recover it from. This is what makes
-#    despawn-by-HANDLE destroy the workspace even when the workspace LABEL/slug
-#    deliberately differs from the comm handle (display-prefix decoupling): a
-#    `.SoT-wt-<short>` worktree has handle `<repo>-wt-<short>` but slug
-#    `_sot-wt-<short>`, so a direct slug/label/id==handle match finds nothing and
-#    the tmux+kernel+toml would otherwise leak (the worktree-clean leak).
-AGENT_SLUG=""
+#    Capture the agent's workspace id from its registry row FIRST, because
+#    deregistering drops the row and step 2 would then have nothing to recover
+#    it from. This is what makes despawn-by-HANDLE destroy the workspace even
+#    when the workspace LABEL/slug deliberately differs from the comm handle
+#    (display-prefix decoupling): a worktree row has handle `<repo>-wt-<short>`
+#    but its own slug, so a direct slug/label/id==handle match finds nothing and
+#    the row+kernel+toml would otherwise leak (the worktree-clean leak).
+AGENT_WSID=""
 if jq -e --arg n "$WHO" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
-    AGENT_TMUX="$(jq -r --arg n "$WHO" '.agents[$n].tmux // ""' "$REGISTRY" 2>/dev/null || true)"
-    AGENT_SLUG="${AGENT_TMUX#sot-be-}"; AGENT_SLUG="${AGENT_SLUG%%:*}"   # sot-be-<slug>:pane -> <slug>
+    AGENT_WSID="$(jq -r --arg n "$WHO" '.agents[$n].workspace_id // ""' "$REGISTRY" 2>/dev/null || true)"
     with_lock registry_del "$WHO"
     rm -f "$SELF_DIR/"*"$WHO"* 2>/dev/null || true
     echo "Removed @$WHO from sot-comm registry"
@@ -61,15 +59,15 @@ LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}
 WSID="$(printf '%s' "$LIST" | jq -r --arg w "$WHO" \
     '.payload.workspaces[] | select(.slug==$w or .label==$w or .workspace_id==$w) | .workspace_id' 2>/dev/null | head -1)"
 # Fallback: WHO was an agent handle that doesn't itself match a workspace
-# slug/label/id (display-prefix decoupling). Match by the slug recovered from its
-# registry row's tmux target above.
-if [ -z "$WSID" ] && [ -n "$AGENT_SLUG" ]; then
-    WSID="$(printf '%s' "$LIST" | jq -r --arg w "$AGENT_SLUG" \
-        '.payload.workspaces[] | select(.slug==$w or .workspace_id==$w) | .workspace_id' 2>/dev/null | head -1)"
-    [ -n "$WSID" ] && echo "Resolved workspace via registry slug '$AGENT_SLUG' (handle @$WHO ≠ workspace slug)"
+# slug/label/id (display-prefix decoupling). Match by the workspace id its
+# registry row recorded at join.
+if [ -z "$WSID" ] && [ -n "$AGENT_WSID" ]; then
+    WSID="$(printf '%s' "$LIST" | jq -r --arg w "$AGENT_WSID" \
+        '.payload.workspaces[] | select(.workspace_id==$w) | .workspace_id' 2>/dev/null | head -1)"
+    [ -n "$WSID" ] && echo "Resolved workspace via registry row '$AGENT_WSID' (handle @$WHO ≠ workspace slug)"
 fi
 if [ -z "$WSID" ]; then
-    echo "No workspace matching '$WHO' (slug/label/id${AGENT_SLUG:+, nor registry slug '$AGENT_SLUG'}). Nothing to destroy."
+    echo "No workspace matching '$WHO' (slug/label/id${AGENT_WSID:+, nor registry row '$AGENT_WSID'}). Nothing to destroy."
     exit 0
 fi
 DESTROY="$(jq -nc --arg id "$WSID" '{v:1,id:2,kind:"req",op:"workspace.destroy",payload:{workspace_id:$id}}')"

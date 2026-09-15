@@ -15,8 +15,8 @@
 # currently viewing.
 #
 # Awareness: requires SOT_WORKSPACE (the workspace slug), which the backend
-# stamps into the tmux session env when it spawns the pane (see pty.rs
-# spawn_tmux_pair). SOT_SESSION=1 marks "you are inside sot";
+# stamps into the capsule leg's env when it spawns the row. SOT_SESSION=1
+# marks "you are inside sot";
 # SOT_WORKSPACE_ROOT is the project root (used to relativize an absolute
 # path). The home-base default session has no workspace slug, so nav.preview is
 # not available from it.
@@ -49,11 +49,9 @@ case "$SUB" in
         ;;
 esac
 
-# Slug: prefer the backend-stamped SOT_WORKSPACE; else derive it from the tmux
-# session name (sot-be-<slug>) — covers panes that predate the stamp or lost it
-# on a re-shell, instead of forcing the caller to guess the repo name.
-SLUG="${SOT_WORKSPACE:-$(tmux display-message -p '#S' 2>/dev/null | sed -n 's/^sot-be-//p')}"
-[ -n "$SLUG" ] || die "SOT_WORKSPACE unset and slug not derivable from tmux session name (expected sot-be-<slug>) — not in a sot workspace session (or the home-base default, which has no workspace)"
+# Slug: the backend-stamped SOT_WORKSPACE.
+SLUG="${SOT_WORKSPACE:-}"
+[ -n "$SLUG" ] || die "SOT_WORKSPACE unset — not in a sot workspace session (or the home-base default, which has no workspace)"
 
 # The FE's files: node ids are workspace-relative, so send a relative path.
 # An absolute path is relativized against the workspace root; a path that is

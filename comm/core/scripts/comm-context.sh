@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # comm-context.sh — detect this session's comm identity. Output is eval-able:
 #   eval "$(.../comm-context.sh)"
-# Sets HOST PANE_ID TMUX_TARGET REPO PROJECT_ROOT NAME SELF_FILE COMM_HOME REGISTRY INBOX_DIR READ_DIR.
+# Sets HOST WORKSPACE_ID REPO PROJECT_ROOT NAME SELF_FILE COMM_HOME REGISTRY INBOX_DIR READ_DIR.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=comm-lib.sh
@@ -33,12 +33,10 @@ else
     HOST="$(hostname -s 2>/dev/null || hostname)"
 fi
 
-PANE_ID=""
-TMUX_TARGET=""
-if [ -n "${TMUX_PANE:-}" ]; then
-    PANE_ID="$(tmux display-message -t "$TMUX_PANE" -p '#{pane_id}' 2>/dev/null || true)"
-    TMUX_TARGET="$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || true)"
-fi
+# The workspace row this shell runs in, stamped into the capsule leg's env
+# by the daemon; empty in a bare shell. It keys the self-file slot and is
+# the target comm-send.sh types into.
+WORKSPACE_ID="${SOT_WORKSPACE_ID:-}"
 
 RAW_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 REPO="$(basename "$RAW_ROOT")"
@@ -58,20 +56,19 @@ if ! PROJECT_ROOT="$(sot_canonical_path "$RAW_ROOT")"; then
 fi
 
 # SOT_COMM_SELF_FILE lets a caller pin the self-file path directly, bypassing
-# the HOST/PANE_ID keying below — a test harness has no real tmux pane to key
-# on (a fake $TMUX_PANE still fails the `tmux display-message` call and
-# collapses to the same "nopane" key for every simulated session), so this is
-# the seam that lets it give each simulated session its own identity slot.
+# the HOST/WORKSPACE_ID keying below — a test harness has no workspace row
+# to key on (every simulated session would collapse to the same "nopane"
+# slot), so this is the seam that lets it give each its own identity slot.
 # Unset in normal use; mirrors the existing $SOT_COMM_HOME override.
 if [ -n "${SOT_COMM_SELF_FILE:-}" ]; then
     SELF_FILE="$SOT_COMM_SELF_FILE"
 else
-    PANE_SAFE="${PANE_ID//%/}"
-    SELF_FILE="$SELF_DIR/${HOST}__${PANE_SAFE:-nopane}.txt"
+    WS_SAFE="$(printf '%s' "$WORKSPACE_ID" | tr -c 'A-Za-z0-9._-' '_')"
+    SELF_FILE="$SELF_DIR/${HOST}__${WS_SAFE:-nopane}.txt"
 fi
-# The self-file is keyed by PANE ID; tmux reuses pane ids, so a fresh
-# session in a recycled pane can otherwise inherit a different session's
-# identity. Full rationale for everything below — the root=/repo=/
+# The self-file is keyed by WORKSPACE ID; a row can be re-created for a
+# different project, so a fresh session in a reused slot can otherwise
+# inherit a different session's identity. Full rationale for everything below — the root=/repo=/
 # registry/nopane read-side matrix, including the round-3 additions
 # (malformed third line, registry-read errors) — lives in
 # docs/adr/0028-remote-comm-autoconnect.md's "Self-file read-side
@@ -79,7 +76,7 @@ fi
 # comments here to short invariant statements only.
 #
 # IS_NOPANE: true only for the literal shared "$HOST__nopane.txt" slot,
-# detected from SELF_FILE's own name (not from PANE_ID at this particular
+# detected from SELF_FILE's own name (not from WORKSPACE_ID at this particular
 # invocation — what matters is whether THIS FILE is the one every no-pane
 # shell on the host shares).
 case "$SELF_FILE" in
@@ -122,7 +119,7 @@ if [ -f "$SELF_FILE" ]; then
         echo "comm-context: self-file identity '$NAME' has a malformed third line ('$SELF_ROOT_LINE', not a root=... line) — stale; discarding (corrupted evidence is never routed through the legacy-heal path)" >&2
         NAME=""
     elif [ "$HAS_REPO_LINE" = 1 ] && [ "$SELF_REPO" != "$REPO" ]; then
-        echo "comm-context: self-file identity '$NAME' was claimed for repo '$SELF_REPO' but this is '$REPO' — stale (pane id reused, a genuine cd elsewhere, or a shared no-pane self-file read from a different repo/cwd); discarding" >&2
+        echo "comm-context: self-file identity '$NAME' was claimed for repo '$SELF_REPO' but this is '$REPO' — stale (workspace slot reused, a genuine cd elsewhere, or a shared no-pane self-file read from a different repo/cwd); discarding" >&2
         NAME=""
     elif [ -n "$NAME" ]; then
         # Legacy self-file (no root=; repo= matching or the ancient
@@ -145,7 +142,7 @@ if [ -f "$SELF_FILE" ]; then
                 NAME=""
             fi
         elif [ "$HAS_REPO_LINE" = 1 ] && [ "$IS_NOPANE" != 1 ]; then
-            heal=1   # pane-keyed, repo= matches, no contrary registry evidence — ADR 0028 residual ambiguity
+            heal=1   # row-keyed, repo= matches, no contrary registry evidence — ADR 0028 residual ambiguity
         elif [ "$HAS_REPO_LINE" = 1 ] && [ "$IS_NOPANE" = 1 ]; then
             echo "comm-context: self-file identity '$NAME' is in the SHARED nopane slot and this project's repo='$REPO' match alone is not enough evidence for it (this exact file is shared by every no-pane shell on this host) — stale; refusing to self-heal without a corroborating registry root; discarding" >&2
             NAME=""
@@ -173,8 +170,7 @@ fi
 emit() { if [ -n "$2" ]; then printf '%s=%q\n' "$1" "$2"; else printf '%s=\n' "$1"; fi; }
 
 emit HOST        "$HOST"
-emit PANE_ID     "$PANE_ID"
-emit TMUX_TARGET "$TMUX_TARGET"
+emit WORKSPACE_ID "$WORKSPACE_ID"
 emit REPO        "$REPO"
 emit PROJECT_ROOT "$PROJECT_ROOT"
 emit NAME        "$NAME"

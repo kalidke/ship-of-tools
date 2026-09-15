@@ -4,8 +4,9 @@
 #
 # WHY: the relay is live-only (the daemon broadcasts to connected clients; no
 # queue). A CLI session that isn't holding a connection misses broadcasts. This
-# starts a reconnect-loop bridge (in a detached tmux session) that stays
-# connected and files inbound messages into ~/.sot-comm/inbox/<name>.jsonl.
+# starts a reconnect-loop bridge (a background child of this session, pid
+# recorded under the comm state dir) that stays connected and files inbound
+# messages into ~/.sot-comm/inbox/<name>.jsonl.
 #
 # WINDOWS: this is a no-op there (prints the receive path and exits 0) — the
 # frontend already files every inbound frame into its own fe-inbox.jsonl, and
@@ -34,9 +35,8 @@ source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 ensure_home
 
-# Mode/name parsed FIRST — before any tmux involvement — so the Windows
-# short-circuit right below can act on it without needing a private tmux
-# socket (git-bash typically ships no tmux at all) or a resolved handle.
+# Mode/name parsed FIRST so the Windows short-circuit right below can act
+# on it without a resolved handle.
 MODE="start"; WANT_NAME=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -48,12 +48,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 # Resolved here — before the Windows short-circuit below, which (for
-# --selftest) now needs NAME too, not just the Linux/tmux path further down.
+# --selftest) needs NAME too, not just the Linux path further down.
 [ -n "$WANT_NAME" ] && NAME="$WANT_NAME"
 
 # On a Windows host the frontend already files every inbound relay frame
 # into its own fe-inbox.jsonl (gpu.rs::append_agent_message) and the
-# session's Monitor tails that — see /sot-fe-session-start. A durable tmux
+# session's Monitor tails that — see /sot-fe-session-start. A durable
 # reconnect-loop bridge has no receive role there, and starting one is
 # actively harmful: its `while true; do comm-relay.sh bridge …; done` loop
 # never exits, so bash keeps this script's own file open for the life of
@@ -160,53 +160,35 @@ if _sot_is_windows; then
     exit 0
 fi
 
-# Private tmux socket (security review) — every tmux session this user's
-# Ship of Tools tooling creates (daemon workspaces AND this script's own
-# relay-bridge session) lives on one private, non-default server so another
-# local account sharing this host can't attach to it. Resolved once, used
-# on every `tmux` call below via `-S`.
-SOT_TMUX_SOCK="$(sot_tmux_socket)" \
-    || { echo "ERROR: could not resolve/secure the private tmux socket dir — see reason above" >&2; exit 1; }
-
 [ -z "$NAME" ] && { echo "ERROR: no handle — run comm-join.sh first or pass --name" >&2; exit 1; }
 
-BIN="$COMM_HOME/bin"
-SESSION="commbridge-$NAME"
-# Codex review round-2 finding 5/D: this used to be a bare, unanchored,
-# all-user `pgrep -f "comm-relay.sh bridge --name $NAME"` — a substring
-# match (NAME="foo" also matches a live "...--name foo-bar" process), a
-# regex (an unescaped '.' in NAME, common in real repo names, matches any
-# character), and not scoped to this uid at all (a shared host's
-# `pgrep`/`pkill -f` with no `-u` can false-match, or even KILL, another
-# user's process — unacceptable). comm-lib.sh's sot_bridge_running_for /
-# sot_bridge_pids_for are the ONE shared, uid-scoped, exact-anchored
-# implementation, also used by comm-join.sh's stranding guard.
-bridge_running() { sot_bridge_running_for "$NAME" "$SOT_TMUX_SOCK"; }
+RELAY="$COMM_HOME/bin/comm-relay.sh"
+# The bridge's liveness, start and stop are comm-lib.sh's sot_bridge_*
+# helpers (also used by comm-join.sh's stranding guard): a pidfile under
+# the comm state dir names the loop, checked by exact argv. A loop from a
+# previous release (tmux-wrapped) or a hand-started bridge is a stray:
+# found by process pattern and killed before a fresh loop starts, so no
+# two bridges ever file the same frame twice.
+bridge_running() { sot_bridge_running_for "$NAME"; }
 
 case "$MODE" in
     status)
-        if bridge_running; then echo "relay listener for @$NAME: RUNNING (pid $(sot_bridge_pids_for "$NAME" | paste -sd, -))"
+        if bridge_running; then echo "relay listener for @$NAME: RUNNING (pid $(sot_bridge_pid_for "$NAME"))"
         else echo "relay listener for @$NAME: not running"; fi
         ;;
     stop)
-        # `=$SESSION` pins tmux to an EXACT session-name match (round-1
-        # finding 4 / round-2 finding 5) so a sibling like
-        # "commbridge-<name>-other" can't be killed by a prefix match.
-        tmux -S "$SOT_TMUX_SOCK" kill-session -t "=$SESSION" 2>/dev/null || true
-        # shellcheck disable=SC2046
-        kill $(sot_bridge_pids_for "$NAME") 2>/dev/null || true
+        sot_bridge_stop "$NAME"
         echo "stopped relay listener for @$NAME"
         ;;
     start)
         if bridge_running; then
             echo "relay listener for @$NAME already running — good."
         else
-            # Detached tmux session with a reconnect loop (the relay can drop;
-            # this re-establishes it). Files inbound into inbox/<name>.jsonl.
-            tmux -S "$SOT_TMUX_SOCK" new-session -d -s "$SESSION" \
-                "while true; do '$BIN/comm-relay.sh' bridge --name '$NAME'; sleep 2; done" 2>/dev/null \
-                || { echo "ERROR: could not start tmux session $SESSION" >&2; exit 1; }
-            echo "started relay listener for @$NAME (tmux session '$SESSION')"
+            # A reconnect loop (the relay can drop; this re-establishes it),
+            # a background child of this session. Files inbound into
+            # inbox/<name>.jsonl.
+            sot_bridge_start "$NAME" "$RELAY"
+            echo "started relay listener for @$NAME (pid $(sot_bridge_pid_for "$NAME" || echo '?'))"
         fi
         echo "NEXT (required for the session to actually react): arm a persistent harness Monitor"
         echo "that POLLS your inbox so new messages wake you — POLL, not 'tail -F' (the inbox is on"
@@ -313,10 +295,7 @@ case "$MODE" in
         #   0  = receive path OK / recovered
         #   1  = daemon unreachable (real outage — "check the daemon")
         #   3  = daemon reachable but bridge still connecting (cold start, benign)
-        if ! bridge_running; then
-            tmux -S "$SOT_TMUX_SOCK" new-session -d -s "$SESSION" \
-                "while true; do '$BIN/comm-relay.sh' bridge --name '$NAME'; sleep 2; done" 2>/dev/null || true
-        fi
+        bridge_running || sot_bridge_start "$NAME" "$RELAY"
         # Cold-start bridges often need well over 8s to reach ESTAB; the old short
         # wait made the selftest declare DOWN while the daemon was perfectly fine
         # (false alarm that cost 3-5 tool calls in two fresh-boot reports). Wait
@@ -324,12 +303,9 @@ case "$MODE" in
         for i in $(seq 1 20); do if _estab; then break; fi; sleep 1; done
         if _probe; then echo "selftest @$NAME: receive path OK"; exit 0; fi
         echo "selftest @$NAME: receive path not yet proven -- restarting listener..." >&2
-        tmux -S "$SOT_TMUX_SOCK" kill-session -t "=$SESSION" 2>/dev/null || true
-        # shellcheck disable=SC2046
-        kill $(sot_bridge_pids_for "$NAME") 2>/dev/null || true
+        sot_bridge_stop "$NAME"
         sleep 1
-        tmux -S "$SOT_TMUX_SOCK" new-session -d -s "$SESSION" \
-            "while true; do '$BIN/comm-relay.sh' bridge --name '$NAME'; sleep 2; done" 2>/dev/null || true
+        sot_bridge_start "$NAME" "$RELAY"
         for i in $(seq 1 20); do if _estab; then break; fi; sleep 1; done
         if _probe; then echo "selftest @$NAME: RECOVERED after restart"; exit 0; fi
         # Still no delivery. Discriminate daemon-down from bridge-still-connecting

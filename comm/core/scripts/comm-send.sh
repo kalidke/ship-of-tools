@@ -2,25 +2,28 @@
 # comm-send.sh — send a message to one agent or broadcast to all.
 # Usage: comm-send.sh @name "message"
 #        comm-send.sh --broadcast "message"
-#        comm-send.sh --force-target SESSION:WIN.PANE "message"   # first contact, no registry
+#
+# Every send lands in the recipient's durable inbox. A directed send to a
+# session that owns a workspace row on THIS host is also typed live into
+# that row (the daemon's `pty.input`, Enter appended — the same path
+# codex-watch.sh uses). With no row on this host the message stays in the
+# inbox (the recipient's Monitor or bridge picks it up) and the send says so.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 ensure_home
 
-BROADCAST=false; TARGET=""; MSG=""; FORCE_TARGET=""
+BROADCAST=false; TARGET=""; MSG=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --broadcast)    BROADCAST=true; shift; continue ;;
-        --force-target) FORCE_TARGET="$2"; shift 2; continue ;;
+        --broadcast) BROADCAST=true; shift; continue ;;
     esac
     # The recipient is ONLY the first positional @arg, taken before any message
-    # text. Once a target/broadcast/force is set or message text has started,
-    # an @arg is message content verbatim — agents naturally open replies with
+    # text. Once a target/broadcast is set or message text has started, an
+    # @arg is message content verbatim — agents naturally open replies with
     # an @mention, so the message must be allowed to begin with @.
-    if [ -z "$TARGET" ] && [ -z "$MSG" ] && [ "$BROADCAST" = false ] \
-       && [ -z "$FORCE_TARGET" ] && [ "${1#@}" != "$1" ]; then
+    if [ -z "$TARGET" ] && [ -z "$MSG" ] && [ "$BROADCAST" = false ] && [ "${1#@}" != "$1" ]; then
         TARGET="${1#@}"
     elif [ -z "$MSG" ]; then
         MSG="$1"
@@ -30,7 +33,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-[ -z "$MSG" ] && { echo "usage: comm-send.sh @name \"msg\" | --broadcast \"msg\" | --force-target T \"msg\"" >&2; exit 1; }
+[ -z "$MSG" ] && { echo "usage: comm-send.sh @name \"msg\" | --broadcast \"msg\"" >&2; exit 1; }
 
 # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): MSG can
 # legitimately start with "/" (an agent naturally opens with a slash
@@ -41,57 +44,26 @@ MSG_FILE="$(sot_jq_rawfile "$MSG")" || exit 1
 trap 'rm -f "$MSG_FILE"' EXIT
 
 # Identity refusal, via the ONE shared helper (comm-lib.sh) also used by
-# comm-relay.sh and comm-bootstrap.sh (Codex review round-2 finding 4/C:
-# collapses three separately-drifting diagnostic essays into one, and
-# requires more than a merely nonempty NAME — see the helper's own
-# comment). Checked BEFORE any transport setup (the tmux socket resolution
-# below) so an unresolved sender always sees THIS refusal, never an
-# unrelated socket error (round-2 SHOULD-FIX 2). Skipped for
-# --force-target: that path is explicitly identityless by design (first
-# contact with a session that hasn't joined the network yet — a raw tmux
-# paste, no inbox, no from-field semantics to get wrong) and must keep
-# working with no identity at all.
-[ -n "$FORCE_TARGET" ] || sot_require_routable_identity || exit 1
-
-# Private tmux socket (security review) — the live-paste delivery legs below
-# target daemon-created panes, which live on the daemon's private socket,
-# not tmux's default server. Resolved once, used on every `tmux` call below
-# via `-S`.
-if _sot_is_windows; then
-    # A Windows frontend box has no tmux: the durable inbox and the relay
-    # bridge are the only delivery legs there. Resolving the private socket
-    # hard-rejects under Git Bash's ACL emulation (the dir reports mode 755)
-    # and used to kill EVERY send before the inbox write (field report
-    # 2026-09-08). The tmux legs below are skipped when this is empty.
-    SOT_TMUX_SOCK=""
-else
-    SOT_TMUX_SOCK="$(sot_tmux_socket)" \
-        || { echo "ERROR: could not resolve/secure the private tmux socket dir — see reason above" >&2; exit 1; }
-fi
+# comm-relay.sh and comm-bootstrap.sh: requires more than a merely nonempty
+# NAME — see the helper's own comment. Checked BEFORE any transport work so
+# an unresolved sender always sees THIS refusal, never a daemon error.
+sot_require_routable_identity || exit 1
 
 FORMATTED="[${NAME:-?}:$REPO] $MSG"
 
-# Raw delivery to a tmux target with no registry lookup — for first contact with
-# a session that hasn't joined yet. No inbox (no known recipient name).
-if [ -n "$FORCE_TARGET" ]; then
-    [ -n "$SOT_TMUX_SOCK" ] || { echo "ERROR: --force-target pastes into a tmux pane and this host has no tmux" >&2; exit 1; }
-    sess="${FORCE_TARGET%%:*}"
-    if ! tmux -S "$SOT_TMUX_SOCK" has-session -t "$sess" 2>/dev/null; then
-        echo "ERROR: tmux session '$sess' not found" >&2; exit 1
-    fi
-    f="$(mktemp "${TMPDIR:-/tmp}/comm-send.XXXXXX")"
-    printf '%s' "$FORMATTED" > "$f"
-    tmux -S "$SOT_TMUX_SOCK" load-buffer "$f"; tmux -S "$SOT_TMUX_SOCK" paste-buffer -t "$FORCE_TARGET"; rm -f "$f"
-    sleep 0.3; tmux -S "$SOT_TMUX_SOCK" send-keys -t "$FORCE_TARGET" Enter
-    echo "Sent to $FORCE_TARGET (force-target, no registry)."
-    exit 0
-fi
+# The daemon that owns this host's rows, resolved once and only when a
+# live delivery is actually attempted: a broadcast never types into anyone,
+# and a shell with no daemon still files to the inbox.
+ENDPOINT=""
+_live_endpoint() {
+    [ -n "$ENDPOINT" ] && return 0
+    ENDPOINT="$(sot_daemon_endpoint 2>/dev/null)" && [ -n "$ENDPOINT" ]
+}
 
 deliver() {  # $1 = target name
-    local t="$1" thost tpane ttmux ts f
-    thost="$(jq -r --arg n "$t" '.agents[$n].host    // empty' "$REGISTRY")"
-    tpane="$(jq -r --arg n "$t" '.agents[$n].pane_id // empty' "$REGISTRY")"
-    ttmux="$(jq -r --arg n "$t" '.agents[$n].tmux    // empty' "$REGISTRY")"
+    local t="$1" thost tws ts resp ok enter_sent code
+    thost="$(jq -r --arg n "$t" '.agents[$n].host         // empty' "$REGISTRY")"
+    tws="$(jq -r   --arg n "$t" '.agents[$n].workspace_id // empty' "$REGISTRY")"
     if [ -z "$thost" ]; then echo "  @$t: not in registry — skipped" >&2; return 1; fi
 
     # 1) durable inbox, always. Stamp `to` so the recipient's Monitor can rank:
@@ -106,22 +78,24 @@ deliver() {  # $1 = target name
     jq -nc --arg from "$NAME" --arg to "$to_stamp" --arg repo "$REPO" --rawfile msg "$MSG_FILE" --arg ts "$ts" \
         '{from:$from, to:$to, repo:$repo, msg:$msg, ts:$ts}' >> "$INBOX_DIR/$t.jsonl"
 
-    # 2) live paste, only if same host, pane alive, and NOT a broadcast.
-    # A paste + Enter is a full interrupt (it submits into the recipient's
-    # claude input — a model turn), so it must follow the same demotion rule
-    # as the Monitor: broadcasts file silently, only directed sends interrupt.
-    # The 2026-06-12 wake-storm fix originally stamped to:"" on the inbox line
-    # but left this leg pasting — every same-host session still got woken per
-    # broadcast (one peer was hit through exactly this path). Worse, a paste
-    # into a pane whose claude has exited lands at a bash PROMPT and the
-    # Enter executes message text as shell input.
-    if [ "$BROADCAST" != true ] && [ -n "$SOT_TMUX_SOCK" ] && [ "$thost" = "$HOST" ] && [ -n "$tpane" ] && [ -n "$ttmux" ] \
-       && tmux -S "$SOT_TMUX_SOCK" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$tpane"; then
-        f="$(mktemp "${TMPDIR:-/tmp}/comm-send.XXXXXX")"
-        printf '%s' "$FORMATTED" > "$f"
-        tmux -S "$SOT_TMUX_SOCK" load-buffer "$f"; tmux -S "$SOT_TMUX_SOCK" paste-buffer -t "$ttmux"; rm -f "$f"
-        sleep 0.3; tmux -S "$SOT_TMUX_SOCK" send-keys -t "$ttmux" Enter
-        echo "  @$t: delivered live (+inbox)"
+    # 2) live typing, only for a directed send to a row on this host. Typing
+    # plus Enter is a full interrupt (it submits into the recipient's input —
+    # a model turn), so it follows the same demotion rule as the Monitor:
+    # broadcasts file silently, only directed sends interrupt. The daemon
+    # refuses a row whose capsule is not ready, so the text never lands at a
+    # bare shell prompt; an unknown or gone row leaves the message queued.
+    if [ "$BROADCAST" != true ] && [ "$thost" = "$HOST" ] && [ -n "$tws" ] && _live_endpoint; then
+        resp="$(sot_pty_input "$tws" "$(printf '%s' "$FORMATTED" | base64 | tr -d '\n')" || true)"
+        IFS='|' read -r ok enter_sent code <<EOF
+$(printf '%s' "$resp" | jq -r '[.payload.ok // false, .payload.enter_sent // false, .payload.code // ""] | map(tostring) | join("|")' 2>/dev/null)
+EOF
+        if [ "$ok" = true ] && [ "$enter_sent" = true ]; then
+            echo "  @$t: delivered live (+inbox)"
+        elif [ "$ok" = true ]; then
+            echo "  @$t: typed live, Enter unconfirmed (+inbox)"
+        else
+            echo "  @$t: queued to inbox (row $tws: ${code:-no reply})"
+        fi
     else
         echo "  @$t: queued to inbox ($thost)"
     fi

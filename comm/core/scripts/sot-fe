@@ -97,16 +97,13 @@
 #              response (op pty.input), unlike pty.write (this connection's
 #              OWN pty, fire-and-forget — the LLM-pane drawer's keystroke
 #              path). Bytes are delivered LITERALLY to the row's own input
-#              path — a tmux row's `send-keys -l` (no key-name
-#              interpretation, ever) or a headless attach that takes a
-#              capsule row's pen ONLY long enough to type it, never resizing
-#              the pane. Text comes from the positional argument OR --stdin
+#              path — a headless attach that takes the capsule row's pen
+#              ONLY long enough to type it, never resizing the pane. Text comes from the positional argument OR --stdin
 #              (a leading `/` in --stdin text survives git-bash's argv
 #              conversion this way); --enter appends the byte a terminal
-#              itself sends for Enter, applied by the DAEMON in a
-#              runtime-appropriate way (a literal CR on a capsule row, a
-#              separate send-keys Enter on a tmux row) — the text itself is
-#              NEVER altered to carry it. --origin <who> names the
+#              itself sends for Enter, applied by the DAEMON (a literal CR
+#              on the capsule row) — the text itself is NEVER altered to
+#              carry it. --origin <who> names the
 #              controller for the record's own controller-actor frames —
 #              ATTRIBUTION, not authentication (the caller's CLAIMED
 #              handle, same trust level as any hello client_id): default is
@@ -118,12 +115,10 @@
 #              advancing it. Prints `ok bytes=<n> runtime=<r> enter_sent=<bool>`
 #              on success (enter_sent:false means unconfirmed, not failed);
 #              exit 2 on a daemon-reported error (unknown workspace,
-#              non-UTF8 text on a tmux row, a not-ready or wedged capsule
-#              row, ...).
+#              a not-ready or wedged capsule row, ...).
 #   screen   — the CURRENT screen of a named row — no scrollback, no
-#              history (op pty.screen). A tmux row's own visible pane; a
-#              capsule row is read by a WATCHER attach that never takes the
-#              pen. Prints the screen's lines verbatim to stdout (one per
+#              history (op pty.screen). The capsule row is read by a WATCHER
+#              attach that never takes the pen. Prints the screen's lines verbatim to stdout (one per
 #              line, blank rows kept) and `cols=.. rows=.. cursor=r,c
 #              runtime=..` to stderr; exit 2 on a daemon-reported error.
 #              This is the READ half of the read-before-write policy above.
@@ -223,7 +218,7 @@ ROI=""         # preview: source-px rect "x,y,w,h" to frame the image at (ADR-00
 CAPTION=""     # preview/reveal: figure caption rendered under the image
 CAPTION_SET=false  # distinguishes "--caption ''" (explicit clear) from "no --caption"
 FRESH=false    # repl run: restart the persistent REPL into the file's project
-ENTER=false    # type: append Enter after the literal text (runtime-appropriate — CR on a capsule row, a separate send-keys Enter on tmux)
+ENTER=false    # type: append Enter after the literal text (the daemon types a CR on the capsule row)
 POS=()         # positional args for the subcommand
 while [ $# -gt 0 ]; do
     case "$1" in

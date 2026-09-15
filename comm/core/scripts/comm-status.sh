@@ -44,7 +44,7 @@
 #
 # Self-gating: a session with no registry row (not a joined comm agent — e.g. a
 # plain human session where a global hook also fires) is a silent no-op (rc 0).
-# Merges into the existing row; never clobbers host/tmux/pane/repo/expertise/
+# Merges into the existing row; never clobbers host/workspace_id/repo/expertise/
 # status/joined.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

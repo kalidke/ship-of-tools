@@ -1,5 +1,4 @@
 #!/bin/bash
-# sot-capsule-capable: 1
 # ccx — start a comm-aware CODEX session for any project (ADR 0031).
 #
 # Codex counterpart of ccb. Unlike ccb (whose claude session bootstraps its
@@ -11,21 +10,20 @@
 #      the same repo);
 #   2. start the durable relay listener (files inbound into the inbox);
 #   3. start codex-watch.sh — the wake: polls the inbox (NFS! poll, never
-#      tail -F), delivers into THIS session (tmux pane, or a capsule's pty.input).
+#      tail -F), delivers into THIS session (the row's pty.input).
 # Then exec codex, which reads AGENTS.md (identity, comm CLI usage, state
 # discipline) from the repo/checkout natively.
 #
 # Source of truth: comm/adapters/codex/bin/ccx in Ship of Tools, deployed to
 # ~/.local/bin by `ShipTools.update_comm()`. Edit it there.
-# The marker above is a static grep target -- never runs this script to ask.
 
-# Same env scrub as ccb: a daemon-spawned pane inherits the tmux SERVER env,
+# Same env scrub as ccb: a daemon-spawned row inherits the daemon's env,
 # which may carry another agent's nesting markers.
 unset CLAUDE_CODE_FORK_SUBAGENT CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_TEAMMATE_MODE CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS CLAUDECODE AI_AGENT CLAUDE_CODE_SESSION_ID
 
-# Daemon-spawned panes lack a login PATH (ADR 0023 gotcha): put ~/.local/bin
+# Daemon-spawned rows lack a login PATH (ADR 0023 gotcha): put ~/.local/bin
 # on it, and resolve codex by full path — it typically lives in an nvm bin
-# dir that the tmux server env has never heard of.
+# dir that the daemon's env has never heard of.
 export PATH="$HOME/.local/bin:$PATH"
 CODEX_BIN="$(command -v codex 2>/dev/null || true)"
 if [ -z "$CODEX_BIN" ]; then
@@ -37,7 +35,7 @@ if [ -z "$CODEX_BIN" ]; then
     echo "ccx: codex not found (install codex-cli and run 'codex login')" >&2
     exec bash   # leave a usable shell in the pane rather than dying silently
 fi
-# codex is a node script (#!/usr/bin/env node): the daemon-spawned pane's
+# codex is a node script (#!/usr/bin/env node): the daemon-spawned row's
 # PATH has no nvm dir, so exec'ing codex dies on a missing `node` — pane and
 # session vanish silently (the 2026-07-05 boot_failed class). node lives
 # next to codex in the nvm bin dir; put that dir on PATH.
@@ -70,22 +68,17 @@ export SOT_COMM_NAME
 if [ -x "$COMM/comm-join.sh" ]; then
     "$COMM/comm-join.sh" --name "$SOT_COMM_NAME" >/dev/null 2>&1 || true
     "$COMM/comm-listen.sh" >/dev/null 2>&1 || true
-    # The wake half. Backgrounded; dies with the pane/leg. --capsule checked
-    # FIRST: a daemon started from inside a tmux pane leaks TMUX_PANE into
-    # the leg, so a capsule row must never fall into tmux mode against
-    # that foreign pane just because the var happens to be set.
+    # The wake half. Backgrounded; dies with the leg. Only a capsule row
+    # has a pty.input target, so only --capsule starts it.
     if [ -x "$COMM/codex-watch.sh" ] && [ "$CAPSULE" = 1 ]; then
         nohup "$COMM/codex-watch.sh" "$SOT_COMM_NAME" \
-            >/dev/null 2>&1 &
-    elif [ -x "$COMM/codex-watch.sh" ] && [ -n "${TMUX_PANE:-}" ]; then
-        nohup "$COMM/codex-watch.sh" "$SOT_COMM_NAME" "$TMUX_PANE" \
             >/dev/null 2>&1 &
     fi
 fi
 
 # Pre-trust the workspace dir (idempotent): without this codex blocks on an
 # interactive "do you trust this directory" prompt on every first visit —
-# fatal in a daemon-booted pane nobody is watching. Trusting is correct by
+# fatal in a daemon-booted row nobody is watching. Trusting is correct by
 # construction here: the daemon only creates workspaces at user-chosen roots.
 # Honor $CODEX_HOME: a host that points it elsewhere (e.g. machine-local, to
 # keep codex's flock() off NFS) reads a DIFFERENT config, so writing this to
@@ -107,8 +100,8 @@ fi
 # --dangerously-bypass-approvals-and-sandbox: full access AND no trust /
 # approval prompts (again broader than ccb's posture, not matched to it) —
 # a [projects] trust_level entry alone still left an
-# interactive trust prompt blocking daemon-booted panes. exec (not a child)
-# so the pane's foreground command reads node/codex and the daemon's boot
+# interactive trust prompt blocking daemon-booted rows. exec (not a child)
+# so the row's foreground command reads node/codex and the daemon's boot
 # poll detects it; with node's dir on PATH the exec-death class is gone.
 # --dangerously-bypass-hook-trust: our state hooks ship as the sot-comm
 # plugin; trust is persisted per hook hash, so any hook-script update would

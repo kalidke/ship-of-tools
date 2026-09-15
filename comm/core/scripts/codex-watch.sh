@@ -12,27 +12,19 @@
 # legacy no-`to` lines inject. Selftest frames DO inject (they prove this
 # exact path).
 #
-# Cursor is IN-MEMORY ONLY in both modes, starting at the inbox's END --
+# Cursor is IN-MEMORY ONLY, starting at the inbox's END --
 # a persisted one replays stale backlog across a reused handle.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=comm-lib.sh
-source "$SCRIPT_DIR/comm-lib.sh"   # _sot_secure_dir / sot_daemon_endpoint / sot_oneshot_request
+source "$SCRIPT_DIR/comm-lib.sh"   # sot_daemon_endpoint / sot_pty_input
 
-# ---- capsule-mode delivery: one request, no local retry -------------------
-_codex_watch_pty_input() {  # WORKSPACE_ID DATA_B64
-    local wsid="$1" data="$2" frame
-    # base64 can begin with "/" (MSYS2 path conversion): --rawfile, never --arg.
-    local _data_file; _data_file="$(sot_jq_rawfile "$data")" || return 1
-    frame="$(jq -nc --arg w "$wsid" --rawfile d "$_data_file" \
-        '{v:1,id:1,kind:"req",op:"pty.input",payload:{workspace_id:$w,data_b64:$d,enter:true}}')"
-    local rc=$?
-    rm -f "$_data_file"
-    [ "$rc" -eq 0 ] || return 1
-    # ~18s is the daemon's own worst case for one enter=true write.
-    SOT_SEND_TIMEOUT="${SOT_SEND_TIMEOUT:-20}" sot_oneshot_request "$frame" "pty.input"
-}
+# ---- capsule delivery: one request, no local retry ------------------------
+# The ONE pty.input implementation is comm-lib.sh's sot_pty_input (shared
+# with comm-send.sh and comm-bootstrap.sh); this name is the seam the
+# tests stub.
+_codex_watch_pty_input() { sot_pty_input "$@"; }   # WORKSPACE_ID DATA_B64
 
 # _codex_watch_capsule_inject FROM TEXT -> 0 advance, 1 retry (text never
 # recorded), 2 row gone. Never calls exit itself.
