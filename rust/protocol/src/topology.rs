@@ -14,11 +14,12 @@
 //!
 //! Rules: exactly one `hub`, and it names a listed host; a section key is a
 //! plain host name (`[a-z0-9][a-z0-9._-]*`, i.e. what `host_name()` yields);
-//! any other key or section is an error naming it. The v1 keys
-//! (`default_host`, `ssh_alias`, `tcp_port`, `remote_socket`, `remote_repo`,
-//! `remote_home`) are accepted for THIS release with one warning each naming
-//! the replacement — see [`parse`] for what each still does — and are
-//! deleted at the next rc.
+//! any other key or section is an error naming it; a key given twice in a
+//! section is an error; a v2 hub must be a `daemon` host. The v1 keys
+//! (`default_host`; per host `ssh_alias`, `remote_repo`, `tcp_port`,
+//! `remote_socket`, `socket`, `remote_home`) are accepted for THIS release
+//! with one warning each naming the replacement — see [`V1_HOST_KEYS`] —
+//! and are deleted at the next rc.
 //!
 //! **Search order** (the only one): `$SOT_HOSTS` when set (tests, scratch
 //! daemons), else `<config dir>/hosts.toml` where the config dir is
@@ -110,12 +111,27 @@ pub fn load() -> Result<Option<(PathBuf, Topology)>, String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Parse grammar v2 (module doc). v1 compatibility, one warning each:
-/// `default_host` sets `hub`; `ssh_alias` marks the host `daemon = true`
-/// (in v1 every listed host was a dialled backend) and must equal the
-/// section key; `tcp_port`, `remote_socket`, `remote_repo`, `remote_home`
-/// are ignored (ordinal, queried, never started by path, served by
-/// `workspace.list`).
+/// The v1 keys still accepted this release (one warning each, naming the
+/// replacement): `default_host` at top level, and per host `ssh_alias`,
+/// `remote_repo`, `tcp_port`, `remote_socket`, `socket`, `remote_home` —
+/// the whole set the frontend's own v1 reader knew. A file using any of
+/// them is a v1 file: every `[host.*]` in it is `daemon = true` (v1 had no
+/// other kind of host). `ssh_alias`, when non-empty, must equal the section
+/// key (the key IS the alias now); the rest are ignored (ports are ordinal,
+/// sockets queried, a remote daemon is never started by path, the default
+/// row root is served by `workspace.list`).
+const V1_HOST_KEYS: [(&str, &str); 6] = [
+    ("ssh_alias", "the section key is the ssh alias now"),
+    ("remote_repo", "a remote daemon is never started by path"),
+    ("tcp_port", "ports are ordinal (`sotd topology plan`)"),
+    ("remote_socket", "queried via `sotd session-socket-path sot` over ssh"),
+    ("socket", "queried via `sotd session-socket-path sot` over ssh"),
+    ("remote_home", "`workspace.list` serves the default row root"),
+];
+
+/// Parse grammar v2 (module doc), plus the v1 shim ([`V1_HOST_KEYS`]).
+/// Duplicate keys in a section (a `[monitor]` label included — two labels
+/// would spawn two samplers) are errors, not last-wins.
 pub fn parse(text: &str) -> Result<Topology, String> {
     #[derive(PartialEq)]
     enum Section {
@@ -128,7 +144,13 @@ pub fn parse(text: &str) -> Result<Topology, String> {
     let mut monitor: Vec<(String, String)> = Vec::new();
     let mut warnings = Vec::new();
     let mut section = Section::Top;
+    let mut seen: Vec<String> = Vec::new();
+    let mut v1 = false;
 
+    // A UTF-8 byte-order mark: PowerShell's `Set-Content`/`Out-File` writes
+    // one and `trim` does not strip U+FEFF, so the first key of such a file
+    // never matched (the 2026-09-08 monitor-drawer incident).
+    let text = text.trim_start_matches('\u{feff}');
     for (i, raw) in text.lines().enumerate() {
         let n = i + 1;
         let line = strip_comment(raw).trim();
@@ -136,6 +158,7 @@ pub fn parse(text: &str) -> Result<Topology, String> {
             continue;
         }
         if let Some(inner) = line.strip_prefix('[') {
+            seen.clear();
             let Some(name) = inner.strip_suffix(']') else {
                 return Err(format!("line {n}: malformed section header `{line}`"));
             };
@@ -163,11 +186,16 @@ pub fn parse(text: &str) -> Result<Topology, String> {
             return Err(format!("line {n}: expected `key = value`, got `{line}`"));
         };
         let (key, val) = (k.trim(), Value::parse(v.trim()).ok_or_else(|| format!("line {n}: bad value for `{}`: {}", k.trim(), v.trim()))?);
+        if seen.iter().any(|s| s == key) {
+            return Err(format!("line {n}: `{key}` given twice in this section"));
+        }
+        seen.push(key.to_string());
         match section {
             Section::Top => match key {
                 "hub" | "default_host" => {
                     if key == "default_host" {
                         warnings.push(format!("line {n}: `default_host` is `hub` now"));
+                        v1 = true;
                     }
                     let name = val.string().ok_or_else(|| format!("line {n}: `{key}` must be a quoted host name"))?;
                     if hub.is_some() {
@@ -184,24 +212,20 @@ pub fn parse(text: &str) -> Result<Topology, String> {
                         let b = val.bool().ok_or_else(|| format!("line {n}: `{key}` must be true or false"))?;
                         if key == "daemon" { host.daemon = b } else { host.frontend = b }
                     }
-                    "ssh_alias" => {
-                        let alias = val.string().unwrap_or("");
-                        if !alias.is_empty() && alias != host.name {
-                            return Err(format!(
-                                "line {n}: `ssh_alias = \"{alias}\"` differs from the section key `{}` (the key IS the ssh alias now)",
-                                host.name
-                            ));
+                    _ if V1_HOST_KEYS.iter().any(|(k, _)| *k == key) => {
+                        v1 = true;
+                        let why = V1_HOST_KEYS.iter().find(|(k, _)| *k == key).map(|(_, w)| *w).unwrap_or("");
+                        if key == "ssh_alias" {
+                            let alias = val.string().unwrap_or("");
+                            if !alias.is_empty() && alias != host.name {
+                                return Err(format!(
+                                    "line {n}: `ssh_alias = \"{alias}\"` differs from the section key `{}` (the key IS the ssh alias now)",
+                                    host.name
+                                ));
+                            }
                         }
-                        warnings.push(format!(
-                            "line {n}: `ssh_alias` is the section key now; `[host.{}]` treated as `daemon = true`",
-                            host.name
-                        ));
-                        host.daemon = true;
+                        warnings.push(format!("line {n}: `{key}` is ignored ({why}); `[host.{}]` is a v1 entry, so `daemon = true`", host.name));
                     }
-                    "tcp_port" => warnings.push(format!("line {n}: `tcp_port` is ignored; ports are ordinal (`sotd topology plan`)")),
-                    "remote_socket" => warnings.push(format!("line {n}: `remote_socket` is ignored; queried via `sotd session-socket-path sot`")),
-                    "remote_repo" => warnings.push(format!("line {n}: `remote_repo` is ignored; a remote daemon is never started by path")),
-                    "remote_home" => warnings.push(format!("line {n}: `remote_home` is ignored; `workspace.list` serves the default row root")),
                     other => return Err(format!("line {n}: unknown key `{other}` in [host.{}]", host.name)),
                 }
             }
@@ -213,8 +237,14 @@ pub fn parse(text: &str) -> Result<Topology, String> {
     }
 
     let hub = hub.ok_or_else(|| "no `hub = \"<host>\"` declared (exactly one hub)".to_string())?;
-    if hosts.iter().all(|h| h.name != hub) {
+    let Some(hub_host) = hosts.iter().find(|h| h.name == hub) else {
         return Err(format!("hub `{hub}` is not a listed host (add `[host.{hub}]`)"));
+    };
+    if v1 {
+        // v1 had no host that was not a dialled backend.
+        hosts.iter_mut().for_each(|h| h.daemon = true);
+    } else if !hub_host.daemon {
+        return Err(format!("hub `{hub}` has `daemon = false`; the hub runs the relay daemon, so `[host.{hub}]` needs `daemon = true`"));
     }
     Ok(Topology { hub, hosts, monitor, warnings })
 }
@@ -294,22 +324,29 @@ pub fn relay_endpoint(topo: &Topology, self_host: &str) -> Result<String, String
 }
 
 /// `sotd topology plan --self <host>` — plain lines, one fact per line,
-/// space-separated fields, stable order; the launcher reads them with a
-/// `split` and nothing else. Documented here and nowhere else:
+/// stable order. Every line is `<word> <word> <rest of line>`: a reader
+/// splits on the first one or two spaces only, because the rest may itself
+/// contain spaces (a Windows pipe path carries the username verbatim). A
+/// reader must ignore lines whose first word it does not know, so a later
+/// release can add facts without breaking an older launcher. Documented
+/// here and nowhere else:
 ///
 /// ```text
 /// self <host>
 /// hub <host>
 /// relay-endpoint <endpoint>          # what SOT_RELAY_ENDPOINT is on this box
-/// dial <host> <endpoint>             # one per daemon host: this box's own socket
-///                                    # for itself, tcp:127.0.0.1:<port> for others
-/// tunnel <host> <port>               # one per daemon host except self:
+/// dial <host> <endpoint>             # one per dialable host (daemon, not frontend —
+///                                    # D8: a frontend box's daemon is never dialled
+///                                    # from elsewhere): this box's own socket for
+///                                    # itself, tcp:127.0.0.1:<port> for others
+/// tunnel <host> <port>               # one per dialable host except self:
 ///                                    # ssh -L <port>:$(ssh <host> sotd session-socket-path sot) <host>
 /// ```
 pub fn plan(topo: &Topology, self_host: &str) -> Result<String, String> {
     let relay = relay_endpoint(topo, self_host)?;
     let mut out = format!("self {self_host}\nhub {}\nrelay-endpoint {relay}\n", topo.hub);
-    for h in topo.hosts.iter().filter(|h| h.daemon) {
+    let dialable = || topo.hosts.iter().filter(|h| h.daemon && !h.frontend);
+    for h in dialable() {
         let port = topo.local_port(&h.name).expect("listed host has a port");
         if h.name == self_host {
             out.push_str(&format!("dial {} {}\n", h.name, local_endpoint("sot")));
@@ -317,7 +354,7 @@ pub fn plan(topo: &Topology, self_host: &str) -> Result<String, String> {
             out.push_str(&format!("dial {} tcp:127.0.0.1:{port}\n", h.name));
         }
     }
-    for h in topo.hosts.iter().filter(|h| h.daemon && h.name != self_host) {
+    for h in dialable().filter(|h| h.name != self_host) {
         out.push_str(&format!("tunnel {} {}\n", h.name, topo.local_port(&h.name).expect("listed")));
     }
     Ok(out)
@@ -388,6 +425,8 @@ gpu-box = "other-user@gpu-box"
     #[test]
     fn two_hubs_fail() {
         let e = parse("hub = \"a\"\nhub = \"b\"\n[host.a]\n").unwrap_err();
+        assert!(e.contains("line 2") && e.contains("`hub` given twice"), "{e}");
+        let e = parse("default_host = \"a\"\nhub = \"b\"\n[host.a]\n").unwrap_err();
         assert!(e.contains("line 2") && e.contains("`hub` declared twice"), "{e}");
     }
 
@@ -439,20 +478,58 @@ tcp_port = 18744
         assert!(e.contains("`ssh_alias = \"other\"` differs from the section key `a`"), "{e}");
     }
 
+    /// The shape of a real hub file today: `default_host`, the hub's own
+    /// `[host.*]` carrying only `socket`, and a `[monitor]` table.
+    #[test]
+    fn v1_hub_file_shape_parses() {
+        let text = "\u{feff}default_host = \"hub\"\n\n[host.hub]\nsocket = \"/run/user/1000/sot/sessions/sot.sock\"\n\n[monitor]\nhub = \"hub\"\nshell-a = \"shell-a\"\nshell-b = \"shell-b\"\ngpu-box = \"other-user@gpu-box\"\n";
+        let t = parse(text).unwrap();
+        assert_eq!(t.hub, "hub");
+        assert!(t.host("hub").unwrap().daemon, "v1 hosts are daemon hosts");
+        assert_eq!(t.monitor_targets().len(), 4);
+        assert_eq!(t.warnings.len(), 2, "{:?}", t.warnings);
+        assert!(t.warnings[0].contains("`default_host`"));
+        assert!(t.warnings[1].contains("`socket` is ignored"), "{}", t.warnings[1]);
+        // The hub is dialable: its own plan dials itself.
+        assert!(plan(&t, "hub").unwrap().lines().any(|l| l.starts_with("dial hub ")));
+        // Every v1 host key is accepted, each with its own warning.
+        let all = "default_host = \"h\"\n[host.h]\nssh_alias = \"h\"\nremote_repo = \"/r\"\ntcp_port = 18743\nremote_socket = \"/s\"\nsocket = \"/s\"\nremote_home = \"/h\"\n";
+        let t = parse(all).unwrap();
+        assert_eq!(t.warnings.len(), 7, "{:?}", t.warnings);
+        for (k, _) in V1_HOST_KEYS {
+            assert!(t.warnings.iter().any(|w| w.contains(&format!("`{k}` is ignored"))), "{k}");
+        }
+    }
+
+    #[test]
+    fn v2_hub_must_be_a_daemon_host() {
+        let e = parse("hub = \"a\"\n[host.a]\n[host.b]\ndaemon = true\n").unwrap_err();
+        assert!(e.contains("hub `a` has `daemon = false`") && e.contains("[host.a]"), "{e}");
+    }
+
+    #[test]
+    fn duplicate_keys_and_labels_fail() {
+        let e = parse("hub = \"a\"\n[host.a]\ndaemon = true\ndaemon = false\n").unwrap_err();
+        assert!(e.contains("line 4") && e.contains("`daemon` given twice"), "{e}");
+        let e = parse("hub = \"a\"\n[host.a]\ndaemon = true\n[monitor]\nx = \"x\"\nx = \"y\"\n").unwrap_err();
+        assert!(e.contains("line 6") && e.contains("`x` given twice"), "{e}");
+        // The same key in two sections is fine.
+        parse("hub = \"a\"\n[host.a]\ndaemon = true\n[host.b]\ndaemon = true\n").unwrap();
+    }
+
     #[test]
     fn plan_lines_are_stable() {
         let t = parse(V2).unwrap();
         let own = local_endpoint("sot");
+        // gamma is daemon+frontend: never dialled from elsewhere (D8), and
+        // its own daemon is the launcher's implicit local connection.
         assert_eq!(
             plan(&t, "gamma").unwrap(),
-            format!(
-                "self gamma\nhub alpha\nrelay-endpoint tcp:127.0.0.1:18743\n\
-                 dial alpha tcp:127.0.0.1:18743\ndial gamma {own}\ntunnel alpha 18743\n"
-            )
+            "self gamma\nhub alpha\nrelay-endpoint tcp:127.0.0.1:18743\ndial alpha tcp:127.0.0.1:18743\ntunnel alpha 18743\n"
         );
         assert_eq!(
             plan(&t, "alpha").unwrap(),
-            format!("self alpha\nhub alpha\nrelay-endpoint {own}\ndial alpha {own}\ndial gamma tcp:127.0.0.1:18745\ntunnel gamma 18745\n")
+            format!("self alpha\nhub alpha\nrelay-endpoint {own}\ndial alpha {own}\n")
         );
         let beta = plan(&t, "beta").unwrap();
         assert!(beta.lines().nth(2).unwrap().starts_with("relay-endpoint unix:"), "{beta}");

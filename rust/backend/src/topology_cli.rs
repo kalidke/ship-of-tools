@@ -19,8 +19,8 @@ Usage: sotd topology <subcommand>
                         version.query on each daemon
   relay-endpoint        SOT_RELAY_ENDPOINT for this box
   sync [--hub <alias>]  fetch the hub's ~/.config/sot/hosts.toml into this
-                        box's config dir (refused if it does not parse)
-  apply                 print the relay tunnel units the hub would enable
+                        box's config dir (refused if it does not parse;
+                        nothing written when it equals the local copy)
 
 The file: $SOT_HOSTS, else <config dir>/hosts.toml (~/.config/sot).";
 
@@ -29,22 +29,18 @@ pub fn run(args: &[String]) -> i32 {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     match sub {
-        "plan" => with_topology(|t| {
+        "plan" => with_topology(true, |t| {
             let me = match flag("--self") { Some(h) => Ok(h), None => self_host() };
             me.and_then(|me| topology::plan(t, &me)).map(|s| print!("{s}"))
         }),
-        "status" => with_topology(|t| Ok(print!("{}", topology::status_table(t)))),
-        "relay-endpoint" => with_topology(|t| {
+        "status" => with_topology(true, |t| Ok(print!("{}", topology::status_table(t)))),
+        // Warnings stay quiet here: the shell profile runs this on every
+        // non-interactive ssh, and N stderr lines per remote command is
+        // not a warning, it is noise.
+        "relay-endpoint" => with_topology(false, |t| {
             self_host().and_then(|me| topology::relay_endpoint(t, &me)).map(|e| println!("{e}"))
         }),
         "sync" => report(sync(flag("--hub"))),
-        "apply" => with_topology(|t| {
-            for h in t.hosts.iter().filter(|h| h.name != t.hub && !h.frontend) {
-                println!("enable sot-relay-tunnel@{}", h.name);
-            }
-            println!("# lane E implements this: today `apply` only prints what it would enable");
-            Ok(())
-        }),
         _ => {
             eprintln!("{USAGE}");
             2
@@ -56,7 +52,7 @@ fn self_host() -> Result<String, String> {
     sot_log::state_dir::host_name()
 }
 
-fn with_topology(f: impl FnOnce(&Topology) -> Result<(), String>) -> i32 {
+fn with_topology(warn: bool, f: impl FnOnce(&Topology) -> Result<(), String>) -> i32 {
     let loaded = match topology::load() {
         Ok(Some(x)) => x,
         Ok(None) => {
@@ -65,8 +61,10 @@ fn with_topology(f: impl FnOnce(&Topology) -> Result<(), String>) -> i32 {
         }
         Err(e) => return report(Err(e)),
     };
-    for w in &loaded.1.warnings {
-        eprintln!("sotd topology: {}: {w}", loaded.0.display());
+    if warn {
+        for w in &loaded.1.warnings {
+            eprintln!("sotd topology: {}: {w}", loaded.0.display());
+        }
     }
     report(f(&loaded.1))
 }
@@ -82,8 +80,11 @@ fn report(r: Result<(), String>) -> i32 {
 }
 
 /// `ssh <hub> cat ~/.config/sot/hosts.toml` into this box's own copy,
-/// tmp + rename, only after the fetched text parses. The hub alias comes
-/// from `--hub`, else from the copy already here.
+/// tmp + rename, only after the fetched text parses, and only when it
+/// differs from the copy here: on a shared-home box the "copy" IS the
+/// canonical file, and a rename over it could drop an owner edit made
+/// between fetch and rename. The hub alias comes from `--hub`, else from
+/// the copy already here.
 fn sync(hub: Option<String>) -> Result<(), String> {
     let dest = topology::locate().ok_or("no config dir: set $HOME (or %LOCALAPPDATA%) or $SOT_HOSTS")?;
     let hub = match hub {
@@ -103,6 +104,10 @@ fn sync(hub: Option<String>) -> Result<(), String> {
     let fetched = topology::parse(&text).map_err(|e| format!("hub `{hub}`: fetched hosts.toml rejected, keeping the local copy: {e}"))?;
     if self_host().as_deref() == Ok(fetched.hub.as_str()) {
         return Err(format!("this box is the hub `{}`; its file is the canonical copy", fetched.hub));
+    }
+    if std::fs::read_to_string(&dest).ok().as_deref() == Some(text.as_str()) {
+        println!("{} is current (same as {hub})", dest.display());
+        return Ok(());
     }
     write_atomic(&dest, &text)?;
     println!("synced {} from {hub} ({} hosts, {} monitor targets)", dest.display(), fetched.hosts.len(), fetched.monitor.len());

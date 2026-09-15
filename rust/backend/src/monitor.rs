@@ -735,7 +735,7 @@ mod config_tests {
     /// split, same alias fallback.
     #[test]
     fn monitor_targets_match_the_old_parser() {
-        let text = "hub = \"alpha\"\n[host.alpha]\n[monitor]\nalpha = \"alpha\"\nbeta = \"\"\ngpu = \"someone@gpu\"\n";
+        let text = "hub = \"alpha\"\n[host.alpha]\ndaemon = true\n[monitor]\nalpha = \"alpha\"\nbeta = \"\"\ngpu = \"someone@gpu\"\n";
         let topo = sot_protocol::topology::parse(text).unwrap();
         let hosts = monitor_hosts(topo.monitor_targets(), "alpha");
         assert_eq!(hosts.len(), 3);

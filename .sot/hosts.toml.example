@@ -34,8 +34,11 @@
 #   frontend = true   runs a frontend + launcher: it dials the hub and the
 #                     hub never dials it (no reverse tunnel). Default false.
 #   Neither flag: a shell host — it gets the hub's reverse relay tunnel
-#   (sot-relay-tunnel@<name>, enabled by `sotd topology apply` on the hub)
-#   so sessions there can join, and nothing else.
+#   (sot-relay-tunnel@<name>, enabled on the hub from this list) so
+#   sessions there can join, and nothing else. The hub itself must be
+#   `daemon = true` (it runs the relay daemon); a daemon that is also
+#   `frontend` is dialled only by its own box's launcher, never from
+#   elsewhere.
 #
 # [monitor]
 #   Sampling targets for the Ctrl+M server-monitor drawer (ADR 0020) — NOT
@@ -46,16 +49,17 @@
 #   or target equals this box's host name is sampled locally.
 #
 # The example below is a real shape: a hub, two shell-only hosts, a frontend
-# box, and a GPU box that runs no Ship of Tools. On `hub`, `sotd topology
-# apply` enables sot-relay-tunnel@shell-a and @shell-b; on `frontend-box`
-# the launcher runs `sotd topology sync --hub hub` then `sotd topology plan`
-# (tunnel hub 18743, dial hub tcp:127.0.0.1:18743, relay-endpoint
-# tcp:127.0.0.1:18743); on any box `export SOT_RELAY_ENDPOINT="$(sotd
-# topology relay-endpoint)"`.
+# box, and a GPU box that runs no Ship of Tools. The hub reverse-tunnels to
+# shell-a and shell-b; on `frontend-box` the launcher runs `sotd topology
+# sync --hub hub` then `sotd topology plan` (tunnel hub 18743, dial hub
+# tcp:127.0.0.1:18743, relay-endpoint tcp:127.0.0.1:18743); on any box
+# `export SOT_RELAY_ENDPOINT="$(sotd topology relay-endpoint)"`.
 #
-# v1 keys (`default_host`, `ssh_alias`, `tcp_port`, `remote_socket`,
-# `remote_repo`, `remote_home`) still parse THIS release with one warning
-# each naming the replacement, and are deleted at the next rc.
+# v1 keys (`default_host`; per host `ssh_alias`, `remote_repo`, `tcp_port`,
+# `remote_socket`, `socket`, `remote_home`) still parse THIS release with
+# one warning each naming the replacement — a file using any of them is a
+# v1 file, and every host in it counts as `daemon = true` — and are deleted
+# at the next rc.
 
 hub = "hub"
 
