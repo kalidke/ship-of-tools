@@ -347,3 +347,44 @@ jobs:
         env:
           SOT_HELPER_E2E: "1"
         run: cargo test -p sot-log --test claude_e2e -- --nocapture
+
+  # Nothing else in CI ever runs scripts/install.sh -- the release smoke only
+  # boots a prebuilt artifact and checks --version. This job exercises a real
+  # `--be-only` fresh install of the latest PUBLISHED release into a clean
+  # container (no tmux, no gh), the case only a brand-new user would hit.
+  fresh-install-smoke:
+    name: fresh install smoke (clean container)
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install minimal deps (no tmux, no gh)
+        run: |
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q git curl tar jq ca-certificates
+      - name: Find latest published release tag
+        id: latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          resp="$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${{ github.repository }}/releases")"
+          tag="$(printf '%s' "$resp" | jq -r '.[0].tag_name // empty')"
+          if [ -z "$tag" ]; then
+            echo "no releases found for ${{ github.repository }} (fork with no releases?) -- skipping" >&2
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Fresh --be-only install into a clean $HOME
+        if: steps.latest.outputs.tag != ''
+        run: |
+          tag="${{ steps.latest.outputs.tag }}"
+          export HOME="$RUNNER_TEMP/sot-fresh-home"
+          mkdir -p "$HOME"
+          out="$(bash "$GITHUB_WORKSPACE/scripts/install.sh" --be-only --no-service --version "$tag" 2>&1)" || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -qi 'tmux' && { echo "installer output mentions tmux on a --be-only install"; exit 1; }
+          got="$("$HOME/.local/share/sot/bin/sotd" --version)"
+          echo "sotd --version: $got (expected: $tag)"
+          case "$got" in *"${tag#v}"*) ;; *) echo "version mismatch"; exit 1 ;; esac
+          [ -f "$HOME/.sot-comm/bin/comm-lib.sh" ] || { echo "comm-lib.sh missing"; exit 1; }
+          find "$HOME/.config" -name sot-tmux.service | grep -q . && { echo "sot-tmux.service present"; exit 1; }
+          exit 0
