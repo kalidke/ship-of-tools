@@ -1,7 +1,7 @@
 // sotd
 //
 // Long-lived daemon that owns the per-session Ship of Tools state. Per ADR 0010 it
-// runs on the remote inside a tmux session and accepts frontend connections
+// runs on the remote as a user service and accepts frontend connections
 // over a single transport:
 //   --socket <path>   — local socket (AF_UNIX / Windows named pipe via
 //                       interprocess::local_socket). Cross-machine access
@@ -29,13 +29,12 @@ mod monitor;
 mod paths;
 mod pluto;
 mod proxy;
-mod pty;
+mod awareness;
 mod repl;
 mod server;
 mod session;
 mod session_state;
 mod site_serve;
-mod tmux;
 mod update;
 mod watcher;
 mod workspaces;
@@ -161,10 +160,6 @@ async fn main() -> Result<()> {
     // rather than duplicates, the arms that used to live in `parse_args()`.
     if let Some(first) = std::env::args().nth(1) {
         match first.as_str() {
-            "tmux-socket-path" => {
-                println!("{}", paths::tmux_socket_path().display());
-                return Ok(());
-            }
             "session-socket-path" => {
                 let label = std::env::args()
                     .nth(2)
@@ -241,7 +236,6 @@ Usage: sotd [OPTIONS]
 Pure queries (no startup side effects, answered before any of the above):
   --version, -V           print the version line and exit
   --help, -h              print this usage and exit
-  tmux-socket-path        print the shared tmux control socket path and exit
   session-socket-path [label]
                           print the per-session socket path and exit
   agent-exec <kind> [flags…] (Unix only)

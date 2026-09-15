@@ -290,23 +290,6 @@ impl Env {
         }
     }
 
-    /// This env's own ISOLATED tmux server socket (F3, LU4 review round
-    /// 2): under `_runtime_tmp`, same directory every real supervisor/
-    /// voyage socket lives under, so it shares that dir's short-prefix,
-    /// 0700-owner-only properties. Passed to the spawned daemon as
-    /// `SOT_TMUX_SOCK` (`paths::tmux_socket_path`'s own override, verified
-    /// by grep against `rust/backend/src/paths.rs`) so the default row's
-    /// own tmux-session-ensure at boot (`server.rs` ~:369 — runs whenever
-    /// the default row's runtime is NOT "capsule", which is every Linux
-    /// test's own default row) never touches the developer's REAL tmux
-    /// server (`/run/user/<uid>/sot/tmux.sock`), the leak this review item
-    /// closes. Unconditional (not `cfg(unix)`) for the same "one `Env`
-    /// shape on both platforms" reason every other env var here is: the
-    /// var is simply unread on a platform with no tmux server to ensure.
-    pub fn tmux_sock(&self) -> PathBuf {
-        self._runtime_tmp.path().join("tmux.sock")
-    }
-
     /// The bounded, deliberate daemon teardown every test in this file
     /// ends its own run with (Codex review finding 13's own "never an
     /// unbounded kill/wait" rule) — takes `Env`'s own tracked child (if
@@ -360,7 +343,6 @@ impl Env {
             .env("XDG_CONFIG_HOME", &self.config_root)
             .env("SOT_STATE_HOST", TEST_STATE_HOST)
             .env("SOT_RUNTIME_DIR", self._runtime_tmp.path())
-            .env("SOT_TMUX_SOCK", self.tmux_sock())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -507,7 +489,6 @@ impl Env {
             .env("XDG_CONFIG_HOME", &self.config_root)
             .env("SOT_STATE_HOST", TEST_STATE_HOST)
             .env("SOT_RUNTIME_DIR", self._runtime_tmp.path())
-            .env("SOT_TMUX_SOCK", self.tmux_sock())
             .env("PATH", path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -533,7 +514,6 @@ impl Env {
             .env("XDG_CONFIG_HOME", &self.config_root)
             .env("SOT_STATE_HOST", TEST_STATE_HOST)
             .env("SOT_RUNTIME_DIR", self._runtime_tmp.path())
-            .env("SOT_TMUX_SOCK", self.tmux_sock())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -570,7 +550,6 @@ impl Env {
     pub fn spawn_sotd_as_user_service(&self) -> (String, u32) {
         let unit = format!("sot-test-{}.service", uuid::Uuid::now_v7());
         let setenv = |k: &str, v: &std::ffi::OsStr| format!("--setenv={k}={}", v.to_string_lossy());
-        let tmux_sock = self.tmux_sock();
         let path = std::env::var_os("PATH").unwrap_or_default();
         let home = std::env::var_os("HOME").unwrap_or_default();
         let status = Command::new("systemd-run")
@@ -584,7 +563,6 @@ impl Env {
             .arg(setenv("XDG_CONFIG_HOME", self.config_root.as_os_str()))
             .arg(setenv("SOT_STATE_HOST", std::ffi::OsStr::new(TEST_STATE_HOST)))
             .arg(setenv("SOT_RUNTIME_DIR", self._runtime_tmp.path().as_os_str()))
-            .arg(setenv("SOT_TMUX_SOCK", tmux_sock.as_os_str()))
             .arg(setenv("PATH", &path))
             .arg(setenv("HOME", &home))
             .arg("--")
@@ -764,16 +742,6 @@ impl Drop for Env {
                 std::thread::sleep(Duration::from_millis(50));
             }
 
-            // (3) this env's own isolated tmux server — never the
-            // developer's real one (a different socket path entirely).
-            let _ = Command::new("tmux")
-                .arg("-S")
-                .arg(self.tmux_sock())
-                .arg("kill-server")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
         }
 
         // (4) `_tmp`/`_runtime_tmp` remove themselves right after this

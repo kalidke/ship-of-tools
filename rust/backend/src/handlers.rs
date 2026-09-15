@@ -19,8 +19,6 @@ use sot_protocol::{
     PlutoOpenReq, PlutoOpenRes, PreviewGetReq, PreviewGetRes, PreviewSetScaleReq, PtyCursor,
     PtyInputReq, PtyInputRes, PtyScreenReq, PtyScreenRes, QuartoOpenReq, QuartoOpenRes,
     ReplErrorOut, ReplExecuteInput, ReplExecuteReq, ReplExecuteRes, ReplValueOut, StackFrame,
-    TmuxCapturePaneReq, TmuxCapturePaneRes, TmuxCreateSessionReq, TmuxKillSessionReq,
-    TmuxListPanesReq, TmuxListPanesRes, TmuxListSessionsRes, TmuxPane, TmuxSession,
     ToggleHiddenReq, ToggleHiddenRes, TreeChildrenReq, TreeChildrenRes, TreeRootReq, TreeRootRes,
     VideoOpenReq, VideoOpenRes,
 };
@@ -32,7 +30,6 @@ use crate::mathjax::MathJax;
 use crate::repl::ReplFrameMsg;
 use crate::pluto::Pluto;
 use crate::session::Session;
-use crate::tmux::TmuxClient;
 use crate::workspaces::{AgentMessage, Workspace, WorkspaceChanged, Workspaces};
 use tokio::sync::broadcast;
 
@@ -3733,204 +3730,6 @@ fn dedup_upload_name(dir: &std::path::Path, name: &str) -> String {
     format!("{stem}-{}{ext}", std::process::id())
 }
 
-// ─── Backend-sessions / tmux registry (ADR 0013) ────────────────────────
-//
-// These shell out to the host tmux server. They don't bump the session ring
-// — tmux is its own source of truth, and the frontend polls (or watches via
-// later tmux-event wiring) rather than relying on replay. Failures are
-// returned as `{error, code}` responses, not propagated, so a missing tmux
-// binary or a kill-of-nonexistent doesn't tear down the connection.
-
-const TMUX_CAPTURE_LINES_CAP: u32 = 5000;
-
-pub async fn handle_tmux_list_sessions(
-    req_id: u64,
-    _payload_json: serde_json::Value,
-    session: &Session,
-) -> Result<HandlerOutput> {
-    tracing::debug!("tmux.list_sessions");
-    let result = tokio::task::spawn_blocking(|| TmuxClient::new().list_sessions())
-        .await
-        .context("spawn_blocking list-sessions")?;
-    let (_, rev) = session.snapshot().await;
-    match result {
-        Ok(sessions) => {
-            let res = TmuxListSessionsRes {
-                sessions: sessions.into_iter().map(into_proto_session).collect(),
-            };
-            Ok(vec![(
-                Frame::res(req_id, op::TMUX_LIST_SESSIONS, serde_json::to_value(res)?)
-                    .with_rev(rev),
-                None,
-            )])
-        }
-        Err(e) => Ok(vec![(
-            tmux_error_frame(req_id, op::TMUX_LIST_SESSIONS, e),
-            None,
-        )]),
-    }
-}
-
-pub async fn handle_tmux_list_panes(
-    req_id: u64,
-    payload_json: serde_json::Value,
-    session: &Session,
-) -> Result<HandlerOutput> {
-    let req: TmuxListPanesReq =
-        serde_json::from_value(payload_json).context("tmux.list_panes payload")?;
-    tracing::debug!(session = ?req.session, "tmux.list_panes");
-    let session_arg = req.session.clone();
-    let result =
-        tokio::task::spawn_blocking(move || TmuxClient::new().list_panes(session_arg.as_deref()))
-            .await
-            .context("spawn_blocking list-panes")?;
-    let (_, rev) = session.snapshot().await;
-    match result {
-        Ok(panes) => {
-            let res = TmuxListPanesRes {
-                panes: panes.into_iter().map(into_proto_pane).collect(),
-            };
-            Ok(vec![(
-                Frame::res(req_id, op::TMUX_LIST_PANES, serde_json::to_value(res)?).with_rev(rev),
-                None,
-            )])
-        }
-        Err(e) => Ok(vec![(
-            tmux_error_frame(req_id, op::TMUX_LIST_PANES, e),
-            None,
-        )]),
-    }
-}
-
-pub async fn handle_tmux_create_session(
-    req_id: u64,
-    payload_json: serde_json::Value,
-    session: &Session,
-) -> Result<HandlerOutput> {
-    let req: TmuxCreateSessionReq =
-        serde_json::from_value(payload_json).context("tmux.create_session payload")?;
-    tracing::info!(name = %req.name, "tmux.create_session");
-    // Name validation (security review): a `|`-containing name would corrupt
-    // `tmux.rs`'s naive `|`-delimited `list-sessions`/`list-panes` parsing for
-    // every session, not just this one; other odd bytes just confuse tmux.
-    // Reject outright rather than silently mangling the requested name.
-    if !valid_name(&req.name) {
-        return Ok(vec![(
-            tmux_error_frame(
-                req_id,
-                op::TMUX_CREATE_SESSION,
-                anyhow::anyhow!(
-                    "invalid session name {:?} (want 1-64 chars of [A-Za-z0-9._-])",
-                    req.name
-                ),
-            ),
-            None,
-        )]);
-    }
-    let name = req.name.clone();
-    let command = req.command.clone();
-    let cwd = req.cwd.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let cwd_path = cwd.as_ref().map(std::path::PathBuf::from);
-        // Generic (non-workspace) session — no slug, no workspace_id; still
-        // stamped with SOT_SESSION/SOT_HOST/SOT_WORKSPACE_ROOT/SOT_MANUAL
-        // awareness.
-        TmuxClient::new().create_session(&name, command.as_deref(), cwd_path.as_deref(), None, None)
-    })
-    .await
-    .context("spawn_blocking create-session")?;
-    let rev = session
-        .bump("tmux.session_created", json!({ "name": req.name }))
-        .await;
-    match result {
-        Ok(()) => {
-            let payload = json!({ "name": req.name });
-            Ok(vec![(
-                Frame::res(req_id, op::TMUX_CREATE_SESSION, payload).with_rev(rev),
-                None,
-            )])
-        }
-        Err(e) => Ok(vec![(
-            tmux_error_frame(req_id, op::TMUX_CREATE_SESSION, e),
-            None,
-        )]),
-    }
-}
-
-pub async fn handle_tmux_kill_session(
-    req_id: u64,
-    payload_json: serde_json::Value,
-    session: &Session,
-) -> Result<HandlerOutput> {
-    let req: TmuxKillSessionReq =
-        serde_json::from_value(payload_json).context("tmux.kill_session payload")?;
-    tracing::info!(name = %req.name, "tmux.kill_session");
-    // Name validation (security review) — same allowlist as tmux.create_session.
-    if !valid_name(&req.name) {
-        return Ok(vec![(
-            tmux_error_frame(
-                req_id,
-                op::TMUX_KILL_SESSION,
-                anyhow::anyhow!(
-                    "invalid session name {:?} (want 1-64 chars of [A-Za-z0-9._-])",
-                    req.name
-                ),
-            ),
-            None,
-        )]);
-    }
-    let name = req.name.clone();
-    let result = tokio::task::spawn_blocking(move || TmuxClient::new().kill_session(&name))
-        .await
-        .context("spawn_blocking kill-session")?;
-    let rev = session
-        .bump("tmux.session_killed", json!({ "name": req.name }))
-        .await;
-    match result {
-        Ok(()) => {
-            let payload = json!({ "name": req.name });
-            Ok(vec![(
-                Frame::res(req_id, op::TMUX_KILL_SESSION, payload).with_rev(rev),
-                None,
-            )])
-        }
-        Err(e) => Ok(vec![(
-            tmux_error_frame(req_id, op::TMUX_KILL_SESSION, e),
-            None,
-        )]),
-    }
-}
-
-pub async fn handle_tmux_capture_pane(
-    req_id: u64,
-    payload_json: serde_json::Value,
-    session: &Session,
-) -> Result<HandlerOutput> {
-    let req: TmuxCapturePaneReq =
-        serde_json::from_value(payload_json).context("tmux.capture_pane payload")?;
-    let lines = req.lines.min(TMUX_CAPTURE_LINES_CAP);
-    tracing::debug!(target = %req.target, lines, "tmux.capture_pane");
-    let target = req.target.clone();
-    let result =
-        tokio::task::spawn_blocking(move || TmuxClient::new().capture_pane(&target, lines))
-            .await
-            .context("spawn_blocking capture-pane")?;
-    let (_, rev) = session.snapshot().await;
-    match result {
-        Ok(text) => {
-            let res = TmuxCapturePaneRes { text };
-            Ok(vec![(
-                Frame::res(req_id, op::TMUX_CAPTURE_PANE, serde_json::to_value(res)?).with_rev(rev),
-                None,
-            )])
-        }
-        Err(e) => Ok(vec![(
-            tmux_error_frame(req_id, op::TMUX_CAPTURE_PANE, e),
-            None,
-        )]),
-    }
-}
-
 /// `PtyInputReq::origin` / `PtyScreenReq` share no size limit of their own
 /// — this one is `origin`'s: ADR 0042 amendment §1, "≤128 bytes, else
 /// `bad_origin`."
@@ -4092,46 +3891,6 @@ pub async fn handle_pty_input(
     };
 
     match ws.runtime.as_str() {
-        "tmux" => {
-            let text = match String::from_utf8(bytes.clone()) {
-                Ok(t) => t,
-                Err(_) => {
-                    let payload = json!({
-                        "error": "pty.input payload is not valid UTF-8 text on a tmux row",
-                        "code": "input_not_text",
-                    });
-                    return Ok(vec![(Frame::res(req_id, op::PTY_INPUT, payload), None)]);
-                }
-            };
-            let session = ws.tmux_session.clone();
-            let enter = req.enter;
-            let byte_len = bytes.len();
-            let result = tokio::task::spawn_blocking(move || {
-                let c = TmuxClient::new();
-                c.send_keys_literal(&session, &text)?;
-                if enter {
-                    // CLI/ADR-level `--enter`: a SEPARATE `send-keys Enter`,
-                    // never a byte appended to the literal text (`ops.rs`'s
-                    // own `PtyInputReq::enter` doc — tmux's `-l` would
-                    // deliver an embedded newline as a literal byte, not a
-                    // submitted line).
-                    c.send_enter(&session)?;
-                }
-                Ok::<(), anyhow::Error>(())
-            })
-            .await
-            .context("spawn_blocking pty.input tmux")?;
-            match result {
-                Ok(()) => {
-                    let res = PtyInputRes { ok: true, runtime: "tmux".into(), bytes: byte_len, enter_sent: enter };
-                    Ok(vec![(
-                        Frame::res(req_id, op::PTY_INPUT, serde_json::to_value(res)?),
-                        None,
-                    )])
-                }
-                Err(e) => Ok(vec![(tmux_error_frame(req_id, op::PTY_INPUT, e), None)]),
-            }
-        }
         "capsule" => {
             #[cfg(any(windows, target_os = "linux"))]
             {
@@ -4277,28 +4036,6 @@ pub async fn handle_pty_screen(
     };
 
     match ws.runtime.as_str() {
-        "tmux" => {
-            let session = ws.tmux_session.clone();
-            let result = tokio::task::spawn_blocking(move || TmuxClient::new().visible_pane(&session))
-                .await
-                .context("spawn_blocking pty.screen tmux")?;
-            match result {
-                Ok((cols, rows, cursor_x, cursor_y, lines)) => {
-                    let res = PtyScreenRes {
-                        runtime: "tmux".into(),
-                        cols,
-                        rows,
-                        lines,
-                        cursor: Some(PtyCursor { row: cursor_y, col: cursor_x }),
-                    };
-                    Ok(vec![(
-                        Frame::res(req_id, op::PTY_SCREEN, serde_json::to_value(res)?),
-                        None,
-                    )])
-                }
-                Err(e) => Ok(vec![(tmux_error_frame(req_id, op::PTY_SCREEN, e), None)]),
-            }
-        }
         "capsule" => {
             #[cfg(any(windows, target_os = "linux"))]
             {
@@ -4554,22 +4291,10 @@ pub async fn handle_workspace_create(
     // stops CREATING new ones anywhere it has a capsule alternative —
     // they retire by attrition.
     let runtime: String = match req.runtime.as_str() {
-        "" => if cfg!(any(windows, target_os = "linux")) { "capsule" } else { "tmux" }.to_string(),
-        "capsule" => "capsule".to_string(),
-        "tmux" if !cfg!(any(windows, target_os = "linux")) => "tmux".to_string(),
-        "tmux" => {
-            let payload = json!({
-                "error": "no new tmux rows on a capsule-capable host (ADR 0042); existing tmux rows keep running".to_string(),
-                "code": "runtime_not_available",
-            });
-            return Ok(vec![(
-                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
-                None,
-            )]);
-        }
+        "" | "capsule" => "capsule".to_string(),
         other => {
             let payload = json!({
-                "error": format!("unknown runtime {other:?} (want \"capsule\", \"tmux\", or \"\" for this host's default)"),
+                "error": format!("unknown runtime {other:?} (want \"capsule\" or \"\")"),
                 "code": "bad_runtime",
             });
             return Ok(vec![(
@@ -4676,144 +4401,116 @@ pub async fn handle_workspace_create(
     // own doc); both arms compile on every platform this daemon builds
     // for (on Windows the tmux arm is simply unreachable — "tmux" is
     // refused above before either arm is ever entered).
-    if ws_handle.runtime == "capsule" {
-        // ADR 0043 decision 22: the capsule runtime itself only compiles
-        // on Windows and Linux (`capsule_workspace::runtime`'s own
-        // gate) — on any other host (macOS stays experimental) an
-        // explicit `"runtime":"capsule"` request is refused gracefully,
-        // the same "not available" shape `destroy_capsule_workspace`
-        // reports for a row that somehow already has one.
-        #[cfg(any(windows, target_os = "linux"))]
-        {
-        // ADR 0042 slice L1a, Codex review finding 1: the capsule spawn —
-        // and, unlike the tmux path below, a SYNCHRONOUS failure here
-        // FAILS the whole op: "a capsule workspace with no supervisor is
-        // not a workspace." Rule C (shrink round): this daemon no longer
-        // creates the state directory itself — `sot-capsule supervise`
-        // creates its OWN, as its first act after it actually runs — so
-        // a synchronous failure below leaves nothing on disk at all, not
-        // even an empty directory. The DETACHED spawn-and-watch is what
-        // survives this daemon's own exit, with its own exit handled
-        // going forward (finding 6). On ANY failure to reach a running
-        // supervisor, roll back the registry row and its persisted toml
-        // and refuse the op with the real error text.
-        // ADR 0043 decision 23: `capsule_state_root` was already resolved
-        // and qualified ABOVE, before this row (or its toml) ever existed
-        // — reuse it rather than re-resolving a second time. Always
-        // `Some` here in practice (this arm only runs when
-        // `ws_handle.runtime == "capsule"`, which is exactly when the
-        // earlier check ran and would have already returned on failure);
-        // the `None` arm stays as a defensive fallback, never actually hit.
-        // ADR 0043 decision 29: a process spawn never runs on a Tokio
-        // worker.
-        //
-        // ADR 0043 decision 33 (Codex review, 2026-09-11): this row's own
-        // guard, taken HERE — inside the capsule arm only, never for a
-        // tmux row (nothing else ever contends a tmux id's guard) — and
-        // held across the spawn attempt below, closing the exact race
-        // `pty.open`'s own `ensure_started` could otherwise win against
-        // this handler's still-in-flight spawn (the field latency map's
-        // own ordering: `ensure_started` can reach this SAME
-        // freshly-minted workspace_id within milliseconds of the row
-        // becoming visible via `insert` above). Every other lifecycle
-        // mutation of a capsule row takes the SAME guard (`ensure_started`,
-        // `resume_if_absent`, the watchdog's own restart, `resume_all`) —
-        // this is that discipline's create-time entry. `capsule_guard`
-        // itself already refuses to mint a guard for an absent row; the
-        // membership recheck right after (under the lock, not before it)
-        // catches one that vanished WHILE this waited for it — deciding
-        // under the guard rather than starting unconditionally, the same
-        // discipline every other guarded mutation follows.
-        let capsule_guard = workspaces.capsule_guard(&ws_handle.workspace_id);
-        let _capsule_guard_held = match &capsule_guard {
-            Some(g) => Some(g.lock().await),
-            None => None,
-        };
-        let still_registered = capsule_guard.is_some()
-            && workspaces.list().iter().any(|ws| ws.workspace_id == ws_handle.workspace_id);
-        let spawn_result: std::result::Result<(), String> = if !still_registered {
-            Err("workspace was removed before its capsule supervisor could be started".to_string())
-        } else {
-            match capsule_state_root {
-            None => Err(format!(
-                "could not resolve this machine's state root ({} unset)",
-                crate::capsule_workspace::STATE_ROOT_HINT
-            )),
-            // `&req.agent_name` verbatim (Codex round finding 2: no
-            // synthesized default — a synthesized `<slug>-<host>` handed
-            // to SOT_COMM_NAME would become an explicit pin that
-            // overwrites any existing registry row of that name,
-            // violating PROTOCOL.md's "never reuse a handle"; an empty
-            // `agent_name` is a real, supported case now — comm-join.sh's
-            // own #148 auto-disambiguating derivation picks the handle,
-            // via the SOT_COMM_SELF_FILE this spawn pins).
-            Some(state_root) => {
-                let workspace_id = ws_handle.workspace_id.clone();
-                let capsule_argv = capsule_argv.clone();
-                let project_root = project_root.clone();
-                let agent_name = req.agent_name.clone();
-                let slug = ws_handle.slug.clone();
-                let workspaces_for_spawn = workspaces.clone();
-                // BLOCKING (process spawn, superseded by ADR 0045: no
-                // pre-spawn probe runs here anymore): the row guard is
-                // held by the CALLING async fn's own frame for this whole
-                // `.await`, not by this closure — a panic in here is
-                // caught by `spawn_blocking` itself and never unwinds
-                // past that guard, so there is nothing to release on the
-                // error path below beyond reporting it.
-                tokio::task::spawn_blocking(move || {
-                    crate::capsule_workspace::start_supervisor(
-                        &state_root,
-                        &workspace_id,
-                        crate::capsule_workspace::StartMode::Start,
-                        &capsule_argv,
-                        &project_root,
-                        &agent_name,
-                        &slug,
-                        workspaces_for_spawn,
-                    )
-                })
-                .await
-                .unwrap_or_else(|join_err| Err(format!("capsule spawn task panicked: {join_err}")))
-                .map(|_phase| ())
-            }
-            }
-        };
-        match spawn_result {
-            Ok(()) => {
-                tracing::info!(workspace_id = %ws_handle.workspace_id, "workspace.create: capsule supervisor spawned");
-                // Starts this row's lifecycle observer for its ongoing periodic poll.
-                crate::capsule_workspace::observer::ensure_running(&workspaces, &ws_handle);
-            }
-            Err(detail) => {
-                tracing::warn!(workspace_id = %ws_handle.workspace_id, error = %detail, "workspace.create: capsule spawn failed; rolling back");
-                let _ = workspaces.remove_by_id(&ws_handle.workspace_id);
-                for toml_path in [
-                    crate::workspaces::toml_path_for(&ws_handle.slug),
-                    crate::workspaces::legacy_toml_path_for(&ws_handle.slug),
-                ] {
-                    match std::fs::remove_file(&toml_path) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => tracing::warn!(error = %e, path = ?toml_path, "workspace.create rollback: toml remove failed"),
-                    }
-                }
-                let payload = json!({
-                    "error": format!("capsule workspace could not be started: {detail}"),
-                    "code": "capsule_spawn_failed",
-                });
-                return Ok(vec![(
-                    Frame::res(req_id, op::WORKSPACE_CREATE, payload),
-                    None,
-                )]);
-            }
+    // ADR 0043 decision 22: the capsule runtime itself only compiles
+    // on Windows and Linux (`capsule_workspace::runtime`'s own
+    // gate) — on any other host (macOS stays experimental) an
+    // explicit `"runtime":"capsule"` request is refused gracefully,
+    // the same "not available" shape `destroy_capsule_workspace`
+    // reports for a row that somehow already has one.
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+    // ADR 0042 slice L1a, Codex review finding 1: the capsule spawn —
+    // and, unlike the tmux path below, a SYNCHRONOUS failure here
+    // FAILS the whole op: "a capsule workspace with no supervisor is
+    // not a workspace." Rule C (shrink round): this daemon no longer
+    // creates the state directory itself — `sot-capsule supervise`
+    // creates its OWN, as its first act after it actually runs — so
+    // a synchronous failure below leaves nothing on disk at all, not
+    // even an empty directory. The DETACHED spawn-and-watch is what
+    // survives this daemon's own exit, with its own exit handled
+    // going forward (finding 6). On ANY failure to reach a running
+    // supervisor, roll back the registry row and its persisted toml
+    // and refuse the op with the real error text.
+    // ADR 0043 decision 23: `capsule_state_root` was already resolved
+    // and qualified ABOVE, before this row (or its toml) ever existed
+    // — reuse it rather than re-resolving a second time. Always
+    // `Some` here in practice (this arm only runs when
+    // `ws_handle.runtime == "capsule"`, which is exactly when the
+    // earlier check ran and would have already returned on failure);
+    // the `None` arm stays as a defensive fallback, never actually hit.
+    // ADR 0043 decision 29: a process spawn never runs on a Tokio
+    // worker.
+    //
+    // ADR 0043 decision 33 (Codex review, 2026-09-11): this row's own
+    // guard, taken HERE — inside the capsule arm only, never for a
+    // tmux row (nothing else ever contends a tmux id's guard) — and
+    // held across the spawn attempt below, closing the exact race
+    // `pty.open`'s own `ensure_started` could otherwise win against
+    // this handler's still-in-flight spawn (the field latency map's
+    // own ordering: `ensure_started` can reach this SAME
+    // freshly-minted workspace_id within milliseconds of the row
+    // becoming visible via `insert` above). Every other lifecycle
+    // mutation of a capsule row takes the SAME guard (`ensure_started`,
+    // `resume_if_absent`, the watchdog's own restart, `resume_all`) —
+    // this is that discipline's create-time entry. `capsule_guard`
+    // itself already refuses to mint a guard for an absent row; the
+    // membership recheck right after (under the lock, not before it)
+    // catches one that vanished WHILE this waited for it — deciding
+    // under the guard rather than starting unconditionally, the same
+    // discipline every other guarded mutation follows.
+    let capsule_guard = workspaces.capsule_guard(&ws_handle.workspace_id);
+    let _capsule_guard_held = match &capsule_guard {
+        Some(g) => Some(g.lock().await),
+        None => None,
+    };
+    let still_registered = capsule_guard.is_some()
+        && workspaces.list().iter().any(|ws| ws.workspace_id == ws_handle.workspace_id);
+    let spawn_result: std::result::Result<(), String> = if !still_registered {
+        Err("workspace was removed before its capsule supervisor could be started".to_string())
+    } else {
+        match capsule_state_root {
+        None => Err(format!(
+            "could not resolve this machine's state root ({} unset)",
+            crate::capsule_workspace::STATE_ROOT_HINT
+        )),
+        // `&req.agent_name` verbatim (Codex round finding 2: no
+        // synthesized default — a synthesized `<slug>-<host>` handed
+        // to SOT_COMM_NAME would become an explicit pin that
+        // overwrites any existing registry row of that name,
+        // violating PROTOCOL.md's "never reuse a handle"; an empty
+        // `agent_name` is a real, supported case now — comm-join.sh's
+        // own #148 auto-disambiguating derivation picks the handle,
+        // via the SOT_COMM_SELF_FILE this spawn pins).
+        Some(state_root) => {
+            let workspace_id = ws_handle.workspace_id.clone();
+            let capsule_argv = capsule_argv.clone();
+            let project_root = project_root.clone();
+            let agent_name = req.agent_name.clone();
+            let slug = ws_handle.slug.clone();
+            let workspaces_for_spawn = workspaces.clone();
+            // BLOCKING (process spawn, superseded by ADR 0045: no
+            // pre-spawn probe runs here anymore): the row guard is
+            // held by the CALLING async fn's own frame for this whole
+            // `.await`, not by this closure — a panic in here is
+            // caught by `spawn_blocking` itself and never unwinds
+            // past that guard, so there is nothing to release on the
+            // error path below beyond reporting it.
+            tokio::task::spawn_blocking(move || {
+                crate::capsule_workspace::start_supervisor(
+                    &state_root,
+                    &workspace_id,
+                    crate::capsule_workspace::StartMode::Start,
+                    &capsule_argv,
+                    &project_root,
+                    &agent_name,
+                    &slug,
+                    workspaces_for_spawn,
+                )
+            })
+            .await
+            .unwrap_or_else(|join_err| Err(format!("capsule spawn task panicked: {join_err}")))
+            .map(|_phase| ())
         }
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
-        {
-            let _ = &capsule_argv;
-            let _ = &capsule_state_root;
-            tracing::warn!(workspace_id = %ws_handle.workspace_id, "workspace.create: capsule runtime requested but not available on this host; rolling back");
+    };
+    match spawn_result {
+        Ok(()) => {
+            tracing::info!(workspace_id = %ws_handle.workspace_id, "workspace.create: capsule supervisor spawned");
+            // Starts this row's lifecycle observer for its ongoing periodic poll.
+            crate::capsule_workspace::observer::ensure_running(&workspaces, &ws_handle);
+        }
+        Err(detail) => {
+            tracing::warn!(workspace_id = %ws_handle.workspace_id, error = %detail, "workspace.create: capsule spawn failed; rolling back");
             let _ = workspaces.remove_by_id(&ws_handle.workspace_id);
             for toml_path in [
                 crate::workspaces::toml_path_for(&ws_handle.slug),
@@ -4826,74 +4523,40 @@ pub async fn handle_workspace_create(
                 }
             }
             let payload = json!({
-                "error": "the capsule runtime is not available on this host",
-                "code": "runtime_not_available",
+                "error": format!("capsule workspace could not be started: {detail}"),
+                "code": "capsule_spawn_failed",
             });
             return Ok(vec![(
                 Frame::res(req_id, op::WORKSPACE_CREATE, payload),
                 None,
             )]);
         }
-    } else {
-        // Create the per-workspace tmux session so BL-pane attach works.
-        // UNIFIED SPAWN (ADR 0023): EVERY `autostart_claude` workspace — a background
-        // comm-spawn (`boot:true`) AND an FE nav-pane create — gets the wait-for-attach
-        // wrapper (`boot_wrapper_command`) as its pane START COMMAND. The wrapper
-        // `exec`s `ccb` the moment a client attaches (the boot-pty for a background
-        // spawn, or the FE's own attach on switch), so claude is the pane's process —
-        // never typed into a shell, which raced the prompt. This retires the FE
-        // autostart-on-attach typing: one race-free boot path for both cases.
-        let tmux_session = ws_handle.tmux_session.clone();
-        let cwd = project_root.clone();
-        let ws_slug = ws_handle.slug.clone();
-        let ws_id = ws_handle.workspace_id.clone();
-        let boot_cmd: Option<String> = if autostart || boot {
-            Some(crate::pty::boot_wrapper_command(
-                &tmux_session,
-                &req.agent_name,
-                &agent_kind,
-            ))
-        } else {
-            None
-        };
-        let tmux_result = tokio::task::spawn_blocking(move || {
-            crate::tmux::TmuxClient::new().create_session(
-                &tmux_session,
-                boot_cmd.as_deref(),
-                Some(&cwd),
-                Some(&ws_slug),
-                Some(&ws_id),
-            )
-        })
-        .await
-        .context("spawn_blocking workspace tmux create")?;
-        let tmux_ok = tmux_result.is_ok();
-        if let Err(e) = tmux_result {
-            tracing::warn!(error = %e, "workspace tmux session create failed; workspace registered without one");
+    }
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = &capsule_argv;
+        let _ = &capsule_state_root;
+        tracing::warn!(workspace_id = %ws_handle.workspace_id, "workspace.create: capsule runtime requested but not available on this host; rolling back");
+        let _ = workspaces.remove_by_id(&ws_handle.workspace_id);
+        for toml_path in [
+            crate::workspaces::toml_path_for(&ws_handle.slug),
+            crate::workspaces::legacy_toml_path_for(&ws_handle.slug),
+        ] {
+            match std::fs::remove_file(&toml_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => tracing::warn!(error = %e, path = ?toml_path, "workspace.create rollback: toml remove failed"),
+            }
         }
-
-        // ADR 0023 §3 (UNIFIED): daemon-side claude boot via a throwaway boot-pty —
-        // open a real pty client to the new session so the wrapper's wait-for-attach
-        // is satisfied, poll until claude is foreground, then detach (claude survives;
-        // the FE client takes over). Runs for EVERY `autostart_claude` create, not
-        // just comm-spawn `boot=true`. WHY nav-pane needs it too: the ADR-0014 single
-        // foreground pty re-target is NOT a stable init client, so without the boot-pty
-        // a nav-pane claude dies during init and the daemon falls back to home (the
-        // "sitting in home" bug). The boot-pty is the SAME stable client that makes
-        // comm-spawn boot reliably — confirmed the missing-client delta is the cause.
-        // Detached `tokio::spawn` (polls up to ~45s, must not block the response);
-        // skipped when the tmux session failed to create.
-        if (autostart || boot) && tmux_ok {
-            let boot_session = ws_handle.tmux_session.clone();
-            let boot_agent = req.agent_name.clone();
-            let boot_cwd = project_root.clone();
-            let boot_slug = ws_handle.slug.clone();
-            tracing::info!(session = %boot_session, agent = %boot_agent, boot,
-                "workspace.create autostart — spawning daemon boot-pty for claude (stable init client)");
-            tokio::spawn(async move {
-                crate::pty::boot_workspace_claude(boot_session, boot_agent, boot_cwd, boot_slug).await;
-            });
-        }
+        let payload = json!({
+            "error": "the capsule runtime is not available on this host",
+            "code": "runtime_not_available",
+        });
+        return Ok(vec![(
+            Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+            None,
+        )]);
     }
 
     let res = WorkspaceCreateRes {
@@ -4921,46 +4584,6 @@ pub async fn handle_workspace_create(
         Frame::res(req_id, op::WORKSPACE_CREATE, serde_json::to_value(res)?).with_rev(rev),
         None,
     )])
-}
-
-#[cfg(test)]
-mod workspace_create_runtime_tests {
-    // ADR 0046 decision 5: nothing NEW runs on tmux wherever the capsule
-    // runtime compiles. This test runs on every host this suite runs on
-    // (`cfg(any(windows, target_os = "linux"))` — CI's macOS leg does
-    // not compile this arm at all, matching `handle_workspace_create`'s
-    // own gate, so it is never silently skipped there either).
-    use super::*;
-    use tokio::sync::broadcast;
-
-    #[tokio::test]
-    #[cfg(any(windows, target_os = "linux"))]
-    async fn workspace_create_refuses_tmux_where_the_capsule_runtime_compiles() {
-        let workspaces = Workspaces::new();
-        let session = Session::new();
-        let (tx, _rx) = broadcast::channel(16);
-        let payload = json!({
-            "label": "t",
-            "project_root": std::env::temp_dir().to_string_lossy(),
-            "runtime": "tmux",
-        });
-        let out = handle_workspace_create(1, payload, &session, &workspaces, &tx)
-            .await
-            .expect("handler must not error");
-        assert_eq!(out.len(), 1, "workspace.create always answers with exactly one frame");
-        let payload = &out[0].0.payload;
-        assert_eq!(
-            payload.get("code").and_then(|v| v.as_str()),
-            Some("runtime_not_available")
-        );
-        let msg = payload.get("error").and_then(|v| v.as_str()).unwrap_or_default();
-        assert!(
-            msg.contains("existing tmux rows keep running"),
-            "got: {msg}"
-        );
-        // Never partially applied: the refused request never inserted a row.
-        assert!(workspaces.list().is_empty());
-    }
 }
 
 /// ADR 0042 slice L1a (Codex review finding 3): whether a capsule
@@ -5042,7 +4665,6 @@ async fn end_default_row_run(
     workspace_id: &str,
     slug: &str,
     agent_name: &str,
-    tmux_session: &str,
     confirmed_ended: bool,
     _held_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 ) {
@@ -5050,10 +4672,9 @@ async fn end_default_row_run(
         return;
     }
     let reg_agent = agent_name.to_string();
-    let reg_session = tmux_session.to_string();
     let reg_host = crate::workspaces::state_host();
     let comm_removed = tokio::task::spawn_blocking(move || {
-        remove_comm_agents_for_workspace(&reg_session, &reg_agent, &reg_host)
+        remove_comm_agents_for_workspace(&reg_agent, &reg_host)
     })
     .await
     .unwrap_or_default();
@@ -5357,30 +4978,6 @@ pub async fn handle_workspace_destroy(
         // gets the same real end-run path a Windows one does. Every
         // OTHER default row (the ordinary "tmux" case on every host)
         // keeps the same flat refusal it always had.
-        if ws.runtime != "capsule" {
-            // Otherwise invisible in the daemon log — a refused destroy on
-            // a dead-end default row (e.g. one stuck with a runtime the
-            // daemon also refuses to start) previously left no trace at
-            // all to diagnose from.
-            tracing::info!(
-                workspace_id = %ws.workspace_id,
-                slug = %ws.slug,
-                code = "default_workspace_not_destroyable",
-                "workspace.destroy refused: default workspace cannot be destroyed"
-            );
-            let payload = json!({
-                "error": format!(
-                    "cannot destroy default workspace '{}'",
-                    ws.label
-                ),
-                "code": "default_workspace_not_destroyable",
-            });
-            return Ok(vec![(
-                Frame::res(req_id, op::WORKSPACE_DESTROY, payload),
-                None,
-            )]);
-        }
-
         // Same end-run path the non-default delete uses below. The
         // reason is honest for THIS row (not "deleted" — it's kept).
         let (outcome, held_guard) = destroy_capsule_workspace(
@@ -5406,7 +5003,6 @@ pub async fn handle_workspace_destroy(
             &ws.workspace_id,
             &ws.slug,
             &ws.agent_name(),
-            &ws.tmux_session,
             confirmed_ended,
             held_guard,
         )
@@ -5421,7 +5017,6 @@ pub async fn handle_workspace_destroy(
     let slug = ws.slug.clone();
     let label = ws.label.clone();
     let workspace_id = ws.workspace_id.clone();
-    let tmux_session = ws.tmux_session.clone();
     let agent_name = ws.agent_name();
 
     // This row's guard, taken below by whichever arm runs — HELD (ADR
@@ -5431,7 +5026,6 @@ pub async fn handle_workspace_destroy(
     // confirmed end and `remove_by_id`. Dropped explicitly once removal
     // is done; stays `None` only for a `Kept` outcome (nothing is
     // removed) or a row that was already gone by the time its arm asked.
-    let mut destroy_guard: Option<tokio::sync::OwnedMutexGuard<()>> = None;
 
     // ADR 0042 slice L1a, Codex review finding 3: a capsule workspace has
     // no tmux session to kill at all — end its run over the supervisor
@@ -5441,7 +5035,7 @@ pub async fn handle_workspace_destroy(
     // toml are kept, and the caller sees a typed error, so a live or
     // unreachable run is never orphaned by a delete that silently
     // "succeeded" out from under it.
-    let tmux_killed = if ws.runtime == "capsule" {
+    let destroy_guard: Option<tokio::sync::OwnedMutexGuard<()>> = {
         let reason = format!("workspace '{slug}' deleted");
         let (outcome, held) = destroy_capsule_workspace(
             &workspace_id,
@@ -5456,8 +5050,7 @@ pub async fn handle_workspace_destroy(
         match outcome {
             CapsuleDestroyOutcome::Removable(outcome) => {
                 tracing::info!(workspace_id = %workspace_id, %outcome, "workspace.destroy: capsule run ended; removing the row");
-                destroy_guard = held;
-                false // no tmux session ever existed to kill -- accurate, not a failure
+                held
             }
             CapsuleDestroyOutcome::Kept { detail } => {
                 tracing::warn!(workspace_id = %workspace_id, detail = %detail, "workspace.destroy: capsule run not confirmed ended; keeping the row");
@@ -5471,32 +5064,6 @@ pub async fn handle_workspace_destroy(
                 )]);
             }
         }
-    } else {
-        // Manager review round 3 (Codex finding B): a tmux row must take
-        // the SAME per-row lifecycle guard the capsule arm above does —
-        // otherwise a concurrent agent.join can resolve this row, this
-        // destroy can remove the toml + registry entry, and the join's
-        // own save then recreates the toml for a row the registry no
-        // longer has (the identical race the guard exists to close,
-        // exposed here because only the capsule arm took it). Acquiring
-        // the guard for a tmux row is harmless — `capsule_guard` mints
-        // one for any registered row regardless of runtime (see its own
-        // doc) — held across the toml removal + `remove_by_id` below,
-        // same as the capsule arm's `destroy_guard`.
-        if let Some(guard) = workspaces.capsule_guard(&workspace_id) {
-            destroy_guard = Some(guard.lock_owned().await);
-        }
-        // Kill the tmux session. Failure is non-fatal — usually means the
-        // session wasn't running anyway. We surface the bool so the
-        // frontend can decide whether to surface the discrepancy.
-        let tmux_target = tmux_session.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::tmux::TmuxClient::new()
-                .kill_session(&tmux_target)
-                .is_ok()
-        })
-        .await
-        .unwrap_or(false)
     };
 
     // Prune the sot-comm registry. Killing the tmux session takes the agent
@@ -5508,11 +5075,10 @@ pub async fn handle_workspace_destroy(
     // whose `ws.agent_name` was never set, plus any stale duplicate rows on the
     // same session). Best-effort + blocking (fs + file lock) → spawn_blocking,
     // non-fatal like the tmux kill above.
-    let reg_session = tmux_session.clone();
     let reg_agent = agent_name.clone();
     let reg_host = crate::workspaces::state_host();
     let comm_removed = tokio::task::spawn_blocking(move || {
-        remove_comm_agents_for_workspace(&reg_session, &reg_agent, &reg_host)
+        remove_comm_agents_for_workspace(&reg_agent, &reg_host)
     })
     .await
     .unwrap_or_default();
@@ -5577,7 +5143,7 @@ pub async fn handle_workspace_destroy(
         workspace_id,
         slug,
         label,
-        tmux_killed,
+        tmux_killed: false,
         toml_removed,
         kept: None,
     };
@@ -5828,7 +5394,7 @@ mod agent_join_tests {
 
         // `workspace.list`'s own row-binding rule merges by the declared
         // handle — this is what makes the join visible there.
-        let merged = comm_handle_for_workspace(&resolved, None, "anyhost");
+        let merged = comm_handle_for_workspace(&resolved);
         assert_eq!(merged, "agentjoin-testhost");
 
         // workspace.changed published so the FE re-lists.
@@ -5933,71 +5499,6 @@ mod agent_join_tests {
     #[tokio::test]
     async fn agent_join_interleaved_with_destroy_never_recreates_the_toml_capsule() {
         agent_join_blocks_on_held_guard_then_destroy_wins("capsule", "agentjoin-race-capsule").await;
-    }
-
-    #[tokio::test]
-    async fn agent_join_interleaved_with_destroy_never_recreates_the_toml_tmux() {
-        agent_join_blocks_on_held_guard_then_destroy_wins("tmux", "agentjoin-race-tmux").await;
-    }
-
-    // Coordinator follow-up to round 3: the two tests above prove the
-    // SHARED guard mechanism (any held guard blocks a concurrent
-    // `agent.join`) but never call the real `handle_workspace_destroy` --
-    // they stand in for "destroy" by taking the guard and replaying its
-    // two actions directly, per the coordinator's own recipe. That leaves
-    // the tmux arm's OWN `capsule_guard` acquisition (finding B's fix,
-    // the `else` branch of `handle_workspace_destroy` above) unexercised
-    // by them: reverting just that acquisition would not move either test.
-    // This test closes that gap directly: pre-hold the row's guard, spawn
-    // the REAL handler for a tmux row, and prove IT blocks on the held
-    // guard (same bounded-timeout technique -- deterministic, not a
-    // sleep-and-hope) before releasing and confirming it then proceeds.
-    #[tokio::test]
-    async fn workspace_destroy_tmux_arm_blocks_on_a_held_guard() {
-        let (_g, dir) = env_guarded();
-        let workspaces = Workspaces::new();
-        let mut ws = mk_ws("destroy-tmux-guard");
-        ws.runtime = "tmux".to_string();
-        let id = workspaces.insert(ws).workspace_id.clone();
-        crate::workspaces::save(&workspaces.resolve(Some(&id)).unwrap()).expect("seed save");
-        let toml_path = crate::workspaces::toml_path_for("destroy-tmux-guard");
-        assert!(toml_path.exists(), "test setup: the seed toml must exist");
-
-        let guard = workspaces.capsule_guard(&id).expect("row is registered");
-        let held = guard.lock().await;
-
-        let workspaces_for_destroy = workspaces.clone();
-        let (ws_events_tx, _ws_events_rx) = tokio::sync::broadcast::channel(4);
-        let id_for_destroy = id.clone();
-        let mut destroy_task = tokio::spawn(async move {
-            let session = Session::new();
-            let payload = serde_json::json!({"workspace_id": id_for_destroy});
-            handle_workspace_destroy(1, payload, &session, &workspaces_for_destroy, &ws_events_tx)
-                .await
-        });
-
-        let still_pending =
-            tokio::time::timeout(std::time::Duration::from_millis(50), &mut destroy_task).await;
-        assert!(
-            still_pending.is_err(),
-            "destroy's tmux arm must block on the held guard, not proceed while it's held"
-        );
-
-        drop(held);
-
-        let out = destroy_task
-            .await
-            .expect("destroy task must not panic")
-            .expect("handler must not error");
-        assert!(
-            out[0].0.payload.get("error").is_none(),
-            "destroy must succeed once the guard is released: {:?}",
-            out[0].0.payload
-        );
-        assert!(!toml_path.exists(), "destroy must remove the toml");
-        assert!(workspaces.resolve(Some(&id)).is_none(), "destroy must remove the row");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -6584,71 +6085,6 @@ fn host_matches(entry: &serde_json::Value, host: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Does this sot-comm registry row belong to `host`'s occupant of
-/// `tmux_session`? `~/.sot-comm/registry.json` is ONE file shared by every
-/// host on an NFS-homed cluster, so two hosts can each run a session with
-/// the same slug — matching on the tmux session part alone let one host's
-/// `workspace.list` show, and one host's destroy delete, another host's
-/// row. `host` is `state_host()`, resolved ONCE by the caller (not per
-/// row).
-fn comm_row_owned_here(entry: &serde_json::Value, tmux_session: &str, host: &str) -> bool {
-    if tmux_session.is_empty() {
-        return false;
-    }
-    let same_session = entry
-        .get("tmux")
-        .and_then(|v| v.as_str())
-        .map(|t| t.split(':').next().unwrap_or("") == tmux_session)
-        .unwrap_or(false);
-    same_session && host_matches(entry, host)
-}
-
-/// Resolve the sot-comm handle bound to a workspace via its LIVE TMUX
-/// OCCUPANT, so manually-joined / pre-state-nav agents (whose stored
-/// `agent_name` was never set — only the spawn path writes it) still bind.
-/// The registry `tmux` field is `"<session>:<win>.<pane>"`; match its
-/// session part against `tmux_session`, filtered through
-/// `comm_row_owned_here` so a same-slug session on another host never
-/// binds here. Falls back to `stored_agent_name` when there's no live tmux
-/// match (e.g. a `spawning` row whose `tmux` is still `""`).
-///
-/// This is the TMUX half of the row-binding rule; `comm_handle_for_workspace`
-/// below is the whole rule (it also covers capsule rows, which have no tmux
-/// pane at all) and is what callers should use. Kept as its own function
-/// because it's independently useful — and independently tested — as "the
-/// live occupant of this tmux session".
-fn resolve_comm_handle(
-    agents: Option<&serde_json::Value>,
-    tmux_session: &str,
-    stored_agent_name: &str,
-    host: &str,
-) -> String {
-    if !tmux_session.is_empty() {
-        if let Some(agents) = agents.and_then(|a| a.as_object()) {
-            // Several rows can share a session (different panes, or a stale
-            // duplicate handle); prefer the most-recently-seen so we bind the
-            // live occupant, not a dead row. ISO `last_seen` compares lexically.
-            let mut best: Option<(&str, &str)> = None;
-            for (handle, entry) in agents {
-                if !comm_row_owned_here(entry, tmux_session, host) {
-                    continue;
-                }
-                let seen = entry
-                    .get("last_seen")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if best.map_or(true, |(_, bseen)| seen > bseen) {
-                    best = Some((handle.as_str(), seen));
-                }
-            }
-            if let Some((h, _)) = best {
-                return h.to_string();
-            }
-        }
-    }
-    stored_agent_name.to_string()
-}
-
 /// Which sot-comm registry row is workspace `ws`'s? THE ONE place that
 /// answers this — `handle_workspace_list` (the FE's `state`/`summary`
 /// merge) and `clear_comm_unread` (ADR 0044's read-clears-blue) both call
@@ -6668,24 +6104,16 @@ fn resolve_comm_handle(
 ///   `agent.join` — deleted only with family H once every row has cycled.
 /// - every other runtime: the live tmux occupant (`resolve_comm_handle`
 ///   above), same fallback.
-fn comm_handle_for_workspace(
-    ws: &Workspace,
-    agents: Option<&serde_json::Value>,
-    host: &str,
-) -> String {
+fn comm_handle_for_workspace(ws: &Workspace) -> String {
     let declared = ws.agent_handle();
     if !declared.is_empty() {
         return declared;
     }
-    if ws.runtime == "capsule" {
-        let h = capsule_comm_handle(&ws.workspace_id);
-        if h.is_empty() {
-            ws.agent_name()
-        } else {
-            h
-        }
+    let h = capsule_comm_handle(&ws.workspace_id);
+    if h.is_empty() {
+        ws.agent_name()
     } else {
-        resolve_comm_handle(agents, &ws.tmux_session, &ws.agent_name(), host)
+        h
     }
 }
 
@@ -6805,8 +6233,8 @@ const CLEAR_COMM_UNREAD_LOCK_BOUND: std::time::Duration = std::time::Duration::f
 /// the registry couldn't be pruned. Writes via a temp file + atomic rename so
 /// a concurrent bash mutator (comm-join / comm-status / …) can't see a torn
 /// file.
-fn remove_comm_agents_for_workspace(tmux_session: &str, agent_name: &str, host: &str) -> Vec<String> {
-    remove_comm_agents_for_workspace_bounded(tmux_session, agent_name, host, COMM_PRUNE_LOCK_BOUND)
+fn remove_comm_agents_for_workspace(agent_name: &str, host: &str) -> Vec<String> {
+    remove_comm_agents_for_workspace_bounded(agent_name, host, COMM_PRUNE_LOCK_BOUND)
 }
 
 /// `remove_comm_agents_for_workspace` with an explicit lock bound — split out
@@ -6815,7 +6243,6 @@ fn remove_comm_agents_for_workspace(tmux_session: &str, agent_name: &str, host: 
 /// without waiting out the real `COMM_PRUNE_LOCK_BOUND`. Production code
 /// only ever calls the wrapper above.
 fn remove_comm_agents_for_workspace_bounded(
-    tmux_session: &str,
     agent_name: &str,
     host: &str,
     bound: std::time::Duration,
@@ -6844,8 +6271,7 @@ fn remove_comm_agents_for_workspace_bounded(
             .filter_map(|(handle, entry)| {
                 let by_name =
                     !agent_name.is_empty() && handle == agent_name && host_matches(entry, host);
-                let by_tmux = comm_row_owned_here(entry, tmux_session, host);
-                (by_name || by_tmux).then(|| handle.clone())
+                by_name.then(|| handle.clone())
             })
             .collect();
         if to_remove.is_empty() {
@@ -6910,7 +6336,7 @@ fn remove_comm_agents_for_workspace_bounded(
 fn clear_comm_unread(ws: &Workspace, host: &str) {
     // --- Unlocked pre-check ---
     let pre_agents = read_comm_agents();
-    let handle = comm_handle_for_workspace(ws, pre_agents.as_ref(), host);
+    let handle = comm_handle_for_workspace(ws);
     if handle.is_empty() {
         return;
     }
@@ -6937,7 +6363,7 @@ fn clear_comm_unread(ws: &Workspace, host: &str) {
         };
         // Re-resolve and re-decide against the freshly-read registry — it
         // may have changed since the pre-check above.
-        let handle = comm_handle_for_workspace(ws, root.get("agents"), host);
+        let handle = comm_handle_for_workspace(ws);
         if handle.is_empty() {
             return;
         }
@@ -7026,7 +6452,7 @@ pub async fn handle_workspace_list(
         .map(|ws| {
             // Which registry row is this workspace's — one rule, shared with
             // `clear_comm_unread` (`comm_handle_for_workspace`).
-            let handle = comm_handle_for_workspace(&ws, comm_agents.as_ref(), &host);
+            let handle = comm_handle_for_workspace(&ws);
             // Work-state merge: the registry `state` is what the agent *declared*
             // (set by the work-state hooks: UserPromptSubmit → "working",
             // Notification → "blocked", Stop → "idle"), while `pane` is the live
@@ -7048,16 +6474,7 @@ pub async fn handle_workspace_list(
             //                       yet running the hooks, through the rollout; a
             //                       hooked agent's pane agrees anyway).
             let reg = agent_str(&handle, "state");
-            let pane = workspaces.pane_activity(&ws.tmux_session);
-            let agent_state = if (reg == "blocked" || reg == "waiting") && pane == "working" {
-                "working".to_string()
-            } else if reg == "working" || reg == "blocked" || reg == "done" || reg == "waiting" {
-                reg
-            } else if !pane.is_empty() {
-                pane
-            } else {
-                reg
-            };
+            let agent_state = reg;
             // `phase` is read straight off the row's own cell; both stay
             // `None` for a `"tmux"` row.
             let (state_dir, phase) = if ws.runtime == "capsule" {
@@ -7243,42 +6660,6 @@ pub async fn handle_directory_list(
                 None,
             )])
         }
-    }
-}
-
-fn tmux_error_frame(req_id: u64, op_str: &str, err: anyhow::Error) -> Frame {
-    let msg = format!("{err:#}");
-    tracing::warn!(op = op_str, error = %msg, "tmux op failed");
-    let payload = json!({
-        "error": msg,
-        "code": "tmux_failed",
-    });
-    Frame::res(req_id, op_str, payload)
-}
-
-fn into_proto_session(s: crate::tmux::SessionInfo) -> TmuxSession {
-    TmuxSession {
-        name: s.name,
-        created: s.created,
-        attached: s.attached,
-        windows: s.windows,
-        width: s.width,
-        height: s.height,
-    }
-}
-
-fn into_proto_pane(p: crate::tmux::PaneInfo) -> TmuxPane {
-    TmuxPane {
-        id: p.id,
-        session: p.session,
-        window_index: p.window_index,
-        pane_index: p.pane_index,
-        title: p.title,
-        command: p.command,
-        pid: p.pid,
-        width: p.width,
-        height: p.height,
-        active: p.active,
     }
 }
 
@@ -8118,80 +7499,6 @@ mod capsule_comm_handle_tests {
 }
 
 #[cfg(test)]
-mod comm_row_owned_here_tests {
-    // LU5d: `~/.sot-comm/registry.json` is ONE file shared by every host on
-    // an NFS-homed cluster; two hosts can each run a session with the same
-    // slug (e.g. `sot-be-x`). Without a host term in the match, one host's
-    // `workspace.list` could bind to — and one host's destroy could delete —
-    // another host's row on that session. `comm_row_owned_here` is the one
-    // predicate both call sites (`resolve_handle` and
-    // `remove_comm_agents_for_workspace`) now share.
-    //
-    // LU5d2 (Codex text round finding 3): a row with no `host` field is
-    // UNKNOWN ownership, not a "legacy" free pass — comm-join.sh has
-    // stamped `host` since the registry existed, so an absent field is not
-    // evidence the row is ours.
-    use super::{comm_row_owned_here, host_matches};
-    use serde_json::json;
-
-    fn row(tmux: &str, host: Option<&str>) -> serde_json::Value {
-        match host {
-            Some(h) => json!({ "tmux": tmux, "host": h }),
-            None => json!({ "tmux": tmux }),
-        }
-    }
-
-    #[test]
-    fn matches_same_session_same_host() {
-        let entry = row("sot-be-x:0.0", Some("kitt"));
-        assert!(comm_row_owned_here(&entry, "sot-be-x", "kitt"));
-    }
-
-    #[test]
-    fn rejects_same_session_other_host() {
-        let entry = row("sot-be-x:0.0", Some("descent"));
-        assert!(!comm_row_owned_here(&entry, "sot-be-x", "kitt"));
-    }
-
-    #[test]
-    fn host_match_is_case_insensitive() {
-        let entry = row("sot-be-x:0.0", Some("KITT"));
-        assert!(comm_row_owned_here(&entry, "sot-be-x", "kitt"));
-    }
-
-    #[test]
-    fn row_with_no_host_never_matches() {
-        let entry = row("sot-be-x:0.0", None);
-        assert!(!comm_row_owned_here(&entry, "sot-be-x", "kitt"));
-        assert!(!comm_row_owned_here(&entry, "sot-be-x", "descent"));
-    }
-
-    #[test]
-    fn empty_tmux_session_never_matches() {
-        let entry = row("sot-be-x:0.0", Some("kitt"));
-        assert!(!comm_row_owned_here(&entry, "", "kitt"));
-    }
-
-    #[test]
-    fn different_session_never_matches() {
-        let entry = row("sot-be-x:0.0", Some("kitt"));
-        assert!(!comm_row_owned_here(&entry, "sot-be-y", "kitt"));
-    }
-
-    #[test]
-    fn host_matches_rejects_absent_and_empty_host() {
-        assert!(!host_matches(&json!({}), "kitt"));
-        assert!(!host_matches(&json!({ "host": "" }), "kitt"));
-    }
-
-    #[test]
-    fn host_matches_is_case_insensitive() {
-        assert!(host_matches(&json!({ "host": "KITT" }), "kitt"));
-        assert!(!host_matches(&json!({ "host": "descent" }), "kitt"));
-    }
-}
-
-#[cfg(test)]
 mod with_comm_registry_lock_panic_tests {
     // Coordinator hardening: `f` runs inside the caller's `spawn_blocking`,
     // which contains a panic (the awaiting task just sees a `JoinError`) —
@@ -8292,52 +7599,6 @@ mod remove_comm_agents_for_workspace_host_tests {
     }
 
     #[test]
-    fn destroy_on_one_host_leaves_the_other_hosts_same_session_row() {
-        let _guard = guarded();
-        let dir = std::env::temp_dir().join(format!(
-            "sot-comm-registry-host-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("SOT_COMM_HOME", &dir);
-        let registry_path = dir.join("registry.json");
-        std::fs::write(
-            &registry_path,
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "agents": {
-                    "kitt-be-x": {"tmux": "sot-be-x:0.0", "host": "kitt"},
-                    "descent-be-x": {"tmux": "sot-be-x:0.0", "host": "descent"},
-                    "hostless-be-x": {"tmux": "sot-be-x:0.0"},
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-
-        let removed = remove_comm_agents_for_workspace("sot-be-x", "", "kitt");
-        assert_eq!(removed, vec!["kitt-be-x"]);
-
-        let after: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
-        let agents = after.get("agents").unwrap().as_object().unwrap();
-        assert!(!agents.contains_key("kitt-be-x"));
-        assert!(
-            agents.contains_key("descent-be-x"),
-            "host B's row must survive host A's destroy"
-        );
-        assert!(
-            agents.contains_key("hostless-be-x"),
-            "a row with no host is unknown ownership, never ours — it must survive too"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn by_name_requires_host() {
         // The `by_name` fallback (for a not-yet-joined `spawning` row whose
         // `tmux` is still "") matches on the caller-supplied `agent_name`
@@ -8368,7 +7629,7 @@ mod remove_comm_agents_for_workspace_host_tests {
 
         // No live tmux row for this session, so only the `by_name` term is in
         // play; the stored handle matches, but the row's host does not.
-        let removed = remove_comm_agents_for_workspace("sot-be-x", "same-name", "kitt");
+        let removed = remove_comm_agents_for_workspace("same-name", "kitt");
         assert!(removed.is_empty());
 
         let after: serde_json::Value =
@@ -8421,7 +7682,7 @@ mod remove_comm_agents_for_workspace_host_tests {
 
         let bound = std::time::Duration::from_millis(150);
         let start = std::time::Instant::now();
-        let removed = remove_comm_agents_for_workspace_bounded("sot-be-x", "", "kitt", bound);
+        let removed = remove_comm_agents_for_workspace_bounded("", "kitt", bound);
         let elapsed = start.elapsed();
 
         assert!(removed.is_empty(), "a contended lock must prune nothing");
@@ -8524,40 +7785,6 @@ mod clear_comm_unread_tests {
         // clear through the capsule branch instead of the seeded tmux row.
         ws.runtime = "tmux".to_string();
         ws
-    }
-
-    #[test]
-    fn done_row_for_this_host_flips_to_idle_summary_and_status_at_untouched() {
-        let _guard = guarded();
-        let dir = temp_home("done");
-        let registry_path = write_registry(
-            &dir,
-            serde_json::json!({
-                "kitt-be-x": {
-                    "tmux": "sot-be-x:0.0",
-                    "host": "kitt",
-                    "state": "done",
-                    "summary": "probe summary",
-                    "status_at": "2026-09-08T00:00:00Z",
-                    "last_seen": "2026-09-08T00:00:01Z",
-                },
-            }),
-        );
-
-        clear_comm_unread(&mk_ws("x", ""), "kitt");
-
-        let after: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
-        let row = &after["agents"]["kitt-be-x"];
-        assert_eq!(row["state"], "idle");
-        assert_eq!(row["summary"], "probe summary", "summary must survive the clear");
-        assert_eq!(
-            row["status_at"], "2026-09-08T00:00:00Z",
-            "status_at must be untouched — reading is not activity"
-        );
-        assert_eq!(row["last_seen"], "2026-09-08T00:00:01Z");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -8852,66 +8079,6 @@ mod workspace_activate_read_tests {
             "workspace.activate always answers with exactly one frame"
         );
         out[0].0.payload.clone()
-    }
-
-    #[tokio::test]
-    async fn read_true_clears_the_row_read_false_does_not() {
-        let _guard = guarded();
-        let dir = std::env::temp_dir().join(format!(
-            "sot-workspace-activate-read-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("SOT_COMM_HOME", &dir);
-        std::env::set_var("SOT_STATE_HOST", "kitt");
-        let registry_path = dir.join("registry.json");
-
-        let (reg, id, tmux_session) = seed_workspace("activate-read-x");
-        std::fs::write(
-            &registry_path,
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "agents": {
-                    "kitt-activate-read-x": {
-                        "tmux": format!("{tmux_session}:0.0"),
-                        "host": "kitt",
-                        "state": "done",
-                        "summary": "probe summary",
-                        "status_at": "2026-09-08T00:00:00Z",
-                    }
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-
-        // read: false — untouched, ack still names the resolved workspace.
-        let ack = activate(&reg, &id, false).await;
-        assert_eq!(
-            ack.get("workspace_id").and_then(|v| v.as_str()),
-            Some(id.as_str())
-        );
-        let after_false: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
-        assert_eq!(after_false["agents"]["kitt-activate-read-x"]["state"], "done");
-
-        // read: true — clears it; summary and status_at survive.
-        let ack = activate(&reg, &id, true).await;
-        assert_eq!(
-            ack.get("workspace_id").and_then(|v| v.as_str()),
-            Some(id.as_str())
-        );
-        let after_true: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
-        let row = &after_true["agents"]["kitt-activate-read-x"];
-        assert_eq!(row["state"], "idle");
-        assert_eq!(row["summary"], "probe summary");
-        assert_eq!(row["status_at"], "2026-09-08T00:00:00Z");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -9256,24 +8423,6 @@ mod workspace_destroy_default_row_tests {
             "workspace.destroy always answers with exactly one frame"
         );
         out[0].0.payload.clone()
-    }
-
-    fn assert_refused(payload: &serde_json::Value) {
-        assert_eq!(
-            payload.get("code").and_then(|v| v.as_str()),
-            Some("default_workspace_not_destroyable")
-        );
-        assert!(payload.get("error").is_some());
-        assert!(payload.get("kept").is_none());
-    }
-
-    #[tokio::test]
-    async fn default_tmux_workspace_is_still_refused() {
-        let (reg, id) = seed_default("tmux");
-        let payload = destroy(&reg, &id).await;
-        assert_refused(&payload);
-        // Untouched either way — the refusal never removes anything.
-        assert!(reg.resolve(Some(&id)).is_some());
     }
 
     // ADR 0043 decision 22: capsule support is no longer Windows-only, so

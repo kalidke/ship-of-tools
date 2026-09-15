@@ -2741,7 +2741,7 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
 /// Linux only: `pkill`/`pgrep`/`tmux` are shelled out to directly.
 #[tokio::test]
 #[cfg(target_os = "linux")]
-async fn capsule_backend_test_env_drop_cleans_up_legs_daemon_and_tmux() {
+async fn capsule_backend_test_env_drop_cleans_up_legs_and_daemon() {
     let _serial = SERIAL.lock().await;
     assert!(
         sot_capsule_exe().is_file(),
@@ -4847,20 +4847,6 @@ async fn lane_connect_refusals() {
     // `default_row_runtime`, independent of ADR 0042's L6 flip, and it
     // stays "tmux" on a fresh Linux install regardless (ADR 0043
     // decision 22).
-    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
-    next_id += 1;
-    let default_row = list_payload["workspaces"]
-        .as_array()
-        .expect("workspaces array")
-        .iter()
-        .find(|w| w["is_default"].as_bool() == Some(true))
-        .cloned()
-        .expect("a default workspace row");
-    assert_eq!(default_row["runtime"], "tmux", "default row: {default_row:?}");
-    let default_target = default_row["tmux_session"].as_str().expect("tmux_session").to_string();
-    let (mut s, res) = lane_connect(&env, &default_target, "supervisor", None).await;
-    assert_eq!(res["code"].as_str(), Some("not_capsule"), "{res:?}");
-    assert_lane_connect_closes(&mut s).await;
 
     // A ready capsule row, shared by the two voyage-lane sub-cases below.
     let create_req = serde_json::json!({

@@ -16,15 +16,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use base64::Engine;
 use interprocess::local_socket::{
     tokio::{prelude::*, Stream as LocalStream},
     GenericFilePath, ListenerOptions,
 };
 use sot_protocol::{
     codec, op, FeCommandEvt, Frame, HostLatest, Kind, MonitorHistoryReq, MonitorHistoryRes,
-    MonitorSubscribeRes, MonitorTickEvt, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyScrollReq,
-    PtyWriteReq,
+    MonitorSubscribeRes, MonitorTickEvt, PtyOpenReq,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -36,7 +34,6 @@ use crate::kernel::Kernel;
 use crate::mathjax::MathJax;
 use crate::paths;
 use crate::pluto::Pluto;
-use crate::pty::Pty;
 use crate::repl::{Repl, ReplFrameMsg};
 use crate::session::Session;
 use crate::watcher::PreviewChanged;
@@ -392,94 +389,6 @@ async fn wait_for_test_activation_barrier() {
     }
 }
 
-/// Derive an agent's work-state from a snapshot of its live tmux pane (the
-/// claude TUI footer). Authoritative for working/idle; needs no hook or model
-/// cooperation — the `Stop` hook only ever reports idle.
-///
-/// `working` keys off claude's live generation status line, which starts with a
-/// "sparkle" spinner glyph and carries a parenthesised elapsed timer, e.g.
-/// `✽ Wiring weakdep extensions… (3m 16s · ↓ 14.8k tokens · …)`. BOTH parts
-/// matter:
-///   - the spinner prefix means ordinary output can't fake it — prose (even this
-///     session quoting the footer in a report) never *starts a line* with a
-///     sparkle glyph, so the bare-phrase contamination that read an idle pane as
-///     working is gone; and
-///   - the parenthesised timer excludes the post-turn summary, which is also
-///     spinner-led but reads `Churned for 17m 59s` (no parens) once idle.
-/// The status line can sit well above the input box (a todo list / tool output
-/// between it and the prompt), so we scan the whole capture for it — a fixed
-/// 12-line footer window read a working agent *with a todo list* as idle because
-/// its status line was 15 lines up.
-///
-/// Returns `""` (no claude → registry fallback), `"working"`, or `"idle"`.
-/// Pure + total: unit-testable, can't panic in the capture loop.
-pub(crate) fn pane_activity(contents: &str) -> &'static str {
-    let lines: Vec<&str> = contents.lines().collect();
-    // claude present? The persistent footer hint (permission mode / shortcuts)
-    // sits in the last lines. A bare shell has none → registry fallback.
-    let footer_start = lines.len().saturating_sub(12);
-    let footer = lines[footer_start..].join("\n").to_lowercase();
-    const PRESENT: &[&str] = &[
-        "bypass permissions",
-        "bypassing permissions",
-        "for shortcuts",
-        "for agents",
-        // Claude Code 2.1.258+ under --permission-mode auto (the owner-ruling
-        // default, replacing --dangerously-skip-permissions): the footer
-        // reads "auto mode on" instead of "bypass permissions on", and
-        // carries neither "for shortcuts" nor "for agents" — verified live
-        // via a probe pane, 2026-09-02.
-        "auto mode on",
-    ];
-    if !PRESENT.iter().any(|m| footer.contains(m)) {
-        return "";
-    }
-    // Generating? Find the live status line: spinner-led AND a running timer.
-    if lines
-        .iter()
-        .any(|l| line_starts_with_spinner(l) && has_running_timer(l))
-    {
-        "working"
-    } else {
-        "idle"
-    }
-}
-
-/// True if the line's first non-whitespace char is one of claude's "sparkle"
-/// spinner glyphs (the generating indicator cycles dingbats in U+2722–U+2747:
-/// ✢ ✦ ✶ ✷ ✸ ✹ ✺ ✻ ✼ ✽ …). The other line-leading glyphs the TUI uses — `●`
-/// (U+25CF) messages, `⎿` (U+23BF) tool output, `◼ ◻ ✔` todo items, `❯`
-/// (U+276F) the prompt — all fall outside this range, so they never false-trip.
-fn line_starts_with_spinner(line: &str) -> bool {
-    matches!(
-        line.trim_start().chars().next(),
-        Some(c) if ('\u{2722}'..='\u{2747}').contains(&c)
-    )
-}
-
-/// True if `s` contains a parenthesised elapsed timer like `(45s`, `(2m 55s` —
-/// the counter claude renders on the live status line. Dependency-free scan (no
-/// regex) so the capture loop stays panic-proof.
-fn has_running_timer(s: &str) -> bool {
-    let b = s.as_bytes();
-    let mut i = 0;
-    while i + 1 < b.len() {
-        if b[i] == b'(' {
-            let mut j = i + 1;
-            let mut saw_digit = false;
-            while j < b.len() && b[j].is_ascii_digit() {
-                saw_digit = true;
-                j += 1;
-            }
-            // digit(s) immediately followed by a time unit → a live timer.
-            if saw_digit && j < b.len() && (b[j] == b'm' || b[j] == b's') {
-                return true;
-            }
-        }
-        i += 1;
-    }
-    false
-}
 
 /// Canonical projection of just the state-relevant fields per sot-comm
 /// registry agent (state/summary/status_at/tmux, since tmux drives the
@@ -528,7 +437,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // pinned into a spawned child's env; see `awareness_env`'s own doc).
     crate::workspaces::declared_host();
     if let Some(path) = opts.socket.as_deref() {
-        crate::pty::set_own_endpoint(path);
+        crate::awareness::set_own_endpoint(path);
     }
 
     let session = Session::new();
@@ -625,7 +534,6 @@ pub async fn run(opts: Opts) -> Result<()> {
     let (seed_autostart, seed_agent, seed_agent_name, seed_task) =
         workspaces::default_row_launch_seed(existing_default.as_deref().map(|e| {
             (
-                e.runtime.as_str(),
                 e.autostart_claude,
                 existing_agent.as_deref().unwrap_or_default(),
                 existing_agent_name.as_deref().unwrap_or_default(),
@@ -661,10 +569,6 @@ pub async fn run(opts: Opts) -> Result<()> {
             );
         }
     }
-    default_ws_seed.runtime = workspaces::default_row_runtime(
-        existing_default.as_deref().map(|w| w.runtime.as_str()),
-        &default_ws_seed.runtime,
-    );
     // Manager review (S16, Codex finding S16): carry the existing row's
     // declared `agent_handle` (ADR 0046 decision 1's `agent.join`)
     // forward the same way `runtime` is above — `from_label` seeds a
@@ -686,33 +590,6 @@ pub async fn run(opts: Opts) -> Result<()> {
             slug = %default_ws.slug,
             "default workspace ready"
         );
-    }
-    // Ensure the default workspace's tmux session exists so it shows up
-    // in Sessions mode alongside any user-created workspaces. `tmux
-    // new-session -A` is idempotent — already-alive sessions are a
-    // no-op. Failure is logged but non-fatal (a head-less host with no
-    // tmux server still serves the protocol fine). ADR 0042 slice L1a,
-    // Codex review finding 5: skipped entirely for a capsule default —
-    // it has no tmux session to ensure; its supervisor is picked up by
-    // the resume-scan below, alongside every other capsule row.
-    if default_ws.runtime != "capsule" {
-        let tmux_name = default_ws.tmux_session.clone();
-        let cwd = default_ws.project_root.clone();
-        let slug = default_ws.slug.clone();
-        let ws_id = default_ws.workspace_id.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            match crate::tmux::TmuxClient::new().create_session(
-                &tmux_name,
-                None,
-                Some(&cwd),
-                Some(&slug),
-                Some(&ws_id),
-            ) {
-                Ok(()) => tracing::info!(tmux = %tmux_name, "default workspace tmux session ready"),
-                Err(e) => tracing::warn!(error = %e, tmux = %tmux_name, "default workspace tmux session create failed"),
-            }
-        })
-        .await;
     }
 
     // ADR 0042 slice L1a: adopt every REGISTERED capsule workspace's
@@ -745,48 +622,6 @@ pub async fn run(opts: Opts) -> Result<()> {
         );
     }
 
-    // Heal the SOT_* awareness env on every registered workspace's live tmux
-    // session. Sessions created before env stamping existed carry nothing, and
-    // tmux ignores `-e` on attach — so without this sweep a long-lived session
-    // never converges (field state 2026-07-13: 13 of 16 sot-be-* sessions had
-    // no SOT_WORKSPACE). `set-environment` reaches only processes spawned
-    // after it; agents already running in those sessions rely on sot-nav.sh's
-    // session-name fallback until their next respawn. Migration aid at heart:
-    // every creation path now stamps at create, so once the fleet's pre-fix
-    // sessions have cycled this sweep finds nothing to do (and could be
-    // dropped). Detached — NOT awaited — so a wedged/slow tmux server can only
-    // delay the heal, never the listener bind; one `list-sessions` gives the
-    // live set instead of a `has-session` fork per workspace.
-    {
-        let all = workspaces.list();
-        tokio::task::spawn_blocking(move || {
-            let client = crate::tmux::TmuxClient::new();
-            let live: std::collections::HashSet<String> = match client.list_sessions() {
-                Ok(sessions) => sessions.into_iter().map(|s| s.name).collect(),
-                Err(e) => {
-                    tracing::debug!(error = %e, "awareness-env sweep: list-sessions failed (no tmux server?) — skipping");
-                    return;
-                }
-            };
-            let mut healed = 0usize;
-            for ws in &all {
-                if !live.contains(&ws.tmux_session) {
-                    continue;
-                }
-                client.set_session_env_all(
-                    &ws.tmux_session,
-                    &crate::pty::awareness_env(Some(&ws.slug), Some(&ws.project_root), Some(&ws.workspace_id)),
-                );
-                healed += 1;
-            }
-            if healed > 0 {
-                tracing::info!(
-                    sessions = healed,
-                    "stamped SOT_* awareness env onto live workspace tmux sessions"
-                );
-            }
-        });
-    }
 
     // When the backend is launched with `--label`, stamp our identity into
     // `~/.config/sot/sessions/<slug>.toml` so Sessions mode (frontend)
@@ -923,80 +758,6 @@ pub async fn run(opts: Opts) -> Result<()> {
         });
     }
 
-    // ADE state-nav pane-watch: the registry-watch above only catches
-    // comm-status / registry writes, which on the work-state axis only ever say
-    // "idle" (the `Stop` hook). There is no "working" hook, so an actively-
-    // generating agent reads idle. This task derives working/idle LIVE from each
-    // workspace's claude pane (its TUI footer) — authoritative, needing no hook,
-    // restart, or model cooperation. Every ~2s it captures every workspace's
-    // pane (each capture in `spawn_blocking` so a slow/hung `tmux capture-pane`
-    // never stalls the runtime, and fully defensive — a capture error yields ""
-    // activity, never a panic), derives state via `pane_activity`, and caches it
-    // on `Workspaces`. When ANY workspace's activity changed vs the previous
-    // tick it sends ONE `agent_state` WorkspaceChanged so the FE re-lists and
-    // picks up the new pane-derived state (coalesced — one evt covers all).
-    {
-        let ws_reg = workspaces.clone();
-        let tx = ws_events_tx.clone();
-        tokio::spawn(async move {
-            let mut last: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
-            loop {
-                tick.tick().await;
-                let mut changed = false;
-                let mut current: std::collections::HashMap<String, String> =
-                    std::collections::HashMap::new();
-                for ws in ws_reg.list() {
-                    // A capsule row has no tmux pane to capture (ADR 0042):
-                    // it still carries a `tmux_session` name, but there is
-                    // no session behind it to poll — on Windows this is
-                    // EVERY row, so without this skip we'd spawn a blocking
-                    // task and hit `TmuxClient::run`'s refusal (#177) for
-                    // each one, every tick, forever, for nothing. `current`
-                    // (and thus `last`, replaced wholesale below) simply
-                    // never gains an entry for these rows, so no separate
-                    // bookkeeping cleanup is needed.
-                    if ws.runtime == "capsule" {
-                        continue;
-                    }
-                    let session = ws.tmux_session.clone();
-                    if session.is_empty() || current.contains_key(&session) {
-                        continue;
-                    }
-                    // Capture off-runtime; any failure (no server, dead pane,
-                    // non-UTF8) maps to an empty capture → "" activity.
-                    let target = session.clone();
-                    let contents = tokio::task::spawn_blocking(move || {
-                        crate::tmux::TmuxClient::new()
-                            .capture_pane(&target, 40)
-                            .unwrap_or_default()
-                    })
-                    .await
-                    .unwrap_or_default();
-                    let activity = pane_activity(&contents);
-                    if last.get(&session).map(String::as_str).unwrap_or("") != activity {
-                        changed = true;
-                    }
-                    ws_reg.set_pane_activity(&session, activity);
-                    current.insert(session, activity.to_string());
-                }
-                // A workspace that vanished (its session gone from the list)
-                // also counts as a change so the FE drops its stale state.
-                if !changed && current.len() != last.len() {
-                    changed = true;
-                }
-                if changed {
-                    let _ = tx.send(WorkspaceChanged {
-                        action: "agent_state".into(),
-                        slug: String::new(),
-                        workspace_id: String::new(),
-                    });
-                }
-                last = current;
-            }
-        });
-    }
 
     // Agent-relay bus: parallel to the workspace bus, typed `AgentMessage`.
     // `agent.send` publishes here; each connection subscribes and writes an
@@ -1302,12 +1063,6 @@ where
     let mut read_fut = Some(Box::pin(read_owned(buffered)));
     tracing::debug!(transport, "connection ready");
 
-    // Per-connection pty for the LLM pane. Lazy: only spawned when
-    // the frontend sends `pty.open`. When `Some`, the select loop
-    // multiplexes wire reads with pty byte output so the terminal
-    // streams live without polling.
-    let mut pty: Option<Pty> = None;
-    let b64 = base64::engine::general_purpose::STANDARD;
 
     // Connected-client registry entry (ADR 0010/0013). Registered on the
     // first `hello` (when this connection's client_id is known) and held
@@ -1415,114 +1170,6 @@ where
         // proxy detection above costs the control path nothing.
         let frame = if let Some((f, _blob)) = pending_first.take() {
             f
-        } else if let Some(p) = pty.as_mut() {
-        // tokio::select! can't borrow `pty` mutably and immutably at
-        // once across arms, so split based on whether the pty is up.
-            tokio::select! {
-                biased;
-                // Off-loop job replies drain BEFORE reads: a finished
-                // preview.get/concept.read/image.crop/kernel.request reply goes out before
-                // this connection accepts another frame, so a burst of new
-                // requests can't indefinitely postpone delivering one
-                // that's already done.
-                Some((frame, blob)) = out_rx.recv() => {
-                    write_reply(&mut tx, frame, blob).await?;
-                    continue;
-                }
-                done = read_fut.as_mut().expect("read_fut is always Some at loop top") => {
-                    // Completed: reclaim the reader and arm the next read.
-                    let (rx_back, wire) = done;
-                    read_fut = Some(Box::pin(read_owned(rx_back)));
-                    match wire {
-                        Ok((f, _blob)) => f,
-                        Err(e) => {
-                            tracing::debug!(error = %e, transport, "read_frame returned; closing");
-                            return Ok(());
-                        }
-                    }
-                }
-                bytes = p.rx.recv() => {
-                    let Some(bytes) = bytes else {
-                        // pty closed (tmux exited); drop it and
-                        // continue serving the rest of the protocol.
-                        tracing::info!(transport, "pty reader EOF; dropping pty");
-                        pty = None;
-                        continue;
-                    };
-                    // Attribute this chunk to the latest resize burst
-                    // (if a window is open) for the 18:17Z timing ask.
-                    p.note_outgoing_bytes(bytes.len());
-                    // Auth gate (ADR 0010 hardening): never push evt frames to an
-                    // unauthenticated connection — a bad re-hello can flip
-                    // `authenticated` back to false while the pty stays open, and
-                    // without this gate terminal output would keep flowing anyway.
-                    if authenticated {
-                        let payload = serde_json::json!({ "data_b64": b64.encode(&bytes) });
-                        let evt = Frame::evt(op::PTY_EVT, payload);
-                        write_frame_to(&mut tx, &evt, None).await?;
-                    }
-                    continue;
-                }
-                change = recv_watcher(&mut watcher_rx) => {
-                    if authenticated {
-                        write_preview_changed(
-                            &mut tx,
-                            change,
-                            transport,
-                            active_workspace.as_deref(),
-                            &workspaces,
-                        )
-                        .await?;
-                    }
-                    continue;
-                }
-                wsc = recv_ws_events(&mut ws_events_rx) => {
-                    // Auth gate (ADR 0010 hardening): never push evt frames to an
-                    // unauthenticated connection. Drain the channel, drop the frame.
-                    if authenticated {
-                        write_workspace_changed(&mut tx, wsc, transport).await?;
-                    }
-                    continue;
-                }
-                msg = recv_agent_msg(&mut agent_events_rx) => {
-                    if authenticated {
-                        write_agent_message(&mut tx, msg, transport).await?;
-                    }
-                    continue;
-                }
-                fc = recv_fe_command(&mut fe_command_rx) => {
-                    if authenticated {
-                        write_fe_command(&mut tx, fc, transport, client_guard.as_ref().map(|g| g.serial())).await?;
-                    }
-                    continue;
-                }
-                rf = recv_repl_frame(&mut repl_frame_rx) => {
-                    if authenticated {
-                        write_repl_frame(&mut tx, rf, transport).await?;
-                    }
-                    continue;
-                }
-                tick = recv_monitor(&mut monitor_rx) => {
-                    if authenticated && monitor_subscribed {
-                        write_monitor_tick(&mut tx, tick, transport).await?;
-                    }
-                    continue;
-                }
-                // Reclaims a finished off-loop job's slot in `jobs` — a
-                // `JoinSet` keeps a completed task's result until it's
-                // retrieved, so a long-lived connection that never drained
-                // this would leak one slot per off-loop request served over
-                // its lifetime. A panicking job surfaces here as `Err`; that
-                // is logged, not answered — the inline dispatch path has
-                // never had per-request panic containment either. Guarded so
-                // an empty set (the common case) can't resolve every poll.
-                Some(res) = jobs.join_next(), if !jobs.is_empty() => {
-                    if let Err(e) = res {
-                        tracing::error!(error = %e, transport, "off-loop job panicked");
-                    }
-                    continue;
-                }
-            }
         } else {
             tokio::select! {
                 biased;
@@ -1887,21 +1534,6 @@ where
             op::REPL_EXECUTE => {
                 handlers::handle_repl_execute(frame.id, frame.payload, &session, &workspaces).await
             }
-            op::TMUX_LIST_SESSIONS => {
-                handlers::handle_tmux_list_sessions(frame.id, frame.payload, &session).await
-            }
-            op::TMUX_LIST_PANES => {
-                handlers::handle_tmux_list_panes(frame.id, frame.payload, &session).await
-            }
-            op::TMUX_CREATE_SESSION => {
-                handlers::handle_tmux_create_session(frame.id, frame.payload, &session).await
-            }
-            op::TMUX_KILL_SESSION => {
-                handlers::handle_tmux_kill_session(frame.id, frame.payload, &session).await
-            }
-            op::TMUX_CAPTURE_PANE => {
-                handlers::handle_tmux_capture_pane(frame.id, frame.payload, &session).await
-            }
             op::DIRECTORY_LIST => {
                 handlers::handle_directory_list(frame.id, frame.payload, &session).await
             }
@@ -2014,306 +1646,86 @@ where
                 let requested_target = req
                     .target
                     .as_deref()
-                    .unwrap_or(crate::pty::DEFAULT_TMUX_TARGET);
-                // Root the tmux session at the owning workspace's project
-                // dir (`-c <project_root>`). Without it `new-session -A`
-                // creates the session in the daemon's launch dir (usually
-                // `$HOME`), so the orchestrator's shell — and its trust
-                // scope — land on the wrong workspace. `None` for the
-                // home-base default (no matching workspace session).
-                let requested_cwd = workspaces.project_root_for_tmux(requested_target);
-                // Workspace slug for the same session — stamped into the
-                // spawned env as SOT_WORKSPACE so a session in the pane
-                // can gate FE nav commands on its workspace. `None` for the
-                // home-base default (no matching workspace).
-                let requested_slug = workspaces.slug_for_tmux(requested_target);
-                // Manager review (S15): the same workspace's id, stamped as
-                // SOT_WORKSPACE_ID on a (re)spawned pane — `Pty::spawn`'s
-                // own auto-respawn-on-EOF path recreates the tmux session
-                // through this SAME call, so a recreated pane must not
-                // skip `agent.join` just because it wasn't the FIRST spawn.
-                let requested_workspace_id =
-                    workspaces.workspace_for_tmux(requested_target).map(|ws| ws.workspace_id.clone());
-                // ADR 0042 slice L1a: a capsule workspace has no tmux
-                // session to attach `Pty::spawn` to at all — refused
-                // before any of the tmux logic below runs (existing-pty
-                // resize, re-target, or a fresh spawn alike), never
-                // proxied. The frontend attaches directly (L1b, the U3
-                // client) using the `state_dir` this carries.
-                if let Some(ws) = workspaces.workspace_for_tmux(requested_target) {
-                    if ws.runtime == "capsule" {
-                        let state_root = sot_log::state_dir::sot_state_dir();
-                        // `attach_direct` answers at once from memory, no
-                        // lane probe here -- `ensure_started` runs
-                        // fire-and-forget in the background under its own
-                        // guard, so a stale cached `Ready` never blocks it.
-                        #[cfg(any(windows, target_os = "linux"))]
-                        {
-                            match state_root.clone() {
-                                None => {
-                                    ws.set_activation_error(Some(format!(
-                                        "could not resolve this machine's state root ({} unset)",
-                                        crate::capsule_workspace::STATE_ROOT_HINT
-                                    )));
-                                }
-                                Some(root) => {
-                                    let workspace_id = ws.workspace_id.clone();
-                                    let workspace_id_for_log = workspace_id.clone();
-                                    let agent_kind = ws.agent();
-                                    let agent_name = ws.agent_name();
-                                    let slug = ws.slug.clone();
-                                    let project_root = ws.project_root.clone();
-                                    let workspaces_for_start = workspaces.clone();
-                                    tokio::spawn(async move {
-                                        wait_for_test_activation_barrier().await;
-                                        let result = tokio::task::spawn_blocking(move || {
-                                            crate::capsule_workspace::ensure_started(
-                                                &root,
-                                                &workspace_id,
-                                                &agent_kind,
-                                                &agent_name,
-                                                &slug,
-                                                &project_root,
-                                                crate::capsule_workspace::ActivationIntent::Selection,
-                                                workspaces_for_start,
-                                            )
-                                        })
-                                        .await
-                                        .unwrap_or_else(|e| {
-                                            Err(format!("capsule start-on-attach task panicked: {e}"))
-                                        });
-                                        match result {
-                                            Ok(Some(())) => {
-                                                tracing::info!(workspace_id = %workspace_id_for_log, "pty.open: capsule supervisor started on attach");
-                                            }
-                                            Ok(None) => {}
-                                            Err(detail) => {
-                                                tracing::warn!(workspace_id = %workspace_id_for_log, error = %detail, "pty.open: capsule supervisor start-on-attach failed");
-                                            }
-                                        }
-                                        record_test_activation_marker("completions");
-                                    });
-                                }
-                            }
-                        }
-                        let state_dir = state_root
-                            .map(|root| crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id))
-                            .map(|p| p.to_string_lossy().into_owned());
-                        let payload = serde_json::json!({
-                            "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
-                            "code": "attach_direct",
-                            "state_dir": state_dir,
-                        });
-                        write_frame_to(&mut tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
-                            .await?;
-                        continue;
-                    }
-                }
-                if let Some(existing) = pty.as_ref() {
-                    // Same target → just resize, keep the existing pty.
-                    // Different target (Sessions-mode re-attach, ADR 0013)
-                    // → drop the existing pty so the loop spawns fresh
-                    // against the new target below.
-                    if existing.target() == requested_target {
-                        if let Err(e) = existing.resize(req.cols, req.rows) {
-                            tracing::warn!(error = %e, "pty resize failed");
-                        }
-                        let res = PtyOpenRes {
-                            cols: req.cols,
-                            rows: req.rows,
-                            // Same-target resize keeps the existing pty and
-                            // never re-arms autostart, so no probe needed.
-                            pane_command: None,
-                        };
-                        Ok(vec![(
-                            Frame::res(frame.id, op::PTY_OPEN, serde_json::to_value(res)?),
-                            None,
-                        )])
-                    } else if req.user_switch {
-                        tracing::info!(
-                            from = %existing.target(),
-                            to = %requested_target,
-                            peer = ?peer,
-                            user_switch = req.user_switch,
-                            "pty re-target: dropping existing pty for fresh spawn"
-                        );
-                        // Release the old session cleanly BEFORE dropping the
-                        // Pty: flag the reader as deliberate-teardown (no EOF
-                        // respawn) and detach our client so tmux keeps the
-                        // session alive for a clean re-attach. Without this the
-                        // bare `pty = None` closed the master fd abruptly while
-                        // our client was still attached, and the rapid
-                        // re-target case raced tmux into destroying the
-                        // left-behind (clientless) session — a bare-shell
-                        // workspace lost its bash on every switch-away.
-                        existing.shutdown();
-                        pty = None;
-                        match Pty::spawn(
-                            req.cols,
-                            req.rows,
-                            Some(requested_target),
-                            requested_cwd.as_deref(),
-                            requested_slug.as_deref(),
-                            requested_workspace_id.as_deref(),
-                        ) {
-                            Ok(p) => {
-                                tracing::info!(
-                                    cols = req.cols,
-                                    rows = req.rows,
-                                    target = %requested_target,
-                                    "pty.open spawned tmux (re-target)"
-                                );
-                                pty = Some(p);
-                                let res = PtyOpenRes {
-                                    cols: req.cols,
-                                    rows: req.rows,
-                                    // Authoritative "is claude already up in
-                                    // this pane?" signal for the FE autostart
-                                    // guard. Queried post-spawn so the session
-                                    // exists. (prompt-spam fix.)
-                                    pane_command: crate::tmux::TmuxClient::new()
-                                        .active_pane_command(requested_target),
-                                };
-                                Ok(vec![(
-                                    Frame::res(frame.id, op::PTY_OPEN, serde_json::to_value(res)?),
-                                    None,
-                                )])
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "pty re-target spawn failed");
-                                let payload = serde_json::json!({
-                                    "error": format!("{e:#}"),
-                                    "code": "pty_spawn_failed",
-                                });
-                                Ok(vec![(Frame::res(frame.id, op::PTY_OPEN, payload), None)])
-                            }
-                        }
-                    } else {
-                        // #5 single-pty guard (ADR-0014): a pty.open for a
-                        // DIFFERENT target that is NOT an explicit user
-                        // workspace-switch (a roaming FE's background re-attach,
-                        // a daemon-boot open, etc.) must NOT yank the single
-                        // foreground pty — that ping-pong between two FEs + the
-                        // boot-pty froze create-session for ~1min. Keep the
-                        // existing pty untouched; only `user_switch == true` (the
-                        // FE sets it at switch_to_workspace) re-targets.
-                        tracing::info!(
-                            from = %existing.target(),
-                            to = %requested_target,
-                            peer = ?peer,
-                            user_switch = req.user_switch,
-                            "pty re-target SUPPRESSED — not a user switch; keeping foreground"
-                        );
-                        let res = PtyOpenRes {
-                            cols: req.cols,
-                            rows: req.rows,
-                            pane_command: None,
-                        };
-                        Ok(vec![(
-                            Frame::res(frame.id, op::PTY_OPEN, serde_json::to_value(res)?),
-                            None,
-                        )])
-                    }
-                } else {
-                    match Pty::spawn(
-                        req.cols,
-                        req.rows,
-                        Some(requested_target),
-                        requested_cwd.as_deref(),
-                        requested_slug.as_deref(),
-                        requested_workspace_id.as_deref(),
-                    ) {
-                        Ok(p) => {
-                            tracing::info!(
-                                cols = req.cols,
-                                rows = req.rows,
-                                target = %requested_target,
-                                "pty.open spawned tmux"
-                            );
-                            pty = Some(p);
-                            let res = PtyOpenRes {
-                                cols: req.cols,
-                                rows: req.rows,
-                                // Same authoritative claude-already-running
-                                // probe as the re-target branch.
-                                pane_command: crate::tmux::TmuxClient::new()
-                                    .active_pane_command(requested_target),
-                            };
-                            Ok(vec![(
-                                Frame::res(frame.id, op::PTY_OPEN, serde_json::to_value(res)?),
-                                None,
-                            )])
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "pty spawn failed");
-                            let payload = serde_json::json!({
-                                "error": format!("{e:#}"),
-                                "code": "pty_spawn_failed",
-                            });
-                            Ok(vec![(Frame::res(frame.id, op::PTY_OPEN, payload), None)])
-                        }
-                    }
-                }
-            }
-            op::PTY_RESIZE => {
-                let req: PtyResizeReq = match serde_json::from_value(frame.payload) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "pty.resize payload parse failed");
-                        continue;
-                    }
-                };
-                if let Some(p) = pty.as_ref() {
-                    if let Err(e) = p.resize(req.cols, req.rows) {
-                        tracing::warn!(error = %e, "pty resize failed");
-                    }
-                }
-                continue; // no response for resize
-            }
-            op::PTY_SCROLL => {
-                // Keyboard scrollback paging (fire-and-forget, mirrors
-                // pty.write). The tmux calls shell out, so they ride
-                // spawn_blocking off the dispatch path — a slow tmux can't
-                // stall this connection's select! loop.
-                let req: PtyScrollReq = match serde_json::from_value(frame.payload) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "pty.scroll payload parse failed");
-                        continue;
-                    }
-                };
-                if let Some(p) = pty.as_ref() {
-                    let target = p.target();
-                    let up = req.direction != "down";
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(e) = crate::tmux::TmuxClient::new().scroll_page(&target, up) {
-                            tracing::warn!(error = %e, target, "pty.scroll tmux failed");
-                        }
+                    .unwrap_or("");
+                // A row's agent pane is a capsule (ADR 0046): `pty.open`
+                // starts its supervisor when needed and answers
+                // `attach_direct` with the `state_dir` the frontend attaches
+                // to (L1b, the U3 client). An unknown target has nothing
+                // to attach to.
+                let Some(ws) = workspaces.workspace_for_tmux(requested_target) else {
+                    let payload = serde_json::json!({
+                        "error": format!("no workspace owns session {requested_target:?}"),
+                        "code": "no_workspace",
                     });
-                }
-                continue; // no response for scroll
-            }
-            op::PTY_WRITE => {
-                let req: PtyWriteReq = match serde_json::from_value(frame.payload) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "pty.write payload parse failed");
-                        continue;
-                    }
+                    write_frame_to(&mut tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
+                        .await?;
+                    continue;
                 };
-                if let Some(p) = pty.as_ref() {
-                    match b64.decode(req.data_b64.as_bytes()) {
-                        Ok(bytes) => {
-                            if let Err(e) = p.write(&bytes) {
-                                tracing::warn!(error = %e, "pty write failed");
-                            }
+                let state_root = sot_log::state_dir::sot_state_dir();
+                // `attach_direct` answers at once from memory, no
+                // lane probe here -- `ensure_started` runs
+                // fire-and-forget in the background under its own
+                // guard, so a stale cached `Ready` never blocks it.
+                #[cfg(any(windows, target_os = "linux"))]
+                {
+                    match state_root.clone() {
+                        None => {
+                            ws.set_activation_error(Some(format!(
+                                "could not resolve this machine's state root ({} unset)",
+                                crate::capsule_workspace::STATE_ROOT_HINT
+                            )));
                         }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "pty.write b64 decode failed");
+                        Some(root) => {
+                            let workspace_id = ws.workspace_id.clone();
+                            let workspace_id_for_log = workspace_id.clone();
+                            let agent_kind = ws.agent();
+                            let agent_name = ws.agent_name();
+                            let slug = ws.slug.clone();
+                            let project_root = ws.project_root.clone();
+                            let workspaces_for_start = workspaces.clone();
+                            tokio::spawn(async move {
+                                wait_for_test_activation_barrier().await;
+                                let result = tokio::task::spawn_blocking(move || {
+                                    crate::capsule_workspace::ensure_started(
+                                        &root,
+                                        &workspace_id,
+                                        &agent_kind,
+                                        &agent_name,
+                                        &slug,
+                                        &project_root,
+                                        crate::capsule_workspace::ActivationIntent::Selection,
+                                        workspaces_for_start,
+                                    )
+                                })
+                                .await
+                                .unwrap_or_else(|e| {
+                                    Err(format!("capsule start-on-attach task panicked: {e}"))
+                                });
+                                match result {
+                                    Ok(Some(())) => {
+                                        tracing::info!(workspace_id = %workspace_id_for_log, "pty.open: capsule supervisor started on attach");
+                                    }
+                                    Ok(None) => {}
+                                    Err(detail) => {
+                                        tracing::warn!(workspace_id = %workspace_id_for_log, error = %detail, "pty.open: capsule supervisor start-on-attach failed");
+                                    }
+                                }
+                                record_test_activation_marker("completions");
+                            });
                         }
                     }
                 }
-                continue; // no response for write
+                let state_dir = state_root
+                    .map(|root| crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id))
+                    .map(|p| p.to_string_lossy().into_owned());
+                let payload = serde_json::json!({
+                    "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
+                    "code": "attach_direct",
+                    "state_dir": state_dir,
+                });
+                write_frame_to(&mut tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
+                    .await?;
+                continue;
             }
             op::PTY_INPUT => {
                 // ADR 0042 amendment (2026-09-07): answered, unlike
@@ -2762,7 +2174,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::pane_activity;
 
     #[tokio::test]
     async fn write_frame_within_times_out_on_stuck_peer() {
@@ -2946,84 +2357,6 @@ mod tests {
         );
     }
 
-    // Realistic footers captured from live agents (input box + status line +
-    // permission hint). The working one adds the live generation status line.
-    const IDLE_FOOTER: &str = "──────────────────\n❯ \n──────────────────\n  Opus 4 [abc] ·think:max | v2.1.177 | Ship of Tools:main | 0 uncommitted\n  Session: 155k (in:155k out:3) | $253.27\n  ⏵⏵ bypass permissions on · 1 monitor";
-    const WORKING_FOOTER: &str = "● Bash(echo hi)\n  ⎿  Running…\n\n✢ Ionizing… (2m 55s · ↓ 12.3k tokens)\n\n──────────────────\n❯ \n──────────────────\n  Session: 155k (in:155k out:3) | $253.27\n  ⏵⏵ bypass permissions on · 1 monitor";
-    // --permission-mode auto footers (2.1.258): "auto mode on" replaces
-    // "bypass permissions on" and neither "for shortcuts" nor "for agents"
-    // appear — captured live from a probe pane, 2026-09-02.
-    const AUTO_IDLE_FOOTER: &str = "──────────────────\n❯ \n──────────────────\n  Fable 5.1 [66b99a4f] ·think:xhigh | v2.1.258 | Ship of Tools:main | 0 uncommitted\n  Session: 12k (in:12k out:1) | $0.10\n  ⏵⏵ auto mode on (shift+tab to cycle) · 1 agent";
-    const AUTO_WORKING_FOOTER: &str = "✢ Ionizing… (2m 55s · ↓ 12.3k tokens)\n\n──────────────────\n❯ \n──────────────────\n  Session: 12k (in:12k out:1) | $0.10\n  ⏵⏵ auto mode on (shift+tab to cycle) · 1 agent";
-
-    #[test]
-    fn no_claude_marker_is_empty() {
-        // A bare shell / unrelated pane → no state (FE falls back to registry).
-        assert_eq!(pane_activity(""), "");
-        assert_eq!(pane_activity("user@host:~$ ls -la\nfoo bar baz\n"), "");
-        assert_eq!(pane_activity("julia> 1 + 1\n2\n"), "");
-    }
-
-    #[test]
-    fn idle_footer_is_idle() {
-        // claude up at the prompt — footer present, no running timer.
-        assert_eq!(pane_activity(IDLE_FOOTER), "idle");
-    }
-
-    #[test]
-    fn running_timer_means_working() {
-        // Current builds: the parenthesised elapsed timer is the generating signal.
-        assert_eq!(pane_activity(WORKING_FOOTER), "working");
-        // Older builds: "(esc to interrupt)" inside the status line.
-        assert_eq!(
-            pane_activity("? for shortcuts\n✻ Working… (12s · esc to interrupt)"),
-            "working"
-        );
-    }
-
-    #[test]
-    fn auto_mode_idle_footer_is_idle() {
-        // --permission-mode auto (owner ruling, replacing
-        // --dangerously-skip-permissions): the footer carries "auto mode on"
-        // instead of "bypass permissions on" — must still resolve idle at
-        // the prompt, not fall back to registry state.
-        assert_eq!(pane_activity(AUTO_IDLE_FOOTER), "idle");
-    }
-
-    #[test]
-    fn auto_mode_working_footer_is_working() {
-        assert_eq!(pane_activity(AUTO_WORKING_FOOTER), "working");
-    }
-
-    #[test]
-    fn prose_quoting_chrome_is_not_working() {
-        // Contamination immunity: an agent whose OUTPUT quotes the footer — the
-        // bare phrase AND the timer format — must not read working, because prose
-        // never *starts a line* with a spinner glyph.
-        let s = format!(
-            "note: esc to interrupt; the live timer reads (2m 55s · 12.3k tokens)\n{IDLE_FOOTER}"
-        );
-        assert_eq!(pane_activity(&s), "idle");
-    }
-
-    #[test]
-    fn working_status_above_a_todo_list_is_working() {
-        // The myanalysis regression: a working agent with a todo list between
-        // its status line and the input box. The status line sits ~15 lines up,
-        // past any fixed footer window — scanning the whole capture catches it.
-        let s = format!(
-            "✽ Wiring weakdep extensions… (3m 16s · ↓ 14.8k tokens)\n  \u{23bf}  \u{25fc} Wire FeaturePrep\n     \u{25fc} Land MyDetector\n     \u{25fb} Validate pipeline\n     \u{2714} Verify DL stack\n     \u{2714} Land FeaturePrep\n\n{IDLE_FOOTER}"
-        );
-        assert_eq!(pane_activity(&s), "working");
-    }
-
-    #[test]
-    fn post_turn_summary_is_idle() {
-        // The completed-turn line is spinner-led but has no parenthesised timer
-        // ("Churned for 17m 59s", not "(17m"), so it reads idle, not working.
-        let s = format!("✻ Churned for 17m 59s · 1 shell, 1 monitor still running\n{IDLE_FOOTER}");
-        assert_eq!(pane_activity(&s), "idle");
-    }
 
     // Per-connection preview.changed fan-out filter (the flood fix): a
     // connection must see exactly what its ACTIVATED workspace can use —

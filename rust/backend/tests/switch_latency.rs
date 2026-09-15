@@ -80,7 +80,6 @@ struct Env {
     _tmp: tempfile::TempDir,
     _runtime_tmp: tempfile::TempDir,
     socket_path: PathBuf,
-    tmux_sock: PathBuf,
     /// One file per fake-kernel process spawned lands here (see
     /// `write_fake_kernel`'s `SOT_LANE_FAKE_JULIA_COUNTER_DIR`) — the only
     /// way these tests can count real child-process starts from outside the
@@ -156,7 +155,6 @@ impl Env {
                 runtime_tmp.path().join(format!("wire-{tag}.sock"))
             }
         };
-        let tmux_sock = runtime_tmp.path().join("tmux.sock");
 
         let mut cmd = Command::new(sotd_exe());
         cmd.arg("--socket")
@@ -168,7 +166,6 @@ impl Env {
             .env("XDG_CONFIG_HOME", &config_root)
             .env("SOT_STATE_HOST", format!("switchlat-{tag}"))
             .env("SOT_RUNTIME_DIR", runtime_tmp.path())
-            .env("SOT_TMUX_SOCK", &tmux_sock)
             .env("SOT_TEST_SLOW_CONCEPT_READ_MS", SLOW_MS.to_string())
             .env("SOT_LANE_FAKE_JULIA_COUNTER_DIR", &spawn_marker_dir)
             .stdin(Stdio::null());
@@ -184,7 +181,6 @@ impl Env {
             _tmp: tmp,
             _runtime_tmp: runtime_tmp,
             socket_path,
-            tmux_sock,
             spawn_marker_dir,
             daemon,
         }
@@ -211,14 +207,6 @@ impl Drop for Env {
         // (never the developer's real one — a different socket entirely).
         let _ = self.daemon.kill();
         let _ = self.daemon.wait();
-        let _ = Command::new("tmux")
-            .arg("-S")
-            .arg(&self.tmux_sock)
-            .arg("kill-server")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
     }
 }
 

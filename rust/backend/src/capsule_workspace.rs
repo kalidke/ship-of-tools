@@ -289,38 +289,10 @@ fn codex_argv() -> Result<Vec<String>, String> {
         std::env::var_os("PATH").as_deref(),
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
     )?;
-    check_capsule_capable(&ccx)?;
     Ok(vec![ccx, "--capsule".to_string(), "--continue".to_string()])
 }
 
 /// The declared-capability line [`check_capsule_capable`] greps for.
-#[cfg(target_os = "linux")]
-const CAPSULE_CAPABLE_MARKER: &str = "# sot-capsule-capable: 1";
-
-/// Refuses a codex capsule recipe when `ccx`/`codex-watch.sh` predate
-/// capsule support — greps each file's text, STATIC only, never executes.
-#[cfg(target_os = "linux")]
-fn check_capsule_capable(ccx: &str) -> Result<(), String> {
-    check_marker_present(Path::new(ccx))?;
-    let comm_home = crate::paths::sot_comm_home().ok_or_else(|| {
-        "could not resolve this machine's comm home (SOT_COMM_HOME/HOME unset) to check codex-watch.sh".to_string()
-    })?;
-    check_marker_present(&comm_home.join("bin").join("codex-watch.sh"))
-}
-
-#[cfg(target_os = "linux")]
-fn check_marker_present(path: &Path) -> Result<(), String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("could not read {path:?} to check capsule capability: {e}"))?;
-    if content.lines().any(|l| l.trim() == CAPSULE_CAPABLE_MARKER) {
-        Ok(())
-    } else {
-        Err(format!(
-            "{path:?} predates capsule support (missing {CAPSULE_CAPABLE_MARKER:?}); \
-             redeploy comm scripts before creating a codex capsule row"
-        ))
-    }
-}
 #[cfg(windows)]
 fn codex_argv() -> Result<Vec<String>, String> {
     Err("codex has no capsule launcher on Windows (ccx is a bash script with no .ps1 counterpart)".to_string())
@@ -701,7 +673,7 @@ fn capsule_comm_home_str() -> Option<String> {
 /// this fixes). Bare `SOT_SOCKET` (ADR 0046 decision 1, S4: no typed
 /// prefix, Unix only), `SOT_WORKSPACE`/`SOT_WORKSPACE_ID` (and
 /// `SOT_WORKSPACE_ROOT`/
-/// `SOT_SESSION`/`SOT_MANUAL`) reuse [`crate::pty::awareness_env`]
+/// `SOT_SESSION`/`SOT_MANUAL`) reuse [`crate::awareness::awareness_env`]
 /// verbatim — ONE builder, not a second copy that could drift — keyed on
 /// `slug` (Codex round finding 1: the frontend keys results and the
 /// active workspace by SLUG, not the internal `ws-<slug>-<hex>` id;
@@ -731,7 +703,7 @@ fn capsule_comm_home_str() -> Option<String> {
 /// Windows and Linux only.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
-    let mut env = crate::pty::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
+    let mut env = crate::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
     if !agent_name.is_empty() {
         env.push(("SOT_COMM_NAME".to_string(), agent_name.to_string()));
     }
@@ -3691,8 +3663,8 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn write_capsule_capable_ccx(path: &Path) {
-        std::fs::write(path, format!("#!/bin/sh\n{CAPSULE_CAPABLE_MARKER}\nexit 0\n")).unwrap();
+    fn write_stub_ccx(path: &Path) {
+        std::fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
         set_executable(path);
     }
 
@@ -3701,51 +3673,13 @@ mod tests {
     fn agent_argv_codex_resolves_ccx_and_ends_in_capsule_continue() {
         let dir = tempfile_test_dir();
         let ccx = dir.path().join("ccx");
-        write_capsule_capable_ccx(&ccx);
-        let comm_home = tempfile_test_dir();
-        std::fs::create_dir_all(comm_home.path().join("bin")).unwrap();
-        std::fs::write(
-            comm_home.path().join("bin").join("codex-watch.sh"),
-            format!("#!/usr/bin/env bash\n{CAPSULE_CAPABLE_MARKER}\n"),
-        )
-        .unwrap();
+        write_stub_ccx(&ccx);
 
-        let result = with_codex_env(Some(dir.path()), None, Some(comm_home.path()), || agent_argv("codex"));
+        let result = with_codex_env(Some(dir.path()), None, None, || agent_argv("codex"));
         assert_eq!(
             result.unwrap(),
             vec![ccx.to_string_lossy().into_owned(), "--capsule".to_string(), "--continue".to_string()]
         );
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn agent_argv_codex_refuses_a_stale_ccx_without_ever_executing_it() {
-        let dir = tempfile_test_dir();
-        let ccx = dir.path().join("ccx");
-        let sentinel = dir.path().join("ccx-was-executed");
-        // No marker: `sentinel` proves whether this ever actually ran it.
-        std::fs::write(&ccx, format!("#!/bin/sh\ntouch {sentinel:?}\nsleep 999\n")).unwrap();
-        set_executable(&ccx);
-
-        let result = with_codex_env(Some(dir.path()), None, None, || agent_argv("codex"));
-        let err = result.expect_err("a ccx missing the capability marker must refuse");
-        assert!(err.contains("CAPSULE_CAPABLE_MARKER") || err.contains("sot-capsule-capable"), "got: {err}");
-        assert!(!sentinel.exists(), "the marker check must never execute ccx");
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn agent_argv_codex_refuses_when_codex_watch_lacks_the_marker() {
-        let dir = tempfile_test_dir();
-        let ccx = dir.path().join("ccx");
-        write_capsule_capable_ccx(&ccx);
-        let comm_home = tempfile_test_dir();
-        std::fs::create_dir_all(comm_home.path().join("bin")).unwrap();
-        std::fs::write(comm_home.path().join("bin").join("codex-watch.sh"), "#!/usr/bin/env bash\n").unwrap();
-
-        let result = with_codex_env(Some(dir.path()), None, Some(comm_home.path()), || agent_argv("codex"));
-        let err = result.expect_err("codex-watch.sh missing the marker must refuse the whole recipe");
-        assert!(err.contains("codex-watch.sh"), "got: {err}");
     }
 
     #[test]
@@ -4074,7 +4008,7 @@ mod tests {
         // listener per process) and process-global (`OnceLock`), so this
         // pins the value itself here rather than trusting whatever another
         // test in this binary may have already set it to.
-        crate::pty::set_own_endpoint(Path::new("/fake-home/.local/state/sot/session.sock"));
+        crate::awareness::set_own_endpoint(Path::new("/fake-home/.local/state/sot/session.sock"));
         let _guard = self_file_env_guarded();
         std::env::set_var("SOT_STATE_HOST", "testhost");
         std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");

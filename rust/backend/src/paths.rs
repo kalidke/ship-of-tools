@@ -299,57 +299,6 @@ pub fn tmux_session_name(label: &str) -> String {
     format!("sot-be-{}", slug(label))
 }
 
-/// Private per-user tmux server socket (security review): tmux's OWN
-/// default server lives at `/tmp/tmux-<uid>/default`. On this system that
-/// directory is `0700`, but the socket FILE itself can end up group-
-/// readable (`srwxrwx---`) — on a shared host where multiple human accounts
-/// share a primary/supplementary GID (a common `useradd` default), that lets
-/// another local user `tmux -S /tmp/tmux-<uid>/default attach` straight into
-/// this daemon's live agent sessions. A FIXED, well-known path (not a
-/// randomized one) so other tooling — the sot-comm shell scripts, and
-/// `sotd tmux-socket-path` (the single-source-of-truth CLI query they use to
-/// stay in sync) — can target the exact same server.
-///
-/// Set `SOT_TMUX_SOCK=/path/to/socket` to intentionally target an existing
-/// tmux server during migration. The caller still verifies the socket parent
-/// directory before spawning tmux.
-///
-/// Resolution order — deterministic, NO randomness (a prior version of this
-/// fell back to `state_dir()`, i.e. `${XDG_STATE_HOME:-~/.local/state}/sot`;
-/// Codex flagged that on this lab's boxes `$HOME` is an NFS-shared mount
-/// across a shared-$HOME NFS cohort, and a unix-domain socket does
-/// not work over NFS — that fallback was silently non-functional on any box
-/// without `$XDG_RUNTIME_DIR` set, exactly the case it exists to cover):
-///   1. `$XDG_RUNTIME_DIR/sot/tmux.sock` — only when `$XDG_RUNTIME_DIR` is
-///      set, exists, and is itself owner-only (no group/other permission
-///      bits — same "don't trust it if others can get at it" posture as
-///      `main.rs`'s token-file check). Normally a tmpfs mounted per-login-
-///      session by systemd-logind: private, and always a LOCAL mount.
-///   2. `/run/user/<uid>/sot/tmux.sock` — the well-known path behind that
-///      same env var, for a shell that didn't inherit it (cron, some
-///      su/sudo paths) but is still on a logind-managed box. Used only when
-///      `/run/user/<uid>` exists and is owner-only.
-///   3. `/tmp/sot-<uid>/tmux.sock` — last-resort local fallback. `/tmp` is
-///      always a local mount (never NFS-shared, unlike `$HOME`), so this
-///      stays correct even though, unlike tier 1, it isn't cleared on
-///      logout. The parent dir is created `0700` by the caller
-///      (`ensure_private_dir`) since `/tmp` itself is world-writable+sticky.
-///
-/// Windows: tmux never runs there at all (no `tmux.exe`), so this path is
-/// never actually USED — `tmux.rs::run()` is gated off on Windows before it
-/// would call this (Codex review, PR #175, replacing an earlier draft that
-/// routed this function's own POSIX-shaped fallback through
-/// `%LOCALAPPDATA%` instead: a fix for a path that's never reached is dead
-/// weight — the real fix is not reaching it, which also closes the actual
-/// field bug, a legacy toml with no `runtime` key defaulting to `"tmux"`
-/// even on Windows — see `workspaces::load_toml`).
-pub fn tmux_socket_path() -> PathBuf {
-    if let Some(sock) = std::env::var_os("SOT_TMUX_SOCK") {
-        return PathBuf::from(sock);
-    }
-    runtime_sot_dir().join("tmux.sock")
-}
-
 /// Resolves the Windows per-machine state root, or fails startup with a
 /// clear message. On Windows this is the ONLY root `state_dir()` below and
 /// `workspaces::app_config_dir` derive from — no POSIX (`XDG_*`/`HOME`/
@@ -581,22 +530,6 @@ mod tests {
         assert_eq!(tmux_session_name("MyPackage.jl"), "sot-be-mypackage_jl");
     }
 
-    #[test]
-    fn tmux_socket_path_honours_explicit_env_override() {
-        struct Guard(Option<std::ffi::OsString>);
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(v) => std::env::set_var("SOT_TMUX_SOCK", v),
-                    None => std::env::remove_var("SOT_TMUX_SOCK"),
-                }
-            }
-        }
-        let _g = Guard(std::env::var_os("SOT_TMUX_SOCK"));
-        let expected = PathBuf::from("/tmp/sot-test-tmux/default");
-        std::env::set_var("SOT_TMUX_SOCK", &expected);
-        assert_eq!(tmux_socket_path(), expected);
-    }
 }
 
 /// `is_private_dir`'s own tests moved to `sot_protocol::session_socket`

@@ -272,7 +272,7 @@ impl Workspace {
             // evidence, v0.6.0-rc.3, PR #175). Callers with a decided
             // value set it on the returned row (`load_toml`'s `runtime`
             // key, `insert`, workspace.create).
-            runtime: if cfg!(windows) { "capsule" } else { "tmux" }.to_string(),
+            runtime: "capsule".to_string(),
             agent_handle: Mutex::new(String::new()),
             phase_cell: Mutex::new(PhaseCell::default()),
             watchdog_identity: Mutex::new(None),
@@ -592,7 +592,6 @@ struct Inner {
     /// reads it as the authoritative working/idle signal — the `Stop`-hook
     /// `comm-status idle` only ever reports idle, so an actively-generating
     /// agent reads idle without this. Empty until the first capture tick.
-    pane_activity: HashMap<String, String>,
     /// The shared preview.changed bus for per-workspace watcher spawns
     /// (2026-07-10 multiwatch). Installed once at startup via
     /// `set_watch_bus`, before workspace registration; `None` in tests. No
@@ -761,23 +760,6 @@ impl Workspaces {
         g.monitor_hub.clone()
     }
 
-    /// Record the pane-derived work-state for `session` (a `tmux_session`).
-    /// Written by the background pane-watch task each tick. `activity` is one
-    /// of "working" / "idle" / "" — see `crate::server::pane_activity`.
-    pub fn set_pane_activity(&self, session: &str, activity: &str) {
-        let mut g = self.inner.write().expect("workspaces lock");
-        g.pane_activity
-            .insert(session.to_string(), activity.to_string());
-    }
-
-    /// Latest pane-derived work-state for `session`. `""` when no capture has
-    /// landed yet (or the workspace's pane carried no running-claude marker),
-    /// which `workspace.list` treats as "fall back to the registry state".
-    pub fn pane_activity(&self, session: &str) -> String {
-        let g = self.inner.read().expect("workspaces lock");
-        g.pane_activity.get(session).cloned().unwrap_or_default()
-    }
-
     /// A finished handle reads as absent.
     #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
     pub(crate) fn has_observer(&self, workspace_id: &str) -> bool {
@@ -934,34 +916,6 @@ impl Workspaces {
         let mut out: Vec<Arc<Workspace>> = g.by_id.values().cloned().collect();
         out.sort_by(|a, b| a.slug.cmp(&b.slug));
         out
-    }
-
-    /// Project root of the workspace that owns tmux session `target`, if
-    /// any. The LLM-pane pty uses this to create `tmux new-session` with
-    /// `-c <project_root>`: without it `new-session -A` roots the
-    /// orchestrator's shell in the daemon's launch dir (commonly `$HOME`),
-    /// which is the wrong workspace and an over-broad trust scope. `None`
-    /// when `target` isn't a known workspace session (e.g. the home-base
-    /// `sot-llm` default) — caller then omits `-c`.
-    pub fn project_root_for_tmux(&self, target: &str) -> Option<std::path::PathBuf> {
-        let g = self.inner.read().expect("workspaces lock");
-        g.by_id
-            .values()
-            .find(|ws| ws.tmux_session == target)
-            .map(|ws| ws.project_root.clone())
-    }
-
-    /// The workspace **slug** owning this tmux session (`sot-be-<slug>`),
-    /// e.g. `"alpha"`. `None` for the home-base `sot-llm` default (no
-    /// matching workspace). Stamped into a spawned session's env as
-    /// `SOT_WORKSPACE` so a session in the pane knows which workspace it
-    /// is in and can gate FE nav commands on it.
-    pub fn slug_for_tmux(&self, target: &str) -> Option<String> {
-        let g = self.inner.read().expect("workspaces lock");
-        g.by_id
-            .values()
-            .find(|ws| ws.tmux_session == target)
-            .map(|ws| ws.slug.clone())
     }
 
     /// The whole workspace owning `target` (the same identifier
@@ -1147,9 +1101,6 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
             agent_name,
             task,
         );
-        if let Some(r) = kv.get("runtime") {
-            ws.runtime = r.clone();
-        }
         // ADR 0046 decision 1. An older toml predates this key → "" (never
         // joined), matching `meta_only`'s own default.
         if let Some(h) = kv.get("agent_handle") {
@@ -1210,28 +1161,6 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
     )))
 }
 
-/// The single decision of what runtime the daemon's own default/home row
-/// gets at boot, for this OS — the counterpart of `load_toml`'s per-OS
-/// `default_runtime` (which fills in a MISSING key) extended to a
-/// pre-existing WRONG one: on Windows the answer is unconditionally
-/// `"capsule"`, `existing` or not — tmux is refused there outright
-/// (#177, `TmuxClient::run`), so an on-disk `"tmux"` value is never a
-/// legitimate steady state, only a leftover (a stale toml, an
-/// older/pre-L1a writer, a manual edit). Preserving it verbatim (the old
-/// behaviour) meant it never self-healed: the daemon then refused to
-/// start the row (`pty spawn failed error=tmux is not available on
-/// Windows`) and it can't be destroyed either
-/// (`default_workspace_not_destroyable`) — a dead end. Every other host
-/// preserves `existing` verbatim; a genuinely first-ever launch (no
-/// `existing`) gets `first_launch_default` (`from_label`'s own "tmux").
-pub(crate) fn default_row_runtime(existing: Option<&str>, first_launch_default: &str) -> String {
-    if cfg!(windows) {
-        "capsule".to_string()
-    } else {
-        existing.unwrap_or(first_launch_default).to_string()
-    }
-}
-
 /// The single decision of what LAUNCH FIELDS (`autostart_claude`, `agent`,
 /// `agent_name`, `task`) the daemon's own default/home row gets at boot —
 /// the counterpart of [`default_row_runtime`] above, for the launch
@@ -1259,20 +1188,16 @@ pub(crate) fn default_row_runtime(existing: Option<&str>, first_launch_default: 
 /// would otherwise silently replace them (`insert`'s "new metadata wins"
 /// semantics, `server::run`'s own doc).
 pub(crate) fn default_row_launch_seed(
-    existing: Option<(&str, bool, &str, &str, &str)>,
+    existing: Option<(bool, &str, &str, &str)>,
 ) -> (bool, String, String, String) {
     match existing {
-        Some((runtime, autostart_claude, agent, agent_name, task))
-            if !(cfg!(windows) && runtime != "capsule") =>
-        {
-            (
-                autostart_claude,
-                agent.to_string(),
-                agent_name.to_string(),
-                task.to_string(),
-            )
-        }
-        _ => (false, "none".to_string(), String::new(), String::new()),
+        Some((autostart_claude, agent, agent_name, task)) => (
+            autostart_claude,
+            agent.to_string(),
+            agent_name.to_string(),
+            task.to_string(),
+        ),
+        None => (false, "none".to_string(), String::new(), String::new()),
     }
 }
 
@@ -2060,10 +1985,6 @@ mod tests {
         assert!(reg.is_inert_default_anchor(&row));
         // The runtime does not matter (2026-09-06): a tmux backend's default
         // row with no agent is the anchor too, and is hidden the same way.
-        let mut tmux = Workspace::from_label("local", PathBuf::from("/home/u"), false, "none".into(), String::new(), String::new());
-        tmux.runtime = "tmux".to_string();
-        let tmux = reg.insert(tmux);
-        assert!(reg.is_inert_default_anchor(&tmux));
         // Default capsule row that carries an agent: a session, not the anchor.
         let mut agent = Workspace::from_label("local", PathBuf::from("/home/u"), true, "claude".into(), String::new(), String::new());
         agent.runtime = "capsule".to_string();
@@ -2351,9 +2272,6 @@ created      = 1700000000
         // byte-for-byte today's Unix behaviour; "capsule" on Windows
         // (Codex review, PR #175 — see `load_toml`'s own comment: tmux
         // never runs on Windows at all).
-        #[cfg(not(windows))]
-        assert_eq!(ws.runtime, "tmux");
-        #[cfg(windows)]
         assert_eq!(ws.runtime, "capsule");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2496,9 +2414,6 @@ pid          = 12345
         assert_eq!(ws.project_root, PathBuf::from("/home/u/LegacyPkg.jl"));
         // No `runtime` key -> `meta_only`'s per-OS default, same as the
         // canonical shape (`load_toml_canonical`).
-        #[cfg(not(windows))]
-        assert_eq!(ws.runtime, "tmux");
-        #[cfg(windows)]
         assert_eq!(ws.runtime, "capsule");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2850,62 +2765,6 @@ cursor_path = "src/lib.jl"
         let _ = app_config_dir();
     }
 
-    /// Field incident (2026-09-03): a Windows default row's on-disk toml
-    /// read `runtime = "tmux"` — some earlier writer's leftover, from
-    /// before this row had ever been through the current boot-seed logic
-    /// — and the OLD preserve-verbatim behaviour carried that forward on
-    /// every boot with no self-healing: the daemon then refused to start
-    /// the row at all (tmux is refused outright on Windows, #177) and it
-    /// couldn't be destroyed either (`default_workspace_not_destroyable`)
-    /// — a dead end. Exercises the REAL on-disk shape through
-    /// `scan_disk`/`load_toml` (not a hand-built `Workspace`) — proving
-    /// the toml really does read back "tmux" — then proves
-    /// `default_row_runtime` (the function `server::run`'s boot seed now
-    /// routes through) corrects it to "capsule".
-    #[test]
-    #[cfg(windows)]
-    fn default_row_runtime_corrects_a_stale_on_disk_tmux_value() {
-        let _guard = env_guarded();
-        let base = std::env::temp_dir().join(format!(
-            "sot-ws-test-default-row-capsule-{}-{}",
-            std::process::id(),
-            now_unix()
-        ));
-        std::fs::create_dir_all(&base).unwrap();
-        std::env::set_var("LOCALAPPDATA", &base);
-        std::env::remove_var("XDG_CONFIG_HOME");
-
-        let dir = workspaces_dir();
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("sot.toml"),
-            r#"
-workspace_id  = "ws-sot-1"
-slug          = "sot"
-label         = "sot"
-project_root  = "/home/u/ship-of-tools"
-tmux_session  = "sot-be-sot"
-created       = 1700000000
-autostart_claude = false
-agent         = "none"
-runtime       = "tmux"
-"#,
-        )
-        .unwrap();
-
-        let reg = Workspaces::new();
-        scan_disk(&reg, false).unwrap();
-        let existing = reg.resolve(Some("sot")).unwrap();
-        // Prove this really exercises the on-disk "tmux" value, not a
-        // tautology — `load_toml` read it back unmodified.
-        assert_eq!(existing.runtime, "tmux");
-
-        let corrected = default_row_runtime(Some(&existing.runtime), "tmux");
-        assert_eq!(corrected, "capsule");
-
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
     /// 2026-09-04 amendment: a genuinely first-ever launch seeds the
     /// default/home row as an INERT ANCHOR — no agent, no autostart — on
     /// EVERY host, not just non-Windows. Runs (and must pass) on every
@@ -2927,49 +2786,13 @@ runtime       = "tmux"
     #[test]
     fn default_row_launch_seed_preserves_a_healthy_existing_row() {
         assert_eq!(
-            default_row_launch_seed(Some(("capsule", true, "claude", "kal-sot", "hello"))),
+            default_row_launch_seed(Some((true, "claude", "kal-sot", "hello"))),
             (
                 true,
                 "claude".to_string(),
                 "kal-sot".to_string(),
                 "hello".to_string()
             )
-        );
-    }
-
-    /// Non-Windows only: `runtime` values other than `"capsule"` (e.g.
-    /// the ordinary `"tmux"` every non-Windows row actually carries) are
-    /// never "corrupted" off Windows — the corrupted-row re-seed is a
-    /// Windows-only concept (`default_row_runtime`'s own doc: tmux is
-    /// refused outright on Windows, #177, so only THERE is a non-capsule
-    /// runtime necessarily a leftover). Existing launch fields still
-    /// survive verbatim.
-    #[test]
-    #[cfg(not(windows))]
-    fn default_row_launch_seed_preserves_a_tmux_row_off_windows() {
-        assert_eq!(
-            default_row_launch_seed(Some(("tmux", true, "claude", "kal-sot", "hello"))),
-            (
-                true,
-                "claude".to_string(),
-                "kal-sot".to_string(),
-                "hello".to_string()
-            )
-        );
-    }
-
-    /// Windows only (#185's corrupted-row incident): an on-disk `runtime`
-    /// other than `"capsule"` means whatever wrote it also flipped
-    /// `agent`/`autostart_claude` — preserving those verbatim would boot
-    /// a capsule with a corrupted agent, so this row re-seeds to the same
-    /// inert defaults a first-ever launch gets, same as
-    /// `default_row_runtime` re-seeds its runtime to `"capsule"` for it.
-    #[test]
-    #[cfg(windows)]
-    fn default_row_launch_seed_reseeds_a_corrupted_windows_row_to_inert() {
-        assert_eq!(
-            default_row_launch_seed(Some(("tmux", true, "claude", "kal-sot", "hello"))),
-            (false, "none".to_string(), String::new(), String::new())
         );
     }
 

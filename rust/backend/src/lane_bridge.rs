@@ -239,9 +239,6 @@ where
     let Some(ws) = workspaces.workspace_for_tmux(&req.target) else {
         return crate::proxy::reject(&mut tx, id, op::LANE_CONNECT, "unknown_workspace", &format!("no workspace targets {:?}", req.target)).await;
     };
-    if ws.runtime != "capsule" {
-        return crate::proxy::reject(&mut tx, id, op::LANE_CONNECT, "not_capsule", "this row has no lane to bridge (runtime is not capsule)").await;
-    }
 
     let Some(root) = sot_log::state_dir::sot_state_dir() else {
         return crate::proxy::reject(
