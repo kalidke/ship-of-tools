@@ -27,7 +27,8 @@ cannot express the inactive grid or alternate-screen identity. Also removed:
 the `tui-term` feature and its ratatui glue, which the only consumer had
 already switched off.
 
-**Changed — three parser behaviors, all to stop a panic.**
+**Changed — four parser behaviors: three to stop a panic, one a scrollback
+correctness fix.**
 
 `Row::resize` now clears a wide character's leading cell when shrinking cuts
 off its continuation, which `Row::truncate` already did. Without it, shrinking
@@ -57,8 +58,24 @@ as an ordinary wide glyph. `MIN_COLS >= MAX_GLYPH_WIDTH` is asserted at compile
 time, because that is the relationship the column arithmetic depends on and
 raising one without the other would restore the underflow in silence.
 
+A scroll region gates scrollback capture by its TOP margin only, not by
+whether the whole region spans the screen. Upstream's `Grid::scroll_up`
+skipped scrollback whenever any non-default region was active — top or
+bottom. A DECSTBM region pinning a bottom footer row (top margin still row
+1, bottom short of the last row) is a standard inline-TUI shape — the one
+this project's own Codex capsule rows use for their live prompt line — and
+under upstream's gate, every line such an app ever prints is unrecoverable:
+nothing enters scrollback, ever, for the life of that region. xterm's actual
+rule keys on the top margin alone: a scroll region reaching down from the
+physical top of the screen still feeds scrollback for the lines it scrolls
+off, exactly as a full-screen scroll would. `scroll_up` now checks
+`scroll_top == 0` instead of "region spans the whole screen"; see
+`tests/scroll.rs::scrollback_with_pinned_footer_region`.
+
 Nothing else about parsing differs from the release this vendors — and that
-sentence is now checked rather than asserted; see below.
+sentence is now checked rather than asserted; see below. (The fixture corpus
+below runs every parser at zero scrollback capacity, so it does not — and
+did not, upstream either — cover this path either way.)
 
 **Added, ADR 0041 step 5 — `Parser::is_ground`.** `src/vte/` vendors vte
 0.13.1's core (minus the `ansi` feature module) and utf8parse 0.2.2 in full,

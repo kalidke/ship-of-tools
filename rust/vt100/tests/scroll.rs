@@ -155,6 +155,24 @@ fn scrollback() {
     );
 }
 
+// xterm's scrollback rule: a line entering scrollback depends on the
+// scroll REGION'S TOP, not its bottom. A pinned-footer TUI (DECSTBM
+// leaving the top margin at row 1, the bottom short of the last row --
+// exactly what Codex's inline renderer emits) must still fill
+// scrollback for everything scrolling above the footer.
+#[test]
+fn scrollback_with_pinned_footer_region() {
+    let mut parser = vt100_ctt::Parser::new(5, 10, 10);
+
+    // Rows 1-4 (0-indexed 0..=3) scroll normally; row 5 (index 4) is a
+    // pinned footer outside the region.
+    parser.process(b"\x1b[1;4r");
+    parser.process(b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n");
+
+    parser.screen_mut().set_scrollback(10);
+    assert_eq!(parser.screen().scrollback(), 5);
+}
+
 #[test]
 fn edge_of_screen() {
     let mut parser = vt100_ctt::Parser::default();

@@ -343,7 +343,14 @@ impl Grid {
             self.rows
                 .insert(usize::from(self.scroll_bottom) + 1, self.new_row());
             let removed = self.rows.remove(usize::from(self.scroll_top));
-            if self.scrollback_len > 0 && !self.scroll_region_active() {
+            // xterm's rule: a scrolled-off line joins scrollback exactly
+            // when it left the PHYSICAL top of the screen (scroll_top ==
+            // 0) -- a region pinning a footer/status row still feeds
+            // scrollback for everything scrolling above it. Gating on the
+            // whole region (bottom included, as this used to) drops every
+            // line for the common "pinned bottom row, scroll above it" TUI
+            // shape, which never touches scroll_top at all.
+            if self.scrollback_len > 0 && self.scroll_top == 0 {
                 self.scrollback.push_back(removed);
                 while self.scrollback.len() > self.scrollback_len {
                     self.scrollback.pop_front();
@@ -381,10 +388,6 @@ impl Grid {
 
     fn in_scroll_region(&self) -> bool {
         self.pos.row >= self.scroll_top && self.pos.row <= self.scroll_bottom
-    }
-
-    fn scroll_region_active(&self) -> bool {
-        self.scroll_top != 0 || self.scroll_bottom != self.size.rows - 1
     }
 
     pub fn set_origin_mode(&mut self, mode: bool) {
