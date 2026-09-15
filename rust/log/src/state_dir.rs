@@ -21,6 +21,23 @@
 //! resolution logic (no behavior change), which now DELEGATES to this
 //! function instead of carrying its own copy.
 
+/// Resolve the per-user CONFIG directory: `%LOCALAPPDATA%\sot\config` on
+/// Windows (a sibling of [`sot_state_dir`]'s `state` under the same root —
+/// no `$HOME`-shaped fallback there, same reasoning as below), else
+/// `$XDG_CONFIG_HOME/sot` or `$HOME/.config/sot`. Home for `hosts.toml`
+/// (`sot-protocol`'s `topology`), the workspace/session registries and the
+/// frontend's own settings. `None` when no base env var is set.
+pub fn sot_config_dir() -> Option<std::path::PathBuf> {
+    if cfg!(windows) {
+        return sot_state_dir().map(|d| d.join("config"));
+    }
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .map(|d| d.join("sot"))
+}
+
 /// Resolve the per-machine state directory: `%LOCALAPPDATA%\sot` (falling
 /// back to `%USERPROFILE%\AppData\Local\sot` — the same location
 /// `%LOCALAPPDATA%` names, derived directly for the rare login where the

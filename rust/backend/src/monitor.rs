@@ -676,140 +676,74 @@ async fn spawn_source(host: &MonitorHost) -> std::io::Result<tokio::process::Chi
     Ok(child)
 }
 
-// ─── Config: monitored host list from hosts.toml ─────────────────────────
 
-/// Load the monitored host list. Looks for a `[monitor]` table in the same
-/// `hosts.toml` the frontend uses (layered candidate paths). Each entry is
-/// `<display-name> = "<ssh-alias>"`, where `"local"` or `""` marks the
-/// backend's own host. Falls back to monitoring just this host.
+// ─── Config: sampling targets from the declared topology ─────────────────
+
+/// The sampling roster: the `[monitor]` table of `hosts.toml`, read through
+/// the ONE parser (`sot_protocol::topology`; search order documented
+/// there). Each entry is `<label> = "<ssh target>"`; an empty target means
+/// the label. The entry whose label or target equals this box's
+/// `host_name()` is sampled locally (no ssh), so one file serves whichever
+/// box the daemon runs on. No file, or a file the parser rejects (logged),
+/// falls back to this host alone.
 ///
-/// `project_root` is the daemon's `--project-root`: the repo-rooted config
-/// layer resolves against it, NOT `current_dir()`, because the daemon's cwd is
-/// the user's `$HOME`, not the repo.
-///
-/// Called ONCE, from `server::serve`, before any connection is accepted. The
-/// roster is fixed for the life of the daemon: editing `hosts.toml` while it
-/// runs changes nothing until a restart. That is a deliberate limit rather than
-/// an oversight — the samplers are spawned eagerly from this list and a live
-/// roster would need supervisor cancellation and ring-retention rules for a
-/// list that changes about once a year — but it has bitten, so say it here.
-///
-/// A candidate that exists but yields no hosts does NOT win: the search
-/// continues to the next one and only the first NON-EMPTY list is taken. Note
-/// this differs from the frontend's host registry, where the first readable
-/// file wins outright (`frontend/src/hosts.rs`).
-pub fn load_hosts(project_root: &std::path::Path) -> Vec<MonitorHost> {
-    let local = local_host_name();
-    for path in candidate_paths(project_root) {
-        match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                let hosts = parse_monitor_section(&text, &local);
-                if !hosts.is_empty() {
-                    tracing::info!(path = ?path, count = hosts.len(), "monitor: hosts loaded");
-                    return hosts;
-                }
-                tracing::warn!(
-                    path = ?path,
-                    "monitor: config has no usable [monitor] entries; trying the next candidate"
-                );
+/// Called ONCE, from `server::serve`, before any connection is accepted.
+/// The roster is fixed for the life of the daemon: editing `hosts.toml`
+/// while it runs changes nothing until a restart — a deliberate limit (the
+/// samplers are spawned eagerly from this list) that has bitten, so it is
+/// said here.
+pub fn load_hosts() -> Vec<MonitorHost> {
+    let local = sot_log::state_dir::host_name().unwrap_or_else(|_| "local".to_string());
+    let targets = match sot_protocol::topology::load() {
+        Ok(Some((path, topo))) => {
+            for w in &topo.warnings {
+                tracing::warn!(path = ?path, "hosts.toml: {w}");
             }
-            // Absent is the ordinary case and says nothing. Present but
-            // unreadable — bad permissions, invalid UTF-8 — used to be
-            // indistinguishable from absent, so a broken config reported
-            // itself as "no [monitor] config" and sent the reader looking in
-            // the wrong place.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::warn!(path = ?path, error = %e, "monitor: config unreadable"),
+            tracing::info!(path = ?path, count = topo.monitor.len(), "monitor: hosts loaded");
+            topo.monitor_targets()
         }
+        Ok(None) => Vec::new(),
+        Err(e) => {
+            tracing::warn!("monitor: hosts.toml rejected, monitoring local host only: {e}");
+            Vec::new()
+        }
+    };
+    let hosts = monitor_hosts(targets, &local);
+    if hosts.is_empty() {
+        tracing::info!(host = %local, "monitor: no [monitor] entries; monitoring local host only");
+        return vec![MonitorHost { name: local, ssh_alias: None, local: true }];
     }
-    tracing::info!(host = %local, "monitor: no [monitor] config; monitoring local host only");
-    vec![MonitorHost {
-        name: local,
-        ssh_alias: None,
-        local: true,
-    }]
+    hosts
 }
 
-fn local_host_name() -> String {
-    gethostname::gethostname()
-        .to_string_lossy()
-        .split('.')
-        .next()
-        .unwrap_or("local")
-        .to_string()
+fn monitor_hosts(targets: Vec<(String, String)>, local: &str) -> Vec<MonitorHost> {
+    targets
+        .into_iter()
+        .map(|(name, target)| {
+            let is_local = name == local || target == local;
+            MonitorHost { local: is_local, ssh_alias: (!is_local).then_some(target), name }
+        })
+        .collect()
 }
 
-fn parse_monitor_section(text: &str, local: &str) -> Vec<MonitorHost> {
-    let mut out = Vec::new();
-    let mut in_monitor = false;
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some(sec) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            in_monitor = sec.trim() == "monitor";
-            continue;
-        }
-        if !in_monitor {
-            continue;
-        }
-        let Some((k, v)) = line.split_once('=') else {
-            continue;
-        };
-        let name = k.trim().to_string();
-        let alias_raw = strip_quotes(v.trim());
-        // Empty alias falls back to the host name. A host is sampled locally
-        // (no SSH) when its name or alias matches this machine's hostname, so
-        // the same config works whichever box the backend runs on.
-        let alias = if alias_raw.is_empty() { name.as_str() } else { alias_raw };
-        let is_local = name == local || alias == local;
-        out.push(MonitorHost {
-            local: is_local,
-            ssh_alias: if is_local { None } else { Some(alias.to_string()) },
-            name,
-        });
-    }
-    out
-}
+#[cfg(test)]
+mod config_tests {
+    use super::*;
 
-fn strip_quotes(s: &str) -> &str {
-    let b = s.as_bytes();
-    if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
-        &s[1..s.len() - 1]
-    } else {
-        s
+    /// The roster the retired private parser produced for this file, now
+    /// reached through the shared parser: same names, same local/remote
+    /// split, same alias fallback.
+    #[test]
+    fn monitor_targets_match_the_old_parser() {
+        let text = "hub = \"alpha\"\n[host.alpha]\n[monitor]\nalpha = \"alpha\"\nbeta = \"\"\ngpu = \"someone@gpu\"\n";
+        let topo = sot_protocol::topology::parse(text).unwrap();
+        let hosts = monitor_hosts(topo.monitor_targets(), "alpha");
+        assert_eq!(hosts.len(), 3);
+        assert!(hosts[0].local && hosts[0].ssh_alias.is_none() && hosts[0].name == "alpha");
+        assert!(!hosts[1].local && hosts[1].ssh_alias.as_deref() == Some("beta"));
+        assert!(!hosts[2].local && hosts[2].ssh_alias.as_deref() == Some("someone@gpu") && hosts[2].name == "gpu");
+        // The alias, not only the label, marks the local box.
+        let hosts = monitor_hosts(vec![("lab".into(), "alpha".into())], "alpha");
+        assert!(hosts[0].local && hosts[0].name == "lab");
     }
-}
-
-/// Layered discovery, highest priority first. Mirrors the frontend's host
-/// registry (`frontend/src/hosts.rs`, ADR 0026). The repo-rooted layer resolves
-/// against `project_root` rather than `current_dir()` — the daemon's cwd is
-/// `$HOME`, so a cwd-relative `.sot/hosts.toml` silently missed the repo's
-/// config and the monitor fell back to local-host-only.
-///   1. $SOT_HOSTS (explicit override)
-///   2. <project-root>/.sot/hosts.toml
-///   3. $XDG_CONFIG_HOME/sot/hosts.toml
-///   4. $HOME/.config/sot/hosts.toml
-///   5. %APPDATA%/sot/hosts.toml (Windows)
-fn candidate_paths(project_root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    use std::path::PathBuf;
-    let mut out = Vec::new();
-    if let Some(p) = std::env::var_os("SOT_HOSTS") {
-        out.push(PathBuf::from(p));
-    }
-    out.push(project_root.join(".sot").join("hosts.toml"));
-    if let Some(p) = std::env::var_os("XDG_CONFIG_HOME") {
-        let base = PathBuf::from(p);
-        out.push(base.join("sot").join("hosts.toml"));
-    }
-    if let Some(p) = std::env::var_os("HOME") {
-        let cfg = PathBuf::from(p).join(".config");
-        out.push(cfg.join("sot").join("hosts.toml"));
-    }
-    if let Some(p) = std::env::var_os("APPDATA") {
-        let base = PathBuf::from(p);
-        out.push(base.join("sot").join("hosts.toml"));
-    }
-    out
 }

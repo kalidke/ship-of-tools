@@ -20,6 +20,9 @@ pub mod ir;
 pub mod lane_client;
 pub mod ops;
 pub mod session_socket;
+// The declared topology (`hosts.toml`, grammar v2): the ONE parser and the
+// ONE search rule for the daemon, `sotd topology`, and the frontend.
+pub mod topology;
 
 pub use codec::{read_frame, write_frame};
 pub use ir::{BlobDescriptor, PreviewPayload, TreeNode};

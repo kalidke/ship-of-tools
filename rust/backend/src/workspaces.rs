@@ -1468,24 +1468,18 @@ fn sessions_dir() -> PathBuf {
 /// to the `config_dir()` logic below on Windows any more (Codex review,
 /// PR #175): `windows_state_root()` panics with a clear message instead
 /// of silently landing on a `$HOME`-shaped path there.
+///
+/// The derivation itself is `sot_log::state_dir::sot_config_dir` (one
+/// resolver, shared with `sot-protocol`'s `topology` reader so the daemon
+/// and `sotd topology` read `hosts.toml` from the same place); this wrapper
+/// keeps the two fallbacks: the Windows panic, and the Unix
+/// `/tmp/.config/sot` for a process with neither `$XDG_CONFIG_HOME` nor
+/// `$HOME`.
 pub(crate) fn app_config_dir() -> PathBuf {
     #[cfg(windows)]
     return crate::paths::windows_state_root().join("config");
     #[cfg(not(windows))]
-    config_dir().join("sot")
-}
-
-#[cfg(not(windows))]
-fn config_dir() -> PathBuf {
-    if let Some(v) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(v);
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push(".config");
-        return p;
-    }
-    PathBuf::from("/tmp/.config")
+    sot_log::state_dir::sot_config_dir().unwrap_or_else(|| PathBuf::from("/tmp/.config/sot"))
 }
 
 /// Directory entries directly under `root` matching the backend's OWN

@@ -781,8 +781,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // subscribe and the `monitor.*` ops can reach it. Sampling runs for the
     // life of the backend so the drawer shows real history the moment it opens;
     // per-connection tick delivery is gated by `monitor.subscribe`.
-    let monitor_hub =
-        crate::monitor::MonitorHub::start(crate::monitor::load_hosts(&opts.project_root));
+    let monitor_hub = crate::monitor::MonitorHub::start(crate::monitor::load_hosts());
     workspaces.set_monitor_hub(monitor_hub);
 
     // Connected-frontend registry (ADR 0010/0013 multi-frontend). Shared

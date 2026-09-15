@@ -35,6 +35,7 @@ mod server;
 mod session;
 mod session_state;
 mod site_serve;
+mod topology_cli;
 mod update;
 mod watcher;
 mod workspaces;
@@ -206,6 +207,13 @@ async fn main() -> Result<()> {
                     std::process::exit(2);
                 }
             }
+            // The declared topology (`hosts.toml` v2): what this box
+            // derives from it — the launcher's tunnel/dial plan, the relay
+            // endpoint, the declared table, a fetch of the hub's copy.
+            "topology" => {
+                let args: Vec<String> = std::env::args().skip(2).collect();
+                std::process::exit(topology_cli::run(&args));
+            }
             "--version" | "-V" => {
                 println!("{}", sot_protocol::version_line("sotd"));
                 return Ok(());
@@ -239,7 +247,10 @@ Pure queries (no startup side effects, answered before any of the above):
   agent-exec <kind> [flags…] (Unix only)
                           resolve and exec the named agent's launch
                           recipe in place (ADR 0046 decision 4); only
-                          "claude" has a recipe today"#
+                          "claude" has a recipe today
+  topology <plan|status|relay-endpoint|sync|apply>
+                          what this box derives from hosts.toml
+                          (`sotd topology` alone prints the details)"#
                 );
                 return Ok(());
             }
