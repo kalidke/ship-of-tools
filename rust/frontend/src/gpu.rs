@@ -15353,11 +15353,14 @@ impl State {
             }
             None => self.status.clone(),
         };
-        // Local wall-clock of the machine running the frontend, 24-hour
-        // HH:MM:SS, painted into the top-right chrome corner. `chrono::Local`
-        // is cross-platform (same behaviour on Windows/macOS/Linux); the
-        // once-per-second repaint is scheduled in `about_to_wait`.
-        let clock = chrono::Local::now().format("%H:%M:%S").to_string();
+        // Local wall-clock of the machine running the frontend, sampled once
+        // per frame and turned into the top-right chrome clock text at the
+        // paint site below (`clock_label`, which also prefixes the date
+        // when there's room). `chrono::Local` is cross-platform (same
+        // behaviour on Windows/macOS/Linux); the once-per-second repaint is
+        // scheduled in `about_to_wait`, which also covers the date rolling
+        // over at midnight — no separate timer needed.
+        let clock_now = chrono::Local::now().naive_local();
         // Battery readout painted just left of the clock. The OS query isn't
         // free, so refresh the cache at most once per `BATTERY_QUERY_INTERVAL`
         // (the clock repaints ~1×/s and reuses the cached value between
@@ -16509,7 +16512,7 @@ impl State {
                 // as an idle pane title. Repaints ~1×/second via the
                 // `about_to_wait` WaitUntil scheduling below.
                 {
-                    let clock_label = format!(" {clock} ");
+                    let clock_label = format!(" {} ", clock_label(clock_now, area.width));
                     let clock_cells = clock_label.chars().count() as u16;
                     // Keep the ┐ corner; sit one cell to its left, then back
                     // off by the label width. No-op if the window is too
@@ -22569,6 +22572,24 @@ fn query_battery_label() -> Option<String> {
     })
 }
 
+/// Build the top-right chrome clock text: the local date prefixed onto the
+/// existing `HH:MM:SS` time (unchanged), e.g. `Tue Sep 15 15:42:07`. The
+/// date is the first thing dropped when `available_width` is too narrow for
+/// the dated form — the time itself never shrinks or disappears here; the
+/// caller's own width guard still decides whether even the time-only label
+/// fits at all.
+fn clock_label(now: chrono::NaiveDateTime, available_width: u16) -> String {
+    let time = now.format("%H:%M:%S").to_string();
+    let dated = format!("{} {time}", now.format("%a %b %-d"));
+    // Same one-cell-each-side padding the render guard checks the label
+    // against (` {label} `), so this mirrors that fit check exactly.
+    if dated.chars().count() as u16 + 2 <= available_width {
+        dated
+    } else {
+        time
+    }
+}
+
 fn write_title(
     buf: &mut ratatui::buffer::Buffer,
     x: u16,
@@ -23032,6 +23053,26 @@ fn force_os_foreground(window: &winit::window::Window) -> bool {
 mod tests {
     use super::*;
     use sot_protocol::TreeNode;
+
+    fn fixed_now() -> chrono::NaiveDateTime {
+        // A Monday, so the weekday abbreviation is unambiguous.
+        chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+            .unwrap()
+            .and_hms_opt(5, 7, 9)
+            .unwrap()
+    }
+
+    #[test]
+    fn clock_label_includes_date_when_there_is_room() {
+        assert_eq!(clock_label(fixed_now(), 25), "Mon Jan 1 05:07:09");
+    }
+
+    #[test]
+    fn clock_label_drops_the_date_when_narrow() {
+        // Too narrow for "Mon Jan 1 05:07:09" (18 chars + 2 padding = 20);
+        // the date is dropped first and the time survives unchanged.
+        assert_eq!(clock_label(fixed_now(), 15), "05:07:09");
+    }
 
     // Switch-latency Phase 1: `reply_is_current` is the whole stale-reply
     // guard for the preview pane and the concept/annotation slot — a
