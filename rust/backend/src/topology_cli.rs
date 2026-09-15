@@ -6,7 +6,6 @@
 //! Warnings from the parser (accepted v1 keys) go to stderr, one line each.
 
 use sot_protocol::topology::{self, Topology};
-use std::path::PathBuf;
 
 const USAGE: &str = "\
 Usage: sotd topology <subcommand>
@@ -117,7 +116,7 @@ fn sync(hub: Option<String>) -> Result<(), String> {
         println!("{} is current (same as {hub})", dest.display());
         return Ok(());
     }
-    write_atomic(&dest, &text)?;
+    crate::topology_store::write_atomic(&dest, &text)?;
     println!("synced {} from {hub} ({} hosts, {} monitor targets)", dest.display(), fetched.hosts.len(), fetched.monitor.len());
     for w in &fetched.warnings {
         eprintln!("sotd topology: {}: {w}", dest.display());

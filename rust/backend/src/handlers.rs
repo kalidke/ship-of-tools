@@ -329,16 +329,33 @@ pub async fn handle_hello(
 /// disagree under concurrent `fe.presence` traffic), and `active` is set by
 /// comparing SERIALS, never handles, so a duplicate-handle connection that
 /// isn't the winner is never marked active alongside it (finding 5).
+///
+/// Topology plan §B "on-demand re-read": this call also re-reads this
+/// daemon's `hosts.toml` (`TopologyStore::refresh`) so `hosts_toml_hash`
+/// is never stale by more than one hand edit, and — same as `topology.set`
+/// — broadcasts `topology.changed` if that re-read picked up a change
+/// nothing else had already announced. Never a file watcher (the file can
+/// be on a network filesystem); this op and `topology.*` are the only
+/// re-read triggers.
 pub async fn handle_version_query(
     req_id: u64,
     clients: &crate::clients::Clients,
+    topology: &crate::topology_store::TopologyStore,
+    topo_tx: &broadcast::Sender<crate::topology_store::TopologyChanged>,
 ) -> Result<HandlerOutput> {
+    let refreshed = topology.refresh();
+    if refreshed.changed {
+        let _ = topo_tx.send(crate::topology_store::TopologyChanged {
+            hash: refreshed.hash.clone().unwrap_or_default(),
+        });
+    }
     let daemon = sot_protocol::DaemonVersion {
         app_version: sot_protocol::app_version(),
         protocol: sot_protocol::PROTOCOL_VERSION,
         lane_build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
         lane_proto: sot_log::wire::SUPERVISOR_PROTO_V1,
         host: crate::workspaces::declared_host().to_string(),
+        hosts_toml_hash: refreshed.hash.unwrap_or_default(),
     };
     let snap = clients.snapshot_with_active();
     let clients = snap

@@ -36,6 +36,8 @@ mod session;
 mod session_state;
 mod site_serve;
 mod topology_cli;
+mod topology_set;
+mod topology_store;
 mod update;
 mod watcher;
 mod workspaces;

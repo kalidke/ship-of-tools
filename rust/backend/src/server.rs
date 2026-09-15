@@ -758,6 +758,18 @@ pub async fn run(opts: Opts) -> Result<()> {
     // evt frame so the Sessions strip refreshes live (mirror preview.changed).
     let (ws_events_tx, _ws_events_rx) = broadcast::channel::<WorkspaceChanged>(64);
 
+    // Topology write path (plan §B "Editing the master list"): one store
+    // per daemon holding the last successfully parsed `hosts.toml`, and a
+    // broadcast bus parallel to the workspace one, typed `TopologyChanged`.
+    // `topology.set` publishes here after a successful write; `version.query`
+    // (and every `topology.*` op) re-reads the file on-demand and publishes
+    // the same way when it notices a hand edit nobody else already announced
+    // — never a file watcher (the file can live on a network filesystem).
+    let topology_store = std::sync::Arc::new(crate::topology_store::TopologyStore::new(
+        sot_protocol::topology::locate().unwrap_or_else(|| PathBuf::from("hosts.toml")),
+    ));
+    let (topo_changed_tx, _topo_changed_rx) = broadcast::channel::<crate::topology_store::TopologyChanged>(16);
+
     // ADE state-nav live refresh: poll the sot-comm registry and publish a
     // `workspace.changed` whenever an agent's work-state actually changes, so the
     // Sessions strip re-lists LIVE (the FE re-issues workspace.list on the evt).
@@ -849,9 +861,11 @@ pub async fn run(opts: Opts) -> Result<()> {
         let fce = fe_command_tx.clone();
         let rfe = repl_frame_tx.clone();
         let cl = clients.clone();
+        let tps = topology_store.clone();
+        let tpe = topo_changed_tx.clone();
         tasks.push(tokio::spawn(async move {
             run_local(
-                path, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl,
+                path, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl, tps, tpe,
             )
             .await
         }));
@@ -890,6 +904,8 @@ async fn run_local(
     fe_command_tx: broadcast::Sender<FeCommandEvt>,
     repl_frame_tx: broadcast::Sender<ReplFrameMsg>,
     clients: Clients,
+    topology_store: Arc<crate::topology_store::TopologyStore>,
+    topo_changed_tx: broadcast::Sender<crate::topology_store::TopologyChanged>,
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -936,11 +952,13 @@ async fn run_local(
         let fce = fe_command_tx.clone();
         let rfe = repl_frame_tx.clone();
         let cl = clients.clone();
+        let tps = topology_store.clone();
+        let tpe = topo_changed_tx.clone();
         tokio::spawn(async move {
             let (rx, tx) = stream.split();
             if let Err(e) = handle_connection(
                 rx, tx, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl,
-                "local", None,
+                tps, tpe, "local", None,
             )
             .await
             {
@@ -1020,6 +1038,8 @@ async fn handle_connection<R, W>(
     fe_command_tx: broadcast::Sender<FeCommandEvt>,
     repl_frame_tx: broadcast::Sender<ReplFrameMsg>,
     clients: Clients,
+    topology_store: Arc<crate::topology_store::TopologyStore>,
+    topo_changed_tx: broadcast::Sender<crate::topology_store::TopologyChanged>,
     transport: &'static str,
     peer: Option<String>,
 ) -> Result<()>
@@ -1099,6 +1119,10 @@ where
     // for the connection's lifetime; the guard deregisters on any exit
     // path (clean EOF, error, task drop). `None` until hello arrives.
     let mut client_guard: Option<crate::clients::ClientGuard> = None;
+    // This connection's own declared host (`HelloReq.host`, ADR 0046
+    // decision 1), captured at hello — `topology.set`'s "can't remove
+    // yourself" refusal reads it (server.rs, `op::TOPOLOGY_SET`).
+    let mut hello_host: Option<String> = None;
 
     // Half-open long-lived-role reaper (topology plan §F step 2). A
     // tunnelled `fe`/`bridge` connection reaches this daemon as sshd's
@@ -1186,6 +1210,11 @@ where
     // detection surfaces a connection that fell behind.
     let mut ws_events_rx = ws_events_tx.subscribe();
 
+    // One topology subscription per connection, same shape as the
+    // workspace-lifecycle bus above (plan §B): each connection writes its
+    // own `topology.changed` evt frame so Hosts mode refreshes live.
+    let mut topo_changed_rx = topo_changed_tx.subscribe();
+
     // One agent-relay subscription per connection. Like the workspace bus
     // it's always present (channel created unconditionally in `run`). Each
     // connection writes its own `agent.message` evt frame; the broadcast's
@@ -1269,6 +1298,12 @@ where
                     // unauthenticated connection. Drain the channel, drop the frame.
                     if authenticated {
                         write_workspace_changed(&mut tx, wsc, transport).await?;
+                    }
+                    continue;
+                }
+                tpc = recv_topo_changed(&mut topo_changed_rx) => {
+                    if authenticated {
+                        write_topology_changed(&mut tx, tpc, transport).await?;
                     }
                     continue;
                 }
@@ -1395,6 +1430,7 @@ where
                             req.role.as_str()
                         };
                         is_long_lived_role = matches!(effective_role, "fe" | "bridge");
+                        hello_host = req.host.clone();
                         client_guard = Some(clients.register(
                             req.client_id,
                             transport,
@@ -1726,7 +1762,22 @@ where
             op::UPDATE_APPLY => {
                 crate::update::handle_update_apply(frame.id, &fe_command_tx).await
             }
-            op::VERSION_QUERY => handlers::handle_version_query(frame.id, &clients).await,
+            op::VERSION_QUERY => {
+                handlers::handle_version_query(frame.id, &clients, &topology_store, &topo_changed_tx)
+                    .await
+            }
+            op::TOPOLOGY_SET => {
+                crate::topology_set::handle_topology_set(
+                    frame.id,
+                    frame.payload,
+                    &topology_store,
+                    &workspaces,
+                    crate::workspaces::declared_host(),
+                    hello_host.as_deref(),
+                    &topo_changed_tx,
+                )
+                .await
+            }
             op::WORKSPACE_DESTROY => {
                 handlers::handle_workspace_destroy(
                     frame.id,
@@ -2099,6 +2150,46 @@ where
         }
         Err(broadcast::error::RecvError::Closed) => {
             tracing::debug!(transport, "workspace event bus channel closed");
+            Ok(false)
+        }
+    }
+}
+
+/// Awaits the next topology write (plan §B). Same shape as `recv_ws_events`
+/// — the channel is always present (created unconditionally in `run`).
+async fn recv_topo_changed(
+    rx: &mut broadcast::Receiver<crate::topology_store::TopologyChanged>,
+) -> Result<crate::topology_store::TopologyChanged, broadcast::error::RecvError> {
+    rx.recv().await
+}
+
+/// Translates one topology write into a `topology.changed` evt frame.
+/// Mirrors `write_workspace_changed`.
+async fn write_topology_changed<W>(
+    tx: &mut W,
+    change: Result<crate::topology_store::TopologyChanged, broadcast::error::RecvError>,
+    transport: &'static str,
+) -> Result<bool>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    match change {
+        Ok(c) => {
+            let payload = serde_json::json!({ "hash": c.hash });
+            let frame = Frame::evt(op::TOPOLOGY_CHANGED, payload);
+            write_frame_to(tx, &frame, None).await?;
+            Ok(true)
+        }
+        Err(broadcast::error::RecvError::Lagged(n)) => {
+            tracing::warn!(
+                skipped = n,
+                transport,
+                "topology event bus lagged on this connection; client missed a topology change"
+            );
+            Ok(false)
+        }
+        Err(broadcast::error::RecvError::Closed) => {
+            tracing::debug!(transport, "topology event bus channel closed");
             Ok(false)
         }
     }
