@@ -1962,8 +1962,24 @@ fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_out
         })
         .collect();
 
-    let old_positions: Vec<usize> = marker_positions.iter().filter(|(_, n)| *n <= cutoff).map(|(p, _)| *p).collect();
-    let new_positions: Vec<usize> = marker_positions.iter().filter(|(_, n)| *n > cutoff).map(|(p, _)| *p).collect();
+    // Real Windows ConPTY, unlike a raw Unix pty, can trigger conhost's
+    // own asynchronous screen-buffer repaint on a resize -- re-emitting
+    // text it already sent earlier at some later, unpredictable point in
+    // the byte stream (a Unix pty's resize is metadata-only: TIOCSWINSZ +
+    // SIGWINCH, no redraw). Under a loaded CI runner (the >500ms Windows
+    // echo latency already measured elsewhere in this file) that repaint
+    // can land AFTER a genuinely NEW marker's own first echo, reproducing
+    // an OLD marker's text a second time -- not a real reordering of when
+    // that marker actually committed, just redraw noise. Bucket each
+    // marker by its FIRST position only (its real commit order); a later
+    // repeat of an already-seen number is ignored rather than inflating
+    // `max_old_pos`.
+    let mut first_pos: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    for (pos, n) in &marker_positions {
+        first_pos.entry(*n).or_insert(*pos);
+    }
+    let old_positions: Vec<usize> = first_pos.iter().filter(|(&n, _)| n <= cutoff).map(|(_, &p)| p).collect();
+    let new_positions: Vec<usize> = first_pos.iter().filter(|(&n, _)| n > cutoff).map(|(_, &p)| p).collect();
 
     assert!(
         !old_positions.is_empty(),
