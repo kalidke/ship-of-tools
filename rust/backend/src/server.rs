@@ -83,6 +83,37 @@ fn write_deadline(blob: Option<&[u8]>) -> std::time::Duration {
     WRITE_TIMEOUT + std::time::Duration::from_secs(extra)
 }
 
+/// Read deadline for a connection whose declared role is `fe` or `bridge`
+/// (topology plan §F step 2, D10 — the half-open-roster fix). Since 0.4.0
+/// the daemon has had no keepalive, and `WRITE_TIMEOUT` above never fires
+/// for a tunnelled peer (its writes always drain into sshd's Unix-socket
+/// side) — a closed laptop stayed in the roster for 15 min to 2 h. No
+/// frame AT ALL from the peer within this long means treat the connection
+/// as dead: drop it and reap it through the same `ClientGuard::drop` path
+/// as a clean exit (`clients.rs:329`). Three times the client-side `ping`
+/// interval (30s — the frontend transport and `comm-listen.sh`'s bridge
+/// loop): one missed tick is noise, three in a row is a dead peer.
+/// `cli`/`agent` (one-shot) connections never gate on this — see
+/// `is_long_lived_role` at its declaration site.
+const PING_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// `SOT_TEST_PING_READ_DEADLINE_MS` overrides [`PING_READ_DEADLINE`] for
+/// tests — same `OnceLock`-cached-once-per-process convention as
+/// `test_slow_concept_read_delay` (read once, before any connection can
+/// have started, never something a client controls per-request). Unset in
+/// every real deployment.
+fn ping_read_deadline() -> std::time::Duration {
+    static OVERRIDE_MS: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    let override_ms = *OVERRIDE_MS.get_or_init(|| {
+        std::env::var("SOT_TEST_PING_READ_DEADLINE_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
+    override_ms
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(PING_READ_DEADLINE)
+}
+
 /// Write one frame to a connection with a bounded timeout (ADR 0027, reaper
 /// half 2). On timeout we return an error so `handle_connection` unwinds and
 /// drops the connection: a peer that hasn't drained a single frame in
@@ -1069,6 +1100,39 @@ where
     // path (clean EOF, error, task drop). `None` until hello arrives.
     let mut client_guard: Option<crate::clients::ClientGuard> = None;
 
+    // Half-open long-lived-role reaper (topology plan §F step 2). A
+    // tunnelled `fe`/`bridge` connection reaches this daemon as sshd's
+    // Unix-socket side, so `WRITE_TIMEOUT` above never fires for it — a
+    // half-open peer's death is otherwise noticed only when the OS-level
+    // TCP side gives up (15 min to 2 h). `is_long_lived_role` flips true on
+    // hello, exactly when this connection's declared role resolves to
+    // `fe`/`bridge` (`cli`/`agent`, one-shot roles, stay false forever and
+    // are never deadline-gated) — it is only ELIGIBILITY, not the gate
+    // itself.
+    //
+    // Opt-in by ping (manager compatibility fix, post-review): the gate is
+    // `deadline_armed`, which flips true only on this connection's FIRST
+    // `ping` — never at hello. An `fe`/`bridge` peer too old to send ping
+    // (a frontend box or a comm bridge that hasn't converged from main
+    // yet) is eligible but never arms, so it keeps TODAY's behaviour
+    // exactly: never reaped by this path. Arming at hello instead would
+    // have dropped every such peer every 90s forever (endless reconnect
+    // churn, a message-loss window each cycle) — the stale-roster defect
+    // this step fixes then persists only for clients too old to ping,
+    // which is correct and self-healing as they upgrade.
+    //
+    // Once armed, `read_deadline` is a fixed point in time — bumped
+    // forward to `now + ping_read_deadline()` every time ANY frame is read
+    // from this connection (not only `ping`; ordinary traffic is just as
+    // much proof of life), never recomputed relative to "now" at each
+    // select! poll, so re-entering select! every loop iteration doesn't
+    // itself push it out. The initial `Instant::now()` here is never
+    // acted on: the corresponding select! arm and the bump below are both
+    // `deadline_armed`-gated, and that starts false.
+    let mut is_long_lived_role = false;
+    let mut deadline_armed = false;
+    let mut read_deadline = tokio::time::Instant::now();
+
     // Per-connection auth state (ADR 0010 hardening). The token gate on `hello`
     // is not sufficient on its own: nothing forces a client to send hello, and
     // the dispatch loop below serves file.read / repl.eval / file.download /
@@ -1239,8 +1303,33 @@ where
                     }
                     continue;
                 }
+                // Topology plan §F step 2: an ARMED `fe`/`bridge` connection
+                // (has sent at least one `ping`) that has since sent no
+                // frame at all within `ping_read_deadline()` is dead — reap
+                // it exactly like a clean EOF. Guarded on `deadline_armed`,
+                // not merely `is_long_lived_role`, so this arm stays inert
+                // — never even polled — before hello, for `cli`/`agent`
+                // connections, AND for an `fe`/`bridge` peer that has never
+                // sent a `ping` at all (opt-in by ping: see the arming
+                // comment above `is_long_lived_role`'s declaration).
+                () = tokio::time::sleep_until(read_deadline), if deadline_armed => {
+                    tracing::info!(transport, ?peer, "no frame within the read deadline; reaping half-open connection");
+                    return Ok(());
+                }
             }
         };
+
+        // Any frame from an ARMED connection is proof of life — push the
+        // reaper deadline back out (topology plan §F step 2). Deliberately
+        // unconditional on the op: ordinary traffic counts exactly as much
+        // as a `ping`, so a busy connection never needs one. Before this
+        // connection's first `ping` (`deadline_armed` still false) this is
+        // a no-op; arming itself (flag + first deadline) happens in the
+        // `op::PING` arm below, the moment role-eligibility (set at hello)
+        // and a first ping coincide.
+        if deadline_armed {
+            read_deadline = tokio::time::Instant::now() + ping_read_deadline();
+        }
 
         if frame.kind != Kind::Req {
             tracing::debug!(?frame.kind, op = %frame.op, transport, "ignoring non-req frame");
@@ -1283,6 +1372,29 @@ where
                     if let Ok(req) =
                         serde_json::from_value::<sot_protocol::HelloReq>(frame.payload.clone())
                     {
+                        // Topology plan §F step 2: mark this connection
+                        // ELIGIBLE for the read-deadline reaper -- exactly
+                        // the two long-lived roles, `fe` and `bridge`
+                        // (`cli`/`agent` are one-shot and stay ungated).
+                        // Mirrors `Clients::register`'s own legacy
+                        // inference (a hello carrying `fe_handle` and no
+                        // `role` at all predates `role` entirely, so it can
+                        // only have been a frontend) — computed here
+                        // against `req` BEFORE its fields move into
+                        // `register` below, so this gates on the exact same
+                        // role resolution the roster itself uses. This does
+                        // NOT arm the deadline itself (manager compatibility
+                        // fix, post-review) — only this connection's FIRST
+                        // `ping` does that (`op::PING` arm below), so a
+                        // peer too old to send one keeps today's behaviour
+                        // exactly, never reaped by this path.
+                        let effective_role: &str = if req.role.is_empty() && req.fe_handle.is_some()
+                        {
+                            "fe"
+                        } else {
+                            req.role.as_str()
+                        };
+                        is_long_lived_role = matches!(effective_role, "fe" | "bridge");
                         client_guard = Some(clients.register(
                             req.client_id,
                             transport,
@@ -1593,6 +1705,22 @@ where
                 // used to stamp it was removed instead of patched.
                 touch_person_input(&clients, &client_guard);
                 handlers::handle_fe_presence(frame.id).await
+            }
+            op::PING => {
+                // Opt-in arming (manager compatibility fix, post-review):
+                // this connection's FIRST `ping`, and only if hello already
+                // marked it role-eligible, arms the read-deadline reaper --
+                // never hello itself. A peer that never pings (an old
+                // frontend or comm bridge not yet converged from main)
+                // stays permanently unarmed and keeps today's behaviour:
+                // never reaped by this path. Once armed, the generic bump
+                // above keeps pushing `read_deadline` out on every
+                // subsequent frame, `ping` included.
+                if is_long_lived_role && !deadline_armed {
+                    deadline_armed = true;
+                    read_deadline = tokio::time::Instant::now() + ping_read_deadline();
+                }
+                handlers::handle_ping(frame.id).await
             }
             op::UPDATE_CHECK => crate::update::handle_update_check(frame.id).await,
             op::UPDATE_APPLY => {

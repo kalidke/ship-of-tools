@@ -5756,6 +5756,22 @@ pub async fn handle_fe_presence(req_id: u64) -> Result<HandlerOutput> {
     )])
 }
 
+/// `ping` (topology plan §F step 2): a bare liveness ack, no side effect
+/// beyond answering. Resetting this connection's read deadline is done in
+/// `server.rs`'s dispatch loop, ON EVERY frame it reads from an `fe`/
+/// `bridge` connection (not only `ping` ones) — this handler stays a pure
+/// echo so it needs no registry access, unlike `fe.presence`.
+pub async fn handle_ping(req_id: u64) -> Result<HandlerOutput> {
+    Ok(vec![(
+        Frame::res(
+            req_id,
+            op::PING,
+            serde_json::to_value(sot_protocol::PingRes { ok: true })?,
+        ),
+        None,
+    )])
+}
+
 #[cfg(test)]
 mod fe_command_send_tests {
     use super::handle_fe_command_send;

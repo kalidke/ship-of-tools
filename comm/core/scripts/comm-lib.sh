@@ -1004,6 +1004,30 @@ sot_hello_frame() {
         "$(sot_json_escape "$tok")" "$(sot_json_escape "$host")" "$(sot_json_escape "$role")" "$(sot_json_escape "${NAME:-}")"
 }
 
+# sot_ping_frame — one `ping` request line (topology plan §F step 2). No
+# per-connection state needed (unlike `sot_hello_frame`, this carries no
+# payload at all) -- id 2 is fixed and never correlated against a reply on
+# this write-only-in-practice path: `comm-relay.sh bridge`'s read side
+# (`filter_inbound`) already drops every frame whose op isn't
+# `agent.message`, so the daemon's `{"ok":true}` ack is simply ignored,
+# same as it ignores its own `hello` reply today.
+sot_ping_frame() {
+    printf '{"v":1,"id":2,"kind":"req","op":"ping","payload":{}}\n'
+}
+
+# sot_ping_interval_s — seconds between `ping` frames a long-lived bridge
+# connection sends (topology plan §F step 2, D10) -- a third of the
+# daemon's own 90s read deadline (`PING_READ_DEADLINE`, server.rs), so one
+# or two missed ticks is noise and three in a row is what actually trips
+# the daemon's reaper. `SOT_TEST_PING_INTERVAL_MS` overrides it for tests
+# -- same env var name the frontend transport reads for its own ping
+# timer, so one override drives both senders in a test. Unset in every
+# real deployment.
+sot_ping_interval_s() {
+    local ms="${SOT_TEST_PING_INTERVAL_MS:-30000}"
+    awk -v ms="$ms" 'BEGIN{printf "%.3f", ms/1000}'
+}
+
 # sot_oneshot_request FRAME OP — one-shot request/response on a fresh daemon
 # connection: send hello + FRAME, return (stdout) the first COMPLETE line
 # whose op matches OP. Hardened after a live intermittent failure

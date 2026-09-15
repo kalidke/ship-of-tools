@@ -129,6 +129,24 @@ nc_send() {
 # ~2 days until a manual restart). /dev/tcp fixes that. fd 9 is opened RW so the
 # write half stays open (daemon doesn't EOF us) while the read EOF still fires.
 # Unix-socket endpoints can't use /dev/tcp (AF_UNIX) so they keep nc -U.
+#
+# sot_hold_stdin: the write side of every branch below -- hello once, then
+# hold the pipe open forever without exiting. For `$HELLO_ROLE = bridge`
+# (topology plan §F step 2, D10: the half-open-roster fix) that means a
+# `ping` every `sot_ping_interval_s` instead of silence, so the daemon's
+# 90s read deadline for long-lived roles never trips a connection that's
+# actually still there; every other role (`ask`/`listen`, one-shot, always
+# called with an explicit `$secs` bound) keeps the original silent hold --
+# a `ping` on those would be harmless but pointless, so it stays scoped to
+# the role that actually needs it.
+sot_hold_stdin() {
+    sot_hello_frame "$HELLO_ROLE"
+    if [ "$HELLO_ROLE" = "bridge" ]; then
+        while :; do sleep "$(sot_ping_interval_s)"; sot_ping_frame; done
+    else
+        tail -f /dev/null
+    fi
+}
 nc_hold() {
     local secs="${1:-}"
     if [ -n "$EP_PIPE" ]; then
@@ -152,24 +170,32 @@ nc_hold() {
     fi
     if [ -n "$EP_HOST" ]; then
         if exec 9<>"/dev/tcp/$EP_HOST/$EP_PORT" 2>/dev/null; then
-            sot_hello_frame "$HELLO_ROLE" >&9   # authenticate the connection before holding it open
+            # Write side backgrounded (hello, then -- for bridge -- a `ping`
+            # every sot_ping_interval_s) so it can keep feeding fd 9 while
+            # this same process foreground-reads <&9 below; killed the
+            # instant that read returns (self-heal is unaffected -- it's
+            # `cat <&9`'s own EOF-on-daemon-close that still drives it).
+            ( sot_hold_stdin >&9 ) &
+            local writer_pid=$!
             if [ -n "$secs" ]; then timeout "$secs" cat <&9; else cat <&9; fi
+            kill "$writer_pid" 2>/dev/null || true
+            wait "$writer_pid" 2>/dev/null || true
             exec 9<&- 9>&- 2>/dev/null || true
             return 0
         fi
         # bash built without /dev/tcp: fall back to nc. NOTE: this form does NOT
         # self-heal on a graceful close — prefer a /dev/tcp-capable bash for bridges.
         if [ "$HAVE_NC" = 1 ]; then
-            if [ -n "$secs" ]; then { sot_hello_frame "$HELLO_ROLE"; tail -f /dev/null; } | timeout "$secs" nc "$EP_HOST" "$EP_PORT"
-            else { sot_hello_frame "$HELLO_ROLE"; tail -f /dev/null; } | nc "$EP_HOST" "$EP_PORT"; fi
+            if [ -n "$secs" ]; then sot_hold_stdin | timeout "$secs" nc "$EP_HOST" "$EP_PORT"
+            else sot_hold_stdin | nc "$EP_HOST" "$EP_PORT"; fi
             return 0
         fi
         echo "ERROR: cannot open /dev/tcp/$EP_HOST/$EP_PORT and nc not found" >&2; return 1
     fi
     # Unix-socket endpoint: requires nc -U (/dev/tcp can't speak AF_UNIX).
     if [ -n "$EP_UNIX" ] && [ "$HAVE_NC" = 1 ]; then
-        if [ -n "$secs" ]; then { sot_hello_frame "$HELLO_ROLE"; tail -f /dev/null; } | timeout "$secs" nc -U "$EP_UNIX"
-        else { sot_hello_frame "$HELLO_ROLE"; tail -f /dev/null; } | nc -U "$EP_UNIX"; fi
+        if [ -n "$secs" ]; then sot_hold_stdin | timeout "$secs" nc -U "$EP_UNIX"
+        else sot_hold_stdin | nc -U "$EP_UNIX"; fi
         return 0
     fi
     echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2; return 1

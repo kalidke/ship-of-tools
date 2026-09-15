@@ -45,7 +45,7 @@ use sot_protocol::{
     FileDownloadReq, FileReadReq, FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq,
     FileWriteRes, Frame,
     HelloReq, HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
-    MonitorHistoryReq, MonitorHistoryRes, MonitorSubscribeRes, MonitorTickEvt, PlutoOpenReq,
+    MonitorHistoryReq, MonitorHistoryRes, MonitorSubscribeRes, MonitorTickEvt, PingReq, PlutoOpenReq,
     PlutoOpenRes, PreviewGetReq, PreviewGetRes, PtyOpenReq,
     QuartoOpenReq, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt, ReplRunFileReq,
     ReplRunFileRes, ToggleHiddenReq, TreeChildrenReq, TreeChildrenRes, TreeNode, TreeRootReq,
@@ -1861,6 +1861,24 @@ async fn read_owned<R: AsyncRead + Unpin>(
     (rx, res)
 }
 
+/// How often this connection sends `ping` (topology plan §F step 2) — a
+/// third of the daemon's own `PING_READ_DEADLINE` (90s, `server.rs`), so a
+/// missed tick or two is noise and three in a row is what actually trips
+/// the daemon's reaper. `SOT_TEST_PING_INTERVAL_MS` overrides it for tests
+/// (same `OnceLock`-cached-once-per-process convention the backend uses
+/// for its own deadline override); unset in every real deployment.
+fn ping_interval_duration() -> std::time::Duration {
+    static OVERRIDE_MS: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    let override_ms = *OVERRIDE_MS.get_or_init(|| {
+        std::env::var("SOT_TEST_PING_INTERVAL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
+    override_ms
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(std::time::Duration::from_secs(30))
+}
+
 /// Drive the wire protocol over an already-connected stream's halves. Generic
 /// over the read/write types so the same code path serves the local-socket
 /// transport and the TCP transport.
@@ -2183,6 +2201,17 @@ where
     // the borrow checker never sees an external `&mut rx` re-borrowed across
     // iterations.
     let mut read_fut = Some(Box::pin(read_owned(rx)));
+    // Topology plan §F step 2 (the half-open-roster fix): this connection
+    // is always `fe`-declared (see `hello` above), one of the daemon's two
+    // long-lived roles, so it always pings — no role check needed here,
+    // unlike the daemon side which also has to let `cli`/`agent` through
+    // ungated. `Interval`, not a plain `sleep_until` recomputed each loop:
+    // it owns its own next-tick state and its `tick()` is cancellation-
+    // safe, so a `select!` iteration that takes another arm just leaves it
+    // armed for next time instead of losing the schedule.
+    let mut ping_interval = tokio::time::interval(ping_interval_duration());
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ping_interval.tick().await; // first tick fires immediately; consume it
     loop {
         tokio::select! {
             // Bias to reads so an avalanche of GPU-thread requests can't
@@ -2197,6 +2226,22 @@ where
                 note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
                 handle_response_frame(frame, blob, &mut pending, evt_tx, &host);
                 window.request_redraw();
+            }
+
+            // Topology plan §F step 2: prove this connection's read half is
+            // alive to the daemon even when the person is idle (no other
+            // outgoing traffic). Fire-and-forget, same idiom as
+            // `OutgoingReq::FePresence` below — no `PendingKind`, the reply
+            // is silently ignored by the unmatched-id fallthrough.
+            _ = ping_interval.tick() => {
+                let id = take_id(&mut next_id);
+                tracing::debug!(id, "→ ping");
+                codec::write_frame(
+                    &mut tx,
+                    &Frame::req(id, op::PING, serde_json::to_value(PingReq {})?),
+                    None,
+                )
+                .await?;
             }
 
             req = out_rx.recv() => {

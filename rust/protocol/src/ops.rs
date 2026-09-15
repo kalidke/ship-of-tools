@@ -350,6 +350,27 @@ pub mod op {
     /// `res` frame carrying this same op) — callers must treat that as
     /// "daemon predates this op", not a failure.
     pub const VERSION_QUERY: &str = "version.query";
+    /// Topology plan §F step 2 (the half-open-roster defect): a bare
+    /// liveness probe for the two long-lived roles, `fe` and `bridge`.
+    /// Empty request (`PingReq`); the daemon answers `PingRes{ok:true}`
+    /// with no side effect beyond proving the read half of this
+    /// connection is still alive. Sent every `PING_INTERVAL` by the
+    /// frontend transport and the comm relay bridge (`comm-listen.sh`);
+    /// the daemon gives an `fe`/`bridge` connection a `READ_DEADLINE`
+    /// (server.rs) and drops one that goes quiet that long, reaping it
+    /// through the same `ClientGuard::drop` path as a clean exit.
+    /// `cli`/`agent` (one-shot) connections never send this and are never
+    /// deadline-gated. Opt-in by ping (manager compatibility fix): the
+    /// deadline arms on this connection's FIRST `ping`, never at hello —
+    /// an `fe`/`bridge` peer too old to send one (a frontend box or comm
+    /// bridge that hasn't converged from main yet) is left untouched,
+    /// exactly today's behavior, rather than reaped every `READ_DEADLINE`
+    /// forever. An old daemon that predates this op answers the generic
+    /// unknown-op payload, same shape as a legacy `version.query` caller
+    /// sees — a sender must tolerate that (it means "daemon predates this
+    /// op", not a failure) rather than treating it as proof the peer is
+    /// dead.
+    pub const PING: &str = "ping";
 }
 
 /// Connect handshake. Per ADR 0010, every connect carries
@@ -1590,6 +1611,20 @@ pub struct FePresenceRes {
     pub ok: bool,
 }
 
+/// `ping` request — empty, always (topology plan §F step 2). Distinct op
+/// from `fe.presence`: presence means "a person is here", ping means
+/// "this connection's read half is alive" — conflating them was the
+/// rejected alternative (D10).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PingReq {}
+
+/// `ping` response — a bare ack; the sender doesn't act on it beyond
+/// having received a reply at all.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PingRes {
+    pub ok: bool,
+}
+
 /// Open a Pluto-flavored `.jl` notebook in the backend-supervised
 /// Pluto server. Path must be absolute on the backend host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2410,7 +2445,7 @@ mod version_query_tests {
 
 #[cfg(test)]
 mod fe_presence_and_command_tests {
-    use super::{FeCommandEvt, FeCommandSendRes, FePresenceReq, FePresenceRes};
+    use super::{FeCommandEvt, FeCommandSendRes, FePresenceReq, FePresenceRes, PingReq, PingRes};
 
     #[test]
     fn fe_presence_req_and_res_round_trip_empty() {
@@ -2421,6 +2456,22 @@ mod fe_presence_and_command_tests {
         let res = FePresenceRes { ok: true };
         let json = serde_json::to_string(&res).unwrap();
         let back: FePresenceRes = serde_json::from_str(&json).unwrap();
+        assert!(back.ok);
+    }
+
+    #[test]
+    fn ping_req_and_res_round_trip_empty() {
+        // topology plan §F step 2: `ping` is an empty request, same wire
+        // shape convention as `fe.presence` (a distinct op, never merged
+        // with it — presence means "a person", ping means "the read half
+        // is alive").
+        let req = PingReq {};
+        assert_eq!(serde_json::to_value(&req).unwrap(), serde_json::json!({}));
+        let _: PingReq = serde_json::from_value(serde_json::json!({})).expect("empty req parses");
+
+        let res = PingRes { ok: true };
+        let json = serde_json::to_string(&res).unwrap();
+        let back: PingRes = serde_json::from_str(&json).unwrap();
         assert!(back.ok);
     }
 
