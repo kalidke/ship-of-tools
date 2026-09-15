@@ -3885,7 +3885,7 @@ fn handle_response_frame(
                     .map(|a| AccountInfo {
                         name: a.name,
                         kinds: a.kinds,
-                        logged_in: a.logged_in,
+                        logged_in: a.logged_in.into_iter().collect(),
                     })
                     .collect();
                 emit(IncomingEvt::AccountsList { accounts });
