@@ -32,6 +32,7 @@
 //! (whole-line or trailing). Nothing else is needed and nothing else parses,
 //! so the reader is ~100 lines and pulls in no TOML crate.
 
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// The relay's forward port on a frontend box, and the base of the ordinal
@@ -360,6 +361,143 @@ pub fn plan(topo: &Topology, self_host: &str) -> Result<String, String> {
     Ok(out)
 }
 
+/// FNV-1a 64-bit hash of the file's exact bytes, lowercase zero-padded
+/// hex. Same algorithm as the backend's `file_io::content_version`
+/// (deterministic, dependency-free, stable across rebuilds) — redefined
+/// here rather than imported because `sot-backend` depends on
+/// `sot-protocol`, never the reverse, and both the daemon (`topology.set`'s
+/// broadcast, `version.query`'s `hosts_toml_hash`) and the CLI
+/// (`topology status`'s "cache diverged" line) need the identical hash of
+/// the identical bytes to ever agree.
+pub fn hash_text(text: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// Write `topo` back out in canonical grammar-v2 form: `hub`, then one
+/// `[host.<name>]` per host (only the `true` flags, in file order), then
+/// `[monitor]` if non-empty. This is a CLEAN rewrite, not a lossless
+/// editor — comments and exact key order in the original file are not
+/// preserved (plan §B "Editing the master list" allows this: "if you
+/// cannot, say so ... and write a clean canonical file"). Always emits v2
+/// — a v1 file edited once converts to v2 for good, with its v1 keys
+/// dropped, which is the point: the shim exists to read old files, not to
+/// keep writing them.
+pub fn serialize(topo: &Topology) -> String {
+    let mut out = format!("hub = \"{}\"\n\n", topo.hub);
+    for h in &topo.hosts {
+        out.push_str(&format!("[host.{}]\n", h.name));
+        if h.daemon {
+            out.push_str("daemon = true\n");
+        }
+        if h.frontend {
+            out.push_str("frontend = true\n");
+        }
+        out.push('\n');
+    }
+    if !topo.monitor.is_empty() {
+        out.push_str("[monitor]\n");
+        for (label, target) in &topo.monitor {
+            out.push_str(&format!("{label} = \"{target}\"\n"));
+        }
+    }
+    out
+}
+
+/// One edit `topology.set` (plan §B) carries: add a host, remove one, flip
+/// one of its two boolean flags, or add/remove a `[monitor]` label.
+/// `#[serde(tag = "kind")]` so the wire shape is self-describing
+/// (`{"kind": "add_host", ...}`) and a CLI can build one from a few plain
+/// words (`sotd topology set add <host>`, `remove <host>`, `flag <host>
+/// daemon|frontend true|false`, `monitor-add <label> <target>`,
+/// `monitor-remove <label>`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TopologyEdit {
+    AddHost {
+        name: String,
+        #[serde(default)]
+        daemon: bool,
+        #[serde(default)]
+        frontend: bool,
+    },
+    RemoveHost {
+        name: String,
+    },
+    /// `key` is `"daemon"` or `"frontend"` — the only two editable flags.
+    SetFlag {
+        name: String,
+        key: String,
+        value: bool,
+    },
+    MonitorAdd {
+        label: String,
+        target: String,
+    },
+    MonitorRemove {
+        label: String,
+    },
+}
+
+/// Apply one edit to `topo`, producing a candidate. Structural checks only
+/// — a plain host name, no duplicate host/label, the edited host/label
+/// must exist, and the hub is never removed here (the hub daemon does the
+/// authority/self/running-rows checks the CLI cannot see, then re-validates
+/// the result through [`parse`]`(`[`serialize`]`(candidate))` — the SAME
+/// grammar every other write goes through, which is what catches "cleared
+/// `daemon` on the hub" generically instead of this function special-casing
+/// it).
+pub fn apply(topo: &Topology, edit: &TopologyEdit) -> Result<Topology, String> {
+    let mut t = topo.clone();
+    match edit {
+        TopologyEdit::AddHost { name, daemon, frontend } => {
+            if !is_plain_host_name(name) {
+                return Err(format!("`{name}` is not a plain host name (expected [a-z0-9][a-z0-9._-]*)"));
+            }
+            if t.hosts.iter().any(|h| h.name == *name) {
+                return Err(format!("host `{name}` is already declared"));
+            }
+            t.hosts.push(HostDecl { name: name.clone(), daemon: *daemon, frontend: *frontend });
+        }
+        TopologyEdit::RemoveHost { name } => {
+            if *name == t.hub {
+                return Err(format!("`{name}` is the hub; pick a new hub before removing it"));
+            }
+            let before = t.hosts.len();
+            t.hosts.retain(|h| h.name != *name);
+            if t.hosts.len() == before {
+                return Err(format!("host `{name}` is not declared"));
+            }
+        }
+        TopologyEdit::SetFlag { name, key, value } => {
+            let host = t.hosts.iter_mut().find(|h| h.name == *name).ok_or_else(|| format!("host `{name}` is not declared"))?;
+            match key.as_str() {
+                "daemon" => host.daemon = *value,
+                "frontend" => host.frontend = *value,
+                other => return Err(format!("`{other}` is not an editable flag (daemon, frontend)")),
+            }
+        }
+        TopologyEdit::MonitorAdd { label, target } => {
+            if t.monitor.iter().any(|(l, _)| l == label) {
+                return Err(format!("monitor label `{label}` is already declared"));
+            }
+            t.monitor.push((label.clone(), target.clone()));
+        }
+        TopologyEdit::MonitorRemove { label } => {
+            let before = t.monitor.len();
+            t.monitor.retain(|(l, _)| l != label);
+            if t.monitor.len() == before {
+                return Err(format!("monitor label `{label}` is not declared"));
+            }
+        }
+    }
+    Ok(t)
+}
+
 /// `sotd topology status` — the declared table only; live columns come
 /// from `version.query` on each daemon.
 pub fn status_table(topo: &Topology) -> String {
@@ -665,6 +803,61 @@ frontend = true
             "# Generated by `sotd topology apply` — regenerated on every apply, do not edit by hand.\n[Unit]\nConditionHost=hub\n"
         );
         assert_eq!(tunnel_unit("remote-a"), "sot-relay-tunnel@remote-a");
+    }
+
+    #[test]
+    fn hash_text_is_deterministic_and_content_sensitive() {
+        assert_eq!(hash_text("a"), hash_text("a"));
+        assert_ne!(hash_text("a"), hash_text("b"));
+        assert_eq!(hash_text("a").len(), 16);
+    }
+
+    #[test]
+    fn serialize_round_trips_through_parse() {
+        let t = parse(V2).unwrap();
+        let text = serialize(&t);
+        let reparsed = parse(&text).unwrap();
+        assert_eq!(t.hub, reparsed.hub);
+        assert_eq!(t.hosts, reparsed.hosts);
+        assert_eq!(t.monitor, reparsed.monitor);
+        assert!(reparsed.warnings.is_empty(), "a clean serialize must never re-trigger the v1 shim");
+    }
+
+    #[test]
+    fn apply_add_remove_flag_monitor() {
+        let t = parse(V2).unwrap();
+        let added = apply(&t, &TopologyEdit::AddHost { name: "epsilon".into(), daemon: true, frontend: false }).unwrap();
+        assert_eq!(added.host("epsilon").unwrap(), &HostDecl { name: "epsilon".into(), daemon: true, frontend: false });
+
+        let flagged = apply(&t, &TopologyEdit::SetFlag { name: "beta".into(), key: "daemon".into(), value: true }).unwrap();
+        assert!(flagged.host("beta").unwrap().daemon);
+
+        let removed = apply(&t, &TopologyEdit::RemoveHost { name: "beta".into() }).unwrap();
+        assert!(removed.host("beta").is_none());
+
+        let mon_added = apply(&t, &TopologyEdit::MonitorAdd { label: "extra".into(), target: "extra-box".into() }).unwrap();
+        assert!(mon_added.monitor.iter().any(|(l, tgt)| l == "extra" && tgt == "extra-box"));
+
+        let mon_removed = apply(&t, &TopologyEdit::MonitorRemove { label: "beta".into() }).unwrap();
+        assert!(!mon_removed.monitor.iter().any(|(l, _)| l == "beta"));
+    }
+
+    #[test]
+    fn apply_refuses_structural_violations() {
+        let t = parse(V2).unwrap();
+        assert!(apply(&t, &TopologyEdit::RemoveHost { name: "alpha".into() }).unwrap_err().contains("is the hub"));
+        assert!(apply(&t, &TopologyEdit::RemoveHost { name: "nobody".into() }).unwrap_err().contains("is not declared"));
+        assert!(apply(&t, &TopologyEdit::AddHost { name: "beta".into(), daemon: false, frontend: false }).unwrap_err().contains("already declared"));
+        assert!(apply(&t, &TopologyEdit::SetFlag { name: "nobody".into(), key: "daemon".into(), value: true }).unwrap_err().contains("is not declared"));
+        assert!(apply(&t, &TopologyEdit::SetFlag { name: "beta".into(), key: "colour".into(), value: true }).unwrap_err().contains("not an editable flag"));
+        assert!(apply(&t, &TopologyEdit::MonitorAdd { label: "alpha".into(), target: "x".into() }).unwrap_err().contains("already declared"));
+        assert!(apply(&t, &TopologyEdit::MonitorRemove { label: "nobody".into() }).unwrap_err().contains("is not declared"));
+        // Clearing the hub's own `daemon` flag is structurally legal HERE
+        // (apply() has no authority/rows knowledge) but the grammar
+        // rejects the result — proven by the daemon-side re-validate step,
+        // not duplicated in this function.
+        let cleared = apply(&t, &TopologyEdit::SetFlag { name: "alpha".into(), key: "daemon".into(), value: false }).unwrap();
+        assert!(parse(&serialize(&cleared)).unwrap_err().contains("has `daemon = false`"));
     }
 
     #[test]

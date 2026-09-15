@@ -371,6 +371,46 @@ pub mod op {
     /// op", not a failure) rather than treating it as proof the peer is
     /// dead.
     pub const PING: &str = "ping";
+    /// Topology plan §B "Editing the master list": edit the declared
+    /// topology (`hosts.toml`, grammar v2). Payload `TopologySetReq {
+    /// edit: topology::TopologyEdit }` (add/remove a host, flip one of its
+    /// flags, add/remove a `[monitor]` label). Authorisation is the dial
+    /// itself — whoever can reach this daemon's socket may send this op;
+    /// no second credential (the 0700 socket and ssh identity already gate
+    /// who can dial at all). Only the daemon declared as `hub` in its OWN
+    /// currently-loaded file applies an edit; every other daemon refuses,
+    /// naming the hub (its file is a `topology sync` CACHE, never
+    /// writable). The hub daemon re-reads its file from disk (picking up
+    /// any hand edit since the last op — same on-demand-refresh path
+    /// `version.query` uses), applies the edit, validates the result by
+    /// re-parsing it with [`crate::topology::parse`] (the one grammar —
+    /// this is what catches "cleared `daemon` on the hub" and similar
+    /// structural nonsense generically), and writes tmp+rename. Refused
+    /// (standard error payload, `code` named): `not_hub`; removing the
+    /// hub; removing/un-daemon-ing the host the REQUEST'S OWN `hello`
+    /// declared (`HelloReq.host`) — a box cannot edit itself out from
+    /// under its own connection; removing or clearing `daemon` on a host
+    /// with running capsule rows — checked against the HUB's OWN rows
+    /// only (a star: the hub cannot see another daemon's rows, so a
+    /// non-hub box's `sotd topology set` CLI does that check locally,
+    /// against ITS OWN daemon, before ever dialing the hub); `invalid`
+    /// (the structural [`crate::topology::apply`] step or the final
+    /// re-parse rejected it). On success, answers `TopologySetRes { ok:
+    /// true, hash }` and broadcasts [`TOPOLOGY_CHANGED`] to every attached
+    /// client — the SAME broadcast a picked-up hand edit fires, so both
+    /// routes are one code path.
+    pub const TOPOLOGY_SET: &str = "topology.set";
+    /// Server→client push fired once per successful topology write —
+    /// either a `topology.set` this daemon applied, or a hand edit on disk
+    /// this daemon noticed on its next on-demand re-read (never a file
+    /// watcher: the plan is explicit that `notify` misses writes on a
+    /// network filesystem). Mirrors `WORKSPACE_CHANGED`: broadcast to
+    /// every connection so Hosts mode refreshes live instead of polling.
+    /// Payload is `{"hash": "<hex>"}` — the new file's `hash_text`; a
+    /// receiver that cares about WHAT changed re-issues `version.query` or
+    /// `topology sync` rather than diffing a delta this event doesn't
+    /// carry.
+    pub const TOPOLOGY_CHANGED: &str = "topology.changed";
 }
 
 /// Connect handshake. Per ADR 0010, every connect carries
@@ -2088,6 +2128,15 @@ pub struct DaemonVersion {
     pub lane_proto: u32,
     #[serde(default)]
     pub host: String,
+    /// `hash_text` of this daemon's currently-loaded `hosts.toml` (plan §B
+    /// "the CLI... compare this box's file hash with the hub's"), as of
+    /// the on-demand re-read this `version.query` call itself triggers —
+    /// never stale by more than one hand edit. `""` when this daemon has
+    /// no `hosts.toml` at all (a fresh box with no topology declared) OR
+    /// predates this field (`#[serde(default)]`); a caller must not treat
+    /// `""` as "matches mine" for the "cache diverged" comparison.
+    #[serde(default)]
+    pub hosts_toml_hash: String,
 }
 
 /// One attached frontend, as `version.query` reports it — sourced from the
@@ -2151,6 +2200,24 @@ pub struct VersionQueryRes {
     /// clients rather than failing the whole response.
     #[serde(default)]
     pub clients: Vec<ClientVersion>,
+}
+
+/// `topology.set` request (plan §B "Editing the master list") — one edit,
+/// applied atomically. See [`op::TOPOLOGY_SET`] for the full authority/
+/// refusal contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopologySetReq {
+    pub edit: crate::topology::TopologyEdit,
+}
+
+/// `topology.set` response on success. `hash` is the new file's
+/// `hash_text` — the same value [`op::TOPOLOGY_CHANGED`] broadcasts and
+/// `version.query`'s `hosts_toml_hash` reports, so a caller can confirm
+/// its own edit landed without a follow-up query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopologySetRes {
+    pub ok: bool,
+    pub hash: String,
 }
 
 #[cfg(test)]
@@ -2360,6 +2427,7 @@ mod version_query_tests {
                 lane_build: "abc1234def".into(),
                 lane_proto: 1,
                 host: "test-host".into(),
+                hosts_toml_hash: "deadbeefcafef00d".into(),
             },
             clients: vec![ClientVersion {
                 client_id: "fe-1".into(),
@@ -2378,6 +2446,7 @@ mod version_query_tests {
         assert_eq!(back.daemon.lane_build, "abc1234def");
         assert_eq!(back.daemon.lane_proto, 1);
         assert_eq!(back.daemon.host, "test-host");
+        assert_eq!(back.daemon.hosts_toml_hash, "deadbeefcafef00d");
         assert_eq!(back.clients.len(), 1);
         assert_eq!(back.clients[0].client_id, "fe-1");
         assert_eq!(back.clients[0].fe_handle.as_deref(), Some("win-fe-a"));
@@ -2429,9 +2498,10 @@ mod version_query_tests {
         // Mirrors `legacy_hello_res_defaults_to_preversioning`: a peer that
         // answers this op but omits the roster must still deserialize
         // rather than failing the whole response. Also omits `lane_proto`
-        // (a daemon predating ADR 0045) and `host` (topology plan §F step
-        // 1, a daemon predating that field) -- `#[serde(default)]` must
-        // supply 0 / "" rather than failing the whole payload.
+        // (a daemon predating ADR 0045), `host` (topology plan §F step
+        // 1), and `hosts_toml_hash` (topology plan §B, this lane) --
+        // `#[serde(default)]` must supply 0 / "" rather than failing the
+        // whole payload.
         let json = serde_json::json!({
             "daemon": { "app_version": "0.6.0", "protocol": 1, "lane_build": "abc" },
         });
@@ -2440,6 +2510,7 @@ mod version_query_tests {
         assert_eq!(res.daemon.app_version, "0.6.0");
         assert_eq!(res.daemon.lane_proto, 0);
         assert_eq!(res.daemon.host, "");
+        assert_eq!(res.daemon.hosts_toml_hash, "");
     }
 }
 
