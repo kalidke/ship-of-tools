@@ -135,7 +135,7 @@ fn reconcile_open(seg_dir: &Path, id: &SegmentIdentity, recovering_epoch: u64) -
         return Ok(Reconciled::ReinitializedOpen);
     }
 
-    // Full structural read; unsealed expectations (tears permitted at tail).
+    // Full structural read; unsealed host-3 (tears permitted at tail).
     let reader = SegmentReader::read(&open_path, false)?; // loud conditions propagate here
     if reader.seal_at_eof() {
         // Seal at EOF: publish as-is. The dead writer may have been killed

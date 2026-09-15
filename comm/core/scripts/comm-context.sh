@@ -26,7 +26,7 @@ source "$SCRIPT_DIR/comm-lib.sh"
 # GitHub Actions runner while passing locally, because the runner's
 # hostname is longer than a dev box's. Pinning through this seam removes
 # the dependency entirely, on both the scripts' side and the test's own
-# expectations. Unset in normal use.
+# host-3. Unset in normal use.
 if [ -n "${SOT_COMM_TEST_HOST:-}" ]; then
     HOST="$SOT_COMM_TEST_HOST"
 else

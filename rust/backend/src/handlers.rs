@@ -3843,8 +3843,8 @@ mod pty_input_controller_id_tests {
 
     #[test]
     fn present_origin_wins_over_the_connection_client_id() {
-        let id = resolve_pty_input_controller_id(1, op::PTY_INPUT, Some("kitt-dev"), "conn-client").unwrap();
-        assert_eq!(id, "kitt-dev");
+        let id = resolve_pty_input_controller_id(1, op::PTY_INPUT, Some("host-4-dev"), "conn-client").unwrap();
+        assert_eq!(id, "host-4-dev");
     }
 
     #[test]
@@ -7662,7 +7662,7 @@ mod remove_comm_agents_for_workspace_host_tests {
 
         // No live tmux row for this session, so only the `by_name` term is in
         // play; the stored handle matches, but the row's host does not.
-        let removed = remove_comm_agents_for_workspace("same-name", "", "kitt");
+        let removed = remove_comm_agents_for_workspace("same-name", "", "host-4");
         assert!(removed.is_empty());
 
         let after: serde_json::Value =
@@ -7752,7 +7752,7 @@ mod remove_comm_agents_for_workspace_host_tests {
             &registry_path,
             serde_json::to_vec_pretty(&serde_json::json!({
                 "agents": {
-                    "kitt-be-x": {"tmux": "sot-be-x:0.0", "host": "kitt"},
+                    "host-4-be-x": {"tmux": "sot-be-x:0.0", "host": "host-4"},
                 }
             }))
             .unwrap(),
@@ -7765,7 +7765,7 @@ mod remove_comm_agents_for_workspace_host_tests {
 
         let bound = std::time::Duration::from_millis(150);
         let start = std::time::Instant::now();
-        let removed = remove_comm_agents_for_workspace_bounded("", "", "kitt", bound);
+        let removed = remove_comm_agents_for_workspace_bounded("", "", "host-4", bound);
         let elapsed = start.elapsed();
 
         assert!(removed.is_empty(), "a contended lock must prune nothing");
@@ -7877,7 +7877,7 @@ mod clear_comm_unread_tests {
         let registry_path = write_registry(
             &dir,
             serde_json::json!({
-                "descent-be-x": {
+                "host-2-be-x": {
                     "tmux": "sot-be-x:0.0",
                     "host": "hostB",
                     "state": "done",
@@ -7888,7 +7888,7 @@ mod clear_comm_unread_tests {
         );
         let before = std::fs::read(&registry_path).unwrap();
 
-        clear_comm_unread(&mk_ws("x", ""), "kitt");
+        clear_comm_unread(&mk_ws("x", ""), "host-4");
 
         let after = std::fs::read(&registry_path).unwrap();
         assert_eq!(before, after, "a foreign host's row must never be touched");
@@ -7904,9 +7904,9 @@ mod clear_comm_unread_tests {
             let registry_path = write_registry(
                 &dir,
                 serde_json::json!({
-                    "kitt-be-x": {
+                    "host-4-be-x": {
                         "tmux": "sot-be-x:0.0",
-                        "host": "kitt",
+                        "host": "host-4",
                         "state": state,
                         "summary": "unchanged",
                         "status_at": "2026-09-08T00:00:00Z",
@@ -7915,7 +7915,7 @@ mod clear_comm_unread_tests {
             );
             let before = std::fs::read(&registry_path).unwrap();
 
-            clear_comm_unread(&mk_ws("x", ""), "kitt");
+            clear_comm_unread(&mk_ws("x", ""), "host-4");
 
             let after = std::fs::read(&registry_path).unwrap();
             assert_eq!(before, after, "state {state} must never be rewritten");
@@ -7932,7 +7932,7 @@ mod clear_comm_unread_tests {
         std::env::set_var("SOT_COMM_HOME", &dir);
         // No registry.json written at all.
 
-        clear_comm_unread(&mk_ws("x", "agent"), "kitt");
+        clear_comm_unread(&mk_ws("x", "agent"), "host-4");
         assert!(!dir.join("registry.json").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -7948,7 +7948,7 @@ mod clear_comm_unread_tests {
         std::fs::write(&registry_path, b"not json{{{").unwrap();
         let before = std::fs::read(&registry_path).unwrap();
 
-        clear_comm_unread(&mk_ws("x", "agent"), "kitt");
+        clear_comm_unread(&mk_ws("x", "agent"), "host-4");
 
         let after = std::fs::read(&registry_path).unwrap();
         assert_eq!(before, after);
@@ -7963,9 +7963,9 @@ mod clear_comm_unread_tests {
         let registry_path = write_registry(
             &dir,
             serde_json::json!({
-                "kitt-be-x": {
+                "host-4-be-x": {
                     "tmux": "sot-be-x:0.0",
-                    "host": "kitt",
+                    "host": "host-4",
                     "state": "done",
                     "summary": "probe summary",
                     "status_at": "2026-09-08T00:00:00Z",
@@ -7981,7 +7981,7 @@ mod clear_comm_unread_tests {
         // count, and a loaded CI runner (the macOS leg took 2.6 s for the
         // ~1 s spin) turns any elapsed-time gate into a flake. The property
         // under test is fail-closed: the registry is untouched.
-        clear_comm_unread(&mk_ws("x", ""), "kitt");
+        clear_comm_unread(&mk_ws("x", ""), "host-4");
         let after = std::fs::read(&registry_path).unwrap();
         assert_eq!(before, after, "a contended lock must fail closed with no write");
 
@@ -8006,20 +8006,20 @@ mod clear_comm_unread_tests {
             serde_json::json!({
                 "capsule-handle-x": {
                     "tmux": "",
-                    "host": "kitt",
+                    "host": "host-4",
                     "state": "done",
                     "summary": "probe summary",
                     "status_at": "2026-09-08T00:00:00Z",
                 },
             }),
         );
-        std::env::set_var("SOT_STATE_HOST", "kitt");
+        std::env::set_var("SOT_STATE_HOST", "host-4");
 
         let mut ws = mk_ws("capsuleprobe", "");
         ws.runtime = "capsule".to_string();
         ws.agent_handle = std::sync::Mutex::new("capsule-handle-x".to_string());
 
-        clear_comm_unread(&ws, "kitt");
+        clear_comm_unread(&ws, "host-4");
 
         let after: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
@@ -8044,21 +8044,21 @@ mod clear_comm_unread_tests {
             serde_json::json!({
                 "someone-else": {
                     "tmux": "",
-                    "host": "kitt",
+                    "host": "host-4",
                     "state": "done",
                     "summary": "not yours",
                     "status_at": "2026-09-08T00:00:00Z",
                 },
             }),
         );
-        std::env::set_var("SOT_STATE_HOST", "kitt");
+        std::env::set_var("SOT_STATE_HOST", "host-4");
         let before = std::fs::read(&registry_path).unwrap();
 
         let mut ws = mk_ws("capsuleprobe2", "");
         ws.runtime = "capsule".to_string();
         // No agent_handle declared at all.
 
-        clear_comm_unread(&ws, "kitt");
+        clear_comm_unread(&ws, "host-4");
 
         let after = std::fs::read(&registry_path).unwrap();
         assert_eq!(before, after, "an unbound capsule row must never fall through to an unrelated handle");
@@ -8165,18 +8165,18 @@ mod workspace_activate_read_tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("SOT_COMM_HOME", &dir);
-        std::env::set_var("SOT_STATE_HOST", "kitt");
+        std::env::set_var("SOT_STATE_HOST", "host-4");
         let registry_path = dir.join("registry.json");
 
-        let (reg, id) = seed_capsule_workspace("activate-capsule-x", "kitt-activate-capsule-x");
+        let (reg, id) = seed_capsule_workspace("activate-capsule-x", "host-4-activate-capsule-x");
 
         std::fs::write(
             &registry_path,
             serde_json::to_vec_pretty(&serde_json::json!({
                 "agents": {
-                    "kitt-activate-capsule-x": {
+                    "host-4-activate-capsule-x": {
                         "tmux": "",
-                        "host": "kitt",
+                        "host": "host-4",
                         "state": "done",
                         "summary": "capsule probe summary",
                         "status_at": "2026-09-08T00:00:00Z",
@@ -8194,7 +8194,7 @@ mod workspace_activate_read_tests {
         );
         let after: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
-        let row = &after["agents"]["kitt-activate-capsule-x"];
+        let row = &after["agents"]["host-4-activate-capsule-x"];
         assert_eq!(row["state"], "idle");
         assert_eq!(row["summary"], "capsule probe summary");
         assert_eq!(row["status_at"], "2026-09-08T00:00:00Z");
@@ -8258,7 +8258,7 @@ mod agent_str_host_filter_tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("SOT_COMM_HOME", &dir);
-        std::env::set_var("SOT_STATE_HOST", "kitt");
+        std::env::set_var("SOT_STATE_HOST", "host-4");
         std::fs::write(
             dir.join("registry.json"),
             serde_json::to_vec_pretty(&serde_json::json!({

@@ -2692,7 +2692,7 @@ mod tests {
         fn registry(host: &str) -> Vec<u8> {
             serde_json::to_vec(&serde_json::json!({
                 "agents": {
-                    "kitt-be-x": {
+                    "host-4-be-x": {
                         "state": "idle",
                         "summary": "",
                         "status_at": "",

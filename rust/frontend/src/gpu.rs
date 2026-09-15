@@ -15182,7 +15182,7 @@ impl State {
         // file, expanding one collapsed ancestor directory per tree update
         // on the way down. Once the cursor is on the file row, the normal
         // cursor-tracking passes above (concept.read / preview / file.parse)
-        // fire exactly as they would for a user descent — which is the
+        // fire exactly as they would for a user host-2 — which is the
         // point: `--capture-preview` only fires preview.get, but the
         // concept panel and drift badge key off the cursored row.
         if let Some(path) = self.pending_start_path.clone() {
@@ -23047,13 +23047,13 @@ mod tests {
 
     #[test]
     fn remote_host_keeps_configured_then_remote_home_then_default_row() {
-        let cfg = picker_start_for_host("kitt", Some("/home/u"), Some("/home/u/dev"), Some("/home/u"), "C:/fe".into(), |_| false);
+        let cfg = picker_start_for_host("host-4", Some("/home/u"), Some("/home/u/dev"), Some("/home/u"), "C:/fe".into(), |_| false);
         assert_eq!(cfg, "/home/u/dev");
-        let home = picker_start_for_host("kitt", Some("/home/u"), None, Some("/home/remote"), "C:/fe".into(), |_| false);
+        let home = picker_start_for_host("host-4", Some("/home/u"), None, Some("/home/remote"), "C:/fe".into(), |_| false);
         assert_eq!(home, "/home/remote");
-        let row = picker_start_for_host("kitt", Some("/home/u"), None, None, "C:/fe".into(), |_| false);
+        let row = picker_start_for_host("host-4", Some("/home/u"), None, None, "C:/fe".into(), |_| false);
         assert_eq!(row, "/home/u");
-        let last = picker_start_for_host("kitt", None, None, None, "C:/fe".into(), |_| false);
+        let last = picker_start_for_host("host-4", None, None, None, "C:/fe".into(), |_| false);
         assert_eq!(last, "C:/fe");
     }
 

@@ -81,7 +81,7 @@ pub struct Cli {
     /// path to walk the cursor to. Collapsed ancestor directories are
     /// expanded one tree-update at a time, then the cursor lands ON the
     /// file's row — so the normal cursor-tracking passes (concept.read,
-    /// file.parse, preview) fire exactly as they would for a user descent.
+    /// file.parse, preview) fire exactly as they would for a user host-2.
     /// `--capture-preview` can't do this: it only fires `preview.get`; the
     /// concept panel and drift badge key off the cursored row.
     pub start_path: Option<String>,

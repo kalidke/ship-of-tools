@@ -2704,14 +2704,14 @@ mod pty_input_screen_tests {
             workspace_id: "ws-2".into(),
             data_b64: "Zm9v".into(),
             enter: true,
-            origin: Some("kitt-dev".into()),
+            origin: Some("host-4-dev".into()),
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: PtyInputReq = serde_json::from_str(&json).unwrap();
         assert_eq!(back.workspace_id, "ws-2");
         assert_eq!(back.data_b64, "Zm9v");
         assert!(back.enter);
-        assert_eq!(back.origin.as_deref(), Some("kitt-dev"));
+        assert_eq!(back.origin.as_deref(), Some("host-4-dev"));
     }
 
     #[test]

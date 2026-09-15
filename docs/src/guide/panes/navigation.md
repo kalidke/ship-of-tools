@@ -7,7 +7,7 @@ pane you steer from; the [Preview pane](preview.md) reflects whatever node the
 cursor is on.
 
 ![Navigation pane in Files mode](../../assets/screenshots/nav-files.png)
-*Files mode mid-descent: parent directory, current directory, and children.*
+*Files mode mid-host-2: parent directory, current directory, and children.*
 
 ## What fills it
 

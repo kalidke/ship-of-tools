@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# installer-state.sh — the decision matrix for "an install is already here".
+# installer-state.sh — the decision matrix for "what does this install do".
 #
-# install.json recorded the role of every completed install and nothing ever
-# read it back, so a re-run on a machine with a live backend silently re-roled
-# it. These tests pin the gate that stops that, and the two limits that shape
-# it: the manifest fails CLOSED when it cannot be read (uncertainty is not
-# permission), and a `remote` role is never reused automatically because
-# schema 1 records no ssh alias to reuse.
-#
-# Separate from hosts-toml-role.sh on purpose — that file has a narrow contract
-# about editing one config file.
+# install.json used to record a `role` that nothing ever read back, so a
+# re-run on a machine with a live backend could silently re-role it. That
+# manifest-role gate is gone: the declared topology (hosts.toml) is now the
+# source of truth for what a listed host installs and enables, and a
+# listless box falls back to its flags — nothing is persisted or compared
+# across runs any more. What IS still worth guarding is a live process: a
+# shared-home cluster (four boxes, one NFS $HOME) sees every host's
+# sotd.service unit FILE, so the guard has to ask systemd whether one is
+# actually RUNNING here, not just whether a file exists.
 #
 # Run: scripts/tests/installer-state.sh
 
@@ -41,97 +41,44 @@ starts_with() {  # <description> <prefix> <actual>
 }
 case_start() { printf '  %s\n' "$1"; }
 
-manifest() {  # <dir> <json-body>
-    mkdir -p "$1"
-    printf '%s' "$2" > "$1/install.json"
-}
+# ---------------------------------------------------------------------------
+case_start "deriving role from the declared topology (installer_topology_role)"
+# Plain-line `sotd topology status` output (rust/protocol/src/topology.rs
+# status_table) — this reads THAT table, not hosts.toml itself; the one
+# parser stays the one parser.
+STATUS_TABLE="$(printf 'HOST DECLARED\nhub-box hub,daemon\nkitt daemon,frontend\ndescent daemon\nexpectations shell\nlaptop frontend\n')"
 
-command -v jq >/dev/null 2>&1 || {
-    printf 'installer-state: jq is required to run these tests\n' >&2
-    exit 1
-}
+check "a host listed daemon-only" \
+    "daemon:1 frontend:0" "$(installer_topology_role "$STATUS_TABLE" host-2)"
+check "a host listed frontend-only" \
+    "daemon:0 frontend:1" "$(installer_topology_role "$STATUS_TABLE" laptop)"
+check "a host listed as neither (shell)" \
+    "daemon:0 frontend:0" "$(installer_topology_role "$STATUS_TABLE" host-3)"
+check "a host listed daemon and frontend" \
+    "daemon:1 frontend:1" "$(installer_topology_role "$STATUS_TABLE" host-4)"
+check "a host not named in the table" \
+    "none" "$(installer_topology_role "$STATUS_TABLE" nowhere)"
+check "no table at all (no hosts.toml yet)" \
+    "none" "$(installer_topology_role "" laptop)"
 
 # ---------------------------------------------------------------------------
-case_start "reading the manifest"
+case_start "the flags fallback when there is no topology entry (installer_role_from_flags)"
 
-d="$WORK/absent"; mkdir -p "$d"
-check "no manifest is 'none'" "none" "$(installer_manifest_state "$d")"
-
-d="$WORK/good"
-manifest "$d" "$(printf '{"schema":1,"role":"be-only","prefix":"%s"}' "$d")"
-check "schema 1 yields the role" "known:be-only" "$(installer_manifest_state "$d")"
-
-d="$WORK/noprefix"
-manifest "$d" '{"schema":1,"role":"local"}'
-check "a manifest with no prefix still reads" "known:local" "$(installer_manifest_state "$d")"
-
-# Fails closed from here down: every one of these must be 'unknown', never
-# 'none'. Reading them as 'none' is what would grant permission to reconfigure.
-d="$WORK/truncated"
-manifest "$d" '{"schema": 1, "role": "be-only", "prefi'
-starts_with "a truncated manifest is unknown, not absent" "unknown:" "$(installer_manifest_state "$d")"
-
-d="$WORK/garbage"
-manifest "$d" 'this is not json at all'
-starts_with "garbage is unknown" "unknown:" "$(installer_manifest_state "$d")"
-
-d="$WORK/empty"
-manifest "$d" ''
-starts_with "an empty file is unknown" "unknown:" "$(installer_manifest_state "$d")"
-
-d="$WORK/future"
-manifest "$d" '{"schema":2,"role":"local"}'
-starts_with "a newer schema is unknown, not absent" "unknown:" "$(installer_manifest_state "$d")"
-
-d="$WORK/badrole"
-manifest "$d" '{"schema":1,"role":"something-else"}'
-starts_with "an unrecognized role is unknown" "unknown:" "$(installer_manifest_state "$d")"
-
-d="$WORK/moved"
-manifest "$d" '{"schema":1,"role":"local","prefix":"/somewhere/else"}'
-starts_with "a manifest recording another prefix is unknown" "unknown:" "$(installer_manifest_state "$d")"
+check "--local"            "daemon:1 frontend:1" "$(installer_role_from_flags local)"
+check "--be-only"          "daemon:1 frontend:0" "$(installer_role_from_flags be-only)"
+check "--backend <alias>"  "daemon:0 frontend:1" "$(installer_role_from_flags remote)"
 
 # ---------------------------------------------------------------------------
-case_start "the gate"
+case_start "install.json: hub recorded, no role field (installer_manifest_json)"
 
-check "a fresh machine is allowed" \
-    "allow" "$(installer_role_decision none "" local 0)"
-check "the same role again is an upgrade" \
-    "allow" "$(installer_role_decision known:be-only be-only be-only 0)"
+json="$(installer_manifest_json "$WORK/prefix" "$WORK/config" systemd 0.6.0 v0.6.0 abc123 2026-09-15T00:00:00Z myhub)"
+check "hub recorded"          1 "$(printf '%s' "$json" | grep -c '"hub": "myhub"')"
+check "no role key"           0 "$(printf '%s' "$json" | grep -c '"role"')"
+check "other fields kept"     1 "$(printf '%s' "$json" | grep -c '"schema": 1')"
 
-# The incident: a documented one-liner carrying a role flag, run on a box that
-# already had a backend.
-starts_with "a DIFFERENT role flag is refused" \
-    "refuse:" "$(installer_role_decision known:be-only be-only local 0)"
-starts_with "the refusal names the flag that would do it" \
-    "refuse:this machine is already installed as be-only, and --local" \
-    "$(installer_role_decision known:be-only be-only local 0)"
-check "--force-role-change is consent" \
-    "allow" "$(installer_role_decision known:be-only be-only local 1)"
+nohub="$(installer_manifest_json "$WORK/prefix" "$WORK/config" none 0.6.0 v0.6.0 abc123 2026-09-15T00:00:00Z "")"
+check "hub is empty when not given" 1 "$(printf '%s' "$nohub" | grep -c '"hub": ""')"
 
-starts_with "an unreadable manifest refuses" \
-    "refuse:" "$(installer_role_decision 'unknown:whatever' "" local 0)"
-check "and --force-role-change still overrides it" \
-    "allow" "$(installer_role_decision 'unknown:whatever' "" local 1)"
-
-# No role flag means the interactive Q&A has not run. Picking a visibly
-# non-current option there is the explicit choice, so the gate stays out of it.
-check "no flag defers to the interactive prompt" \
-    "allow" "$(installer_role_decision known:be-only be-only "" 0)"
-
-# ---------------------------------------------------------------------------
-case_start "no automatic reuse of a remote role"
-# Schema 1 stores no ssh alias or port, so 'keep what was recorded' would
-# produce ROLE=remote with an empty BE_ALIAS — a broken [host.] entry and a
-# broken launcher. The gate must refuse a change, never silently reinstate one.
-check "a recorded remote role is not reused for another flag" \
-    "allow" "$(installer_role_decision known:remote remote remote 0)"
-starts_with "and switching away from it is still refused" \
-    "refuse:" "$(installer_role_decision known:remote remote be-only 0)"
-check "the manifest exposes no alias to reuse" \
-    "" "$(jq -r '.ssh_alias // ""' <<<'{"schema":1,"role":"remote"}')"
-
-# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 case_start "unit ownership: ExecStart path extraction (old + wrapped forms)"
 # Codex round on PR #164: installer_unit_owner_path used to take the FIRST
@@ -168,6 +115,55 @@ check "no ExecStart line yields empty" \
     "" "$(printf '%s\n' "$no_execstart" | installer_unit_owner_path)"
 
 # ---------------------------------------------------------------------------
+case_start "the running-daemon guard: is-active, not just a unit file (installer_running_daemon_bin)"
+# The incident this replaces: a shared-home box saw ANOTHER host's
+# sotd.service FILE over NFS (both hosts' ~/.config/systemd/user is the same
+# directory) and refused every fresh install there. `systemctl --user cat`
+# alone can't tell the difference — only `is-active`, kept per-host outside
+# the shared file, can.
+
+stubbin="$WORK/stubbin"
+mkdir -p "$stubbin"
+active_flag="$WORK/active"
+unit_text="$WORK/unit.txt"
+printf 'ExecStart=/opt/other-prefix/bin/sotd --project-root /home/u --label sot\n' > "$unit_text"
+cat > "$stubbin/systemctl" <<STUBEOF
+#!/usr/bin/env bash
+case "\$*" in
+    *"is-active --quiet sotd.service"*) [ -f "$active_flag" ] && exit 0 || exit 3 ;;
+    *"cat sotd.service"*) cat "$unit_text" 2>/dev/null ;;
+    *) exit 0 ;;
+esac
+STUBEOF
+chmod +x "$stubbin/systemctl"
+
+rm -f "$active_flag"
+check "a unit file for another host, not active, is not a daemon here" \
+    "" "$(PATH="$stubbin:$PATH" installer_running_daemon_bin)"
+
+: > "$active_flag"
+check "active names the binary it runs" \
+    "/opt/other-prefix/bin/sotd" "$(PATH="$stubbin:$PATH" installer_running_daemon_bin)"
+rm -f "$active_flag"
+
+emptypath="$WORK/empty-path"
+mkdir -p "$emptypath"
+check "no systemctl on PATH at all is not a daemon here" \
+    "" "$(PATH="$emptypath" installer_running_daemon_bin)"
+
+# ---------------------------------------------------------------------------
+case_start "the running-daemon decision (installer_running_daemon_decision)"
+
+check "nothing running installs" \
+    "allow" "$(installer_running_daemon_decision "" /opt/sot 0)"
+check "a daemon from THIS prefix is an upgrade" \
+    "allow" "$(installer_running_daemon_decision /opt/sot/bin/sotd /opt/sot 0)"
+starts_with "a daemon from a different prefix refuses" \
+    "refuse:" "$(installer_running_daemon_decision /opt/other/bin/sotd /opt/sot 0)"
+check "--force-role-change overrides it" \
+    "allow" "$(installer_running_daemon_decision /opt/other/bin/sotd /opt/sot 1)"
+
+# ---------------------------------------------------------------------------
 case_start "retiring the tmux keeper unit on upgrade"
 # v0.6.0 deleted the tmux runtime; an upgrade must remove the old
 # sot-tmux.service unit (ADR 0038, superseded) instead of leaving it behind.
@@ -176,17 +172,17 @@ sysdir="$WORK/systemd-user"
 mkdir -p "$sysdir"
 : > "$sysdir/sot-tmux.service"
 
-stubbin="$WORK/stubbin"
-mkdir -p "$stubbin"
+tmuxstub="$WORK/tmuxstub"
+mkdir -p "$tmuxstub"
 systemctl_log="$WORK/systemctl.log"
 : > "$systemctl_log"
-cat > "$stubbin/systemctl" <<STUBEOF
+cat > "$tmuxstub/systemctl" <<STUBEOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$systemctl_log"
 STUBEOF
-chmod +x "$stubbin/systemctl"
+chmod +x "$tmuxstub/systemctl"
 
-PATH="$stubbin:$PATH" installer_retire_tmux_unit "$sysdir"
+PATH="$tmuxstub:$PATH" installer_retire_tmux_unit "$sysdir"
 
 check "the unit file is removed" \
     "0" "$([ -f "$sysdir/sot-tmux.service" ] && echo 1 || echo 0)"

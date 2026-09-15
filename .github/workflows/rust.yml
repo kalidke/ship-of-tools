@@ -388,3 +388,25 @@ jobs:
           [ -f "$HOME/.sot-comm/bin/comm-lib.sh" ] || { echo "comm-lib.sh missing"; exit 1; }
           find "$HOME/.config" -name sot-tmux.service | grep -q . && { echo "sot-tmux.service present"; exit 1; }
           exit 0
+      # A shared-home cluster sees every host's sotd.service FILE in the same
+      # ~/.config/systemd/user; the old guard read a mere `cat` of it as
+      # "another host owns this" and refused. This stubs one that is never
+      # active here -- proving that case now installs (installer_running_daemon_bin).
+      - name: Second --be-only install into a different prefix (shared-home unit case)
+        if: steps.latest.outputs.tag != ''
+        run: |
+          tag="${{ steps.latest.outputs.tag }}"
+          export HOME="$RUNNER_TEMP/sot-fresh-home"
+          mkdir -p "$RUNNER_TEMP/fakebin"
+          cat > "$RUNNER_TEMP/fakebin/systemctl" <<'STUB'
+          #!/bin/sh
+          case "$*" in
+            *"is-active --quiet sotd.service"*) exit 3 ;;
+            *"cat sotd.service"*) echo 'ExecStart=/home/another-host/.local/share/sot/bin/sotd --project-root /home/another-host --label sot' ;;
+            *) exit 0 ;;
+          esac
+          STUB
+          chmod +x "$RUNNER_TEMP/fakebin/systemctl"
+          out="$(PATH="$RUNNER_TEMP/fakebin:$PATH" bash "$GITHUB_WORKSPACE/scripts/install.sh" --be-only --no-service --version "$tag" --prefix "$HOME/.local/share/sot2" 2>&1)" || { echo "$out"; exit 1; }
+          echo "$out"
+          [ -x "$HOME/.local/share/sot2/bin/sotd" ] || { echo "second prefix missing sotd"; exit 1; }

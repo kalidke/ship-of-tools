@@ -1587,7 +1587,7 @@ case_host_alias_guard_triggers_on_long_host() {
     # The expected value here necessarily mirrors sot_sanitize_component's
     # clamp + sot_hash6's algorithm — that's not "a parallel implementation
     # that can drift" in the sense the fix direction warned against (that
-    # warning was about NOT computing per-host expectations for the OTHER,
+    # warning was about NOT computing per-host host-3 for the OTHER,
     # host-agnostic cases — the fix there is pinning the input, not
     # replicating the transform). Here the transform IS the thing under
     # test, so asserting its exact output requires computing what it

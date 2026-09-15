@@ -6,8 +6,15 @@
 #   ./scripts/install.sh --backend <ssh-alias>       # FE here → remote BE
 #   ./scripts/install.sh --be-only                   # headless backend/canary
 #   [--version vX.Y.Z] [--prefix <dir>] [--port <n>] [--no-service]
-#   [--force-role-change]  # consent to reconfiguring an install already here
+#   [--hub <ssh-alias>]     # this box does NOT share the hub's home: fetch
+#                           # its hosts.toml (`sotd topology sync`) once staged
+#   [--force-role-change]  # consent to installing over another prefix's live daemon
 #                                                    # default: latest release
+#
+# Role: a declared hosts.toml naming this host (host_name()) wins — its
+# daemon/frontend flags say what gets installed and enabled here, no
+# --local/--backend/--be-only needed. Those flags are the fallback for a box
+# with no entry yet (a brand-new user, or one not sharing the hub's home).
 #
 # What it does (idempotent; re-run to upgrade):
 #   1. preflight — arch/glibc floor for the FE, tar/curl present (gh or
@@ -18,8 +25,8 @@
 #      manual and the resource tree; blobless partial clone = full history
 #      for blame, only the tag's tree downloaded; supersedes the curated
 #      julia bundle) + juliaup + Pkg.instantiate inside the checkout
-#   5. config in ~/.config/sot (hosts.toml, settings.toml) — never clobbers
-#      an existing file
+#   5. config in ~/.config/sot: settings.toml stub if missing; hosts.toml is
+#      read (role) and, with --hub, fetched — never written here
 #   6. agent comm resources: ~/.sot-comm plus Claude/Codex skills
 #   7. backend roles: install+enable the systemd --user sotd unit
 #   8. FE roles: ~/.local/bin/sot-launch wrapper + app/desktop entry
@@ -30,7 +37,7 @@ set -euo pipefail
 REPO="${SOT_INSTALL_REPO:-kalidke/ship-of-tools}"
 PREFIX="${SOT_PREFIX:-$HOME/.local/share/sot}"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sot"
-ROLE="" VERSION="" BE_ALIAS="" PORT=18743 NO_SERVICE=0 FORCE_ROLE_CHANGE=0
+ROLE="" VERSION="" BE_ALIAS="" HUB_ALIAS="" PORT=18743 NO_SERVICE=0 FORCE_ROLE_CHANGE=0
 GLIBC_FLOOR_FE="2.35"
 
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
@@ -48,155 +55,127 @@ reject_unsafe_path_chars() {  # <label> <value>
     esac
 }
 
-# ---- hosts.toml editing --------------------------------------------------------
-# The installer owns exactly TWO things in hosts.toml: the value of
-# `default_host`, and the presence of an entry for the role's own host. Every
-# other line is the user's and survives verbatim — their other [host.*] entries
-# (docs/src/ref/config.md calls this a registry, and the frontend's Hosts mode
-# lists all of them), the [monitor] table (ADR 0020), comments, and sections a
-# future version adds that this one has never heard of.
-#
-# This used to back the file up and rewrite it from a stub whenever a one-line
-# grep for the expected `default_host` missed. That silently discarded the
-# user's [monitor] table — the drawer then monitored only the local host and
-# said nothing about why — along with every other host and every comment. It
-# also contradicted this script's own promise at the top of the file never to
-# clobber existing config. The grep was not even a role detector: --local and
-# --be-only both want "local", so a real change between them missed, while a
-# user who simply picked a different default_host tripped it.
+# ---- what this box knows about itself --------------------------------------------
+# hosts.toml is never written here (D1/D9, dev/output/topology-plan.md §C/§D):
+# the hub owns the one canonical copy (`sotd topology apply`); every other box
+# either shares its home (the file is simply there) or fetches a copy
+# (`--hub`, below). The installer only ever READS it, to ask "does this list
+# name ME" — and derives what to install and enable from the answer instead
+# of a role flag or a Q&A.
 
-# Exact, trimmed line compare. Deliberately not a regex: an ssh alias may
-# contain regex metacharacters, and `[host.a.b]` must not match `[host.axb]`.
-hosts_toml_has_line() {  # <file> <exact-trimmed-line>
-    awk -v want="$2" '{ s = $0; gsub(/^[ \t]+|[ \t]+$/, "", s); if (s == want) { found = 1; exit } } END { exit !found }' "$1"
-}
-
-# Is there a `default_host` key ABOVE the first table header? A key below one
-# belongs to that table, not to the document.
-hosts_toml_has_default() {  # <file>
-    awk 'BEGIN { pro = 1 } { s = $0; gsub(/^[ \t]+|[ \t]+$/, "", s); if (substr(s, 1, 1) == "[") pro = 0; if (pro && s ~ /^default_host[ \t]*=/) { found = 1; exit } } END { exit !found }' "$1"
-}
-
-# Point default_host at this role's host and make sure that host has an entry.
-# Writes a sibling temp file and renames, so an interrupted run cannot leave a
-# truncated config where a working one was.
-hosts_toml_apply_role() {  # <file> <want-host> <entry-block>
-    local file="$1" want="$2" entry="$3" tmp="$1.new" added=""
-    if [ ! -f "$file" ]; then
-        printf 'default_host = "%s"\n\n%s\n' "$want" "$entry" > "$file"
-        say "wrote $file"
-        return
-    fi
-    if hosts_toml_has_default "$file"; then
-        awk -v want="$want" '
-            BEGIN { pro = 1; done = 0 }
-            {
-                s = $0; gsub(/^[ \t]+|[ \t]+$/, "", s)
-                if (substr(s, 1, 1) == "[") pro = 0
-                if (pro && !done && s ~ /^default_host[ \t]*=/) {
-                    print "default_host = \"" want "\""; done = 1; next
-                }
-                print
-            }' "$file" > "$tmp"
-    else
-        # Prepended, never appended: a top-level key after a table header would
-        # silently become a key OF that table.
-        { printf 'default_host = "%s"\n' "$want"; cat "$file"; } > "$tmp"
-    fi
-    if ! hosts_toml_has_line "$file" "[host.$want]"; then
-        printf '\n%s\n' "$entry" >> "$tmp"
-        added="; added [host.$want]"
-    fi
-    if cmp -s "$tmp" "$file"; then rm -f "$tmp"; return; fi
-    mv "$tmp" "$file"
-    say "updated $file: default_host = \"$want\"$added (other hosts, [monitor] and comments kept)"
-}
-
-# ---- what is already installed here ---------------------------------------------
-# $PREFIX/install.json has recorded the role of every completed install since
-# schema 1, and until now nothing ever read it back. So a re-run on a machine
-# with a working install had no idea: the role Q&A offered three equal choices,
-# and a role flag reconfigured silently. That is how a documented install on a
-# box with a live backend turned it into a different topology.
-#
-# Two honest limits on what the manifest proves, both of which shape the gate:
-# it means "this prefix completed a release install", NOT "a backend exists
-# here" — a source install owns the same sotd.service and writes no manifest —
-# and schema 1 records no ssh alias or port, so a `remote` install cannot be
-# reconstructed from it. Hence: no automatic reuse of a recorded role, only a
-# refusal to change one by accident.
-
-# "none" | "unknown:<why>" | "known:<role>". Fails CLOSED: anything present but
-# not understood is unknown, never "no install here" — turning uncertainty into
-# permission to reconfigure is the whole bug being fixed.
-installer_manifest_state() {  # <prefix>
-    local f="$1/install.json" schema role recorded
-    [ -f "$f" ] || { printf 'none'; return; }
-    # jq, not a regex: a truncated file still contains plausible-looking
-    # `"schema": 1` and `"role"` lines, so line matching would read a half
-    # written manifest as authoritative. The unauthenticated curl path already
-    # requires jq; when it is missing here, "unreadable" is the honest answer.
-    command -v jq >/dev/null 2>&1 || { printf 'unknown:jq is not installed, so %s cannot be read' "$f"; return; }
-    schema="$(jq -r '.schema // empty' "$f" 2>/dev/null || true)"
-    [ "$schema" = 1 ] || { printf 'unknown:%s is not a schema-1 manifest' "$f"; return; }
-    role="$(jq -r '.role // empty' "$f" 2>/dev/null || true)"
-    case "$role" in
-        local|remote|be-only) ;;
-        *) printf 'unknown:%s records no role this version understands' "$f"; return ;;
-    esac
-    recorded="$(jq -r '.prefix // empty' "$f" 2>/dev/null || true)"
-    if [ -n "$recorded" ] && [ "$recorded" != "$1" ]; then
-        printf 'unknown:%s records prefix %s, not %s' "$f" "$recorded" "$1"
-        return
-    fi
-    printf 'known:%s' "$role"
-}
-
-# Extract the sotd binary path from a unit's ExecStart line. Two shapes:
-# the old direct form (ExecStart=<bin>/sotd ...) and the current form that
-# sources ~/.bashrc through a shell before exec'ing (ExecStart=/bin/bash -c
-# '...; exec "<bin>/sotd" ...'). One regex covers both: an optional
-# `exec "` prefix — present only in the wrapped form — before the path,
-# which runs to the next space or quote either way. Pure (stdin -> stdout),
-# so it is testable without systemctl or a real unit file
-# (scripts/tests/installer-state.sh).
+# ExecStart's binary path from a `systemctl --user cat sotd.service` unit.
+# Two shapes: the old direct form (ExecStart=<bin>/sotd ...) and the current
+# one that sources ~/.bashrc through a shell before exec'ing (ExecStart=/bin/bash
+# -c '...; exec "<bin>/sotd" ...'). One regex covers both: an optional
+# `exec "` prefix — present only in the wrapped form — before the path, which
+# runs to the next space or quote either way. Pure (stdin -> stdout), so it is
+# testable without systemctl or a real unit file (scripts/tests/installer-state.sh).
 installer_unit_owner_path() {
     sed -n -E 's/^ExecStart=(.*exec ")?([^ "]+)"?.*/\2/p' | head -1
 }
 
-# The program an existing user-level sotd.service runs, if there is one. A
-# source install has no manifest but owns this same fixed unit name, so the
-# manifest alone would miss it.
-installer_unit_owner() {
+# The sotd binary path from the unit CURRENTLY RUNNING for this user on this
+# host, or empty when none is. A shared-home cluster (four boxes, one NFS
+# $HOME) puts every host's `sotd.service` FILE in the same
+# ~/.config/systemd/user — `systemctl --user cat` finds it no matter which
+# host wrote it, so file presence alone cannot tell "another host owns this"
+# from "nothing is running here"; that used to refuse a fresh install on
+# every box but the one that ran the original install. `is-active` is
+# per-host state systemd keeps outside that shared file — the only honest
+# signal that installing here would step on a live process.
+installer_running_daemon_bin() {
     command -v systemctl >/dev/null 2>&1 || return 0
+    systemctl --user is-active --quiet sotd.service 2>/dev/null || return 0
     systemctl --user cat sotd.service 2>/dev/null | installer_unit_owner_path
 }
 
-# "allow" | "refuse:<why>". Pure, so the decision matrix is testable without
-# running an install.
-installer_role_decision() {  # <state> <prior-role> <requested-role> <force>
-    local state="$1" prior="$2" want="$3" force="$4"
+# "allow" | "refuse:<why>" — pure, so the decision is testable without
+# systemctl or a real prefix. A binary running from THIS prefix is an
+# upgrade, not a collision.
+installer_running_daemon_decision() {  # <running-bin> <prefix> <force>
+    local running="$1" prefix="$2" force="$3"
+    [ -z "$running" ] && { printf 'allow'; return; }
     [ "$force" = 1 ] && { printf 'allow'; return; }
-    case "$state" in
-        none) printf 'allow'; return ;;
-        unknown:*) printf 'refuse:%s' "${state#unknown:}"; return ;;
-    esac
-    # Empty means the interactive Q&A has not run yet. Picking a visibly
-    # non-current option there IS the explicit choice, so the gate does not
-    # second-guess it; this path only protects flags.
-    [ -z "$want" ] && { printf 'allow'; return; }
-    [ "$want" = "$prior" ] && { printf 'allow'; return; }
-    printf 'refuse:this machine is already installed as %s, and %s would change that' \
-        "$prior" "$(installer_role_flag "$want")"
+    if [ "${running#"$prefix"/}" != "$running" ]; then
+        printf 'allow'
+        return
+    fi
+    printf 'refuse:the sotd.service running for this user runs %s; this install targets %s/bin/sotd' "$running" "$prefix"
 }
 
-installer_role_flag() {  # role -> the flag that asks for it, for messages
+# Mirrors sot_log::state_dir::host_name() (rust/log/src/state_dir.rs): this
+# box's own name, needed to look itself up in the declared topology one step
+# before any staged sotd has run to say it out loud. Not a second parser —
+# the grammar itself is read by `sotd topology status` (installer_topology_role
+# below); this is the same three-line env-or-hostname resolution that
+# function documents.
+installer_self_host() {
+    if [ -n "${SOT_SELF_HOST:-}" ]; then
+        printf '%s' "$SOT_SELF_HOST"
+        return
+    fi
+    hostname 2>/dev/null | cut -d. -f1 | tr '[:upper:]' '[:lower:]'
+}
+
+# "daemon:0|1 frontend:0|1" for <self> in `sotd topology status`'s output —
+# the one parser (rust/protocol/src/topology.rs); this reads its plain-line
+# table, not hosts.toml itself, so it stays a consumer, not a second parser.
+# "none" when the table doesn't list self: no hosts.toml yet, or one that
+# doesn't name this box — both are the same "fall back to flags" signal to
+# the caller. Pure, so the decision is testable against canned status text.
+installer_topology_role() {  # <status-table-text> <self-host>
+    printf '%s\n' "$1" | awk -v self="$2" '
+        NR == 1 { next }  # header line "HOST DECLARED"
+        $1 == self && NF >= 2 {
+            split($2, w, ",")
+            d = 0; f = 0
+            for (i in w) {
+                if (w[i] == "daemon") d = 1
+                if (w[i] == "frontend") f = 1
+            }
+            printf "daemon:%d frontend:%d", d, f
+            found = 1
+            exit
+        }
+        END { if (!found) print "none" }
+    '
+}
+
+# The same "daemon:0|1 frontend:0|1" shape, for the flags fallback (no
+# topology entry for this host yet) — one parse path serves both sources.
+installer_role_from_flags() {  # <role: local|remote|be-only>
     case "$1" in
-        local) printf -- '--local' ;;
-        be-only) printf -- '--be-only' ;;
-        remote) printf -- '--backend' ;;
-        *) printf '%s' "$1" ;;
+        local) printf 'daemon:1 frontend:1' ;;
+        be-only) printf 'daemon:1 frontend:0' ;;
+        remote) printf 'daemon:0 frontend:1' ;;
     esac
+}
+
+# Minimal JSON string escape (backslash + double quote) so an exotic prefix
+# or hub alias can't produce a manifest that parses wrong.
+json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# $PREFIX/install.json (schema 1) body. No `role` key: this schema no longer
+# records one — a box the declared topology names asks the list again next
+# run, a listless box re-derives from its own flags. `hub` is the plan's one
+# local declaration, for a box that does not share the hub's home; empty
+# string when this box has none. Extracted to a pure function so
+# scripts/tests/installer-state.sh can check its shape without a real install.
+installer_manifest_json() {  # <prefix> <config> <service> <version> <tag> <commit> <installed_at> <hub>
+    local prefix="$1" config="$2" service="$3" version="$4" tag="$5" commit="$6" installed_at="$7" hub="$8"
+    cat <<EOF
+{
+  "schema": 1,
+  "prefix": "$(json_str "$prefix")",
+  "config": "$(json_str "$config")",
+  "service": "$service",
+  "version": "$version",
+  "tag": "$tag",
+  "commit": "$commit",
+  "installed_at": "$installed_at",
+  "hub": "$(json_str "$hub")"
+}
+EOF
 }
 
 installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
@@ -208,9 +187,9 @@ installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
     rm -f "$unit"
 }
 
-# scripts/tests/hosts-toml-role.sh and scripts/tests/installer-state.sh both
-# source this file to exercise the functions above in isolation. Nothing else sets this,
-# `curl | bash` included.
+# scripts/tests/installer-state.sh sources this file to exercise the
+# functions above in isolation. Nothing else sets this, `curl | bash`
+# included.
 if [ "${SOT_INSTALL_SOURCE_ONLY:-}" = 1 ]; then return 0; fi
 
 # ---- 0. heal a forbidden depot config (owner ruling 2026-09-02: no depot
@@ -230,6 +209,9 @@ while [ $# -gt 0 ]; do
         --local) ROLE=local ;;
         --backend) ROLE=remote; BE_ALIAS="${2:?--backend needs an ssh alias}"; shift ;;
         --be-only) ROLE=be-only ;;
+        # This box does not share the hub's home: fetch its hosts.toml
+        # (`sotd topology sync`) after staging, below.
+        --hub) HUB_ALIAS="${2:?--hub needs an ssh alias}"; shift ;;
         --version) VERSION="${2:?}"; shift ;;
         --prefix) PREFIX="${2:?}"; shift ;;
         --port) PORT="${2:?}"; shift ;;
@@ -258,74 +240,18 @@ esac
 reject_unsafe_path_chars "prefix" "$PREFIX"
 reject_unsafe_path_chars 'project root ($HOME)' "$HOME"
 
-# ---- the role gate -------------------------------------------------------------
-# Runs BEFORE the role is resolved, so it can refuse a flag, and after the
-# prefix is final, so it looks in the right place.
-PRIOR_STATE="$(installer_manifest_state "$PREFIX")"
-PRIOR_ROLE=""
-case "$PRIOR_STATE" in known:*) PRIOR_ROLE="${PRIOR_STATE#known:}" ;; esac
-
-# A unit that runs something outside this prefix belongs to another install —
-# a source checkout, or a second --prefix. Backend roles overwrite that unit
-# and the remote role disables it, so touching it uninvited is exactly the
-# class of accident this gate exists for, and the manifest cannot see it.
-UNIT_OWNER="$(installer_unit_owner)"
-if [ -n "$UNIT_OWNER" ] && [ "${UNIT_OWNER#"$PREFIX/"}" = "$UNIT_OWNER" ] && [ "$FORCE_ROLE_CHANGE" = 0 ]; then
-    printf '\033[1;31mERROR:\033[0m an existing sotd.service runs %s, which this install does not own.\n' "$UNIT_OWNER" >&2
-    printf '       Installing here would replace or disable it. Re-run with --force-role-change if that is what you want.\n' >&2
-    exit 2
-fi
-
-DECISION="$(installer_role_decision "$PRIOR_STATE" "$PRIOR_ROLE" "$ROLE" "$FORCE_ROLE_CHANGE")"
+# ---- the running-daemon guard ---------------------------------------------------
+# Runs before download: fail fast rather than pull 100+MB to discover this.
+# See installer_running_daemon_bin above for why this checks is-active, not
+# merely a unit FILE's presence.
+RUNNING_BIN="$(installer_running_daemon_bin)"
+DECISION="$(installer_running_daemon_decision "$RUNNING_BIN" "$PREFIX" "$FORCE_ROLE_CHANGE")"
 case "$DECISION" in
     refuse:*)
         printf '\033[1;31mERROR:\033[0m %s\n' "${DECISION#refuse:}" >&2
-        printf '       Re-run with the matching role flag to upgrade in place, or add --force-role-change to reconfigure.\n' >&2
-        printf '       Reconfiguring replaces the service, the launcher, the config default, and update ownership.\n' >&2
+        printf '       Installing here would replace or disable a live daemon this install does not own. Re-run with --force-role-change if that is what you want.\n' >&2
         exit 2 ;;
 esac
-[ -n "$PRIOR_ROLE" ] && say "existing install here: role $PRIOR_ROLE"
-
-# No role flag → interactive Q&A (matches the sot-setup experience; found
-# missing by the first real laptop install). Prompts read /dev/tty so this
-# also works under `curl | bash`. No TTY and no flags → the old hard error.
-if [ -z "$ROLE" ]; then
-    # A real open-probe: -r/-w pass on the device node even in ttyless
-    # contexts (cron, CI, piped bash) where opening it then fails.
-    if (: < /dev/tty) 2>/dev/null && (: > /dev/tty) 2>/dev/null; then
-        {
-            if [ -n "$PRIOR_ROLE" ]; then
-                echo "This machine is already installed as: $PRIOR_ROLE"
-                echo "Choosing a different layout below RECONFIGURES it."
-            fi
-            echo "Where should Ship of Tools run?"
-            echo "  1) all on this machine        (frontend + backend here)$([ "$PRIOR_ROLE" = local ] && printf '   [current]')"
-            echo "  2) frontend here, backend on another machine over SSH$([ "$PRIOR_ROLE" = remote ] && printf '   [current]')"
-            echo "  3) backend only on this machine (headless server)$([ "$PRIOR_ROLE" = be-only ] && printf '   [current]')"
-            printf "Choose [1-3]: "
-        } > /dev/tty
-        read -r choice < /dev/tty
-        case "$choice" in
-            1) ROLE=local ;;
-            2) ROLE=remote
-               printf "SSH alias/hostname of the backend machine (key-based auth required): " > /dev/tty
-               read -r BE_ALIAS < /dev/tty
-               [ -n "$BE_ALIAS" ] || die "backend host is required for the remote layout"
-               printf "Verifying ssh to '%s'... " "$BE_ALIAS" > /dev/tty
-               ssh -o BatchMode=yes -o ConnectTimeout=8 "$BE_ALIAS" true 2>/dev/null \
-                   && echo "ok" > /dev/tty \
-                   || { echo "FAILED" > /dev/tty; die "key-based ssh to '$BE_ALIAS' doesn't work (ssh-copy-id first, or fix ~/.ssh/config)"; } ;;
-            3) ROLE=be-only ;;
-            *) die "no such choice: '$choice'" ;;
-        esac
-        printf "Local tunnel port [%s]: " "$PORT" > /dev/tty
-        read -r p < /dev/tty
-        [ -n "$p" ] && PORT="$p"
-    else
-        echo "pick a role: --local | --backend <alias> | --be-only (no TTY for interactive setup)" >&2
-        exit 2
-    fi
-fi
 
 # ---- 1. preflight ------------------------------------------------------------
 OS="$(uname -s)"
@@ -342,19 +268,9 @@ case "$OS" in
     *)  die "unsupported OS $OS. Linux/macOS: this installer; Windows: docs/INSTALL-AGENT.md section 2b" ;;
 esac
 for t in curl tar; do command -v "$t" >/dev/null || die "$t is required"; done
-
-if [ "$OS" = Linux ] && [ "$ROLE" != be-only ]; then
-    # No pipelines here: `... | head | grep || echo 0` SIGPIPEs ldd under
-    # pipefail and APPENDS a bogus "0" to a good match, making the floor
-    # check fail on EVERY machine (the first real laptop install hit this).
-    # Capture the whole output, then parse from the variable.
-    ldd_out="$(ldd --version 2>/dev/null || true)"
-    glibc="$(printf '%s\n' "$ldd_out" | sed -n '1s/.*[^0-9.]\([0-9][0-9]*\.[0-9][0-9]*\)[[:space:]]*$/\1/p')"
-    [ -n "$glibc" ] || glibc=0
-    lowest="$(printf '%s\n%s\n' "$GLIBC_FLOOR_FE" "$glibc" | sort -V | sed -n 1p)"
-    [ "$lowest" = "$GLIBC_FLOOR_FE" ] \
-        || die "the frontend binary needs glibc >= $GLIBC_FLOOR_FE (this box: $glibc). The backend (musl, --be-only) runs anywhere."
-fi
+# The glibc floor for the frontend binary is checked further down, once the
+# role is resolved (WANT_FRONTEND) — that now needs the declared topology,
+# read via the sotd just staged below, so it can't run this early any more.
 
 # Downloader: for a public repo, unauthenticated curl works. gh (authed) is
 # preferred when present, and $GITHUB_TOKEN is honored purely to dodge the
@@ -383,7 +299,7 @@ if [ -z "$VERSION" ]; then
     fi
 fi
 VER="${VERSION#v}"
-say "installing Ship of Tools $VERSION (role: $ROLE) into $PREFIX"
+say "installing Ship of Tools $VERSION into $PREFIX"
 
 # ---- 2. download + verify ----------------------------------------------------
 ASSETS=("SHA256SUMS" "sot-$VER-$TARGET.tar.gz")
@@ -429,6 +345,87 @@ done
 rm -f "$PREFIX"/updates/last-good-*.json "$PREFIX"/updates/just-applied-* 2>/dev/null || true
 say "binaries: $("$PREFIX/bin/sotd" --version)"
 DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
+
+# ---- role resolution: the declared topology, else flags -------------------------
+# D9 (dev/output/topology-plan.md §C/§D): the hub's hosts.toml is canonical —
+# when it names this host, that entry's daemon/frontend flags decide what's
+# installed and enabled here, no --local/--backend/--be-only or Q&A needed.
+# A box with no entry yet (a brand-new user) falls back to the role flag /
+# interactive choice below. --hub fetches a copy first, for a box that does
+# not share the hub's home; a box that does already has the file, no fetch
+# needed.
+if [ -n "$HUB_ALIAS" ]; then
+    "$PREFIX/bin/sotd" topology sync --hub "$HUB_ALIAS" || die "topology sync --hub $HUB_ALIAS failed"
+fi
+SELF_HOST="$(installer_self_host)"
+WANT_DAEMON=0
+WANT_FRONTEND=0
+TOPO_ROLE=none
+if STATUS_OUT="$("$PREFIX/bin/sotd" topology status 2>/dev/null)"; then
+    TOPO_ROLE="$(installer_topology_role "$STATUS_OUT" "$SELF_HOST")"
+fi
+if [ "$TOPO_ROLE" != none ]; then
+    [ -n "$ROLE" ] && say "note: --$ROLE given, but the declared topology names this host — the topology wins"
+    # The topology wins outright: an ssh alias from an overridden --backend
+    # flag must not leak into the FE launcher choice below (step 8).
+    BE_ALIAS=""
+    RESOLVED="$TOPO_ROLE"
+    say "role: the declared topology names '$SELF_HOST' ($RESOLVED) — installing/enabling accordingly"
+else
+    # No role flag → interactive Q&A (matches the sot-setup experience; found
+    # missing by the first real laptop install). Prompts read /dev/tty so
+    # this also works under `curl | bash`. No TTY and no flags → hard error.
+    if [ -z "$ROLE" ]; then
+        # A real open-probe: -r/-w pass on the device node even in ttyless
+        # contexts (cron, CI, piped bash) where opening it then fails.
+        if (: < /dev/tty) 2>/dev/null && (: > /dev/tty) 2>/dev/null; then
+            {
+                echo "No declared topology names this machine ($SELF_HOST) — where should Ship of Tools run?"
+                echo "  1) all on this machine        (frontend + backend here)"
+                echo "  2) frontend here, backend on another machine over SSH"
+                echo "  3) backend only on this machine (headless server)"
+                printf "Choose [1-3]: "
+            } > /dev/tty
+            read -r choice < /dev/tty
+            case "$choice" in
+                1) ROLE=local ;;
+                2) ROLE=remote
+                   printf "SSH alias/hostname of the backend machine (key-based auth required): " > /dev/tty
+                   read -r BE_ALIAS < /dev/tty
+                   [ -n "$BE_ALIAS" ] || die "backend host is required for the remote layout"
+                   printf "Verifying ssh to '%s'... " "$BE_ALIAS" > /dev/tty
+                   ssh -o BatchMode=yes -o ConnectTimeout=8 "$BE_ALIAS" true 2>/dev/null \
+                       && echo "ok" > /dev/tty \
+                       || { echo "FAILED" > /dev/tty; die "key-based ssh to '$BE_ALIAS' doesn't work (ssh-copy-id first, or fix ~/.ssh/config)"; } ;;
+                3) ROLE=be-only ;;
+                *) die "no such choice: '$choice'" ;;
+            esac
+            printf "Local tunnel port [%s]: " "$PORT" > /dev/tty
+            read -r p < /dev/tty
+            [ -n "$p" ] && PORT="$p"
+        else
+            echo "pick a role: --local | --backend <alias> | --be-only (no TTY for interactive setup)" >&2
+            exit 2
+        fi
+    fi
+    RESOLVED="$(installer_role_from_flags "$ROLE")"
+    say "role: no topology entry for '$SELF_HOST' — using $ROLE ($RESOLVED)"
+fi
+case "$RESOLVED" in *"daemon:1"*) WANT_DAEMON=1 ;; esac
+case "$RESOLVED" in *"frontend:1"*) WANT_FRONTEND=1 ;; esac
+
+if [ "$OS" = Linux ] && [ "$WANT_FRONTEND" = 1 ]; then
+    # No pipelines here: `... | head | grep || echo 0` SIGPIPEs ldd under
+    # pipefail and APPENDS a bogus "0" to a good match, making the floor
+    # check fail on EVERY machine (the first real laptop install hit this).
+    # Capture the whole output, then parse from the variable.
+    ldd_out="$(ldd --version 2>/dev/null || true)"
+    glibc="$(printf '%s\n' "$ldd_out" | sed -n '1s/.*[^0-9.]\([0-9][0-9]*\.[0-9][0-9]*\)[[:space:]]*$/\1/p')"
+    [ -n "$glibc" ] || glibc=0
+    lowest="$(printf '%s\n%s\n' "$GLIBC_FLOOR_FE" "$glibc" | sort -V | sed -n 1p)"
+    [ "$lowest" = "$GLIBC_FLOOR_FE" ] \
+        || die "the frontend binary needs glibc >= $GLIBC_FLOOR_FE (this box: $glibc). The backend (musl, --be-only) runs anywhere."
+fi
 
 # ---- 4. the repo checkout — manual, resources, julia code (ADR 0030 add.) -----
 # The checkout IS the product's resource tree and its help system:
@@ -551,7 +548,7 @@ say "installing agent comm resources (sot-comm, Claude/Codex skills)"
 julia_run --project="$CHECKOUT" -e 'using ShipTools; ShipTools.update_comm()' \
     || die "ShipTools.update_comm() failed"
 
-if [ "$ROLE" != remote ]; then
+if [ "$WANT_DAEMON" = 1 ]; then
     # A previous install's instantiate wrote Manifest.toml into these env dirs
     # (untracked — envs fresh-resolve at the tag by design), and a tag move
     # keeps the file. A stale manifest predating a newly added dep fails
@@ -588,41 +585,29 @@ if [ "$ROLE" != remote ]; then
 fi
 
 # ---- 6. config -----------------------------------------------------------------
-# A remote-FE role must not leave a previously-installed LOCAL backend
-# running (the wrong-topology remnant): disable it, don't just orphan it.
-if [ "$ROLE" = remote ] && command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
+# hosts.toml is never written here — see "what this box knows about itself"
+# above. A resolution that does not want a daemon here must not leave a
+# previously-installed LOCAL backend running (a wrong-topology remnant):
+# disable it, don't just orphan it.
+if [ "$WANT_DAEMON" = 0 ] && command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
     systemctl --user disable --now sotd.service || true
     say "disabled the local sotd.service from a previous all-in-one install"
 fi
-# Re-running with a role flag is how a wrong-topology install heals itself, so
-# the role's choice of default_host wins — but it is now the ONLY thing that
-# changes besides adding a missing host entry.
-case "$ROLE" in
-    local|be-only)
-        want="local"
-        entry="$(printf '# Local backend on the per-user socket — no SSH involved for the same-machine role.\n[host.local]\nsocket = "%s"' "$DEFAULT_SOCKET")"
-        ;;
-    remote)
-        want="$BE_ALIAS"
-        entry="$(printf '[host.%s]\nssh_alias = "%s"\nremote_repo = "$HOME"\ntcp_port = %s' "$BE_ALIAS" "$BE_ALIAS" "$PORT")"
-        ;;
-esac
-hosts_toml_apply_role "$CONFIG/hosts.toml" "$want" "$entry"
 [ -f "$CONFIG/settings.toml" ] || printf '# Ship of Tools settings — see .sot/settings.toml.example in the repo\n' > "$CONFIG/settings.toml"
 
 # ---- 7. backend service --------------------------------------------------------
-if [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 1 ]; then
+if [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 1 ]; then
     say "skipping systemd unit (--no-service) — supervise sotd yourself, e.g.:"
     say "  systemd-run --user --unit=sotd-canary -p Restart=always $PREFIX/bin/sotd --project-root \$HOME --label sot"
 fi
-if [ "$OS" = Darwin ] && [ "$ROLE" != remote ]; then
+if [ "$OS" = Darwin ] && [ "$WANT_DAEMON" = 1 ]; then
     # No launchd wiring yet (roadmap): the local-role launcher below starts
     # sotd on demand; be-only Macs run it by hand.
     NO_SERVICE=1
     say "macOS: no service manager wiring yet — the sot-launch wrapper starts sotd on demand"
-    [ "$ROLE" = be-only ] && say "  be-only: start it with  $PREFIX/bin/sotd --project-root ~ --label sot"
+    [ "$WANT_FRONTEND" = 0 ] && say "  be-only: start it with  $PREFIX/bin/sotd --project-root ~ --label sot"
 fi
-if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
+if [ "$OS" = Linux ] && [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 0 ]; then
     mkdir -p "$HOME/.config/systemd/user"
     installer_retire_tmux_unit "$HOME/.config/systemd/user"
     sed -e "s|@SOT_BIN@|$PREFIX/bin/sotd|" \
@@ -642,8 +627,12 @@ if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
 fi
 
 # ---- 8. FE launcher -------------------------------------------------------------
-if [ "$ROLE" != be-only ]; then
-    if [ "$ROLE" = local ]; then
+if [ "$WANT_FRONTEND" = 1 ]; then
+    # The all-in-one launcher (own daemon on demand) unless this install
+    # names an explicit remote backend to dial over SSH (--backend <alias>,
+    # or its interactive equivalent) — that shape has no topology-derived
+    # equivalent yet, so a listed frontend-only host also gets this one.
+    if [ -z "$BE_ALIAS" ]; then
         cat > "$HOME/.local/bin/sot-launch" <<EOF
 #!/usr/bin/env bash
 # All-in-one launcher: apply any armed pending update (offline pointer flip,
@@ -856,11 +845,11 @@ fi
 # keeps executing the old binary until restarted. Restart it here so the
 # update takes effect now, not at the next reboot. (Launcher-started daemons
 # — macOS / --no-service — are restarted by the next sot-launch; say so.)
-if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ] \
+if [ "$OS" = Linux ] && [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 0 ] \
    && systemctl --user is-active sotd.service >/dev/null 2>&1; then
     say "restarting sotd to pick up the new version"
     systemctl --user try-restart sotd.service || true
-elif [ "$ROLE" != remote ]; then
+elif [ "$WANT_DAEMON" = 1 ]; then
     say "note: a running sotd keeps the old version until restarted (next sot-launch restarts it if its socket is gone; or stop it manually)"
 fi
 
@@ -872,30 +861,14 @@ fi
 # it. Read by sot-updater's InstallManifest (rust/updater/src/manifest.rs) —
 # keep the two in sync.
 SERVICE="none"
-[ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ] && SERVICE="systemd"
+[ "$OS" = Linux ] && [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 0 ] && SERVICE="systemd"
 COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
-# Paths go through a minimal JSON string escape (backslash + double quote) so
-# an exotic prefix can't produce a manifest that parses wrong — a broken
-# manifest silently redirects the updater's staging root.
-json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 # Temp file plus rename: a heredoc straight onto the live path truncates it
-# first, so an interrupt would leave the machine with no readable manifest —
-# which the gate above now reads as "state unknown" and refuses to act on.
-cat > "$PREFIX/install.json.new" <<EOF
-{
-  "schema": 1,
-  "role": "$ROLE",
-  "prefix": "$(json_str "$PREFIX")",
-  "config": "$(json_str "$CONFIG")",
-  "service": "$SERVICE",
-  "version": "${VERSION#v}",
-  "tag": "$VERSION",
-  "commit": "$COMMIT",
-  "installed_at": "$(date -u +%FT%TZ)"
-}
-EOF
+# first, so an interrupt would leave the machine with no readable manifest.
+installer_manifest_json "$PREFIX" "$CONFIG" "$SERVICE" "${VERSION#v}" "$VERSION" "$COMMIT" "$(date -u +%FT%TZ)" "$HUB_ALIAS" \
+    > "$PREFIX/install.json.new"
 mv "$PREFIX/install.json.new" "$PREFIX/install.json"
-say "wrote $PREFIX/install.json (schema 1, role=$ROLE, service=$SERVICE)"
+say "wrote $PREFIX/install.json (schema 1, daemon=$WANT_DAEMON frontend=$WANT_FRONTEND, service=$SERVICE)"
 
 # A shared-home Linux cluster used to set SOT_RELAY_ENDPOINT with a
 # per-host `case` in the shell profile (ADR 0028); `sotd topology
@@ -912,6 +885,6 @@ if [ "$OS" = Linux ]; then
     say '  : "${SOT_RELAY_ENDPOINT:=tcp:127.0.0.1:18743}"'
 fi
 
-say "DONE — Ship of Tools $VERSION installed ($ROLE)."
-[ "$ROLE" = remote ] && say "reminder: key-based ssh to '$BE_ALIAS' is required (ssh $BE_ALIAS true)"
+say "DONE — Ship of Tools $VERSION installed (daemon=$WANT_DAEMON frontend=$WANT_FRONTEND)."
+[ -n "$BE_ALIAS" ] && say "reminder: key-based ssh to '$BE_ALIAS' is required (ssh $BE_ALIAS true)"
 exit 0
