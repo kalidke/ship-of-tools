@@ -248,7 +248,7 @@ Pure queries (no startup side effects, answered before any of the above):
                           resolve and exec the named agent's launch
                           recipe in place (ADR 0046 decision 4); only
                           "claude" has a recipe today
-  topology <plan|status|relay-endpoint|sync>
+  topology <plan|status|relay-endpoint|sync|apply>
                           what this box derives from hosts.toml
                           (`sotd topology` alone prints the details)"#
                 );

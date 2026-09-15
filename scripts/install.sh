@@ -897,6 +897,21 @@ EOF
 mv "$PREFIX/install.json.new" "$PREFIX/install.json"
 say "wrote $PREFIX/install.json (schema 1, role=$ROLE, service=$SERVICE)"
 
+# A shared-home Linux cluster used to set SOT_RELAY_ENDPOINT with a
+# per-host `case` in the shell profile (ADR 0028); `sotd topology
+# relay-endpoint` now derives the right value on every box (hub's own
+# socket, a frontend's forward tunnel, or the reverse-tunnel socket) from
+# hosts.toml, so that block becomes this one-liner. The profile is the
+# maintainer's own file outside this repo — paste it by hand, this script
+# never edits it. The fallback keeps a box working (same value ADR 0028
+# used before this) if the command fails or sotd isn't on PATH yet; it
+# runs on every non-interactive ssh, so it stays quiet either way.
+if [ "$OS" = Linux ]; then
+    say "shell profile: replace any per-host SOT_RELAY_ENDPOINT case block with:"
+    say '  export SOT_RELAY_ENDPOINT="$(sotd topology relay-endpoint 2>/dev/null)"'
+    say '  : "${SOT_RELAY_ENDPOINT:=tcp:127.0.0.1:18743}"'
+fi
+
 say "DONE — Ship of Tools $VERSION installed ($ROLE)."
 [ "$ROLE" = remote ] && say "reminder: key-based ssh to '$BE_ALIAS' is required (ssh $BE_ALIAS true)"
 exit 0

@@ -88,13 +88,45 @@ and keep setting `SOT_RELAY_ENDPOINT` inline in git-bash.
 ### Operational notes
 - Add a remote: `systemctl --user enable --now sot-relay-tunnel@<host>` (host must
   be myhost-ssh-reachable with an agent-less key + a `known_hosts` entry, or rely on
-  `accept-new` on first contact).
+  `accept-new` on first contact). **Superseded** — see the Update below: run
+  `sotd topology apply --yes` instead of enabling instances by hand.
 - Check: `systemctl --user status 'sot-relay-tunnel@*' sotd.service`.
 - If a remote's `127.0.0.1:18743` is already bound (orphaned tunnel),
   `ExitOnForwardFailure` makes the unit fail+retry until the port frees — visible
   as a restart loop in `systemctl --user status`.
 - `scripts/restart-backend.sh` now restarts the systemd `sotd` when the unit is
   enabled; the legacy `--check` staleness report is unchanged.
+
+## Update (2026-09-15, v0.6.0 topology sprint): instance set generated, not hand-enabled
+
+The `sot-relay-tunnel@<host>` instance set above ("enabled for host-b, host-c,
+host-d" by hand) is now **derived from `hosts.toml`**, not maintained by hand.
+`sotd topology apply`, run on the hub, computes it from the declared
+`[host.*]` list — every host that is neither the hub nor `frontend = true`
+(`rust/protocol/src/topology.rs::tunnel_hosts`; independent of `daemon`, so a
+`daemon = false` shell host still gets tunnelled) — and enables/disables
+`sot-relay-tunnel@<host>` instances to match, printing every action. It
+refuses to run anywhere but the hub, naming it, and defaults to a **dry
+run** (enabling or disabling a live relay tunnel is not something it does on
+its own say-so); pass `--yes` to act. A second run against an unchanged list
+is a no-op.
+
+Because the four boxes share `$HOME`, they share `~/.config/systemd/user`
+too: enabling an instance on the hub would, without more, also "enable" it
+(and, on the next boot of any of them, try to start it) on every other
+shared-home box. `apply` writes a generated
+`sot-relay-tunnel@<host>.service.d/topology.conf` drop-in alongside each
+instance carrying `ConditionHost=<hub>`, so it actually runs only on the box
+whose hostname is the hub. The drop-in file name is fixed and owned by
+`apply` alone — any other, hand-made drop-in in the same `.d/` directory is
+left untouched by a re-apply, the same rule `scripts/install.sh` already
+follows for `sotd.service.d`.
+
+The shell profile's per-host `case` on `SOT_RELAY_ENDPOINT` is superseded
+too — see `.sot/hosts.toml.example` and the installer's post-install message
+for the one-liner that replaces it (`sotd topology relay-endpoint`, correct
+on every box: the hub's own socket, a frontend's forward tunnel, or the
+reverse-tunnel socket this ADR describes).
 
 ## Addendum: derived-handle disambiguation ("derived vs explicit")
 

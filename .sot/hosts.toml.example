@@ -34,8 +34,9 @@
 #   frontend = true   runs a frontend + launcher: it dials the hub and the
 #                     hub never dials it (no reverse tunnel). Default false.
 #   Neither flag: a shell host — it gets the hub's reverse relay tunnel
-#   (sot-relay-tunnel@<name>, enabled on the hub from this list) so
-#   sessions there can join, and nothing else. The hub itself must be
+#   (sot-relay-tunnel@<name>, enabled on the hub from this list by `sotd
+#   topology apply`, ADR 0028's Update) so sessions there can join, and
+#   nothing else. The hub itself must be
 #   `daemon = true` (it runs the relay daemon); a daemon that is also
 #   `frontend` is dialled only by its own box's launcher, never from
 #   elsewhere.
