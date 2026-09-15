@@ -371,6 +371,54 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
         end
     end
 
+    @testset "codex home profile export parsing" begin
+        # _parse_codex_home_export is pure and file-free by design — never
+        # sources or runs a profile — so these exercise it directly on
+        # synthetic profile text; no real dotfile is ever touched.
+        user, home = "devuser", "/home/devuser"
+
+        # A plain path needs no expansion.
+        v, raw = ShipTools._parse_codex_home_export(
+            "export CODEX_HOME=/opt/codex-home\n"; user, home)
+        @test v == "/opt/codex-home"
+        @test raw == "/opt/codex-home"
+
+        # $HOME expands.
+        v, raw = ShipTools._parse_codex_home_export(
+            "export CODEX_HOME=\$HOME/.codex-work\n"; user, home)
+        @test v == "/home/devuser/.codex-work"
+        @test raw == "\$HOME/.codex-work"
+
+        # ${USER:-$(id -un)} expands to the current user.
+        v, raw = ShipTools._parse_codex_home_export(
+            "export CODEX_HOME=/srv/agents/\${USER:-\$(id -un)}/codex\n"; user, home)
+        @test v == "/srv/agents/devuser/codex"
+
+        # The `NAME=value; export NAME` two-step form.
+        v, raw = ShipTools._parse_codex_home_export(
+            "CODEX_HOME=/opt/other; export CODEX_HOME\n"; user, home)
+        @test v == "/opt/other"
+
+        # A commented-out line must be ignored entirely.
+        v, raw = ShipTools._parse_codex_home_export(
+            "# export CODEX_HOME=/should/not/count\n"; user, home)
+        @test v === nothing
+        @test raw === nothing
+
+        # No assignment anywhere in the file.
+        v, raw = ShipTools._parse_codex_home_export(
+            "export PATH=\$PATH:/usr/local/bin\nalias ll='ls -la'\n"; user, home)
+        @test v === nothing
+        @test raw === nothing
+
+        # A value this installer doesn't know how to expand is reported,
+        # not guessed at — the raw text survives so a warning can quote it.
+        v, raw = ShipTools._parse_codex_home_export(
+            "export CODEX_HOME=\$SOME_OTHER_VAR/codex\n"; user, home)
+        @test v === nothing
+        @test raw == "\$SOME_OTHER_VAR/codex"
+    end
+
     @testset "accounts: the installer never writes under .claude-auth" begin
         # Owner ruling: a named account shares the default `~/.claude`
         # folder by SYMLINK, created by the daemon at spawn
