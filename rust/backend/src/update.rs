@@ -185,8 +185,41 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
     }
 }
 
+/// Pure: given the declared topology (if any) and this box's own name, does
+/// it want a backend prepared for the staged release (Julia envs, the
+/// MathJax sidecar)? `None`, or a topology that doesn't list `me`, defaults
+/// to `true` — see `backend_role_wanted`'s doc for why. Split out from it so
+/// the decision is testable against a fixture, with no env vars or files
+/// involved (`scripts/tests/installer-state.sh`'s `installer_running_daemon_decision`
+/// is the same split, for the same reason).
+fn backend_role_from_topology(topo: Option<&sot_protocol::topology::Topology>, me: &str) -> bool {
+    match topo {
+        Some(t) => t.host(me).map(|h| h.daemon).unwrap_or(true),
+        None => true,
+    }
+}
+
+/// Does THIS box want a backend prepared for the staged release? Used to be
+/// `install.role != "remote"` — install.json no longer records a role (plan
+/// step 6, dev/output/topology-plan.md §D), so this asks the same question
+/// the installer now does, in-process: the declared topology's `daemon` flag
+/// for this host (`sot_protocol::topology`, read directly here — no
+/// subprocess, unlike the installer's own `sotd topology status`). A box the
+/// topology doesn't name (no hosts.toml, or one that doesn't list this host —
+/// the listless-install case, where nothing persists which flag was given)
+/// defaults to `true`: this code only runs inside a live sotd daemon, so "no
+/// backend wanted here" would already be a contradiction, and `true` matches
+/// the old default for every role but `remote` — the one role whose daemon
+/// this code path never actually runs under (installed with no local unit
+/// and none started).
+fn backend_role_wanted() -> bool {
+    let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
+    let me = sot_log::state_dir::host_name().unwrap_or_default();
+    backend_role_from_topology(topo.as_ref(), &me)
+}
+
 fn prepare_spec(install: &InstallManifest, cfg: &UpdaterConfig, id: &ReleaseIdentity) -> PrepareSpec {
-    let backend_role = install.role != "remote";
+    let backend_role = backend_role_wanted();
     PrepareSpec {
         identity: id.clone(),
         repo_dir: install.prefix.join("repo"),
@@ -470,4 +503,53 @@ pub async fn handle_update_apply(
         Frame::res(req_id, op::UPDATE_APPLY, serde_json::to_value(res)?),
         None,
     )])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn topo(text: &str) -> sot_protocol::topology::Topology {
+        sot_protocol::topology::parse(text).expect("fixture must parse")
+    }
+
+    // The regression this pins: `install.role != "remote"` used to decide
+    // this; install.json carries no role any more (plan step 6), so a
+    // daemon box and a frontend-only box must still take the branch they
+    // always did, now read from the declared topology instead.
+
+    #[test]
+    fn a_daemon_box_still_prepares_julia_and_npm() {
+        let t = topo(
+            "hub = \"hubbox\"\n\
+             [host.hubbox]\n\
+             daemon = true\n\
+             [host.host-2]\n\
+             daemon = true\n",
+        );
+        assert!(backend_role_from_topology(Some(&t), "host-2"));
+    }
+
+    #[test]
+    fn a_frontend_only_box_does_not() {
+        let t = topo(
+            "hub = \"hubbox\"\n\
+             [host.hubbox]\n\
+             daemon = true\n\
+             [host.laptop]\n\
+             frontend = true\n",
+        );
+        assert!(!backend_role_from_topology(Some(&t), "laptop"));
+    }
+
+    #[test]
+    fn a_box_the_topology_does_not_name_defaults_to_true() {
+        let t = topo("hub = \"hubbox\"\n[host.hubbox]\ndaemon = true\n");
+        assert!(backend_role_from_topology(Some(&t), "nowhere"));
+    }
+
+    #[test]
+    fn no_topology_at_all_defaults_to_true() {
+        assert!(backend_role_from_topology(None, "anything"));
+    }
 }

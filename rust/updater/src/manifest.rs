@@ -1,11 +1,15 @@
 //! The two manifests the updater lives by.
 //!
 //! **Install manifest** (`<prefix>/install.json`, written by `install.sh`):
-//! what THIS machine's install is — role, prefix, config dir, service mode,
-//! and the installed release identity. It's how a binary finds its own
-//! install layout instead of guessing from XDG env vars (Codex review,
-//! MUST-FIX 10): the updates root, the checkout, and the bin dir all hang off
-//! `prefix`.
+//! what THIS machine's install is — prefix, config dir, service mode, and
+//! the installed release identity. It's how a binary finds its own install
+//! layout instead of guessing from XDG env vars (Codex review, MUST-FIX 10):
+//! the updates root, the checkout, and the bin dir all hang off `prefix`.
+//! No role: the installer derives what to run from the declared topology
+//! (`sot_protocol::topology`) or, listless, its own flags — neither is a
+//! fact about the INSTALL worth persisting here (plan step 6, dev/output/
+//! topology-plan.md §D). A reader that needs "does this box run a backend"
+//! asks the topology directly (see `update.rs`'s `backend_role_wanted`).
 //!
 //! **Ready manifest** (`<updates-root>/<tag>/manifest.json`, written LAST by
 //! a stage): the staged release's full identity. "Staged" means the manifest
@@ -28,8 +32,6 @@ pub const INSTALL_SCHEMA: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallManifest {
     pub schema: u32,
-    /// `local` | `remote` | `be-only`.
-    pub role: String,
     /// Install prefix, e.g. `~/.local/share/sot`.
     pub prefix: PathBuf,
     /// Config dir, e.g. `~/.config/sot`.
@@ -283,9 +285,13 @@ mod tests {
 
     #[test]
     fn install_manifest_parses_with_unknown_fields() {
+        // `role` (schema 1's own dropped field) and `hub` (the plan's local
+        // declaration, dev/output/topology-plan.md §D) are both unknown to
+        // this struct now — same as any future key a newer installer adds.
         let text = r#"{
             "schema": 1,
             "role": "local",
+            "hub": "",
             "prefix": "/home/u/.local/share/sot",
             "config": "/home/u/.config/sot",
             "service": "systemd",
@@ -295,7 +301,20 @@ mod tests {
             "future_field": {"x": 1}
         }"#;
         let m: InstallManifest = serde_json::from_str(text).unwrap();
-        assert_eq!(m.role, "local");
         assert_eq!(m.updates_root(), PathBuf::from("/home/u/.local/share/sot/updates"));
+    }
+
+    #[test]
+    fn install_manifest_parses_without_a_role_field() {
+        // The regression this pins: scripts/install.sh (plan step 6) no
+        // longer writes `role` at all — a manifest missing the key
+        // entirely, not just an empty one, must still parse.
+        let text = r#"{
+            "schema": 1,
+            "prefix": "/home/u/.local/share/sot",
+            "hub": "host-2"
+        }"#;
+        let m: InstallManifest = serde_json::from_str(text).unwrap();
+        assert_eq!(m.prefix, PathBuf::from("/home/u/.local/share/sot"));
     }
 }

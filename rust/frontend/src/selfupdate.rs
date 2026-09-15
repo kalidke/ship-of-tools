@@ -16,9 +16,14 @@
 //   - `SOT_UPDATE_MODE=off` disables;
 //   - no install manifest → not a release install → no-op (dev checkouts,
 //     Windows dev launcher);
-//   - role != "remote" → the BACKEND on this machine owns the full pipeline
-//     (all-in-one / be-only); the FE staying out avoids a second writer
-//     doing a julia-less prepare that could arm an env-less version.
+//   - the backend on this machine owns updates (`backend_owns_updates_here`)
+//     → the FE staying out avoids a second writer doing a julia-less prepare
+//     that could arm an env-less version. Used to be `role != "remote"`;
+//     install.json no longer records a role (plan step 6, dev/output/
+//     topology-plan.md §D), so this reads the same declared topology the
+//     installer and `sot-backend`'s own `update::backend_role_from_topology`
+//     do (duplicated rather than shared: `sot-updater` is mechanism only,
+//     this is policy, and each side already carries its own guards).
 //
 // Runs on a small dedicated thread + current-thread runtime so the winit
 // main thread and the transport runtime never wait on it. Outcomes go to
@@ -67,8 +72,8 @@ pub fn spawn_startup_selfcheck() {
         );
         return;
     };
-    if install.role != "remote" {
-        tracing::info!(role = %install.role, "fe self-update: role is not 'remote' — the backend on this machine owns updates, skipping");
+    if backend_owns_updates_here() {
+        tracing::info!("fe self-update: the backend on this machine owns updates (declared topology, or the default), skipping");
         return;
     }
     let spawned = std::thread::Builder::new()
@@ -86,6 +91,26 @@ pub fn spawn_startup_selfcheck() {
     if let Err(e) = spawned {
         tracing::warn!(error = %e, "fe self-update: could not spawn worker thread — self-update disabled this run");
     }
+}
+
+/// Pure: given the declared topology (if any) and this box's own name, does
+/// the backend on this machine own the update pipeline? `None`, or a
+/// topology that doesn't list `me`, defaults to `true` — the old default
+/// for every role but `remote`.
+fn backend_owns_updates(topo: Option<&sot_protocol::topology::Topology>, me: &str) -> bool {
+    match topo {
+        Some(t) => t.host(me).map(|h| h.daemon).unwrap_or(true),
+        None => true,
+    }
+}
+
+/// Does the backend on THIS machine own the update pipeline, so the FE
+/// should stay out of it? See `backend_owns_updates` for the decision and
+/// `spawn_startup_selfcheck`'s doc comment for the guard order this sits in.
+fn backend_owns_updates_here() -> bool {
+    let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
+    let me = sot_log::state_dir::host_name().unwrap_or_default();
+    backend_owns_updates(topo.as_ref(), &me)
 }
 
 async fn run(install: InstallManifest, current: String) {
@@ -118,7 +143,9 @@ async fn run(install: InstallManifest, current: String) {
         tracing::warn!(tag = %id.tag, error = %e, "fe self-update: staging failed");
         return;
     }
-    // Remote role: checkout only — julia envs are a backend-host concern.
+    // The FE only ever reaches here when the backend doesn't own updates
+    // (backend_owns_updates_here() was false): checkout only, julia envs
+    // are a backend-host concern.
     let spec = PrepareSpec {
         identity: id.clone(),
         repo_dir: install.prefix.join("repo"),
@@ -140,5 +167,54 @@ async fn run(install: InstallManifest, current: String) {
         }
         Ok(false) => tracing::info!(tag = %id.tag, "fe self-update: a newer/blocked arm exists"),
         Err(e) => tracing::warn!(tag = %id.tag, error = %e, "fe self-update: arming failed"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn topo(text: &str) -> sot_protocol::topology::Topology {
+        sot_protocol::topology::parse(text).expect("fixture must parse")
+    }
+
+    // The regression this pins: `install.role != "remote"` used to decide
+    // this; install.json carries no role any more (plan step 6), so a
+    // daemon box and a frontend-only box must still take the branch they
+    // always did, now read from the declared topology instead.
+
+    #[test]
+    fn a_daemon_box_leaves_updates_to_the_backend() {
+        let t = topo(
+            "hub = \"hubbox\"\n\
+             [host.hubbox]\n\
+             daemon = true\n\
+             [host.host-2]\n\
+             daemon = true\n",
+        );
+        assert!(backend_owns_updates(Some(&t), "host-2"));
+    }
+
+    #[test]
+    fn a_frontend_only_box_self_updates() {
+        let t = topo(
+            "hub = \"hubbox\"\n\
+             [host.hubbox]\n\
+             daemon = true\n\
+             [host.laptop]\n\
+             frontend = true\n",
+        );
+        assert!(!backend_owns_updates(Some(&t), "laptop"));
+    }
+
+    #[test]
+    fn a_box_the_topology_does_not_name_defaults_to_the_backend_owning_it() {
+        let t = topo("hub = \"hubbox\"\n[host.hubbox]\ndaemon = true\n");
+        assert!(backend_owns_updates(Some(&t), "nowhere"));
+    }
+
+    #[test]
+    fn no_topology_at_all_defaults_to_the_backend_owning_it() {
+        assert!(backend_owns_updates(None, "anything"));
     }
 }
