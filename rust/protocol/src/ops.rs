@@ -1437,9 +1437,7 @@ pub struct WorkspaceDestroyReq {
 }
 
 /// `workspace.destroy` response. Echoes back the slug + label so the
-/// frontend status line can identify what got destroyed. `tmux_killed`
-/// reflects whether the kill-session call succeeded — `false` is
-/// usually "session wasn't running anyway" and not fatal.
+/// frontend status line can identify what got destroyed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceDestroyRes {
     pub workspace_id: String,
@@ -1973,8 +1971,7 @@ pub struct ProxyConnectRes {
 /// Error codes on refusal (standard error payload, connection closes):
 /// `bad_request` (payload didn't parse), `unauthenticated` (bad/missing
 /// token on a token-configured daemon, checked before any row lookup),
-/// `unknown_workspace` (`target` names no row), `not_capsule` (the row
-/// is a tmux workspace, which has no lane to bridge), `bad_lane` (as
+/// `unknown_workspace` (`target` names no row), `bad_lane` (as
 /// above), `voyage_mismatch` (`voyage_id` is not the TARGET row's own
 /// current voyage — checked against its durable pointer BEFORE any
 /// dial, since the wire itself carries no ownership: a voyage socket is

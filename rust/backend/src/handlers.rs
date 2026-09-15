@@ -4277,19 +4277,12 @@ pub async fn handle_workspace_create(
 
     // ADR 0042's rule, flipped here (L6 / this repo's B6 lane) now that
     // the bridge (ADR 0045) gives a capsule row a remote attach path:
-    // `""` (absent on the wire) resolves to "capsule" on every host
-    // where the capsule runtime compiles (`cfg(any(windows,
-    // target_os = "linux"))`, matching `capsule_workspace::mod
-    // runtime`'s own gate) — macOS, with no capsule runtime at all,
-    // keeps "tmux" as its default. `"capsule"` still asks for one
-    // explicitly either way. ADR 0046 decision 5: nothing NEW runs on
-    // tmux on a host where the capsule runtime compiles — an explicit
-    // `"tmux"` ask is now refused there too (Windows already refused it;
-    // this extends the SAME refusal to Linux), leaving only a host
-    // without the capsule runtime at all (macOS) still able to create
-    // one. Existing tmux rows keep running unaffected; the daemon just
-    // stops CREATING new ones anywhere it has a capsule alternative —
-    // they retire by attrition.
+    // `""` (absent on the wire) resolves to "capsule". `"capsule"` still
+    // asks for one explicitly either way. ADR 0046 decision 5: nothing
+    // NEW runs on tmux — an explicit `"tmux"` ask is refused (Windows
+    // already refused it; this extends the SAME refusal everywhere).
+    // Existing tmux rows keep running unaffected; the daemon just stops
+    // CREATING new ones — they retire by attrition.
     let runtime: String = match req.runtime.as_str() {
         "" | "capsule" => "capsule".to_string(),
         other => {

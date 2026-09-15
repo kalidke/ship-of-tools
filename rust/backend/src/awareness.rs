@@ -64,9 +64,7 @@ pub(crate) fn awareness_env(
 /// as every other resource (dev checkouts get the dev tree, installs get
 /// $PREFIX/repo/current); `None` when absent. Cached: the answer can't change
 /// under a running daemon, and `awareness_env` is called per session spawn +
-/// per workspace in the boot sweep (same reasoning as `tmux_supports_dash_e`).
-/// $PREFIX/repo/current); `None` when absent. Cached: the answer cannot change
-/// under a running daemon.
+/// per workspace in the boot sweep.
 fn manual_root() -> Option<&'static Path> {
     static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
     ROOT.get_or_init(|| {

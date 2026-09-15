@@ -701,7 +701,7 @@ fn capsule_comm_home_str() -> Option<String> {
 /// the cross-platform test suite even though
 /// [`runtime::spawn_detached_supervisor`], its only caller, is gated to
 /// Windows and Linux only.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
     let mut env = crate::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
     if !agent_name.is_empty() {

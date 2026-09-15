@@ -156,14 +156,12 @@ pub struct Workspace {
     pub task: String,
     /// ADR 0042 slice L1a: `"tmux"` | `"capsule"` — which runtime hosts
     /// this workspace's agent pane. Plain metadata; persisted in the toml
-    /// and, for an older toml that lacks the key, defaulted per OS by
-    /// `meta_only` (`"capsule"` on Windows, `"tmux"` elsewhere). `"capsule"`
-    /// workspaces are Windows-only in this unit (`handle_workspace_create`
-    /// is the only writer of `"capsule"`); `tmux_session` is still
-    /// populated for them (the same `sot-be-<slug>` convention) even
-    /// though no real tmux session is ever created — it stays the one
-    /// stable identifier `pty.open`'s `target` field addresses a
-    /// workspace by, for both runtimes uniformly.
+    /// and, for an older toml that lacks the key, defaulted to `"capsule"`
+    /// by `meta_only`. `tmux_session` is still populated for a capsule
+    /// workspace (the same `sot-be-<slug>` convention) even though no
+    /// real tmux session is ever created — it stays the one stable
+    /// identifier `pty.open`'s `target` field addresses a workspace by,
+    /// for both runtimes uniformly.
     pub runtime: String,
     /// The sot-comm handle the session inside this workspace actually
     /// DECLARED via `agent.join` (ADR 0046 decision 1) — distinct from
@@ -264,14 +262,8 @@ impl Workspace {
             agent: Mutex::new(agent),
             agent_name: Mutex::new(agent_name),
             task,
-            // This platform's ordinary workspace runtime — "tmux", except
-            // on Windows, where tmux never runs at all (#177) and "tmux"
-            // is only ever a dead row: a toml predating the key that
-            // defaulted to it made the daemon try to secure a tmux socket
-            // dir before failing to spawn a nonexistent `tmux.exe` (field
-            // evidence, v0.6.0-rc.3, PR #175). Callers with a decided
-            // value set it on the returned row (`load_toml`'s `runtime`
-            // key, `insert`, workspace.create).
+            // Callers with a decided value set it on the returned row
+            // (`load_toml`'s `runtime` key, `insert`, workspace.create).
             runtime: "capsule".to_string(),
             agent_handle: Mutex::new(String::new()),
             phase_cell: Mutex::new(PhaseCell::default()),
@@ -918,13 +910,9 @@ impl Workspaces {
         out
     }
 
-    /// The whole workspace owning `target` (the same identifier
-    /// `project_root_for_tmux`/`slug_for_tmux` match against — see
-    /// `Workspace::runtime`'s own doc for why a capsule workspace still
-    /// has one). ADR 0042 slice L1a: `pty.open` uses this to check
-    /// `runtime` BEFORE falling into any tmux logic, so a capsule
-    /// workspace's target is refused early rather than handed to
-    /// `Pty::spawn`.
+    /// The whole workspace owning `target` — see `Workspace::runtime`'s
+    /// own doc for why a capsule workspace still has one. `pty.open`
+    /// resolves the target through this before answering `attach_direct`.
     pub fn workspace_for_tmux(&self, target: &str) -> Option<Arc<Workspace>> {
         let g = self.inner.read().expect("workspaces lock");
         g.by_id.values().find(|ws| ws.tmux_session == target).cloned()

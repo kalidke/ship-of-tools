@@ -150,14 +150,12 @@ async fn main() -> Result<()> {
     // creation, tracing init) below. Previously pure path/version queries were
     // handled inside `parse_args()`, which only runs
     // AFTER those side effects — so a shell script that just wants the
-    // socket path (comm-lib.sh's `sot_tmux_socket`, potentially called
-    // often, and optionally steered by `SOT_TMUX_SOCK` for tmux-server
-    // migration) was spinning up the daemon's log file/state dir as a
+    // socket path was spinning up the daemon's log file/state dir as a
     // byproduct of a read-only query. Only recognised as the FIRST
     // argument (true subcommand position, matching how both are actually
-    // invoked — `sotd tmux-socket-path`, `sotd session-socket-path sot`,
-    // `sotd --version`); this replaces,
-    // rather than duplicates, the arms that used to live in `parse_args()`.
+    // invoked — `sotd session-socket-path sot`, `sotd --version`); this
+    // replaces, rather than duplicates, the arms that used to live in
+    // `parse_args()`.
     if let Some(first) = std::env::args().nth(1) {
         match first.as_str() {
             "session-socket-path" => {
@@ -309,7 +307,7 @@ fn parse_args() -> Result<Opts> {
     let mut label: Option<String> = None;
     let mut adopt_legacy_registry = false;
 
-    // `--version`/`-V` and `tmux-socket-path` are handled earlier, in
+    // `--version`/`-V` and `session-socket-path` are handled earlier, in
     // `main()`, before any startup side effect — see the comment there.
     // Not re-recognised here: if either slips through as a later/extra
     // argument in some invocation this fast path didn't catch, falling
