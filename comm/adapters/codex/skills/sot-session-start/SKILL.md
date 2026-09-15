@@ -1,6 +1,6 @@
 ---
 name: sot-session-start
-description: Bootstrap or repair a backend Codex session via comm-session-start.sh's two-phase flow (arm, then catch-up) so codex-watch.sh exists before the selftest proves it. Use after a restart, manual tmux attach, or comm repair.
+description: Bootstrap or repair a backend Codex session via comm-session-start.sh's two-phase flow (arm, then catch-up) so codex-watch.sh exists before the selftest proves it. Use after a restart or comm repair.
 ---
 
 # sot-session-start
@@ -40,7 +40,7 @@ Otherwise, start the Codex wake helper for the printed handle NOW, before
 anything else — the selftest in phase 2 needs it alive to prove the wake:
 
 ```bash
-[ -n "${TMUX_PANE:-}" ] && nohup ~/.sot-comm/bin/codex-watch.sh "$SOT_COMM_NAME" "$TMUX_PANE" >/dev/null 2>&1 &
+[ -n "${SOT_WORKSPACE_ID:-}" ] && nohup ~/.sot-comm/bin/codex-watch.sh "$SOT_COMM_NAME" >/dev/null 2>&1 &
 ```
 
 ## Phase 2 — catch up

@@ -27,8 +27,8 @@ Two fixes:
    export SOT_FE_ENDPOINT="tcp:127.0.0.1:${SOT_PORT:-18743}"
    ```
 
-2. **Pass the workspace slug explicitly** — there's no tmux on the FE box
-   and `$SOT_WORKSPACE` is unset, so slug auto-discovery yields nothing:
+2. **Pass the workspace slug explicitly** — `$SOT_WORKSPACE` is unset on the
+   FE box, so slug auto-discovery yields nothing:
 
    ```bash
    ~/.sot-comm/bin/sot-fe preview sot examples/preview/quarto_julia.qmd
@@ -42,11 +42,10 @@ even though you're typing it on the FE. Same two rules apply to `docs` and
 ## Manual fallback on a backend session (if `show-result` isn't on PATH)
 
 `show-result` (in `~/.local/bin`) auto-discovers your workspace slug — it's
-what `sot-nav.sh` uses internally: `${SOT_WORKSPACE:-$(tmux
-display-message -p '#S' | sed -n 's/^sot-be-//p')}`. If it's missing from
-PATH, call the same thing directly:
+what `sot-nav.sh` uses internally: `$SOT_WORKSPACE`, stamped into the row's
+env by the daemon. If it's missing from PATH, call the same thing directly:
 
 ```bash
-WS=${SOT_WORKSPACE:-$(tmux display-message -p '#S' | sed -n 's/^sot-be-//p')}
+WS=$SOT_WORKSPACE
 ~/.sot-comm/bin/sot-fe preview "$WS" "<path>"
 ```

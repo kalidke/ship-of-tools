@@ -36,7 +36,7 @@ user only what you can't derive. Use `AskUserQuestion` with these:
    - *Frontend client* (default): runs the TUI locally, connects to a remote
      backend over SSH. Needs Rust + build; **no local Julia**.
    - *Backend server*: headless host for the daemon + Julia kernel (e.g. a Linux
-     remote). Needs Rust + **Julia** + tmux; no display.
+     remote). Needs Rust + **Julia**; no display.
    - *All-in-one (local backend)*: both on this machine (local socket/pipe, no SSH).
 
 2. **Backend server connection** (only if role = Frontend client). Free-text /
@@ -221,10 +221,10 @@ after the installers run. Every remote step must bring the env in itself
 Probe what's present + what needs sudo:
 ```sh
 HOST=myhost; REMOTE_REPO=/home/<user>/ship-of-tools
-ssh "$HOST" 'for t in git tmux cc cargo julia; do printf "%s: " "$t"; command -v "$t" || echo MISSING; done'
+ssh "$HOST" 'for t in git cc cargo julia; do printf "%s: " "$t"; command -v "$t" || echo MISSING; done'
 ```
-- `git` / `tmux` / `cc` **MISSING** → system packages (sudo). Stop and ask the user
-  to install them (`sudo apt install -y git tmux build-essential`, or the distro
+- `git` / `cc` **MISSING** → system packages (sudo). Stop and ask the user
+  to install them (`sudo apt install -y git build-essential`, or the distro
   equivalent). A **headless** BE needs **no** graphics/Vulkan libs (that set is
   FE-only, §2b).
 - `cargo` / `julia` MISSING → user-level; install below.

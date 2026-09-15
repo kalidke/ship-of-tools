@@ -22,8 +22,9 @@ set; phase 2 reads/cursors `fe-inbox.jsonl` directly for the initial
 backlog — never expect a bridge or a `~/.sot-comm` row on the backend host's
 shared registry.
 
-Phase 1 prints a `MONITOR:` command, but there is no tmux wake helper on a
-non-tmux Codex FE — nothing re-arms it automatically. So beyond the
+Phase 1 prints a `MONITOR:` command, but there is no wake helper for a
+Codex FE session (`codex-watch.sh` needs a workspace row) — nothing re-arms
+it automatically. So beyond the
 phase-2 catch-up, at every later turn start (or when told there is FE
 backlog) read the local FE inbox directly and answer via `comm-relay.sh`:
 

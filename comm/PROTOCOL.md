@@ -35,8 +35,7 @@ in v1 — the `.claude-bus` git loop can still cover separate filesystems.)
   "agents": {
     "<name>": {
       "host":       "myhost",                      // hostname -s; used for same-host delivery
-      "tmux":       "",                            // legacy field, always "" (v0.6.0)
-      "pane_id":    "",                            // legacy field, always "" (v0.6.0)
+      "workspace_id": "ws-…",                      // the row this session runs in (SOT_WORKSPACE_ID); "" in a bare shell
       "repo":       "Ship of Tools",
       "expertise":  ["files", "rust-backend"],
       "status":     "idle",                        // lifecycle: idle | spawning
@@ -52,8 +51,8 @@ in v1 — the `.claude-bus` git loop can still cover separate filesystems.)
 
 **Liveness** is heartbeat-based, not pane-based: an agent is *live* if
 `now - last_seen <= SOT_COMM_STALE_SECS` (default 600). This is what lets a
-session on one machine consider a session on another reachable. `pane_id` is only
-consulted for the same-host live-paste optimization.
+session on one machine consider a session on another reachable. `host` +
+`workspace_id` are what a same-host live delivery types into.
 
 **Work-state** (`state` + `summary`, stamped by `status_at`) powers the ADE
 *state-nav* at-a-glance view, and is distinct from the lifecycle `status` above.
@@ -85,18 +84,31 @@ which is why an unstamped `--broadcast` once woke the whole network at once.
 ## Delivery — two modes, chosen by reachability, always visible
 
 1. **Durable always:** every send appends the frame to `inbox/<target>.jsonl`.
-2. **Live wake — directed sends only:** the recipient's own inbox Monitor
-   (`comm-listen.sh` + `/sot-session-start`) polls `inbox/<name>.jsonl` and
-   wakes the session; a codex row is woken by `codex-watch.sh`, which injects
-   each directed frame through the daemon's `pty.input` for that capsule row.
-   The message text is `[<from>:<repo>] <msg>`. **Broadcasts never paste** —
-   a paste+Enter is a full interrupt (it submits into the recipient's claude,
-   costing a model turn; into a dead pane it executes as shell input), so
-   broadcast copies are durable-only and surface on the next `comm-poll`,
-   matching the Monitor's demotion rule.
+2. **Live wake — directed sends only:** a directed send to a recipient whose
+   registry row names a workspace row on the sender's host is typed into
+   that row through the daemon's `pty.input` (Enter appended; the send
+   reports `delivered live` only when the daemon confirms `enter_sent`).
+   Otherwise the recipient's own inbox Monitor (`/sot-session-start`) polls
+   `inbox/<name>.jsonl` and wakes the session; a codex row is woken by
+   `codex-watch.sh`, which injects each directed frame through the same
+   `pty.input`. The message text is `[<from>:<repo>] <msg>`. **Broadcasts are
+   never typed** — text+Enter is a full interrupt (it submits into the
+   recipient's claude, costing a model turn), so broadcast copies are
+   durable-only and surface on the next `comm-poll`, matching the Monitor's
+   demotion rule.
 
-If live delivery isn't possible the send reports `queued to inbox (<host>)` — the
+If live delivery isn't possible (no row for the recipient on this host, no
+daemon, a row that is not ready) the send reports `queued to inbox (…)` — the
 fallback is **stated, never silent**. The recipient sees it on the next `poll`.
+
+**Cross-machine receive** is the relay bridge `comm-listen.sh` starts: a
+reconnect loop (`comm-relay.sh bridge --name <name>`) run as a background
+child of the session's own process tree, pid recorded in
+`state/bridge-<name>.pid`. It lives in the session's capsule leg and dies
+with it; `--status`/`--stop` and `comm-leave.sh` follow the pidfile, and a
+start reaps any stray bridge for the handle (one without a pidfile) first,
+so one frame is never filed twice. A Windows frontend has no bridge — the
+frontend files inbound frames itself.
 
 ## Verbs (reference client = `bin/*.sh`)
 
@@ -121,7 +133,7 @@ task**. A task-named anything is unfindable next to its repo-named siblings
 | Spawned agent — git **worktree** | `<repo>-wt-<shortname>` (the `-wt-` infix is reserved for worktrees and groups them next to the parent; `<shortname>` names the WORKTREE, never the task). Created via the `/worktree` skill. | `MyAnalysis-wt-rotation` (worktree `rotation`) |
 | FE handle | `win-fe-<host>` (per-machine — a shared `win-fe` breaks echo-filters and targeting) | `win-fe-laptop` |
 | Workspace label | repo basename (comm-spawn default; task-named labels are **rejected**) | `MyPackage` |
-| Workspace session name (`tmux_session` wire field, the row's identity) | `sot-be-<slug>` derived from the label by the daemon | `sot-be-mypackage` |
+| Workspace slug (the row's name) | derived from the label by the daemon | `mypackage` |
 | Second workspace on one repo | `<Repo>-<suffix>` label, deliberately | `MyPackage-2` |
 
 A bare `<repo-lowercase>` handle is the default for a normal repo checkout. For a

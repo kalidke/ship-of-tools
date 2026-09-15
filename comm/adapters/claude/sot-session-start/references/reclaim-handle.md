@@ -25,11 +25,12 @@ explicitly instead.
 
 1. **Prove sole ownership of the canonical handle before reclaiming it.**
    Confirm exactly one live session has this repo as its cwd, and that
-   session's bridge creation time matches when *this* session actually
-   started:
+   the bridge for the canonical handle (its pid is in
+   `~/.sot-comm/state/bridge-<canonical-handle>.pid`) started when *this*
+   session actually started:
    ```bash
-   source ~/.sot-comm/bin/comm-lib.sh
-   tmux -S "$(sot_tmux_socket)" has-session -t "=commbridge-<canonical-handle>"
+   ~/.sot-comm/bin/comm-listen.sh --name <canonical-handle> --status   # RUNNING (pid N) or not running
+   ps -o lstart= -p N
    ```
    If you can't confirm sole ownership, stop and ask a human — reclaiming
    someone else's live handle strands *them* instead of fixing you.

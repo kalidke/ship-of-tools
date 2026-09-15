@@ -5,8 +5,8 @@ description: "Use Ship of Tools comms from Codex: send/poll messages, coordinate
 
 # sot-comm
 
-Use the installed tools in `~/.sot-comm/bin/`; do not hand-roll registry, tmux,
-or daemon protocol logic.
+Use the installed tools in `~/.sot-comm/bin/`; do not hand-roll registry or
+daemon protocol logic.
 
 ## Core Commands
 

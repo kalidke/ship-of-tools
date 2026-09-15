@@ -6,8 +6,8 @@
 # ONE owner of the launch recipe, and `/sot-be-session-start` is an alias of
 # `/sot-session-start` (CLAUDE.md: "the skill is one skill"), so there is no
 # separate recipe left for this script to carry. Kept as its own file only
-# because the tmux surface it names in its own history is still retiring by
-# attrition; `ccbe` is deleted together with that surface, not before.
+# because launchers and docs still name it; delete it together with the last
+# of those references.
 #
 # Usage:
 #   ccbe                # fresh comm-aware backend session
