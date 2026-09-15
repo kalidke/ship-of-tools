@@ -1800,7 +1800,10 @@ pub struct GpuSample {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub util_pct: f32,
-    pub mem_pct: f32,
+    /// `None` when the GPU has nothing to report -- e.g. a unified-memory
+    /// GPU (no discrete VRAM), which nvidia-smi reports as N/A rather than 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem_pct: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temp_c: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

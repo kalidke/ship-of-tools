@@ -192,9 +192,15 @@ impl MonitorView {
                 gs.sort_by_key(|g| g.index);
                 for g in gs {
                     let color = GPU_COLORS[g.index as usize % GPU_COLORS.len()];
+                    // Unified-memory GPUs (GB10) have no discrete VRAM to
+                    // report -- read "n/a" rather than a misleading "0m%".
+                    let mem_txt = match g.mem_pct {
+                        Some(m) => format!("{m:>3.0}m%"),
+                        None => "n/a".to_string(),
+                    };
                     segs.push((
                         color,
-                        format!("g{} {:>3.0}u/{:>3.0}m%", g.index, g.util_pct, g.mem_pct),
+                        format!("g{} {:>3.0}u/{mem_txt}", g.index, g.util_pct),
                     ));
                 }
                 for (color, txt) in &segs {
@@ -276,11 +282,14 @@ impl MonitorView {
                         .find(|g| g.index as usize == gi)
                         .map(|g| g.util_pct as f64)
                 });
+                // None (unified memory: not applicable) breaks the dashed
+                // trace into a gap rather than drawing a false 0% line.
                 push_series(&mut out, buf, t0, color, sw, true, &xmap, &ymap, move |s| {
                     s.gpus
                         .iter()
                         .find(|g| g.index as usize == gi)
-                        .map(|g| g.mem_pct as f64)
+                        .and_then(|g| g.mem_pct)
+                        .map(|m| m as f64)
                 });
             }
         }
@@ -383,7 +392,7 @@ mod tests {
                     index: *i,
                     name: None,
                     util_pct: *u,
-                    mem_pct: 0.0,
+                    mem_pct: Some(0.0),
                     temp_c: None,
                     power_w: None,
                 })

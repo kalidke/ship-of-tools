@@ -54,20 +54,35 @@ while :; do
   mt=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo)
   ma=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo)
   ram=$(awk -v mt="$mt" -v ma="$ma" 'BEGIN{ if(mt>0) printf "%.1f",(1-ma/mt)*100; else printf "0.0" }')
+  # nvidia-smi prints "[N/A]" (or "N/A" / "Not Supported" / empty) for a
+  # field the driver has nothing to report -- notably memory.used/total on a
+  # unified-memory GPU (e.g. GB10), which has no discrete VRAM to query.
+  # numf() renders "null" for those instead of coercing them to 0, so a
+  # not-reported field reads as absent rather than lying about the value;
+  # memory stays null unless BOTH used and total are real numbers.
   gpus=$(nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw \
            --format=csv,noheader,nounits 2>/dev/null \
          | awk -F', *' 'BEGIN{ORS="";print "["}
+              function isna(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return (x=="" || x=="N/A" || x=="[N/A]" || x=="Not Supported") }
+              function numf(x, fmt) { return isna(x) ? "null" : sprintf(fmt, x+0) }
               { if(NR>1)print ",";
-                tot=($4+0); m=(tot>0)?($3+0)/tot*100:0;
-                printf "{\"i\":%d,\"u\":%.0f,\"m\":%.1f,\"t\":%.0f,\"p\":%.1f}",($1+0),($2+0),m,($5+0),($6+0) }
+                m = (isna($3) || isna($4) || ($4+0)<=0) ? "null" : sprintf("%.1f", ($3+0)/($4+0)*100);
+                printf "{\"i\":%d,\"u\":%s,\"m\":%s,\"t\":%s,\"p\":%s}",($1+0),numf($2,"%.0f"),m,numf($5,"%.0f"),numf($6,"%.1f") }
               END{print "]"}')
   [ -z "$gpus" ] && gpus="[]"
   # Top-3 processes by INSTANTANEOUS cpu: delta utime+stime per pid across
   # ticks (what `top` does), NOT ps's lifetime pcpu — a long-lived now-idle
   # process must not outrank what is hot now. First tick has no delta -> [].
   # Like top's irix mode, a multithreaded process can read > 100%.
+  # cat, not `awk ... /proc/[0-9]*/stat`: a pid glob-expanded by the shell can
+  # have exited by the time awk gets around to opening it, and awk treats a
+  # missing ARGV file as FATAL (aborts before its END block ever runs, so the
+  # whole scan silently returns nothing) -- confirmed on both gawk and mawk.
+  # cat instead warns per missing file and keeps reading the rest, so one
+  # dead pid among many (routine on a busy, many-process host) no longer
+  # blanks the entire top-3 list.
   now_pts=$(date +%s.%N)
-  pout=$(awk -v prev="$proc_prev" '
+  pout=$(cat /proc/[0-9]*/stat 2>/dev/null | awk -v prev="$proc_prev" '
     BEGIN { np = split(prev, a, " "); for (i = 1; i <= np; i++) { split(a[i], kv, ":"); p[kv[1]] = kv[2] } }
     {
       line = $0
@@ -90,7 +105,7 @@ while :; do
         printf "P %s %d %s\n", best, d[best], name[best]
         delete d[best]
       }
-    }' /proc/[0-9]*/stat 2>/dev/null)
+    }' 2>/dev/null)
   dtp=$(awk -v a="$prev_pts" -v b="$now_pts" 'BEGIN { d = b - a; if (d <= 0) d = 1; print d }')
   top="["; sep=""
   while read -r tag pid ticks comm; do
@@ -160,10 +175,13 @@ struct RawSample {
 #[derive(Debug, Deserialize)]
 struct RawGpu {
     i: u32,
-    u: f32,
-    m: f32,
-    t: f32,
-    p: f32,
+    // Each rides as `null` (SAMPLER_SH's `numf`/`isna`) when nvidia-smi has
+    // nothing to report for it -- so a not-reported field never fails the
+    // whole sample the way a required f32 would on a JSON null.
+    u: Option<f32>,
+    m: Option<f32>,
+    t: Option<f32>,
+    p: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,10 +205,13 @@ impl RawSample {
                 .map(|g| GpuSample {
                     index: g.i,
                     name: None,
-                    util_pct: g.u,
+                    // Utilization isn't seen N/A in practice (GB10 still
+                    // reports 0%); a not-reported reading renders as idle
+                    // rather than dropping the GPU from the sample.
+                    util_pct: g.u.unwrap_or(0.0),
                     mem_pct: g.m,
-                    temp_c: Some(g.t),
-                    power_w: Some(g.p),
+                    temp_c: g.t,
+                    power_w: g.p,
                 })
                 .collect(),
             top_procs: self
@@ -212,6 +233,10 @@ impl RawSample {
 struct GpuAcc {
     u: f64,
     m: f64,
+    // Memory is averaged only over the samples that actually reported it, so
+    // a unified-memory GPU (always null) finalizes to None instead of a
+    // false 0% -- `m_n` can be < `n` when some ticks had it and others didn't.
+    m_n: u32,
     t: f64,
     p: f64,
     n: u32,
@@ -258,7 +283,10 @@ impl Bucket {
         for g in &s.gpus {
             let a = self.gpus.entry(g.index).or_default();
             a.u += g.util_pct as f64;
-            a.m += g.mem_pct as f64;
+            if let Some(m) = g.mem_pct {
+                a.m += m as f64;
+                a.m_n += 1;
+            }
             a.t += g.temp_c.unwrap_or(0.0) as f64;
             a.p += g.power_w.unwrap_or(0.0) as f64;
             a.n += 1;
@@ -281,7 +309,7 @@ impl Bucket {
                         index: *idx,
                         name: None,
                         util_pct: (a.u / an) as f32,
-                        mem_pct: (a.m / an) as f32,
+                        mem_pct: (a.m_n > 0).then(|| (a.m / a.m_n.max(1) as f64) as f32),
                         temp_c: Some((a.t / an) as f32),
                         power_w: Some((a.p / an) as f32),
                     }
@@ -502,6 +530,158 @@ mod tests {
         let hs = r.query("h", 200.0, 2099.0, 10);
         assert!(hs.samples.len() <= 10, "strided to <= points, got {}", hs.samples.len());
         assert!(!hs.samples.is_empty());
+    }
+
+    // ─── Target A: unified-memory GPU (GB10) fixture ──────────────────────
+    // Captured live over ssh with the *fixed* SAMPLER_SH (host names
+    // replaced with a neutral placeholder; nothing else altered).
+
+    #[test]
+    fn fixture_unified_memory_gpu_reports_mem_not_applicable() {
+        let fixture = include_str!("../tests/fixtures/monitor/unified_memory_gpu.ndjson");
+        for line in fixture.lines() {
+            let s = serde_json::from_str::<RawSample>(line).unwrap().into_sample();
+            assert_eq!(s.gpus.len(), 1);
+            assert_eq!(s.gpus[0].mem_pct, None, "unified memory has no VRAM to report");
+            assert_eq!(s.gpus[0].temp_c, Some(40.0), "temperature must survive the N/A memory field");
+            assert_eq!(s.gpus[0].util_pct, 0.0);
+            assert_eq!(s.cpu_cores, Some(20));
+            assert_eq!(s.ram_total_gb, Some(120.0));
+        }
+    }
+
+    // ─── Target B: many-process host fixture ───────────────────────────────
+    // Captured live over ssh with the *fixed* SAMPLER_SH (host names and
+    // usernames replaced with neutral placeholders).
+
+    #[test]
+    fn fixture_many_process_host_parses() {
+        let fixture = include_str!("../tests/fixtures/monitor/many_process_host.ndjson");
+        for line in fixture.lines() {
+            let s = serde_json::from_str::<RawSample>(line).unwrap().into_sample();
+            assert_eq!(s.cpu_cores, Some(64));
+            assert_eq!(s.ram_total_gb, Some(755.0));
+            assert_eq!(s.gpus[0].mem_pct, Some(1.0), "a discrete GPU's memory is still reported");
+        }
+    }
+
+    /// A `null` in any single GPU field (SAMPLER_SH's rendering of an N/A
+    /// reading) must not reject the whole line -- before RawGpu's fields were
+    /// `Option<f32>`, a null here would fail `RawSample`'s deserialize and
+    /// drop CPU/RAM/everything else in the same sample.
+    #[test]
+    fn raw_gpu_null_in_any_field_keeps_the_rest_of_the_sample() {
+        for field in ["u", "m", "t", "p"] {
+            let mut gpu = serde_json::json!({"i": 0, "u": 10.0, "m": 20.0, "t": 30.0, "p": 40.0});
+            gpu[field] = serde_json::Value::Null;
+            let line = format!(r#"{{"ts":1.0,"cpu":5.0,"ram":6.0,"cc":8,"rt":32,"gpus":[{gpu}],"top":[]}}"#);
+            let s = serde_json::from_str::<RawSample>(&line)
+                .unwrap_or_else(|e| panic!("a null \"{field}\" must not reject the line: {e}"))
+                .into_sample();
+            assert_eq!(s.cpu_pct, 5.0);
+            assert_eq!(s.ram_pct, 6.0);
+            assert_eq!(s.gpus.len(), 1);
+        }
+    }
+
+    /// Runs the REAL, shipped `SAMPLER_SH` (nvidia-smi stubbed on PATH) and
+    /// proves every N/A spelling nvidia-smi actually uses -- "[N/A]", bare
+    /// "N/A", "Not Supported", and an empty field -- renders as `null` while
+    /// a real number on the *same* row survives untouched.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sampler_script_treats_every_na_spelling_as_not_reported() {
+        let dir = std::env::temp_dir().join(format!("sot-sampler-na-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let stub = dir.join("nvidia-smi");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\ncat <<'EOF'\n0, 11, [N/A], [N/A], 40, 5.0\n1, 22, N/A, N/A, 41, 5.1\n2, 33, Not Supported, Not Supported, 42, 5.2\n3, 44, , , 43, 5.3\nEOF\n",
+        )
+        .expect("write stub");
+        let mut perms = std::fs::metadata(&stub).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&stub, perms).expect("chmod stub");
+
+        let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default());
+        let mut child = std::process::Command::new("bash")
+            .arg("-s")
+            .arg("1")
+            .arg("1")
+            .env("PATH", path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn bash");
+        {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(SAMPLER_SH.as_bytes())
+                .expect("feed sampler script");
+        }
+        let out = child.wait_with_output().expect("sampler run");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let line = stdout.lines().next().expect("one sample line");
+        let raw: RawSample = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("every N/A spelling must still parse: {e}\nline: {line}"));
+        assert_eq!(raw.gpus.len(), 4, "all four rows survive");
+        for g in &raw.gpus {
+            assert!(g.m.is_none(), "gpu {} memory must be not-applicable, got {:?}", g.i, g.m);
+            assert!(g.u.is_some(), "utilization on the same row must survive");
+            assert!(g.t.is_some(), "temperature on the same row must survive");
+        }
+    }
+
+    /// Root cause of target B's degraded top-processes list: a pid
+    /// glob-expanded by the shell can have exited by the time `awk` opens
+    /// it, and awk -- confirmed on both gawk and mawk -- treats a missing
+    /// ARGV file as fatal, aborting *before* its END block ever runs, so the
+    /// whole scan silently returns nothing even though every other matched
+    /// pid was still readable. SAMPLER_SH's proc-scan now pipes through
+    /// `cat` instead, which warns per missing file and keeps reading the
+    /// rest -- this is the mechanism that fix relies on.
+    #[cfg(unix)]
+    #[test]
+    fn awk_aborts_on_a_vanished_argv_file_but_cat_piping_survives_it() {
+        let dir = std::env::temp_dir().join(format!("sot-monitor-race-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let survivor = dir.join("7.stat");
+        std::fs::write(&survivor, "7 (alive) S 1 1\n").expect("write survivor");
+        let vanished = dir.join("8.stat"); // never created: a pid that exited between glob and open
+        let prog = "{ n++ } END { print n+0 }";
+
+        let old = std::process::Command::new("awk")
+            .arg(prog)
+            .arg(&vanished)
+            .arg(&survivor)
+            .output()
+            .expect("run awk directly on the argv list");
+        assert!(!old.status.success(), "awk must fail fatally on a missing ARGV file");
+        assert!(
+            old.stdout.is_empty(),
+            "END never runs on the fatal path, so the survivor's record is lost too: {:?}",
+            String::from_utf8_lossy(&old.stdout)
+        );
+
+        let piped = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("cat {} {} 2>/dev/null | awk '{}'", vanished.display(), survivor.display(), prog))
+            .output()
+            .expect("run cat | awk");
+        assert!(piped.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&piped.stdout).trim(),
+            "1",
+            "the fix: cat skips the vanished file and awk still counts the survivor"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
