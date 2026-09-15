@@ -549,6 +549,20 @@ pub const FOREIGN_PHASE: &str = "foreign";
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const NEVER_STARTED_PHASE: &str = "stopped";
 
+/// The wire phase string `workspace.list` reports in place of
+/// [`NEVER_STARTED_PHASE`] for a capsule row the boot-time resume-scan
+/// found with no `state_dir` at all under this daemon's own state root
+/// (`runtime::log_and_flag_orphaned_state_dirs`, `Workspace::orphaned`).
+/// Not a [`crate::workspaces::Phase`] variant — the row's actual phase
+/// cell is untouched; this is a display-layer override
+/// `handle_workspace_list` applies only when the row is flagged, so a
+/// row this genuinely never-started (a real `state_dir`, simply no
+/// pointer published yet) keeps reading `NEVER_STARTED_PHASE` exactly as
+/// before. The frontend renders any capsule phase string as a bracket
+/// tag on the row's glance line already (`capsule_phase_tag`,
+/// `gpu.rs`) — a new string here is visible with no frontend change.
+pub const ORPHAN_PHASE: &str = "orphaned";
+
 /// Whether a capsule workspace's supervisor lane is even worth querying,
 /// given whether its voyage pointer exists — pure, no I/O itself (the
 /// caller supplies `pointer_exists`, e.g. `phase_of`'s own
@@ -829,6 +843,21 @@ pub enum EndRunOutcome {
     /// left the row permanently `Kept`/unendable, because `query_status`
     /// failing was the ONLY signal this function ever consulted.
     Unheld,
+    /// The state directory itself does not exist AND `query_status`'s
+    /// connect failure conclusively proves no supervisor answers this
+    /// row's lane (`runtime::is_definitely_orphaned` — decision 27's own
+    /// "no listener at all" classification, never a mere timeout or a
+    /// foreign/undetermined challenge). Distinct from `Unheld`: that
+    /// variant proves absence by taking the fence and the writer lock;
+    /// neither lock can even be attempted here because both live INSIDE
+    /// the missing directory (`fence.rs`, `voyage_root_path`) — so there
+    /// is nowhere left for either to exist, let alone be held. This row
+    /// has no durable record and no supervisor that could be alive under
+    /// this daemon's state root — safe to remove, same as `Unheld`, but
+    /// reported under its own name (`orphan_removed`) rather than folded
+    /// into "no supervisor held the row", which would misstate that a
+    /// row here ever really ran under this daemon.
+    Orphaned,
 }
 
 /// The daemon's capsule runtime — spawning, watching, querying, and
@@ -1411,14 +1440,41 @@ mod runtime {
                 // Recoverability (ADR 0043 decision 33): a row is
                 // removed only after a confirmed end or a PROVEN absence
                 // of BOTH authority (fence) and leg (writer.lock) — a
-                // missing state dir proves neither, and fence creation
-                // there fails outright (`CREATE_NEW` needs the
-                // directory), so it is checked and reported FIRST,
-                // distinct from every other "lane unreachable" case —
-                // never a licence to recreate anything (`leg_absent`'s
-                // own caller, `destroy_capsule_workspace`, never does).
+                // missing state dir proves neither BY ITSELF, and fence
+                // creation there fails outright (`CREATE_NEW` needs the
+                // directory), so `absence_proof` below cannot even be
+                // attempted. It is checked and reported FIRST, distinct
+                // from every other "lane unreachable" case — never a
+                // licence to recreate anything (`leg_absent`'s own
+                // caller, `destroy_capsule_workspace`, never does).
+                //
+                // A missing directory is not automatically a dead end,
+                // though: `supervisor.lock` and every voyage's
+                // `writer.lock` live INSIDE `state_dir` (`fence.rs`,
+                // `voyage_root_path`), so if the directory is gone
+                // neither lock can possibly be held BY THIS ROW anywhere
+                // else — the one thing that could still be alive is a
+                // supervisor process answering THIS row's lane, which is
+                // addressed by a hash of the path (`state_dir_hash`) in
+                // the runtime dir, not a file under `state_dir` — so it
+                // stays reachable regardless of whether the directory
+                // exists. `query_status`'s own connect already tested
+                // exactly that, and `e`'s shape says whether it was
+                // conclusive: `is_definitely_orphaned` accepts only
+                // decision 27's own "no listener at all" classification
+                // (`TransportError::is_endpoint_absent`: connect refused
+                // or nothing there), never a timeout or a foreign/
+                // undetermined challenge, either of which means SOMETHING
+                // answered and the row must keep refusing. Proven absent
+                // -> `Orphaned` (no durable record, no reachable
+                // authority, no possible lock holder); otherwise the
+                // original unchanged refusal.
                 if !state_dir.is_dir() {
-                    return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "state_dir_missing"));
+                    return if is_definitely_orphaned(&e) {
+                        Ok(R::Orphaned)
+                    } else {
+                        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "state_dir_missing"))
+                    };
                 }
                 // Unreachable is not the same claim as "not running" —
                 // the caller must keep refusing a live-but-unresponsive
@@ -1541,6 +1597,70 @@ mod runtime {
         leg_absent(state_dir).map_err(NotProven::LegCheckFailed)
         // `_fence` drops here, right after `leg_absent`'s own single
         // observation -- observe only, never become the holder.
+    }
+
+    /// `end_run`'s missing-state-dir proof: whether `query_status`'s own
+    /// connect failure `e` is conclusive that NOTHING answers this row's
+    /// lane, reusing decision 27's own classification
+    /// (`TransportError::is_endpoint_absent`: `ECONNREFUSED`/`ENOENT`/
+    /// their Windows equivalents, returned on the FIRST attempt — never
+    /// the outcome of a retried-but-still-busy endpoint, which means a
+    /// listener exists). Only the connect step itself produces a
+    /// `sot_log::Error::Transport` — a challenge that answered `Foreign`/
+    /// `Undetermined`/`VersionSkew`, or a reply-stage failure, is a
+    /// DIFFERENT `Error` variant and correctly falls through to `false`
+    /// here, because each of those means something DID answer. A `true`
+    /// result, together with the caller's own `!state_dir.is_dir()`
+    /// check, is the missing directory's own version of
+    /// [`absence_proof`]: nowhere left for `supervisor.lock` or any
+    /// voyage's `writer.lock` to exist (both live under `state_dir`), and
+    /// no supervisor reachable at the one address that does not depend on
+    /// the directory existing.
+    fn is_definitely_orphaned(e: &sot_log::Error) -> bool {
+        matches!(e, sot_log::Error::Transport(te) if te.is_endpoint_absent())
+    }
+
+    #[cfg(test)]
+    mod is_definitely_orphaned_tests {
+        use super::*;
+        use sot_log::transport::TransportError;
+
+        fn io_transport(kind: std::io::ErrorKind) -> sot_log::Error {
+            sot_log::Error::Transport(TransportError::Io {
+                op: "connect",
+                source: std::io::Error::new(kind, "test"),
+            })
+        }
+
+        #[test]
+        fn no_listener_at_all_is_orphaned() {
+            // Decision 27's own "absent" shapes -- what `query_status`'s
+            // connect step actually returns on the first attempt when
+            // nothing is bound at this row's lane address at all.
+            assert!(is_definitely_orphaned(&io_transport(std::io::ErrorKind::NotFound)));
+            assert!(is_definitely_orphaned(&io_transport(std::io::ErrorKind::ConnectionRefused)));
+        }
+
+        #[test]
+        fn a_reachable_but_refusing_lane_is_never_orphaned() {
+            // The lane DID answer (a foreign build, a version skew, or
+            // some other live-but-unresponsive shape) -- none of these
+            // may ever be folded into "nothing is running here".
+            assert!(!is_definitely_orphaned(&sot_log::Error::VersionSkew));
+            assert!(!is_definitely_orphaned(&sot_log::Error::State(
+                "supervisor lane challenge: foreign".to_string()
+            )));
+        }
+
+        #[test]
+        fn a_busy_or_timed_out_endpoint_is_never_orphaned() {
+            // Decision 27: a busy endpoint is retried WITHIN the connect
+            // bound and only surfaces as `Err` once genuinely ambiguous
+            // (e.g. a timeout) -- that must stay unproven, never treated
+            // as absent.
+            assert!(!is_definitely_orphaned(&io_transport(std::io::ErrorKind::TimedOut)));
+            assert!(!is_definitely_orphaned(&io_transport(std::io::ErrorKind::PermissionDenied)));
+        }
     }
 
     /// Whether a `lock_writer` failure is genuine contention (its OWN
@@ -2720,6 +2840,7 @@ mod runtime {
         }
 
         log_registryless_state_dirs(&state_root, &workspaces);
+        log_and_flag_orphaned_state_dirs(&state_root, &workspaces);
     }
 
     /// One log line naming every `<state-root>/workspaces/*` directory
@@ -2749,6 +2870,102 @@ mod runtime {
                 "capsule workspace resume-scan: state directories with no matching registry entry -- \
                  left untouched (ADR 0042: the workspace list is the list)"
             );
+        }
+    }
+
+    /// The reverse of [`log_registryless_state_dirs`]: a REGISTERED
+    /// capsule row whose `state_dir` does not exist under THIS daemon's
+    /// own state root. Every capsule row that ever reaches the registry
+    /// had a `start_supervisor` call succeed at `workspace.create` time —
+    /// a failed spawn rolls the row (and its toml) back before either is
+    /// ever persisted (`handlers.rs`'s create rollback) — and that
+    /// success is exactly what creates the directory (`sot_log::
+    /// supervisor`'s voyage-root bootstrap runs before `create` can
+    /// report success). So a row surviving to a fresh boot with no
+    /// matching directory here was never "not started yet" — its
+    /// directory was deleted, or (the field defect this closes) the
+    /// registry ENTRY was written by a daemon using a DIFFERENT state
+    /// root and this daemon never created one at all. Logged ONCE, here,
+    /// at boot — never from the per-row lifecycle observer's own
+    /// `POLL_INTERVAL` loop, which would otherwise repeat the same line
+    /// forever — and latched onto the row (`Workspace::set_orphaned`) so
+    /// `workspace.list` stops reporting it as an ordinary
+    /// [`NEVER_STARTED_PHASE`] row (see [`ORPHAN_PHASE`]'s own doc).
+    /// Never acted on beyond the flag and the log line: removal is still
+    /// only ever `workspace.destroy`'s to decide, via `end_run`'s own
+    /// proof.
+    fn log_and_flag_orphaned_state_dirs(state_root: &Path, workspaces: &Workspaces) {
+        for ws in workspaces.list() {
+            if ws.runtime != "capsule" {
+                continue;
+            }
+            let state_dir = super::state_dir_for(state_root, &ws.workspace_id);
+            if state_dir.is_dir() {
+                continue;
+            }
+            ws.set_orphaned();
+            tracing::warn!(
+                workspace_id = %ws.workspace_id, slug = %ws.slug, state_dir = ?state_dir,
+                "capsule workspace resume-scan: registered row has no state directory under this \
+                 daemon's state root -- marking it orphaned rather than an ordinary stopped row; \
+                 workspace.destroy removes it once no supervisor answers its lane"
+            );
+        }
+    }
+
+    #[cfg(test)]
+    mod log_and_flag_orphaned_state_dirs_tests {
+        use super::*;
+        use crate::workspaces::Workspace;
+
+        fn capsule_row(reg: &Workspaces, label: &str) -> Arc<crate::workspaces::Workspace> {
+            let mut ws = Workspace::from_label(
+                label,
+                PathBuf::from("/tmp/sot-orphan-sweep-test"),
+                false,
+                "none".to_string(),
+                String::new(),
+                String::new(),
+            );
+            ws.runtime = "capsule".to_string();
+            reg.insert(ws)
+        }
+
+        #[test]
+        fn a_row_with_no_state_dir_is_flagged_and_a_row_with_one_is_not() {
+            let root = tempfile::tempdir().unwrap();
+            let reg = Workspaces::new();
+            let missing = capsule_row(&reg, "orphan-row");
+            let present = capsule_row(&reg, "real-row");
+            let present_dir = super::super::state_dir_for(root.path(), &present.workspace_id);
+            std::fs::create_dir_all(&present_dir).unwrap();
+
+            log_and_flag_orphaned_state_dirs(root.path(), &reg);
+
+            assert!(missing.orphaned(), "a row with no state dir at all must be flagged orphaned");
+            assert!(!present.orphaned(), "a row with a real state dir must never be flagged");
+        }
+
+        #[test]
+        fn a_tmux_row_with_no_state_dir_is_never_flagged() {
+            // The sweep is scoped to `runtime == "capsule"` -- a tmux row
+            // has no `state_dir` concept at all and must never be touched.
+            let root = tempfile::tempdir().unwrap();
+            let reg = Workspaces::new();
+            let mut ws = Workspace::from_label(
+                "tmux-row",
+                PathBuf::from("/tmp/sot-orphan-sweep-test"),
+                false,
+                "none".to_string(),
+                String::new(),
+                String::new(),
+            );
+            ws.runtime = "tmux".to_string();
+            let ws = reg.insert(ws);
+
+            log_and_flag_orphaned_state_dirs(root.path(), &reg);
+
+            assert!(!ws.orphaned(), "a non-capsule row is never a candidate for this sweep");
         }
     }
 }

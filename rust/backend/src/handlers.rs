@@ -4655,6 +4655,11 @@ fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> Cap
         O::Unheld => {
             CapsuleDestroyOutcome::Removable("no supervisor held the row".to_string())
         }
+        // No state dir, no reachable lane at any point this daemon could
+        // check (see `EndRunOutcome::Orphaned`'s own doc) -- its own
+        // code, distinct from `Unheld`'s "no supervisor held the row":
+        // this row never ran under this daemon's state root at all.
+        O::Orphaned => CapsuleDestroyOutcome::Removable("orphan_removed".to_string()),
     }
 }
 
@@ -6525,7 +6530,17 @@ pub async fn handle_workspace_list(
                     .to_string_lossy()
                     .into_owned()
             });
-            let phase = Some(ws.phase().as_wire_str().to_string());
+            // A boot-time orphan (`Workspace::orphaned`, set only by the
+            // resume-scan's `log_and_flag_orphaned_state_dirs`) overrides
+            // the wire phase string here, never the phase cell itself —
+            // an ordinary `NEVER_STARTED_PHASE` ("stopped") row must
+            // never be mistaken for a row the daemon knows has no state
+            // directory at all (see `ORPHAN_PHASE`'s own doc).
+            let phase = Some(if ws.orphaned() {
+                crate::capsule_workspace::ORPHAN_PHASE.to_string()
+            } else {
+                ws.phase().as_wire_str().to_string()
+            });
             WorkspaceListEntry {
                 workspace_id: ws.workspace_id.clone(),
                 slug: ws.slug.clone(),
@@ -8340,11 +8355,15 @@ mod workspace_destroy_default_row_tests {
     // `capsule_end_not_reached` error, never the flat tmux-style refusal.
     use super::*;
 
-    // Isolates `crate::workspaces::save`'s config dir for the one test
-    // below that (unlike every other test in this module) runs the
-    // reset+persist path for real -- same technique as `workspaces.rs`'s
-    // own `env_guarded`, serialized under the crate-wide lock so this
-    // never races another module's env-mutating test. Every caller is now
+    // Isolates `crate::workspaces::save`'s config dir -- `pin_local_
+    // state_root` below now pins `XDG_CONFIG_HOME` unconditionally
+    // alongside state, so this is no longer "the one test below" that
+    // reaches the reset+persist path for real: an `Orphaned` outcome
+    // (this fix) can make ANY of them reach a real toml write or removal,
+    // and every one now runs through the same scratch config root.
+    // Same technique as `workspaces.rs`'s own `env_guarded`, serialized
+    // under the crate-wide lock so this never races another module's
+    // env-mutating test. Every caller is now
     // `#[cfg(any(windows, target_os = "linux"))]` (the absence proof
     // `seed_provably_unheld_state_dir` builds only means anything there),
     // so this whole cluster is unused dead code elsewhere -- allowed
@@ -8411,15 +8430,42 @@ mod workspace_destroy_default_row_tests {
     /// then returns the root by calling that SAME resolver rather than
     /// hand-building `dir.join("sot")` here — the one seam every fixture
     /// below must agree with `destroy_capsule_workspace` about. Caller
-    /// holds an `EnvGuard` (`env_guarded()`) first so both vars this may
-    /// touch are restored on drop, and `dir` need not exist yet — nothing
+    /// holds an `EnvGuard` (`env_guarded()`) first so every var this may
+    /// touch is restored on drop, and `dir` need not exist yet — nothing
     /// here creates it; `state_dir_missing` fixtures rely on exactly that.
+    ///
+    /// Also isolates `XDG_CONFIG_HOME` on every non-Windows platform (the
+    /// field defect this closes): `sot_config_dir()` reads a SEPARATE var
+    /// there, entirely independent of `XDG_STATE_HOME`
+    /// (`state_dir.rs`'s own doc — only Windows derives config from the
+    /// same `LOCALAPPDATA` root), so pinning state alone left config free
+    /// to resolve to the real `$HOME/.config/sot` the instant any test
+    /// through this fixture reached `crate::workspaces::save` or a toml
+    /// removal — exactly the shape of the leaked row this whole fix
+    /// exists to close: a scratch daemon whose state root was isolated
+    /// but whose config directory was not, writing (and then, once a row
+    /// with no state dir can be proven `Orphaned`, DELETING) a real
+    /// per-host workspace registry entry. A SIBLING of `dir`, never a
+    /// subdirectory of it, so "nothing exists under `dir`" fixtures stay
+    /// literally true; harmless even for a caller that already pinned
+    /// `XDG_CONFIG_HOME` itself first (this only narrows where it points,
+    /// never widens it, and every path below is re-resolved live through
+    /// the same env var at assertion time, never cached).
     #[cfg(any(windows, target_os = "linux"))]
     fn pin_local_state_root(dir: &std::path::Path) -> std::path::PathBuf {
         #[cfg(windows)]
         std::env::set_var("LOCALAPPDATA", dir);
         #[cfg(not(windows))]
-        std::env::set_var("XDG_STATE_HOME", dir);
+        {
+            std::env::set_var("XDG_STATE_HOME", dir);
+            std::env::set_var(
+                "XDG_CONFIG_HOME",
+                dir.with_file_name(format!(
+                    "{}-xdg-config",
+                    dir.file_name().and_then(|n| n.to_str()).unwrap_or("sot-test-scratch")
+                )),
+            );
+        }
         sot_log::state_dir::sot_state_dir()
             .expect("state root must resolve once pinned to a scratch dir")
     }
@@ -8515,15 +8561,18 @@ mod workspace_destroy_default_row_tests {
     // one always did — never the flat tmux-style refusal
     // (`default_workspace_not_destroyable`). Nothing is actually running
     // behind this row in-process, so the real attempt cannot reach a
-    // live lane and the row is KEPT (unconfirmed) either way. The exact
-    // reason is platform-dependent (ADR 0043 decision 33): on Windows and
+    // live lane. The exact outcome is platform-dependent: on Windows and
     // Linux, `destroy_capsule_workspace`'s real path finds no state dir
-    // at all on disk for this synthetic, never-spawned row and reports
-    // the SPECIFIC `state_dir_missing` proof rather than the generic
-    // "lane unreachable" catch-all; where the capsule runtime doesn't
-    // compile at all (e.g. macOS), the portable fallback arm reports the
-    // generic code instead — the outward `Kept` shape is the same either
-    // way, only the code differs.
+    // at all on disk for this synthetic, never-spawned row AND
+    // `query_status`'s own connect fails with decision 27's "no listener
+    // at all" shape (nothing was ever bound at this row's lane address
+    // either) — the orphan-removal fix this test now covers: proven,
+    // not merely refused, so the row's run is confirmed ended
+    // (`orphan_removed`) exactly as a real end would be, never the
+    // flat refusal AND never a bare `Kept`. Where the capsule runtime
+    // doesn't compile at all (e.g. macOS), the portable fallback arm
+    // still reports the generic `Kept` code instead — no proof
+    // machinery exists there to reach at all.
     // Pinned hermetic (Codex review, 2026-09-11): this test used to read
     // `sot_log::state_dir::sot_state_dir()`'s REAL, unpinned environment —
     // fine on a dev box whose shell always exports a stable, qualified
@@ -8533,8 +8582,13 @@ mod workspace_destroy_default_row_tests {
     // under `env_guarded()`'s lock. Pinning to a fresh, never-created
     // scratch root — same resolver, same lock — makes "no state dir on
     // disk for this workspace" true by construction, not by luck.
+    // `pin_local_state_root` now also isolates `XDG_CONFIG_HOME` (the
+    // harness fix this same effort closes): once this scenario proves
+    // `Orphaned` instead of merely refusing, the response path really
+    // does reach `crate::workspaces::save`'s reset-persist write, which
+    // must never land under a real `~/.config/sot`.
     #[tokio::test]
-    async fn default_capsule_workspace_takes_the_real_end_run_path_not_the_flat_refusal() {
+    async fn default_capsule_workspace_with_no_state_dir_is_proven_orphaned_not_a_flat_refusal() {
         let _guard = env_guarded();
         #[cfg(any(windows, target_os = "linux"))]
         let scratch = std::env::temp_dir().join(format!(
@@ -8546,7 +8600,8 @@ mod workspace_destroy_default_row_tests {
                 .as_nanos()
         ));
         // Nothing is created under `scratch` — the point of this test is
-        // that the resolved state dir does not exist on disk at all.
+        // that the resolved state dir does not exist on disk at all, and
+        // nothing was ever bound at this row's lane address either.
         #[cfg(any(windows, target_os = "linux"))]
         pin_local_state_root(&scratch);
 
@@ -8558,12 +8613,22 @@ mod workspace_destroy_default_row_tests {
             "a capsule default row must not get the flat tmux-style refusal: {payload:?}"
         );
         #[cfg(any(windows, target_os = "linux"))]
-        let expected_code = "state_dir_missing";
+        {
+            assert_eq!(
+                payload.get("code").and_then(|v| v.as_str()),
+                None,
+                "a proven orphan is a CONFIRMED end, not a `Kept` error: {payload:?}"
+            );
+            let kept = payload.get("kept").and_then(|v| v.as_str()).unwrap_or("");
+            assert!(
+                kept.contains("orphan_removed"),
+                "the orphan proof's own distinct outcome must be visible: {payload:?}"
+            );
+        }
         #[cfg(not(any(windows, target_os = "linux")))]
-        let expected_code = "capsule_end_not_reached";
         assert_eq!(
             payload.get("code").and_then(|v| v.as_str()),
-            Some(expected_code),
+            Some("capsule_end_not_reached"),
             "payload: {payload:?}"
         );
         assert!(reg.resolve(Some(&id)).is_some(), "the default row is never removed either way");
