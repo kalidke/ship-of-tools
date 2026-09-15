@@ -27,14 +27,17 @@ machine (Windows, Linux, or macOS). Done manually, these are the steps:
    backend, that server's details (see below).
 4. **Instantiate Julia environments**: the repo root, `core`, `julia/kernel`,
    `julia/repl`, and `julia/pluto`.
-5. **Write `.sot/hosts.toml` and `.sot/settings.toml`** from your answers.
+5. **Write `hosts.toml`** (the hub's canonical copy, or a `sotd topology
+   sync --hub <alias>` fetch of it) **and `.sot/settings.toml`** from your
+   answers.
 6. **Install agent comm resources**:
    `julia --project=. -e 'using ShipTools; ShipTools.update_comm()'`.
 7. **Create a launcher / shortcut** so you can start the app without typing the
    build paths.
 
 On Windows frontend machines, run `scripts\install-shortcut.ps1` after
-`.sot\hosts.toml` exists. Besides creating the desktop shortcut to
+`hosts.toml` exists (`%LOCALAPPDATA%\sot\config\hosts.toml`, or `$SOT_HOSTS`
+— see [Configuration Files](../ref/config.md)). Besides creating the desktop shortcut to
 `scripts\launch-sot.ps1`, it sets the SoT icon (`logo.ico`) and stamps the
 `ShipOfTools.Sot` AppUserModelID on the `.lnk`, so the running window merges
 into the shortcut's taskbar button with the right icon (a hand-made shortcut
@@ -67,40 +70,41 @@ The Q&A asks which of three roles the machine fills:
 | **backend-remote** | the backend + kernel, reached over SSH | Linux server in `tmux` |
 | **all-local** | frontend and backend on one machine | a single Linux or macOS box for offline work |
 
-For **frontend-local**, the flow also collects the backend server's connection
-details (its SSH alias, the repo path on the remote, and the local forwarded
-port) and writes them as a host entry. The remote side of that forward is the
-backend user's per-user Unix socket, discovered from `sotd session-socket-path
-sot` unless `remote_socket` is set explicitly.
+For **frontend-local**, the flow also records this machine as a `frontend`
+host and the backend server as a `daemon` host in `hosts.toml` (the hub's
+copy). The launcher derives everything else — the SSH forward's local
+port, and the remote's socket path (`sotd session-socket-path sot`, always
+queried, never configured) — from `sotd topology plan --self <host>` at
+launch time; there is nothing else to fill in by hand.
 
 ## What gets written
 
-The answers land in two files under `.sot/`, both with layered discovery so a
-machine-specific or environment override can take precedence:
+### `hosts.toml` — the declared topology
 
-### `hosts.toml` — the host registry
-
-A section per backend host, in a deliberately simple `key = value` format so both
-the Rust frontend and the PowerShell launcher can parse it without a TOML
-library. The in-app Hosts mode (hotkey `h`) lists every `[host.<name>]` and lets
-you pick the target; the choice persists, and the launcher and reconnect both
-route to it.
+One section per host, in a deliberately simple `key = value` format so it
+needs no TOML library. `sot_protocol::topology` (Rust) is the one parser;
+`sotd topology plan|status|sync|relay-endpoint` is the one way anything
+reads it — see [Configuration Files](../ref/config.md) for the full
+grammar. The in-app Hosts mode (hotkey `h`) lists every dialable host with
+its live connected/unreachable status.
 
 ```toml
-default_host = "myserver"
+hub = "myserver"
 
 [host.myserver]
-ssh_alias   = "myserver"
-remote_repo = "/home/me/projects/ship-of-tools"
-# tcp_port: local side of the SSH forward (no parser here strips an
-# inline comment, so this note lives on its own line, not after the value)
-tcp_port    = 18743
-# remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
+daemon = true
+
+[host.laptop]
+frontend = true
 ```
 
-Discovery order: `$SOT_HOSTS` → `<repo-root>/.sot/hosts.toml` →
-`$XDG_CONFIG_HOME/sot/hosts.toml` (or `%APPDATA%\sot\hosts.toml`). Adding a
-new remote is one entry here — no launcher edit.
+Discovery order: `$SOT_HOSTS` → `<config dir>/hosts.toml`
+(`~/.config/sot/hosts.toml` on Linux/macOS,
+`%LOCALAPPDATA%\sot\config\hosts.toml` on Windows) — no repo-local `.sot/`
+copy. The hub's copy is canonical; every other box's is a
+`sotd topology sync --hub <alias>` fetch of it. Adding a new remote is one
+`[host.<name>]` section on the hub, then `sync` on every box that dials it
+— no launcher edit.
 
 ### `settings.toml` — frontend settings
 

@@ -1,15 +1,20 @@
 # Configuration Files
 
-The frontend reads three TOML files from `.sot/`, each with its own layered
-discovery: `settings.toml` (layout + terminal), `hosts.toml` (the host registry),
-and `keybindings.toml` (chords). Keybindings have their own page —
+Three TOML files, each read by a different piece and none of them by more
+than one parser: `settings.toml` (layout + terminal, read by the frontend
+from `.sot/`, layered discovery), `hosts.toml` (the declared topology —
+hub, daemon and frontend hosts, monitor targets — read ONLY by
+`sot_protocol::topology`/`sotd topology`; the frontend reads no config
+file for hosts at all, see below), and `keybindings.toml` (chords, read by
+the frontend from `.sot/`). Keybindings have their own page —
 [Keybindings](keybindings.md) — so this page covers `settings.toml` and
 `hosts.toml`.
 
-All three share the same single-responsibility, layered-discovery pattern: a
-project file in `.sot/`, overridable by an env var and a per-user file, with
-built-in defaults underneath. Missing or out-of-range values fall back to the
-default rather than crashing the chrome.
+`settings.toml` and `keybindings.toml` share a single-responsibility,
+layered-discovery pattern: a project file in `.sot/`, overridable by an env
+var and a per-user file, with built-in defaults underneath. Missing or
+out-of-range values fall back to the default rather than crashing the
+chrome. `hosts.toml` has its own, simpler search order — see below.
 
 ## `settings.toml`
 
@@ -123,60 +128,58 @@ fullscreen_vsync_pin = false    # default false | true on a VRR/OLED panel
 
 ## `hosts.toml`
 
-The host registry the in-app Hosts mode (hotkey `h`) lists and the PowerShell
-launcher consumes.
+The declared topology: which host is the relay hub, which hosts run a
+daemon, which run a frontend, and which hosts a `Ctrl+M` monitor drawer
+samples. `sot_protocol::topology` (Rust) is the **one parser** for this
+file — the daemon's `sotd topology plan|status|sync|relay-endpoint` CLI is
+the one way anything reads it. Neither the frontend nor the PowerShell
+launcher parses `hosts.toml` itself any more: the launcher runs
+`sotd topology plan --self <host>` and renders its plain-line output into
+SSH tunnels, `--dial <host>=<endpoint>` flags for the frontend, and
+`SOT_RELAY_ENDPOINT`; the frontend reads no config file for hosts at all
+(see `--dial` under [CLI flags](../start/setup.md), and
+`rust/protocol/src/topology.rs`'s `plan` doc comment for the exact
+line-oriented contract).
 
-The format is deliberately simple — a section per host, scalar `key = value`
-lines — so the PowerShell launcher can parse it with a regex without pulling in a
-TOML library. Values pass through **verbatim**: there is no TOML escape
-processing, so Windows pipe paths use single backslashes.
+The format is deliberately simple — a section per host, scalar
+`key = value` lines — so it needs no TOML library. Values pass through
+**verbatim**: there is no TOML escape processing, so Windows pipe paths
+use single backslashes.
 
 ### Discovery order
 
-1. `$SOT_HOSTS` — explicit path override.
-2. `<repo-root>/.sot/hosts.toml` — the project's host registry.
-3. `$XDG_CONFIG_HOME/sot/hosts.toml` or `%APPDATA%\sot\hosts.toml` —
-   per-user registry.
+The one search order, used everywhere this file is read:
 
-The launcher reads the single fixed path `<repo>/.sot/hosts.toml` (the
-PowerShell side does not layer).
+1. `$SOT_HOSTS` — explicit path override (tests, scratch daemons).
+2. `<config dir>/hosts.toml` — `~/.config/sot/hosts.toml` on Linux/macOS,
+   `%LOCALAPPDATA%\sot\config\hosts.toml` on Windows.
+
+There is no repo-local `.sot/hosts.toml` layer any more: the hub's own copy
+is canonical, and every other box's copy is a `sotd topology sync --hub
+<alias>` fetch of it (see below).
 
 ### Top-level
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `default_host` | string | *(none)* | The one remote host the CLI `--socket`/`--tcp` override targets, and whose `tcp_port` may be omitted (falls back to `SOT_TCP_PORT`/18743). The launcher resolves it as: env vars (`SOT_HOST` etc.) → `default_host` → error ("no backend host configured") if neither resolves — but it is no longer the only tunnel the launcher opens (ADR 0042 L2b design E, below). (Pre-ADR-0042-L2a this also fell back to a persisted `last_host` the launcher read from frontend state; that step is deleted — see the note below.) |
+| `hub` | string | *(required)* | The one host running the relay daemon every other box's comm handles register on and dial through. Exactly one `hub` key, naming a listed host. |
 
 ### `[host.<name>]`
 
-One section per host. The frontend opens one connection per section that
-has a reachable endpoint (a `socket` or a `tcp_port`), local-first then
-file order — every configured host is live at once, not a single picked
-target. The Hosts mode lists every entry with its live
-connected/unreachable status; Enter moves the Sessions-mode cursor to
-that host's node (it doesn't pick a target for the launcher — see ADR
-0042 slice L2a; ADR 0015's `last_host`-based single-host picker is
-superseded).
+One section per host. `<name>` is the plain host name (`[a-z0-9][a-z0-9._-]*`)
+that box's own `host_name()` resolves to — it doubles as its SSH alias, so
+`~/.ssh/config` must have a matching entry for any host another box dials.
 
-**`local` needs no section at all.** The frontend always holds a
-connection to this machine's own daemon, and every launch mode ensures
-that daemon is running (ADR 0042 L2b designs B and D) — no `hosts.toml`
-entry required. A `[host.local]` section is only for overriding its
-derived `socket` (see that key below); every other key on it is ignored,
-since local is never SSH-tunneled.
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `daemon` | bool | `false` | This host runs `sotd`; other boxes may dial it. `sotd topology plan` names it in a `dial`/`tunnel` line for every OTHER host that isn't itself frontend-only. |
+| `frontend` | bool | `false` | This host runs a frontend + launcher (dials the hub, is never dialled by anyone else — D8). |
 
-| Key | Type | Meaning |
-|-----|------|---------|
-| `ssh_alias` | string | SSH alias for the remote host (an entry in your `~/.ssh/config`). Presence of this key is what makes a section a tunnel target (ADR 0042 L2b design E) — the launcher opens one SSH forward per section that has it, not just `default_host`'s. |
-| `remote_repo` | string | Absolute path to the project repo on the remote host. |
-| `tcp_port` | integer | Local TCP port for the SSH-forwarded backend connection. The remote side should terminate at the per-user backend socket. **Required** for every remote except `default_host`, which may omit it (falls back to `SOT_TCP_PORT`/18743 for compatibility); a remote missing it gets no tunnel — the launcher logs one line naming the host and moves on, it does not fail the whole launch. |
-| `remote_socket` | string | Optional remote Unix socket path for the backend control channel. If omitted, launchers query `sotd session-socket-path sot` on the remote host. |
-| `remote_home` | string | Absolute home directory on the remote host. |
-| `socket` | string | **Local-host form** — a named-pipe / socket path instead of SSH (no remote). Only meaningful on `[host.local]`, to override the derived pipe path (`sot_protocol::session_socket_path("local")`, ADR 0042 L2b design A) — every other host resolves its endpoint from `tcp_port` instead. On Windows this uses single backslashes, e.g. `\\.\pipe\sot-local`, because values are not escape-processed. |
-
-A remote host sets `ssh_alias` / `remote_repo` / `tcp_port` (and usually
-`remote_home`); `remote_socket` is optional and normally discovered. `local`
-needs nothing at all unless overriding its derived `socket`.
+A host can be `daemon = true`, `frontend = true`, neither (the section is
+otherwise pointless), or both (a workstation running its own daemon *and*
+driving a local frontend). The hub itself needs `daemon = true` too — it
+is still a listed host, just the one every other daemon host's relay
+handles register on.
 
 ### Backend tmux socket
 
@@ -217,33 +220,44 @@ are needed on any monitored host. Remove a line to stop monitoring that host.
 ### Example
 
 ```toml
-default_host = "myserver"
+hub = "myserver"
 
 [host.myserver]
-ssh_alias = "myserver"
-remote_repo = "/home/me/ship-of-tools"
-tcp_port = 18743
-# remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
-remote_home = "/home/me"
+daemon = true
 
-# A second remote -- its OWN tunnel, opened alongside myserver's, not
-# instead of it (ADR 0042 L2b design E). tcp_port is required here (this
-# isn't default_host).
+# A frontend box: dials the hub, is never dialled by anyone (D8) -- no
+# tunnel/dial line is emitted FOR it, only ones it consumes as the dialer.
+[host.laptop]
+frontend = true
+
+# A second daemon host -- its own tunnel, opened alongside myserver's SSH
+# alias must be `otherbox` (the section key doubles as the alias).
 [host.otherbox]
-ssh_alias = "otherbox"
-remote_repo = "/home/me/ship-of-tools"
-tcp_port = 18744
-
-# "local" needs no section -- see above. Only to override its derived pipe:
-# [host.local]
-# socket = "\\.\pipe\sot-local"
+daemon = true
 
 [monitor]
 myserver = "myserver"
-host-b = "host-b"
+otherbox = "otherbox"
 host-c = "host-c"
 ```
 
+`sotd topology plan --self laptop` on the laptop above renders as (see
+`rust/protocol/src/topology.rs`'s `plan` doc comment for the exact grammar):
+
+```text
+self laptop
+hub myserver
+relay-endpoint tcp:127.0.0.1:18743
+dial myserver tcp:127.0.0.1:18743
+dial otherbox tcp:127.0.0.1:18744
+tunnel myserver 18743
+tunnel otherbox 18744
+```
+
+— which the launcher turns into two SSH tunnels and
+`--dial myserver=tcp:127.0.0.1:18743 --dial otherbox=tcp:127.0.0.1:18744`
+for the frontend.
+
 ## See also
 
-- [Keybindings](keybindings.md) — the third `.sot/` file, chords and grammar.
+- [Keybindings](keybindings.md) — chords and grammar (still repo-local, under `.sot/`).
