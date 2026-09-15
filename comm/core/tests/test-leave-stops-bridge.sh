@@ -154,12 +154,25 @@ case_leave_by_name_never_stops_the_other_handles_bridge() {
     return 0
 }
 
+case_stop_kills_the_loop_even_with_a_lost_pidfile() {
+    local handle="t-orphan-$$"
+    start_fake_bridge "$handle" || { echo "  setup: could not start the bridge for @$handle"; return 1; }
+    rm -f "$(sot_bridge_pidfile "$handle")"  # simulate a lost pidfile
+
+    sot_bridge_stop "$handle"
+    bridge_gone "$handle" \
+        || { echo "  FAIL: the loop for @$handle survived sot_bridge_stop after its pidfile was lost"; return 1; }
+    return 0
+}
+
 contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
 check "comm-leave.sh (self) stops its own bridge, prunes its row, spares a same-prefix sibling bridge" \
     case_leave_stops_own_bridge_prunes_row_and_spares_a_sibling_bridge
 check "comm-leave.sh --name <other> removes only the row -- the other handle's bridge survives" \
     case_leave_by_name_never_stops_the_other_handles_bridge
+check "sot_bridge_stop kills the loop (not just the relay child) when the pidfile is lost" \
+    case_stop_kills_the_loop_even_with_a_lost_pidfile
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

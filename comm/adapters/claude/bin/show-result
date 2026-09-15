@@ -27,12 +27,11 @@ esac
 
 REL="$1"; shift
 
-# Discover the workspace slug — never guess it. Prefer the backend-stamped
-# SOT_WORKSPACE; else strip the `sot-be-` prefix off the tmux session name.
-WS="${SOT_WORKSPACE:-$(tmux display-message -p '#S' 2>/dev/null | sed -n 's/^sot-be-//p')}"
+# Discover the workspace slug — never guess it. Requires the backend-stamped
+# SOT_WORKSPACE.
+WS="${SOT_WORKSPACE:-}"
 if [ -z "$WS" ]; then
-  echo "show-result: workspace slug unknown — SOT_WORKSPACE unset and not a sot-be-<slug> tmux session." >&2
-  echo "             run this from inside your workspace's backend pane." >&2
+  echo "show-result: workspace slug unknown — SOT_WORKSPACE is unset." >&2
   exit 3
 fi
 

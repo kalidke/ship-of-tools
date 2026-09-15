@@ -376,9 +376,10 @@ sot_write_self_file() {
 #
 # The bridge is the reconnect loop `comm-relay.sh bridge --name <handle>`,
 # run as a plain background child of the session's own process tree. It
-# lives in the capsule leg: the leg's process group is killed when the leg
-# ends, so the bridge dies with its session and nothing reaps it. Its loop
-# pid is recorded in a pidfile under the comm state dir; "running" means
+# ends with the row's scope (workspace.destroy, or the run ending) — not
+# with any one leg — so it survives a leg restart and is reused through
+# its pidfile rather than restarted. Its loop pid is recorded in a
+# pidfile under the comm state dir; "running" means
 # that pid is alive AND is our loop for this handle (argv checked field by
 # field, so a reused pid never counts). There is never a bridge on Windows
 # (the frontend files inbound frames itself).
@@ -407,13 +408,16 @@ sot_bridge_pid_for() {
 sot_bridge_running_for() { sot_bridge_pid_for "$1" >/dev/null; }
 
 # _sot_bridge_pattern NAME — end-anchored pgrep -f pattern matching every
-# `comm-relay.sh bridge --name NAME` process under this uid: the loop's
-# child, a bridge someone ran by hand, and the loop of a bridge a previous
-# release wrapped in a tmux session (its shell quoted the handle, hence the
-# optional quotes). Every non-alphanumeric character of NAME is escaped.
+# bridge process for NAME under this uid: the loop's relay child, a bridge
+# someone ran by hand, the loop of a bridge a previous release wrapped in a
+# tmux session (its shell quoted the handle, hence the optional quotes), and
+# the current loop itself — `bash -c ... sot-bridge <relay> NAME`, which
+# never contains "comm-relay.sh bridge --name" as one substring so it needs
+# its own alternative. Every non-alphanumeric character of NAME is escaped.
 _sot_bridge_pattern() {
     local escaped; escaped="$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/\\&/g')"
-    printf "comm-relay\\\\.sh'? bridge --name '?%s'?(;|\$)" "$escaped"
+    printf "(comm-relay\\\\.sh'? bridge --name '?%s'?(;|\$)|%s [^ ]+ %s\$)" \
+        "$escaped" "$BRIDGE_ARGV0" "$escaped"
 }
 
 # sot_bridge_pids_for NAME — pids (this uid only) of every bridge process
