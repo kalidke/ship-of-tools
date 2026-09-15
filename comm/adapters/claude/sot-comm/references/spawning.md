@@ -8,8 +8,7 @@
 `--tcp`/`--socket` daemon flags, or `sotd session-socket-path
 ${SOT_BACKEND_LABEL:-sot}`. Override with `--endpoint unix:/path/to/sot.sock`
 or `--endpoint tcp:HOST:PORT`. Tune boot wait with `SOT_COMM_SPAWN_WAIT`
-(default 6s). `--no-workspace` skips the daemon entirely and just makes a
-plain tmux session — headless, won't appear in the FE strip.
+(default 6s).
 
 ## A durable peer instead of a task agent
 
@@ -21,10 +20,10 @@ is spawning:
 - **You are a Claude session (or headless)**: still use `comm-spawn.sh` in
   workspace mode — the daemon + FE autostart give claude a clean env and a
   real attach.
-- **A human at a shell**: `tmux -S "$SOCK" new-session -s <name> -c <repo>
-  ~/.local/bin/ccb` (`ccbe` for a Ship of Tools backend) — no `-d`, create
-  and attach in one step. Never take a registry handle that already exists,
-  even one that looks stale.
+- **A human at a shell**: create the row from the FE Sessions mode (or run
+  `comm-spawn.sh`); the daemon starts `ccb` (`ccbe` for a Ship of Tools
+  backend) in the row's capsule. Never take a registry handle that already
+  exists, even one that looks stale.
 
 ## Git worktrees
 
@@ -38,14 +37,8 @@ session bound to it. Don't hand-roll `git worktree add` here; see
 
 A session is only addressable by `@name` once it has joined — that's the
 consent model. If another session has the skill installed but hasn't
-joined, find its tmux target and nudge it:
-
-```bash
-source ~/.sot-comm/bin/comm-lib.sh
-SOCK="$(sot_tmux_socket)" || { echo "cannot resolve the sot tmux socket" >&2; exit 1; }
-tmux -S "$SOCK" list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}  #{pane_id}'
-comm-bootstrap.sh sot-be-lab-guide:1.1 lab-guide
-```
+joined, ask its owner to run `/sot-session-start` in that session — there is
+no out-of-band nudge into a capsule row.
 
 `comm-bootstrap.sh` pastes a self-contained "run comm-join then reply to me"
 message into the target's prompt (via `comm-send.sh --force-target`, the

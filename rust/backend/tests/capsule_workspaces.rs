@@ -2784,18 +2784,7 @@ async fn capsule_backend_test_env_drop_cleans_up_legs_and_daemon() {
     }
 
     // Not vacuous: a real `sot-capsule supervise`/leg pair matching this
-    // env's own anchored pattern is alive right now. (The default row's
-    // own boot-time tmux-session-ensure ALSO ran against this env's own
-    // isolated socket — F3 — but whether it actually landed a session
-    // there is host-dependent: on a box already running the ADR 0038
-    // `sot-tmux.service` keeper for the developer's REAL socket, ADR
-    // 0038's own conflict-refusal correctly declines to also start an
-    // implicit server on a SECOND, isolated socket rather than risk
-    // racing the keeper — so it fails closed instead, logged and
-    // non-fatal, exactly its own documented "non-fatal" contract. Either
-    // way no session ever reaches the developer's real socket, which is
-    // F3's actual claim; this test's own proof stays on the leg, which
-    // is deterministic regardless of that host difference.)
+    // env's own anchored pattern is alive right now.
     let pattern = env.leg_pgrep_pattern();
     assert!(
         any_process_matches(&pattern),

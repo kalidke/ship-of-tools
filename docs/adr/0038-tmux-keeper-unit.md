@@ -1,6 +1,6 @@
 # ADR 0038: sot-tmux keeper — daemon restarts must stop killing sessions
 
-**Status:** Accepted (2026-08-23). This is the first, immediately-shipped piece of
+**Status:** Superseded — the tmux runtime was deleted in v0.6.0 (every session is a capsule row the daemon supervises; the keeper unit is uninstalled on upgrade, see ADR 0046). Originally accepted (2026-08-23). This is the first, immediately-shipped piece of
 ADR 0037 — pure systemd plus a small guard in the daemon; none of the new
 architecture is needed for it.
 **Date:** 2026-08-23

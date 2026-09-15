@@ -1,8 +1,8 @@
 # sot-comm protocol — v1
 
 Session-to-session messaging for Ship of Tools. A fork of the `agent-comm` user skill
-with the single-tmux-session jail removed and a durable inbox fallback added, so
-sessions can address each other across tmux sessions and across machines.
+with the single-session jail removed and a durable inbox fallback added, so
+sessions can address each other across capsule rows and across machines.
 
 This file is the **contract**. Every client — the Claude skill today, a Codex or
 Gemini adapter or the in-app Ship of Tools `Tool` plugin later — implements *this*, so
@@ -35,8 +35,8 @@ in v1 — the `.claude-bus` git loop can still cover separate filesystems.)
   "agents": {
     "<name>": {
       "host":       "myhost",                      // hostname -s; used for same-host delivery
-      "tmux":       "session:win.pane",           // local tmux target for live delivery ("" if none)
-      "pane_id":    "%3",                          // local tmux pane id, for liveness ("" if none)
+      "tmux":       "",                            // legacy field, always "" (v0.6.0)
+      "pane_id":    "",                            // legacy field, always "" (v0.6.0)
       "repo":       "Ship of Tools",
       "expertise":  ["files", "rust-backend"],
       "status":     "idle",                        // lifecycle: idle | spawning
@@ -85,9 +85,10 @@ which is why an unstamped `--broadcast` once woke the whole network at once.
 ## Delivery — two modes, chosen by reachability, always visible
 
 1. **Durable always:** every send appends the frame to `inbox/<target>.jsonl`.
-2. **Live when possible — directed sends only:** if the target is on *this*
-   host and its `pane_id` is a currently-live tmux pane, also deliver
-   immediately by `load-buffer -> paste-buffer -> Enter` into its tmux target.
+2. **Live wake — directed sends only:** the recipient's own inbox Monitor
+   (`comm-listen.sh` + `/sot-session-start`) polls `inbox/<name>.jsonl` and
+   wakes the session; a codex row is woken by `codex-watch.sh`, which injects
+   each directed frame through the daemon's `pty.input` for that capsule row.
    The message text is `[<from>:<repo>] <msg>`. **Broadcasts never paste** —
    a paste+Enter is a full interrupt (it submits into the recipient's claude,
    costing a model turn; into a dead pane it executes as shell input), so
@@ -120,7 +121,7 @@ task**. A task-named anything is unfindable next to its repo-named siblings
 | Spawned agent — git **worktree** | `<repo>-wt-<shortname>` (the `-wt-` infix is reserved for worktrees and groups them next to the parent; `<shortname>` names the WORKTREE, never the task). Created via the `/worktree` skill. | `MyAnalysis-wt-rotation` (worktree `rotation`) |
 | FE handle | `win-fe-<host>` (per-machine — a shared `win-fe` breaks echo-filters and targeting) | `win-fe-laptop` |
 | Workspace label | repo basename (comm-spawn default; task-named labels are **rejected**) | `MyPackage` |
-| Workspace tmux session | `sot-be-<slug>` derived from the label by the daemon | `sot-be-mypackage` |
+| Workspace session name (`tmux_session` wire field, the row's identity) | `sot-be-<slug>` derived from the label by the daemon | `sot-be-mypackage` |
 | Second workspace on one repo | `<Repo>-<suffix>` label, deliberately | `MyPackage-2` |
 
 A bare `<repo-lowercase>` handle is the default for a normal repo checkout. For a

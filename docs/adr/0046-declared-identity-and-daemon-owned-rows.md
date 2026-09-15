@@ -363,3 +363,16 @@ New vocabulary lands with the lane that first consumes it: B3a was reviewed down
 Order: A ∥ B1 ∥ B3a ∥ B3b1 ∥ D ∥ E → B2a → B2c; B3b1 → B3b2 → B3b3 →
 B3c. Each lane: brief, implementation, manager review, CI, a live proof
 on the backend host, merge; Codex on the design-bearing ones.
+
+## The tmux runtime is deleted (v0.6.0)
+
+Owner ruling at the close of the sprint: a session is a capsule row whose
+agent is claude, codex or bash; the daemon supervises it; comm lives in the
+leg. Everything tmux is deleted — not migrated, not kept behind a flag: the
+daemon's tmux runtime arm, the per-connection LLM-pane pty, the `tmux.*`
+ops, the live-occupant comm binding, the sot-capsule-capable marker, the
+sot-tmux keeper unit (ADR 0038, now superseded) and the comm scripts' tmux
+modes. `runtime` stays on the wire as an additive field whose only value is
+`"capsule"`; a `workspace.create` naming any other runtime is refused with
+`bad_runtime`. The `tmux_session` wire field keeps its name: it is the row's
+`sot-be-<slug>` identity, which every client and the state layout address by.

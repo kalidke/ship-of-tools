@@ -1,18 +1,18 @@
 ---
 name: sot-comm
-description: Session-to-session messaging for Ship of Tools (cross-tmux, cross-machine). Use for sending/broadcasting, joining/leaving, checking inbox, listing sessions, spawning/despawning agents, driving the frontend. Activates on receiving "[name:repo] ...".
+description: Session-to-session messaging for Ship of Tools (cross-session, cross-machine). Use for sending/broadcasting, joining/leaving, checking inbox, listing sessions, spawning/despawning agents, driving the frontend. Activates on receiving "[name:repo] ...".
 ---
 
 # sot-comm
 
 Send messages between Ship of Tools/Claude sessions. Discovery + durable
-inboxes live under `~/.sot-comm/`; live delivery uses tmux paste-buffer on
-the same host or the daemon relay across machines. Full contract:
+inboxes live under `~/.sot-comm/`; live wake is the recipient's inbox Monitor
+on the same host or the daemon relay across machines. Full contract:
 `comm/PROTOCOL.md`. **Receive setup (`comm-listen.sh` + a Monitor) belongs to
 `/sot-session-start`** — run that once per session; this skill assumes it's
 already done.
 
-**Scripts** (installed by `ShipTools.install_comm()`): `~/.sot-comm/bin/` — always use these, never hand-roll tmux/jq/registry logic.
+**Scripts** (installed by `ShipTools.install_comm()`): `~/.sot-comm/bin/` — always use these, never hand-roll jq/registry logic.
 
 ## Verbs
 
@@ -24,7 +24,6 @@ already done.
 | Broadcast | `comm-send.sh --broadcast "message"` |
 | Check inbox | `comm-poll.sh` |
 | Leave (removes the row and stops this handle's relay bridge) | `comm-leave.sh` |
-| Bootstrap an unjoined session | `comm-bootstrap.sh <tmux-target> [name]` (pastes a join+reply nudge) |
 | Spawn a new agent for a task | `comm-spawn.sh <name> <repo-path> --expertise "..." --task "..."` |
 | Tear down a spawned agent | `comm-despawn.sh <name\|slug>` |
 | Instant cross-machine message | `comm-relay.sh send @<name> "msg"` / `ask @<name> "msg" <timeout-s>` |
@@ -116,11 +115,10 @@ repo name, never the task (`comm-spawn.sh` rejects task-named labels).
 Refresh the FE's session list to see the new row; despawn with
 `comm-despawn.sh <name|slug>`.
 
-**Never hand-roll a tmux pane for a Claude session** (inherits your
-`CLAUDECODE` env; a claude TUI in a never-attached pane exits silently). A
-human starting a durable peer by hand: `tmux -S "$SOCK" new-session -s <name>
--c <repo> ~/.local/bin/ccb` — **no `-d`**, never a detached pane. Endpoint
-override, `--no-workspace`, worktree spawning: `references/spawning.md`.
+**Never hand-roll a Claude session outside a workspace row** (it inherits
+your `CLAUDECODE` env). A durable peer is a capsule row: `comm-spawn.sh`, or a
+`workspace.create` from the FE Sessions mode. Endpoint override and worktree
+spawning: `references/spawning.md`.
 
 ## Conventions
 
