@@ -2488,15 +2488,15 @@ mod tests {
 
         #[test]
         fn a_host_change_alone_changes_the_projection() {
-            let before = project_comm_registry(&registry("kitt"));
+            let before = project_comm_registry(&registry("hostA"));
             let after = project_comm_registry(&registry("descent"));
             assert_ne!(before, after);
         }
 
         #[test]
         fn an_unchanged_registry_projects_identically() {
-            let a = project_comm_registry(&registry("kitt"));
-            let b = project_comm_registry(&registry("kitt"));
+            let a = project_comm_registry(&registry("hostA"));
+            let b = project_comm_registry(&registry("hostA"));
             assert_eq!(a, b);
         }
     }
