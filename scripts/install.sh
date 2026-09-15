@@ -103,6 +103,86 @@ installer_running_daemon_decision() {  # <running-bin> <prefix> <force>
     printf 'refuse:the sotd.service running for this user runs %s; this install targets %s/bin/sotd' "$running" "$prefix"
 }
 
+# The owner prefix a sot-launch wrapper's content embeds, or empty when it
+# matches none of the three known shapes — fail-closed: an unrecognized
+# wrapper's owner is never assumed to be THIS install. Shapes: today's
+# all-in-one wrapper (PENDING="<prefix>/updates/pending-..."), today's
+# remote-backend wrapper (SOT_FRONTEND_BIN="<prefix>/bin/sot"), and the
+# legacy one-liner (exec "<prefix>/bin/sot" ...). Pure (stdin -> stdout).
+installer_wrapper_owner_prefix() {
+    sed -n -E \
+        -e 's#^PENDING="(.+)/updates/pending-.*"$#\1#p' \
+        -e 's#^export SOT_FRONTEND_BIN="(.+)/bin/sot"$#\1#p' \
+        -e 's#^exec "(.+)/bin/sot".*#\1#p' \
+        | head -1
+}
+
+# The exec target of a desktop entry's `Exec=` line or an app bundle's
+# `exec "..."` shim — the shape both the Linux .desktop file and the macOS
+# app's Contents/MacOS/sot-launch use to launch the real sot-launch wrapper.
+# Pure (stdin -> stdout).
+installer_integration_exec_target() {
+    sed -n -E -e 's/^Exec=(.*)$/\1/p' -e 's/^exec "(.*)"$/\1/p' | head -1
+}
+
+# "allow" | "refuse:<why>" | "unresolvable:<why>" for one on-disk
+# integration file whose content-derived owner prefix is <owner> (empty
+# when it could not be identified — installer_wrapper_owner_prefix found no
+# known shape, or a desktop/app launcher's exec target isn't this install's
+# wrapper path). Mirrors installer_running_daemon_decision's allow/refuse
+# shape; "unresolvable" is a third outcome --force-role-change must not
+# waive — this isn't a DIFFERENT owner to consent past, it's no identifiable
+# owner at all, so overwriting it could be corrupting THIS install's own file
+# just as easily as taking over someone else's.
+installer_integration_decision() {  # <file> <owner-or-empty> <prefix> <force>
+    local file="$1" owner="$2" prefix="$3" force="$4"
+    [ -z "$owner" ] && { printf 'unresolvable:%s exists but its owner could not be determined — move it aside and re-run' "$file"; return; }
+    [ "$owner" = "$prefix" ] && { printf 'allow'; return; }
+    [ "$force" = 1 ] && { printf 'allow'; return; }
+    printf 'refuse:%s belongs to the install at %s; this install targets %s' "$file" "$owner" "$prefix"
+}
+
+# "allow" | "refuse:<why>" | "unresolvable:<why>" — the whole ownership gate
+# as one decision, so it runs (and is tested) in one place instead of a
+# refusal path per file. <running-bin> is installer_running_daemon_bin's
+# output (a parameter, not a call, so this stays callable with no live
+# systemd session — tests pass a synthetic value). The service is checked
+# unconditionally: the disable step in "6. config" and the enable step in
+# "7. backend service" can each touch a unit this run doesn't otherwise own,
+# regardless of <want-frontend>. The wrapper/desktop/app files are checked
+# only when <want-frontend> is 1 and only for their own <os> — exactly the
+# files "8. FE launcher" would otherwise write. Read-only: it opens files to
+# read them and nothing else, which is what makes "a refused install changes
+# nothing under $HOME" true by construction rather than by care taken at
+# each call site.
+installer_ownership_gate() {  # <running-bin> <home> <prefix> <os> <want-frontend> <force>
+    local running="$1" home="$2" prefix="$3" os="$4" want_frontend="$5" force="$6"
+    local decision wrapper file
+    decision="$(installer_running_daemon_decision "$running" "$prefix" "$force")"
+    [ "$decision" = allow ] || { printf '%s' "$decision"; return; }
+    [ "$want_frontend" = 1 ] || { printf 'allow'; return; }
+    wrapper="$home/.local/bin/sot-launch"
+    if [ -f "$wrapper" ]; then
+        decision="$(installer_integration_decision "$wrapper" "$(installer_wrapper_owner_prefix < "$wrapper")" "$prefix" "$force")"
+        [ "$decision" = allow ] || { printf '%s' "$decision"; return; }
+    fi
+    if [ "$os" = Linux ]; then
+        file="$home/.local/share/applications/ship-of-tools.desktop"
+        if [ -f "$file" ] && [ "$(installer_integration_exec_target < "$file")" != "$wrapper" ]; then
+            printf 'unresolvable:%s exists but does not launch this install'"'"'s wrapper — move it aside and re-run' "$file"
+            return
+        fi
+    fi
+    if [ "$os" = Darwin ]; then
+        file="$home/Applications/Ship of Tools.app/Contents/MacOS/sot-launch"
+        if [ -f "$file" ] && [ "$(installer_integration_exec_target < "$file")" != "$wrapper" ]; then
+            printf 'unresolvable:%s exists but does not launch this install'"'"'s wrapper — move it aside and re-run' "$file"
+            return
+        fi
+    fi
+    printf 'allow'
+}
+
 # Mirrors sot_log::state_dir::host_name() (rust/log/src/state_dir.rs): this
 # box's own name, needed to look itself up in the declared topology one step
 # before any staged sotd has run to say it out loud. Not a second parser —
@@ -252,19 +332,6 @@ esac
 reject_unsafe_path_chars "prefix" "$PREFIX"
 reject_unsafe_path_chars 'project root ($HOME)' "$HOME"
 
-# ---- the running-daemon guard ---------------------------------------------------
-# Runs before download: fail fast rather than pull 100+MB to discover this.
-# See installer_running_daemon_bin above for why this checks is-active, not
-# merely a unit FILE's presence.
-RUNNING_BIN="$(installer_running_daemon_bin)"
-DECISION="$(installer_running_daemon_decision "$RUNNING_BIN" "$PREFIX" "$FORCE_ROLE_CHANGE")"
-case "$DECISION" in
-    refuse:*)
-        printf '\033[1;31mERROR:\033[0m %s\n' "${DECISION#refuse:}" >&2
-        printf '       Installing here would replace or disable a live daemon this install does not own. Re-run with --force-role-change if that is what you want.\n' >&2
-        exit 2 ;;
-esac
-
 # ---- 1. preflight ------------------------------------------------------------
 OS="$(uname -s)"
 case "$OS" in
@@ -335,7 +402,7 @@ else
 fi
 
 # ---- 3. layout ---------------------------------------------------------------
-mkdir -p "$PREFIX/bin" "$PREFIX/updates" "$PREFIX/repo" "$CONFIG" "$HOME/.local/bin"
+mkdir -p "$PREFIX/bin" "$PREFIX/updates" "$PREFIX/repo" "$CONFIG"
 tar -xzf "$WORK/sot-$VER-$TARGET.tar.gz" -C "$WORK"
 BINDIR="$WORK/sot-$VER-$TARGET"
 # sot-capsule is sotd's capsule-runtime pair (ADR 0042 L1a): sotd resolves it
@@ -438,6 +505,23 @@ if [ "$OS" = Linux ] && [ "$WANT_FRONTEND" = 1 ]; then
     [ "$lowest" = "$GLIBC_FLOOR_FE" ] \
         || die "the frontend binary needs glibc >= $GLIBC_FLOOR_FE (this box: $glibc). The backend (musl, --be-only) runs anywhere."
 fi
+
+# ---- ownership gate ------------------------------------------------------------
+# Run now that the role is known and before the first write under $HOME (the
+# mkdir of ~/.local/bin included) — a refused install changes nothing there.
+# installer_ownership_gate is read-only, so this cannot be the source of a
+# stray write; see it above for what --force-role-change does and does not
+# waive.
+GATE_DECISION="$(installer_ownership_gate "$(installer_running_daemon_bin)" "$HOME" "$PREFIX" "$OS" "$WANT_FRONTEND" "$FORCE_ROLE_CHANGE")"
+case "$GATE_DECISION" in
+    refuse:*)
+        printf '\033[1;31mERROR:\033[0m %s\n' "${GATE_DECISION#refuse:}" >&2
+        printf '       Installing here would replace or disable another install'"'"'s files. Re-run with --force-role-change if that is what you want.\n' >&2
+        exit 2 ;;
+    unresolvable:*)
+        printf '\033[1;31mERROR:\033[0m %s\n' "${GATE_DECISION#unresolvable:}" >&2
+        exit 2 ;;
+esac
 
 # ---- 4. the repo checkout — manual, resources, julia code (ADR 0030 add.) -----
 # The checkout IS the product's resource tree and its help system:
@@ -640,6 +724,7 @@ fi
 
 # ---- 8. FE launcher -------------------------------------------------------------
 if [ "$WANT_FRONTEND" = 1 ]; then
+    mkdir -p "$HOME/.local/bin"
     # The all-in-one launcher (own daemon on demand) unless this install
     # names an explicit remote backend to dial over SSH (--backend <alias>,
     # or its interactive equivalent) — that shape has no topology-derived

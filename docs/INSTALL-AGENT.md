@@ -84,6 +84,7 @@ pane quietly showing one host.
 cat ~/.local/share/sot/install.json 2>/dev/null        # prior install here (no role: derived fresh, below)
 sotd topology status 2>/dev/null                        # does the declared list already name this box?
 systemctl --user is-active --quiet sotd.service && systemctl --user cat sotd.service 2>/dev/null | grep ExecStart
+cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launcher belong to another prefix?
 ```
 
 - **A schema-1 manifest** → this is an UPGRADE. Same command (bump `--version`
@@ -91,18 +92,26 @@ systemctl --user is-active --quiet sotd.service && systemctl --user cat sotd.ser
   else the role flag/interactive answer) — the manifest's own `daemon`/
   `frontend` bits just record what got installed, for a listless box's own
   self-update check to fall back on, same list-first order.
-- **An ACTIVE unit whose `ExecStart` is outside `~/.local/share/sot/`** →
-  something else owns the backend here (a source checkout, or another
-  `--prefix`) — installing would replace or disable it. Stop and tell the
-  human. A unit file alone (e.g. seen over a shared home, not active here) is
-  not this case.
+- **The backend service or any FE integration file belongs to a different
+  prefix** → one ownership rule covers all of them: an ACTIVE `sotd.service`
+  whose `ExecStart` is outside this prefix, the `~/.local/bin/sot-launch`
+  wrapper, the desktop entry, and the macOS app — any one of these already
+  pointing at a source checkout or another `--prefix` means installing here
+  would replace or disable it. Stop and tell the human. A unit file alone
+  (e.g. seen over a shared home, not active here) is not this case, and
+  neither is a wrapper/desktop entry/app that already points at THIS prefix
+  (that's an upgrade). A `sot-launch` wrapper whose shape the installer
+  doesn't recognize is refused the same way, but **not** overridable with
+  `--force-role-change` — its owner can't be identified at all, so tell the
+  human to move it aside instead.
 - **A manifest you cannot read** — truncated, unknown schema, recording a
   different prefix — is NOT the same as no install. Treat it as unknown state
   and stop; the installer does the same.
 - **Neither** → a fresh install; carry on below.
 
-Only when a live daemon from a different prefix is blocking you, and the
-human has explicitly authorized stepping on it, add `--force-role-change` to
+Only when a live daemon or integration file from a different prefix is
+blocking you, and the human has explicitly authorized stepping on it, add
+`--force-role-change` to
 the install command. Never add it to get past an error you did not understand.
 
 ### 2.1 Ask the human (one question, fresh installs)

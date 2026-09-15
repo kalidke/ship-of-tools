@@ -114,14 +114,21 @@ non-TTY install and every manual update, so a copied one-liner is exactly how a
 working machine gets reconfigured by accident. A role flag asks for a role; it
 is not consent to *change* one. `--force-role-change` is that consent.
 
-Two related refusals, both fail-closed:
+One ownership rule, fail-closed, covers the backend service and every
+integration file `--prefix` can relocate: the `sotd.service` unit, the
+`sot-launch` wrapper, the desktop entry, and the macOS app. If any of these
+already exists and belongs to a *different* prefix — a source checkout,
+another user's `--prefix`, an earlier trial install — installing here would
+replace or disable it, so the installer stops before writing anything and
+names the file and the prefix it belongs to. `--force-role-change` is the
+consent to take it over anyway. A file whose owner cannot be determined at
+all (an unrecognized `sot-launch` shape) is refused too, with no
+`--force-role-change` override — move it aside and re-run.
 
-- An existing `sotd.service` whose `ExecStart` is outside this prefix belongs
-  to another install — a source checkout, or a second `--prefix`. Installing
-  would replace or disable it, so it stops.
-- A manifest that is present but unreadable — truncated, an unknown schema, or
-  recording a different prefix — is treated as *unknown state*, never as "no
-  install here". Uncertainty is not permission to reconfigure.
+A related refusal: a manifest that is present but unreadable — truncated, an
+unknown schema, or recording a different prefix — is treated as *unknown
+state*, never as "no install here". Uncertainty is not permission to
+reconfigure.
 
 Note the installer never reuses a recorded role automatically. Schema 1 stores
 no ssh alias or port, so a recorded `--backend` install cannot be reconstructed

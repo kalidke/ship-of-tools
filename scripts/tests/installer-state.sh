@@ -199,6 +199,97 @@ installer_retire_tmux_unit "$WORK/no-such-dir"
 check "a missing unit is a no-op" "" "$(cat "$systemctl_log")"
 
 # ---------------------------------------------------------------------------
+case_start "wrapper owner extraction (installer_wrapper_owner_prefix)"
+check "today's all-in-one wrapper" \
+    "/opt/sot-a" "$(printf 'PENDING="/opt/sot-a/updates/pending-linux-x86_64.json"\n' | installer_wrapper_owner_prefix)"
+check "today's remote-backend wrapper" \
+    "/opt/sot-b" "$(printf 'export SOT_FRONTEND_BIN="/opt/sot-b/bin/sot"\n' | installer_wrapper_owner_prefix)"
+check "the legacy one-liner" \
+    "/opt/sot-c" "$(printf 'exec "/opt/sot-c/bin/sot" "\$@"\n' | installer_wrapper_owner_prefix)"
+check "unrecognized content yields no owner" \
+    "" "$(printf '#!/usr/bin/env bash\necho hi\n' | installer_wrapper_owner_prefix)"
+
+case_start "desktop/app exec target extraction (installer_integration_exec_target)"
+check "a .desktop Exec= line" \
+    "/home/user/.local/bin/sot-launch" "$(printf '[Desktop Entry]\nExec=/home/user/.local/bin/sot-launch\n' | installer_integration_exec_target)"
+check "a macOS app's exec shim" \
+    "/home/user/.local/bin/sot-launch" "$(printf '#!/usr/bin/env bash\nexec "/home/user/.local/bin/sot-launch"\n' | installer_integration_exec_target)"
+
+case_start "one integration file's decision (installer_integration_decision)"
+check "same owner as this prefix is an upgrade" \
+    "allow" "$(installer_integration_decision /f/sot-launch /opt/sot-a /opt/sot-a 0)"
+check "a different owner refuses" \
+    "refuse:/f/sot-launch belongs to the install at /opt/sot-a; this install targets /opt/sot-b" \
+    "$(installer_integration_decision /f/sot-launch /opt/sot-a /opt/sot-b 0)"
+check "--force-role-change overrides a different owner" \
+    "allow" "$(installer_integration_decision /f/sot-launch /opt/sot-a /opt/sot-b 1)"
+check "no identifiable owner is unresolvable, force or not" \
+    "unresolvable:/f/sot-launch exists but its owner could not be determined — move it aside and re-run" \
+    "$(installer_integration_decision /f/sot-launch "" /opt/sot-b 1)"
+
+case_start "the whole gate (installer_ownership_gate) — scratch HOME + prefix, no real systemctl"
+GHOME="$WORK/gate-home"; GPREFIX="$WORK/gate-prefix-a"; OTHER_PREFIX="$WORK/gate-prefix-b"
+snapshot() { find "$1" -printf '%y %p\n' 2>/dev/null | sort; find "$1" -type f -exec sha256sum {} + 2>/dev/null | sort; }
+
+rm -rf "$GHOME"; mkdir -p "$GHOME"
+check "empty sentinel HOME + no running daemon integrates" \
+    "allow" "$(installer_ownership_gate "" "$GHOME" "$GPREFIX" Linux 1 0)"
+check "be-only (want_frontend=0) never looks at FE files" \
+    "allow" "$(installer_ownership_gate "" "$GHOME" "$GPREFIX" Linux 0 0)"
+
+rm -rf "$GHOME"; mkdir -p "$GHOME/.local/bin"
+printf 'PENDING="%s/updates/pending-linux-x86_64.json"\n' "$OTHER_PREFIX" > "$GHOME/.local/bin/sot-launch"
+before="$(snapshot "$GHOME")"
+check "a wrapper owned by another prefix stops the install" \
+    "refuse:$GHOME/.local/bin/sot-launch belongs to the install at $OTHER_PREFIX; this install targets $GPREFIX" \
+    "$(installer_ownership_gate "" "$GHOME" "$GPREFIX" Linux 1 0)"
+after="$(snapshot "$GHOME")"
+check "nothing under HOME changed while refusing" "$before" "$after"
+check "--force-role-change overrides the same wrapper conflict" \
+    "allow" "$(installer_ownership_gate "" "$GHOME" "$GPREFIX" Linux 1 1)"
+
+rm -rf "$GHOME"; mkdir -p "$GHOME/.local/bin"
+printf 'export SOT_FRONTEND_BIN="%s/bin/sot"\n' "$GPREFIX" > "$GHOME/.local/bin/sot-launch"
+check "a wrapper already owned by this prefix is an upgrade" \
+    "allow" "$(installer_ownership_gate "" "$GHOME" "$GPREFIX" Linux 1 0)"
+
+rm -rf "$GHOME"; mkdir -p "$GHOME/.local/bin"
+printf 'exec "%s/bin/sot" "\$@"\n' "$OTHER_PREFIX" > "$GHOME/.local/bin/sot-launch"
+check "the legacy one-liner wrapper is recognized and refuses when foreign" \
+    "refuse:$GHOME/.local/bin/sot-launch belongs to the install at $OTHER_PREFIX; this install targets $GPREFIX" \
+    "$(installer_ownership_gate "" "$GHOME" "$GPREFIX" Linux 1 0)"
+
+rm -rf "$GHOME"; mkdir -p "$GHOME/.local/bin"
+printf '#!/usr/bin/env bash\necho not a known wrapper shape\n' > "$GHOME/.local/bin/sot-launch"
+check "an unrecognized wrapper refuses even with --force-role-change" \
+    "unresolvable:$GHOME/.local/bin/sot-launch exists but its owner could not be determined — move it aside and re-run" \
+    "$(installer_ownership_gate "" "$GHOME" "$GPREFIX" Linux 1 1)"
+
+rm -rf "$GHOME"; mkdir -p "$GHOME/.local/share/applications"
+printf '[Desktop Entry]\nExec=%s/bin/sot\n' "$OTHER_PREFIX" > "$GHOME/.local/share/applications/ship-of-tools.desktop"
+check "a desktop entry not launching this install's wrapper is unresolvable" \
+    "unresolvable:$GHOME/.local/share/applications/ship-of-tools.desktop exists but does not launch this install's wrapper — move it aside and re-run" \
+    "$(installer_ownership_gate "" "$GHOME" "$GPREFIX" Linux 1 0)"
+
+rm -rf "$GHOME"; mkdir -p "$GHOME/.local/share/applications"
+printf '[Desktop Entry]\nExec=%s/.local/bin/sot-launch\n' "$GHOME" > "$GHOME/.local/share/applications/ship-of-tools.desktop"
+check "a desktop entry launching the (absent) wrapper defers to it and allows" \
+    "allow" "$(installer_ownership_gate "" "$GHOME" "$GPREFIX" Linux 1 0)"
+
+rm -rf "$GHOME"; mkdir -p "$GHOME/Applications/Ship of Tools.app/Contents/MacOS"
+printf '#!/usr/bin/env bash\nexec "%s/bin/sot"\n' "$OTHER_PREFIX" > "$GHOME/Applications/Ship of Tools.app/Contents/MacOS/sot-launch"
+check "a macOS app not launching this install's wrapper is unresolvable" \
+    "unresolvable:$GHOME/Applications/Ship of Tools.app/Contents/MacOS/sot-launch exists but does not launch this install's wrapper — move it aside and re-run" \
+    "$(installer_ownership_gate "" "$GHOME" "$GPREFIX" Darwin 1 0)"
+check "the same app is ignored entirely on Linux" \
+    "allow" "$(installer_ownership_gate "" "$GHOME" "$GPREFIX" Linux 1 0)"
+
+rm -rf "$GHOME"; mkdir -p "$GHOME"
+check "a live daemon from another prefix refuses before any FE file is even looked at" \
+    "refuse:the sotd.service running for this user runs $OTHER_PREFIX/bin/sotd; this install targets $GPREFIX/bin/sotd" \
+    "$(installer_ownership_gate "$OTHER_PREFIX/bin/sotd" "$GHOME" "$GPREFIX" Linux 1 0)"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'
