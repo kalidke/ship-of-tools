@@ -834,6 +834,18 @@ rule D's claim and the contention re-probe; decision 34 is superseded into ADR
     acts on the row). **L1a is PR #231**; **L1c** (the destroy proof, same
     decision) follows it.
 
+    **Refinement** (2026-09-15, a field defect: a leaked scratch-daemon
+    registry row left un-removable forever): supervisor.lock and every
+    writer.lock live under state_dir, so a directory that does not exist
+    (ENOENT only) holds neither; the only remaining liveness is a
+    supervisor on the row's lane, addressed by the hash of the canonical
+    path. Destroy removes such a row only when the connect returns
+    decision 27's absent shape (ENOENT or ECONNREFUSED on the first
+    attempt; on Windows ERROR_FILE_NOT_FOUND), reported as
+    orphan_removed; any answer, timeout, or non-ENOENT stat error keeps
+    the refusal. Scoped to this daemon's state root; a foreign daemon's
+    state dir is never consulted or touched. Never recreated.
+
 34. **The gate half is superseded into ADR 0045 decisions 6–8; the
     retirement half is decision 36.** The protocol-versioned gate and the
     deleted pre-spawn pair probe this decision specified now live in ADR

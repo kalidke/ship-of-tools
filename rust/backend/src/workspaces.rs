@@ -202,21 +202,6 @@ pub struct Workspace {
     /// The most recent FAILED start-on-attach activation's detail, kept
     /// until the next attempt — never implies `phase == Terminal`.
     activation_error: Mutex<Option<String>>,
-    /// Set once, at boot, by the resume-scan's own orphan sweep
-    /// (`capsule_workspace::runtime::log_orphaned_state_dirs`) for a
-    /// capsule row whose `state_dir` does not exist under THIS daemon's
-    /// state root — never cleared, never set anywhere else (a row like
-    /// that has no durable record to recover; only `workspace.destroy`
-    /// removing it, or a fresh daemon restart re-scanning, changes this
-    /// again). Deliberately NOT a `Phase` variant: the phase cell's
-    /// latching rules (Terminal/EndedNoRespawn precedence,
-    /// `apply_phase_observation`) exist to arbitrate a lane that is
-    /// really answering something; this row's lane can never answer
-    /// (nothing durable remains to run), so folding it in there would
-    /// buy nothing but a wider blast radius. `workspace.list` reads this
-    /// to override the wire phase string it reports — see
-    /// `handle_workspace_list`.
-    orphaned: std::sync::atomic::AtomicBool,
     files_mode: OnceLock<Arc<FilesMode>>,
     concept: OnceLock<Arc<ConceptStore>>,
     kernel: OnceLock<Kernel>,
@@ -253,7 +238,6 @@ impl std::fmt::Debug for Workspace {
             .field("phase", &self.phase())
             .field("watchdog_identity", &self.watchdog_identity())
             .field("activation_error", &self.activation_error())
-            .field("orphaned", &self.orphaned())
             .field("files_mode_built", &self.files_mode.get().is_some())
             .field("concept_built", &self.concept.get().is_some())
             .field("kernel_built", &self.kernel.get().is_some())
@@ -299,7 +283,6 @@ impl Workspace {
             phase_cell: Mutex::new(PhaseCell::default()),
             watchdog_identity: Mutex::new(None),
             activation_error: Mutex::new(None),
-            orphaned: std::sync::atomic::AtomicBool::new(false),
             files_mode: OnceLock::new(),
             concept: OnceLock::new(),
             kernel: OnceLock::new(),
@@ -439,17 +422,6 @@ impl Workspace {
         *self.activation_error.lock().unwrap_or_else(|e| e.into_inner()) = detail;
     }
 
-    /// See the `orphaned` field's own doc.
-    pub fn orphaned(&self) -> bool {
-        self.orphaned.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Set once by the boot-time orphan sweep; never cleared by this
-    /// call (there is no path back from "no state dir at all" short of
-    /// destroying the row or a fresh daemon restart finding it fixed).
-    pub fn set_orphaned(&self) {
-        self.orphaned.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
 
     /// Lazily get this workspace's `FilesMode`, constructing it (and
     /// stating the project root) on first access. Subsequent calls

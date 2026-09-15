@@ -4777,6 +4777,33 @@ async fn destroy_capsule_workspace(
                 None,
             );
         };
+        // SAFETY (Fable review): `sot_log::state_dir::state_dir_hash`
+        // canonicalizes `state_dir` itself, falling back to the RAW path
+        // only when that fails -- which is exactly the missing-directory
+        // case the orphan proof exists for. If `state_root` is reached
+        // through a symlink, a live supervisor (spawned while its own
+        // `state_dir` existed) canonicalized the FULL real path and
+        // bound its lane there; dialing the raw, non-canonical path
+        // here would miss it -- ENOENT for the wrong reason, not because
+        // nothing is running. Canonicalizing the ROOT (which, unlike the
+        // row's own `state_dir`, is expected to exist) before joining
+        // the workspace id closes this: the joined path then matches
+        // what a live supervisor's own canonicalize would have produced,
+        // whether or not this row's own `state_dir` still exists. When
+        // the root itself cannot be canonicalized, `root_canonicalized`
+        // is `false` and `end_run` must never attempt the orphan proof
+        // on this call -- it keeps today's unconditional refusal instead
+        // of trusting a hash built from an unresolved path.
+        let (state_root, root_canonicalized) = match state_root.canonicalize() {
+            Ok(canonical) => (canonical, true),
+            Err(e) => {
+                tracing::debug!(
+                    state_root = ?state_root, error = %e,
+                    "workspace.destroy: state root did not canonicalize; the orphan proof is refused this call"
+                );
+                (state_root, false)
+            }
+        };
         let state_dir = crate::capsule_workspace::state_dir_for(&state_root, workspace_id);
         let reason = reason.to_string();
         let workspace_id = workspace_id.to_string();
@@ -4856,7 +4883,7 @@ async fn destroy_capsule_workspace(
                     );
                 }
             }
-            let result = crate::capsule_workspace::end_run(&state_dir, &reason);
+            let result = crate::capsule_workspace::end_run(&state_dir, &reason, root_canonicalized);
             (result, Some(held))
         })
         .await;
@@ -6525,22 +6552,24 @@ pub async fn handle_workspace_list(
             // `phase` is read straight off the row's own cell — every row
             // is a capsule on this build (`ws.runtime` is always
             // `"capsule"`), so there is no other case left to branch on.
+            // A row with no state dir at all reads NEVER_STARTED_PHASE
+            // ("stopped") exactly like a row that simply hasn't been
+            // attached yet — deliberately NOT distinguished here (Fable
+            // review, capsule_workspaces.rs's own "Rule H": a pre-seeded,
+            // never-`workspace.create`d row is indistinguishable from a
+            // truly orphaned one by any fact this list can cheaply check,
+            // and a wire-visible claim otherwise would be dishonest for
+            // exactly that row shape). `capsule_workspace::runtime::
+            // log_orphaned_state_dirs` still names such rows once at
+            // boot, as an operator diagnostic only; `workspace.destroy`'s
+            // own real proof (a live lane connect) is what actually
+            // decides whether one is removable.
             let state_dir = sot_log::state_dir::sot_state_dir().map(|root| {
                 crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id)
                     .to_string_lossy()
                     .into_owned()
             });
-            // A boot-time orphan (`Workspace::orphaned`, set only by the
-            // resume-scan's `log_and_flag_orphaned_state_dirs`) overrides
-            // the wire phase string here, never the phase cell itself —
-            // an ordinary `NEVER_STARTED_PHASE` ("stopped") row must
-            // never be mistaken for a row the daemon knows has no state
-            // directory at all (see `ORPHAN_PHASE`'s own doc).
-            let phase = Some(if ws.orphaned() {
-                crate::capsule_workspace::ORPHAN_PHASE.to_string()
-            } else {
-                ws.phase().as_wire_str().to_string()
-            });
+            let phase = Some(ws.phase().as_wire_str().to_string());
             WorkspaceListEntry {
                 workspace_id: ws.workspace_id.clone(),
                 slug: ws.slug.clone(),
@@ -8390,6 +8419,11 @@ mod workspace_destroy_default_row_tests {
         localappdata: Option<std::ffi::OsString>,
         sot_self_host: Option<std::ffi::OsString>,
         sot_comm_home: Option<std::ffi::OsString>,
+        // Added for the real-listener refusal proof below (`sot_log::
+        // state_dir::runtime_dir` trusts this once it is absolute and
+        // private) -- captured/restored exactly like the other five so a
+        // test that pins it never leaks the override past its own scope.
+        sot_runtime_dir: Option<std::ffi::OsString>,
     }
 
     impl Drop for EnvGuard {
@@ -8400,6 +8434,7 @@ mod workspace_destroy_default_row_tests {
                 ("LOCALAPPDATA", &self.localappdata),
                 ("SOT_SELF_HOST", &self.sot_self_host),
                 ("SOT_COMM_HOME", &self.sot_comm_home),
+                ("SOT_RUNTIME_DIR", &self.sot_runtime_dir),
             ] {
                 match val {
                     Some(v) => std::env::set_var(key, v),
@@ -8420,6 +8455,7 @@ mod workspace_destroy_default_row_tests {
             localappdata: std::env::var_os("LOCALAPPDATA"),
             sot_self_host: std::env::var_os("SOT_SELF_HOST"),
             sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
+            sot_runtime_dir: std::env::var_os("SOT_RUNTIME_DIR"),
             _serial: serial,
         }
     }
@@ -8429,10 +8465,19 @@ mod workspace_destroy_default_row_tests {
     /// elsewhere — that function's own doc has the precedence) at `dir`,
     /// then returns the root by calling that SAME resolver rather than
     /// hand-building `dir.join("sot")` here — the one seam every fixture
-    /// below must agree with `destroy_capsule_workspace` about. Caller
-    /// holds an `EnvGuard` (`env_guarded()`) first so every var this may
-    /// touch is restored on drop, and `dir` need not exist yet — nothing
-    /// here creates it; `state_dir_missing` fixtures rely on exactly that.
+    /// below must agree with `destroy_capsule_workspace` about. `dir`
+    /// need not exist yet — nothing here creates it; `state_dir_missing`
+    /// fixtures rely on exactly that. The caller must hold an `EnvGuard`
+    /// (`env_guarded()`) FIRST, captured before this call touches
+    /// anything — its `Drop` puts `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
+    /// `LOCALAPPDATA`, `SOT_SELF_HOST` and `SOT_COMM_HOME` back to
+    /// whatever `env_guarded()` observed at that moment, which is every
+    /// var this function or any of its callers may set — but that
+    /// restore is only as good as the crate-wide serialization every one
+    /// of these fixtures shares (`paths::ENV_TEST_LOCK`): it is NOT a
+    /// claim that `XDG_STATE_HOME` (or any of the five) is protected
+    /// from a test elsewhere in this binary that mutates it without
+    /// taking the same lock.
     ///
     /// Also isolates `XDG_CONFIG_HOME` on every non-Windows platform (the
     /// field defect this closes): `sot_config_dir()` reads a SEPARATE var
@@ -8445,12 +8490,12 @@ mod workspace_destroy_default_row_tests {
     /// exists to close: a scratch daemon whose state root was isolated
     /// but whose config directory was not, writing (and then, once a row
     /// with no state dir can be proven `Orphaned`, DELETING) a real
-    /// per-host workspace registry entry. A SIBLING of `dir`, never a
-    /// subdirectory of it, so "nothing exists under `dir`" fixtures stay
-    /// literally true; harmless even for a caller that already pinned
-    /// `XDG_CONFIG_HOME` itself first (this only narrows where it points,
-    /// never widens it, and every path below is re-resolved live through
-    /// the same env var at assertion time, never cached).
+    /// per-host workspace registry entry. Pinned to the SAME `dir` as
+    /// state (Fable review: no separate sibling path to invent or keep
+    /// in sync) — `sot_state_dir()` and `sot_config_dir()` both append
+    /// their own distinct subtree name under it (`state_dir.rs`'s own
+    /// doc), so the two never collide even sharing one root; "nothing
+    /// exists under `dir`" fixtures stay literally true either way.
     #[cfg(any(windows, target_os = "linux"))]
     fn pin_local_state_root(dir: &std::path::Path) -> std::path::PathBuf {
         #[cfg(windows)]
@@ -8458,13 +8503,7 @@ mod workspace_destroy_default_row_tests {
         #[cfg(not(windows))]
         {
             std::env::set_var("XDG_STATE_HOME", dir);
-            std::env::set_var(
-                "XDG_CONFIG_HOME",
-                dir.with_file_name(format!(
-                    "{}-xdg-config",
-                    dir.file_name().and_then(|n| n.to_str()).unwrap_or("sot-test-scratch")
-                )),
-            );
+            std::env::set_var("XDG_CONFIG_HOME", dir);
         }
         sot_log::state_dir::sot_state_dir()
             .expect("state root must resolve once pinned to a scratch dir")
@@ -8599,11 +8638,17 @@ mod workspace_destroy_default_row_tests {
                 .unwrap()
                 .as_nanos()
         ));
-        // Nothing is created under `scratch` — the point of this test is
-        // that the resolved state dir does not exist on disk at all, and
-        // nothing was ever bound at this row's lane address either.
+        // The resolved STATE ROOT is created (Fable review, safety: the
+        // orphan proof now refuses outright unless the root itself
+        // canonicalizes -- `destroy_capsule_workspace`'s own doc) but
+        // nothing under it is: the point of this test is that THIS ROW's
+        // own state dir does not exist on disk at all, and nothing was
+        // ever bound at its lane address either.
         #[cfg(any(windows, target_os = "linux"))]
-        pin_local_state_root(&scratch);
+        {
+            let root = pin_local_state_root(&scratch);
+            std::fs::create_dir_all(&root).unwrap();
+        }
 
         let (reg, id) = seed_default("capsule");
         let payload = destroy(&reg, &id).await;
@@ -8635,6 +8680,67 @@ mod workspace_destroy_default_row_tests {
 
         #[cfg(any(windows, target_os = "linux"))]
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// The refusing half of the same proof, for real (Fable review, item
+    /// 6): a row with no state dir whose lane IS actually answered by
+    /// something — a bare listener, bound at exactly this row's own
+    /// `supervisor-<h>.sock`, that never speaks the protocol back — must
+    /// never be classified `is_definitely_orphaned`. `connect(2)` itself
+    /// succeeds against a bound-and-listening socket even with nothing
+    /// ever `accept`ing it, so `query_status`'s connect step does NOT
+    /// return decision 27's absent shape (`ENOENT`/`ECONNREFUSED`); it
+    /// times out instead, waiting on a hello nobody answers — exactly the
+    /// "something is there, but unresponsive" case that must keep
+    /// refusing. `SOT_RUNTIME_DIR` is pinned to a fresh, private (owner-
+    /// only) scratch dir so the real socket path (`sot_log::socket_unix::
+    /// supervisor_socket_path`) never collides with a real session.
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn a_reachable_listener_with_no_state_dir_still_refuses() {
+        let _guard = env_guarded();
+        let stamp = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        );
+        let scratch = std::env::temp_dir().join(format!("sot-ws-destroy-listener-test-state-{stamp}"));
+        let root = pin_local_state_root(&scratch);
+        std::fs::create_dir_all(&root).unwrap();
+        let canonical_root = root.canonicalize().expect("the scratch root was just created");
+
+        let runtime_dir = std::env::temp_dir().join(format!("sot-ws-destroy-listener-test-runtime-{stamp}"));
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        std::env::set_var("SOT_RUNTIME_DIR", &runtime_dir);
+
+        let (reg, id) = seed_default("capsule");
+        // The EXACT path `destroy_capsule_workspace` will dial: the same
+        // canonical-root-then-join this fix's own destroy site uses, fed
+        // to the SAME hash the production lane address is built from.
+        let state_dir = crate::capsule_workspace::state_dir_for(&canonical_root, &id);
+        let h = sot_log::state_dir::state_dir_hash(&state_dir);
+        let sock_path =
+            sot_log::socket_unix::supervisor_socket_path(&h).expect("runtime dir was just pinned");
+        let _listener = std::os::unix::net::UnixListener::bind(&sock_path)
+            .unwrap_or_else(|e| panic!("bind the stand-in listener at {sock_path:?}: {e}"));
+        // Never `accept()`s -- proves a merely-unresponsive lane, not an
+        // absent one.
+
+        let payload = destroy(&reg, &id).await;
+        assert_eq!(
+            payload.get("code").and_then(|v| v.as_str()),
+            Some("state_dir_missing"),
+            "a lane that answers (even silently) must never be treated as orphaned: {payload:?}"
+        );
+        assert!(reg.resolve(Some(&id)).is_some(), "a refused destroy never removes the row");
+        assert!(!state_dir.exists(), "destroy on a missing state dir must never recreate it");
+
+        let _ = std::fs::remove_dir_all(&scratch);
+        let _ = std::fs::remove_dir_all(&runtime_dir);
     }
 
     // ADR 0043 decision 33 (BLOCKER, Codex review, 2026-09-11): a row the

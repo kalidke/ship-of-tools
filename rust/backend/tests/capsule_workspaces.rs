@@ -3678,18 +3678,26 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
     env.kill_daemon_bounded().await;
 }
 
-/// ADR 0043 decision 33's destroy proof, the missing-state-dir case: a
-/// row that was cleanly ended and stopped, then had its whole state dir
-/// removed out from under it (an operator `rm -rf`, or an external
-/// volume issue) — never a licence to recreate anything. `end_run`'s own
-/// `!state_dir.is_dir()` check reports this as `state_dir_missing`
-/// BEFORE it ever reaches the fence/leg proof, and
-/// `destroy_capsule_workspace` maps that to a `Kept` outcome with the
-/// SAME code on the wire — the row is neither removed nor is its
-/// directory ever recreated, and it stays listed.
+/// ADR 0043 decision 33's destroy proof, the missing-state-dir case
+/// (refined): a row that was cleanly ended and stopped, then had its
+/// whole state dir removed out from under it (an operator `rm -rf`, or
+/// an external volume issue) — never a licence to recreate anything, but
+/// no longer an automatic keep either. `end_run`'s `!state_dir.is_dir()`
+/// check no longer reports `state_dir_missing` unconditionally: with the
+/// directory gone, neither the supervisor fence nor this voyage's writer
+/// lock can exist anywhere (both live under `state_dir`), so the only
+/// remaining question is whether a supervisor still answers this row's
+/// lane (addressed independently of the directory, by the hash of the
+/// canonical state-dir path). Here the authority was already stopped and
+/// its lane confirmed silent BEFORE the directory was removed, so
+/// `query_status`'s connect returns decision 27's own "no listener at
+/// all" shape and `destroy_capsule_workspace` proves the row `Orphaned`
+/// — a CONFIRMED end (`orphan_removed`), same as a normal `end_run`
+/// success, and the row is actually removed. The directory is still
+/// never recreated at any point.
 #[tokio::test]
 #[cfg(target_os = "linux")]
-async fn capsule_destroy_on_a_missing_state_dir_reports_and_creates_nothing() {
+async fn capsule_destroy_on_a_missing_state_dir_with_no_listener_removes_the_row() {
     let _serial = SERIAL.lock().await;
     assert!(
         sot_capsule_exe().is_file(),
@@ -3775,10 +3783,23 @@ async fn capsule_destroy_on_a_missing_state_dir_reports_and_creates_nothing() {
     let destroy_req = serde_json::json!({ "workspace_id": workspace_id });
     let destroy_res = call(&mut conn, next_id, op::WORKSPACE_DESTROY, destroy_req).await;
     next_id += 1;
+    // A NON-default row's proven-orphan destroy takes the ordinary
+    // "actually removed" wire shape (`WorkspaceDestroyRes`'s own doc:
+    // `kept: None` means the row above was really removed) -- the
+    // distinct `orphan_removed` outcome this fix adds is visible in the
+    // daemon's own log (`destroy_capsule_workspace`'s
+    // `tracing::info!(..., %outcome, ...)`), not on this wire shape,
+    // which is identical to any other confirmed end (`RecordVerified`,
+    // `Unheld`, ...). Only the DEFAULT row's own kept-not-removed
+    // response carries the outcome text (`default_row_end_response`).
+    assert!(
+        destroy_res.payload.get("error").is_none(),
+        "a proven orphan is a CONFIRMED end, not an error: {:?}", destroy_res.payload
+    );
     assert_eq!(
-        destroy_res.payload.get("code").and_then(|v| v.as_str()),
-        Some("state_dir_missing"),
-        "payload: {:?}", destroy_res.payload
+        destroy_res.payload.get("toml_removed").and_then(|v| v.as_bool()),
+        Some(true),
+        "a proven orphan's toml must actually be removed: {:?}", destroy_res.payload
     );
     assert!(
         !state_dir_path.exists(),
@@ -3789,8 +3810,8 @@ async fn capsule_destroy_on_a_missing_state_dir_reports_and_creates_nothing() {
     next_id += 1;
     let _ = next_id;
     assert!(
-        find_row(&list_payload, &workspace_id).is_some(),
-        "a kept row must still be listed: {list_payload:?}"
+        find_row(&list_payload, &workspace_id).is_none(),
+        "a proven orphan is actually removed, not merely kept: {list_payload:?}"
     );
 
     env.kill_daemon_bounded().await;

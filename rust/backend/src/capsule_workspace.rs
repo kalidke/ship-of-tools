@@ -549,20 +549,6 @@ pub const FOREIGN_PHASE: &str = "foreign";
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const NEVER_STARTED_PHASE: &str = "stopped";
 
-/// The wire phase string `workspace.list` reports in place of
-/// [`NEVER_STARTED_PHASE`] for a capsule row the boot-time resume-scan
-/// found with no `state_dir` at all under this daemon's own state root
-/// (`runtime::log_and_flag_orphaned_state_dirs`, `Workspace::orphaned`).
-/// Not a [`crate::workspaces::Phase`] variant — the row's actual phase
-/// cell is untouched; this is a display-layer override
-/// `handle_workspace_list` applies only when the row is flagged, so a
-/// row this genuinely never-started (a real `state_dir`, simply no
-/// pointer published yet) keeps reading `NEVER_STARTED_PHASE` exactly as
-/// before. The frontend renders any capsule phase string as a bracket
-/// tag on the row's glance line already (`capsule_phase_tag`,
-/// `gpu.rs`) — a new string here is visible with no frontend change.
-pub const ORPHAN_PHASE: &str = "orphaned";
-
 /// Whether a capsule workspace's supervisor lane is even worth querying,
 /// given whether its voyage pointer exists — pure, no I/O itself (the
 /// caller supplies `pointer_exists`, e.g. `phase_of`'s own
@@ -1429,7 +1415,21 @@ mod runtime {
     /// stays the confirmed one (`stop` only ends the AUTHORITY, never
     /// the capsule LEG, ADR 0041 adoption). The state directory is NEVER
     /// deleted here. BLOCKING — callers run it via `spawn_blocking`.
-    pub fn end_run(state_dir: &Path, reason: &str) -> std::io::Result<super::EndRunOutcome> {
+    /// `root_canonicalized` (Fable review, safety): true only when the
+    /// caller (`destroy_capsule_workspace`) successfully canonicalized
+    /// the STATE ROOT before building `state_dir` — see that call site's
+    /// own doc for why an un-canonicalized root makes the orphan proof
+    /// below unsafe (a symlinked root can make this call dial a
+    /// different lane address than a live supervisor, spawned while its
+    /// own `state_dir` existed, actually bound). `false` disables the
+    /// orphan proof outright and keeps today's unconditional
+    /// `state_dir_missing` refusal, regardless of what `query_status`'s
+    /// connect returned.
+    pub fn end_run(
+        state_dir: &Path,
+        reason: &str,
+        root_canonicalized: bool,
+    ) -> std::io::Result<super::EndRunOutcome> {
         use super::EndRunOutcome as R;
         use sot_log::supervisor_client::EndRunOutcome as O;
         use sot_log::wire::SupervisorPhase;
@@ -1448,33 +1448,61 @@ mod runtime {
                 // licence to recreate anything (`leg_absent`'s own
                 // caller, `destroy_capsule_workspace`, never does).
                 //
-                // A missing directory is not automatically a dead end,
-                // though: `supervisor.lock` and every voyage's
-                // `writer.lock` live INSIDE `state_dir` (`fence.rs`,
-                // `voyage_root_path`), so if the directory is gone
-                // neither lock can possibly be held BY THIS ROW anywhere
-                // else — the one thing that could still be alive is a
-                // supervisor process answering THIS row's lane, which is
-                // addressed by a hash of the path (`state_dir_hash`) in
-                // the runtime dir, not a file under `state_dir` — so it
-                // stays reachable regardless of whether the directory
-                // exists. `query_status`'s own connect already tested
-                // exactly that, and `e`'s shape says whether it was
-                // conclusive: `is_definitely_orphaned` accepts only
-                // decision 27's own "no listener at all" classification
-                // (`TransportError::is_endpoint_absent`: connect refused
-                // or nothing there), never a timeout or a foreign/
-                // undetermined challenge, either of which means SOMETHING
-                // answered and the row must keep refusing. Proven absent
-                // -> `Orphaned` (no durable record, no reachable
-                // authority, no possible lock holder); otherwise the
-                // original unchanged refusal.
-                if !state_dir.is_dir() {
-                    return if is_definitely_orphaned(&e) {
-                        Ok(R::Orphaned)
-                    } else {
-                        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "state_dir_missing"))
-                    };
+                // STAT STRICTLY (Fable review): `fs::metadata`, not
+                // `Path::is_dir()` — that helper swallows every error
+                // (permission denied, a stale network-mount handle, any
+                // other I/O failure) into a bare `false`, which used to
+                // read identically to "genuinely absent". Only
+                // `ErrorKind::NotFound` means missing; anything else
+                // keeps refusing with ITS OWN detail, never folded into
+                // `state_dir_missing` and never treated as grounds for
+                // the orphan proof — a network mount hiccup must never
+                // remove a row whose record exists.
+                match std::fs::metadata(state_dir) {
+                    Ok(meta) if meta.is_dir() => {}
+                    Ok(_) => {
+                        return Err(std::io::Error::other(
+                            "state dir path exists but is not a directory",
+                        ));
+                    }
+                    Err(stat_err) if stat_err.kind() == std::io::ErrorKind::NotFound => {
+                        // A missing directory is not automatically a dead
+                        // end, though: `supervisor.lock` and every
+                        // voyage's `writer.lock` live INSIDE `state_dir`
+                        // (`fence.rs`, `voyage_root_path`), so if the
+                        // directory is gone neither lock can possibly be
+                        // held BY THIS ROW anywhere else — the one thing
+                        // that could still be alive is a supervisor
+                        // process answering THIS row's lane, which is
+                        // addressed by a hash of the CANONICAL path
+                        // (`state_dir_hash`) in the runtime dir, not a
+                        // file under `state_dir` — so it stays reachable
+                        // regardless of whether the directory exists,
+                        // PROVIDED the caller resolved that canonical
+                        // form (`root_canonicalized`). `query_status`'s
+                        // own connect already tested exactly that, and
+                        // `e`'s shape says whether it was conclusive:
+                        // `is_definitely_orphaned` accepts only decision
+                        // 27's own "no listener at all" classification
+                        // (`TransportError::is_endpoint_absent`: connect
+                        // refused or nothing there), never a timeout or a
+                        // foreign/undetermined challenge, either of which
+                        // means SOMETHING answered and the row must keep
+                        // refusing. Proven absent -> `Orphaned` (no
+                        // durable record, no reachable authority, no
+                        // possible lock holder); otherwise the original
+                        // unchanged refusal.
+                        return if root_canonicalized && is_definitely_orphaned(&e) {
+                            Ok(R::Orphaned)
+                        } else {
+                            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "state_dir_missing"))
+                        };
+                    }
+                    Err(stat_err) => {
+                        return Err(std::io::Error::other(format!(
+                            "state dir stat failed (not proof of absence): {stat_err}"
+                        )));
+                    }
                 }
                 // Unreachable is not the same claim as "not running" —
                 // the caller must keep refusing a live-but-unresponsive
@@ -2840,7 +2868,7 @@ mod runtime {
         }
 
         log_registryless_state_dirs(&state_root, &workspaces);
-        log_and_flag_orphaned_state_dirs(&state_root, &workspaces);
+        log_orphaned_state_dirs(&state_root, &workspaces);
     }
 
     /// One log line naming every `<state-root>/workspaces/*` directory
@@ -2875,97 +2903,50 @@ mod runtime {
 
     /// The reverse of [`log_registryless_state_dirs`]: a REGISTERED
     /// capsule row whose `state_dir` does not exist under THIS daemon's
-    /// own state root. Every capsule row that ever reaches the registry
-    /// had a `start_supervisor` call succeed at `workspace.create` time —
-    /// a failed spawn rolls the row (and its toml) back before either is
-    /// ever persisted (`handlers.rs`'s create rollback) — and that
-    /// success is exactly what creates the directory (`sot_log::
-    /// supervisor`'s voyage-root bootstrap runs before `create` can
-    /// report success). So a row surviving to a fresh boot with no
-    /// matching directory here was never "not started yet" — its
-    /// directory was deleted, or (the field defect this closes) the
-    /// registry ENTRY was written by a daemon using a DIFFERENT state
-    /// root and this daemon never created one at all. Logged ONCE, here,
-    /// at boot — never from the per-row lifecycle observer's own
-    /// `POLL_INTERVAL` loop, which would otherwise repeat the same line
-    /// forever — and latched onto the row (`Workspace::set_orphaned`) so
-    /// `workspace.list` stops reporting it as an ordinary
-    /// [`NEVER_STARTED_PHASE`] row (see [`ORPHAN_PHASE`]'s own doc).
-    /// Never acted on beyond the flag and the log line: removal is still
+    /// own state root — a DIAGNOSTIC candidate list only, never a proof.
+    /// A row that went through `workspace.create` and reached the
+    /// registry always had a `start_supervisor` call succeed there (a
+    /// failed spawn rolls the row and its toml back before either is
+    /// persisted, `handlers.rs`'s create rollback), and that success is
+    /// exactly what creates the directory — but a row can ALSO reach the
+    /// registry by a pre-seeded or hand-authored toml that has never been
+    /// through `workspace.create` at all (a legitimate, tested shape:
+    /// "Rule H" in `capsule_workspaces.rs`'s own integration suite), and
+    /// reads identically here — no state dir, no pointer, "never started
+    /// yet" — RIGHT UP UNTIL its first attach spawns it for real. This
+    /// function cannot and does not try to tell the two apart (see
+    /// `workspace.list`'s own phase, which deliberately does not either —
+    /// decision 33's Rule B: "neither has ever had a real run"); it only
+    /// NAMES every such row, once, at boot — never from the per-row
+    /// lifecycle observer's own `POLL_INTERVAL` loop, which would
+    /// otherwise repeat the same line forever — so an operator staring at
+    /// `sotd.log` after the field defect this closes (a leaked scratch-
+    /// daemon registry row) has a lead to start from. Removal is still
     /// only ever `workspace.destroy`'s to decide, via `end_run`'s own
-    /// proof.
-    fn log_and_flag_orphaned_state_dirs(state_root: &Path, workspaces: &Workspaces) {
+    /// PROOF (a real lane connect, decision 27's absent shape) — which
+    /// needs no such distinction either: nothing running is nothing
+    /// running, whether the row is freshly seeded or truly abandoned.
+    /// STAT STRICTLY, matching `end_run`: only `ErrorKind::NotFound` is
+    /// "missing" — a permission or I/O error says nothing about whether
+    /// the directory is actually gone, so it is skipped (not logged)
+    /// rather than guessed at.
+    fn log_orphaned_state_dirs(state_root: &Path, workspaces: &Workspaces) {
         for ws in workspaces.list() {
             if ws.runtime != "capsule" {
                 continue;
             }
             let state_dir = super::state_dir_for(state_root, &ws.workspace_id);
-            if state_dir.is_dir() {
-                continue;
+            match std::fs::metadata(&state_dir) {
+                Err(e) if e.kind() == ErrorKind::NotFound => {}
+                _ => continue,
             }
-            ws.set_orphaned();
             tracing::warn!(
                 workspace_id = %ws.workspace_id, slug = %ws.slug, state_dir = ?state_dir,
                 "capsule workspace resume-scan: registered row has no state directory under this \
-                 daemon's state root -- marking it orphaned rather than an ordinary stopped row; \
-                 workspace.destroy removes it once no supervisor answers its lane"
+                 daemon's state root -- reads as an ordinary stopped row (indistinguishable here \
+                 from one simply never started yet); workspace.destroy removes it once no \
+                 supervisor answers its lane"
             );
-        }
-    }
-
-    #[cfg(test)]
-    mod log_and_flag_orphaned_state_dirs_tests {
-        use super::*;
-        use crate::workspaces::Workspace;
-
-        fn capsule_row(reg: &Workspaces, label: &str) -> Arc<crate::workspaces::Workspace> {
-            let mut ws = Workspace::from_label(
-                label,
-                PathBuf::from("/tmp/sot-orphan-sweep-test"),
-                false,
-                "none".to_string(),
-                String::new(),
-                String::new(),
-            );
-            ws.runtime = "capsule".to_string();
-            reg.insert(ws)
-        }
-
-        #[test]
-        fn a_row_with_no_state_dir_is_flagged_and_a_row_with_one_is_not() {
-            let root = tempfile::tempdir().unwrap();
-            let reg = Workspaces::new();
-            let missing = capsule_row(&reg, "orphan-row");
-            let present = capsule_row(&reg, "real-row");
-            let present_dir = super::super::state_dir_for(root.path(), &present.workspace_id);
-            std::fs::create_dir_all(&present_dir).unwrap();
-
-            log_and_flag_orphaned_state_dirs(root.path(), &reg);
-
-            assert!(missing.orphaned(), "a row with no state dir at all must be flagged orphaned");
-            assert!(!present.orphaned(), "a row with a real state dir must never be flagged");
-        }
-
-        #[test]
-        fn a_tmux_row_with_no_state_dir_is_never_flagged() {
-            // The sweep is scoped to `runtime == "capsule"` -- a tmux row
-            // has no `state_dir` concept at all and must never be touched.
-            let root = tempfile::tempdir().unwrap();
-            let reg = Workspaces::new();
-            let mut ws = Workspace::from_label(
-                "tmux-row",
-                PathBuf::from("/tmp/sot-orphan-sweep-test"),
-                false,
-                "none".to_string(),
-                String::new(),
-                String::new(),
-            );
-            ws.runtime = "tmux".to_string();
-            let ws = reg.insert(ws);
-
-            log_and_flag_orphaned_state_dirs(root.path(), &reg);
-
-            assert!(!ws.orphaned(), "a non-capsule row is never a candidate for this sweep");
         }
     }
 }
@@ -3676,7 +3657,7 @@ mod tests {
         // No supervisor.lock AND no published pointer at all -- the
         // fence is free, but there is nothing to prove the leg absent
         // against: uncertain, never fabricated as `Unheld`.
-        match end_run(state_dir, "test reason") {
+        match end_run(state_dir, "test reason", true) {
             Err(_) => {}
             Ok(outcome) => panic!("expected Err with no pointer to check the leg against: {outcome:?}"),
         }
@@ -3689,7 +3670,7 @@ mod tests {
         let voyage_root = sot_log::supervisor::voyage_root_path(state_dir, voyage_id);
         std::fs::create_dir_all(&voyage_root).expect("voyage root");
         std::fs::write(voyage_root.join("writer.lock"), b"").expect("writer.lock file");
-        match end_run(state_dir, "test reason") {
+        match end_run(state_dir, "test reason", true) {
             Ok(super::EndRunOutcome::Unheld) => {}
             other => panic!("expected Ok(Unheld) with no authority and no leg: {other:?}"),
         }
@@ -3697,7 +3678,7 @@ mod tests {
         // A leg holds the voyage's own `writer.lock` -- reported
         // instead of silently orphaned.
         let leg = sot_log::lock_writer(&voyage_root.join("writer.lock")).expect("take the writer lock");
-        match end_run(state_dir, "test reason") {
+        match end_run(state_dir, "test reason", true) {
             Err(_) => {}
             Ok(outcome) => panic!("expected Err while a leg holds the row with no authority: {outcome:?}"),
         }
@@ -3708,7 +3689,7 @@ mod tests {
         // keeps the unreachable-lane refusal (Err) rather than
         // fabricating `Unheld` out from under a live holder.
         let holder = sot_log::fence::lock_supervisor(state_dir).expect("take the fence");
-        match end_run(state_dir, "test reason") {
+        match end_run(state_dir, "test reason", true) {
             Err(_) => {}
             Ok(outcome) => {
                 panic!("expected the unchanged unreachable-lane Err while the fence is held: {outcome:?}")
