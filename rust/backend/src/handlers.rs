@@ -7619,7 +7619,7 @@ mod remove_comm_agents_for_workspace_host_tests {
             &registry_path,
             serde_json::to_vec_pretty(&serde_json::json!({
                 "agents": {
-                    "same-name": {"tmux": "", "host": "descent"},
+                    "same-name": {"tmux": "", "host": "hostB"},
                 }
             }))
             .unwrap(),
@@ -7845,7 +7845,7 @@ mod clear_comm_unread_tests {
             serde_json::json!({
                 "descent-be-x": {
                     "tmux": "sot-be-x:0.0",
-                    "host": "descent",
+                    "host": "hostB",
                     "state": "done",
                     "summary": "not yours",
                     "status_at": "2026-09-08T00:00:00Z",
@@ -8231,7 +8231,7 @@ mod agent_str_host_filter_tests {
                 "agents": {
                     "same-name": {
                         "tmux": "",
-                        "host": "descent",
+                        "host": "hostB",
                         "state": "working",
                         "summary": "leaked",
                         "status_at": "2026-01-01T00:00:00Z"

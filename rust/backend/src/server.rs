@@ -2489,7 +2489,7 @@ mod tests {
         #[test]
         fn a_host_change_alone_changes_the_projection() {
             let before = project_comm_registry(&registry("hostA"));
-            let after = project_comm_registry(&registry("descent"));
+            let after = project_comm_registry(&registry("hostB"));
             assert_ne!(before, after);
         }
 
