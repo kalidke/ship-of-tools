@@ -85,40 +85,30 @@ pub mod op {
     /// further frames for that `eval_id` follow. The `repl.eval` /
     /// `repl.run_file` response is now a terminal ack (empty `frames`).
     pub const REPL_FRAME: &str = "repl.frame";
-    /// LLM-pane terminal — attach (or create) the shared `sot-llm`
-    /// tmux session on a pty. The backend keeps a single pty per
-    /// connection and streams its bytes back via `PTY_EVT` event
-    /// frames; the frontend sends keystrokes back as `PTY_WRITE`
-    /// requests (fire-and-forget, no response).
+    /// Attach to a row's agent pane. Every row is a capsule (ADR 0046):
+    /// the daemon always answers with an `attach_direct` refusal
+    /// carrying the `state_dir` the frontend attaches to directly — see
+    /// `PtyAttachDirect`. No runtime on this branch ever answers with a
+    /// size-confirmation success case.
     pub const PTY_OPEN: &str = "pty.open";
-    pub const PTY_RESIZE: &str = "pty.resize";
+    /// Fire-and-forget keystroke bytes to THIS connection's own pty.
+    /// Unhandled on this branch (there is no runtime left that answers
+    /// `pty.open` with anything but `attach_direct`), kept only because
+    /// a backend integration test still exercises firing it as an
+    /// arbitrary unhandled op (`navigation_and_typing_ops_never_stamp_
+    /// presence_only_fe_presence_does`).
     pub const PTY_WRITE: &str = "pty.write";
-    pub const PTY_EVT: &str = "pty.evt";
-    /// Keyboard-driven scrollback paging for the LLM pane's tmux-backed pty
-    /// (fire-and-forget, no response — mirrors `pty.write`). The FE's vt100
-    /// ring stays empty for tmux content (cursor-positioned repaints), so
-    /// PgUp/PgDn can't scroll FE-side; instead the backend drives tmux:
-    /// `copy-mode -e` + `send-keys -X page-up|page-down` against the
-    /// connection's current pty target. Alternate-screen apps (vim, less)
-    /// get the raw PPage/NPage key passed through instead, so their own
-    /// paging keeps working. `-e` exits copy-mode when a page-down reaches
-    /// the live bottom — keyboard-symmetric with the mouse-wheel SGR path.
-    pub const PTY_SCROLL: &str = "pty.scroll";
     /// ADR 0042 amendment (2026-09-07), "a session types into and reads a
     /// sibling row": a session types into ANOTHER row's pane by
-    /// `workspace_id`, unlike `PTY_WRITE` (which always means THIS
-    /// connection's own pty, fire-and-forget). Answered — a caller with no
-    /// pane to look at needs the outcome. Request `PtyInputReq`, response
-    /// `PtyInputRes` or a typed error (`unknown_workspace`,
-    /// `capsule_not_ready`, `capsule_input_failed`, `capsule_input_unknown`,
-    /// `input_not_text`, `runtime_not_available`, `bad_origin`). A tmux row
-    /// delivers the bytes literally (`send-keys -l`, no key-name
-    /// interpretation, ever); a capsule row is served by a HEADLESS ATTACH
-    /// CLIENT that takes the pen only long enough to type and never resizes
-    /// it (`capsule_workspace::headless`) — ADR 0041's take-on-first-input
-    /// semantics, applied to a second kind of client. `PtyWriteReq`/
-    /// `PTY_WRITE` are UNCHANGED by this: an old daemon simply answers
-    /// unknown-op for `pty.input`, the safe failure.
+    /// `workspace_id`. Answered — a caller with no pane to look at needs
+    /// the outcome. Request `PtyInputReq`, response `PtyInputRes` or a
+    /// typed error (`unknown_workspace`, `capsule_not_ready`,
+    /// `capsule_input_failed`, `capsule_input_unknown`, `input_not_text`,
+    /// `runtime_not_available`, `bad_origin`). A capsule row is served by
+    /// a HEADLESS ATTACH CLIENT that takes the pen only long enough to
+    /// type and never resizes it (`capsule_workspace::headless`) — ADR
+    /// 0041's take-on-first-input semantics, applied to a second kind of
+    /// client.
     pub const PTY_INPUT: &str = "pty.input";
     /// ADR 0042 amendment (2026-09-07): the CURRENT screen of a row named by
     /// `workspace_id` — no scrollback, no history (the record and a future
@@ -1033,16 +1023,15 @@ pub struct ReplExecuteRes {
     pub project_source: Option<String>,
 }
 
-/// Open (or attach) a tmux session on a pty. The backend spawns
-/// `tmux new-session -A -s <target>` on a pty sized (cols, rows) and
-/// streams bytes back via `PTY_EVT` events.
+/// Attach a row's agent pane, sized (cols, rows). Every row is a
+/// capsule (ADR 0046): the daemon always answers with an
+/// `attach_direct` refusal (see `PtyAttachDirect`'s doc at the
+/// `attach_direct` code site in the backend), never a size-confirming
+/// `PtyOpenRes` success.
 ///
-/// `target` selects the tmux session: `None` defaults to `sot-llm`
-/// (the shared LLM pane); Sessions mode (ADR 0013) passes a backend
-/// session name so the BL pane shows that backend's tmux session
-/// instead. Calling `pty.open` again with the same target just resizes;
-/// with a different target the backend kills the existing pty and
-/// spawns a fresh one — frontend sees that as a clean transition.
+/// `target` selects the row: `None` defaults to the daemon's own
+/// default target; Sessions mode (ADR 0013) passes a backend session
+/// name so the BL pane shows that backend's row instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtyOpenReq {
     pub cols: u16,
@@ -1063,20 +1052,15 @@ pub struct PtyOpenReq {
     pub user_switch: bool,
 }
 
+/// A size-confirmation success case — no runtime on this branch ever
+/// answers `pty.open` with one; every row is a capsule (ADR 0046) and
+/// the daemon always refuses with `attach_direct` instead (see
+/// `PtyAttachDirect`). Kept for wire compatibility with an old daemon
+/// build that might still send it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtyOpenRes {
     pub cols: u16,
     pub rows: u16,
-    /// Foreground command of the (re-)targeted session's active pane at
-    /// attach time — e.g. `claude` when an agent session already has claude
-    /// running, `bash` at a shell prompt. The frontend uses this as the
-    /// authoritative "is claude already up here?" signal to suppress a
-    /// redundant autostart launch (which would otherwise land in the live
-    /// agent's prompt). Populated on a fresh spawn / re-target; `None` on a
-    /// same-target resize or when the session/pane is gone. `serde(default)`
-    /// keeps the wire compatible with a backend that predates the field.
-    #[serde(default)]
-    pub pane_command: Option<String>,
 }
 
 /// Resize an already-open pty (e.g. when the LLM pane changes size).

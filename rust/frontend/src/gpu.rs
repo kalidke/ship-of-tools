@@ -3093,19 +3093,17 @@ fn tmux_session_key(host: &HostKey, session_name: &str) -> WsKey {
     (host.clone(), session_name.to_string())
 }
 
-/// ADR 0042 slice L1b fix 2: which backend the session pane's input,
-/// resize and scroll route to RIGHT NOW — tracked independently of
+/// ADR 0042 slice L1b fix 2, narrowed post-notmux: which state the
+/// session pane's input routes to RIGHT NOW — tracked independently of
 /// `Option<FeAttachClient>` because "no client yet" is genuinely
-/// ambiguous: it means `Tmux` when the cache already says so, but means
-/// `Pending` (backend unknown) for a freshly-selected row with no
-/// `workspace.list` entry yet, where a `pty.open` is in flight and could
-/// resolve to EITHER an ordinary `PtyOpened` (confirms tmux) or an
-/// `attach_direct` refusal (confirms capsule). Treating "no client" as
-/// "must be tmux" during that window sent live keystrokes to whatever
-/// tmux pty the daemon still had attached from the PREVIOUS row.
+/// ambiguous: `Pending` (attach unresolved) for a freshly-selected row
+/// whose `pty.open` is in flight and hasn't yet come back as an
+/// `attach_direct` refusal (confirms capsule — the only kind of row this
+/// build has). Treating "no client" as "already attached" during that
+/// window sent live keystrokes to whatever the pane was PREVIOUSLY
+/// showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaneFeed {
-    Tmux,
     // ADR 0045 decision 1: assigned by the (now unconditional)
     // `PtyAttachDirect` handler on every platform — a capsule row
     // attaches through its own daemon's lane bridge wherever the daemon
@@ -3115,14 +3113,13 @@ enum PaneFeed {
 }
 
 /// LU6a: the pane's last-known screen content, captured the instant a
-/// departing feed (capsule client or tmux) is dropped for an incoming
-/// switch — held until the new attach client's checkpoint lands, so the
-/// pane never repaints an empty parser mid-switch (see
-/// `attach_session_to_bl`'s capture sites and `pane_screen_choice`'s own
-/// doc). An owned clone is the smallest shape that works: both
-/// `pane_attach_term`'s and `pty_terminal`'s `.screen()` already return
-/// `&vt100::Screen`, so holding one is just keeping a copy of whichever
-/// was live a moment ago — no timers, no diffing.
+/// departing capsule client is dropped for an incoming switch — held
+/// until the new attach client's checkpoint lands, so the pane never
+/// repaints an empty parser mid-switch (see `attach_session_to_bl`'s
+/// capture sites and `pane_screen_choice`'s own doc). An owned clone is
+/// the smallest shape that works: `pane_attach_term`'s `.screen()`
+/// already returns `&vt100::Screen`, so holding one is just keeping a
+/// copy of whichever was live a moment ago — no timers, no diffing.
 struct HeldPaneScreen(vt100::Screen);
 
 impl HeldPaneScreen {
@@ -3141,8 +3138,10 @@ enum PaneScreen {
     /// `pane_hold`'s captured screen — the pane's last content, held
     /// until the new attach client's checkpoint lands.
     Hold,
-    /// `pty_terminal`'s screen — the tmux emulator, today's default.
-    Tmux,
+    /// Nothing worth painting yet (no client has ever attached, or the
+    /// last one died before ever checkpointing) — the pane draws blank
+    /// at its current size.
+    Empty,
 }
 
 /// LU6a: a capsule switch must not paint the new client's freshly
@@ -3150,17 +3149,17 @@ enum PaneScreen {
 /// visible clear this lane fixes) — so a live, not-yet-checkpointed
 /// client, or a `Pending` feed (it isn't even known yet whether a client
 /// is coming), defers to whatever the pane held from before. Falls back
-/// to today's behavior only once there is nothing held (a first-ever
-/// attach, or a hold already cleared): the client's own screen while one
-/// exists, `pty_terminal` while none does — exactly what the old
-/// unconditional `pane_attach_term.map(...).unwrap_or_else(...)` drew.
+/// to blank only once there is nothing held (a first-ever attach, or a
+/// hold already cleared): the client's own screen while one exists,
+/// blank while none does — exactly what the old unconditional
+/// `pane_attach_term.map(...).unwrap_or_else(...)` drew.
 ///
 /// Coordinator amendment: a client that reaches a TERMINAL failure
 /// (`is_dead`) before it EVER checkpointed is a dead end, not a stall —
 /// neither a hold (the departed row's screen) nor the dead client's own
 /// (blank) screen is right to keep showing, so this falls all the way
-/// through to `pty_terminal` instead, same as no client existing at all.
-/// A client that checkpointed and only later died keeps painting its own
+/// through to blank instead, same as no client existing at all. A
+/// client that checkpointed and only later died keeps painting its own
 /// (now-frozen, but real) last content — the `checkpointed` branch above
 /// still wins regardless of `is_dead`.
 ///
@@ -3249,6 +3248,15 @@ mod read_mark_tests {
     }
 }
 
+/// A blank screen at the given size — what the session pane shows when
+/// `PaneScreen::Empty` resolves (no client has ever attached, or the
+/// last one died before checkpointing). Every row is a capsule on this
+/// build, so there is no tmux emulator to fall back to; a freshly
+/// constructed, never-fed `vt100::Parser` is blank by construction.
+fn blank_pane_screen(cols: u16, rows: u16) -> vt100::Screen {
+    vt100::Parser::new(rows, cols, 0).screen().clone()
+}
+
 fn pane_screen_choice(
     has_client: bool,
     checkpointed: bool,
@@ -3259,24 +3267,24 @@ fn pane_screen_choice(
     if has_client && checkpointed {
         PaneScreen::Client
     } else if has_client && is_dead {
-        PaneScreen::Tmux
+        PaneScreen::Empty
     } else if has_client || feed == PaneFeed::Pending {
         if has_hold {
             PaneScreen::Hold
         } else if has_client {
             PaneScreen::Client
         } else {
-            PaneScreen::Tmux
+            PaneScreen::Empty
         }
     } else {
-        PaneScreen::Tmux
+        PaneScreen::Empty
     }
 }
 
 /// ADR 0030 §8 "Where it is shown", widened by ADR 0045 decision 1
 /// (Codex review, lane B5 discharge): originally only the dead-
 /// uncheckpointed case (`pane_screen_choice` resolving to `PaneScreen::
-/// Tmux` with no content of its own worth painting) showed a reason —
+/// Empty` with no content of its own worth painting) showed a reason —
 /// EXCLUDING a client that is still alive but CURRENTLY failing or
 /// retrying (typed `Unreachable` mid-outage, a refusal, a failure after
 /// checkpointing), which left the pane's only signal a shared, easily-
@@ -3376,94 +3384,6 @@ fn capsule_phase_tag(phase: &str) -> String {
 /// kind is never foreign, regardless of what `phase` happens to hold.
 fn capsule_row_is_foreign(kind: &str, phase: Option<&str>) -> bool {
     kind == "session" && phase == Some("foreign")
-}
-
-/// Phase of the post-launch task delivery to a spawned agent, driven from the
-/// event loop (`advance_delivery`) so each step waits for the pane to settle
-/// and re-checks the pinned target — never a blind timer.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum DeliveryPhase {
-    Boot,
-    Interstitial,
-    Typed,
-    Submitted,
-}
-
-/// In-flight auto-start task delivery to a spawned agent's pane (contract b).
-/// Replaces the old detached-thread blind-timer: `advance_delivery` watches the
-/// pinned pane's pty for output to settle (readiness), keeps every keystroke
-/// pinned to the launch session, double-Enter-submits, and surfaces a timeout
-/// instead of silently leaving the agent idle.
-struct AutoStartDelivery {
-    pinned: String,
-    task: String,
-    agent: String,
-    phase: DeliveryPhase,
-    last_pty: std::time::Instant,
-    started: std::time::Instant,
-    submitted_at: Option<std::time::Instant>,
-}
-
-/// Pre-launch "sniff" gate (contract b). Set when a flagged agent pane
-/// re-targets; `advance_autostart_scan` waits for tmux's replayed screen to
-/// settle, then scans it for a *already-running* claude TUI. If found, the
-/// launch is skipped (typing `claude …` into a live agent would land as a
-/// prompt in its input box — the spam this guards against, esp. across FE
-/// relaunches where the in-memory `autostarted_sessions` set is forgotten but
-/// the agent's claude is still up). If not found, the real launch fires.
-struct AutostartScan {
-    session: String,
-    started: std::time::Instant,
-    last_pty: std::time::Instant,
-}
-
-/// Heuristic: does this pane's visible text show a *running* Claude Code TUI?
-/// Matches stable chrome present across boot/idle/working states so we don't
-/// re-launch claude into a pane that already has it (which would type the
-/// launch string into the live agent's prompt). Biased toward detection —
-/// a false positive only means we skip autostart (user starts it manually,
-/// surfaced via status), while a false negative re-introduces the spam.
-fn pane_shows_running_claude(contents: &str) -> bool {
-    let c = contents.to_lowercase();
-    const MARKERS: [&str; 8] = [
-        "for shortcuts",      // idle footer: "? for shortcuts"
-        "esc to interrupt",   // working footer
-        "bypass permissions", // --dangerously-skip-permissions banner
-        "bypassing permissions",
-        "welcome to claude code",
-        "/help for", // help hint
-        "for agents", // steady-state footer hint ("← for agents"),
-                     // flag-independent — catches a claude started
-                     // WITHOUT --dangerously-skip-permissions, whose
-                     // footer carries no "bypass permissions" banner.
-        "auto mode on", // --permission-mode auto banner (2.1.258+, the
-                        // owner-ruling default): "auto mode on" replaces
-                        // "bypass permissions on" and the footer carries
-                        // neither "for shortcuts" nor "for agents" —
-                        // verified live via a probe pane, 2026-09-02.
-    ];
-    MARKERS.iter().any(|m| c.contains(m))
-}
-
-/// True when a pane's tmux *foreground command* means claude is already
-/// running there — `claude` (the name `pane_current_command` reports for the
-/// CLI) or `node` (the runtime it may exec under). This is the *authoritative*
-/// "don't autostart" signal the backend supplies on `pty.open`
-/// (`PtyOpenRes.pane_command`), and unlike the screen-scrape
-/// `pane_shows_running_claude` it does not depend on fresh post-attach output
-/// or the FE-memory `autostarted_sessions` set — both of which mis-fired on an
-/// idle, long-lived agent after an FE relaunch and spammed its live prompt
-/// with the ccb launcher. Bias is toward *suppressing* a
-/// launch: a false skip just means the user starts claude themselves, whereas
-/// a false launch corrupts a working session's input.
-fn pane_command_is_claude(cmd: Option<&str>) -> bool {
-    match cmd {
-        Some(c) => {
-            let c = c.trim();
-            c.eq_ignore_ascii_case("claude") || c.eq_ignore_ascii_case("node")
-        }
-        None => false,
-    }
 }
 
 struct State {
@@ -4047,52 +3967,6 @@ struct State {
     /// per-daemon process namespaces — two hosts can each have a
     /// `sot-be-sot` session, so the key carries the host too.
     workspace_autostart: HashMap<WsKey, WsAutostart>,
-    /// tmux sessions whose claude auto-start is CONFIRMED up — recorded only
-    /// by the `advance_autostart_scan` sniff (4171) when it actually sees ccb
-    /// running, so a re-attach doesn't spawn a second claude. In-memory only:
-    /// a FE relaunch forgets this — but the scan re-confirms a still-running
-    /// agent on the next attach, so the forgotten set self-heals.
-    autostarted_sessions: std::collections::HashSet<String>,
-    /// tmux session → the `Instant` we last *fired* an auto-start launch into
-    /// it. ADR 0042 L2a codex review deletions: the read-side "is this
-    /// stamp still within its hold window" guard (`launching_held`,
-    /// `AUTOSTART_LAUNCH_HOLD`) had zero call sites (compiler-confirmed
-    /// dead) and is deleted; this map is now written (insert on fire,
-    /// remove on confirm) but not read back for a re-launch decision.
-    /// Left in place because the rest of the autostart/delivery chain
-    /// this field belongs to (`AutostartScan`, `advance_autostart_scan`,
-    /// `autostart_claude_in_pane`, `pending_autostart`) still has
-    /// syntactic call sites the compiler doesn't flag, even though a
-    /// data-flow read shows `pending_autostart` is never set to `Some`
-    /// anywhere — auditing/retiring that whole chain is a separate,
-    /// larger change than this deletion pass. The 4171 confirm-scan
-    /// promotes a stamp into
-    /// `autostarted_sessions` (and clears it here). Fixes the old eager-mark
-    /// race where a lost launch left the session permanently marked → a bare
-    /// shell that never retried.
-    launching_sessions: HashMap<String, std::time::Instant>,
-    /// Set by `attach_session_to_bl` when the just-attached session is a
-    /// flagged agent workspace not yet started; consumed by the matching
-    /// `PtyOpened` so the launch lands *after* the pty re-target lands.
-    pending_autostart: Option<String>,
-    /// Pre-launch sniff gate: between the pty re-target and the actual
-    /// claude launch, `advance_autostart_scan` waits for the replayed screen
-    /// to settle and skips the launch if claude is already running there.
-    autostart_scan: Option<AutostartScan>,
-    /// In-flight auto-start task delivery (contract b), or `None`. Driven by
-    /// `advance_delivery` from the event loop each tick: it waits for the
-    /// pinned pane's output to settle (readiness), types the bootstrap,
-    /// double-Enter-submits, re-checks `bl_pane_target == pinned` before every
-    /// keystroke (never misroutes), and on timeout surfaces a status notice
-    /// rather than leaving a launched-but-idle agent.
-    delivery: Option<AutoStartDelivery>,
-    /// A delivery parked by a BL switch-away mid-flight (the symmetric
-    /// counterpart of the launch defer in `advance_autostart_scan`). Resumed
-    /// phase-preserved by the `PtyOpened` for the next attach of its pinned
-    /// session: a delivery deferred at `Typed` already has the task text
-    /// sitting in the agent's input box (tmux kept the pane alive), so
-    /// resuming there just submits — re-typing would double the text.
-    deferred_delivery: Option<AutoStartDelivery>,
     /// Sessions-mode workspace picker (ADR 0014). `Some(state)` while
     /// the user is browsing a directory tree to pick the project_root
     /// of a new workspace; `None` outside the picker. Supersedes the
@@ -4373,17 +4247,10 @@ struct State {
     /// position alone doesn't determine the scroll — direction of motion
     /// matters.
     tree_scroll: u16,
-    /// vt100 terminal emulator backing the LLM pane. Bytes streamed
-    /// from the backend's pty (`pty.evt`) get fed in via `process`,
-    /// and `screen()` is walked into the BL content rect on every
-    /// redraw. Sized to the BL content rect; resized when the rect
-    /// changes shape. Named `pty_terminal` so it doesn't collide
-    /// with the ratatui `terminal: Terminal<WgpuBackend>` field.
-    pty_terminal: vt100::Parser,
-    /// Last (cols, rows) we sent the backend so it can size its pty.
-    /// `None` = no pty.open sent yet; first BL redraw with a real rect
-    /// triggers the open. Subsequent redraws compare the BL content
-    /// rect to this and fire `pty.resize` on mismatch.
+    /// Last (cols, rows) sent on the session pane's `pty.open`, and the
+    /// size a fresh `blank_pane_screen` draws at when nothing else is
+    /// live. `None` = no `pty.open` sent yet; first BL redraw with a
+    /// real rect fires the open.
     pty_size: Option<(u16, u16)>,
     /// Scroll offset (rows from the tail) of the REPL pane. 0 = live,
     /// positive = looking at older lines. Reset to 0 whenever the user
@@ -4450,13 +4317,6 @@ struct State {
     /// and only applying whole rows lets gentle scroll work the way the
     /// user expects.
     wheel_residue_y: f32,
-    /// Time of the last SGR mouse-wheel sequence forwarded to the LLM
-    /// pty. Used to throttle wheel passthrough: each SGR triggers a
-    /// tmux pane repaint round-tripped through SSH, so high-rate
-    /// touchpad events would queue up and scroll would lag behind the
-    /// wheel. Capping fires keeps it responsive at the cost of
-    /// "skipping" excess events when scrolling fast.
-    last_pty_wheel_at: Option<std::time::Instant>,
     /// When `true`, the currently-focused pane fills the whole window;
     /// the other three are zero-sized and not drawn. Toggled with
     /// `Action::MaximizePane` / `Action::RestoreLayout` (defaults
@@ -4558,8 +4418,7 @@ struct State {
     /// the new client's checkpoint lands — see `HeldPaneScreen`'s own doc
     /// and `pane_screen_choice`. Captured by `attach_session_to_bl` when
     /// dropping the departing feed; cleared the first time the new
-    /// client reports checkpointed, when the feed resolves to tmux
-    /// (`PtyOpened`), when the attach itself fails
+    /// client reports checkpointed, when the attach itself fails
     /// (`spawn_pane_attach_term` returning false), or — coordinator
     /// amendment — when the client goes terminal (`is_dead`) before it
     /// EVER checkpointed (`pump_pane_attach_term`, alongside the episode-
@@ -4622,17 +4481,15 @@ struct State {
     /// it on screen has actually been submitted for display. Reset to
     /// `false` on every new spawn (`spawn_pane_attach_term`).
     pane_attach_presented: bool,
-    /// ADR 0042 slice L1b fix 2: which backend the session pane's
-    /// input/resize/scroll route to right now — see `PaneFeed`'s own
-    /// doc for why this can't just be derived from
-    /// `pane_attach_term.is_some()`. Starts `Tmux` (matches the
-    /// pre-L1b, pre-any-switch default: the BL pane opens against
-    /// whatever the daemon's own default target is).
+    /// ADR 0042 slice L1b fix 2: which state the session pane's input
+    /// routes to right now — see `PaneFeed`'s own doc for why this can't
+    /// just be derived from `pane_attach_term.is_some()`. Starts
+    /// `Pending`: the very first attach is exactly as unresolved as any
+    /// later switch.
     pane_feed: PaneFeed,
     /// ADR 0042 slice L1b fix 2: input typed/pasted while `pane_feed ==
     /// PaneFeed::Pending` — flushed through `send_input` once a capsule
-    /// attach resolves (`spawn_pane_attach_term` succeeds), or through
-    /// `pty.write` once an ordinary `PtyOpened` confirms tmux after all.
+    /// attach resolves (`spawn_pane_attach_term` succeeds).
     /// Cleared (not flushed) on every switch to a DIFFERENT target — input
     /// buffered for the DEPARTING row must never reach whatever the new
     /// one turns out to be. Capped at `sot_log::fe_client::TAKE_QUEUE_CAP`
@@ -5987,12 +5844,6 @@ impl State {
             workspace_slugs: Vec::new(),
             default_workspace_slug: None,
             workspace_autostart: HashMap::new(),
-            autostarted_sessions: std::collections::HashSet::new(),
-            launching_sessions: HashMap::new(),
-            pending_autostart: None,
-            autostart_scan: None,
-            delivery: None,
-            deferred_delivery: None,
             workspace_picker: None,
             workspace_ui_snapshots: HashMap::new(),
             workspace_repl_snapshots: HashMap::new(),
@@ -6062,12 +5913,6 @@ impl State {
             repl_input: String::new(),
             repl_eval_counter: 0,
             tree_scroll: 0,
-            // Seed the terminal at a small placeholder size; first
-            // redraw with a real BL content rect resizes it to match.
-            // 5000-row scrollback so wheel-up in the LLM pane can walk
-            // back through tmux output without forwarding any bytes to
-            // tmux itself.
-            pty_terminal: vt100::Parser::new(24, 80, 5000),
             pty_size: None,
             repl_scroll: 0,
             preview_scroll: 0,
@@ -6079,7 +5924,6 @@ impl State {
             llm_drag_active: false,
             cursor_px: (0.0, 0.0),
             wheel_residue_y: 0.0,
-            last_pty_wheel_at: None,
             maximized: cli.start_maximized,
             wide_preview: false,
             nav_spill_until: None,
@@ -6130,7 +5974,7 @@ impl State {
             pane_attach_started_at: None,
             pane_attach_episode_warnings: 0,
             pane_attach_presented: false,
-            pane_feed: PaneFeed::Tmux,
+            pane_feed: PaneFeed::Pending,
             pane_pending_input: Vec::new(),
             #[cfg(windows)]
             fe_down_baseline_evidence,
@@ -7667,11 +7511,8 @@ impl State {
                 // `--boot` (scriptable spawn->goto->boot): seed the target's
                 // autostart flag so the attach below arms ccb — unconditional of
                 // what workspace.list reported, fixing the registry-flag timing
-                // where a freshly-spawned ws hadn't been flagged yet. The
-                // existing already-running guards (autostarted_sessions /
-                // pane_command==claude) still prevent prompt-spam into a live
-                // agent, so this only boots a pane that ISN'T already running
-                // claude. No-op for the daemon-default (no tmux target to boot).
+                // where a freshly-spawned ws hadn't been flagged yet. No-op for
+                // the daemon-default (no tmux target to boot).
                 if boot {
                     if let Some(t) = tmux.as_ref() {
                         let e = self
@@ -9375,10 +9216,10 @@ impl State {
     /// from the DEPARTING row, marks `pane_feed = Pending`, and ALWAYS
     /// routes through `send_to(&host, ...)` (ADR 0042 L2a — was
     /// `self.send`, i.e. `active_host`, before this row's own host was
-    /// threaded through) — the daemon decides tmux-vs-capsule (and,
-    /// start-on-attach, whether a capsule's supervisor needs starting)
-    /// via its `pty.open` reply, either an ordinary `PtyOpened` or a
-    /// refusal carrying `PtyAttachDirect{target}`, never a frontend-side
+    /// threaded through) — the daemon decides whether a capsule's
+    /// supervisor needs starting via its `pty.open` reply, an
+    /// `attach_direct` refusal carrying `PtyAttachDirect{target}` (the
+    /// only kind this build's daemon sends), never a frontend-side
     /// cache-hit guess.
     fn attach_session_to_bl(&mut self, host: HostKey, session_name: String) {
         // ADR 0042 L2a codex review, item D: compare the OWNER pair, not
@@ -9411,19 +9252,18 @@ impl State {
         // Still drop any live client from the DEPARTING row first
         // ("deselecting detaches; a watcher leaving costs nothing") so a
         // switch away from a capsule row never leaks the old attach
-        // client, and set `pane_feed = Pending`: this build genuinely
-        // doesn't know yet whether the new row is tmux or capsule until
-        // the daemon replies (an ordinary `PtyOpened`, or a `pty.open`
-        // refusal carrying `PtyAttachDirect`).
+        // client, and set `pane_feed = Pending`: the attach is still
+        // async until the daemon's `pty.open` reply (an `attach_direct`
+        // refusal, the only kind this build's daemon sends) lands.
         //
         // LU6a: before dropping it, capture whatever the DEPARTING feed
-        // was painting into `pane_hold` — a capsule client's own screen,
-        // or (a tmux→capsule switch) `pty_terminal`'s — so the pane keeps
-        // showing that until the new client's checkpoint lands, rather
-        // than the new client's freshly-constructed, still-empty parser
-        // (`pane_screen_choice`'s own doc). A departing `Pending` feed
-        // (no client yet) leaves whatever hold is already there alone —
-        // nothing new was ever painted for it to replace.
+        // was painting into `pane_hold` — the capsule client's own
+        // screen — so the pane keeps showing that until the new client's
+        // checkpoint lands, rather than the new client's freshly-
+        // constructed, still-empty parser (`pane_screen_choice`'s own
+        // doc). A departing `Pending` feed (no client yet) leaves
+        // whatever hold is already there alone — nothing new was ever
+        // painted for it to replace.
         // LU6a design-review amendment: the "since request" clock
         // starts HERE for an ordinary switch — or, for a switch that
         // is really the tail of a workspace CREATE
@@ -9440,8 +9280,6 @@ impl State {
         );
         if let Some(t) = self.pane_attach_term.take() {
             self.pane_hold = Some(HeldPaneScreen(t.screen().clone()));
-        } else if self.pane_feed == PaneFeed::Tmux {
-            self.pane_hold = Some(HeldPaneScreen(self.pty_terminal.screen().clone()));
         }
         // SHOULD-FIX (Codex review, lane B5 discharge): a dial
         // configuration error belongs to the DEPARTING row only — the
@@ -9628,66 +9466,28 @@ impl State {
         }
     }
 
-    /// Flushes `pane_pending_input` through the daemon's `pty.write` —
-    /// call once `pane_feed` resolves to `Tmux` (an ordinary `PtyOpened`
-    /// confirming the row was tmux after all).
-    fn flush_pane_pending_input_to_tmux(&mut self) {
-        if self.pane_pending_input.is_empty() {
-            return;
-        }
-        let bytes = std::mem::take(&mut self.pane_pending_input);
-        // ADR 0042 L2a item D: route to the BL pane's owner, not
-        // whatever's active — the buffer was queued for a specific
-        // target, and by the time it flushes the user may have already
-        // switched active_host elsewhere.
-        let bl_owner = self
-            .bl_pane_target
-            .as_ref()
-            .map(|(h, _)| h.clone())
-            .unwrap_or_else(|| self.active_host.clone());
-        if let Err(e) = self.send_to(&bl_owner, crate::transport::OutgoingReq::PtyWrite { bytes }) {
-            tracing::warn!(error = %e, "drop buffered pty.write on tmux confirm — channel closed");
-        }
-    }
-
-    /// ADR 0042 slice L1b fix 2/3: routes session-pane input bytes to
-    /// whichever backend `pane_feed` says is live — the capsule client's
-    /// own `send_input`, the pending buffer while resolution is still
-    /// unknown, or the daemon's `pty.write` for a confirmed tmux row.
-    /// The ONE routing point every input source (typed keystrokes, LLM-
-    /// pane paste, ROI paste) shares, so a future fourth source only has
-    /// to call this rather than re-derive the three-way branch.
+    /// ADR 0042 slice L1b fix 2/3, narrowed post-notmux (every row is a
+    /// capsule; there is no tmux fallback anymore): routes session-pane
+    /// input bytes to the capsule client's own `send_input`, or queues
+    /// in `pane_pending_input` while resolution is still `Pending`. The
+    /// ONE routing point every input source (typed keystrokes, LLM-pane
+    /// paste, ROI paste) shares, so a future source only has to call
+    /// this rather than re-derive the branch.
     fn send_pane_input(&mut self, bytes: &[u8]) {
         match self.pane_feed {
             PaneFeed::Capsule => {
                 if let Some(t) = self.pane_attach_term.as_mut() {
                     t.send_input(bytes);
-                    return;
+                } else {
+                    // (a logic bug) `pane_feed` says Capsule but there's
+                    // no live client — never silently drop input, queue
+                    // it for whenever one attaches.
+                    self.queue_pane_pending_input(bytes);
                 }
-                // Falls through to `pty.write` below only if `pane_feed`
-                // says Capsule but (a logic bug) there's no live client —
-                // never silently drop input.
             }
             PaneFeed::Pending => {
                 self.queue_pane_pending_input(bytes);
-                return;
             }
-            PaneFeed::Tmux => {}
-        }
-        // ADR 0042 L2a item D: same owner-routing as
-        // flush_pane_pending_input_to_tmux above.
-        let bl_owner = self
-            .bl_pane_target
-            .as_ref()
-            .map(|(h, _)| h.clone())
-            .unwrap_or_else(|| self.active_host.clone());
-        if let Err(e) = self.send_to(
-            &bl_owner,
-            crate::transport::OutgoingReq::PtyWrite {
-                bytes: bytes.to_vec(),
-            },
-        ) {
-            tracing::warn!(error = %e, "drop pty.write — channel closed");
         }
     }
 
@@ -9799,8 +9599,8 @@ impl State {
                 // the departed row's screen. `pane_screen_choice` also
                 // stops painting this dead client's own (blank) screen
                 // once `is_dead` is set, so the pane falls all the way
-                // through to `pty_terminal` — today's rendering — instead
-                // of either. A client that checkpointed and only later
+                // through to blank instead of either. A client that
+                // checkpointed and only later
                 // died is untouched (its own last content keeps showing).
                 if t.is_dead() && !t.is_checkpointed() {
                     self.pane_hold = None;
@@ -9827,288 +9627,6 @@ impl State {
                 self.status = status_line;
             }
         }
-    }
-
-    /// Decide an armed pre-launch sniff (contract b). Once tmux's replayed
-    /// screen has settled, scan it: if claude is already running in the pane,
-    /// skip the launch (typing `claude …` would land as a prompt in the live
-    /// agent — the spam this guards, esp. across FE relaunches that forget
-    /// `autostarted_sessions`); otherwise fire the real launch. Re-checks the
-    /// pinned target so a user switch-away cancels cleanly.
-    fn advance_autostart_scan(&mut self) {
-        // Wait for the replayed screen before scanning, but cap so a silent
-        // pane (no output) still launches.
-        const SETTLE: std::time::Duration = std::time::Duration::from_millis(1200);
-        const MIN_WAIT: std::time::Duration = std::time::Duration::from_millis(600);
-        const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-
-        let (session, started, last_pty) = match self.autostart_scan.as_ref() {
-            Some(s) => (s.session.clone(), s.started, s.last_pty),
-            None => return,
-        };
-        // User switched the BL pane away before we decided — DEFER, don't
-        // kill: `autostarted_sessions` stays untouched so the next attach of
-        // this session re-arms the launch (attach_session_to_bl's contract-b
-        // check), and the status says so out loud — a silent flash here made
-        // spawn delivery look like a coin flip under a multitasking user.
-        // ADR 0042 L2a: this scan is always active_host-scoped (see
-        // autostart_claude_in_pane's doc, same invariant) -- compare the
-        // owner pair, not just the session name.
-        if self.bl_pane_target.as_ref() != Some(&(self.active_host.clone(), session.clone())) {
-            tracing::warn!(%session,
-                "autostart: BL pane left the target before launch decision — deferred to next attach");
-            self.status = format!("autostart deferred · launches on next visit → {session}");
-            self.autostart_scan = None;
-            self.window.request_redraw();
-            return;
-        }
-        let now = std::time::Instant::now();
-        let settled =
-            now.duration_since(last_pty) >= SETTLE && now.duration_since(started) >= MIN_WAIT;
-        let timed_out = now.duration_since(started) >= MAX_WAIT;
-        if !settled && !timed_out {
-            return; // still replaying — check again next tick
-        }
-
-        // Only trust a positive "already running" if the pane produced
-        // output AFTER this attach armed the scan: until the re-target's
-        // replay lands, `contents()` is still the PREVIOUS session's screen,
-        // and matching the user's own claude there poisons
-        // `autostarted_sessions` for the agent session — a silently dead
-        // spawn. (A fresh attach always replays at least a prompt, so an
-        // honest match implies fresh output.)
-        let output_since_attach = last_pty > started;
-        let contents = self.pty_terminal.screen().contents();
-        if pane_shows_running_claude(&contents) {
-            if output_since_attach {
-                // Already running — record it as CONFIRMED so we treat the
-                // pane as satisfied and never type the launch string into the
-                // live agent's prompt. Promote: clear any "launching" hold now
-                // that the launch is verified up.
-                self.autostarted_sessions.insert(session.clone());
-                self.launching_sessions.remove(&session);
-                self.autostart_scan = None;
-                tracing::info!(%session,
-                    "autostart: claude already running in pane — skipping launch (no prompt-spam)");
-                self.status =
-                    format!("auto-start: claude already running in {session} — left as-is");
-                self.window.request_redraw();
-                return;
-            }
-            tracing::info!(%session,
-                "autostart: 'running claude' match predates any post-attach output — stale screen, ignoring");
-        }
-        // No (trustworthy) claude detected — fire the real launch + task
-        // delivery. PtyOpened acked the re-target, so the write lands in
-        // this session's pane.
-        self.autostart_scan = None;
-        self.autostart_claude_in_pane(session);
-    }
-
-    /// Contract (b): launch claude in the freshly-attached agent pane, then
-    /// hand task delivery to the event-loop state machine (`advance_delivery`).
-    /// The keys flow through the FE-attached pty (`pty.write` → BL pane): that
-    /// live terminal client is exactly what a detached session lacks, and why
-    /// claude can't self-init there.
-    fn autostart_claude_in_pane(&mut self, session: String) {
-        // ADR 0042 L2a: `attach_session_to_bl`'s `pty.open` always routes
-        // via `self.send` (active_host), so the BL pane we're checking
-        // below is on `active_host` by construction — no separate lookup
-        // needed.
-        let key: WsKey = (self.active_host.clone(), session.clone());
-        let (task, agent) = match self.workspace_autostart.get(&key) {
-            Some(info) => (info.task.clone(), info.agent_name.clone()),
-            None => return,
-        };
-        // Only if the BL pane is actually on this session right now.
-        if self.bl_pane_target.as_ref() != Some(&(self.active_host.clone(), session.clone())) {
-            return;
-        }
-        // Stamp the fire time (NOT the permanent confirmed mark -- that's
-        // set only by the 4171 sniff once ccb is actually seen running).
-        // ADR 0042 L2a codex review deletions: the read-side hold-window
-        // guard this stamp used to gate (`launching_held`) is deleted as
-        // dead code -- see `launching_sessions`'s own field doc.
-        self.launching_sessions
-            .insert(session.clone(), std::time::Instant::now());
-        // One launch flavor (pane is already cd'd to the repo root): `ccb` —
-        // claude whose first turn is the /sot-session-start receive-bootstrap,
-        // so every agent session comes up comm-aware (joined + listening +
-        // inbox Monitor armed) with no hand-rolled join in the brief (maintainer decision,
-        // 2026-06-12; comm-spawn's brief is now task-only). A spawned agent's
-        // handle is pinned with SOT_COMM_NAME=<agent> — comm-join's env
-        // default — so the spawner knows who reports back. Tilde path because
-        // the daemon-made tmux login shell may not have ~/.local/bin on PATH
-        // (same pitfall comm-spawn.sh works around); bash expands the tilde,
-        // and a missing ccb fails loudly in the pane rather than silently.
-        // The task brief (if any) is delivered by `advance_delivery` after
-        // the bootstrap turn settles — its TIMEOUT is sized to ride that
-        // turn out.
-        let launch = if agent.is_empty() {
-            "~/.local/bin/ccb\r".to_string()
-        } else {
-            format!("SOT_COMM_NAME={agent} ~/.local/bin/ccb\r")
-        };
-        self.status = if !task.is_empty() {
-            format!("auto-starting ccb · @{agent}")
-        } else {
-            format!("auto-starting ccb · {session}")
-        };
-        tracing::info!(%session, %agent, has_task = !task.is_empty(),
-            "autostart: launching ccb in agent pane");
-        // ADR 0042 L2a: route via send_to the owner (already confirmed
-        // == active_host above) rather than the implicit self.send, so
-        // this reads the same as every other bl_pane_target-owned
-        // request rather than relying on the invariant silently.
-        if self
-            .send_to(
-                &self.active_host.clone(),
-                crate::transport::OutgoingReq::PtyWrite {
-                    bytes: launch.into_bytes(),
-                },
-            )
-            .is_err()
-        {
-            return;
-        }
-        if task.is_empty() {
-            return; // launch-only; nothing to deliver
-        }
-        let now = std::time::Instant::now();
-        self.delivery = Some(AutoStartDelivery {
-            pinned: session,
-            task,
-            agent,
-            phase: DeliveryPhase::Boot,
-            last_pty: now,
-            started: now,
-            submitted_at: None,
-        });
-        self.window.request_redraw();
-    }
-
-    /// Drive an in-flight auto-start task delivery (contract b). Called from
-    /// the event loop each tick/frame. Waits for the pinned pane's pty output
-    /// to settle (readiness — not a blind timer), clears a possible what's-new
-    /// interstitial, types the bootstrap, then settles + double-Enter-submits.
-    /// Re-checks `bl_pane_target == pinned` before every keystroke so it never
-    /// misroutes into a session the user switched to, and on overall timeout
-    /// surfaces a status notice instead of leaving a launched-but-idle agent.
-    fn advance_delivery(&mut self) {
-        const SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
-        const MIN_BOOT: std::time::Duration = std::time::Duration::from_secs(3);
-        const SUBMIT_GAP: std::time::Duration = std::time::Duration::from_millis(800);
-        // Sized to ride out the agent's /sot-session-start first turn: the
-        // ccb launch runs the full comm bootstrap (join + listener + Monitor
-        // + selftest + poll) before the pane settles enough for the brief,
-        // and that turn alone can run well past the old 60s.
-        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
-
-        let (pinned, phase, last_pty, started, submitted_at, agent) = match self.delivery.as_ref() {
-            Some(d) => (
-                d.pinned.clone(),
-                d.phase,
-                d.last_pty,
-                d.started,
-                d.submitted_at,
-                d.agent.clone(),
-            ),
-            None => return,
-        };
-        let now = std::time::Instant::now();
-
-        // Pin: never write to a pane the user switched to. DEFER, don't
-        // kill (mirror of e69cd45's launch defer): the agent's tmux pane
-        // lives on regardless of where the BL pane looks, so the delivery
-        // resumes phase-preserved on the next attach of the pinned session
-        // (PtyOpened consumes `deferred_delivery`). Killing here left a
-        // launched-but-taskless agent behind a status flash.
-        // ADR 0042 L2a: same active_host-scoped invariant as
-        // autostart_claude_in_pane -- delivery only ever pins a session
-        // on the host that was active when the launch fired.
-        if self.bl_pane_target.as_ref() != Some(&(self.active_host.clone(), pinned.clone())) {
-            tracing::warn!(%pinned,
-                "autostart: BL pane left the target before delivery — deferred to next attach (no misroute)");
-            self.status = format!(
-                "auto-start: task for @{agent} deferred · delivers on next visit → {pinned}"
-            );
-            self.deferred_delivery = self.delivery.take();
-            self.window.request_redraw();
-            return;
-        }
-        // Timeout: surface rather than leave a launched-but-idle agent.
-        if now.duration_since(started) > TIMEOUT {
-            tracing::warn!(%pinned,
-                "autostart: claude prompt not confirmed within timeout — task not delivered");
-            self.status = format!(
-                "auto-start: couldn't confirm @{agent}'s prompt in 60s — task NOT delivered, do it manually"
-            );
-            self.delivery = None;
-            self.window.request_redraw();
-            return;
-        }
-
-        let settled = now.duration_since(last_pty) >= SETTLE;
-        match phase {
-            DeliveryPhase::Boot => {
-                // Wait for the TUI to come up and quiesce, then clear a
-                // possible what's-new interstitial (no-op on an empty prompt).
-                if now.duration_since(started) >= MIN_BOOT && settled {
-                    self.deliver_write(b"\r".to_vec());
-                    if let Some(d) = self.delivery.as_mut() {
-                        d.phase = DeliveryPhase::Interstitial;
-                        d.last_pty = now;
-                    }
-                }
-            }
-            DeliveryPhase::Interstitial => {
-                // Prompt is up (interstitial cleared); type the bootstrap.
-                if settled {
-                    let task = self
-                        .delivery
-                        .as_ref()
-                        .map(|d| d.task.clone())
-                        .unwrap_or_default();
-                    self.deliver_write(task.into_bytes());
-                    if let Some(d) = self.delivery.as_mut() {
-                        d.phase = DeliveryPhase::Typed;
-                        d.last_pty = now;
-                    }
-                }
-            }
-            DeliveryPhase::Typed => {
-                // Task text settled in the input box; submit (Enter #1).
-                if settled {
-                    self.deliver_write(b"\r".to_vec());
-                    if let Some(d) = self.delivery.as_mut() {
-                        d.phase = DeliveryPhase::Submitted;
-                        d.submitted_at = Some(now);
-                    }
-                }
-            }
-            DeliveryPhase::Submitted => {
-                // Ink can drop the first Enter after a big paste — confirm with
-                // a second one, then we're done.
-                let gap_ok = submitted_at
-                    .map(|t| now.duration_since(t) >= SUBMIT_GAP)
-                    .unwrap_or(true);
-                if gap_ok {
-                    self.deliver_write(b"\r".to_vec());
-                    self.status = format!("auto-start: delivered task to @{agent}");
-                    self.delivery = None;
-                    self.window.request_redraw();
-                }
-            }
-        }
-    }
-
-    /// Send one keystroke to the BL pane during delivery. The caller has
-    /// already confirmed `bl_pane_target == (active_host, pinned)`.
-    fn deliver_write(&self, bytes: Vec<u8>) {
-        let _ = self.send_to(
-            &self.active_host.clone(),
-            crate::transport::OutgoingReq::PtyWrite { bytes },
-        );
     }
 
     /// If the selected tree row's annotation target differs from the last
@@ -10367,13 +9885,17 @@ impl State {
         }
         // ADR 0042 slice L1b: same source as the paint path (`redraw`'s
         // `pty_screen`) — a capsule attach's own screen when one is
-        // live, else the tmux `pty_terminal`. Selecting text against the
-        // wrong (idle) screen would copy stale or blank content.
-        let screen = self
-            .pane_attach_term
-            .as_ref()
-            .map(|t| t.screen())
-            .unwrap_or_else(|| self.pty_terminal.screen());
+        // live, else blank. Selecting text against the wrong (idle)
+        // screen would copy stale or blank content.
+        let blank;
+        let screen = match self.pane_attach_term.as_ref().map(|t| t.screen()) {
+            Some(s) => s,
+            None => {
+                let (cols, rows) = self.pty_size.unwrap_or((80, 24));
+                blank = blank_pane_screen(cols, rows);
+                &blank
+            }
+        };
         let mut out = String::new();
         for row in sr..=er {
             if row != sr {
@@ -12147,8 +11669,9 @@ impl State {
                     screen.is_some_and(|s| s.alternate_screen())
                 }
                 help::Pane::Agent => {
-                    // Tmux always owns scrollback paging. A capsule row in
-                    // alternate-screen mode instead receives the original key.
+                    // A capsule row in alternate-screen mode receives the
+                    // original key instead of having it consumed as a
+                    // local-ring scrollback page.
                     self.pane_feed == PaneFeed::Capsule && self.pane_attach_term.as_ref()
                         .is_some_and(|t| t.screen().alternate_screen())
                 },
@@ -14280,121 +13803,6 @@ impl State {
                         }
                     }
                 }
-                crate::transport::IncomingEvt::PtyOpened {
-                    cols,
-                    rows,
-                    pane_command,
-                } => {
-                    // ADR 0042 L2a codex review, item D: only the BL
-                    // pane's actual OWNER may act on its own pty.open
-                    // reply -- the owner is bl_pane_target's host, or
-                    // active_host as the fallback for the pre-first-
-                    // attach case (redraw's startup-resync PtyOpen routes
-                    // the same way, see the `bl_owner` local there). A
-                    // reply from any other host is stale/foreign and is
-                    // dropped rather than resizing/flushing the wrong
-                    // connection's state.
-                    let bl_owner = self
-                        .bl_pane_target
-                        .as_ref()
-                        .map(|(h, _)| h.clone())
-                        .unwrap_or_else(|| self.active_host.clone());
-                    if event_host != bl_owner {
-                        tracing::debug!(%event_host, %bl_owner,
-                            "pty.opened from a non-owning host — dropped");
-                        continue;
-                    }
-                    // Backend confirmed the pty size. Make sure our
-                    // emulator matches — if it doesn't (e.g. backend
-                    // clamped to a minimum), the redraw will fire a
-                    // PtyResize on the next mismatch.
-                    self.pty_terminal.screen_mut().set_size(rows, cols);
-                    self.pty_size = Some((cols, rows));
-                    // ADR 0042 slice L1b fix 2: an ordinary size
-                    // confirmation is the daemon proving this target is
-                    // (or remains) tmux — resolves `PaneFeed::Pending`
-                    // definitively and releases anything buffered while
-                    // it was unknown. A no-op when `pane_feed` was
-                    // already `Tmux` (a routine resize-confirm): the
-                    // buffer is empty by construction in that case.
-                    self.pane_feed = PaneFeed::Tmux;
-                    // LU6a: the feed just resolved to tmux — any hold from
-                    // the switch this resolves has nothing left to wait
-                    // for (`pane_hold`'s own doc: "never left to outlive
-                    // the switch it belongs to"); `pty_terminal`, the tmux
-                    // screen, paints live from here on regardless.
-                    self.pane_hold = None;
-                    self.flush_pane_pending_input_to_tmux();
-                    // Contract (b): the pty re-target is now live. If this
-                    // open was for a flagged agent workspace, launch claude
-                    // + deliver its bootstrap now that the BL pane points at
-                    // the agent's session.
-                    if let Some(sess) = self.pending_autostart.take() {
-                        if self.bl_pane_target.as_ref().map(|(_, s)| s.as_str())
-                            == Some(sess.as_str())
-                        {
-                            // Authoritative backend guard first: if the agent
-                            // pane already runs claude (tmux foreground process
-                            // is `claude`/`node`, reported on this `pty.open`),
-                            // it's confirmed up — record it and skip the launch
-                            // outright. This is the truth source the old path
-                            // lacked: it survives FE relaunches (which wipe
-                            // `autostarted_sessions`) and needs no screen-scrape
-                            // fresh-output heuristic, so an idle long-lived
-                            // agent is never
-                            // relaunched into. Only when the signal is ambiguous
-                            // (shell prompt, claude shelled out mid-tool, or the
-                            // backend didn't probe) do we fall back to the
-                            // settle-and-sniff scan below.
-                            if pane_command_is_claude(pane_command.as_deref()) {
-                                self.autostarted_sessions.insert(sess.clone());
-                                self.launching_sessions.remove(&sess);
-                                tracing::info!(session = %sess, ?pane_command,
-                                    "autostart: backend reports claude already foreground in pane — skipping launch (no prompt-spam)");
-                                self.status = format!(
-                                    "auto-start: claude already running in {sess} — left as-is"
-                                );
-                            } else {
-                                // Don't launch yet: arm the pre-launch sniff so
-                                // we can still skip a pane that shows claude in
-                                // its replayed screen even if the foreground
-                                // probe was inconclusive.
-                                // `advance_autostart_scan` decides once the
-                                // replayed screen settles.
-                                let now = std::time::Instant::now();
-                                self.autostart_scan = Some(AutostartScan {
-                                    session: sess,
-                                    started: now,
-                                    last_pty: now,
-                                });
-                            }
-                        }
-                    }
-                    // Resume a delivery parked by a mid-flight switch-away,
-                    // now that the re-target for its pinned session has
-                    // landed (writes route to the right pane from here on).
-                    // Fresh clocks restart the settle + 60s-timeout windows;
-                    // phase is preserved — see `deferred_delivery`'s doc for
-                    // why resuming at `Typed` must not re-type the task.
-                    // (Mutually exclusive with the launch path above: a
-                    // delivery only exists after `autostart_claude_in_pane`
-                    // put the session in `autostarted_sessions`.)
-                    if self.delivery.is_none()
-                        && self.deferred_delivery.as_ref().is_some_and(|d| {
-                            self.bl_pane_target.as_ref().map(|(_, s)| s.as_str())
-                                == Some(d.pinned.as_str())
-                        })
-                    {
-                        let mut d = self.deferred_delivery.take().expect("checked above");
-                        let now = std::time::Instant::now();
-                        d.started = now;
-                        d.last_pty = now;
-                        tracing::info!(pinned = %d.pinned, phase = ?d.phase,
-                            "autostart: resuming deferred task delivery");
-                        self.status = format!("auto-start: resuming task delivery to @{}", d.agent);
-                        self.delivery = Some(d);
-                    }
-                }
                 crate::transport::IncomingEvt::PtyAttachDirect { target } => {
                     // ADR 0042 slice L1b fix 1: this reply is about
                     // `target` — the ORIGINAL request's own target,
@@ -14456,72 +13864,6 @@ impl State {
                             // this target — nothing to change.
                         }
                     }
-                    self.window.request_redraw();
-                }
-                crate::transport::IncomingEvt::PtyBytes { bytes } => {
-                    // ADR 0042 L2a codex review, item D: only the BL
-                    // pane's actual OWNER may feed these bytes into the
-                    // shared terminal emulator -- otherwise a same-named
-                    // session on a NON-owning host (or a straggling
-                    // stream from a host we've since switched away from)
-                    // would render into the wrong pane's screen.
-                    let bl_owner = self
-                        .bl_pane_target
-                        .as_ref()
-                        .map(|(h, _)| h.clone())
-                        .unwrap_or_else(|| self.active_host.clone());
-                    if event_host != bl_owner {
-                        tracing::debug!(%event_host, %bl_owner,
-                            "pty.bytes from a non-owning host — dropped");
-                        continue;
-                    }
-                    self.pty_terminal.process(&bytes);
-                    // Feed the auto-start delivery settle-clock: output on the
-                    // pinned pane means claude is still rendering (not ready
-                    // yet), so reset its quiescence timer.
-                    let on_pinned = match self.delivery.as_ref() {
-                        Some(d) => {
-                            self.bl_pane_target.as_ref().map(|(_, s)| s.as_str())
-                                == Some(d.pinned.as_str())
-                        }
-                        None => false,
-                    };
-                    if on_pinned {
-                        if let Some(d) = self.delivery.as_mut() {
-                            d.last_pty = std::time::Instant::now();
-                        }
-                    }
-                    // Same settle-clock for the pre-launch sniff: output on the
-                    // scanned pane means tmux is still replaying its screen.
-                    let scan_on_pinned = match self.autostart_scan.as_ref() {
-                        Some(s) => {
-                            self.bl_pane_target.as_ref().map(|(_, sn)| sn.as_str())
-                                == Some(s.session.as_str())
-                        }
-                        None => false,
-                    };
-                    if scan_on_pinned {
-                        if let Some(s) = self.autostart_scan.as_mut() {
-                            s.last_pty = std::time::Instant::now();
-                        }
-                    }
-                    // Belt-and-braces wake of the redraw pump. The
-                    // transport-side `window.request_redraw()` at
-                    // transport.rs:1044 fires per frame received, which
-                    // *should* already cover this — but user-confirmed
-                    // 2026-05-22 the LLM pane sometimes stops repainting
-                    // after a nav-reset burst (set_root / set_flat /
-                    // apply_children + the cascade of `preview.get` /
-                    // `concept.read` / `file.parse` / `tree.children`
-                    // that follows). Switching workspaces b/f unwedges
-                    // it because that path fires its own request_redraw.
-                    // Independent of the underlying root cause, asking
-                    // for a redraw here too guarantees the LLM pane
-                    // wakes the loop on every byte burst — coalesced
-                    // with the transport call by winit, so no extra
-                    // paints in the steady state. See `a2e4916` for the
-                    // companion fix that removes the *trigger* (nav
-                    // cursor reset).
                     self.window.request_redraw();
                 }
                 crate::transport::IncomingEvt::Event { op, payload } => {
@@ -15642,14 +14984,6 @@ impl State {
         if self.prune_expired_flashes(std::time::Instant::now()) {
             self.dirty = true;
         }
-        // Decide any armed pre-launch sniff (contract b): skip the launch if
-        // the pane already runs claude, else fire it. Must run before
-        // advance_delivery (it's what creates the delivery on launch).
-        self.advance_autostart_scan();
-        // Advance any in-flight agent auto-start task delivery (contract b).
-        // Runs each frame/tick — the idle clock tick guarantees ~1s cadence —
-        // watching the pinned pane for output to settle before each keystroke.
-        self.advance_delivery();
         // Coalesced reflow: one MathRendered (or a burst) sets
         // needs_md_reflow; we rebuild preview_md here so the walk pulls
         // the freshly-cached SVG dims when sizing per-block placeholders.
@@ -15959,22 +15293,13 @@ impl State {
         // internally when the requested offset exceeds the buffered
         // rows, so we read the actual offset back to keep State in
         // sync with what the emulator agreed to.
-        // ADR 0042 slice L1b: when the session pane is a capsule attach
-        // (`pane_attach_term` live), `pump_pane_attach_term` owns
-        // `pty_scroll` — applying it to `pty_terminal` too would clobber
-        // it with the idle tmux parser's own (empty) scrollback every
-        // frame. `pty_terminal` only drives `pty_scroll` on the tmux path.
+        // ADR 0042 slice L1b: `pump_pane_attach_term` owns `pty_scroll`
+        // for a live capsule attach — every row is a capsule on this
+        // build, so a `Pending` feed (no client yet) simply has no
+        // scrollback to apply.
         self.fire_due_read_mark();
-        let pane_is_capsule = self.pane_attach_term.is_some();
-        if pane_is_capsule {
+        if self.pane_attach_term.is_some() {
             self.pump_pane_attach_term();
-        }
-        if !pane_is_capsule {
-            self.pty_terminal
-                .screen_mut()
-                .set_scrollback(self.pty_scroll as usize);
-            let actual_pty_scroll = self.pty_terminal.screen().scrollback();
-            self.pty_scroll = actual_pty_scroll.min(u16::MAX as usize) as u16;
         }
         // Local terminal drawer (G2/G3): lazily spawn the OS shell the
         // first time the Terminal drawer is shown, then drain any pending
@@ -16073,30 +15398,24 @@ impl State {
         // value the renderer branches on.
         let drawer = self.drawer;
         // Borrow the LLM terminal screen for the duration of the draw.
-        // vt100::Parser's screen() returns a `&Screen` tied to the
-        // parser; since `terminal.draw` borrows a different field
-        // (self.terminal, not self.pty_terminal), Rust's split-borrow
-        // rules let us hold both at once. The local terminal's screen is
-        // borrowed the same way when the Terminal drawer is active.
-        // ADR 0042 slice L1b: `pane_attach_term`'s screen wins when the
-        // session pane is a capsule attach — same `vt100-ctt` type as
-        // `pty_terminal`'s (the frontend's `vt100` name and `sot_log`'s
-        // `vt100_ctt` name both resolve to the workspace-patched fork, so
-        // this is a plain `Option::unwrap_or_else`, not a conversion).
-        // Unconditional on every platform since ADR 0045 decision 1 (a
-        // capsule row attaches through its own daemon everywhere).
+        // `pane_attach_term`'s `vt100-ctt` `screen()` returns a `&Screen`
+        // tied to the client; since `terminal.draw` borrows a different
+        // field (self.terminal), Rust's split-borrow rules let us hold
+        // both at once. The local terminal's screen is borrowed the same
+        // way when the Terminal drawer is active. Unconditional on every
+        // platform since ADR 0045 decision 1 (a capsule row attaches
+        // through its own daemon everywhere).
         //
-        // LU6a: which of the three sources actually wins is
-        // `pane_screen_choice`'s call, not an unconditional
-        // `pane_attach_term`-if-present — a live but not-yet-checkpointed
-        // client (or a still-`Pending` feed) defers to `pane_hold` so a
-        // capsule switch never paints the new client's empty parser.
-        // Coordinator amendment: a client that went terminal before ever
-        // checkpointing falls all the way through to `pty_terminal`
-        // instead (`pane_screen_choice`'s own doc) — three separate
-        // `let`s (rather than inlining each as a call argument) so the
-        // one `&mut` read (`is_dead`) never overlaps the `&ref` reads
-        // around it.
+        // LU6a: which source actually wins is `pane_screen_choice`'s
+        // call, not an unconditional `pane_attach_term`-if-present — a
+        // live but not-yet-checkpointed client (or a still-`Pending`
+        // feed) defers to `pane_hold` so a capsule switch never paints
+        // the new client's empty parser. Coordinator amendment: a client
+        // that went terminal before ever checkpointing falls all the way
+        // through to blank instead (`pane_screen_choice`'s own doc) —
+        // three separate `let`s (rather than inlining each as a call
+        // argument) so the one `&mut` read (`is_dead`) never overlaps
+        // the `&ref` reads around it.
         let pane_attach_has_client = self.pane_attach_term.is_some();
         let pane_attach_checkpointed =
             self.pane_attach_term.as_ref().is_some_and(|t| t.is_checkpointed());
@@ -16146,12 +15465,19 @@ impl State {
                 .unwrap_or(0);
             tracing::info!(since_request_ms, "session pane: capsule screen presented");
         }
-        let pty_screen = match pane_screen {
+        let blank_pty_screen;
+        let pty_screen = match match pane_screen {
             PaneScreen::Client => self.pane_attach_term.as_ref().map(|t| t.screen()),
             PaneScreen::Hold => self.pane_hold.as_ref().map(|h| h.screen()),
-            PaneScreen::Tmux => None,
-        }
-        .unwrap_or_else(|| self.pty_terminal.screen());
+            PaneScreen::Empty => None,
+        } {
+            Some(s) => s,
+            None => {
+                let (cols, rows) = self.pty_size.unwrap_or((80, 24));
+                blank_pty_screen = blank_pane_screen(cols, rows);
+                &blank_pty_screen
+            }
+        };
         #[cfg(windows)]
         let attach_screen = self.attach_term.as_ref().map(|t| t.screen());
         #[cfg(not(windows))]
@@ -17120,10 +16446,11 @@ impl State {
         self.pane_rects = new_pane_rects;
         self.nav_spill_segments = nav_spill_segs_out;
 
-        // Open the LLM-pane pty on the first redraw that has a real
-        // BL content rect, or resize it when the rect grew/shrank.
-        // `tmux new-session -A -s sot-llm` is what runs on the
-        // backend side, so this is idempotent across launches.
+        // Track the LLM-pane's size once the first redraw has a real BL
+        // content rect, and keep an already-live capsule client's
+        // viewport in sync when the rect grows/shrinks — the actual
+        // attach/open wire request is `attach_session_to_bl`'s, not
+        // this redraw's.
         let (cols, rows) = pty_size_observed;
         if cols >= 2 && rows >= 2 {
             let need_open = self.pty_size.is_none();
@@ -17163,55 +16490,6 @@ impl State {
                 PaneFeed::Pending => {
                     if need_open || need_resize {
                         self.pty_size = Some((cols, rows));
-                    }
-                }
-                PaneFeed::Tmux => {
-                    // ADR 0042 L2a item D: route to the OWNER of
-                    // bl_pane_target, falling back to active_host for the
-                    // pre-first-attach case (no target yet -- opens the
-                    // daemon's default pty on whichever host is active).
-                    let bl_owner = self
-                        .bl_pane_target
-                        .as_ref()
-                        .map(|(h, _)| h.clone())
-                        .unwrap_or_else(|| self.active_host.clone());
-                    if need_open {
-                        if let Err(e) = self.send_to(
-                            &bl_owner,
-                            OutgoingReq::PtyOpen {
-                                cols,
-                                rows,
-                                target: self.bl_pane_target.as_ref().map(|(_, s)| s.clone()),
-                                // #5 guard: the first-redraw initial BL open is
-                                // startup restore, not a user switch — false so
-                                // it can't claim the foreground from where the
-                                // user (on any FE) put it.
-                                user_switch: false,
-                            },
-                        ) {
-                            tracing::warn!(error = %e, "drop pty.open request — channel closed");
-                        } else {
-                            // Locally seed the size so a resize doesn't fire
-                            // before the response confirms. The emulator is
-                            // resized to match so we don't render at the
-                            // wrong dims before the first bytes arrive.
-                            self.pty_terminal.screen_mut().set_size(rows, cols);
-                            self.pty_size = Some((cols, rows));
-                        }
-                    } else if need_resize {
-                        if let Err(e) =
-                            self.send_to(&bl_owner, OutgoingReq::PtyResize { cols, rows })
-                        {
-                            tracing::warn!(error = %e, "drop pty.resize — channel closed");
-                        } else {
-                            self.pty_terminal.screen_mut().set_size(rows, cols);
-                            self.pty_size = Some((cols, rows));
-                            // Row layout shifted; the previous scrollback
-                            // offset no longer points where the user
-                            // expected. Snap to live rather than show a
-                            // confused slice.
-                            self.pty_scroll = 0;
-                        }
                     }
                 }
             }
@@ -20022,49 +19300,11 @@ impl ApplicationHandler for App {
                             state.window.request_redraw();
                             return;
                         }
-                        // Tmux owns scrollback; our vt100-ctt ring stays
-                        // empty because tmux uses cursor-positioned
-                        // redraws. Forward wheel events to the pty as
-                        // xterm SGR mouse-tracking sequences and let
-                        // tmux scroll its own ring. Needs `set -g mouse
-                        // on` inside the tmux session.
-                        //
-                        // Throttled to one fire per ~120ms because each
-                        // SGR triggers a tmux pane repaint round-tripped
-                        // through SSH; without throttling, touchpad
-                        // events at 60Hz pile up and scroll visibly
-                        // lags behind the wheel. Excess events get
-                        // dropped on the floor (stale residue cleared)
-                        // — "fast scrolling" then translates to "max
-                        // ~8 scroll lines/sec", which is plenty for
-                        // human reading pace and stays in sync with
-                        // the wheel.
-                        let now = std::time::Instant::now();
-                        let elapsed = state
-                            .last_pty_wheel_at
-                            .map(|t| now.duration_since(t))
-                            .unwrap_or(std::time::Duration::MAX);
+                        // No live capsule client and not `Pending` (a
+                        // logic bug — every row is a capsule on this
+                        // build, there is no tmux fallback to forward
+                        // wheel events to). Drop the residue and no-op.
                         state.wheel_residue_y = 0.0;
-                        if elapsed < std::time::Duration::from_millis(120) {
-                            return;
-                        }
-                        state.last_pty_wheel_at = Some(now);
-                        let button = if rows_above > 0 { 64 } else { 65 };
-                        let seq = format!("\x1b[<{};1;1M", button);
-                        // ADR 0042 L2a item D: route to the BL pane's owner.
-                        let bl_owner = state
-                            .bl_pane_target
-                            .as_ref()
-                            .map(|(h, _)| h.clone())
-                            .unwrap_or_else(|| state.active_host.clone());
-                        if let Err(e) = state.send_to(
-                            &bl_owner,
-                            OutgoingReq::PtyWrite {
-                                bytes: seq.into_bytes(),
-                            },
-                        ) {
-                            tracing::warn!(error = %e, "drop pty.write (wheel) — channel closed");
-                        }
                     }
                     PaneFocus::NavTree => {
                         // Nav is cursor-driven; wheel-scroll without
@@ -22186,19 +21426,14 @@ impl ApplicationHandler for App {
                                 _ => None,
                             };
                             if let Some(up) = scroll {
-                                // ADR 0042 slice L1b: same local-ring
-                                // convention as the wheel arm above — a
-                                // capsule pane pages its OWN scrollback
-                                // (`pty_scroll`, applied in `redraw`), not
-                                // a wire `pty.scroll` (that op pages TMUX
-                                // copy-mode, which doesn't exist for a
-                                // capsule row). ADR 0042 slice L1b fix 2:
-                                // dropped entirely while `pane_feed ==
-                                // Pending` — routing it to either backend
-                                // would be a guess, and the daemon
-                                // fallback would otherwise reach whatever
-                                // tmux pty it still has open from the
-                                // PREVIOUS row.
+                                // ADR 0042 slice L1b: a capsule pane
+                                // pages its OWN scrollback (`pty_scroll`,
+                                // applied in `redraw`) — every row is a
+                                // capsule on this build. ADR 0042 slice
+                                // L1b fix 2: dropped entirely while
+                                // `pane_feed == Pending` — routing it
+                                // anywhere would be a guess before the
+                                // attach resolves.
                                 //
                                 // ADR 0042 slice L1b fix 4: a capsule
                                 // row's ALTERNATE-SCREEN app (vim, less)
@@ -22209,11 +21444,7 @@ impl ApplicationHandler for App {
                                 // gates the early return below so that
                                 // case falls through to the ordinary
                                 // `key_to_pty_bytes` forward further
-                                // down. Tmux rows keep intercepting
-                                // unconditionally: tmux's own copy-mode
-                                // paging has never checked
-                                // alternate-screen here (byte-for-byte
-                                // the pre-L1b convention).
+                                // down.
                                 let capsule_alt_screen = state.pane_feed == PaneFeed::Capsule
                                     && state
                                         .pane_attach_term
@@ -22230,20 +21461,6 @@ impl ApplicationHandler for App {
                                             state.pty_scroll = new as u16;
                                         }
                                         PaneFeed::Pending => {}
-                                        PaneFeed::Tmux => {
-                                            // ADR 0042 L2a item D: route to
-                                            // the BL pane's owner.
-                                            let bl_owner = state
-                                                .bl_pane_target
-                                                .as_ref()
-                                                .map(|(h, _)| h.clone())
-                                                .unwrap_or_else(|| state.active_host.clone());
-                                            if let Err(e) = state
-                                                .send_to(&bl_owner, OutgoingReq::PtyScroll { up })
-                                            {
-                                                tracing::warn!(error = %e, "drop pty.scroll — channel closed");
-                                            }
-                                        }
                                     }
                                     state.last_key = Some(label);
                                     state.window.request_redraw();
@@ -24430,62 +23647,6 @@ mod tests {
             badges: Vec::new(),
             payload: Default::default(),
         }
-    }
-
-    #[test]
-    fn detects_running_claude_in_pane() {
-        // Idle footer.
-        assert!(pane_shows_running_claude(
-            "│ > Try \"edit\"                          │\n  ? for shortcuts"
-        ));
-        // Working footer.
-        assert!(pane_shows_running_claude("✶ Pondering… (esc to interrupt)"));
-        // --dangerously-skip-permissions banner.
-        assert!(pane_shows_running_claude("  Bypassing Permissions"));
-        // Welcome box (just-booted).
-        assert!(pane_shows_running_claude("✻ Welcome to Claude Code!"));
-        // Real frameconn steady-state footer (captured 2026-06-02) —
-        // a claude WITHOUT the bypass flag still shows the agents hint.
-        assert!(pane_shows_running_claude(
-            "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
-        ));
-        assert!(pane_shows_running_claude(
-            "                    ← for agents"
-        ));
-        // --permission-mode auto footer (Claude Code 2.1.258, the
-        // owner-ruling default) — captured live from a probe pane,
-        // 2026-09-02: "auto mode on" replaces "bypass permissions on" and
-        // neither "for shortcuts" nor "for agents" appear.
-        assert!(pane_shows_running_claude(
-            "⏵⏵ auto mode on (shift+tab to cycle) · 1 agent"
-        ));
-    }
-
-    #[test]
-    fn no_false_positive_on_shell_prompt() {
-        // A freshly cd'd shell pane — must NOT look like a running claude,
-        // else we'd never autostart a genuinely fresh agent.
-        assert!(!pane_shows_running_claude("user@host:~/dev/some-project$ "));
-        assert!(!pane_shows_running_claude(""));
-    }
-
-    #[test]
-    fn pane_command_claude_guard() {
-        // Authoritative backend probe: `claude` is exactly what
-        // `pane_current_command` reports for a live agent; `node` is the runtime
-        // it may exec under. Both must
-        // suppress the autostart launch.
-        assert!(pane_command_is_claude(Some("claude")));
-        assert!(pane_command_is_claude(Some("node")));
-        assert!(pane_command_is_claude(Some(" claude\n"))); // tmux can pad/newline
-        assert!(pane_command_is_claude(Some("CLAUDE")));
-        // A shell prompt or unknown foreground means "not confirmed running" —
-        // fall through to the screen-scrape scan, then launch a real dead agent.
-        assert!(!pane_command_is_claude(Some("bash")));
-        assert!(!pane_command_is_claude(Some("zsh")));
-        assert!(!pane_command_is_claude(Some("")));
-        // No probe (same-target resize, or backend predating the field).
-        assert!(!pane_command_is_claude(None));
     }
 
     #[test]
@@ -27486,8 +26647,8 @@ mod tests {
     #[test]
     fn bl_pane_target_owner_pair_distinguishes_same_named_sessions_across_hosts() {
         // ADR 0042 L2a codex review, item D: attach_session_to_bl's
-        // "already attached" early-return, and the PtyOpened/PtyBytes
-        // owner gates, all compare the FULL (host, session) pair -- a
+        // "already attached" early-return, and the PtyAttachDirect
+        // owner gate, both compare the FULL (host, session) pair -- a
         // bare session-name compare let a switch from host alpha's
         // "sot-be-sot" to host beta's "sot-be-sot" (every host uses the
         // same "sot-be-<slug>" naming convention) hit the early return,
@@ -27505,7 +26666,7 @@ mod tests {
         );
 
         // Once re-attached, an event tagged with the OLD host must not be
-        // mistaken for the new owner (the PtyBytes/PtyOpened event_host
+        // mistaken for the new owner (the PtyAttachDirect event_host
         // gate).
         let new_owner: Option<(HostKey, String)> = Some(switch_to);
         let stale_event_host: HostKey = "alpha".to_string();
@@ -28266,14 +27427,14 @@ mod capsule_pane_tests {
         // Coordinator amendment: a client that goes TERMINAL before it
         // ever checkpointed is a dead end, not a stall — it must not keep
         // showing a hold (the departed row's screen) OR its own (blank)
-        // screen. Both fall all the way through to `Tmux`.
+        // screen. Both fall all the way through to `Empty`.
         assert_eq!(
             pane_screen_choice(true, false, true, PaneFeed::Capsule, true),
-            PaneScreen::Tmux
+            PaneScreen::Empty
         );
         assert_eq!(
             pane_screen_choice(true, false, true, PaneFeed::Capsule, false),
-            PaneScreen::Tmux
+            PaneScreen::Empty
         );
 
         // `Pending` (no client yet, backend unknown) also defers to a
@@ -28282,23 +27443,11 @@ mod capsule_pane_tests {
             pane_screen_choice(false, false, false, PaneFeed::Pending, true),
             PaneScreen::Hold
         );
-        // ...and otherwise falls back to the tmux emulator, exactly as
-        // before this lane.
+        // ...and otherwise the pane is blank — every row is a capsule on
+        // this build, so there is no other feed left to fall back to.
         assert_eq!(
             pane_screen_choice(false, false, false, PaneFeed::Pending, false),
-            PaneScreen::Tmux
-        );
-
-        // An ordinary tmux feed always paints `pty_terminal`, hold or no
-        // hold — a hold never outlives the switch it belongs to, but even
-        // if one were somehow still set, `Tmux` feed is definitive.
-        assert_eq!(
-            pane_screen_choice(false, false, false, PaneFeed::Tmux, false),
-            PaneScreen::Tmux
-        );
-        assert_eq!(
-            pane_screen_choice(false, false, false, PaneFeed::Tmux, true),
-            PaneScreen::Tmux
+            PaneScreen::Empty
         );
     }
 

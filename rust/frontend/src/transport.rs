@@ -46,8 +46,8 @@ use sot_protocol::{
     FileWriteRes, Frame,
     HelloReq, HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
     MonitorHistoryReq, MonitorHistoryRes, MonitorSubscribeRes, MonitorTickEvt, PlutoOpenReq,
-    PlutoOpenRes, PreviewGetReq, PreviewGetRes, PtyOpenReq, PtyOpenRes, PtyResizeReq, PtyScrollReq,
-    PtyWriteReq, QuartoOpenReq, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt, ReplRunFileReq,
+    PlutoOpenRes, PreviewGetReq, PreviewGetRes, PtyOpenReq,
+    QuartoOpenReq, ReplEvalReq, ReplEvalRes, ReplFrame, ReplFrameEvt, ReplRunFileReq,
     ReplRunFileRes, ToggleHiddenReq, TreeChildrenReq, TreeChildrenRes, TreeNode, TreeRootReq,
     TreeRootRes, VideoOpenReq, VideoOpenRes, WorkspaceActivateReq, WorkspaceListReq,
     WorkspaceListRes,
@@ -464,22 +464,6 @@ pub enum IncomingEvt {
         workspace_id: Option<String>,
         frame: ReplFrame,
     },
-    /// Reply to a `pty.open` request — confirms the size the backend is
-    /// running with. Frontend uses it to size its terminal emulator.
-    PtyOpened {
-        cols: u16,
-        rows: u16,
-        /// Foreground command of the (re-)targeted pane at attach time
-        /// (`claude`/`node` ⇒ claude already running). Authoritative input to
-        /// the autostart guard so it never relaunches into a live agent.
-        /// `None` on a same-target resize or when the backend didn't probe.
-        pane_command: Option<String>,
-    },
-    /// Bytes streamed out of the pty (`pty.evt`). The chrome feeds these
-    /// into its `vt100::Parser`.
-    PtyBytes {
-        bytes: Vec<u8>,
-    },
     /// ADR 0042 slice L1b: a `pty.open` came back refused with
     /// `code: "attach_direct"` — the row THIS REQUEST targeted (mirrors
     /// `PtyOpenReq.target`, carried through `PendingKind::PtyOpen`) is
@@ -658,9 +642,9 @@ pub struct WorkspaceInfo {
     /// hosts this workspace's agent pane. `""` from a daemon that
     /// predates L1a. ADR 0042 shrink round (rule A): no longer consulted
     /// by the attach path at all — `attach_session_to_bl` always sends
-    /// `pty.open` and lets the daemon's own reply (an ordinary
-    /// `PtyOpened`, or `attach_direct`) decide, so an old daemon (or one
-    /// reporting `""`) changes nothing there either.
+    /// `pty.open` and lets the daemon's own `attach_direct` reply decide
+    /// (the only kind this build's daemon sends), so an old daemon (or
+    /// one reporting `""`) changes nothing there either.
     ///
     /// Deserialized on every platform (the wire contract doesn't fork by
     /// FE OS). Historically read by gpu.rs only from `#[cfg(windows)]`
@@ -1179,14 +1163,6 @@ pub enum OutgoingReq {
         /// false so they can't yank the foreground. See `PtyOpenReq`.
         user_switch: bool,
     },
-    /// Resize an already-open pty (BL pane size changed).
-    PtyResize { cols: u16, rows: u16 },
-    /// Keystroke bytes to forward to the pty. Fire-and-forget — no
-    /// response.
-    PtyWrite { bytes: Vec<u8> },
-    /// Keyboard PgUp/PgDn scrollback paging for the LLM pane — the backend
-    /// drives tmux copy-mode (`op::PTY_SCROLL`). Fire-and-forget.
-    PtyScroll { up: bool },
     /// Sessions-mode ops (ADR 0013 B1 backend; B2-B5 consumes here) that
     /// round-trip through the host tmux server; responses surface as the
     /// matching `IncomingEvt::Tmux*` variants. ADR 0042 L2a codex review
@@ -2725,58 +2701,6 @@ where
                         .await?;
                         pending.insert(id, PendingKind::PtyOpen { target: pending_target });
                     }
-                    OutgoingReq::PtyResize { cols, rows } => {
-                        // Fire-and-forget — no response, so no pending entry.
-                        codec::write_frame(
-                            &mut tx,
-                            &Frame::req(
-                                id,
-                                op::PTY_RESIZE,
-                                serde_json::to_value(PtyResizeReq { cols, rows })?,
-                            ),
-                            None,
-                        )
-                        .await?;
-                    }
-                    OutgoingReq::PtyWrite { bytes } => {
-                        // Latency instrumentation: log every short
-                        // outgoing keystroke (≤16 bytes) with a wall-
-                        // clock millis stamp so the round-trip delta to
-                        // the matching `pty.evt received` line is
-                        // directly readable in the log.
-                        if bytes.len() <= 16 {
-                            let now_ms = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_millis())
-                                .unwrap_or(0);
-                            tracing::info!(now_ms, n = bytes.len(), "pty.write sent");
-                        }
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                        codec::write_frame(
-                            &mut tx,
-                            &Frame::req(
-                                id,
-                                op::PTY_WRITE,
-                                serde_json::to_value(PtyWriteReq { data_b64: b64 })?,
-                            ),
-                            None,
-                        )
-                        .await?;
-                    }
-                    OutgoingReq::PtyScroll { up } => {
-                        codec::write_frame(
-                            &mut tx,
-                            &Frame::req(
-                                id,
-                                op::PTY_SCROLL,
-                                serde_json::to_value(PtyScrollReq {
-                                    direction: if up { "up" } else { "down" }.to_string(),
-                                })?,
-                            ),
-                            None,
-                        )
-                        .await?;
-                    }
                     OutgoingReq::DirectoryList { path, include_hidden } => {
                         tracing::debug!(%path, include_hidden, id, "→ directory.list");
                         codec::write_frame(
@@ -3745,29 +3669,18 @@ fn handle_response_frame(
                 }
             }
             PendingKind::PtyOpen { target } => {
-                // ADR 0042 slice L1b: checked BEFORE the `PtyOpenRes`
-                // parse below (which requires `cols`/`rows` and would
-                // just fail-and-warn on this envelope) — a capsule row's
-                // `pty.open` is refused with `{error, code:
-                // "attach_direct", state_dir}`, never a size confirmation.
-                // `target` is THIS request's own target (fix 1) — the
-                // chrome corrects/attaches that row, not whatever is
-                // currently selected.
+                // ADR 0042 slice L1b: a capsule row's `pty.open` is
+                // refused with `{error, code: "attach_direct",
+                // state_dir}` — this build's daemon has no tmux runtime,
+                // so that refusal is the ONLY reply `pty.open` ever
+                // gets; there is no size-confirmation success case left
+                // to parse. `target` is THIS request's own target (fix
+                // 1) — the chrome corrects/attaches that row, not
+                // whatever is currently selected.
                 if is_attach_direct(&frame.payload) {
                     emit(IncomingEvt::PtyAttachDirect { target });
-                    return;
-                }
-                match serde_json::from_value::<PtyOpenRes>(frame.payload) {
-                    Ok(res) => {
-                        emit(IncomingEvt::PtyOpened {
-                            cols: res.cols,
-                            rows: res.rows,
-                            pane_command: res.pane_command,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "pty.open res parse failed");
-                    }
+                } else {
+                    tracing::warn!(?target, payload = ?frame.payload, "pty.open res was not attach_direct");
                 }
             }
             PendingKind::DirectoryList => {
@@ -4125,33 +4038,6 @@ fn handle_response_frame(
             }
         }
         let _ = blob; // remaining ops carry no blob (download took its own)
-        return;
-    }
-    // Unsolicited evt frames. The backend uses one for `pty.evt` —
-    // pty byte streams piped through to the chrome's terminal
-    // emulator. Decode base64 here so the consumer sees raw bytes.
-    if frame.kind == sot_protocol::Kind::Evt && frame.op == op::PTY_EVT {
-        let data_b64 = frame
-            .payload
-            .get("data_b64")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        match base64::engine::general_purpose::STANDARD.decode(data_b64.as_bytes()) {
-            Ok(bytes) => {
-                // Latency instrumentation: log every pty.evt arrival
-                // regardless of payload size — even a single-keystroke
-                // echo can come back as a multi-byte ANSI sequence.
-                // Lets us see the keystroke→echo delta directly in the
-                // log against the matching `pty.write sent` line.
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0);
-                tracing::info!(now_ms, n = bytes.len(), "pty.evt received");
-                emit(IncomingEvt::PtyBytes { bytes });
-            }
-            Err(e) => tracing::warn!(error = %e, "pty.evt b64 decode failed"),
-        }
         return;
     }
     // Streamed REPL output frame (`repl.frame` evt, ADR 0009 phase-2). One
@@ -4811,8 +4697,9 @@ mod tests {
             "state_dir": serde_json::Value::Null,
         });
         assert!(is_attach_direct(&attach_no_dir));
-        // An ordinary size-confirmation reply.
-        let ok = serde_json::json!({"cols": 80, "rows": 24, "pane_command": null});
+        // Any other response shape — this build's daemon never sends
+        // one for `pty.open`, but the check must still decline it.
+        let ok = serde_json::json!({"cols": 80, "rows": 24});
         assert!(!is_attach_direct(&ok));
         // A DIFFERENT error code must not be mistaken for attach_direct —
         // only the exact literal switches the pane to the attach path.
@@ -4826,9 +4713,7 @@ mod tests {
     /// `PtyAttachDirect` carrying the exact `target` this request's own
     /// `PendingKind::PtyOpen` entry named — L1b fix 1's whole point: the
     /// reply is about THAT row, not whatever the pending map happened to
-    /// be keyed against. Must NOT fall through to a `pty.open res parse
-    /// failed` warn-and-drop (the pre-L1b behavior for any unparseable
-    /// `PtyOpenRes`).
+    /// be keyed against.
     #[test]
     fn attach_direct_reply_emits_exactly_one_pty_attach_direct_with_its_own_target() {
         let (evt_tx, evt_rx) = std::sync::mpsc::channel();
@@ -4867,10 +4752,11 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_pty_opened_reply_is_unaffected_by_the_attach_direct_check() {
-        // Same dispatcher, a ROUTINE size-confirmation reply — must still
-        // produce `PtyOpened`, not `PtyAttachDirect`, byte-for-byte the
-        // pre-L1b behavior for a tmux row.
+    fn non_attach_direct_pty_open_reply_emits_no_event() {
+        // This build's daemon never answers `pty.open` with anything but
+        // an `attach_direct` refusal (every row is a capsule) — a
+        // malformed or unexpected reply shape is warned-and-dropped
+        // rather than producing a stale `PtyOpened`-shaped event.
         let (evt_tx, evt_rx) = std::sync::mpsc::channel();
         let mut pending: HashMap<u64, PendingKind> = HashMap::new();
         pending.insert(
@@ -4879,32 +4765,12 @@ mod tests {
                 target: Some("sot-be-beta".to_string()),
             },
         );
-        let frame = Frame::res(
-            11,
-            op::PTY_OPEN,
-            serde_json::json!({"cols": 80, "rows": 24, "pane_command": "claude"}),
-        );
+        let frame = Frame::res(11, op::PTY_OPEN, serde_json::json!({"cols": 80, "rows": 24}));
         let host = "test-host".to_string();
         handle_response_frame(frame, None, &mut pending, &evt_tx, &host);
 
         let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
-        assert_eq!(events.len(), 1, "got {events:?}");
-        match &events[0] {
-            (
-                h,
-                IncomingEvt::PtyOpened {
-                    cols,
-                    rows,
-                    pane_command,
-                },
-            ) => {
-                assert_eq!(h, &host);
-                assert_eq!(*cols, 80);
-                assert_eq!(*rows, 24);
-                assert_eq!(pane_command.as_deref(), Some("claude"));
-            }
-            other => panic!("expected PtyOpened, got {other:?}"),
-        }
+        assert!(events.is_empty(), "got {events:?}");
     }
 
     // --- Switch-latency Phase 1: the generation/owner fields transport.rs
