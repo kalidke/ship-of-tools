@@ -138,6 +138,15 @@ case "$AGENT" in
     claude|codex) ;;
     *) echo "ERROR: --agent must be claude or codex (got '$AGENT')" >&2; exit 1 ;;
 esac
+# --account is bound into jq as `--arg acc`, which the hermetic suite's
+# slash-safe audit allows only because this rule (the account-name rule,
+# the same one the installer applies to ~/.claude-auth/<name>) makes a
+# leading "/" impossible. A whole-string bash match, so a value carrying
+# a newline cannot pass on its first line alone.
+ACCOUNT_RE='^[a-z0-9][a-z0-9_-]*$'
+if [ -n "$ACCOUNT" ] && ! [[ "$ACCOUNT" =~ $ACCOUNT_RE ]]; then
+    echo "ERROR: --account must match ^[a-z0-9][a-z0-9_-]*\$ (got '$ACCOUNT')" >&2; exit 1
+fi
 if [ -n "$NAME_FLAG" ]; then
     if [ -n "$NAME" ]; then
         echo "ERROR: name given both as --name and positionally — pick one" >&2; exit 1
