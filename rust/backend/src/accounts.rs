@@ -50,6 +50,40 @@ const CLAUDE_CREDENTIALS_FILE: &str = ".credentials.json";
 /// for the default codex account (the only one this release has).
 const CODEX_CREDENTIALS_FILE: &str = "auth.json";
 
+/// Owner ruling (2026-09-15): a named account folder shares EVERYTHING the
+/// default `.claude` folder carries except the login. This is an
+/// ALLOWLIST, not a denylist — an unknown or new entry stays per-account
+/// by default, never shared by accident. Each name here is linked (see
+/// [`ensure_account_links`]) only if the default folder actually has it.
+/// Grouped by the invariant each group serves:
+///
+/// - what a session reads to know how to behave, independent of which
+///   subscription it spends: `CLAUDE.md`, `settings.json` (hooks,
+///   permissions, model, status line), `agents`, `commands`, `skills`,
+///   `plugins`, `output-styles`;
+/// - continuity of what the user has been doing, which must survive a
+///   switch of which account a session runs as: `projects` (per-project
+///   memory) and `history.jsonl` (prompt history).
+///
+/// Deliberately NEVER in this list, and never added to it implicitly: the
+/// OAuth identity (`.claude.json`, `.credentials.json` — the entire reason
+/// a named account exists is to hold a SEPARATE login) and any runtime
+/// state a live process owns or mutates (a background daemon directory,
+/// `sessions`, `teams`, `tasks`, `jobs`, `ide`, caches) — sharing those
+/// would let two accounts' processes collide on the same lock file or
+/// session state while running under different credentials.
+const SHARED_ENTRIES: &[&str] = &[
+    "CLAUDE.md",
+    "settings.json",
+    "agents",
+    "commands",
+    "skills",
+    "plugins",
+    "output-styles",
+    "projects",
+    "history.jsonl",
+];
+
 /// `true` iff `name` is a valid account name: `^[a-z0-9][a-z0-9_-]*$`,
 /// the exact character class the brief pins. A subdirectory of
 /// `.claude-auth` whose name fails this is ignored outright by
@@ -187,6 +221,71 @@ pub fn account_env(agent_kind: &str, account: &str, home: &Path) -> Result<Vec<(
         )),
         other => Err(format!("a {other:?} row has no account (only claude rows do)")),
     }
+}
+
+/// Unix half of the one symlink [`ensure_account_links`] creates per
+/// entry: `target` is the RELATIVE `../../.claude/<entry>` path, `link` is
+/// where it lands inside the account folder.
+#[cfg(unix)]
+fn make_shared_link(target: &Path, link: &Path, _target_is_dir: bool) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+/// Windows half: a directory reparse point needs `symlink_dir`, anything
+/// else `symlink_file` — the brief pins both, no junctions, no cfg-gated
+/// second rule beyond this one already-required split.
+#[cfg(windows)]
+fn make_shared_link(target: &Path, link: &Path, target_is_dir: bool) -> std::io::Result<()> {
+    if target_is_dir {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+}
+
+/// Link `home/.claude-auth/<account>` up to the default `home/.claude`
+/// folder for every [`SHARED_ENTRIES`] name — the mechanism behind the
+/// owner's "shares everything but the login" ruling. Called once, from
+/// the spawn path
+/// ([`crate::capsule_workspace::runtime::spawn_detached_supervisor`]),
+/// right after [`account_env`] succeeds, so a folder made with a bare
+/// `mkdir` is fully linked on its very first session — no separate
+/// installer step to forget, and nothing here writes to the DEFAULT
+/// folder, only into the account's own.
+///
+/// One relative symlink per entry (`../../.claude/<entry>`, valid because
+/// an account folder is always exactly `home/.claude-auth/<name>` — two
+/// levels under `home`, matching the two `..` segments): a no-op for an
+/// empty account or `"default"`; an entry the default folder does not
+/// have is never linked (never produce a dangling symlink); an entry that
+/// already exists in the account folder in ANY form — real file or
+/// directory, an existing symlink, even a dangling one
+/// (`symlink_metadata` succeeding is the test, not `exists`, which
+/// follows and would miss a dangling link) — is left alone: it
+/// deliberately overrides the shared one, and is NEVER replaced or
+/// removed. Any creation error refuses the whole call — a half-linked
+/// account folder starting a degraded session is worse than a refused
+/// spawn.
+pub fn ensure_account_links(home: &Path, account: &str) -> Result<(), String> {
+    if account.is_empty() || account == "default" {
+        return Ok(());
+    }
+    let default_dir = home.join(CLAUDE_DIR_PREFIX);
+    let account_dir = home.join(CLAUDE_ACCOUNTS_DIR).join(account);
+    for name in SHARED_ENTRIES {
+        let source = default_dir.join(name);
+        if !source.exists() {
+            continue; // the default folder doesn't have this entry either
+        }
+        let link = account_dir.join(name);
+        if std::fs::symlink_metadata(&link).is_ok() {
+            continue; // something is already there -- never replace it
+        }
+        let relative = Path::new("..").join("..").join(CLAUDE_DIR_PREFIX).join(name);
+        make_shared_link(&relative, &link, source.is_dir())
+            .map_err(|err| format!("could not link {name} into account {account:?}: {err}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -343,5 +442,113 @@ mod tests {
         touch_dir(&tmp.path().join(".claude-auth").join("team"));
         let err = account_env("none", "team", tmp.path()).unwrap_err();
         assert!(err.contains("no account"), "{err}");
+    }
+
+    #[test]
+    fn ensure_account_links_links_every_shared_entry_the_default_has() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        touch_dir(&home.join(".claude"));
+        touch_file(&home.join(".claude").join("CLAUDE.md"));
+        touch_file(&home.join(".claude").join("settings.json"));
+        touch_dir(&home.join(".claude").join("skills").join("foo"));
+        touch_file(&home.join(".claude").join("history.jsonl"));
+        // agents, commands, plugins, output-styles, projects: the default
+        // lacks all five, so none of them may be created.
+        let account_dir = home.join(".claude-auth").join("team");
+        touch_dir(&account_dir);
+
+        ensure_account_links(home, "team").unwrap();
+
+        for name in ["CLAUDE.md", "settings.json", "skills", "history.jsonl"] {
+            let link = account_dir.join(name);
+            let meta = std::fs::symlink_metadata(&link).unwrap();
+            assert!(meta.file_type().is_symlink(), "{name} should be a symlink");
+            assert_eq!(
+                std::fs::canonicalize(&link).unwrap(),
+                std::fs::canonicalize(home.join(".claude").join(name)).unwrap(),
+                "{name} should resolve to the default's own entry"
+            );
+        }
+        for name in ["agents", "commands", "plugins", "output-styles", "projects"] {
+            assert!(
+                std::fs::symlink_metadata(account_dir.join(name)).is_err(),
+                "{name}: the default lacks it, so it must not be created"
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_account_links_never_links_login_or_runtime_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        touch_dir(&home.join(".claude"));
+        touch_file(&home.join(".claude").join(".credentials.json"));
+        touch_file(&home.join(".claude").join(".claude.json"));
+        touch_dir(&home.join(".claude").join("daemon"));
+        touch_dir(&home.join(".claude").join("sessions"));
+        let account_dir = home.join(".claude-auth").join("team");
+        touch_dir(&account_dir);
+
+        ensure_account_links(home, "team").unwrap();
+
+        for name in [".credentials.json", ".claude.json", "daemon", "sessions"] {
+            assert!(
+                std::fs::symlink_metadata(account_dir.join(name)).is_err(),
+                "{name} must never be linked -- it's runtime state or the login itself"
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_account_links_leaves_an_existing_real_entry_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        touch_dir(&home.join(".claude"));
+        std::fs::write(home.join(".claude").join("settings.json"), b"default").unwrap();
+        touch_dir(&home.join(".claude").join("skills").join("shared-skill"));
+
+        let account_dir = home.join(".claude-auth").join("team");
+        touch_dir(&account_dir);
+        std::fs::write(account_dir.join("settings.json"), b"account-own").unwrap();
+        touch_dir(&account_dir.join("skills").join("own-skill"));
+
+        ensure_account_links(home, "team").unwrap();
+
+        let settings_meta = std::fs::symlink_metadata(account_dir.join("settings.json")).unwrap();
+        assert!(!settings_meta.file_type().is_symlink(), "must stay the account's own real file");
+        assert_eq!(std::fs::read(account_dir.join("settings.json")).unwrap(), b"account-own");
+
+        let skills_meta = std::fs::symlink_metadata(account_dir.join("skills")).unwrap();
+        assert!(!skills_meta.file_type().is_symlink(), "must stay the account's own real dir");
+        assert!(account_dir.join("skills").join("own-skill").is_dir());
+    }
+
+    #[test]
+    fn ensure_account_links_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        touch_dir(&home.join(".claude"));
+        touch_file(&home.join(".claude").join("CLAUDE.md"));
+        let account_dir = home.join(".claude-auth").join("team");
+        touch_dir(&account_dir);
+
+        ensure_account_links(home, "team").unwrap();
+        let first = std::fs::read_link(account_dir.join("CLAUDE.md")).unwrap();
+        assert_eq!(ensure_account_links(home, "team"), Ok(()), "second call must still succeed");
+        let second = std::fs::read_link(account_dir.join("CLAUDE.md")).unwrap();
+        assert_eq!(first, second, "second call must change nothing");
+    }
+
+    #[test]
+    fn ensure_account_links_is_a_no_op_for_empty_or_default_account() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        touch_dir(&home.join(".claude"));
+        touch_file(&home.join(".claude").join("CLAUDE.md"));
+
+        assert_eq!(ensure_account_links(home, ""), Ok(()));
+        assert_eq!(ensure_account_links(home, "default"), Ok(()));
+        assert!(!home.join(".claude-auth").exists(), "must never create anything for default");
     }
 }

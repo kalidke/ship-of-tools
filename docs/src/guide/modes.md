@@ -101,6 +101,18 @@ row's own pane runs the login on its first start. Sessions running under a
 non-default account show a short `· <name>` suffix in the Sessions list so
 you can tell at a glance which subscription each one spends.
 
+An account folder holds only its own login and Claude's own per-account
+runtime state (sessions, caches, and the like). Everything else — `CLAUDE.md`,
+`settings.json` (hooks, permissions, model, status line), `agents`, `commands`,
+`skills`, `plugins`, `output-styles`, per-project memory (`projects`), and
+prompt history (`history.jsonl`) — is **shared with the default folder**: on
+the first session in a new account, the daemon links each of those entries in
+from `~/.claude`, so the account starts with the same instructions, hooks,
+and history as the default login. An entry you create yourself in the account
+folder overrides the shared one instead of being replaced by it. User-scope
+MCP servers live with the per-account state, so add them separately for each
+account you want to use them from.
+
 Claude only, this release — Codex accounts are deferred, so a codex row
 always runs the default login.
 

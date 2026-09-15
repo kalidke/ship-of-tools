@@ -2,11 +2,12 @@
 #
 # Source of truth: comm/ in the repo. install_comm copies the CLI-agnostic core
 # scripts to ~/.sot-comm/bin and each per-CLI adapter to that CLI's dir
-# (~/.claude/skills, $CODEX_HOME/skills, ~/.local/bin, hooks/plugins) — AND,
-# per-session accounts (owner ruling), into every discovered
-# ~/.claude-auth/<name> account subdirectory alongside the default
-# `~/.claude`, via the same merge logic (`_discover_claude_accounts`,
-# `_install_claude_skills`, `_install_claude_hooks`).
+# (~/.claude/skills, $CODEX_HOME/skills, ~/.local/bin, hooks/plugins).
+# Named accounts (owner ruling): a `~/.claude-auth/<name>` account folder
+# gets skills, hooks, and everything else the default `~/.claude` folder
+# carries except the login via a SYMLINK the daemon creates at spawn
+# (`rust/backend/src/accounts.rs::ensure_account_links`) — the installer
+# itself never writes under `.claude-auth`.
 # See comm/PROTOCOL.md for the wire contract.
 #
 # The Claude adapter additionally installs three work-state hooks
@@ -54,48 +55,6 @@ codex_home() = _env_dir("CODEX_HOME", joinpath(homedir(), ".codex"))
 
 "Resolved runtime home for the DEFAULT claude account (honors `\$CLAUDE_CONFIG_DIR`)."
 claude_home() = _env_dir("CLAUDE_CONFIG_DIR", joinpath(homedir(), ".claude"))
-
-# Per-session accounts (owner ruling, later refined): an account is a
-# SUBDIRECTORY of one dedicated parent folder, `~/.claude-auth/<name>` —
-# never a declared entity, and never a sibling `~/.claude-<name>` folder
-# (that scheme is retired: on the maintainer's own home it collided with
-# unrelated folders that merely matched the naming pattern — one holding a
-# single subdirectory named after a session, another holding two
-# subdirectories from an earlier per-account auth layout — with no way to
-# tell those apart from a real account without opening files). Nothing
-# here creates the parent or a subdirectory; discovery only looks at what
-# already exists in $HOME, so a typo or a folder for something else
-# entirely never gets treated as an account by accident (the same
-# `[a-z0-9][a-z0-9_-]*` name rule the daemon uses to discover them). A
-# subdirectory that has never been logged into is a NORMAL account — its
-# pane runs the login on first start — so it's discovered and seeded
-# exactly like any other. Codex accounts are deferred this release (see
-# `rust/backend/src/accounts.rs`); only Claude is discovered here.
-const _CLAUDE_ACCOUNTS_DIR = ".claude-auth"
-const _CLAUDE_ACCOUNT_NAME_RE = r"^[a-z0-9][a-z0-9_-]*$"
-
-"""
-    _discover_claude_accounts()
-
-Named Claude account directories: every direct subdirectory of
-`homedir()/.claude-auth` whose name matches `^[a-z0-9][a-z0-9_-]*\$`. A
-non-directory entry there (e.g. a stray file) is skipped outright.
-Returns `(name, dir)` pairs sorted by name for a deterministic install order.
-"""
-function _discover_claude_accounts()
-    parent = joinpath(homedir(), _CLAUDE_ACCOUNTS_DIR)
-    out = Tuple{String,String}[]
-    isdir(parent) || return out
-    for entry in readdir(parent)
-        m = match(_CLAUDE_ACCOUNT_NAME_RE, entry)
-        m === nothing && continue
-        dir = joinpath(parent, entry)
-        isdir(dir) || continue
-        push!(out, (entry, dir))
-    end
-    sort!(out; by = first)
-    return out
-end
 
 # ADR 0030 §8 "Installed comm scripts": these carried no stamp before this —
 # only a registry PROTOCOL_VERSION, no way to answer "what commit are the
@@ -443,17 +402,16 @@ skew.
 update_comm(; clis = [:claude, :codex]) = install_comm(; clis = clis)
 
 """
-    _install_claude_skills(srcdir, claude_dir; account)
+    _install_claude_skills(srcdir, claude_dir)
 
 Copy every skill directory under `srcdir` (one containing a `SKILL.md`) into
-`claude_dir/skills`, replacing any stale destination first. The same logic
-runs for the default `~/.claude` and for every discovered
-`~/.claude-auth/<name>` account subdirectory — `account` only labels the `@info`
-line so a multi-account install is legible. Returns the list of skill names
-installed (`"/name"`, matching the existing log shape).
+`claude_dir/skills`, replacing any stale destination first. Called only for
+the default `~/.claude` — a named account gets skills via the shared-folder
+symlink instead (`rust/backend/src/accounts.rs::ensure_account_links`), not
+a second copy here. Returns the list of skill names installed (`"/name"`,
+matching the existing log shape).
 """
-function _install_claude_skills(srcdir::AbstractString, claude_dir::AbstractString;
-                                account::AbstractString = "default")
+function _install_claude_skills(srcdir::AbstractString, claude_dir::AbstractString)
     skillsroot = joinpath(claude_dir, "skills")
     mkpath(skillsroot)
     installed = String[]
@@ -481,28 +439,21 @@ function _install_claude_skills(srcdir::AbstractString, claude_dir::AbstractStri
         cp(src, dst; force = true)
         push!(installed, "/$name")
     end
-    @info "Installed Claude skills" account skills = installed dir = skillsroot
+    @info "Installed Claude skills" skills = installed dir = skillsroot
     return installed
 end
 
 function _install_adapter(cli::Symbol)
     if cli === :claude
         srcdir = joinpath(COMM_SRC, "adapters", "claude")
-        _install_claude_skills(srcdir, claude_home(); account = "default")
+        _install_claude_skills(srcdir, claude_home())
         _install_launchers(joinpath(srcdir, "bin"))
-        _install_claude_hooks(joinpath(srcdir, "hooks"), claude_home(); account = "default")
-        # Per-session accounts (owner ruling): seed every OTHER discovered
-        # `~/.claude-auth/<name>` subdirectory with the same product skills + hook
-        # registration, via the exact same merge logic as the default
-        # folder above — never overwriting a user's unrelated settings.
-        # A folder that has never been logged into still gets them (it's a
-        # normal account, not an error state); this writes only what the
-        # product itself owns (the skills/ directory and its hook entries
-        # in settings.json) — nothing that would look like a login.
-        for (name, dir) in _discover_claude_accounts()
-            _install_claude_skills(srcdir, dir; account = name)
-            _install_claude_hooks(joinpath(srcdir, "hooks"), dir; account = name)
-        end
+        _install_claude_hooks(joinpath(srcdir, "hooks"), claude_home())
+        # Named accounts (owner ruling) get skills and hooks via the
+        # shared-folder symlink the daemon creates at spawn
+        # (`rust/backend/src/accounts.rs::ensure_account_links`), not a
+        # second install pass here — the installer never writes under
+        # `.claude-auth`.
     elseif cli === :codex
         # ADR 0031 — codex adapter: ccx launcher, the PermissionRequest->blocked
         # hook script, and the hooks.json plugin payload (state-nav wiring). The shared
@@ -642,14 +593,14 @@ function _install_adapter(cli::Symbol)
 end
 
 """
-    _install_claude_hooks(srchooks, claude_dir; account)
+    _install_claude_hooks(srchooks, claude_dir)
 
 Install the comm hook script(s) from `srchooks` into `\$SOT_COMM_HOME/bin`
-(next to the comm-*.sh scripts they shell out to — shared across every
-account, so this repeats harmlessly), then idempotently register the
-work-state hooks in `claude_dir/settings.json`. Called once for the default
-`~/.claude` and once per discovered `~/.claude-auth/<name>` account subdirectory
-(`_install_adapter`) — same merge logic every time.
+(next to the comm-*.sh scripts they shell out to), then idempotently
+register the work-state hooks in `claude_dir/settings.json`. Called only
+for the default `~/.claude` (`_install_adapter`) — a named account gets the
+same hooks via the shared-folder symlink, not a second registration pass
+here.
 
 The work-state hooks make state **event-driven — instant, automatic, and free of
 model cooperation**: `UserPromptSubmit → working`, `Notification → blocked`,
@@ -663,14 +614,13 @@ it adds one entry for that event only if absent and preserves every other hook
 missing or unparseable, or `jq` is unavailable, it is left alone and the exact
 JSON to add by hand is printed. No-op if `srchooks` is absent.
 """
-function _install_claude_hooks(srchooks::AbstractString, claude_dir::AbstractString;
-                               account::AbstractString = "default")
+function _install_claude_hooks(srchooks::AbstractString, claude_dir::AbstractString)
     isdir(srchooks) || return nothing
     bin = joinpath(comm_home(), "bin")
     installed = [f for f in readdir(srchooks) if isfile(joinpath(srchooks, f))]
     isempty(installed) && return nothing
     _install_files(srchooks, bin, installed; executable = Returns(true))
-    @info "Installed comm hook scripts" account hooks = installed dir = bin
+    @info "Installed comm hook scripts" hooks = installed dir = bin
     # Register the work-state hooks. Together they make work-state event-driven —
     # a turn starting → working, an AskUserQuestion → blocked, a turn ending →
     # idle. Retire any stale comm wiring first (e.g. the old Notification→blocked
@@ -743,11 +693,9 @@ merge is structural, not a clobbering rewrite. Falls back to printing the
 exact JSON to add by hand when jq is missing or the file can't be parsed —
 never overwrites a file it could not safely read.
 
-A MISSING `settings.json` (e.g. a freshly discovered account folder that has
-never been logged into — a normal state, not an error) gets a fresh `{}`
-created first, so the account still gets the hook registration; the
-account itself is unaffected either way (settings.json carries no
-credential and its presence never signals "logged in").
+A MISSING `settings.json` (e.g. a fresh `~/.claude` that has never been run
+yet) gets a fresh `{}` created first, so the install still gets the hook
+registration.
 """
 function _add_comm_hook!(event::AbstractString, script::AbstractString, claude_dir::AbstractString;
                          matcher::Union{Nothing,AbstractString} = nothing)
@@ -825,8 +773,8 @@ Strip every comm hook (any `~/.sot-comm/bin/comm-status-*.sh` command) from
 before re-adding the current set ([`_install_claude_hooks`]) so settings ends up
 matching `_COMM_STATE_HOOKS` exactly — retiring wirings we no longer use (notably
 the old `Notification`→blocked that lit agents red on plain idle). Every non-comm
-hook is preserved. No-op if `jq` is missing or settings.json is absent/unparseable
-(a brand-new account directory has nothing to prune yet either way).
+hook is preserved. No-op if `jq` is missing or settings.json is absent/unparseable (a fresh
+`~/.claude` has nothing to prune yet either way).
 """
 function _remove_stale_comm_hooks!(claude_dir::AbstractString)
     settings = joinpath(claude_dir, "settings.json")
