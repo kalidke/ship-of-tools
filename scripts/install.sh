@@ -199,55 +199,8 @@ installer_role_flag() {  # role -> the flag that asks for it, for messages
     esac
 }
 
-# ---- ADR 0046 decision 5: tmux only where an existing row still needs it --
-# "yes" | "no" — whether THIS install needs tmux at all (ADR 0046 decision
-# 5: nothing NEW runs on tmux; a fresh capsule-capable install needs none).
-# "yes" when <os> has no capsule runtime at all (Darwin — the runtime
-# compiles only for Windows and Linux, capsule_workspace.rs:277) OR any
-# existing workspace toml under ANY <config>/workspaces-*/ still asks for it
-# explicitly (`runtime = "tmux"`) or predates the runtime key entirely (a
-# legacy toml — `#[serde(default)]` on that field means an absent key reads
-# as `""`, which `default_row_runtime`/`load_toml` resolve to "tmux" on
-# every host that isn't Windows, so a pre-this-decision row IS a tmux row
-# even though its own file never says so).
-#
-# Deliberately globs EVERY host's per-host dir, not just this one: computing
-# "this host's own label" here would be a SECOND copy of the daemon's own
-# `workspaces::state_host()` rule (rust/backend/src/workspaces.rs:1110) that
-# a future change to that rule could silently drift out of step with — the
-# exact anti-pattern ADR 0046 exists to delete. The one accepted consequence:
-# on a shared $HOME, another host's tmux row makes THIS install ask for tmux
-# too, even if this host's own rows are all capsule. That is a deliberate
-# over-approximation — it can only ask for tmux where it turns out not to be
-# strictly needed, it can never miss a row that DOES need it, and it removes
-# any host-derivation rule from the installer entirely.
-#
-# Pure (stdin/env untouched, <config> passed explicitly) — testable without
-# a real install (scripts/tests/installer-state.sh).
-installer_tmux_required() {  # <os> <config-dir>
-    local os="$1" config="$2"
-    if [ "$os" = Darwin ]; then
-        printf 'yes\n'
-        return 0
-    fi
-    local f
-    for f in "$config"/workspaces-*/*.toml; do
-        [ -e "$f" ] || continue
-        if grep -qE '^runtime[[:space:]]*=[[:space:]]*"tmux"' "$f"; then
-            printf 'yes\n'
-            return 0
-        fi
-        if ! grep -qE '^runtime[[:space:]]*=' "$f"; then
-            printf 'yes\n'
-            return 0
-        fi
-    done
-    printf 'no\n'
-}
-
 # scripts/tests/hosts-toml-role.sh and scripts/tests/installer-state.sh both
-# source this file to exercise the functions above in isolation (the latter
-# also covers `installer_tmux_required` just above). Nothing else sets this,
+# source this file to exercise the functions above in isolation. Nothing else sets this,
 # `curl | bash` included.
 if [ "${SOT_INSTALL_SOURCE_ONLY:-}" = 1 ]; then return 0; fi
 
@@ -392,39 +345,6 @@ if [ "$OS" = Linux ] && [ "$ROLE" != be-only ]; then
     lowest="$(printf '%s\n%s\n' "$GLIBC_FLOOR_FE" "$glibc" | sort -V | sed -n 1p)"
     [ "$lowest" = "$GLIBC_FLOOR_FE" ] \
         || die "the frontend binary needs glibc >= $GLIBC_FLOOR_FE (this box: $glibc). The backend (musl, --be-only) runs anywhere."
-fi
-
-# tmux is required ONLY where this install actually needs it (ADR 0046
-# decision 5): a host with no capsule runtime at all (Darwin), or an
-# EXISTING row on this host that still asks for tmux — a fresh install on a
-# capsule-capable host (Linux) needs no tmux at all (ADR 0042: nothing new
-# runs on tmux). `installer_tmux_required` (above) is the one predicate;
-# `TMUX_REQUIRED` is read again at the keeper-unit step further down, so it
-# is computed once here for both. Only checked for roles that run sotd on
-# THIS machine (local, be-only); --backend points at a remote daemon, so a
-# local tmux is never needed regardless. When required, a missing tmux is
-# still fatal (nothing surfaced it before — the first real server install
-# found tmux entirely unmentioned); tmux < 3.2 is a graceful DEGRADE, not an
-# error: the daemon version-gates `new-session -e` (older tmux rejected it
-# at arg-parse and drove a respawn storm — a shared Ubuntu 20.04 host,
-# 2026-07-11), so the backend runs, but the pane's in-session SOT_*
-# awareness is best-effort.
-if [ "$ROLE" = local ] || [ "$ROLE" = be-only ]; then
-    TMUX_REQUIRED="$(installer_tmux_required "$OS" "$CONFIG")"
-    if [ "$TMUX_REQUIRED" = yes ]; then
-        command -v tmux >/dev/null 2>&1 \
-            || die "tmux is required for the backend (the daemon hosts the LLM pane in a tmux session) but is not on PATH. Install it (e.g. 'sudo apt install tmux', or a user-local tmux >= 3.2 in ~/.local/bin) and re-run."
-        # Parse "tmux 3.0a" / "tmux next-3.4" -> "3.0" / "3.4". No pipefail traps
-        # here (single sed, no head/grep pipeline).
-        tmux_ver="$(tmux -V 2>/dev/null | sed -n '1s/^tmux \(next-\)\{0,1\}\([0-9][0-9]*\.[0-9][0-9]*\).*/\2/p')"
-        [ -n "$tmux_ver" ] || tmux_ver=0
-        tmux_lowest="$(printf '%s\n%s\n' "3.2" "$tmux_ver" | sort -V | sed -n 1p)"
-        if [ "$tmux_lowest" != "3.2" ]; then
-            say "NOTE: tmux $tmux_ver (< 3.2) detected. The backend runs fine, but the LLM pane's in-session Ship of Tools awareness env is best-effort only on old tmux. For full awareness put a tmux >= 3.2 earlier on the daemon's PATH (e.g. ~/.local/bin). See docs/INSTALL-AGENT.md."
-        fi
-    else
-        say "tmux not required: this host runs the capsule runtime (ADR 0042/0046) and no existing row asks for it."
-    fi
 fi
 
 # Downloader: for a public repo, unauthenticated curl works. gh (authed) is
@@ -695,14 +615,11 @@ if [ "$OS" = Darwin ] && [ "$ROLE" != remote ]; then
 fi
 if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
     mkdir -p "$HOME/.config/systemd/user"
-    # ADR 0038: the tmux keeper goes in FIRST (and enable --now BEFORE sotd),
-    # so the tmux server is never an implicit child of sotd's cgroup. Static
-    # unit, no tokens. Tolerate an older release stage that lacks the file.
-    # ADR 0046 decision 5: installed only under the SAME predicate the
-    # preflight check above already computed into `$TMUX_REQUIRED` — a
-    # fresh capsule-capable install has nothing for this keeper to keep.
-    if [ -f "$BINDIR/sot-tmux.service" ] && [ "$TMUX_REQUIRED" = yes ]; then
-        cp "$BINDIR/sot-tmux.service" "$HOME/.config/systemd/user/sot-tmux.service"
+    # v0.6.0 deleted the tmux runtime: retire the keeper unit earlier
+    # installs enabled (ADR 0038, superseded).
+    if [ -f "$HOME/.config/systemd/user/sot-tmux.service" ]; then
+        systemctl --user disable --now sot-tmux.service 2>/dev/null || true
+        rm -f "$HOME/.config/systemd/user/sot-tmux.service"
     fi
     sed -e "s|@SOT_BIN@|$PREFIX/bin/sotd|" \
         -e "s|@SOT_APPLY@|$PREFIX/bin/sot-apply|" \
@@ -715,10 +632,6 @@ if [ "$OS" = Linux ] && [ "$ROLE" != remote ] && [ "$NO_SERVICE" = 0 ]; then
     # install's forbidden drop-in is healed unconditionally near the top of
     # this script (step 0), not here.
     systemctl --user daemon-reload
-    if [ -f "$HOME/.config/systemd/user/sot-tmux.service" ]; then
-        systemctl --user enable --now sot-tmux.service
-        say "sot-tmux keeper: $(systemctl --user is-active sot-tmux.service)"
-    fi
     systemctl --user enable --now sotd.service
     loginctl enable-linger "$USER" 2>/dev/null || true
     say "sotd running: $(systemctl --user is-active sotd.service) (socket $DEFAULT_SOCKET)"

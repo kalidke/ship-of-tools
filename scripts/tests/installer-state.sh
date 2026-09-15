@@ -133,54 +133,6 @@ check "the manifest exposes no alias to reuse" \
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-case_start "tmux requirement (ADR 0046 decision 5: nothing new runs on tmux)"
-# `installer_tmux_required <os> <config-dir>` globs EVERY
-# <config-dir>/workspaces-*/*.toml -- no host-derivation rule of its own
-# (deliberately: a second copy of the daemon's own state_host() rule is
-# exactly what ADR 0046 exists to delete), so these cases use whatever
-# per-host directory names they like.
-
-d="$WORK/tmux-no-rows"; mkdir -p "$d/workspaces-somehost"
-check "no workspace tomls at all: not required on Linux" \
-    "no" "$(installer_tmux_required Linux "$d")"
-
-d="$WORK/tmux-no-dir"
-check "no workspaces-* dir at all: not required on Linux" \
-    "no" "$(installer_tmux_required Linux "$d")"
-
-d="$WORK/tmux-capsule-only"; mkdir -p "$d/workspaces-somehost"
-printf 'slug          = "a"\nruntime       = "capsule"\n' > "$d/workspaces-somehost/a.toml"
-check "every existing row already capsule: not required" \
-    "no" "$(installer_tmux_required Linux "$d")"
-
-d="$WORK/tmux-explicit"; mkdir -p "$d/workspaces-somehost"
-printf 'slug          = "a"\nruntime       = "tmux"\n' > "$d/workspaces-somehost/a.toml"
-check "an existing row explicitly on tmux requires it" \
-    "yes" "$(installer_tmux_required Linux "$d")"
-
-d="$WORK/tmux-legacy"; mkdir -p "$d/workspaces-somehost"
-printf 'slug          = "a"\nlabel         = "a"\n' > "$d/workspaces-somehost/a.toml"
-check "a legacy toml predating the runtime key requires it" \
-    "yes" "$(installer_tmux_required Linux "$d")"
-
-d="$WORK/tmux-mixed"; mkdir -p "$d/workspaces-somehost"
-printf 'slug          = "a"\nruntime       = "capsule"\n' > "$d/workspaces-somehost/a.toml"
-printf 'slug          = "b"\nruntime       = "tmux"\n' > "$d/workspaces-somehost/b.toml"
-check "one tmux row among several capsule rows still requires it" \
-    "yes" "$(installer_tmux_required Linux "$d")"
-
-d="$WORK/tmux-other-host"; mkdir -p "$d/workspaces-thishost" "$d/workspaces-otherhost"
-printf 'slug          = "a"\nruntime       = "capsule"\n' > "$d/workspaces-thishost/a.toml"
-printf 'slug          = "b"\nruntime       = "tmux"\n' > "$d/workspaces-otherhost/b.toml"
-check "a shared-home OTHER host's tmux row makes this install require it too (deliberate over-approximation)" \
-    "yes" "$(installer_tmux_required Linux "$d")"
-
-d="$WORK/tmux-darwin"; mkdir -p "$d/workspaces-somehost"
-printf 'slug          = "a"\nruntime       = "capsule"\n' > "$d/workspaces-somehost/a.toml"
-check "Darwin always requires it, even with only capsule rows on disk" \
-    "yes" "$(installer_tmux_required Darwin "$d")"
-
-# ---------------------------------------------------------------------------
 case_start "unit ownership: ExecStart path extraction (old + wrapped forms)"
 # Codex round on PR #164: installer_unit_owner_path used to take the FIRST
 # WORD of ExecStart, which was the sotd path in the old direct form but
