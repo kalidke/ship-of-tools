@@ -360,5 +360,108 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
         withenv("SOT_COMM_HOME" => "") do
             @test ShipTools.comm_home() == joinpath(homedir(), ".sot-comm")
         end
+        withenv("CLAUDE_CONFIG_DIR" => "") do
+            @test ShipTools.claude_home() == joinpath(homedir(), ".claude")
+        end
+        withenv("CLAUDE_CONFIG_DIR" => "/tmp/sot-test-claude-home") do
+            @test ShipTools.claude_home() == "/tmp/sot-test-claude-home"
+        end
+        withenv("CLAUDE_CONFIG_DIR" => nothing) do
+            @test ShipTools.claude_home() == joinpath(homedir(), ".claude")
+        end
+    end
+
+    @testset "per-session accounts: discovery + installer seeding" begin
+        # Owner ruling: an account is a FOLDER the user creates and logs
+        # into OUTSIDE Ship of Tools — never a declared entity. Discovery
+        # only looks at what already exists in a temp $HOME, so this suite
+        # never touches the real machine's accounts.
+        @testset "_discover_claude_accounts: name rule + non-directories" begin
+            mktempdir() do home
+                for name in (".claude-team", ".claude-a1", ".claude-BAD", ".claude_nodash",
+                             ".claude-", ".notclaude-x")
+                    mkpath(joinpath(home, name))
+                end
+                # A file (not a directory) matching the pattern must not count.
+                write(joinpath(home, ".claude-filelikethis"), "not a dir")
+                withenv("HOME" => home) do
+                    found = ShipTools._discover_claude_accounts()
+                    @test found == [("a1", joinpath(home, ".claude-a1")), ("team", joinpath(home, ".claude-team"))]
+                end
+            end
+        end
+
+        # The installer's own test: seeding a SECOND account folder with the
+        # same skills + hook registration as the default, leaving an
+        # unrelated existing setting untouched, and doing nothing new on a
+        # second run.
+        @testset "update_comm seeds a discovered account like the default" begin
+            mktempdir() do home
+                acct_dir = joinpath(home, ".claude-team")
+                mkpath(acct_dir)
+                # Pre-existing, unrelated content the installer must never
+                # clobber — the "never overwrite a user's unrelated
+                # settings" rule.
+                write(joinpath(acct_dir, "settings.json"), """{"unrelated":{"foo":"bar"}}""")
+
+                withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                        "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                    ShipTools.update_comm(clis = [:claude])
+
+                    default_skills = sort(readdir(joinpath(home, ".claude", "skills")))
+                    acct_skills = sort(readdir(joinpath(acct_dir, "skills")))
+                    @test !isempty(default_skills)
+                    @test acct_skills == default_skills
+
+                    acct_settings = joinpath(acct_dir, "settings.json")
+                    @test isfile(acct_settings)
+
+                    if !isnothing(Sys.which("jq"))
+                        # Hook registration landed exactly as it does for
+                        # the default directory...
+                        @test readchomp(`jq -e '.hooks.Stop' $acct_settings`) != ""
+                        # ...while the unrelated key survived byte-for-byte.
+                        @test readchomp(`jq -r '.unrelated.foo' $acct_settings`) == "bar"
+                    end
+
+                    # Idempotent: a second run changes nothing SEMANTICALLY.
+                    # `_remove_stale_comm_hooks!` only prunes a matcher-group
+                    # when EVERY hook in it matches "comm-status-" — the two
+                    # SessionStart groups above never do, so they're never
+                    # pruned+re-added like the rest, and jq's own object key
+                    # order can shift as a result (pre-existing behavior,
+                    # unrelated to accounts). Compare CANONICALIZED
+                    # (sorted-key) JSON rather than raw bytes — key order was
+                    # never a stated invariant; content is.
+                    before_skills = sort(readdir(joinpath(acct_dir, "skills")))
+                    canon() = isnothing(Sys.which("jq")) ? read(acct_settings, String) :
+                        read(`jq -S . $acct_settings`, String)
+                    before_canon = canon()
+                    ShipTools.update_comm(clis = [:claude])
+                    @test canon() == before_canon
+                    @test sort(readdir(joinpath(acct_dir, "skills"))) == before_skills
+                end
+            end
+        end
+
+        # A never-logged-in (freshly created, otherwise EMPTY) account
+        # folder is a NORMAL account (owner ruling), not an error state —
+        # it must still get seeded, creating only what the installer itself
+        # owns (skills/ and the hook registration), nothing that would look
+        # like a login.
+        @testset "update_comm seeds an empty, never-logged-in account folder" begin
+            mktempdir() do home
+                acct_dir = joinpath(home, ".claude-fresh")
+                mkpath(acct_dir) # nothing inside — never logged in here
+
+                withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                        "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                    ShipTools.update_comm(clis = [:claude])
+                    @test isdir(joinpath(acct_dir, "skills"))
+                    @test !isempty(readdir(joinpath(acct_dir, "skills")))
+                    @test isfile(joinpath(acct_dir, "settings.json"))
+                end
+            end
+        end
     end
 end

@@ -113,6 +113,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `session.create_codex` | `Ctrl+Enter` | Create a workspace in the selected folder with a Codex agent. |
 | `session.create_bare` | `Shift+Enter` | Create a workspace in the selected folder with a shell and no agent. |
 | `session.create` | `Enter` | Create a workspace in the selected folder with a Claude Code agent. |
+| `session.account_next` | `Tab` | Cycle which login account the new session will use. Hidden when only one account is discovered. |
 | `quit` | `Ctrl+q` | Close the frontend from navigation focus. |
 | `files.copy_path` | `Ctrl+c` / `c` | Copy the selected file's backend path to the clipboard. |
 | `files.new` | `Ctrl+n` | Create a file, or a folder when the name ends with /, in the selected directory. |

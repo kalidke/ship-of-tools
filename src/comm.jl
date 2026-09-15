@@ -2,17 +2,22 @@
 #
 # Source of truth: comm/ in the repo. install_comm copies the CLI-agnostic core
 # scripts to ~/.sot-comm/bin and each per-CLI adapter to that CLI's dir
-# (~/.claude/skills, $CODEX_HOME/skills, ~/.local/bin, hooks/plugins).
+# (~/.claude/skills, $CODEX_HOME/skills, ~/.local/bin, hooks/plugins) — AND,
+# per-session accounts (owner ruling), into every discovered
+# ~/.claude-<name> account directory alongside the default `~/.claude`, via
+# the same merge logic (`_discover_claude_accounts`, `_install_claude_skills`,
+# `_install_claude_hooks`).
 # See comm/PROTOCOL.md for the wire contract.
 #
 # The Claude adapter additionally installs three work-state hooks
 # (UserPromptSubmit → working, Notification → blocked, Stop → idle; each shells
 # out to comm-status.sh) so an agent's state in the state-nav is event-driven —
 # instant and automatic, no model cooperation. Wiring them touches
-# ~/.claude/settings.json, but via NON-clobbering jq merges (_add_comm_hook!) that
-# add one entry per event only if absent and preserve every existing hook; if jq
-# is missing or the file won't parse it is left alone and the exact JSON to add by
-# hand is printed.
+# <claude_dir>/settings.json, but via NON-clobbering jq merges (_add_comm_hook!)
+# that add one entry per event only if absent and preserve every existing hook;
+# if jq is missing the exact JSON to add by hand is printed, and if the file
+# won't parse it is left alone untouched (a missing file is created fresh
+# instead, since there is nothing there to preserve).
 #
 # Install copies each file via copy-then-rename (`install_file`, an atomic
 # swap onto the destination — see below) and then prunes a small deprecation
@@ -46,6 +51,45 @@ comm_home() = _env_dir("SOT_COMM_HOME", joinpath(homedir(), ".sot-comm"))
 # dirs. Honor the env like comm_home() does.
 "Resolved runtime home for codex (honors `\$CODEX_HOME`)."
 codex_home() = _env_dir("CODEX_HOME", joinpath(homedir(), ".codex"))
+
+"Resolved runtime home for the DEFAULT claude account (honors `\$CLAUDE_CONFIG_DIR`)."
+claude_home() = _env_dir("CLAUDE_CONFIG_DIR", joinpath(homedir(), ".claude"))
+
+# Per-session accounts (owner ruling): an account is nothing more than a
+# folder the user creates and logs into OUTSIDE Ship of Tools —
+# `~/.claude-<name>` for Claude — never a declared entity. Nothing here
+# creates one; discovery only looks at what already exists in $HOME, so a
+# typo or a folder for something else entirely never gets treated as an
+# account by accident (the same `[a-z0-9][a-z0-9_-]*` name rule the daemon
+# uses to discover them). A folder that has never been logged into is a
+# NORMAL account — its pane runs the login on first start — so it's
+# discovered and seeded exactly like any other.
+const _CLAUDE_ACCOUNT_DIR_RE = r"^\.claude-([a-z0-9][a-z0-9_-]*)$"
+
+"""
+    _discover_claude_accounts()
+
+Named Claude account directories directly in `homedir()`: every
+`~/.claude-<name>` entry whose `<name>` matches `^[a-z0-9][a-z0-9_-]*\$`.
+Always scans the literal home (not `claude_home()`, which honors
+`\$CLAUDE_CONFIG_DIR` for the ONE directory a caller names) — an account is
+a sibling of the default `~/.claude`, on whichever machine's home this is.
+Returns `(name, dir)` pairs sorted by name for a deterministic install order.
+"""
+function _discover_claude_accounts()
+    home = homedir()
+    out = Tuple{String,String}[]
+    isdir(home) || return out
+    for entry in readdir(home)
+        m = match(_CLAUDE_ACCOUNT_DIR_RE, entry)
+        m === nothing && continue
+        dir = joinpath(home, entry)
+        isdir(dir) || continue
+        push!(out, (String(m.captures[1]), dir))
+    end
+    sort!(out; by = first)
+    return out
+end
 
 # ADR 0030 §8 "Installed comm scripts": these carried no stamp before this —
 # only a registry PROTOCOL_VERSION, no way to answer "what commit are the
@@ -392,39 +436,67 @@ skew.
 """
 update_comm(; clis = [:claude, :codex]) = install_comm(; clis = clis)
 
+"""
+    _install_claude_skills(srcdir, claude_dir; account)
+
+Copy every skill directory under `srcdir` (one containing a `SKILL.md`) into
+`claude_dir/skills`, replacing any stale destination first. The same logic
+runs for the default `~/.claude` and for every discovered
+`~/.claude-<name>` account directory — `account` only labels the `@info`
+line so a multi-account install is legible. Returns the list of skill names
+installed (`"/name"`, matching the existing log shape).
+"""
+function _install_claude_skills(srcdir::AbstractString, claude_dir::AbstractString;
+                                account::AbstractString = "default")
+    skillsroot = joinpath(claude_dir, "skills")
+    mkpath(skillsroot)
+    installed = String[]
+    for name in readdir(srcdir)
+        src = joinpath(srcdir, name)
+        isfile(joinpath(src, "SKILL.md")) || continue
+        dst = joinpath(skillsroot, name)
+        # Copy the whole skill directory (not just SKILL.md) so a skill's
+        # resources/ (e.g. project-log's vendored templates) travel with
+        # it. Remove any stale destination first so a renamed/removed
+        # resource file doesn't linger as an orphan.
+        #
+        # This rm-then-cp has the same shape as the bug install_file fixes
+        # (destination gone before the copy that might fail) — deliberately
+        # left as is rather than folded into install_file's swap. The
+        # observed loss was a single script vanishing from bin/; a skill
+        # directory is many small text files copied from the local repo
+        # checkout onto local disk, not a lone executable that can be
+        # mid-use on Windows, so a partial recursive copy here is a risk
+        # class this PR has no field evidence for. Giving it an atomic
+        # swap too means a second code path (copy-aside, rm, rename a
+        # directory) for a failure mode that hasn't been seen — deferred
+        # until it is.
+        isdir(dst) && rm(dst; recursive = true, force = true)
+        cp(src, dst; force = true)
+        push!(installed, "/$name")
+    end
+    @info "Installed Claude skills" account skills = installed dir = skillsroot
+    return installed
+end
+
 function _install_adapter(cli::Symbol)
     if cli === :claude
         srcdir = joinpath(COMM_SRC, "adapters", "claude")
-        skillsroot = joinpath(homedir(), ".claude", "skills")
-        mkpath(skillsroot)
-        installed = String[]
-        for name in readdir(srcdir)
-            src = joinpath(srcdir, name)
-            isfile(joinpath(src, "SKILL.md")) || continue
-            dst = joinpath(skillsroot, name)
-            # Copy the whole skill directory (not just SKILL.md) so a skill's
-            # resources/ (e.g. project-log's vendored templates) travel with
-            # it. Remove any stale destination first so a renamed/removed
-            # resource file doesn't linger as an orphan.
-            #
-            # This rm-then-cp has the same shape as the bug install_file fixes
-            # (destination gone before the copy that might fail) — deliberately
-            # left as is rather than folded into install_file's swap. The
-            # observed loss was a single script vanishing from bin/; a skill
-            # directory is many small text files copied from the local repo
-            # checkout onto local disk, not a lone executable that can be
-            # mid-use on Windows, so a partial recursive copy here is a risk
-            # class this PR has no field evidence for. Giving it an atomic
-            # swap too means a second code path (copy-aside, rm, rename a
-            # directory) for a failure mode that hasn't been seen — deferred
-            # until it is.
-            isdir(dst) && rm(dst; recursive = true, force = true)
-            cp(src, dst; force = true)
-            push!(installed, "/$name")
-        end
-        @info "Installed Claude skills" skills = installed dir = skillsroot
+        _install_claude_skills(srcdir, claude_home(); account = "default")
         _install_launchers(joinpath(srcdir, "bin"))
-        _install_claude_hooks(joinpath(srcdir, "hooks"))
+        _install_claude_hooks(joinpath(srcdir, "hooks"), claude_home(); account = "default")
+        # Per-session accounts (owner ruling): seed every OTHER discovered
+        # `~/.claude-<name>` folder with the same product skills + hook
+        # registration, via the exact same merge logic as the default
+        # folder above — never overwriting a user's unrelated settings.
+        # A folder that has never been logged into still gets them (it's a
+        # normal account, not an error state); this writes only what the
+        # product itself owns (the skills/ directory and its hook entries
+        # in settings.json) — nothing that would look like a login.
+        for (name, dir) in _discover_claude_accounts()
+            _install_claude_skills(srcdir, dir; account = name)
+            _install_claude_hooks(joinpath(srcdir, "hooks"), dir; account = name)
+        end
     elseif cli === :codex
         # ADR 0031 — codex adapter: ccx launcher, the PermissionRequest->blocked
         # hook script, and the hooks.json plugin payload (state-nav wiring). The shared
@@ -564,11 +636,14 @@ function _install_adapter(cli::Symbol)
 end
 
 """
-    _install_claude_hooks(srchooks)
+    _install_claude_hooks(srchooks, claude_dir; account)
 
 Install the comm hook script(s) from `srchooks` into `\$SOT_COMM_HOME/bin`
-(next to the comm-*.sh scripts they shell out to), then idempotently register the
-three work-state hooks in `~/.claude/settings.json`.
+(next to the comm-*.sh scripts they shell out to — shared across every
+account, so this repeats harmlessly), then idempotently register the
+work-state hooks in `claude_dir/settings.json`. Called once for the default
+`~/.claude` and once per discovered `~/.claude-<name>` account directory
+(`_install_adapter`) — same merge logic every time.
 
 The work-state hooks make state **event-driven — instant, automatic, and free of
 model cooperation**: `UserPromptSubmit → working`, `Notification → blocked`,
@@ -582,21 +657,22 @@ it adds one entry for that event only if absent and preserves every other hook
 missing or unparseable, or `jq` is unavailable, it is left alone and the exact
 JSON to add by hand is printed. No-op if `srchooks` is absent.
 """
-function _install_claude_hooks(srchooks::AbstractString)
+function _install_claude_hooks(srchooks::AbstractString, claude_dir::AbstractString;
+                               account::AbstractString = "default")
     isdir(srchooks) || return nothing
     bin = joinpath(comm_home(), "bin")
     installed = [f for f in readdir(srchooks) if isfile(joinpath(srchooks, f))]
     isempty(installed) && return nothing
     _install_files(srchooks, bin, installed; executable = Returns(true))
-    @info "Installed comm hook scripts" hooks = installed dir = bin
+    @info "Installed comm hook scripts" account hooks = installed dir = bin
     # Register the work-state hooks. Together they make work-state event-driven —
     # a turn starting → working, an AskUserQuestion → blocked, a turn ending →
     # idle. Retire any stale comm wiring first (e.g. the old Notification→blocked
     # that lit agents red on plain idle) so settings ends up matching the current
     # set declaratively, then add each via a non-clobbering merge.
-    _remove_stale_comm_hooks!()
+    _remove_stale_comm_hooks!(claude_dir)
     for (event, script, matcher) in _COMM_STATE_HOOKS
-        _add_comm_hook!(event, script; matcher = matcher)
+        _add_comm_hook!(event, script, claude_dir; matcher = matcher)
     end
     return nothing
 end
@@ -652,18 +728,24 @@ const _COMM_STATE_HOOKS = [
 _hook_command(script::AbstractString) = "\$HOME/.sot-comm/bin/$script"
 
 """
-    _add_comm_hook!(event, script)
+    _add_comm_hook!(event, script, claude_dir)
 
 Idempotently add a Claude Code hook for `event` (`"UserPromptSubmit"`,
-`"Notification"`, `"Stop"`, …) running `~/.sot-comm/bin/<script>` to the user's
-`~/.claude/settings.json`, preserving all existing config. Uses `jq` so the merge
-is structural, not a clobbering rewrite. Falls back to printing the exact JSON to
-add by hand when jq is missing or the file can't be parsed — never overwrites a
-file it could not safely read.
+`"Notification"`, `"Stop"`, …) running `~/.sot-comm/bin/<script>` to
+`claude_dir/settings.json`, preserving all existing config. Uses `jq` so the
+merge is structural, not a clobbering rewrite. Falls back to printing the
+exact JSON to add by hand when jq is missing or the file can't be parsed —
+never overwrites a file it could not safely read.
+
+A MISSING `settings.json` (e.g. a freshly discovered account folder that has
+never been logged into — a normal state, not an error) gets a fresh `{}`
+created first, so the account still gets the hook registration; the
+account itself is unaffected either way (settings.json carries no
+credential and its presence never signals "logged in").
 """
-function _add_comm_hook!(event::AbstractString, script::AbstractString;
+function _add_comm_hook!(event::AbstractString, script::AbstractString, claude_dir::AbstractString;
                          matcher::Union{Nothing,AbstractString} = nothing)
-    settings = joinpath(homedir(), ".claude", "settings.json")
+    settings = joinpath(claude_dir, "settings.json")
     cmd = _hook_command(script)
     m = matcher === nothing ? "" : matcher
     mfield = isempty(m) ? "" : """ "matcher": "$m", """
@@ -674,8 +756,9 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString;
         return nothing
     end
     if !isfile(settings)
-        @warn "no ~/.claude/settings.json — create it with the comm $event hook" file = settings entry = manual
-        return nothing
+        mkpath(claude_dir)
+        write(settings, "{}")
+        @info "Created settings.json for the comm hooks" file = settings
     end
 
     # jq: add our entry for `event` only if no existing hook for that event
@@ -700,7 +783,7 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString;
         run(pipeline(`jq --arg cmd $cmd --arg evt $event --arg m $m $prog $settings`; stdout = tmp))
         true
     catch err
-        @warn "could not parse ~/.claude/settings.json with jq — leaving it untouched; add the comm $event hook by hand" file = settings entry = manual error = err
+        @warn "could not parse settings.json with jq — leaving it untouched; add the comm $event hook by hand" file = settings entry = manual error = err
         isfile(tmp) && rm(tmp; force = true)
         false
     end
@@ -717,7 +800,7 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString;
         Base.Filesystem.rename(tmp, settings)
     catch err
         isfile(tmp) && rm(tmp; force = true)
-        @warn "could not update ~/.claude/settings.json (in use?) — leaving the previous copy in place; add the comm $event hook by hand" file = settings entry = manual error = err
+        @warn "could not update settings.json (in use?) — leaving the previous copy in place; add the comm $event hook by hand" file = settings entry = manual error = err
         return nothing
     end
     if changed
@@ -729,17 +812,18 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString;
 end
 
 """
-    _remove_stale_comm_hooks!()
+    _remove_stale_comm_hooks!(claude_dir)
 
 Strip every comm hook (any `~/.sot-comm/bin/comm-status-*.sh` command) from
-`~/.claude/settings.json`, across all events, dropping events left empty. Run
+`claude_dir/settings.json`, across all events, dropping events left empty. Run
 before re-adding the current set ([`_install_claude_hooks`]) so settings ends up
 matching `_COMM_STATE_HOOKS` exactly — retiring wirings we no longer use (notably
 the old `Notification`→blocked that lit agents red on plain idle). Every non-comm
-hook is preserved. No-op if `jq` is missing or settings.json is absent/unparseable.
+hook is preserved. No-op if `jq` is missing or settings.json is absent/unparseable
+(a brand-new account directory has nothing to prune yet either way).
 """
-function _remove_stale_comm_hooks!()
-    settings = joinpath(homedir(), ".claude", "settings.json")
+function _remove_stale_comm_hooks!(claude_dir::AbstractString)
+    settings = joinpath(claude_dir, "settings.json")
     (Sys.which("jq") === nothing || !isfile(settings)) && return nothing
     # For each event, keep only matcher-groups that do NOT run a comm-status-*.sh
     # command; then drop any event whose group list is now empty.

@@ -81,6 +81,26 @@ so switching workspaces is fast and does not tear down the kernel — switching 
 "like tmux windows in the same session." You can also cycle the active workspace
 directly with `Shift+ArrowRight` / `Shift+ArrowLeft`.
 
+#### Accounts
+
+A session normally runs under the agent's default login. To spend a *different*
+subscription — a team account, say, kept separate from your personal one — add
+an account outside Ship of Tools first:
+
+```sh
+mkdir ~/.claude-team
+CLAUDE_CONFIG_DIR=~/.claude-team claude
+# then, inside that claude session: /login
+```
+
+Once that folder exists it appears as a choice in the session picker (`Tab`
+cycles it) — Ship of Tools discovers accounts, it never declares or creates
+them, and it never stores a credential of any kind. A folder you haven't
+logged into yet still shows up and is still selectable — the row's own pane
+runs the login on its first start. Sessions running under a non-default
+account show a short `· <name>` suffix in the Sessions list so you can tell
+at a glance which subscription each one spends.
+
 ### Hosts mode (`h`)
 
 Hosts mode picks which remote the frontend targets. The choice is persisted, and
