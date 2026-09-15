@@ -149,7 +149,7 @@ run_version() {
 
 case_matching_pair_prints_the_phase_verbatim() {
     stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[{"client_id":"fe-1","app_version":"0.6.0-dev+abc1234","protocol":1,"connected_at":1}]}}'
-    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[{"workspace_id":"ws1","slug":"research","label":"","project_root":"/p","tmux_session":"t","kernel_running":false,"is_default":false,"runtime":"capsule","state_dir":"/sd","phase":"ready"}]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[{"workspace_id":"ws1","slug":"research","label":"","project_root":"/p","session_name":"t","kernel_running":false,"is_default":false,"runtime":"capsule","state_dir":"/sd","phase":"ready"}]}}'
     start_stub_daemon
     run_version
     stop_stub_daemon
@@ -280,7 +280,7 @@ case_untargeted_relaunch_with_resolved_target_exits_0() {
 
 case_foreign_row_prints_the_phase_with_no_derived_verdict() {
     stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[]}}'
-    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[{"workspace_id":"ws2","slug":"scratch","label":"","project_root":"/p2","tmux_session":"t2","kernel_running":false,"is_default":false,"runtime":"capsule","state_dir":"/sd2","phase":"foreign"}]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[{"workspace_id":"ws2","slug":"scratch","label":"","project_root":"/p2","session_name":"t2","kernel_running":false,"is_default":false,"runtime":"capsule","state_dir":"/sd2","phase":"foreign"}]}}'
     start_stub_daemon
     run_version
     stop_stub_daemon

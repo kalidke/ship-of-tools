@@ -279,7 +279,7 @@ impl Endpoint for DaemonLaneEndpoint {
     type Client = DaemonLaneClient;
     type Process = BridgedPeer;
 
-    /// `lane` is the row's `tmux_session` name — `LaneConnectReq::target`
+    /// `lane` is the row's `session_name` name — `LaneConnectReq::target`
     /// is required for the voyage lane too (a voyage is reached only
     /// through the row that owns it), so no daemon-side change was
     /// needed here: B3 already requires `target` on both lane kinds.
@@ -460,7 +460,7 @@ impl DaemonLaneEndpoint {
     /// hardened connector — see [`LaneStream`]'s own doc), write the
     /// `lane.connect` request and read ONE reply under a SEPARATE 2 s
     /// bound ([`run_handshake`]), then classify it.  `row` is the row's
-    /// `tmux_session` name (`LaneConnectReq::target`, required for both
+    /// `session_name` name (`LaneConnectReq::target`, required for both
     /// lane kinds); `kind` is `"supervisor"` or `"voyage"`
     /// (`LaneConnectReq::lane`).
     fn dial(&self, row: &str, kind: &str, voyage_id: Option<String>) -> Result<DaemonLaneClient, TransportError> {

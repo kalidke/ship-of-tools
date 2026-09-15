@@ -4556,7 +4556,7 @@ pub async fn handle_workspace_create(
         slug: ws_handle.slug.clone(),
         label: ws_handle.label.clone(),
         project_root: ws_handle.project_root.to_string_lossy().into_owned(),
-        tmux_session: ws_handle.tmux_session.clone(),
+        session_name: ws_handle.session_name.clone(),
     };
     let rev = session
         .bump(
@@ -6225,7 +6225,7 @@ const CLEAR_COMM_UNREAD_LOCK_BOUND: std::time::Duration = std::time::Duration::f
 /// run `comm-leave` for itself, so its row would otherwise persist and show as
 /// a ghost in `workspace.list`. We mirror `handle_workspace_list`'s row-binding
 /// rule — a row belongs to this workspace when `comm_row_owned_here` matches
-/// (its `tmux` session-part equals `tmux_session` AND it's this `host`'s row),
+/// (its `tmux` session-part equals `session_name` AND it's this `host`'s row),
 /// or (fallback for not-yet-joined `spawning` rows) when its handle equals the
 /// stored `agent_name` AND `host_matches` too (LU5d2: the stored name is
 /// caller-supplied, not proof of ownership — a same-named row stamped by
@@ -6502,7 +6502,7 @@ pub async fn handle_workspace_list(
                 slug: ws.slug.clone(),
                 label: ws.label.clone(),
                 project_root: ws.project_root.to_string_lossy().into_owned(),
-                tmux_session: ws.tmux_session.clone(),
+                session_name: ws.session_name.clone(),
                 kernel_running: ws.kernel_built(),
                 is_default: default_id.as_deref() == Some(ws.workspace_id.as_str()),
                 autostart_claude: ws.autostart_claude,
@@ -7622,7 +7622,7 @@ mod remove_comm_agents_for_workspace_host_tests {
             &registry_path,
             serde_json::to_vec_pretty(&serde_json::json!({
                 "agents": {
-                    "same-name": {"tmux": "", "host": "hostB"},
+                    "same-name": {"host": "hostB"},
                 }
             }))
             .unwrap(),
@@ -7668,8 +7668,8 @@ mod remove_comm_agents_for_workspace_host_tests {
             &registry_path,
             serde_json::to_vec_pretty(&serde_json::json!({
                 "agents": {
-                    "manually-joined": {"tmux": "", "host": "hostA", "workspace_id": "ws-1"},
-                    "other-workspace": {"tmux": "", "host": "hostA", "workspace_id": "ws-2"},
+                    "manually-joined": {"host": "hostA", "workspace_id": "ws-1"},
+                    "other-workspace": {"host": "hostA", "workspace_id": "ws-2"},
                 }
             }))
             .unwrap(),
@@ -7721,7 +7721,7 @@ mod remove_comm_agents_for_workspace_host_tests {
             &registry_path,
             serde_json::to_vec_pretty(&serde_json::json!({
                 "agents": {
-                    "host-4-be-x": {"tmux": "sot-be-x:0.0", "host": "host-4"},
+                    "host-4-be-x": {"host": "host-4"},
                 }
             }))
             .unwrap(),
@@ -7819,10 +7819,10 @@ mod clear_comm_unread_tests {
         registry_path
     }
 
-    // A `"tmux"`-runtime workspace with `tmux_session = "sot-be-<label>"`
-    // (matching `Workspace::from_label`'s own convention, so a fixture's
-    // registry `"tmux": "sot-be-<label>:0.0"` binds via the live-occupant
-    // match, same as production) and the given stored `agent_name`.
+    // A `"tmux"`-runtime workspace with `session_name = "sot-be-<label>"`
+    // (`Workspace::from_label`'s own convention) and the given stored
+    // `agent_name`. Registry rows bind to it by `workspace_id`/`host`;
+    // the registry's old `tmux` pane field is gone (topology plan §D).
     fn mk_ws(label: &str, agent_name: &str) -> Workspace {
         let mut ws = Workspace::from_label(
             label,
@@ -7847,7 +7847,6 @@ mod clear_comm_unread_tests {
             &dir,
             serde_json::json!({
                 "host-2-be-x": {
-                    "tmux": "sot-be-x:0.0",
                     "host": "hostB",
                     "state": "done",
                     "summary": "not yours",
@@ -7874,7 +7873,6 @@ mod clear_comm_unread_tests {
                 &dir,
                 serde_json::json!({
                     "host-4-be-x": {
-                        "tmux": "sot-be-x:0.0",
                         "host": "host-4",
                         "state": state,
                         "summary": "unchanged",
@@ -7933,7 +7931,6 @@ mod clear_comm_unread_tests {
             &dir,
             serde_json::json!({
                 "host-4-be-x": {
-                    "tmux": "sot-be-x:0.0",
                     "host": "host-4",
                     "state": "done",
                     "summary": "probe summary",
@@ -7974,7 +7971,6 @@ mod clear_comm_unread_tests {
             &dir,
             serde_json::json!({
                 "capsule-handle-x": {
-                    "tmux": "",
                     "host": "host-4",
                     "state": "done",
                     "summary": "probe summary",
@@ -8012,7 +8008,6 @@ mod clear_comm_unread_tests {
             &dir,
             serde_json::json!({
                 "someone-else": {
-                    "tmux": "",
                     "host": "host-4",
                     "state": "done",
                     "summary": "not yours",
@@ -8144,7 +8139,6 @@ mod workspace_activate_read_tests {
             serde_json::to_vec_pretty(&serde_json::json!({
                 "agents": {
                     "host-4-activate-capsule-x": {
-                        "tmux": "",
                         "host": "host-4",
                         "state": "done",
                         "summary": "capsule probe summary",
@@ -8233,7 +8227,6 @@ mod agent_str_host_filter_tests {
             serde_json::to_vec_pretty(&serde_json::json!({
                 "agents": {
                     "same-name": {
-                        "tmux": "",
                         "host": "hostB",
                         "state": "working",
                         "summary": "leaked",
@@ -8738,8 +8731,8 @@ mod workspace_destroy_default_row_tests {
             comm_dir.join("registry.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
                 "agents": {
-                    handle: {"tmux": "", "host": "leave-test-host"},
-                    "other-host-handle": {"tmux": "", "host": "another-host"},
+                    handle: {"host": "leave-test-host"},
+                    "other-host-handle": {"host": "another-host"},
                 }
             }))
             .unwrap(),

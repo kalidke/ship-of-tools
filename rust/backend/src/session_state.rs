@@ -61,8 +61,8 @@ pub fn write_backend_identity(
         toml_quote(&project_root.to_string_lossy())
     ));
     body.push_str(&format!(
-        "tmux_session  = {}\n",
-        toml_quote(&paths::tmux_session_name(label))
+        "session_name  = {}\n",
+        toml_quote(&paths::session_name(label))
     ));
     if let Some(s) = socket_path {
         body.push_str(&format!(
@@ -248,7 +248,7 @@ left_col_pct = 50
         assert!(text.contains("label         = \"MyPkg.jl\""));
         assert!(text.contains("session_id    = \"sess-123\""));
         assert!(text.contains("project_dir   = \"/home/u/MyPkg.jl\""));
-        assert!(text.contains("tmux_session  = \"sot-be-mypkg_jl\""));
+        assert!(text.contains("session_name  = \"sot-be-mypkg_jl\""));
 
         // Now write a frontend section to simulate the frontend later
         // editing the file, then re-stamp the backend identity. The

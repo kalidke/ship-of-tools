@@ -363,15 +363,15 @@ mod tests {
     use super::*;
     use crate::workspaces::Workspace;
 
-    /// A registry with exactly one CAPSULE row, named `tmux_session` —
+    /// A registry with exactly one CAPSULE row, named `session_name` —
     /// no real state dir, no real supervisor: these tests never reach
     /// past the token gate (a known target with the WRONG token still
     /// refuses), so nothing here needs to dial anything.
-    fn workspaces_with_one_capsule_row(tmux_session: &str) -> Workspaces {
+    fn workspaces_with_one_capsule_row(session_name: &str) -> Workspaces {
         let workspaces = Workspaces::default();
         let mut ws = Workspace::from_label("token-gate-test", std::env::temp_dir(), false, "none".to_string(), String::new(), String::new());
         ws.runtime = "capsule".to_string();
-        ws.tmux_session = tmux_session.to_string();
+        ws.session_name = session_name.to_string();
         workspaces.insert(ws);
         workspaces
     }

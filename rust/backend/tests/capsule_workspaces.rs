@@ -355,9 +355,9 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["tmux_session"]
+    let target = create_res.payload["session_name"]
         .as_str()
-        .expect("tmux_session (the pty.open addressing token)")
+        .expect("session_name (the pty.open addressing token)")
         .to_string();
 
     // workspace.list: runtime "capsule", a state_dir, and — polled — phase
@@ -624,7 +624,7 @@ async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_
     next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
 
     let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
     let state_dir = loop {
@@ -1192,7 +1192,7 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
     assert_eq!(default_row["runtime"], "capsule", "default row: {default_row:?}");
     assert_eq!(default_row["agent"], "none", "default row: {default_row:?}");
     let default_workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
-    let default_target = default_row["tmux_session"].as_str().expect("tmux_session").to_string();
+    let default_target = default_row["session_name"].as_str().expect("session_name").to_string();
 
     // Same path arithmetic `capsule_workspace::state_dir_for` uses:
     // `<LOCALAPPDATA>\sot\workspaces\<workspace_id>` — `env.state_root` IS
@@ -1214,11 +1214,11 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
         "the default row's phase must read \"stopped\" before its first attach: {default_row:?}"
     );
 
-    // `target` MUST be the row's own `tmux_session` — a targetless
+    // `target` MUST be the row's own `session_name` — a targetless
     // `pty.open` addresses the drawer's own special SoT LLM terminal
     // (`pty::DEFAULT_TMUX_TARGET` == "sot-llm"), never a workspace row;
     // `server.rs`'s `workspace_for_tmux(requested_target)` only resolves
-    // to this row when `target` matches its `tmux_session`. This is
+    // to this row when `target` matches its `session_name`. This is
     // exactly what the frontend sends attaching a capsule row — though
     // in practice the frontend never sends it for THIS row at all
     // (2026-09-04's own frontend-side filter, tested separately in
@@ -1327,7 +1327,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     let row = find_row(&list_payload, "ws-preseeded-extra").expect("the pre-seeded row is registered");
     assert_eq!(row["runtime"], "capsule", "row: {row:?}");
     let workspace_id = row["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = row["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = row["session_name"].as_str().expect("session_name").to_string();
 
     // Same path arithmetic `capsule_workspace::state_dir_for` uses.
     let state_dir_path = env.state_root.join("sot").join("workspaces").join(&workspace_id);
@@ -1557,7 +1557,7 @@ async fn capsule_attach_right_after_run_end_activates_despite_a_stale_cached_rea
     next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
     let state_dir_path = env.state_root.join("sot").join("workspaces").join(&workspace_id);
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
@@ -1637,7 +1637,7 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
     let state_dir_path = env.state_root.join("sot").join("workspaces").join(&workspace_id);
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
@@ -1780,7 +1780,7 @@ async fn setup_ended_row(env: &Env, label: &str) -> (Conn, u64, String, String, 
     next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
     let state_dir_path = env.state_root.join("sot").join("workspaces").join(&workspace_id);
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
@@ -2153,7 +2153,7 @@ async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
     next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
     let state_dir_path = env.state_root.join("sot").join("workspaces").join(&workspace_id);
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
@@ -2470,9 +2470,9 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
         .as_str()
         .expect("workspace_id")
         .to_string();
-    let target = create_res.payload["tmux_session"]
+    let target = create_res.payload["session_name"]
         .as_str()
-        .expect("tmux_session")
+        .expect("session_name")
         .to_string();
 
     let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
@@ -2638,7 +2638,7 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
         .expect("a default workspace row");
     assert_eq!(default_row["runtime"], "capsule", "default row: {default_row:?}");
     let default_workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
-    let default_target = default_row["tmux_session"].as_str().expect("tmux_session").to_string();
+    let default_target = default_row["session_name"].as_str().expect("session_name").to_string();
     let state_dir_path = env.state_root.join("sot").join("workspaces").join(&default_workspace_id);
 
     // Trigger start-on-attach: the capsule's producer (`claude`) will
@@ -4243,7 +4243,7 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
     next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
 
     let list_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
     loop {
@@ -4482,7 +4482,7 @@ async fn lane_connect_supervisor_pipes_hello_and_status() {
     next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
 
@@ -4582,7 +4582,7 @@ async fn lane_connect_voyage_pipes_the_attach_hello() {
     next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
     let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
@@ -4670,7 +4670,7 @@ async fn lane_connect_closes_when_either_side_closes() {
     next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
 
@@ -4759,7 +4759,7 @@ async fn lane_connect_resumes_a_stopped_row() {
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
     next_id += 1;
     let row = find_row(&list_payload, &workspace_id).expect("the row is still registered");
-    let target = row["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = row["session_name"].as_str().expect("session_name").to_string();
 
     let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -4847,7 +4847,7 @@ async fn lane_connect_refusals() {
     next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let ready_workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let ready_target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let ready_target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
     poll_for_phase(&mut conn, &mut next_id, &ready_workspace_id, "ready", BOUND).await;
 
     // voyage lane, no voyage_id.
@@ -4887,7 +4887,7 @@ async fn lane_connect_refusals() {
         .cloned()
         .expect("a default workspace row");
     let default_workspace_id2 = default_row2["workspace_id"].as_str().expect("workspace_id").to_string();
-    let default_target2 = default_row2["tmux_session"].as_str().expect("tmux_session").to_string();
+    let default_target2 = default_row2["session_name"].as_str().expect("session_name").to_string();
 
     let pty_req = serde_json::json!({
         "cols": 80, "rows": 24, "user_switch": true, "target": default_target2,
@@ -4980,7 +4980,7 @@ async fn lane_connect_refuses_a_voyage_id_the_target_row_does_not_own() {
         *next_id += 1;
         assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
         let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-        let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+        let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
         poll_for_phase(conn, next_id, &workspace_id, "ready", BOUND).await;
         (target, state_dir_from_list(conn, next_id, &workspace_id).await)
     }

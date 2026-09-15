@@ -799,7 +799,7 @@ mod capsule_pty_open_answers_before_activation {
         next_id += 1;
         let row = find_row(&list_payload, "ws-preseeded-order").expect("the pre-seeded row is registered");
         assert_eq!(row["phase"].as_str(), Some("stopped"), "row: {row:?}");
-        let target = row["tmux_session"].as_str().expect("tmux_session").to_string();
+        let target = row["session_name"].as_str().expect("session_name").to_string();
         let workspace_id = row["workspace_id"].as_str().expect("workspace_id").to_string();
         // `sot-capsule supervise <state_dir>` carries the state dir in argv.
         let state_dir = env.state_root.join("sot").join("workspaces").join(&workspace_id);

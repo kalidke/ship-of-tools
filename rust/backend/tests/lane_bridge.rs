@@ -50,7 +50,7 @@ fn wake_flag_for_test() -> (Arc<AtomicBool>, Box<dyn Fn() + Send + 'static>) {
 }
 
 /// Creates a `runtime: "capsule"` workspace and polls it to `"ready"`,
-/// returning its id and the `tmux_session` `lane.connect`'s own `target`
+/// returning its id and the `session_name` `lane.connect`'s own `target`
 /// names — `workspace.create`'s reply already carries it (mirrors
 /// `capsule_workspaces.rs`'s own `lane_connect_supervisor_pipes_hello_
 /// and_status` fixture).
@@ -64,7 +64,7 @@ async fn create_ready_capsule_row(env: &Env, conn: &mut Conn, next_id: &mut u64,
     *next_id += 1;
     assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
     let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
-    let target = create_res.payload["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
     poll_for_phase(conn, next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
     (workspace_id, target)
 }
@@ -519,7 +519,7 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
     next_id += 1;
     let row = find_row(&list_payload, "ws-lb3b-preseeded").expect("the pre-seeded row is registered");
     assert_eq!(row["phase"].as_str(), Some("stopped"), "row must be genuinely never-started: {row:?}");
-    let target = row["tmux_session"].as_str().expect("tmux_session").to_string();
+    let target = row["session_name"].as_str().expect("session_name").to_string();
 
     let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", &env.state_root);
     assert_eq!(count_matching_processes(&pattern).unwrap_or(99), 0, "no supervise process must exist before the dial");
@@ -822,7 +822,7 @@ async fn a_terminal_row_is_terminal_after_the_window() {
         .cloned()
         .expect("a default workspace row");
     let default_workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
-    let default_target = default_row["tmux_session"].as_str().expect("tmux_session").to_string();
+    let default_target = default_row["session_name"].as_str().expect("session_name").to_string();
 
     let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": default_target });
     let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;

@@ -616,7 +616,7 @@ pub struct WorkspaceInfo {
     pub slug: String,
     pub label: String,
     pub project_root: String,
-    pub tmux_session: String,
+    pub session_name: String,
     pub kernel_running: bool,
     pub is_default: bool,
     /// Which agent this workspace auto-starts: "claude" | "codex" | "none".
@@ -703,7 +703,7 @@ pub struct WorkspaceCreatedInfo {
     pub slug: String,
     pub label: String,
     pub project_root: String,
-    pub tmux_session: String,
+    pub session_name: String,
 }
 
 /// `workspace.destroy` reply payload. `tmux_killed` and `toml_removed`
@@ -3763,7 +3763,7 @@ fn handle_response_frame(
                             slug: r.slug,
                             label: r.label,
                             project_root: r.project_root,
-                            tmux_session: r.tmux_session,
+                            session_name: r.session_name,
                         }),
                         Err(e) => Err(format!("workspace.create res parse: {e}")),
                     }
@@ -3788,7 +3788,7 @@ fn handle_response_frame(
                                 slug: w.slug,
                                 label: w.label,
                                 project_root: w.project_root,
-                                tmux_session: w.tmux_session,
+                                session_name: w.session_name,
                                 kernel_running: w.kernel_running,
                                 is_default: w.is_default,
                                 agent: w.agent,

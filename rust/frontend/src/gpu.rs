@@ -3038,7 +3038,7 @@ struct RoiAim {
 /// `try_attach_capsule_pane`, and ADR 0045 decision 1's `pty.open` +
 /// `PtyAttachDirect` path never consulted it either) named no invariant
 /// worth a field. `WsAutostart`/`workspace_autostart` (and the
-/// `tmux_session_key` helper that built its key) went the same way
+/// `session_name_key` helper that built its key) went the same way
 /// post-notmux: the old FE autostart-on-attach launch it fed
 /// (`pending_autostart` → `advance_autostart_scan` →
 /// `autostart_claude_in_pane`) is retired in favor of the BE tmux
@@ -7144,7 +7144,7 @@ impl State {
             .unwrap_or(0);
         let next = ((idx + direction).rem_euclid(n)) as usize;
         let (next_host, next_slug) = self.workspace_slugs[next].clone();
-        let tmux_session = format!("sot-be-{next_slug}");
+        let session_name = format!("sot-be-{next_slug}");
         // Flick the brand wheels in the direction of travel (forward = CW). The
         // per-frame decay + redraw live in the bottom-strip block; nudge the
         // event loop so the spin animates even if nothing else is dirty.
@@ -7152,7 +7152,7 @@ impl State {
             .clamp(-WHEEL_MAX_VEL, WHEEL_MAX_VEL);
         self.dirty = true;
         self.window.request_redraw();
-        self.switch_to_workspace(next_host, Some(next_slug), Some(tmux_session), person_driven);
+        self.switch_to_workspace(next_host, Some(next_slug), Some(session_name), person_driven);
     }
 
     /// Send `fe.presence` if this is real input and the last send is stale
@@ -8173,7 +8173,7 @@ impl State {
     /// pre-L2a except the row id and payload now carry `host` (ADR 0042
     /// L2a: two hosts can each report a `sot-be-sot` tmux session, so the
     /// row id must be host-qualified even though the `name` payload stays
-    /// the bare tmux_session `attach_session_to_bl`/`selected_session_name`
+    /// the bare session_name `attach_session_to_bl`/`selected_session_name`
     /// already key off).
     fn build_session_row(host: &HostKey, w: &crate::transport::WorkspaceInfo) -> TreeNode {
         let mut payload = serde_json::Map::new();
@@ -8182,7 +8182,7 @@ impl State {
         // unchanged — routing to the right daemon is `host`'s job now.
         payload.insert(
             "name".to_string(),
-            serde_json::Value::String(w.tmux_session.clone()),
+            serde_json::Value::String(w.session_name.clone()),
         );
         payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
         payload.insert(
@@ -8267,7 +8267,7 @@ impl State {
             format!("{} · {}", w.label, glance)
         };
         TreeNode {
-            id: format!("sessions:{host}:{}", w.tmux_session),
+            id: format!("sessions:{host}:{}", w.session_name),
             label,
             kind: "session".to_string(),
             has_children: false,
@@ -8596,9 +8596,9 @@ impl State {
     /// 6. Persist `last_workspace_id` (and the resumed mode/target)
     ///    for the next launch.
     ///
-    /// `tmux_session` is `Some(name)` when the caller already has the
+    /// `session_name` is `Some(name)` when the caller already has the
     /// target name (Sessions-Enter, workspace.create reply); `None`
-    /// derives it from `paths::tmux_session_name(slug)` semantics —
+    /// derives it from `paths::session_name(slug)` semantics —
     /// i.e. `sot-be-<slug>`. The default workspace (`slug = None`)
     /// keeps the current BL pane target.
     ///
@@ -8619,7 +8619,7 @@ impl State {
         &mut self,
         host: HostKey,
         slug: Option<String>,
-        tmux_session: Option<String>,
+        session_name: Option<String>,
         person_driven: bool,
     ) {
         self.snapshot_current_workspace_ui();
@@ -8693,7 +8693,7 @@ impl State {
         // the ENTERING workspace's cursor-follow preview until the user
         // moved the cursor (blank preview on switch).
         self.driven_preview_hold_cursor = None;
-        if let Some(target) = tmux_session.or_else(|| slug.as_ref().map(|s| format!("sot-be-{s}")))
+        if let Some(target) = session_name.or_else(|| slug.as_ref().map(|s| format!("sot-be-{s}")))
         {
             // `self.active_host` was just set to `host` above, before
             // anything in this function fired a request — correct BY
@@ -9703,7 +9703,7 @@ impl State {
         let live: std::collections::HashSet<String> = self
             .workspace_lists
             .get(host)
-            .map(|l| l.iter().map(|w| w.tmux_session.clone()).collect())
+            .map(|l| l.iter().map(|w| w.session_name.clone()).collect())
             .unwrap_or_default();
         shutdown_detached(self.warm_attach.retain_rows(host, |row| live.contains(row)));
     }
@@ -14190,7 +14190,7 @@ impl State {
                             self.switch_to_workspace(
                                 event_host.clone(),
                                 Some(info.slug.clone()),
-                                Some(info.tmux_session.clone()),
+                                Some(info.session_name.clone()),
                                 false,
                             );
                             // Land focus in the LLM pane so the freshly
@@ -26239,13 +26239,13 @@ mod tests {
     /// Minimal `WorkspaceInfo` for cache/tree tests — every field a real
     /// `workspace.list` row carries, defaulted to the empty/false case so
     /// each test only names what it cares about.
-    fn ws_info(slug: &str, tmux_session: &str) -> crate::transport::WorkspaceInfo {
+    fn ws_info(slug: &str, session_name: &str) -> crate::transport::WorkspaceInfo {
         crate::transport::WorkspaceInfo {
             workspace_id: format!("ws-{slug}-0000"),
             slug: slug.to_string(),
             label: String::new(),
             project_root: format!("/projects/{slug}"),
-            tmux_session: tmux_session.to_string(),
+            session_name: session_name.to_string(),
             kernel_running: false,
             is_default: false,
             agent: String::new(),

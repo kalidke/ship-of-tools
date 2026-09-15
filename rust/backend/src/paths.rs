@@ -284,18 +284,17 @@ mod path_tests {
 /// nothing in this crate calls directly any more — `runtime_sot_dir` is its
 /// only caller, and that moved too) so every existing `paths::slug(...)` /
 /// `paths::session_socket_path(...)` call site in this crate, and the
-/// `tmux_session_name`/`tmux_socket_path`/`secure_private_dir`/
+/// `session_name`/`tmux_socket_path`/`secure_private_dir`/
 /// `secure_socket_dir` below that still need the shared helpers, keep
 /// working unchanged. See that module for the Windows named-pipe branch and
 /// the moved doc comments/tests.
 pub use sot_protocol::{current_uid, runtime_sot_dir, session_socket_path, slug};
 
-/// Conventional tmux session name for a backend with the given label.
-/// Not currently consumed inside the backend — kept here as the
-/// authoritative naming rule so future code (and the frontend, when it
-/// picks up Sessions mode B2-B5) has one place to look.
-#[allow(dead_code)]
-pub fn tmux_session_name(label: &str) -> String {
+/// A row's session name for the given label, `sot-be-<slug>` — the
+/// token `pty.open` / `lane.connect` `target` address the row by (see
+/// `Workspace::session_name`). The authoritative naming rule; the
+/// frontend mirrors it when it builds a target from a slug.
+pub fn session_name(label: &str) -> String {
     format!("sot-be-{}", slug(label))
 }
 
@@ -519,15 +518,15 @@ pub fn secure_socket_dir(dir: &Path) -> Result<()> {
 // `session_socket_path_honours_xdg_runtime_dir` and the Windows named-pipe
 // tests) moved with them to `sot_protocol::session_socket` (ADR 0042 L2b) —
 // see that module. What stays here only exercises what's still DEFINED
-// here: `tmux_session_name`'s use of the (now re-exported) `slug`, and
+// here: `session_name`'s use of the (now re-exported) `slug`, and
 // `tmux_socket_path`'s env override.
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn tmux_session_name_uses_slug() {
-        assert_eq!(tmux_session_name("MyPackage.jl"), "sot-be-mypackage_jl");
+    fn session_name_uses_slug() {
+        assert_eq!(session_name("MyPackage.jl"), "sot-be-mypackage_jl");
     }
 
 }

@@ -327,7 +327,7 @@ pub mod op {
     /// DEDICATED connection — the `proxy.connect` peek, never inside the
     /// hello-gated control loop: `LaneConnectReq { target, lane,
     /// voyage_id?, token? }`. The daemon resolves `target` (the row's
-    /// `tmux_session`, as `pty.open` addresses it) to a capsule
+    /// `session_name`, as `pty.open` addresses it) to a capsule
     /// workspace, dials that row's lane locally, resumes an absent
     /// supervisor lane in place (`resume_if_absent`, never a voyage
     /// lane), authenticates the peer it dialed, and answers
@@ -1320,7 +1320,7 @@ pub struct WorkspaceCreateRes {
     pub slug: String,
     pub label: String,
     pub project_root: String,
-    pub tmux_session: String,
+    pub session_name: String,
 }
 
 /// `workspace.list` has no fields — the daemon always returns its full
@@ -1335,7 +1335,11 @@ pub struct WorkspaceListEntry {
     pub slug: String,
     pub label: String,
     pub project_root: String,
-    pub tmux_session: String,
+    /// The row's session name, `sot-be-<slug>`: the stable token
+    /// `pty.open` / `lane.connect` `target` address the row by, fixed for
+    /// its lifetime (protocol 2 renamed it from `tmux_session`; the tmux
+    /// runtime is one of the two things it can name a session in).
+    pub session_name: String,
     /// True if the workspace's `Kernel` handle has been constructed —
     /// i.e. some op has caused the daemon to lazily instantiate it.
     /// Reflects in-memory state only; if the underlying Julia child has
@@ -2016,7 +2020,7 @@ pub struct ProxyConnectRes {
 }
 
 /// `lane.connect` request (ADR 0045 §2) — the FIRST frame on a dedicated
-/// lane-bridge connection. `target` is the capsule row's `tmux_session`
+/// lane-bridge connection. `target` is the capsule row's `session_name`
 /// name, exactly as `pty.open` addresses it, and is REQUIRED for BOTH
 /// lanes: a voyage lane is reached only through the capsule row that owns
 /// it — the daemon dials the voyage's own socket by `voyage_id`, but
@@ -2576,7 +2580,7 @@ mod repl_lifecycle_tests {
             "slug": "a",
             "label": "A",
             "project_root": "/p",
-            "tmux_session": "t",
+            "session_name": "t",
             "kernel_running": false,
             "is_default": false,
         });
@@ -2591,7 +2595,7 @@ mod repl_lifecycle_tests {
             "slug": "a",
             "label": "A",
             "project_root": "/p",
-            "tmux_session": "t",
+            "session_name": "t",
             "kernel_running": false,
             "is_default": false,
             "repl_state": "starting",

@@ -138,7 +138,12 @@ pub struct Workspace {
     pub slug: String,
     pub label: String,
     pub project_root: PathBuf,
-    pub tmux_session: String,
+    /// The row's session name, `sot-be-<slug>` (`paths::session_name`):
+    /// the one stable token `pty.open` / `lane.connect` `target` address
+    /// the row by, the same for both runtimes, and for a `"tmux"`-runtime
+    /// row the real tmux session's name. Fixed for the row's lifetime —
+    /// the frontend keys its per-row UI state and the Sessions tree on it.
+    pub session_name: String,
     pub created: i64,
     /// Whether the frontend should launch claude on first attach to this
     /// workspace's session. Plain metadata field; persisted in the toml
@@ -157,11 +162,7 @@ pub struct Workspace {
     /// ADR 0042 slice L1a: `"tmux"` | `"capsule"` — which runtime hosts
     /// this workspace's agent pane. Plain metadata; persisted in the toml
     /// and, for an older toml that lacks the key, defaulted to `"capsule"`
-    /// by `meta_only`. `tmux_session` is still populated for a capsule
-    /// workspace (the same `sot-be-<slug>` convention) even though no
-    /// real tmux session is ever created — it stays the one stable
-    /// identifier `pty.open`'s `target` field addresses a workspace by,
-    /// for both runtimes uniformly.
+    /// by `meta_only`.
     pub runtime: String,
     /// The sot-comm handle the session inside this workspace actually
     /// DECLARED via `agent.join` (ADR 0046 decision 1) — distinct from
@@ -218,7 +219,7 @@ impl std::fmt::Debug for Workspace {
             .field("slug", &self.slug)
             .field("label", &self.label)
             .field("project_root", &self.project_root)
-            .field("tmux_session", &self.tmux_session)
+            .field("session_name", &self.session_name)
             .field("created", &self.created)
             .field("autostart_claude", &self.autostart_claude)
             .field("agent", &self.agent())
@@ -244,7 +245,7 @@ impl Workspace {
         slug: String,
         label: String,
         project_root: PathBuf,
-        tmux_session: String,
+        session_name: String,
         created: i64,
         autostart_claude: bool,
         agent: String,
@@ -256,7 +257,7 @@ impl Workspace {
             slug,
             label,
             project_root,
-            tmux_session,
+            session_name,
             created,
             autostart_claude,
             agent: Mutex::new(agent),
@@ -517,7 +518,7 @@ impl Workspace {
         task: String,
     ) -> Self {
         let slug = paths::slug(label);
-        let tmux_session = paths::tmux_session_name(label);
+        let session_name = paths::session_name(label);
         let workspace_id = format!(
             "ws-{slug}-{:x}",
             std::process::id() as u64 ^ now_unix() as u64
@@ -534,7 +535,7 @@ impl Workspace {
             slug,
             label.to_string(),
             project_root,
-            tmux_session,
+            session_name,
             now_unix(),
             autostart_claude,
             agent,
@@ -578,7 +579,7 @@ struct Inner {
     /// (and in the `Default` impl used by tests).
     monitor_hub: Option<crate::monitor::MonitorHub>,
     /// Pane-derived agent work-state cache (ADE state-nav), keyed by
-    /// `tmux_session`. A background task (spawned in `server::run`) captures
+    /// `session_name`. A background task (spawned in `server::run`) captures
     /// each workspace's live claude pane every ~2s and writes the derived
     /// activity ("working" / "idle" / "" for no-claude) here. `workspace.list`
     /// reads it as the authoritative working/idle signal — the `Stop`-hook
@@ -648,7 +649,7 @@ impl Workspaces {
                     ws.slug.clone(),
                     ws.label.clone(),
                     ws.project_root.clone(),
-                    ws.tmux_session.clone(),
+                    ws.session_name.clone(),
                     ws.created,
                     ws.autostart_claude,
                     ws.agent(),
@@ -915,7 +916,7 @@ impl Workspaces {
     /// resolves the target through this before answering `attach_direct`.
     pub fn workspace_for_tmux(&self, target: &str) -> Option<Arc<Workspace>> {
         let g = self.inner.read().expect("workspaces lock");
-        g.by_id.values().find(|ws| ws.tmux_session == target).cloned()
+        g.by_id.values().find(|ws| ws.session_name == target).cloned()
     }
 
     pub fn remove_by_id(&self, id: &str) -> Option<Arc<Workspace>> {
@@ -1024,10 +1025,11 @@ fn scan_dir(reg: &Workspaces, dir: &Path, legacy: bool) -> Result<usize> {
 /// Parse a workspace toml. We handle both shapes:
 ///
 ///   ADR 0014 (canonical): top-level `workspace_id`, `slug`, `label`,
-///   `project_root`, `tmux_session`, optional `[kernel]`.
+///   `project_root`, `session_name` (`tmux_session` before protocol 2),
+///   optional `[kernel]`.
 ///
 ///   ADR 0013 legacy: `[backend]` section with `session_id`, `label`,
-///   `project_dir`, `tmux_session`.
+///   `project_dir`, `session_name`.
 ///
 /// Returns `Ok(None)` for files that don't look like either (so we can
 /// skip without erroring).
@@ -1056,10 +1058,14 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         let project_root = paths::simplify_verbatim(PathBuf::from(
             kv.get("project_root").cloned().unwrap_or_default(),
         ));
-        let tmux_session = kv
-            .get("tmux_session")
+        // `tmux_session` is the key every release before protocol 2 wrote
+        // (a file shim, not a wire one): read when `session_name` is
+        // absent; deletable one release after 0.6.0 final.
+        let session_name = kv
+            .get("session_name")
+            .or_else(|| kv.get("tmux_session"))
             .cloned()
-            .unwrap_or_else(|| paths::tmux_session_name(&label));
+            .unwrap_or_else(|| paths::session_name(&label));
         let created = kv
             .get("created")
             .and_then(|s| s.parse::<i64>().ok())
@@ -1082,7 +1088,7 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
             slug,
             label,
             project_root,
-            tmux_session,
+            session_name,
             created,
             autostart_claude,
             agent,
@@ -1121,10 +1127,10 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
             .unwrap_or_else(|| ".".into()),
     ));
     let slug = paths::slug(&label);
-    let tmux_session = backend
+    let session_name = backend
         .get("tmux_session")
         .cloned()
-        .unwrap_or_else(|| paths::tmux_session_name(&label));
+        .unwrap_or_else(|| paths::session_name(&label));
     let workspace_id = backend
         .get("session_id")
         .cloned()
@@ -1140,7 +1146,7 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         slug,
         label,
         project_root,
-        tmux_session,
+        session_name,
         created,
         false,
         "none".to_string(),
@@ -1210,8 +1216,8 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
         toml_quote(&ws.project_root.to_string_lossy())
     ));
     body.push_str(&format!(
-        "tmux_session  = {}\n",
-        toml_quote(&ws.tmux_session)
+        "session_name  = {}\n",
+        toml_quote(&ws.session_name)
     ));
     body.push_str(&format!("created       = {}\n", ws.created));
     body.push_str(&format!(
@@ -1253,7 +1259,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
 /// This daemon's host — `sot_log::state_dir::host_name()` (`SOT_SELF_HOST`
 /// else the hostname's first label, lowercased), the ONE resolver (ADR
 /// 0046 decision 1; topology plan §D folded the daemon's second resolver,
-/// `declared_host()`, into it). It names the `workspaces-<host>` /
+/// the old `state_host()`, into it). It names the `workspaces-<host>` /
 /// `sessions-<host>` state dirs — the reason a workspace toml written by
 /// one box is never resurrected on another sharing the home — the host the
 /// capsule's `SOT_COMM_SELF_FILE` is suffixed with, the registry-row
@@ -1756,7 +1762,7 @@ fn parse_section(text: &str, section: &str) -> HashMap<String, String> {
 }
 
 /// Remove the canonical (top-level) `workspace_id/slug/label/project_root/
-/// tmux_session/created` keys *and* the `[kernel]` section so we can
+/// session_name/created` keys *and* the `[kernel]` section so we can
 /// rewrite them. Everything else (e.g. `[nav_state]`, `[layout]`) is
 /// preserved verbatim.
 fn strip_canonical_top_and_kernel(text: &str) -> String {
@@ -1765,6 +1771,9 @@ fn strip_canonical_top_and_kernel(text: &str) -> String {
         "slug",
         "label",
         "project_root",
+        "session_name",
+        // Pre-protocol-2 spelling, dropped on rewrite; deletable one
+        // release after 0.6.0 final.
         "tmux_session",
         "created",
         "autostart_claude",
@@ -1892,7 +1901,7 @@ mod tests {
     fn workspace_from_label_uses_slug_and_tmux_convention() {
         let ws = Workspace::from_label("MyPkg.jl", PathBuf::from("/home/u/MyPkg.jl"), false, "none".into(), String::new(), String::new());
         assert_eq!(ws.slug, "mypkg_jl");
-        assert_eq!(ws.tmux_session, "sot-be-mypkg_jl");
+        assert_eq!(ws.session_name, "sot-be-mypkg_jl");
         assert_eq!(ws.label, "MyPkg.jl");
         assert_eq!(ws.project_root, PathBuf::from("/home/u/MyPkg.jl"));
     }
@@ -2200,7 +2209,7 @@ workspace_id = "ws-alpha-1"
 slug         = "alpha"
 label        = "Alpha.jl"
 project_root = "/home/u/Alpha.jl"
-tmux_session = "sot-be-alpha"
+session_name = "sot-be-alpha"
 created      = 1700000000
 "#,
         )
@@ -2210,7 +2219,7 @@ created      = 1700000000
         assert_eq!(ws.slug, "alpha");
         assert_eq!(ws.label, "Alpha.jl");
         assert_eq!(ws.project_root, PathBuf::from("/home/u/Alpha.jl"));
-        assert_eq!(ws.tmux_session, "sot-be-alpha");
+        assert_eq!(ws.session_name, "sot-be-alpha");
         // ADR 0042 slice L1a: a toml predating the `runtime` key defaults
         // to this platform's ordinary workspace runtime — "tmux",
         // byte-for-byte today's Unix behaviour; "capsule" on Windows
@@ -2236,7 +2245,7 @@ workspace_id = "ws-beta-1"
 slug         = "beta"
 label        = "Beta.jl"
 project_root = "/home/u/Beta.jl"
-tmux_session = "sot-be-beta"
+session_name = "sot-be-beta"
 created      = 1700000000
 runtime      = "capsule"
 "#,
@@ -2244,6 +2253,37 @@ runtime      = "capsule"
         .unwrap();
         let ws = load_toml(&p, false).unwrap().unwrap();
         assert_eq!(ws.runtime, "capsule");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_toml_reads_the_pre_protocol_2_tmux_session_key_when_session_name_is_absent() {
+        // File shim (topology plan step 8): a row written by any release
+        // before protocol 2 spelled the key `tmux_session`. It must load
+        // under `session_name` with the stored value, never a re-derived
+        // one, and a rewrite drops the old spelling. Deletable one
+        // release after 0.6.0 final, together with the shim it tests.
+        let dir = std::env::temp_dir().join(format!(
+            "sot-ws-test-oldkey-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("gamma.toml");
+        let text = r#"
+workspace_id = "ws-gamma-1"
+slug         = "gamma"
+label        = "Gamma.jl"
+project_root = "/home/u/Gamma.jl"
+tmux_session = "sot-be-gamma-kept"
+created      = 1700000000
+runtime      = "capsule"
+"#;
+        std::fs::write(&p, text).unwrap();
+        let ws = load_toml(&p, false).unwrap().unwrap();
+        assert_eq!(ws.session_name, "sot-be-gamma-kept");
+        let preserved = strip_canonical_top_and_kernel(text);
+        assert!(!preserved.contains("tmux_session"), "old key must not survive a rewrite: {preserved}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2279,7 +2319,7 @@ workspace_id = "ws-gamma-1"
 slug         = "gamma"
 label        = "Gamma.jl"
 project_root = "\\?\C:\Users\u\.julia\dev\Gamma.jl"
-tmux_session = "sot-be-gamma"
+session_name = "sot-be-gamma"
 created      = 1700000000
 "#,
         )
@@ -2319,7 +2359,7 @@ workspace_id = "ws-delta-1"
 slug         = "delta"
 label        = "Delta.jl"
 project_root = "\\\\?\\C:\\Users\\u\\HomeLab\\x"
-tmux_session = "sot-be-delta"
+session_name = "sot-be-delta"
 created      = 1700000000
 "#,
         )
@@ -2345,7 +2385,7 @@ created      = 1700000000
 session_id   = "sess-old"
 label        = "LegacyPkg.jl"
 project_dir  = "/home/u/LegacyPkg.jl"
-tmux_session = "sot-be-legacypkg.jl"
+session_name = "sot-be-legacypkg.jl"
 started      = 1700000000
 pid          = 12345
 "#,
@@ -2394,7 +2434,7 @@ workspace_id  = "ws-local-1"
 slug          = "local"
 label         = "local"
 project_root  = "/home/u"
-tmux_session  = "sot-be-local"
+session_name  = "sot-be-local"
 created       = 1700000000
 autostart_claude = true
 agent         = "claude"
@@ -2413,7 +2453,7 @@ runtime       = "capsule"
 session_id   = "ws-local-1"
 label        = "local"
 project_dir  = "/home/u"
-tmux_session = "sot-be-local"
+session_name = "sot-be-local"
 started      = 1600000000
 "#,
         )
@@ -2452,7 +2492,7 @@ started      = 1600000000
 slug         = "alpha"
 label        = "Alpha"
 project_root = "/p"
-tmux_session = "sot-be-alpha"
+session_name = "sot-be-alpha"
 created      = 1700000000
 
 [kernel]
