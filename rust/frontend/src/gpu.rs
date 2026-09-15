@@ -2285,29 +2285,24 @@ struct FreshWorkspaceCaches {
 }
 
 /// The connection `default_host`/startup `active_host` resolve to (ADR
-/// 0042 L2a), shared by both: `configured_default` when set AND present in
-/// `conns` — the actual resolved connection set, the one source of truth
-/// this checks directly rather than trusting `resolve_connections`'s
-/// internal bookkeeping — else the first connection in `conns`' display
-/// order (local-first, then `--dial` argument order), else `fallback`
-/// (offline mode, no connections at all). Every caller passes `None` for
-/// `configured_default` today: topology plan/`--dial` (lane D) deleted the
-/// `hosts.toml` `default_host` setting this parameter used to carry, so
-/// this always falls through to `conns.first()`; kept as a parameter
-/// (rather than deleted) because the fallback logic and its tests are
-/// still exactly what a future `--default-host`-shaped flag would need.
-/// "Local first" is the TREE order, not the initial selection: a daily
-/// launch must land on the configured default's resumed workspace, not an
-/// empty local host just because it sorts first — but only when that
-/// default is actually reachable.
+/// 0042 L2a): the first connection in `conns`' display order (local-first,
+/// then `--dial` argument order), else `fallback` (offline mode, no
+/// connections at all). "Local first" is the TREE order, not a separate
+/// selection rule — a daily launch lands on whichever connection sorts
+/// first, matching topology plan/`--dial` (lane D): there is no more
+/// configured `hosts.toml` `default_host` to prefer over it. (Pre-lane-D
+/// this took a `configured_default: Option<HostKey>` that every caller had
+/// already been passing `None` for since the `--dial` migration — deleted
+/// outright rather than kept as unused plumbing; see git history if a
+/// future `--default-host`-shaped flag needs the old preference-with-
+/// fallback logic back.)
 fn resolve_default_host(
-    configured_default: Option<HostKey>,
     conns: &[(HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)],
     fallback: HostKey,
 ) -> HostKey {
-    configured_default
-        .filter(|h| conns.iter().any(|(ch, _)| ch == h))
-        .or_else(|| conns.first().map(|(h, _)| h.clone()))
+    conns
+        .first()
+        .map(|(h, _)| h.clone())
         .unwrap_or(fallback)
 }
 
@@ -5289,7 +5284,7 @@ impl State {
             .last_host
             .clone()
             .filter(|h| conns.iter().any(|(ch, _)| ch == h))
-            .unwrap_or_else(|| resolve_default_host(None, &conns, "offline".to_string()));
+            .unwrap_or_else(|| resolve_default_host(&conns, "offline".to_string()));
         // ADR 0042 L2a codex review, item H: `last_workspace_id` /
         // `last_bl_target` were saved for WHATEVER host was active at
         // quit. If that host is unreachable now and `active_host` fell
@@ -8057,12 +8052,10 @@ impl State {
     /// switching to a workspace on another host moves `active_host`, but
     /// the drawer never follows — "no drawer host switching". Delegates to
     /// `resolve_default_host` — the same resolution `State::new` uses for
-    /// the STARTUP `active_host` — with `None` as the configured default:
-    /// topology plan/`--dial` (lane D) deleted the `hosts.toml`
-    /// `default_host` setting, so this always falls back to `conns.first()`
-    /// (local-first, then `--dial` argument order).
+    /// the STARTUP `active_host` (`conns.first()`, local-first then
+    /// `--dial` argument order).
     fn default_host(&self) -> HostKey {
-        resolve_default_host(None, &self.conns, self.active_host.clone())
+        resolve_default_host(&self.conns, self.active_host.clone())
     }
 
     /// Every connection in display order (ADR 0042 L2a) — local-first,
@@ -27197,56 +27190,17 @@ mod tests {
     }
 
     #[test]
-    fn startup_active_host_prefers_configured_default_over_conns_first() {
-        // "Local first" is the TREE order (ordered_hosts), not the initial
-        // selection: a daily launch must land on the configured
-        // default_host's resumed workspace, not an empty local host just
-        // because it sorts first in conns.
+    fn startup_active_host_is_conns_first_else_the_fallback() {
+        // "Local first" is the TREE order (ordered_hosts) AND the initial
+        // selection since lane D: there is no more configured
+        // `hosts.toml` default_host to prefer over it (folded from the
+        // pre-lane-D "configured default wins"/"ignores an endpointless
+        // configured default" cases, both meaningless now that
+        // resolve_default_host takes no configured_default at all).
         let (conns, _rxs) = fake_conns(); // ["local", "alpha"], in that order
-        assert_eq!(
-            resolve_default_host(Some("alpha".to_string()), &conns, "offline".to_string()),
-            "alpha",
-            "configured default_host wins even though 'local' is conns[0]"
-        );
-        // No configured default_host → falls back to conns[0] (unchanged
-        // pre-fix behavior for a registry with no default_host set).
-        assert_eq!(
-            resolve_default_host(None, &conns, "offline".to_string()),
-            "local"
-        );
+        assert_eq!(resolve_default_host(&conns, "offline".to_string()), "local");
         // No connections at all (offline mode) → the fallback name.
-        assert_eq!(
-            resolve_default_host(None, &[], "offline".to_string()),
-            "offline"
-        );
-    }
-
-    #[test]
-    fn resolve_default_host_ignores_a_configured_default_with_no_connection() {
-        // Codex review (PR #163): resolve_connections SKIPS a hosts.toml
-        // entry with neither socket nor tcp_port -- so a configured
-        // default_host name can survive with ZERO live connection behind
-        // it (a phantom active host every send fails against). The
-        // resolved conns list is the one source of truth; a configured
-        // name absent from it must not win.
-        let (conns, _rxs) = fake_conns(); // ["local", "alpha"], in that order
-        assert_eq!(
-            resolve_default_host(
-                Some("nonexistent".to_string()),
-                &conns,
-                "offline".to_string()
-            ),
-            "local",
-            "an endpointless configured default falls through to conns[0], not itself"
-        );
-        // Absent default (None) with no connections either -> offline,
-        // unchanged from the existing coverage above; restated here next
-        // to the endpointless case so the two "no real default" paths
-        // read together.
-        assert_eq!(
-            resolve_default_host(Some("nonexistent".to_string()), &[], "offline".to_string()),
-            "offline"
-        );
+        assert_eq!(resolve_default_host(&[], "offline".to_string()), "offline");
     }
 }
 
