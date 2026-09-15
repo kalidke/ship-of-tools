@@ -494,6 +494,28 @@ struct WorkspacePicker {
     entries: Vec<crate::transport::DirEntry>,
     /// Cursor into `entries`. `0`-based; clamped on each refresh.
     selected: usize,
+    /// Per-session accounts (owner-simplified brief, 2026-09-15): the
+    /// login directories `accounts.list` reported for `host`, "default"
+    /// first. Empty until the reply lands, and stays empty (the field the
+    /// render/commit paths check) when the daemon only has "default" or
+    /// predates the op — either way the account choice is hidden.
+    accounts: Vec<crate::transport::AccountInfo>,
+    /// Cursor into `accounts` (`Tab` cycles). `0` is always "default" when
+    /// `accounts` is non-empty, so index 0 and "no choice made" both mean
+    /// the same thing: the agent's own default directory.
+    account_selected: usize,
+}
+
+impl WorkspacePicker {
+    /// Per-session accounts (owner-simplified brief, 2026-09-15): true only
+    /// when there's a real choice — more than "default" alone. An empty
+    /// list (old daemon with no `accounts.list` handler, or the reply
+    /// hasn't landed yet) reads exactly like default-only: hidden, no
+    /// error surfaced. The one gate the render row, the Tab cycle, and the
+    /// commit path all share, so they can't drift apart.
+    fn account_choice_visible(&self) -> bool {
+        self.accounts.len() > 1
+    }
 }
 
 /// A one-line modal prompt that floats over the NavTree and steals
@@ -8266,6 +8288,15 @@ impl State {
         } else {
             format!("{} · {}", w.label, glance)
         };
+        // Per-session accounts (owner-simplified brief, 2026-09-15): a
+        // short suffix naming which subscription this row spends — shown
+        // ONLY when it isn't the agent's default directory (`w.account`
+        // empty), so the common case renders exactly as before.
+        let label = if w.account.is_empty() {
+            label
+        } else {
+            format!("{label} · {}", w.account)
+        };
         TreeNode {
             id: format!("sessions:{host}:{}", w.session_name),
             label,
@@ -8983,6 +9014,8 @@ impl State {
             current_path: start.clone(),
             entries: Vec::new(),
             selected: 0,
+            accounts: Vec::new(),
+            account_selected: 0,
         });
         if let Err(e) = self.send_to(
             &host,
@@ -8992,6 +9025,15 @@ impl State {
             },
         ) {
             tracing::warn!(error = %e, %host, %start, "drop initial directory.list — channel closed");
+        }
+        // Per-session accounts (owner-simplified brief, 2026-09-15): ask
+        // the daemon that will OWN the row, never the frontend's own disk
+        // — the login must exist where the session runs. An old daemon's
+        // reply parses to an empty list (see `PendingKind::AccountsList`),
+        // which keeps the choice hidden exactly like a fresh daemon that
+        // only reports "default".
+        if let Err(e) = self.send_to(&host, crate::transport::OutgoingReq::AccountsList) {
+            tracing::warn!(error = %e, %host, "drop initial accounts.list — channel closed");
         }
         self.status = format!("create workspace · {host} · picker @ {start}");
         self.window.request_redraw();
@@ -9109,6 +9151,24 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// `Tab` in the picker: cycle to the next account (owner-simplified
+    /// brief, 2026-09-15). No-op when `accounts` has 0 or 1 entries (the
+    /// choice is hidden — either only "default" exists, or the daemon
+    /// never answered `accounts.list`).
+    fn picker_cycle_account(&mut self) {
+        let Some(p) = self.workspace_picker.as_mut() else {
+            return;
+        };
+        if !p.account_choice_visible() {
+            return;
+        }
+        p.account_selected = (p.account_selected + 1) % p.accounts.len();
+        let acct = &p.accounts[p.account_selected];
+        let suffix = if acct.any_logged_in() { "" } else { " (not logged in)" };
+        self.status = format!("picker · account: {}{suffix}", acct.name);
+        self.window.request_redraw();
+    }
+
     fn picker_confirm_selected(&mut self, agent: &str) {
         let path = match self.workspace_picker.as_ref() {
             Some(p) => p
@@ -9136,6 +9196,16 @@ impl State {
             .and_then(|n| n.to_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| "workspace".to_string());
+        // Per-session accounts: index 0 ("default") and an empty/absent
+        // accounts list both mean "no choice" — `None` either way, so the
+        // daemon resolves its own default directory.
+        let account = self.workspace_picker.as_ref().and_then(|p| {
+            if p.account_selected == 0 {
+                None
+            } else {
+                p.accounts.get(p.account_selected).map(|a| a.name.clone())
+            }
+        });
         if let Err(e) = self.send_to(
             &host,
             crate::transport::OutgoingReq::WorkspaceCreate {
@@ -9143,6 +9213,7 @@ impl State {
                 project_root: path.clone(),
                 autostart_claude: agent == "claude",
                 agent: agent.to_string(),
+                account,
             },
         ) {
             tracing::warn!(error = %e, %host, %label, %path, "drop workspace.create — channel closed");
@@ -14827,6 +14898,19 @@ impl State {
                     // entering Sessions shows current rows instantly).
                     self.rebuild_and_install_sessions_tree();
                 }
+                // Per-session accounts (owner-simplified brief,
+                // 2026-09-15): store into the picker ONLY if it's still
+                // open on the host this reply answers — a slow reply
+                // after Esc/commit must not resurrect a closed picker or
+                // clobber a newer one opened on a different host.
+                crate::transport::IncomingEvt::AccountsList { accounts } => {
+                    if let Some(p) = self.workspace_picker.as_mut() {
+                        if p.host == event_host {
+                            p.accounts = accounts;
+                            p.account_selected = 0;
+                        }
+                    }
+                }
             }
         }
     }
@@ -15675,7 +15759,7 @@ impl State {
         );
         let (tree_lines, tree_empty): (Vec<NavRow>, bool) = if let Some(p) = &self.workspace_picker
         {
-            let mut rows: Vec<NavRow> = Vec::with_capacity(p.entries.len() + 2);
+            let mut rows: Vec<NavRow> = Vec::with_capacity(p.entries.len() + 4);
             rows.push((
                 format!("workspace picker · {}", p.current_path),
                 false,
@@ -15710,6 +15794,28 @@ impl State {
                 0.0,
                 false,
             ));
+            // Per-session accounts (owner-simplified brief, 2026-09-15):
+            // hidden entirely when the daemon reports only "default" (or
+            // never answered `accounts.list` — same empty state). A
+            // never-logged-in folder is a NORMAL choice, not an error —
+            // the row's own pane runs the login on first start — so it's
+            // still selectable, just marked; this row renders with the
+            // same dim treatment as the two footer rows above (no
+            // agent/pinned/stale/selected tone applies to it).
+            if p.account_choice_visible() {
+                let acct = &p.accounts[p.account_selected];
+                let marker = if acct.any_logged_in() { "" } else { " (not logged in)" };
+                rows.push((
+                    format!("  account: {}{marker} · {} next", acct.name,
+                        self.bindings.first_label(Action::SessionAccountNext)),
+                    false,
+                    false,
+                    false,
+                    None,
+                    0.0,
+                    false,
+                ));
+            }
             for (i, e) in p.entries.iter().enumerate() {
                 let selected = i == p.selected;
                 let caret = if selected { ">" } else { " " };
@@ -19957,6 +20063,16 @@ impl ApplicationHandler for App {
                                 && action == Some(Action::SessionCreate)
                             {
                                 state.picker_confirm_selected("claude");
+                                return;
+                            }
+                            // Per-session accounts (owner-simplified brief,
+                            // 2026-09-15): Tab cycles the account choice.
+                            // No-op (via picker_cycle_account) when the
+                            // choice is hidden (0 or 1 discovered accounts).
+                            if !event.repeat
+                                && action == Some(Action::SessionAccountNext)
+                            {
+                                state.picker_cycle_account();
                                 return;
                             }
                             match action {
@@ -26258,7 +26374,108 @@ mod tests {
             repl_state: String::new(),
             runtime: String::new(),
             phase: None,
+            account: String::new(),
         }
+    }
+
+    /// Per-session accounts (owner-simplified brief, 2026-09-15):
+    /// `ws_info` plus a non-default account, for the sessions-list suffix
+    /// tests.
+    fn ws_info_with_account(
+        slug: &str,
+        session_name: &str,
+        account: &str,
+    ) -> crate::transport::WorkspaceInfo {
+        crate::transport::WorkspaceInfo {
+            account: account.to_string(),
+            ..ws_info(slug, session_name)
+        }
+    }
+
+    /// Per-session accounts (owner-simplified brief, 2026-09-15): the
+    /// sessions-list suffix. A default (empty-account) row renders exactly
+    /// as before; a non-default row gets a short `· <name>` suffix so the
+    /// user can see which subscription it spends.
+    #[test]
+    fn build_session_row_omits_account_suffix_for_the_default_directory() {
+        let w = ws_info("proj", "sot-be-proj"); // account == "" (default)
+        let node = State::build_session_row(&"local".to_string(), &w);
+        assert_eq!(node.label, "proj", "unchanged from before the accounts field existed");
+    }
+
+    #[test]
+    fn build_session_row_appends_the_account_suffix_when_not_default() {
+        let w = ws_info_with_account("proj", "sot-be-proj", "team");
+        let node = State::build_session_row(&"local".to_string(), &w);
+        assert!(
+            node.label.ends_with("· team"),
+            "expected a trailing account suffix, got: {}",
+            node.label
+        );
+    }
+
+    fn account(name: &str, kinds: &[&str], logged_in: &[(&str, bool)]) -> crate::transport::AccountInfo {
+        crate::transport::AccountInfo {
+            name: name.to_string(),
+            kinds: kinds.iter().map(|s| s.to_string()).collect(),
+            logged_in: logged_in.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+        }
+    }
+
+    fn picker_with_accounts(accounts: Vec<crate::transport::AccountInfo>) -> WorkspacePicker {
+        WorkspacePicker {
+            host: "local".to_string(),
+            show_hidden: true,
+            current_path: "/tmp".to_string(),
+            entries: Vec::new(),
+            selected: 0,
+            accounts,
+            account_selected: 0,
+        }
+    }
+
+    /// The new-session prompt's account list handling (owner-simplified
+    /// brief, 2026-09-15): default-only hides the field.
+    #[test]
+    fn account_choice_hidden_when_only_default() {
+        let p = picker_with_accounts(vec![account("default", &["claude"], &[("claude", true)])]);
+        assert!(!p.account_choice_visible());
+    }
+
+    /// An old daemon with no `accounts.list` handler (or one whose reply
+    /// fails to parse) surfaces as an empty accounts list — same hidden
+    /// treatment as default-only, no error.
+    #[test]
+    fn account_choice_hidden_when_daemon_never_answered() {
+        let p = picker_with_accounts(Vec::new());
+        assert!(!p.account_choice_visible());
+    }
+
+    #[test]
+    fn account_choice_visible_with_a_second_declared_account() {
+        let p = picker_with_accounts(vec![
+            account("default", &["claude"], &[("claude", true)]),
+            account("team", &["claude"], &[("claude", true)]),
+        ]);
+        assert!(p.account_choice_visible());
+    }
+
+    /// Not-logged-in entries are marked, but still selectable — a
+    /// never-logged-in folder is a NORMAL choice (owner ruling): the
+    /// row's own pane runs the login on first start.
+    #[test]
+    fn account_not_logged_in_is_marked_and_still_selectable() {
+        let logged_out = account("team", &["claude"], &[("claude", false)]);
+        assert!(!logged_out.any_logged_in());
+        let logged_in = account("default", &["claude"], &[("claude", true)]);
+        assert!(logged_in.any_logged_in());
+        // Cycling never skips a not-logged-in entry — it's a full member
+        // of the rotation, just annotated.
+        let mut p = picker_with_accounts(vec![logged_in, logged_out]);
+        assert_eq!(p.account_selected, 0);
+        p.account_selected = (p.account_selected + 1) % p.accounts.len();
+        assert_eq!(p.account_selected, 1);
+        assert!(!p.accounts[p.account_selected].any_logged_in());
     }
 
     #[test]

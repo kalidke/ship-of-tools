@@ -100,6 +100,7 @@ actions! {
     SessionCreateCodex, "session.create_codex", ["Ctrl+Enter"], "Create with Codex", "Create a workspace in the selected folder with a Codex agent.", "Picker", Picker;
     SessionCreateBare, "session.create_bare", ["Shift+Enter"], "Create without agent", "Create a workspace in the selected folder with a shell and no agent.", "Picker", Picker;
     SessionCreate, "session.create", ["Enter"], "Create with Claude", "Create a workspace in the selected folder with a Claude Code agent.", "Picker", Picker;
+    SessionAccountNext, "session.account_next", ["Tab"], "Next account", "Cycle which login account the new session will use. Hidden when only one account is discovered.", "Picker", Picker;
     Quit, "quit", ["Ctrl+q"], "Quit SoT", "Close the frontend from navigation focus.", "Navigation", Nav;
     CopyPath, "files.copy_path", ["Ctrl+c", "c"], "Copy path", "Copy the selected file's backend path to the clipboard.", "Files", FileNav;
     NewFile, "files.new", ["Ctrl+n"], "New file or folder", "Create a file, or a folder when the name ends with /, in the selected directory.", "Files", Files;

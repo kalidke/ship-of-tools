@@ -524,6 +524,13 @@ pub enum IncomingEvt {
     Workspaces {
         workspaces: Vec<WorkspaceInfo>,
     },
+    /// `accounts.list` reply (owner-simplified brief, 2026-09-15). Empty
+    /// on an old daemon (no handler for the op) or a daemon reporting only
+    /// "default" — either way the new-session prompt hides the account
+    /// choice entirely.
+    AccountsList {
+        accounts: Vec<AccountInfo>,
+    },
     /// `workspace.destroy` reply (ADR 0014). The chrome uses this to
     /// surface the result in the status line and re-fetch the
     /// workspace list so the destroyed row falls out.
@@ -678,6 +685,11 @@ pub struct WorkspaceInfo {
     /// Folded into the Sessions row's glance line (`capsule_phase_tag`).
     #[allow(dead_code)]
     pub phase: Option<String>,
+    /// Per-session accounts (owner-simplified brief, 2026-09-15): the
+    /// login directory this row's agent runs under. `""` = the agent's
+    /// default directory — the common case, and the only value from a
+    /// daemon that predates the field.
+    pub account: String,
 }
 
 impl WorkspaceInfo {
@@ -691,6 +703,25 @@ impl WorkspaceInfo {
     /// two never drift on what "inert" means.
     pub(crate) fn is_inert_anchor(&self) -> bool {
         self.is_default && self.agent == "none"
+    }
+}
+
+/// One row of the `accounts.list` response (owner-simplified brief,
+/// 2026-09-15). Mirrors `sot_protocol::AccountEntry`. `"default"` sorts
+/// first.
+#[derive(Debug, Clone)]
+pub struct AccountInfo {
+    pub name: String,
+    pub kinds: Vec<String>,
+    pub logged_in: std::collections::HashMap<String, bool>,
+}
+
+impl AccountInfo {
+    /// True if none of this account's declared kinds have a login here —
+    /// the new-session prompt dims the row and appends "(not logged in)",
+    /// still selectable: the daemon refuses with the exact fix command.
+    pub fn any_logged_in(&self) -> bool {
+        self.kinds.iter().any(|k| self.logged_in.get(k).copied().unwrap_or(false))
     }
 }
 
@@ -1202,12 +1233,26 @@ pub enum OutgoingReq {
         autostart_claude: bool,
         /// ADR 0031 agent kind: "claude" | "codex" | "none".
         agent: String,
+        /// Per-session accounts (owner-simplified brief, 2026-09-15): the
+        /// login directory name the picker resolved, or `None` for the
+        /// agent's default directory. Sent through to
+        /// `sot_protocol::WorkspaceCreateReq.account` verbatim.
+        account: Option<String>,
     },
     /// Enumerate registered workspaces on the daemon (ADR 0014).
     /// Replaces the `tmux.list_sessions` prefix-filter as the source of
     /// truth for Sessions mode rows. Response surfaces as
     /// `IncomingEvt::Workspaces` carrying the full registry view.
     WorkspaceList,
+    /// Per-session accounts (owner-simplified brief, 2026-09-15): ask the
+    /// daemon which login directories it can see for a row it would spawn
+    /// here. Fired when the new-session picker opens, targeting the
+    /// picker's own host (`send_to`) — never the frontend's own disk, since
+    /// the login must exist where the session actually runs. Response
+    /// surfaces as `IncomingEvt::AccountsList`; an old daemon with no
+    /// handler for `accounts.list` fails to parse as `AccountsListRes` and
+    /// is treated as an empty list (default-only), not an error.
+    AccountsList,
     /// Destroy a registered workspace (ADR 0014). Backend kills the
     /// tmux session, removes the toml, drops the in-memory entry.
     /// Default workspace is refused. Response surfaces as
@@ -1398,6 +1443,7 @@ enum PendingKind {
     DirectoryList,
     WorkspaceCreate,
     WorkspaceList,
+    AccountsList,
     WorkspaceDestroy,
     PlutoOpen,
     VideoOpen,
@@ -2750,8 +2796,8 @@ where
                         .await?;
                         pending.insert(id, PendingKind::DirectoryList);
                     }
-                    OutgoingReq::WorkspaceCreate { label, project_root, autostart_claude, agent } => {
-                        tracing::info!(%label, %project_root, autostart_claude, %agent, id, "→ workspace.create");
+                    OutgoingReq::WorkspaceCreate { label, project_root, autostart_claude, agent, account } => {
+                        tracing::info!(%label, %project_root, autostart_claude, %agent, account = account.as_deref().unwrap_or(""), id, "→ workspace.create");
                         codec::write_frame(
                             &mut tx,
                             &Frame::req(
@@ -2775,10 +2821,7 @@ where
                                     // sends nothing new here, unchanged
                                     // behavior on every host.
                                     runtime: String::new(),
-                                    // Accounts brief (v0.6.0): no picker yet
-                                    // (D7) — an FE-created row always takes
-                                    // the default account.
-                                    account: None,
+                                    account,
                                 })?,
                             ),
                             None,
@@ -2799,6 +2842,20 @@ where
                         )
                         .await?;
                         pending.insert(id, PendingKind::WorkspaceList);
+                    }
+                    OutgoingReq::AccountsList => {
+                        tracing::debug!(id, "→ accounts.list");
+                        codec::write_frame(
+                            &mut tx,
+                            &Frame::req(
+                                id,
+                                op::ACCOUNTS_LIST,
+                                serde_json::to_value(sot_protocol::AccountsListReq::default())?,
+                            ),
+                            None,
+                        )
+                        .await?;
+                        pending.insert(id, PendingKind::AccountsList);
                     }
                     OutgoingReq::WorkspaceDestroy { workspace_id } => {
                         tracing::info!(%workspace_id, id, "→ workspace.destroy");
@@ -3805,6 +3862,7 @@ fn handle_response_frame(
                                 repl_state: w.repl_state,
                                 runtime: w.runtime,
                                 phase: w.phase,
+                                account: w.account,
                             })
                             .collect();
                         emit(IncomingEvt::Workspaces { workspaces });
@@ -3813,6 +3871,24 @@ fn handle_response_frame(
                         tracing::warn!(error = %e, "workspace.list res parse failed");
                     }
                 }
+            }
+            // Per-session accounts (owner-simplified brief, 2026-09-15): a
+            // daemon that has no `accounts.list` handler (old build) or
+            // whose reply otherwise fails to parse as `AccountsListRes` is
+            // treated as an empty list — default-only, no error surfaced.
+            // The chrome hides the account choice entirely on an empty list.
+            PendingKind::AccountsList => {
+                let accounts = serde_json::from_value::<sot_protocol::AccountsListRes>(frame.payload)
+                    .map(|r| r.accounts)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|a| AccountInfo {
+                        name: a.name,
+                        kinds: a.kinds,
+                        logged_in: a.logged_in,
+                    })
+                    .collect();
+                emit(IncomingEvt::AccountsList { accounts });
             }
             PendingKind::WorkspaceDestroy => {
                 // Same shape as WorkspaceCreate: success carries the
