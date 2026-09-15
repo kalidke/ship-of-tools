@@ -82,7 +82,7 @@ pub fn sot_state_dir() -> Option<std::path::PathBuf> {
 /// The declared identity's `host` component (ADR 0046 decision 1): one
 /// resolver, replacing the five independent guesses that used to disagree
 /// (`gpu.rs`'s per-call mint, the backend's own `gethostname` call, this
-/// crate's `state_host()`, the comm digest, and the frontend's `hosts.rs`
+/// crate's old `state_host()`, the comm digest, and the frontend's `hosts.rs`
 /// label) — every one of them fixed a wrong answer with another resolver
 /// tier or override env instead of declaring the fact once.
 ///
@@ -92,9 +92,8 @@ pub fn sot_state_dir() -> Option<std::path::PathBuf> {
 /// remote frontend dials (`scripts/launch-sot.ps1`, `launch-sot.sh`), and
 /// this declaration is a different fact (who a process IS, not where it
 /// dials). Otherwise `gethostname`'s first `.`-delimited label, lowercased.
-/// Feeds hello, logs, and display ONLY — it does not touch `state_host()`'s
-/// on-disk namespace (`workspaces_dir()` keeps today's own derivation;
-/// no migration is scheduled this sprint).
+/// Also names the daemon's per-host state dirs (`workspaces-<host>`), since
+/// topology plan step 8 folded the daemon's second resolver into this one.
 ///
 /// `Err` — never a fallback string — when neither source yields a usable
 /// label: a process with no nameable host has nothing honest to declare.

@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use crate::paths;
 
 /// Path to the per-backend toml for a given label — in the PER-HOST sessions
-/// dir (`sessions-<host>/`, see `workspaces::state_host`): this file records
+/// dir (`sessions-<host>/`, see `workspaces::declared_host`): this file records
 /// THIS machine's daemon identity, and on a shared-$HOME cohort an unsuffixed
 /// path made every box's daemon fight over it (this was the straggler writer
 /// that recreated the legacy dir right after the 2026-07-03 migration).
@@ -192,7 +192,7 @@ left_col_pct = 50
         // `XDG_CONFIG_HOME` alone used to be enough, but `app_config_dir`
         // now resolves via `LOCALAPPDATA` unconditionally on Windows (Codex
         // review, PR #175: without this, the test wrote under the real
-        // `%LOCALAPPDATA%\sot\config` there). `SOT_STATE_HOST` is pinned
+        // `%LOCALAPPDATA%\sot\config` there). `SOT_SELF_HOST` is pinned
         // too so the written path doesn't depend on the real hostname.
         // Held under the crate-wide env-mutation lock (`paths::ENV_TEST_LOCK`)
         // shared with every other test that mutates these same vars.
@@ -211,14 +211,14 @@ left_col_pct = 50
         struct Guard {
             xdg_config_home: Option<std::ffi::OsString>,
             localappdata: Option<std::ffi::OsString>,
-            sot_state_host: Option<std::ffi::OsString>,
+            sot_self_host: Option<std::ffi::OsString>,
         }
         impl Drop for Guard {
             fn drop(&mut self) {
                 for (key, val) in [
                     ("XDG_CONFIG_HOME", &self.xdg_config_home),
                     ("LOCALAPPDATA", &self.localappdata),
-                    ("SOT_STATE_HOST", &self.sot_state_host),
+                    ("SOT_SELF_HOST", &self.sot_self_host),
                 ] {
                     match val {
                         Some(v) => std::env::set_var(key, v),
@@ -230,11 +230,11 @@ left_col_pct = 50
         let _g = Guard {
             xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
             localappdata: std::env::var_os("LOCALAPPDATA"),
-            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            sot_self_host: std::env::var_os("SOT_SELF_HOST"),
         };
         std::env::set_var("XDG_CONFIG_HOME", &tmp);
         std::env::set_var("LOCALAPPDATA", &tmp);
-        std::env::set_var("SOT_STATE_HOST", "test-host");
+        std::env::set_var("SOT_SELF_HOST", "test-host");
 
         let written = write_backend_identity(
             "MyPkg.jl",

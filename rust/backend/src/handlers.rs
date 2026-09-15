@@ -260,7 +260,7 @@ pub async fn handle_hello(
     // they're connected — the one declared host (ADR 0046 decision 1),
     // resolved once at boot, never recomputed per hello. `root_path` is
     // the configured --project-root (absolute, canonicalised on startup).
-    let host = Some(crate::workspaces::declared_host().to_string());
+    let host = Some(crate::workspaces::declared_host());
     let project_root = Some(files_mode.root_path().display().to_string());
 
     let res = HelloRes {
@@ -336,7 +336,7 @@ pub async fn handle_version_query(
         protocol: sot_protocol::PROTOCOL_VERSION,
         lane_build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
         lane_proto: sot_log::wire::SUPERVISOR_PROTO_V1,
-        host: crate::workspaces::declared_host().to_string(),
+        host: crate::workspaces::declared_host(),
         hosts_toml_hash: refreshed.hash.unwrap_or_default(),
     };
     let snap = clients.snapshot_with_active();
@@ -4665,7 +4665,7 @@ async fn end_default_row_run(
     }
     let reg_agent = agent_name.to_string();
     let reg_ws = workspace_id.to_string();
-    let reg_host = crate::workspaces::state_host();
+    let reg_host = crate::workspaces::declared_host();
     let comm_removed = tokio::task::spawn_blocking(move || {
         remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
     })
@@ -5070,7 +5070,7 @@ pub async fn handle_workspace_destroy(
     // teardown above.
     let reg_agent = agent_name.clone();
     let reg_ws = workspace_id.clone();
-    let reg_host = crate::workspaces::state_host();
+    let reg_host = crate::workspaces::declared_host();
     let comm_removed = tokio::task::spawn_blocking(move || {
         remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
     })
@@ -6053,7 +6053,7 @@ fn capsule_comm_handle(workspace_id: &str) -> String {
     let Some(comm_home) = crate::paths::sot_comm_home() else {
         return String::new();
     };
-    let host = crate::workspaces::state_host();
+    let host = crate::workspaces::declared_host();
     let self_file = comm_home.join("self").join(format!("{host}__{workspace_id}.txt"));
     std::fs::read_to_string(&self_file)
         .ok()
@@ -6432,7 +6432,7 @@ pub async fn handle_workspace_list(
     // owning agents' latest `comm-status.sh` writes). `None` when the file is
     // absent/malformed; every lookup below then falls back to empty strings.
     let comm_agents = read_comm_agents();
-    let host = crate::workspaces::state_host();
+    let host = crate::workspaces::declared_host();
     // Pull `.agents[agent_name].<field>` as an owned String, "" if anything is
     // missing or not a string. LU5d2: `agent_name` here is a handle the caller
     // (below) already bound to THIS workspace — by live tmux match or by the
@@ -6562,7 +6562,7 @@ pub async fn handle_workspace_activate(
     // below is sent unconditionally, whatever this does or doesn't clear.
     if req.read {
         if let Some(ws) = resolved_ws.clone() {
-            let host = crate::workspaces::state_host();
+            let host = crate::workspaces::declared_host();
             let _ = tokio::task::spawn_blocking(move || clear_comm_unread(&ws, &host)).await;
         }
     }
@@ -7422,7 +7422,7 @@ mod capsule_comm_handle_tests {
         sot_comm_home: Option<std::ffi::OsString>,
         home: Option<std::ffi::OsString>,
         userprofile: Option<std::ffi::OsString>,
-        sot_state_host: Option<std::ffi::OsString>,
+        sot_self_host: Option<std::ffi::OsString>,
     }
 
     impl Drop for EnvGuard {
@@ -7431,7 +7431,7 @@ mod capsule_comm_handle_tests {
                 ("SOT_COMM_HOME", &self.sot_comm_home),
                 ("HOME", &self.home),
                 ("USERPROFILE", &self.userprofile),
-                ("SOT_STATE_HOST", &self.sot_state_host),
+                ("SOT_SELF_HOST", &self.sot_self_host),
             ] {
                 match val {
                     Some(v) => std::env::set_var(key, v),
@@ -7449,7 +7449,7 @@ mod capsule_comm_handle_tests {
             sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
             home: std::env::var_os("HOME"),
             userprofile: std::env::var_os("USERPROFILE"),
-            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            sot_self_host: std::env::var_os("SOT_SELF_HOST"),
             _serial: serial,
         }
     }
@@ -7468,7 +7468,7 @@ mod capsule_comm_handle_tests {
         let self_dir = dir.join("self");
         std::fs::create_dir_all(&self_dir).unwrap();
         std::env::set_var("SOT_COMM_HOME", &dir);
-        std::env::set_var("SOT_STATE_HOST", "testhost");
+        std::env::set_var("SOT_SELF_HOST", "testhost");
         std::fs::write(
             self_dir.join("testhost__ws-myrepo-1a2b.txt"),
             "myrepo-testhost\nrepo=myrepo\nroot=/home/me/myrepo\n",
@@ -7492,7 +7492,7 @@ mod capsule_comm_handle_tests {
                 .as_nanos()
         ));
         std::env::set_var("SOT_COMM_HOME", &dir);
-        std::env::set_var("SOT_STATE_HOST", "testhost");
+        std::env::set_var("SOT_SELF_HOST", "testhost");
 
         assert_eq!(capsule_comm_handle("ws-never-joined-9f9f"), "");
 
@@ -7769,7 +7769,7 @@ mod clear_comm_unread_tests {
     struct EnvGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
         sot_comm_home: Option<std::ffi::OsString>,
-        sot_state_host: Option<std::ffi::OsString>,
+        sot_self_host: Option<std::ffi::OsString>,
     }
 
     impl Drop for EnvGuard {
@@ -7778,9 +7778,9 @@ mod clear_comm_unread_tests {
                 Some(v) => std::env::set_var("SOT_COMM_HOME", v),
                 None => std::env::remove_var("SOT_COMM_HOME"),
             }
-            match &self.sot_state_host {
-                Some(v) => std::env::set_var("SOT_STATE_HOST", v),
-                None => std::env::remove_var("SOT_STATE_HOST"),
+            match &self.sot_self_host {
+                Some(v) => std::env::set_var("SOT_SELF_HOST", v),
+                None => std::env::remove_var("SOT_SELF_HOST"),
             }
         }
     }
@@ -7791,7 +7791,7 @@ mod clear_comm_unread_tests {
             .unwrap_or_else(|e| e.into_inner());
         EnvGuard {
             sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
-            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            sot_self_host: std::env::var_os("SOT_SELF_HOST"),
             _serial: serial,
         }
     }
@@ -7982,7 +7982,7 @@ mod clear_comm_unread_tests {
                 },
             }),
         );
-        std::env::set_var("SOT_STATE_HOST", "host-4");
+        std::env::set_var("SOT_SELF_HOST", "host-4");
 
         let mut ws = mk_ws("capsuleprobe", "");
         ws.runtime = "capsule".to_string();
@@ -8020,7 +8020,7 @@ mod clear_comm_unread_tests {
                 },
             }),
         );
-        std::env::set_var("SOT_STATE_HOST", "host-4");
+        std::env::set_var("SOT_SELF_HOST", "host-4");
         let before = std::fs::read(&registry_path).unwrap();
 
         let mut ws = mk_ws("capsuleprobe2", "");
@@ -8048,7 +8048,7 @@ mod workspace_activate_read_tests {
     struct EnvGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
         sot_comm_home: Option<std::ffi::OsString>,
-        sot_state_host: Option<std::ffi::OsString>,
+        sot_self_host: Option<std::ffi::OsString>,
     }
 
     impl Drop for EnvGuard {
@@ -8057,9 +8057,9 @@ mod workspace_activate_read_tests {
                 Some(v) => std::env::set_var("SOT_COMM_HOME", v),
                 None => std::env::remove_var("SOT_COMM_HOME"),
             }
-            match &self.sot_state_host {
-                Some(v) => std::env::set_var("SOT_STATE_HOST", v),
-                None => std::env::remove_var("SOT_STATE_HOST"),
+            match &self.sot_self_host {
+                Some(v) => std::env::set_var("SOT_SELF_HOST", v),
+                None => std::env::remove_var("SOT_SELF_HOST"),
             }
         }
     }
@@ -8070,7 +8070,7 @@ mod workspace_activate_read_tests {
             .unwrap_or_else(|e| e.into_inner());
         EnvGuard {
             sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
-            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            sot_self_host: std::env::var_os("SOT_SELF_HOST"),
             _serial: serial,
         }
     }
@@ -8134,7 +8134,7 @@ mod workspace_activate_read_tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("SOT_COMM_HOME", &dir);
-        std::env::set_var("SOT_STATE_HOST", "host-4");
+        std::env::set_var("SOT_SELF_HOST", "host-4");
         let registry_path = dir.join("registry.json");
 
         let (reg, id) = seed_capsule_workspace("activate-capsule-x", "host-4-activate-capsule-x");
@@ -8186,14 +8186,14 @@ mod agent_str_host_filter_tests {
     struct EnvGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
         sot_comm_home: Option<std::ffi::OsString>,
-        sot_state_host: Option<std::ffi::OsString>,
+        sot_self_host: Option<std::ffi::OsString>,
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             for (key, val) in [
                 ("SOT_COMM_HOME", &self.sot_comm_home),
-                ("SOT_STATE_HOST", &self.sot_state_host),
+                ("SOT_SELF_HOST", &self.sot_self_host),
             ] {
                 match val {
                     Some(v) => std::env::set_var(key, v),
@@ -8209,7 +8209,7 @@ mod agent_str_host_filter_tests {
             .unwrap_or_else(|e| e.into_inner());
         EnvGuard {
             sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
-            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            sot_self_host: std::env::var_os("SOT_SELF_HOST"),
             _serial: serial,
         }
     }
@@ -8227,7 +8227,7 @@ mod agent_str_host_filter_tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("SOT_COMM_HOME", &dir);
-        std::env::set_var("SOT_STATE_HOST", "host-4");
+        std::env::set_var("SOT_SELF_HOST", "host-4");
         std::fs::write(
             dir.join("registry.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
@@ -8318,7 +8318,7 @@ mod workspace_destroy_default_row_tests {
         // the fixture built a state dir nobody ever looked at.
         xdg_state_home: Option<std::ffi::OsString>,
         localappdata: Option<std::ffi::OsString>,
-        sot_state_host: Option<std::ffi::OsString>,
+        sot_self_host: Option<std::ffi::OsString>,
         sot_comm_home: Option<std::ffi::OsString>,
     }
 
@@ -8328,7 +8328,7 @@ mod workspace_destroy_default_row_tests {
                 ("XDG_CONFIG_HOME", &self.xdg_config_home),
                 ("XDG_STATE_HOME", &self.xdg_state_home),
                 ("LOCALAPPDATA", &self.localappdata),
-                ("SOT_STATE_HOST", &self.sot_state_host),
+                ("SOT_SELF_HOST", &self.sot_self_host),
                 ("SOT_COMM_HOME", &self.sot_comm_home),
             ] {
                 match val {
@@ -8348,7 +8348,7 @@ mod workspace_destroy_default_row_tests {
             xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
             xdg_state_home: std::env::var_os("XDG_STATE_HOME"),
             localappdata: std::env::var_os("LOCALAPPDATA"),
-            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            sot_self_host: std::env::var_os("SOT_SELF_HOST"),
             sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
             _serial: serial,
         }
@@ -8611,7 +8611,7 @@ mod workspace_destroy_default_row_tests {
     // 0043 decision 33's own absence proof, reproduced on disk -- the
     // technique the test above also uses) makes the outcome
     // deterministic with no live supervisor at all, and
-    // `XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`SOT_STATE_HOST` are pinned to a
+    // `XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`SOT_SELF_HOST` are pinned to a
     // scratch dir so neither the toml write nor the state dir ever
     // touches a real `~/.config/sot` or `~/.local/state/sot`.
     //
@@ -8632,7 +8632,7 @@ mod workspace_destroy_default_row_tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("XDG_CONFIG_HOME", &dir);
-        std::env::set_var("SOT_STATE_HOST", "reset-test-host");
+        std::env::set_var("SOT_SELF_HOST", "reset-test-host");
         let state_root = pin_local_state_root(&dir.join("state"));
 
         let (reg, id, slug) = seed_default_with_agent("claude", "kal-local");
@@ -8728,7 +8728,7 @@ mod workspace_destroy_default_row_tests {
         std::fs::create_dir_all(&comm_dir).unwrap();
         std::env::set_var("XDG_CONFIG_HOME", &config_dir);
         std::env::set_var("SOT_COMM_HOME", &comm_dir);
-        std::env::set_var("SOT_STATE_HOST", "leave-test-host");
+        std::env::set_var("SOT_SELF_HOST", "leave-test-host");
         let scratch_state =
             std::env::temp_dir().join(format!("sot-ws-destroy-default-leave-state-{stamp}"));
         let state_root = pin_local_state_root(&scratch_state);

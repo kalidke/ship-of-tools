@@ -90,9 +90,10 @@ directory names, and must be preserved); then verify the daemon's actual
 environment after the change (`systemctl --user show sotd -p Environment`)
 and that the destination has the retention you expect.
 
-`SOT_STATE_HOST`, when set, must equal the short hostname sot-comm's own
-registry stamps on that host's rows (case-insensitive) — the registry's
-ownership check compares them.
+`SOT_SELF_HOST` is the one declared-host override (ADR 0046): the daemon,
+the frontend and the comm scripts all read it, so a value set for one of
+them must be set for all of them on that box — it names the per-host state
+dirs and the registry's ownership check compares it.
 
 ## Survival
 

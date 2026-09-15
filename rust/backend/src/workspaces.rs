@@ -961,7 +961,7 @@ pub fn scan_disk(reg: &Workspaces, adopt_legacy_registry: bool) -> Result<usize>
     if adopt_legacy_registry {
         migrate_legacy_windows_config_dir()?;
     }
-    // Per-host state dirs (see `state_host`): adopt the legacy unsuffixed
+    // Per-host state dirs (see `declared_host`): adopt the legacy unsuffixed
     // dirs on the first post-deploy boot, before scanning.
     migrate_legacy_state_dirs();
     let mut count = 0;
@@ -1250,60 +1250,22 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// Short hostname for PER-HOST state dirs. Shared-$HOME cohorts (NFS) run one
-/// daemon PER MACHINE; unsuffixed dirs made those daemons cross-contaminate —
-/// a workspace toml written by any box resurrected on every other box's next
-/// daemon boot (the gatecheck/canary incidents, and the reason "a BE on
-/// a remote host" looked broken). First hostname label, lowercased;
-/// `SOT_STATE_HOST` overrides for tests/exotic setups.
-///
-/// `pub(crate)` (capsule-comm-identity fix): also the host `comm-lib.sh`'s
-/// own handles are suffixed with, so `capsule_workspace::capsule_supervisor_env`
-/// reuses this SAME resolution for the capsule's `SOT_COMM_SELF_FILE`
-/// path rather than re-deriving a host string that could drift from it.
-///
-/// `SOT_STATE_HOST`, when set, must equal the short hostname sot-comm
-/// stamps on registry rows (comm-lib.sh's `HOST`), compared case-
-/// insensitively — the registry predicate depends on it.
-pub(crate) fn state_host() -> String {
-    if let Ok(h) = std::env::var("SOT_STATE_HOST") {
-        if !h.is_empty() {
-            return h;
-        }
-    }
-    #[cfg(windows)]
-    let raw = std::env::var("COMPUTERNAME").unwrap_or_default();
-    #[cfg(not(windows))]
-    let raw = std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .unwrap_or_default();
-    let short = raw.split('.').next().unwrap_or("").trim().to_lowercase();
-    if short.is_empty() {
-        "host".to_string()
-    } else {
-        short
-    }
-}
-
-/// This daemon's declared `host` (ADR 0046 decision 1) — `sot_log::state_dir::
-/// host_name()`, resolved ONCE and cached, fatal at boot. Feeds `HelloRes.host`,
-/// the "client connected" log line, and the awareness env this daemon pins on
-/// every pane/capsule (`pty::awareness_env`) — deliberately separate from
-/// `state_host()` above: that function keeps naming `workspaces-<host>` on
-/// disk until B2a's migration lands, so a change here must never touch it.
-/// `run()` calls this once at startup so an unresolvable host fails the
-/// daemon immediately instead of surfacing as a mysterious per-hello error
-/// deep in a handler.
-pub(crate) fn declared_host() -> &'static str {
-    static DECLARED_HOST: OnceLock<String> = OnceLock::new();
-    DECLARED_HOST.get_or_init(|| {
-        sot_log::state_dir::host_name().unwrap_or_else(|e| {
-            tracing::error!(error = %e, "cannot start: no declared host (ADR 0046 decision 1)");
-            std::process::exit(1);
-        })
+/// This daemon's host — `sot_log::state_dir::host_name()` (`SOT_SELF_HOST`
+/// else the hostname's first label, lowercased), the ONE resolver (ADR
+/// 0046 decision 1; topology plan §D folded the daemon's second resolver,
+/// `declared_host()`, into it). It names the `workspaces-<host>` /
+/// `sessions-<host>` state dirs — the reason a workspace toml written by
+/// one box is never resurrected on another sharing the home — the host the
+/// capsule's `SOT_COMM_SELF_FILE` is suffixed with, the registry-row
+/// ownership predicate (so it must equal comm-lib.sh's `sot_host`, which
+/// reads the same env and rule), `HelloRes.host` and the awareness env.
+/// Uncached, so a unit test may pin `SOT_SELF_HOST` per test; `run()`
+/// calls it once at boot so an unresolvable host fails the daemon
+/// immediately instead of surfacing as a per-hello error.
+pub(crate) fn declared_host() -> String {
+    sot_log::state_dir::host_name().unwrap_or_else(|e| {
+        tracing::error!(error = %e, "cannot start: no declared host (ADR 0046 decision 1)");
+        std::process::exit(1);
     })
 }
 
@@ -1332,7 +1294,7 @@ pub(crate) fn declared_host() -> &'static str {
 pub(crate) fn migrate_legacy_state_dirs() {
     for name in ["workspaces", "sessions"] {
         let legacy = app_config_dir().join(name);
-        let per_host = app_config_dir().join(format!("{name}-{}", state_host()));
+        let per_host = app_config_dir().join(format!("{name}-{}", declared_host()));
         if !legacy.is_dir() {
             continue;
         }
@@ -1414,7 +1376,7 @@ fn fold_unsuffixed_into_per_host(legacy: &Path, per_host: &Path) {
 }
 
 fn workspaces_dir() -> PathBuf {
-    app_config_dir().join(format!("workspaces-{}", state_host()))
+    app_config_dir().join(format!("workspaces-{}", declared_host()))
 }
 
 /// Path to a workspace's on-disk toml for the given slug. Mirrors
@@ -1438,7 +1400,7 @@ pub(crate) fn sessions_state_dir() -> PathBuf {
 }
 
 fn sessions_dir() -> PathBuf {
-    app_config_dir().join(format!("sessions-{}", state_host()))
+    app_config_dir().join(format!("sessions-{}", declared_host()))
 }
 
 /// App config dir: `~/.config/sot`. Shared so every backend config resolver
@@ -1485,7 +1447,7 @@ pub(crate) fn app_config_dir() -> PathBuf {
 /// Directory entries directly under `root` matching the backend's OWN
 /// registry dirs: `workspaces`, `sessions` (pre-per-host legacy shape) and
 /// `workspaces-*`/`sessions-*` (current per-host shape, any host suffix —
-/// `state_host()` isn't consulted here since migration runs before/
+/// `declared_host()` isn't consulted here since migration runs before/
 /// independent of which host string this boot resolves). Named
 /// explicitly rather than swept wholesale because `<...>\.config\sot` is
 /// NOT backend-exclusive on Windows: the frontend resolves its OWN files
@@ -2421,7 +2383,7 @@ pid          = 12345
         std::env::set_var("XDG_CONFIG_HOME", dir.join("xdg"));
         std::env::set_var("LOCALAPPDATA", &dir);
         std::env::remove_var("USERPROFILE");
-        std::env::set_var("SOT_STATE_HOST", "legacy-shadow-test");
+        std::env::set_var("SOT_SELF_HOST", "legacy-shadow-test");
 
         let canonical_dir = workspaces_dir();
         std::fs::create_dir_all(&canonical_dir).unwrap();
@@ -2523,11 +2485,11 @@ cursor_path = "src/lib.jl"
         system_drive: Option<std::ffi::OsString>,
         // Snapshotted/restored too (not just set) because a few tests below
         // pin it to a known value so `migrate_legacy_state_dirs`'s
-        // `state_host()` calls resolve deterministically — the real
+        // `declared_host()` calls resolve deterministically — the real
         // hostname would otherwise leak into the "-<host>" suffix these
         // tests assert on, and a leaked value would poison every other
-        // `state_host()`-reading test sharing this crate-wide lock.
-        sot_state_host: Option<std::ffi::OsString>,
+        // `declared_host()`-reading test sharing this crate-wide lock.
+        sot_self_host: Option<std::ffi::OsString>,
     }
 
     impl Drop for EnvGuard {
@@ -2538,7 +2500,7 @@ cursor_path = "src/lib.jl"
                 ("LOCALAPPDATA", &self.localappdata),
                 ("USERPROFILE", &self.userprofile),
                 ("SystemDrive", &self.system_drive),
-                ("SOT_STATE_HOST", &self.sot_state_host),
+                ("SOT_SELF_HOST", &self.sot_self_host),
             ] {
                 match val {
                     Some(v) => std::env::set_var(key, v),
@@ -2558,7 +2520,7 @@ cursor_path = "src/lib.jl"
             localappdata: std::env::var_os("LOCALAPPDATA"),
             userprofile: std::env::var_os("USERPROFILE"),
             system_drive: std::env::var_os("SystemDrive"),
-            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            sot_self_host: std::env::var_os("SOT_SELF_HOST"),
             _serial: serial,
         }
     }
@@ -2583,7 +2545,7 @@ cursor_path = "src/lib.jl"
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         std::env::set_var("LOCALAPPDATA", &dir);
         std::env::remove_var("USERPROFILE");
-        std::env::set_var("SOT_STATE_HOST", "roundtrip-test");
+        std::env::set_var("SOT_SELF_HOST", "roundtrip-test");
 
         let ws = Workspace::meta_only(
             "ws-rt-1".to_string(),
@@ -2622,7 +2584,7 @@ cursor_path = "src/lib.jl"
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         std::env::set_var("LOCALAPPDATA", &dir);
         std::env::remove_var("USERPROFILE");
-        std::env::set_var("SOT_STATE_HOST", "roundtrip-test");
+        std::env::set_var("SOT_SELF_HOST", "roundtrip-test");
 
         let ws = Workspace::meta_only(
             "ws-rt-2".to_string(),
@@ -2659,7 +2621,7 @@ cursor_path = "src/lib.jl"
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         std::env::set_var("LOCALAPPDATA", &dir);
         std::env::remove_var("USERPROFILE");
-        std::env::set_var("SOT_STATE_HOST", "roundtrip-test");
+        std::env::set_var("SOT_SELF_HOST", "roundtrip-test");
 
         let mut ws = Workspace::meta_only(
             "ws-rt-3".to_string(),
@@ -3076,7 +3038,7 @@ cursor_path = "src/lib.jl"
     #[cfg(windows)]
     fn migrate_then_fold_lands_every_legacy_row_in_the_host_suffixed_dir() {
         let _guard = env_guarded();
-        std::env::set_var("SOT_STATE_HOST", "host");
+        std::env::set_var("SOT_SELF_HOST", "host");
         let s = MigrationScratch::new("migrate-then-fold");
         let primary = s.userprofile_legacy();
         std::fs::create_dir_all(primary.join("workspaces-host")).unwrap();
@@ -3119,7 +3081,7 @@ cursor_path = "src/lib.jl"
     #[cfg(windows)]
     fn fold_adopts_a_dir_stranded_by_an_earlier_broken_boot() {
         let _guard = env_guarded();
-        std::env::set_var("SOT_STATE_HOST", "host");
+        std::env::set_var("SOT_SELF_HOST", "host");
         let s = MigrationScratch::new("fold-stranded");
         s.apply_env();
         let new_root = s.new_root();
@@ -3152,7 +3114,7 @@ cursor_path = "src/lib.jl"
     #[cfg(windows)]
     fn fold_keeps_the_destination_row_on_a_name_collision() {
         let _guard = env_guarded();
-        std::env::set_var("SOT_STATE_HOST", "host");
+        std::env::set_var("SOT_SELF_HOST", "host");
         let s = MigrationScratch::new("fold-collision");
         s.apply_env();
         let new_root = s.new_root();

@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 /// Crate-wide serialization lock for every test that mutates process-
 /// global env vars this crate's resolvers read (`XDG_CONFIG_HOME`,
 /// `XDG_STATE_HOME`, `HOME`, `LOCALAPPDATA`, `USERPROFILE`, `SystemDrive`,
-/// `SOT_STATE_HOST`, ...) — `cargo test` runs tests in parallel within one
+/// `SOT_SELF_HOST`, ...) — `cargo test` runs tests in parallel within one
 /// process by default, and several DIFFERENT modules
 /// (`paths::state_dir_tests`, `workspaces::tests`, `session_state::tests`)
 /// each exercise resolvers that read the SAME vars. One shared lock, not

@@ -31,9 +31,9 @@ use sot_protocol::{codec, op, Frame, HelloReq, Kind};
 /// ~= 9s worst case) but still a real bound, never "forever."
 pub const BOUND: Duration = Duration::from_secs(30);
 
-/// Pinned `SOT_STATE_HOST` for every `spawn_sotd` in this file — a fixed,
-/// known per-host registry dir name instead of whatever `%COMPUTERNAME%`
-/// happens to be on the runner (`workspaces::state_host`'s fallback).
+/// Pinned `SOT_SELF_HOST` for every `spawn_sotd` in this file — a fixed,
+/// known per-host registry dir name instead of whatever hostname the
+/// runner has (`host_name()`'s fallback).
 /// `Env::seed_default_capsule_toml` computes the same path from it.
 pub const TEST_STATE_HOST: &str = "testhost";
 pub fn sotd_exe() -> PathBuf {
@@ -316,9 +316,9 @@ impl Env {
     /// is set UNCONDITIONALLY (one shape, not a per-platform cfg split):
     /// the platform this daemon actually runs on only ever reads its own
     /// pair, so setting the other platform's var too is harmless.
-    /// `SOT_STATE_HOST` is pinned so the per-host registry dir
-    /// (`workspaces::state_host`, which otherwise falls back to
-    /// `%COMPUTERNAME%`/the real hostname) is a fixed, known name —
+    /// `SOT_SELF_HOST` is pinned so the per-host registry dir
+    /// (`workspaces::declared_host`, which otherwise falls back to the
+    /// real hostname) is a fixed, known name —
     /// `seed_default_capsule_toml` below has to compute the SAME path
     /// from the test side to pre-write a toml this daemon will read.
     /// `SOT_RUNTIME_DIR` (Linux only, ADR 0043 decision 1) pins every
@@ -341,7 +341,7 @@ impl Env {
             .env("LOCALAPPDATA", &self.state_root)
             .env("XDG_STATE_HOME", &self.state_root)
             .env("XDG_CONFIG_HOME", &self.config_root)
-            .env("SOT_STATE_HOST", TEST_STATE_HOST)
+            .env("SOT_SELF_HOST", TEST_STATE_HOST)
             .env("SOT_RUNTIME_DIR", self._runtime_tmp.path())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -374,7 +374,7 @@ impl Env {
     /// Pre-write an ARBITRARY capsule row's own toml BEFORE `spawn_sotd`
     /// boots the daemon, with `runtime = "capsule"` and the given
     /// `agent` — the same registry path `workspaces::save`/`load_toml`
-    /// use (`<app config dir>/workspaces-<SOT_STATE_HOST>/<slug>.toml`,
+    /// use (`<app config dir>/workspaces-<SOT_SELF_HOST>/<slug>.toml`,
     /// [`Env::app_config_dir`]). Only `workspace_id`/`slug`/`project_root`
     /// are required for `load_toml` to treat this as canonical
     /// (`workspaces.rs`'s own doc); every other field the daemon needs
@@ -487,7 +487,7 @@ impl Env {
             .env("LOCALAPPDATA", &self.state_root)
             .env("XDG_STATE_HOME", &self.state_root)
             .env("XDG_CONFIG_HOME", &self.config_root)
-            .env("SOT_STATE_HOST", TEST_STATE_HOST)
+            .env("SOT_SELF_HOST", TEST_STATE_HOST)
             .env("SOT_RUNTIME_DIR", self._runtime_tmp.path())
             .env("PATH", path)
             .stdin(Stdio::null())
@@ -512,7 +512,7 @@ impl Env {
             .env("LOCALAPPDATA", &self.state_root)
             .env("XDG_STATE_HOME", &self.state_root)
             .env("XDG_CONFIG_HOME", &self.config_root)
-            .env("SOT_STATE_HOST", TEST_STATE_HOST)
+            .env("SOT_SELF_HOST", TEST_STATE_HOST)
             .env("SOT_RUNTIME_DIR", self._runtime_tmp.path())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -561,7 +561,7 @@ impl Env {
             .arg(setenv("LOCALAPPDATA", self.state_root.as_os_str()))
             .arg(setenv("XDG_STATE_HOME", self.state_root.as_os_str()))
             .arg(setenv("XDG_CONFIG_HOME", self.config_root.as_os_str()))
-            .arg(setenv("SOT_STATE_HOST", std::ffi::OsStr::new(TEST_STATE_HOST)))
+            .arg(setenv("SOT_SELF_HOST", std::ffi::OsStr::new(TEST_STATE_HOST)))
             .arg(setenv("SOT_RUNTIME_DIR", self._runtime_tmp.path().as_os_str()))
             .arg(setenv("PATH", &path))
             .arg(setenv("HOME", &home))

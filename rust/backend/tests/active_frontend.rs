@@ -92,7 +92,7 @@ impl Env {
             .env("LOCALAPPDATA", &state_root)
             .env("XDG_STATE_HOME", &state_root)
             .env("XDG_CONFIG_HOME", &config_root)
-            .env("SOT_STATE_HOST", format!("activefe-{tag}"))
+            .env("SOT_SELF_HOST", format!("activefe-{tag}"))
             .env("SOT_RUNTIME_DIR", runtime_tmp.path())
             .stdin(Stdio::null())
             .spawn()

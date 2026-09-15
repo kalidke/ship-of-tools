@@ -432,7 +432,7 @@ async fn wait_for_test_activation_barrier() {
 /// unit-testable on its own. Deliberately NOT host-filtered (unlike the
 /// list itself): this has no per-workspace context to filter against, only
 /// a flat agent map, so a write on another host still costs one extra
-/// `workspace.list` broadcast — cheaper than threading `state_host()`
+/// `workspace.list` broadcast — cheaper than threading `declared_host()`
 /// through a projection whose only job is "did anything change".
 fn project_comm_registry(bytes: &[u8]) -> String {
     let root: serde_json::Value = match serde_json::from_slice(bytes) {
@@ -459,14 +459,14 @@ fn project_comm_registry(bytes: &[u8]) -> String {
 }
 
 pub async fn run(opts: Opts) -> Result<()> {
-    // ADR 0046 decision 1: resolve this daemon's declared host ONCE, fatal
-    // at boot if it can't be named — every later hello/log read reads it,
-    // never recomputing. Pin the (bare, S4) own-listener endpoint the same
-    // way, from `opts.socket` before it's consumed by value below; both
-    // caches are read by `pty::awareness_env` for every pane/capsule this
-    // daemon ever spawns (SOT_SOCKET only — the declared host is never
-    // pinned into a spawned child's env; see `awareness_env`'s own doc).
-    crate::workspaces::declared_host();
+    // ADR 0046 decision 1: resolve this daemon's declared host at boot,
+    // fatal if it can't be named, so the failure is a boot error rather
+    // than a per-hello one. Pin the (bare, S4) own-listener endpoint from
+    // `opts.socket` before it's consumed by value below; it is read by
+    // `pty::awareness_env` for every pane/capsule this daemon ever spawns
+    // (SOT_SOCKET only — the declared host is never pinned into a spawned
+    // child's env; see `awareness_env`'s own doc).
+    let _ = crate::workspaces::declared_host();
     if let Some(path) = opts.socket.as_deref() {
         crate::awareness::set_own_endpoint(path);
     }
@@ -1767,7 +1767,7 @@ where
                     frame.payload,
                     &topology_store,
                     &workspaces,
-                    crate::workspaces::declared_host(),
+                    &crate::workspaces::declared_host(),
                     hello_host.as_deref(),
                     &topo_changed_tx,
                 )

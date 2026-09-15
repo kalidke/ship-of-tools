@@ -164,7 +164,7 @@ impl Env {
             .env("LOCALAPPDATA", &state_root)
             .env("XDG_STATE_HOME", &state_root)
             .env("XDG_CONFIG_HOME", &config_root)
-            .env("SOT_STATE_HOST", format!("switchlat-{tag}"))
+            .env("SOT_SELF_HOST", format!("switchlat-{tag}"))
             .env("SOT_RUNTIME_DIR", runtime_tmp.path())
             .env("SOT_TEST_SLOW_CONCEPT_READ_MS", SLOW_MS.to_string())
             .env("SOT_LANE_FAKE_JULIA_COUNTER_DIR", &spawn_marker_dir)

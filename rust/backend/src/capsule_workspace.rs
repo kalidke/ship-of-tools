@@ -708,7 +708,7 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
         env.push(("SOT_COMM_NAME".to_string(), agent_name.to_string()));
     }
     if let Some(comm_home) = capsule_comm_home_str() {
-        let host = crate::workspaces::state_host();
+        let host = crate::workspaces::declared_host();
         let self_file = format!("{}/self/{}__{}.txt", comm_home.trim_end_matches('/'), host, workspace_id);
         env.push(("SOT_COMM_HOME".to_string(), comm_home));
         env.push(("SOT_COMM_SELF_FILE".to_string(), self_file));
@@ -3925,7 +3925,7 @@ mod tests {
         home: Option<std::ffi::OsString>,
         userprofile: Option<std::ffi::OsString>,
         sot_comm_home: Option<std::ffi::OsString>,
-        sot_state_host: Option<std::ffi::OsString>,
+        sot_self_host: Option<std::ffi::OsString>,
         path: Option<std::ffi::OsString>,
     }
 
@@ -3935,7 +3935,7 @@ mod tests {
                 ("HOME", &self.home),
                 ("USERPROFILE", &self.userprofile),
                 ("SOT_COMM_HOME", &self.sot_comm_home),
-                ("SOT_STATE_HOST", &self.sot_state_host),
+                ("SOT_SELF_HOST", &self.sot_self_host),
                 ("PATH", &self.path),
             ] {
                 match val {
@@ -3954,7 +3954,7 @@ mod tests {
             home: std::env::var_os("HOME"),
             userprofile: std::env::var_os("USERPROFILE"),
             sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
-            sot_state_host: std::env::var_os("SOT_STATE_HOST"),
+            sot_self_host: std::env::var_os("SOT_SELF_HOST"),
             path: std::env::var_os("PATH"),
             _serial: serial,
         }
@@ -4010,7 +4010,7 @@ mod tests {
         // test in this binary may have already set it to.
         crate::awareness::set_own_endpoint(Path::new("/fake-home/.local/state/sot/session.sock"));
         let _guard = self_file_env_guarded();
-        std::env::set_var("SOT_STATE_HOST", "testhost");
+        std::env::set_var("SOT_SELF_HOST", "testhost");
         std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
         let env = capsule_supervisor_env(
             "ws-myrepo-1a2b",
@@ -4058,7 +4058,7 @@ mod tests {
         // SOT_WORKSPACE/SOT_COMM_HOME/SOT_COMM_SELF_FILE stay
         // unconditional regardless.
         let _guard = self_file_env_guarded();
-        std::env::set_var("SOT_STATE_HOST", "testhost");
+        std::env::set_var("SOT_SELF_HOST", "testhost");
         std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
         let env = capsule_supervisor_env("ws-anon-9f9f", "anon", Path::new("/home/me/anon"), "");
         let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
