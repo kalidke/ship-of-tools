@@ -1,103 +1,76 @@
-# Ship of Tools host registry — TEMPLATE (copy to hosts.toml and edit).
+# Ship of Tools declared topology — TEMPLATE. Grammar v2 (one parser:
+# rust/protocol/src/topology.rs; one reader per box: `sotd topology`).
 #
-# The real hosts.toml is machine/user-specific and NOT committed (ADR 0030 §6):
-#   cp .sot/hosts.toml.example .sot/hosts.toml     # repo-local override, or
-#   ~/.config/sot/hosts.toml / %APPDATA%\sot\hosts.toml   # per-user config
+# Where it lives: the hub's own ~/.config/sot/hosts.toml is the canonical
+# copy (written by the owner, on the hub). A box that shares the hub's home
+# simply has it. Every other box fetches it with `sotd topology sync --hub
+# <alias>` into its own config dir (~/.config/sot/hosts.toml,
+# %LOCALAPPDATA%\sot\config\hosts.toml); the launcher runs that at every
+# launch. `$SOT_HOSTS` overrides the path (tests, scratch daemons). There
+# is no repo-local copy: this file is a template, not a search location.
 #
-# Discovery order: $SOT_HOSTS → <repo-root>/.sot/hosts.toml →
-# $XDG_CONFIG_HOME/sot/hosts.toml or %APPDATA%\sot\hosts.toml.
-# Format kept deliberately simple — section per host, scalar
-# key = value lines — so the PowerShell launcher can parse it with
-# regex without pulling in a TOML library.
+# Read once at daemon start for the [monitor] list; at every launch for the
+# tunnel plan. Editing it means a relaunch (tunnels are the launcher's) and
+# a daemon restart (samplers are spawned from the list).
 #
-# The frontend's `Mode::Hosts` lists every `[host.<name>]` section — every
-# entry is a live connection at once (ADR 0042 slice L2a), not a single
-# picked target, so Enter there just navigates the Sessions-mode cursor
-# to that host's node. The LAUNCHER opens ONE SSH TUNNEL PER REMOTE entry
-# (every `[host.<name>]` with an `ssh_alias` — ADR 0042 L2b design E), not
-# just `default_host`; `default_host` below only picks which host the CLI
-# `--socket`/`--tcp` overrides (env vars can override that choice) and may
-# omit `tcp_port` (falls back to 18743/$SOT_TCP_PORT) for compatibility —
-# every OTHER remote must set `tcp_port` itself. The launcher no longer
-# reads any persisted "last picked host" from frontend state (that
-# ADR-0015 mechanism — a `last_host` written to `state-<hostname>.toml` —
-# is retired; the field now means something else entirely on the frontend
-# side and the launcher doesn't read it at all).
+# The grammar is exactly what you see: `[section]` headers, `key = "string"`,
+# `key = true|false`, `#` comments (whole-line or trailing). Anything else
+# is an error naming the line and the offender.
 #
-# Frontend↔backend transport is SSH to a per-user remote socket. `tcp_port`
-# below is the local forwarded port the native frontend dials; the remote side
-# terminates at the Unix socket owned by the SSH user. Key-based auth to the
-# backend host is a hard requirement (ADR 0030 §5).
-
-default_host = "myserver"
-
-[host.myserver]
-# None of this project's hosts.toml parsers (Rust, PowerShell, bash) strip
-# an inline comment -- a trailing `# ...` on an active key=value line
-# becomes part of the value verbatim (see the required-tcp_port note
-# above for what that does to a bare number). Comments below live on
-# their OWN line, one per key, so this file is safe to copy verbatim.
+# hub = "<host>"
+#   Exactly one, and it must be a listed host. The hub runs the relay daemon
+#   every comm session joins — ONE handle namespace. Its forward-tunnel port
+#   on a frontend box is always 18743.
 #
-# ssh_alias: entry in your ~/.ssh/config
-ssh_alias = "myserver"
-# remote_repo: project root the daemon serves
-remote_repo = "/home/me/path/to/project"
-# tcp_port: local side of the SSH forward -- required (default_host may omit; see above)
-tcp_port = 18743
-# remote_socket (optional; queried if omitted):
-# remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
-remote_home = "/home/me"
-
-# A second remote — its OWN tunnel, opened alongside myserver's, not instead
-# of it (ADR 0042 L2b design E). tcp_port is REQUIRED here (this isn't
-# default_host): if it's missing, the launcher logs one line naming the
-# host and skips just this one's tunnel, rather than failing the whole launch.
-#
-# [host.otherbox]
-# ssh_alias = "otherbox"
-# remote_repo = "/home/me/path/to/project"
-# tcp_port = 18744
-# remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
-#
-# "local" (this machine's own backend) needs NO entry here at all — every
-# launch ensures a local sotd and the frontend always connects to it first,
-# implicitly (ADR 0042 L2b). A [host.local] section is only for the rare
-# case of overriding its derived socket/pipe path; nothing else on it
-# (ssh_alias, tcp_port, ...) has any effect, since local is never tunneled.
-
-# Hosts sampled for the Ctrl+M server-monitor drawer (ADR 0020). Each line is
-# <display-name> = "<ssh-alias>". The host whose name (or alias) matches this
-# machine's hostname is sampled locally (no SSH); the rest over `ssh <alias>`.
-# nvidia-smi + /proc are world-readable, so no sudo/privileges are needed on
-# any host. Remove a line to stop monitoring that host.
-#
-# READ ONCE, AT DAEMON START. Editing this section while the backend is running
-# has no effect until it restarts. Omit the section entirely and only this
-# machine is sampled — the [host.*] entries above are connection targets and are
-# not monitored implicitly.
+# [host.<name>]
+#   A Ship of Tools host. The section key is the host's own `host_name()`
+#   (hostname -s, lowercased, or $SOT_SELF_HOST) AND its ssh alias on every
+#   box that dials it — one name, three uses, so it must be plain:
+#   [a-z0-9][a-z0-9._-]*. Reachability (User, ProxyJump, HostName) is ssh's
+#   business, in ~/.ssh/config, never here.
+#   daemon   = true   runs sotd: frontends dial it (a tunnel per launch,
+#                     port 18743 for the hub, then 18744.. in file order
+#                     skipping the hub) and it owns session rows. Default false.
+#   frontend = true   runs a frontend + launcher: it dials the hub and the
+#                     hub never dials it (no reverse tunnel). Default false.
+#   Neither flag: a shell host — it gets the hub's reverse relay tunnel
+#   (sot-relay-tunnel@<name>, enabled by `sotd topology apply` on the hub)
+#   so sessions there can join, and nothing else.
 #
 # [monitor]
-# myserver = "myserver"
-# otherbox = "otherbox"
+#   Sampling targets for the Ctrl+M server-monitor drawer (ADR 0020) — NOT
+#   hosts. `<label> = "<ssh target>"`; an empty target means the label. Any
+#   box, user or OS with bash, /proc and (for GPU columns) nvidia-smi over
+#   key-based ssh qualifies, whether or not it runs Ship of Tools; a host
+#   above is sampled only if it is also listed here. The entry whose label
+#   or target equals this box's host name is sampled locally.
+#
+# The example below is a real shape: a hub, two shell-only hosts, a frontend
+# box, and a GPU box that runs no Ship of Tools. On `hub`, `sotd topology
+# apply` enables sot-relay-tunnel@shell-a and @shell-b; on `frontend-box`
+# the launcher runs `sotd topology sync --hub hub` then `sotd topology plan`
+# (tunnel hub 18743, dial hub tcp:127.0.0.1:18743, relay-endpoint
+# tcp:127.0.0.1:18743); on any box `export SOT_RELAY_ENDPOINT="$(sotd
+# topology relay-endpoint)"`.
+#
+# v1 keys (`default_host`, `ssh_alias`, `tcp_port`, `remote_socket`,
+# `remote_repo`, `remote_home`) still parse THIS release with one warning
+# each naming the replacement, and are deleted at the next rc.
 
-# A backend that is NOT ssh-reachable from this frontend, but IS reachable from
-# another backend. No extra key here: `ssh_alias` resolves through
-# ~/.ssh/config, so reachability is ssh's problem, expressed in ssh's own
-# config. Add to ~/.ssh/config ON EACH FRONTEND BOX:
-#
-#   Host hiddenbox
-#     HostName 10.0.0.9
-#     ProxyJump myserver
-#
-# The jump host only forwards TCP -- this frontend still authenticates
-# end-to-end to hiddenbox, so hiddenbox's authorized_keys needs this
-# frontend's pubkey, and the hop never sees a decrypted stream. Topology
-# stays a logical star (each frontend dials each backend; backends still
-# never talk to each other -- ADR 0037). Latency now depends on the hop box,
-# and a slow frontend link reads as a wedged backend, so jump through
-# something always-on and boring.
-#
-# [host.hiddenbox]
-# ssh_alias = "hiddenbox"
-# remote_repo = "/home/me/path/to/project"
-# tcp_port = 18745
+hub = "hub"
+
+[host.hub]
+daemon = true
+
+[host.shell-a]
+
+[host.shell-b]
+
+[host.frontend-box]
+frontend = true
+
+[monitor]
+hub = ""
+shell-a = ""
+shell-b = ""
+gpu-box = "other-user@gpu-box"
