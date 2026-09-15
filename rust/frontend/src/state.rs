@@ -21,7 +21,7 @@
 
 use std::path::PathBuf;
 
-use crate::hosts::HostKey;
+use crate::dial::HostKey;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -50,11 +50,11 @@ impl SessionMemory {
     }
 }
 
-/// Filesystem-safe rendering of a `HostKey` for use in a filename: hosts.toml
-/// names are typically already `[a-zA-Z0-9_-]`, but the registry format
-/// doesn't enforce that, so anything else collapses to `_` rather than
+/// Filesystem-safe rendering of a `HostKey` for use in a filename: a
+/// `--dial` host name is typically already `[a-z0-9._-]`, but nothing
+/// enforces that here, so anything else collapses to `_` rather than
 /// producing a path-separator or reserved character in a filename built
-/// from user-editable config.
+/// from a CLI argument.
 fn sanitize_for_filename(host: &HostKey) -> String {
     host.chars()
         .map(|c| {
@@ -91,15 +91,14 @@ fn legacy_state_path() -> PathBuf {
 /// Whether `host` is the one a pre-L2a install's single connection would
 /// have been — the ONLY host eligible to adopt the legacy file (every
 /// other host is a NEW L2a addition with no prior connection to have
-/// reconnect memory for in the first place). Mirrors
-/// `hosts::resolve_connections`'s own default-name resolution: the
-/// configured `hosts.toml default_host`, or `"default"` for the CLI-only
-/// synthesis case (no `hosts.toml` at all, or no matching entry).
+/// reconnect memory for in the first place). Since lane D (topology
+/// plan/`--dial`), the frontend reads no config file at all, so there is
+/// no more configured `default_host` to mirror — `"local"` is the one
+/// `dial::resolve_connections` names for a CLI-only (`--socket`/`--tcp`,
+/// no `--dial`) invocation, matching the pre-L2a single-connection shape
+/// this migration exists for.
 fn is_the_pre_l2a_default_host(host: &HostKey) -> bool {
-    let default_name = crate::hosts::load()
-        .default_host
-        .unwrap_or_else(|| "default".to_string());
-    host == &default_name
+    host == "local"
 }
 
 pub fn load(host: &HostKey) -> SessionMemory {
@@ -159,22 +158,18 @@ mod tests {
     use super::*;
 
     // ADR 0042 L2a codex review, item H: the legacy session.json ->
-    // session-<default>.json migration touches real env vars (XDG_STATE_HOME
-    // for the state dir; SOT_HOSTS to pin a deterministic hosts.toml so
-    // `default_host` resolves to `None` -> "default") and does real file
-    // I/O. Every test in this module takes the SAME serial lock: the
-    // three path-shape tests below don't need env isolation themselves,
-    // but without the lock they can read XDG_STATE_HOME mid-mutation from
-    // a migration test running concurrently on another thread (observed:
-    // state_path called twice in the same test resolving to two DIFFERENT
-    // dirs). Deliberately does NOT touch XDG_CONFIG_HOME/HOME — those are
-    // shared with state_persistence.rs's OWN (differently-locked) test
-    // env mutation, and cross-module interference there was observed
-    // directly (a flaky failure in load_tolerates_garbage_lines while
-    // this module's tests ran concurrently). SOT_HOSTS alone is
-    // sufficient: hosts::load()'s candidate search stops at the FIRST
-    // path that reads successfully, and pointing it at a real (if empty)
-    // file wins outright before XDG_CONFIG_HOME/HOME are ever tried.
+    // session-local.json migration touches a real env var (XDG_STATE_HOME
+    // for the state dir) and does real file I/O. Every test in this module
+    // takes the SAME serial lock: the three path-shape tests below don't
+    // need env isolation themselves, but without the lock they can read
+    // XDG_STATE_HOME mid-mutation from a migration test running
+    // concurrently on another thread (observed: state_path called twice in
+    // the same test resolving to two DIFFERENT dirs). Deliberately does NOT
+    // touch XDG_CONFIG_HOME/HOME — those are shared with
+    // state_persistence.rs's OWN (differently-locked) test env mutation,
+    // and cross-module interference there was observed directly (a flaky
+    // failure in load_tolerates_garbage_lines while this module's tests ran
+    // concurrently).
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -211,7 +206,6 @@ mod tests {
     struct EnvGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
         xdg_state: Option<std::ffi::OsString>,
-        sot_hosts: Option<std::ffi::OsString>,
         dir: PathBuf,
     }
     impl Drop for EnvGuard {
@@ -219,10 +213,6 @@ mod tests {
             match self.xdg_state.take() {
                 Some(v) => std::env::set_var("XDG_STATE_HOME", v),
                 None => std::env::remove_var("XDG_STATE_HOME"),
-            }
-            match self.sot_hosts.take() {
-                Some(v) => std::env::set_var("SOT_HOSTS", v),
-                None => std::env::remove_var("SOT_HOSTS"),
             }
             let _ = std::fs::remove_dir_all(&self.dir);
         }
@@ -242,29 +232,15 @@ mod tests {
         let g = EnvGuard {
             _serial,
             xdg_state: std::env::var_os("XDG_STATE_HOME"),
-            sot_hosts: std::env::var_os("SOT_HOSTS"),
             dir: dir.clone(),
         };
         std::env::set_var("XDG_STATE_HOME", &dir);
-        // `hosts::load()`'s candidate search tries SOT_HOSTS, then
-        // cwd/.sot/hosts.toml, then $XDG_CONFIG_HOME/sot/hosts.toml, then
-        // $HOME/.config/sot/hosts.toml, IN ORDER, and stops at the FIRST
-        // candidate that reads successfully. Point SOT_HOSTS at a real,
-        // EMPTY file: it wins outright at the FIRST candidate, so
-        // XDG_CONFIG_HOME/HOME are never even tried -- no need to touch
-        // either (and touching them would race with
-        // state_persistence.rs's own, differently-locked, XDG_CONFIG_HOME
-        // mutation in its tests).
-        let empty_hosts = dir.join("empty-hosts.toml");
-        std::fs::write(&empty_hosts, b"").unwrap();
-        std::env::set_var("SOT_HOSTS", &empty_hosts);
         g
     }
 
     #[test]
-    fn load_adopts_legacy_session_json_for_the_default_host_only() {
+    fn load_adopts_legacy_session_json_for_the_local_host_only() {
         let _g = set_test_env();
-        // No hosts.toml -> default_host resolves to "default".
         let legacy = legacy_state_path();
         std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
         std::fs::write(
@@ -278,8 +254,8 @@ mod tests {
         )
         .unwrap();
 
-        // The default host adopts it -- no session-default.json exists yet.
-        let adopted = load(&"default".to_string());
+        // "local" adopts it -- no session-local.json exists yet.
+        let adopted = load(&"local".to_string());
         assert_eq!(adopted.client_id, "client-legacy");
         assert_eq!(adopted.session_id.as_deref(), Some("sess-legacy"));
         assert_eq!(adopted.last_seen_revision, 42);
@@ -289,7 +265,7 @@ mod tests {
         let fresh = load(&"otherhost".to_string());
         assert_ne!(
             fresh.client_id, "client-legacy",
-            "a non-default host must start fresh, never adopt the legacy file"
+            "a non-local host must start fresh, never adopt the legacy file"
         );
     }
 
@@ -308,11 +284,11 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        // session-default.json already exists (a prior L2a launch already
+        // session-local.json already exists (a prior L2a launch already
         // ran and saved its own memory) -- the migration must not
         // override it with the older legacy file.
         save(
-            &"default".to_string(),
+            &"local".to_string(),
             &SessionMemory {
                 session_id: Some("sess-current".to_string()),
                 client_id: "client-current".to_string(),
@@ -321,7 +297,7 @@ mod tests {
         )
         .unwrap();
 
-        let m = load(&"default".to_string());
+        let m = load(&"local".to_string());
         assert_eq!(m.client_id, "client-current");
         assert_eq!(m.last_seen_revision, 99);
     }

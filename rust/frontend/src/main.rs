@@ -14,7 +14,7 @@ mod download;
 mod edit_buffer;
 mod gpu;
 mod help;
-mod hosts;
+mod dial;
 mod keybindings;
 mod layout;
 mod monitor_view;
@@ -103,20 +103,28 @@ fn main() -> Result<()> {
         ControlFlow::Wait
     });
 
-    // ADR 0042 L2a: the connection set is every hosts.toml entry with a
-    // reachable endpoint (local first, then hosts.toml order), with the CLI
-    // --socket/--tcp/--token flags overriding whichever entry is
-    // `default_host` — same meaning those flags always had, now scoped to
-    // one host instead of "the only host". No hosts.toml (or no matching
-    // default entry) falls back to exactly the old single-connection
-    // CLI-only behaviour (see `hosts::resolve_connections`).
-    let hosts_cfg = hosts::load();
-    let cli_override = hosts::CliOverride {
+    // Topology plan (lane D): the connection set comes ONLY from repeated
+    // `--dial <host>=<endpoint>` flags — the launcher's own rendering of
+    // `sotd topology plan --self <host>` — plus the CLI --socket/--tcp/
+    // --token flags, which override the implicit "local" connection. Those
+    // CLI flags are the ad hoc/manual path (dev, tests, a box with no
+    // launcher or topology plan at all); the launcher itself never needs
+    // them, since the plan hands this box's own endpoint over as an
+    // ordinary `--dial` entry. The frontend reads no config file for hosts
+    // (see `dial.rs`; no hosts.toml, here or anywhere else).
+    let mut dials: Vec<(dial::HostKey, transport::TransportConfig)> = Vec::new();
+    for arg in &cli.dial {
+        match dial::parse_dial_arg(arg) {
+            Ok(entry) => dials.push(entry),
+            Err(e) => tracing::warn!("{e}; skipping"),
+        }
+    }
+    let cli_override = dial::CliOverride {
         socket: cli.socket.clone(),
         tcp: cli.tcp.clone(),
         token: cli.token.clone(),
     };
-    let connections = hosts::resolve_connections(&hosts_cfg, &cli_override);
+    let connections = dial::resolve_connections(&dials, &cli_override);
     tracing::info!(hosts = ?connections.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(), "connection set resolved");
 
     // Channel from every transport task → GPU thread, fanned in. std::sync::mpsc
@@ -124,7 +132,7 @@ fn main() -> Result<()> {
     // would require an async drain. One receiver, N cloned senders (one per
     // host's transport task) — tagging happens at each transport's own send,
     // not through a forwarding task.
-    let (evt_tx, evt_rx) = mpsc::channel::<(hosts::HostKey, transport::IncomingEvt)>();
+    let (evt_tx, evt_rx) = mpsc::channel::<(dial::HostKey, transport::IncomingEvt)>();
 
     // One outgoing-request channel per host: the GPU thread's `conns` sender
     // half is built here; the receiver half travels with its `TransportConfig`
@@ -147,7 +155,7 @@ fn main() -> Result<()> {
         )
     } else {
         tracing::info!(
-            "no reachable host (no --socket / --tcp / $SOT_SOCKET / $SOT_TCP / hosts.toml entry); running offline against bundled samples"
+            "no reachable host (no --dial / --socket / --tcp / $SOT_SOCKET / $SOT_TCP); running offline against bundled samples"
         );
         None
     };

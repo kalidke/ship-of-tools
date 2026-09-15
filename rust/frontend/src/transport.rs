@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender as StdSender;
 use std::sync::Arc;
 
-use crate::hosts::HostKey;
+use crate::dial::HostKey;
 use anyhow::{Context, Result};
 use base64::Engine;
 use interprocess::local_socket::{

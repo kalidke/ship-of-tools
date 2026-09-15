@@ -29,6 +29,13 @@ pub(crate) fn parse_demo_session(entry: &str) -> Option<(String, Option<String>)
 
 #[derive(Debug, Clone)]
 pub struct Cli {
+    /// `--dial <host>=<endpoint>` (repeatable) — one connection per flag,
+    /// `<endpoint>` spelled `unix:<path>` / `pipe:<path>` / `tcp:<host:port>`
+    /// (the same scheme `sotd topology plan` emits). This is the launcher's
+    /// own connection set (topology plan, lane D) — the frontend parses
+    /// these and nothing else for hosts; it reads no config file. Raw
+    /// strings here; `dial::parse_dial_arg` does the validation.
+    pub dial: Vec<String>,
     /// Backend local-socket path (Unix socket or Windows named pipe).
     /// `--socket` overrides `$SOT_SOCKET`.
     pub socket: Option<PathBuf>,
@@ -183,6 +190,7 @@ pub struct Cli {
 
 impl Cli {
     pub fn parse() -> Self {
+        let mut dial: Vec<String> = Vec::new();
         let mut socket: Option<PathBuf> = None;
         let mut tcp: Option<String> = None;
         let mut token: Option<String> = None;
@@ -229,10 +237,15 @@ impl Cli {
 Usage: sot [OPTIONS]
 
 Connection:
+  --dial <host>=<endpoint>  one connection (repeatable); endpoint is
+                            unix:<path> / pipe:<path> / tcp:<host:port>
+                            (what the launcher renders from
+                            `sotd topology plan --self <host>`)
   --tcp <host:port>     connect to a backend over TCP (e.g. 127.0.0.1:18743)
   --socket <path>       connect over a unix socket / named pipe
   --token <token>       app-level auth token (must match the backend)
-  (no connection flag)  offline sample mode with demo data
+  (--tcp/--socket override the "local" connection; no connection flag at
+   all is offline sample mode with demo data)
 
 Display:
   --scale <f>           UI scale factor
@@ -252,6 +265,11 @@ Automation / dev (screenshots, demos):
 Ctrl+? shows pane actions briefly; press again for the Help drawer.
 F1 opens Help directly. Focused pane borders show the active shortcuts."#);
                     std::process::exit(0);
+                }
+                "--dial" => {
+                    if let Some(v) = args.next() {
+                        dial.push(v);
+                    }
                 }
                 "--socket" => {
                     if let Some(v) = args.next() {
@@ -426,6 +444,7 @@ F1 opens Help directly. Focused pane borders show the active shortcuts."#);
         }
 
         Self {
+            dial,
             socket,
             tcp,
             token,

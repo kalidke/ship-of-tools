@@ -30,7 +30,7 @@ use ratatui::{
 
 use crate::chrome::WgpuBackend;
 use crate::edit_buffer::EditBuffer;
-use crate::hosts::HostKey;
+use crate::dial::HostKey;
 use crate::keybindings::{Action, KeyBindings, Modifiers};
 use crate::help;
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
@@ -77,7 +77,7 @@ enum Mode {
     Modules,
     Sessions,
     /// ADR 0042 L2a — live connected/unreachable status list for every
-    /// `hosts.toml` entry (superseded ADR 0015's "pick one, persist
+    /// dialed connection (superseded ADR 0015's "pick one, persist
     /// `last_host`, Ctrl+Q + relaunch": every host is already a live
     /// connection, nothing to relaunch into). Enter moves the
     /// Sessions-mode cursor to the picked host's node
@@ -2285,19 +2285,21 @@ struct FreshWorkspaceCaches {
 }
 
 /// The connection `default_host`/startup `active_host` resolve to (ADR
-/// 0042 L2a), shared by both: `configured_default` (`hosts_config
-/// .default_host`) when set AND present in `conns` — the actual resolved
-/// connection set, the one source of truth this checks directly rather
-/// than trusting `resolve_connections`'s internal bookkeeping (a
-/// `default_host` entry with neither `socket` nor `tcp_port` set is
-/// SKIPPED there, not synthesized, so the configured NAME can survive
-/// with zero live connection behind it — a phantom default that failed
-/// every `send`) — else the first connection in `conns`' display order
-/// (local-first, then hosts.toml order), else `fallback` (offline mode,
-/// no connections at all). "Local first" is the TREE order, not the
-/// initial selection: a daily launch must land on the configured
-/// default's resumed workspace, not an empty local host just because it
-/// sorts first — but only when that default is actually reachable.
+/// 0042 L2a), shared by both: `configured_default` when set AND present in
+/// `conns` — the actual resolved connection set, the one source of truth
+/// this checks directly rather than trusting `resolve_connections`'s
+/// internal bookkeeping — else the first connection in `conns`' display
+/// order (local-first, then `--dial` argument order), else `fallback`
+/// (offline mode, no connections at all). Every caller passes `None` for
+/// `configured_default` today: topology plan/`--dial` (lane D) deleted the
+/// `hosts.toml` `default_host` setting this parameter used to carry, so
+/// this always falls through to `conns.first()`; kept as a parameter
+/// (rather than deleted) because the fallback logic and its tests are
+/// still exactly what a future `--default-host`-shaped flag would need.
+/// "Local first" is the TREE order, not the initial selection: a daily
+/// launch must land on the configured default's resumed workspace, not an
+/// empty local host just because it sorts first — but only when that
+/// default is actually reachable.
 fn resolve_default_host(
     configured_default: Option<HostKey>,
     conns: &[(HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)],
@@ -2434,8 +2436,8 @@ fn host_tree_node(host: &HostKey, display: &str, connected: bool, has_list: bool
 ///
 /// `declared` (ADR 0046 decision 1, revised): the daemon's own declared
 /// identity for this dial (`App::declared_host`), shown alongside `name`
-/// whenever it differs — `name` (the dial label / `hosts.toml` section)
-/// is never replaced by it, only annotated, so the row still says what
+/// whenever it differs — `name` (the `--dial` host name) is never
+/// replaced by it, only annotated, so the row still says what
 /// the user actually configured.
 fn hosts_mode_row(name: &str, display: &str, connected: bool, is_active: bool, is_default: bool) -> TreeNode {
     let status_word = if connected {
@@ -2473,7 +2475,7 @@ fn hosts_mode_row(name: &str, display: &str, connected: bool, is_active: bool, i
 /// ONE display projection for every host-keyed UI surface (ADR 0046
 /// decision 1, manager review S9/finding S14): the daemon's own
 /// declaration for `dial` if it has reported one, else `dial` itself (the
-/// `hosts.toml` label). Display only — routing keys (`conns`,
+/// `--dial` host name). Display only — routing keys (`conns`,
 /// `host_connected`, and every other host-keyed map) are never re-homed
 /// and never read through this. Used by Hosts mode rows, Sessions
 /// labels, the status line, and connect/disconnect log lines — the one
@@ -2880,7 +2882,7 @@ const CAPTURE_FRAME: u32 = 30;
 /// transport task) — ADR 0042 L2a, the N-host generalisation of the old
 /// single `req_rx`.
 type PendingTransport = (
-    crate::hosts::HostKey,
+    crate::dial::HostKey,
     crate::transport::TransportConfig,
     tokio::sync::mpsc::UnboundedReceiver<crate::transport::OutgoingReq>,
 );
@@ -2891,17 +2893,17 @@ pub struct App {
     /// us a window. Held on App rather than constructed inside resumed() so
     /// main.rs can decide whether transport runs.
     evt_rx:
-        Option<std::sync::mpsc::Receiver<(crate::hosts::HostKey, crate::transport::IncomingEvt)>>,
+        Option<std::sync::mpsc::Receiver<(crate::dial::HostKey, crate::transport::IncomingEvt)>>,
     rt: Option<tokio::runtime::Runtime>,
     cli: crate::cli::Cli,
     /// Fans in every host's transport task; each clones this once in
     /// `resumed()` before it's handed off (see `PendingTransport`).
-    evt_tx: Option<std::sync::mpsc::Sender<(crate::hosts::HostKey, crate::transport::IncomingEvt)>>,
+    evt_tx: Option<std::sync::mpsc::Sender<(crate::dial::HostKey, crate::transport::IncomingEvt)>>,
     /// One outgoing-request sender per host, in connection (display) order
     /// — the send-side half of `PendingTransport`. GPU thread holds these;
     /// `resumed()` spawns the matching transport task for each.
     conns: Vec<(
-        crate::hosts::HostKey,
+        crate::dial::HostKey,
         tokio::sync::mpsc::UnboundedSender<crate::transport::OutgoingReq>,
     )>,
     pending_transports: Option<Vec<PendingTransport>>,
@@ -2914,12 +2916,12 @@ pub struct App {
 
 impl App {
     pub fn new(
-        evt_rx: std::sync::mpsc::Receiver<(crate::hosts::HostKey, crate::transport::IncomingEvt)>,
+        evt_rx: std::sync::mpsc::Receiver<(crate::dial::HostKey, crate::transport::IncomingEvt)>,
         rt: Option<tokio::runtime::Runtime>,
         cli: crate::cli::Cli,
-        evt_tx: std::sync::mpsc::Sender<(crate::hosts::HostKey, crate::transport::IncomingEvt)>,
+        evt_tx: std::sync::mpsc::Sender<(crate::dial::HostKey, crate::transport::IncomingEvt)>,
         conns: Vec<(
-            crate::hosts::HostKey,
+            crate::dial::HostKey,
             tokio::sync::mpsc::UnboundedSender<crate::transport::OutgoingReq>,
         )>,
         pending_transports: Option<Vec<PendingTransport>>,
@@ -3346,7 +3348,7 @@ type PaneAttachClient = sot_log::fe_client_io::FeAttachClient<sot_protocol::lane
 /// dial is several tunnel round trips). Newest last; per-host bound =
 /// that host's row count, capped at [`WARM_ATTACH_CAP`].
 struct WarmAttachPool<C> {
-    entries: Vec<((crate::hosts::HostKey, String), C)>,
+    entries: Vec<((crate::dial::HostKey, String), C)>,
 }
 
 const WARM_ATTACH_CAP: usize = 16;
@@ -3356,14 +3358,14 @@ impl<C> WarmAttachPool<C> {
         Self { entries: Vec::new() }
     }
 
-    fn take(&mut self, key: &(crate::hosts::HostKey, String)) -> Option<C> {
+    fn take(&mut self, key: &(crate::dial::HostKey, String)) -> Option<C> {
         let i = self.entries.iter().position(|(k, _)| k == key)?;
         Some(self.entries.remove(i).1)
     }
 
     /// Parks `client` under `key`; returns the clients evicted to keep
     /// the key's host within `bound` — the caller shuts those down.
-    fn park(&mut self, key: (crate::hosts::HostKey, String), client: C, bound: usize) -> Vec<C> {
+    fn park(&mut self, key: (crate::dial::HostKey, String), client: C, bound: usize) -> Vec<C> {
         let mut evicted = Vec::new();
         if let Some(old) = self.take(&key) {
             evicted.push(old);
@@ -3380,7 +3382,7 @@ impl<C> WarmAttachPool<C> {
 
     /// Drops every entry of `host` whose row `is_live` rejects (destroyed
     /// rows); returns them for shutdown.
-    fn retain_rows(&mut self, host: &crate::hosts::HostKey, is_live: impl Fn(&str) -> bool) -> Vec<C> {
+    fn retain_rows(&mut self, host: &crate::dial::HostKey, is_live: impl Fn(&str) -> bool) -> Vec<C> {
         let (dead, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries)
             .into_iter()
             .partition(|(k, _)| &k.0 == host && !is_live(&k.1));
@@ -3606,7 +3608,7 @@ struct State {
     repl_window: (usize, usize),
     /// Drained at the top of every redraw; every host's transport task
     /// pushes here, tagged with its own `HostKey` (ADR 0042 L2a fan-in).
-    evt_rx: std::sync::mpsc::Receiver<(crate::hosts::HostKey, crate::transport::IncomingEvt)>,
+    evt_rx: std::sync::mpsc::Receiver<(crate::dial::HostKey, crate::transport::IncomingEvt)>,
     /// One-line status string for the chrome.
     status: String,
     /// Active NavTree modal prompt (Ctrl+N new-file, future delete-confirm),
@@ -3831,18 +3833,13 @@ struct State {
     /// active_workspace_id)` is what names the current workspace now that
     /// there's more than one connection.
     active_workspace_id: Option<String>,
-    /// ADR 0015 host registry loaded from `hosts.toml` at startup so
-    /// `Mode::Hosts` can render a picker. Empty when the user hasn't
-    /// configured any hosts (the picker shows a "no hosts configured"
-    /// hint and the launcher uses its env-var defaults).
-    hosts_config: crate::hosts::HostsConfig,
     /// Per-host connection status, derived from each connection's own
     /// `Connected`/`Disconnected`/`ProtocolMismatch` events (ADR 0042 L2a —
     /// no new wire signal). Absent or `false` = unreachable (never
     /// connected, or currently reconnecting); `true` = connected. The
     /// Sessions tree's host nodes read this to badge status and grey an
     /// unreachable host's (retained) workspace rows.
-    host_connected: HashMap<crate::hosts::HostKey, bool>,
+    host_connected: HashMap<crate::dial::HostKey, bool>,
     /// The union this refactor is built on (ADR 0042 L2a): host → its most
     /// recent `workspace.list` reply. A reply from host H replaces only
     /// H's entry — every other host's last-known list is untouched, so an
@@ -3850,7 +3847,7 @@ struct State {
     /// vanishing. `rebuild_workspace_caches` and the Sessions tree are
     /// both derived from this in `conns` order (see `ordered_hosts`), not
     /// insertion order.
-    workspace_lists: HashMap<crate::hosts::HostKey, Vec<crate::transport::WorkspaceInfo>>,
+    workspace_lists: HashMap<crate::dial::HostKey, Vec<crate::transport::WorkspaceInfo>>,
     /// Two-press confirm for `D` (workspace destroy) in Sessions mode.
     /// First press arms with the cursor row's `(host, workspace_id)`;
     /// second press on the same row fires `workspace.destroy` via
@@ -4135,7 +4132,7 @@ struct State {
     /// (routes to `active_host`) or `self.send_to(host, req)` (routes to a
     /// specific row's host) rather than reading this directly.
     conns: Vec<(
-        crate::hosts::HostKey,
+        crate::dial::HostKey,
         tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
     )>,
     /// ADR 0045 decision 1: each host's own `TransportConfig` (its
@@ -4144,26 +4141,26 @@ struct State {
     /// state-dir path directly. Filled once, from the same
     /// `PendingTransport` list `conns` is built from, before `resumed()`
     /// consumes it (`spawn_pane_attach_term` is the only reader).
-    host_transports: HashMap<crate::hosts::HostKey, crate::transport::TransportConfig>,
+    host_transports: HashMap<crate::dial::HostKey, crate::transport::TransportConfig>,
     /// ADR 0045 decision 1 (Codex review, lane B5 discharge): which
     /// transport each host's CONTROL connection actually resolved to
     /// (`ResolvedDial`'s own doc) — recorded from every `Connected` evt,
     /// consulted by `lane_dial`/`spawn_pane_attach_term` so the capsule
     /// lane dials the SAME endpoint, never a second independent guess.
     /// Absent for a host that hasn't connected yet.
-    host_resolved_dial: HashMap<crate::hosts::HostKey, ResolvedDial>,
+    host_resolved_dial: HashMap<crate::dial::HostKey, ResolvedDial>,
     /// ADR 0046 decision 1 (revised): the daemon's own declared identity
     /// for each dial — `HostKey` stays the stable dial label; this is
     /// purely informational, read by `host_label` (the one display
     /// projection) for Hosts mode, Sessions labels, the status line, and
     /// log lines. Absent for a host that hasn't completed hello yet.
-    declared_host: HashMap<crate::hosts::HostKey, String>,
+    declared_host: HashMap<crate::dial::HostKey, String>,
     /// The connection every "current view" operation targets — cursor
     /// state, the active tree, `active_workspace_id`. The pair
     /// `(active_host, active_workspace_id)` names the current workspace
     /// (ADR 0042 L2a). Defaults to the first connection in `conns`
-    /// (local-first, then hosts.toml order — see `hosts::resolve_connections`).
-    active_host: crate::hosts::HostKey,
+    /// (local-first, then --dial argument order — see `dial::resolve_connections`).
+    active_host: crate::dial::HostKey,
     /// Combined multiplier (`cli.scale * window.scale_factor()`) applied to
     /// all text + cell metrics. Captured once at startup; ScaleFactorChanged
     /// is currently ignored.
@@ -5268,10 +5265,10 @@ fn reply_is_current(
 impl State {
     fn new(
         event_loop: &ActiveEventLoop,
-        evt_rx: std::sync::mpsc::Receiver<(crate::hosts::HostKey, crate::transport::IncomingEvt)>,
+        evt_rx: std::sync::mpsc::Receiver<(crate::dial::HostKey, crate::transport::IncomingEvt)>,
         cli: &crate::cli::Cli,
         conns: Vec<(
-            crate::hosts::HostKey,
+            crate::dial::HostKey,
             tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
         )>,
     ) -> Result<Self> {
@@ -5282,23 +5279,17 @@ impl State {
         // ADR 0042 L2a codex review, item H: `last_host` is the active
         // host AT QUIT (persist_resume_state writes it every save now —
         // see the field's own doc for the ADR 0015 -> L2a meaning
-        // change). It wins over the configured `hosts.toml default_host`
-        // whenever it's still a resolved connection, so a daily launch
-        // resumes wherever the user actually left off, not always the
-        // configured default; `resolve_default_host` (G's rule) is the
-        // fallback when there's no persisted host, or it's no longer
-        // reachable.
-        let active_host: crate::hosts::HostKey = persisted_geom
+        // change). It wins whenever it's still a resolved connection, so a
+        // daily launch resumes wherever the user actually left off;
+        // `resolve_default_host` (G's rule — no more configured
+        // `default_host` since topology plan lane D, so this always falls
+        // back to `conns.first()`) is the fallback when there's no
+        // persisted host, or it's no longer reachable.
+        let active_host: crate::dial::HostKey = persisted_geom
             .last_host
             .clone()
             .filter(|h| conns.iter().any(|(ch, _)| ch == h))
-            .unwrap_or_else(|| {
-                resolve_default_host(
-                    crate::hosts::load().default_host,
-                    &conns,
-                    "offline".to_string(),
-                )
-            });
+            .unwrap_or_else(|| resolve_default_host(None, &conns, "offline".to_string()));
         // ADR 0042 L2a codex review, item H: `last_workspace_id` /
         // `last_bl_target` were saved for WHATEVER host was active at
         // quit. If that host is unreachable now and `active_host` fell
@@ -5857,7 +5848,6 @@ impl State {
             } else {
                 persisted_geom.last_workspace_id.clone()
             },
-            hosts_config: crate::hosts::load(),
             host_connected: HashMap::new(),
             workspace_lists: HashMap::new(),
             pending_destroy_target: None,
@@ -6210,7 +6200,7 @@ impl State {
     /// pty.open/attach on a non-active row; ADR 0042 L2a).
     fn send_to(
         &self,
-        host: &crate::hosts::HostKey,
+        host: &crate::dial::HostKey,
         req: OutgoingReq,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<OutgoingReq>> {
         match self.conns.iter().find(|(h, _)| h == host) {
@@ -7947,18 +7937,18 @@ impl State {
     /// Sessions-mode cursor to the host's node instead of persisting a
     /// launcher target.
     ///
-    /// First live shakedown fix: the OLD version iterated
-    /// `hosts_config.hosts` directly, so `local` — which needs no
-    /// `hosts.toml` entry at all (ADR 0042 L2b) — never got a row. Iterating
-    /// `ordered_hosts()` (== `conns`, local-first display order — the SAME
-    /// source `build_sessions_tree` already uses for its host-grouped rows)
-    /// makes the two host lists agree, with `hosts_config` consulted only
-    /// for the cosmetic `default` badge. A per-row endpoint string used to
-    /// live here too — deleted (Codex round, PR #172): it re-read
-    /// `hosts_config` and could disagree with the endpoint the connection
-    /// actually resolved to (a CLI override, or the CLI-only synthesized
-    /// host) — the row is name + status + markers now; the endpoint was
-    /// decoration that could lie.
+    /// First live shakedown fix: the OLD version iterated the host registry
+    /// directly, so `local` — which needs no config entry at all (ADR 0042
+    /// L2b) — never got a row. Iterating `ordered_hosts()` (== `conns`,
+    /// local-first display order — the SAME source `build_sessions_tree`
+    /// already uses for its host-grouped rows) is the one source of truth
+    /// now; topology plan (lane D) deleted the `hosts.toml` registry
+    /// entirely, so there is no second list left to agree with. A per-row
+    /// endpoint string used to live here too — deleted (Codex round, PR
+    /// #172): it re-read the (now-gone) registry and could disagree with
+    /// the endpoint the connection actually resolved to (a CLI override,
+    /// or the CLI-only synthesized host) — the row is name + status +
+    /// markers now; the endpoint was decoration that could lie.
     fn populate_hosts_tree(&mut self) {
         let root = TreeNode {
             id: "hosts:".to_string(),
@@ -8002,18 +7992,21 @@ impl State {
     /// The Hosts-mode root's children, in `ordered_hosts()` (local-first)
     /// display order — the pure per-call rebuild `populate_hosts_tree` and
     /// `try_expand_hosts_root_local` both delegate to, so a mode-entry
-    /// refresh and a root re-expand can never drift apart. `hosts_config`
-    /// is consulted only for the `default` badge — membership and
+    /// refresh and a root re-expand can never drift apart. The `default`
+    /// badge marks whichever host `resolve_default_host` would fall back to
+    /// (`conns.first()` — there is no more configured default since
+    /// topology plan/`--dial`, lane D) — membership and
     /// connected/unreachable/current status come from
-    /// `conns`/`host_connected`, which is the only way `local` (no
-    /// `hosts.toml` entry required, ADR 0042 L2b) gets a row at all.
+    /// `conns`/`host_connected`, which is the only way `local` (no config
+    /// file required, ADR 0042 L2b) gets a row at all.
     fn hosts_tree_children(&self) -> Vec<TreeNode> {
+        let default_name = self.conns.first().map(|(h, _)| h.as_str());
         self.ordered_hosts()
             .into_iter()
             .map(|name| {
                 let connected = self.host_connected.get(&name).copied().unwrap_or(false);
                 let is_active = name == self.active_host;
-                let is_default = self.hosts_config.default_host.as_deref() == Some(name.as_str());
+                let is_default = default_name == Some(name.as_str());
                 let display = host_label(&self.declared_host, &name);
                 hosts_mode_row(&name, display, connected, is_active, is_default)
             })
@@ -8059,25 +8052,21 @@ impl State {
         self.window.request_redraw();
     }
 
-    /// Display order for every host with a workspace list: `conns`' order
-    /// `default_host` (ADR 0042 L2a) — the drawer's fixed home. Distinct
-    /// from `active_host`: switching to a workspace on another host moves
-    /// `active_host`, but the drawer (Terminal/Monitor/Repl overlay pane,
-    /// ADR 0041's fixed-tenant "one drawer") never follows — "no drawer
-    /// host switching". Delegates to `resolve_default_host` — the same
-    /// resolution `State::new` uses for the STARTUP `active_host` (a daily
-    /// launch must land on the configured default's resumed workspace, not
-    /// an empty local host just because it sorts first).
+    /// The drawer's fixed home (Terminal/Monitor/Repl overlay pane, ADR
+    /// 0041's fixed-tenant "one drawer"). Distinct from `active_host`:
+    /// switching to a workspace on another host moves `active_host`, but
+    /// the drawer never follows — "no drawer host switching". Delegates to
+    /// `resolve_default_host` — the same resolution `State::new` uses for
+    /// the STARTUP `active_host` — with `None` as the configured default:
+    /// topology plan/`--dial` (lane D) deleted the `hosts.toml`
+    /// `default_host` setting, so this always falls back to `conns.first()`
+    /// (local-first, then `--dial` argument order).
     fn default_host(&self) -> HostKey {
-        resolve_default_host(
-            self.hosts_config.default_host.clone(),
-            &self.conns,
-            self.active_host.clone(),
-        )
+        resolve_default_host(None, &self.conns, self.active_host.clone())
     }
 
     /// Every connection in display order (ADR 0042 L2a) — local-first,
-    /// then hosts.toml order, from `conns` (fixed at startup). Deliberately
+    /// then --dial argument order, from `conns` (fixed at startup). Deliberately
     /// NOT filtered to hosts that have answered a `workspace.list` yet: L2's
     /// acceptance criterion is that an unreachable (or still-mid-hello) host
     /// is a VISIBLE node marked unreachable, not an absent one.
@@ -8098,7 +8087,7 @@ impl State {
     /// cancellation mechanism reachable from the GPU thread). Restoring a
     /// half-built lifecycle around a decision this code cannot enforce
     /// would be worse than not detecting the collision at all — the
-    /// static same-port skip in `hosts::resolve_connections` is what
+    /// static same-port skip in `dial::resolve_connections` is what
     /// prevents two dials from ever reaching the same daemon in the first
     /// place, restored for exactly this reason.
     fn record_declared_host(&mut self, label: &HostKey, declared: String) {
@@ -8306,7 +8295,7 @@ impl State {
 
     /// Build the host-grouped Sessions tree (ADR 0042 L2a): root → one
     /// `session_host` node per connected/unreachable host (in
-    /// `ordered_hosts` order — local first, then hosts.toml order), each
+    /// `ordered_hosts` order — local first, then --dial argument order), each
     /// carrying a status badge and the `HOST_DIVIDER_GLYPH` prefix. A host
     /// node's own children — its `[+ create new]` row and that host's
     /// session rows — are spliced in locally by `try_expand_selected`'s
@@ -8968,14 +8957,14 @@ impl State {
         //      at my dev dir, not $HOME".
         //   1. $SOT_PROJECTS_ROOT — explicit env override, e.g. someone
         //      wants the picker to start under a specific projects dir.
-        //   2. The target host's `remote_home` from hosts.toml — the
-        //      right answer for the cross-machine case (the picker
-        //      browses the backend's filesystem, not the frontend's; the FRONTEND's
-        //      $HOME is meaningless to the BACKEND).
-        //   3. The launcher-set SOT_REMOTE_HOME, if it propagated.
-        //   4+. Frontend's own $HOME, then the OS-reported home dir, then
+        //   2. The launcher-set SOT_REMOTE_HOME, if it propagated (a
+        //      per-host `remote_home` config field used to feed this tier
+        //      too — deleted with hosts.toml, topology plan lane D: the
+        //      daemon's own default-row root, tier below, is the query-not-
+        //      guess replacement `workspace.list` already serves).
+        //   3+. Frontend's own $HOME, then the OS-reported home dir, then
         //      the filesystem root — see `picker_local_home_fallback`,
-        //      whose doc comment explains why step 4 alone (a bare `/`)
+        //      whose doc comment explains why step 3 alone (a bare `/`)
         //      was a Windows drive-letter bug.
         //   Every tier above names a path on some BACKEND; the picker
         //   browses the TARGET host's filesystem, so for the implicit
@@ -8985,12 +8974,6 @@ impl State {
         //   default row, anchored at that machine's user home (ADR 0042),
         //   which is the one per-host path the frontend always holds --
         //   see `picker_start_for_host`.
-        let host_home = self
-            .hosts_config
-            .hosts
-            .iter()
-            .find(|h| h.name == host)
-            .and_then(|h| h.remote_home.clone());
         let default_row_root = self
             .workspace_lists
             .get(&host)
@@ -9001,7 +8984,7 @@ impl State {
             .new_session_root
             .clone()
             .or_else(|| std::env::var("SOT_PROJECTS_ROOT").ok());
-        let remote_home = host_home.or_else(|| std::env::var("SOT_REMOTE_HOME").ok());
+        let remote_home = std::env::var("SOT_REMOTE_HOME").ok();
         let fe_home = picker_local_home_fallback(std::env::var("HOME").ok(), dirs::home_dir());
         let start = picker_start_for_host(
             &host,
@@ -12014,7 +11997,7 @@ impl State {
             // display only (`host_label`) — manager review, S8: closing a
             // duplicate dial here was rejected (no transport shutdown
             // path exists to actually enforce it); the static same-port
-            // skip in `hosts::resolve_connections` is what prevents a
+            // skip in `dial::resolve_connections` is what prevents a
             // same-daemon collision from ever dialing twice.
             if let crate::transport::IncomingEvt::Connected { host: Some(declared), .. } = &evt {
                 self.record_declared_host(&event_host, declared.clone());
@@ -12270,9 +12253,10 @@ impl State {
                             }
                             Mode::Hosts => {
                                 // ADR 0015: no backend round-trip — the
-                                // hosts tree is sourced from `hosts.toml`
-                                // on the frontend side. Populate once on
-                                // resume; subsequent `h` re-entries call
+                                // hosts tree is built from `conns` (the
+                                // `--dial` set resolved at startup) on the
+                                // frontend side. Populate once on resume;
+                                // subsequent `h` re-entries call
                                 // `populate_hosts_tree` directly. A resume
                                 // is a first population too, so land on
                                 // the active host same as mode entry.
@@ -20294,11 +20278,11 @@ impl ApplicationHandler for App {
                                 state.toggle_pin();
                             }
                             // ADR 0015 — `h` enters Mode::Hosts, populating
-                            // the nav tree from `hosts.toml`. No backend
-                            // round-trip needed: hosts.toml is read at
-                            // startup and lives entirely on the frontend
-                            // side. Cursor on the currently-selected host
-                            // is the natural way in.
+                            // the nav tree from `conns`. No backend
+                            // round-trip needed: the `--dial` set is
+                            // resolved at startup and lives entirely on
+                            // the frontend side. Cursor on the
+                            // currently-selected host is the natural way in.
                             Some(Action::ModeHosts) if !event.repeat =>
                             {
                                 state.enter_mode(Mode::Hosts);
@@ -27068,7 +27052,7 @@ mod tests {
     // `HashMap::insert`, no branch worth a dedicated unit test) feeds
     // display only (Hosts mode, Sessions labels, the status line,
     // connect/disconnect logs — see `host_label` below). The static
-    // same-port skip in `hosts::resolve_connections` (restored) is what
+    // same-port skip in `dial::resolve_connections` (restored) is what
     // prevents two dials from ever reaching the same daemon.
 
     #[test]
@@ -27172,8 +27156,8 @@ mod tests {
         // `[current]`/`[default]` are baked into the label instead, the
         // one source of truth since nothing reads `badges`):
         // membership/connected/current/default are all caller-supplied --
-        // this row-builder itself never touches `hosts_config`, matching
-        // `hosts_tree_children`'s contract that `local` (no `hosts.toml`
+        // this row-builder itself never touches the connection registry, matching
+        // `hosts_tree_children`'s contract that `local` (no --dial
         // entry) gets a row exactly like any configured host.
         let row = hosts_mode_row("local", "local", true, true, false);
         assert_eq!(row.id, "hosts:local");
