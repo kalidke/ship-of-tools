@@ -2281,7 +2281,6 @@ struct FreshWorkspaceCaches {
     /// `repl_state`) — `repl_lifecycle` itself is never cleared, so the
     /// caller inserts these rather than replacing the whole map.
     repl_lifecycle: HashMap<WsKey, String>,
-    workspace_autostart: HashMap<WsKey, WsAutostart>,
     default_workspace_slug: Option<String>,
 }
 
@@ -2630,7 +2629,6 @@ fn fresh_workspace_caches(
         workspace_states: HashMap::new(),
         workspace_id_slugs: HashMap::new(),
         repl_lifecycle: HashMap::new(),
-        workspace_autostart: HashMap::new(),
         default_workspace_slug: None,
     };
     for host in ordered_hosts {
@@ -2673,15 +2671,6 @@ fn fresh_workspace_caches(
             if !is_inert {
                 out.workspace_slugs.push(ws_key.clone());
             }
-            let tmux_key: WsKey = tmux_session_key(&host, &w.tmux_session);
-            out.workspace_autostart.insert(
-                tmux_key,
-                WsAutostart {
-                    autostart_claude: w.autostart_claude,
-                    agent_name: w.agent_name.clone(),
-                    task: String::new(),
-                },
-            );
             if w.is_default && host == active_host {
                 out.default_workspace_slug = Some(w.slug.clone());
             }
@@ -3055,43 +3044,19 @@ struct RoiAim {
     ready: bool,
 }
 
-/// Per-workspace auto-start info from `workspace.list` (contract b).
-/// Spawned agent workspaces carry `autostart_claude = true` plus the
-/// `agent_name`; the FE launches ccb on first attach. Interactive /
-/// default workspaces have `autostart_claude = false`.
-///
-/// `task` (the old spawn brief) is now always empty: the FE no longer
-/// delivers briefs (see the `workspace.list` handler — comm-spawn owns
-/// task delivery via comm). Kept as a field so `autostart_claude_in_pane`'s
-/// launch-only / deliver branch still compiles; it just never takes the
-/// deliver branch.
-#[derive(Clone)]
-struct WsAutostart {
-    autostart_claude: bool,
-    #[allow(dead_code)] // informational; the bootstrap self-contains the join
-    agent_name: String,
-    task: String,
-}
-
 /// DELETIONS (Codex review, lane B5 discharge): `WorkspaceRuntime` and
 /// both `workspace_runtime` caches (`State`'s own and its staging
 /// `FreshWorkspaceCaches` twin) are gone — a write-only cache with no
 /// reader (ADR 0042 shrink round rule A retired its one reader,
 /// `try_attach_capsule_pane`, and ADR 0045 decision 1's `pty.open` +
 /// `PtyAttachDirect` path never consulted it either) named no invariant
-/// worth a field. `tmux_session_key` stays: `workspace_autostart` — the
-/// cache `attach_session_to_bl` actually reads — uses the SAME
-/// `(host, tmux_session)` key.
-///
-/// The `workspace_autostart` lookup/insert key for `session_name` (a
-/// tmux session name) on `host` — `WsKey`, i.e. `(host, session_name)`
-/// (ADR 0042 L2a: two hosts can both report a `sot-be-sot` session).
-/// Every `workspace_autostart` access builds its key through this
-/// function, unconditional so the shape is type-checked (and this
-/// function's own unit test runs) on every platform.
-fn tmux_session_key(host: &HostKey, session_name: &str) -> WsKey {
-    (host.clone(), session_name.to_string())
-}
+/// worth a field. `WsAutostart`/`workspace_autostart` (and the
+/// `tmux_session_key` helper that built its key) went the same way
+/// post-notmux: the old FE autostart-on-attach launch it fed
+/// (`pending_autostart` → `advance_autostart_scan` →
+/// `autostart_claude_in_pane`) is retired in favor of the BE tmux
+/// start-command wrapper (`attach_session_to_bl`'s own doc), which left
+/// it write-only too.
 
 /// ADR 0042 slice L1b fix 2, narrowed post-notmux: which state the
 /// session pane's input routes to RIGHT NOW — tracked independently of
@@ -3960,13 +3925,6 @@ struct State {
     /// whole layer for no invariant this slice needs. `None` until the
     /// reply lands.
     default_workspace_slug: Option<String>,
-    /// `(host, tmux_session)` → auto-start info, from each host's own
-    /// `workspace.list` reply (contract b). `attach_session_to_bl` looks
-    /// the just-attached session up here to decide whether to launch
-    /// claude + deliver the bootstrap. ADR 0042 L2a: tmux session names are
-    /// per-daemon process namespaces — two hosts can each have a
-    /// `sot-be-sot` session, so the key carries the host too.
-    workspace_autostart: HashMap<WsKey, WsAutostart>,
     /// Sessions-mode workspace picker (ADR 0014). `Some(state)` while
     /// the user is browsing a directory tree to pick the project_root
     /// of a new workspace; `None` outside the picker. Supersedes the
@@ -5843,7 +5801,6 @@ impl State {
             contrast_dim: cli.contrast_mode == "dim",
             workspace_slugs: Vec::new(),
             default_workspace_slug: None,
-            workspace_autostart: HashMap::new(),
             workspace_picker: None,
             workspace_ui_snapshots: HashMap::new(),
             workspace_repl_snapshots: HashMap::new(),
@@ -7508,24 +7465,6 @@ impl State {
                     }
                 }
                 let tmux = slug.as_ref().map(|s| format!("sot-be-{s}"));
-                // `--boot` (scriptable spawn->goto->boot): seed the target's
-                // autostart flag so the attach below arms ccb — unconditional of
-                // what workspace.list reported, fixing the registry-flag timing
-                // where a freshly-spawned ws hadn't been flagged yet. No-op for
-                // the daemon-default (no tmux target to boot).
-                if boot {
-                    if let Some(t) = tmux.as_ref() {
-                        let e = self
-                            .workspace_autostart
-                            .entry((self.active_host.clone(), t.clone()))
-                            .or_insert_with(|| WsAutostart {
-                                autostart_claude: true,
-                                agent_name: String::new(),
-                                task: String::new(),
-                            });
-                        e.autostart_claude = true;
-                    }
-                }
                 tracing::info!(?slug, boot, "fe-command: switch workspace");
                 // Agent-driven, not a person looking: leave blue as-is.
                 self.switch_to_workspace(self.active_host.clone(), slug, tmux, false);
@@ -8124,7 +8063,6 @@ impl State {
         for (key, state) in fresh.repl_lifecycle {
             self.repl_lifecycle.insert(key, state);
         }
-        self.workspace_autostart = fresh.workspace_autostart;
         self.default_workspace_slug = fresh.default_workspace_slug;
         self.migrate_default_slug_keys();
         self.rebuild_connection_status();
@@ -14100,20 +14038,6 @@ impl State {
                                 "workspace created · '{}' @ {}",
                                 info.label, info.project_root
                             );
-                            // The autostart cache is fed by workspace.list,
-                            // which hasn't refreshed for this brand-new
-                            // workspace yet — seed it so the switch below
-                            // arms the ccb autostart on first attach
-                            // (matches the autostart_claude: true the
-                            // create request carried).
-                            self.workspace_autostart.insert(
-                                (event_host.clone(), info.tmux_session.clone()),
-                                WsAutostart {
-                                    autostart_claude: true,
-                                    agent_name: String::new(),
-                                    task: String::new(),
-                                },
-                            );
                             // The reply arrived over the same connection the
                             // `workspace.create` request targeted (ADR 0042
                             // L2a) — `event_host` IS the new workspace's host.
@@ -16133,9 +16057,9 @@ impl State {
 
                 let llm_focus = focus == PaneFocus::Llm;
                 let llm_title = if llm_focus {
-                    " llm · tmux · [FOCUS] ".to_string()
+                    " llm · [FOCUS] ".to_string()
                 } else {
-                    " llm · tmux ".to_string()
+                    " llm ".to_string()
                 };
 
                 let repl_focus = focus == PaneFocus::Repl;
@@ -26553,14 +26477,6 @@ mod tests {
                 .map(String::as_str),
             Some("/projects/beta-sot")
         );
-        // Same-named tmux sessions on different hosts must also resolve
-        // to distinct autostart entries.
-        assert!(fresh
-            .workspace_autostart
-            .contains_key(&("alpha".to_string(), "sot-be-sot".to_string())));
-        assert!(fresh
-            .workspace_autostart
-            .contains_key(&("beta".to_string(), "sot-be-sot".to_string())));
     }
 
     #[test]
@@ -27325,24 +27241,6 @@ mod capsule_pane_tests {
         // Saturating: a buffer somehow already PAST cap has zero room,
         // not an underflow panic.
         assert_eq!(pending_input_room(cap + 500, 100, cap), 0);
-    }
-
-    #[test]
-    fn tmux_session_key_does_not_collide_across_hosts() {
-        // ADR 0042 L2a (coordinator review of the first pass): every
-        // host's default workspace tmux session is named `sot-be-<slug>`
-        // — commonly `sot-be-sot` — so `workspace_autostart`'s key MUST
-        // carry the host. `tmux_session_key` is the one place that key is
-        // built, unconditional so this type is checked, and this test
-        // runs, on every platform.
-        let key_a = tmux_session_key(&"alpha".to_string(), "sot-be-sot");
-        let key_b = tmux_session_key(&"beta".to_string(), "sot-be-sot");
-        assert_ne!(
-            key_a, key_b,
-            "same session name, different host → different key"
-        );
-        assert_eq!(key_a, ("alpha".to_string(), "sot-be-sot".to_string()));
-        assert_eq!(key_b, ("beta".to_string(), "sot-be-sot".to_string()));
     }
 
     /// BLOCKER (Codex review, lane B5 discharge): `lane_dial` must dial

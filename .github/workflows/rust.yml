@@ -172,15 +172,11 @@ jobs:
         working-directory: .
 
       # PR #148 Codex review F10: hermetic + fast, so it rides along in this
-      # existing ubuntu leg rather than a dedicated job. Only comm-spawn.sh's
-      # --no-workspace path needs a real `tmux` binary (an isolated server on
-      # a temp socket, never the runner's default one — the test never
-      # touches a real install either way); installed only if missing.
+      # existing ubuntu leg rather than a dedicated job.
       - name: Test sot-comm disambiguation (hermetic)
         if: matrix.os == 'ubuntu-latest'
         working-directory: comm/core/tests
         run: |
-          command -v tmux >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y tmux; }
           bash test-join-disambiguation.sh
           bash test-status-floor.sh
           bash test-session-start-survived.sh

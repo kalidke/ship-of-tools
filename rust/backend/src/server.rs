@@ -391,9 +391,9 @@ async fn wait_for_test_activation_barrier() {
 
 
 /// Canonical projection of just the state-relevant fields per sot-comm
-/// registry agent (state/summary/status_at/tmux, since tmux drives the
-/// live-occupant binding, plus `host` — LU5d2: `workspace.list`'s registry
-/// reads are now host-filtered, so a `host` edit alone, e.g. a stale row's
+/// registry agent (state/summary/status_at, plus `host` — LU5d2:
+/// `workspace.list`'s registry reads are now host-filtered, so a `host`
+/// edit alone, e.g. a stale row's
 /// owner changing, is a real change even when every other field is
 /// unchanged). `last_seen` is deliberately excluded. Used by the
 /// registry-watch task in `run` (below) to detect a real change between
@@ -418,7 +418,7 @@ fn project_comm_registry(bytes: &[u8]) -> String {
     for k in keys {
         let e = &agents[k];
         s.push_str(k);
-        for field in ["state", "summary", "status_at", "tmux", "host"] {
+        for field in ["state", "summary", "status_at", "host"] {
             s.push('\u{1}');
             s.push_str(e.get(field).and_then(|v| v.as_str()).unwrap_or(""));
         }

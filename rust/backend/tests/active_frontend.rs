@@ -43,7 +43,6 @@ struct Env {
     _tmp: tempfile::TempDir,
     _runtime_tmp: tempfile::TempDir,
     socket_path: PathBuf,
-    tmux_sock: PathBuf,
     daemon: Child,
 }
 
@@ -85,8 +84,6 @@ impl Env {
                 runtime_tmp.path().join(format!("wire-{tag}.sock"))
             }
         };
-        let tmux_sock = runtime_tmp.path().join("tmux.sock");
-
         let daemon = Command::new(sotd_exe())
             .arg("--socket")
             .arg(&socket_path)
@@ -97,7 +94,6 @@ impl Env {
             .env("XDG_CONFIG_HOME", &config_root)
             .env("SOT_STATE_HOST", format!("activefe-{tag}"))
             .env("SOT_RUNTIME_DIR", runtime_tmp.path())
-            .env("SOT_TMUX_SOCK", &tmux_sock)
             .stdin(Stdio::null())
             .spawn()
             .expect("spawn sotd");
@@ -106,7 +102,6 @@ impl Env {
             _tmp: tmp,
             _runtime_tmp: runtime_tmp,
             socket_path,
-            tmux_sock,
             daemon,
         }
     }
@@ -116,14 +111,6 @@ impl Drop for Env {
     fn drop(&mut self) {
         let _ = self.daemon.kill();
         let _ = self.daemon.wait();
-        let _ = Command::new("tmux")
-            .arg("-S")
-            .arg(&self.tmux_sock)
-            .arg("kill-server")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
     }
 }
 

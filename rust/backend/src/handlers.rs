@@ -6484,18 +6484,15 @@ pub async fn handle_workspace_list(
             //                       hooked agent's pane agrees anyway).
             let reg = agent_str(&handle, "state");
             let agent_state = reg;
-            // `phase` is read straight off the row's own cell; both stay
-            // `None` for a `"tmux"` row.
-            let (state_dir, phase) = if ws.runtime == "capsule" {
-                let state_dir = sot_log::state_dir::sot_state_dir().map(|root| {
-                    crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id)
-                        .to_string_lossy()
-                        .into_owned()
-                });
-                (state_dir, Some(ws.phase().as_wire_str().to_string()))
-            } else {
-                (None, None)
-            };
+            // `phase` is read straight off the row's own cell — every row
+            // is a capsule on this build (`ws.runtime` is always
+            // `"capsule"`), so there is no other case left to branch on.
+            let state_dir = sot_log::state_dir::sot_state_dir().map(|root| {
+                crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id)
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            let phase = Some(ws.phase().as_wire_str().to_string());
             WorkspaceListEntry {
                 workspace_id: ws.workspace_id.clone(),
                 slug: ws.slug.clone(),
