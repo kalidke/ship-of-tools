@@ -673,24 +673,38 @@ if (-not $Local) {
 # (`Read-SotLastHost`, ADR 0015) is DELETED (unrelated to this box's own
 # host name -- see state_persistence.rs's field doc for what `last_host`
 # means today, frontend-side).
-$sotdForPlan = if (Test-Path -LiteralPath $backendExe) {
-    $backendExe
-} else {
-    $stagedSotdForPlan = Join-Path $prefixDir 'bin\sotd.exe'
-    if (Test-Path -LiteralPath $stagedSotdForPlan) { $stagedSotdForPlan } else { $null }
+#
+# Ordering risk (manager review): a brand-new box has no sotd(.exe) built
+# yet at THIS point (before Invoke-FreshnessPass's backend-pair rebuild,
+# below) -- an early-only read would leave $frontendArgs built from a
+# permanently empty plan on the very first launch, needing a second one to
+# pick up any host at all. Update-SotTopologyPlan is called here (for the
+# tunnel-opening code right below, which does need to run before the
+# rebuild) AND AGAIN after every Invoke-FreshnessPass call (both call
+# sites) so $plan is fresh by the time $frontendArgs is built, right
+# before the frontend actually launches -- a fresh box needs exactly one
+# launch, not two.
+function Update-SotTopologyPlan {
+    $sotdForPlan = if (Test-Path -LiteralPath $backendExe) {
+        $backendExe
+    } else {
+        $stagedSotdForPlan = Join-Path $prefixDir 'bin\sotd.exe'
+        if (Test-Path -LiteralPath $stagedSotdForPlan) { $stagedSotdForPlan } else { $null }
+    }
+    $script:plan = Get-SotTopologyPlan -SotdPath $sotdForPlan
+    if ($script:plan.Error) {
+        Write-SupLog "topology: $($script:plan.Error) - continuing with no remote hosts"
+    }
+    # The laptop fix (comm-lib.sh no longer hardcodes a relay port): every
+    # session this box spawns needs SOT_RELAY_ENDPOINT in its environment,
+    # not just this launcher's own process -- persist it at User scope
+    # too, same pattern as SOT_TOKEN's fallback below.
+    if ($script:plan.RelayEndpoint) {
+        $env:SOT_RELAY_ENDPOINT = $script:plan.RelayEndpoint
+        [Environment]::SetEnvironmentVariable('SOT_RELAY_ENDPOINT', $script:plan.RelayEndpoint, 'User')
+    }
 }
-$plan = Get-SotTopologyPlan -SotdPath $sotdForPlan
-if ($plan.Error) {
-    Write-SupLog "topology: $($plan.Error) - continuing with no remote hosts"
-}
-# The laptop fix (comm-lib.sh no longer hardcodes a relay port): every
-# session this box spawns needs SOT_RELAY_ENDPOINT in its environment, not
-# just this launcher's own process -- persist it at User scope too, same
-# pattern as SOT_TOKEN's fallback below.
-if ($plan.RelayEndpoint) {
-    $env:SOT_RELAY_ENDPOINT = $plan.RelayEndpoint
-    [Environment]::SetEnvironmentVariable('SOT_RELAY_ENDPOINT', $plan.RelayEndpoint, 'User')
-}
+Update-SotTopologyPlan
 $backendHost = if ($env:SOT_HOST_NAME) {
     $env:SOT_HOST_NAME
 } elseif ($env:SOT_HOST) {
@@ -1333,6 +1347,9 @@ function Invoke-FreshnessPass {
     }
 }
 Invoke-FreshnessPass
+# Re-read now that the backend pair may have just been built for the first
+# time (ordering risk, see Update-SotTopologyPlan's own comment above).
+Update-SotTopologyPlan
 # ---------------------------------------------------------------------------
 # Local daemon ensure (ADR 0042 L2b design D; ONE-ensure simplification
 # 2026-09-02): EVERY launch mode ensures the persistent, per-user local
@@ -1672,6 +1689,7 @@ try {
             $splashDismissed = $false
             Invoke-SelfUpdatePrelude
             Invoke-FreshnessPass
+            Update-SotTopologyPlan
             $localDaemonReady = Invoke-LocalDaemonEnsure
             $localSocket = if ($localDaemonReady) { Get-SotLocalPipePath } else { $null }
             Set-LaunchNoticeEnv

@@ -8,22 +8,25 @@
 # running, then runs the local frontend pointed at the forwarded local port.
 # The remote BE must already be BUILT on the host.
 #
-# ADR 0042 L2b design E: every OTHER `[host.<name>]` entry in
-# `.sot/hosts.toml` that has an `ssh_alias` gets its OWN tunnel too (see
-# `sot_ensure_remote_host` / scripts/sot-hosts.sh's `sot_tunnel_plan`
-# below). $SOT_HOST/$PORT keep their exact pre-L2b meaning and are NOT
-# read from hosts.toml (env-var driven, same as always); other hosts'
-# ssh_alias/remote_repo/tcp_port come straight from their own
-# [host.<name>] section, with tcp_port required.
+# ADR 0042 L2b design E, topology plan (lane D): every OTHER dialable host
+# `sotd topology plan [--self <host>]` names gets its OWN tunnel too (see
+# `sot_ensure_remote_host` / scripts/sot-hosts.sh's `sot_topology_plan`
+# below). $SOT_HOST/$PORT keep their exact pre-L2b meaning by default
+# (env-var driven), falling back to the plan's declared `hub` when unset;
+# other hosts' ports come straight from the plan's `tunnel` lines. A
+# remote's `sotd` is always `systemctl --user start/restart` (never
+# started by path) and its socket always queried
+# (`sotd session-socket-path sot` on the remote) -- there is no more
+# per-host ssh_alias/remote_repo/tcp_port/remote_socket to configure.
 #
 # Codex follow-up (design 3): $SOT_HOST is NONFATAL now too, exactly like
-# every other configured remote -- with the implicit local connection
-# (rust/frontend's hosts::resolve_connections, cross-platform) always
-# present, an unconfigured or unreachable default remote is no longer a
-# reason to refuse to launch the frontend at all. $SOT_HOST/$SOT_REMOTE_REPO
-# being unset just skips the primary host's own ensure+tunnel step; every
-# failure past that point (unreachable, no socket, etc.) logs one line and
-# falls through to the same `exec` at the bottom either way.
+# every other configured remote -- with the frontend's own `--socket` for
+# its local daemon (when one is up) usually present, an unconfigured or
+# unreachable default remote is no longer a reason to refuse to launch the
+# frontend at all. $SOT_HOST being unset just skips the primary host's own
+# ensure+tunnel step; every failure past that point (unreachable, no
+# socket, etc.) logs one line and falls through to the same `exec` at the
+# bottom either way.
 #
 # Idempotent: an `ssh -fN` tunnel is backgrounded and OUTLIVES the FE window, so
 # a naive re-run would collide on the forwarded ports (Address already in use)
@@ -31,8 +34,7 @@
 # existing tunnel instead of opening a second one, and only (re)spawn the backend
 # when it isn't already up.
 #
-# Overridable via env: SOT_HOST, SOT_TCP_PORT, SOT_REMOTE_REPO,
-# SOT_REMOTE_SOCKET (default: query `sotd session-socket-path sot` remotely),
+# Overridable via env: SOT_HOST (or SOT_HOST_NAME), SOT_TCP_PORT,
 # SOT_RESTART_BE=1 (force a backend restart even if one is running).
 #
 # `-e` (errexit) is deliberately NOT set here (unlike some sibling scripts):
@@ -78,14 +80,10 @@ unset SOT_LAUNCH_REEXEC || true
 # --- end self-update prelude ---
 
 # Codex follow-up (design 3): no longer a hard `${VAR:?...}` requirement --
-# an unset SOT_HOST/SOT_REMOTE_REPO just means "no default remote", which is
-# now a normal, nonfatal state (see the header). HOST/REMOTE_REPO stay empty
-# in that case; every call site below checks for that instead of relying on
+# an unset SOT_HOST/no declared hub just means "no default remote", which
+# is now a normal, nonfatal state (see the header). HOST stays empty in
+# that case; every call site below checks for that instead of relying on
 # a startup abort.
-HOST="${SOT_HOST:-}"
-PORT="${SOT_TCP_PORT:-18743}"
-REMOTE_REPO="${SOT_REMOTE_REPO:-}"
-REMOTE_SOCKET="${SOT_REMOTE_SOCKET:-}"
 PLUTO_PORT="${SOT_PLUTO_PORT:-1234}"
 VIDEO_PORT="${SOT_VIDEO_PORT:-1235}"
 DOCS_PORT="${SOT_DOCS_PORT:-1236}"
@@ -148,73 +146,48 @@ ensure_aux_tunnel() {
         || { echo "ERROR: could not open browser aux SSH tunnel to $HOST (missing: ${missing[*]})" >&2; exit 1; }
 }
 
-# sot_ensure_remote_host <name> <ssh_alias> <remote_repo> <port> <remote_socket-override-or-empty>
+# sot_ensure_remote_host <name> <ssh_alias> <port>
 # The ONE ensure+resolve+tunnel plan every host uses now (codex follow-up,
-# item 3): resolve the remote socket, ensure the backend is up (honoring
-# SOT_RESTART_BE / warning when stale, exactly as the default host always
-# did -- UNCONDITIONALLY, even when an existing tunnel is about to be
-# reused, matching the default host's original behavior: a stale-backend
-# warning is worth seeing on every launch, not just a cold start), then
-# open (or reuse) the tunnel. Every failure is NONFATAL: one log line and
-# `return 1` -- the caller decides what that means for it.
-#
-# <remote_repo> is OPTIONAL (item 2 follow-up): empty means "no local
-# knowledge of the remote's checkout" -- the case for install.sh's
-# generated launcher, a client-only install with no source tree of its
-# own, connecting to a remote it may not even have SSH'd into before.
-# Without a repo there is no `scripts/restart-backend.sh` to `cd` into, so
-# backend management is skipped entirely (this host's backend is assumed
-# to manage itself, e.g. its own systemd unit) and the socket is queried
-# straight from the remote's well-known INSTALLED path -- exactly what the
-# old heredoc this replaces did, and the only thing it did.
+# item 3; topology plan, lane D): `systemctl --user start/restart sotd` on
+# the remote (SOT_RESTART_BE=1 forces a restart; otherwise an already-up
+# backend is left alone, a down one is started and waited for), query its
+# socket path (`sotd session-socket-path sot`, always, never configured --
+# remote_repo/remote_socket are gone: this launcher never starts a remote
+# daemon by path any more), then open (or reuse) the tunnel. Every failure
+# is NONFATAL: one log line and `return 1` -- the caller decides what that
+# means for it.
 sot_ensure_remote_host() {
-    local name="$1" alias="$2" repo="$3" port="$4" remote_socket="$5"
-    if [ -z "$remote_socket" ]; then
-        if [ -n "$repo" ]; then
-            # Dev checkout first, then a release install's staged sotd on
-            # the remote -- either way, this remote has a checkout at
-            # $repo we know about.
-            remote_socket="$(sot_ssh_bounded "$alias" "cd '$repo' && ./rust/target/release/sotd session-socket-path sot 2>/dev/null || \${SOT_REMOTE_SOTD:-\$HOME/.local/share/sot/bin/sotd} session-socket-path sot")" \
-                || { echo "tunnel: host '$name' unreachable (could not query sotd socket path)" >&2; return 1; }
-        else
-            remote_socket="$(sot_ssh_bounded "$alias" '${SOT_REMOTE_SOTD:-$HOME/.local/share/sot/bin/sotd} session-socket-path sot')" \
-                || { echo "tunnel: host '$name' unreachable (could not query sotd socket path)" >&2; return 1; }
-        fi
-    fi
-    if [ -z "$remote_socket" ]; then
-        echo "tunnel: host '$name' did not report a socket path" >&2
-        return 1
-    fi
-
-    # Backend -- ensure one is running (don't disrupt a live session), ONLY
-    # when a checkout is known (see the repo-optional note above).
-    # SOT_RESTART_BE=1 forces a restart; otherwise an already-up backend is
-    # left alone (with a staleness warning if it predates the built
-    # binary), and a down one is started and waited for.
-    if [ -z "$repo" ]; then
-        :   # no checkout -- this remote manages its own backend
-    elif [ "${SOT_RESTART_BE:-0}" = "1" ]; then
-        if sot_ssh_bounded "$alias" "cd '$repo' && scripts/restart-backend.sh"; then
-            echo "tunnel: host '$name' backend force-restarted at current build"
+    local name="$1" alias="$2" port="$3"
+    # export PATH first: a non-interactive ssh command's PATH doesn't
+    # always carry ~/.local/bin (matching launch-sot.ps1's own remote
+    # command, same reason).
+    local remote_path_prelude='export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH";'
+    if [ "${SOT_RESTART_BE:-0}" = "1" ]; then
+        if sot_ssh_bounded "$alias" "$remote_path_prelude systemctl --user restart sotd.service"; then
+            echo "tunnel: host '$name' backend force-restarted via systemd"
         else
             echo "tunnel: host '$name' backend force-restart FAILED" >&2
         fi
-    elif sot_ssh_bounded "$alias" "[ -S '$remote_socket' ]" 2>/dev/null; then
-        if ! sot_ssh_bounded "$alias" "cd '$repo' && scripts/restart-backend.sh --check" >/dev/null 2>&1; then
-            echo "tunnel: host '$name' backend is STALE -- it updates on its own cadence -- force with SOT_RESTART_BE=1" >&2
-        fi
+    elif sot_ssh_bounded "$alias" "$remote_path_prelude systemctl --user is-active --quiet sotd.service" 2>/dev/null; then
+        : # already running -- left alone
     else
-        sot_ssh_bounded "$alias" "cd '$repo' && scripts/restart-backend.sh" >/dev/null 2>&1 || true
-        local i=0
-        while [ "$i" -lt 40 ]; do
-            sot_ssh_bounded "$alias" "[ -S '$remote_socket' ]" 2>/dev/null && break
-            sleep 0.25
-            i=$((i+1))
-        done
-        if ! sot_ssh_bounded "$alias" "[ -S '$remote_socket' ]" 2>/dev/null; then
-            echo "tunnel: host '$name' backend did not create socket $remote_socket" >&2
-            return 1
-        fi
+        sot_ssh_bounded "$alias" "$remote_path_prelude systemctl --user reset-failed sotd.service 2>/dev/null; systemctl --user start sotd.service" \
+            || echo "tunnel: host '$name' could not start sotd via systemd" >&2
+    fi
+    local remote_socket i=0
+    while [ "$i" -lt 40 ]; do
+        remote_socket="$(sot_ssh_bounded "$alias" "$remote_path_prelude sotd session-socket-path sot" 2>/dev/null)"
+        [ -n "$remote_socket" ] && sot_ssh_bounded "$alias" "[ -S '$remote_socket' ]" 2>/dev/null && break
+        sleep 0.25
+        i=$((i+1))
+    done
+    if [ -z "$remote_socket" ]; then
+        echo "tunnel: host '$name' unreachable (could not query sotd socket path)" >&2
+        return 1
+    fi
+    if ! sot_ssh_bounded "$alias" "[ -S '$remote_socket' ]" 2>/dev/null; then
+        echo "tunnel: host '$name' backend did not create socket $remote_socket" >&2
+        return 1
     fi
 
     # Reuse only a tunnel that visibly targets the same remote socket.
@@ -234,43 +207,58 @@ sot_ensure_remote_host() {
 
 # shellcheck source=sot-hosts.sh
 . "$(dirname "$0")/sot-hosts.sh"
-# $REPO/.sot/hosts.toml first (a dev checkout's own, machine-local, git-
-# ignored config) -- but an install-layout checkout at repo/current (item 2
-# follow-up: install.sh's generated launcher delegates here and has no
-# .sot/hosts.toml of its own, only $REPO/scripts) has none, so fall back to
-# the same XDG config path the Rust frontend already checks on its own
-# (rust/frontend/src/hosts.rs's own candidate list) and install.sh itself
-# writes to.
-if [ -f "$REPO/.sot/hosts.toml" ]; then
-    HOSTS_TOML="$REPO/.sot/hosts.toml"
-else
-    HOSTS_TOML="${XDG_CONFIG_HOME:-$HOME/.config}/sot/hosts.toml"
-fi
 
-# Codex follow-up, item 7: host identity is the hosts.toml KEY, not the ssh
-# alias -- nothing stops two different hosts.toml entries from sharing one
-# ssh_alias. DEFAULT_HOST_KEY is used ONLY to (a) skip the primary host's
-# entry in the extra-hosts loop below, so it is never double-tunneled, and
-# (b) let sot_tunnel_plan apply the SOT_TCP_PORT/18743 compatibility
-# fallback to the right row. It does NOT drive $HOST/$PORT themselves,
-# which stay purely env-var driven, same as always.
-DEFAULT_HOST_KEY="$(sot_hosts_default_host "$HOSTS_TOML")"
+# resolve_local_sotd_bin: dev build first, then a release install's staged
+# sotd -- either way, a LOCAL binary this box can run `topology plan`
+# with. Empty when neither exists (a fresh checkout with nothing built
+# yet), which read_topology_plan below treats as "no plan yet", same as
+# an absent hosts.toml always was.
+resolve_local_sotd_bin() {
+    if [ -x "$REPO/rust/target/release/sotd" ]; then
+        printf '%s\n' "$REPO/rust/target/release/sotd"
+    elif [ -x "$HOME/.local/share/sot/bin/sotd" ]; then
+        printf '%s\n' "$HOME/.local/share/sot/bin/sotd"
+    fi
+}
+
+# read_topology_plan: (re)resolves the local sotd binary and (re)runs
+# sot_topology_plan into $PLAN. Called once, early (steps 1-2b below need
+# it), and AGAIN after the freshness rebuild (step 3) -- ordering risk
+# (manager review): a brand-new box has no sotd built yet at the first
+# call, so an early-only read would leave the frontend's --dial args
+# permanently empty on the very first launch. The second call, right
+# before the frontend actually launches, picks up a binary the rebuild
+# below may have just produced -- a fresh box needs exactly one launch,
+# not two.
+read_topology_plan() {
+    SOTD_BIN="$(resolve_local_sotd_bin)"
+    if PLAN="$(sot_topology_plan "$SOTD_BIN")"; then
+        :
+    else
+        PLAN=""
+        echo "topology: no plan available yet (no sotd binary built) - continuing with no declared hosts" >&2
+    fi
+}
+read_topology_plan
+
+# $SOT_HOST_NAME/$SOT_HOST still override which declared host is the
+# PRIMARY (the one that gets the opt-in legacy aux forwards); default the
+# plan's declared hub. $PORT defaults to that host's own ordinal port from
+# the plan's `tunnel` lines, falling back to 18743 for a box with no plan
+# at all.
+HOST="${SOT_HOST_NAME:-${SOT_HOST:-$(sot_topology_field "$PLAN" HUB)}}"
+PORT="${SOT_TCP_PORT:-$(printf '%s\n' "$PLAN" | awk -F'|' -v h="$HOST" '$1=="TUNNEL" && $2==h {print $3}')}"
+PORT="${PORT:-18743}"
 
 # 1-2. Default remote: ensure it, same nonfatal plan as every other host
-# (codex follow-up, item 3). $HOST empty (SOT_HOST never set) just skips
-# this entirely; every OTHER failure logs and falls through. Guarded
-# against inherited errexit (item 13): a bare nonfatal call would abort
-# under `-e` even though this script never sets it itself.
-#
-# REMOTE_REPO is NOT required here (item 2 follow-up): gating on it too
-# would skip a caller that only knows $HOST -- exactly install.sh's
-# generated remote-role launcher, which has no local knowledge of the
-# remote's checkout and relies on sot_ensure_remote_host's repo-optional
-# path (see its own doc comment) to query the remote's installed sotd
-# directly instead.
+# (codex follow-up, item 3). $HOST empty (no SOT_HOST/SOT_HOST_NAME and no
+# declared hub) just skips this entirely; every OTHER failure logs and
+# falls through. Guarded against inherited errexit (item 13): a bare
+# nonfatal call would abort under `-e` even though this script never sets
+# it itself.
 if [ -n "$HOST" ]; then
     default_remote_ok=1
-    sot_ensure_remote_host "default" "$HOST" "$REMOTE_REPO" "$PORT" "$REMOTE_SOCKET" || default_remote_ok=0
+    sot_ensure_remote_host "default" "$HOST" "$PORT" || default_remote_ok=0
     # Only worth trying the (opt-in, legacy) aux forwards to a host we just
     # confirmed we can reach -- otherwise this would hard-exit the script
     # (ensure_aux_tunnel's own failure path is NOT nonfatal) for a host
@@ -280,49 +268,60 @@ if [ -n "$HOST" ]; then
         ensure_aux_tunnel
     fi
 else
-    echo "default remote: not configured (set SOT_HOST) - continuing without one"
+    echo "default remote: no declared hub and SOT_HOST/SOT_HOST_NAME unset - continuing without one"
 fi
 
-# 2b. Every OTHER configured remote gets its own tunnel too (ADR 0042 L2b
-# design E) — $HOST's own tunnel above is untouched. sot_tunnel_plan (pure,
-# no ssh) enumerates hosts.toml; sot_ensure_remote_host (above) does the
-# ensure+resolve+open sequence, nonfatal: any failure logs one line and
-# moves on to the next host instead of exiting the whole launch. The
-# frontend reads hosts.toml itself and shows an unreachable host as
-# unreachable — that is the intended failure mode here, not a launch abort.
-while IFS='|' read -r t_name t_alias t_port t_repo t_socket t_err; do
-    [ -n "$t_name" ] || continue
-    [ "$t_name" = "$DEFAULT_HOST_KEY" ] && continue   # the default host's tunnel is step 1-2 above
-    if [ -n "$t_err" ]; then
-        echo "tunnel: skipping host '$t_name' -- $t_err" >&2
-        continue
-    fi
-    if ! sot_ensure_remote_host "$t_name" "$t_alias" "$t_repo" "$t_port" "$t_socket"; then
-        :
-    fi
+# 2b. Every OTHER dialable host in the plan gets its own tunnel too (ADR
+# 0042 L2b design E) — $HOST's own tunnel above is untouched. Topology
+# plan already excludes self and frontend hosts from `tunnel` lines (D8),
+# so nothing here needs its own filter beyond skipping the primary.
+# sot_ensure_remote_host does the ensure+resolve+open sequence, nonfatal:
+# any failure logs one line and moves on to the next host instead of
+# exiting the whole launch. The frontend's own --dial list (built from the
+# SAME plan below, independent of whether the tunnel actually came up)
+# shows an unreachable host as unreachable — that is the intended failure
+# mode here, not a launch abort.
+while IFS='|' read -r t_tag t_name t_port; do
+    [ "$t_tag" = "TUNNEL" ] || continue
+    [ "$t_name" = "$HOST" ] && continue   # the primary host's tunnel is step 1-2 above
+    sot_ensure_remote_host "$t_name" "$t_name" "$t_port" || :
 done <<EOF
-$(sot_tunnel_plan "$HOSTS_TOML" "$DEFAULT_HOST_KEY" "$PORT")
+$PLAN
 EOF
 
-# 3. Frontend rebuild (ADR 0030 dev-freshness rev 2). The git pull moved to the
-# self-update prelude at the top; here we only REBUILD, and only when that pull
-# succeeded (SOT_LAUNCH_REBUILD) so exactly one build runs in the final exec.
-# FAIL-OPEN: a broken build warns and launches the existing binary.
+# 3. Frontend + backend-pair rebuild (ADR 0030 dev-freshness rev 2). The
+# git pull moved to the self-update prelude at the top; here we only
+# REBUILD, and only when that pull succeeded (SOT_LAUNCH_REBUILD) so
+# exactly one build runs in the final exec. sot-backend is built alongside
+# sot-frontend now (ordering risk, above): it's the only source of a local
+# `sotd` for read_topology_plan's re-read below, on a box with no release
+# install. FAIL-OPEN: a broken build warns and launches with whatever
+# plan/binary already existed.
 if [ "${SOT_LAUNCH_REBUILD:-0}" = 1 ] && [ "${SOT_NO_UPDATE:-0}" != 1 ]; then
     unset SOT_LAUNCH_REBUILD || true
-    cargo build --release -p sot-frontend --manifest-path "$REPO/rust/Cargo.toml" \
-        || echo "WARNING: frontend rebuild failed - launching existing binary" >&2
+    cargo build --release -p sot-frontend -p sot-backend --manifest-path "$REPO/rust/Cargo.toml" \
+        || echo "WARNING: frontend/backend rebuild failed - launching with the existing binaries" >&2
 fi
+read_topology_plan
 
-# 4. Frontend (blocks; GPU window). Always runs -- the implicit local
-# connection (rust/frontend's hosts::resolve_connections) and/or any
-# successfully tunneled remote is what the frontend actually has to show;
-# --tcp here is only the DEFAULT host's endpoint (ADR 0042 L2a semantics),
-# reachable or not.
+# 4. Frontend (blocks; GPU window). Always runs -- one --dial per plan.Dials
+# entry (this box's own local daemon, if it's ALSO a declared daemon host,
+# plus every other dialable host), passed UNCONDITIONALLY: a tunnel that
+# didn't come up just means the frontend shows that host unreachable and
+# keeps retrying, never a reason to hold an arg back. No plan at all (no
+# sotd binary anywhere) means no --dial args -- the frontend reports that
+# plainly and runs offline, same as a box with no hosts.toml always did.
 #
 # SOT_FRONTEND_BIN (item 2 follow-up): the dev-checkout path is the
 # default, unchanged; install.sh's generated launcher sets this to its own
 # staged $PREFIX/bin/sot when it delegates here, since repo/current (a
 # pinned release checkout, not necessarily built) has no
 # rust/target/release of its own.
-exec "${SOT_FRONTEND_BIN:-$REPO/rust/target/release/sot}" --tcp "127.0.0.1:$PORT"
+dial_args=()
+while IFS='|' read -r d_tag d_host d_endpoint; do
+    [ "$d_tag" = "DIAL" ] || continue
+    dial_args+=(--dial "$d_host=$d_endpoint")
+done <<EOF
+$PLAN
+EOF
+exec "${SOT_FRONTEND_BIN:-$REPO/rust/target/release/sot}" "${dial_args[@]}"

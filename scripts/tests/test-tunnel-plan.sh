@@ -1,21 +1,15 @@
 #!/usr/bin/env bash
 # test-tunnel-plan.sh -- regression harness for scripts/sot-hosts.sh's
-# tunnel-plan builder (ADR 0042 L2b design E: one tunnel per configured
-# remote, both launchers).
+# sot_topology_plan (topology plan, lane D: `sotd topology plan [--self
+# <host>]` is the one parser now; this reads its plain-line stdout).
 #
-# Pure text processing (no ssh, no network) against a fixture hosts.toml,
-# mirroring test-sot-apply.ps1/test-local-daemon.ps1's own "fake files are
-# never executed" convention and installer-state.sh's `check`/`case_start`
-# shape (this file is the bash-side sibling of
-# scripts/tests/test-tunnel-plan.ps1, which exercises the same host set --
-# see FIXTURE below -- through Get-TunnelPlan).
-#
-# Duplicate tcp_port across hosts is NOT tested here (owner ruling, codex
-# follow-up round 2): sot_tunnel_plan doesn't detect it -- that check lives
-# once, in rust/frontend/src/hosts.rs's resolve_connections (its own test).
-# A second `ssh -fN -L` on an already-bound port fails to bind on its own,
-# which sot_ensure_remote_host already treats as an ordinary nonfatal
-# failure, so the launcher needs nothing else here.
+# Pure text processing against a FAKE sotd (a stub script on PATH that
+# echoes fixed lines) -- no real sotd binary, no ssh, no network.
+# rust/protocol/src/topology.rs's `plan` doc comment is the contract this
+# stub imitates; a reviewer may still adjust that format, so this parses
+# it in ONE function (sot_topology_plan) and nowhere else. Bash-side
+# sibling of scripts/tests/test-tunnel-plan.ps1, which exercises the same
+# fixtures through Get-SotTopologyPlan.
 #
 # Run: scripts/tests/test-tunnel-plan.sh
 
@@ -38,80 +32,100 @@ check() {  # <description> <expected> <actual>
 }
 case_start() { printf '  %s\n' "$1"; }
 
-# Shared with test-tunnel-plan.ps1 -- same host set, same names, so a
-# fixture change on either side is easy to keep in sync by eye. Kept as two
-# copies (one per language's own fixture-writing idiom -- heredoc vs.
-# here-string) rather than one shared file: neither test harness has a
-# reason to read the OTHER language's directory layout, and a single-file
-# share would add that coupling for no real gain at this size.
-FIXTURE="$WORK/hosts.toml"
-cat > "$FIXTURE" <<'EOF'
-default_host = "myserver"
+# new_fake_sotd <name> <line>...
+# A stub `sotd` executable that ignores its own argv (`topology plan
+# [--self <host>]`) and just echoes the given fixed lines -- a pure
+# parser test needs nothing else.
+new_fake_sotd() {
+    local name="$1"; shift
+    local path="$WORK/$name"
+    # A quoted heredoc (`cat <<'SOT_PLAN_EOF'`) inside the stub's OWN body:
+    # the fixture lines are emitted verbatim when the stub runs, no shell
+    # interpretation at all (dash's echo, unlike bash's, interprets
+    # backslash escapes even inside single quotes -- this sidesteps that
+    # entirely rather than trying to out-quote it), so a Windows pipe path
+    # fixture's backslashes and embedded space survive untouched.
+    {
+        echo '#!/bin/sh'
+        echo "cat <<'SOT_PLAN_EOF'"
+        local line
+        for line in "$@"; do
+            printf '%s\n' "$line"
+        done
+        echo 'SOT_PLAN_EOF'
+    } > "$path"
+    chmod +x "$path"
+    printf '%s\n' "$path"
+}
 
-[host.myserver]
-ssh_alias = "myserver-alias"
-remote_repo = "/home/me/project"
-# tcp_port omitted -- it is the default host (by KEY, not ssh_alias), so
-# it falls back to whatever default_port sot_tunnel_plan is given
+echo "=== a well-formed plan ==="
+good_sotd="$(new_fake_sotd good \
+    'self myserver' \
+    'hub hub-box' \
+    'relay-endpoint tcp:127.0.0.1:18743' \
+    'dial hub-box tcp:127.0.0.1:18743' \
+    'dial otherbox tcp:127.0.0.1:18744' \
+    'tunnel hub-box 18743' \
+    'tunnel otherbox 18744')"
+plan="$(sot_topology_plan "$good_sotd" myserver)"
 
-[host.otherbox]
-ssh_alias = "otherbox"
-remote_repo = "/home/me/project"
-tcp_port = 18744
-remote_socket = "/run/user/1000/sot/sessions/sot.sock"
+case_start "scalar fields"
+check "self" "myserver" "$(sot_topology_field "$plan" SELF)"
+check "hub" "hub-box" "$(sot_topology_field "$plan" HUB)"
+check "relay-endpoint" "tcp:127.0.0.1:18743" "$(sot_topology_field "$plan" RELAY)"
 
-[host.thirdbox]
-ssh_alias = "thirdbox"
-remote_repo = "/home/me/project3"
-# tcp_port deliberately omitted -- not the default host, so this must error
+case_start "dial/tunnel records"
+check "two dials, in order" "hub-box,otherbox" \
+    "$(printf '%s\n' "$plan" | awk -F'|' '$1=="DIAL"{printf "%s%s", sep, $2; sep=","}')"
+check "otherbox dial endpoint" "tcp:127.0.0.1:18744" \
+    "$(printf '%s\n' "$plan" | awk -F'|' '$1=="DIAL" && $2=="otherbox"{print $3}')"
+check "hub-box tunnel port" "18743" \
+    "$(printf '%s\n' "$plan" | awk -F'|' '$1=="TUNNEL" && $2=="hub-box"{print $3}')"
+check "otherbox tunnel port" "18744" \
+    "$(printf '%s\n' "$plan" | awk -F'|' '$1=="TUNNEL" && $2=="otherbox"{print $3}')"
 
-[host.local]
-ssh_alias = "myserver-alias"
-tcp_port = 18743
-EOF
+echo "=== an endpoint containing a space (Windows pipe path, verbatim username) ==="
+space_sotd="$(new_fake_sotd space \
+    'self myserver' \
+    'hub myserver' \
+    'relay-endpoint pipe:\\.\pipe\sot-My User-sot' \
+    'dial myserver pipe:\\.\pipe\sot-My User-sot')"
+space_plan="$(sot_topology_plan "$space_sotd" myserver)"
+check "relay-endpoint keeps its embedded space intact" 'pipe:\\.\pipe\sot-My User-sot' \
+    "$(sot_topology_field "$space_plan" RELAY)"
+check "dial endpoint keeps its embedded space intact (host not swallowed into it)" \
+    'DIAL|myserver|pipe:\\.\pipe\sot-My User-sot' \
+    "$(printf '%s\n' "$space_plan" | awk -F'|' '$1=="DIAL"')"
 
-echo "=== sot_hosts_default_host / sot_hosts_table ==="
-case_start "default_host"
-check "default_host parsed" "myserver" "$(sot_hosts_default_host "$FIXTURE")"
+echo "=== the fake sotd resolved via \$PATH (not just an absolute path) ==="
+pathdir="$WORK/pathbin"
+mkdir -p "$pathdir"
+cp "$good_sotd" "$pathdir/sotd"
+chmod +x "$pathdir/sotd"
+resolved="$(PATH="$pathdir:$PATH" command -v sotd)"
+check "resolved via PATH lands in the fake bin dir" "$pathdir/sotd" "$resolved"
+plan_via_path="$(sot_topology_plan "$resolved" myserver)"
+check "plan parses the same via the PATH-resolved binary" "myserver" \
+    "$(sot_topology_field "$plan_via_path" SELF)"
 
-case_start "hosts_table"
-table="$(sot_hosts_table "$FIXTURE")"
-check "four sections captured" "4" "$(printf '%s\n' "$table" | wc -l | tr -d ' ')"
-check "myserver row" "myserver|myserver-alias|/home/me/project|||" \
-    "$(printf '%s\n' "$table" | awk -F'|' '$1=="myserver"')"
-check "local row carries whatever it was given (filtering is sot_tunnel_plan's job)" \
-    "local|myserver-alias||18743||" \
-    "$(printf '%s\n' "$table" | awk -F'|' '$1=="local"')"
+echo "=== an unknown first word is ignored, not an error ==="
+future_sotd="$(new_fake_sotd future \
+    'self myserver' \
+    'hub hub-box' \
+    'a-future-fact something new here' \
+    'dial hub-box tcp:127.0.0.1:18743')"
+future_plan="$(sot_topology_plan "$future_sotd" myserver)"
+check "self/hub still parsed around it" "myserver hub-box" \
+    "$(sot_topology_field "$future_plan" SELF) $(sot_topology_field "$future_plan" HUB)"
+check "dial still parsed around it" "1" \
+    "$(printf '%s\n' "$future_plan" | awk -F'|' '$1=="DIAL"' | wc -l | tr -d ' ')"
 
-echo "=== sot_tunnel_plan (default_host=myserver, default_port=18743) ==="
-plan="$(sot_tunnel_plan "$FIXTURE" myserver 18743)"
-
-case_start "local is never in the plan (socket-only, regardless of ssh_alias/tcp_port on it)"
-check "no local row" "" "$(printf '%s\n' "$plan" | awk -F'|' '$1=="local"')"
-
-case_start "myserver (the default, identified by hosts.toml KEY not ssh_alias) keeps its own tcp_port"
-check "myserver local_port" "18743" "$(printf '%s\n' "$plan" | awk -F'|' '$1=="myserver"{print $3}')"
-check "myserver has no error" "" "$(printf '%s\n' "$plan" | awk -F'|' '$1=="myserver"{print $6}')"
-
-case_start "otherbox: its own tcp_port and remote_socket override, no error"
-check "otherbox local_port" "18744" "$(printf '%s\n' "$plan" | awk -F'|' '$1=="otherbox"{print $3}')"
-check "otherbox remote override" "/run/user/1000/sot/sessions/sot.sock" \
-    "$(printf '%s\n' "$plan" | awk -F'|' '$1=="otherbox"{print $5}')"
-check "otherbox has no error" "" "$(printf '%s\n' "$plan" | awk -F'|' '$1=="otherbox"{print $6}')"
-
-case_start "thirdbox: missing tcp_port, NOT the default -- nonfatal error, empty local_port"
-check "thirdbox local_port empty" "" "$(printf '%s\n' "$plan" | awk -F'|' '$1=="thirdbox"{print $3}')"
-check "thirdbox names the host and field" "host 'thirdbox' has no tcp_port (required for a remote tunnel)" \
-    "$(printf '%s\n' "$plan" | awk -F'|' '$1=="thirdbox"{print $6}')"
-
-case_start "a default_host that matches no KEY never fabricates a default (and never matches by alias)"
-plan_no_default="$(sot_tunnel_plan "$FIXTURE" nonexistent-key 18743)"
-check "thirdbox still errors (no default fallback applies)" "host 'thirdbox' has no tcp_port (required for a remote tunnel)" \
-    "$(printf '%s\n' "$plan_no_default" | awk -F'|' '$1=="thirdbox"{print $6}')"
-plan_by_alias="$(sot_tunnel_plan "$FIXTURE" myserver-alias 18743)"
-check "myserver-alias (the ssh_alias, not the key) does NOT count as the default" \
-    "host 'myserver' has no tcp_port (required for a remote tunnel)" \
-    "$(printf '%s\n' "$plan_by_alias" | awk -F'|' '$1=="myserver"{print $6}')"
+echo "=== no sotd binary at all ==="
+if sot_topology_plan "$WORK/does-not-exist" myserver >/dev/null; then
+    check "missing binary must fail" "fail" "ok (WRONG -- should have failed)"
+else
+    check "missing binary fails cleanly (not a crash)" "fail" "fail"
+fi
 
 echo
 if [ "$fails" -eq 0 ]; then
