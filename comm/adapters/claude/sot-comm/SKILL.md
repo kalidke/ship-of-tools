@@ -1,6 +1,6 @@
 ---
 name: sot-comm
-description: Session-to-session messaging for Ship of Tools (cross-session, cross-machine). Use for sending/broadcasting, joining/leaving, checking inbox, listing sessions, spawning/despawning agents, driving the frontend. Activates on receiving "[name:repo] ...".
+description: Session-to-session messaging for Ship of Tools (cross-session, cross-machine). Use for sending/broadcasting, joining/leaving, checking inbox, listing sessions, spawning/despawning agents, driving the frontend, and answering "what FE am I on" / which frontend / its build (run `sot-fe version`). Activates on receiving "[name:repo] ...".
 ---
 
 # sot-comm
@@ -136,3 +136,17 @@ spawning: `references/spawning.md`.
   `comm-poll.sh`); liveness is heartbeat-based (`comm-list.sh` shows
   live/stale) — `poll`/`send`/`join` all refresh yours.
 - To poll on a schedule: `/loop 5m comm-poll`.
+
+## Which frontend am I on
+
+One command, authoritative, no log reading:
+
+```bash
+~/.sot-comm/bin/sot-fe version
+```
+
+It prints every connected frontend (`fe <label>@<host> <build> active|idle`), the
+daemon's build, the deployed comm scripts, and every row's phase. The frontend
+the user is on is the `fe` line marked `active`; its build says whether it has a
+given fix. Never answer this from sotd.log or the comm registry: a frontend is a
+client, not a comm peer, so the registry never lists it.
