@@ -425,4 +425,22 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             @test isfile(joinpath(bindir, "my-launcher"))
         end
     end
+
+    @testset "project-local skills match their shipped copies" begin
+        # A fresh checkout runs /sot-setup (and the skills it calls) from
+        # .claude/skills before anything is installed; the installer ships
+        # comm/adapters/claude. A skill held in both must be byte-identical.
+        root = dirname(@__DIR__)
+        localdir = joinpath(root, ".claude", "skills")
+        shipped = joinpath(root, "comm", "adapters", "claude")
+        relfiles(d) = sort([relpath(joinpath(r, f), d) for (r, _, fs) in walkdir(d) for f in fs])
+        for name in readdir(localdir)
+            isdir(joinpath(shipped, name)) || continue
+            a, b = joinpath(localdir, name), joinpath(shipped, name)
+            @test relfiles(a) == relfiles(b)
+            for rel in relfiles(a)
+                @test read(joinpath(a, rel)) == read(joinpath(b, rel))
+            end
+        end
+    end
 end
