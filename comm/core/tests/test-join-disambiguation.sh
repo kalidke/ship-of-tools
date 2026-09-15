@@ -2027,6 +2027,46 @@ case_windows_relay_endpoint_is_the_tunnel_even_with_a_live_local_pipe() {
     return 0
 }
 
+case_windows_relay_endpoint_prefers_the_launcher_exported_env_over_the_hardcoded_port() {
+    # Topology plan (lane D), the laptop fix: launch-sot.ps1 now derives
+    # this box's relay endpoint from `sotd topology plan` and exports/
+    # persists SOT_RELAY_ENDPOINT -- comm-lib must take THAT over the old
+    # hardcoded tcp:127.0.0.1:18743 guess, which was wrong on any box not
+    # literally tunneling the hub on the default port (every send from
+    # such a box went nowhere before this fix). The hardcoded guess stays
+    # the fallback for a box with no plan yet (SOT_RELAY_ENDPOINT unset).
+    local fakebin appdata out
+    fakebin="$WORK/win-discovery-bin"
+    appdata="$WORK/win-discovery-localappdata"
+    [ -x "$fakebin/uname" ] && [ -x "$appdata/sot/bin/sotd.exe" ] \
+        || { echo "  depends on case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep's fakes"; return 1; }
+    out="$(
+        unset OS OSTYPE SOT_SOCKET SOTD_BIN SOT_PORT
+        PATH="$fakebin:$PATH"
+        LOCALAPPDATA="$appdata"
+        SOT_RELAY_ENDPOINT="unix:/run/user/1000/sot-relay.sock" sot_relay_endpoint
+    )"
+    [ "$out" = "unix:/run/user/1000/sot-relay.sock" ] \
+        || { echo "  expected the plan-derived SOT_RELAY_ENDPOINT verbatim, got: $out"; return 1; }
+    # No plan on this box (SOT_RELAY_ENDPOINT unset) -- still the old
+    # hardcoded fallback, unchanged.
+    out="$(
+        unset OS OSTYPE SOT_SOCKET SOTD_BIN SOT_PORT SOT_RELAY_ENDPOINT
+        PATH="$fakebin:$PATH"
+        LOCALAPPDATA="$appdata"
+        sot_relay_endpoint
+    )"
+    [ "$out" = "tcp:127.0.0.1:18743" ] \
+        || { echo "  expected the hardcoded fallback with no plan, got: $out"; return 1; }
+    # An explicit endpoint still wins over SOT_RELAY_ENDPOINT too.
+    out="$(
+        SOT_RELAY_ENDPOINT="unix:/should-not-win.sock" sot_relay_endpoint "unix:/explicit.sock"
+    )"
+    [ "$out" = "unix:/explicit.sock" ] \
+        || { echo "  an explicit endpoint must win over SOT_RELAY_ENDPOINT too, got: $out"; return 1; }
+    return 0
+}
+
 # --- run, in order (later cases depend on earlier ones' registry state) --
 
 check "fresh claim records root"                            case_fresh_claim
@@ -2082,6 +2122,7 @@ check "sot_oneshot_request over a pipe: endpoint fails cleanly with no powershel
 check "sot_oneshot_request over a pipe: endpoint fails cleanly with comm-pipe-request.ps1 missing (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_missing_ps1
 check "sot_daemon_endpoint on a simulated Windows host returns pipe: first and never calls pgrep (LU6e)" case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep
 check "sot_relay_endpoint on a simulated Windows host is the backend tunnel even with a live local pipe (never the pipe)" case_windows_relay_endpoint_is_the_tunnel_even_with_a_live_local_pipe
+check "sot_relay_endpoint prefers the launcher-exported SOT_RELAY_ENDPOINT over the hardcoded port, falls back with no plan (topology plan, lane D)" case_windows_relay_endpoint_prefers_the_launcher_exported_env_over_the_hardcoded_port
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

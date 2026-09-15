@@ -1,6 +1,6 @@
 # test-tunnel-plan.ps1 -- regression harness for scripts/sot-hosts.ps1's
-# Read-SotHosts / Get-TunnelPlan (ADR 0042 L2b design E: one tunnel per
-# configured remote, both launchers).
+# Get-SotTopologyPlan (topology plan, lane D: `sotd topology plan --self
+# <host>` is the one parser now; this reads its plain-line stdout).
 #
 # Section 0 syntax-parses every .ps1 this unit touches, same convention as
 # test-local-daemon.ps1's own Section 0 (this repo's CI has no
@@ -8,18 +8,12 @@
 # which globs scripts/*.ps1 WITHOUT -Recurse and so never reaches
 # scripts/tests/*.ps1).
 #
-# Sections 1+ exercise Read-SotHosts/Get-TunnelPlan against a FIXTURE
-# hosts.toml -- pure text processing, no ssh, no network. Same host set
-# (names, ports, aliases) as scripts/tests/test-tunnel-plan.sh's own
-# fixture -- kept as two copies (a shared file would couple each
-# language's test to the other's directory layout for no real gain at this
-# size), not one shared file.
-#
-# Duplicate tcp_port across hosts is NOT tested here (owner ruling, codex
-# follow-up round 2): Get-TunnelPlan doesn't detect it -- that check lives
-# once, in rust/frontend/src/hosts.rs's resolve_connections (its own test).
-# A second `ssh -L` on an already-bound port fails to bind on its own,
-# which is already nonfatal, so the launcher needs nothing else here.
+# Sections 1+ exercise Get-SotTopologyPlan against a FAKE `sotd` -- a
+# batch stub that echoes fixed lines, so this is pure text processing, no
+# real sotd binary, no ssh, no network. rust/protocol/src/topology.rs's
+# `plan` doc comment is the contract this stub imitates; a reviewer may
+# still adjust that format, so this parses it in ONE function
+# (Get-SotTopologyPlan) and nowhere else.
 #
 # ASCII ONLY (see the same note in sot-hosts.ps1 / launch-sot.ps1).
 #
@@ -35,6 +29,18 @@ $pass = 0; $fail = 0
 function Check([string]$name, [bool]$ok, [string]$detail) {
     if ($ok) { $script:pass++; Write-Host "  PASS  $name" -ForegroundColor Green }
     else { $script:fail++; Write-Host "  FAIL  $name -- $detail" -ForegroundColor Red }
+}
+
+# A fake sotd: a .cmd stub that just echoes fixed lines, so Get-SotTopologyPlan
+# is exercised end-to-end (it really does `& $SotdPath topology plan ...`)
+# without a real Rust binary. `%*` swallows `topology plan [--self <host>]`
+# unread -- the stub always answers the same fixture, which is all a pure
+# parser test needs.
+function New-FakeSotd([string]$name, [string[]]$lines) {
+    $path = Join-Path $root "$name.cmd"
+    $body = "@echo off`r`n" + (($lines | ForEach-Object { "echo $_" }) -join "`r`n") + "`r`n"
+    Set-Content -LiteralPath $path -Value $body -Encoding ascii
+    return $path
 }
 
 try {
@@ -53,102 +59,67 @@ try {
 
     . $script
 
-    $fixture = Join-Path $root 'hosts.toml'
-    @'
-default_host = "myserver"
+    Write-Host "`n=== 1. a well-formed plan ===" -ForegroundColor Cyan
+    $goodSotd = New-FakeSotd 'good' @(
+        'self myserver',
+        'hub hub-box',
+        'relay-endpoint tcp:127.0.0.1:18743',
+        'dial hub-box tcp:127.0.0.1:18743',
+        'dial otherbox tcp:127.0.0.1:18744',
+        'tunnel hub-box 18743',
+        'tunnel otherbox 18744'
+    )
+    $plan = Get-SotTopologyPlan -SotdPath $goodSotd -SelfHost myserver
+    Check 'no error' (-not $plan.Error) "got: $($plan.Error)"
+    Check 'self parsed' ($plan.Self -eq 'myserver') "got $($plan.Self)"
+    Check 'hub parsed' ($plan.Hub -eq 'hub-box') "got $($plan.Hub)"
+    Check 'relay-endpoint parsed' ($plan.RelayEndpoint -eq 'tcp:127.0.0.1:18743') "got $($plan.RelayEndpoint)"
+    Check 'two dials captured, in order' `
+        ((($plan.Dials | ForEach-Object { $_.Host }) -join ',') -eq 'hub-box,otherbox') `
+        "got $(($plan.Dials | ForEach-Object { $_.Host }) -join ',')"
+    Check 'otherbox dial endpoint carried through' `
+        (($plan.Dials | Where-Object { $_.Host -eq 'otherbox' }).Endpoint -eq 'tcp:127.0.0.1:18744') `
+        'endpoint mismatch'
+    Check 'two tunnels captured, ports parsed as int' `
+        ((($plan.Tunnels | Where-Object { $_.Host -eq 'hub-box' }).Port -eq 18743) -and
+         (($plan.Tunnels | Where-Object { $_.Host -eq 'otherbox' }).Port -eq 18744)) `
+        "got $(($plan.Tunnels | ForEach-Object { "$($_.Host)=$($_.Port)" }) -join ',')"
 
-[host.myserver]
-ssh_alias = "myserver-alias"
-remote_repo = "/home/me/project"
-# tcp_port omitted -- it is the default host (by KEY, not ssh_alias), so
-# it falls back to whatever -DefaultPort Get-TunnelPlan is given
+    Write-Host "`n=== 2. an endpoint containing a space (Windows pipe path, verbatim username) ===" -ForegroundColor Cyan
+    $spaceSotd = New-FakeSotd 'space' @(
+        'self myserver',
+        'hub myserver',
+        'relay-endpoint pipe:\\.\pipe\sot-My User-sot',
+        'dial myserver pipe:\\.\pipe\sot-My User-sot'
+    )
+    $spacePlan = Get-SotTopologyPlan -SotdPath $spaceSotd -SelfHost myserver
+    Check 'relay-endpoint keeps its embedded space intact' `
+        ($spacePlan.RelayEndpoint -eq 'pipe:\\.\pipe\sot-My User-sot') `
+        "got [$($spacePlan.RelayEndpoint)]"
+    Check 'dial endpoint keeps its embedded space intact (host not swallowed into it)' `
+        (($spacePlan.Dials.Count -eq 1) -and
+         ($spacePlan.Dials[0].Host -eq 'myserver') -and
+         ($spacePlan.Dials[0].Endpoint -eq 'pipe:\\.\pipe\sot-My User-sot')) `
+        "got host=[$($spacePlan.Dials[0].Host)] endpoint=[$($spacePlan.Dials[0].Endpoint)]"
 
-[host.otherbox]
-ssh_alias = "otherbox"
-remote_repo = "/home/me/project"
-tcp_port = 18744
-remote_socket = "/run/user/1000/sot/sessions/sot.sock"
+    Write-Host "`n=== 3. an unknown first word is ignored, not an error ===" -ForegroundColor Cyan
+    $futureSotd = New-FakeSotd 'future' @(
+        'self myserver',
+        'hub hub-box',
+        'a-future-fact something new here',
+        'dial hub-box tcp:127.0.0.1:18743'
+    )
+    $futurePlan = Get-SotTopologyPlan -SotdPath $futureSotd -SelfHost myserver
+    Check 'no error from the unrecognised line' (-not $futurePlan.Error) "got: $($futurePlan.Error)"
+    Check 'self/hub/dial still parsed around it' `
+        (($futurePlan.Self -eq 'myserver') -and ($futurePlan.Hub -eq 'hub-box') -and ($futurePlan.Dials.Count -eq 1)) `
+        'a field was lost'
 
-[host.thirdbox]
-ssh_alias = "thirdbox"
-remote_repo = "/home/me/project3"
-# tcp_port deliberately omitted -- not the default host, so this must error
-
-[host.badport]
-ssh_alias = "badport"
-remote_repo = "/home/me/bad"
-# An inline comment here demonstrates the real-world way this happens:
-# none of the three hosts.toml parsers (Rust, PowerShell, bash) strip an
-# inline comment, so it becomes part of the value verbatim.
-tcp_port = 18745 # oops, an inline comment
-
-[host.local]
-ssh_alias = "myserver-alias"
-tcp_port = 18743
-'@ | Set-Content -LiteralPath $fixture -Encoding utf8
-
-    Write-Host "`n=== 1. Read-SotHosts ===" -ForegroundColor Cyan
-    $cfg = Read-SotHosts -Path $fixture
-    Check 'default_host parsed' ($cfg.default_host -eq 'myserver') "got $($cfg.default_host)"
-    Check 'five hosts captured' ($cfg.hosts.Count -eq 5) "got $($cfg.hosts.Count)"
-    Check 'declaration order preserved' `
-        (($cfg.order -join ',') -eq 'myserver,otherbox,thirdbox,badport,local') `
-        "got $($cfg.order -join ',')"
-    Check 'local carries whatever it was given (filtering is Get-TunnelPlan''s job)' `
-        ($cfg.hosts['local'].ssh_alias -eq 'myserver-alias' -and $cfg.hosts['local'].tcp_port -eq '18743') `
-        'local did not carry its configured fields'
-
-    Write-Host "`n=== 2. Get-TunnelPlan (default_host=myserver, default_port=18743) ===" -ForegroundColor Cyan
-    $plan = Get-TunnelPlan -Cfg $cfg -DefaultHost 'myserver' -DefaultPort 18743
-    $names = $plan | ForEach-Object { $_.host }
-    Check 'local never appears (socket-only, regardless of ssh_alias/tcp_port on it)' `
-        (-not ($names -contains 'local')) "plan hosts: $($names -join ',')"
-    Check 'four remotes planned (local excluded)' ($plan.Count -eq 4) "got $($plan.Count): $($names -join ',')"
-
-    $myserver = $plan | Where-Object { $_.host -eq 'myserver' }
-    Check 'myserver (identified by KEY) falls back to DefaultPort' ($myserver.local_port -eq 18743) "got $($myserver.local_port)"
-    Check 'myserver has no error' (-not $myserver.error) "got $($myserver.error)"
-
-    $otherbox = $plan | Where-Object { $_.host -eq 'otherbox' }
-    Check 'otherbox keeps its own tcp_port' ($otherbox.local_port -eq 18744) "got $($otherbox.local_port)"
-    Check 'otherbox remote_socket override carried through' ($otherbox.remote -eq '/run/user/1000/sot/sessions/sot.sock') "got $($otherbox.remote)"
-    Check 'otherbox has no error' (-not $otherbox.error) "got $($otherbox.error)"
-
-    $thirdbox = $plan | Where-Object { $_.host -eq 'thirdbox' }
-    Check 'thirdbox (missing tcp_port, not default) has no local_port' (-not $thirdbox.local_port) "got $($thirdbox.local_port)"
-    Check 'thirdbox names the host and the missing field' `
-        ($thirdbox.error -eq "host 'thirdbox' has no tcp_port (required for a remote tunnel)") `
-        "got: $($thirdbox.error)"
-
-    $badport = $plan | Where-Object { $_.host -eq 'badport' }
-    Check 'badport (inline comment corrupts the port) has no local_port' (-not $badport.local_port) "got $($badport.local_port)"
-    Check 'badport names the host and the bad value (comment included), not a thrown error' `
-        ($badport.error -eq "host 'badport' has a malformed tcp_port '18745 # oops, an inline comment'") `
-        "got: $($badport.error)"
-
-    Write-Host "`n=== 3. Get-TunnelPlan with no matching default host ===" -ForegroundColor Cyan
-    $planNoDefault = Get-TunnelPlan -Cfg $cfg -DefaultHost 'nonexistent-key' -DefaultPort 18743
-    $myserverNoDefault = $planNoDefault | Where-Object { $_.host -eq 'myserver' }
-    Check 'myserver now errors -- no tcp_port and no default match' `
-        ($myserverNoDefault.error -eq "host 'myserver' has no tcp_port (required for a remote tunnel)") `
-        "got: $($myserverNoDefault.error)"
-    $thirdboxNoDefault = $planNoDefault | Where-Object { $_.host -eq 'thirdbox' }
-    Check 'thirdbox still errors (no fabricated default fallback)' `
-        ($thirdboxNoDefault.error -eq "host 'thirdbox' has no tcp_port (required for a remote tunnel)") `
-        "got: $($thirdboxNoDefault.error)"
-
-    Write-Host "`n=== 4. -DefaultHost matches by KEY only, never by ssh_alias ===" -ForegroundColor Cyan
-    $planByAlias = Get-TunnelPlan -Cfg $cfg -DefaultHost 'myserver-alias' -DefaultPort 18743
-    $myserverByAlias = $planByAlias | Where-Object { $_.host -eq 'myserver' }
-    Check 'myserver-alias (the ssh_alias, not the key) does NOT count as the default' `
-        ($myserverByAlias.error -eq "host 'myserver' has no tcp_port (required for a remote tunnel)") `
-        "got: $($myserverByAlias.error)"
-
-    Write-Host "`n=== 5. empty/missing hosts.toml ===" -ForegroundColor Cyan
-    $emptyCfg = Read-SotHosts -Path (Join-Path $root 'does-not-exist.toml')
-    Check 'missing file yields empty registry' ($emptyCfg.hosts.Count -eq 0) "got $($emptyCfg.hosts.Count)"
-    $emptyPlan = Get-TunnelPlan -Cfg $emptyCfg -DefaultHost $null -DefaultPort 18743
-    Check 'empty registry yields an empty plan' (@($emptyPlan).Count -eq 0) "got $(@($emptyPlan).Count)"
+    Write-Host "`n=== 4. no sotd binary at all ===" -ForegroundColor Cyan
+    $missingPlan = Get-SotTopologyPlan -SotdPath (Join-Path $root 'does-not-exist.exe')
+    Check 'missing binary yields an empty, errored plan (not a throw)' `
+        ($missingPlan.Error -and $missingPlan.Dials.Count -eq 0 -and $missingPlan.Tunnels.Count -eq 0) `
+        "got error=[$($missingPlan.Error)]"
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

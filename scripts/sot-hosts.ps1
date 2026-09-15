@@ -1,126 +1,105 @@
-# sot-hosts.ps1 -- shared .sot/hosts.toml reader + tunnel-plan builder
-# (ADR 0042 L2b). Dot-sourced by launch-sot.ps1 (which SSH-ensures and opens
-# the tunnels a plan names), shutdown-sot.ps1 (which needs every port it
-# must kill a tunnel on), and scripts/tests/test-tunnel-plan.ps1.
+# sot-hosts.ps1 -- shared `sotd topology plan` reader (topology plan, lane
+# D). Dot-sourced by launch-sot.ps1 (which SSH-ensures and opens the
+# tunnels a plan names) and shutdown-sot.ps1 (which needs every port it
+# must kill a tunnel on).
 #
-# Read-SotHosts is the same simple regex parser launch-sot.ps1 used to carry
-# inline -- moved here, unchanged, so it has one home instead of a copy per
-# script. Same format hosts.rs parses on the Rust side; see that file's own
-# doc comment for the format and the "why not a TOML library" rationale.
+# The old hosts.toml TOML parsing (Read-SotHosts / Get-TunnelPlan) is
+# DELETED -- `sot_protocol::topology` (Rust) is the one parser for that
+# file now, and `sotd topology plan --self <host>` is the one way anything
+# reads it. This file is a reader of THAT command's plain-line stdout,
+# nothing else -- no TOML, no `.sot\hosts.toml` path knowledge here at all.
 #
-# Get-TunnelPlan is PURE (no ssh, no side effects) so it's unit-testable
-# against a fixture hosts.toml without touching the network -- the actual
-# ssh-ensure-and-open work stays in launch-sot.ps1 (New-RemoteEnsureCommand
-# and its two call sites), which is not pure by nature and not something a
-# fixture-driven test should be exercising anyway.
+# Get-SotTopologyPlan is PURE apart from the one `sotd topology plan` call
+# it shells out to (no ssh, no other side effects) -- easy to fake in a
+# test by pointing -SotdPath at a stub script that prints fixed lines.
+#
+# Contract (rust/protocol/src/topology.rs's `plan` doc comment -- read it
+# there before changing this; a reviewer may still adjust the format, so
+# this parses it in ONE place and nowhere else): one fact per line, first
+# word a keyword, then either one value (self/hub/relay-endpoint) or a host
+# name followed by a value (dial/tunnel). The value can itself contain a
+# space (a Windows pipe path carries the username verbatim), so every
+# split below keeps the remainder intact -- `-split ' ', 2` at each level,
+# never a fixed field count. A line whose first word isn't recognised is
+# ignored, not an error, so a newer sotd can add facts without breaking an
+# older launcher (the ignore-unknown-keyword rule is deliberate, not an
+# oversight).
+#
+#   self <host>
+#   hub <host>
+#   relay-endpoint <endpoint>
+#   dial <host> <endpoint>      # one per dialable host (daemon, not frontend --
+#                                # D8: a frontend box's daemon is never dialled)
+#   tunnel <host> <port>        # one per dialable host except self
 #
 # ASCII ONLY in string literals (see the same note in launch-sot.ps1): this
 # file has no BOM, so Windows PowerShell 5.1 decodes it as ANSI/cp1252 and a
 # non-ASCII byte inside a string literal can mojibake into a phantom quote
 # and fail the whole parse.
 
-function Read-SotHosts {
-    param([string]$Path)
-    $cfg = @{ default_host = $null; hosts = @{}; order = @() }
-    if (-not (Test-Path $Path)) { return $cfg }
-    $currentHost = $null
-    foreach ($line in Get-Content $Path) {
-        $trim = $line.Trim()
-        if (-not $trim -or $trim.StartsWith('#')) { continue }
-        if ($trim -match '^\[host\.(.+)\]$') {
-            $currentHost = $matches[1].Trim()
-            if (-not $cfg.hosts.ContainsKey($currentHost)) {
-                $cfg.hosts[$currentHost] = @{}
-                $cfg.order += $currentHost
-            }
-            continue
-        }
-        if ($trim -match '^\[(.+)\]$') {
-            # Some other section; reset host context.
-            $currentHost = $null
-            continue
-        }
-        if ($trim -match '^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$') {
-            $key = $matches[1]
-            $val = $matches[2].Trim().Trim('"')
-            if ($currentHost) {
-                $cfg.hosts[$currentHost][$key] = $val
-            } elseif ($key -eq 'default_host') {
-                $cfg.default_host = $val
-            }
-        }
-    }
-    return $cfg
-}
-
-# Get-TunnelPlan: one entry per [host.<name>] section that has an ssh_alias
-# (a remote -- a local-socket-only entry, e.g. a hand-written [host.local]
-# override, has none and is never tunneled). Each entry is
-# { host; ssh_alias; remote_repo; local_port; remote; error }, in
-# hosts.toml declaration order, ready for the caller to turn into an
-# `ssh -L <local_port>:<remote-or-queried-socket> <ssh_alias>` forward.
-#
-# `local` is EXCLUDED unconditionally (codex follow-up) -- it is
-# socket-only (see hosts.rs's resolve_connections doc), so an ssh_alias
-# accidentally left on a [host.local] section must never turn it into a
-# tunnel target, the same way a stray tcp_port on it must never either.
-#
-# tcp_port is REQUIRED per remote -- except the one entry whose NAME
-# (the hosts.toml key, NOT its ssh_alias -- codex follow-up: identity is
-# the key, the alias is only the SSH destination and nothing stops two
-# hosts from sharing one) equals $DefaultHost (today's single-tunnel
-# `default_host`), which falls back to $DefaultPort (SOT_TCP_PORT / 18743)
-# for compatibility with hosts.toml files written before this slice. A
-# remote missing tcp_port (and not the default), or with a malformed one
-# (parsed via TryParse, never a throwing cast -- a bad value must be a
-# per-host plan error, not an all-host abort under the callers'
-# $ErrorActionPreference = 'Stop'), comes back with local_port = $null and
-# a non-empty `error` naming the host and the reason.
-#
-# Two hosts sharing one tcp_port is NOT checked here (owner ruling, codex
-# follow-up round 2): detected once, in rust/frontend/src/hosts.rs's
-# resolve_connections. A second `ssh -L` on an already-bound local port
-# fails to bind on its own and is already nonfatal (this plan's caller
-# treats a failed ssh -fN the same as any other unreachable host) -- which
-# is all the launcher itself needs; a second detector here would just be
-# the same check twice.
-#
-# Nonfatal per host (ADR 0042 L2b design E): never a hard stop for every
-# OTHER host's tunnel.
-function Get-TunnelPlan {
+function Get-SotTopologyPlan {
     param(
-        [hashtable]$Cfg,
-        [string]$DefaultHost,
-        [int]$DefaultPort = 18743
+        # Path to a built sotd(.exe). $null (or missing) is not an error --
+        # a box with no daemon binary yet (first-ever launch, nothing built)
+        # just gets an empty plan, same as a box with no hosts.toml today.
+        [string]$SotdPath,
+        # Passed through as `--self <host>`; omitted lets `sotd` derive its
+        # own host_name() (the normal case -- launch-sot.ps1 never needs to
+        # override this).
+        [string]$SelfHost
     )
-    $plan = @()
-    foreach ($name in $Cfg.order) {
-        if ($name -eq 'local') { continue }   # socket-only, never tunneled
-        $entry = $Cfg.hosts[$name]
-        if (-not $entry.ssh_alias) { continue }   # local-socket host, not a tunnel target
-        $isDefault = ($DefaultHost -and $name -eq $DefaultHost)
-        $port = $null
-        $portErr = $null
-        if ($entry.tcp_port) {
-            $parsedPort = 0
-            if ([int]::TryParse($entry.tcp_port, [ref]$parsedPort)) {
-                $port = $parsedPort
-            } else {
-                $portErr = "host '$name' has a malformed tcp_port '$($entry.tcp_port)'"
+    $result = [PSCustomObject]@{
+        Self          = $null
+        Hub           = $null
+        RelayEndpoint = $null
+        Dials         = @()   # [PSCustomObject]@{ Host; Endpoint }
+        Tunnels       = @()   # [PSCustomObject]@{ Host; Port }
+        Error         = $null
+    }
+    if (-not $SotdPath -or -not (Test-Path -LiteralPath $SotdPath)) {
+        $result.Error = 'no sotd binary found'
+        return $result
+    }
+    $planArgs = @('topology', 'plan')
+    if ($SelfHost) { $planArgs += @('--self', $SelfHost) }
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $output = & $SotdPath @planArgs 2>&1
+    $exit = $LASTEXITCODE
+    $ErrorActionPreference = $savedEAP
+    if ($exit -ne 0) {
+        $result.Error = "sotd topology plan failed (exit $exit): $($output | Out-String)".Trim()
+        return $result
+    }
+    foreach ($line in $output) {
+        # First split: keyword vs. everything else, remainder intact.
+        $head = "$line" -split ' ', 2
+        $keyword = $head[0]
+        $rest = if ($head.Length -gt 1) { $head[1] } else { '' }
+        switch ($keyword) {
+            'self'           { $result.Self = $rest }
+            'hub'            { $result.Hub = $rest }
+            'relay-endpoint' { $result.RelayEndpoint = $rest }
+            'dial' {
+                # Second split, same rule: host vs. the endpoint (which may
+                # itself contain a space on Windows).
+                $fields = $rest -split ' ', 2
+                if ($fields.Length -eq 2 -and $fields[0]) {
+                    $result.Dials += [PSCustomObject]@{ Host = $fields[0]; Endpoint = $fields[1] }
+                }
             }
-        } elseif ($isDefault) {
-            $port = $DefaultPort
-        } else {
-            $portErr = "host '$name' has no tcp_port (required for a remote tunnel)"
-        }
-        $plan += [PSCustomObject]@{
-            host        = $name
-            ssh_alias   = $entry.ssh_alias
-            remote_repo = $entry.remote_repo
-            local_port  = $port
-            remote      = $entry.remote_socket
-            error       = $portErr
+            'tunnel' {
+                $fields = $rest -split ' ', 2
+                $port = 0
+                if ($fields.Length -eq 2 -and $fields[0] -and [int]::TryParse($fields[1], [ref]$port)) {
+                    $result.Tunnels += [PSCustomObject]@{ Host = $fields[0]; Port = $port }
+                }
+            }
+            default {
+                # Unknown first word -- ignore (forward-compat with a newer
+                # sotd; see the module doc above).
+            }
         }
     }
-    return $plan
+    return $result
 }

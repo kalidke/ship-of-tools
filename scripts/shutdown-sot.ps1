@@ -84,30 +84,23 @@ function W([string]$m) { "$(Get-Date -Format o)  $m" | Tee-Object -FilePath $log
 #            browser forwards and always includes pluto "-L 1234:127.0.0.1:1234"
 #            - anchor on that. These are sot-owned and must die with the FE.
 #
-# ADR 0042 L2b design E: launch-sot.ps1 opens one tunnel per configured
-# remote, not just $TcpPort's -- this script has to know every port it
-# might need to kill a tunnel on, or a second remote's tunnel outlives every
-# "clean" shutdown exactly the way the 2026-07-14 incident above describes.
-# Read-SotHosts/Get-TunnelPlan (shared with launch-sot.ps1) supply that list;
-# $TcpPort (env/-TcpPort override) is ALWAYS included even with no
-# hosts.toml at all, matching the pre-L2b single-tunnel contract.
+# ADR 0042 L2b design E: launch-sot.ps1 opens one tunnel per dialable host
+# `sotd topology plan` names, not just $TcpPort's -- this script has to
+# know every port it might need to kill a tunnel on, or a remote's tunnel
+# outlives every "clean" shutdown exactly the way the 2026-07-14 incident
+# above describes. Get-SotTopologyPlan (shared with launch-sot.ps1, lane D)
+# supplies that list; $TcpPort (env/-TcpPort override) is ALWAYS included
+# even with no plan at all (no sotd binary yet), matching the pre-L2b
+# single-tunnel contract.
 . (Join-Path $PSScriptRoot 'sot-hosts.ps1')
 $repo = Resolve-Path -Path (Join-Path $PSScriptRoot '..')
-$hostsCfg = Read-SotHosts -Path (Join-Path $repo '.sot\hosts.toml')
-# Codex follow-up, item 7: Get-TunnelPlan's default-host match is by
-# hosts.toml KEY, not ssh_alias -- $SshAlias above is (and stays) an SSH
-# destination for the journal-verification ssh calls, a different identity.
-# Resolve the KEY the same way launch-sot.ps1's $activeHostName does.
-$activeHostName = if ($env:SOT_HOST_NAME) {
-    $env:SOT_HOST_NAME
-} elseif ($hostsCfg.default_host) {
-    $hostsCfg.default_host
-} else {
-    $null
+$sotdForPlan = $null
+foreach ($cand in @((Join-Path $repo 'rust\target\release\sotd.exe'), (Join-Path $env:LOCALAPPDATA 'sot\bin\sotd.exe'))) {
+    if (Test-Path -LiteralPath $cand) { $sotdForPlan = $cand; break }
 }
-$tunnelPlan = Get-TunnelPlan -Cfg $hostsCfg -DefaultHost $activeHostName -DefaultPort $TcpPort
+$plan = Get-SotTopologyPlan -SotdPath $sotdForPlan
 $tunnelPorts = @($TcpPort) + (
-    $tunnelPlan | Where-Object { $_.local_port } | ForEach-Object { $_.local_port }
+    $plan.Tunnels | Where-Object { $_.Port } | ForEach-Object { $_.Port }
 ) | Sort-Object -Unique
 $portAlt = ($tunnelPorts | ForEach-Object { "-L ${_}:" }) -join '|'
 

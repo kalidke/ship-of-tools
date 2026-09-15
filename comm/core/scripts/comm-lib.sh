@@ -82,10 +82,22 @@ _sot_windows_local_pipe() {
 # day discovery became pipe-first). Workspace ops, spawn and sot-fe keep
 # sot_daemon_endpoint's pipe-first order: those really do target the local
 # daemon. An explicit endpoint always wins, as everywhere else.
+#
+# Topology plan (lane D): the launcher derives this box's relay endpoint
+# from `sotd topology plan --self <host>` (the hub's own socket on the
+# hub, its forward tunnel elsewhere — see relay_endpoint in
+# rust/protocol/src/topology.rs) and exports/persists it as
+# SOT_RELAY_ENDPOINT (launch-sot.ps1). Take that when a launcher has set
+# it — no more hardcoded `tcp:127.0.0.1:18743` guess, which was wrong on
+# any box not literally tunneling the hub on the default port (the laptop
+# fix: those sessions' sends went nowhere). The hardcoded guess remains
+# the fallback for a box with no plan yet (no launcher run, or a sotd too
+# old to have one).
 sot_relay_endpoint() {
     local explicit="${1:-}"
     [ -n "$explicit" ] && { printf '%s\n' "$explicit"; return 0; }
     if _sot_is_windows; then
+        [ -n "${SOT_RELAY_ENDPOINT:-}" ] && { printf '%s\n' "$SOT_RELAY_ENDPOINT"; return 0; }
         printf 'tcp:127.0.0.1:%s\n' "${SOT_PORT:-18743}"
         return 0
     fi
