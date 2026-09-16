@@ -15812,7 +15812,12 @@ impl State {
                     format!("  account: {}{marker} · {} next", acct.name,
                         self.bindings.first_label(Action::SessionAccountNext)),
                     false,
-                    false,
+                    // Attention slot (yellow + bold), not the dim footer
+                    // treatment the two rows above use: this is the only
+                    // picker row that announces a key you must press
+                    // BEFORE Enter, and a dim hint is one a user reads
+                    // past — reported from the field, 2026-09-15.
+                    true,
                     false,
                     None,
                     0.0,
@@ -16088,7 +16093,10 @@ impl State {
                     // cyan, distinct from the yellow stale/selected hues),
                     // then selection (light yellow), then dim.
                     if *is_stale {
-                        style = style.fg(Color::Yellow);
+                        // Yellow is the cross-cutting attention hue; BOLD
+                        // rides with it so the row reads at a glance
+                        // rather than only on a careful scan.
+                        style = style.fg(Color::Yellow).add_modifier(Modifier::BOLD);
                     } else if let Some((tone, aged)) = agent {
                         // Resolve the tone to RGB through the shared contrast
                         // helper so the nav row and the bottom strip render
