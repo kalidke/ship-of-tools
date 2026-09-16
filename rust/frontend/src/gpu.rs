@@ -470,7 +470,8 @@ struct WorkspaceReplSnapshot {
 /// Sessions-mode workspace picker (ADR 0014). When `State.workspace_picker`
 /// is `Some(this)`, the NavTree renders this directory listing instead of
 /// the Sessions list. Up/Down moves the cursor; Right drills into a
-/// subdirectory (refires `directory.list`); Left ascends to the parent; Enter
+/// subdirectory (refires `directory.list`); Left ascends to the parent, landing
+/// on the directory it came out of; Enter
 /// commits the cursored directory as the new workspace's project_root (with the
 /// ccb agent), Shift+Enter commits it as a bare session (no LLM agent); Esc
 /// cancels. Commit chords are keymap-driven (session.create / .create_bare).
@@ -494,6 +495,13 @@ struct WorkspacePicker {
     entries: Vec<crate::transport::DirEntry>,
     /// Cursor into `entries`. `0`-based; clamped on each refresh.
     selected: usize,
+    /// The entry the cursor lands on when the pending listing arrives,
+    /// by name (unique within one listing, and immune to a start path
+    /// written with a trailing slash): the directory Left just came out of —
+    /// so going back up returns you to where you went in, not the top — or
+    /// the entry under the cursor before a hidden-folder toggle. Consumed by
+    /// the listing that answers `current_path`.
+    reveal: Option<String>,
     /// Per-session accounts (owner-simplified brief, 2026-09-15): the
     /// login directories `accounts.list` reported for `host`, "default"
     /// first. Empty until the reply lands, and stays empty (the field the
@@ -507,6 +515,18 @@ struct WorkspacePicker {
 }
 
 impl WorkspacePicker {
+    /// Install a listing that answers `current_path` and place the cursor:
+    /// on `reveal` if the listing holds it, else where it was if that is
+    /// still in range, else the top.
+    fn land_listing(&mut self, entries: Vec<crate::transport::DirEntry>) {
+        let reveal = self.reveal.take();
+        self.entries = entries;
+        let kept = if self.selected < self.entries.len() { self.selected } else { 0 };
+        self.selected = reveal
+            .and_then(|name| self.entries.iter().position(|e| e.name == name))
+            .unwrap_or(kept);
+    }
+
     /// Per-session accounts (owner-simplified brief, 2026-09-15): true only
     /// when there's a real choice — more than "default" alone. An empty
     /// list (old daemon with no `accounts.list` handler, or the reply
@@ -9115,6 +9135,7 @@ impl State {
             current_path: start.clone(),
             entries: Vec::new(),
             selected: 0,
+            reveal: None,
             accounts: Vec::new(),
             account_selected: 0,
         });
@@ -9208,6 +9229,11 @@ impl State {
                 return;
             }
             if let Some(p) = self.workspace_picker.as_mut() {
+                // The directory being left is an entry of its parent: land
+                // the cursor on it when the parent's listing arrives.
+                p.reveal = std::path::Path::new(&p.current_path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned());
                 p.current_path = path.clone();
                 p.entries.clear();
                 p.selected = 0;
@@ -9236,6 +9262,9 @@ impl State {
             return;
         };
         p.show_hidden = !p.show_hidden;
+        // Keep the cursor on the entry it was on, unless that entry is the
+        // one now hidden.
+        p.reveal = p.entries.get(p.selected).map(|e| e.name.clone());
         p.entries.clear();
         p.selected = 0;
         let (host, path, include_hidden) = (p.host.clone(), p.current_path.clone(), p.show_hidden);
@@ -14334,10 +14363,7 @@ impl State {
                         // (plausible: two hosts share a home-directory
                         // layout) must not populate this picker's entries.
                         if p.current_path == path && p.host == event_host {
-                            p.entries = entries;
-                            if p.selected >= p.entries.len() {
-                                p.selected = 0;
-                            }
+                            p.land_listing(entries);
                             self.window.request_redraw();
                         } else {
                             tracing::debug!(%path, current = %p.current_path, %event_host, picker_host = %p.host, "drop stale directory.list reply");
@@ -26671,9 +26697,53 @@ mod tests {
             current_path: "/tmp".to_string(),
             entries: Vec::new(),
             selected: 0,
+            reveal: None,
             accounts,
             account_selected: 0,
         }
+    }
+
+    fn picker_dir(path: &str) -> crate::transport::DirEntry {
+        crate::transport::DirEntry {
+            name: path.rsplit('/').next().unwrap_or(path).to_string(),
+            path: path.to_string(),
+            has_children: true,
+        }
+    }
+
+    /// Going back up with Left returns you to where you went in: the
+    /// directory just left is an entry of the parent, and the cursor lands
+    /// on it instead of the top.
+    #[test]
+    fn picker_listing_lands_the_cursor_on_the_directory_left_behind() {
+        let mut p = picker_with_accounts(Vec::new());
+        p.reveal = Some("c".to_string());
+        p.land_listing(vec![picker_dir("/tmp/a"), picker_dir("/tmp/b"), picker_dir("/tmp/c")]);
+        assert_eq!(p.selected, 2);
+        assert_eq!(p.reveal, None, "consumed by the listing that answered");
+    }
+
+    /// The remembered entry is not in the listing (a dot-directory, with
+    /// hidden folders now off): the top, never a stale index.
+    #[test]
+    fn picker_listing_falls_back_to_the_top_when_the_entry_is_gone() {
+        let mut p = picker_with_accounts(Vec::new());
+        p.reveal = Some(".hidden".to_string());
+        p.land_listing(vec![picker_dir("/tmp/a"), picker_dir("/tmp/b")]);
+        assert_eq!(p.selected, 0);
+    }
+
+    /// Nothing remembered: an in-range cursor stays put, and one the
+    /// listing no longer reaches goes to the top.
+    #[test]
+    fn picker_listing_keeps_an_in_range_cursor_and_clamps_the_rest() {
+        let mut p = picker_with_accounts(Vec::new());
+        p.selected = 1;
+        p.land_listing(vec![picker_dir("/tmp/a"), picker_dir("/tmp/b")]);
+        assert_eq!(p.selected, 1);
+        p.selected = 5;
+        p.land_listing(vec![picker_dir("/tmp/a")]);
+        assert_eq!(p.selected, 0);
     }
 
     /// The new-session prompt's account list handling (owner-simplified
