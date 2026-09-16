@@ -6,7 +6,12 @@
 # simply has it. Every other box fetches it with `sotd topology sync --hub
 # <alias>` into its own config dir (~/.config/sot/hosts.toml,
 # %LOCALAPPDATA%\sot\config\hosts.toml); the launcher runs that at every
-# launch. `$SOT_HOSTS` overrides the path (tests, scratch daemons). There
+# launch, naming the hub the copy it already has declares. A box that has
+# never synced has no copy to name one, so the launcher falls back to its
+# own configured backend host (`$SOT_HOST_NAME` / `$SOT_HOST`) for that
+# first fetch; with neither, it launches with no remote hosts and says so
+# in the supervisor log. `$SOT_HOSTS` overrides the path (tests, scratch
+# daemons). There
 # is no repo-local copy: this file is a template, not a search location.
 #
 # Read once at daemon start for the [monitor] list; at every launch for the

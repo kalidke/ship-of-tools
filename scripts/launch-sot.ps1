@@ -692,6 +692,29 @@ function Update-SotTopologyPlan {
         if (Test-Path -LiteralPath $stagedSotdForPlan) { $stagedSotdForPlan } else { $null }
     }
     $script:plan = Get-SotTopologyPlan -SotdPath $sotdForPlan
+    # Self-heal, at EVERY launch -- what .sot\hosts.toml.example promises.
+    # The hub is the one writer of that file; this only ever FETCHES its
+    # copy, so there is no second source of truth. The alias comes from the
+    # copy just read; when that copy is missing or names no hub -- the
+    # bootstrap case, a box that has never synced, whose plan therefore
+    # fails and whose frontend would otherwise come up with no remote hosts
+    # at all -- fall back to this launcher's own configured backend host,
+    # the only other place a hub is ever named here. Then re-read: a
+    # successful fetch may have added hosts, or the whole file.
+    $syncHub = if ($script:plan.Hub) {
+        $script:plan.Hub
+    } elseif ($env:SOT_HOST_NAME) {
+        $env:SOT_HOST_NAME
+    } else {
+        $env:SOT_HOST
+    }
+    $sync = Invoke-SotTopologySync -SotdPath $sotdForPlan -Hub $syncHub
+    if ($sync.Ok) {
+        if ($sync.Output) { Write-SupLog "topology sync: $($sync.Output)" }
+        $script:plan = Get-SotTopologyPlan -SotdPath $sotdForPlan
+    } elseif ($sync.Output) {
+        Write-SupLog "topology sync skipped: $($sync.Output)"
+    }
     if ($script:plan.Error) {
         Write-SupLog "topology: $($script:plan.Error) - continuing with no remote hosts"
     }
@@ -705,37 +728,6 @@ function Update-SotTopologyPlan {
     }
 }
 Update-SotTopologyPlan
-$backendHost = if ($env:SOT_HOST_NAME) {
-    $env:SOT_HOST_NAME
-} elseif ($env:SOT_HOST) {
-    $env:SOT_HOST
-} else {
-    $plan.Hub
-}
-# ADR 0042 L2b codex follow-up (design 3): the default remote is now
-# NONFATAL, same as every other host -- the local `--socket` connection
-# (item 1: no more unconditional implicit local, but this launcher always
-# passes it when the local daemon is up, see $localSocket above) means the
-# frontend usually has SOMETHING to show even with no default remote
-# configured or reachable at all. No backend host configured (logged below, once $tcpPort/etc. are in scope)
-# just means the launch continues without one; $defaultRemoteOk (computed
-# further down, after the ssh attempt) gates the one error dialog that
-# remains -- see the "nothing at all can start" check right before the
-# frontend launches.
-# The plan's own ordinal port for $backendHost (the hub is always 18743)
-# wins; SOT_TCP_PORT still overrides it, and 18743 is the last-resort
-# fallback for a box with no plan at all (no sotd binary yet).
-$planPrimaryPort = ($plan.Tunnels | Where-Object { $_.Host -eq $backendHost } | Select-Object -First 1).Port
-$tcpPort = if ($env:SOT_TCP_PORT) {
-    [int]$env:SOT_TCP_PORT
-} elseif ($planPrimaryPort) {
-    $planPrimaryPort
-} else {
-    18743
-}
-# Always queried on the remote (New-RemoteEnsureCommand below) -- no more
-# config-file/env override; see the host-registry comment above.
-$remoteSocket = $null
 # Token resolution with registry-scope fallback (a Windows FE box finding, 2026-07-11):
 # an ADR-0017 exit-75 respawn reuses THIS supervisor's process env, frozen at
 # launch time — a supervisor started from a stale shell/shortcut (no
@@ -818,6 +810,48 @@ done
     return ($cmd -replace "`r`n", "`n")
 }
 
+
+# Everything the default remote's dial is made of -- which host it is, its
+# port, its socket, whether it resolved at all, and the ssh argv that forwards
+# it -- in ONE function, called at first launch and again on every converge
+# (exit 76) right after the plan is re-read. It used to run once, above the
+# supervisor loop: a launch whose FIRST plan failed then kept an empty $sshArgs
+# for the life of the process, so a converge that finally saw a good plan
+# handed the frontend a --dial with no tunnel behind it. Assignments are
+# $script: because the loop, the tunnel helpers and the "nothing reachable"
+# check all read them.
+function Update-SotRemoteDial {
+$script:backendHost = if ($env:SOT_HOST_NAME) {
+    $env:SOT_HOST_NAME
+} elseif ($env:SOT_HOST) {
+    $env:SOT_HOST
+} else {
+    $plan.Hub
+}
+# ADR 0042 L2b codex follow-up (design 3): the default remote is now
+# NONFATAL, same as every other host -- the local `--socket` connection
+# (item 1: no more unconditional implicit local, but this launcher always
+# passes it when the local daemon is up, see $localSocket above) means the
+# frontend usually has SOMETHING to show even with no default remote
+# configured or reachable at all. No backend host configured (logged below, once $tcpPort/etc. are in scope)
+# just means the launch continues without one; $defaultRemoteOk (computed
+# further down, after the ssh attempt) gates the one error dialog that
+# remains -- see the "nothing at all can start" check right before the
+# frontend launches.
+# The plan's own ordinal port for $backendHost (the hub is always 18743)
+# wins; SOT_TCP_PORT still overrides it, and 18743 is the last-resort
+# fallback for a box with no plan at all (no sotd binary yet).
+$planPrimaryPort = ($plan.Tunnels | Where-Object { $_.Host -eq $backendHost } | Select-Object -First 1).Port
+$script:tcpPort = if ($env:SOT_TCP_PORT) {
+    [int]$env:SOT_TCP_PORT
+} elseif ($planPrimaryPort) {
+    $planPrimaryPort
+} else {
+    18743
+}
+# Always queried on the remote (New-RemoteEnsureCommand above) -- no more
+# config-file/env override; see the host-registry comment above.
+$script:remoteSocket = $null
 # ADR 0042 L2b codex follow-up (design 3): the default remote is routed
 # through the same nonfatal plan every other host uses -- log, continue,
 # let the frontend show it unreachable and reconnect. $defaultRemoteOk
@@ -825,7 +859,7 @@ done
 # and (combined with $localDaemonReady, computed further below, after
 # the freshness rebuild) the ONE error dialog that remains -- see
 # "nothing at all can start" further down.
-$defaultRemoteOk = $false
+$script:defaultRemoteOk = $false
 if ($backendHost) {
     $remoteCmd = New-RemoteEnsureCommand -Restart $RestartBackend
     # rev 2: default launches only check staleness / start-if-down (never restart a
@@ -853,10 +887,10 @@ if ($backendHost) {
             Set-LaunchStatus "ERROR: backend force-restart failed on $backendHost (see 'systemctl --user status sotd' on that box / supervisor.log)"
         }
         if ($remoteStatusText -match 'backend-socket:\s*(\S+)') {
-            $remoteSocket = $matches[1]
+            $script:remoteSocket = $matches[1]
         }
         if ($remoteSocket) {
-            $defaultRemoteOk = $true
+            $script:defaultRemoteOk = $true
         } else {
             Write-SupLog "default remote: '$backendHost' did not report a socket path - continuing without it"
         }
@@ -885,7 +919,7 @@ $plutoPort = if ($env:SOT_PLUTO_PORT) { [int]$env:SOT_PLUTO_PORT } else { 1234 }
 $videoPort = if ($env:SOT_VIDEO_PORT) { [int]$env:SOT_VIDEO_PORT } else { 1235 }
 $docsPort  = if ($env:SOT_DOCS_PORT)  { [int]$env:SOT_DOCS_PORT }  else { 1236 }
 $wglPort   = if ($env:SOT_WGL_PORT)   { [int]$env:SOT_WGL_PORT }   else { 1241 }
-$sshCommonArgs = @(
+$script:sshCommonArgs = @(
     '-N',
     '-o', 'ExitOnForwardFailure=yes',
     '-o', 'ServerAliveInterval=30',
@@ -911,12 +945,12 @@ $sshCommonArgs = @(
 # on a shared host the safe default is to forward nothing you cannot prove is
 # yours.
 $useLegacyForwards = [bool]$env:SOT_LEGACY_FORWARDS
-$sshAuxArgs = @()
+$script:sshAuxArgs = @()
 if ($useLegacyForwards -and $defaultRemoteOk) {
     Write-Host "SOT_LEGACY_FORWARDS=1 - forwarding fixed helper ports $plutoPort/$videoPort/$docsPort(+1..4)/$wglPort." -ForegroundColor Yellow
     Write-Host "  On a shared host these may belong to ANOTHER USER's daemon; pages served over them are not verified as yours." -ForegroundColor Yellow
-    $sshAuxArgs += $sshCommonArgs
-    $sshAuxArgs += @(
+    $script:sshAuxArgs += $sshCommonArgs
+    $script:sshAuxArgs += @(
         # H1.2 — the remote Pluto.jl server.
         '-L', "${plutoPort}:127.0.0.1:${plutoPort}",
         # ADR 0018 — the backend's video file server.
@@ -938,10 +972,10 @@ if ($useLegacyForwards -and $defaultRemoteOk) {
 # default remote actually resolved -- see $defaultRemoteOk above. An empty
 # $sshArgs makes Start-SotTunnel's own callers no-ops (guarded at each
 # call site, "Connecting..." and the supervisor loop below).
-$sshArgs = @()
+$script:sshArgs = @()
 if ($defaultRemoteOk) {
-    $sshArgs += $sshCommonArgs
-    $sshArgs += @('-L', "${tcpPort}:$remoteSocket")
+    $script:sshArgs += $sshCommonArgs
+    $script:sshArgs += @('-L', "${tcpPort}:$remoteSocket")
     # Fold the aux forwards into the MAIN tunnel too -- but only when they exist.
     # With the forwards retired, $sshAuxArgs is empty and `$sshAuxArgs.Count - 1`
     # would be -1, which PowerShell reads as "last element" and would splice
@@ -952,7 +986,7 @@ if ($defaultRemoteOk) {
         # and the destination is appended separately below. Slicing to Count - 1 here
         # would put the host in twice.
         $auxForwardEnd = $sshAuxArgs.Count - 2
-        $sshArgs += $sshAuxArgs[$auxForwardStart..$auxForwardEnd]
+        $script:sshArgs += $sshAuxArgs[$auxForwardStart..$auxForwardEnd]
     }
     # The ssh DESTINATION, always last and never conditional. Before the aux
     # forwards were retired this rode in as the final element of the $sshAuxArgs
@@ -960,8 +994,10 @@ if ($defaultRemoteOk) {
     # host entirely and ssh exited instantly ("ssh -N -o ... -L 18743:<sock>" with
     # no destination), leaving the supervisor respawning a doomed tunnel on
     # exponential backoff and 18743 never listening. Observed on a real FE, 2026-07-30.
-    $sshArgs += $backendHost
+    $script:sshArgs += $backendHost
 }
+}
+Update-SotRemoteDial
 function Test-LocalPortOpen {
     param([int]$Port)
     $client = New-Object Net.Sockets.TcpClient
@@ -1690,6 +1726,25 @@ try {
             Invoke-SelfUpdatePrelude
             Invoke-FreshnessPass
             Update-SotTopologyPlan
+            # The re-read plan is only half of it: the dial it describes --
+            # host, port, socket, ssh argv -- has to be rebuilt from it too,
+            # or the frontend respawned below gets a --dial with no tunnel
+            # behind it. That is exactly the bootstrap case: a first plan
+            # that failed (no local topology file), then a sync, then this.
+            Update-SotRemoteDial
+            # The loop's watchdog further down only ever RESPAWNS a tunnel
+            # that has exited, so a converge that has just GAINED a remote
+            # must start the first one here. Re-test the port: another
+            # process may be holding it, in which case the control tunnel
+            # is external and only the aux one is ours to start.
+            if (-not $sshTunnel -or $sshTunnel.HasExited) {
+                $externalControlTunnel = Test-LocalPortOpen -Port $tcpPort
+                $sshTunnel = if ($externalControlTunnel) { Start-SotAuxTunnel } else { Start-SotTunnel }
+                if ($sshTunnel) {
+                    $sshStartedAt = Get-Date
+                    Write-SupLog "converge: control tunnel started pid=$($sshTunnel.Id) on port $tcpPort (external=$externalControlTunnel)"
+                }
+            }
             $localDaemonReady = Invoke-LocalDaemonEnsure
             $localSocket = if ($localDaemonReady) { Get-SotLocalPipePath } else { $null }
             Set-LaunchNoticeEnv

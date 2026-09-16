@@ -120,6 +120,48 @@ try {
     Check 'missing binary yields an empty, errored plan (not a throw)' `
         ($missingPlan.Error -and $missingPlan.Dials.Count -eq 0 -and $missingPlan.Tunnels.Count -eq 0) `
         "got error=[$($missingPlan.Error)]"
+
+    Write-Host "`n=== 5. Invoke-SotTopologySync: the one side-effecting call ===" -ForegroundColor Cyan
+    # A stub that records its own argv and answers with a chosen exit code,
+    # so this asserts the exact command line the launcher hands sotd without
+    # a real binary, ssh or network -- same hermetic rule as the sections above.
+    function New-FakeSyncSotd([string]$name, [string]$argLog, [int]$code, [string]$say) {
+        $path = Join-Path $root "$name.cmd"
+        $body = "@echo off`r`n" +
+                "echo %* > `"$argLog`"`r`n" +
+                "echo $say`r`n" +
+                "exit /b $code`r`n"
+        Set-Content -LiteralPath $path -Value $body -Encoding ascii
+        return $path
+    }
+
+    $okLog = Join-Path $root 'sync-ok-args.txt'
+    $okSotd = New-FakeSyncSotd 'sync-ok' $okLog 0 'synced'
+    $okSync = Invoke-SotTopologySync -SotdPath $okSotd -Hub 'hub-box'
+    $okArgs = (Get-Content -LiteralPath $okLog -Raw).Trim()
+    Check 'a zero exit reports Ok' ($okSync.Ok) "got Ok=$($okSync.Ok) output=[$($okSync.Output)]"
+    Check 'sotd is asked for exactly `topology sync --hub <alias>`' `
+        ($okArgs -eq 'topology sync --hub hub-box') "got [$okArgs]"
+    Check 'the command output is carried back to the caller' `
+        ($okSync.Output -match 'synced') "got [$($okSync.Output)]"
+
+    $failLog = Join-Path $root 'sync-fail-args.txt'
+    $failSotd = New-FakeSyncSotd 'sync-fail' $failLog 1 'hub unreachable'
+    $failSync = Invoke-SotTopologySync -SotdPath $failSotd -Hub 'hub-box'
+    Check 'a non-zero exit is a reported failure, never a throw' `
+        ((-not $failSync.Ok) -and ($failSync.Output -match 'hub unreachable')) `
+        "got Ok=$($failSync.Ok) output=[$($failSync.Output)]"
+
+    $noHubLog = Join-Path $root 'sync-nohub-args.txt'
+    $noHubSotd = New-FakeSyncSotd 'sync-nohub' $noHubLog 0 'should not run'
+    $noHubSync = Invoke-SotTopologySync -SotdPath $noHubSotd -Hub ''
+    Check 'no hub named: nothing is run at all' `
+        ((-not $noHubSync.Ok) -and (-not (Test-Path -LiteralPath $noHubLog))) `
+        "got Ok=$($noHubSync.Ok) ranStub=$(Test-Path -LiteralPath $noHubLog)"
+
+    $noBinSync = Invoke-SotTopologySync -SotdPath (Join-Path $root 'does-not-exist.exe') -Hub 'hub-box'
+    Check 'no sotd binary: reported, not thrown' `
+        ((-not $noBinSync.Ok) -and $noBinSync.Output) "got Ok=$($noBinSync.Ok)"
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
