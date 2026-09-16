@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sot_protocol::{GpuSample, HostLatest, HostSeries, MonitorHistoryReq, MonitorSample};
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::Command;
 use tokio::sync::broadcast;
 
@@ -747,6 +747,27 @@ impl MonitorHub {
     }
 }
 
+/// Whether a death reason is worth a fresh log line: only when it is
+/// non-empty and differs from the last one logged for this host. The wire
+/// already carries "still failing" on every tick via the ring's `stale`
+/// flag; the journal only needs to hold the one thing the wire does not,
+/// which is why.
+fn should_log(prev: Option<&str>, next: &str) -> bool {
+    !next.is_empty() && prev != Some(next)
+}
+
+/// `lines.next_line()`, or pending forever when there is no pipe to read.
+/// Lets `supervise` `select!` over stdout and stderr uniformly even though
+/// one of them may not have been captured.
+async fn next_or_pending<R: AsyncBufRead + Unpin>(
+    lines: &mut Option<Lines<R>>,
+) -> std::io::Result<Option<String>> {
+    match lines {
+        Some(l) => l.next_line().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Per-host supervisor: spawn the sampler, stream its lines into the ring +
 /// broadcast, and on death emit a stale tick and respawn after a backoff.
 async fn supervise(
@@ -754,53 +775,72 @@ async fn supervise(
     tick_tx: broadcast::Sender<HostLatest>,
     rings: Arc<Mutex<HashMap<String, HostRing>>>,
 ) {
+    // The reason last logged for this host's death, so a target that stays
+    // unreachable logs it once rather than on every ~5s respawn forever.
+    let mut last_reason: Option<String> = None;
     loop {
-        match spawn_source(&host).await {
+        let reason = match spawn_source(&host).await {
             Ok(mut child) => {
-                if let Some(stdout) = child.stdout.take() {
-                    let mut lines = BufReader::new(stdout).lines();
-                    loop {
-                        match lines.next_line().await {
-                            Ok(Some(line)) => {
-                                let line = line.trim();
-                                if line.is_empty() {
-                                    continue;
-                                }
-                                match serde_json::from_str::<RawSample>(line) {
-                                    Ok(raw) => {
-                                        let sample = raw.into_sample();
-                                        if let Ok(mut rings) = rings.lock() {
-                                            if let Some(r) = rings.get_mut(&host.name) {
-                                                r.push(sample.clone());
+                let mut stdout = child.stdout.take().map(|s| BufReader::new(s).lines());
+                let mut stderr = child.stderr.take().map(|s| BufReader::new(s).lines());
+                // ssh's own words for why the source died, kept only until
+                // the child does — one bounded string, never a growing log.
+                let mut stderr_line: Option<String> = None;
+                loop {
+                    tokio::select! {
+                        line = next_or_pending(&mut stdout) => {
+                            match line {
+                                Ok(Some(line)) => {
+                                    let line = line.trim();
+                                    if line.is_empty() {
+                                        continue;
+                                    }
+                                    match serde_json::from_str::<RawSample>(line) {
+                                        Ok(raw) => {
+                                            let sample = raw.into_sample();
+                                            if let Ok(mut rings) = rings.lock() {
+                                                if let Some(r) = rings.get_mut(&host.name) {
+                                                    r.push(sample.clone());
+                                                }
                                             }
+                                            let _ = tick_tx.send(HostLatest {
+                                                host: host.name.clone(),
+                                                stale: false,
+                                                sample: Some(sample),
+                                            });
                                         }
-                                        let _ = tick_tx.send(HostLatest {
-                                            host: host.name.clone(),
-                                            stale: false,
-                                            sample: Some(sample),
-                                        });
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(host = %host.name, error = %e, line, "monitor: bad sampler line");
+                                        Err(e) => {
+                                            tracing::warn!(host = %host.name, error = %e, line, "monitor: bad sampler line");
+                                        }
                                     }
                                 }
+                                Ok(None) => {
+                                    tracing::warn!(host = %host.name, "monitor: sampler stdout closed");
+                                    break stderr_line.take().unwrap_or_default();
+                                }
+                                Err(e) => {
+                                    tracing::warn!(host = %host.name, error = %e, "monitor: sampler read error");
+                                    break stderr_line.take().unwrap_or_default();
+                                }
                             }
-                            Ok(None) => {
-                                tracing::warn!(host = %host.name, "monitor: sampler stdout closed");
-                                break;
-                            }
-                            Err(e) => {
-                                tracing::warn!(host = %host.name, error = %e, "monitor: sampler read error");
-                                break;
+                        }
+                        line = next_or_pending(&mut stderr) => {
+                            if let Ok(Some(line)) = line {
+                                let line = line.trim();
+                                if !line.is_empty() {
+                                    stderr_line = Some(line.chars().take(200).collect());
+                                }
                             }
                         }
                     }
                 }
                 // child dropped here -> kill_on_drop reaps it.
             }
-            Err(e) => {
-                tracing::warn!(host = %host.name, error = %e, "monitor: sampler spawn failed");
-            }
+            Err(e) => e.to_string(),
+        };
+        if should_log(last_reason.as_deref(), &reason) {
+            tracing::warn!(host = %host.name, reason = %reason, "monitor: sampler died");
+            last_reason = Some(reason);
         }
         // Source is down: surface a gap, mark the ring stale, back off, retry.
         if let Ok(mut rings) = rings.lock() {
@@ -844,7 +884,7 @@ async fn spawn_source(host: &MonitorHost) -> std::io::Result<tokio::process::Chi
     };
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true);
 
     let mut child = cmd.spawn()?;
@@ -872,15 +912,33 @@ async fn spawn_source(host: &MonitorHost) -> std::io::Result<tokio::process::Chi
 /// while it runs changes nothing until a restart — a deliberate limit (the
 /// samplers are spawned eagerly from this list) that has bitten, so it is
 /// said here.
+/// The sampling roster this box actually executes. The declared monitor
+/// table is HUB-SCOPED DECLARATION: only the declared hub runs it. Every
+/// other daemon samples the host it runs on and nothing else — it is not
+/// the monitoring authority, and asking it to ssh targets it may not
+/// resolve produced a partial record that looked like a whole one.
+fn sampling_roster(topo: &sot_protocol::topology::Topology, local: &str) -> Vec<MonitorHost> {
+    if topo.hub == local {
+        monitor_hosts(topo.monitor_targets(), local)
+    } else {
+        vec![MonitorHost { name: local.into(), ssh_alias: None, local: true }]
+    }
+}
+
 pub fn load_hosts() -> Vec<MonitorHost> {
     let local = sot_log::state_dir::host_name().unwrap_or_else(|_| "local".to_string());
-    let targets = match sot_protocol::topology::load() {
+    let hosts = match sot_protocol::topology::load() {
         Ok(Some((path, topo))) => {
             for w in &topo.warnings {
                 tracing::warn!(path = ?path, "hosts.toml: {w}");
             }
-            tracing::info!(path = ?path, count = topo.monitor.len(), "monitor: hosts loaded");
-            topo.monitor_targets()
+            let hosts = sampling_roster(&topo, &local);
+            if topo.hub == local {
+                tracing::info!(path = ?path, count = hosts.len(), "monitor: hosts loaded, this box is the hub");
+            } else {
+                tracing::info!(path = ?path, hub = %topo.hub, "monitor: not the hub; sampling only this host");
+            }
+            hosts
         }
         Ok(None) => Vec::new(),
         Err(e) => {
@@ -888,7 +946,6 @@ pub fn load_hosts() -> Vec<MonitorHost> {
             Vec::new()
         }
     };
-    let hosts = monitor_hosts(targets, &local);
     if hosts.is_empty() {
         tracing::info!(host = %local, "monitor: no [monitor] entries; monitoring local host only");
         return vec![MonitorHost { name: local, ssh_alias: None, local: true }];
@@ -925,5 +982,50 @@ mod config_tests {
         // The alias, not only the label, marks the local box.
         let hosts = monitor_hosts(vec![("lab".into(), "alpha".into())], "alpha");
         assert!(hosts[0].local && hosts[0].name == "lab");
+    }
+
+    /// The roster is hub-scoped declaration: only the declared hub executes
+    /// it. Every other box samples itself and nothing else, regardless of
+    /// what the file declares.
+    #[test]
+    fn only_the_hub_executes_the_monitor_roster() {
+        let text = "hub = \"alpha\"\n[host.alpha]\ndaemon = true\n[monitor]\nalpha = \"alpha\"\nbeta = \"\"\ngpu = \"someone@gpu\"\n";
+        let topo = sot_protocol::topology::parse(text).unwrap();
+
+        let hosts = sampling_roster(&topo, "alpha");
+        assert_eq!(hosts.len(), 3);
+        assert!(hosts[0].local && hosts[0].ssh_alias.is_none() && hosts[0].name == "alpha");
+        assert!(!hosts[1].local && hosts[1].ssh_alias.as_deref() == Some("beta"));
+        assert!(!hosts[2].local && hosts[2].ssh_alias.as_deref() == Some("someone@gpu") && hosts[2].name == "gpu");
+
+        let hosts = sampling_roster(&topo, "gamma");
+        assert_eq!(hosts.len(), 1);
+        assert!(hosts[0].local && hosts[0].ssh_alias.is_none() && hosts[0].name == "gamma");
+    }
+
+    /// Pins the pre-existing "no file, no topology at all" fallback: a box
+    /// with nothing declared still samples itself, exactly as before this
+    /// change — the hub-scoping rule only narrows what a *declared* roster
+    /// means, it does not touch the no-declaration case.
+    #[test]
+    fn a_box_with_no_hub_declaration_samples_itself() {
+        // Env is process-global; this test only reads the override path.
+        std::env::set_var("SOT_HOSTS", "/nowhere/hosts.toml");
+        let hosts = load_hosts();
+        std::env::remove_var("SOT_HOSTS");
+        assert_eq!(hosts.len(), 1);
+        assert!(hosts[0].local && hosts[0].ssh_alias.is_none());
+    }
+
+    /// The dedup that keeps a permanently-unreachable target from logging
+    /// its reason on every ~5s respawn forever: same reason logs once, a
+    /// changed reason logs again, an empty reason never logs.
+    #[test]
+    fn a_repeated_failure_reason_is_logged_once() {
+        assert!(should_log(None, "connection timed out"));
+        assert!(!should_log(Some("connection timed out"), "connection timed out"));
+        assert!(should_log(Some("connection timed out"), "permission denied"));
+        assert!(!should_log(Some("connection timed out"), ""));
+        assert!(!should_log(None, ""));
     }
 }

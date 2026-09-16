@@ -207,12 +207,16 @@ navigation still refreshes previews reactively.
 
 ### `[monitor]`
 
-The hosts sampled for the `Ctrl+M` server-monitor drawer. Each line is
-`<display-name> = "<ssh-alias>"`.
+The hosts sampled for the `Ctrl+M` server-monitor drawer. **Hub-scoped:**
+declared once, but only the declared `hub` executes it — every non-hub daemon
+samples just the host it runs on, regardless of what this table says, so the
+roster's ssh aliases need only resolve **on the hub**. The drawer itself
+subscribes to the hub, not to whichever host the frontend happens to be
+navigating. Each line is `<display-name> = "<ssh-alias>"`.
 
 | Form | Meaning |
 |------|---------|
-| `<name> = "<ssh-alias>"` | Sample this host in the monitor drawer. The host whose name (or alias) matches this machine's hostname is sampled **locally** (no SSH); the rest are sampled over `ssh <alias>`. |
+| `<name> = "<ssh-alias>"` | Sample this host in the monitor drawer. The host whose name (or alias) matches the hub's hostname is sampled **locally** (no SSH); the rest are sampled over `ssh <alias>` from the hub. |
 
 `nvidia-smi` and `/proc` are world-readable, so no `sudo` or special privileges
 are needed on any monitored host. Remove a line to stop monitoring that host.
