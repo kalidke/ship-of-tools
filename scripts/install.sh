@@ -18,9 +18,8 @@
 # with no entry yet (a brand-new user, or one not sharing the hub's home).
 #
 # What it does (idempotent; re-run to upgrade):
-#   1. preflight — arch/glibc floor for the FE, tar/curl present (gh or
-#      $GITHUB_TOKEN are OPTIONAL: authed calls dodge API rate limits)
-#   2. download the release artifacts + verify SHA256SUMS
+#   1. preflight — arch/glibc floor for the FE, tar/curl present
+#   2. download the release artifacts from the fixed release URL + verify SHA256SUMS
 #   3. lay out $PREFIX (~/.local/share/sot): bin/ updates/ repo/current
 #   4. REPO CHECKOUT at the release tag (ADR 0030 addendum: the repo IS the
 #      manual and the resource tree; blobless partial clone = full history
@@ -376,35 +375,12 @@ for t in curl tar; do command -v "$t" >/dev/null || die "$t is required"; done
 # role is resolved (WANT_FRONTEND) — that now needs the declared topology,
 # read via the sotd just staged below, so it can't run this early any more.
 
-# Downloader: for a public repo, unauthenticated curl works. gh (authed) is
-# preferred when present, and $GITHUB_TOKEN is honored purely to dodge the
-# unauthenticated API rate limit (60 req/h per IP).
-FETCH=curl
-if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
-    FETCH=gh
-fi
-
-# The curl path parses GitHub's JSON — needs jq (the gh path doesn't).
-[ "$FETCH" = curl ] && { command -v jq >/dev/null || die "jq is required (or install+auth gh)"; }
-
+# Downloader: the repo is public, so unauthenticated curl against the fixed
+# release-download URL works — no API call, no auth.
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-install.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
-gh_api() {  # gh_api <endpoint> <outfile> — API GET to a file (token optional)
-    curl -fsSL ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} \
-         -H "Accept: application/vnd.github+json" \
-         -o "$2" "https://api.github.com/repos/$REPO/$1"
-}
 
-# A pinned run already has the tag the prelude resolved — never re-hit the
-# releases API for it.
+# VERSION is always known here: the prelude resolves and re-execs first.
 VERSION="${VERSION:-${SOT_INSTALL_TAG:-}}"
-if [ -z "$VERSION" ]; then
-    if [ "$FETCH" = gh ]; then
-        VERSION="$(gh api "repos/$REPO/releases/latest" --jq .tag_name)"
-    else
-        gh_api "releases/latest" "$WORK/latest.json"
-        VERSION="$(jq -r .tag_name "$WORK/latest.json")"
-    fi
-fi
 VER="${VERSION#v}"
 say "installing Ship of Tools $VERSION into $PREFIX"
 
@@ -412,14 +388,8 @@ say "installing Ship of Tools $VERSION into $PREFIX"
 ASSETS=("SHA256SUMS" "sot-$VER-$TARGET.tar.gz")
 
 dl() {
-    if [ "$FETCH" = gh ]; then
-        gh release download "$VERSION" -R "$REPO" -p "$1" -D "$WORK"
-    else
-        [ -f "$WORK/release.json" ] || gh_api "releases/tags/$VERSION" "$WORK/release.json"
-        url="$(jq -r --arg n "$1" '.assets[] | select(.name == $n) | .url' "$WORK/release.json")"
-        [ -n "$url" ] && [ "$url" != null ] || die "asset $1 not found on release $VERSION"
-        curl -fsSL ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} -H "Accept: application/octet-stream" -o "$WORK/$1" "$url"
-    fi
+    curl -fsSL -o "$WORK/$1" "https://github.com/$REPO/releases/download/$VERSION/$1" \
+        || die "asset $1 not found on release $VERSION"
 }
 say "downloading ${#ASSETS[@]} assets"
 for a in "${ASSETS[@]}"; do dl "$a"; done
@@ -521,6 +491,17 @@ fi
 case "$RESOLVED" in *"daemon:1"*) WANT_DAEMON=1 ;; esac
 case "$RESOLVED" in *"frontend:1"*) WANT_FRONTEND=1 ;; esac
 
+# A coding agent isn't part of this installer's business, but a daemon role
+# with neither one on PATH will start sessions that go nowhere — warn, don't
+# die. Fallback dirs mirror resolve_claude/resolve_ccx in
+# rust/backend/src/capsule_workspace.rs.
+if [ "$WANT_DAEMON" = 1 ] && ! command -v claude >/dev/null 2>&1 \
+    && ! command -v ccx >/dev/null 2>&1 \
+    && [ ! -x "$HOME/.local/bin/claude" ] && [ ! -x "$HOME/.claude/local/claude" ] \
+    && [ ! -x "$HOME/.local/bin/ccx" ]; then
+    say "WARNING: neither claude nor ccx (the Codex launcher) found on PATH — install and log in a coding agent on this machine before running sessions"
+fi
+
 if [ "$OS" = Linux ] && [ "$WANT_FRONTEND" = 1 ]; then
     # No pipelines here: `... | head | grep || echo 0` SIGPIPEs ldd under
     # pipefail and APPENDS a bogus "0" to a good match, making the floor
@@ -572,15 +553,9 @@ CURRENT="$REPO_DIR/current"
 command -v git >/dev/null || die "git is required (the install includes a repo checkout)"
 if [ ! -d "$BASE" ]; then
     say "creating base clone (blobless, no checkout)"
-    if [ "$FETCH" = gh ]; then
-        git -c "credential.helper=!gh auth git-credential" \
-            clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
-            || die "base clone failed"
-    else
-        # Public repo: plain https clone, no auth needed.
-        git clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
-            || die "base clone failed"
-    fi
+    # Public repo: plain https clone, no auth needed.
+    git clone --filter=blob:none --no-checkout "https://github.com/$REPO" "$BASE" \
+        || die "base clone failed"
 fi
 # --force on the tag fetch: a release tag force-moved upstream (e.g. the
 # public-flip history rewrite) otherwise makes the whole fetch abort with

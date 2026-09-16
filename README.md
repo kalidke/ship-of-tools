@@ -78,6 +78,9 @@ Install Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-t
 The agent runs preflight, asks you one topology question, drives the
 installer, and proves the result answers before it says done.
 
+A coding agent (Claude Code, or Codex) must already be installed and logged
+in on every machine that runs sessions — the installer does not install one.
+
 **Prebuilt artifacts** ship with every
 [GitHub Release](https://github.com/kalidke/ship-of-tools/releases) — Linux
 x86_64, Windows x86_64, and macOS aarch64; the installer fetches the latest
@@ -103,8 +106,12 @@ bash scripts/install.sh --be-only             # headless backend only
 bash scripts/install.sh --be-only --no-service # shared-home deployment; skip systemd user unit
 ```
 
-Requirements: **git**, **curl**, **tar**; Linux frontend roles need glibc ≥ 2.35, while
-`--be-only` skips the frontend floor because the backend binary is static.
+Requirements: **git**, **curl**, **tar**, **jq**, plus **tmux** for daemon
+roles, until a v0.6 tag is the latest release — the current stable's own
+installer needs both and reads the releases API. Also a **coding agent**
+(Claude Code, or Codex) installed and logged in. Linux frontend roles need
+glibc ≥ 2.35, while `--be-only` skips the frontend floor because the backend
+binary is static.
 Remote layouts require key-based SSH to the backend host. `--version vX.Y.Z`
 pins a specific release and `--prefix <dir>` relocates the install. Changing
 roles repoints `default_host` and adds the new host's entry, leaving the rest

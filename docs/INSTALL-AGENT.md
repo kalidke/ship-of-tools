@@ -46,7 +46,7 @@ case "$(uname -s)" in
   Linux)  ldd --version | head -1 ;;   # frontend needs glibc >= 2.35
   Darwin) sw_vers -productVersion ;;   # macOS aarch64 artifact only
 esac
-command -v git curl tar   # all required; jq required if gh is absent
+command -v git curl tar jq tmux # jq and tmux (daemon roles) required until a v0.6 tag is latest
 command -v node npm       # OPTIONAL — math rendering in markdown previews
 ```
 
@@ -54,8 +54,8 @@ command -v node npm       # OPTIONAL — math rendering in markdown previews
   sidecar deps with a warning and math in markdown previews shows raw LaTeX.
   Tell the human; if they want math, install node and re-run (or run
   `npm ci` in `<checkout>/rust/backend/sidecars/mathjax`).
-- tmux is not used since v0.6.0; an upgrade removes the old sot-tmux.service
-  unit by itself.
+- An upgrade to a tmux-free tag removes the old sot-tmux.service unit by
+  itself.
 - **Linux x86_64, glibc ≥ 2.35** → full install works.
 - **Linux, older glibc** → only `--be-only` (the backend is static musl);
   the frontend must run on another machine.
@@ -376,11 +376,8 @@ sock="$(~/.local/share/sot/bin/sotd session-socket-path sot)"
 # Ask the binary what wire protocol it speaks -- don't hard-code the
 # number here (the `protocol <N>` at the end of `sotd --version`'s
 # parenthetical exists exactly so out-of-tree probes like this one never
-# have to; see version_line's doc comment in rust/protocol/src/lib.rs). An
-# older release (before rc.32) prints no `protocol` word at all -- omit the
-# field rather than send `"protocol":` with no value (invalid JSON); the
-# backend's HelloReq.protocol is `#[serde(default)]` and treats an absent
-# field the same as 0, its own pre-versioning grace value.
+# have to; see version_line's doc comment in rust/protocol/src/lib.rs).
+# Omit the field when the version line prints none; the backend defaults it.
 proto="$(~/.local/share/sot/bin/sotd --version | grep -oE 'protocol [0-9]+' | grep -oE '[0-9]+' || true)"
 proto_field=""
 [ -n "$proto" ] && proto_field="\"protocol\":$proto,"
@@ -413,7 +410,6 @@ top line of the nav pane always shows the pane-switch keys.**
 | `glibc >= 2.35` error | distro too old for the prebuilt frontend → use `--be-only` here + frontend elsewhere, or build from source |
 | checksum verification FAILED | truncated download → re-run; still failing = report, don't bypass |
 | `ssh ... doesn't work` during (b) | no key auth → `ssh-copy-id` then re-run |
-| GitHub API rate-limit (60/h per IP) | authenticate `gh` or set `$GITHUB_TOKEN` (optional otherwise) |
 | dirty-checkout refusal on upgrade | the human edited `repo/current` → `git -C ... stash` (or commit), re-run |
 | local port 18743 already bound | another tunnel owns it → `--port <n>` |
 | backend socket missing | old TCP-based service unit or failed daemon start → reinstall/restart the socket-based `sotd.service` |

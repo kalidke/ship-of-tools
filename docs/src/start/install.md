@@ -170,16 +170,16 @@ use.
 
 - **linux-x86_64** or **macos-aarch64** release artifacts (a
   **windows-x86_64** zip also ships for the Windows frontend path below).
-- **git** for the release-tag checkout.
-- **curl** and **tar** for the installer. If using the `$GITHUB_TOKEN` path
-  instead of `gh`, `jq` is also required.
-- **Julia ≥ 1.12** for agent comm resource installation. The installer uses
-  juliaup to install it when missing.
-- **node/npm** — *optional*: used once to fetch the MathJax sidecar deps for
-  typeset math in markdown previews. Absent, the installer warns and skips;
-  everything works except math renders as raw LaTeX. To add math later,
-  install node and re-run the installer (or `npm ci` in
-  `<checkout>/rust/backend/sidecars/mathjax`).
+- The base requirements (git, curl, tar, jq, a coding agent) are the
+  [README's list](https://github.com/kalidke/ship-of-tools#install). This
+  page adds:
+  - **Julia ≥ 1.12** for agent comm resource installation. The installer uses
+    juliaup to install it when missing.
+  - **node/npm** — *optional*: used once to fetch the MathJax sidecar deps
+    for typeset math in markdown previews. Absent, the installer warns and
+    skips; everything works except math renders as raw LaTeX. To add math
+    later, install node and re-run the installer (or `npm ci` in
+    `<checkout>/rust/backend/sidecars/mathjax`).
 - **tmux**, on any host that runs the backend (`--local`, `--be-only`),
   *if* the release you install still needs it — the daemon used to host the
   LLM pane in a tmux session and preflight it (**absent fatal**, **< 3.2** a
@@ -192,9 +192,9 @@ use.
   binary is static musl and runs on any distro — `--be-only` has no glibc
   floor.
 - `--backend <ssh-alias>` needs key-based SSH to the remote backend host.
-- No GitHub auth is required (the repo is public). An authenticated `gh` or
-  a set `$GITHUB_TOKEN` is *honored* to avoid the unauthenticated API rate
-  limit (60 requests/hour per IP) — relevant only if you install repeatedly.
+- No GitHub auth is required — the repo is public. Until a v0.6 tag is
+  latest, the current stable's own installer still reads the releases API
+  (see the base requirements above, which is why jq is on that list).
 
 On **Windows** there is no packaged `install.ps1` yet (`scripts/install.sh`
 exits with a Windows-specific message), but **no Rust toolchain is needed**:
