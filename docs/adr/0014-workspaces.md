@@ -4,6 +4,10 @@
 **Date:** 2026-05-15
 **Amends:** [ADR 0013](0013-backend-sessions.md)
 
+> **Status note.** The "native Windows without WSL is unsupported" line
+> below is stale: v0.6.0 removed the tmux dependency entirely, and a
+> Windows frontend runs its own local daemon (ADR 0042 L2b).
+
 ## Context
 
 ADR 0013 introduced "session-per-backend": each project gets its own tmux session containing its own `devenv-backend` daemon, the frontend reconnects to that daemon's socket on session switch. The tmux plumbing (B1–B6) is built and works. What is not built is the frontend transport reconnect on switch — and on revisit the user surfaced two requirements that change the calculus:
