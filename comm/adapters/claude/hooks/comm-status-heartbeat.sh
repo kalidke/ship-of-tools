@@ -29,6 +29,51 @@ NAME=""
 
 row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.state // "") + "|" + (.status_at // "") else "" end' "$REGISTRY" 2>/dev/null || true)"
 [ -n "$row" ] || exit 0
+
+# DEAF-SESSION WARNING (2026-09-15): a session whose harness inbox Monitor
+# died still looks alive here — this hook keeps running, the registry row
+# keeps updating below — while comm-listen.sh keeps filing relay traffic
+# into its inbox with nothing left to wake it on. The bug is silence, not a
+# crash, so this must run BEFORE the state/staleness early exits below
+# (the case statement and the throttle's `exit 0`), because those two exit
+# on exactly the busy-but-silent rows this warning exists to catch.
+#
+# Liveness check duplicated from comm-session-start.sh's `_survived()` (its
+# twin — comm/core/scripts/comm-session-start.sh, the marker read around
+# lines 97-122) because hooks are standalone by design and don't source
+# comm-lib.sh, so both copies are kept in sync by hand (same convention as
+# the machine-origin pattern lists duplicated across comm-status-idle.sh).
+# UNLIKE that twin, this check is PID-liveness ONLY — no session-id
+# comparison: a subagent/lane inherits its parent's handle but gets its own
+# $CLAUDE_CODE_SESSION_ID, and no env signal proves subagent-ness
+# ($CLAUDE_CODE_CHILD_SESSION is set in a parent session's own hook shell
+# too), so a lane must read the parent's still-live watcher as proof this
+# handle isn't deaf, even when the marker names a different session.
+if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    watch_marker="$COMM_HOME/state/$NAME.watch"
+    watcher_alive=0
+    if [ -f "$watch_marker" ]; then
+        wpid="$(sed -n '1p' "$watch_marker" 2>/dev/null)"
+        [[ "$wpid" =~ ^[0-9]+$ ]] && kill -0 "$wpid" 2>/dev/null && watcher_alive=1
+    fi
+    if [ "$watcher_alive" = 0 ]; then
+        # Own throttle stamp (NOT the registry's status_at) so a busy row
+        # that legitimately skips the registry write below (lock contention,
+        # a `done`/`blocked` state) still only warns once per 10 minutes.
+        warn_stamp="$COMM_HOME/state/$NAME.watchwarn"
+        warn_age=999999
+        if [ -f "$warn_stamp" ]; then
+            wmtime="$(stat -c '%Y' "$warn_stamp" 2>/dev/null || echo 0)"
+            warn_age=$(( $(date -u +%s) - wmtime ))
+        fi
+        if [ "$warn_age" -ge 600 ]; then
+            echo "comm-status-heartbeat: no live inbox watcher for @$NAME — you are deaf; re-arm: $COMM_HOME/bin/comm-watch.sh $NAME" >&2
+            mkdir -p "$(dirname "$warn_stamp")" 2>/dev/null
+            touch -- "$warn_stamp" 2>/dev/null || true
+        fi
+    fi
+fi
+
 state="${row%%|*}"; at="${row#*|}"
 # HIERARCHY (red > green > purple, maintainer 2026-07-04, refined 2026-07-17):
 # tool activity means the session is ACTIVELY WORKING, so a `waiting` row with NO

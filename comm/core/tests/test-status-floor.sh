@@ -27,7 +27,7 @@ trap 'rm -rf "$WORK"' EXIT
 export SOT_COMM_HOME="$WORK/home"
 export SOT_COMM_SELF_FILE="$WORK/self.txt"
 export SOT_COMM_TEST_HOST="testhost"
-unset SOT_COMM_NAME COMM_STATUS_SOFT COMM_STATUS_ORIGIN
+unset SOT_COMM_NAME COMM_STATUS_SOFT COMM_STATUS_ORIGIN CLAUDE_CODE_SESSION_ID
 mkdir -p "$SOT_COMM_HOME"
 ln -s "$SCRIPTS_DIR" "$SOT_COMM_HOME/bin"
 # shellcheck source=../scripts/comm-lib.sh
@@ -398,6 +398,85 @@ case_stop_hook_sends_done_only_to_a_floor_aware_script() {
     [ "$(cat "$old/argv.log")" = idle ] || { echo "    old script got '$(cat "$old/argv.log")'"; return 1; }
 }
 
+# ---- deaf-session warning (2026-09-15): comm-status-heartbeat.sh warns to
+# stderr when a session's harness inbox watcher died but nothing told the
+# session — see the hook's own header comment for the mechanism. ----
+# The hook resolves NAME via $SELF_DIR/comm-context.sh (next to itself),
+# which only resolves once hooks and scripts are deployed flat into one
+# ~/.sot-comm/bin/ (update_comm) -- same reasoning as $FLAT_BIN_DIR above for
+# comm-turn-auditor.sh. Reuse that dir here rather than a second one.
+ln -sf "$HOOKS_DIR/comm-status-heartbeat.sh" "$FLAT_BIN_DIR/comm-status-heartbeat.sh"
+ln -sf "$SCRIPTS_DIR/comm-context.sh" "$FLAT_BIN_DIR/comm-context.sh"
+ln -sf "$SCRIPTS_DIR/comm-lib.sh" "$FLAT_BIN_DIR/comm-lib.sh"
+WATCH_MARKER="$SOT_COMM_HOME/state/$NAME.watch"
+WARN_STAMP="$SOT_COMM_HOME/state/$NAME.watchwarn"
+mkmarker() {  # PID [SESSION_ID] -- write a watcher marker in comm-watch.sh's own format
+    mkdir -p "$(dirname "$WATCH_MARKER")"
+    printf '%s\n%s\n' "$1" "${2:-}" > "$WATCH_MARKER"
+}
+rmmarker() { rm -f "$WATCH_MARKER" "$WARN_STAMP"; }
+dead_pid() {  # a pid guaranteed not to be running: backgrounded, then reaped
+    ( exit 0 ) & local p=$!
+    wait "$p" 2>/dev/null
+    echo "$p"
+}
+# HBW [SESSION_ID]: like HB, but runs with CLAUDE_CODE_SESSION_ID set (as a
+# real Claude Code hook shell always has it), through the flattened bin dir
+# so NAME actually resolves, and leaves whatever the hook wrote to stderr in
+# $HBW_ERR (stdout discarded, same as HB).
+HBW() {
+    HBW_ERR="$(printf '{"tool_name":"Bash"}' \
+        | CLAUDE_CODE_SESSION_ID="${1:-sess-a}" bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh" 2>&1 1>/dev/null)"
+}
+case_deaf_warns_on_dead_pid() {
+    seed idle; rmmarker; mkmarker "$(dead_pid)"
+    HBW
+    [[ "$HBW_ERR" == *"no live inbox watcher for @$NAME"* ]] || { echo "    got '$HBW_ERR'"; return 1; }
+}
+case_deaf_warns_on_missing_marker() {
+    seed idle; rmmarker
+    HBW
+    [[ "$HBW_ERR" == *"no live inbox watcher for @$NAME"* ]] || { echo "    got '$HBW_ERR'"; return 1; }
+}
+case_deaf_silent_while_watcher_alive() {
+    seed idle; rmmarker
+    sleep 30 & local p=$!
+    mkmarker "$p" "sess-a"
+    HBW
+    kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+    [ -z "$HBW_ERR" ] || { echo "    got '$HBW_ERR'"; return 1; }
+}
+case_deaf_silent_with_no_registry_row() {
+    printf '{"agents":{}}\n' > "$REGISTRY"; rmmarker
+    HBW
+    [ -z "$HBW_ERR" ] || { echo "    got '$HBW_ERR'"; return 1; }
+}
+case_deaf_silent_without_session_id() {
+    seed idle; rmmarker
+    HBW_ERR="$(printf '{"tool_name":"Bash"}' | bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh" 2>&1 1>/dev/null)"
+    [ -z "$HBW_ERR" ] || { echo "    got '$HBW_ERR'"; return 1; }
+}
+case_deaf_warning_is_throttled() {
+    seed idle; rmmarker
+    HBW
+    [ -n "$HBW_ERR" ] || { echo "    first call: expected a warning, got none"; return 1; }
+    HBW
+    [ -z "$HBW_ERR" ] || { echo "    second call inside the 10min window: got '$HBW_ERR'"; return 1; }
+}
+case_deaf_silent_for_subagent_sharing_parents_watcher() {
+    # Same handle, marker alive, a DIFFERENT session id in both the env and
+    # the marker's own second line — must stay silent: a lane shares its
+    # parent's handle and must read the parent's live watcher as proof this
+    # handle isn't deaf (see the hook's header comment for why there is
+    # deliberately no session-id comparison here).
+    seed idle; rmmarker
+    sleep 30 & local p=$!
+    mkmarker "$p" "sess-parent"
+    HBW "sess-lane"
+    kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+    [ -z "$HBW_ERR" ] || { echo "    got '$HBW_ERR'"; return 1; }
+}
+
 check "a genuine user turn ends blue" case_user_turn_ends_blue
 check "a machine-started turn ends gray" case_machine_turn_ends_gray
 check "a harness teammate report is a machine turn" case_teammate_report_is_a_machine_turn
@@ -443,6 +522,14 @@ check "race: a machine start committed while the floor waits ends gray, not blue
 check "a failed state write exits non-zero and leaves the row untouched" case_failed_state_write_exits_nonzero
 check "a failed origin-only write exits non-zero and leaves the row untouched" case_failed_origin_write_exits_nonzero
 check "the Stop hook sends soft done only to a floor-aware comm-status.sh" case_stop_hook_sends_done_only_to_a_floor_aware_script
+check "deaf warning fires when the watcher marker's pid is dead" case_deaf_warns_on_dead_pid
+check "deaf warning fires when the watcher marker is missing" case_deaf_warns_on_missing_marker
+check "deaf warning stays silent while the watcher pid is alive" case_deaf_silent_while_watcher_alive
+check "deaf warning stays silent with no registry row" case_deaf_silent_with_no_registry_row
+check "deaf warning stays silent without CLAUDE_CODE_SESSION_ID" case_deaf_silent_without_session_id
+check "deaf warning is throttled to once per window" case_deaf_warning_is_throttled
+check "deaf warning stays silent for a subagent sharing its parent's live watcher" case_deaf_silent_for_subagent_sharing_parents_watcher
+rmmarker
 
 echo ""
 echo "$PASS passed, $FAIL failed"
