@@ -15747,7 +15747,11 @@ impl State {
         // 0023), present only on Sessions rows that carry one — `None`
         // everywhere else, so every other mode renders unchanged. The 6th is
         // the status-change flash factor (0.0 = no flash), also Sessions-only.
-        // (text, is_selected, is_stale, is_pinned, agent_tone, flash, is_pending)
+        // (text, is_selected, is_stale, is_pinned, agent_tone, flash,
+        //  is_pending, is_attention)
+        // `is_attention` (2026-09-15, field report) marks a row that
+        // names an action the user must take before the default is
+        // committed: yellow + bold, ahead of every other colour layer.
         // `is_pending` (ADR 0025 §1 badge floor) flags a Sessions row whose
         // workspace has a pending nav.preview result waiting — rendered as a
         // non-disruptive indicator distinct from the work-state colours.
@@ -15758,6 +15762,7 @@ impl State {
             bool,
             Option<(AgentTone, bool)>,
             f32,
+            bool,
             bool,
         );
         let (tree_lines, tree_empty): (Vec<NavRow>, bool) = if let Some(p) = &self.workspace_picker
@@ -15770,6 +15775,7 @@ impl State {
                 false,
                 None,
                 0.0,
+                false,
                 false,
             ));
             // Two footer rows: NAVIGATION first (→ is how you descend into
@@ -15786,6 +15792,7 @@ impl State {
                 None,
                 0.0,
                 false,
+                false,
             ));
             rows.push((
                 format!("  {} Claude · {} bare · {} Codex", self.bindings.first_label(Action::SessionCreate),
@@ -15795,6 +15802,7 @@ impl State {
                 false,
                 None,
                 0.0,
+                false,
                 false,
             ));
             // Per-session accounts (owner-simplified brief, 2026-09-15):
@@ -15812,16 +15820,16 @@ impl State {
                     format!("  account: {}{marker} · {} next", acct.name,
                         self.bindings.first_label(Action::SessionAccountNext)),
                     false,
-                    // Attention slot (yellow + bold), not the dim footer
-                    // treatment the two rows above use: this is the only
-                    // picker row that announces a key you must press
-                    // BEFORE Enter, and a dim hint is one a user reads
-                    // past — reported from the field, 2026-09-15.
-                    true,
+                    false,
                     false,
                     None,
                     0.0,
                     false,
+                    // The only picker row naming a key you must press
+                    // BEFORE Enter: Enter commits the default account
+                    // immediately, so a dim hint here is one a user reads
+                    // past — reported from the field, 2026-09-15.
+                    true,
                 ));
             }
             for (i, e) in p.entries.iter().enumerate() {
@@ -15835,6 +15843,7 @@ impl State {
                     false,
                     None,
                     0.0,
+                    false,
                     false,
                 ));
             }
@@ -15899,6 +15908,9 @@ impl State {
                         agent,
                         flash,
                         pending,
+                        // No nav tree row is an attention row: the slot
+                        // exists for picker affordances, not for content.
+                        false,
                     )
                 })
                 .collect();
@@ -16074,7 +16086,16 @@ impl State {
                 // tree_lines and stays spill-eligible on purpose: floating
                 // the full picker path is exactly what the spill is for.
                 let tree_rows_body_start = body_lines.len();
-                for (text, is_selected, is_stale, is_pinned, agent, flash, is_pending) in
+                for (
+                    text,
+                    is_selected,
+                    is_stale,
+                    is_pinned,
+                    agent,
+                    flash,
+                    is_pending,
+                    is_attention,
+                ) in
                     &tree_lines
                 {
                     let mut style = Style::default();
@@ -16092,11 +16113,15 @@ impl State {
                     // original layer applies: the pinned accent (bright
                     // cyan, distinct from the yellow stale/selected hues),
                     // then selection (light yellow), then dim.
-                    if *is_stale {
-                        // Yellow is the cross-cutting attention hue; BOLD
-                        // rides with it so the row reads at a glance
-                        // rather than only on a careful scan.
+                    if *is_attention {
+                        // Attention row: yellow + BOLD. Scoped to rows that
+                        // announce a key the user must press BEFORE the
+                        // default commits, so it never competes with the
+                        // cross-cutting stale hue below (which stays plain
+                        // yellow — drift is noticed, not shouted).
                         style = style.fg(Color::Yellow).add_modifier(Modifier::BOLD);
+                    } else if *is_stale {
+                        style = style.fg(Color::Yellow);
                     } else if let Some((tone, aged)) = agent {
                         // Resolve the tone to RGB through the shared contrast
                         // helper so the nav row and the bottom strip render
