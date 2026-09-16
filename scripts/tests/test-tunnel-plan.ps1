@@ -167,4 +167,9 @@ try {
 }
 
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
+# Exit explicitly either way. Section 5 runs a stub that exits non-zero on
+# purpose, which leaves $LASTEXITCODE at 1; a script that falls off the end
+# hands that to its caller, and the CI runner then exits with it -- a red
+# step that reports "0 failed".
 if ($fail) { exit 1 }
+exit 0
