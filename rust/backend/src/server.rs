@@ -1720,7 +1720,14 @@ where
                 handlers::handle_workspace_activate(frame.id, frame.payload, &workspaces).await
             }
             op::AGENT_SEND => {
-                handlers::handle_agent_send(frame.id, frame.payload, &agent_events_tx).await
+                handlers::handle_agent_send(
+                    frame.id,
+                    frame.payload,
+                    &agent_events_tx,
+                    &clients,
+                    client_guard.as_ref().map(|g| g.serial()),
+                )
+                .await
             }
             op::AGENT_JOIN => {
                 handlers::handle_agent_join(frame.id, frame.payload, &workspaces, &ws_events_tx)

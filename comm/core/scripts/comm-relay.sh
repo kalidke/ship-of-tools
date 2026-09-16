@@ -225,11 +225,44 @@ send_frame() {  # $1 to, $2 text
     # An EMPTY $resp must never pass: `jq -e` on zero input never sees a
     # falsy last value to react to, so it exits 0 — a missing socket used
     # to print "relayed" and exit 0 (Codex review round-3 finding 3).
-    # Require a NONEMPTY response AND a true ack; anything else is a real
-    # failure, returned nonzero so `set -e` propagates it to the caller.
+    # Require a NONEMPTY response AND a true ack before even looking at
+    # `receivers` — `ok` stays the wire-compat gate this checks first
+    # (scheduled for deletion at the next protocol bump); anything short
+    # of that is a real failure, falling through to the WARN branch below.
     if [ -n "$resp" ] && printf '%s' "$resp" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
-        echo "relayed -> ${1:-<all>} via $ENDPOINT"
-        return 0
+        # `receivers` (the honest-send fix) is what actually answers "did
+        # this land anywhere" — `ok` alone no longer means that: a send
+        # with nobody subscribed used to ack ok too. Gate on it here.
+        if printf '%s' "$resp" | jq -e '.payload.receivers | type == "array"' >/dev/null 2>&1; then
+            local -a receivers; mapfile -t receivers < <(printf '%s' "$resp" | jq -r '.payload.receivers[]')
+            if [ -z "$1" ]; then
+                # --all: there's no single named recipient to check for —
+                # report the count, even zero (that's the honest answer).
+                echo "relayed -> <all> (${#receivers[@]} receiver(s)) via $ENDPOINT"
+                return 0
+            fi
+            # A Windows-hosted handle runs no bridge — its frontend files
+            # every frame into its own inbox instead, declared as
+            # `fe@<host>` (comm-listen.sh, comm-send.sh:62's lookup
+            # pattern) — so a target whose OWN row is that frontend still
+            # counts as reached even though its exact name never appears.
+            local want_fe="" thost
+            thost="$(jq -r --arg n "$1" '.agents[$n].host // empty' "$REGISTRY" 2>/dev/null)"
+            [ -n "$thost" ] && want_fe="fe@$thost"
+            local r
+            for r in "${receivers[@]}"; do
+                if [ "$r" = "$1" ] || { [ -n "$want_fe" ] && [ "$r" = "$want_fe" ]; }; then
+                    echo "relayed -> $1 via $ENDPOINT"
+                    return 0
+                fi
+            done
+            echo "ERROR: no receiver — the daemon's roster shows nobody positioned to see $1." >&2
+            echo "       Use durable delivery instead: comm-send.sh @$1 \"msg\"" >&2
+            return 1
+        fi
+        # `receivers` absent: an OLD daemon answered — it can't prove a
+        # receiver either way, so this is NOT a success to report; fall
+        # through to the same WARN/failure branch as no-ack.
     fi
     echo "WARN: no ack from daemon — the message may NOT have been delivered." >&2
     echo "      Retry, or use durable delivery: comm-send.sh @<name> \"msg\"" >&2

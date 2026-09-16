@@ -183,6 +183,28 @@ impl Clients {
         self.inner.lock().unwrap().by_conn.len()
     }
 
+    /// Connection names positioned to receive an `agent.send` addressed to
+    /// `to` (`to == ""` is the broadcast form — see `AgentSendReq`), read
+    /// with ONE lock acquisition. A row counts when its `serial` isn't
+    /// `self_serial` (a sender is never its own receiver) AND either its
+    /// declared `name` matches `to` exactly, or its `role` is `"fe"`
+    /// unconditionally — a Windows-hosted handle runs no bridge (its
+    /// frontend files every broadcast frame straight into its own inbox
+    /// rather than filtering client-side like a bridge does), so gating
+    /// `"fe"` rows on a name match would turn every send to a Windows
+    /// session into a false "no receiver". `to == ""` counts every OTHER
+    /// row with a non-empty declared `name`. Rows with no declared `name`
+    /// never appear in the result — there's nothing to report them as.
+    pub fn receivers_for(&self, to: &str, self_serial: u64) -> Vec<String> {
+        let g = self.inner.lock().unwrap();
+        g.by_conn
+            .values()
+            .filter(|c| c.serial != self_serial)
+            .filter(|c| to.is_empty() || c.name.as_deref() == Some(to) || c.role == "fe")
+            .filter_map(|c| c.name.clone())
+            .collect()
+    }
+
     /// Stamp `last_person_input_at = now` for the connection at `serial` —
     /// the ONLY thing that should call this is the `fe.presence` handler
     /// (2026-09-08 review rework, design point A). A no-op if `serial`
@@ -567,5 +589,34 @@ mod tests {
         assert_eq!(snap.active().map(|x| x.serial), Some(a.serial()));
         assert!(snap.is_active_serial(a.serial()));
         assert!(!snap.is_active_serial(b.serial()), "the untouched duplicate is never active");
+    }
+
+    #[test]
+    fn receivers_for_matches_by_name_or_unconditionally_by_fe_role() {
+        // Roster: a bridge named "X", a frontend named "fe@h" (no bridge,
+        // per the module doc — an "fe" row always counts), and the
+        // requester itself ("cli", never its own receiver).
+        let clients = Clients::new();
+        let bridge = clients.register("client-x", "local", None, "0.6.0", 1, "bridge".to_string(), None, None, Some("X".into()));
+        let fe = clients.register("client-fe", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@h".into()));
+        let me = clients.register("client-me", "local", None, "0.6.0", 1, "cli".to_string(), None, None, Some("self".into()));
+        let _ = (&bridge, &fe);
+
+        let mut to_x = clients.receivers_for("X", me.serial());
+        to_x.sort();
+        assert_eq!(to_x, vec!["X".to_string(), "fe@h".to_string()], "the named match plus the always-on fe row");
+
+        let mut to_absent = clients.receivers_for("Y", me.serial());
+        to_absent.sort();
+        assert_eq!(to_absent, vec!["fe@h".to_string()], "no name matches, but fe still counts");
+
+        let mut broadcast = clients.receivers_for("", me.serial());
+        broadcast.sort();
+        assert_eq!(broadcast, vec!["X".to_string(), "fe@h".to_string()], "broadcast is every OTHER named row");
+
+        assert!(
+            !clients.receivers_for("self", me.serial()).contains(&"self".to_string()),
+            "self_serial is always excluded, even if `to` names the requester's own handle"
+        );
     }
 }

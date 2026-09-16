@@ -222,100 +222,82 @@ case "$MODE" in
             sot_hello_frame
             printf '%s\n' "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"agent.send\",\"payload\":{\"from\":\"__selftest__\",\"to\":\"$NAME\",\"text\":\"receive-path self-test\"}}"
         }
+        # A one-shot direct connection to the daemon (bypassing NAME's own
+        # bridge entirely) that sends the self-test frame and prints its
+        # `agent.send` ack line on stdout — nothing on failure. The connect
+        # MUST live in a subshell: `exec` with redirections only EXITS a
+        # non-interactive shell on a failed redirect — a bare `|| return 1`
+        # after it never runs, and the whole selftest used to die silently
+        # between the probe and the DOWN diagnostics (the unidentified kill
+        # site from the 2026-06-11 fresh-join report). In a subshell the
+        # death is contained and surfaces as ordinary empty output instead.
         _inject() {
-            # The connect MUST live in a subshell: `exec` with redirections
-            # only EXITS a non-interactive shell on a failed redirect — the
-            # `|| return 1` never runs, and the whole selftest dies silently
-            # between the probe and the DOWN diagnostics (the unidentified
-            # kill site from the 2026-06-11 fresh-join report). In a subshell
-            # the death is contained and surfaces as a normal probe failure,
-            # which routes into the restart + diagnostics path as designed.
             if [ -n "$SH" ]; then
                 (
                     exec 8<>"/dev/tcp/$SH/$SP" 2>/dev/null || exit 1
                     _selftest_frames >&8
-                    timeout 3 cat <&8 >/dev/null 2>&1 || true
+                    timeout 3 cat <&8 2>/dev/null
                     exec 8<&- 8>&- 2>/dev/null || true
-                ) 2>/dev/null || return 1
-                return 0
+                ) 2>/dev/null | grep -m1 '"op":"agent.send"'
+                return
             fi
             command -v nc >/dev/null 2>&1 || return 1
-            if _selftest_frames | timeout 3 nc -U "$SU" >/dev/null 2>&1; then
-                return 0
-            else
-                rc=$?
-                [ "$rc" -eq 124 ] && return 0
-                return 1
-            fi
+            _selftest_frames | timeout 3 nc -U "$SU" 2>/dev/null | grep -m1 '"op":"agent.send"'
         }
-        _estab() {
-            [ -n "$SH" ] || return 0
-            ss -tn 2>/dev/null | awk -v p="127.0.0.1:$SP" '$1=="ESTAB" && $5==p{f=1} END{exit f?0:1}'
+        # Is `$NAME` in the ack's `receivers` (honest-send fix) — i.e. is
+        # the bridge actually attached and subscribed right now? Reads the
+        # response `_inject` printed, passed as $1; empty input reads "no".
+        _attached() {
+            [ -n "$1" ] || return 1
+            printf '%s' "$1" | jq -e --arg n "$NAME" '(.payload.receivers // []) | any(. == $n)' >/dev/null 2>&1
         }
-        # Is the daemon itself reachable? A bare TCP connect to the resolved
-        # endpoint, independent of whether our bridge has come up. This is the
-        # discriminator: a failing probe with a REACHABLE daemon is a cold-start
-        # bridge still connecting (benign, retry shortly); a failing probe with
-        # an UNREACHABLE daemon is a real outage. The connect lives in a subshell
-        # for the same reason _inject does (a redirections-only `exec` that fails
-        # EXITS a non-interactive shell rather than running the `||`).
-        _daemon_reachable() {
-            if [ -n "$SH" ]; then
-                ( exec 3<>"/dev/tcp/$SH/$SP" 2>/dev/null || exit 1
-                  exec 3<&- 3>&- 2>/dev/null || true ) 2>/dev/null
-                return $?
-            fi
-            [ -S "$SU" ] || return 1
-            command -v nc >/dev/null 2>&1 || return 1
-            if sot_hello_frame | timeout 3 nc -U "$SU" >/dev/null 2>&1; then
-                return 0
-            else
-                rc=$?
-                [ "$rc" -eq 124 ] && return 0
-                return 1
-            fi
-        }
-        # _probe injects once and re-injects mid-wait: on a cold start the bridge
-        # may not be ESTAB when the first frame is sent, so that frame is lost to
-        # the live-only relay. Re-injecting partway through means a frame is in
-        # flight once the bridge connects, instead of waiting a whole second cycle.
+        # One inject + classify, with an inbox-growth wait once attached —
+        # the ack alone proves the daemon saw the frame and knows who's
+        # subscribed, but it can't see the WRITE half (daemon push -> bridge
+        # -> file); only watching the inbox grow proves that. Re-injects
+        # once mid-wait in case the first frame raced a bridge that hadn't
+        # finished subscribing yet. Return codes:
+        #   0 = OK: bridge attached, inbox line landed
+        #   1 = daemon unreachable (no ack at all -- real outage)
+        #   2 = not proven: bridge not attached yet, or attached but the
+        #       inbox never grew -- both benign/retry-shortly outcomes
         _probe() {
-            local base cur i
+            local base cur i resp
             base="$(wc -l < "$INBOX" 2>/dev/null || echo 0)"
-            _inject || return 1
+            resp="$(_inject || true)"
+            [ -n "$resp" ] || return 1
+            _attached "$resp" || return 2
             for i in $(seq 1 12); do
                 cur="$(wc -l < "$INBOX" 2>/dev/null || echo 0)"
                 if [ "$cur" -gt "$base" ]; then return 0; fi
-                [ "$i" = 6 ] && { _inject || true; }   # re-inject once mid-wait
+                [ "$i" = 6 ] && resp="$(_inject || true)"   # re-inject once mid-wait
                 sleep 1
             done
-            return 1
+            return 2
         }
         # Distinct exit codes so a caller (and the skill) can tell apart:
         #   0  = receive path OK / recovered
         #   1  = daemon unreachable (real outage — "check the daemon")
         #   3  = daemon reachable but bridge still connecting (cold start, benign)
         bridge_running || sot_bridge_start "$NAME" "$RELAY"
-        # Cold-start bridges often need well over 8s to reach ESTAB; the old short
-        # wait made the selftest declare DOWN while the daemon was perfectly fine
-        # (false alarm that cost 3-5 tool calls in two fresh-boot reports). Wait
-        # longer before the first probe.
-        for i in $(seq 1 20); do if _estab; then break; fi; sleep 1; done
-        if _probe; then echo "selftest @$NAME: receive path OK"; exit 0; fi
+        _probe; rc=$?
+        if [ "$rc" -eq 0 ]; then echo "selftest @$NAME: receive path OK"; exit 0; fi
+        if [ "$rc" -eq 1 ]; then
+            echo "selftest @$NAME: daemon unreachable at $EP -- check the daemon" >&2
+            exit 1
+        fi
         echo "selftest @$NAME: receive path not yet proven -- restarting listener..." >&2
         sot_bridge_stop "$NAME"
         sleep 1
         sot_bridge_start "$NAME" "$RELAY"
-        for i in $(seq 1 20); do if _estab; then break; fi; sleep 1; done
-        if _probe; then echo "selftest @$NAME: RECOVERED after restart"; exit 0; fi
-        # Still no delivery. Discriminate daemon-down from bridge-still-connecting
-        # BEFORE telling anyone to "check the daemon" — the cold-start case is
-        # benign and self-resolves; only an unreachable daemon is actionable.
-        if _daemon_reachable; then
-            echo "selftest @$NAME: bridge still connecting (cold start, give it 2-5s) -- re-run comm-listen.sh --selftest shortly" >&2
-            exit 3
+        sleep 2
+        _probe; rc=$?
+        if [ "$rc" -eq 0 ]; then echo "selftest @$NAME: RECOVERED after restart"; exit 0; fi
+        if [ "$rc" -eq 1 ]; then
+            echo "selftest @$NAME: daemon unreachable at $EP -- check the daemon" >&2
+            exit 1
         fi
-        echo "selftest @$NAME: daemon unreachable at $EP -- check the daemon" >&2
-        exit 1
+        echo "selftest @$NAME: bridge still connecting (cold start, give it 2-5s) -- re-run comm-listen.sh --selftest shortly" >&2
+        exit 3
         ;;
 esac

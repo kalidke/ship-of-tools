@@ -5209,30 +5209,44 @@ pub async fn handle_workspace_destroy(
 }
 
 /// Relay one agent-to-agent message (`agent.send`). Parse the request,
-/// stamp an ISO-8601 UTC `ts`, publish onto the agent broadcast channel
-/// (each connection turns it into an `agent.message` evt), and ack. The
-/// publish is fire-and-forget: a send with no subscribers still acks ok.
-/// Mirrors the `ws_events.send(...)` leg of `handle_workspace_create`.
+/// snapshot the roster's `receivers_for` the target BEFORE publishing
+/// (bias must be false-negative, never false-positive: a receiver that
+/// disconnects between the snapshot and the publish still gets counted,
+/// which is the safe direction — the alternative would let a receiver
+/// that connects in that same window make an honest "nobody's there" ack
+/// look wrong), stamp an ISO-8601 UTC `ts`, publish onto the agent
+/// broadcast channel (every connection, including the sender's own,
+/// subscribes at connection start — `receivers_for` is what makes this
+/// ack meaningful, not the broadcast's own delivery, since the channel
+/// always "succeeds" once at least one subscriber exists), and ack with
+/// the receivers the sender can use to judge whether the send landed
+/// anywhere. Mirrors the `ws_events.send(...)` leg of
+/// `handle_workspace_create`.
 pub async fn handle_agent_send(
     req_id: u64,
     payload_json: serde_json::Value,
     agent_tx: &broadcast::Sender<AgentMessage>,
+    clients: &crate::clients::Clients,
+    self_serial: Option<u64>,
 ) -> Result<HandlerOutput> {
     let req: AgentSendReq = serde_json::from_value(payload_json).context("agent.send payload")?;
-    tracing::info!(from = %req.from, to = %req.to, "agent.send relay");
+    let receivers = clients.receivers_for(&req.to, self_serial.unwrap_or(0));
+    tracing::info!(from = %req.from, to = %req.to, ?receivers, "agent.send relay");
     let msg = AgentMessage {
         from: req.from,
         to: req.to,
         text: req.text,
         ts: iso8601_utc_now(),
     };
-    // Fire-and-forget broadcast; send error means no subscribers, harmless.
+    // Fire-and-forget broadcast; every connection subscribed at connection
+    // start, so this never errs for "no receivers" — `receivers` above is
+    // the roster's honest answer to that question instead.
     let _ = agent_tx.send(msg);
     Ok(vec![(
         Frame::res(
             req_id,
             op::AGENT_SEND,
-            serde_json::to_value(AgentSendRes { ok: true })?,
+            serde_json::to_value(AgentSendRes { ok: true, receivers })?,
         ),
         None,
     )])

@@ -187,7 +187,7 @@ pub mod op {
     /// stamps a `ts` and publishes onto a broadcast channel; each connection
     /// turns it into an `AGENT_MESSAGE` evt. Payload is `AgentSendReq`
     /// (`{from, to, text}`; `to == ""` means broadcast/all). Response is a
-    /// simple `AgentSendRes{ok}` ack. Structurally mirrors `WORKSPACE_CHANGED`
+    /// `AgentSendRes{ok, receivers}` ack. Structurally mirrors `WORKSPACE_CHANGED`
     /// but adds the client→daemon publish leg.
     pub const AGENT_SEND: &str = "agent.send";
     /// Server→client push fired for every relayed agent message (see
@@ -1569,12 +1569,15 @@ pub struct AgentSendReq {
     pub text: String,
 }
 
-/// `agent.send` response — a simple ack. `ok` is always true on a
-/// successfully-parsed request (the publish is fire-and-forget; a send
-/// with no subscribers still acks ok).
+/// `agent.send` response. `receivers` names the connections the daemon's
+/// client roster showed as positioned to see `to`, snapshotted BEFORE the
+/// publish (`Clients::receivers_for`) — empty means the send landed with
+/// nobody there to read it, even though `ok` is still true. `ok` reflects
+/// only that the request parsed and was published onto the broadcast bus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSendRes {
     pub ok: bool,
+    pub receivers: Vec<String>,
 }
 
 /// `agent.join` request (ADR 0046 decision 1) — a session declares its
