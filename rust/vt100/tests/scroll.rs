@@ -204,7 +204,23 @@ fn scrollback_larger_than_rows() {
     assert_eq!(parser.screen().contents(), gen_nums(1..=3, "\n"));
 }
 
-#[cfg(test)]
+/// A view held back in scrollback must not drift as new output arrives:
+/// the rows being read stay put, and the offset grows to keep them there.
+/// This is the guarantee the frontend's LLM and Terminal panes rest on —
+/// they hold no copy of the offset, they read this one.
+#[test]
+fn scrollback_view_stays_put_under_new_output() {
+    let mut parser = vt100_ctt::Parser::new(4, 20, 100);
+    parser.process(b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8");
+    parser.screen_mut().set_scrollback(3);
+    let held = parser.screen().contents();
+    assert_eq!(held, "2\n3\n4\n5");
+
+    parser.process(b"\r\n9\r\n10\r\n11");
+    assert_eq!(parser.screen().contents(), held);
+    assert_eq!(parser.screen().scrollback(), 6);
+}
+
 fn gen_nums(range: RangeInclusive<u8>, join: &str) -> String {
     range
         .map(|num| num.to_string())

@@ -3627,6 +3627,17 @@ struct State {
     /// paint into.
     repl_scrollback_px: ScreenRect,
     repl_window: (usize, usize),
+    /// What the last REPL line-build produced, for `pinned_repl_scroll`:
+    /// the geometry it was laid out at (the raw bits of all four inputs the
+    /// build consumes, so an unchanged `f32` compares equal), the newest
+    /// entry's `eval_id`, and the span from that entry's first line to the
+    /// end of the build. Keyed on the whole geometry because the line count
+    /// moves with pane HEIGHT and cell metrics too, not just width — a
+    /// taller window reserves more rows for a figure, and a font-scale step
+    /// re-wraps — and compensating for that would jump the view. `None` =
+    /// nothing to measure against (first draw, empty log, or a workspace
+    /// swap replaced the log wholesale).
+    repl_build_anchor: Option<((u32, u32, u32, u32), u64, usize)>,
     /// Drained at the top of every redraw; every host's transport task
     /// pushes here, tagged with its own `HostKey` (ADR 0042 L2a fan-in).
     evt_rx: std::sync::mpsc::Receiver<(crate::dial::HostKey, crate::transport::IncomingEvt)>,
@@ -4334,14 +4345,6 @@ struct State {
     /// `natural_w_px` is the measured max line width — used by the
     /// scroll clamp.
     table_buffers: Vec<TableBufferEntry>,
-    /// Scroll offset of the LLM pty: rows *above* the live screen.
-    /// 0 = live (the bottom of the scrollback ring); positive =
-    /// looking back at older bytes. Implemented via vt100-ctt's
-    /// `Screen::set_scrollback`, which the redraw applies just before
-    /// painting. Reset to 0 whenever the user types into the pty
-    /// (snap-to-live on keystroke) and on rect resize (the row map
-    /// changes shape, so the old offset is meaningless).
-    pty_scroll: u16,
     /// The four pane content rects from the most recent redraw, cached
     /// so keyboard handlers can size scroll steps to a real viewport
     /// (`PgUp/PgDn`, `Ctrl+u/d`). Updated at the end of every redraw.
@@ -4560,12 +4563,6 @@ struct State {
     /// until the drawer rect is first observed; drives resize-on-change
     /// (mirrors `pty_size` for the LLM pane).
     term_size: Option<(u16, u16)>,
-    /// Scrollback offset (rows up from the bottom) for the local terminal
-    /// drawer, applied via `Screen::set_scrollback` each draw — mirrors
-    /// `pty_scroll` for the LLM pane. Only used when the running app hasn't
-    /// grabbed the mouse; mouse-aware apps (vim/less) get wheel events
-    /// forwarded as SGR sequences instead. Reset to 0 (live tail) on input.
-    term_scroll: u16,
     /// Local repo root (`$SOT_REPO_DIR`, set by the supervisor). Used as
     /// the Terminal drawer's working directory, so the plain shell it spawns
     /// starts in the project root. `None` when launched outside the
@@ -5133,7 +5130,9 @@ fn forward_clipboard_paste_to_llm(state: &mut State) -> bool {
         return false;
     };
     let bytes = bracketed_paste_bytes(&text);
-    state.pty_scroll = 0;
+    if let Some(t) = state.pane_attach_term.as_mut() {
+        t.screen_mut().set_scrollback(0);
+    }
     // ADR 0042 slice L1b fix 2/3: routed through the ONE session-pane
     // input dispatcher (capsule client / pending buffer / daemon
     // `pty.write`, keyed on `pane_feed`) — see `send_pane_input`'s own
@@ -5152,14 +5151,78 @@ fn forward_clipboard_paste_to_local_term(state: &mut State) {
     let bytes = bracketed_paste_bytes(&text);
     if let Some(t) = state.local_term.as_mut() {
         t.send_input(&bytes);
-        state.term_scroll = 0;
+        t.screen_mut().set_scrollback(0);
     } else {
         #[cfg(windows)]
         if let Some(t) = state.attach_term.as_mut() {
             t.send_input(&bytes);
-            state.term_scroll = 0;
+            t.screen_mut().set_scrollback(0);
         }
     }
+}
+
+/// Move a terminal's scrollback view by `delta` rows (positive = older).
+///
+/// The emulator owns this offset and maintains it: `Grid::scroll_up` grows
+/// it as lines enter scrollback while the view is held back, which is what
+/// keeps the rows being read still under arriving output. Write it only on
+/// a user action; never mirror it in `State`.
+fn scroll_ring(scr: &mut vt100::Screen, delta: i32) {
+    let cur = scr.scrollback() as i32;
+    scr.set_scrollback((cur + delta).max(0) as usize);
+}
+
+/// `scroll_ring` for the Terminal drawer, which has two possible clients
+/// (the in-process shell, or the Windows attach client) of which only one
+/// is ever live — three call sites share the dance.
+fn scroll_drawer_ring(state: &mut State, delta: i32) {
+    if let Some(t) = state.local_term.as_mut() {
+        scroll_ring(t.screen_mut(), delta);
+    }
+    #[cfg(windows)]
+    if let Some(t) = state.attach_term.as_mut() {
+        scroll_ring(t.screen_mut(), delta);
+    }
+}
+
+/// The REPL pane's offset counts rows back from a tail that keeps moving,
+/// so the rows being read slide away as output arrives. Track how far the
+/// tail moved and the rows stay put — the rule the emulator applies to the
+/// pty panes, which this pane has no emulator to get.
+///
+/// Measured as the span from the newest entry's first line to the end of
+/// the build, never as a change in total lines: the 256-entry cap drops an
+/// entry off the FRONT in the same frame a new one arrives, which leaves a
+/// total-line delta short by the dropped entry and slides the view once per
+/// eval. The delta is signed, because entries shrink as well as grow — a
+/// finished entry with no measurable elapsed time loses its "(running…)"
+/// line, and an evicted image falls back to a single caption line. A row
+/// removed between the viewed rows and the tail shortens their distance
+/// from it, so the offset must drop with it.
+///
+/// At the live tail (0) it stays 0: there, new output *should* follow,
+/// which is what a terminal does.
+fn pinned_repl_scroll(
+    scroll: u16,
+    anchor_eval_id: u64,
+    anchor_tail_span: usize,
+    total: usize,
+    starts: &[(u64, usize)],
+) -> u16 {
+    if scroll == 0 {
+        return scroll;
+    }
+    // From the tail: the anchor is always the newest entry, and a
+    // peer-originated entry can carry an eval_id that collides numerically
+    // with an older local one in the same log.
+    let Some(i) = starts.iter().rposition(|(id, _)| *id == anchor_eval_id) else {
+        // The anchored entry is gone: nothing trustworthy to measure from
+        // this frame, so leave the view alone and re-seed.
+        return scroll;
+    };
+    let new_span = total.saturating_sub(starts[i].1) as i64;
+    let delta = new_span - anchor_tail_span as i64;
+    (scroll as i64 + delta).clamp(0, u16::MAX as i64) as u16
 }
 
 fn cell_grid_for(
@@ -5797,6 +5860,7 @@ impl State {
                 h: 0.0,
             },
             repl_window: (0, 0),
+            repl_build_anchor: None,
             evt_rx,
             status: "offline · no transport".to_string(),
             nav_prompt: None,
@@ -5975,7 +6039,6 @@ impl State {
             preview_scroll: 0,
             md_table_scroll_px: 0.0,
             table_buffers: Vec::new(),
-            pty_scroll: 0,
             pane_rects: PaneRects::default(),
             llm_selection: None,
             llm_drag_active: false,
@@ -6037,7 +6100,6 @@ impl State {
             #[cfg(windows)]
             fe_down_baseline_evidence,
             term_size: None,
-            term_scroll: 0,
             repo_dir,
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             presence_last_sent: None,
@@ -8627,6 +8689,8 @@ impl State {
             self.repl_eval_counter = snap.repl_eval_counter;
             self.repl_pkg_mode = snap.repl_pkg_mode;
             self.repl_scroll = snap.repl_scroll;
+            // The incoming log is a different length: nothing to pin against.
+            self.repl_build_anchor = None;
             self.history_pos = snap.history_pos;
             self.history_saved = snap.history_saved;
             true
@@ -8637,6 +8701,7 @@ impl State {
             self.repl_eval_counter = 0;
             self.repl_pkg_mode = false;
             self.repl_scroll = 0;
+            self.repl_build_anchor = None;
             self.history_pos = None;
             self.history_saved = None;
             false
@@ -9684,9 +9749,9 @@ impl State {
 
     /// ADR 0042 slice L1b: drains checkpoint/output/notice/status/
     /// terminal events from the session pane's `pane_attach_term` —
-    /// mirrors `pump_attach_term`'s own drain/status contract, applied to
-    /// `pty_scroll` (the session pane's scrollback offset) rather than
-    /// `term_scroll`. Called EVERY redraw regardless of what's on screen
+    /// mirrors `pump_attach_term`'s own drain/status contract. The
+    /// scrollback offset is the emulator's own (see `scroll_ring`), so
+    /// pumping never touches it. Called EVERY redraw regardless of what's on screen
     /// (the session pane, unlike the drawer, is always visible — there is
     /// no visibility gate to mirror here).
     ///
@@ -9722,8 +9787,6 @@ impl State {
         let was_checkpointed = t.is_checkpointed();
         let status_before = t.status_line().to_string();
         let changed = t.pump();
-        t.screen_mut().set_scrollback(self.pty_scroll as usize);
-        self.pty_scroll = t.screen().scrollback().min(u16::MAX as usize) as u16;
         let since_request_ms = self
             .pane_attach_requested_at
             .map(|s| s.elapsed().as_millis() as u64)
@@ -15117,8 +15180,6 @@ impl State {
             return;
         };
         let changed = t.pump();
-        t.screen_mut().set_scrollback(self.term_scroll as usize);
-        self.term_scroll = t.screen().scrollback().min(u16::MAX as usize) as u16;
         // Codex review round, finding 11: status text (queue overflow/
         // expiry, geometry refusal, pen loss, input-delivery-unknown,
         // ...) must reach the drawer independently of `is_dead()` — the
@@ -15474,7 +15535,7 @@ impl State {
         // note: NOT monitor_rect_px, which is the Ctrl+M drawer's rect).
         // One frame of lag on a resize, self-corrects; 0 before the
         // drawer's first draw, where the caption fallback covers the gap.
-        let (repl_lines, repl_slots) = build_repl_lines(
+        let (repl_lines, repl_slots, repl_starts) = build_repl_lines(
             &self.repl_log,
             &self.repl_images,
             self.repl_scrollback_px.w,
@@ -15484,6 +15545,26 @@ impl State {
             self.active_repl_starting(),
         );
         self.repl_image_slots = repl_slots;
+        let build_key = (
+            self.repl_scrollback_px.w.to_bits(),
+            self.repl_scrollback_px.h.to_bits(),
+            self.cell_w.to_bits(),
+            self.cell_h.to_bits(),
+        );
+        if let Some((prev_key, anchor_id, anchor_span)) = self.repl_build_anchor {
+            if prev_key == build_key {
+                new_repl_scroll = pinned_repl_scroll(
+                    new_repl_scroll,
+                    anchor_id,
+                    anchor_span,
+                    repl_lines.len(),
+                    &repl_starts,
+                );
+            }
+        }
+        self.repl_build_anchor = repl_starts
+            .last()
+            .map(|&(id, start)| (build_key, id, repl_lines.len().saturating_sub(start)));
         let repl_input = self.repl_input.clone();
         let repl_pkg_mode = self.repl_pkg_mode;
         // The navigation body begins with status + spacer. The picker adds
@@ -15500,15 +15581,6 @@ impl State {
         // this in place based on the cursor's viewport position; the
         // result is written back to self.tree_scroll after the draw.
         let mut nav_scroll = self.tree_scroll;
-        // Apply the LLM-pane scrollback offset *before* taking an
-        // immutable borrow for the draw. set_scrollback saturates
-        // internally when the requested offset exceeds the buffered
-        // rows, so we read the actual offset back to keep State in
-        // sync with what the emulator agreed to.
-        // ADR 0042 slice L1b: `pump_pane_attach_term` owns `pty_scroll`
-        // for a live capsule attach — every row is a capsule on this
-        // build, so a `Pending` feed (no client yet) simply has no
-        // scrollback to apply.
         self.fire_due_read_mark();
         if self.pane_attach_term.is_some() {
             self.pump_pane_attach_term();
@@ -15573,11 +15645,6 @@ impl State {
             }
             if let Some(t) = self.local_term.as_mut() {
                 let processed = t.pump();
-                // Apply the scrollback offset before borrowing the screen for
-                // the draw, then read back the clamped value (the ring may
-                // hold fewer rows than requested) — mirrors the pty pane.
-                t.screen_mut().set_scrollback(self.term_scroll as usize);
-                self.term_scroll = t.screen().scrollback().min(u16::MAX as usize) as u16;
                 // Diagnostic surfaced on the status line so a blank pane is
                 // debuggable without RUST_LOG: parser size, dead flag, and
                 // whether the screen currently holds any non-blank cell.
@@ -16762,11 +16829,13 @@ impl State {
                     if need_open || need_resize {
                         if let Some(t) = self.pane_attach_term.as_mut() {
                             t.resize(cols, rows);
+                            if need_resize {
+                                // A resize reshapes the row map, so the old
+                                // offset means nothing: snap to live.
+                                t.screen_mut().set_scrollback(0);
+                            }
                         }
                         self.pty_size = Some((cols, rows));
-                        if need_resize {
-                            self.pty_scroll = 0;
-                        }
                     }
                 }
                 PaneFeed::Pending => {
@@ -19497,8 +19566,8 @@ impl ApplicationHandler for App {
                         // The drawer is the local terminal. If the running app
                         // grabbed the mouse (vim/less/htop), forward the wheel
                         // as an SGR sequence so it scrolls its own view; else
-                        // walk our vt100 scrollback ring (set_scrollback is
-                        // applied in redraw). Sign: positive rows_above = up =
+                        // walk our vt100 scrollback ring (the emulator owns
+                        // the offset). Sign: positive rows_above = up =
                         // older = larger offset, matching the REPL pane.
                         #[cfg(windows)]
                         let attach_mouse_on =
@@ -19527,8 +19596,7 @@ impl ApplicationHandler for App {
                                 }
                             }
                         } else {
-                            let new = (state.term_scroll as i32 + rows_above).max(0);
-                            state.term_scroll = new as u16;
+                            scroll_drawer_ring(state, rows_above);
                         }
                         state.window.request_redraw();
                     }
@@ -19559,8 +19627,8 @@ impl ApplicationHandler for App {
                         // remote ring to forward to, so this mirrors the
                         // drawer's own Repl-focus wheel arm: forward as
                         // SGR only when the remote app grabbed the mouse,
-                        // else walk the local ring via `pty_scroll`
-                        // (applied in `redraw`). No throttle — this is a
+                        // else walk the local ring via `scroll_ring`
+                        // (the emulator owns it). No throttle — this is a
                         // local call on an already-open connection, not a
                         // wire round trip through the daemon.
                         if let Some(t) = state.pane_attach_term.as_mut() {
@@ -19572,8 +19640,7 @@ impl ApplicationHandler for App {
                                     t.send_input(seq.as_bytes());
                                 }
                             } else {
-                                let new = (state.pty_scroll as i32 + rows_above).max(0);
-                                state.pty_scroll = new as u16;
+                                scroll_ring(t.screen_mut(), rows_above);
                             }
                             state.window.request_redraw();
                             return;
@@ -20802,14 +20869,12 @@ impl ApplicationHandler for App {
                             if !alt_screen {
                                 match &event.logical_key {
                                     _ if action == Some(Action::ScrollPageUp) => {
-                                        let new = (state.term_scroll as i32 + page_step).max(0);
-                                        state.term_scroll = new as u16;
+                                        scroll_drawer_ring(state, page_step);
                                         state.window.request_redraw();
                                         return;
                                     }
                                     _ if action == Some(Action::ScrollPageDown) => {
-                                        let new = (state.term_scroll as i32 - page_step).max(0);
-                                        state.term_scroll = new as u16;
+                                        scroll_drawer_ring(state, -page_step);
                                         state.window.request_redraw();
                                         return;
                                     }
@@ -20817,17 +20882,18 @@ impl ApplicationHandler for App {
                                 }
                             }
                             if let Some(bytes) = key_to_pty_bytes(&event.logical_key, ctrl, shift) {
+                                // Typing snaps back to the live tail so the
+                                // cursor/prompt is visible (standard emulator
+                                // behaviour).
                                 if let Some(t) = state.local_term.as_mut() {
                                     t.send_input(&bytes);
+                                    t.screen_mut().set_scrollback(0);
                                 }
                                 #[cfg(windows)]
                                 if let Some(t) = state.attach_term.as_mut() {
                                     t.send_input(&bytes);
+                                    t.screen_mut().set_scrollback(0);
                                 }
-                                // Typing snaps back to the live tail so the
-                                // cursor/prompt is visible (standard emulator
-                                // behaviour).
-                                state.term_scroll = 0;
                                 state.last_key = Some(label);
                                 state.window.request_redraw();
                             }
@@ -21716,8 +21782,8 @@ impl ApplicationHandler for App {
                             };
                             if let Some(up) = scroll {
                                 // ADR 0042 slice L1b: a capsule pane
-                                // pages its OWN scrollback (`pty_scroll`,
-                                // applied in `redraw`) — every row is a
+                                // pages its OWN scrollback (the emulator's
+                                // ring, see `scroll_ring`) — every row is a
                                 // capsule on this build. ADR 0042 slice
                                 // L1b fix 2: dropped entirely while
                                 // `pane_feed == Pending` — routing it
@@ -21746,8 +21812,9 @@ impl ApplicationHandler for App {
                                             let page_step =
                                                 (state.pane_rects.llm.height as i32 / 3).max(1);
                                             let delta = if up { page_step } else { -page_step };
-                                            let new = (state.pty_scroll as i32 + delta).max(0);
-                                            state.pty_scroll = new as u16;
+                                            if let Some(t) = state.pane_attach_term.as_mut() {
+                                                scroll_ring(t.screen_mut(), delta);
+                                            }
                                         }
                                         PaneFeed::Pending => {}
                                     }
@@ -21767,7 +21834,9 @@ impl ApplicationHandler for App {
                             // view back to live so what the user is
                             // typing is always at the bottom of the
                             // LLM pane next to the prompt.
-                            state.pty_scroll = 0;
+                            if let Some(t) = state.pane_attach_term.as_mut() {
+                                t.screen_mut().set_scrollback(0);
+                            }
                             // ADR 0042 slice L1b fix 2/3: routed through
                             // the ONE session-pane input dispatcher — see
                             // `send_pane_input`'s own doc.
@@ -21961,10 +22030,15 @@ fn build_repl_lines(
     cell_w: f32,
     cell_h: f32,
     repl_starting: bool,
-) -> (Vec<RtLine<'static>>, Vec<ReplImageSlot>) {
+) -> (Vec<RtLine<'static>>, Vec<ReplImageSlot>, Vec<(u64, usize)>) {
     let mut slots: Vec<ReplImageSlot> = Vec::new();
     let mut out: Vec<RtLine<'static>> = Vec::new();
+    // Where each entry's first line falls in this build. The REPL pin
+    // measures how far the TAIL moved, which a total-line count cannot do
+    // once the 256-entry cap starts dropping entries off the front.
+    let mut starts: Vec<(u64, usize)> = Vec::new();
     for entry in log {
+        starts.push((entry.eval_id, out.len()));
         if let Some(label) = &entry.origin {
             // A run this FE did NOT originate (a session's repl.execute, ADR
             // 0033 phase 2): show a distinct labelled prompt (magenta) instead
@@ -22159,7 +22233,7 @@ fn build_repl_lines(
             )]));
         }
     }
-    (out, slots)
+    (out, slots, starts)
 }
 
 /// Paint a unified box-drawing wireframe over `area`, using `vlines`
@@ -23163,6 +23237,48 @@ mod tests {
     // guard for the preview pane and the concept/annotation slot — a
     // single free function shared by both `IncomingEvt` match arms, so one
     // set of cases covers both consumers.
+
+    /// Live means live: at the tail, new output follows, as a terminal does.
+    #[test]
+    fn pinned_repl_scroll_lets_a_live_pane_follow_new_output() {
+        assert_eq!(pinned_repl_scroll(0, 7, 3, 12, &[(5, 0), (7, 5)]), 0);
+    }
+
+    /// Held back, the offset tracks the tail so the rows being read stay
+    /// under the arriving output instead of sliding away.
+    #[test]
+    fn pinned_repl_scroll_holds_the_view_still_when_the_tail_grows() {
+        // Anchored entry 7 started at line 5 and spanned 3; it now spans 5.
+        assert_eq!(pinned_repl_scroll(4, 7, 3, 10, &[(5, 0), (7, 5)]), 6);
+    }
+
+    /// The case a total-line delta gets wrong: at the 256-entry cap, an
+    /// arriving entry drops the oldest off the FRONT in the same frame. The
+    /// total can even fall while the tail grew, and compensating on the
+    /// total would slide the view once per eval. Measured at the tail, the
+    /// drop contributes nothing and only the real growth counts.
+    #[test]
+    fn pinned_repl_scroll_counts_only_the_tail_when_the_cap_drops_an_entry() {
+        // Was [(1,0),(5,4),(7,9)] with 12 lines, anchor span 3. Entry 1 is
+        // gone and the tail grew by exactly one line: total FELL 12 -> 9.
+        assert_eq!(pinned_repl_scroll(6, 7, 3, 9, &[(5, 0), (7, 5)]), 7);
+    }
+
+    /// Entries shrink as well as grow — a finished entry with no measurable
+    /// elapsed time loses its "(running…)" line. A row removed between the
+    /// viewed rows and the tail shortens their distance from it, so the
+    /// offset drops with it.
+    #[test]
+    fn pinned_repl_scroll_follows_a_tail_that_shrank() {
+        assert_eq!(pinned_repl_scroll(6, 7, 4, 8, &[(5, 0), (7, 5)]), 5);
+    }
+
+    /// The anchored entry is gone entirely: nothing trustworthy to measure
+    /// from, so leave the view alone rather than guess at a delta.
+    #[test]
+    fn pinned_repl_scroll_leaves_the_view_alone_when_its_anchor_vanished() {
+        assert_eq!(pinned_repl_scroll(6, 7, 4, 8, &[(5, 0), (9, 5)]), 6);
+    }
 
     #[test]
     fn reply_is_current_accepts_the_latest_generation_for_the_active_owner() {
@@ -27599,7 +27715,7 @@ mod repl_lifecycle_render_tests {
         // kernel for the minutes a first-per-workspace boot takes.
         let log = vec![entry(1, "1+1", true)];
         let images = std::collections::HashMap::new();
-        let (lines, _) = build_repl_lines(&log, &images, 800.0, 600.0, 8.0, 16.0, true);
+        let (lines, _, _) = build_repl_lines(&log, &images, 800.0, 600.0, 8.0, 16.0, true);
         let text = rendered_text(&lines);
         assert!(
             text.contains("julia starting"),
@@ -27615,7 +27731,7 @@ mod repl_lifecycle_render_tests {
     fn in_flight_entry_says_running_once_ready() {
         let log = vec![entry(1, "1+1", true)];
         let images = std::collections::HashMap::new();
-        let (lines, _) = build_repl_lines(&log, &images, 800.0, 600.0, 8.0, 16.0, false);
+        let (lines, _, _) = build_repl_lines(&log, &images, 800.0, 600.0, 8.0, 16.0, false);
         let text = rendered_text(&lines);
         assert!(text.contains("(running…)"), "{text}");
         assert!(!text.contains("julia starting"), "{text}");
@@ -27628,7 +27744,7 @@ mod repl_lifecycle_render_tests {
         let mut e = entry(1, "1+1", false);
         e.elapsed_ms = 42;
         let images = std::collections::HashMap::new();
-        let (lines, _) = build_repl_lines(&[e], &images, 800.0, 600.0, 8.0, 16.0, true);
+        let (lines, _, _) = build_repl_lines(&[e], &images, 800.0, 600.0, 8.0, 16.0, true);
         let text = rendered_text(&lines);
         assert!(text.contains("(42 ms)"), "{text}");
         assert!(!text.contains("julia starting"), "{text}");
