@@ -302,9 +302,84 @@ left exactly as it was, and the error's first line names `dst` and the
 underlying cause: a launcher that only surfaces the tail of a crash's stderr
 still needs the useful part to survive truncation.
 """
+# This machine's own name with every non-alphanumeric character stripped,
+# read at runtime and never written into the repository.
+_host_tag() = filter(c -> isletter(c) || isdigit(c), gethostname())
+
+# No two LIVE copies of the installer may share a staging path — a fixed name
+# lets one run's copy interleave with another's rename and publish a torn file
+# under a name that then passes every existence check. Host tag + pid also
+# make an ABANDONED staging file decidable: pid liveness is only meaningful
+# against files written on this host. Returns a SIBLING of `dst`, which is
+# load-bearing: the publish is a rename, atomic only within one filesystem.
+_tmp_name(dst::AbstractString) =
+    string(dst, ".tmp-", _host_tag(), "-", getpid(), "-",
+           string(rand(UInt16); base = 16))
+
+# Zero-signal liveness probe. Non-unix returns `true` (never reap): the probe
+# is unix-only, so a Windows host killed mid-install leaves one inert staging
+# file that nothing reaps — a named residual, not an age threshold, which
+# would delete a slow run's LIVE file.
+function _pid_alive(pid::Integer)
+    Sys.isunix() || return true
+    return try
+        ccall(:kill, Cint, (Cint, Cint), pid, 0) == 0
+    catch
+        true
+    end
+end
+
+"""
+    _reap_markers(dst)
+
+Remove this destination's own leftover markers, run only AFTER a successful
+rename onto `dst`. A directory-wide PRE-pass can delete another run's aside
+during the window between its two renames — the one moment that aside is the
+only copy of the old file; done after our own rename succeeds, the worst case
+is that the other run's restore fails and `dst` keeps our valid new content,
+never missing. An aside goes unconditionally (best effort). A staging file
+goes ONLY when its host field is this host AND its pid is not alive: a live
+pid means a run is writing it right now, and another host's pid number says
+nothing about liveness here, so both exclusions are absolute.
+"""
+function _reap_markers(dst::AbstractString; keep::Union{Nothing,AbstractString} = nothing)
+    dir = dirname(dst)
+    base = basename(dst)
+    isdir(dir) || return nothing
+    tag = _host_tag()
+    for name in readdir(dir)
+        (startswith(name, base) && name != base) || continue
+        full = joinpath(dir, name)
+        # The aside this call just created belongs to the NEXT replace, not
+        # this one: it is the only copy of the old file a live holder still
+        # has open.
+        (keep !== nothing && full == keep) && continue
+        if occursin(".stale-", name)
+            try
+                rm(full; force = true)
+            catch
+            end
+            continue
+        end
+        r = findfirst(".tmp-", name)
+        r === nothing && continue
+        fields = split(name[(last(r) + 1):end], '-')
+        length(fields) >= 2 || continue
+        fields[1] == tag || continue
+        pid = tryparse(Int, fields[2])
+        (pid === nothing || _pid_alive(pid)) && continue
+        try
+            rm(full; force = true)
+        catch
+        end
+    end
+    return nothing
+end
+
 function install_file(src::AbstractString, dst::AbstractString;
                       rename = Base.Filesystem.rename)
-    tmp = dst * ".tmp"
+    tmp = _tmp_name(dst)
+    aside_made = Ref{Union{Nothing,String}}(nothing)
     try
         cp(src, tmp; force = true)
         try
@@ -316,13 +391,14 @@ function install_file(src::AbstractString, dst::AbstractString;
             # never land it (field report 2026-09-11). The old file is moved
             # ASIDE, never deleted: the running process keeps its inode, the
             # name is freed, the new file lands, and the aside copy is pruned
-            # by the next install (`_prune_stale`). Only a FILE is moved
+            # by the next successful replace of this name (`_reap_markers`). Only a FILE is moved
             # aside; anything else at dst (a directory) stays an error, as
             # before, and if the second rename fails too the old file is put
             # back so dst is never missing.
             isfile(dst) || rethrow(first_err)
             aside = dst * ".stale-" * string(rand(UInt32); base = 16)
             rename(dst, aside)
+            aside_made[] = aside
             try
                 rename(tmp, dst)
             catch second_err
@@ -333,28 +409,10 @@ function install_file(src::AbstractString, dst::AbstractString;
                 rethrow(second_err)
             end
         end
+        _reap_markers(dst; keep = aside_made[])
     catch err
         isfile(tmp) && rm(tmp; force = true)
         error("install_file: $dst: $(sprint(showerror, err))")
-    end
-    return nothing
-end
-
-"""
-    _prune_stale(dstdir)
-
-Remove the `*.stale-*` copies a previous [`install_file`](@ref) moved aside.
-Best effort: a copy a process still holds open cannot be removed on Windows
-and simply waits for a later install.
-"""
-function _prune_stale(dstdir::AbstractString)
-    isdir(dstdir) || return nothing
-    for name in readdir(dstdir)
-        occursin(".stale-", name) || continue
-        try
-            rm(joinpath(dstdir, name); force = true)
-        catch
-        end
     end
     return nothing
 end
@@ -406,7 +464,6 @@ survive.
 """
 function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
                          executable = Returns(false))
-    _prune_stale(dstdir)
     problems = String[]
     for f in files
         dst = joinpath(dstdir, f)
@@ -463,10 +520,8 @@ function install_comm(; clis = [:claude, :codex])
     # end, so one refused file (a running comm-watch.sh on Windows, field
     # report 2026-09-11) no longer leaves the skills and hooks un-updated.
     problems = String[]
-    try
+    _stage!(problems, "comm scripts") do
         _install_files(srcscripts, bin, srcfiles; executable = endswith(".sh"))
-    catch err
-        push!(problems, sprint(showerror, err))
     end
     # Remove orphans left by past renames/deletions (see COMM_DEPRECATED_BIN),
     # so a pull + update_comm doesn't leave a stale binary on the machine.
@@ -480,13 +535,13 @@ function install_comm(; clis = [:claude, :codex])
     @info "Installed comm scripts" dir = bin count = length(readdir(bin))
 
     for cli in clis
-        try
+        _stage!(problems, "adapter $cli") do
             _install_adapter(Symbol(cli))
-        catch err
-            push!(problems, "adapter $cli: $(sprint(showerror, err))")
         end
     end
-    isempty(problems) || error("sot-comm install incomplete: $(join(problems, "; "))")
+    isempty(problems) ||
+        error("sot-comm install INCOMPLETE — " * join(problems, "; ") *
+              "; no version stamp written, `sot-fe version` reports this install as unknown")
 
     # Published LAST, only once every copy above has actually succeeded —
     # invariant "the scripts on this box came from commit X" (dirty-
@@ -508,45 +563,108 @@ skew.
 update_comm(; clis = [:claude, :codex]) = install_comm(; clis = clis)
 
 """
-    _install_claude_skills(srcdir, claude_dir)
+    _stage!([f], problems, label)
 
-Copy every skill directory under `srcdir` (one containing a `SKILL.md`) into
-`claude_dir/skills`, replacing any stale destination first. Called only for
-the default `~/.claude` — a named account gets skills via the shared-folder
-symlink instead (`rust/backend/src/accounts.rs::ensure_account_links`), not
-a second copy here. Returns the list of skill names installed (`"/name"`,
-matching the existing log shape).
+Run `f`, and on a throw record ONE line on `problems` naming `label` and the
+cause, then return. A failure is recorded and named, never propagated: no
+file strands its skill, no skill strands the skills after it, no stage
+strands the next one, no adapter strands the next one. The run raises one
+combined error at the end instead.
 """
-function _install_claude_skills(srcdir::AbstractString, claude_dir::AbstractString)
-    skillsroot = joinpath(claude_dir, "skills")
+function _stage!(f::Function, problems::Vector{String}, label::AbstractString)
+    try
+        f()
+    catch err
+        push!(problems, "$label ($(sprint(showerror, err)))")
+    end
+    return nothing
+end
+_stage!(problems::Vector{String}, label::AbstractString, f::Function) =
+    _stage!(f, problems, label)
+
+"""
+    _sweep_orphans!(skilldst, shipped)
+
+Delete files under an installed skill that the source no longer ships — the
+only thing the old `rm(dst; recursive = true)` ever bought: a renamed or
+deleted reference must not linger and be read as current. Names carrying
+`install_file`'s in-flight or aside markers are NOT ours to delete here
+(another run may be mid-swap on them; reaping lives in `install_file`, which
+knows their owner). Emptied directories go too. Best effort: a file a live
+process holds open warns, it does not fail the skill — the skill itself is
+current. Called ONLY for a skill whose install raised nothing, since sweeping
+a failed skill could delete a resource while its `SKILL.md` stayed old.
+"""
+function _sweep_orphans!(skilldst::AbstractString, shipped)
+    isdir(skilldst) || return nothing
+    for (root, _, files) in walkdir(skilldst)
+        for f in files
+            (occursin(".tmp-", f) || occursin(".stale-", f)) && continue
+            rel = relpath(joinpath(root, f), skilldst)
+            rel in shipped && continue
+            try
+                rm(joinpath(root, f))
+            catch err
+                @warn "orphan left in place" file = joinpath(root, f) error = err
+            end
+        end
+    end
+    for (root, dirs, _) in walkdir(skilldst; topdown = false)
+        for d in dirs
+            full = joinpath(root, d)
+            try
+                isempty(readdir(full)) && rm(full)
+            catch
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+    _install_skills(srcdir, skillsroot) -> Vector{String}
+
+Install every skill directory under `srcdir` (one containing a `SKILL.md`)
+into `skillsroot`, file by file through [`install_file`](@ref)'s atomic
+copy-then-rename, plus one orphan sweep. Every file is either the old copy or
+the new one — never missing, never partial. The destination is NEVER removed:
+`rename(2)` cannot replace a non-empty directory, so a "directory swap" is
+really rename-aside-then-rename-in, which re-creates the very window it
+claims to close.
+
+One path for BOTH adapters. Returns the names that landed (`"/name"`); raises
+one combined error naming every skill that kept its previous copy, which the
+caller records as a stage failure.
+"""
+function _install_skills(srcdir::AbstractString, skillsroot::AbstractString)
     mkpath(skillsroot)
+    names = [n for n in readdir(srcdir) if isfile(joinpath(srcdir, n, "SKILL.md"))]
     installed = String[]
-    for name in readdir(srcdir)
-        src = joinpath(srcdir, name)
-        isfile(joinpath(src, "SKILL.md")) || continue
-        dst = joinpath(skillsroot, name)
-        # Copy the whole skill directory (not just SKILL.md) so a skill's
-        # resources/ (e.g. project-log's vendored templates) travel with
-        # it. Remove any stale destination first so a renamed/removed
-        # resource file doesn't linger as an orphan.
-        #
-        # This rm-then-cp has the same shape as the bug install_file fixes
-        # (destination gone before the copy that might fail) — deliberately
-        # left as is rather than folded into install_file's swap. The
-        # observed loss was a single script vanishing from bin/; a skill
-        # directory is many small text files copied from the local repo
-        # checkout onto local disk, not a lone executable that can be
-        # mid-use on Windows, so a partial recursive copy here is a risk
-        # class this PR has no field evidence for. Giving it an atomic
-        # swap too means a second code path (copy-aside, rm, rename a
-        # directory) for a failure mode that hasn't been seen — deferred
-        # until it is.
-        isdir(dst) && rm(dst; recursive = true, force = true)
-        cp(src, dst; force = true)
-        push!(installed, "/$name")
+    stale = String[]
+    problems = String[]
+    for name in names
+        skillsrc = joinpath(srcdir, name)
+        rel = sort([relpath(joinpath(r, f), skillsrc)
+                    for (r, _, fs) in walkdir(skillsrc) for f in fs])
+        before = length(problems)
+        _stage!(problems, "/$name") do
+            _install_files(srcdir, skillsroot, [joinpath(name, r) for r in rel])
+        end
+        if length(problems) == before
+            _sweep_orphans!(joinpath(skillsroot, name), Set(rel))
+            push!(installed, "/$name")
+        else
+            push!(stale, "/$name")
+            @warn "skill NOT updated — the destination still holds the PREVIOUS copy" skill = "/$name" dir = skillsroot reason = last(problems)
+        end
     end
     _prune_deprecated_skills!(skillsroot)
-    @info "Installed Claude skills" skills = installed dir = skillsroot
+    # The word Installed may never appear without its denominator and its
+    # stale list in the same line: a reader who sees only this line can
+    # compute the outcome without reading anything above it.
+    @info "Installed skills" installed = "$(length(installed))/$(length(names))" stale = stale dir = skillsroot
+    isempty(problems) || error("$(length(installed)) of $(length(names)) skills updated; " *
+                               "STALE (previous copy still in place): $(join(problems, "; "))")
     return installed
 end
 
@@ -564,11 +682,18 @@ function _prune_deprecated_skills!(skillsroot::AbstractString)
 end
 
 function _install_adapter(cli::Symbol)
+    problems = String[]
     if cli === :claude
         srcdir = joinpath(COMM_SRC, "adapters", "claude")
-        _install_claude_skills(srcdir, claude_home())
-        _install_launchers(joinpath(srcdir, "bin"))
-        _install_claude_hooks(joinpath(srcdir, "hooks"), claude_home())
+        _stage!(problems, "claude skills") do
+            _install_skills(srcdir, joinpath(claude_home(), "skills"))
+        end
+        _stage!(problems, "claude launchers") do
+            _install_launchers(joinpath(srcdir, "bin"))
+        end
+        _stage!(problems, "claude hooks") do
+            _install_claude_hooks(joinpath(srcdir, "hooks"), claude_home())
+        end
         # Named accounts (owner ruling) get skills and hooks via the
         # shared-folder symlink the daemon creates at spawn
         # (`rust/backend/src/accounts.rs::ensure_account_links`), not a
@@ -603,21 +728,18 @@ function _install_adapter(cli::Symbol)
         srcdir = joinpath(COMM_SRC, "adapters", "codex")
         isdir(srcdir) || return nothing
         skills_src = joinpath(srcdir, "skills")
-        if isdir(skills_src)
-            skillsroot = joinpath(codex_home(), "skills")
-            installed = [name for name in readdir(skills_src)
-                         if isfile(joinpath(skills_src, name, "SKILL.md"))]
-            relfiles = [joinpath(name, "SKILL.md") for name in installed]
-            _install_files(skills_src, skillsroot, relfiles)
-            _prune_deprecated_skills!(skillsroot)
-            @info "Installed Codex skills" skills = installed dir = skillsroot
+        # Same function as the Claude adapter: a Codex skill's resource files
+        # travel too, which the old one-entry-per-skill list never carried.
+        isdir(skills_src) && _stage!(problems, "codex skills") do
+            _install_skills(skills_src, joinpath(codex_home(), "skills"))
         end
-        _install_launchers(joinpath(srcdir, "bin"))
+        _stage!(problems, "codex launchers") do
+            _install_launchers(joinpath(srcdir, "bin"))
+        end
         hookssrc = joinpath(srcdir, "hooks")
-        if isdir(hookssrc)
+        isdir(hookssrc) && _stage!(problems, "codex hooks") do
             bin = joinpath(comm_home(), "bin")
-            hookfiles = readdir(hookssrc)
-            _install_files(hookssrc, bin, hookfiles; executable = Returns(true))
+            _install_files(hookssrc, bin, readdir(hookssrc); executable = Returns(true))
         end
         # Global codex memory: our AGENTS.md also installs as
         # $CODEX_HOME/AGENTS.md so conventions reach codex sessions in ANY
@@ -626,7 +748,7 @@ function _install_adapter(cli::Symbol)
         # conventions not found" from a scratch workspace). Marker-guarded like
         # hooks.json.
         src_agents = joinpath(dirname(COMM_SRC), "AGENTS.md")
-        if isfile(src_agents)
+        isfile(src_agents) && _stage!(problems, "codex AGENTS.md") do
             dstdir = codex_home()
             mkpath(dstdir)
             dst = joinpath(dstdir, "AGENTS.md")
@@ -664,7 +786,7 @@ function _install_adapter(cli::Symbol)
         # comm/adapters/codex/hooks.README.md — read it before editing
         # hooks.json. The guard below enforces the first one.
         src = joinpath(srcdir, "hooks.json")
-        if isfile(src)
+        isfile(src) && _stage!(problems, "codex plugin") do
             pdir = joinpath(homedir(), ".agents", "plugins", "sot-comm")
             mkpath(joinpath(pdir, ".codex-plugin"))
             mkpath(joinpath(pdir, "hooks"))
@@ -732,6 +854,8 @@ function _install_adapter(cli::Symbol)
     else
         @warn "No adapter for this CLI yet — add comm/adapters/$(cli)/ and a case here" cli
     end
+    isempty(problems) || error(join(problems, "; "))
+    return nothing
 end
 
 """
@@ -874,7 +998,7 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString, claude_d
       end
     """
 
-    tmp = settings * ".tmp"
+    tmp = _tmp_name(settings)
     ok = try
         run(pipeline(`jq --arg cmd $cmd --arg evt $event --arg m $m $prog $settings`; stdout = tmp))
         true
@@ -931,7 +1055,7 @@ function _remove_stale_comm_hooks!(claude_dir::AbstractString)
         | from_entries )
     else . end
     """
-    tmp = settings * ".tmp"
+    tmp = _tmp_name(settings)
     try
         run(pipeline(`jq $prog $settings`; stdout = tmp))
         changed = read(tmp, String) != read(settings, String)

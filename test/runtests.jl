@@ -124,7 +124,7 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             dst = joinpath(dir, "dst.txt")
             ShipTools.install_file(src, dst)
             @test read(dst, String) == "hello"
-            @test !isfile(dst * ".tmp")
+            @test !any(n -> occursin(".tmp-", n), readdir(dir))
 
             # Failure with a PRE-EXISTING dst (the field scenario: an update
             # over a working install): the old dst must survive untouched,
@@ -227,7 +227,7 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             dst = joinpath(dir, "held.sh"); write(dst, "OLD")
             refused = Ref(true)
             fake_rename(a, b) = begin
-                if refused[] && b == dst && endswith(a, ".tmp")
+                if refused[] && b == dst && occursin(".tmp-", a)
                     refused[] = false
                     error("rename($a, $b): permission denied (EACCES)")
                 end
@@ -238,8 +238,13 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             asides = filter(n -> startswith(n, "held.sh.stale-"), readdir(dir))
             @test length(asides) == 1
             @test read(joinpath(dir, asides[1]), String) == "OLD"
-            @test !isfile(dst * ".tmp")
-            ShipTools._prune_stale(dir)
+            @test !any(n -> occursin(".tmp-", n), readdir(dir))
+            # Reaping moved INTO install_file's success path: the aside is
+            # removed by the next successful replace of the same name, so the
+            # real path is what gets asserted, not a helper called by hand.
+            write(src, "NEWER")
+            ShipTools.install_file(src, dst)
+            @test read(dst, String) == "NEWER"
             @test !any(n -> occursin(".stale-", n), readdir(dir))
 
             # A refusal that persists even after the aside: the old file is
@@ -248,7 +253,7 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             # Refuse every PUBLISH onto dst (a .tmp source); the restore of
             # the aside copy targets a now-free name and goes through, as it
             # would on Windows.
-            always_refuse(a, b) = (b == dst && endswith(a, ".tmp")) ? error("still refused") : Base.Filesystem.rename(a, b)
+            always_refuse(a, b) = (b == dst && occursin(".tmp-", a)) ? error("still refused") : Base.Filesystem.rename(a, b)
             err = try
                 ShipTools.install_file(src, dst; rename = always_refuse)
                 nothing
@@ -258,7 +263,7 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             @test err isa ErrorException
             @test occursin(dst, err.msg)
             @test read(dst, String) == "OLD2"
-            @test !isfile(dst * ".tmp")
+            @test !any(n -> occursin(".tmp-", n), readdir(dir))
         end
     end
 
@@ -342,6 +347,186 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             # survives exactly as it was, not deleted, not half-replaced.
             @test isdir(joinpath(dstdir, stuck_name))
             @test read(joinpath(dstdir, stuck_name, "marker.txt"), String) == "keepme"
+        end
+    end
+
+    @testset "_tmp_name: two live copies never share a staging path" begin
+        # The load-bearing guard for the concurrency fix: a FIXED staging name
+        # lets one run's copy interleave with another's rename and publish a
+        # torn file under a name that then passes every existence check.
+        dst = joinpath("/a", "b", "c.txt")
+        a = ShipTools._tmp_name(dst)
+        b = ShipTools._tmp_name(dst)
+        @test a != b
+        # A sibling, because the publish is a rename and a rename is atomic
+        # only within one filesystem.
+        @test dirname(a) == dirname(dst)
+        @test a != dst * ".tmp"
+        @test occursin(".tmp-", a)
+    end
+
+    @testset "install_file: a concurrent writer never publishes a torn file" begin
+        mktempdir() do base
+            dst = joinpath(base, "dst.bin")
+            s1 = joinpath(base, "s1.bin"); s2 = joinpath(base, "s2.bin")
+            write(s1, repeat("A", 1_000_000)); write(s2, repeat("B", 1_000_000))
+            write(dst, "old")
+            if Threads.nthreads() > 1
+                for _ in 1:5
+                    t1 = Threads.@spawn ShipTools.install_file(s1, dst)
+                    t2 = Threads.@spawn ShipTools.install_file(s2, dst)
+                    for t in (t1, t2)
+                        try; fetch(t); catch; end
+                    end
+                    got = read(dst, String)
+                    # Entirely one source or entirely the other — never mixed,
+                    # never truncated, never missing.
+                    @test got == read(s1, String) || got == read(s2, String)
+                end
+            else
+                ShipTools.install_file(s1, dst)
+                @test read(dst, String) == read(s1, String)
+            end
+        end
+    end
+
+    @testset "skills: an unremovable ORPHAN warns and does not kill the run" begin
+        # The reproduced incident: a destination entry that cannot be
+        # unlinked (NFS leaves a placeholder for a file a live process still
+        # holds open) made the old rm-then-cp throw and killed every later
+        # skill and stage. The directory itself was writable — only the
+        # removal failed — so that is what this models: shipped files land at
+        # the skill root, and the sweep meets an orphan it cannot remove.
+        mktempdir() do base
+            srcdir = joinpath(base, "src"); root = joinpath(base, "skills")
+            for n in ("aaa-skill", "zzz-skill")
+                mkpath(joinpath(srcdir, n))
+                write(joinpath(srcdir, n, "SKILL.md"), "NEW-$n")
+            end
+            locked = joinpath(root, "aaa-skill", "retired")
+            mkpath(locked)
+            write(joinpath(locked, "held.md"), "OLD-held")
+            write(joinpath(root, "aaa-skill", "SKILL.md"), "OLD")
+            chmod(locked, 0o555)
+            # Runtime probe, not a platform check: CI may run as a user whom
+            # mode bits do not restrain.
+            restrained = try
+                rm(joinpath(locked, "held.md")); false
+            catch
+                true
+            end
+            try
+                if restrained
+                    ShipTools._install_skills(srcdir, root)
+                    @test read(joinpath(root, "aaa-skill", "SKILL.md"), String) == "NEW-aaa-skill"
+                    # A skill later in the walk order still installed.
+                    @test read(joinpath(root, "zzz-skill", "SKILL.md"), String) == "NEW-zzz-skill"
+                    # The orphan warned and stayed; it did not throw.
+                    @test isfile(joinpath(locked, "held.md"))
+                end
+            finally
+                chmod(locked, 0o755)
+            end
+        end
+    end
+
+    @testset "skills: one unreplaceable skill does not strand the skills after it" begin
+        mktempdir() do base
+            srcdir = joinpath(base, "src"); root = joinpath(base, "skills")
+            names = ["s$(lpad(i, 2, '0'))" for i in 1:6]
+            stuck = names[3]
+            for n in names
+                mkpath(joinpath(srcdir, n))
+                write(joinpath(srcdir, n, "SKILL.md"), "NEW-$n")
+            end
+            mkpath(joinpath(root, stuck, "SKILL.md"))
+            write(joinpath(root, stuck, "SKILL.md", "marker.txt"), "keepme")
+            err = try
+                ShipTools._install_skills(srcdir, root); nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin(stuck, err.msg)
+            for n in names
+                n == stuck && continue
+                @test read(joinpath(root, n, "SKILL.md"), String) == "NEW-$n"
+            end
+            @test read(joinpath(root, stuck, "SKILL.md", "marker.txt"), String) == "keepme"
+        end
+    end
+
+    @testset "skills: the orphan sweep removes retired files and spares markers" begin
+        mktempdir() do base
+            srcdir = joinpath(base, "src"); root = joinpath(base, "skills")
+            mkpath(joinpath(srcdir, "sk", "references"))
+            write(joinpath(srcdir, "sk", "SKILL.md"), "NEW")
+            write(joinpath(srcdir, "sk", "references", "keep.md"), "KEEP")
+            mkpath(joinpath(root, "sk", "references"))
+            mkpath(joinpath(root, "sk", "gone"))
+            write(joinpath(root, "sk", "references", "retired.md"), "OLD")
+            write(joinpath(root, "sk", "gone", "old.md"), "OLD")
+            # Derived foreign tag: guaranteed different without naming a host.
+            foreign = "x" * ShipTools._host_tag()
+            marker = joinpath(root, "sk", "SKILL.md.tmp-$foreign-424242-ab12")
+            write(marker, "in-flight elsewhere")
+            mkpath(joinpath(root, "my-user-skill"))
+            write(joinpath(root, "my-user-skill", "SKILL.md"), "MINE")
+            ShipTools._install_skills(srcdir, root)
+            @test read(joinpath(root, "sk", "SKILL.md"), String) == "NEW"
+            @test read(joinpath(root, "sk", "references", "keep.md"), String) == "KEEP"
+            @test !isfile(joinpath(root, "sk", "references", "retired.md"))
+            @test !isdir(joinpath(root, "sk", "gone"))
+            @test isfile(marker)
+            @test read(joinpath(root, "my-user-skill", "SKILL.md"), String) == "MINE"
+        end
+    end
+
+    if Sys.isunix()
+        @testset "install_file: marker reaping is owner-aware" begin
+            mktempdir() do base
+                dst = joinpath(base, "f.txt"); src = joinpath(base, "src.txt")
+                write(dst, "OLD"); write(src, "NEW")
+                # A certainly-dead pid: the child reports its own, then exits.
+                proc = open(`sh -c "echo \$\$"`)
+                deadpid = parse(Int, strip(read(proc, String)))
+                wait(proc)
+                tag = ShipTools._host_tag()
+                mine_dead = joinpath(base, "f.txt.tmp-$tag-$deadpid-0001")
+                foreign_live = joinpath(base, "f.txt.tmp-x$tag-$(getpid())-0002")
+                aside = joinpath(base, "f.txt.stale-deadbeef")
+                for f in (mine_dead, foreign_live, aside); write(f, "x"); end
+                ShipTools.install_file(src, dst)
+                @test read(dst, String) == "NEW"
+                @test !isfile(mine_dead)      # this host, pid gone
+                @test isfile(foreign_live)    # another host's pid means nothing here
+                @test !isfile(aside)
+            end
+        end
+    end
+
+    @testset "update_comm reports an INCOMPLETE install honestly" begin
+        mktempdir() do home
+            adapters = joinpath(dirname(@__DIR__), "comm", "adapters", "claude")
+            skill = first(sort([n for n in readdir(adapters)
+                                if isfile(joinpath(adapters, n, "SKILL.md"))]))
+            stuckdir = joinpath(home, ".claude", "skills", skill, "SKILL.md")
+            mkpath(stuckdir)
+            write(joinpath(stuckdir, "marker.txt"), "keepme")
+            withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                    "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                err = try
+                    ShipTools.update_comm(clis = [:claude]); nothing
+                catch e
+                    e
+                end
+                @test err isa ErrorException
+                @test occursin("INCOMPLETE", err.msg)
+                @test occursin(skill, err.msg)
+                # No stamp on a partial run, and later stages were not stranded.
+                @test !isfile(joinpath(home, ".sot-comm", "VERSION"))
+                @test isfile(joinpath(home, ".sot-comm", "bin", "comm-relay.sh"))
+            end
         end
     end
 
@@ -439,6 +624,9 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
     end
 
     @testset "installer prunes the retired session-start aliases and ccbe" begin
+        # Both adapters route through _install_skills: the Codex-only path
+        # that never carried resource files must not silently return.
+        @test !isdefined(ShipTools, :_install_claude_skills)
         # COMM_DEPRECATED_SKILLS / COMM_DEPRECATED_LAUNCHERS: exact names
         # only. A skill or launcher the repo stopped shipping (a prior
         # install left it on disk) must be removed from BOTH the Claude and
