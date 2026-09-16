@@ -170,7 +170,7 @@ use.
 
 - **linux-x86_64** or **macos-aarch64** release artifacts (a
   **windows-x86_64** zip also ships for the Windows frontend path below).
-- The base requirements (git, curl, tar, jq, a coding agent) are the
+- The base requirements (git, curl, tar, a coding agent) are the
   [README's list](https://github.com/kalidke/ship-of-tools#install). This
   page adds:
   - **Julia ≥ 1.12** for agent comm resource installation. The installer uses
@@ -192,9 +192,8 @@ use.
   binary is static musl and runs on any distro — `--be-only` has no glibc
   floor.
 - `--backend <ssh-alias>` needs key-based SSH to the remote backend host.
-- No GitHub auth is required — the repo is public. Until a v0.6 tag is
-  latest, the current stable's own installer still reads the releases API
-  (see the base requirements above, which is why jq is on that list).
+- No GitHub auth is required — the repo is public, and releases download
+  from fixed URLs, not the API.
 
 On **Windows** there is no packaged `install.ps1` yet (`scripts/install.sh`
 exits with a Windows-specific message), but **no Rust toolchain is needed**:

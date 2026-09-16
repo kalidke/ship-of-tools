@@ -106,10 +106,8 @@ bash scripts/install.sh --be-only             # headless backend only
 bash scripts/install.sh --be-only --no-service # shared-home deployment; skip systemd user unit
 ```
 
-Requirements: **git**, **curl**, **tar**, **jq**, plus **tmux** for daemon
-roles, until a v0.6 tag is the latest release — the current stable's own
-installer needs both and reads the releases API. Also a **coding agent**
-(Claude Code, or Codex) installed and logged in. Linux frontend roles need
+Requirements: **git**, **curl**, **tar**, and a **coding agent** (Claude
+Code, or Codex) installed and logged in. Linux frontend roles need
 glibc ≥ 2.35, while `--be-only` skips the frontend floor because the backend
 binary is static.
 Remote layouts require key-based SSH to the backend host. `--version vX.Y.Z`

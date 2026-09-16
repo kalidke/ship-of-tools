@@ -46,7 +46,7 @@ case "$(uname -s)" in
   Linux)  ldd --version | head -1 ;;   # frontend needs glibc >= 2.35
   Darwin) sw_vers -productVersion ;;   # macOS aarch64 artifact only
 esac
-command -v git curl tar jq tmux # jq and tmux (daemon roles) required until a v0.6 tag is latest
+command -v git curl tar   # all required
 command -v node npm       # OPTIONAL — math rendering in markdown previews
 ```
 
