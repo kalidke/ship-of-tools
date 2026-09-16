@@ -349,9 +349,12 @@ jobs:
         run: cargo test -p sot-log --test claude_e2e -- --nocapture
 
   # Nothing else in CI ever runs scripts/install.sh -- the release smoke only
-  # boots a prebuilt artifact and checks --version. This job exercises a real
-  # `--be-only` fresh install of the latest PUBLISHED release into a clean
-  # container (no tmux, no gh), the case only a brand-new user would hit.
+  # boots a prebuilt artifact and checks --version. This job pins
+  # SOT_INSTALL_TAG so the CHECKOUT's own install.sh body runs (skipping the
+  # fetch-and-reexec prelude) against the newest PUBLISHED release's
+  # artifacts -- a `--be-only` fresh install into a clean container (no
+  # tmux, no gh), the case only a brand-new user would hit. The prelude
+  # itself has no CI coverage.
   fresh-install-smoke:
     name: fresh install smoke (clean container)
     runs-on: ubuntu-latest
@@ -379,7 +382,7 @@ jobs:
           tag="${{ steps.latest.outputs.tag }}"
           export HOME="$RUNNER_TEMP/sot-fresh-home"
           mkdir -p "$HOME"
-          out="$(bash "$GITHUB_WORKSPACE/scripts/install.sh" --be-only --no-service --version "$tag" 2>&1)" || { echo "$out"; exit 1; }
+          out="$(SOT_INSTALL_TAG="$tag" bash "$GITHUB_WORKSPACE/scripts/install.sh" --be-only --no-service --version "$tag" 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
           echo "$out" | grep -qi 'tmux' && { echo "installer output mentions tmux on a --be-only install"; exit 1; }
           got="$("$HOME/.local/share/sot/bin/sotd" --version)"
@@ -407,6 +410,6 @@ jobs:
           esac
           STUB
           chmod +x "$RUNNER_TEMP/fakebin/systemctl"
-          out="$(PATH="$RUNNER_TEMP/fakebin:$PATH" bash "$GITHUB_WORKSPACE/scripts/install.sh" --be-only --no-service --version "$tag" --prefix "$HOME/.local/share/sot2" 2>&1)" || { echo "$out"; exit 1; }
+          out="$(PATH="$RUNNER_TEMP/fakebin:$PATH" SOT_INSTALL_TAG="$tag" bash "$GITHUB_WORKSPACE/scripts/install.sh" --be-only --no-service --version "$tag" --prefix "$HOME/.local/share/sot2" 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
           [ -x "$HOME/.local/share/sot2/bin/sotd" ] || { echo "second prefix missing sotd"; exit 1; }

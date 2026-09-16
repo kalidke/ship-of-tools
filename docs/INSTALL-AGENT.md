@@ -281,8 +281,10 @@ your prefix in every path below if you use it).
 
 Idempotent; re-running is also the upgrade path.
 (If you fetched this runbook at a pinned commit, still use `main`'s installer as
-above — the installer is the moving part and stays compatible with this
-runbook.) It downloads the release binaries, verifies SHA256 checksums, clones
+above — it only resolves the release tag, then runs that release's own
+`scripts/install.sh` unmodified, so this runbook stays compatible with any
+release regardless of what main's copy currently says.) It downloads the
+release binaries, verifies SHA256 checksums, clones
 the repo at the release tag into
 `~/.local/share/sot/repo/current` (blobless — small), installs Julia via
 juliaup if missing, installs the agent comm resources with
@@ -374,12 +376,18 @@ sock="$(~/.local/share/sot/bin/sotd session-socket-path sot)"
 # Ask the binary what wire protocol it speaks -- don't hard-code the
 # number here (the `protocol <N>` at the end of `sotd --version`'s
 # parenthetical exists exactly so out-of-tree probes like this one never
-# have to; see version_line's doc comment in rust/protocol/src/lib.rs).
-proto="$(~/.local/share/sot/bin/sotd --version | grep -oE 'protocol [0-9]+' | grep -oE '[0-9]+')"
+# have to; see version_line's doc comment in rust/protocol/src/lib.rs). An
+# older release (before rc.32) prints no `protocol` word at all -- omit the
+# field rather than send `"protocol":` with no value (invalid JSON); the
+# backend's HelloReq.protocol is `#[serde(default)]` and treats an absent
+# field the same as 0, its own pre-versioning grace value.
+proto="$(~/.local/share/sot/bin/sotd --version | grep -oE 'protocol [0-9]+' | grep -oE '[0-9]+' || true)"
+proto_field=""
+[ -n "$proto" ] && proto_field="\"protocol\":$proto,"
 tmp="$(mktemp "${TMPDIR:-/tmp}/sot-hello.XXXXXX")"
 (
-  printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"install-check","last_seen_revision":0,"protocol":%s,"app_version":"agent-install"}}\n' \
-    "$proto" \
+  printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"install-check","last_seen_revision":0,%s"app_version":"agent-install"}}\n' \
+    "$proto_field" \
     | nc -U "$sock" > "$tmp"
 ) &
 pid=$!

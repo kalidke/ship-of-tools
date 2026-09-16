@@ -180,14 +180,14 @@ use.
   everything works except math renders as raw LaTeX. To add math later,
   install node and re-run the installer (or `npm ci` in
   `<checkout>/rust/backend/sidecars/mathjax`).
-- **tmux** on any host that runs the backend (`--local`, `--be-only`) — the
-  daemon hosts the LLM pane in a tmux session. The installer preflights it:
-  **absent is fatal**. **tmux < 3.2 is a graceful degrade, not an error** — the
-  daemon version-gates `new-session -e` (older tmux rejected it, which once drove
-  a respawn storm), so the backend runs but the pane's in-session `SOT_*`
-  awareness is best-effort; put a **tmux ≥ 3.2** earlier on the daemon's `PATH`
-  (e.g. `~/.local/bin`) for full awareness. Frontend-only `--backend <alias>`
-  hosts don't need tmux.
+- **tmux**, on any host that runs the backend (`--local`, `--be-only`),
+  *if* the release you install still needs it — the daemon used to host the
+  LLM pane in a tmux session and preflight it (**absent fatal**, **< 3.2** a
+  graceful degrade); a later release retired that dependency entirely. The
+  script fetched from `main` only resolves the release tag and hands off to
+  that release's own `scripts/install.sh`, so it's that installer's own
+  preflight, not this page, that decides whether tmux is checked at all.
+  Frontend-only `--backend <alias>` hosts never needed tmux.
 - Frontend roles need **glibc ≥ 2.35** (Ubuntu 22.04 or newer). The backend
   binary is static musl and runs on any distro — `--be-only` has no glibc
   floor.

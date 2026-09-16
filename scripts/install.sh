@@ -10,6 +10,7 @@
 #                           # its hosts.toml (`sotd topology sync`) once staged
 #   [--force-role-change]  # consent to installing over another prefix's live daemon
 #                                                    # default: latest release
+#   SOT_INSTALL_TAG=<tag> ./scripts/install.sh ...   # run THIS checkout's body
 #
 # Role: a declared hosts.toml naming this host (host_name()) wins — its
 # daemon/frontend flags say what gets installed and enabled here, no
@@ -284,6 +285,30 @@ installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
 # included.
 if [ "${SOT_INSTALL_SOURCE_ONLY:-}" = 1 ]; then return 0; fi
 
+# ---- prelude: run the FETCHED tag's own installer, not main's body -------
+# The one-liner always fetches this file from main, whose body targets the
+# release line under development and can drift from what "latest" needs
+# (v0.5.10 needed tmux; main's body no longer checks). SOT_INSTALL_TAG unset
+# means: resolve the tag, then run THAT tag's own install.sh, args untouched
+# (set = skip: the pinned run, and how a checkout runs its own body). Old
+# tags have no prelude; they resolve "latest" themselves the same way.
+if [ -z "${SOT_INSTALL_TAG:-}" ]; then
+    command -v curl >/dev/null || die "curl is required"
+    tag="" prev=""
+    for a in "$@"; do [ "$prev" = --version ] && tag="$a"; prev="$a"; done
+    if [ -z "$tag" ]; then
+        loc="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")" \
+            || die "could not resolve the latest release of $REPO"
+        tag="${loc##*/}"
+    fi
+    case "$tag" in v[0-9]*) ;; *) die "could not resolve a release tag (got '$tag')" ;; esac
+    tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
+    url="https://raw.githubusercontent.com/$REPO/$tag/scripts/install.sh"
+    curl -fsSL -o "$tmp" "$url" || die "could not fetch $url"
+    SOT_INSTALL_TAG="$tag" bash "$tmp" "$@"
+    exit
+fi
+
 # ---- 0. heal a forbidden depot config (owner ruling 2026-09-02: no depot
 # path is ever set, derived, or hardcoded anywhere in this repo) -----------
 # A prior install (PR #161) wrote a systemd drop-in carrying the installing
@@ -369,6 +394,9 @@ gh_api() {  # gh_api <endpoint> <outfile> — API GET to a file (token optional)
          -o "$2" "https://api.github.com/repos/$REPO/$1"
 }
 
+# A pinned run already has the tag the prelude resolved — never re-hit the
+# releases API for it.
+VERSION="${VERSION:-${SOT_INSTALL_TAG:-}}"
 if [ -z "$VERSION" ]; then
     if [ "$FETCH" = gh ]; then
         VERSION="$(gh api "repos/$REPO/releases/latest" --jq .tag_name)"

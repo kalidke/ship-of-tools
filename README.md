@@ -82,7 +82,9 @@ installer, and proves the result answers before it says done.
 [GitHub Release](https://github.com/kalidke/ship-of-tools/releases) — Linux
 x86_64, Windows x86_64, and macOS aarch64; the installer fetches the latest
 by default (`--version` pins). `scripts/install.sh` is the user-install path;
-source builds are stamped `-dev` and never self-update.
+source builds are stamped `-dev` and never self-update. The copy of that
+script on `main` only resolves the version, then downloads and runs that
+release's own `scripts/install.sh` unmodified.
 
 `scripts/install.sh` downloads the latest release (SHA256-verified), lays out
 `~/.local/share/sot`, installs Julia via juliaup when needed, installs the
