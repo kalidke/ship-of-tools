@@ -100,10 +100,12 @@ reflects *persisted* trust and does not predict what happens under the flag.
 Trusting once per machine is still worth doing, because sessions started without
 `ccx` get no bypass.
 
-`$CODEX_HOME` may be **machine-local** (this deployment points it at
-`/var/tmp/$USER/codex` to keep codex's `flock()` off NFS), in which case trust,
-plugin enablement and the plugin cache are per-machine and a shared `$HOME` does
-not cover them — `update_comm` has to run on each machine.
+`$CODEX_HOME` may be **machine-local** (a host can point it at a local path, as
+this one once did to keep codex's `flock()` off an NFS `$HOME`), in which case
+trust, plugin enablement and the plugin cache are per-machine and a shared
+`$HOME` does not cover them — `update_comm` has to run on each machine. Unset,
+the home is `~/.codex`: on a shared `$HOME` all three are shared too and one
+`update_comm` covers every machine.
 
 `[features] hooks = true` was needed by an older codex; on 0.146 hooks install
 without it, so its absence from a config is not a fault.

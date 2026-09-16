@@ -19,8 +19,8 @@ this** — same house rules, your dialect.
   humans: reply to asks, announce pushes, never assume delivery without a
   reply.
 - Codex-specific Ship of Tools skills are installed by `ShipTools.update_comm()`
-  under `$CODEX_HOME/skills/` (default `~/.codex/skills/`, but this deployment
-  points `CODEX_HOME` elsewhere — check the env, don't assume the default):
+  under `$CODEX_HOME/skills/` (`~/.codex/skills/` unless a host overrides
+  `CODEX_HOME`):
   use `sot-comm` for messaging and `sot-session-start` for backend Codex
   bootstrap — one skill for every session, Ship of Tools repo or not.
 - Socket-only mode is the default: the backend normally listens on the private

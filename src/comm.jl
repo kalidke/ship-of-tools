@@ -774,11 +774,11 @@ function _install_adapter(cli::Symbol)
         #
         # Hook TRUST: persisted per hook HASH in $CODEX_HOME/config.toml under
         # [hooks.state], granted once via the /hooks TUI. NOT covered by a
-        # shared $HOME when CODEX_HOME is machine-local (this deployment points
-        # it at /var/tmp to keep codex's flock() off NFS) — so trust is
-        # per-machine. ccx additionally passes --dangerously-bypass-hook-trust
-        # so a changed hash can't silently disable state reporting on
-        # daemon-spawned sessions.
+        # shared $HOME when a host points CODEX_HOME at a machine-local path —
+        # then trust is per-machine. Unset (the default, ~/.codex) it follows
+        # the shared $HOME like everything else. ccx additionally passes
+        # --dangerously-bypass-hook-trust so a changed hash can't silently
+        # disable state reporting on daemon-spawned sessions.
         #
         # The two silent-death traps this file has already fallen into (both
         # cost weeks of colourless sessions, both report Installed=0 in /hooks
