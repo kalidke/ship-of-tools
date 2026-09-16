@@ -344,5 +344,5 @@ IDENTITY="ok"
 # comm-watch.sh itself honors $SOT_COMM_HOME for the inbox/marker it reads —
 # nothing extra to thread through here.
 MONITOR_CMD="$(printf '%q %q' "$SCRIPT_DIR/comm-watch.sh" "$HANDLE")"
-echo "BOOTSTRAP-ARM handle=$HANDLE listener=$LISTENER_STATE identity=$IDENTITY MONITOR: $MONITOR_CMD (persistent — does not expire; comm-status-heartbeat.sh warns if the watcher dies anyway)"
+echo "BOOTSTRAP-ARM handle=$HANDLE listener=$LISTENER_STATE identity=$IDENTITY MONITOR: $MONITOR_CMD (persistent; if the harness ends it, re-arm on the notice - this hook warns if you miss one)"
 _workstate_rule

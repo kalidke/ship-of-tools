@@ -27,8 +27,8 @@ BOOTSTRAP-ARM handle=<h> listener=up|down|n/a identity=ok|MISMATCH|FAIL MONITOR:
   private `SOT_COMM_SELF_FILE`) and re-run; never work around this by hand.
 - Otherwise, **arm a persistent harness Monitor** running exactly the
   printed `MONITOR:` command — the one act this script can't do for you —
-  then run phase 2. This watch does not expire; if its process ever dies
-  anyway, `comm-status-heartbeat.sh` warns you on your next tool call.
+  then run phase 2. If the harness ends it anyway, re-arm on the expiry
+  notice, and `comm-status-heartbeat.sh` warns you if you miss one.
 
 **Phase 2 — catch up** (only once the Monitor from phase 1 is armed):
 
