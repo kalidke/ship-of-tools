@@ -376,6 +376,17 @@ function _reap_markers(dst::AbstractString; keep::Union{Nothing,AbstractString} 
     return nothing
 end
 
+"""
+    install_file(src, dst; rename = Base.Filesystem.rename)
+
+Copy `src` to a temporary name beside `dst`, then rename it onto `dst`, so
+`dst` is never partially written. When the rename is refused because a running
+process holds `dst` open (Windows), the old file is moved aside under a
+`.stale-` name rather than deleted — the process keeps its inode — the new file
+lands, and the aside copy is reaped by the next successful replace of that
+name. Any failure removes the temporary and throws; if the second rename fails
+the old file is put back, so `dst` is never missing.
+"""
 function install_file(src::AbstractString, dst::AbstractString;
                       rename = Base.Filesystem.rename)
     tmp = _tmp_name(dst)
