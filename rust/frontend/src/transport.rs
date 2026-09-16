@@ -3020,8 +3020,8 @@ where
                             None,
                         )
                         .await?;
-                        // Fire-and-forget: the ack is a bare `{ok}` we don't
-                        // track, so no pending entry (an unmatched response id
+                        // Fire-and-forget: the ack carries `{ok, receivers}` and we
+                        // track neither, so no pending entry (an unmatched response id
                         // is silently ignored).
                     }
                     OutgoingReq::MonitorHistory { window_s, points, until, host } => {
