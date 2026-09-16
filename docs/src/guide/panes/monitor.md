@@ -11,9 +11,11 @@ is global, so it opens even when another pane has focus.
 
 ## How it gets the data
 
-The connected backend is the **aggregator** (the frontend talks to one backend at
-a time, so "see all servers at once" is solved at the data layer). For each
-monitored host it runs a small sampler:
+The declared **hub** is the aggregator: it alone runs the `[monitor]` roster, and
+the drawer subscribes to the hub regardless of which host you're navigating —
+"see all servers at once" is solved at the data layer, on the one daemon that's
+the monitoring authority. For each host in the roster the hub runs a small
+sampler:
 
 - **its own host** locally; **remote hosts** as `ssh <alias> bash -s`, with the
   script fed over stdin — **zero footprint**, no daemon, nothing written to the
@@ -21,22 +23,27 @@ monitored host it runs a small sampler:
 - CPU% from `/proc/stat`, RAM% from `/proc/meminfo`, GPU from `nvidia-smi`. All
   world-readable, so **no sudo and no privileges** are needed.
 
-Sampling is **always on** for the life of the backend, so the drawer shows real
+A daemon that is **not** the hub samples only the host it runs on — it never ssh's
+anywhere, so a wrong or unreachable alias on some other box can't wedge it.
+Dialling a non-hub daemon directly shows that daemon's own single panel, not the
+fleet; to see the fleet, dial the hub.
+
+Sampling is **always on** for the life of the daemon, so the drawer shows real
 history the moment it opens rather than starting from a blank axis; what
 `monitor.subscribe` gates is per-connection *delivery* of ticks, not collection.
 (ADR 0020 originally specified reactive spawn-on-subscribe; the implementation
-went the other way and the ADR carries a note.) The backend keeps an in-memory
+went the other way and the ADR carries a note.) The hub keeps an in-memory
 tiered ring buffer per host, so the time axis can rescale to wider windows
-without a round-trip. Restarting the backend restarts that history.
+without a round-trip. Restarting the hub restarts that history.
 
 Which hosts appear comes from the `[monitor]` section of `.sot/hosts.toml` — see
-[Configuration Files](../../ref/config.md). With no `[monitor]` section, only the
-backend's own host is sampled; the `[host.*]` entries are frontend connection
-targets and are not monitored implicitly.
+[Configuration Files](../../ref/config.md). With no `[monitor]` section, or on a
+non-hub daemon, only that daemon's own host is sampled; the `[host.*]` entries are
+frontend connection targets and are not monitored implicitly.
 
-**The list binds when the daemon starts.** Editing `hosts.toml` while the backend
-is running changes nothing until it restarts — there is no reload and no file
-watch. If the drawer is missing a host you just added, restart the backend.
+**The list binds when the daemon starts.** Editing `hosts.toml` while the hub is
+running changes nothing until it restarts — there is no reload and no file watch.
+If the drawer is missing a host you just added, restart the hub.
 
 ## On-philosophy rendering
 

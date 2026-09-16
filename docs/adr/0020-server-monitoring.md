@@ -62,6 +62,16 @@ here rather than edited into the text, so the change is visible.
   and are not necessarily machines worth sampling, so treating them as an
   implicit monitor list would have surprising results. The user documentation
   was corrected to match the code, not the other way round.
+- **The `[monitor]` roster is hub-scoped, not per-daemon.** Every daemon used to
+  execute it, so a box with no ssh access to some alias in the file looped that
+  sampler's spawn/backoff cycle forever, and the drawer (fixed to whichever
+  connection sorts first) rendered a partial reach as if it were the whole
+  fleet. Only the declared hub now executes the roster; every other daemon
+  samples just the host it runs on, and the drawer subscribes to the hub
+  specifically, not to `default_host`. The sampler's stderr, previously
+  discarded, is captured and logged at the hub once per death (deduped on the
+  reason) so the ssh failure that caused it is diagnosable — the drawer's own
+  stale marker is unchanged; the reason is a journal fact, not a wire field.
 
 Also worth naming, because it has cost a debugging session: the monitored host
 list is read ONCE, at daemon start. There is no reload path. A live roster would

@@ -2328,6 +2328,20 @@ fn resolve_default_host(
         .unwrap_or(fallback)
 }
 
+/// The connection the monitor drawer subscribes to: the declared hub (the
+/// one daemon that executes the monitor roster), else the drawer's
+/// existing default. Still FIXED — ADR 0042 L2a's invariant is that the
+/// drawer does not follow the active host; this changes what it resolves
+/// to, not whether it moves.
+fn resolve_monitor_host(
+    conns: &[(HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)],
+    hub: Option<&str>,
+    fallback: HostKey,
+) -> HostKey {
+    hub.and_then(|h| conns.iter().find(|(c, _)| c == h).map(|(c, _)| c.clone()))
+        .unwrap_or_else(|| resolve_default_host(conns, fallback))
+}
+
 /// This frontend process's own declared identity (ADR 0046 decision 1):
 /// `{host, instance, name, role: "fe"}`, constructed ONCE and shared by
 /// every connection, reconnect and input attribution — `instance`
@@ -4168,6 +4182,12 @@ struct State {
     /// (ADR 0042 L2a). Defaults to the first connection in `conns`
     /// (local-first, then --dial argument order — see `dial::resolve_connections`).
     active_host: crate::dial::HostKey,
+    /// The declared hub's name (topology `hub = "<host>"`), loaded once at
+    /// startup the same way `selfupdate.rs` reads the topology. `None` when
+    /// no `hosts.toml` declares one. Names the monitor drawer's subscribe
+    /// target (`monitor_host`) — the drawer means "the fleet's record", so
+    /// it asks the hub, not whichever connection sorts first.
+    monitor_hub: Option<String>,
     /// Combined multiplier (`cli.scale * window.scale_factor()`) applied to
     /// all text + cell metrics. Captured once at startup; ScaleFactorChanged
     /// is currently ignored.
@@ -5306,6 +5326,11 @@ impl State {
         // we actually resumed onto the host they were saved for.
         let resume_matches_last_host =
             persisted_geom.last_host.as_deref() == Some(active_host.as_str());
+        // The declared hub's name (4.3): loaded once here, the same pattern
+        // `selfupdate.rs::backend_owns_updates_here` uses — pure file read,
+        // no daemon round trip, `None` when no `hosts.toml` declares one.
+        let monitor_hub: Option<String> =
+            sot_protocol::topology::load().ok().flatten().map(|(_, t)| t.hub);
         // Restore previous window geometry on launch. Saved in logical
         // pixels so cross-DPR launches behave sensibly. Defaults are
         // ~50% bigger than the spike's original 1024×700.
@@ -5910,6 +5935,7 @@ impl State {
             host_resolved_dial: HashMap::new(),
             declared_host: HashMap::new(),
             active_host,
+            monitor_hub,
             scale,
             cell_w,
             cell_h,
@@ -6120,10 +6146,12 @@ impl State {
         // Ctrl+M arm sends. The unbounded req channel buffers until the
         // transport connects, so sending here is safe pre-hello.
         if cli.start_monitor {
-            // ADR 0042 L2a: the drawer (Monitor content included) rides
-            // `default_host`'s connection always — it never follows
-            // `active_host` around as the user switches workspaces.
-            let monitor_host = state.default_host();
+            // ADR 0042 L2a: the drawer (Monitor content included) rides a
+            // FIXED connection always — it never follows `active_host`
+            // around as the user switches workspaces. Which connection is
+            // `monitor_host` (2.1): the declared hub, so the fleet's record
+            // is what's shown regardless of which host this box dialled.
+            let monitor_host = state.monitor_host();
             let _ = state.send_to(
                 &monitor_host,
                 crate::transport::OutgoingReq::MonitorSubscribe,
@@ -8068,6 +8096,14 @@ impl State {
     /// `--dial` argument order).
     fn default_host(&self) -> HostKey {
         resolve_default_host(&self.conns, self.active_host.clone())
+    }
+
+    /// The monitor drawer's subscribe target (2.1): the declared hub when
+    /// it's among today's connections, else `default_host`'s fallback. The
+    /// three former `state.default_host()` call sites at the monitor
+    /// subscribe/history/tab-label points use this instead.
+    fn monitor_host(&self) -> HostKey {
+        resolve_monitor_host(&self.conns, self.monitor_hub.as_deref(), self.active_host.clone())
     }
 
     /// Every connection in display order (ADR 0042 L2a) — local-first,
@@ -15966,6 +16002,11 @@ impl State {
         // T1: full path of the file the preview is showing, snapshotted here
         // so the draw closure doesn't borrow `self`.
         let preview_name = self.preview_pane_name();
+        // 4.3: the monitor tab label's source, snapshotted here (String +
+        // bool) for the same reason as `preview_name` above — the draw
+        // closure must not borrow `self`.
+        let monitor_host_label = self.monitor_host();
+        let monitor_host_connected = self.conns.iter().any(|(h, _)| h == &monitor_host_label);
         // Sessions create-legend gate: is the workspace picker open? Snapshotted
         // here (Copy bool) so the header inside the draw closure can decide
         // whether to show the standalone three-key create legend without
@@ -16322,7 +16363,17 @@ impl State {
                 let repl_title = match (drawer, repl_focus) {
                     (DrawerContent::Terminal, true) => " terminal · [FOCUS] ".to_string(),
                     (DrawerContent::Terminal, false) => " terminal ".to_string(),
-                    (DrawerContent::Monitor, _) => " monitor ".to_string(),
+                    // 4.3, option (a): names whose record this is — the
+                    // resolved host (the hub when it's connected, else the
+                    // `default_host` fallback), flagged when that host
+                    // isn't actually among today's connections.
+                    (DrawerContent::Monitor, _) => {
+                        if monitor_host_connected {
+                            format!(" monitor · {monitor_host_label} ")
+                        } else {
+                            format!(" monitor · {monitor_host_label} [not connected] ")
+                        }
+                    }
                     (DrawerContent::Help, _) => " help ".to_string(),
                     (_, true) => " repl · julia · [FOCUS] ".to_string(),
                     (_, false) => " repl · julia ".to_string(),
@@ -19923,11 +19974,12 @@ impl ApplicationHandler for App {
                         // 0020): subscribe + prefill on open, unsubscribe on
                         // close. Backend sampling is always-on; this just gates
                         // this connection's live stream to when the drawer is up.
-                        // ADR 0042 L2a: always `default_host` — the drawer
-                        // never follows `active_host`.
+                        // ADR 0042 L2a: always `monitor_host` (2.1, the
+                        // declared hub) — the drawer never follows
+                        // `active_host`.
                         if state.drawer == DrawerContent::Monitor && !state.monitor_view.subscribed
                         {
-                            let monitor_host = state.default_host();
+                            let monitor_host = state.monitor_host();
                             let _ = state.send_to(
                                 &monitor_host,
                                 crate::transport::OutgoingReq::MonitorSubscribe,
@@ -19946,7 +19998,7 @@ impl ApplicationHandler for App {
                         } else if state.drawer != DrawerContent::Monitor
                             && state.monitor_view.subscribed
                         {
-                            let monitor_host = state.default_host();
+                            let monitor_host = state.monitor_host();
                             let _ = state.send_to(
                                 &monitor_host,
                                 crate::transport::OutgoingReq::MonitorUnsubscribe,
@@ -27443,6 +27495,37 @@ mod tests {
         assert_eq!(resolve_default_host(&conns, "offline".to_string()), "local");
         // No connections at all (offline mode) → the fallback name.
         assert_eq!(resolve_default_host(&[], "offline".to_string()), "offline");
+    }
+
+    #[test]
+    fn resolve_monitor_host_prefers_the_declared_hub() {
+        // ["local", "alpha"], in that order — the hub is not first, so this
+        // also proves the resolver doesn't just defer to conns.first().
+        let (conns, _rxs) = fake_conns();
+        assert_eq!(
+            resolve_monitor_host(&conns, Some("alpha"), "offline".to_string()),
+            "alpha"
+        );
+    }
+
+    #[test]
+    fn resolve_monitor_host_falls_back_without_a_hub() {
+        let (conns, _rxs) = fake_conns();
+        // No hub declared at all.
+        assert_eq!(
+            resolve_monitor_host(&conns, None, "offline".to_string()),
+            resolve_default_host(&conns, "offline".to_string())
+        );
+        // A hub declared but not among today's connections.
+        assert_eq!(
+            resolve_monitor_host(&conns, Some("gamma"), "offline".to_string()),
+            resolve_default_host(&conns, "offline".to_string())
+        );
+        // No connections at all (offline mode) → the fallback name either way.
+        assert_eq!(
+            resolve_monitor_host(&[], Some("alpha"), "offline".to_string()),
+            "offline"
+        );
     }
 }
 
