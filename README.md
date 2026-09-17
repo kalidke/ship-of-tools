@@ -78,6 +78,12 @@ Install Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-t
 The agent runs preflight, asks you one topology question, drives the
 installer, and proves the result answers before it says done.
 
+To update later, or to replace a source build with a release install, say:
+
+```text
+Update Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-tools/main/docs/INSTALL-AGENT.md and follow it. If this machine runs a source build, replace it with a release install.
+```
+
 A coding agent (Claude Code, or Codex) must already be installed and logged
 in on every machine that runs sessions — the installer does not install one.
 

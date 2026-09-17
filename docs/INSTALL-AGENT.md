@@ -97,7 +97,9 @@ cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launc
   whose `ExecStart` is outside this prefix, the `~/.local/bin/sot-launch`
   wrapper, the desktop entry, and the macOS app — any one of these already
   pointing at a source checkout or another `--prefix` means installing here
-  would replace or disable it. Stop and tell the human. A unit file alone
+  would replace or disable it. Stop and tell the human — unless they asked
+  you to replace a source build with a release install, which is that
+  authorization already; then proceed with the flag. A unit file alone
   (e.g. seen over a shared home, not active here) is not this case, and
   neither is a wrapper/desktop entry/app that already points at THIS prefix
   (that's an upgrade). A `sot-launch` wrapper whose shape the installer
