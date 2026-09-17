@@ -168,10 +168,9 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
 
 4. **Launch**: `sot.exe --tcp 127.0.0.1:18743` (`sot.exe --help` prints the
    full flag set). Optionally persist the connection in
-   `%APPDATA%\sot\hosts.toml` (config discovery: `$SOT_HOSTS` →
-   `.sot\hosts.toml` relative to the **current directory** — so the repo file
-   is only picked up when launching from the repo root — →
-   `%APPDATA%\sot\hosts.toml`, the reliable location for manual launches).
+   `%LOCALAPPDATA%\sot\config\hosts.toml` (config discovery, one order, no
+   repo-local layer: `$SOT_HOSTS` when set, else `%LOCALAPPDATA%\sot\config\hosts.toml`
+   — `~/.config/sot/hosts.toml` on Linux/macOS).
 
    `sot.exe` does NOT open the SSH forward itself — the tunnel is yours (or
    a launcher's).
@@ -191,18 +190,13 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
    ```powershell
    git clone https://github.com/kalidke/ship-of-tools
    cd ship-of-tools
-   # Write .sot\hosts.toml — the table is [host.<name>], SINGULAR:
-   #   default_host = "myserver"
-   #   [host.myserver]
-   #   ssh_alias   = "myserver"
-   #   remote_repo = "/home/<user>/.local/share/sot/repo/current"
-   #   tcp_port    = 18743
-   # remote_socket is OPTIONAL: the launcher resolves it by running sotd
-   # session-socket-path on the remote (dev checkout or the release-installed
-   # ~/.local/share/sot/bin/sotd). Set it explicitly (or $env:SOT_REMOTE_SOCKET)
-   # only to skip that probe: remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
-   # For the rest of the config follow docs/src/start/setup.md, or in a Claude
-   # Code session invoke the /sot-setup skill — it drives the whole checklist.
+   # hosts.toml is never hand-written here: it lives at
+   # %LOCALAPPDATA%\sot\config\hosts.toml (or $SOT_HOSTS), and the launcher
+   # (scripts\launch-sot.ps1) fetches it from the hub via `sotd topology
+   # sync` on every launch -- write the hub = "..." / [host.<name>] /
+   # daemon / frontend grammar ONCE, on the hub, per docs/src/start/setup.md
+   # ("hosts.toml — the declared topology"), or in a Claude Code session
+   # invoke the /sot-setup skill — it drives the whole checklist.
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1
    ```
 

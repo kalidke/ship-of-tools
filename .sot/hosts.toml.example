@@ -60,12 +60,6 @@
 # sync --hub hub` then `sotd topology plan` (tunnel hub 18743, dial hub
 # tcp:127.0.0.1:18743, relay-endpoint tcp:127.0.0.1:18743); on any box
 # `export SOT_RELAY_ENDPOINT="$(sotd topology relay-endpoint)"`.
-#
-# v1 keys (`default_host`; per host `ssh_alias`, `remote_repo`, `tcp_port`,
-# `remote_socket`, `socket`, `remote_home`) still parse THIS release with
-# one warning each naming the replacement — a file using any of them is a
-# v1 file, and every host in it counts as `daemon = true` — and are deleted
-# at the next rc.
 
 hub = "hub"
 

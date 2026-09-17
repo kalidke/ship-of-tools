@@ -22,8 +22,9 @@ frontend exits. Pass `-Local` to fall back to a backend spawned on the same
 machine over a named pipe (offline / debugging).
 
 Which remote you connect to comes from the persisted host choice (Hosts mode,
-hotkey `h`) resolved against `.sot/hosts.toml`; environment overrides
-(`SOT_HOST`, `SOT_REMOTE_REPO`, `SOT_TCP_PORT`, `SOT_REMOTE_SOCKET`) win over both. See
+hotkey `h`) resolved against the declared topology (`hosts.toml`, fetched
+from the hub by `sotd topology sync` — never repo-local); environment
+overrides (`SOT_HOST_NAME`/`SOT_HOST`, `SOT_TCP_PORT`) win over both. See
 [Per-Machine Setup](setup.md).
 
 A **comm-tooling session** (a Claude Code session driving `sot-fe`/
@@ -51,16 +52,17 @@ The Windows shortcut runs the launcher hidden, so an early failure can look like
   the pinned `.lnk`; stale pins can still point at an old bare `sot.exe` or an
   old checkout.
 
-After writing or changing `.sot\hosts.toml`, rerun:
+After changing the topology on the hub (a new `[host.<name>]`, a flag flip),
+`sotd topology sync` on every other box picks it up on its next launch — no
+shortcut re-run needed for that. Re-run the shortcut installer only after
+moving the repo or the launcher script:
 
 ```powershell
 pwsh -File scripts\install-shortcut.ps1
 ```
 
 That refreshes the desktop shortcut and repoints any existing Ship of Tools
-taskbar pin to `scripts\launch-sot.ps1`. If `.sot\hosts.toml` is missing, the
-shortcut can still be created, but launch will fail with "no backend host
-configured."
+taskbar pin to `scripts\launch-sot.ps1`.
 
 ## The Terminal drawer
 

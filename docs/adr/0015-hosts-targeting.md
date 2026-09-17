@@ -5,9 +5,14 @@
 Ctrl+Q + relaunch" flow this ADR specifies with a live connection per
 `hosts.toml` entry, open simultaneously — "no live in-session swap" is
 moot once switching hosts no longer means cold-starting a new
-connection at all. `hosts.toml` itself (the registry format, its
-layered discovery, `HostEntry`/`HostsConfig`) is UNCHANGED and remains
-this ADR's live contribution; only the "one active host, chosen via
+connection at all. `hosts.toml` itself — the registry format
+(`HostEntry`/`HostsConfig`, `default_host`) and its layered discovery
+(a repo-local `.sot/hosts.toml` among the search paths) — is since
+SUPERSEDED by grammar v2 (`sot_protocol::topology`, commit 6ce7ca2b):
+one `hub`/`[host.<name>]` grammar, one search order
+(`$SOT_HOSTS`, else `<config dir>/hosts.toml`, no repo-local layer),
+fetched from the hub by `sotd topology sync` rather than hand-edited
+per box; see `docs/src/start/setup.md`. Only the "one active host, chosen via
 `Mode::Hosts` + relaunch" targeting model is superseded. `Mode::Hosts`
 still exists but is now a live connected/unreachable status list (see
 ADR 0042 L2a); the frontend no longer writes `last_host` to
