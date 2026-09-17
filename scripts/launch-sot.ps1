@@ -1014,23 +1014,58 @@ function Test-LocalPortOpen {
 function Start-SotTunnel {
     # No-op when the default remote never resolved ($sshArgs empty -- see
     # $defaultRemoteOk above): nothing to forward to, and every call site
-    # already treats a $null return the same way Start-SotAuxTunnel's own
-    # no-op is treated.
+    # already treats a $null return as "no tunnel to supervise". $sshArgs
+    # already carries the (opt-in, legacy) aux forwards folded in above,
+    # so this one process carries everything -- see Update-SotRemoteDial.
     if ($sshArgs.Count -eq 0) { return $null }
     Start-Process -FilePath ssh `
         -ArgumentList $sshArgs `
         -WindowStyle Hidden `
         -PassThru
 }
-function Start-SotAuxTunnel {
-    # No-op once the fixed-port forwards are retired (the default). Returns
-    # $null so callers that track the process handle see "nothing started"
-    # rather than launching a bare `ssh` with no forwards.
-    if ($sshAuxArgs.Count -eq 0) { return $null }
-    Start-Process -FilePath ssh `
-        -ArgumentList $sshAuxArgs `
-        -WindowStyle Hidden `
-        -PassThru
+function Stop-StaleControlTunnel {
+    # Owner ruling (2026-09-17): never reuse a tunnel this launcher did not
+    # start. The single-instance lock above guarantees one launcher per
+    # user, and the control port is now per OS user
+    # (sot_protocol::topology::hub_local_port), so an open port here can
+    # only be OUR OWN earlier launch's zombie (ssh alive, forward dead --
+    # the 2026-09-12 field failure) or some other process entirely -- never
+    # a legitimate peer to ride. Stop only ssh.exe processes this same OS
+    # user owns whose command line forwards this port; anything else is
+    # left alone for the caller to report as "still open" and refuse.
+    param([int]$Port)
+    Get-CimInstance Win32_Process -Filter "Name = 'ssh.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match "-L\s+${Port}:" } |
+        ForEach-Object {
+            $owner = $null
+            try { $owner = (Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction Stop).User } catch { }
+            if ($owner -and $owner -ne $env:USERNAME) { return }  # not ours -- never touch another user's process
+            try {
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
+                Write-SupLog "control port $Port was held by a stale tunnel (pid $($_.ProcessId)); replaced"
+            } catch {
+                Write-SupLog "control port ${Port}: failed to stop stale tunnel pid $($_.ProcessId) -- $_"
+            }
+        }
+}
+function Start-SotControlTunnel {
+    # The one place that decides whether to (re)open the default remote's
+    # control tunnel. Replaces the old "port open -> assume it's a peer,
+    # ride it with an aux-only ssh" branch (Start-SotAuxTunnel, deleted):
+    # that could dial a DIFFERENT user's backend on a shared box before the
+    # port became per-user. Now an open port only ever gets cleared (if it's
+    # ours) or refused (if it isn't) -- never connected through blind.
+    param([int]$Port)
+    if (Test-LocalPortOpen -Port $Port) {
+        Stop-StaleControlTunnel -Port $Port
+        Start-Sleep -Milliseconds 300   # give the OS a moment to release it
+    }
+    if (Test-LocalPortOpen -Port $Port) {
+        Set-LaunchStatus "ERROR: local port $Port is already in use by another process - not connecting through it"
+        Write-SupLog "control port $Port still open after clearing our own stale tunnels - refusing to reuse it"
+        return $null
+    }
+    Start-SotTunnel
 }
 
 # ---------------------------------------------------------------------------
@@ -1521,13 +1556,7 @@ if (-not $localDaemonReady -and -not $defaultRemoteOk) {
 }
 
 Set-LaunchStatus 'Connecting...'
-$externalControlTunnel = Test-LocalPortOpen -Port $tcpPort
-if ($externalControlTunnel) {
-    Write-SupLog "control port $tcpPort is already open; starting browser aux-only tunnel"
-    $sshTunnel = Start-SotAuxTunnel
-} else {
-    $sshTunnel = Start-SotTunnel
-}
+$sshTunnel = Start-SotControlTunnel -Port $tcpPort
 $sshStartedAt = Get-Date
 Start-Sleep -Milliseconds 400
 
@@ -1662,17 +1691,21 @@ try {
         $tunnelBackoffSec = 0
         while (-not $frontend.HasExited) {
             $pollSleepSec = 0.5
-            # $sshTunnel is $null when the control port is externally held AND
-            # the aux forwards are retired (nothing to supervise), or when the
-            # default remote never resolved (ADR 0042 L2b codex follow-up,
-            # item 3 -- Start-SotTunnel/Start-SotAuxTunnel are no-ops then).
-            # Guard it explicitly rather than relying on $null.HasExited being
-            # falsy -- that only holds while no one adds Set-StrictMode.
+            # $sshTunnel is $null when the default remote never resolved
+            # (ADR 0042 L2b codex follow-up, item 3 -- Start-SotTunnel is a
+            # no-op then), or when Start-SotControlTunnel refused to reuse a
+            # port some other process holds (owner ruling, 2026-09-17 --
+            # never ride a tunnel this launcher didn't start). Guard it
+            # explicitly rather than relying on $null.HasExited being falsy
+            # -- that only holds while no one adds Set-StrictMode.
             if ($sshTunnel -and $sshTunnel.HasExited) {
                 $uptime = ((Get-Date) - $sshStartedAt).TotalSeconds
                 $tunnelBackoffSec = if ($uptime -lt 2) { [Math]::Min(($tunnelBackoffSec * 2 + 1), 30) } else { 0 }
                 if ($tunnelBackoffSec -gt $pollSleepSec) { $pollSleepSec = $tunnelBackoffSec }
-                $sshTunnel = if ($externalControlTunnel) { Start-SotAuxTunnel } else { Start-SotTunnel }
+                # Our own tunnel just exited, so the port is ours to reclaim --
+                # a straight respawn, not the full Start-SotControlTunnel
+                # dance (which exists for "is this port even ours" at startup).
+                $sshTunnel = Start-SotTunnel
                 $sshStartedAt = Get-Date
                 Write-SupLog "tunnel respawned pid=$($sshTunnel.Id) (backoff=${tunnelBackoffSec}s)"
             }
@@ -1735,15 +1768,14 @@ try {
             Update-SotRemoteDial
             # The loop's watchdog further down only ever RESPAWNS a tunnel
             # that has exited, so a converge that has just GAINED a remote
-            # must start the first one here. Re-test the port: another
-            # process may be holding it, in which case the control tunnel
-            # is external and only the aux one is ours to start.
+            # must start the first one here. Start-SotControlTunnel clears
+            # any stale tunnel of ours holding the port and refuses (no
+            # tunnel) rather than ride another process's -- see its own doc.
             if (-not $sshTunnel -or $sshTunnel.HasExited) {
-                $externalControlTunnel = Test-LocalPortOpen -Port $tcpPort
-                $sshTunnel = if ($externalControlTunnel) { Start-SotAuxTunnel } else { Start-SotTunnel }
+                $sshTunnel = Start-SotControlTunnel -Port $tcpPort
                 if ($sshTunnel) {
                     $sshStartedAt = Get-Date
-                    Write-SupLog "converge: control tunnel started pid=$($sshTunnel.Id) on port $tcpPort (external=$externalControlTunnel)"
+                    Write-SupLog "converge: control tunnel started pid=$($sshTunnel.Id) on port $tcpPort"
                 }
             }
             $localDaemonReady = Invoke-LocalDaemonEnsure
