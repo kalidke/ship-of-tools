@@ -13,7 +13,9 @@ Usage: sotd topology <subcommand>
   plan [--self <host>]  this box's derived facts, one per line: self, hub,
                         relay-endpoint, dial <host> <endpoint> (every daemon
                         host), tunnel <host> <port> (every daemon host but
-                        self; the hub is 18743, others ordinal in file order)
+                        self; the hub is this box's OS-user tunnel port
+                        (topology::hub_local_port, per-user, not fixed),
+                        others ordinal from it in file order)
   status                the declared table (HOST DECLARED), plus a
                         \"cache diverged\" line when this box's file hash
                         disagrees with the hub's (skipped ON the hub, and
@@ -299,8 +301,9 @@ fn remove_dropin(host: &str) -> Result<(), String> {
 /// `sotd topology set <edit>`. Sends one edit to the hub over this box's
 /// own control dial — the SAME endpoint the launcher's own tunnel plan
 /// already establishes for the hub (`hub_endpoint`, below: this box's own
-/// socket when it IS the hub, else the forwarded `tcp:127.0.0.1:18743`
-/// every non-hub box already dials for everything else). No separate
+/// socket when it IS the hub, else the forwarded
+/// `tcp:127.0.0.1:<hub_local_port>` (per OS user) every non-hub box
+/// already dials for everything else). No separate
 /// "find the hub" step: authorisation is the dial itself (`op::
 /// TOPOLOGY_SET`'s own doc).
 fn set(words: &[String]) -> Result<(), String> {
@@ -342,7 +345,7 @@ fn hub_endpoint(topo: &Topology, me: &str) -> String {
     if me == topo.hub {
         topology::local_endpoint("sot")
     } else {
-        format!("tcp:127.0.0.1:{}", topology::HUB_LOCAL_PORT)
+        format!("tcp:127.0.0.1:{}", topology::hub_local_port())
     }
 }
 
@@ -469,7 +472,7 @@ mod tests {
     fn hub_endpoint_is_local_on_the_hub_else_the_forwarded_port() {
         let t = topology::parse("hub = \"alpha\"\n[host.alpha]\ndaemon = true\n").unwrap();
         assert_eq!(hub_endpoint(&t, "alpha"), topology::local_endpoint("sot"));
-        assert_eq!(hub_endpoint(&t, "beta"), format!("tcp:127.0.0.1:{}", topology::HUB_LOCAL_PORT));
+        assert_eq!(hub_endpoint(&t, "beta"), format!("tcp:127.0.0.1:{}", topology::hub_local_port()));
     }
 
     #[test]

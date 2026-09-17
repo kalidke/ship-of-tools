@@ -37,7 +37,30 @@ set -euo pipefail
 REPO="${SOT_INSTALL_REPO:-kalidke/ship-of-tools}"
 PREFIX="${SOT_PREFIX:-$HOME/.local/share/sot}"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sot"
-ROLE="" VERSION="" BE_ALIAS="" HUB_ALIAS="" PORT=18743 NO_SERVICE=0 FORCE_ROLE_CHANGE=0
+
+# Mirrors `hub_local_port_for` (rust/protocol/src/topology.rs): this runs
+# before any `sotd` binary is on disk, so it can't just ask the real thing.
+# Two OS users sharing one box must not default to the same tunnel port
+# (the bug this whole per-user scheme fixes), so the default offered here
+# has to already be per-user, not a shared constant. FNV-1a 32-bit over
+# $USER/$USERNAME/$LOGNAME, folded to a two-digit offset above 18743; no
+# name found keeps the old fixed 18743.
+sot_hub_local_port() {
+    local user="${USER:-${USERNAME:-${LOGNAME:-}}}"
+    if [ -z "$user" ]; then
+        printf '18743\n'
+        return 0
+    fi
+    local hash=2166136261 i c  # 0x811c9dc5
+    for (( i = 0; i < ${#user}; i++ )); do
+        c=$(LC_ALL=C printf '%d' "'${user:$i:1}")
+        hash=$(( (hash ^ c) & 0xffffffff ))
+        hash=$(( (hash * 16777619) & 0xffffffff ))  # 0x01000193
+    done
+    printf '%d\n' $(( 18743 + hash % 100 ))
+}
+
+ROLE="" VERSION="" BE_ALIAS="" HUB_ALIAS="" PORT="$(sot_hub_local_port)" NO_SERVICE=0 FORCE_ROLE_CHANGE=0
 GLIBC_FLOOR_FE="2.35"
 
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
@@ -976,13 +999,15 @@ say "wrote $PREFIX/install.json (schema 1, daemon=$WANT_DAEMON frontend=$WANT_FR
 # socket, a frontend's forward tunnel, or the reverse-tunnel socket) from
 # hosts.toml, so that block becomes this one-liner. The profile is the
 # maintainer's own file outside this repo — paste it by hand, this script
-# never edits it. The fallback keeps a box working (same value ADR 0028
-# used before this) if the command fails or sotd isn't on PATH yet; it
-# runs on every non-interactive ssh, so it stays quiet either way.
+# never edits it. The fallback keeps a box working if the command fails or
+# sotd isn't on PATH yet; it runs on every non-interactive ssh, so it stays
+# quiet either way. It is THIS install's own $PORT (per OS user, see
+# sot_hub_local_port above), not a fixed number — two OS users sharing a
+# box must not fall back to the same port either.
 if [ "$OS" = Linux ]; then
     say "shell profile: replace any per-host SOT_RELAY_ENDPOINT case block with:"
     say '  export SOT_RELAY_ENDPOINT="$(sotd topology relay-endpoint 2>/dev/null)"'
-    say '  : "${SOT_RELAY_ENDPOINT:=tcp:127.0.0.1:18743}"'
+    say "  : \"\${SOT_RELAY_ENDPOINT:=tcp:127.0.0.1:$PORT}\""
 fi
 
 say "DONE — Ship of Tools $VERSION installed (daemon=$WANT_DAEMON frontend=$WANT_FRONTEND)."

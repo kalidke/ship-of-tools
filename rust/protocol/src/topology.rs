@@ -35,9 +35,39 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// The relay's forward port on a frontend box, and the base of the ordinal
-/// port series `topology plan` hands the launcher: the hub is always
-/// `18743`, the remaining hosts count up from `18744` in file order.
-pub const HUB_LOCAL_PORT: u16 = 18743;
+/// port series `topology plan` hands the launcher — **per OS user**, not a
+/// single constant: two OS users sharing one Windows box each run their own
+/// launcher and tunnel, and a fixed port let the second user's launcher find
+/// the first user's tunnel already open and dial that user's backend as its
+/// own (field report, 2026-09-17). `18743 + (h % 100)`, `h` an FNV-1a 32-bit
+/// hash of the OS user name; no user name found keeps the old fixed `18743`.
+/// [`hub_local_port_for`] is the pure half, for tests.
+pub fn hub_local_port() -> u16 {
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| {
+            std::env::var_os("LOGNAME")
+                .map(|v| v.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
+    hub_local_port_for(&user)
+}
+
+/// Pure half of [`hub_local_port`]: FNV-1a 32-bit over `user`'s bytes,
+/// folded to a two-digit offset above `18743`. Written inline — no new
+/// crate — and kept free of the environment so a test can predict a port
+/// without mutating process-global state.
+pub fn hub_local_port_for(user: &str) -> u16 {
+    if user.is_empty() {
+        return 18743;
+    }
+    let mut hash: u32 = 0x811c_9dc5;
+    for b in user.as_bytes() {
+        hash ^= u32::from(*b);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    18743 + (hash % 100) as u16
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostDecl {
@@ -60,19 +90,20 @@ impl Topology {
         self.hosts.iter().find(|h| h.name == name)
     }
 
-    /// Ordinal local port for a host: the hub `18743`, every other host
-    /// `18744 + its position among the non-hub hosts` (file order). A
-    /// property of the position, not of the flags, so flipping `daemon` on
-    /// one host renumbers nobody; inserting a host does (plan §G).
+    /// Ordinal local port for a host: the hub gets [`hub_local_port`] (this
+    /// box's OS user, not a fixed number), every other host that plus
+    /// `1 + its position among the non-hub hosts` (file order). A property
+    /// of the position, not of the flags, so flipping `daemon` on one host
+    /// renumbers nobody; inserting a host does (plan §G).
     pub fn local_port(&self, name: &str) -> Option<u16> {
         if name == self.hub {
-            return Some(HUB_LOCAL_PORT);
+            return Some(hub_local_port());
         }
         self.hosts
             .iter()
             .filter(|h| h.name != self.hub)
             .position(|h| h.name == name)
-            .map(|i| HUB_LOCAL_PORT + 1 + i as u16)
+            .map(|i| hub_local_port() + 1 + i as u16)
     }
 
     /// Sampling targets, resolved: `[monitor]` labels with an empty target
@@ -263,16 +294,17 @@ pub fn local_endpoint(label: &str) -> String {
 
 /// The relay endpoint for `self_host` (plan §C): the hub's own socket on
 /// the hub; on a `frontend` box the launcher's forward tunnel to the hub
-/// (`tcp:127.0.0.1:18743`); everywhere else the hub's reverse tunnel, which
-/// lands on `<runtime dir>/sot-relay.sock` (`/run/user/<uid>/sot-relay.sock`
-/// — the path `sot-relay-tunnel@` has always used). Path derivations are
-/// this box's own, so ask on the box in question.
+/// (`tcp:127.0.0.1:<`[`hub_local_port`]`>`, per OS user); everywhere else
+/// the hub's reverse tunnel, which lands on
+/// `<runtime dir>/sot-relay.sock` (`/run/user/<uid>/sot-relay.sock` — the
+/// path `sot-relay-tunnel@` has always used). Path derivations are this
+/// box's own, so ask on the box in question.
 pub fn relay_endpoint(topo: &Topology, self_host: &str) -> Result<String, String> {
     let host = topo.host(self_host).ok_or_else(|| format!("`{self_host}` is not a listed host"))?;
     Ok(if self_host == topo.hub {
         local_endpoint("sot")
     } else if host.frontend {
-        format!("tcp:127.0.0.1:{HUB_LOCAL_PORT}")
+        format!("tcp:127.0.0.1:{}", hub_local_port())
     } else {
         let run = crate::runtime_sot_dir();
         let base = run.parent().map(PathBuf::from).unwrap_or(run);
@@ -573,6 +605,30 @@ pub fn tunnel_dropin(hub: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Pins `USER` for [`hub_local_port`] so a test can predict its output
+    /// without depending on whoever's running it, restored on drop. Both
+    /// callers below pin the SAME name, so running them in parallel (the
+    /// default test-runner behaviour) never races on the value, only on
+    /// which one restores it last — harmless, since both write it back
+    /// identically before that.
+    struct PinnedUser(Option<std::ffi::OsString>);
+    impl PinnedUser {
+        fn set(name: &str) -> Self {
+            let prev = std::env::var_os("USER");
+            std::env::set_var("USER", name);
+            PinnedUser(prev)
+        }
+    }
+    impl Drop for PinnedUser {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(v) => std::env::set_var("USER", v),
+                None => std::env::remove_var("USER"),
+            }
+        }
+    }
+    const TEST_USER: &str = "sot-test-user";
+
     const V2: &str = r#"
 hub = "alpha"   # the relay daemon
 
@@ -596,6 +652,8 @@ gpu-box = "other-user@gpu-box"
 
     #[test]
     fn v2_parses() {
+        let _pin = PinnedUser::set(TEST_USER);
+        let base = hub_local_port_for(TEST_USER);
         let t = parse(V2).unwrap();
         assert_eq!(t.hub, "alpha");
         assert_eq!(t.hosts.len(), 4);
@@ -603,9 +661,19 @@ gpu-box = "other-user@gpu-box"
         assert_eq!(t.host("beta").unwrap(), &HostDecl { name: "beta".into(), daemon: false, frontend: false });
         assert_eq!(t.monitor_targets()[1], ("beta".to_string(), "beta".to_string()));
         assert_eq!(t.monitor_targets()[2].1, "other-user@gpu-box");
-        assert_eq!(t.local_port("alpha"), Some(18743));
-        assert_eq!(t.local_port("beta"), Some(18744));
-        assert_eq!(t.local_port("delta"), Some(18746));
+        assert_eq!(t.local_port("alpha"), Some(base));
+        assert_eq!(t.local_port("beta"), Some(base + 1));
+        assert_eq!(t.local_port("delta"), Some(base + 3));
+    }
+
+    #[test]
+    fn hub_local_port_for_is_per_user() {
+        // Pure function: no env involved, so no pinning needed here.
+        assert_eq!(hub_local_port_for(""), 18743, "no user name keeps the pre-existing fixed value");
+        let a = hub_local_port_for("alice");
+        let b = hub_local_port_for("bob");
+        assert_ne!(a, b, "two different OS users must not land on the same tunnel port");
+        assert!((18743..18843).contains(&a) && (18743..18843).contains(&b));
     }
 
     #[test]
@@ -666,13 +734,15 @@ gpu-box = "other-user@gpu-box"
 
     #[test]
     fn plan_lines_are_stable() {
+        let _pin = PinnedUser::set(TEST_USER);
+        let base = hub_local_port_for(TEST_USER);
         let t = parse(V2).unwrap();
         let own = local_endpoint("sot");
         // gamma is daemon+frontend: never dialled from elsewhere (D8), and
         // its own daemon is the launcher's implicit local connection.
         assert_eq!(
             plan(&t, "gamma").unwrap(),
-            "self gamma\nhub alpha\nrelay-endpoint tcp:127.0.0.1:18743\ndial alpha tcp:127.0.0.1:18743\ntunnel alpha 18743\n"
+            format!("self gamma\nhub alpha\nrelay-endpoint tcp:127.0.0.1:{base}\ndial alpha tcp:127.0.0.1:{base}\ntunnel alpha {base}\n")
         );
         assert_eq!(
             plan(&t, "alpha").unwrap(),
