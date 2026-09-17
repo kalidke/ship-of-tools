@@ -946,11 +946,32 @@ pub fn load_hosts() -> Vec<MonitorHost> {
             Vec::new()
         }
     };
-    if hosts.is_empty() {
+    let hosts = if hosts.is_empty() {
         tracing::info!(host = %local, "monitor: no [monitor] entries; monitoring local host only");
-        return vec![MonitorHost { name: local, ssh_alias: None, local: true }];
+        vec![MonitorHost { name: local, ssh_alias: None, local: true }]
+    } else {
+        hosts
+    };
+    without_local_sampler(hosts, cfg!(windows))
+}
+
+/// The sampler is a Linux script fed to `bash -s` (`/proc`, `nvidia-smi`).
+/// On Windows the only `bash` is git-bash, the daemon runs without a
+/// console, and every 5-second respawn of the dying script opened a new
+/// console window into the git install directory (field report,
+/// 2026-09-17). A Windows daemon samples nothing locally; ssh targets on
+/// a hub's roster are untouched. `on_windows` is a parameter so both
+/// branches are unit-testable on one platform.
+fn without_local_sampler(hosts: Vec<MonitorHost>, on_windows: bool) -> Vec<MonitorHost> {
+    if !on_windows {
+        return hosts;
     }
-    hosts
+    let kept: Vec<MonitorHost> = hosts.into_iter().filter(|h| !h.local).collect();
+    tracing::info!(
+        count = kept.len(),
+        "monitor: Windows daemon; the local host is not sampled (the sampler is a Linux script)"
+    );
+    kept
 }
 
 fn monitor_hosts(targets: Vec<(String, String)>, local: &str) -> Vec<MonitorHost> {
@@ -987,6 +1008,24 @@ mod config_tests {
     /// The roster is hub-scoped declaration: only the declared hub executes
     /// it. Every other box samples itself and nothing else, regardless of
     /// what the file declares.
+    #[test]
+    fn windows_daemon_drops_only_the_local_sampler() {
+        let hosts = vec![
+            MonitorHost { name: "here".into(), ssh_alias: None, local: true },
+            MonitorHost { name: "there".into(), ssh_alias: Some("there".into()), local: false },
+        ];
+        let unix = without_local_sampler(hosts.clone(), false);
+        assert_eq!(unix.len(), 2);
+        let win = without_local_sampler(hosts, true);
+        assert_eq!(win.len(), 1);
+        assert_eq!(win[0].name, "there");
+        assert!(without_local_sampler(
+            vec![MonitorHost { name: "here".into(), ssh_alias: None, local: true }],
+            true
+        )
+        .is_empty());
+    }
+
     #[test]
     fn only_the_hub_executes_the_monitor_roster() {
         let text = "hub = \"alpha\"\n[host.alpha]\ndaemon = true\n[monitor]\nalpha = \"alpha\"\nbeta = \"\"\ngpu = \"someone@gpu\"\n";
