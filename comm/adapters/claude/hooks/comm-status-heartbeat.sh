@@ -67,7 +67,7 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
             warn_age=$(( $(date -u +%s) - wmtime ))
         fi
         if [ "$warn_age" -ge 600 ]; then
-            echo "comm-status-heartbeat: no live inbox watcher for @$NAME — you are deaf; re-arm: $COMM_HOME/bin/comm-watch.sh $NAME" >&2
+            echo "comm-status-heartbeat: no live inbox watcher for @$NAME — you are deaf; run $COMM_HOME/bin/comm-session-start.sh (starts the ping wake on a capsule row, else prints the Monitor command)" >&2
             mkdir -p "$(dirname "$warn_stamp")" 2>/dev/null
             touch -- "$warn_stamp" 2>/dev/null || true
         fi
