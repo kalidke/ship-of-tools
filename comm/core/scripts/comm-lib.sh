@@ -1121,16 +1121,22 @@ sot_oneshot_request() {
             command -v nc >/dev/null 2>&1 || {
                 echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2
                 rm -f "$tmp"; return 1; }
-            { sot_hello_frame; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
-                | timeout "$timeout_s" nc -U "${ENDPOINT#unix:}" > "$tmp" 2>/dev/null &
+            # `-q`: nc keeps reading for timeout_s after stdin's EOF, so no
+            # `sleep` is needed to hold the write side open. A sender
+            # subshell with a sleep used to outlive the matched reply and
+            # hold the CALLER's stderr for the whole timeout: any pipe or
+            # harness reading the caller waited for it, so every eval
+            # appeared to take exactly --timeout (2026-09-17, two boxes).
+            { sot_hello_frame; printf '%s\n' "$frame"; } \
+                | timeout "$timeout_s" nc -q "$timeout_s" -U "${ENDPOINT#unix:}" > "$tmp" 2>/dev/null &
             ncpid=$!
             ;;
         tcp:*)
             local hp="${ENDPOINT#tcp:}" host port
             host="${hp%:*}"; port="${hp##*:}"
             if command -v nc >/dev/null 2>&1; then
-                { sot_hello_frame; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
-                    | timeout "$timeout_s" nc "$host" "$port" > "$tmp" 2>/dev/null &
+                { sot_hello_frame; printf '%s\n' "$frame"; } \
+                    | timeout "$timeout_s" nc -q "$timeout_s" "$host" "$port" > "$tmp" 2>/dev/null &
                 ncpid=$!
             else
                 # /dev/tcp fallback: the fd stays open for the whole window,
@@ -1162,7 +1168,9 @@ sot_oneshot_request() {
             [ -f "$ps1" ] || {
                 echo "ERROR: comm-pipe-request.ps1 not found next to the comm scripts (looked in ${SCRIPT_DIR:-.})" >&2
                 rm -f "$tmp"; return 1; }
-            { sot_hello_frame; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
+            # The sender's sleep stays here (no -q on the pipe reader) but
+            # its stderr is detached so it can hold nothing of the caller's.
+            { sot_hello_frame; printf '%s\n' "$frame"; sleep "$timeout_s"; } 2>/dev/null \
                 | timeout "$timeout_s" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
                     -File "$ps1" -PipeName "$pipename" -Mode Oneshot -Op "$op" -TimeoutSec "$timeout_s" \
                     > "$tmp" 2>/dev/null &
