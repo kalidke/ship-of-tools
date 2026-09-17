@@ -20,9 +20,13 @@ Usage: sotd topology <subcommand>
                         best-effort — silent if the hub can't be reached)
   relay-endpoint        SOT_RELAY_ENDPOINT for this box
   sync [--hub <alias>]  fetch the hub's ~/.config/sot/hosts.toml into this
-                        box's config dir (refused if it does not parse or
-                        does not list this box; nothing written when it
-                        equals the local copy)
+                        box's config dir. The local copy's own hub always
+                        wins over --hub (a bootstrap-only fallback, used
+                        when there is no local copy yet); re-point a box by
+                        deleting its copy first. A no-op on the hub itself.
+                        Refused if the fetched file does not parse or does
+                        not list this box; nothing written when it equals
+                        the local copy.
   apply [--yes]         hub only: converge sot-relay-tunnel@<host> systemd
                         --user instances (enable/disable) plus each one's
                         ConditionHost drop-in with the declared list.
@@ -46,23 +50,20 @@ pub fn run(args: &[String]) -> i32 {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     match sub {
-        "plan" => with_topology(true, |t| {
+        "plan" => with_topology(|t| {
             let me = match flag("--self") { Some(h) => Ok(h), None => self_host() };
             me.and_then(|me| topology::plan(t, &me)).map(|s| print!("{s}"))
         }),
-        "status" => with_topology(true, |t| {
+        "status" => with_topology(|t| {
             print!("{}", topology::status_table(t));
             report_cache_divergence(t);
             Ok(())
         }),
-        // Warnings stay quiet here: the shell profile runs this on every
-        // non-interactive ssh, and N stderr lines per remote command is
-        // not a warning, it is noise.
-        "relay-endpoint" => with_topology(false, |t| {
+        "relay-endpoint" => with_topology(|t| {
             self_host().and_then(|me| topology::relay_endpoint(t, &me)).map(|e| println!("{e}"))
         }),
         "sync" => report(sync(flag("--hub"))),
-        "apply" => with_topology(true, |t| apply(t, !args.iter().any(|a| a == "--yes"))),
+        "apply" => with_topology(|t| apply(t, !args.iter().any(|a| a == "--yes"))),
         "set" => report(set(&args[1..])),
         _ => {
             eprintln!("{USAGE}");
@@ -75,7 +76,7 @@ fn self_host() -> Result<String, String> {
     sot_log::state_dir::host_name()
 }
 
-fn with_topology(warn: bool, f: impl FnOnce(&Topology) -> Result<(), String>) -> i32 {
+fn with_topology(f: impl FnOnce(&Topology) -> Result<(), String>) -> i32 {
     let loaded = match topology::load() {
         Ok(Some(x)) => x,
         Ok(None) => {
@@ -84,11 +85,6 @@ fn with_topology(warn: bool, f: impl FnOnce(&Topology) -> Result<(), String>) ->
         }
         Err(e) => return report(Err(e)),
     };
-    if warn {
-        for w in &loaded.1.warnings {
-            eprintln!("sotd topology: {}: {w}", loaded.0.display());
-        }
-    }
     report(f(&loaded.1))
 }
 
@@ -106,16 +102,17 @@ fn report(r: Result<(), String>) -> i32 {
 /// tmp + rename, only after the fetched text parses, and only when it
 /// differs from the copy here: on a shared-home box the "copy" IS the
 /// canonical file, and a rename over it could drop an owner edit made
-/// between fetch and rename. The hub alias comes from `--hub`, else from
-/// the copy already here.
+/// between fetch and rename. The hub alias is [`resolve_hub`]'s call — the
+/// local copy wins whenever one exists; `--hub` is a bootstrap value only.
 fn sync(hub: Option<String>) -> Result<(), String> {
     let dest = topology::locate().ok_or("no config dir: set $HOME (or %LOCALAPPDATA%) or $SOT_HOSTS")?;
-    let hub = match hub {
-        Some(h) => h,
-        None => topology::load()?
-            .map(|(_, t)| t.hub)
-            .ok_or_else(|| format!("no hosts.toml at {} yet: pass --hub <alias>", dest.display()))?,
-    };
+    let local = topology::load()?;
+    let hub = resolve_hub(local.as_ref().map(|(_, t)| t), hub.as_deref(), &dest)?;
+    let me = self_host()?;
+    if self_is_hub(&me, &hub) {
+        println!("this box is the hub; nothing to sync");
+        return Ok(());
+    }
     let out = std::process::Command::new("ssh")
         .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", &hub, "cat ~/.config/sot/hosts.toml"])
         .output()
@@ -125,10 +122,6 @@ fn sync(hub: Option<String>) -> Result<(), String> {
     }
     let text = String::from_utf8(out.stdout).map_err(|_| format!("hub `{hub}`: hosts.toml is not UTF-8"))?;
     let fetched = topology::parse(&text).map_err(|e| format!("hub `{hub}`: fetched hosts.toml rejected, keeping the local copy: {e}"))?;
-    let me = self_host()?;
-    if me == fetched.hub {
-        return Err(format!("this box is the hub `{}`; its file is the canonical copy", fetched.hub));
-    }
     refuse_if_not_listed(&fetched, &me)?;
     if std::fs::read_to_string(&dest).ok().as_deref() == Some(text.as_str()) {
         println!("{} is current (same as {hub})", dest.display());
@@ -136,10 +129,37 @@ fn sync(hub: Option<String>) -> Result<(), String> {
     }
     crate::topology_store::write_atomic(&dest, &text)?;
     println!("synced {} from {hub} ({} hosts, {} monitor targets)", dest.display(), fetched.hosts.len(), fetched.monitor.len());
-    for w in &fetched.warnings {
-        eprintln!("sotd topology: {}: {w}", dest.display());
-    }
     Ok(())
+}
+
+/// Which hub `sync` fetches from (orchestrator ruling): the LOCAL copy's
+/// `hub` always wins when a copy already exists — re-pointing a box to a
+/// different hub means deleting its copy and running `sync --hub <new>`
+/// again, not overriding a live copy in place. `--hub` is read only when
+/// there is no local copy at all (bootstrap: the first sync on a box that
+/// has never had one). Both present and disagreeing is not an error — the
+/// copy still wins — but it is said out loud rather than silently ignored.
+fn resolve_hub(local: Option<&Topology>, cli_hub: Option<&str>, dest: &std::path::Path) -> Result<String, String> {
+    match local {
+        Some(t) => {
+            if let Some(cli) = cli_hub {
+                if cli != t.hub {
+                    println!("local copy already names hub `{}`; ignoring --hub `{cli}` (delete the local copy to re-point this box)", t.hub);
+                }
+            }
+            Ok(t.hub.clone())
+        }
+        None => cli_hub.map(str::to_string).ok_or_else(|| format!("no hosts.toml at {} yet: pass --hub <alias>", dest.display())),
+    }
+}
+
+/// True when this box IS the hub named by `hub` — syncing would fetch its
+/// own file over ssh to itself, which is nonsense (the hub's copy is
+/// already canonical). Checked BEFORE any ssh call, so this is a cheap
+/// no-op on the hub rather than a wasted (and often permission-denied)
+/// self-ssh round trip on every launch.
+fn self_is_hub(me: &str, hub: &str) -> bool {
+    me == hub
 }
 
 /// A stale file that doesn't list this box is the root cause of the
@@ -152,16 +172,6 @@ fn refuse_if_not_listed(fetched: &Topology, me: &str) -> Result<(), String> {
         return Err(format!("hub's hosts.toml does not list this box; add `[host.{me}]` on the hub"));
     }
     Ok(())
-}
-
-fn write_atomic(dest: &PathBuf, text: &str) -> Result<(), String> {
-    let io = |e: std::io::Error| format!("{}: {e}", dest.display());
-    if let Some(dir) = dest.parent() {
-        std::fs::create_dir_all(dir).map_err(io)?;
-    }
-    let tmp = dest.with_extension("toml.tmp");
-    std::fs::write(&tmp, text).map_err(io)?;
-    std::fs::rename(&tmp, dest).map_err(io)
 }
 
 /// `sotd topology apply` (plan §C, §F step 5): on the hub, converge the
@@ -468,5 +478,28 @@ mod tests {
         let e = refuse_if_not_listed(&fetched, "frontend-box").unwrap_err();
         assert!(e.contains("does not list this box") && e.contains("[host.frontend-box]"), "{e}");
         assert!(refuse_if_not_listed(&fetched, "hub").is_ok());
+    }
+
+    #[test]
+    fn self_is_hub_predicate() {
+        assert!(self_is_hub("hub-box", "hub-box"));
+        assert!(!self_is_hub("frontend-box", "hub-box"));
+    }
+
+    #[test]
+    fn resolve_hub_prefers_the_local_copy_over_a_disagreeing_flag() {
+        let t = topology::parse("hub = \"hub-a\"\n[host.hub-a]\ndaemon = true\n").unwrap();
+        let dest = std::path::Path::new("/nowhere/hosts.toml");
+        assert_eq!(resolve_hub(Some(&t), None, dest).unwrap(), "hub-a", "no flag: the copy's hub");
+        assert_eq!(resolve_hub(Some(&t), Some("hub-a"), dest).unwrap(), "hub-a", "agreeing flag: no complaint, same answer");
+        assert_eq!(resolve_hub(Some(&t), Some("hub-b"), dest).unwrap(), "hub-a", "disagreeing flag: the copy still wins");
+    }
+
+    #[test]
+    fn resolve_hub_falls_back_to_the_flag_only_with_no_local_copy() {
+        let dest = std::path::Path::new("/nowhere/hosts.toml");
+        assert_eq!(resolve_hub(None, Some("hub-a"), dest).unwrap(), "hub-a");
+        let e = resolve_hub(None, None, dest).unwrap_err();
+        assert!(e.contains("/nowhere/hosts.toml") && e.contains("pass --hub <alias>"), "{e}");
     }
 }

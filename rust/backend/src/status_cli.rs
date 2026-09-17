@@ -403,7 +403,7 @@ pub async fn run(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let (path, topo) = match topology::load() {
+    let (_, topo) = match topology::load() {
         Ok(Some(x)) => x,
         Ok(None) => {
             let looked = topology::locate().map(|p| p.display().to_string()).unwrap_or_default();
@@ -415,9 +415,6 @@ pub async fn run(args: &[String]) -> i32 {
             return 2;
         }
     };
-    for w in &topo.warnings {
-        eprintln!("sotd status: {}: {w}", path.display());
-    }
     let probes = gather(&topo, &me).await;
     let rep = report(&topo, &probes);
     if json {
@@ -486,7 +483,6 @@ mod tests {
             hub: "hub-a".to_string(),
             hosts: vec![host("hub-a", true, false), host("server-a", false, false), host("laptop", true, true)],
             monitor: vec![("server-a".to_string(), String::new())],
-            warnings: Vec::new(),
         }
     }
 
@@ -524,7 +520,7 @@ mod tests {
     /// all — never an empty parenthetical).
     #[test]
     fn rows_cell_names_a_non_default_account_but_stays_compact_without_one() {
-        let topo = Topology { hub: "hub-a".to_string(), hosts: vec![host("hub-a", true, false)], monitor: Vec::new(), warnings: Vec::new() };
+        let topo = Topology { hub: "hub-a".to_string(), hosts: vec![host("hub-a", true, false)], monitor: Vec::new() };
         let mut probes = BTreeMap::new();
         probes.insert(
             "hub-a".to_string(),
@@ -550,7 +546,7 @@ mod tests {
 
     #[test]
     fn a_host_with_no_daemon_flag_at_all_is_never_probed_and_renders_a_dash() {
-        let topo = Topology { hub: "hub-a".to_string(), hosts: vec![host("hub-a", true, false), host("shell-only", false, false)], monitor: Vec::new(), warnings: Vec::new() };
+        let topo = Topology { hub: "hub-a".to_string(), hosts: vec![host("hub-a", true, false), host("shell-only", false, false)], monitor: Vec::new() };
         let mut probes = BTreeMap::new();
         probes.insert("hub-a".to_string(), Probe::Up { build: "0.6.0".to_string(), reported_host: "hub-a".to_string(), clients: Vec::new(), rows: Vec::new() });
         let rep = report(&topo, &probes);
@@ -562,7 +558,7 @@ mod tests {
 
     #[test]
     fn an_unreachable_daemon_host_is_printed_never_omitted() {
-        let topo = Topology { hub: "hub-a".to_string(), hosts: vec![host("hub-a", true, false), host("dead-box", true, false)], monitor: Vec::new(), warnings: Vec::new() };
+        let topo = Topology { hub: "hub-a".to_string(), hosts: vec![host("hub-a", true, false), host("dead-box", true, false)], monitor: Vec::new() };
         let mut probes = BTreeMap::new();
         probes.insert("hub-a".to_string(), Probe::Up { build: "0.6.0".to_string(), reported_host: "hub-a".to_string(), clients: Vec::new(), rows: Vec::new() });
         probes.insert("dead-box".to_string(), Probe::Unreachable("connection refused".to_string()));

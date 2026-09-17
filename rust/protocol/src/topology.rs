@@ -53,10 +53,6 @@ pub struct Topology {
     pub hosts: Vec<HostDecl>,
     /// `(label, ssh target)`; an empty target means "the label".
     pub monitor: Vec<(String, String)>,
-    /// Always empty now that the v1 shim is gone; kept because
-    /// `status_cli`, `monitor`, and `topology_cli` all print this list
-    /// rather than assume it is empty.
-    pub warnings: Vec<String>,
 }
 
 impl Topology {
@@ -126,7 +122,6 @@ pub fn parse(text: &str) -> Result<Topology, String> {
     let mut hub: Option<String> = None;
     let mut hosts: Vec<HostDecl> = Vec::new();
     let mut monitor: Vec<(String, String)> = Vec::new();
-    let warnings = Vec::new();
     let mut section = Section::Top;
     let mut seen: Vec<String> = Vec::new();
 
@@ -208,7 +203,7 @@ pub fn parse(text: &str) -> Result<Topology, String> {
     if !hub_host.daemon {
         return Err(format!("hub `{hub}` has `daemon = false`; the hub runs the relay daemon, so `[host.{hub}]` needs `daemon = true`"));
     }
-    Ok(Topology { hub, hosts, monitor, warnings })
+    Ok(Topology { hub, hosts, monitor })
 }
 
 enum Value<'a> {
@@ -608,7 +603,6 @@ gpu-box = "other-user@gpu-box"
         assert_eq!(t.host("beta").unwrap(), &HostDecl { name: "beta".into(), daemon: false, frontend: false });
         assert_eq!(t.monitor_targets()[1], ("beta".to_string(), "beta".to_string()));
         assert_eq!(t.monitor_targets()[2].1, "other-user@gpu-box");
-        assert!(t.warnings.is_empty());
         assert_eq!(t.local_port("alpha"), Some(18743));
         assert_eq!(t.local_port("beta"), Some(18744));
         assert_eq!(t.local_port("delta"), Some(18746));
@@ -770,7 +764,6 @@ frontend = true
         assert_eq!(t.hub, reparsed.hub);
         assert_eq!(t.hosts, reparsed.hosts);
         assert_eq!(t.monitor, reparsed.monitor);
-        assert!(reparsed.warnings.is_empty(), "warnings is always empty now the v1 shim is gone");
     }
 
     #[test]

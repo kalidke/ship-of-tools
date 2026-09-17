@@ -929,9 +929,6 @@ pub fn load_hosts() -> Vec<MonitorHost> {
     let local = sot_log::state_dir::host_name().unwrap_or_else(|_| "local".to_string());
     let hosts = match sot_protocol::topology::load() {
         Ok(Some((path, topo))) => {
-            for w in &topo.warnings {
-                tracing::warn!(path = ?path, "hosts.toml: {w}");
-            }
             let hosts = sampling_roster(&topo, &local);
             if topo.hub == local {
                 tracing::info!(path = ?path, count = hosts.len(), "monitor: hosts loaded, this box is the hub");
