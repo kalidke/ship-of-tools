@@ -14,12 +14,11 @@
 //!
 //! Rules: exactly one `hub`, and it names a listed host; a section key is a
 //! plain host name (`[a-z0-9][a-z0-9._-]*`, i.e. what `host_name()` yields);
-//! any other key or section is an error naming it; a key given twice in a
-//! section is an error; a v2 hub must be a `daemon` host. The v1 keys
-//! (`default_host`; per host `ssh_alias`, `remote_repo`, `tcp_port`,
-//! `remote_socket`, `socket`, `remote_home`) are accepted for THIS release
-//! with one warning each naming the replacement — see [`V1_HOST_KEYS`] —
-//! and are deleted at the next rc.
+//! any other key or section is an error naming it — this is also the
+//! schema check: an old-grammar file (`default_host`, per host
+//! `ssh_alias`/`remote_repo`/`tcp_port`/`remote_socket`/`socket`/
+//! `remote_home`) fails on its first unknown key, naming the line; a key
+//! given twice in a section is an error; a hub must be a `daemon` host.
 //!
 //! **Search order** (the only one): `$SOT_HOSTS` when set (tests, scratch
 //! daemons), else `<config dir>/hosts.toml` where the config dir is
@@ -54,7 +53,9 @@ pub struct Topology {
     pub hosts: Vec<HostDecl>,
     /// `(label, ssh target)`; an empty target means "the label".
     pub monitor: Vec<(String, String)>,
-    /// One line per accepted v1 key, naming the replacement.
+    /// Always empty now that the v1 shim is gone; kept because
+    /// `status_cli`, `monitor`, and `topology_cli` all print this list
+    /// rather than assume it is empty.
     pub warnings: Vec<String>,
 }
 
@@ -112,27 +113,9 @@ pub fn load() -> Result<Option<(PathBuf, Topology)>, String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The v1 keys still accepted this release (one warning each, naming the
-/// replacement): `default_host` at top level, and per host `ssh_alias`,
-/// `remote_repo`, `tcp_port`, `remote_socket`, `socket`, `remote_home` —
-/// the whole set the frontend's own v1 reader knew. A file using any of
-/// them is a v1 file: every `[host.*]` in it is `daemon = true` (v1 had no
-/// other kind of host). `ssh_alias`, when non-empty, must equal the section
-/// key (the key IS the alias now); the rest are ignored (ports are ordinal,
-/// sockets queried, a remote daemon is never started by path, the default
-/// row root is served by `workspace.list`).
-const V1_HOST_KEYS: [(&str, &str); 6] = [
-    ("ssh_alias", "the section key is the ssh alias now"),
-    ("remote_repo", "a remote daemon is never started by path"),
-    ("tcp_port", "ports are ordinal (`sotd topology plan`)"),
-    ("remote_socket", "queried via `sotd session-socket-path sot` over ssh"),
-    ("socket", "queried via `sotd session-socket-path sot` over ssh"),
-    ("remote_home", "`workspace.list` serves the default row root"),
-];
-
-/// Parse grammar v2 (module doc), plus the v1 shim ([`V1_HOST_KEYS`]).
-/// Duplicate keys in a section (a `[monitor]` label included — two labels
-/// would spawn two samplers) are errors, not last-wins.
+/// Parse grammar v2 (module doc). Duplicate keys in a section (a
+/// `[monitor]` label included — two labels would spawn two samplers) are
+/// errors, not last-wins.
 pub fn parse(text: &str) -> Result<Topology, String> {
     #[derive(PartialEq)]
     enum Section {
@@ -143,10 +126,9 @@ pub fn parse(text: &str) -> Result<Topology, String> {
     let mut hub: Option<String> = None;
     let mut hosts: Vec<HostDecl> = Vec::new();
     let mut monitor: Vec<(String, String)> = Vec::new();
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     let mut section = Section::Top;
     let mut seen: Vec<String> = Vec::new();
-    let mut v1 = false;
 
     // A UTF-8 byte-order mark: PowerShell's `Set-Content`/`Out-File` writes
     // one and `trim` does not strip U+FEFF, so the first key of such a file
@@ -193,11 +175,7 @@ pub fn parse(text: &str) -> Result<Topology, String> {
         seen.push(key.to_string());
         match section {
             Section::Top => match key {
-                "hub" | "default_host" => {
-                    if key == "default_host" {
-                        warnings.push(format!("line {n}: `default_host` is `hub` now"));
-                        v1 = true;
-                    }
+                "hub" => {
                     let name = val.string().ok_or_else(|| format!("line {n}: `{key}` must be a quoted host name"))?;
                     if hub.is_some() {
                         return Err(format!("line {n}: `hub` declared twice (exactly one hub)"));
@@ -213,20 +191,6 @@ pub fn parse(text: &str) -> Result<Topology, String> {
                         let b = val.bool().ok_or_else(|| format!("line {n}: `{key}` must be true or false"))?;
                         if key == "daemon" { host.daemon = b } else { host.frontend = b }
                     }
-                    _ if V1_HOST_KEYS.iter().any(|(k, _)| *k == key) => {
-                        v1 = true;
-                        let why = V1_HOST_KEYS.iter().find(|(k, _)| *k == key).map(|(_, w)| *w).unwrap_or("");
-                        if key == "ssh_alias" {
-                            let alias = val.string().unwrap_or("");
-                            if !alias.is_empty() && alias != host.name {
-                                return Err(format!(
-                                    "line {n}: `ssh_alias = \"{alias}\"` differs from the section key `{}` (the key IS the ssh alias now)",
-                                    host.name
-                                ));
-                            }
-                        }
-                        warnings.push(format!("line {n}: `{key}` is ignored ({why}); `[host.{}]` is a v1 entry, so `daemon = true`", host.name));
-                    }
                     other => return Err(format!("line {n}: unknown key `{other}` in [host.{}]", host.name)),
                 }
             }
@@ -241,10 +205,7 @@ pub fn parse(text: &str) -> Result<Topology, String> {
     let Some(hub_host) = hosts.iter().find(|h| h.name == hub) else {
         return Err(format!("hub `{hub}` is not a listed host (add `[host.{hub}]`)"));
     };
-    if v1 {
-        // v1 had no host that was not a dialled backend.
-        hosts.iter_mut().for_each(|h| h.daemon = true);
-    } else if !hub_host.daemon {
+    if !hub_host.daemon {
         return Err(format!("hub `{hub}` has `daemon = false`; the hub runs the relay daemon, so `[host.{hub}]` needs `daemon = true`"));
     }
     Ok(Topology { hub, hosts, monitor, warnings })
@@ -403,10 +364,7 @@ pub fn hash_text(text: &str) -> String {
 /// `[monitor]` if non-empty. This is a CLEAN rewrite, not a lossless
 /// editor — comments and exact key order in the original file are not
 /// preserved (plan §B "Editing the master list" allows this: "if you
-/// cannot, say so ... and write a clean canonical file"). Always emits v2
-/// — a v1 file edited once converts to v2 for good, with its v1 keys
-/// dropped, which is the point: the shim exists to read old files, not to
-/// keep writing them.
+/// cannot, say so ... and write a clean canonical file").
 pub fn serialize(topo: &Topology) -> String {
     let mut out = format!("hub = \"{}\"\n\n", topo.hub);
     for h in &topo.hosts {
@@ -660,8 +618,6 @@ gpu-box = "other-user@gpu-box"
     fn two_hubs_fail() {
         let e = parse("hub = \"a\"\nhub = \"b\"\n[host.a]\n").unwrap_err();
         assert!(e.contains("line 2") && e.contains("`hub` given twice"), "{e}");
-        let e = parse("default_host = \"a\"\nhub = \"b\"\n[host.a]\n").unwrap_err();
-        assert!(e.contains("line 2") && e.contains("`hub` declared twice"), "{e}");
     }
 
     #[test]
@@ -686,53 +642,16 @@ gpu-box = "other-user@gpu-box"
         assert!(e.contains("unknown section `[hosts]`"), "{e}");
     }
 
+    /// The v1 shim is gone: an old-grammar file (real shape: `default_host`
+    /// at top level, a host carrying `socket`) is now a loud parse error at
+    /// its first unknown key, naming the line — never a silently-kept file.
     #[test]
-    fn v1_parses_with_warnings() {
-        let v1 = r#"
-default_host = "alpha"
-
-[host.alpha]
-ssh_alias = "alpha"
-remote_repo = "/home/me/project"
-tcp_port = 18743
-remote_socket = "/run/user/1000/sot/sessions/sot.sock"
-remote_home = "/home/me"
-
-[host.beta]
-ssh_alias = "beta"
-tcp_port = 18744
-"#;
-        let t = parse(v1).unwrap();
-        assert_eq!(t.hub, "alpha");
-        assert!(t.host("alpha").unwrap().daemon && t.host("beta").unwrap().daemon);
-        assert_eq!(t.warnings.len(), 8, "{:?}", t.warnings);
-        assert!(t.warnings[0].contains("`default_host` is `hub` now"));
-        assert!(t.warnings.iter().any(|w| w.contains("`tcp_port` is ignored")));
-        let e = parse("default_host = \"a\"\n[host.a]\nssh_alias = \"other\"\n").unwrap_err();
-        assert!(e.contains("`ssh_alias = \"other\"` differs from the section key `a`"), "{e}");
-    }
-
-    /// The shape of a real hub file today: `default_host`, the hub's own
-    /// `[host.*]` carrying only `socket`, and a `[monitor]` table.
-    #[test]
-    fn v1_hub_file_shape_parses() {
-        let text = "\u{feff}default_host = \"hub\"\n\n[host.hub]\nsocket = \"/run/user/1000/sot/sessions/sot.sock\"\n\n[monitor]\nhub = \"hub\"\nshell-a = \"shell-a\"\nshell-b = \"shell-b\"\ngpu-box = \"other-user@gpu-box\"\n";
-        let t = parse(text).unwrap();
-        assert_eq!(t.hub, "hub");
-        assert!(t.host("hub").unwrap().daemon, "v1 hosts are daemon hosts");
-        assert_eq!(t.monitor_targets().len(), 4);
-        assert_eq!(t.warnings.len(), 2, "{:?}", t.warnings);
-        assert!(t.warnings[0].contains("`default_host`"));
-        assert!(t.warnings[1].contains("`socket` is ignored"), "{}", t.warnings[1]);
-        // The hub is dialable: its own plan dials itself.
-        assert!(plan(&t, "hub").unwrap().lines().any(|l| l.starts_with("dial hub ")));
-        // Every v1 host key is accepted, each with its own warning.
-        let all = "default_host = \"h\"\n[host.h]\nssh_alias = \"h\"\nremote_repo = \"/r\"\ntcp_port = 18743\nremote_socket = \"/s\"\nsocket = \"/s\"\nremote_home = \"/h\"\n";
-        let t = parse(all).unwrap();
-        assert_eq!(t.warnings.len(), 7, "{:?}", t.warnings);
-        for (k, _) in V1_HOST_KEYS {
-            assert!(t.warnings.iter().any(|w| w.contains(&format!("`{k}` is ignored"))), "{k}");
-        }
+    fn old_grammar_file_fails_on_first_unknown_key() {
+        let text = "\u{feff}default_host = \"hub\"\n\n[host.hub]\nsocket = \"/run/user/1000/sot/sessions/sot.sock\"\n";
+        let e = parse(text).unwrap_err();
+        assert!(e.contains("line 1") && e.contains("unknown key `default_host`"), "{e}");
+        let e = parse("hub = \"a\"\n[host.a]\nssh_alias = \"a\"\n").unwrap_err();
+        assert!(e.contains("unknown key `ssh_alias`"), "{e}");
     }
 
     #[test]
@@ -851,7 +770,7 @@ frontend = true
         assert_eq!(t.hub, reparsed.hub);
         assert_eq!(t.hosts, reparsed.hosts);
         assert_eq!(t.monitor, reparsed.monitor);
-        assert!(reparsed.warnings.is_empty(), "a clean serialize must never re-trigger the v1 shim");
+        assert!(reparsed.warnings.is_empty(), "warnings is always empty now the v1 shim is gone");
     }
 
     #[test]

@@ -3,7 +3,6 @@
 //! parser). A pure query arm of `main` (no startup side effects). Output is
 //! line-oriented so a shell or PowerShell launcher reads it with `split`;
 //! the `plan` line set is documented on `topology::plan` and nowhere else.
-//! Warnings from the parser (accepted v1 keys) go to stderr, one line each.
 
 use sot_protocol::topology::{self, Topology};
 use std::path::PathBuf;
@@ -21,8 +20,9 @@ Usage: sotd topology <subcommand>
                         best-effort — silent if the hub can't be reached)
   relay-endpoint        SOT_RELAY_ENDPOINT for this box
   sync [--hub <alias>]  fetch the hub's ~/.config/sot/hosts.toml into this
-                        box's config dir (refused if it does not parse;
-                        nothing written when it equals the local copy)
+                        box's config dir (refused if it does not parse or
+                        does not list this box; nothing written when it
+                        equals the local copy)
   apply [--yes]         hub only: converge sot-relay-tunnel@<host> systemd
                         --user instances (enable/disable) plus each one's
                         ConditionHost drop-in with the declared list.
@@ -125,9 +125,11 @@ fn sync(hub: Option<String>) -> Result<(), String> {
     }
     let text = String::from_utf8(out.stdout).map_err(|_| format!("hub `{hub}`: hosts.toml is not UTF-8"))?;
     let fetched = topology::parse(&text).map_err(|e| format!("hub `{hub}`: fetched hosts.toml rejected, keeping the local copy: {e}"))?;
-    if self_host().as_deref() == Ok(fetched.hub.as_str()) {
+    let me = self_host()?;
+    if me == fetched.hub {
         return Err(format!("this box is the hub `{}`; its file is the canonical copy", fetched.hub));
     }
+    refuse_if_not_listed(&fetched, &me)?;
     if std::fs::read_to_string(&dest).ok().as_deref() == Some(text.as_str()) {
         println!("{} is current (same as {hub})", dest.display());
         return Ok(());
@@ -136,6 +138,18 @@ fn sync(hub: Option<String>) -> Result<(), String> {
     println!("synced {} from {hub} ({} hosts, {} monitor targets)", dest.display(), fetched.hosts.len(), fetched.monitor.len());
     for w in &fetched.warnings {
         eprintln!("sotd topology: {}: {w}", dest.display());
+    }
+    Ok(())
+}
+
+/// A stale file that doesn't list this box is the root cause of the
+/// old-vs-new install confusion (a v1 file never listed the frontend box):
+/// caught here, at fetch time, rather than left for `plan` to fail on
+/// silently later. Factored out so it's testable without ssh or a real
+/// `self_host()`.
+fn refuse_if_not_listed(fetched: &Topology, me: &str) -> Result<(), String> {
+    if fetched.host(me).is_none() {
+        return Err(format!("hub's hosts.toml does not list this box; add `[host.{me}]` on the hub"));
     }
     Ok(())
 }
@@ -446,5 +460,13 @@ mod tests {
         let t = topology::parse("hub = \"alpha\"\n[host.alpha]\ndaemon = true\n").unwrap();
         assert_eq!(hub_endpoint(&t, "alpha"), topology::local_endpoint("sot"));
         assert_eq!(hub_endpoint(&t, "beta"), format!("tcp:127.0.0.1:{}", topology::HUB_LOCAL_PORT));
+    }
+
+    #[test]
+    fn sync_refuses_a_fetched_file_that_does_not_list_self() {
+        let fetched = topology::parse("hub = \"hub\"\n[host.hub]\ndaemon = true\n").unwrap();
+        let e = refuse_if_not_listed(&fetched, "frontend-box").unwrap_err();
+        assert!(e.contains("does not list this box") && e.contains("[host.frontend-box]"), "{e}");
+        assert!(refuse_if_not_listed(&fetched, "hub").is_ok());
     }
 }
