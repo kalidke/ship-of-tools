@@ -487,6 +487,45 @@ sot_pty_input() {
     # ~18s is the daemon's own worst case for one enter=true write.
     SOT_SEND_TIMEOUT="${SOT_SEND_TIMEOUT:-20}" sot_oneshot_request "$frame" "pty.input"
 }
+
+# sot_pty_screen WORKSPACE_ID — one `pty.screen` request (no scrollback,
+# current screen only) to the daemon at ENDPOINT (caller's scope); prints
+# the response line. Lifted out of sot-fe's send_pty_screen (ADR 0042
+# amendment) so comm-wake.sh's prompt-free gate and sot-fe share the one
+# implementation instead of two frame-builders drifting apart.
+sot_pty_screen() {
+    local wsid="$1" frame
+    frame="$(jq -nc --arg w "$wsid" '{v:1,id:1,kind:"req",op:"pty.screen",payload:{workspace_id:$w}}')"
+    SOT_SEND_TIMEOUT="${SOT_SEND_TIMEOUT:-10}" sot_oneshot_request "$frame" "pty.screen"
+}
+
+# sot_capsule_workspace_id — print the calling shell's capsule row id, or
+# print nothing and return 1 when this isn't a capsule row. $SOT_WORKSPACE_ID
+# wins when set; otherwise it's read out of $SOT_COMM_SELF_FILE's basename
+# (comm-context.sh names it "<host>__<workspace_id>.txt" — a real capsule
+# row today has the self file pinned but not the id itself in its env, so
+# the basename is the only place it survives). "nopane" is the literal
+# placeholder comm-context.sh writes for a non-capsule shell, never a real
+# id — treated the same as absent. Shared by comm-wake.sh (its own startup
+# gate, rule: exit 3 when this fails) and comm-session-start.sh (deciding
+# whether to auto-start a ping watcher at all).
+sot_capsule_workspace_id() {
+    if [ -n "${SOT_WORKSPACE_ID:-}" ]; then
+        printf '%s\n' "$SOT_WORKSPACE_ID"
+        return 0
+    fi
+    local base="${SOT_COMM_SELF_FILE:-}"
+    [ -n "$base" ] || return 1
+    base="$(basename "$base")"
+    case "$base" in
+        *__*.txt) ;;
+        *) return 1 ;;
+    esac
+    local id="${base#*__}"
+    id="${id%.txt}"
+    [ -n "$id" ] && [ "$id" != "nopane" ] || return 1
+    printf '%s\n' "$id"
+}
 # --- MSYS2 argv-conversion guard for jq values that can legitimately
 # start with "/" ---
 #
