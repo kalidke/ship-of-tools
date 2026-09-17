@@ -1055,14 +1055,32 @@ function Start-SotControlTunnel {
     # that could dial a DIFFERENT user's backend on a shared box before the
     # port became per-user. Now an open port only ever gets cleared (if it's
     # ours) or refused (if it isn't) -- never connected through blind.
-    param([int]$Port)
+    #
+    # -HardFail is the first, pre-frontend connect: it fails exactly like
+    # the "nothing reachable" gate just below it (same Set-LaunchStatus +
+    # MessageBox + exit 1 shape) rather than start a frontend with no
+    # backend at all. Without it (the converge re-check further down),
+    # a still-blocked port logs and returns $null, non-fatal like every
+    # other step on that path.
+    param([int]$Port, [switch]$HardFail)
     if (Test-LocalPortOpen -Port $Port) {
         Stop-StaleControlTunnel -Port $Port
-        Start-Sleep -Milliseconds 300   # give the OS a moment to release it
+        $deadline = (Get-Date).AddSeconds(2)
+        while ((Get-Date) -lt $deadline -and (Test-LocalPortOpen -Port $Port)) {
+            Start-Sleep -Milliseconds 100
+        }
     }
     if (Test-LocalPortOpen -Port $Port) {
-        Set-LaunchStatus "ERROR: local port $Port is already in use by another process - not connecting through it"
-        Write-SupLog "control port $Port still open after clearing our own stale tunnels - refusing to reuse it"
+        Write-SupLog "control port $Port is held by another process; refusing to connect through it"
+        if ($HardFail) {
+            Set-LaunchStatus "ERROR: local port $Port is held by another process - refusing to connect through it"
+            Stop-Splash
+            [System.Windows.Forms.MessageBox]::Show(
+                "Local port $Port is already in use by another process, and Ship of Tools does not own it.`n`nClose whatever holds it (see %LOCALAPPDATA%\sot\logs\supervisor.log) and relaunch.",
+                'Ship of Tools launcher',
+                'OK', 'Error') | Out-Null
+            exit 1
+        }
         return $null
     }
     Start-SotTunnel
@@ -1556,7 +1574,7 @@ if (-not $localDaemonReady -and -not $defaultRemoteOk) {
 }
 
 Set-LaunchStatus 'Connecting...'
-$sshTunnel = Start-SotControlTunnel -Port $tcpPort
+$sshTunnel = Start-SotControlTunnel -Port $tcpPort -HardFail
 $sshStartedAt = Get-Date
 Start-Sleep -Milliseconds 400
 
