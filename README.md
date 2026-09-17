@@ -159,7 +159,8 @@ files, a launcher, and comm skills) see
 In a Claude Code session the **`/sot-setup`** skill drives that page end-to-end
 (it ships in the checkout's `.claude/skills/` and `ShipTools.update_comm()`
 installs it user-level). Doing it by hand on Windows: after the build/env
-steps, write `.sot/hosts.toml` and `.sot/settings.toml`, run
+steps, write `.sot/settings.toml` and make sure the hub has a `hosts.toml`
+(fetched onto this box by `sotd topology sync`, never repo-local), run
 `ShipTools.update_comm()`, then run `scripts\install-shortcut.ps1` — it wires
 the desktop shortcut (and any taskbar pin) to `scripts\launch-sot.ps1` and
 stamps the SoT icon + taskbar identity. Never point a shortcut at bare

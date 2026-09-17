@@ -246,14 +246,16 @@ read_topology_plan() {
         if sync_out="$(sot_topology_sync "$SOTD_BIN" "$sync_hub")"; then
             [ -n "$sync_out" ] && echo "topology sync: $sync_out"
         else
-            echo "topology sync failed: $sync_out - run \`sotd topology sync --hub <alias>\`" >&2
+            # No hint appended here: sotd's own message already names the
+            # fix (e.g. "... pass --hub <alias>") when there is one.
+            echo "topology sync failed: $sync_out" >&2
         fi
     fi
     if PLAN="$(sot_topology_plan "$SOTD_BIN")"; then
         :
     else
         PLAN=""
-        echo "topology: ${SOT_TOPOLOGY_PLAN_ERR:-no plan available yet (no sotd binary built)} - continuing with no declared hosts (run \`sotd topology sync --hub <alias>\`)" >&2
+        echo "topology: ${SOT_TOPOLOGY_PLAN_ERR:-no plan available yet (no sotd binary built)} - continuing with no declared hosts" >&2
     fi
 }
 read_topology_plan

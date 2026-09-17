@@ -707,13 +707,15 @@ function Update-SotTopologyPlan {
     if ($sync.Ok) {
         if ($sync.Output) { Write-SupLog "topology sync: $($sync.Output)" }
     } elseif ($sync.Output) {
-        $msg = "topology sync failed: $($sync.Output) - run 'sotd topology sync --hub <alias>'"
+        # No hint appended here: sotd's own message already names the fix
+        # (e.g. "... pass --hub <alias>") when there is one.
+        $msg = "topology sync failed: $($sync.Output)"
         Write-SupLog $msg
         Set-LaunchStatus $msg
     }
     $script:plan = Get-SotTopologyPlan -SotdPath $sotdForPlan
     if ($script:plan.Error) {
-        $msg = "topology plan failed: $($script:plan.Error) - continuing with no remote hosts; run 'sotd topology sync --hub <alias>'"
+        $msg = "topology plan failed: $($script:plan.Error) - continuing with no remote hosts"
         Write-SupLog $msg
         Set-LaunchStatus $msg
     }
