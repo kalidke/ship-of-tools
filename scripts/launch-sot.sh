@@ -221,22 +221,39 @@ resolve_local_sotd_bin() {
     fi
 }
 
-# read_topology_plan: (re)resolves the local sotd binary and (re)runs
-# sot_topology_plan into $PLAN. Called once, early (steps 1-2b below need
-# it), and AGAIN after the freshness rebuild (step 3) -- ordering risk
-# (manager review): a brand-new box has no sotd built yet at the first
-# call, so an early-only read would leave the frontend's --dial args
-# permanently empty on the very first launch. The second call, right
+# read_topology_plan: (re)resolves the local sotd binary, SYNCS, then
+# (re)runs sot_topology_plan into $PLAN. Called once, early (steps 1-2b
+# below need it), and AGAIN after the freshness rebuild (step 3) --
+# ordering risk (manager review): a brand-new box has no sotd built yet at
+# the first call, so an early-only read would leave the frontend's --dial
+# args permanently empty on the very first launch. The second call, right
 # before the frontend actually launches, picks up a binary the rebuild
 # below may have just produced -- a fresh box needs exactly one launch,
 # not two.
+#
+# Sync BEFORE plan, never the other way around (matches
+# launch-sot.ps1's Update-SotTopologyPlan): `plan` needs this box listed
+# in the hosts.toml it reads, and the one file that CANNOT list this box
+# is exactly the stale/never-synced copy the self-heal exists to replace
+# -- gating the sync on a successful plan starves it of the one thing it
+# exists to fix. The hub is the env override when set, else `sotd
+# topology sync` derives it from whatever hub the LOCAL copy already
+# names -- no plan round-trip needed to learn it.
 read_topology_plan() {
     SOTD_BIN="$(resolve_local_sotd_bin)"
+    if [ -n "$SOTD_BIN" ]; then
+        local sync_hub="${SOT_HOST_NAME:-${SOT_HOST:-}}" sync_out
+        if sync_out="$(sot_topology_sync "$SOTD_BIN" "$sync_hub")"; then
+            [ -n "$sync_out" ] && echo "topology sync: $sync_out"
+        else
+            echo "topology sync failed: $sync_out - run \`sotd topology sync --hub <alias>\`" >&2
+        fi
+    fi
     if PLAN="$(sot_topology_plan "$SOTD_BIN")"; then
         :
     else
         PLAN=""
-        echo "topology: no plan available yet (no sotd binary built) - continuing with no declared hosts" >&2
+        echo "topology: ${SOT_TOPOLOGY_PLAN_ERR:-no plan available yet (no sotd binary built)} - continuing with no declared hosts (run \`sotd topology sync --hub <alias>\`)" >&2
     fi
 }
 read_topology_plan

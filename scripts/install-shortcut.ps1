@@ -13,17 +13,16 @@ $launcher = Join-Path $repo 'scripts\launch-sot.ps1'
 $frontendExe = Join-Path $repo 'rust\target\release\sot.exe'
 $logoIcon = Join-Path $repo 'logo.ico'
 $shortcutPath = Join-Path $env:USERPROFILE 'Desktop\Ship of Tools.lnk'
-$hostsToml = Join-Path $repo '.sot\hosts.toml'
 
 if (-not (Test-Path $launcher)) {
     Write-Error "launcher not found: $launcher"
     exit 1
 }
 
-if (-not (Test-Path $hostsToml)) {
-    Write-Warning "No .sot\hosts.toml found. The shortcut can be installed, but launch will fail until host config exists."
-    Write-Warning "Copy .sot\hosts.toml.example to .sot\hosts.toml, set default_host, then rerun scripts\install-shortcut.ps1."
-}
+# No hosts.toml check here: the file is never repo-local (it lives in
+# <config dir>/hosts.toml, fetched from the hub by `sotd topology sync`,
+# which the launcher now runs on every launch) -- see
+# docs/adr/0015-hosts-targeting.md.
 
 # Copy the icon to the install prefix and point shortcuts THERE, not into the
 # clone. A .lnk stores an absolute IconLocation, so a shortcut aimed at

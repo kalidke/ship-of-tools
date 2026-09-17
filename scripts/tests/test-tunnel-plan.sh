@@ -127,6 +127,55 @@ else
     check "missing binary fails cleanly (not a crash)" "fail" "fail"
 fi
 
+echo "=== sot_topology_sync: the one side-effecting call ==="
+# A stub that records its own argv and answers with a chosen exit code, so
+# this asserts the exact command line the launcher hands sotd without a
+# real binary, ssh or network -- same hermetic rule as the sections above.
+new_fake_sync_sotd() {  # <name> <arg-log-file> <exit-code> <message>
+    local path="$WORK/$1" arglog="$2" code="$3" msg="$4"
+    {
+        echo '#!/bin/sh'
+        echo "echo \"\$@\" > \"$arglog\""
+        echo "echo '$msg'"
+        echo "exit $code"
+    } > "$path"
+    chmod +x "$path"
+    printf '%s\n' "$path"
+}
+
+# Every call below is guarded by an `if`, never a bare assignment -- this
+# file runs under `set -e`, and a plain `x="$(failing_cmd)"` would abort
+# the whole suite right there instead of letting `check` report it.
+ok_log="$WORK/sync-ok-args.txt"
+ok_sotd="$(new_fake_sync_sotd sync-ok "$ok_log" 0 synced)"
+if ok_out="$(sot_topology_sync "$ok_sotd" hub-box)"; then ok_rc=0; else ok_rc=$?; fi
+check "a zero exit reports success" "0" "$ok_rc"
+check "sotd is asked for exactly 'topology sync --hub <alias>'" "topology sync --hub hub-box" "$(cat "$ok_log")"
+check "the command output is carried back to the caller" "synced" "$ok_out"
+
+fail_log="$WORK/sync-fail-args.txt"
+fail_sotd="$(new_fake_sync_sotd sync-fail "$fail_log" 1 "hub unreachable")"
+if fail_out="$(sot_topology_sync "$fail_sotd" hub-box)"; then fail_rc=0; else fail_rc=$?; fi
+check "a non-zero exit is a reported failure, never a crash" "1" "$fail_rc"
+check "the failure reason is carried back to the caller" "hub unreachable" "$fail_out"
+
+# An empty hub (no env override) still runs the sync -- plain `topology
+# sync`, no --hub -- so sotd derives the hub from the LOCAL copy itself.
+# This is the fix: sync must not depend on a plan having already
+# succeeded to learn a hub (that's exactly what a stale/unlisted-self file
+# cannot provide).
+nohub_log="$WORK/sync-nohub-args.txt"
+nohub_sotd="$(new_fake_sync_sotd sync-nohub "$nohub_log" 0 "synced from local hub")"
+if nohub_out="$(sot_topology_sync "$nohub_sotd" "")"; then nohub_rc=0; else nohub_rc=$?; fi
+check "no env hub: still runs, with no --hub (sotd reads the local copy)" "topology sync" "$(cat "$nohub_log")"
+check "no env hub: still reports success" "0" "$nohub_rc"
+
+if sot_topology_sync "$WORK/does-not-exist" hub-box >/dev/null 2>&1; then
+    check "no sotd binary must fail" "fail" "ok (WRONG -- should have failed)"
+else
+    check "no sotd binary fails cleanly (not a crash)" "fail" "fail"
+fi
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "test-tunnel-plan: all checks passed"

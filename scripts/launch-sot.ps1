@@ -691,32 +691,31 @@ function Update-SotTopologyPlan {
         $stagedSotdForPlan = Join-Path $prefixDir 'bin\sotd.exe'
         if (Test-Path -LiteralPath $stagedSotdForPlan) { $stagedSotdForPlan } else { $null }
     }
-    $script:plan = Get-SotTopologyPlan -SotdPath $sotdForPlan
     # Self-heal, at EVERY launch -- what .sot\hosts.toml.example promises.
-    # The hub is the one writer of that file; this only ever FETCHES its
-    # copy, so there is no second source of truth. The alias comes from the
-    # copy just read; when that copy is missing or names no hub -- the
-    # bootstrap case, a box that has never synced, whose plan therefore
-    # fails and whose frontend would otherwise come up with no remote hosts
-    # at all -- fall back to this launcher's own configured backend host,
-    # the only other place a hub is ever named here. Then re-read: a
-    # successful fetch may have added hosts, or the whole file.
-    $syncHub = if ($script:plan.Hub) {
-        $script:plan.Hub
-    } elseif ($env:SOT_HOST_NAME) {
-        $env:SOT_HOST_NAME
-    } else {
-        $env:SOT_HOST
-    }
+    # SYNC FIRST, then plan -- never the other way around. `plan` needs
+    # this box listed in the hosts.toml it reads, and the one file that
+    # CANNOT list this box is exactly the stale/never-synced copy the
+    # self-heal exists to replace; gating the sync on a successful plan
+    # (the old order) starves it of the one thing it exists to fix (a
+    # frontend box's file predates this box's own [host.<name>] entry, or
+    # is missing, or is pre-grammar-v2 -- see the 2026-09-17 install
+    # confusion writeup). The hub for the sync is the env override when
+    # set, else `sotd topology sync` derives it from whatever hub the
+    # LOCAL copy already names -- no plan round-trip needed to learn it.
+    $syncHub = if ($env:SOT_HOST_NAME) { $env:SOT_HOST_NAME } else { $env:SOT_HOST }
     $sync = Invoke-SotTopologySync -SotdPath $sotdForPlan -Hub $syncHub
     if ($sync.Ok) {
         if ($sync.Output) { Write-SupLog "topology sync: $($sync.Output)" }
-        $script:plan = Get-SotTopologyPlan -SotdPath $sotdForPlan
     } elseif ($sync.Output) {
-        Write-SupLog "topology sync skipped: $($sync.Output)"
+        $msg = "topology sync failed: $($sync.Output) - run 'sotd topology sync --hub <alias>'"
+        Write-SupLog $msg
+        Set-LaunchStatus $msg
     }
+    $script:plan = Get-SotTopologyPlan -SotdPath $sotdForPlan
     if ($script:plan.Error) {
-        Write-SupLog "topology: $($script:plan.Error) - continuing with no remote hosts"
+        $msg = "topology plan failed: $($script:plan.Error) - continuing with no remote hosts; run 'sotd topology sync --hub <alias>'"
+        Write-SupLog $msg
+        Set-LaunchStatus $msg
     }
     # The laptop fix (comm-lib.sh no longer hardcodes a relay port): every
     # session this box spawns needs SOT_RELAY_ENDPOINT in its environment,

@@ -152,12 +152,17 @@ try {
         ((-not $failSync.Ok) -and ($failSync.Output -match 'hub unreachable')) `
         "got Ok=$($failSync.Ok) output=[$($failSync.Output)]"
 
+    # An empty -Hub (no env override) still runs the sync -- plain `topology
+    # sync`, no --hub -- so sotd derives the hub from the LOCAL copy itself.
+    # This is the fix: sync must not depend on a plan having already
+    # succeeded to learn a hub (that's exactly what a stale/unlisted-self
+    # file cannot provide).
     $noHubLog = Join-Path $root 'sync-nohub-args.txt'
-    $noHubSotd = New-FakeSyncSotd 'sync-nohub' $noHubLog 0 'should not run'
+    $noHubSotd = New-FakeSyncSotd 'sync-nohub' $noHubLog 0 'synced from local hub'
     $noHubSync = Invoke-SotTopologySync -SotdPath $noHubSotd -Hub ''
-    Check 'no hub named: nothing is run at all' `
-        ((-not $noHubSync.Ok) -and (-not (Test-Path -LiteralPath $noHubLog))) `
-        "got Ok=$($noHubSync.Ok) ranStub=$(Test-Path -LiteralPath $noHubLog)"
+    $noHubArgs = (Get-Content -LiteralPath $noHubLog -Raw).Trim()
+    Check 'no env hub: still runs, with no --hub (sotd reads the local copy)' `
+        ($noHubSync.Ok -and ($noHubArgs -eq 'topology sync')) "got Ok=$($noHubSync.Ok) args=[$noHubArgs]"
 
     $noBinSync = Invoke-SotTopologySync -SotdPath (Join-Path $root 'does-not-exist.exe') -Hub 'hub-box'
     Check 'no sotd binary: reported, not thrown' `
