@@ -5275,6 +5275,19 @@ const FRAME_BUDGET: std::time::Duration = std::time::Duration::from_micros(8_333
 /// any realistic auto-repeat rate.
 const NAV_FIRE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// A saved window dimension is trusted only when it could hold a window.
+/// A quit while minimized persisted `window_w = 0` / `window_h = 0`, and
+/// the next launch restored exactly that: a 0x0 window nobody could find
+/// (field report, 2026-09-17). Below the floor the default applies.
+fn restore_dim(saved: Option<f64>, default: f64) -> f64 {
+    const MIN_LOGICAL_PX: f64 = 200.0;
+    match saved {
+        Some(v) if v.is_finite() && v >= MIN_LOGICAL_PX => v,
+        _ => default,
+    }
+}
+
+
 /// Local-host fallback for the workspace picker's starting directory
 /// (`State::begin_create_session`), used only once every higher-priority
 /// source (the `[sessions] new_session_root` setting, `$SOT_PROJECTS_ROOT`,
@@ -5417,8 +5430,8 @@ impl State {
         // Restore previous window geometry on launch. Saved in logical
         // pixels so cross-DPR launches behave sensibly. Defaults are
         // ~50% bigger than the spike's original 1024×700.
-        let init_w = persisted_geom.window_w.unwrap_or(1536.0);
-        let init_h = persisted_geom.window_h.unwrap_or(1050.0);
+        let init_w = restore_dim(persisted_geom.window_w, 1536.0);
+        let init_h = restore_dim(persisted_geom.window_h, 1050.0);
         // Loaded here rather than at first use (the Terminal-drawer resume,
         // far below) because adapter selection needs `[gpu] power_preference`
         // and that happens a few dozen lines down. Pure env+fs, no dependency
@@ -23428,6 +23441,15 @@ mod tests {
         assert_eq!(row, "/home/u");
         let last = picker_start_for_host("host-4", None, None, None, "C:/fe".into(), |_| false);
         assert_eq!(last, "C:/fe");
+    }
+
+    #[test]
+    fn restore_dim_rejects_a_collapsed_window() {
+        assert_eq!(restore_dim(Some(0.0), 1536.0), 1536.0);
+        assert_eq!(restore_dim(Some(12.0), 1536.0), 1536.0);
+        assert_eq!(restore_dim(Some(f64::NAN), 1050.0), 1050.0);
+        assert_eq!(restore_dim(None, 1050.0), 1050.0);
+        assert_eq!(restore_dim(Some(800.0), 1536.0), 800.0);
     }
 
     #[test]
