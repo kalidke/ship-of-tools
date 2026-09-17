@@ -19,18 +19,30 @@ Either nothing to do (`SURVIVED handle=<h>` + a context block — stop here),
 or:
 
 ```
+BOOTSTRAP-ARM handle=<h> listener=up|down|n/a identity=ok|MISMATCH|FAIL WAKE: comm-wake.sh (ping; no Monitor needed)
+```
+or, outside a capsule row:
+```
 BOOTSTRAP-ARM handle=<h> listener=up|down|n/a identity=ok|MISMATCH|FAIL MONITOR: <cmd>
 ```
 
 - `identity=FAIL` with a `REFUSED:` line — the identity slot already names
   someone else's project. Pin `SOT_COMM_NAME` (and, for a subagent/lane, a
   private `SOT_COMM_SELF_FILE`) and re-run; never work around this by hand.
-- Otherwise, **arm a persistent harness Monitor** running exactly the
-  printed `MONITOR:` command — the one act this script can't do for you —
-  then run phase 2. If the harness ends it anyway, re-arm on the expiry
-  notice, and `comm-status-heartbeat.sh` warns you if you miss one.
+- `WAKE:` — this is a capsule row: the script already started
+  `comm-wake.sh --deliver ping` for you, detached. There is nothing to arm;
+  the proof it works is the ping turn itself, arriving after phase 2's
+  selftest (`[sot-comm] wake selftest OK …`) — not the inline selftest
+  text. No re-arming, ever: it ends itself when this session does.
+- Otherwise (no capsule row), **arm a persistent harness Monitor** running
+  exactly the printed `MONITOR:` command — the one act this script can't do
+  for you — then run phase 2. Re-arm on expiry **only while the row is
+  working or waiting** on something; once it goes idle, let the Monitor
+  lapse and read the inbox with `comm-poll.sh` on your next natural turn
+  instead of paying a turn just to re-arm. `comm-status-heartbeat.sh` warns
+  you if a still-active row misses a re-arm.
 
-**Phase 2 — catch up** (only once the Monitor from phase 1 is armed):
+**Phase 2 — catch up** (only once phase 1's `WAKE:`/`MONITOR:` outcome is in place):
 
 ```bash
 ~/.sot-comm/bin/comm-session-start.sh --catch-up
@@ -45,8 +57,9 @@ BOOTSTRAP handle=<h> poll=<n>|ERR selftest=ok|retry|down bus=<n>|n/a identity=ok
 - `bus=<n>` is a PEEK, not an acknowledgement — run `bus.sh sync` (or
   `/bus-sync`) to actually see and consume those entries.
 
-The real proof your Monitor works is its own notification —
-`[relay] from __selftest__: …` — not the inline selftest text.
+The real proof the wake path works is its own notification, not the inline
+selftest text: a Monitor's is `[relay] from __selftest__: …`; a ping
+watcher's is `[sot-comm] wake selftest OK — nothing to read`.
 
 **Identity**: a pin (`SOT_COMM_NAME`, or a private `SOT_COMM_SELF_FILE`)
 always wins; otherwise a validated prior identity; otherwise fresh

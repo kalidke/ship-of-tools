@@ -126,7 +126,8 @@ _survived() {
     local h_re
     h_re="$(printf '%s' "$h" | sed 's/\./\\./g')"
     pgrep -u "$(id -un)" -f "comm-watch\\.sh ${h_re}\$" >/dev/null 2>&1 \
-        || pgrep -u "$(id -un)" -f "codex-watch\\.sh ${h_re} " >/dev/null 2>&1
+        || pgrep -u "$(id -un)" -f "codex-watch\\.sh ${h_re} " >/dev/null 2>&1 \
+        || pgrep -u "$(id -un)" -f "comm-wake\\.sh ${h_re} " >/dev/null 2>&1
 }
 
 # The work-state rule, printed on EVERY bootstrap outcome (fresh, survived,
@@ -339,10 +340,36 @@ fi
 IDENTITY="ok"
 [ "$IDENTITY_MISMATCH" = 1 ] && IDENTITY="MISMATCH"
 
-# printf %q quotes BOTH the executable path and the handle (Codex review
-# finding 8): an unquoted command breaks under a spaced installation path.
-# comm-watch.sh itself honors $SOT_COMM_HOME for the inbox/marker it reads —
-# nothing extra to thread through here.
-MONITOR_CMD="$(printf '%q %q' "$SCRIPT_DIR/comm-watch.sh" "$HANDLE")"
-echo "BOOTSTRAP-ARM handle=$HANDLE listener=$LISTENER_STATE identity=$IDENTITY MONITOR: $MONITOR_CMD (persistent; if the harness ends it, re-arm on the notice - this hook warns if you miss one)"
+# Claude sessions in a capsule row wake on a ping (comm-wake.sh --deliver
+# ping) instead of paying a model turn every ~30 minutes to re-arm a
+# harness Monitor (ADR 0047). Gated on $CLAUDE_CODE_SESSION_ID (the same
+# signal _survived already uses to tell Claude from Codex): Codex's own
+# skill starts its `--deliver full` watcher itself, right after this
+# script returns — auto-starting a second one here for the same handle
+# would race it. Outside a capsule row (no workspace id resolves) the
+# MONITOR: line is unchanged, and Codex is untouched either way.
+WAKE_ACTIVE=0
+if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    CAPSULE_WS_ID=""
+    if CAPSULE_WS_ID="$(sot_capsule_workspace_id 2>/dev/null)"; then
+        if _survived "$HANDLE"; then
+            WAKE_ACTIVE=1
+        else
+            SOT_WORKSPACE_ID="$CAPSULE_WS_ID" nohup "$SCRIPT_DIR/comm-wake.sh" "$HANDLE" --deliver ping \
+                </dev/null >/dev/null 2>&1 &
+            WAKE_ACTIVE=1
+        fi
+    fi
+fi
+
+if [ "$WAKE_ACTIVE" = 1 ]; then
+    echo "BOOTSTRAP-ARM handle=$HANDLE listener=$LISTENER_STATE identity=$IDENTITY WAKE: comm-wake.sh (ping; no Monitor needed)"
+else
+    # printf %q quotes BOTH the executable path and the handle (Codex
+    # review finding 8): an unquoted command breaks under a spaced
+    # installation path. comm-watch.sh itself honors $SOT_COMM_HOME for
+    # the inbox/marker it reads — nothing extra to thread through here.
+    MONITOR_CMD="$(printf '%q %q' "$SCRIPT_DIR/comm-watch.sh" "$HANDLE")"
+    echo "BOOTSTRAP-ARM handle=$HANDLE listener=$LISTENER_STATE identity=$IDENTITY MONITOR: $MONITOR_CMD (persistent; if the harness ends it, re-arm on the notice - this hook warns if you miss one)"
+fi
 _workstate_rule

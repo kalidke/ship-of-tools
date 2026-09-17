@@ -97,6 +97,20 @@ which is why an unstamped `--broadcast` once woke the whole network at once.
    durable-only and surface on the next `comm-poll`, matching the Monitor's
    demotion rule.
 
+**Ping delivery (Claude, capsule rows, ADR 0047):** a harness Monitor costs a
+model turn every ~30 minutes just to re-arm, so a Claude session in a capsule
+row wakes instead via `comm-wake.sh <handle> --deliver ping` — the same
+`codex-watch.sh` mechanism generalized, but it types ONE fixed notice line
+(never the message text) and lets the session read the real backlog with
+`comm-poll.sh` on the turn the ping wakes it. A whole batch of new directed
+frames still costs one wake, not one per frame (coalescing: an unread ping
+suppresses a further one until the recipient's poll cursor moves, capped at
+10 minutes). It only types when the row's current screen shows a free prompt
+— typing into an open dialog or menu could answer it — so a busy screen
+delays the wake, never drops it. `comm-session-start.sh` starts this
+automatically for a capsule row; outside one, the harness Monitor is
+unchanged.
+
 If live delivery isn't possible (no row for the recipient on this host, no
 daemon, a row that is not ready) the send reports `queued to inbox (…)` — the
 fallback is **stated, never silent**. The recipient sees it on the next `poll`.
