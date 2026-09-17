@@ -5,9 +5,9 @@
 # inbox append is never delivered twice; a row-gone reply ends the WHOLE
 # watcher; the log file stays bounded.
 #
-# Each case runs `_codex_watch_main` in its own `bash -c` subprocess (it
+# Each case runs `_comm_wake_main` in its own `bash -c` subprocess (it
 # can call `exit` without killing this suite), overriding
-# `sleep`/`wc`/`sot_daemon_endpoint`/`_codex_watch_pty_input` as needed.
+# `sleep`/`wc`/`sot_daemon_endpoint`/`_comm_wake_pty_input` as needed.
 #
 # Usage: comm/core/tests/test-codex-watch-capsule-loop.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -15,7 +15,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
-WATCH="$SCRIPTS_DIR/codex-watch.sh"
+WATCH="$SCRIPTS_DIR/comm-wake.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-codex-watch-loop-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
@@ -37,16 +37,16 @@ line() { printf '{"from":"peer","to":"me","msg":"%s"}\n' "$1"; }
 case_capsule_mode_starts_at_eof_ignoring_a_stale_pos_file_and_backlog() {
     local d="$WORK/eof-capsule"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
     { line "one"; line "two"; line "three"; } > "$d/inbox/watchee.jsonl"
-    printf '0\n' > "$d/state/codex-watch-watchee.pos"
+    printf '0\n' > "$d/state/comm-wake-watchee.pos"
     local attempts="$d/attempts.log"
     bash -c '
         source "'"$WATCH"'"
         export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="'"$d"'"
         sot_daemon_endpoint() { printf fixture; }
-        _codex_watch_pty_input() { printf "%s" "$2" | base64 -d >> "'"$attempts"'"; printf "\n" >> "'"$attempts"'"; printf "%s" "{\"op\":\"pty.input\",\"payload\":{\"ok\":true,\"enter_sent\":true}}"; }
+        _comm_wake_pty_input() { printf "%s" "$2" | base64 -d >> "'"$attempts"'"; printf "\n" >> "'"$attempts"'"; printf "%s" "{\"op\":\"pty.input\",\"payload\":{\"ok\":true,\"enter_sent\":true}}"; }
         turns=0
         sleep() { turns=$((turns + 1)); [ "$turns" -le 1 ] || exit 0; }
-        _codex_watch_main watchee
+        _comm_wake_main watchee
     ' 2>/dev/null
     [ ! -f "$attempts" ] || { echo "  the pre-existing backlog was delivered (want silence -- comm-poll's job); attempts:"; cat "$attempts"; return 1; }
     return 0
@@ -62,7 +62,7 @@ case_concurrent_append_is_never_delivered_twice() {
         source "'"$WATCH"'"
         export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="'"$d"'"
         sot_daemon_endpoint() { printf fixture; }
-        _codex_watch_pty_input() { printf "%s" "$2" | base64 -d >> "'"$attempts"'"; printf "\n" >> "'"$attempts"'"; printf "%s" "{\"op\":\"pty.input\",\"payload\":{\"ok\":true,\"enter_sent\":true}}"; }
+        _comm_wake_pty_input() { printf "%s" "$2" | base64 -d >> "'"$attempts"'"; printf "\n" >> "'"$attempts"'"; printf "%s" "{\"op\":\"pty.input\",\"payload\":{\"ok\":true,\"enter_sent\":true}}"; }
         CALL_COUNT_FILE="'"$d"'/wc-calls"
         : > "$CALL_COUNT_FILE"
         wc() {
@@ -83,7 +83,7 @@ case_concurrent_append_is_never_delivered_twice() {
         }
         turns=0
         sleep() { turns=$((turns + 1)); [ "$turns" -le 2 ] || exit 0; }
-        _codex_watch_main watchee
+        _comm_wake_main watchee
     ' 2>/dev/null
     local n; n="$(grep -c "peer: raced" "$attempts" 2>/dev/null || echo 0)"
     [ "$n" -eq 1 ] || { echo "  'raced' delivered $n time(s), want exactly 1"; cat "$attempts" 2>/dev/null; return 1; }
@@ -98,7 +98,7 @@ case_row_gone_ends_the_whole_watcher_not_just_the_inner_loop() {
         source "'"$WATCH"'"
         export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="'"$d"'"
         sot_daemon_endpoint() { printf fixture; }
-        _codex_watch_pty_input() { printf "%s" "{\"op\":\"pty.input\",\"payload\":{\"error\":\"unknown workspace\",\"code\":\"unknown_workspace\"}}"; }
+        _comm_wake_pty_input() { printf "%s" "{\"op\":\"pty.input\",\"payload\":{\"error\":\"unknown workspace\",\"code\":\"unknown_workspace\"}}"; }
         # A message arrives after the cursor is already at EOF (same wc-race
         # trick as the dedup case above).
         RACED_MARKER="'"$d"'/raced.marker"
@@ -123,7 +123,7 @@ case_row_gone_ends_the_whole_watcher_not_just_the_inner_loop() {
             printf "%s" "$n" > "'"$sleeps"'"
             [ "$n" -le 20 ] || exit 1   # safety valve: never loop forever if the fix regresses
         }
-        _codex_watch_main watchee
+        _comm_wake_main watchee
     ' 2>/dev/null
     local rc=$?
     [ "$rc" -eq 0 ] || { echo "  watcher did not exit cleanly (rc=$rc)"; return 1; }
@@ -134,14 +134,14 @@ case_row_gone_ends_the_whole_watcher_not_just_the_inner_loop() {
 
 case_log_file_is_bounded_to_roughly_256kb() {
     local d="$WORK/logbound"; rm -rf "$d"; mkdir -p "$d/state"
-    local log="$d/state/codex-watch-watchee.log"
+    local log="$d/state/comm-wake-watchee.log"
     # 400 KiB seed, ending in a marker -- the bound must keep the TAIL.
     head -c 409600 /dev/zero | tr '\0' 'x' > "$log"
     printf 'TAIL-MARKER\n' >> "$log"
     bash -c '
         source "'"$WATCH"'"
         LOG_FILE="'"$log"'"
-        _codex_watch_bound_log
+        _comm_wake_bound_log
     '
     local size; size=$(wc -c < "$log" 2>/dev/null || echo 0)
     [ "$size" -le 262144 ] || { echo "  log is $size bytes after bounding, want <= 262144"; return 1; }
@@ -151,12 +151,12 @@ case_log_file_is_bounded_to_roughly_256kb() {
 
 case_log_file_under_the_cap_is_left_alone() {
     local d="$WORK/logbound-small"; rm -rf "$d"; mkdir -p "$d/state"
-    local log="$d/state/codex-watch-watchee.log"
+    local log="$d/state/comm-wake-watchee.log"
     printf 'small log\n' > "$log"
     bash -c '
         source "'"$WATCH"'"
         LOG_FILE="'"$log"'"
-        _codex_watch_bound_log
+        _comm_wake_bound_log
     '
     [ "$(cat "$log")" = "small log" ] || { echo "  an under-cap log was rewritten unnecessarily"; return 1; }
     return 0
@@ -167,7 +167,7 @@ case_log_bound_keeps_appending_correctly_after_truncation() {
     # the bound runs -- an mv-based bound would swap in a new inode the
     # already-open fd never sees, losing later writes.
     local d="$WORK/logbound-append"; rm -rf "$d"; mkdir -p "$d/state"
-    local log="$d/state/codex-watch-watchee.log"
+    local log="$d/state/comm-wake-watchee.log"
     bash -c '
         source "'"$WATCH"'"
         LOG_FILE="'"$log"'"
@@ -178,7 +178,7 @@ case_log_bound_keeps_appending_correctly_after_truncation() {
             printf "%s\n" "$big_line" >&2
             i=$((i + 1))
         done
-        _codex_watch_bound_log
+        _comm_wake_bound_log
         echo "POST-BOUND-MARKER" >&2
     '
     local size; size=$(wc -c < "$log" 2>/dev/null || echo 0)

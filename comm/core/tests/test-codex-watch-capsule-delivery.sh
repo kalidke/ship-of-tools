@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-codex-watch-capsule-delivery.sh — pins `_codex_watch_capsule_inject`'s
+# test-codex-watch-capsule-delivery.sh — pins `_comm_wake_capsule_inject`'s
 # return-code contract against fixture `pty.input` replies: 0 ADVANCE
 # (delivered, unconfirmed, or permanently refused -- never retyped), 1
 # RETRY (text never recorded), 2 GONE. Stubs the one daemon call, no tmux.
@@ -10,8 +10,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
-# shellcheck source=../scripts/codex-watch.sh
-source "$SCRIPTS_DIR/codex-watch.sh"
+# shellcheck source=../scripts/comm-wake.sh
+source "$SCRIPTS_DIR/comm-wake.sh"
 
 PASS=0
 FAIL=0
@@ -44,14 +44,14 @@ RESP_GONE='{"v":1,"id":1,"kind":"res","op":"pty.input","payload":{"error":"unkno
 export SOT_WORKSPACE_ID="ws-test"
 COUNT_FILE="$(mktemp)"
 trap 'rm -f "$COUNT_FILE"' EXIT
-_codex_watch_pty_input() { printf 'x' >> "$COUNT_FILE"; printf '%s' "$STUB_RESP"; }
+_comm_wake_pty_input() { printf 'x' >> "$COUNT_FILE"; printf '%s' "$STUB_RESP"; }
 reset_call_count() { : > "$COUNT_FILE"; }
 call_count() { wc -c < "$COUNT_FILE" 2>/dev/null | tr -d ' '; }
 
 inject_delivered_returns_zero_and_warns_nothing() {
     STUB_RESP="$RESP_SENT"; reset_call_count
     local out rc
-    out="$(_codex_watch_capsule_inject "peer" "hello" 2>&1)"
+    out="$(_comm_wake_capsule_inject "peer" "hello" 2>&1)"
     rc=$?
     [ "$rc" -eq 0 ] && [ -z "$out" ] && [ "$(call_count)" -eq 1 ]
 }
@@ -59,7 +59,7 @@ inject_delivered_returns_zero_and_warns_nothing() {
 inject_enter_not_sent_still_returns_zero_but_warns() {
     STUB_RESP="$RESP_NOT_SENT"; reset_call_count
     local out rc
-    out="$(_codex_watch_capsule_inject "peer" "hello" 2>&1)"
+    out="$(_comm_wake_capsule_inject "peer" "hello" 2>&1)"
     rc=$?
     [ "$rc" -eq 0 ] || return 1
     [ "$(call_count)" -eq 1 ] || return 1
@@ -70,7 +70,7 @@ inject_enter_not_sent_still_returns_zero_but_warns() {
 inject_not_ready_returns_one_for_retry_next_cycle() {
     STUB_RESP="$RESP_NOT_READY"; reset_call_count
     local rc
-    _codex_watch_capsule_inject "peer" "hello" >/dev/null 2>&1
+    _comm_wake_capsule_inject "peer" "hello" >/dev/null 2>&1
     rc=$?
     [ "$rc" -eq 1 ] && [ "$(call_count)" -eq 1 ]
 }
@@ -78,7 +78,7 @@ inject_not_ready_returns_one_for_retry_next_cycle() {
 inject_stale_enter_refusal_retries_despite_submitted_true() {
     STUB_RESP="$RESP_STALE"; reset_call_count
     local rc
-    _codex_watch_capsule_inject "peer" "hello" >/dev/null 2>&1
+    _comm_wake_capsule_inject "peer" "hello" >/dev/null 2>&1
     rc=$?
     [ "$rc" -eq 1 ] && [ "$(call_count)" -eq 1 ]
 }
@@ -86,7 +86,7 @@ inject_stale_enter_refusal_retries_despite_submitted_true() {
 inject_no_reply_advances_and_never_retypes() {
     STUB_RESP=""; reset_call_count
     local out rc
-    out="$(_codex_watch_capsule_inject "peer" "hello" 2>&1)"
+    out="$(_comm_wake_capsule_inject "peer" "hello" 2>&1)"
     rc=$?
     [ "$rc" -eq 0 ] || return 1
     [ "$(call_count)" -eq 1 ] || return 1
@@ -97,7 +97,7 @@ inject_no_reply_advances_and_never_retypes() {
 inject_size_refusal_advances_permanently() {
     STUB_RESP="$RESP_SIZE"; reset_call_count
     local out rc
-    out="$(_codex_watch_capsule_inject "peer" "hello" 2>&1)"
+    out="$(_comm_wake_capsule_inject "peer" "hello" 2>&1)"
     rc=$?
     [ "$rc" -eq 0 ] || return 1
     [ "$(call_count)" -eq 1 ] || return 1
@@ -108,7 +108,7 @@ inject_size_refusal_advances_permanently() {
 inject_unknown_outcome_advances_and_never_retypes() {
     STUB_RESP="$RESP_UNKNOWN"; reset_call_count
     local out rc
-    out="$(_codex_watch_capsule_inject "peer" "hello" 2>&1)"
+    out="$(_comm_wake_capsule_inject "peer" "hello" 2>&1)"
     rc=$?
     [ "$rc" -eq 0 ] || return 1
     [ "$(call_count)" -eq 1 ] || return 1
@@ -119,7 +119,7 @@ inject_unknown_outcome_advances_and_never_retypes() {
 inject_gone_returns_two_and_never_exits_itself() {
     STUB_RESP="$RESP_GONE"; reset_call_count
     local out rc
-    out="$(_codex_watch_capsule_inject "peer" "hello" 2>&1)"
+    out="$(_comm_wake_capsule_inject "peer" "hello" 2>&1)"
     rc=$?
     # Reaching this line proves it did not call `exit` itself.
     [ "$rc" -eq 2 ] && [ "$(call_count)" -eq 1 ] && case "$out" in *"is gone"*) return 0 ;; esac
