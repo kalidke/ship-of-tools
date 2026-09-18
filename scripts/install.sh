@@ -51,9 +51,17 @@ sot_hub_local_port() {
         printf '18743\n'
         return 0
     fi
+    # LC_ALL=C for the WHOLE function, not just the printf below: bash's own
+    # ${#user} and ${user:i:1} are locale-aware, so under a UTF-8 locale a
+    # non-ASCII username was walked one CHARACTER at a time (and each printf
+    # saw only that character's first byte) while the Rust
+    # hub_local_port_for hashes user.as_bytes() one byte at a time -- two
+    # different hashes, two different ports, for the same username. Under
+    # C, a "character" IS a byte, which is what matches Rust here.
+    local LC_ALL=C
     local hash=2166136261 i c  # 0x811c9dc5
     for (( i = 0; i < ${#user}; i++ )); do
-        c=$(LC_ALL=C printf '%d' "'${user:$i:1}")
+        c=$(printf '%d' "'${user:$i:1}")
         hash=$(( (hash ^ c) & 0xffffffff ))
         hash=$(( (hash * 16777619) & 0xffffffff ))  # 0x01000193
     done
