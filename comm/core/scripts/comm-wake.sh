@@ -32,13 +32,19 @@
 #     mtime is older than the ping) suppresses a second one -- new lines
 #     just wait, since the outstanding ping already wakes the session onto
 #     ALL of them. Capped at 10 minutes: if the session never polls, retry
-#     rather than wait forever on one dropped ping.
+#     rather than wait forever on one dropped ping. Separately, once the
+#     cursor DOES move: its content is the newest-read message's ts
+#     (comm-poll.sh), compared against the newest pending line's ts -- a
+#     cursor that already covers the pending batch (read through some other
+#     real poll) advances past it with no second ping, rather than treating
+#     "cursor moved at all" as reason enough to ping again.
 #
 # LIFETIME: this process ends itself when the agent (claude/codex) that
-# spawned it is gone -- walks up from $PPID once at startup to find that
-# process, then `kill -0`s it every cycle. This is what the old
-# Monitor-only scheme couldn't do, and why idle watchers piled up as
-# orphans under it.
+# spawned it is gone -- the caller passes that pid with `--owner <pid>`
+# (found while the caller itself was still attached, a better vantage than
+# this script has once backgrounded), then `kill -0`s it every cycle. This
+# is what the old Monitor-only scheme couldn't do, and why idle watchers
+# piled up as orphans under it.
 #
 # LIVENESS MARKER: the same one comm-watch.sh writes
 # ($COMM_HOME/state/<handle>.watch: line 1 this process's own pid, line 2
@@ -118,17 +124,20 @@ _comm_wake_ping_inject() {
     return "$rc"
 }
 
-# _comm_wake_prompt_free -> 0 iff some line of the row's CURRENT screen,
-# whitespace-trimmed, is exactly the prompt glyph. A screen this can't read
-# (no reply, a daemon error) reads as "not free" -- typing on an unclear
-# screen is exactly the risk this gate exists to avoid.
+# _comm_wake_prompt_free -> 0 free (some line of the row's CURRENT screen,
+# whitespace-trimmed, is exactly the prompt glyph), 1 screen read but NOT
+# free (dialog/menu/draft on screen -- today's fail-closed retry, cursor
+# untouched), 2 NO REPLY at all (transport error, empty response -- distinct
+# from 1 so the caller can count these separately and give up on a daemon
+# that never answers instead of retrying it forever).
 _comm_wake_prompt_free() {
     local resp
-    resp="$(_comm_wake_pty_screen "$SOT_WORKSPACE_ID" 2>/dev/null)" || return 1
-    [ -n "$resp" ] || return 1
+    resp="$(_comm_wake_pty_screen "$SOT_WORKSPACE_ID" 2>/dev/null)"
+    [ -n "$resp" ] || return 2
     printf '%s' "$resp" | jq -e '
         (.payload.lines // []) | any(gsub("^[ \t]+|[ \t]+$";"") == "❯")
-    ' >/dev/null 2>&1
+    ' >/dev/null 2>&1 && return 0
+    return 1
 }
 
 # _comm_wake_ping_outstanding -> 0 iff a ping was accepted and the session's
@@ -146,24 +155,15 @@ _comm_wake_ping_outstanding() {
 
 # ---- lifetime: end with the agent that spawned this, never orphan --------
 
-# _comm_wake_find_agent_pid -> the pid of the nearest ancestor whose comm is
-# `claude` or `codex`, walking up from $PPID (stop at pid 1 -> none found,
-# printed nothing, rc 1). No owner found means no liveness tie -- this
-# process then runs for as long as its capsule leg does (today's codex-watch
-# behaviour, unchanged when nothing claims it).
-_comm_wake_find_agent_pid() {
-    local pid="${PPID:-}" comm ppid
-    while [ -n "$pid" ] && [ "$pid" != "1" ]; do
-        comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')"
-        case "$comm" in
-            claude|codex) printf '%s\n' "$pid"; return 0 ;;
-        esac
-        ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
-        [ -n "$ppid" ] && [ "$ppid" != "$pid" ] || break
-        pid="$ppid"
-    done
-    return 1
-}
+# The owning agent's pid is no longer discovered here: the caller (typically
+# comm-session-start.sh) is still directly attached to the real originating
+# claude/codex process at the moment it decides to spawn this watcher, and
+# passes it with `--owner <pid>`. Finding it AFTER this script is already
+# backgrounded (the old _comm_wake_find_agent_pid, which walked $PPID up
+# looking for a claude/codex `comm`) was strictly worse vantage for the same
+# answer. No `--owner` given means no liveness tie -- this process then runs
+# for as long as its capsule leg does (today's codex-watch behaviour,
+# unchanged when nothing claims it).
 
 # _comm_wake_owner_alive -> 0 when no owner is known (never trigger exit) or
 # when the known owner still answers `kill -0`.
@@ -196,7 +196,7 @@ _comm_wake_deliver_full() {
 }
 
 _comm_wake_deliver_ping() {
-    local any_directed=0 all_selftest=1 from to text rc text_to_type
+    local any_directed=0 all_selftest=1 from to text ts rc text_to_type newest_ts=""
 
     while IFS= read -r line; do
         from=$(printf '%s' "$line" | jq -r '.from // ""' 2>/dev/null)
@@ -207,14 +207,45 @@ _comm_wake_deliver_ping() {
         [ -z "$text" ] && continue
         any_directed=1
         [ "$from" = "__selftest__" ] || all_selftest=0
+        ts=$(printf '%s' "$line" | jq -r '.ts // ""' 2>/dev/null)
+        [ -n "$ts" ] && newest_ts="$ts"
     done < <(sed -n "$((pos + 1)),${total}p" "$INBOX")
 
     if [ "$any_directed" -eq 0 ]; then
         pos="$total"
         return
     fi
+
+    # Coalescing (S2): the poll cursor's CONTENT is the newest-read message's
+    # ts (comm-poll.sh writes it, not just a touch), so compare it against
+    # the newest pending line's ts instead of only asking "did the cursor
+    # move". A moved cursor that already covers this batch means the session
+    # read it through some other real poll -- advance past it with no second
+    # ping. A mtime-only check pinged again the instant the cursor moved at
+    # all, even when it had already covered everything pending.
+    if [ -n "$newest_ts" ]; then
+        local read_ts
+        read_ts="$(cat "$CURSOR_FILE" 2>/dev/null || true)"
+        if [ -n "$read_ts" ] && [[ ! "$newest_ts" > "$read_ts" ]]; then
+            pos="$total"
+            return
+        fi
+    fi
     _comm_wake_ping_outstanding && return    # already awake for these; wait for the read
-    _comm_wake_prompt_free || return         # dialog/menu/draft on screen; retry next cycle
+
+    _comm_wake_prompt_free
+    local pf_rc=$?
+    if [ "$pf_rc" -eq 2 ]; then
+        no_reply_count=$((no_reply_count + 1))
+        if [ "$no_reply_count" -ge 5 ]; then
+            echo "comm-wake: pty.screen unanswered 5 times; exiting so session start can fall back to the Monitor" >&2
+            rm -f "$MARKER" 2>/dev/null
+            exit 0
+        fi
+        return   # no reply this cycle; retry, cursor untouched
+    fi
+    no_reply_count=0
+    [ "$pf_rc" -eq 0 ] || return   # dialog/menu/draft on screen; retry next cycle
 
     if [ "$all_selftest" -eq 1 ]; then
         text_to_type="$SELFTEST_TEXT"
@@ -230,6 +261,7 @@ _comm_wake_deliver_ping() {
 _comm_wake_run() {
     pos=$(wc -l < "$INBOX" 2>/dev/null || echo 0)
     pinged_at=0
+    no_reply_count=0
 
     # No pane-liveness check beyond the agent-owner one above: a capsule
     # leg's own process group reaps this when the row itself goes away.
@@ -265,9 +297,17 @@ _comm_wake_bound_log() {
 _comm_wake_cleanup() { rm -f "${MARKER:-}" 2>/dev/null || true; }
 
 _comm_wake_main() {
-    HANDLE="${1:?usage: comm-wake.sh <handle> --deliver full|ping}"
+    HANDLE="${1:?usage: comm-wake.sh <handle> --deliver full|ping [--owner <pid>]}"
+    shift
     DELIVER="full"
-    if [ "${2:-}" = "--deliver" ]; then DELIVER="${3:-full}"; fi
+    OWNER_PID=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --deliver) DELIVER="${2:-full}"; shift 2 ;;
+            --owner)   OWNER_PID="${2:-}"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
     case "$DELIVER" in
         full|ping) ;;
         *) echo "comm-wake: --deliver must be full or ping" >&2; exit 2 ;;
@@ -301,7 +341,7 @@ _comm_wake_main() {
     SELFTEST_TEXT="[sot-comm] wake selftest OK — nothing to read"
 
     AGENT_PID=""
-    AGENT_PID="$(_comm_wake_find_agent_pid || true)"
+    [[ "$OWNER_PID" =~ ^[0-9]+$ ]] && AGENT_PID="$OWNER_PID"
 
     # Same marker comm-watch.sh writes: line 1 this process's own pid
     # (liveness), line 2 the session that armed it (identity).

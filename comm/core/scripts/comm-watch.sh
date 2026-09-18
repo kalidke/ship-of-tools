@@ -105,6 +105,11 @@ linecount() { [ -r "$inbox" ] && wc -l < "$inbox" 2>/dev/null || echo 0; }
 
 n=$(linecount)
 while true; do
+    # A Monitor whose harness expired still leaves this poll loop running
+    # forever otherwise (45 orphans observed on one box) -- $PPID is fixed at
+    # startup and is never live-updated by bash on reparenting, so this still
+    # correctly reads as gone after the original parent exits.
+    kill -0 "$PPID" 2>/dev/null || exit 0
     c=$(linecount)
     # File shrank/rotated/recreated — reset to 0 so the next compare re-reads the
     # whole (now-smaller) file from line 1. Resetting to $c instead would skip any

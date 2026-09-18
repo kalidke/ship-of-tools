@@ -64,6 +64,37 @@ IS_SOT=0
 
 _watch_marker() { printf '%s/state/%s.watch\n' "${SOT_COMM_HOME:-$HOME/.sot-comm}" "$1"; }
 
+# _wake_owner_pid -> the pid of the nearest ancestor whose command is
+# `claude` or `codex`, walking up from $PPID. This script is still directly
+# attached to that real originating process right now — a better vantage
+# than comm-wake.sh has once it's already backgrounded, which is why the pid
+# is found HERE and handed to it with `--owner <pid>` rather than
+# rediscovered there. `ps -o comm=` is tried at each hop; where it gives
+# nothing (unsupported on this platform, or the pid raced past), /proc is
+# tried next if it exists; if neither answers, the walk stops there and
+# prints nothing (no owner tie — comm-wake.sh runs untethered, same as
+# today when nothing claims it).
+_wake_owner_pid() {
+    local pid="${PPID:-}" comm ppid
+    while [ -n "$pid" ] && [ "$pid" != "1" ]; do
+        comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')"
+        if [ -z "$comm" ] && [ -r "/proc/$pid/comm" ]; then
+            comm="$(tr -d ' \t\n' < "/proc/$pid/comm" 2>/dev/null)"
+        fi
+        [ -n "$comm" ] || return 1
+        case "$comm" in
+            claude|codex) printf '%s\n' "$pid"; return 0 ;;
+        esac
+        ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+        if [ -z "$ppid" ] && [ -r "/proc/$pid/status" ]; then
+            ppid="$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null)"
+        fi
+        [ -n "$ppid" ] && [ "$ppid" != "$pid" ] || break
+        pid="$ppid"
+    done
+    return 1
+}
+
 # _owns_handle H — does the registry currently attribute H to OUR
 # PROJECT_ROOT? A pgrep/marker match on H's watcher process is NOT proof of
 # ownership by itself (Codex review finding 3): a derived or explicit handle
@@ -354,10 +385,24 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     if CAPSULE_WS_ID="$(sot_capsule_workspace_id 2>/dev/null)"; then
         if _survived "$HANDLE"; then
             WAKE_ACTIVE=1
-        else
-            SOT_WORKSPACE_ID="$CAPSULE_WS_ID" nohup "$SCRIPT_DIR/comm-wake.sh" "$HANDLE" --deliver ping \
-                </dev/null >/dev/null 2>&1 &
+        elif SOT_SEND_TIMEOUT=10 sot_pty_screen "$CAPSULE_WS_ID" >/dev/null 2>&1; then
+            # Ping-wake honesty: only claim the watcher is armed once this
+            # daemon has proven, right now, that it can answer pty.screen at
+            # all — the watcher's own prompt-free gate depends on that same
+            # call working every cycle. A daemon that can't answer it gets no
+            # watcher spawned at all; the MONITOR: line below is the honest
+            # fallback.
+            WAKE_OWNER="$(_wake_owner_pid || true)"
+            if [ -n "$WAKE_OWNER" ]; then
+                SOT_WORKSPACE_ID="$CAPSULE_WS_ID" nohup "$SCRIPT_DIR/comm-wake.sh" "$HANDLE" --deliver ping --owner "$WAKE_OWNER" \
+                    </dev/null >/dev/null 2>&1 &
+            else
+                SOT_WORKSPACE_ID="$CAPSULE_WS_ID" nohup "$SCRIPT_DIR/comm-wake.sh" "$HANDLE" --deliver ping \
+                    </dev/null >/dev/null 2>&1 &
+            fi
             WAKE_ACTIVE=1
+        else
+            echo "wake: pty.screen did not answer on this daemon; falling back to the Monitor" >&2
         fi
     fi
 fi

@@ -3,9 +3,11 @@
 # path: one fixed line typed for a whole batch of new directed messages
 # (never the message text itself — the session reads that with
 # comm-poll.sh), the selftest-only variant, the prompt-free gate, ping
-# coalescing (an unread ping suppresses a second one; a moved cursor lets
-# the next one through), workspace-id derivation from $SOT_COMM_SELF_FILE,
-# and the agent-liveness exit.
+# coalescing (an unread ping suppresses a second one; a cursor whose CONTENT
+# already covers the pending batch's newest ts skips a second ping rather
+# than firing on any cursor movement at all), the no-reply give-up (pty.screen
+# unanswered 5 times in a row exits and drops the marker), workspace-id
+# derivation from $SOT_COMM_SELF_FILE, and the agent-liveness exit.
 #
 # Cursor starts at the inbox's END (same rule `full` mode already pins,
 # proven by test-codex-watch-capsule-loop.sh): every case's inbox starts
@@ -15,8 +17,11 @@
 # Each case runs `_comm_wake_main` in its own script file under a fresh
 # sandbox $SOT_COMM_HOME, invoked via `bash script.sh` (not `bash -c` string
 # splicing) so env is passed by export, not quoting -- stubs
-# `_comm_wake_find_agent_pid`/`_comm_wake_pty_screen`/`_comm_wake_pty_input`/
-# `sleep`/`kill` as needed, same seams the existing codex-watch tests stub.
+# `_comm_wake_pty_screen`/`_comm_wake_pty_input`/`sleep`/`kill` as needed,
+# same seams the existing codex-watch tests stub. The owning-agent pid is
+# now an argv flag (`--owner <pid>`), not a discovered function, so a case
+# that wants no liveness tie simply omits `--owner`, and the one liveness
+# case passes it directly.
 #
 # Usage: comm/core/tests/test-comm-wake-ping.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -41,10 +46,6 @@ check() {
     fi
 }
 
-# A default agent-liveness stub used by every case except the one that
-# exercises it for real: no owner found, so the liveness gate never fires.
-NO_OWNER_STUB='_comm_wake_find_agent_pid() { return 1; }'
-
 case_three_new_directed_lines_type_the_ping_once() {
     local d="$WORK/three-lines"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
@@ -54,7 +55,6 @@ case_three_new_directed_lines_type_the_ping_once() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
-$NO_OWNER_STUB
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["banner","❯"]}}'; }
 _comm_wake_pty_input() {
     printf x >> "$calls"
@@ -91,7 +91,6 @@ case_selftest_only_batch_types_the_selftest_text() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
-$NO_OWNER_STUB
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"]}}'; }
 _comm_wake_pty_input() {
     printf x >> "$calls"
@@ -124,7 +123,6 @@ case_prompt_not_free_waits_then_types_once_free() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
-$NO_OWNER_STUB
 _comm_wake_pty_screen() {
     printf x >> "$screen_calls"
     local n; n=\$(wc -c < "$screen_calls")
@@ -153,7 +151,36 @@ EOF
     return 0
 }
 
-case_outstanding_ping_suppresses_a_second_until_cursor_moves() {
+case_five_consecutive_no_replies_gives_up_and_drops_the_marker() {
+    local d="$WORK/no-reply"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local marker="$d/state/watchee.watch" screen_calls="$d/screen.calls"
+    : > "$screen_calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_pty_screen() { printf x >> "$screen_calls"; printf ''; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"hello"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 10 ] || { echo "the loop never gave up after 5 unanswered probes" >&2; exit 9; }
+}
+_comm_wake_main watchee --deliver ping
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local rc=$?
+    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0 (gave up after 5 unanswered pty.screen probes)"; return 1; }
+    [ ! -f "$marker" ] || { echo "  the liveness marker was left behind after giving up"; return 1; }
+    local sc; sc="$(wc -c < "$screen_calls" 2>/dev/null || echo 0)"
+    [ "$sc" -eq 5 ] || { echo "  pty.screen was probed $sc time(s), want exactly 5 before giving up"; return 1; }
+    return 0
+}
+
+case_a_cursor_that_already_covers_the_batch_skips_a_second_ping() {
     local d="$WORK/coalesce"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls"
@@ -162,16 +189,15 @@ case_outstanding_ping_suppresses_a_second_until_cursor_moves() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
-$NO_OWNER_STUB
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"]}}'; }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
 sleep() {
     turns=\$((turns + 1))
     case "\$turns" in
-        1) printf '{"from":"peer","to":"me","msg":"first"}\n' >> "$d/inbox/watchee.jsonl" ;;
-        2) printf '{"from":"peer","to":"me","msg":"second"}\n' >> "$d/inbox/watchee.jsonl" ;;
-        3) touch "$d/read/watchee.cursor" ;;
+        1) printf '{"from":"peer","to":"me","msg":"first","ts":"2026-01-01T00:00:00Z"}\n' >> "$d/inbox/watchee.jsonl" ;;
+        2) printf '{"from":"peer","to":"me","msg":"second","ts":"2026-01-01T00:00:01Z"}\n' >> "$d/inbox/watchee.jsonl" ;;
+        3) printf '%s' "2026-01-01T00:00:01Z" > "$d/read/watchee.cursor" ;;
     esac
     [ "\$turns" -le 4 ] || exit 0
 }
@@ -179,7 +205,13 @@ _comm_wake_main watchee --deliver ping
 EOF
     bash "$d/run.sh" 2>/dev/null
     local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
-    [ "$n" -eq 2 ] || { echo "  pty.input called $n time(s), want exactly 2 (one for the first line, none while outstanding, one more once the cursor moved)"; return 1; }
+    # Turn 1 pings for "first" (call #1). Turn 2's "second" is suppressed by
+    # the still-outstanding ping (unread). Turn 3 writes the cursor's CONTENT
+    # as "second"'s own ts -- the session read it via a real poll, so the
+    # fix must advance past it with NO second ping, unlike the old
+    # mtime-only check that pinged again the instant the cursor file moved
+    # at all, however it moved (even an empty `touch`).
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s), want exactly 1 (the cursor's ts already covers 'second' once written at turn 3 -- no second ping for a message already read)"; return 1; }
     return 0
 }
 
@@ -194,7 +226,6 @@ source "$WAKE"
 unset SOT_WORKSPACE_ID
 export SOT_COMM_HOME="$d" SOT_COMM_SELF_FILE="$d/self/testhost__ws-derived.txt"
 sot_daemon_endpoint() { printf fixture; }
-$NO_OWNER_STUB
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"]}}'; }
 _comm_wake_pty_input() {
     printf x >> "$calls"
@@ -226,10 +257,9 @@ case_agent_pid_gone_exits_zero_and_removes_the_marker() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
-_comm_wake_find_agent_pid() { printf '99999\n'; }
 kill() { [ "\$1" = "-0" ] && return 1; command kill "\$@"; }
 sleep() { echo "sleep must not be called once the owner is gone" >&2; exit 9; }
-_comm_wake_main watchee --deliver ping
+_comm_wake_main watchee --deliver ping --owner 99999
 EOF
     bash "$d/run.sh" 2>/dev/null
     local rc=$?
@@ -241,7 +271,8 @@ EOF
 check "three new directed lines type the ping notice exactly once" case_three_new_directed_lines_type_the_ping_once
 check "a batch that is only __selftest__ frames types the selftest notice" case_selftest_only_batch_types_the_selftest_text
 check "a not-free prompt withholds the ping and types it once the prompt frees up" case_prompt_not_free_waits_then_types_once_free
-check "an outstanding (unread) ping suppresses a second until the cursor moves" case_outstanding_ping_suppresses_a_second_until_cursor_moves
+check "five consecutive no-reply pty.screen probes gives up and drops the marker" case_five_consecutive_no_replies_gives_up_and_drops_the_marker
+check "a cursor that already covers the pending batch skips a second ping" case_a_cursor_that_already_covers_the_batch_skips_a_second_ping
 check "the workspace id derives from SOT_COMM_SELF_FILE's basename" case_workspace_id_derived_from_self_file_basename
 check "the owning agent gone ends the watcher and removes its marker" case_agent_pid_gone_exits_zero_and_removes_the_marker
 
