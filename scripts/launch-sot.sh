@@ -161,7 +161,7 @@ sot_ensure_remote_host() {
     # export PATH first: a non-interactive ssh command's PATH doesn't
     # always carry ~/.local/bin (matching launch-sot.ps1's own remote
     # command, same reason).
-    local remote_path_prelude='export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH";'
+    local remote_path_prelude='export PATH="$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH";'
     if [ "${SOT_RESTART_BE:-0}" = "1" ]; then
         if sot_ssh_bounded "$alias" "$remote_path_prelude systemctl --user restart sotd.service"; then
             echo "tunnel: host '$name' backend force-restarted via systemd"
