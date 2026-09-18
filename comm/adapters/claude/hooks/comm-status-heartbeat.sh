@@ -47,23 +47,35 @@ touch -- "$_hb_tick" 2>/dev/null || true
 NAME=""
 # TIMEOUT GUARD (2026-09-17): comm-context.sh was observed hung on Windows,
 # and because this hook fires on EVERY PostToolUse a stalled child piles up
-# one wedged bash per tool call -- ~150 of them on kitt-adjacent boxes, which
-# starved Git Bash startup past 120s and stalled the harness's own Bash tool.
-# "A hook must never wedge a turn" (header, above), so cap the child and carry
-# on contextless if it stalls: a missing NAME just exits 0 a few lines down,
+# one wedged bash per tool call -- ~150 of them on one box, which starved Git
+# Bash startup past 120s and stalled the harness's own Bash tool. "A hook must
+# never wedge a turn" (header, above), so cap the child and carry on
+# contextless if it stalls: a missing NAME just exits 0 a few lines down,
 # which is the same no-op as not being a comm agent.
-# Absolute paths on purpose: in Git Bash a bare `timeout` resolves to
-# C:\WINDOWS\system32\timeout.exe, which is NOT coreutils and takes no command.
-_CTX_TIMEOUT=""
-for _t in /usr/bin/timeout /bin/timeout; do
-    [ -x "$_t" ] && { _CTX_TIMEOUT="$_t"; break; }
-done
+# Bash-native watchdog, not an external `timeout`: in Git Bash a bare
+# `timeout` resolves to C:\WINDOWS\system32\timeout.exe, which is NOT
+# coreutils and takes no command, and /usr/bin/timeout isn't guaranteed
+# either. Run comm-context.sh in the background, poll for up to 10s, kill it
+# if it's still alive past that -- collect its output only when it finished
+# on its own (a non-zero exit from a fast, legitimate no-context run still
+# has its output used, matching the old unconditional `|| true`).
 if [ -x "$SELF_DIR/comm-context.sh" ]; then
-    if [ -n "$_CTX_TIMEOUT" ]; then
-        _ctx="$("$_CTX_TIMEOUT" 30 "$SELF_DIR/comm-context.sh" 2>/dev/null || true)"
+    _ctx_out="$COMM_HOME/state/.hb-ctx-$$"
+    "$SELF_DIR/comm-context.sh" >"$_ctx_out" 2>/dev/null &
+    _ctx_pid=$!
+    _waited=0
+    while kill -0 "$_ctx_pid" 2>/dev/null && [ "$_waited" -lt 10 ]; do
+        sleep 1
+        _waited=$((_waited + 1))
+    done
+    if kill -0 "$_ctx_pid" 2>/dev/null; then
+        kill "$_ctx_pid" 2>/dev/null
+        _ctx=""
     else
-        _ctx="$("$SELF_DIR/comm-context.sh" 2>/dev/null || true)"
+        _ctx="$(cat "$_ctx_out" 2>/dev/null)"
     fi
+    wait "$_ctx_pid" 2>/dev/null
+    rm -f "$_ctx_out" 2>/dev/null
     [ -n "${_ctx:-}" ] && eval "$_ctx" 2>/dev/null || true
 fi
 [ -n "${NAME:-}" ] || exit 0

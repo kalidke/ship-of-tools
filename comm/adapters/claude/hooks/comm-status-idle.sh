@@ -89,6 +89,13 @@ if [ -z "${NAME:-}" ] || ! jq -e --arg n "${NAME:-}" '.agents[$n]' "$REGISTRY" >
     turn_floor; exit 0
 fi
 
+# Clear the heartbeat's own throttle stamp for this session key (same key
+# formula as comm-status-heartbeat.sh's _hb_key) so a tick left over from
+# the tail of THIS turn can't gate the early-throttle exit on the NEXT
+# turn's first tool call, which would otherwise skip the promote-to-working
+# flip and leave the row purple/idle through real work.
+rm -f "$HOME_DIR/state/hb-$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-$PPID}}" | tr -c 'A-Za-z0-9._-' '_').tick" 2>/dev/null
+
 tp="$(jqget '.transcript_path // empty')"
 
 # The current turn's slice: everything after the last HUMAN/machine prompt (a
