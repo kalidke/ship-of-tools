@@ -207,15 +207,21 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
    update itself. It no-ops with an explanation on a `-dev` source build.
 
    `install-shortcut.ps1` creates `Desktop\Ship of Tools.lnk` →
-   `launch-sot.ps1` (opens the step-3 control forward, spawns/refreshes the
-   remote `sotd`, applies any staged update via `sot-apply.ps1`, runs the
-   frontend under the exit-75 respawn supervisor),
-   sets the SoT icon (`logo.ico`, copied to `%LOCALAPPDATA%\sot` so it
-   survives moving the clone), and stamps the AppUserModelID
+   `%LOCALAPPDATA%\sot\repo\current\scripts\launch-sot.ps1` once that pinned
+   checkout exists, else the clone's own `scripts\launch-sot.ps1` as a
+   bootstrap fallback (`Get-SotLauncherTarget`; docs/adr/
+   0030-versioning-release-and-auto-update.md's 2026-09-17 amendment — a
+   version is binaries + resources + scripts, and the shortcut now tracks
+   all three together). The launcher itself (opens the step-3 control
+   forward, spawns/refreshes the remote `sotd`, applies any staged update
+   via `sot-apply.ps1`, runs the frontend under the exit-75 respawn
+   supervisor) sets the SoT icon (`logo.ico`, copied to `%LOCALAPPDATA%\sot`
+   so it survives moving the clone), and stamps the AppUserModelID
    `ShipOfTools.Sot` on the `.lnk` so the running window merges into the
    shortcut's taskbar button with the right icon. Re-run it after pinning to
    the taskbar — it re-syncs the pin so it never drifts back to a naive
-   `sot.exe`.
+   `sot.exe`; the first launch after a fresh install migrates the pin onto
+   the pinned checkout itself, with no by-hand step needed.
 
    The **first launch** finishes the layout the steps above leave incomplete:
    the launcher creates `%LOCALAPPDATA%\sot\repo\versions\v<ver>` (a detached
@@ -428,8 +434,11 @@ top line of the nav pane always shows the pane-switch keys.**
     on the next launch to verify and swap the binaries, keeping `.prev` and
     rolling back automatically if the new build crash-loops within 10s. This
     needs `install.json` to exist (§4 step 3) — without it the check never
-    runs. The launcher separately does a `git pull` of the clone each launch,
-    which is what refreshes the scripts and config.
+    runs. Scripts and config update the SAME way: the shortcut/pin targets
+    `%LOCALAPPDATA%\sot\repo\current\scripts\launch-sot.ps1` (docs/adr/
+    0030-versioning-release-and-auto-update.md's 2026-09-17 amendment), and
+    `sot-apply.ps1`'s junction flip carries them in the same transaction as
+    the binaries — never a separate `git pull` of the clone.
   - Source builds are stamped `-dev` and never self-update on any platform;
     they update by pulling and rebuilding.
 - Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`;

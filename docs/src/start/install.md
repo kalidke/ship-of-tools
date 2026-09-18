@@ -199,8 +199,11 @@ On **Windows** there is no packaged `install.ps1` yet (`scripts/install.sh`
 exits with a Windows-specific message), but **no Rust toolchain is needed**:
 the release ships `sot-<ver>-windows-x86_64.zip` — extract `sot.exe` into
 `%LOCALAPPDATA%\sot\bin`, clone the repo for the launcher scripts and config,
-and wire the shortcut with `scripts\install-shortcut.ps1`. The step-by-step
-walkthrough is
+and wire the shortcut with `scripts\install-shortcut.ps1`. After the first
+launch the shortcut/pin follows the installed tag's own pinned checkout
+(`repo\current`), the same as Linux's `sot-launch` wrapper — scripts update
+alongside binaries and resources, never a separate clone pull. The
+step-by-step walkthrough is
 [INSTALL-AGENT.md §2b](https://github.com/kalidke/ship-of-tools/blob/main/docs/INSTALL-AGENT.md)
 (written for a coding agent to drive, equally followable by hand). Building
 from source via [Per-Machine Setup](setup.md) — manually or with the shipped
