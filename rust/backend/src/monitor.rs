@@ -1049,8 +1049,15 @@ mod config_tests {
         std::env::set_var("SOT_HOSTS", "/nowhere/hosts.toml");
         let hosts = load_hosts();
         std::env::remove_var("SOT_HOSTS");
-        assert_eq!(hosts.len(), 1);
-        assert!(hosts[0].local && hosts[0].ssh_alias.is_none());
+        if cfg!(windows) {
+            // The fallback single-host roster is still local-only, and
+            // load_hosts() strips the local sampler on Windows same as any
+            // other roster: no declaration means an empty roster there.
+            assert!(hosts.is_empty());
+        } else {
+            assert_eq!(hosts.len(), 1);
+            assert!(hosts[0].local && hosts[0].ssh_alias.is_none());
+        }
     }
 
     /// The dedup that keeps a permanently-unreachable target from logging
