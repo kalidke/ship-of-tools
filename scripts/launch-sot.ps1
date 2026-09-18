@@ -71,28 +71,23 @@ $script:LaunchBoundParameters = $PSBoundParameters
 # (use '-' not an em-dash in status text); prose em-dashes live in comments only.
 
 $repo = Resolve-Path -Path (Join-Path $PSScriptRoot '..')
+# Moved up from its old spot further down (needed by the pinned-checkout
+# predicate right below); every other use of it is unchanged.
+$prefixDir = Join-Path $env:LOCALAPPDATA 'sot'
 
 # Get-SotTopologyPlan (topology plan, lane D: `sotd topology plan --self
 # <host>` is the one parser now) lives in one dot-sourceable file shared
 # with shutdown-sot.ps1 -- see that file's own header.
 . (Join-Path $PSScriptRoot 'sot-hosts.ps1')
 
-# Test-SotPinnedCheckout / Get-SotPinnedTag / Get-SotLauncherTarget /
-# Set-SotJunction / Initialize-InstallLayout -- shared with
+# Test-SotPinnedCheckout / Get-SotLauncherTarget -- shared with
 # install-shortcut.ps1; see that file's header.
 . (Join-Path $PSScriptRoot 'sot-install-layout.ps1')
 
-# Computed ONCE, before any self-update/freshness/layout decision below: is
-# the SCRIPT running right now the installed tag's own copy (a detached
-# worktree under repo\current), or a branch clone -- a dev box, or a
-# release box that has not yet migrated onto the pinned shortcut (see the
-# migration handover further down)? This used to be asked four different,
-# sometimes disagreeing ways (a git-pull gate, a cargo-on-PATH probe, a
-# staged-sotd-absent check, and the launcher's dev-pair-first binary rule,
-# which decides something else and stays) -- see docs/adr/
-# 0030-versioning-release-and-auto-update.md's 2026-09-17 amendment.
-$script:sotPinned = Test-SotPinnedCheckout -Repo $repo
-$script:sotPinnedTag = if ($script:sotPinned) { Get-SotPinnedTag -Repo $repo } else { '' }
+# Computed ONCE, before any self-update/freshness/layout decision below.
+# See docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
+# amendment for what this predicate replaced and why.
+$script:sotPinned = Test-SotPinnedCheckout -RepoPath $repo.Path -Prefix $prefixDir
 
 # Logs FIRST — so the progress splash and status writes can come up before any
 # slow pull/build/ssh work. Append-only supervisor log: unlike the frontend
@@ -232,14 +227,9 @@ function Stop-Splash {
 # the tunnels nor an exit-75 relaunch inherit it. -Local (a freshness-free debug
 # path) and -NoUpdate skip the whole prelude.
 #
-# Pinned checkout (docs/adr/0030-versioning-release-and-auto-update.md's
-# 2026-09-17 amendment): $script:sotPinned, computed once near the top of
-# this file, skips ALL of the above -- a release install's repo\current is
-# the tag's own scripts, resources and binaries, flipped together by
-# sot-apply.ps1, so there is nothing here for a git pull to refresh and
-# nothing for the SOT_LAUNCH_REBUILD/cargo path below to rebuild. Only a
-# branch clone (a dev box, or a release box mid-migration onto the pinned
-# shortcut -- see the migration handover further down) reaches the pull.
+# $script:sotPinned (computed once near the top of this file) skips ALL of
+# the above -- see docs/adr/0030-versioning-release-and-auto-update.md's
+# 2026-09-17 amendment.
 #
 # Refused vs offline (2026-09-03 field report): a pull can fail two different
 # ways and they are NOT the same event. OFFLINE means fetch never reached the
@@ -280,13 +270,9 @@ function Invoke-SelfUpdatePrelude {
     )
     $script:launchNotices.Clear()
     if ($script:sotPinned) {
-        # A pinned checkout IS the installed tag's scripts, resources and
-        # binaries, flipped together by sot-apply.ps1 -- there is nothing
-        # here for a git pull to refresh, and pulling anyway (against
-        # whatever branch the BASE clone happens to be on) is exactly the
-        # launcher/binary skew this predicate exists to end. Updates arrive
-        # only through the staged-update apply further down.
-        Write-SupLog "self-update: pinned checkout $script:sotPinnedTag - updates arrive via sot-apply, no pull"
+        # See docs/adr/0030-versioning-release-and-auto-update.md's
+        # 2026-09-17 amendment: nothing here for a git pull to refresh.
+        Write-SupLog "self-update: pinned checkout ($($repo.Path)) - updates arrive via sot-apply, no pull"
         if ($env:SOT_LAUNCH_REEXEC) { Remove-Item Env:\SOT_LAUNCH_REEXEC -ErrorAction SilentlyContinue }
         return
     }
@@ -375,8 +361,8 @@ $backendExe = Join-Path $repo 'rust\target\release\sotd.exe'
 # that contract: it verifies digests + the prepared worktree, swaps binaries
 # keeping .prev, flips repo\current, and arms the crash-loop marker. It is
 # fail-open by contract, so a broken update path can never brick the launch.
-# -NoUpdate skips it, same as the git-pull prelude.
-$prefixDir = Join-Path $env:LOCALAPPDATA 'sot'
+# -NoUpdate skips it, same as the git-pull prelude. ($prefixDir itself now
+# lives up near $repo -- the pinned-checkout predicate needs it earlier.)
 $applyMarker = Join-Path $prefixDir 'updates\just-applied-windows-x86_64'
 $sotApply = Join-Path $PSScriptRoot 'sot-apply.ps1'
 $sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
@@ -421,54 +407,211 @@ $sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
 # ---------------------------------------------------------------------------
 $repoCurrent = Join-Path $prefixDir 'repo\current'
 
-# Set-SotJunction and Initialize-InstallLayout moved to the dot-sourced
-# scripts/sot-install-layout.ps1 (same shape as sot-hosts.ps1) so install-
-# shortcut.ps1 can share Get-SotLauncherTarget/Test-SotPinnedCheckout from
-# the same file -- see its header for the full contract, and docs/adr/
-# 0030-versioning-release-and-auto-update.md's 2026-09-17 amendment for why
-# a pinned checkout never reaches the create-a-checkout branch below (it
-# already has repo\current, by construction) while the Julia-env
-# instantiate half keeps running unconditionally either way.
-Initialize-InstallLayout
-
-# ---------------------------------------------------------------------------
-# One-time migration onto the pinned shortcut (docs/adr/
-# 0030-versioning-release-and-auto-update.md's 2026-09-17 amendment): a
-# shortcut/pin that still points at THIS clone runs pinned scripts as soon
-# as repo\current exists -- Initialize-InstallLayout above may have just
-# created it (a release install's very first launch) or it may already
-# have existed -- install-shortcut.ps1 just has not been told to re-point
-# yet. Re-run it now (idempotent: it only rewrites the shortcut/pin
-# targets, install.json, and the icon) and hand over to the pinned
-# launcher in-process, the SAME re-invoke path Invoke-SelfUpdatePrelude
-# uses above for a self-update -- so THIS launch already runs the pinned
-# scripts, not just the next one. -NoUpdate skips it (this rewrites
-# persistent installer state, same bar as Initialize-InstallLayout's own
-# tag-fetch). Never fires once migrated: the pinned launcher's own
-# $script:sotPinned is true, so the guard below is false from its very
-# first line.
-# ---------------------------------------------------------------------------
-if (-not $NoUpdate -and -not $script:sotPinned) {
-    $pinnedLauncher = Join-Path $repoCurrent 'scripts\launch-sot.ps1'
-    if (Test-Path -LiteralPath $pinnedLauncher) {
-        Write-SupLog "migration: repo\current\scripts\launch-sot.ps1 exists - repointing the shortcut/pin and handing over to it"
-        $shortcutScript = Join-Path $PSScriptRoot 'install-shortcut.ps1'
-        if (Test-Path -LiteralPath $shortcutScript) {
-            try {
-                $shortcutOut = & $shortcutScript 2>&1
-                foreach ($l in @($shortcutOut)) { if ("$l".Trim()) { Write-SupLog "migration: install-shortcut -> $l" } }
-            } catch {
-                Write-SupLog "migration: install-shortcut.ps1 failed: $($_.Exception.Message)"
-            }
+# Twin of sot-apply.ps1's Set-Junction -- keep the two in step. A directory
+# JUNCTION, never a symlink: a symlink needs Developer Mode or an elevated
+# shell, a junction needs neither, and every reader only traverses it as a
+# directory. Not shared by dot-sourcing: sot-apply.ps1 is fail-open by
+# contract on the launch path, and a file it would have to source in order to
+# run at all is a new way for it not to run.
+function Set-SotJunction {
+    param([string]$Link, [string]$Target)
+    try {
+        if (Test-Path -LiteralPath $Link) {
+            # Remove the LINK, never its contents: Remove-Item -Recurse on a
+            # junction can follow into the target on older PowerShell.
+            [System.IO.Directory]::Delete($Link)
         }
-        Write-SupLog "migration: handing over to $pinnedLauncher"
-        Stop-Splash   # the pinned launcher spawns its own
-        $env:SOT_LAUNCH_REEXEC = '1'
-        $reexecParams = $script:LaunchBoundParameters
-        & $pinnedLauncher @reexecParams
-        exit $LASTEXITCODE
+        $parent = Split-Path -Parent $Link
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+        New-Item -ItemType Junction -Path $Link -Target $Target -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        Write-SupLog "install layout: junction $Link -> $Target failed: $($_.Exception.Message)"
+        return $false
     }
 }
+
+# A pinned checkout never reaches the create-a-checkout branch below (Test-
+# SotPinnedCheckout is true only once repo\current already exists, by
+# construction) -- see docs/adr/0030-versioning-release-and-auto-update.md's
+# 2026-09-17 amendment.
+function Initialize-InstallLayout {
+    $stagedSotd = Join-Path $prefixDir 'bin\sotd.exe'
+    if (-not (Test-Path -LiteralPath $stagedSotd)) {
+        # A pure dev box: its daemon runs out of rust\target\release, where
+        # resource_dir's compile-time fallback IS the correct answer, and its
+        # Julia envs are the checkout's own. Nothing to create.
+        Write-SupLog 'install layout: no staged sotd.exe - dev box, leaving the layout alone'
+        return
+    }
+    # Relax 'Stop' -> 'Continue' around native git/julia and the version probe:
+    # their stderr under 'Stop' + 2>&1 throws in PS 5.1. Gate on $LASTEXITCODE.
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        if (-not (Test-Path -LiteralPath $repoCurrent)) {
+            if (-not (Test-Path (Join-Path $repo '.git'))) {
+                Write-SupLog "install layout: $repo is not a git clone - cannot pin a version checkout"
+                return
+            }
+            Set-LaunchStatus 'Creating install layout...'
+            # The version comes from the binary itself, never a hardcoded
+            # string: the layout must describe what is actually installed. The
+            # line is "sotd X.Y.Z (<sha> <date>)"; a marked build adds "+src"
+            # or "-dev+<sha>[-dirty]" (rust/protocol/src/lib.rs app_version)
+            # and the release tag is the bare X.Y.Z[-pre] underneath both.
+            $versionLine = & $stagedSotd --version 2>&1 | Select-Object -First 1
+            if ("$versionLine" -notmatch '^\s*sotd\s+(\S+)') {
+                Write-SupLog "install layout: could not read a version from '$versionLine'"
+                return
+            }
+            $rawVersion = $Matches[1]
+            $version = ($rawVersion -replace '\+.*$', '') -replace '-dev$', ''
+            # Strict shape, because this string becomes a directory name and a
+            # git ref: X.Y.Z with an optional alnum-led prerelease, nothing else.
+            if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.]*)?$') {
+                Write-SupLog "install layout: '$rawVersion' is not a version this can pin - leaving the layout alone"
+                return
+            }
+            $tag = "v$version"
+            $checkout = Join-Path $prefixDir "repo\versions\$tag"
+            if (-not (Test-Path -LiteralPath $checkout)) {
+                if (-not ((git -C $repo tag -l $tag) -join '')) {
+                    if ($NoUpdate) {
+                        # -NoUpdate is documented as the offline path; no network here.
+                        Write-SupLog "install layout: tag $tag not in the local clone and -NoUpdate forbids fetching"
+                    } else {
+                        Write-SupLog "install layout: tag $tag not in the local clone - fetching tags"
+                        $fetchOut = git -C $repo fetch --tags --quiet 2>&1
+                        foreach ($l in @($fetchOut)) { if ("$l".Trim()) { Write-SupLog "install layout: git fetch -> $l" } }
+                    }
+                }
+                if (-not ((git -C $repo tag -l $tag) -join '')) {
+                    # No tag means no honest resource tree to pin. Say it once
+                    # and leave the daemon on resource_dir's own fallback rather
+                    # than junctioning a tree that is not this version.
+                    Write-SupLog "install layout: tag $tag unavailable - repo\current NOT created"
+                    $script:launchNotices.Add("install layout: release tag $tag is not in the local clone - the local daemon runs without a resource checkout") | Out-Null
+                    return
+                }
+                # An externally deleted worktree stays registered; prune first
+                # so the add cannot die on "missing but already registered"
+                # (the same order scripts/install.sh and the updater's prepare
+                # step use).
+                git -C $repo worktree prune 2>&1 | Out-Null
+                $addOut = git -C $repo worktree add --detach $checkout $tag 2>&1
+                $addExit = $LASTEXITCODE
+                foreach ($l in @($addOut)) { if ("$l".Trim()) { Write-SupLog "install layout: git worktree -> $l" } }
+                if ($addExit -ne 0 -or -not (Test-Path -LiteralPath $checkout)) {
+                    Write-SupLog "install layout: worktree add for $tag failed (exit $addExit) - repo\current NOT created"
+                    $script:launchNotices.Add("install layout: could not create the $tag resource checkout - see supervisor.log") | Out-Null
+                    return
+                }
+            }
+            if (-not (Set-SotJunction $repoCurrent $checkout)) {
+                $script:launchNotices.Add('install layout: could not create the repo\current junction - see supervisor.log') | Out-Null
+                return
+            }
+            # install.json is what makes this box a release install to the
+            # updater (rust/updater/src/manifest.rs). install-shortcut.ps1
+            # already writes it through install-manifest.ps1 at hand-install
+            # time, so this only fires for a box that missed that step -- and
+            # it DELEGATES rather than re-deriving the schema: that script is
+            # the Windows authority for it and refuses non-release builds on
+            # its own.
+            $installJson = Join-Path $prefixDir 'install.json'
+            $installManifest = Join-Path $PSScriptRoot 'install-manifest.ps1'
+            if (-not (Test-Path -LiteralPath $installJson) -and (Test-Path $installManifest)) {
+                try {
+                    $manOut = & $installManifest -Prefix $prefixDir -Repo "$repo" 6>&1 2>&1
+                    foreach ($l in @($manOut)) { if ("$l".Trim()) { Write-SupLog "install layout: $l" } }
+                } catch {
+                    Write-SupLog "install layout: install-manifest.ps1 failed: $($_.Exception.Message)"
+                }
+            }
+            Write-SupLog "install layout: created repo\current -> $checkout"
+            $script:launchNotices.Add("install layout created: repo\current -> repo\versions\$tag") | Out-Null
+        }
+
+        # ---- the checkout's Julia environments (scripts/install.sh's own
+        # instantiate step). A checkout is only SOURCE until its envs are
+        # instantiated: the daemon spawns the REPL child on
+        # <checkout>\julia\repl and it died at `using JSON3` on the fresh box.
+        # install.sh skips this for role=remote -- a box whose backend lives
+        # elsewhere -- but a Windows frontend runs its OWN local daemon (ADR
+        # 0042 L2b: local is just another host) and that daemon serves local
+        # REPLs, so this box does need them.
+        #
+        # Everything below addresses the envs THROUGH repo\current rather than
+        # through $checkout, so the one code path serves both a layout this
+        # call just created and one that was already there. Gated on the
+        # kernel env's manifest, not on "the junction was just created": a box
+        # that got its layout from the first version of this step, or by hand,
+        # still needs the envs -- including a pinned checkout right after a
+        # version flip, since sot-apply.ps1's junction swap does not
+        # instantiate the new tag's envs itself.
+        if (Test-Path -LiteralPath (Join-Path $repoCurrent 'julia\kernel\Manifest.toml')) { return }
+        if (-not (Get-Command julia -ErrorAction SilentlyContinue)) {
+            Write-SupLog 'install layout: no julia on PATH - Julia envs not instantiated'
+            $script:launchNotices.Add('local REPL needs Julia on this box: install Julia (juliaup), then relaunch') | Out-Null
+            return
+        }
+        # A previous instantiate's UNTRACKED Manifest.toml can predate a dep
+        # added at this tag, and instantiate then dies with "project and
+        # manifest out of sync". Drop untracked leftovers only: deleting a file
+        # the tag TRACKS (old tags shipped julia/pluto/Manifest.toml) would
+        # dirty a checkout that is read-only by convention and break the next
+        # update's dirty-tree refusal. Same guard as install.sh's own loop.
+        foreach ($envName in @('kernel', 'repl', 'pluto')) {
+            $man = Join-Path $repoCurrent "julia\$envName\Manifest.toml"
+            if (-not (Test-Path -LiteralPath $man)) { continue }
+            git -C $repoCurrent ls-files --error-unmatch "julia/$envName/Manifest.toml" 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-SupLog "install layout: dropping stale julia\$envName\Manifest.toml (fresh resolve at this tag)"
+                Remove-Item -LiteralPath $man -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Set-LaunchStatus 'Instantiating Julia environments (first launch, a few minutes)...'
+        # The same three commands in the same order as install.sh. julia\pluto
+        # also precompiles and loads Pluto -- the slowest of the three, and the
+        # one whose first use is a user-visible page load.
+        foreach ($step in @(
+                @{ Env = 'kernel'; Code = 'using Pkg; Pkg.instantiate()' },
+                @{ Env = 'repl';   Code = 'using Pkg; Pkg.instantiate()' },
+                @{ Env = 'pluto';  Code = 'using Pkg; Pkg.instantiate(); Pkg.precompile(); using Pluto' }
+            )) {
+            $project = Join-Path $repoCurrent "julia\$($step.Env)"
+            if (-not (Test-Path -LiteralPath $project)) {
+                Write-SupLog "install layout: julia\$($step.Env) is not in this checkout - skipping"
+                continue
+            }
+            Write-SupLog "install layout: instantiating julia\$($step.Env)"
+            # One fully-quoted argument, not a bare+quoted concatenation --
+            # unambiguous when the prefix contains a space, which is normal here.
+            $projectArg = "--project=$project"
+            $julOut = julia $projectArg -e $step.Code 2>&1
+            $julExit = $LASTEXITCODE
+            if ($julExit -ne 0) {
+                # Head-bounded, because Julia writes ERROR and the failing file
+                # FIRST. Not routed through Get-FailureExcerpt: that helper is
+                # defined further down this file, so it does not exist yet at
+                # this point in the run.
+                foreach ($l in @($julOut | Select-Object -First 30)) { if ("$l".Trim()) { Write-SupLog "install layout: julia -> $l" } }
+                Write-SupLog "install layout: julia\$($step.Env) instantiate FAILED (exit $julExit)"
+                $script:launchNotices.Add("julia $($step.Env) env did not instantiate - local REPL/Pluto will not start (see supervisor.log)") | Out-Null
+            } else {
+                Write-SupLog "install layout: julia\$($step.Env) instantiated"
+            }
+        }
+    } catch {
+        Write-SupLog "install layout: unexpected failure - $($_.Exception.Message)"
+    } finally {
+        $ErrorActionPreference = $savedEAP
+    }
+}
+Initialize-InstallLayout
 
 # ADR 0042 L2b design D: a running local daemon pins its sotd.exe/
 # sot-capsule.exe as mapped images (Windows) -- stop it BEFORE anything

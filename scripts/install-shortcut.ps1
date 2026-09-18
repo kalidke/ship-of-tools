@@ -6,19 +6,12 @@
 #
 # Re-run any time the repo path changes or the launcher script moves. Also
 # re-run (idempotent) any time repo\current\scripts\launch-sot.ps1 changes
-# hands, e.g. the first sot-apply.ps1 flip on a fresh install -- the
-# shortcut/pin target below follows it via Get-SotLauncherTarget.
-#
-# The shortcut/pin target is the PINNED launcher (repo\current\scripts\
-# launch-sot.ps1) once one exists, the clone's own launcher otherwise
-# (docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
-# amendment): a shortcut aimed at the clone runs whatever branch the clone
-# is on, refreshed by a git pull on every launch -- a launcher/binary skew
-# that broke every release box between a push and the next tag. Mirrors
-# Linux's `sot-launch` wrapper (scripts/install.sh), which execs the pinned
-# checkout's launcher with updates off. launch-sot.ps1's own migration
-# handover re-runs this script once a pinned launcher first appears, so an
-# existing shortcut needs no by-hand fix.
+# hands -- the shortcut/pin target below follows it via
+# Get-SotLauncherTarget. See docs/adr/0030-versioning-release-and-auto-
+# update.md's 2026-09-17 amendment for why the target is repo\current, not
+# the clone. launch-sot.ps1's own migration handover re-runs this script
+# once a pinned launcher first appears, so an existing shortcut needs no
+# by-hand fix.
 
 $ErrorActionPreference = 'Stop'
 
