@@ -6976,6 +6976,16 @@ impl State {
         if self.ephemeral {
             return;
         }
+        // A minimized window's own size/position reads as (near-)zero on
+        // some platforms; persisting that produced an unfindable 0x0
+        // window on the next launch (field report, 2026-09-17). Skip the
+        // whole snapshot (this is a full-overwrite write, not a merge)
+        // while minimized rather than trying to filter just the geometry
+        // fields out of it — whatever was last saved non-minimized stays on
+        // disk untouched.
+        if self.window.is_minimized().unwrap_or(false) {
+            return;
+        }
         // Snapshot window geometry in *logical* pixels so the next
         // launch's `with_inner_size` / `with_position` lands cleanly
         // regardless of the current monitor's DPR.

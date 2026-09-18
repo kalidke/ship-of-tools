@@ -112,16 +112,19 @@ function Get-SotTopologyPlan {
 # never sync.
 #
 # Never throws and never fails a launch. A box that is itself the hub, an
-# unreachable hub, or a fetched file that does not parse all leave the local
-# copy untouched and come back as Ok=$false with the reason in Output --
-# the caller logs it and carries on with whatever copy it already had.
+# unreachable hub, a fetched file that does not parse, or one that does not
+# list this box all leave the local copy untouched and come back as
+# Ok=$false with the reason in Output -- the caller logs it and carries on
+# with whatever copy it already had.
 function Invoke-SotTopologySync {
     param(
         # Path to a built sotd(.exe); missing is not an error, just no sync.
         [string]$SotdPath,
-        # The hub's ssh alias. The caller picks it: the hub the local file
-        # already names, else (the bootstrap case, no local file at all) the
-        # launcher's own configured backend host.
+        # The hub's ssh alias, from an env override. Empty is NOT an error:
+        # `sotd topology sync` (no --hub) derives the hub from whatever the
+        # LOCAL copy already names -- the ordinary case on every launch
+        # after the first. Only a box that has never synced AND has no env
+        # override fails here, and it fails with sotd's own message.
         [string]$Hub
     )
     $result = [PSCustomObject]@{ Ok = $false; Output = $null }
@@ -129,13 +132,11 @@ function Invoke-SotTopologySync {
         $result.Output = 'no sotd binary found'
         return $result
     }
-    if (-not $Hub) {
-        $result.Output = 'no hub named by the local file and no configured backend host - nothing to sync from'
-        return $result
-    }
+    $syncArgs = @('topology', 'sync')
+    if ($Hub) { $syncArgs += @('--hub', $Hub) }
     $savedEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $output = & $SotdPath topology sync --hub $Hub 2>&1
+    $output = & $SotdPath @syncArgs 2>&1
     $exit = $LASTEXITCODE
     $ErrorActionPreference = $savedEAP
     $result.Ok = ($exit -eq 0)

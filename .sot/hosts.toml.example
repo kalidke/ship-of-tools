@@ -3,16 +3,21 @@
 #
 # Where it lives: the hub's own ~/.config/sot/hosts.toml is the canonical
 # copy (written by the owner, on the hub). A box that shares the hub's home
-# simply has it. Every other box fetches it with `sotd topology sync --hub
-# <alias>` into its own config dir (~/.config/sot/hosts.toml,
+# simply has it. Every other box fetches it with `sotd topology sync
+# [--hub <alias>]` into its own config dir (~/.config/sot/hosts.toml,
 # %LOCALAPPDATA%\sot\config\hosts.toml); the launcher runs that at every
-# launch, naming the hub the copy it already has declares. A box that has
-# never synced has no copy to name one, so the launcher falls back to its
-# own configured backend host (`$SOT_HOST_NAME` / `$SOT_HOST`) for that
-# first fetch; with neither, it launches with no remote hosts and says so
-# in the supervisor log. `$SOT_HOSTS` overrides the path (tests, scratch
-# daemons). There
-# is no repo-local copy: this file is a template, not a search location.
+# launch. The LOCAL copy's own hub always wins once a copy exists --
+# `--hub` (from `$SOT_HOST_NAME` / `$SOT_HOST`, the launcher's configured
+# backend host) is a BOOTSTRAP value only, read on the first sync a box
+# ever does, before it has a copy to name one from. Re-pointing a box at a
+# different hub means deleting its local copy and running `sotd topology
+# sync --hub <new-hub>` again -- not passing a different `--hub` alongside
+# an existing copy, which the copy's own hub still wins over (said out
+# loud, not silently ignored). A box with neither a copy nor a configured
+# backend host launches with no remote hosts and says so in the
+# supervisor log. `$SOT_HOSTS` overrides the path (tests, scratch
+# daemons). There is no repo-local copy: this file is a template, not a
+# search location.
 #
 # Read once at daemon start for the [monitor] list; at every launch for the
 # tunnel plan. Editing it means a relaunch (tunnels are the launcher's) and
@@ -60,12 +65,6 @@
 # sync --hub hub` then `sotd topology plan` (tunnel hub 18743, dial hub
 # tcp:127.0.0.1:18743, relay-endpoint tcp:127.0.0.1:18743); on any box
 # `export SOT_RELAY_ENDPOINT="$(sotd topology relay-endpoint)"`.
-#
-# v1 keys (`default_host`; per host `ssh_alias`, `remote_repo`, `tcp_port`,
-# `remote_socket`, `socket`, `remote_home`) still parse THIS release with
-# one warning each naming the replacement — a file using any of them is a
-# v1 file, and every host in it counts as `daemon = true` — and are deleted
-# at the next rc.
 
 hub = "hub"
 

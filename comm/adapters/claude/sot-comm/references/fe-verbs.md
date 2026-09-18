@@ -15,6 +15,23 @@ kernel (e.g. after a struct/field change Revise can't hot-reload); it's
 fire-and-forget, the include's output streams to the FE drawer instead of
 being collected.
 
+Using it well (field lessons, 2026-09-17):
+
+- Read the outcome block from stdout in the foreground. Never pipe it
+  through `tail`/`head` and never background it; a run that seems stuck for
+  exactly `--timeout` means stale comm scripts on that box — reinstall
+  (`/sot-install`) before building any workaround.
+- Anything longer than one line goes in `--stdin` (or a file inside the
+  workspace root for `repl run`, which refuses paths outside it). A
+  heavily quoted `--code` string fails at Julia's parser instantly, and a
+  fast completion leaves NO daemon log line — only slow ones are logged.
+- Edits not taking effect: Revise tracks only packages loaded after
+  `using Revise`; for a file loaded before that, `include` it again into
+  its module. A binding created by `include` inside an eval is not visible
+  to a closure in that same eval (world age): read it in the next eval.
+- Right after a daemon restart the workspace may read `unknown` until the
+  frontend re-registers; wait for `repl status` to list it.
+
 ## `repl interrupt`
 
 Stops the RUNNING eval, keeps the kernel (compiled packages intact) — the

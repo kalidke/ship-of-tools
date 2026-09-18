@@ -71,11 +71,23 @@ $script:LaunchBoundParameters = $PSBoundParameters
 # (use '-' not an em-dash in status text); prose em-dashes live in comments only.
 
 $repo = Resolve-Path -Path (Join-Path $PSScriptRoot '..')
+# Moved up from its old spot further down (needed by the pinned-checkout
+# predicate right below); every other use of it is unchanged.
+$prefixDir = Join-Path $env:LOCALAPPDATA 'sot'
 
 # Get-SotTopologyPlan (topology plan, lane D: `sotd topology plan --self
 # <host>` is the one parser now) lives in one dot-sourceable file shared
 # with shutdown-sot.ps1 -- see that file's own header.
 . (Join-Path $PSScriptRoot 'sot-hosts.ps1')
+
+# Test-SotPinnedCheckout / Get-SotLauncherTarget -- shared with
+# install-shortcut.ps1; see that file's header.
+. (Join-Path $PSScriptRoot 'sot-install-layout.ps1')
+
+# Computed ONCE, before any self-update/freshness/layout decision below.
+# See docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
+# amendment for what this predicate replaced and why.
+$script:sotPinned = Test-SotPinnedCheckout -RepoPath $repo.Path -Prefix $prefixDir
 
 # Logs FIRST — so the progress splash and status writes can come up before any
 # slow pull/build/ssh work. Append-only supervisor log: unlike the frontend
@@ -215,6 +227,10 @@ function Stop-Splash {
 # the tunnels nor an exit-75 relaunch inherit it. -Local (a freshness-free debug
 # path) and -NoUpdate skip the whole prelude.
 #
+# $script:sotPinned (computed once near the top of this file) skips ALL of
+# the above -- see docs/adr/0030-versioning-release-and-auto-update.md's
+# 2026-09-17 amendment.
+#
 # Refused vs offline (2026-09-03 field report): a pull can fail two different
 # ways and they are NOT the same event. OFFLINE means fetch never reached the
 # remote - expected on a laptop off wifi, stays quiet (log only). REFUSED means
@@ -253,6 +269,13 @@ function Invoke-SelfUpdatePrelude {
         [switch]$AllowReexec
     )
     $script:launchNotices.Clear()
+    if ($script:sotPinned) {
+        # See docs/adr/0030-versioning-release-and-auto-update.md's
+        # 2026-09-17 amendment: nothing here for a git pull to refresh.
+        Write-SupLog "self-update: pinned checkout ($($repo.Path)) - updates arrive via sot-apply, no pull"
+        if ($env:SOT_LAUNCH_REEXEC) { Remove-Item Env:\SOT_LAUNCH_REEXEC -ErrorAction SilentlyContinue }
+        return
+    }
     if (-not $NoUpdate -and -not $Local -and -not $env:SOT_LAUNCH_REEXEC -and (Test-Path (Join-Path $repo '.git'))) {
         # Relax 'Stop' -> 'Continue' around native git: its stderr under 'Stop' + 2>&1
         # throws in PS 5.1. Gate on $LASTEXITCODE, not thrown errors (as below).
@@ -338,8 +361,8 @@ $backendExe = Join-Path $repo 'rust\target\release\sotd.exe'
 # that contract: it verifies digests + the prepared worktree, swaps binaries
 # keeping .prev, flips repo\current, and arms the crash-loop marker. It is
 # fail-open by contract, so a broken update path can never brick the launch.
-# -NoUpdate skips it, same as the git-pull prelude.
-$prefixDir = Join-Path $env:LOCALAPPDATA 'sot'
+# -NoUpdate skips it, same as the git-pull prelude. ($prefixDir itself now
+# lives up near $repo -- the pinned-checkout predicate needs it earlier.)
 $applyMarker = Join-Path $prefixDir 'updates\just-applied-windows-x86_64'
 $sotApply = Join-Path $PSScriptRoot 'sot-apply.ps1'
 $sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
@@ -410,6 +433,10 @@ function Set-SotJunction {
     }
 }
 
+# A pinned checkout never reaches the create-a-checkout branch below (Test-
+# SotPinnedCheckout is true only once repo\current already exists, by
+# construction) -- see docs/adr/0030-versioning-release-and-auto-update.md's
+# 2026-09-17 amendment.
 function Initialize-InstallLayout {
     $stagedSotd = Join-Path $prefixDir 'bin\sotd.exe'
     if (-not (Test-Path -LiteralPath $stagedSotd)) {
@@ -522,7 +549,9 @@ function Initialize-InstallLayout {
         # call just created and one that was already there. Gated on the
         # kernel env's manifest, not on "the junction was just created": a box
         # that got its layout from the first version of this step, or by hand,
-        # still needs the envs.
+        # still needs the envs -- including a pinned checkout right after a
+        # version flip, since sot-apply.ps1's junction swap does not
+        # instantiate the new tag's envs itself.
         if (Test-Path -LiteralPath (Join-Path $repoCurrent 'julia\kernel\Manifest.toml')) { return }
         if (-not (Get-Command julia -ErrorAction SilentlyContinue)) {
             Write-SupLog 'install layout: no julia on PATH - Julia envs not instantiated'
@@ -618,6 +647,59 @@ if (-not $NoUpdate -and (Test-Path $sotApply)) {
     $applyOut = & $sotApply 6>&1 2>&1
     foreach ($l in @($applyOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
 }
+# Read ONCE, right after the apply attempt above -- Invoke-FreshnessPass and
+# the migration/handover block below both need "did an update just land",
+# and the marker FILE itself stays present for the rest of this launch (the
+# crash-loop read further down needs that), so a $script: flag is the one-
+# shot signal that gets CONSUMED (see Invoke-FreshnessPass) instead.
+$script:sotJustApplied = Test-Path -LiteralPath $applyMarker
+
+# ---------------------------------------------------------------------------
+# Migration + post-apply handover onto the pinned launcher (docs/adr/
+# 0030-versioning-release-and-auto-update.md's 2026-09-17 amendment). ONE
+# block serves two cases that both need the same in-process re-invoke:
+#   - migration: the shortcut/pin still targets the clone even though
+#     repo\current now exists (Initialize-InstallLayout above may have just
+#     created it) -- hand over so this launch already runs pinned scripts.
+#   - post-apply: sot-apply.ps1 just flipped repo\current to a NEW tag, but
+#     THIS process is still the OLD tag's in-memory copy -- without handing
+#     over, it drives the rest of this launch (backend-pair rebuild, local
+#     daemon ensure, frontend spawn) against the new tag's binaries and
+#     scripts with the old copy's logic.
+#
+# Gated on install.json existing -- the updater's own release-install marker
+# (rust/updater/src/manifest.rs); a dev clone never writes one. $pinnedLauncher
+# -ne $PSCommandPath is what actually stops this from recursing: a copy that
+# IS ALREADY $pinnedLauncher has nothing left to hand over to, regardless of
+# $script:sotPinned's own value -- the previous version of this block
+# skipped straight to trusting the predicate here and could loop when the
+# two disagreed. -not $env:SOT_LAUNCH_REEXEC is redundant with that (both
+# Invoke-SelfUpdatePrelude paths always clear it before this point) but kept
+# as defense in depth. Test-Path $pinnedLauncher guards the obvious case of
+# nothing to hand over to yet (Initialize-InstallLayout failed to pin a tag).
+# ---------------------------------------------------------------------------
+$pinnedLauncher = Join-Path $repoCurrent 'scripts\launch-sot.ps1'
+if ((Test-Path -LiteralPath (Join-Path $prefixDir 'install.json')) -and
+    -not $env:SOT_LAUNCH_REEXEC -and
+    ($pinnedLauncher -ne $PSCommandPath) -and
+    (-not $script:sotPinned -or $script:sotJustApplied) -and
+    (Test-Path -LiteralPath $pinnedLauncher)) {
+    Write-SupLog "migration: handing over to $pinnedLauncher"
+    $shortcutScript = Join-Path $PSScriptRoot 'install-shortcut.ps1'
+    if (Test-Path -LiteralPath $shortcutScript) {
+        try {
+            $shortcutOut = & $shortcutScript 2>&1
+            foreach ($l in @($shortcutOut)) { if ("$l".Trim()) { Write-SupLog "migration: install-shortcut -> $l" } }
+        } catch {
+            Write-SupLog "migration: install-shortcut.ps1 failed: $($_.Exception.Message)"
+        }
+    }
+    Stop-Splash   # the pinned launcher spawns its own
+    $env:SOT_LAUNCH_REEXEC = '1'
+    $reexecParams = $script:LaunchBoundParameters
+    & $pinnedLauncher @reexecParams
+    exit $LASTEXITCODE
+}
 
 # Binary sources, in priority order: an update just applied into the staged
 # bin dir, the dev source build, or the already-staged copy from a previous
@@ -691,32 +773,33 @@ function Update-SotTopologyPlan {
         $stagedSotdForPlan = Join-Path $prefixDir 'bin\sotd.exe'
         if (Test-Path -LiteralPath $stagedSotdForPlan) { $stagedSotdForPlan } else { $null }
     }
-    $script:plan = Get-SotTopologyPlan -SotdPath $sotdForPlan
     # Self-heal, at EVERY launch -- what .sot\hosts.toml.example promises.
-    # The hub is the one writer of that file; this only ever FETCHES its
-    # copy, so there is no second source of truth. The alias comes from the
-    # copy just read; when that copy is missing or names no hub -- the
-    # bootstrap case, a box that has never synced, whose plan therefore
-    # fails and whose frontend would otherwise come up with no remote hosts
-    # at all -- fall back to this launcher's own configured backend host,
-    # the only other place a hub is ever named here. Then re-read: a
-    # successful fetch may have added hosts, or the whole file.
-    $syncHub = if ($script:plan.Hub) {
-        $script:plan.Hub
-    } elseif ($env:SOT_HOST_NAME) {
-        $env:SOT_HOST_NAME
-    } else {
-        $env:SOT_HOST
-    }
+    # SYNC FIRST, then plan -- never the other way around. `plan` needs
+    # this box listed in the hosts.toml it reads, and the one file that
+    # CANNOT list this box is exactly the stale/never-synced copy the
+    # self-heal exists to replace; gating the sync on a successful plan
+    # (the old order) starves it of the one thing it exists to fix (a
+    # frontend box's file predates this box's own [host.<name>] entry, or
+    # is missing, or is pre-grammar-v2 -- see the 2026-09-17 install
+    # confusion writeup). The hub for the sync is the env override when
+    # set, else `sotd topology sync` derives it from whatever hub the
+    # LOCAL copy already names -- no plan round-trip needed to learn it.
+    $syncHub = if ($env:SOT_HOST_NAME) { $env:SOT_HOST_NAME } else { $env:SOT_HOST }
     $sync = Invoke-SotTopologySync -SotdPath $sotdForPlan -Hub $syncHub
     if ($sync.Ok) {
         if ($sync.Output) { Write-SupLog "topology sync: $($sync.Output)" }
-        $script:plan = Get-SotTopologyPlan -SotdPath $sotdForPlan
     } elseif ($sync.Output) {
-        Write-SupLog "topology sync skipped: $($sync.Output)"
+        # No hint appended here: sotd's own message already names the fix
+        # (e.g. "... pass --hub <alias>") when there is one.
+        $msg = "topology sync failed: $($sync.Output)"
+        Write-SupLog $msg
+        Set-LaunchStatus $msg
     }
+    $script:plan = Get-SotTopologyPlan -SotdPath $sotdForPlan
     if ($script:plan.Error) {
-        Write-SupLog "topology: $($script:plan.Error) - continuing with no remote hosts"
+        $msg = "topology plan failed: $($script:plan.Error) - continuing with no remote hosts"
+        Write-SupLog $msg
+        Set-LaunchStatus $msg
     }
     # The laptop fix (comm-lib.sh no longer hardcodes a relay port): every
     # session this box spawns needs SOT_RELAY_ENDPOINT in its environment,
@@ -849,6 +932,14 @@ $script:tcpPort = if ($env:SOT_TCP_PORT) {
 } else {
     18743
 }
+# Propagate the RESOLVED port back into this process's own environment
+# (2026-09-17 review), not just read it: shutdown-sot.ps1/comm-relay.ps1
+# each default $env:SOT_TCP_PORT to a bare 18743 with no plan of their own
+# to fall back on, and this line runs before Invoke-LocalDaemonEnsure below
+# starts the local daemon -- so setting it here, once, lets the daemon (and
+# anything it in turn spawns, e.g. a capsule inheriting the daemon's env)
+# see the per-user-derived port instead of always the fixed default.
+$env:SOT_TCP_PORT = "$tcpPort"
 # Always queried on the remote (New-RemoteEnsureCommand above) -- no more
 # config-file/env override; see the host-registry comment above.
 $script:remoteSocket = $null
@@ -1013,23 +1104,79 @@ function Test-LocalPortOpen {
 function Start-SotTunnel {
     # No-op when the default remote never resolved ($sshArgs empty -- see
     # $defaultRemoteOk above): nothing to forward to, and every call site
-    # already treats a $null return the same way Start-SotAuxTunnel's own
-    # no-op is treated.
+    # already treats a $null return as "no tunnel to supervise". $sshArgs
+    # already carries the (opt-in, legacy) aux forwards folded in above,
+    # so this one process carries everything -- see Update-SotRemoteDial.
     if ($sshArgs.Count -eq 0) { return $null }
     Start-Process -FilePath ssh `
         -ArgumentList $sshArgs `
         -WindowStyle Hidden `
         -PassThru
 }
-function Start-SotAuxTunnel {
-    # No-op once the fixed-port forwards are retired (the default). Returns
-    # $null so callers that track the process handle see "nothing started"
-    # rather than launching a bare `ssh` with no forwards.
-    if ($sshAuxArgs.Count -eq 0) { return $null }
-    Start-Process -FilePath ssh `
-        -ArgumentList $sshAuxArgs `
-        -WindowStyle Hidden `
-        -PassThru
+function Stop-StaleControlTunnel {
+    # Owner ruling (2026-09-17): never reuse a tunnel this launcher did not
+    # start. The single-instance lock above guarantees one launcher per
+    # user, and the control port is now per OS user
+    # (sot_protocol::topology::hub_local_port), so an open port here can
+    # only be OUR OWN earlier launch's zombie (ssh alive, forward dead --
+    # the 2026-09-12 field failure) or some other process entirely -- never
+    # a legitimate peer to ride. Stop only ssh.exe processes this same OS
+    # user owns whose command line forwards this port; anything else is
+    # left alone for the caller to report as "still open" and refuse.
+    param([int]$Port)
+    Get-CimInstance Win32_Process -Filter "Name = 'ssh.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match "-L\s+${Port}:" } |
+        ForEach-Object {
+            $owner = $null
+            try { $owner = (Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction Stop).User } catch { }
+            # A null owner (GetOwner failed/denied) means NOT PROVEN ours,
+            # same as a proven different owner -- do not fall through to
+            # Stop-Process on an unconfirmed process (2026-09-17 review).
+            if ((-not $owner) -or ($owner -ne $env:USERNAME)) { return }
+            try {
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
+                Write-SupLog "control port $Port was held by a stale tunnel (pid $($_.ProcessId)); replaced"
+            } catch {
+                Write-SupLog "control port ${Port}: failed to stop stale tunnel pid $($_.ProcessId) -- $_"
+            }
+        }
+}
+function Start-SotControlTunnel {
+    # The one place that decides whether to (re)open the default remote's
+    # control tunnel. Replaces the old "port open -> assume it's a peer,
+    # ride it with an aux-only ssh" branch (Start-SotAuxTunnel, deleted):
+    # that could dial a DIFFERENT user's backend on a shared box before the
+    # port became per-user. Now an open port only ever gets cleared (if it's
+    # ours) or refused (if it isn't) -- never connected through blind.
+    #
+    # -HardFail is the first, pre-frontend connect: it fails exactly like
+    # the "nothing reachable" gate just below it (same Set-LaunchStatus +
+    # MessageBox + exit 1 shape) rather than start a frontend with no
+    # backend at all. Without it (the converge re-check further down),
+    # a still-blocked port logs and returns $null, non-fatal like every
+    # other step on that path.
+    param([int]$Port, [switch]$HardFail)
+    if (Test-LocalPortOpen -Port $Port) {
+        Stop-StaleControlTunnel -Port $Port
+        $deadline = (Get-Date).AddSeconds(2)
+        while ((Get-Date) -lt $deadline -and (Test-LocalPortOpen -Port $Port)) {
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    if (Test-LocalPortOpen -Port $Port) {
+        Write-SupLog "control port $Port is held by another process; refusing to connect through it"
+        if ($HardFail) {
+            Set-LaunchStatus "ERROR: local port $Port is held by another process - refusing to connect through it"
+            Stop-Splash
+            [System.Windows.Forms.MessageBox]::Show(
+                "Local port $Port is already in use by another process, and Ship of Tools does not own it.`n`nClose whatever holds it (see %LOCALAPPDATA%\sot\logs\supervisor.log) and relaunch.",
+                'Ship of Tools launcher',
+                'OK', 'Error') | Out-Null
+            exit 1
+        }
+        return $null
+    }
+    Start-SotTunnel
 }
 
 # ---------------------------------------------------------------------------
@@ -1172,8 +1319,63 @@ function Limit-NoticeText {
     if ($t.Length -le $MaxLength) { return $t }
     return $t.Substring(0, $MaxLength) + '...'
 }
+# Comm layer install/refresh (converge follow-up, 2026-09-03): a converged
+# box carries fresh Rust binaries but a STALE ~/.sot-comm/bin + Claude/Codex
+# skill set if this step is skipped -- ShipTools.update_comm() is the one
+# place that deploys comm/ scripts and skills (scripts/install.sh's own
+# julia_run call does the same thing at install time; see docs/src/start/
+# install.md). Shared by both of Invoke-FreshnessPass's branches below (a
+# dev pull and a pinned release install) -- the trigger differs, the call
+# does not. Non-fatal: no julia on PATH is the NORMAL state for a pure
+# FE-client box (sot-setup SKILL.md's no-Julia fallback) and only logs;
+# julia present but the command itself failing is unusual enough to also
+# join the launch notice.
+function Invoke-CommUpdate {
+    $juliaCmd = Get-Command julia -ErrorAction SilentlyContinue
+    if (-not $juliaCmd) {
+        Write-SupLog "freshness: no julia on PATH - skipping comm install (FE-client box, this is normal)"
+        return
+    }
+    Write-SupLog "freshness: julia -e ShipTools.update_comm()"
+    # One fully-quoted argument, not an adjacent bare+quoted concatenation --
+    # unambiguous if $repo.Path ever contains a space. $repo IS repo\current
+    # on a pinned checkout (PSScriptRoot resolves through it), so comm
+    # scripts and skills follow the installed tag with no separate wiring.
+    $juliaProjectArg = "--project=$($repo.Path)"
+    $commOut = julia $juliaProjectArg -e 'using ShipTools; ShipTools.update_comm()' 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $commExcerpt = @(Get-FailureExcerpt -Output $commOut -Kind 'julia')
+        Write-SupLog "freshness: ShipTools.update_comm() FAILED (non-fatal). message: $($commExcerpt -join ' / ')"
+        $script:launchNotices.Add("comm install failed: $(Limit-NoticeText $commExcerpt[0])") | Out-Null
+    } else {
+        Write-SupLog "freshness: ShipTools.update_comm() ok"
+    }
+}
+
 function Invoke-FreshnessPass {
-    if ($env:SOT_LAUNCH_REBUILD -ne '1' -or $NoUpdate -or $Local) { return }
+    if ($NoUpdate -or $Local) { return }
+    if ($script:sotPinned) {
+        # Nothing here to pull or rebuild. Comm still needs to follow the
+        # tag (ADR 0030's deferred "update_comm on auto-apply" item, closed
+        # by the 2026-09-17 amendment): triggered by an update this launch
+        # just applied or a comm install that is simply missing, never by
+        # "a pull succeeded". $script:sotJustApplied is CONSUMED (read then
+        # cleared) here, not re-read from the marker file: an exit-76
+        # converge calls this function again later in the SAME launch, and
+        # that is still the one apply, not a second update -- Julia must
+        # not run twice for it.
+        $commHome = if ($env:SOT_COMM_HOME) { $env:SOT_COMM_HOME } else { Join-Path $env:USERPROFILE '.sot-comm' }
+        $commMissing = -not (Test-Path -LiteralPath (Join-Path $commHome 'bin'))
+        $justApplied = $script:sotJustApplied
+        $script:sotJustApplied = $false
+        if ($justApplied -or $commMissing) {
+            Invoke-CommUpdate
+        } else {
+            Write-SupLog 'freshness: pinned checkout - comm already installed and nothing just applied, skipping'
+        }
+        return
+    }
+    if ($env:SOT_LAUNCH_REBUILD -ne '1') { return }
     # The git pull moved to the self-update prelude at the top; here we only
     # REBUILD, and only when that pull succeeded (the SOT_LAUNCH_REBUILD marker)
     # so exactly one cargo build runs in the final invocation. Consume the marker.
@@ -1185,49 +1387,26 @@ function Invoke-FreshnessPass {
     $savedEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        # Comm layer install/refresh (converge follow-up, 2026-09-03): a
-        # converged box carries fresh Rust binaries but a STALE
-        # ~/.sot-comm/bin + Claude/Codex skill set if this step is skipped --
-        # ShipTools.update_comm() is the one place that deploys comm/
-        # scripts and skills (scripts/install.sh's own julia_run call does
-        # the same thing at install time; see docs/src/start/install.md).
         # Gated the same as the rest of this pass -- "the pull succeeded"
         # (SOT_LAUNCH_REBUILD, checked above) stands in for "the pull
         # changed anything"; update_comm() is idempotent, so running it on
         # a no-op pull is harmless and there is no cheaper signal available
-        # here. Non-fatal: no julia on PATH is the NORMAL state for a pure
-        # FE-client box (sot-setup SKILL.md's no-Julia fallback) and only
-        # logs; julia present but the command itself failing is unusual
-        # enough to also join the launch notice.
-        $juliaCmd = Get-Command julia -ErrorAction SilentlyContinue
-        if (-not $juliaCmd) {
-            Write-SupLog "freshness: no julia on PATH - skipping comm install (FE-client box, this is normal)"
-        } else {
-            Write-SupLog "freshness: julia -e ShipTools.update_comm()"
-            # One fully-quoted argument, not an adjacent bare+quoted
-            # concatenation -- unambiguous if $repo.Path ever contains a space.
-            $juliaProjectArg = "--project=$($repo.Path)"
-            $commOut = julia $juliaProjectArg -e 'using ShipTools; ShipTools.update_comm()' 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                $commExcerpt = @(Get-FailureExcerpt -Output $commOut -Kind 'julia')
-                Write-SupLog "freshness: ShipTools.update_comm() FAILED (non-fatal). message: $($commExcerpt -join ' / ')"
-                $script:launchNotices.Add("comm install failed: $(Limit-NoticeText $commExcerpt[0])") | Out-Null
-            } else {
-                Write-SupLog "freshness: ShipTools.update_comm() ok"
-            }
-        }
+        # here.
+        Invoke-CommUpdate
 
         # Probe for cargo FIRST. Without this the missing-toolchain case is
         # reported as a SUCCESS: PowerShell raises CommandNotFoundException
         # (which 2>&1 captures into $buildOut) but leaves $LASTEXITCODE at 0
         # from the preceding successful `git` call, so the `-ne 0` test below
         # takes the else-branch and logs "frontend rebuilt" having built
-        # nothing. That is the normal state on a release install (INSTALL-AGENT
-        # §2b needs no Rust toolchain), so it is not an error — just say so and
-        # run the staged binary.
+        # nothing. This branch only runs on a non-pinned (dev/clone) checkout
+        # now -- a pinned release install returns above and never reaches
+        # this probe at all -- but a dev checkout can still lack a Rust
+        # toolchain (e.g. a box that only ever clicks the shortcut), so this
+        # is not an error -- just say so and run whatever binaries exist.
         $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
         if (-not $cargoCmd) {
-            Write-SupLog "freshness: no cargo on PATH - release install, running the staged binary (this is normal)"
+            Write-SupLog "freshness: no cargo on PATH - nothing to rebuild from source here, running the existing binaries (this is normal on a dev checkout without a Rust toolchain)"
             Set-LaunchStatus 'Starting Ship of Tools...'
             $buildOut = $null
         } else {
@@ -1520,13 +1699,7 @@ if (-not $localDaemonReady -and -not $defaultRemoteOk) {
 }
 
 Set-LaunchStatus 'Connecting...'
-$externalControlTunnel = Test-LocalPortOpen -Port $tcpPort
-if ($externalControlTunnel) {
-    Write-SupLog "control port $tcpPort is already open; starting browser aux-only tunnel"
-    $sshTunnel = Start-SotAuxTunnel
-} else {
-    $sshTunnel = Start-SotTunnel
-}
+$sshTunnel = Start-SotControlTunnel -Port $tcpPort -HardFail
 $sshStartedAt = Get-Date
 Start-Sleep -Milliseconds 400
 
@@ -1661,17 +1834,21 @@ try {
         $tunnelBackoffSec = 0
         while (-not $frontend.HasExited) {
             $pollSleepSec = 0.5
-            # $sshTunnel is $null when the control port is externally held AND
-            # the aux forwards are retired (nothing to supervise), or when the
-            # default remote never resolved (ADR 0042 L2b codex follow-up,
-            # item 3 -- Start-SotTunnel/Start-SotAuxTunnel are no-ops then).
-            # Guard it explicitly rather than relying on $null.HasExited being
-            # falsy -- that only holds while no one adds Set-StrictMode.
+            # $sshTunnel is $null when the default remote never resolved
+            # (ADR 0042 L2b codex follow-up, item 3 -- Start-SotTunnel is a
+            # no-op then), or when Start-SotControlTunnel refused to reuse a
+            # port some other process holds (owner ruling, 2026-09-17 --
+            # never ride a tunnel this launcher didn't start). Guard it
+            # explicitly rather than relying on $null.HasExited being falsy
+            # -- that only holds while no one adds Set-StrictMode.
             if ($sshTunnel -and $sshTunnel.HasExited) {
                 $uptime = ((Get-Date) - $sshStartedAt).TotalSeconds
                 $tunnelBackoffSec = if ($uptime -lt 2) { [Math]::Min(($tunnelBackoffSec * 2 + 1), 30) } else { 0 }
                 if ($tunnelBackoffSec -gt $pollSleepSec) { $pollSleepSec = $tunnelBackoffSec }
-                $sshTunnel = if ($externalControlTunnel) { Start-SotAuxTunnel } else { Start-SotTunnel }
+                # Our own tunnel just exited, so the port is ours to reclaim --
+                # a straight respawn, not the full Start-SotControlTunnel
+                # dance (which exists for "is this port even ours" at startup).
+                $sshTunnel = Start-SotTunnel
                 $sshStartedAt = Get-Date
                 Write-SupLog "tunnel respawned pid=$($sshTunnel.Id) (backoff=${tunnelBackoffSec}s)"
             }
@@ -1734,15 +1911,14 @@ try {
             Update-SotRemoteDial
             # The loop's watchdog further down only ever RESPAWNS a tunnel
             # that has exited, so a converge that has just GAINED a remote
-            # must start the first one here. Re-test the port: another
-            # process may be holding it, in which case the control tunnel
-            # is external and only the aux one is ours to start.
+            # must start the first one here. Start-SotControlTunnel clears
+            # any stale tunnel of ours holding the port and refuses (no
+            # tunnel) rather than ride another process's -- see its own doc.
             if (-not $sshTunnel -or $sshTunnel.HasExited) {
-                $externalControlTunnel = Test-LocalPortOpen -Port $tcpPort
-                $sshTunnel = if ($externalControlTunnel) { Start-SotAuxTunnel } else { Start-SotTunnel }
+                $sshTunnel = Start-SotControlTunnel -Port $tcpPort
                 if ($sshTunnel) {
                     $sshStartedAt = Get-Date
-                    Write-SupLog "converge: control tunnel started pid=$($sshTunnel.Id) on port $tcpPort (external=$externalControlTunnel)"
+                    Write-SupLog "converge: control tunnel started pid=$($sshTunnel.Id) on port $tcpPort"
                 }
             }
             $localDaemonReady = Invoke-LocalDaemonEnsure

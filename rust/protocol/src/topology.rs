@@ -14,12 +14,11 @@
 //!
 //! Rules: exactly one `hub`, and it names a listed host; a section key is a
 //! plain host name (`[a-z0-9][a-z0-9._-]*`, i.e. what `host_name()` yields);
-//! any other key or section is an error naming it; a key given twice in a
-//! section is an error; a v2 hub must be a `daemon` host. The v1 keys
-//! (`default_host`; per host `ssh_alias`, `remote_repo`, `tcp_port`,
-//! `remote_socket`, `socket`, `remote_home`) are accepted for THIS release
-//! with one warning each naming the replacement — see [`V1_HOST_KEYS`] —
-//! and are deleted at the next rc.
+//! any other key or section is an error naming it — this is also the
+//! schema check: an old-grammar file (`default_host`, per host
+//! `ssh_alias`/`remote_repo`/`tcp_port`/`remote_socket`/`socket`/
+//! `remote_home`) fails on its first unknown key, naming the line; a key
+//! given twice in a section is an error; a hub must be a `daemon` host.
 //!
 //! **Search order** (the only one): `$SOT_HOSTS` when set (tests, scratch
 //! daemons), else `<config dir>/hosts.toml` where the config dir is
@@ -36,9 +35,39 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// The relay's forward port on a frontend box, and the base of the ordinal
-/// port series `topology plan` hands the launcher: the hub is always
-/// `18743`, the remaining hosts count up from `18744` in file order.
-pub const HUB_LOCAL_PORT: u16 = 18743;
+/// port series `topology plan` hands the launcher — **per OS user**, not a
+/// single constant: two OS users sharing one Windows box each run their own
+/// launcher and tunnel, and a fixed port let the second user's launcher find
+/// the first user's tunnel already open and dial that user's backend as its
+/// own (field report, 2026-09-17). `18743 + (h % 100)`, `h` an FNV-1a 32-bit
+/// hash of the OS user name; no user name found keeps the old fixed `18743`.
+/// [`hub_local_port_for`] is the pure half, for tests.
+pub fn hub_local_port() -> u16 {
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| {
+            std::env::var_os("LOGNAME")
+                .map(|v| v.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
+    hub_local_port_for(&user)
+}
+
+/// Pure half of [`hub_local_port`]: FNV-1a 32-bit over `user`'s bytes,
+/// folded to a two-digit offset above `18743`. Written inline — no new
+/// crate — and kept free of the environment so a test can predict a port
+/// without mutating process-global state.
+pub fn hub_local_port_for(user: &str) -> u16 {
+    if user.is_empty() {
+        return 18743;
+    }
+    let mut hash: u32 = 0x811c_9dc5;
+    for b in user.as_bytes() {
+        hash ^= u32::from(*b);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    18743 + (hash % 100) as u16
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostDecl {
@@ -54,8 +83,6 @@ pub struct Topology {
     pub hosts: Vec<HostDecl>,
     /// `(label, ssh target)`; an empty target means "the label".
     pub monitor: Vec<(String, String)>,
-    /// One line per accepted v1 key, naming the replacement.
-    pub warnings: Vec<String>,
 }
 
 impl Topology {
@@ -63,19 +90,20 @@ impl Topology {
         self.hosts.iter().find(|h| h.name == name)
     }
 
-    /// Ordinal local port for a host: the hub `18743`, every other host
-    /// `18744 + its position among the non-hub hosts` (file order). A
-    /// property of the position, not of the flags, so flipping `daemon` on
-    /// one host renumbers nobody; inserting a host does (plan §G).
+    /// Ordinal local port for a host: the hub gets [`hub_local_port`] (this
+    /// box's OS user, not a fixed number), every other host that plus
+    /// `1 + its position among the non-hub hosts` (file order). A property
+    /// of the position, not of the flags, so flipping `daemon` on one host
+    /// renumbers nobody; inserting a host does (plan §G).
     pub fn local_port(&self, name: &str) -> Option<u16> {
         if name == self.hub {
-            return Some(HUB_LOCAL_PORT);
+            return Some(hub_local_port());
         }
         self.hosts
             .iter()
             .filter(|h| h.name != self.hub)
             .position(|h| h.name == name)
-            .map(|i| HUB_LOCAL_PORT + 1 + i as u16)
+            .map(|i| hub_local_port() + 1 + i as u16)
     }
 
     /// Sampling targets, resolved: `[monitor]` labels with an empty target
@@ -112,27 +140,9 @@ pub fn load() -> Result<Option<(PathBuf, Topology)>, String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The v1 keys still accepted this release (one warning each, naming the
-/// replacement): `default_host` at top level, and per host `ssh_alias`,
-/// `remote_repo`, `tcp_port`, `remote_socket`, `socket`, `remote_home` —
-/// the whole set the frontend's own v1 reader knew. A file using any of
-/// them is a v1 file: every `[host.*]` in it is `daemon = true` (v1 had no
-/// other kind of host). `ssh_alias`, when non-empty, must equal the section
-/// key (the key IS the alias now); the rest are ignored (ports are ordinal,
-/// sockets queried, a remote daemon is never started by path, the default
-/// row root is served by `workspace.list`).
-const V1_HOST_KEYS: [(&str, &str); 6] = [
-    ("ssh_alias", "the section key is the ssh alias now"),
-    ("remote_repo", "a remote daemon is never started by path"),
-    ("tcp_port", "ports are ordinal (`sotd topology plan`)"),
-    ("remote_socket", "queried via `sotd session-socket-path sot` over ssh"),
-    ("socket", "queried via `sotd session-socket-path sot` over ssh"),
-    ("remote_home", "`workspace.list` serves the default row root"),
-];
-
-/// Parse grammar v2 (module doc), plus the v1 shim ([`V1_HOST_KEYS`]).
-/// Duplicate keys in a section (a `[monitor]` label included — two labels
-/// would spawn two samplers) are errors, not last-wins.
+/// Parse grammar v2 (module doc). Duplicate keys in a section (a
+/// `[monitor]` label included — two labels would spawn two samplers) are
+/// errors, not last-wins.
 pub fn parse(text: &str) -> Result<Topology, String> {
     #[derive(PartialEq)]
     enum Section {
@@ -143,10 +153,8 @@ pub fn parse(text: &str) -> Result<Topology, String> {
     let mut hub: Option<String> = None;
     let mut hosts: Vec<HostDecl> = Vec::new();
     let mut monitor: Vec<(String, String)> = Vec::new();
-    let mut warnings = Vec::new();
     let mut section = Section::Top;
     let mut seen: Vec<String> = Vec::new();
-    let mut v1 = false;
 
     // A UTF-8 byte-order mark: PowerShell's `Set-Content`/`Out-File` writes
     // one and `trim` does not strip U+FEFF, so the first key of such a file
@@ -193,11 +201,7 @@ pub fn parse(text: &str) -> Result<Topology, String> {
         seen.push(key.to_string());
         match section {
             Section::Top => match key {
-                "hub" | "default_host" => {
-                    if key == "default_host" {
-                        warnings.push(format!("line {n}: `default_host` is `hub` now"));
-                        v1 = true;
-                    }
+                "hub" => {
                     let name = val.string().ok_or_else(|| format!("line {n}: `{key}` must be a quoted host name"))?;
                     if hub.is_some() {
                         return Err(format!("line {n}: `hub` declared twice (exactly one hub)"));
@@ -213,20 +217,6 @@ pub fn parse(text: &str) -> Result<Topology, String> {
                         let b = val.bool().ok_or_else(|| format!("line {n}: `{key}` must be true or false"))?;
                         if key == "daemon" { host.daemon = b } else { host.frontend = b }
                     }
-                    _ if V1_HOST_KEYS.iter().any(|(k, _)| *k == key) => {
-                        v1 = true;
-                        let why = V1_HOST_KEYS.iter().find(|(k, _)| *k == key).map(|(_, w)| *w).unwrap_or("");
-                        if key == "ssh_alias" {
-                            let alias = val.string().unwrap_or("");
-                            if !alias.is_empty() && alias != host.name {
-                                return Err(format!(
-                                    "line {n}: `ssh_alias = \"{alias}\"` differs from the section key `{}` (the key IS the ssh alias now)",
-                                    host.name
-                                ));
-                            }
-                        }
-                        warnings.push(format!("line {n}: `{key}` is ignored ({why}); `[host.{}]` is a v1 entry, so `daemon = true`", host.name));
-                    }
                     other => return Err(format!("line {n}: unknown key `{other}` in [host.{}]", host.name)),
                 }
             }
@@ -241,13 +231,10 @@ pub fn parse(text: &str) -> Result<Topology, String> {
     let Some(hub_host) = hosts.iter().find(|h| h.name == hub) else {
         return Err(format!("hub `{hub}` is not a listed host (add `[host.{hub}]`)"));
     };
-    if v1 {
-        // v1 had no host that was not a dialled backend.
-        hosts.iter_mut().for_each(|h| h.daemon = true);
-    } else if !hub_host.daemon {
+    if !hub_host.daemon {
         return Err(format!("hub `{hub}` has `daemon = false`; the hub runs the relay daemon, so `[host.{hub}]` needs `daemon = true`"));
     }
-    Ok(Topology { hub, hosts, monitor, warnings })
+    Ok(Topology { hub, hosts, monitor })
 }
 
 enum Value<'a> {
@@ -307,16 +294,17 @@ pub fn local_endpoint(label: &str) -> String {
 
 /// The relay endpoint for `self_host` (plan §C): the hub's own socket on
 /// the hub; on a `frontend` box the launcher's forward tunnel to the hub
-/// (`tcp:127.0.0.1:18743`); everywhere else the hub's reverse tunnel, which
-/// lands on `<runtime dir>/sot-relay.sock` (`/run/user/<uid>/sot-relay.sock`
-/// — the path `sot-relay-tunnel@` has always used). Path derivations are
-/// this box's own, so ask on the box in question.
+/// (`tcp:127.0.0.1:<`[`hub_local_port`]`>`, per OS user); everywhere else
+/// the hub's reverse tunnel, which lands on
+/// `<runtime dir>/sot-relay.sock` (`/run/user/<uid>/sot-relay.sock` — the
+/// path `sot-relay-tunnel@` has always used). Path derivations are this
+/// box's own, so ask on the box in question.
 pub fn relay_endpoint(topo: &Topology, self_host: &str) -> Result<String, String> {
     let host = topo.host(self_host).ok_or_else(|| format!("`{self_host}` is not a listed host"))?;
     Ok(if self_host == topo.hub {
         local_endpoint("sot")
     } else if host.frontend {
-        format!("tcp:127.0.0.1:{HUB_LOCAL_PORT}")
+        format!("tcp:127.0.0.1:{}", hub_local_port())
     } else {
         let run = crate::runtime_sot_dir();
         let base = run.parent().map(PathBuf::from).unwrap_or(run);
@@ -403,10 +391,7 @@ pub fn hash_text(text: &str) -> String {
 /// `[monitor]` if non-empty. This is a CLEAN rewrite, not a lossless
 /// editor — comments and exact key order in the original file are not
 /// preserved (plan §B "Editing the master list" allows this: "if you
-/// cannot, say so ... and write a clean canonical file"). Always emits v2
-/// — a v1 file edited once converts to v2 for good, with its v1 keys
-/// dropped, which is the point: the shim exists to read old files, not to
-/// keep writing them.
+/// cannot, say so ... and write a clean canonical file").
 pub fn serialize(topo: &Topology) -> String {
     let mut out = format!("hub = \"{}\"\n\n", topo.hub);
     for h in &topo.hosts {
@@ -620,6 +605,30 @@ pub fn tunnel_dropin(hub: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Pins `USER` for [`hub_local_port`] so a test can predict its output
+    /// without depending on whoever's running it, restored on drop. Both
+    /// callers below pin the SAME name, so running them in parallel (the
+    /// default test-runner behaviour) never races on the value, only on
+    /// which one restores it last — harmless, since both write it back
+    /// identically before that.
+    struct PinnedUser(Option<std::ffi::OsString>);
+    impl PinnedUser {
+        fn set(name: &str) -> Self {
+            let prev = std::env::var_os("USER");
+            std::env::set_var("USER", name);
+            PinnedUser(prev)
+        }
+    }
+    impl Drop for PinnedUser {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(v) => std::env::set_var("USER", v),
+                None => std::env::remove_var("USER"),
+            }
+        }
+    }
+    const TEST_USER: &str = "sot-test-user";
+
     const V2: &str = r#"
 hub = "alpha"   # the relay daemon
 
@@ -643,6 +652,8 @@ gpu-box = "other-user@gpu-box"
 
     #[test]
     fn v2_parses() {
+        let _pin = PinnedUser::set(TEST_USER);
+        let base = hub_local_port_for(TEST_USER);
         let t = parse(V2).unwrap();
         assert_eq!(t.hub, "alpha");
         assert_eq!(t.hosts.len(), 4);
@@ -650,18 +661,25 @@ gpu-box = "other-user@gpu-box"
         assert_eq!(t.host("beta").unwrap(), &HostDecl { name: "beta".into(), daemon: false, frontend: false });
         assert_eq!(t.monitor_targets()[1], ("beta".to_string(), "beta".to_string()));
         assert_eq!(t.monitor_targets()[2].1, "other-user@gpu-box");
-        assert!(t.warnings.is_empty());
-        assert_eq!(t.local_port("alpha"), Some(18743));
-        assert_eq!(t.local_port("beta"), Some(18744));
-        assert_eq!(t.local_port("delta"), Some(18746));
+        assert_eq!(t.local_port("alpha"), Some(base));
+        assert_eq!(t.local_port("beta"), Some(base + 1));
+        assert_eq!(t.local_port("delta"), Some(base + 3));
+    }
+
+    #[test]
+    fn hub_local_port_for_is_per_user() {
+        // Pure function: no env involved, so no pinning needed here.
+        assert_eq!(hub_local_port_for(""), 18743, "no user name keeps the pre-existing fixed value");
+        let a = hub_local_port_for("alice");
+        let b = hub_local_port_for("bob");
+        assert_ne!(a, b, "two different OS users must not land on the same tunnel port");
+        assert!((18743..18843).contains(&a) && (18743..18843).contains(&b));
     }
 
     #[test]
     fn two_hubs_fail() {
         let e = parse("hub = \"a\"\nhub = \"b\"\n[host.a]\n").unwrap_err();
         assert!(e.contains("line 2") && e.contains("`hub` given twice"), "{e}");
-        let e = parse("default_host = \"a\"\nhub = \"b\"\n[host.a]\n").unwrap_err();
-        assert!(e.contains("line 2") && e.contains("`hub` declared twice"), "{e}");
     }
 
     #[test]
@@ -686,53 +704,16 @@ gpu-box = "other-user@gpu-box"
         assert!(e.contains("unknown section `[hosts]`"), "{e}");
     }
 
+    /// The v1 shim is gone: an old-grammar file (real shape: `default_host`
+    /// at top level, a host carrying `socket`) is now a loud parse error at
+    /// its first unknown key, naming the line — never a silently-kept file.
     #[test]
-    fn v1_parses_with_warnings() {
-        let v1 = r#"
-default_host = "alpha"
-
-[host.alpha]
-ssh_alias = "alpha"
-remote_repo = "/home/me/project"
-tcp_port = 18743
-remote_socket = "/run/user/1000/sot/sessions/sot.sock"
-remote_home = "/home/me"
-
-[host.beta]
-ssh_alias = "beta"
-tcp_port = 18744
-"#;
-        let t = parse(v1).unwrap();
-        assert_eq!(t.hub, "alpha");
-        assert!(t.host("alpha").unwrap().daemon && t.host("beta").unwrap().daemon);
-        assert_eq!(t.warnings.len(), 8, "{:?}", t.warnings);
-        assert!(t.warnings[0].contains("`default_host` is `hub` now"));
-        assert!(t.warnings.iter().any(|w| w.contains("`tcp_port` is ignored")));
-        let e = parse("default_host = \"a\"\n[host.a]\nssh_alias = \"other\"\n").unwrap_err();
-        assert!(e.contains("`ssh_alias = \"other\"` differs from the section key `a`"), "{e}");
-    }
-
-    /// The shape of a real hub file today: `default_host`, the hub's own
-    /// `[host.*]` carrying only `socket`, and a `[monitor]` table.
-    #[test]
-    fn v1_hub_file_shape_parses() {
-        let text = "\u{feff}default_host = \"hub\"\n\n[host.hub]\nsocket = \"/run/user/1000/sot/sessions/sot.sock\"\n\n[monitor]\nhub = \"hub\"\nshell-a = \"shell-a\"\nshell-b = \"shell-b\"\ngpu-box = \"other-user@gpu-box\"\n";
-        let t = parse(text).unwrap();
-        assert_eq!(t.hub, "hub");
-        assert!(t.host("hub").unwrap().daemon, "v1 hosts are daemon hosts");
-        assert_eq!(t.monitor_targets().len(), 4);
-        assert_eq!(t.warnings.len(), 2, "{:?}", t.warnings);
-        assert!(t.warnings[0].contains("`default_host`"));
-        assert!(t.warnings[1].contains("`socket` is ignored"), "{}", t.warnings[1]);
-        // The hub is dialable: its own plan dials itself.
-        assert!(plan(&t, "hub").unwrap().lines().any(|l| l.starts_with("dial hub ")));
-        // Every v1 host key is accepted, each with its own warning.
-        let all = "default_host = \"h\"\n[host.h]\nssh_alias = \"h\"\nremote_repo = \"/r\"\ntcp_port = 18743\nremote_socket = \"/s\"\nsocket = \"/s\"\nremote_home = \"/h\"\n";
-        let t = parse(all).unwrap();
-        assert_eq!(t.warnings.len(), 7, "{:?}", t.warnings);
-        for (k, _) in V1_HOST_KEYS {
-            assert!(t.warnings.iter().any(|w| w.contains(&format!("`{k}` is ignored"))), "{k}");
-        }
+    fn old_grammar_file_fails_on_first_unknown_key() {
+        let text = "\u{feff}default_host = \"hub\"\n\n[host.hub]\nsocket = \"/run/user/1000/sot/sessions/sot.sock\"\n";
+        let e = parse(text).unwrap_err();
+        assert!(e.contains("line 1") && e.contains("unknown key `default_host`"), "{e}");
+        let e = parse("hub = \"a\"\n[host.a]\nssh_alias = \"a\"\n").unwrap_err();
+        assert!(e.contains("unknown key `ssh_alias`"), "{e}");
     }
 
     #[test]
@@ -753,13 +734,15 @@ tcp_port = 18744
 
     #[test]
     fn plan_lines_are_stable() {
+        let _pin = PinnedUser::set(TEST_USER);
+        let base = hub_local_port_for(TEST_USER);
         let t = parse(V2).unwrap();
         let own = local_endpoint("sot");
         // gamma is daemon+frontend: never dialled from elsewhere (D8), and
         // its own daemon is the launcher's implicit local connection.
         assert_eq!(
             plan(&t, "gamma").unwrap(),
-            "self gamma\nhub alpha\nrelay-endpoint tcp:127.0.0.1:18743\ndial alpha tcp:127.0.0.1:18743\ntunnel alpha 18743\n"
+            format!("self gamma\nhub alpha\nrelay-endpoint tcp:127.0.0.1:{base}\ndial alpha tcp:127.0.0.1:{base}\ntunnel alpha {base}\n")
         );
         assert_eq!(
             plan(&t, "alpha").unwrap(),
@@ -851,7 +834,6 @@ frontend = true
         assert_eq!(t.hub, reparsed.hub);
         assert_eq!(t.hosts, reparsed.hosts);
         assert_eq!(t.monitor, reparsed.monitor);
-        assert!(reparsed.warnings.is_empty(), "a clean serialize must never re-trigger the v1 shim");
     }
 
     #[test]

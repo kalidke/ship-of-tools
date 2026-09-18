@@ -47,7 +47,7 @@ ORIGIN=user
 # classifies a transcript prompt record with this same pattern list, kept in
 # sync by hand -- both hooks stay standalone, no shared library.
 case "$prompt" in
-    "[SYSTEM NOTIFICATION"*|*"<task-notification>"*|"[relay] from"*|\[*:*\]\ *)   # teammate messages arrive as "[handle:team] ..."
+    "[SYSTEM NOTIFICATION"*|*"<task-notification>"*|"[relay] from"*|"[sot-comm] "*|\[*:*\]\ *)   # teammate messages arrive as "[handle:team] ..."
         ORIGIN=machine ;;
     # The harness's own wrappers (2026-09-14, owner: "the stop hook is
     # triggering an almost identical rehash of the SITREP"): a subagent or

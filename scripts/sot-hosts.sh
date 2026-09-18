@@ -50,14 +50,20 @@
 # executable, or the command itself fails (no plan yet -- e.g. a fresh
 # checkout with no sotd built) -- the caller's job is to treat that as
 # "no declared hosts", same as an absent/empty hosts.toml always was.
+#
+# Sets $SOT_TOPOLOGY_PLAN_ERR to sotd's own stderr on failure (empty on
+# success or when <sotd-bin> itself is missing) -- the caller's log line
+# names the real reason (an unlisted self, a v2 file predating this box's
+# entry, ...) instead of a blanket "no plan yet".
 sot_topology_plan() {
     local sotd="$1" self="${2:-}"
+    SOT_TOPOLOGY_PLAN_ERR=""
     [ -n "$sotd" ] && [ -x "$sotd" ] || return 1
     local out
     if [ -n "$self" ]; then
-        out="$("$sotd" topology plan --self "$self" 2>/dev/null)" || return 1
+        out="$("$sotd" topology plan --self "$self" 2>&1)" || { SOT_TOPOLOGY_PLAN_ERR="$out"; return 1; }
     else
-        out="$("$sotd" topology plan 2>/dev/null)" || return 1
+        out="$("$sotd" topology plan 2>&1)" || { SOT_TOPOLOGY_PLAN_ERR="$out"; return 1; }
     fi
     printf '%s\n' "$out" | awk '
         {
@@ -87,4 +93,22 @@ sot_topology_plan() {
 sot_topology_field() {
     local plan="$1" tag="$2"
     printf '%s\n' "$plan" | awk -F'|' -v tag="$tag" '$1==tag{ v=$0; sub(/^[^|]*\|/,"",v) } END{ print v }'
+}
+
+# sot_topology_sync <sotd-bin> [hub]
+# The ONE side-effecting topology call: `<sotd-bin> topology sync [--hub
+# <hub>]` fetches the hub's hosts.toml into this box's config dir (the hub
+# is the only writer -- see .sot/hosts.toml.example). Never ssh's or
+# writes anything itself; sotd owns all of that. Prints sotd's combined
+# stdout+stderr and returns its exit status. An empty <hub> is NOT an
+# error: sotd then derives the hub from whatever the LOCAL copy already
+# names, so this is safe to call with no env override on every launch.
+sot_topology_sync() {
+    local sotd="$1" hub="${2:-}"
+    [ -n "$sotd" ] && [ -x "$sotd" ] || { echo "no sotd binary found"; return 1; }
+    if [ -n "$hub" ]; then
+        "$sotd" topology sync --hub "$hub" 2>&1
+    else
+        "$sotd" topology sync 2>&1
+    fi
 }

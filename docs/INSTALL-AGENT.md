@@ -168,10 +168,9 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
 
 4. **Launch**: `sot.exe --tcp 127.0.0.1:18743` (`sot.exe --help` prints the
    full flag set). Optionally persist the connection in
-   `%APPDATA%\sot\hosts.toml` (config discovery: `$SOT_HOSTS` →
-   `.sot\hosts.toml` relative to the **current directory** — so the repo file
-   is only picked up when launching from the repo root — →
-   `%APPDATA%\sot\hosts.toml`, the reliable location for manual launches).
+   `%LOCALAPPDATA%\sot\config\hosts.toml` (config discovery, one order, no
+   repo-local layer: `$SOT_HOSTS` when set, else `%LOCALAPPDATA%\sot\config\hosts.toml`
+   — `~/.config/sot/hosts.toml` on Linux/macOS).
 
    `sot.exe` does NOT open the SSH forward itself — the tunnel is yours (or
    a launcher's).
@@ -191,18 +190,13 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
    ```powershell
    git clone https://github.com/kalidke/ship-of-tools
    cd ship-of-tools
-   # Write .sot\hosts.toml — the table is [host.<name>], SINGULAR:
-   #   default_host = "myserver"
-   #   [host.myserver]
-   #   ssh_alias   = "myserver"
-   #   remote_repo = "/home/<user>/.local/share/sot/repo/current"
-   #   tcp_port    = 18743
-   # remote_socket is OPTIONAL: the launcher resolves it by running sotd
-   # session-socket-path on the remote (dev checkout or the release-installed
-   # ~/.local/share/sot/bin/sotd). Set it explicitly (or $env:SOT_REMOTE_SOCKET)
-   # only to skip that probe: remote_socket = "/run/user/<uid>/sot/sessions/sot.sock"
-   # For the rest of the config follow docs/src/start/setup.md, or in a Claude
-   # Code session invoke the /sot-setup skill — it drives the whole checklist.
+   # hosts.toml is never hand-written here: it lives at
+   # %LOCALAPPDATA%\sot\config\hosts.toml (or $SOT_HOSTS), and the launcher
+   # (scripts\launch-sot.ps1) fetches it from the hub via `sotd topology
+   # sync` on every launch -- write the hub = "..." / [host.<name>] /
+   # daemon / frontend grammar ONCE, on the hub, per docs/src/start/setup.md
+   # ("hosts.toml — the declared topology"), or in a Claude Code session
+   # invoke the /sot-setup skill — it drives the whole checklist.
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1
    ```
 
@@ -213,15 +207,21 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
    update itself. It no-ops with an explanation on a `-dev` source build.
 
    `install-shortcut.ps1` creates `Desktop\Ship of Tools.lnk` →
-   `launch-sot.ps1` (opens the step-3 control forward, spawns/refreshes the
-   remote `sotd`, applies any staged update via `sot-apply.ps1`, runs the
-   frontend under the exit-75 respawn supervisor),
-   sets the SoT icon (`logo.ico`, copied to `%LOCALAPPDATA%\sot` so it
-   survives moving the clone), and stamps the AppUserModelID
+   `%LOCALAPPDATA%\sot\repo\current\scripts\launch-sot.ps1` once that pinned
+   checkout exists, else the clone's own `scripts\launch-sot.ps1` as a
+   bootstrap fallback (`Get-SotLauncherTarget`; docs/adr/
+   0030-versioning-release-and-auto-update.md's 2026-09-17 amendment — a
+   version is binaries + resources + scripts, and the shortcut now tracks
+   all three together). The launcher itself (opens the step-3 control
+   forward, spawns/refreshes the remote `sotd`, applies any staged update
+   via `sot-apply.ps1`, runs the frontend under the exit-75 respawn
+   supervisor) sets the SoT icon (`logo.ico`, copied to `%LOCALAPPDATA%\sot`
+   so it survives moving the clone), and stamps the AppUserModelID
    `ShipOfTools.Sot` on the `.lnk` so the running window merges into the
    shortcut's taskbar button with the right icon. Re-run it after pinning to
    the taskbar — it re-syncs the pin so it never drifts back to a naive
-   `sot.exe`.
+   `sot.exe`; the first launch after a fresh install migrates the pin onto
+   the pinned checkout itself, with no by-hand step needed.
 
    The **first launch** finishes the layout the steps above leave incomplete:
    the launcher creates `%LOCALAPPDATA%\sot\repo\versions\v<ver>` (a detached
@@ -434,8 +434,11 @@ top line of the nav pane always shows the pane-switch keys.**
     on the next launch to verify and swap the binaries, keeping `.prev` and
     rolling back automatically if the new build crash-loops within 10s. This
     needs `install.json` to exist (§4 step 3) — without it the check never
-    runs. The launcher separately does a `git pull` of the clone each launch,
-    which is what refreshes the scripts and config.
+    runs. Scripts and config update the SAME way: the shortcut/pin targets
+    `%LOCALAPPDATA%\sot\repo\current\scripts\launch-sot.ps1` (docs/adr/
+    0030-versioning-release-and-auto-update.md's 2026-09-17 amendment), and
+    `sot-apply.ps1`'s junction flip carries them in the same transaction as
+    the binaries — never a separate `git pull` of the clone.
   - Source builds are stamped `-dev` and never self-update on any platform;
     they update by pulling and rebuilding.
 - Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`;

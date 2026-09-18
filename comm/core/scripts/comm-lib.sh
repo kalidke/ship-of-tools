@@ -487,6 +487,51 @@ sot_pty_input() {
     # ~18s is the daemon's own worst case for one enter=true write.
     SOT_SEND_TIMEOUT="${SOT_SEND_TIMEOUT:-20}" sot_oneshot_request "$frame" "pty.input"
 }
+
+# sot_pty_screen WORKSPACE_ID — one `pty.screen` request (no scrollback,
+# current screen only) to the daemon at ENDPOINT (caller's scope); prints
+# the response line. Lifted out of sot-fe's send_pty_screen (ADR 0042
+# amendment) so comm-wake.sh's prompt-free gate and sot-fe share the one
+# implementation instead of two frame-builders drifting apart.
+sot_pty_screen() {
+    local wsid="$1" frame
+    frame="$(jq -nc --arg w "$wsid" '{v:1,id:1,kind:"req",op:"pty.screen",payload:{workspace_id:$w}}')"
+    # No local default here (fixed 2026-09-17): sot_oneshot_request's own
+    # fallback chain is SOT_SEND_TIMEOUT -> SEND_TIMEOUT -> 10. Presetting
+    # SOT_SEND_TIMEOUT=10 here shadowed a caller-set SEND_TIMEOUT (sot-fe
+    # screen --timeout N exports SEND_TIMEOUT, then its own error text quotes
+    # SEND_TIMEOUT), so the flag was silently ignored. Let the callee's own
+    # fallback apply unmangled.
+    sot_oneshot_request "$frame" "pty.screen"
+}
+
+# sot_capsule_workspace_id — print the calling shell's capsule row id, or
+# print nothing and return 1 when this isn't a capsule row. $SOT_WORKSPACE_ID
+# wins when set; otherwise it's read out of $SOT_COMM_SELF_FILE's basename
+# (comm-context.sh names it "<host>__<workspace_id>.txt" — a real capsule
+# row today has the self file pinned but not the id itself in its env, so
+# the basename is the only place it survives). "nopane" is the literal
+# placeholder comm-context.sh writes for a non-capsule shell, never a real
+# id — treated the same as absent. Shared by comm-wake.sh (its own startup
+# gate, rule: exit 3 when this fails) and comm-session-start.sh (deciding
+# whether to auto-start a ping watcher at all).
+sot_capsule_workspace_id() {
+    if [ -n "${SOT_WORKSPACE_ID:-}" ]; then
+        printf '%s\n' "$SOT_WORKSPACE_ID"
+        return 0
+    fi
+    local base="${SOT_COMM_SELF_FILE:-}"
+    [ -n "$base" ] || return 1
+    base="$(basename "$base")"
+    case "$base" in
+        *__*.txt) ;;
+        *) return 1 ;;
+    esac
+    local id="${base#*__}"
+    id="${id%.txt}"
+    [ -n "$id" ] && [ "$id" != "nopane" ] || return 1
+    printf '%s\n' "$id"
+}
 # --- MSYS2 argv-conversion guard for jq values that can legitimately
 # start with "/" ---
 #
@@ -1072,6 +1117,16 @@ sot_ping_interval_s() {
 # 10s. Uses ENDPOINT (unix:/path, tcp:host:port, or pipe:name — the last one
 # a Windows-only named-pipe transport, see the pipe: arm below) from the
 # caller's scope.
+# _sot_oneshot_sender FRAME TIMEOUT_S PIDFILE — the write side of a one-shot
+# request: hello, the frame, then `exec sleep` so the subshell's pid (written
+# to PIDFILE first) is the sleep itself and one kill ends it.
+_sot_oneshot_sender() {
+    printf '%s\n' "$BASHPID" > "$3"
+    sot_hello_frame
+    printf '%s\n' "$1"
+    exec sleep "$2"
+}
+
 sot_oneshot_request() {
     local frame="$1" op="$2"
     local timeout_s="${SOT_SEND_TIMEOUT:-${SEND_TIMEOUT:-10}}"
@@ -1082,7 +1137,14 @@ sot_oneshot_request() {
             command -v nc >/dev/null 2>&1 || {
                 echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2
                 rm -f "$tmp"; return 1; }
-            { sot_hello_frame; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
+            # The sender holds the write side open with a sleep (a half-close
+            # via `nc -q` made stub listeners hang up early). It is `exec`'d so
+            # the recorded pid IS the sleep, killed the moment the reply
+            # matches, and its stderr is detached: a sender that outlived the
+            # reply used to hold the CALLER's stderr for the whole timeout, so
+            # any pipe or harness reading the caller waited that long
+            # (2026-09-17, two boxes).
+            _sot_oneshot_sender "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
                 | timeout "$timeout_s" nc -U "${ENDPOINT#unix:}" > "$tmp" 2>/dev/null &
             ncpid=$!
             ;;
@@ -1090,7 +1152,7 @@ sot_oneshot_request() {
             local hp="${ENDPOINT#tcp:}" host port
             host="${hp%:*}"; port="${hp##*:}"
             if command -v nc >/dev/null 2>&1; then
-                { sot_hello_frame; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
+                _sot_oneshot_sender "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
                     | timeout "$timeout_s" nc "$host" "$port" > "$tmp" 2>/dev/null &
                 ncpid=$!
             else
@@ -1123,7 +1185,7 @@ sot_oneshot_request() {
             [ -f "$ps1" ] || {
                 echo "ERROR: comm-pipe-request.ps1 not found next to the comm scripts (looked in ${SCRIPT_DIR:-.})" >&2
                 rm -f "$tmp"; return 1; }
-            { sot_hello_frame; printf '%s\n' "$frame"; sleep "$timeout_s"; } \
+            _sot_oneshot_sender "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
                 | timeout "$timeout_s" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
                     -File "$ps1" -PipeName "$pipename" -Mode Oneshot -Op "$op" -TimeoutSec "$timeout_s" \
                     > "$tmp" 2>/dev/null &
@@ -1157,6 +1219,7 @@ sot_oneshot_request() {
         sleep 0.1
     done
     kill "$ncpid" 2>/dev/null || true
-    rm -f "$tmp"
+    [ -r "$tmp.snd" ] && kill "$(cat "$tmp.snd" 2>/dev/null)" 2>/dev/null
+    rm -f "$tmp" "$tmp.snd"
     [ -n "$line" ] && printf '%s\n' "$line"
 }

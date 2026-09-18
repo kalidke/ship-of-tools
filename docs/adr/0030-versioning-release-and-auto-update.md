@@ -706,3 +706,20 @@ artifacts exist. Verify current tags and GitHub Releases before using the
 release-installer path; if no matching assets exist, install from source.
 Installer GitHub auth remains optional and is only a rate-limit dodge for public
 API calls.
+
+## Amendment 2026-09-17 — scripts are part of the version; the Windows shortcut targets `repo\current`
+
+A version is binaries + resources + scripts, but on Windows the third was
+fetched from the clone's current branch every launch (`git pull`) — any
+main push touching the launcher or `sotd`'s CLI broke release boxes before
+the next tag. The shortcut/pin now targets `repo\current\scripts\
+launch-sot.ps1` once one exists (`Get-SotLauncherTarget`), mirroring
+Linux's `sot-launch`; `sot-apply.ps1`'s junction flip then carries scripts
+with binaries and resources in one transaction, and the clone is the git
+base only. `Test-SotPinnedCheckout` (a detached worktree) is the one
+predicate replacing the old `.git`-exists pull gate and staged-sotd-absent
+layout check; the dev-pair-first binary rule is unrelated (picks which
+*binary* runs, not whether the *script* is pinned) and stays. `update_comm`
+on a pinned checkout now triggers on an applied update or a missing comm
+install, not "a pull succeeded" — closing the auto-apply `update_comm` item
+above.

@@ -71,7 +71,7 @@ if [ -x "$COMM/comm-join.sh" ]; then
     # The wake half. Backgrounded; dies with the leg. Only a capsule row
     # has a pty.input target, so only --capsule starts it.
     if [ -x "$COMM/codex-watch.sh" ] && [ "$CAPSULE" = 1 ]; then
-        nohup "$COMM/codex-watch.sh" "$SOT_COMM_NAME" \
+        nohup "$COMM/codex-watch.sh" "$SOT_COMM_NAME" --owner "$$" \
             >/dev/null 2>&1 &
     fi
 fi

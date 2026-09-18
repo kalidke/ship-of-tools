@@ -23,8 +23,61 @@ REGISTRY="$COMM_HOME/registry.json"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 [ -f "$REGISTRY" ] || exit 0
+
+# EARLY THROTTLE (2026-09-17): everything below -- comm-context.sh above all --
+# costs ~7s on Windows (git rev-parse + hostname + jq + sourcing comm-lib.sh,
+# each a process spawn Git Bash charges dearly for). This hook fires on EVERY
+# PostToolUse, so that cost was landing on every single tool call and shells
+# piled up faster than they retired. The registry refresh below is already
+# throttled to 60s -- but that check runs AFTER the expensive part, so it saved
+# a write, never the work. Gate the whole body on a cheap mtime stamp instead.
+#
+# 10s, not the 60s used below: the state-change path (promote waiting->working)
+# deliberately bypasses that throttle so the nav colour flips on the FIRST tool
+# call of a turn, and a 60s gate here would defeat that. 10s keeps the flip
+# effectively immediate while dropping ~85% of invocations. Anti-wilt is
+# unaffected either way (it fires at 10 MINUTES of zero activity).
+_hb_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-$PPID}}"
+_hb_tick="$COMM_HOME/state/hb-$(printf '%s' "$_hb_key" | tr -c 'A-Za-z0-9._-' '_').tick"
+if [ -f "$_hb_tick" ] && [ -n "$(find "$_hb_tick" -newermt '-10 seconds' 2>/dev/null)" ]; then
+    exit 0
+fi
+mkdir -p "$COMM_HOME/state" 2>/dev/null || true
+touch -- "$_hb_tick" 2>/dev/null || true
 NAME=""
-[ -x "$SELF_DIR/comm-context.sh" ] && eval "$("$SELF_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
+# TIMEOUT GUARD (2026-09-17): comm-context.sh was observed hung on Windows,
+# and because this hook fires on EVERY PostToolUse a stalled child piles up
+# one wedged bash per tool call -- ~150 of them on one box, which starved Git
+# Bash startup past 120s and stalled the harness's own Bash tool. "A hook must
+# never wedge a turn" (header, above), so cap the child and carry on
+# contextless if it stalls: a missing NAME just exits 0 a few lines down,
+# which is the same no-op as not being a comm agent.
+# Bash-native watchdog, not an external `timeout`: in Git Bash a bare
+# `timeout` resolves to C:\WINDOWS\system32\timeout.exe, which is NOT
+# coreutils and takes no command, and /usr/bin/timeout isn't guaranteed
+# either. Run comm-context.sh in the background, poll for up to 10s, kill it
+# if it's still alive past that -- collect its output only when it finished
+# on its own (a non-zero exit from a fast, legitimate no-context run still
+# has its output used, matching the old unconditional `|| true`).
+if [ -x "$SELF_DIR/comm-context.sh" ]; then
+    _ctx_out="$COMM_HOME/state/.hb-ctx-$$"
+    "$SELF_DIR/comm-context.sh" >"$_ctx_out" 2>/dev/null &
+    _ctx_pid=$!
+    _waited=0
+    while kill -0 "$_ctx_pid" 2>/dev/null && [ "$_waited" -lt 10 ]; do
+        sleep 1
+        _waited=$((_waited + 1))
+    done
+    if kill -0 "$_ctx_pid" 2>/dev/null; then
+        kill "$_ctx_pid" 2>/dev/null
+        _ctx=""
+    else
+        _ctx="$(cat "$_ctx_out" 2>/dev/null)"
+    fi
+    wait "$_ctx_pid" 2>/dev/null
+    rm -f "$_ctx_out" 2>/dev/null
+    [ -n "${_ctx:-}" ] && eval "$_ctx" 2>/dev/null || true
+fi
 [ -n "${NAME:-}" ] || exit 0
 
 row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.state // "") + "|" + (.status_at // "") else "" end' "$REGISTRY" 2>/dev/null || true)"
@@ -67,7 +120,7 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
             warn_age=$(( $(date -u +%s) - wmtime ))
         fi
         if [ "$warn_age" -ge 600 ]; then
-            echo "comm-status-heartbeat: no live inbox watcher for @$NAME — you are deaf; re-arm: $COMM_HOME/bin/comm-watch.sh $NAME" >&2
+            echo "comm-status-heartbeat: no live inbox watcher for @$NAME — you are deaf; run $COMM_HOME/bin/comm-session-start.sh (starts the ping wake on a capsule row, else prints the Monitor command)" >&2
             mkdir -p "$(dirname "$warn_stamp")" 2>/dev/null
             touch -- "$warn_stamp" 2>/dev/null || true
         fi

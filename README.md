@@ -117,10 +117,10 @@ Code, or Codex) installed and logged in. Linux frontend roles need
 glibc ≥ 2.35, while `--be-only` skips the frontend floor because the backend
 binary is static.
 Remote layouts require key-based SSH to the backend host. `--version vX.Y.Z`
-pins a specific release and `--prefix <dir>` relocates the install. Changing
-roles repoints `default_host` and adds the new host's entry, leaving the rest
-of `hosts.toml` — other hosts, `[monitor]`, comments — untouched. Re-running
-with a role flag that differs from what is already installed is refused unless
+pins a specific release and `--prefix <dir>` relocates the install. The
+installer never writes `hosts.toml` — it's fetched from the hub by `sotd
+topology sync`, which the launcher runs on every launch. Re-running with a
+role flag that differs from what is already installed is refused unless
 you pass `--force-role-change`, so a copied one-liner cannot silently
 reconfigure a working machine. Details:
 **[Install](https://kalidke.github.io/ship-of-tools/dev/start/install/)**.
@@ -159,7 +159,8 @@ files, a launcher, and comm skills) see
 In a Claude Code session the **`/sot-setup`** skill drives that page end-to-end
 (it ships in the checkout's `.claude/skills/` and `ShipTools.update_comm()`
 installs it user-level). Doing it by hand on Windows: after the build/env
-steps, write `.sot/hosts.toml` and `.sot/settings.toml`, run
+steps, write `.sot/settings.toml` and make sure the hub has a `hosts.toml`
+(fetched onto this box by `sotd topology sync`, never repo-local), run
 `ShipTools.update_comm()`, then run `scripts\install-shortcut.ps1` — it wires
 the desktop shortcut (and any taskbar pin) to `scripts\launch-sot.ps1` and
 stamps the SoT icon + taskbar identity. Never point a shortcut at bare

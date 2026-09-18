@@ -249,9 +249,16 @@ send_frame() {  # $1 to, $2 text
             local want_fe="" thost
             thost="$(jq -r --arg n "$1" '.agents[$n].host // empty' "$REGISTRY" 2>/dev/null)"
             [ -n "$thost" ] && want_fe="fe@$thost"
+            # A handle on ANOTHER box is never in this registry (each box
+            # keeps its own), so the lookup above cannot name its frontend
+            # and a delivered send read as "no receiver" (rc.33 regression,
+            # 2026-09-17). Derived handles end in -<host>, so a frontend
+            # receiver whose host the target's name ends with is that
+            # handle's own frontend: count it.
             local r
             for r in "${receivers[@]}"; do
-                if [ "$r" = "$1" ] || { [ -n "$want_fe" ] && [ "$r" = "$want_fe" ]; }; then
+                if [ "$r" = "$1" ] || { [ -n "$want_fe" ] && [ "$r" = "$want_fe" ]; } \
+                    || { [ -z "$thost" ] && [ "${r#fe@}" != "$r" ] && [ "${1%-${r#fe@}}" != "$1" ]; }; then
                     echo "relayed -> $1 via $ENDPOINT"
                     return 0
                 fi

@@ -77,8 +77,9 @@ pressing the other key swaps the content. See
 Press `Ctrl+M` for the **Monitor** drawer — a server monitor sampling the
 configured hosts (GPU and process stats from `nvidia-smi` and `/proc`, which are
 world-readable, so no privileges are needed). Which hosts appear comes from the
-`[monitor]` section of your `hosts.toml` (`.sot/hosts.toml` in a checkout;
-`~/.config/sot/hosts.toml` for a release install).
+`[monitor]` section of your `hosts.toml` (`~/.config/sot/hosts.toml`,
+`%LOCALAPPDATA%\sot\config\hosts.toml` on Windows — never repo-local; fetched
+from the hub by `sotd topology sync`).
 
 ## Navigation modes: Sessions — `s` — and Hosts — `h`
 

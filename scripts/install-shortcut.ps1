@@ -4,7 +4,14 @@
 # Every re-run AFTER that also re-syncs the existing taskbar pin to the launcher,
 # so the pin never drifts into launching a bare sot.exe ("naive" FE).
 #
-# Re-run any time the repo path changes or the launcher script moves.
+# Re-run any time the repo path changes or the launcher script moves. Also
+# re-run (idempotent) any time repo\current\scripts\launch-sot.ps1 changes
+# hands -- the shortcut/pin target below follows it via
+# Get-SotLauncherTarget. See docs/adr/0030-versioning-release-and-auto-
+# update.md's 2026-09-17 amendment for why the target is repo\current, not
+# the clone. launch-sot.ps1's own migration handover re-runs this script
+# once a pinned launcher first appears, so an existing shortcut needs no
+# by-hand fix.
 
 $ErrorActionPreference = 'Stop'
 
@@ -13,17 +20,20 @@ $launcher = Join-Path $repo 'scripts\launch-sot.ps1'
 $frontendExe = Join-Path $repo 'rust\target\release\sot.exe'
 $logoIcon = Join-Path $repo 'logo.ico'
 $shortcutPath = Join-Path $env:USERPROFILE 'Desktop\Ship of Tools.lnk'
-$hostsToml = Join-Path $repo '.sot\hosts.toml'
 
 if (-not (Test-Path $launcher)) {
     Write-Error "launcher not found: $launcher"
     exit 1
 }
 
-if (-not (Test-Path $hostsToml)) {
-    Write-Warning "No .sot\hosts.toml found. The shortcut can be installed, but launch will fail until host config exists."
-    Write-Warning "Copy .sot\hosts.toml.example to .sot\hosts.toml, set default_host, then rerun scripts\install-shortcut.ps1."
-}
+# Get-SotLauncherTarget -- shared with launch-sot.ps1; see that file's
+# header and scripts/sot-install-layout.ps1's own header.
+. (Join-Path $PSScriptRoot 'sot-install-layout.ps1')
+
+# No hosts.toml check here: the file is never repo-local (it lives in
+# <config dir>/hosts.toml, fetched from the hub by `sotd topology sync`,
+# which the launcher now runs on every launch) -- see
+# docs/adr/0015-hosts-targeting.md.
 
 # Copy the icon to the install prefix and point shortcuts THERE, not into the
 # clone. A .lnk stores an absolute IconLocation, so a shortcut aimed at
@@ -43,10 +53,15 @@ if (Test-Path $logoIcon) {
     $logoIcon = $stableIcon
 }
 
+# The pinned launcher once sot-apply.ps1 (or a first Initialize-InstallLayout
+# run) has created one, else this clone's own launcher -- see the header
+# above and Get-SotLauncherTarget's own doc comment.
+$launcherTarget = Get-SotLauncherTarget -Prefix $prefixDir -ClonePath $repo.Path
+
 $wsh = New-Object -ComObject WScript.Shell
 $sc = $wsh.CreateShortcut($shortcutPath)
 $sc.TargetPath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
-$sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
+$sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcherTarget`""
 $sc.WorkingDirectory = $repo.Path
 # Prefer the Ship of Tools logo icon; fall back to the frontend exe's icon
 # when it's been built, otherwise the PowerShell icon stays (still distinct).
@@ -90,7 +105,7 @@ if (Test-Path $pinDir) {
         $isSot = ($_.Name -match 'sot|ship') -or ($p.TargetPath -match 'sot\.exe$') -or ($p.Arguments -match 'launch-sot\.ps1')
         if ($isSot) {
             $p.TargetPath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
-            $p.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
+            $p.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcherTarget`""
             $p.WorkingDirectory = $repo.Path
             if (Test-Path $logoIcon) { $p.IconLocation = "$logoIcon,0" }
             $p.WindowStyle = 7

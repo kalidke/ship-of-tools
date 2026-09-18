@@ -175,7 +175,10 @@ case_capsule_flag_starts_the_capsule_watcher() {
     done
     [ -f "$WATCH_ARGV_LOG" ] || { echo "  codex-watch.sh stub never ran"; return 1; }
     [ "$(sed -n 1p "$WATCH_ARGV_LOG")" = "ccx-resume-test" ] || { echo "  argv[1] != handle: $(cat "$WATCH_ARGV_LOG")"; return 1; }
-    [ "$(wc -l < "$WATCH_ARGV_LOG")" -eq 1 ] || { echo "  a second arg was passed, want the handle only: $(cat "$WATCH_ARGV_LOG")"; return 1; }
+    # argv after the handle is exactly `--owner <pid>` (the liveness tie ccx
+    # passes since the watcher no longer walks for its owner) -- never a pane.
+    [ "$(sed -n 2p "$WATCH_ARGV_LOG")" = "--owner" ] && [[ "$(sed -n 3p "$WATCH_ARGV_LOG")" =~ ^[0-9]+$ ]] && [ "$(wc -l < "$WATCH_ARGV_LOG")" -eq 3 ] \
+        || { echo "  want '<handle> --owner <pid>' only: $(cat "$WATCH_ARGV_LOG")"; return 1; }
     return 0
 }
 
@@ -199,7 +202,8 @@ case_capsule_flag_starts_the_capsule_watcher_even_with_a_leaked_pane_var() {
         n=$((n + 1))
     done
     [ -f "$WATCH_ARGV_LOG" ] || { echo "  codex-watch.sh stub never ran"; return 1; }
-    [ "$(wc -l < "$WATCH_ARGV_LOG")" -eq 1 ] || { echo "  a second arg was passed despite --capsule: $(cat "$WATCH_ARGV_LOG")"; return 1; }
+    [ "$(sed -n 2p "$WATCH_ARGV_LOG")" = "--owner" ] && [ "$(wc -l < "$WATCH_ARGV_LOG")" -eq 3 ] \
+        || { echo "  want '<handle> --owner <pid>' despite --capsule, no pane: $(cat "$WATCH_ARGV_LOG")"; return 1; }
     return 0
 }
 

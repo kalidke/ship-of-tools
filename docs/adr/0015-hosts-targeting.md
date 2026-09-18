@@ -5,9 +5,14 @@
 Ctrl+Q + relaunch" flow this ADR specifies with a live connection per
 `hosts.toml` entry, open simultaneously — "no live in-session swap" is
 moot once switching hosts no longer means cold-starting a new
-connection at all. `hosts.toml` itself (the registry format, its
-layered discovery, `HostEntry`/`HostsConfig`) is UNCHANGED and remains
-this ADR's live contribution; only the "one active host, chosen via
+connection at all. `hosts.toml` itself — the registry format
+(`HostEntry`/`HostsConfig`, `default_host`) and its layered discovery
+(a repo-local `.sot/hosts.toml` among the search paths) — is since
+SUPERSEDED by grammar v2 (`sot_protocol::topology`, commit 6ce7ca2b):
+one `hub`/`[host.<name>]` grammar, one search order
+(`$SOT_HOSTS`, else `<config dir>/hosts.toml`, no repo-local layer),
+fetched from the hub by `sotd topology sync` rather than hand-edited
+per box; see `docs/src/start/setup.md`. Only the "one active host, chosen via
 `Mode::Hosts` + relaunch" targeting model is superseded. `Mode::Hosts`
 still exists but is now a live connected/unreachable status list (see
 ADR 0042 L2a); the frontend no longer writes `last_host` to
@@ -101,3 +106,24 @@ function Read-DevenvHosts { …reads .devenv/hosts.toml… }
 - **Cost of switching = Ctrl+Q + click shortcut.** Two clicks/keystrokes; acceptable given switching is rare.
 - **Parser simplicity is load-bearing** — both Rust and PowerShell parse the same file without a real TOML library. Trade: no escape sequences, no nested tables, no inline arrays. If the format needs to grow we'd switch both to a real parser.
 - **Backward compatibility**: env vars (`SOT_HOST` etc.) still win over `last_host`, so existing CI / launcher overrides keep working.
+
+## Addendum (2026-09-17): the loopback forward port is per OS user
+
+The TCP port this ADR introduced (`tcp_port = 18743` above, now grammar v2's
+ordinal series in `sot_protocol::topology`) was a single fixed constant per
+host — the same number for whoever ran the launcher there. On a shared
+Windows PC with two OS users each running their own Ship of Tools frontend,
+that collided: the second user's launcher found the first user's tunnel
+already listening on `127.0.0.1:18743`, decided the port was "open, reuse
+it," and dialed the first user's backend as its own. Both users' launchers
+only ever tested whether the port was *open*, never whose tunnel it was.
+
+The fix (`topology::hub_local_port`) makes the port a function of the OS
+user, not a shared constant: `18743 + (h % 100)`, where `h` is an FNV-1a
+hash of `$USER`/`%USERNAME%`/`$LOGNAME` (no name found keeps the old fixed
+`18743`, so a single-user box is unaffected). Every ordinal port in the
+series shifts with it — the whole block of loopback forwards a box's own
+launcher opens must stay inside that OS user's private port range, not
+just the hub's own tunnel — since the network stack's port namespace is
+per-machine, not per-user, and a second user's process can otherwise bind
+(or, worse, silently reuse) a port the first user already owns.

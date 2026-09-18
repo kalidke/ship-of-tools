@@ -637,6 +637,11 @@ pub const LANE_CONCURRENCY: usize = 4;
 /// teammate session. A daemon started from within a claude session (or
 /// restarted by one) would otherwise propagate every one of these into
 /// every capsule it spawns (ADR 0042 L1a, Codex review finding 9).
+/// `NO_COLOR` rides the same path for the same reason: a daemon that
+/// inherited it (a relaunch fired from inside a capsule hands its env to
+/// the next daemon) painted every row's agent colourless on Windows,
+/// where the pty sets no `TERM`/`COLORTERM` and `NO_COLOR` overrides
+/// ConPTY's own VT detection (field report, 2026-09-17).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
     "CLAUDE_CODE_FORK_SUBAGENT",
@@ -646,6 +651,7 @@ pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
     "CLAUDECODE",
     "AI_AGENT",
     "CLAUDE_CODE_SESSION_ID",
+    "NO_COLOR",
 ];
 
 /// The `SOT_COMM_HOME` value (forward-slash string form — a git-bash/MSYS
@@ -4176,6 +4182,7 @@ mod tests {
                 "CLAUDECODE",
                 "AI_AGENT",
                 "CLAUDE_CODE_SESSION_ID",
+                "NO_COLOR",
             ]
         );
     }

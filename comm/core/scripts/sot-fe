@@ -796,13 +796,13 @@ send_pty_input() {
 # scrollback, no history (op pty.screen). $1=workspace (id/label/slug).
 # Exits 2 on a daemon-reported error.
 send_pty_screen() {
-    local ws="$1" ws_id payload req resp
+    local ws="$1" ws_id resp
     _need_endpoint
     ws_id="$(_ws_id_or_passthrough "$ws")"
     export SEND_TIMEOUT="${TIMEOUT:-10}"
-    payload="$(jq -nc --arg w "$ws_id" '{workspace_id:$w}')"
-    req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"pty.screen", payload:$p}')"
-    resp="$(sot_send "$req" pty.screen || true)"
+    # One implementation (comm-lib.sh's sot_pty_screen), shared with
+    # comm-wake.sh's prompt-free gate.
+    resp="$(sot_pty_screen "$ws_id" || true)"
     if [ -z "$resp" ]; then
         echo "ERROR: no response from pty.screen within ${SEND_TIMEOUT}s via $ENDPOINT." >&2
         exit 2

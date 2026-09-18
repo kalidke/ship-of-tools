@@ -929,9 +929,6 @@ pub fn load_hosts() -> Vec<MonitorHost> {
     let local = sot_log::state_dir::host_name().unwrap_or_else(|_| "local".to_string());
     let hosts = match sot_protocol::topology::load() {
         Ok(Some((path, topo))) => {
-            for w in &topo.warnings {
-                tracing::warn!(path = ?path, "hosts.toml: {w}");
-            }
             let hosts = sampling_roster(&topo, &local);
             if topo.hub == local {
                 tracing::info!(path = ?path, count = hosts.len(), "monitor: hosts loaded, this box is the hub");
@@ -946,11 +943,32 @@ pub fn load_hosts() -> Vec<MonitorHost> {
             Vec::new()
         }
     };
-    if hosts.is_empty() {
+    let hosts = if hosts.is_empty() {
         tracing::info!(host = %local, "monitor: no [monitor] entries; monitoring local host only");
-        return vec![MonitorHost { name: local, ssh_alias: None, local: true }];
+        vec![MonitorHost { name: local, ssh_alias: None, local: true }]
+    } else {
+        hosts
+    };
+    without_local_sampler(hosts, cfg!(windows))
+}
+
+/// The sampler is a Linux script fed to `bash -s` (`/proc`, `nvidia-smi`).
+/// On Windows the only `bash` is git-bash, the daemon runs without a
+/// console, and every 5-second respawn of the dying script opened a new
+/// console window into the git install directory (field report,
+/// 2026-09-17). A Windows daemon samples nothing locally; ssh targets on
+/// a hub's roster are untouched. `on_windows` is a parameter so both
+/// branches are unit-testable on one platform.
+fn without_local_sampler(hosts: Vec<MonitorHost>, on_windows: bool) -> Vec<MonitorHost> {
+    if !on_windows {
+        return hosts;
     }
-    hosts
+    let kept: Vec<MonitorHost> = hosts.into_iter().filter(|h| !h.local).collect();
+    tracing::info!(
+        count = kept.len(),
+        "monitor: Windows daemon; the local host is not sampled (the sampler is a Linux script)"
+    );
+    kept
 }
 
 fn monitor_hosts(targets: Vec<(String, String)>, local: &str) -> Vec<MonitorHost> {
@@ -988,6 +1006,24 @@ mod config_tests {
     /// it. Every other box samples itself and nothing else, regardless of
     /// what the file declares.
     #[test]
+    fn windows_daemon_drops_only_the_local_sampler() {
+        let hosts = vec![
+            MonitorHost { name: "here".into(), ssh_alias: None, local: true },
+            MonitorHost { name: "there".into(), ssh_alias: Some("there".into()), local: false },
+        ];
+        let unix = without_local_sampler(hosts.clone(), false);
+        assert_eq!(unix.len(), 2);
+        let win = without_local_sampler(hosts, true);
+        assert_eq!(win.len(), 1);
+        assert_eq!(win[0].name, "there");
+        assert!(without_local_sampler(
+            vec![MonitorHost { name: "here".into(), ssh_alias: None, local: true }],
+            true
+        )
+        .is_empty());
+    }
+
+    #[test]
     fn only_the_hub_executes_the_monitor_roster() {
         let text = "hub = \"alpha\"\n[host.alpha]\ndaemon = true\n[monitor]\nalpha = \"alpha\"\nbeta = \"\"\ngpu = \"someone@gpu\"\n";
         let topo = sot_protocol::topology::parse(text).unwrap();
@@ -1013,8 +1049,15 @@ mod config_tests {
         std::env::set_var("SOT_HOSTS", "/nowhere/hosts.toml");
         let hosts = load_hosts();
         std::env::remove_var("SOT_HOSTS");
-        assert_eq!(hosts.len(), 1);
-        assert!(hosts[0].local && hosts[0].ssh_alias.is_none());
+        if cfg!(windows) {
+            // The fallback single-host roster is still local-only, and
+            // load_hosts() strips the local sampler on Windows same as any
+            // other roster: no declaration means an empty roster there.
+            assert!(hosts.is_empty());
+        } else {
+            assert_eq!(hosts.len(), 1);
+            assert!(hosts[0].local && hosts[0].ssh_alias.is_none());
+        }
     }
 
     /// The dedup that keeps a permanently-unreachable target from logging

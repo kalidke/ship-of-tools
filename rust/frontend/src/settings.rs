@@ -292,8 +292,11 @@ pub struct Settings {
     /// workspace" picker (ADR 0014) starts browsing from. A BACKEND path (the
     /// picker lists the daemon host's filesystem, e.g. the backend host), so set it to
     /// where your projects live, e.g. `"/home/you/projects"`. `None` →
-    /// the existing fallback chain (`$SOT_PROJECTS_ROOT` → host `remote_home` →
-    /// `$HOME`). See `begin_create_session`.
+    /// the existing fallback chain (`$SOT_PROJECTS_ROOT` → `$SOT_REMOTE_HOME`
+    /// → the daemon's own default row root → `$HOME`) — see
+    /// `begin_create_session`'s own doc comment for the full, current
+    /// tier list (a per-host hosts.toml `remote_home` field was never
+    /// part of it; that key was deleted with the v1 grammar).
     pub new_session_root: Option<String>,
     /// `[font] scale` — default text-scale multiplier applied at startup when
     /// no per-host persisted zoom exists. Precedence: persisted `font_scale`

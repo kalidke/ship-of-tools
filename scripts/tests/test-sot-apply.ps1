@@ -54,6 +54,14 @@ function New-Fixture([string]$prefix, [string]$curTag, [string]$newTag, [switch]
     git init -q 2>$null | Out-Null
     git config user.email t@t 2>$null; git config user.name t 2>$null
     Set-Content -LiteralPath (Join-Path $checkout 'f.txt') -Value 'x'
+    # A launch-sot.ps1 stand-in carrying the tag in its own text -- docs/adr/
+    # 0030-versioning-release-and-auto-update.md's 2026-09-17 amendment:
+    # repo\current\scripts\launch-sot.ps1 must be THIS tag's file after a
+    # flip, not the previous one (that is the whole point of pointing the
+    # shortcut at repo\current instead of the clone). See the check in
+    # section 2 below.
+    New-Item -ItemType Directory -Force -Path (Join-Path $checkout 'scripts') | Out-Null
+    Set-Content -LiteralPath (Join-Path $checkout 'scripts\launch-sot.ps1') -Value "# launch-sot.ps1 stand-in for $newTag"
     git add -A 2>$null | Out-Null
     git commit -qm init 2>$null | Out-Null
     $commit = (git rev-parse HEAD).Trim()
@@ -119,6 +127,12 @@ Check 'install.json version rewritten' ($ij2 -match '"version":\s*"0\.6\.0"') 'v
 Check 'unknown field preserved' ($ij2 -match 'must-survive-the-rewrite') 'additive field lost'
 $jt = @((Get-Item (Join-Path $p2 'repo\current') -Force).Target)
 Check 'repo\current junction' ([bool]($jt.Count -gt 0 -and $jt[0])) 'junction missing'
+# The flipped launcher is the NEW tag's own file (docs/adr/0030's 2026-09-17
+# amendment: a shortcut aimed at repo\current must pick up scripts on the
+# same transaction as binaries and resources, not lag a launch behind).
+Check 'repo\current\scripts\launch-sot.ps1 is the new tags file' `
+    ((Get-Content (Join-Path $p2 'repo\current\scripts\launch-sot.ps1') -Raw) -match [regex]::Escape('v0.6.0')) `
+    'flipped launcher does not name the new tag'
 # install.json must stay BOM-less: serde_json::from_str rejects a leading BOM,
 # so a BOM here makes InstallManifest::for_current_exe() return None and the
 # frontend silently stops checking for updates after the FIRST successful
