@@ -7,7 +7,6 @@ on:
   push:
     branches:
       - main
-    tags: ['*']
     paths:
       - "core/**"
       - "julia/**"
@@ -27,6 +26,7 @@ jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     timeout-minutes: 60
     permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
       actions: write
@@ -67,6 +67,7 @@ jobs:
   julia-packages:
     name: Julia packages ${{ matrix.version }}
     runs-on: ubuntu-latest
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     timeout-minutes: 60
     permissions:
       actions: write # julia-actions/cache proactive cleanup
@@ -118,6 +119,7 @@ jobs:
   docs:
     name: Documentation
     runs-on: ubuntu-latest
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
     concurrency:
       # Serialize only the DEPLOYING build (main -> gh-pages). A PR/branch
       # docs build deploys nothing, and one repo-wide group made GitHub

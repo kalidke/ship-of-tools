@@ -54,8 +54,10 @@ fi
 # skip it. gh is required — a release is never cut blind.
 command -v gh >/dev/null 2>&1 || { echo "preflight: gh not found — CI on main cannot be verified" >&2; exit 1; }
 for wf in rust.yml CI.yml; do
-    run="$(gh run list --branch main --workflow "$wf" --limit 1 --json headSha,status,conclusion,databaseId \
-        --jq '.[0] | "\(.headSha) \(.status) \(.conclusion) \(.databaseId)"' 2>/dev/null || true)"
+    # The version-stamp commit's run is skipped by the workflows' own `if`
+    # (2026-09-18), so read past skipped runs to the latest real verdict.
+    run="$(gh run list --branch main --workflow "$wf" --limit 5 --json headSha,status,conclusion,databaseId \
+        --jq '[.[] | select(.conclusion != "skipped")][0] | "\(.headSha) \(.status) \(.conclusion) \(.databaseId)"' 2>/dev/null || true)"
     [[ -n "$run" && "$run" != "null null null null" ]] || { echo "preflight: no $wf run on main — push and let CI finish, or: gh workflow run $wf --ref main" >&2; exit 1; }
     read -r run_sha run_status run_concl run_id <<<"$run"
     if [[ "$run_concl" != "success" ]]; then
