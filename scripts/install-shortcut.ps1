@@ -13,6 +13,14 @@
 # once a pinned launcher first appears, so an existing shortcut needs no
 # by-hand fix.
 
+param(
+    # The hub's ssh alias (the box whose hosts.toml is canonical). Recorded in
+    # install.json and used for this box's FIRST topology sync: the launcher
+    # can refresh a hosts.toml on every launch but cannot create the first one
+    # without knowing the hub (a fresh box has no copy to read a hub from).
+    # Same job as install.sh --hub on Linux/macOS.
+    [string]$Hub
+)
 $ErrorActionPreference = 'Stop'
 
 $repo = Resolve-Path -Path (Join-Path $PSScriptRoot '..')
@@ -87,7 +95,7 @@ Write-Host "Created: $shortcutPath"
 # bails at its "not a release install" guard and Windows never checks for
 # updates at all (install.sh, the only other writer, refuses to run here).
 # No-ops with an explanation on a -dev source build.
-& (Join-Path $PSScriptRoot 'install-manifest.ps1') -Prefix $prefixDir -Repo $repo.Path
+& (Join-Path $PSScriptRoot 'install-manifest.ps1') -Prefix $prefixDir -Repo $repo.Path -Hub $Hub
 
 # --- Keep the taskbar pin in sync -------------------------------------------
 # The taskbar pin is a SEPARATE .lnk from the desktop shortcut, so it drifts

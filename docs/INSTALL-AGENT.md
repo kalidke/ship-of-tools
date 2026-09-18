@@ -147,8 +147,13 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
 1. **Download + verify** from the selected release
    (https://github.com/kalidke/ship-of-tools/releases):
    `sot-<ver>-windows-x86_64.zip` + `SHA256SUMS`; check the hash
-   (`Get-FileHash -Algorithm SHA256`), extract `sot.exe` somewhere stable
-   (e.g. `%LOCALAPPDATA%\sot\bin`).
+   (`Get-FileHash -Algorithm SHA256`), extract **all three** binaries —
+   `sot.exe`, `sotd.exe`, `sot-capsule.exe` — into `%LOCALAPPDATA%\sot\bin`.
+   Not just `sot.exe`: the launcher reads the install's version from the
+   staged `sotd.exe` and treats its absence as a dev box (no pinned
+   `repo\current`, so the local daemon has no resources and REPL verbs fail
+   with "repl project missing"); `sot-apply.ps1` swaps and rolls back all
+   three as a set.
 2. **Backend**: install it on the Linux machine (`--be-only`, see the table
    above — you can drive that over SSH). It listens on that user's private
    socket, normally `/run/user/<uid>/sot/sessions/sot.sock`.
@@ -158,7 +163,7 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
 
    ```powershell
    $sock = ssh <ssh-alias> '~/.local/share/sot/bin/sotd session-socket-path sot'
-   ssh -N -L "18743:$sock" <ssh-alias>
+   ssh -N -L "18743:$sock" <ssh-alias>      # any free local port; 18743 is only an example
    ```
 
    Do NOT add the old fixed helper-port forwards (1234-1241) — they are
@@ -191,14 +196,21 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
    git clone https://github.com/kalidke/ship-of-tools
    cd ship-of-tools
    # hosts.toml is never hand-written here: it lives at
-   # %LOCALAPPDATA%\sot\config\hosts.toml (or $SOT_HOSTS), and the launcher
-   # (scripts\launch-sot.ps1) fetches it from the hub via `sotd topology
-   # sync` on every launch -- write the hub = "..." / [host.<name>] /
-   # daemon / frontend grammar ONCE, on the hub, per docs/src/start/setup.md
-   # ("hosts.toml — the declared topology"), or in a Claude Code session
-   # invoke the /sot-setup skill — it drives the whole checklist.
-   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1
+   # %LOCALAPPDATA%\sot\config\hosts.toml (or $SOT_HOSTS). -Hub names the
+   # hub's ssh alias ONCE: install-shortcut.ps1 records it in install.json
+   # and runs the box's FIRST `sotd topology sync --hub`, and the launcher
+   # (scripts\launch-sot.ps1) refreshes the file from the hub on every
+   # launch after that. Without -Hub a fresh box has no copy to learn the
+   # hub from and launches local-only ("no hosts.toml ... yet: pass --hub").
+   # The hub = "..." / [host.<name>] / daemon / frontend grammar is written
+   # ONCE, on the hub, per docs/src/start/setup.md ("hosts.toml — the
+   # declared topology"), or via the /sot-setup skill in a Claude Code session.
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1 -Hub <hub-ssh-alias>
    ```
+
+   Migrating off a source checkout: the box may look configured because
+   `<repo>\.sot\hosts.toml` survives, but that repo-local layer is no longer
+   read (step 4). `-Hub` is still required.
 
    `install-shortcut.ps1` also writes `%LOCALAPPDATA%\sot\install.json` (via
    `install-manifest.ps1`). **Do not skip it and hand-make a shortcut**: that
@@ -327,8 +339,11 @@ $e = $null
     (Resolve-Path .\scripts\sot-apply.ps1), [ref]$null, [ref]$e)
 $e.Count   # must be 0
 
-# 5. The tunnel is up and the backend answers on it.
-Test-NetConnection 127.0.0.1 -Port 18743 | Select-Object TcpTestSucceeded
+# 5. The tunnel is up. The port is topology-derived (per OS user), NOT 18743:
+#    read it from the plan's "tunnel <host> <port>" line.
+$port = (& "$env:LOCALAPPDATA\sot\bin\sotd.exe" topology plan |
+         Select-String '^tunnel ' | Select-Object -First 1 | ForEach-Object { ($_ -split '\s+')[2] })
+Test-NetConnection 127.0.0.1 -Port $port | Select-Object TcpTestSucceeded
 ```
 
 Then launch from the desktop shortcut (not `sot.exe` directly — that is a
@@ -339,8 +354,8 @@ means the frontend and backend are on different builds** and the backend
 needs updating. Tell the human: **press `?` for help; the top line of the nav
 pane always shows the pane-switch keys.**
 
-If step 3 printed nothing, run `powershell -File scripts\install-manifest.ps1`
-and re-check. If it reports a `-dev` build, that is a source install: it
+If step 3 printed nothing, run `powershell -File scripts\install-manifest.ps1
+-Hub <hub-ssh-alias>` and re-check. If it reports a `-dev` build, that is a source install: it
 updates via the launcher's git pull + cargo rebuild instead, which is correct
 and needs no manifest.
 
@@ -413,7 +428,8 @@ top line of the nav pane always shows the pane-switch keys.**
 | checksum verification FAILED | truncated download → re-run; still failing = report, don't bypass |
 | `ssh ... doesn't work` during (b) | no key auth → `ssh-copy-id` then re-run |
 | dirty-checkout refusal on upgrade | the human edited `repo/current` → `git -C ... stash` (or commit), re-run |
-| local port 18743 already bound | another tunnel owns it → `--port <n>` |
+| local port (from the plan's `tunnel` line) already bound | another tunnel owns it → `--port <n>` |
+| `topology sync failed: no hosts.toml ... yet: pass --hub <alias>` | the box never had its first sync (fresh install without `-Hub`, or migrated off a checkout whose `.sot\hosts.toml` is no longer read) → `sotd topology sync --hub <alias>` (or re-run `install-shortcut.ps1 -Hub <alias>`), then relaunch |
 | backend socket missing | old TCP-based service unit or failed daemon start → reinstall/restart the socket-based `sotd.service` |
 | Julia instantiate fails "project and manifest are out of sync" (often naming a stdlib, e.g. `Sockets`) | stale `Manifest.toml` from a previous install left in the checkout's env dirs → re-run the installer (it drops stale manifests since 2026-08-11); manual fix: `rm ~/.local/share/sot/repo/current/julia/{kernel,repl,pluto}/Manifest.toml` and re-run |
 | Julia instantiate slow on first run | normal (precompilation); minutes, once |

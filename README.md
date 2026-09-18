@@ -161,7 +161,9 @@ In a Claude Code session the **`/sot-setup`** skill drives that page end-to-end
 installs it user-level). Doing it by hand on Windows: after the build/env
 steps, write `.sot/settings.toml` and make sure the hub has a `hosts.toml`
 (fetched onto this box by `sotd topology sync`, never repo-local), run
-`ShipTools.update_comm()`, then run `scripts\install-shortcut.ps1` — it wires
+`ShipTools.update_comm()`, then run `scripts\install-shortcut.ps1 -Hub <hub-alias>`
+(the alias does the box's first `hosts.toml` fetch and is recorded for every
+launch after) — it wires
 the desktop shortcut (and any taskbar pin) to `scripts\launch-sot.ps1` and
 stamps the SoT icon + taskbar identity. Never point a shortcut at bare
 `sot.exe`.
