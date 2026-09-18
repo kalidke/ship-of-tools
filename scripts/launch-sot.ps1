@@ -932,6 +932,14 @@ $script:tcpPort = if ($env:SOT_TCP_PORT) {
 } else {
     18743
 }
+# Propagate the RESOLVED port back into this process's own environment
+# (2026-09-17 review), not just read it: shutdown-sot.ps1/comm-relay.ps1
+# each default $env:SOT_TCP_PORT to a bare 18743 with no plan of their own
+# to fall back on, and this line runs before Invoke-LocalDaemonEnsure below
+# starts the local daemon -- so setting it here, once, lets the daemon (and
+# anything it in turn spawns, e.g. a capsule inheriting the daemon's env)
+# see the per-user-derived port instead of always the fixed default.
+$env:SOT_TCP_PORT = "$tcpPort"
 # Always queried on the remote (New-RemoteEnsureCommand above) -- no more
 # config-file/env override; see the host-registry comment above.
 $script:remoteSocket = $null
@@ -1121,7 +1129,10 @@ function Stop-StaleControlTunnel {
         ForEach-Object {
             $owner = $null
             try { $owner = (Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction Stop).User } catch { }
-            if ($owner -and $owner -ne $env:USERNAME) { return }  # not ours -- never touch another user's process
+            # A null owner (GetOwner failed/denied) means NOT PROVEN ours,
+            # same as a proven different owner -- do not fall through to
+            # Stop-Process on an unconfirmed process (2026-09-17 review).
+            if ((-not $owner) -or ($owner -ne $env:USERNAME)) { return }
             try {
                 Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
                 Write-SupLog "control port $Port was held by a stale tunnel (pid $($_.ProcessId)); replaced"
