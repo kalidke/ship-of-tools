@@ -16,10 +16,12 @@
 #
 # Two kinds of writer:
 #   - the MODEL reports EXPLICITLY (COMM_STATUS_SOFT unset). Its word overrides
-#     everything. `waiting` sets a sticky marker (.sticky/.sticky_at); any other
-#     explicit state clears it, except `blocked`, which keeps it underneath —
-#     waiting-on-a-job and blocked-on-the-user can both be true, and answering
-#     the question must drop the row back to purple, not green.
+#     everything. `waiting` sets a sticky marker (.sticky/.sticky_at); every
+#     other explicit state clears it, `blocked` included (2026-09-18: a
+#     question is the newest declaration of the turn's end state, and a
+#     marker kept underneath it from an earlier wait turned a red question
+#     purple on the next tool call; a session still waiting after the answer
+#     says so again with SITREP-WAITING).
 #   - HOOKS write SOFT (COMM_STATUS_SOFT=1) and never override a deliberate
 #     state:
 #       soft `working` (the prompt hook, with COMM_STATUS_ORIGIN=user|machine —
@@ -180,7 +182,6 @@ status_txn() {
     elif [ "$SOFT" = 0 ]; then
         case "$st" in
             waiting) sticky_op=set ;;
-            blocked) sticky_op=keep ;;
             *)       sticky_op=clear ;;
         esac
     fi

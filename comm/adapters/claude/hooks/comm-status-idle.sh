@@ -180,7 +180,7 @@ if [ -n "$last_text" ]; then
 fi
 if [ -n "$marker_state" ]; then
     # Explicit (not soft): the marker IS the model's report. `waiting` sets
-    # the sticky purple; `blocked` keeps a marker underneath as today.
+    # the sticky purple; every other marker clears it.
     [ -x "$STATUS" ] && "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || true
 
     # ARTIFACT AUDIT EXCEPTION (2026-09-14): the row is already stamped from

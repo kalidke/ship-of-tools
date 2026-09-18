@@ -15,9 +15,11 @@ behave differently while it's live:
   marker **demotes you straight back to purple**, restoring your `waiting`
   summary. You do NOT need to re-assert `waiting` at every turn end — it
   survives intervening turns on its own.
-- An explicit `blocked` also preserves the marker underneath it (precedence:
-  blocked > waiting > idle); answering the question drops you back to
-  purple, not green.
+- An explicit `blocked` clears the marker like any other explicit state
+  (2026-09-18): a question is the newest word on the turn's end state, and a
+  marker kept underneath it turned a red question purple on the next tool
+  call. Still waiting on the job after the answer? Say so again with
+  `SITREP-WAITING:`.
 
 The marker clears two ways:
 1. **You explicitly report** `working` / `idle` / `done` (i.e. you ran
