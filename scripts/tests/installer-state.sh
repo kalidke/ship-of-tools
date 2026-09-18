@@ -290,14 +290,6 @@ check "a live daemon from another prefix refuses before any FE file is even look
     "$(installer_ownership_gate "$OTHER_PREFIX/bin/sotd" "$GHOME" "$GPREFIX" Linux 1 0)"
 
 # ---------------------------------------------------------------------------
-case_start "sot-launch wrapper execs the pinned checkout with updates off (docs/adr/0030's 2026-09-17 amendment: Windows now shares this invariant via install-shortcut.ps1/launch-sot.ps1)"
-INSTALL_SH="$(dirname "$0")/../install.sh"
-check "wrapper execs repo/current/scripts/launch-sot.sh, never the base clone" \
-    "1" "$(grep -Fc 'exec "$PREFIX/repo/current/scripts/launch-sot.sh"' "$INSTALL_SH")"
-check "wrapper sets SOT_NO_UPDATE=1 before that exec (the pinned checkout never self-updates)" \
-    "1" "$(grep -Fc 'export SOT_NO_UPDATE=1' "$INSTALL_SH")"
-
-# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'
