@@ -496,7 +496,13 @@ sot_pty_input() {
 sot_pty_screen() {
     local wsid="$1" frame
     frame="$(jq -nc --arg w "$wsid" '{v:1,id:1,kind:"req",op:"pty.screen",payload:{workspace_id:$w}}')"
-    SOT_SEND_TIMEOUT="${SOT_SEND_TIMEOUT:-10}" sot_oneshot_request "$frame" "pty.screen"
+    # No local default here (fixed 2026-09-17): sot_oneshot_request's own
+    # fallback chain is SOT_SEND_TIMEOUT -> SEND_TIMEOUT -> 10. Presetting
+    # SOT_SEND_TIMEOUT=10 here shadowed a caller-set SEND_TIMEOUT (sot-fe
+    # screen --timeout N exports SEND_TIMEOUT, then its own error text quotes
+    # SEND_TIMEOUT), so the flag was silently ignored. Let the callee's own
+    # fallback apply unmangled.
+    sot_oneshot_request "$frame" "pty.screen"
 }
 
 # sot_capsule_workspace_id — print the calling shell's capsule row id, or
