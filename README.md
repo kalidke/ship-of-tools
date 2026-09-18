@@ -219,4 +219,6 @@ before opening a PR.
 
 ## License
 
-See [LICENSE](LICENSE).
+Dual-licensed: [AGPL-3.0-or-later](LICENSE) for everyone, with a commercial
+licence available for products and services that cannot meet the AGPL's
+source-sharing terms. Details and history in [LICENSING.md](LICENSING.md).
