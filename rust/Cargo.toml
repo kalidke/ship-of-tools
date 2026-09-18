@@ -13,7 +13,7 @@ members = [
 version = "0.6.3"
 edition = "2021"
 authors = ["kalidke"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 # Async + plumbing
