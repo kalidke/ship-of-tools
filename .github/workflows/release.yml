@@ -94,12 +94,16 @@ jobs:
           else
             echo "version=0.0.0-ci.${GITHUB_SHA::9}" >> "$GITHUB_OUTPUT"
           fi
-      - name: Test
-        shell: bash
-        run: cd rust && cargo test --workspace --locked
+      # No test step here (2026-09-18): the tag tree is the merge commit
+      # rust.yml already tested on main plus version lines, and release.sh
+      # ran the workspace suite on the stamped tree before pushing. What
+      # this workflow proves is the ARTIFACT: it builds, boots on the oldest
+      # fleet host, and self-identifies -- the smokes below.
       - name: Build release binaries
         shell: bash
-        run: cd rust && cargo build --release --workspace --locked
+        # linux ships only the frontend from this glibc build (sotd and
+        # sot-capsule come from the musl build below), so build only that.
+        run: cd rust && cargo build --release ${{ matrix.target == 'linux-x86_64' && '-p sot-frontend' || '--workspace' }} --locked
       - name: Build sotd + sot-capsule (musl static, linux)
         if: matrix.target == 'linux-x86_64'
         shell: bash
