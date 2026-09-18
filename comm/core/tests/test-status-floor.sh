@@ -130,6 +130,13 @@ case_soft_done_holds_red() { seed blocked; COMM_STATUS_SOFT=1 "$ST" done; expect
 case_sticky_waiting_survives_user_turn() { seed idle; "$ST" waiting "job"; W "$GENUINE"; expect working/user/sticky prompt && I && expect waiting/user/sticky end; }
 case_explicit_idle_then_floor_is_gray() { seed idle; W "$GENUINE"; "$ST" idle; I; expect idle/user/- end; }
 case_machine_wake_on_blue_stays_blue() { seed idle; W "$GENUINE"; I; W "$RELAY"; expect done/machine/- wake && HB && expect done/machine/- tool && I && expect done/machine/- end; }
+# A peer message on a blue row: the first tool call holds blue (a quick ack
+# must not repaint a parked done), two minutes of tool calls is real work.
+age_turn() { jq --arg n "$NAME" '.agents[$n].turn_at = "2026-09-08T00:00:00Z"' "$REGISTRY" > "$REGISTRY.t" && mv "$REGISTRY.t" "$REGISTRY"; }
+# HBF: the heartbeat run from the flat bin dir (built below, before the checks
+# run), where it can resolve NAME; the plain HB above cannot and exits early.
+HBF() { rm -f "$SOT_COMM_HOME"/state/hb-*.tick 2>/dev/null; printf '{"tool_name":"Bash"}' | bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh" >/dev/null 2>&1; }
+case_machine_turn_on_blue_goes_green_after_work() { seed idle; W "$GENUINE"; "$ST" done "shipped"; W "$RELAY"; expect done/machine/- wake && HBF && expect done/machine/- first-tool && age_turn && HBF && expect working/machine/- worked && I && expect idle/machine/- end; }
 case_machine_wake_on_red_stays_red() { seed idle; W "$GENUINE"; "$ST" blocked "q?"; W "$RELAY"; expect blocked/machine/- wake && HB && expect blocked/machine/- tool && I && expect blocked/machine/- end; }
 case_explicit_working_in_machine_turn_on_red_ends_gray() { seed idle; W "$GENUINE"; "$ST" blocked "q?"; W "$RELAY"; "$ST" working "resuming"; expect working/machine/- explicit && I && expect idle/machine/- end; }
 case_blocked_answered_ends_blue() { seed blocked; W "$GENUINE"; expect working/user/- answer && I && expect done/user/- end; }
@@ -495,6 +502,7 @@ check "sticky waiting paints green through a user turn and returns to purple at 
 check "explicit idle then the floor stays gray" case_explicit_idle_then_floor_is_gray
 check "a machine wake on a blue row stays blue through tool work and Stop" case_machine_wake_on_blue_stays_blue
 check "a machine wake on a red row stays red through tool work and Stop" case_machine_wake_on_red_stays_red
+check "a machine turn on a blue row goes green after two minutes of tool work, gray at Stop" case_machine_turn_on_blue_goes_green_after_work
 check "explicit working inside a machine turn on a red row ends gray (no stale origin)" case_explicit_working_in_machine_turn_on_red_ends_gray
 check "blocked answered by the user ends blue" case_blocked_answered_ends_blue
 check "headless child hooks stand down on SOT_COMM_HOOKS=off" case_headless_child_hooks_stand_down

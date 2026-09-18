@@ -101,7 +101,9 @@ marker_live() { [ -n "$1" ] && [ "$1" -lt "$STICKY_MAX_AGE_S" ]; }
 # write_origin ORIGIN — record the running turn's provenance without touching
 # the state (a soft working write that HOLDS the current colour).
 write_origin() {
-    jq --arg n "$NAME" --arg o "$1" 'if .agents[$n] then .agents[$n] += {turn_origin:$o} else . end' \
+    # turn_at: when this turn began -- the heartbeat hook reads it to tell a
+    # machine turn that is doing real work from one that only acked a peer.
+    jq --arg n "$NAME" --arg o "$1" --arg t "$(now_iso)" 'if .agents[$n] then .agents[$n] += {turn_origin:$o, turn_at:$t} else . end' \
        "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
 }
 # write_state STATE HAVE_SUMMARY SUMMARY STICKY_OP — merge the work-state into

@@ -38,7 +38,10 @@ Blue and gray are an **unread / read** pair, stamped by hooks, not by you:
   been back since".
 - A turn a **machine** started — a relay message, a Monitor event, a task
   notification — floors to **gray** `idle`, whatever it did: a peer's ack must
-  not paint a parked row blue. If such a turn landed a real result, report
+  not paint a parked row blue. A blue row holds through such a turn's first
+  tool calls, but once the turn has been calling tools for two minutes the
+  heartbeat hook paints it green: that is real work, not an ack. A red row
+  still holds (the question is still open). If such a turn landed a real result, report
   `comm-status.sh done "<summary>"` yourself — that explicit blue is the
   accurate signal and the skill rule already asks for it.
 - **Never stamp `done` by hand mid-turn.** Blue means "finished, nothing
