@@ -227,7 +227,7 @@ stored_origin="$origin"
 # longer than the tail ($h was null above), so this never fires there --
 # $origin is left exactly as read, same as before this change.
 case "$prompt_text" in
-    "[SYSTEM NOTIFICATION"*|*"<task-notification>"*|"[relay] from"*|\[*:*\]\ *)
+    "[SYSTEM NOTIFICATION"*|*"<task-notification>"*|"[relay] from"*|"[sot-comm] "*|\[*:*\]\ *)
         origin=machine ;;
     "Another Claude session sent a message"*|*"<teammate-message"*|*"<agent-message"*|*"<cross-session-message"*|"Stop hook feedback:"*)
         origin=machine ;;

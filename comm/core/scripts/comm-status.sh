@@ -62,8 +62,17 @@ esac
 
 # Self-gate: only a joined comm agent (a session with a self row) reports. NAME
 # comes from comm-context (the pane-keyed self file); empty / no row → no-op.
-[ -n "${NAME:-}" ] || exit 0
-jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || exit 0
+# A hook's SOFT write stays a silent no-op (not every shell is a comm agent);
+# an EXPLICIT stamp that lands nowhere says so and fails -- a stamp run from
+# the wrong cwd resolved no identity and vanished with rc 0 (field report,
+# 2026-09-18).
+_no_row() {
+    [ "${COMM_STATUS_SOFT:-0}" = 1 ] && exit 0
+    echo "comm-status.sh: no registry row for '${NAME:-<no identity>}' from cwd $PWD -- stamp discarded; run it from the session's project root" >&2
+    exit 1
+}
+[ -n "${NAME:-}" ] || _no_row
+jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || _no_row
 
 SOFT="${COMM_STATUS_SOFT:-0}"
 STICKY_MAX_AGE_S=7200   # a forgotten sticky-waiting self-heals after 2h
