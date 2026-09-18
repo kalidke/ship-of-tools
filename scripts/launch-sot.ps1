@@ -647,6 +647,59 @@ if (-not $NoUpdate -and (Test-Path $sotApply)) {
     $applyOut = & $sotApply 6>&1 2>&1
     foreach ($l in @($applyOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
 }
+# Read ONCE, right after the apply attempt above -- Invoke-FreshnessPass and
+# the migration/handover block below both need "did an update just land",
+# and the marker FILE itself stays present for the rest of this launch (the
+# crash-loop read further down needs that), so a $script: flag is the one-
+# shot signal that gets CONSUMED (see Invoke-FreshnessPass) instead.
+$script:sotJustApplied = Test-Path -LiteralPath $applyMarker
+
+# ---------------------------------------------------------------------------
+# Migration + post-apply handover onto the pinned launcher (docs/adr/
+# 0030-versioning-release-and-auto-update.md's 2026-09-17 amendment). ONE
+# block serves two cases that both need the same in-process re-invoke:
+#   - migration: the shortcut/pin still targets the clone even though
+#     repo\current now exists (Initialize-InstallLayout above may have just
+#     created it) -- hand over so this launch already runs pinned scripts.
+#   - post-apply: sot-apply.ps1 just flipped repo\current to a NEW tag, but
+#     THIS process is still the OLD tag's in-memory copy -- without handing
+#     over, it drives the rest of this launch (backend-pair rebuild, local
+#     daemon ensure, frontend spawn) against the new tag's binaries and
+#     scripts with the old copy's logic.
+#
+# Gated on install.json existing -- the updater's own release-install marker
+# (rust/updater/src/manifest.rs); a dev clone never writes one. $pinnedLauncher
+# -ne $PSCommandPath is what actually stops this from recursing: a copy that
+# IS ALREADY $pinnedLauncher has nothing left to hand over to, regardless of
+# $script:sotPinned's own value -- the previous version of this block
+# skipped straight to trusting the predicate here and could loop when the
+# two disagreed. -not $env:SOT_LAUNCH_REEXEC is redundant with that (both
+# Invoke-SelfUpdatePrelude paths always clear it before this point) but kept
+# as defense in depth. Test-Path $pinnedLauncher guards the obvious case of
+# nothing to hand over to yet (Initialize-InstallLayout failed to pin a tag).
+# ---------------------------------------------------------------------------
+$pinnedLauncher = Join-Path $repoCurrent 'scripts\launch-sot.ps1'
+if ((Test-Path -LiteralPath (Join-Path $prefixDir 'install.json')) -and
+    -not $env:SOT_LAUNCH_REEXEC -and
+    ($pinnedLauncher -ne $PSCommandPath) -and
+    (-not $script:sotPinned -or $script:sotJustApplied) -and
+    (Test-Path -LiteralPath $pinnedLauncher)) {
+    Write-SupLog "migration: handing over to $pinnedLauncher"
+    $shortcutScript = Join-Path $PSScriptRoot 'install-shortcut.ps1'
+    if (Test-Path -LiteralPath $shortcutScript) {
+        try {
+            $shortcutOut = & $shortcutScript 2>&1
+            foreach ($l in @($shortcutOut)) { if ("$l".Trim()) { Write-SupLog "migration: install-shortcut -> $l" } }
+        } catch {
+            Write-SupLog "migration: install-shortcut.ps1 failed: $($_.Exception.Message)"
+        }
+    }
+    Stop-Splash   # the pinned launcher spawns its own
+    $env:SOT_LAUNCH_REEXEC = '1'
+    $reexecParams = $script:LaunchBoundParameters
+    & $pinnedLauncher @reexecParams
+    exit $LASTEXITCODE
+}
 
 # Binary sources, in priority order: an update just applied into the staged
 # bin dir, the dev source build, or the already-staged copy from a previous
@@ -1291,17 +1344,20 @@ function Invoke-CommUpdate {
 function Invoke-FreshnessPass {
     if ($NoUpdate -or $Local) { return }
     if ($script:sotPinned) {
-        # Release install: binaries, resources and scripts already arrived
-        # together via sot-apply.ps1 -- nothing here to pull or rebuild.
-        # Comm scripts/skills still need to follow the tag though (ADR
-        # 0030's deferred "update_comm on auto-apply" item, closed by this
-        # 2026-09-17 amendment): triggered by the update this launch just
-        # applied (the just-applied marker, cleared/re-armed by sot-apply.ps1
-        # above) or by a comm install that is simply missing, never by "a
-        # pull succeeded" -- there is no pull to succeed.
+        # Nothing here to pull or rebuild. Comm still needs to follow the
+        # tag (ADR 0030's deferred "update_comm on auto-apply" item, closed
+        # by the 2026-09-17 amendment): triggered by an update this launch
+        # just applied or a comm install that is simply missing, never by
+        # "a pull succeeded". $script:sotJustApplied is CONSUMED (read then
+        # cleared) here, not re-read from the marker file: an exit-76
+        # converge calls this function again later in the SAME launch, and
+        # that is still the one apply, not a second update -- Julia must
+        # not run twice for it.
         $commHome = if ($env:SOT_COMM_HOME) { $env:SOT_COMM_HOME } else { Join-Path $env:USERPROFILE '.sot-comm' }
         $commMissing = -not (Test-Path -LiteralPath (Join-Path $commHome 'bin'))
-        if ((Test-Path -LiteralPath $applyMarker) -or $commMissing) {
+        $justApplied = $script:sotJustApplied
+        $script:sotJustApplied = $false
+        if ($justApplied -or $commMissing) {
             Invoke-CommUpdate
         } else {
             Write-SupLog 'freshness: pinned checkout - comm already installed and nothing just applied, skipping'
