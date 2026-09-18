@@ -77,6 +77,23 @@ $repo = Resolve-Path -Path (Join-Path $PSScriptRoot '..')
 # with shutdown-sot.ps1 -- see that file's own header.
 . (Join-Path $PSScriptRoot 'sot-hosts.ps1')
 
+# Test-SotPinnedCheckout / Get-SotPinnedTag / Get-SotLauncherTarget /
+# Set-SotJunction / Initialize-InstallLayout -- shared with
+# install-shortcut.ps1; see that file's header.
+. (Join-Path $PSScriptRoot 'sot-install-layout.ps1')
+
+# Computed ONCE, before any self-update/freshness/layout decision below: is
+# the SCRIPT running right now the installed tag's own copy (a detached
+# worktree under repo\current), or a branch clone -- a dev box, or a
+# release box that has not yet migrated onto the pinned shortcut (see the
+# migration handover further down)? This used to be asked four different,
+# sometimes disagreeing ways (a git-pull gate, a cargo-on-PATH probe, a
+# staged-sotd-absent check, and the launcher's dev-pair-first binary rule,
+# which decides something else and stays) -- see docs/adr/
+# 0030-versioning-release-and-auto-update.md's 2026-09-17 amendment.
+$script:sotPinned = Test-SotPinnedCheckout -Repo $repo
+$script:sotPinnedTag = if ($script:sotPinned) { Get-SotPinnedTag -Repo $repo } else { '' }
+
 # Logs FIRST — so the progress splash and status writes can come up before any
 # slow pull/build/ssh work. Append-only supervisor log: unlike the frontend
 # stdout/stderr logs (which Start-Process truncates on every respawn), this
@@ -215,6 +232,15 @@ function Stop-Splash {
 # the tunnels nor an exit-75 relaunch inherit it. -Local (a freshness-free debug
 # path) and -NoUpdate skip the whole prelude.
 #
+# Pinned checkout (docs/adr/0030-versioning-release-and-auto-update.md's
+# 2026-09-17 amendment): $script:sotPinned, computed once near the top of
+# this file, skips ALL of the above -- a release install's repo\current is
+# the tag's own scripts, resources and binaries, flipped together by
+# sot-apply.ps1, so there is nothing here for a git pull to refresh and
+# nothing for the SOT_LAUNCH_REBUILD/cargo path below to rebuild. Only a
+# branch clone (a dev box, or a release box mid-migration onto the pinned
+# shortcut -- see the migration handover further down) reaches the pull.
+#
 # Refused vs offline (2026-09-03 field report): a pull can fail two different
 # ways and they are NOT the same event. OFFLINE means fetch never reached the
 # remote - expected on a laptop off wifi, stays quiet (log only). REFUSED means
@@ -253,6 +279,17 @@ function Invoke-SelfUpdatePrelude {
         [switch]$AllowReexec
     )
     $script:launchNotices.Clear()
+    if ($script:sotPinned) {
+        # A pinned checkout IS the installed tag's scripts, resources and
+        # binaries, flipped together by sot-apply.ps1 -- there is nothing
+        # here for a git pull to refresh, and pulling anyway (against
+        # whatever branch the BASE clone happens to be on) is exactly the
+        # launcher/binary skew this predicate exists to end. Updates arrive
+        # only through the staged-update apply further down.
+        Write-SupLog "self-update: pinned checkout $script:sotPinnedTag - updates arrive via sot-apply, no pull"
+        if ($env:SOT_LAUNCH_REEXEC) { Remove-Item Env:\SOT_LAUNCH_REEXEC -ErrorAction SilentlyContinue }
+        return
+    }
     if (-not $NoUpdate -and -not $Local -and -not $env:SOT_LAUNCH_REEXEC -and (Test-Path (Join-Path $repo '.git'))) {
         # Relax 'Stop' -> 'Continue' around native git: its stderr under 'Stop' + 2>&1
         # throws in PS 5.1. Gate on $LASTEXITCODE, not thrown errors (as below).
@@ -1226,8 +1263,60 @@ function Limit-NoticeText {
     if ($t.Length -le $MaxLength) { return $t }
     return $t.Substring(0, $MaxLength) + '...'
 }
+# Comm layer install/refresh (converge follow-up, 2026-09-03): a converged
+# box carries fresh Rust binaries but a STALE ~/.sot-comm/bin + Claude/Codex
+# skill set if this step is skipped -- ShipTools.update_comm() is the one
+# place that deploys comm/ scripts and skills (scripts/install.sh's own
+# julia_run call does the same thing at install time; see docs/src/start/
+# install.md). Shared by both of Invoke-FreshnessPass's branches below (a
+# dev pull and a pinned release install) -- the trigger differs, the call
+# does not. Non-fatal: no julia on PATH is the NORMAL state for a pure
+# FE-client box (sot-setup SKILL.md's no-Julia fallback) and only logs;
+# julia present but the command itself failing is unusual enough to also
+# join the launch notice.
+function Invoke-CommUpdate {
+    $juliaCmd = Get-Command julia -ErrorAction SilentlyContinue
+    if (-not $juliaCmd) {
+        Write-SupLog "freshness: no julia on PATH - skipping comm install (FE-client box, this is normal)"
+        return
+    }
+    Write-SupLog "freshness: julia -e ShipTools.update_comm()"
+    # One fully-quoted argument, not an adjacent bare+quoted concatenation --
+    # unambiguous if $repo.Path ever contains a space. $repo IS repo\current
+    # on a pinned checkout (PSScriptRoot resolves through it), so comm
+    # scripts and skills follow the installed tag with no separate wiring.
+    $juliaProjectArg = "--project=$($repo.Path)"
+    $commOut = julia $juliaProjectArg -e 'using ShipTools; ShipTools.update_comm()' 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $commExcerpt = @(Get-FailureExcerpt -Output $commOut -Kind 'julia')
+        Write-SupLog "freshness: ShipTools.update_comm() FAILED (non-fatal). message: $($commExcerpt -join ' / ')"
+        $script:launchNotices.Add("comm install failed: $(Limit-NoticeText $commExcerpt[0])") | Out-Null
+    } else {
+        Write-SupLog "freshness: ShipTools.update_comm() ok"
+    }
+}
+
 function Invoke-FreshnessPass {
-    if ($env:SOT_LAUNCH_REBUILD -ne '1' -or $NoUpdate -or $Local) { return }
+    if ($NoUpdate -or $Local) { return }
+    if ($script:sotPinned) {
+        # Release install: binaries, resources and scripts already arrived
+        # together via sot-apply.ps1 -- nothing here to pull or rebuild.
+        # Comm scripts/skills still need to follow the tag though (ADR
+        # 0030's deferred "update_comm on auto-apply" item, closed by this
+        # 2026-09-17 amendment): triggered by the update this launch just
+        # applied (the just-applied marker, cleared/re-armed by sot-apply.ps1
+        # above) or by a comm install that is simply missing, never by "a
+        # pull succeeded" -- there is no pull to succeed.
+        $commHome = if ($env:SOT_COMM_HOME) { $env:SOT_COMM_HOME } else { Join-Path $env:USERPROFILE '.sot-comm' }
+        $commMissing = -not (Test-Path -LiteralPath (Join-Path $commHome 'bin'))
+        if ((Test-Path -LiteralPath $applyMarker) -or $commMissing) {
+            Invoke-CommUpdate
+        } else {
+            Write-SupLog 'freshness: pinned checkout - comm already installed and nothing just applied, skipping'
+        }
+        return
+    }
+    if ($env:SOT_LAUNCH_REBUILD -ne '1') { return }
     # The git pull moved to the self-update prelude at the top; here we only
     # REBUILD, and only when that pull succeeded (the SOT_LAUNCH_REBUILD marker)
     # so exactly one cargo build runs in the final invocation. Consume the marker.
@@ -1239,49 +1328,26 @@ function Invoke-FreshnessPass {
     $savedEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        # Comm layer install/refresh (converge follow-up, 2026-09-03): a
-        # converged box carries fresh Rust binaries but a STALE
-        # ~/.sot-comm/bin + Claude/Codex skill set if this step is skipped --
-        # ShipTools.update_comm() is the one place that deploys comm/
-        # scripts and skills (scripts/install.sh's own julia_run call does
-        # the same thing at install time; see docs/src/start/install.md).
         # Gated the same as the rest of this pass -- "the pull succeeded"
         # (SOT_LAUNCH_REBUILD, checked above) stands in for "the pull
         # changed anything"; update_comm() is idempotent, so running it on
         # a no-op pull is harmless and there is no cheaper signal available
-        # here. Non-fatal: no julia on PATH is the NORMAL state for a pure
-        # FE-client box (sot-setup SKILL.md's no-Julia fallback) and only
-        # logs; julia present but the command itself failing is unusual
-        # enough to also join the launch notice.
-        $juliaCmd = Get-Command julia -ErrorAction SilentlyContinue
-        if (-not $juliaCmd) {
-            Write-SupLog "freshness: no julia on PATH - skipping comm install (FE-client box, this is normal)"
-        } else {
-            Write-SupLog "freshness: julia -e ShipTools.update_comm()"
-            # One fully-quoted argument, not an adjacent bare+quoted
-            # concatenation -- unambiguous if $repo.Path ever contains a space.
-            $juliaProjectArg = "--project=$($repo.Path)"
-            $commOut = julia $juliaProjectArg -e 'using ShipTools; ShipTools.update_comm()' 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                $commExcerpt = @(Get-FailureExcerpt -Output $commOut -Kind 'julia')
-                Write-SupLog "freshness: ShipTools.update_comm() FAILED (non-fatal). message: $($commExcerpt -join ' / ')"
-                $script:launchNotices.Add("comm install failed: $(Limit-NoticeText $commExcerpt[0])") | Out-Null
-            } else {
-                Write-SupLog "freshness: ShipTools.update_comm() ok"
-            }
-        }
+        # here.
+        Invoke-CommUpdate
 
         # Probe for cargo FIRST. Without this the missing-toolchain case is
         # reported as a SUCCESS: PowerShell raises CommandNotFoundException
         # (which 2>&1 captures into $buildOut) but leaves $LASTEXITCODE at 0
         # from the preceding successful `git` call, so the `-ne 0` test below
         # takes the else-branch and logs "frontend rebuilt" having built
-        # nothing. That is the normal state on a release install (INSTALL-AGENT
-        # §2b needs no Rust toolchain), so it is not an error — just say so and
-        # run the staged binary.
+        # nothing. This branch only runs on a non-pinned (dev/clone) checkout
+        # now -- a pinned release install returns above and never reaches
+        # this probe at all -- but a dev checkout can still lack a Rust
+        # toolchain (e.g. a box that only ever clicks the shortcut), so this
+        # is not an error -- just say so and run whatever binaries exist.
         $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
         if (-not $cargoCmd) {
-            Write-SupLog "freshness: no cargo on PATH - release install, running the staged binary (this is normal)"
+            Write-SupLog "freshness: no cargo on PATH - nothing to rebuild from source here, running the existing binaries (this is normal on a dev checkout without a Rust toolchain)"
             Set-LaunchStatus 'Starting Ship of Tools...'
             $buildOut = $null
         } else {
