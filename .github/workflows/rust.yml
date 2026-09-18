@@ -130,6 +130,18 @@ jobs:
         run: .\scripts\tests\test-sot-apply.ps1
         working-directory: .
 
+      # docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
+      # amendment: the one pinned-checkout predicate that replaced four
+      # disagreeing dev-vs-release heuristics, plus the shortcut-target
+      # rule that reads it. Real git state (a temp repo, a branch clone, a
+      # detached worktree), no fake, same 5.1 host as the steps above.
+      - name: Test install layout (pinned-checkout predicate)
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        timeout-minutes: 5
+        run: .\scripts\tests\test-install-layout.ps1
+        working-directory: .
+
       # ADR 0042 L1c: the launcher's local-daemon start/stop (sot-local-
       # daemon.ps1), driven against the sotd.exe this same job's "Build
       # workspace" step already built (target\debug, since that step has no
