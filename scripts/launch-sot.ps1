@@ -866,7 +866,7 @@ function New-RemoteEnsureCommand {
     # under EAP=Stop (the 2026-07-16 'force: command not found' hang).
     $restartFlag = if ($Restart) { '1' } else { '0' }
     $cmd = @"
-export PATH="`$HOME/.cargo/bin:`$HOME/.local/bin:`$PATH"
+export PATH="`$HOME/.local/share/sot/bin:`$HOME/.cargo/bin:`$HOME/.local/bin:`$PATH"
 remote_socket="`$(sotd session-socket-path sot 2>/dev/null)"
 echo "backend-socket: `$remote_socket"
 if [ "$restartFlag" = 1 ]; then
@@ -977,7 +977,7 @@ if ($backendHost) {
         if ($remoteStatusText -match 'force-restart FAILED') {
             Set-LaunchStatus "ERROR: backend force-restart failed on $backendHost (see 'systemctl --user status sotd' on that box / supervisor.log)"
         }
-        if ($remoteStatusText -match 'backend-socket:\s*(\S+)') {
+        if ($remoteStatusText -match 'backend-socket:[ \t]*(\S+)') {
             $script:remoteSocket = $matches[1]
         }
         if ($remoteSocket) {
@@ -1108,9 +1108,12 @@ function Start-SotTunnel {
     # already carries the (opt-in, legacy) aux forwards folded in above,
     # so this one process carries everything -- see Update-SotRemoteDial.
     if ($sshArgs.Count -eq 0) { return $null }
+    # ssh's own complaint (a bad -L spec, a refused key) is the only record of
+    # why a tunnel dies; without this the respawn loop was silent (2026-09-18).
     Start-Process -FilePath ssh `
         -ArgumentList $sshArgs `
         -WindowStyle Hidden `
+        -RedirectStandardError (Join-Path $logDir 'tunnel.stderr.log') `
         -PassThru
 }
 function Stop-StaleControlTunnel {
@@ -1215,7 +1218,7 @@ foreach ($item in $plan.Tunnels) {
         continue
     }
     $extraRemoteSocket = $null
-    if ($extraStatusText -match 'backend-socket:\s*(\S+)') {
+    if ($extraStatusText -match 'backend-socket:[ \t]*(\S+)') {
         $extraRemoteSocket = $matches[1]
     }
     if (-not $extraRemoteSocket) {
@@ -1226,7 +1229,8 @@ foreach ($item in $plan.Tunnels) {
     $extraArgs += $sshCommonArgs
     $extraArgs += @('-L', "$($item.Port):$extraRemoteSocket", $item.Host)
     try {
-        $proc = Start-Process -FilePath ssh -ArgumentList $extraArgs -WindowStyle Hidden -PassThru
+        $proc = Start-Process -FilePath ssh -ArgumentList $extraArgs -WindowStyle Hidden `
+            -RedirectStandardError (Join-Path $logDir "tunnel-$($item.Host).stderr.log") -PassThru
         $extraTunnels += [PSCustomObject]@{
             HostName     = $item.Host
             SshAlias     = $item.Host
