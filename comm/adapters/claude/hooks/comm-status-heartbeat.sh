@@ -144,20 +144,9 @@ state="${row%%|*}"; at="${row#*|}"
 # (maintainer 2026-07-17: "green while only waiting for subagents"). See the
 # `hold_purple` logic below. `blocked` is NEVER touched: red persists through any
 # background activity until the user answers or the model explicitly clears.
-# A `done` row on a MACHINE turn (a peer message woke the session) holds blue
-# through a quick ack -- but a machine turn that has been calling tools for
-# two minutes is real work and must be green (owner, 2026-09-18: "you should
-# be green when running"; an hour-long fix ran blue). The prompt hook records
-# turn_at with the origin; a user turn already went green at the prompt.
-BLUE_WORK_PROMOTE_S=120
 case "$state" in
     working) ;;      # refresh path below (throttled)
     waiting) ;;      # stay-purple (live marker) or promote (expired/none) — below
-    done)
-        tat="$(jq -r --arg n "$NAME" 'select(.agents[$n].turn_origin == "machine") | .agents[$n].turn_at // ""' "$REGISTRY" 2>/dev/null)"
-        [ -n "$tat" ] || exit 0
-        tat_s=$(date -u -d "$tat" +%s 2>/dev/null || echo 0)
-        [ "$tat_s" -gt 0 ] && [ $(( $(date -u +%s) - tat_s )) -ge "$BLUE_WORK_PROMOTE_S" ] || exit 0 ;;
     *) exit 0 ;;
 esac
 
@@ -200,7 +189,7 @@ LOCKDIR="$COMM_HOME/.registry.lock"
 if mkdir "$LOCKDIR" 2>/dev/null; then
     trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
     jq --arg n "$NAME" --arg t "$ts" --arg st "$newstate" \
-       'if .agents[$n] and (.agents[$n].state == "working" or .agents[$n].state == "waiting" or .agents[$n].state == "done")
+       'if .agents[$n] and (.agents[$n].state == "working" or .agents[$n].state == "waiting")
         then .agents[$n] += {state:$st, status_at:$t, last_seen:$t} else . end' \
        "$REGISTRY" > "$REGISTRY.hb.tmp" 2>/dev/null && mv "$REGISTRY.hb.tmp" "$REGISTRY"
     rmdir "$LOCKDIR" 2>/dev/null

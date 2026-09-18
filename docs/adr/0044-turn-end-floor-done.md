@@ -3,6 +3,15 @@
 **Status:** accepted (owner decision 2026-09-08, no aging); implemented in the
 comm scripts (deploys via `update_comm`, no release needed).
 
+**Amended 2026-09-18 (owner: "it should be green after the prompt until
+something else takes over"):** the hierarchy guard that held a `blocked` or
+`done` row through a machine-started turn is deleted. Any prompt paints
+green; a machine turn still floors gray, and a question the turn did not
+answer comes back red through its closing `SITREP-QUESTION:` marker. The
+only remaining hold on a soft `working` is a `waiting` row with a live
+sticky marker on a machine turn. The passages below describing the red and
+blue hold are historical.
+
 ## Context
 
 The session work-state (ADR 0023 state-nav; `comm-status.sh`) has five
