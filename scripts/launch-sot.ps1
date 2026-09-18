@@ -780,11 +780,22 @@ function Update-SotTopologyPlan {
     # self-heal exists to replace; gating the sync on a successful plan
     # (the old order) starves it of the one thing it exists to fix (a
     # frontend box's file predates this box's own [host.<name>] entry, or
-    # is missing, or is pre-grammar-v2 -- see the 2026-09-17 install
-    # confusion writeup). The hub for the sync is the env override when
-    # set, else `sotd topology sync` derives it from whatever hub the
-    # LOCAL copy already names -- no plan round-trip needed to learn it.
+    # or is pre-grammar-v2 -- ADR 0015's 2026-09-17 addendum). The hub for
+    # the sync is the env override when set, else the hub install.json
+    # recorded at install time (install-shortcut.ps1 -Hub), else `sotd
+    # topology sync` derives it from whatever hub the LOCAL copy already
+    # names. Only the manifest's hub can create the FIRST copy: sotd reads
+    # --hub only while no local copy exists, so a box that never synced
+    # stayed local-only until 2026-09-18.
     $syncHub = if ($env:SOT_HOST_NAME) { $env:SOT_HOST_NAME } else { $env:SOT_HOST }
+    if (-not $syncHub) {
+        try {
+            $manifestPath = Join-Path $prefixDir 'install.json'
+            if (Test-Path -LiteralPath $manifestPath) {
+                $syncHub = [string](Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).hub
+            }
+        } catch { $syncHub = $null }
+    }
     $sync = Invoke-SotTopologySync -SotdPath $sotdForPlan -Hub $syncHub
     if ($sync.Ok) {
         if ($sync.Output) { Write-SupLog "topology sync: $($sync.Output)" }

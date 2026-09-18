@@ -33,7 +33,12 @@ param(
     [ValidateSet('local', 'remote', 'be-only')]
     [string]$Role = 'remote',
     # Repo clone that supplies the launcher + config (not the binaries).
-    [string]$Repo
+    [string]$Repo,
+    # The hub's ssh alias: recorded as "hub" (install.sh writes the same
+    # field) and used for the box's first `sotd topology sync --hub`, which
+    # creates the hosts.toml the launcher's every-launch self-heal then
+    # refreshes. Empty keeps whatever install.json already records.
+    [string]$Hub
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,11 +91,17 @@ if ($version -match '(\+|-dev)') {
 
 $tag = "v$version"
 $config = Join-Path $env:APPDATA 'sot'
+# The RELEASE commit (what install.sh records), not the clone's HEAD: the
+# clone tracks main and its HEAD is usually past the staged binaries.
 $commit = ''
 try {
-    $commit = (& git -C $Repo rev-parse HEAD 2>$null | Select-Object -First 1)
+    $commit = (& git -C $Repo rev-parse "$tag^{commit}" 2>$null | Select-Object -First 1)
 } catch {}
 if (-not $commit) { $commit = 'unknown' }
+$manifest = Join-Path $Prefix 'install.json'
+if (-not $Hub -and (Test-Path -LiteralPath $manifest)) {
+    try { $Hub = [string](Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json).hub } catch {}
+}
 
 # Minimal JSON string escape, matching install.sh's json_str(): an exotic
 # prefix must not be able to produce a manifest that parses wrong, because a
@@ -98,7 +109,6 @@ if (-not $commit) { $commit = 'unknown' }
 function ConvertTo-JsonStr([string]$s) { return ($s -replace '\\', '\\' -replace '"', '\"') }
 
 New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
-$manifest = Join-Path $Prefix 'install.json'
 $body = @"
 {
   "schema": 1,
@@ -106,6 +116,7 @@ $body = @"
   "prefix": "$(ConvertTo-JsonStr $Prefix)",
   "config": "$(ConvertTo-JsonStr $config)",
   "service": "none",
+  "hub": "$(ConvertTo-JsonStr $Hub)",
   "version": "$version",
   "tag": "$tag",
   "commit": "$commit",
@@ -116,5 +127,22 @@ $body = @"
 # utf8 on PowerShell 5.1 writes one.
 [System.IO.File]::WriteAllText($manifest, $body, (New-Object System.Text.UTF8Encoding($false)))
 
-Write-Host "install-manifest: wrote $manifest (schema 1, role=$Role, version=$version)"
+Write-Host "install-manifest: wrote $manifest (schema 1, role=$Role, version=$version, hub=$Hub)"
+
+# First topology sync. `sotd topology sync` reads --hub only while no local
+# hosts.toml exists; afterwards the copy's own hub wins and the launcher
+# refreshes it on every launch. Without this a fresh box launches local-only
+# with "no hosts.toml ... yet: pass --hub <alias>" (2026-09-18 field report).
+$sotd = Join-Path $Prefix 'bin\sotd.exe'
+if ($Hub -and (Test-Path -LiteralPath $sotd)) {
+    $syncOut = & $sotd topology sync --hub $Hub 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "install-manifest: topology sync --hub $Hub ok: $syncOut"
+    } else {
+        Write-Warning "install-manifest: topology sync --hub $Hub failed (exit $LASTEXITCODE): $syncOut"
+        Write-Warning "  The launcher will fall back to a local-only frontend until this succeeds."
+    }
+} elseif (-not $Hub) {
+    Write-Warning "install-manifest: no -Hub given and none recorded: this box cannot fetch hosts.toml until you run install-shortcut.ps1 -Hub <alias>."
+}
 Write-Host "  The frontend will now check for updates at startup and stage them for sot-apply.ps1."
