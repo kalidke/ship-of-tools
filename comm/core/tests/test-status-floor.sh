@@ -425,6 +425,10 @@ dead_pid() {  # a pid guaranteed not to be running: backgrounded, then reaped
 # so NAME actually resolves, and leaves whatever the hook wrote to stderr in
 # $HBW_ERR (stdout discarded, same as HB).
 HBW() {
+    # The hook's 10 s early throttle (one tick per session) would silence
+    # every call after the first inside one case run; each case is a fresh
+    # tool call in its own right, so clear the tick first.
+    rm -f "$SOT_COMM_HOME"/state/hb-*.tick 2>/dev/null
     HBW_ERR="$(printf '{"tool_name":"Bash"}' \
         | CLAUDE_CODE_SESSION_ID="${1:-sess-a}" bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh" 2>&1 1>/dev/null)"
 }

@@ -1111,6 +1111,16 @@ sot_ping_interval_s() {
 # 10s. Uses ENDPOINT (unix:/path, tcp:host:port, or pipe:name — the last one
 # a Windows-only named-pipe transport, see the pipe: arm below) from the
 # caller's scope.
+# _sot_oneshot_sender FRAME TIMEOUT_S PIDFILE — the write side of a one-shot
+# request: hello, the frame, then `exec sleep` so the subshell's pid (written
+# to PIDFILE first) is the sleep itself and one kill ends it.
+_sot_oneshot_sender() {
+    printf '%s\n' "$BASHPID" > "$3"
+    sot_hello_frame
+    printf '%s\n' "$1"
+    exec sleep "$2"
+}
+
 sot_oneshot_request() {
     local frame="$1" op="$2"
     local timeout_s="${SOT_SEND_TIMEOUT:-${SEND_TIMEOUT:-10}}"
@@ -1121,22 +1131,23 @@ sot_oneshot_request() {
             command -v nc >/dev/null 2>&1 || {
                 echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2
                 rm -f "$tmp"; return 1; }
-            # `-q`: nc keeps reading for timeout_s after stdin's EOF, so no
-            # `sleep` is needed to hold the write side open. A sender
-            # subshell with a sleep used to outlive the matched reply and
-            # hold the CALLER's stderr for the whole timeout: any pipe or
-            # harness reading the caller waited for it, so every eval
-            # appeared to take exactly --timeout (2026-09-17, two boxes).
-            { sot_hello_frame; printf '%s\n' "$frame"; } \
-                | timeout "$timeout_s" nc -q "$timeout_s" -U "${ENDPOINT#unix:}" > "$tmp" 2>/dev/null &
+            # The sender holds the write side open with a sleep (a half-close
+            # via `nc -q` made stub listeners hang up early). It is `exec`'d so
+            # the recorded pid IS the sleep, killed the moment the reply
+            # matches, and its stderr is detached: a sender that outlived the
+            # reply used to hold the CALLER's stderr for the whole timeout, so
+            # any pipe or harness reading the caller waited that long
+            # (2026-09-17, two boxes).
+            _sot_oneshot_sender "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
+                | timeout "$timeout_s" nc -U "${ENDPOINT#unix:}" > "$tmp" 2>/dev/null &
             ncpid=$!
             ;;
         tcp:*)
             local hp="${ENDPOINT#tcp:}" host port
             host="${hp%:*}"; port="${hp##*:}"
             if command -v nc >/dev/null 2>&1; then
-                { sot_hello_frame; printf '%s\n' "$frame"; } \
-                    | timeout "$timeout_s" nc -q "$timeout_s" "$host" "$port" > "$tmp" 2>/dev/null &
+                _sot_oneshot_sender "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
+                    | timeout "$timeout_s" nc "$host" "$port" > "$tmp" 2>/dev/null &
                 ncpid=$!
             else
                 # /dev/tcp fallback: the fd stays open for the whole window,
@@ -1168,9 +1179,7 @@ sot_oneshot_request() {
             [ -f "$ps1" ] || {
                 echo "ERROR: comm-pipe-request.ps1 not found next to the comm scripts (looked in ${SCRIPT_DIR:-.})" >&2
                 rm -f "$tmp"; return 1; }
-            # The sender's sleep stays here (no -q on the pipe reader) but
-            # its stderr is detached so it can hold nothing of the caller's.
-            { sot_hello_frame; printf '%s\n' "$frame"; sleep "$timeout_s"; } 2>/dev/null \
+            _sot_oneshot_sender "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
                 | timeout "$timeout_s" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
                     -File "$ps1" -PipeName "$pipename" -Mode Oneshot -Op "$op" -TimeoutSec "$timeout_s" \
                     > "$tmp" 2>/dev/null &
@@ -1204,6 +1213,7 @@ sot_oneshot_request() {
         sleep 0.1
     done
     kill "$ncpid" 2>/dev/null || true
-    rm -f "$tmp"
+    [ -r "$tmp.snd" ] && kill "$(cat "$tmp.snd" 2>/dev/null)" 2>/dev/null
+    rm -f "$tmp" "$tmp.snd"
     [ -n "$line" ] && printf '%s\n' "$line"
 }
