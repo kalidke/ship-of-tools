@@ -100,10 +100,15 @@ jobs:
       - name: Build release binaries
         shell: bash
         run: cd rust && cargo build --release --workspace --locked
-      - name: Build sotd (musl static, linux)
+      - name: Build sotd + sot-capsule (musl static, linux)
         if: matrix.target == 'linux-x86_64'
         shell: bash
-        run: cd rust && cargo build --release -p sot-backend --target x86_64-unknown-linux-musl --locked
+        # BOTH daemon-side binaries: the daemon spawns `sot-capsule` for every
+        # session row (`pty.open` starts the capsule supervisor on attach), so
+        # it must run wherever `sotd` runs. v0.6.0/v0.6.1 shipped it from the
+        # glibc-2.35 workspace build and every row died at spawn on the
+        # glibc-2.31 fleet hosts (`GLIBC_2.34 not found`).
+        run: cd rust && cargo build --release -p sot-backend -p sot-log --bin sotd --bin sot-capsule --target x86_64-unknown-linux-musl --locked
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -112,25 +117,20 @@ jobs:
           stage="sot-$v-${{ matrix.target }}"
           mkdir "$stage"
           if [ "${{ matrix.target }}" = "linux-x86_64" ]; then
-            # sotd ships MUSL STATIC (runs on any distro, incl. the 20.04
-            # canary); the FE keeps the runner's glibc floor (2.35).
-            cp rust/target/release/sot rust/target/x86_64-unknown-linux-musl/release/sotd "$stage/"
+            # sotd AND sot-capsule ship MUSL STATIC (run on any distro, incl.
+            # the 20.04 canary); the FE keeps the runner's glibc floor (2.35).
+            cp rust/target/release/sot rust/target/x86_64-unknown-linux-musl/release/sotd rust/target/x86_64-unknown-linux-musl/release/sot-capsule "$stage/"
           else
-            cp rust/target/release/sot rust/target/release/sotd "$stage/"
+            cp rust/target/release/sot rust/target/release/sotd rust/target/release/sot-capsule "$stage/"
           fi
           # ADR 0042 slice L1a, Codex review finding 1: `sot-capsule`
-          # ships alongside `sotd` on every platform the "Build release
-          # binaries" step above (`cargo build --release --workspace`)
-          # already produces it for — it was never copied into the
-          # staged archive at all before this, on ANY platform (the
-          # daemon's own `capsule_workspace::sot_capsule_exe()` resolves
-          # it next to itself via `current_exe().parent()`, which the
-          # install layout can only honor if it is actually shipped).
-          # `sot-capsule` builds on Unix at the runner's own glibc floor
-          # (unlike `sotd`, it is not rebuilt musl-static here — no
-          # workspace op spawns it from Rust on this platform yet, so
-          # there is no cross-distro requirement to satisfy).
-          cp rust/target/release/sot-capsule "$stage/"
+          # ships alongside `sotd` on every platform (the daemon's own
+          # `capsule_workspace::sot_capsule_exe()` resolves it next to
+          # itself via `current_exe().parent()`, which the install layout
+          # can only honor if it is actually shipped). On linux it comes
+          # from the same musl build as `sotd`: the daemon spawns it for
+          # every session row, so it has the daemon's cross-distro
+          # requirement, not the FE's.
           # The linux FE's provenance is proven HERE, on the runner that built
           # it, not in the linux smoke: that smoke pins a glibc-2.31 container
           # to prove the static sotd boots on the oldest fleet host, and the
@@ -222,8 +222,9 @@ jobs:
           # nothing downstream would notice. Checking one of the pair leaves
           # the frontend — the half that self-updates on a remote box —
           # unverified.
-          # sotd only: this container is glibc 2.31 on purpose and the FE
-          # cannot run here; the FE's provenance is checked in the build job.
+          # sotd only here: this container is glibc 2.31 on purpose and the
+          # FE cannot run here; the FE's provenance is checked in the build
+          # job. sot-capsule has no --version and is booted just below.
           for b in sotd; do
             got="$("$d/$b" --version)"
             echo "$b --version: $got (expected version: $expected)"
@@ -236,6 +237,12 @@ jobs:
               *)          case "$got" in "$b $expected ("*) ;; *) echo "VERSION MISMATCH for $b: $got"; exit 1;; esac ;;
             esac
           done
+          # sot-capsule must boot on the same old-glibc host as sotd: the
+          # daemon spawns it for every session row. A dynamically linked
+          # copy dies right here with `GLIBC_2.34 not found` (v0.6.0/v0.6.1
+          # did, and every row on the 20.04 fleet hosts died with it).
+          bid="$("$d/sot-capsule" build-id)" || { echo "sot-capsule failed to boot on glibc 2.31"; exit 1; }
+          echo "sot-capsule build-id: $bid"
           # Ask the binary what wire protocol it speaks rather than writing
           # the number into this script's own hello frame — a hard-coded
           # literal here is exactly the class of bug that broke this smoke
