@@ -38,9 +38,19 @@ Blue and gray are an **unread / read** pair, stamped by hooks, not by you:
   been back since".
 - A turn a **machine** started — a relay message, a Monitor event, a task
   notification — floors to **gray** `idle`, whatever it did: a peer's ack must
-  not paint a parked row blue. If such a turn landed a real result, report
+  not paint a parked row blue. The prompt itself paints **green** whoever
+  sent it: a running session is green until something else takes over
+  (owner, 2026-09-18). A red question the turn did not answer comes back
+  through the closing `SITREP-QUESTION:` marker. If such a turn landed a real result, report
   `comm-status.sh done "<summary>"` yourself — that explicit blue is the
   accurate signal and the skill rule already asks for it.
+- **Never stamp `done` by hand mid-turn.** Blue means "finished, nothing
+  running"; a turn that stamps `done` and keeps editing sits blue for the
+  rest of its work, and nothing restamps green until the next prompt (a
+  slides session did this for ten turns, 2026-09-18). Close an effort with
+  the `SITREP:` marker as the reply's last block and let the Stop hook stamp
+  `done` at the moment the turn actually ends. If you do continue after an
+  explicit `done`, stamp `working` first.
 - Blue clears on the user's **next genuine prompt** (→ green) or any explicit
   report. There is **no time-based decay**: a parked blue row is an honest
   "you never came back", not a bug. A `blocked`/`waiting`/explicit `done` row

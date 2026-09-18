@@ -23,11 +23,13 @@
 #   - HOOKS write SOFT (COMM_STATUS_SOFT=1) and never override a deliberate
 #     state:
 #       soft `working` (the prompt hook, with COMM_STATUS_ORIGIN=user|machine —
-#         default machine): HOLDS a `waiting` row with a live marker; HOLDS a
-#         `blocked` or `done` row on a MACHINE turn (a relay message, Monitor
-#         event or notification is not the user answering); and ALWAYS records
-#         `turn_origin`, even when holding, so the floor below reads the running
-#         turn's origin and never a stale one.
+#         default machine): paints GREEN on any prompt, whoever sent it -- a
+#         session that is running is green until something else takes over
+#         (owner, 2026-09-18); the one HOLD is a `waiting` row with a live
+#         marker on a machine turn (the declared wait continues); and ALWAYS
+#         records `turn_origin`, even when holding, so the floor below reads
+#         the running turn's origin and never a stale one. A red question a
+#         machine turn did not answer comes back through the closing marker.
 #       soft floor (`done` from the Stop hook; `idle` from older callers):
 #         HOLDS `blocked`, `done`, and a `waiting` row with a live marker;
 #         DEMOTES a `working` row that still carries a live marker back to
@@ -158,7 +160,6 @@ status_txn() {
                     # be green?" while a sticky waiting held through the turn).
                     [ "$TURN_ORIGIN" = user ] || hold=1
                 fi ;;
-            blocked|done) [ "$TURN_ORIGIN" = machine ] && hold=1 ;;
         esac
         if [ "$hold" = 1 ]; then write_origin "$TURN_ORIGIN"; return; fi
     fi

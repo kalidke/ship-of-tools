@@ -30,14 +30,20 @@
 # UserPromptSubmit. It classifies by prompt shape (stdin is the hook's JSON
 # envelope, {"prompt": ...}) and passes COMM_STATUS_ORIGIN=user|machine. Every
 # decision that depends on it lives in comm-status.sh, not here:
-#   - HIERARCHY GUARD (maintainer 2026-07-04, "question/red always first
-#     priority"): a machine turn must not flip a BLOCKED (question pending on
-#     the user) or DONE (finished, unread) row to green; a genuine human prompt
-#     still does. comm-status.sh holds the state on a machine origin — and
+#   - (The 2026-07-04 hierarchy guard that held a BLOCKED or DONE row through
+#     a machine turn was deleted 2026-09-18, owner: green after any prompt
+#     until something else takes over; ADR 0044 amendment.) comm-status.sh
+#     still holds a sticky-waiting row on a machine origin — and
 #     still records the origin, so the turn-end floor can never read a stale
 #     "user" from an earlier turn and paint a machine turn blue.
 #   - The turn-end floor paints blue only for origin=user (ADR 0044).
 set -uo pipefail
+# A headless claude launched BY comm tooling (the turn auditor's tier-2 call)
+# runs these same hooks under the parent's identity: its prompt hook painted
+# the parent's row working and its Stop hook floored it to done, one second
+# after the parent's own marker had stamped blocked (field report, 2026-09-18).
+# The launcher sets SOT_COMM_HOOKS=off; every status hook stands down on it.
+[ "${SOT_COMM_HOOKS:-}" = off ] && exit 0
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$COMM_HOME/bin/comm-status.sh"
 [ -x "$STATUS" ] || exit 0
