@@ -18,6 +18,12 @@
 # Source of truth: comm/adapters/claude/hooks/comm-status-heartbeat.sh in
 # Ship of Tools, deployed to ~/.sot-comm/bin by ShipTools.update_comm().
 set -uo pipefail
+# A headless claude launched BY comm tooling (the turn auditor's tier-2 call)
+# runs these same hooks under the parent's identity: its prompt hook painted
+# the parent's row working and its Stop hook floored it to done, one second
+# after the parent's own marker had stamped blocked (field report, 2026-09-18).
+# The launcher sets SOT_COMM_HOOKS=off; every status hook stands down on it.
+[ "${SOT_COMM_HOOKS:-}" = off ] && exit 0
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 REGISTRY="$COMM_HOME/registry.json"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

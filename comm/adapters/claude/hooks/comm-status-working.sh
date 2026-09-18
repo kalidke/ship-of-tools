@@ -38,6 +38,12 @@
 #     "user" from an earlier turn and paint a machine turn blue.
 #   - The turn-end floor paints blue only for origin=user (ADR 0044).
 set -uo pipefail
+# A headless claude launched BY comm tooling (the turn auditor's tier-2 call)
+# runs these same hooks under the parent's identity: its prompt hook painted
+# the parent's row working and its Stop hook floored it to done, one second
+# after the parent's own marker had stamped blocked (field report, 2026-09-18).
+# The launcher sets SOT_COMM_HOOKS=off; every status hook stands down on it.
+[ "${SOT_COMM_HOOKS:-}" = off ] && exit 0
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$COMM_HOME/bin/comm-status.sh"
 [ -x "$STATUS" ] || exit 0

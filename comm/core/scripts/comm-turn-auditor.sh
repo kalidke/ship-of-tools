@@ -239,6 +239,10 @@ EOF
 resp="$(printf '%s' "$prompt" \
     | ( unset CLAUDECODE AI_AGENT CLAUDE_CODE_ENTRYPOINT 2>/dev/null || true
         for v in $(env | grep -oE '^CLAUDE_CODE_[A-Z_]*' 2>/dev/null); do unset "$v" 2>/dev/null || true; done
+        # The headless claude inherits the account's hooks and this session's
+        # comm identity: without this its prompt hook and Stop hook restamp
+        # the parent's row (working, then done) over the marker just written.
+        export SOT_COMM_HOOKS=off
         exec timeout 45 "$CLAUDE_BIN" -p --model "$MODEL" --max-turns 1 ) 2>/dev/null)" || exit 3
 
 # Strip optional markdown fences, parse findings; any parse failure → fail open.

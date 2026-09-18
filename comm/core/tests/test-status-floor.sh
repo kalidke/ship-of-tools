@@ -133,6 +133,10 @@ case_machine_wake_on_blue_stays_blue() { seed idle; W "$GENUINE"; I; W "$RELAY";
 case_machine_wake_on_red_stays_red() { seed idle; W "$GENUINE"; "$ST" blocked "q?"; W "$RELAY"; expect blocked/machine/- wake && HB && expect blocked/machine/- tool && I && expect blocked/machine/- end; }
 case_explicit_working_in_machine_turn_on_red_ends_gray() { seed idle; W "$GENUINE"; "$ST" blocked "q?"; W "$RELAY"; "$ST" working "resuming"; expect working/machine/- explicit && I && expect idle/machine/- end; }
 case_blocked_answered_ends_blue() { seed blocked; W "$GENUINE"; expect working/user/- answer && I && expect done/user/- end; }
+# A headless claude launched by comm tooling (the auditor's tier-2 call) runs
+# these hooks under the parent's identity; with SOT_COMM_HOOKS=off they stand
+# down, so the parent's fresh red stays red through the child's prompt and Stop.
+case_headless_child_hooks_stand_down() { seed idle; W "$GENUINE"; "$ST" blocked "q?"; SOT_COMM_HOOKS=off W "$GENUINE"; expect blocked/user/- child-prompt && SOT_COMM_HOOKS=off HB && expect blocked/user/- child-tool && SOT_COMM_HOOKS=off I && expect blocked/user/- child-stop; }
 case_blue_cleared_by_next_prompt() { seed idle; "$ST" done "shipped"; expect done/-/- explicit && W "$GENUINE"; expect working/user/- next; }
 case_machine_wake_on_sticky_then_explicit_working_ends_gray() { seed idle; W "$GENUINE"; "$ST" waiting "job"; W "$RELAY"; expect waiting/machine/sticky wake && "$ST" working "finishing"; expect working/machine/- explicit && I && expect idle/machine/- end; }
 case_user_prompt_on_sticky_then_explicit_working_ends_blue() { seed idle; W "$RELAY"; "$ST" waiting "job"; W "$GENUINE"; expect working/user/sticky prompt && "$ST" working "finishing"; expect working/user/- explicit && I; expect done/user/- end; }
@@ -493,6 +497,7 @@ check "a machine wake on a blue row stays blue through tool work and Stop" case_
 check "a machine wake on a red row stays red through tool work and Stop" case_machine_wake_on_red_stays_red
 check "explicit working inside a machine turn on a red row ends gray (no stale origin)" case_explicit_working_in_machine_turn_on_red_ends_gray
 check "blocked answered by the user ends blue" case_blocked_answered_ends_blue
+check "headless child hooks stand down on SOT_COMM_HOOKS=off" case_headless_child_hooks_stand_down
 check "explicit done is cleared by the next genuine prompt" case_blue_cleared_by_next_prompt
 check "machine wake on sticky purple then explicit working ends gray" case_machine_wake_on_sticky_then_explicit_working_ends_gray
 check "user prompt on sticky purple then explicit working ends blue" case_user_prompt_on_sticky_then_explicit_working_ends_blue
