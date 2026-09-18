@@ -19826,6 +19826,18 @@ impl ApplicationHandler for App {
                                 }
                             }
                         }
+                        // Generated fresh from `state.bindings`, no fs source of its
+                        // own -- same temp-file-then-browser route as the Quarto
+                        // quick-render and sourceless-preview `o` (open_html_in_browser).
+                        _ if action == Some(Action::HelpCheatSheet) && !event.repeat => {
+                            let html = help::cheat_sheet_html(&state.bindings);
+                            if let Err(e) = open_html_in_browser(html.as_bytes()) {
+                                tracing::warn!(error = %e, "help cheat sheet: open_html_in_browser failed");
+                                state.status = format!("Print cheat sheet failed: {e}");
+                            } else {
+                                state.status = "cheat sheet · opened in browser".to_string();
+                            }
+                        }
                         Key::Character(c) if !ctrl && !super_ => { state.help.query.push_str(c); state.help.selected = 0; }
                         Key::Named(NamedKey::Space) => { state.help.query.push(' '); state.help.selected = 0; }
                         _ => {}

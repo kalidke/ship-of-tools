@@ -1,5 +1,5 @@
 //! Contextual help is a view of the dispatch catalog, never a second shortcut list.
-use crate::keybindings::{Action, KeyBindings, Scope, ACTIONS};
+use crate::keybindings::{Action, ActionSpec, KeyBindings, Scope, ACTIONS};
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -455,6 +455,77 @@ pub fn manual_url(action: Action) -> &'static str {
     }
 }
 
+/// Escape the five HTML-special characters. No new crate for five `match` arms.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// A standalone, printable page of every listed action and its loaded
+/// shortcuts (user overrides included, via `bindings.labels`), one table
+/// per Help group in table-definition order. No fs source for this page
+/// -- it's synthesized fresh from `bindings` -- so the caller opens it
+/// the same way the Quarto quick-render and sourceless-preview `o` do:
+/// write it to a temp file and hand that to the OS browser, whose own
+/// Print / Save-as-PDF is the export path (no PDF library here).
+pub fn cheat_sheet_html(bindings: &KeyBindings) -> String {
+    let mut groups: Vec<(&'static str, Vec<&'static ActionSpec>)> = Vec::new();
+    for spec in ACTIONS.iter() {
+        match groups.iter_mut().find(|(group, _)| *group == spec.group) {
+            Some((_, specs)) => specs.push(spec),
+            None => groups.push((spec.group, vec![spec])),
+        }
+    }
+
+    let mut tables = String::new();
+    for (group, specs) in &groups {
+        tables.push_str(&format!("<h2>{}</h2>\n<table>\n", html_escape(group)));
+        tables.push_str("<tr><th>Shortcut(s)</th><th>Action</th><th>What it does</th></tr>\n");
+        for spec in specs {
+            // `id` carries the dotted action name -- not shown, but a
+            // find-in-page/deep-link hook, and how the test below tells
+            // one row from another without depending on label wording.
+            tables.push_str(&format!(
+                "<tr id=\"{}\"><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+                spec.name,
+                html_escape(&bindings.labels(spec.action)),
+                html_escape(spec.label),
+                html_escape(spec.detail),
+            ));
+        }
+        tables.push_str("</table>\n");
+    }
+
+    format!(
+        "<!doctype html>\n\
+         <html><head><meta charset=\"utf-8\">\n\
+         <title>Ship of Tools keybindings</title>\n\
+         <style>\n\
+         body {{ font-family: system-ui, sans-serif; font-size: 13px; margin: 16px; columns: 2; column-gap: 24px; }}\n\
+         h2 {{ column-span: none; font-size: 14px; margin: 14px 0 4px; }}\n\
+         table {{ border-collapse: collapse; width: 100%; margin-bottom: 8px; }}\n\
+         td, th {{ padding: 2px 6px; text-align: left; border-bottom: 1px solid #ccc; font-size: 12px; }}\n\
+         @media print {{ @page {{ margin: 12mm }} h2 {{ page-break-after: avoid }} tr {{ page-break-inside: avoid }} }}\n\
+         </style></head><body>\n\
+         <p>Ship of Tools v{version} keybindings &mdash; {date}</p>\n\
+         {tables}\
+         </body></html>\n",
+        version = env!("CARGO_PKG_VERSION"),
+        date = chrono::Local::now().format("%Y-%m-%d"),
+        tables = tables,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,5 +649,22 @@ mod tests {
             c.alternate_screen = true;
             assert!(!c.allows(Action::ScrollPageUp));
         }
+    }
+
+    #[test]
+    fn cheat_sheet_lists_every_action() {
+        let b = KeyBindings::defaults();
+        let html = cheat_sheet_html(&b);
+        for spec in ACTIONS.iter() {
+            assert!(html.contains(spec.name), "missing action {}", spec.name);
+        }
+    }
+    #[test]
+    fn html_escape_covers_the_five_special_characters() {
+        assert_eq!(
+            html_escape("<script>&\"'"),
+            "&lt;script&gt;&amp;&quot;&#39;"
+        );
+        assert_eq!(html_escape("plain text"), "plain text");
     }
 }

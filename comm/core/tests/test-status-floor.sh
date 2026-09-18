@@ -133,6 +133,9 @@ case_explicit_idle_then_floor_is_gray() { seed idle; W "$GENUINE"; "$ST" idle; I
 # prompt until something else takes over"); a machine turn still ends gray,
 # and a still-open question comes back red through the closing marker.
 case_machine_wake_on_blue_goes_green() { seed idle; W "$GENUINE"; I; W "$RELAY"; expect working/machine/- wake && I && expect idle/machine/- end; }
+# A question clears an earlier wait: red must not turn purple on the next
+# tool call because of a marker from a job that has since landed.
+case_explicit_blocked_clears_sticky() { seed idle; W "$GENUINE"; "$ST" waiting "job"; expect waiting/user/sticky wait && "$ST" blocked "q?"; expect blocked/user/- question && W "$GENUINE" && expect working/user/- answer; }
 case_machine_wake_on_red_goes_green() { seed idle; W "$GENUINE"; "$ST" blocked "q?"; W "$RELAY"; expect working/machine/- wake && IT "SITREP-QUESTION: still which port?" && expect blocked/machine/- marker; }
 case_explicit_working_in_machine_turn_on_red_ends_gray() { seed idle; W "$GENUINE"; "$ST" blocked "q?"; W "$RELAY"; "$ST" working "resuming"; expect working/machine/- explicit && I && expect idle/machine/- end; }
 case_blocked_answered_ends_blue() { seed blocked; W "$GENUINE"; expect working/user/- answer && I && expect done/user/- end; }
@@ -498,6 +501,7 @@ check "sticky waiting paints green through a user turn and returns to purple at 
 check "explicit idle then the floor stays gray" case_explicit_idle_then_floor_is_gray
 check "a machine wake on a blue row goes green, gray at Stop" case_machine_wake_on_blue_goes_green
 check "a machine wake on a red row goes green; the closing marker restores red" case_machine_wake_on_red_goes_green
+check "an explicit blocked clears an earlier sticky wait; the answer turn stays green" case_explicit_blocked_clears_sticky
 check "explicit working inside a machine turn on a red row ends gray (no stale origin)" case_explicit_working_in_machine_turn_on_red_ends_gray
 check "blocked answered by the user ends blue" case_blocked_answered_ends_blue
 check "headless child hooks stand down on SOT_COMM_HOOKS=off" case_headless_child_hooks_stand_down
