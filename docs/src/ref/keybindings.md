@@ -19,6 +19,8 @@ use arrows to select, Tab to switch between this pane and all panes, and Enter
 to open the selected action's manual section. A shadowed shortcut is identified
 instead of being advertised as working. Embedded terminal applications own
 their own shortcuts; the catalog describes SoT controls around them.
+**Ctrl+p** in the Help drawer writes a printable cheat sheet of the loaded
+bindings and opens it in the browser; print it or save it as PDF there.
 
 ## Configuration
 
@@ -168,6 +170,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `help.page_down` | `PageDown` | Next actions in the Help drawer. |
 | `help.scope` | `Tab` | This pane or all panes in the Help drawer. |
 | `help.manual` | `Enter` | Open manual in the Help drawer. |
+| `help.cheatsheet` | `Ctrl+p` | Write a printable page of every listed action and its loaded shortcuts, and open it in the browser (print or save as PDF there). |
 | `help.close` | `Escape` | Return to work in the Help drawer. |
 | `files.confirm_delete` | `y` / `Shift+y` | Delete the file named in the confirmation prompt. Any other key cancels. |
 | `edit.confirm_discard` | `y` / `Shift+y` / `Escape` | Discard unsaved edits and close the editor. Another key returns to editing. |

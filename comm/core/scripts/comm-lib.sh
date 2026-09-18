@@ -42,19 +42,25 @@ now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # the \\.\pipe\... path and returns 0 only when both checks pass; nothing
 # printed, nonzero return otherwise. Windows-only — callers gate with
 # _sot_is_windows first.
-_sot_windows_local_pipe() {
-    command -v powershell.exe >/dev/null 2>&1 || return 1
+# _sot_windows_sotd_exe — the sotd executable on a Windows box: SOTD_BIN when
+# set, else the RUNNING daemon's own path (an installed %LOCALAPPDATA%\sot\bin\
+# sotd.exe or a dev build under a checkout's target dir -- ask the OS, not a
+# fixed install path), else the install path. Prints it; 1 when none exists.
+_sot_windows_sotd_exe() {
     local daemon_exe="${SOTD_BIN:-}"
     if [ -z "$daemon_exe" ] || [ ! -f "$daemon_exe" ]; then
-        # The RUNNING daemon's own executable, wherever it lives (an
-        # installed %LOCALAPPDATA%\sot\bin\sotd.exe or a dev build under a
-        # checkout's target dir): ask the OS, not a fixed install path.
         daemon_exe="$(powershell.exe -NoProfile -NonInteractive -Command \
             "(Get-Process -Name sotd -ErrorAction SilentlyContinue | Select-Object -First 1).Path" 2>/dev/null \
             | tr -d '\r' | head -n1)"
         [ -n "$daemon_exe" ] || daemon_exe="${LOCALAPPDATA:-}/sot/bin/sotd.exe"
     fi
     [ -f "$daemon_exe" ] || return 1
+    printf '%s\n' "$daemon_exe"
+}
+_sot_windows_local_pipe() {
+    command -v powershell.exe >/dev/null 2>&1 || return 1
+    local daemon_exe
+    daemon_exe="$(_sot_windows_sotd_exe)" || return 1
     local raw
     raw="$("$daemon_exe" session-socket-path local 2>/dev/null | head -n1 | tr -d '\r')"
     case "$raw" in
@@ -90,14 +96,23 @@ _sot_windows_local_pipe() {
 # SOT_RELAY_ENDPOINT (launch-sot.ps1). Take that when a launcher has set
 # it — no more hardcoded `tcp:127.0.0.1:18743` guess, which was wrong on
 # any box not literally tunneling the hub on the default port (the laptop
-# fix: those sessions' sends went nowhere). The hardcoded guess remains
-# the fallback for a box with no plan yet (no launcher run, or a sotd too
-# old to have one).
+# fix: those sessions' sends went nowhere). A session spawned by an OLDER
+# launcher has no SOT_RELAY_ENDPOINT in its env, so before guessing, ask
+# the daemon itself (`sotd topology relay-endpoint`, one exec, always the
+# plan's answer -- 2026-09-18, a box whose sends went to 18743 while its
+# tunnel sat on another port). The hardcoded guess remains the last
+# fallback for a box with no plan yet (no launcher run, or a sotd too old
+# to have one).
 sot_relay_endpoint() {
     local explicit="${1:-}"
     [ -n "$explicit" ] && { printf '%s\n' "$explicit"; return 0; }
     if _sot_is_windows; then
         [ -n "${SOT_RELAY_ENDPOINT:-}" ] && { printf '%s\n' "$SOT_RELAY_ENDPOINT"; return 0; }
+        local exe planned
+        if exe="$(_sot_windows_sotd_exe)"; then
+            planned="$("$exe" topology relay-endpoint 2>/dev/null | head -n1 | tr -d '\r')"
+            [ -n "$planned" ] && { printf '%s\n' "$planned"; return 0; }
+        fi
         printf 'tcp:127.0.0.1:%s\n' "${SOT_PORT:-18743}"
         return 0
     fi
@@ -1117,20 +1132,25 @@ sot_ping_interval_s() {
 # 10s. Uses ENDPOINT (unix:/path, tcp:host:port, or pipe:name — the last one
 # a Windows-only named-pipe transport, see the pipe: arm below) from the
 # caller's scope.
-# _sot_oneshot_sender FRAME TIMEOUT_S PIDFILE — the write side of a one-shot
-# request: hello, the frame, then `exec sleep` so the subshell's pid (written
-# to PIDFILE first) is the sleep itself and one kill ends it.
+# _sot_oneshot_sender HELLO FRAME TIMEOUT_S PIDFILE — the write side of a
+# one-shot request: hello, the frame, then `exec sleep` so the subshell's pid
+# (written to PIDFILE first) is the sleep itself and one kill ends it. The
+# hello is BUILT BY THE CALLER before the pipeline starts: building it here
+# (hostname + four jq spawns, about a second on a Windows box) meant the
+# reader had already started on an empty pipe, and PowerShell's
+# Console.In.ReadLine never wakes for data that arrives after it began --
+# every named-pipe one-shot timed out with no hello logged (2026-09-18).
 _sot_oneshot_sender() {
-    printf '%s\n' "$BASHPID" > "$3"
-    sot_hello_frame
-    printf '%s\n' "$1"
-    exec sleep "$2"
+    printf '%s\n' "$BASHPID" > "$4"
+    printf '%s\n%s\n' "$1" "$2"
+    exec sleep "$3"
 }
 
 sot_oneshot_request() {
     local frame="$1" op="$2"
     local timeout_s="${SOT_SEND_TIMEOUT:-${SEND_TIMEOUT:-10}}"
-    local tmp ncpid line="" deadline
+    local tmp ncpid line="" deadline hello
+    hello="$(sot_hello_frame)"
     tmp="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/sot-oneshot-XXXXXX")" || return 1
     case "$ENDPOINT" in
         unix:*)
@@ -1144,7 +1164,7 @@ sot_oneshot_request() {
             # reply used to hold the CALLER's stderr for the whole timeout, so
             # any pipe or harness reading the caller waited that long
             # (2026-09-17, two boxes).
-            _sot_oneshot_sender "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
+            _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
                 | timeout "$timeout_s" nc -U "${ENDPOINT#unix:}" > "$tmp" 2>/dev/null &
             ncpid=$!
             ;;
@@ -1152,7 +1172,7 @@ sot_oneshot_request() {
             local hp="${ENDPOINT#tcp:}" host port
             host="${hp%:*}"; port="${hp##*:}"
             if command -v nc >/dev/null 2>&1; then
-                _sot_oneshot_sender "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
+                _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
                     | timeout "$timeout_s" nc "$host" "$port" > "$tmp" 2>/dev/null &
                 ncpid=$!
             else
@@ -1160,7 +1180,7 @@ sot_oneshot_request() {
                 # so the EOF race does not exist here — plain bounded read.
                 (
                     exec 9<>"/dev/tcp/$host/$port" || exit 1
-                    { sot_hello_frame; printf '%s\n' "$frame"; } >&9
+                    printf '%s\n%s\n' "$hello" "$frame" >&9
                     timeout "$timeout_s" cat <&9
                     exec 9<&- 9>&- 2>/dev/null || true
                 ) > "$tmp" 2>/dev/null &
@@ -1185,7 +1205,7 @@ sot_oneshot_request() {
             [ -f "$ps1" ] || {
                 echo "ERROR: comm-pipe-request.ps1 not found next to the comm scripts (looked in ${SCRIPT_DIR:-.})" >&2
                 rm -f "$tmp"; return 1; }
-            _sot_oneshot_sender "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
+            _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
                 | timeout "$timeout_s" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
                     -File "$ps1" -PipeName "$pipename" -Mode Oneshot -Op "$op" -TimeoutSec "$timeout_s" \
                     > "$tmp" 2>/dev/null &

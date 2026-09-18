@@ -155,6 +155,7 @@ actions! {
     HelpPageDown, "help.page_down", ["PageDown"], "Next actions", "Next actions in the Help drawer.", "Help", Help;
     HelpScope, "help.scope", ["Tab"], "This pane or all panes", "This pane or all panes in the Help drawer.", "Help", Help;
     HelpManual, "help.manual", ["Enter"], "Open manual", "Open manual in the Help drawer.", "Help", Help;
+    HelpCheatSheet, "help.cheatsheet", ["Ctrl+p"], "Print cheat sheet", "Write a printable page of every listed action and its loaded shortcuts, and open it in the browser (print or save as PDF there).", "Help", Help;
     HelpClose, "help.close", ["Escape"], "Return to work", "Return to work in the Help drawer.", "Help", Help;
     DeleteConfirm, "files.confirm_delete", ["y", "Shift+y"], "Confirm deletion", "Delete the file named in the confirmation prompt. Any other key cancels.", "Input", DeleteConfirm;
     DiscardConfirm, "edit.confirm_discard", ["y", "Shift+y", "Escape"], "Discard edits", "Discard unsaved edits and close the editor. Another key returns to editing.", "Editor", DiscardConfirm;
