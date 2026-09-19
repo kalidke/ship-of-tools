@@ -98,8 +98,18 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 pub fn qualified_state_root() -> Result<PathBuf, String> {
     let root = sot_log::state_dir::sot_state_dir()
         .ok_or_else(|| format!("could not resolve this machine's state root ({STATE_ROOT_HINT} unset)"))?;
-    crate::paths::ensure_private_dir(&root)
-        .map_err(|e| format!("could not create the state root {root:?}: {e}"))?;
+    // Security review addendum (item 2b, v0.6.5 macOS field report): the
+    // runtime dir and sockets already get `is_private_dir`'s
+    // symlink/ownership/mode check; this root -- what `XDG_STATE_HOME`
+    // selects -- did not, and on a shared host it can sit under a
+    // world-writable sticky parent (e.g. /scratch), where an attacker-
+    // precreated or symlinked directory would receive session records.
+    // `secure_private_dir` is the create-or-verify guard the tmux socket
+    // dir already uses for exactly this threat model (atomic 0700 create
+    // when absent; symlink/owner/mode-checked, never trusted, when
+    // present) -- reused here rather than a second bespoke check.
+    crate::paths::secure_private_dir(&root)
+        .map_err(|e| format!("could not secure the state root {root:?}: {e}"))?;
     let root = std::fs::canonicalize(&root)
         .map_err(|e| format!("could not resolve the state root {root:?}: {e}"))?;
     #[cfg(target_os = "linux")]

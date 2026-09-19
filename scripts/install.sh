@@ -432,6 +432,9 @@ if [ "$OS" = Linux ] && command -v stat >/dev/null 2>&1; then
                 say "  systemd install: systemctl --user set-environment"
                 say "  XDG_STATE_HOME=/path/on/local/disk, or export it in"
                 say "  ~/.bashrc (which the unit sources) -- then restart sotd."
+                say "  Whichever directory you choose, sotd requires it to be owned by"
+                say "  you with mode 700 (it refuses to start otherwise) and does not"
+                say "  back it up -- pick a path that persists across reboots, not /tmp."
                 ;;
         esac
     }

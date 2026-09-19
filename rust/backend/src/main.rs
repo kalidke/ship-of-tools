@@ -283,6 +283,30 @@ Pure queries (no startup side effects, answered before any of the above):
     if let Err(e) = sot_log::winhandle::harden_own_stdio(true) {
         eprintln!("sotd: could not harden inherited stdio ({e}); continuing");
     }
+
+    // Security review addendum (item 2b, v0.6.5 macOS field report): the
+    // runtime dir and its sockets already get a symlink/ownership/mode
+    // check before anything is trusted to live there; the STATE root
+    // `XDG_STATE_HOME` selects did not. On a shared host that root can
+    // sit under a world-writable sticky parent (e.g. `/scratch`), where
+    // an attacker-precreated or symlinked directory would receive
+    // session records. Checked here, at the very top of startup, before
+    // `open_private_log_file` below (or anything else) ever touches it —
+    // every daemon gets this, not only one that goes on to create a
+    // capsule row (`capsule_workspace::qualified_state_root` applies the
+    // SAME check again per row create/attach, as defense in depth
+    // against the directory being altered after this boot-time check).
+    // Plain refusal, no auto-repair; tracing isn't initialized yet at
+    // this point, so this is stderr-only, same as the harden_own_stdio
+    // fallback right above.
+    if let Err(e) = paths::secure_private_dir(&paths::state_dir()) {
+        eprintln!(
+            "sotd: state dir {} is not private ({e}) — refusing to start",
+            paths::state_dir().display()
+        );
+        std::process::exit(1);
+    }
+
     let log_file = open_private_log_file();
     tracing_subscriber::fmt()
         .with_env_filter(
