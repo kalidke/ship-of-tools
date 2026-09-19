@@ -718,7 +718,7 @@ if ((Test-Path -LiteralPath (Join-Path $prefixDir 'install.json')) -and
     (-not $script:sotPinned -or $script:sotJustApplied) -and
     (Test-Path -LiteralPath $pinnedLauncher)) {
     $handoverReason = if ($pinnedLauncher -ne $PSCommandPath) { 'migration' } else { 'post-apply refresh' }
-    Write-SupLog "$handoverReason: handing over to $pinnedLauncher"
+    Write-SupLog "${handoverReason}: handing over to $pinnedLauncher"
     $shortcutScript = Join-Path $PSScriptRoot 'install-shortcut.ps1'
     if (Test-Path -LiteralPath $shortcutScript) {
         try {
