@@ -176,12 +176,28 @@ Check 'install.json has no BOM after rollback' `
     (-not ($b4[0] -eq 0xEF -and $b4[1] -eq 0xBB -and $b4[2] -eq 0xBF)) 'BOM written on the rollback path'
 Check 'marker cleared' (-not (Test-Path (Join-Path $f4.updates 'just-applied-windows-x86_64'))) 'marker still armed'
 
-Write-Host "`n=== 5. already at tag: clears stale pointer ===" -ForegroundColor Cyan
+Write-Host "`n=== 5. already at tag, binaries match the stage: clears stale pointer ===" -ForegroundColor Cyan
 $p5 = Join-Path $root 'p5'
 $f5 = New-Fixture $p5 'v0.6.0' 'v0.6.0'
+# The installed binaries ARE the staged ones: nothing to do but drop the pointer.
+Set-Content -LiteralPath (Join-Path $f5.bin 'sot.exe') -Value 'NEW-BINARY' -NoNewline
+Set-Content -LiteralPath (Join-Path $f5.bin 'sotd.exe') -Value 'NEW-DAEMON' -NoNewline
 & $apply -Prefix $p5 6>&1 2>&1 | Out-Null
 Check 'stale pointer cleared' (-not (Test-Path (Join-Path $f5.updates 'pending-windows-x86_64.json'))) 'pointer kept'
-Check 'binary untouched' ((Get-Content (Join-Path $f5.bin 'sot.exe') -Raw) -eq 'OLD-BINARY') 'mutated'
+Check 'binary untouched' ((Get-Content (Join-Path $f5.bin 'sot.exe') -Raw) -eq 'NEW-BINARY') 'mutated'
+Check 'no marker armed' (-not (Test-Path (Join-Path $f5.updates 'just-applied-windows-x86_64'))) 'marker armed on a no-op'
+
+Write-Host "`n=== 5b. manifest at tag but a binary differs: installs anyway ===" -ForegroundColor Cyan
+# The pre-fix apply flipped install.json after a failed binary swap; a
+# re-armed pointer for that tag must install, not be dropped as 'already at'.
+$p5b = Join-Path $root 'p5b'
+$f5b = New-Fixture $p5b 'v0.6.0' 'v0.6.0'
+& $apply -Prefix $p5b 6>&1 2>&1 | Out-Null
+Check 'exit code 0' ($LASTEXITCODE -eq 0) "got $LASTEXITCODE"
+Check 'binary installed' ((Get-Content (Join-Path $f5b.bin 'sot.exe') -Raw) -eq 'NEW-BINARY') 'left the old binary'
+Check 'daemon installed' ((Get-Content (Join-Path $f5b.bin 'sotd.exe') -Raw) -eq 'NEW-DAEMON') 'left the old daemon'
+Check 'pointer consumed' (-not (Test-Path (Join-Path $f5b.updates 'pending-windows-x86_64.json'))) 'pointer kept'
+Check 'marker armed' (Test-Path (Join-Path $f5b.updates 'just-applied-windows-x86_64')) 'no marker'
 
 Write-Host "`n=== 6. wrong-target pointer is refused ===" -ForegroundColor Cyan
 $p6 = Join-Path $root 'p6'
