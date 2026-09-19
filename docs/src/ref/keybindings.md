@@ -93,7 +93,9 @@ desktop, which is why pane focus is `⌘Arrow` there and fullscreen also accepts
 are handled by the OS-level application menu, not by SoT's own key dispatch.
 `⇧⌘/` is the system Help-menu shortcut, on by default, and never reaches the
 app at all — that is why `help.toggle`'s macOS default is the bare `⌘/`
-instead of the cross-platform `Primary+?` pattern.
+instead of the cross-platform `Primary+?` pattern. On Mac laptop keyboards
+F1/F5/F11 need the fn key unless "Use F1, F2, etc. keys as standard function
+keys" is on in System Settings.
 
 ## Default actions
 
