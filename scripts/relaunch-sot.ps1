@@ -16,15 +16,21 @@
 # timestamp -> 75 (plain relaunch, this file's default). `-Converge` writes
 # `converge` instead -> the frontend's watcher (rust/frontend/src/gpu.rs)
 # reads that back and exits 76, and the supervisor (launch-sot.ps1's
-# do/while loop) re-runs its self-update prelude (git pull + classify) and
-# freshness pass (cargo rebuild + `ShipTools.update_comm()`) BEFORE
-# respawning -- the only way today to converge a resident supervisor to
-# main without a fresh shortcut launch. `-Converge` skips the local build
-# below: it would build the CURRENT, not-yet-pulled tree, which the
-# supervisor's own freshness-pass rebuild immediately supersedes after the
-# pull -- wasted work against the wrong source. `-NoBuild` and `-Converge`
-# both skip the build, for different reasons; passing both is fine (same
-# effect as `-Converge` alone).
+# do/while loop) converges BEFORE respawning -- what that means depends on
+# the install: a PINNED release install applies any update sot-apply.ps1
+# has already armed (Invoke-PendingApply, 2026-09-18 fix -- a converge used
+# to skip this and leave an armed update sitting unapplied), then re-runs
+# the self-update prelude (a no-op there -- pinned installs update via
+# sot-apply, not a pull) and the freshness pass; a SOURCE checkout pulls
+# origin/main, rebuilds, and reinstalls the comm layer
+# (`ShipTools.update_comm()`) before its own freshness pass. Either way
+# this is the only way today to converge a resident supervisor without a
+# fresh shortcut launch. `-Converge` skips the local build below: it would
+# build the CURRENT, not-yet-pulled tree, which the supervisor's own
+# freshness-pass rebuild immediately supersedes after the pull -- wasted
+# work against the wrong source. `-NoBuild` and `-Converge` both skip the
+# build, for different reasons; passing both is fine (same effect as
+# `-Converge` alone).
 
 [CmdletBinding()]
 param(
@@ -72,7 +78,7 @@ Set-Content -Path $sentinelTemp -Value $sentinelValue -Encoding ascii
 Move-Item -Path $sentinelTemp -Destination $sentinel -Force
 
 if ($Converge) {
-    Write-Host 'Converge requested - the supervisor will pull, rebuild, reinstall comm, then respawn the frontend.' -ForegroundColor Green
+    Write-Host 'Converge requested - a pinned install applies any armed update then reruns the prelude and freshness pass; a source checkout pulls, rebuilds and reinstalls comm; either way the supervisor respawns the frontend.' -ForegroundColor Green
 } else {
     Write-Host 'Relaunch requested - the supervisor will restage and respawn the frontend.' -ForegroundColor Green
 }
