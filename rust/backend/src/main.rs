@@ -296,6 +296,29 @@ Pure queries (no startup side effects, answered before any of the above):
 
     let opts = parse_args().context("parsing command-line arguments")?;
 
+    // Finding 1, v0.6.5 macOS field report: refuse to serve a capsule row
+    // sotd can never actually start, rather than booting cleanly and
+    // leaving every pane blinking "supervisor lane not answering" while
+    // the journal claims a start that produced no process. A pre-0.6
+    // `sot-apply` (run by an old install's updater/systemd unit) only
+    // knew to swap `sot` and `sotd`; `sot-capsule` (new in 0.6) is left
+    // behind in the staged tarball. Plain check, no auto-repair — the
+    // fix is a real reinstall (docs/INSTALL-AGENT.md), which
+    // `sot-apply.sh` itself cannot retroactively become for a box already
+    // running the old copy (see that script's own re-exec-the-staged-copy
+    // comment for the case this DOES cover).
+    if let Ok(exe) = std::env::current_exe() {
+        if !capsule_workspace::capsule_sibling_present(&exe) {
+            let msg = format!(
+                "sotd: sot-capsule is missing next to sotd ({}); this install was upgraded by a pre-0.6 apply — re-run the installer: fetch docs/INSTALL-AGENT.md from main and follow it",
+                exe.display()
+            );
+            eprintln!("{msg}");
+            tracing::error!("{msg}");
+            std::process::exit(1);
+        }
+    }
+
     tracing::info!(
         socket = ?opts.socket,
         project_root = ?opts.project_root,
