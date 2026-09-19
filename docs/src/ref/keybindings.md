@@ -3,7 +3,7 @@
 The focused pane's border shows useful actions with their **loaded shortcuts**.
 Help and keyboard dispatch use the same action catalog and context checks.
 
-- **Primary+?** (`Ctrl+?` on Windows/Linux, `⌘?` on macOS) shows the current pane's actions for five seconds, followed by a short fade.
+- **Ctrl+?** (`⌘/` on macOS — the bare Cmd+/, not Cmd+Shift+/) shows the current pane's actions for five seconds, followed by a short fade.
 - Press it **again** while it is visible to open the same context in the **Help drawer**.
 - **F1** opens or closes Help directly. Both shortcuts are rebindable.
 - **Escape** dismisses the temporary overlay. Any ordinary command dismisses it and still performs its normal action.
@@ -91,6 +91,9 @@ Control+Arrow switches Spaces or opens Mission Control, and F11 shows the
 desktop, which is why pane focus is `⌘Arrow` there and fullscreen also accepts
 `Ctrl+Cmd+F` (F11 still works if that system shortcut is off). `⌘Q` and `⌘H`
 are handled by the OS-level application menu, not by SoT's own key dispatch.
+`⇧⌘/` is the system Help-menu shortcut, on by default, and never reaches the
+app at all — that is why `help.toggle`'s macOS default is the bare `⌘/`
+instead of the cross-platform `Primary+?` pattern.
 
 ## Default actions
 
@@ -99,7 +102,7 @@ Normal text entry and terminal-application controls retain their own input handl
 
 | Action | Default shortcut(s) | Description |
 |---|---|---|
-| `help.toggle` | `Primary+?` | Show actions here for five seconds; press again to browse them in the Help drawer. |
+| `help.toggle` | `Ctrl+?` (`⌘/` on macOS) | Show actions here for five seconds; press again to browse them in the Help drawer. |
 | `drawer.help` | `F1` | Browse and search actions for the pane you were using. Escape restores the previous drawer. |
 | `transport.reconnect` | `F5` | Retry backend connections immediately. |
 | `view.fullscreen` | `F11` (+ `Ctrl+Super+f` on macOS) | Toggle borderless fullscreen. |

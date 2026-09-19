@@ -425,6 +425,17 @@ impl KeyBindings {
                 .get_mut(&Action::ToggleFullscreen)
                 .expect("ToggleFullscreen is in ACTIONS")
                 .push(Chord::parse("Ctrl+Super+f").expect("valid default keybinding"));
+            // Finding 4, v0.6.5 macOS field report: Cmd+Shift+/ -- this
+            // action's cross-platform "Primary+?" default, spelled out on
+            // macOS -- is the SYSTEM'S OWN "Show Help menu" shortcut, on
+            // by default; it never reaches the app at all, which is why
+            // the field report's key log showed zero such events.
+            // REPLACE the default here (never add to it) with the bare
+            // Cmd+/, which nothing else on the system claims.
+            b.chords.insert(
+                Action::ToggleHelp,
+                vec![Chord::parse("Cmd+/").expect("valid default keybinding")],
+            );
         }
         b
     }
@@ -811,12 +822,29 @@ mod tests {
     fn help_supports_control_question_mark_and_remapping() {
         let mut b = KeyBindings::defaults();
         let q = Key::Character("?".into());
-        // The default is Primary+? (Ctrl on Windows/Linux, Cmd on macOS).
-        let default_mods = Modifiers { shift: true, ..primary() };
-        assert_eq!(
-            b.resolve(&q, Some(&Key::Character("/".into())), default_mods, false, |_| true),
-            Some(Action::ToggleHelp)
-        );
+        // The default differs by OS (finding 4, v0.6.5 macOS field
+        // report): everywhere else it's Primary+? i.e. Ctrl+Shift+?; on
+        // macOS it's the BARE Cmd+/ instead, because Cmd+Shift+/ is the
+        // system's own reserved "Show Help menu" shortcut and never
+        // reaches the app at all.
+        if cfg!(target_os = "macos") {
+            let cmd = Modifiers { super_: true, ..Modifiers::default() };
+            assert_eq!(
+                b.resolve(&Key::Character("/".into()), None, cmd, false, |_| true),
+                Some(Action::ToggleHelp)
+            );
+            let reserved = Modifiers { super_: true, shift: true, ..Modifiers::default() };
+            assert_ne!(
+                b.resolve(&q, Some(&Key::Character("/".into())), reserved, false, |_| true),
+                Some(Action::ToggleHelp)
+            );
+        } else {
+            let default_mods = Modifiers { shift: true, ..primary() };
+            assert_eq!(
+                b.resolve(&q, Some(&Key::Character("/".into())), default_mods, false, |_| true),
+                Some(Action::ToggleHelp)
+            );
+        }
         assert_eq!(b.resolve(&q, None, Modifiers::default(), false, |_| true), None);
         b.merge_text("help.toggle = \"Cmd+Shift+/\"");
         let cmd_shift = Modifiers {
@@ -828,10 +856,22 @@ mod tests {
             b.resolve(&q, Some(&Key::Character("/".into())), cmd_shift, false, |_| true),
             Some(Action::ToggleHelp)
         );
-        assert_ne!(
-            b.resolve(&q, None, default_mods, false, |_| true),
-            Some(Action::ToggleHelp)
-        );
+        // An override REPLACES the whole default chord list (finding 5):
+        // once help.toggle is remapped, whichever OS-specific default it
+        // used to resolve through no longer fires.
+        if cfg!(target_os = "macos") {
+            let cmd = Modifiers { super_: true, ..Modifiers::default() };
+            assert_ne!(
+                b.resolve(&Key::Character("/".into()), None, cmd, false, |_| true),
+                Some(Action::ToggleHelp)
+            );
+        } else {
+            let default_mods = Modifiers { shift: true, ..primary() };
+            assert_ne!(
+                b.resolve(&q, None, default_mods, false, |_| true),
+                Some(Action::ToggleHelp)
+            );
+        }
         assert_eq!(b.labels_for(Action::ToggleHelp, true), "⇧⌘/");
     }
     #[test]
@@ -1086,12 +1126,22 @@ mod windows_shifted_punctuation_tests {
         assert_ne!(b.resolve(&slash, Some(&slash), ctrl, false, |_| true), Some(Action::ToggleHelp));
     }
 
-    /// Linux/macOS deliver the shifted symbol itself; unchanged.
+    /// Linux delivers the shifted symbol itself; unchanged there. macOS's
+    /// own default is no longer Primary+? at all (finding 4, v0.6.5 macOS
+    /// field report: Cmd+Shift+/ is the system's reserved Help-menu
+    /// shortcut), so this only holds off-macOS; macOS gets its own
+    /// assertion of the bare Cmd+/ it actually defaults to.
     #[test]
     fn a_directly_delivered_question_mark_still_matches() {
         let b = KeyBindings::defaults();
-        let q = Key::Character("?".into());
-        let m = Modifiers { shift: true, ..primary() };
-        assert_eq!(b.resolve(&q, Some(&Key::Character("/".into())), m, false, |_| true), Some(Action::ToggleHelp));
+        if cfg!(target_os = "macos") {
+            let slash = Key::Character("/".into());
+            let cmd = Modifiers { super_: true, ..Modifiers::default() };
+            assert_eq!(b.resolve(&slash, None, cmd, false, |_| true), Some(Action::ToggleHelp));
+        } else {
+            let q = Key::Character("?".into());
+            let m = Modifiers { shift: true, ..primary() };
+            assert_eq!(b.resolve(&q, Some(&Key::Character("/".into())), m, false, |_| true), Some(Action::ToggleHelp));
+        }
     }
 }
