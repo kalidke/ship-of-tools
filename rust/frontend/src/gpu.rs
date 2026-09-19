@@ -22596,8 +22596,9 @@ fn key_to_pty_bytes(key: &Key, ctrl: bool, shift: bool, super_: bool) -> Option<
     // action above (handled before this call), or it is residual input that
     // must not leak into the shell as a raw keystroke -- macOS delivers
     // Cmd+<letter> as a plain Character with `super_` set, which is exactly
-    // the bug this guard exists for.
-    if super_ {
+    // the bug this guard exists for. Gated to macOS: on Windows/Linux the OS
+    // or window manager owns Super chords and nothing changes there.
+    if cfg!(target_os = "macos") && super_ {
         return None;
     }
     match key {
@@ -23655,9 +23656,11 @@ mod tests {
         // macOS bug this guards: Cmd+C fell through and typed a literal "c"
         // into the shell/LLM pane, because the pty encoder had no idea
         // Command was held. Ctrl+C is unaffected -- still the interrupt byte.
+        // macOS only: elsewhere the OS or window manager owns Super chords,
+        // and whatever it lets through keeps typing exactly as before.
         assert_eq!(
             key_to_pty_bytes(&Key::Character("c".into()), false, false, true),
-            None
+            if cfg!(target_os = "macos") { None } else { Some(b"c".to_vec()) }
         );
         assert_eq!(
             key_to_pty_bytes(&Key::Character("c".into()), true, false, false),
