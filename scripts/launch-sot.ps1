@@ -24,7 +24,10 @@
 # Overrides (env vars):
 #   SOT_HOST_NAME    Which declared host is the PRIMARY (default: the plan's hub)
 #   SOT_HOST         Same, pre-topology-plan name (still honoured)
-#   SOT_TCP_PORT     Local loopback port for the primary's tunnel (default: the plan's own port)
+#   SOT_TCP_PORT     Local loopback port for the primary's tunnel, but only
+#                    when no topology plan exists yet -- a plan's own port
+#                    always wins over this (see the port-priority comment
+#                    further down)
 #   SOT_TOKEN        App-level auth token for TCP fallback only
 #
 # Every OTHER dialable host `sotd topology plan` names gets its own tunnel
@@ -632,27 +635,40 @@ Initialize-InstallLayout
 # -- see its own comment further below), but it stops the daemon itself,
 # right before ITS OWN pair rebuild -- gating THIS earlier stop on
 # SOT_LAUNCH_REBUILD too would just double the stop/restart for no benefit.
-if (-not $NoUpdate -and (Test-Path $sotLocalDaemon)) {
-    $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
-    if ($updatePending) {
-        Write-SupLog 'local daemon: stopping before apply so it does not pin a stale binary'
-        $stopOut = & $sotLocalDaemon -Stop 6>&1 2>&1
-        foreach ($l in @($stopOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+#
+# A function, not inline, so an exit-76 CONVERGE respawn (see the do/while
+# loop) can call it too: a PINNED install's ONLY apply path used to be this
+# top-level call, so an update armed while the supervisor was already
+# resident (relaunch-sot.ps1 -Converge, or the frontend's own update
+# banner) sat unapplied until the box's next full process start --
+# Invoke-SelfUpdatePrelude is a no-op for a pinned install ("updates arrive
+# via sot-apply, no pull"), so nothing else in the converge path ever
+# invoked sot-apply.ps1 (2026-09-18 field report).
+function Invoke-PendingApply {
+    if (-not $NoUpdate -and (Test-Path $sotLocalDaemon)) {
+        $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
+        if ($updatePending) {
+            Write-SupLog 'local daemon: stopping before apply so it does not pin a stale binary'
+            $stopOut = & $sotLocalDaemon -Stop 6>&1 2>&1
+            foreach ($l in @($stopOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+        }
     }
-}
 
-if (-not $NoUpdate -and (Test-Path $sotApply)) {
-    Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
-    Set-LaunchStatus 'Applying update...'
-    $applyOut = & $sotApply 6>&1 2>&1
-    foreach ($l in @($applyOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+    if (-not $NoUpdate -and (Test-Path $sotApply)) {
+        Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
+        Set-LaunchStatus 'Applying update...'
+        $applyOut = & $sotApply 6>&1 2>&1
+        foreach ($l in @($applyOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+    }
+    # Read ONCE, right after the apply attempt above -- Invoke-FreshnessPass
+    # and the migration/handover block below both need "did an update just
+    # land", and the marker FILE itself stays present for the rest of this
+    # launch (the crash-loop read further down needs that), so a $script:
+    # flag is the one-shot signal that gets CONSUMED (see
+    # Invoke-FreshnessPass) instead.
+    $script:sotJustApplied = Test-Path -LiteralPath $applyMarker
 }
-# Read ONCE, right after the apply attempt above -- Invoke-FreshnessPass and
-# the migration/handover block below both need "did an update just land",
-# and the marker FILE itself stays present for the rest of this launch (the
-# crash-loop read further down needs that), so a $script: flag is the one-
-# shot signal that gets CONSUMED (see Invoke-FreshnessPass) instead.
-$script:sotJustApplied = Test-Path -LiteralPath $applyMarker
+Invoke-PendingApply
 
 # ---------------------------------------------------------------------------
 # Migration + post-apply handover onto the pinned launcher (docs/adr/
@@ -669,22 +685,40 @@ $script:sotJustApplied = Test-Path -LiteralPath $applyMarker
 #
 # Gated on install.json existing -- the updater's own release-install marker
 # (rust/updater/src/manifest.rs); a dev clone never writes one. $pinnedLauncher
-# -ne $PSCommandPath is what actually stops this from recursing: a copy that
-# IS ALREADY $pinnedLauncher has nothing left to hand over to, regardless of
-# $script:sotPinned's own value -- the previous version of this block
-# skipped straight to trusting the predicate here and could loop when the
-# two disagreed. -not $env:SOT_LAUNCH_REEXEC is redundant with that (both
-# Invoke-SelfUpdatePrelude paths always clear it before this point) but kept
-# as defense in depth. Test-Path $pinnedLauncher guards the obvious case of
-# nothing to hand over to yet (Initialize-InstallLayout failed to pin a tag).
+# -ne $PSCommandPath used to be the ONLY thing that let this fire, on the
+# reasoning that a copy already AT $pinnedLauncher has nothing left to hand
+# over to -- true for migration, but wrong for the post-apply case: on an
+# already-pinned install $PSCommandPath and $pinnedLauncher are the SAME
+# junction path string both before and after sot-apply.ps1 flips the
+# junction underneath this running process, so the string compare can never
+# see the change. That silently skipped the post-apply handover on every
+# Windows box past its first migration -- exactly the common case -- and
+# left THIS process (helpers dot-sourced once, near the top of the file,
+# from the OLD target) driving the rest of the launch against the NEW
+# tag's binaries with the old copy's logic (2026-09-18 field report: a
+# v0.6.2 launcher that had just applied v0.6.4 died silently later reading
+# v0.6.4's sot-hosts.ps1/sot-install-layout.ps1). Fixed by OR-ing in
+# $script:sotJustApplied, which is true only for the one launch that just
+# ran sot-apply.ps1 -- $pinnedLauncher then resolves through the junction
+# to the NEW tag's file even though its string is unchanged.
+# Recursion is stopped two ways, not just the path compare: -not
+# $env:SOT_LAUNCH_REEXEC (kept as defense in depth even though both
+# Invoke-SelfUpdatePrelude paths always clear it before this point), and --
+# for the sotJustApplied arm specifically -- Invoke-PendingApply always
+# clears $applyMarker before invoking sot-apply.ps1, so the re-exec'd
+# process finds nothing pending, sot-apply.ps1 exits without rewriting the
+# marker, and $script:sotJustApplied comes back false on the second pass.
+# Test-Path $pinnedLauncher guards the obvious case of nothing to hand over
+# to yet (Initialize-InstallLayout failed to pin a tag).
 # ---------------------------------------------------------------------------
 $pinnedLauncher = Join-Path $repoCurrent 'scripts\launch-sot.ps1'
 if ((Test-Path -LiteralPath (Join-Path $prefixDir 'install.json')) -and
     -not $env:SOT_LAUNCH_REEXEC -and
-    ($pinnedLauncher -ne $PSCommandPath) -and
+    (($pinnedLauncher -ne $PSCommandPath) -or $script:sotJustApplied) -and
     (-not $script:sotPinned -or $script:sotJustApplied) -and
     (Test-Path -LiteralPath $pinnedLauncher)) {
-    Write-SupLog "migration: handing over to $pinnedLauncher"
+    $handoverReason = if ($pinnedLauncher -ne $PSCommandPath) { 'migration' } else { 'post-apply refresh' }
+    Write-SupLog "$handoverReason: handing over to $pinnedLauncher"
     $shortcutScript = Join-Path $PSScriptRoot 'install-shortcut.ps1'
     if (Test-Path -LiteralPath $shortcutScript) {
         try {
@@ -933,13 +967,26 @@ $script:backendHost = if ($env:SOT_HOST_NAME) {
 # remains -- see the "nothing at all can start" check right before the
 # frontend launches.
 # The plan's own ordinal port for $backendHost (the hub is always 18743)
-# wins; SOT_TCP_PORT still overrides it, and 18743 is the last-resort
-# fallback for a box with no plan at all (no sotd binary yet).
+# wins; SOT_TCP_PORT is honoured only when NO plan exists (no sotd binary
+# yet), and 18743 is the last-resort fallback below that.
+#
+# 2026-09-18 field report: the OLD order checked $env:SOT_TCP_PORT FIRST,
+# so a session shell that had inherited a stale export from an earlier
+# launch (this same line, below, on a box that has since re-planned to a
+# different port) tunnelled on the OLD port while the frontend's --dial
+# args -- built straight from $plan.Dials, never from $tcpPort -- pointed
+# at the plan's CURRENT one: a live tunnel on 18743 beside a dial for
+# 18838. The plan is this box's own freshly-computed truth; the inherited
+# env is carried state from whenever it was last set, possibly by a
+# different process. One $script:tcpPort now feeds both the tunnel -L
+# (~1080, ~1717, ~1933) and the export below, so there is exactly one
+# source for what "the port" means in this launch.
 $planPrimaryPort = ($plan.Tunnels | Where-Object { $_.Host -eq $backendHost } | Select-Object -First 1).Port
-$script:tcpPort = if ($env:SOT_TCP_PORT) {
-    [int]$env:SOT_TCP_PORT
-} elseif ($planPrimaryPort) {
+$script:tcpPort = if ($planPrimaryPort) {
     $planPrimaryPort
+} elseif ($env:SOT_TCP_PORT) {
+    Write-SupLog "no topology plan: SOT_TCP_PORT=$($env:SOT_TCP_PORT) used"
+    [int]$env:SOT_TCP_PORT
 } else {
     18743
 }
@@ -949,7 +996,11 @@ $script:tcpPort = if ($env:SOT_TCP_PORT) {
 # to fall back on, and this line runs before Invoke-LocalDaemonEnsure below
 # starts the local daemon -- so setting it here, once, lets the daemon (and
 # anything it in turn spawns, e.g. a capsule inheriting the daemon's env)
-# see the per-user-derived port instead of always the fixed default.
+# see the per-user-derived port instead of always the fixed default. Set
+# from $tcpPort (the plan's own value whenever a plan exists) -- never a
+# re-echo of whatever SOT_TCP_PORT happened to already be in the
+# environment, which is exactly the stale value this export used to
+# perpetuate into every child (and every child's own later shell) above.
 $env:SOT_TCP_PORT = "$tcpPort"
 # Always queried on the remote (New-RemoteEnsureCommand above) -- no more
 # config-file/env override; see the host-registry comment above.
@@ -1915,6 +1966,16 @@ try {
             # the respawn, exactly as on the first launch.
             Start-Splash
             $splashDismissed = $false
+            # A pinned install's updates arrive ONLY through sot-apply.ps1 --
+            # Invoke-SelfUpdatePrelude below is a no-op for one -- so an
+            # armed update sitting on an already-resident supervisor was
+            # never applied until the next full process start (2026-09-18
+            # field report). Gated on the pending pointer actually existing
+            # so a converge with nothing armed doesn't pay a sot-apply.ps1
+            # spawn every time.
+            if (Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')) {
+                Invoke-PendingApply
+            }
             Invoke-SelfUpdatePrelude
             Invoke-FreshnessPass
             Update-SotTopologyPlan
