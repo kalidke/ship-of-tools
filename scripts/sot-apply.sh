@@ -43,6 +43,37 @@ PENDING="$UPDATES/pending-$TARGET.json"
 LASTGOOD="$UPDATES/last-good-$TARGET.json"
 MARKER="$UPDATES/just-applied-$TARGET"
 
+# ---- prefer a STAGED release's OWN sot-apply, once -------------------------
+# Finding 1b (v0.6.5 macOS field report): the INSTALLED copy of this
+# script (the one actually running right now) can predate fixes a newer
+# release's own copy carries -- it is the same problem finding 1a's daemon
+# check guards against, one level up. When a pending update has already
+# staged a newer sot-apply, hand off to it instead of running our own,
+# older logic. This must happen BEFORE the staging lock below is taken:
+# `exec` replaces this whole process image, so the EXIT trap that would
+# release the lock never runs, and the staged copy re-entering its own
+# lock section would just find the dir already there and refuse ("staging
+# lock held"). SOT_APPLY_REEXECED stops this from ever looping (the
+# staged copy sees it set and skips straight past this block).
+#
+# Only helps FUTURE upgrades: an old box's old apply predates this guard
+# too, so it can never reach it -- finding 1a's daemon-side sibling check
+# is what protects an upgrade already in the past.
+if [ -z "${SOT_APPLY_REEXECED:-}" ] && [ -f "$PENDING" ]; then
+    stage_field() { sed -n 's/^ *"'"$1"'": *"\([^"]*\)".*/\1/p' "$PENDING" | head -1; }
+    STAGE_TAG="$(stage_field tag)"
+    STAGE_ASSET="$(stage_field asset)"
+    if [ -n "$STAGE_TAG" ] && [ -n "$STAGE_ASSET" ]; then
+        STAGE_TOP="${STAGE_ASSET%.tar.gz}"; STAGE_TOP="${STAGE_TOP%.zip}"
+        STAGE_APPLY="$UPDATES/$STAGE_TAG-$TARGET/$STAGE_TOP/sot-apply"
+        if [ -x "$STAGE_APPLY" ]; then
+            log "re-executing the staged sot-apply ($STAGE_APPLY)"
+            SOT_APPLY_REEXECED=1 exec "$STAGE_APPLY" "$@"
+        fi
+    fi
+fi
+
+
 sha_file() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" 2>/dev/null | cut -d' ' -f1

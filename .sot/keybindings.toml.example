@@ -19,6 +19,13 @@
 # Letters and named keys match Shift exactly: r and Shift+r are distinct.
 # Punctuation uses the typed character: Alt++ binds plus, Alt+= binds equals.
 # macOS labels distinguish Control (⌃), Command (⌘), Option (⌥), and Shift (⇧).
+#
+# An override here REPLACES that action's WHOLE default chord list, not just
+# adds to it (finding 5, v0.6.5 macOS field report) -- e.g. an old
+# `focus.pane_left = "Alt+ArrowLeft"` line hides the CURRENT built-in default
+# (⌘Arrow on macOS) rather than sitting alongside it. Delete a line here once
+# you no longer need it: an upgrade that changes a built-in default never
+# reaches you while a stale override of that same action is still active.
 
 [keys]
 # Maximise the focused pane to fill the window.
@@ -48,25 +55,29 @@ mode.hosts = "h"
 # the tree to its root; deeper dirs pick up the change on next expand.
 files.toggle_hidden = "."
 # Drawer toggles (global): REPL / Terminal / Monitor panes.
-drawer.repl = "Ctrl+j"
-drawer.terminal = "Ctrl+t"
-drawer.monitor = "Ctrl+m"
+drawer.repl = "Primary+j"
+drawer.terminal = "Primary+t"
+drawer.monitor = "Primary+m"
 # Spatial pane focus (global, 4-way). Keep disjoint from plain arrows
 # (per-pane nav) and Shift+Arrow (workspace cycle).
-focus.pane_left = "Ctrl+ArrowLeft"
-focus.pane_right = "Ctrl+ArrowRight"
-focus.pane_up = "Ctrl+ArrowUp"
-focus.pane_down = "Ctrl+ArrowDown"
+focus.pane_left = "Primary+ArrowLeft"
+focus.pane_right = "Primary+ArrowRight"
+focus.pane_up = "Primary+ArrowUp"
+focus.pane_down = "Primary+ArrowDown"
 # Cycle the active workspace (global; ignored while editing a file).
 workspace.cycle_next = "Shift+ArrowRight"
 workspace.cycle_prev = "Shift+ArrowLeft"
 # Global chrome.
-quit = "Ctrl+q"                 # nav focus only (won't fire in the pty panes)
-help.toggle = "Ctrl+?"          # five-second pane overlay; again opens Help
+quit = "Primary+q"               # nav focus only (won't fire in the pty panes)
+# NOTE: on macOS the built-in default is actually the bare Cmd+/, not
+# Primary+? applied literally -- Cmd+Shift+/ is the system's own reserved
+# Help-menu shortcut (finding 4). Setting this line active on a Mac
+# reintroduces that conflict; leave it out there unless you want that.
+help.toggle = "Primary+?"        # five-second pane overlay; again opens Help
 drawer.help = "F1"              # open/close the persistent Help drawer
 view.fullscreen = "F11"
 transport.reconnect = "F5"
 # Font scale. "=" and shifted "+" both zoom in; "-" and "_" both zoom out.
-font.scale_up = ["Ctrl+=", "Ctrl++"]
-font.scale_down = ["Ctrl+-", "Ctrl+_"]
-font.scale_reset = "Ctrl+0"
+font.scale_up = ["Primary+=", "Primary++"]
+font.scale_down = ["Primary+-", "Primary+_"]
+font.scale_reset = "Primary+0"

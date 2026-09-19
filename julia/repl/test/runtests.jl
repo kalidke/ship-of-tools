@@ -1,5 +1,5 @@
 using Test
-using JSON3
+using Pkg
 using Sockets
 using ShipToolsRepl
 
@@ -10,7 +10,8 @@ const DR = ShipToolsRepl
 
     @testset "utf8_prefix splits on char boundary" begin
         # "é" is 0xC3 0xA9. A buffer ending mid-char must hold the partial byte
-        # back so we never emit invalid UTF-8 (JSON3 would reject it).
+        # back so we never emit invalid UTF-8 (json_write would serialize it
+        # as garbage on the other side of the pipe).
         full = Vector{UInt8}("aé")              # [0x61, 0xC3, 0xA9]
         s, rest = DR.utf8_prefix(full)
         @test s == "aé"
@@ -106,7 +107,7 @@ const DR = ShipToolsRepl
         while true
             line = readline(bs_out)            # "" on EOF (watchdog close)
             isempty(line) && (eof(bs_out) ? break : continue)
-            env = JSON3.read(line)
+            env = DR.json_read(line)
             push!(envs, env)
             get(env, :kind, "") == "res" && break
         end
@@ -115,7 +116,7 @@ const DR = ShipToolsRepl
 
     @testset "serve: repl.eval streams frames + terminal res" begin
         bs_in, bs_out, _ = drive(String[])
-        req = JSON3.write(Dict(
+        req = sprint(DR.json_write, Dict(
             :v => 1, :id => 7, :op => "repl.eval",
             :payload => Dict(:eval_id => 99, :code => "print(\"hi\"); 1+2"),
         ))
@@ -124,20 +125,20 @@ const DR = ShipToolsRepl
         envs = read_until_res(bs_out)
         close(bs_in)
 
-        evts = [e for e in envs if get(e, :kind, "") == "evt" && e.op == "repl.frame"]
+        evts = [e for e in envs if get(e, :kind, "") == "evt" && e[:op] == "repl.frame"]
         @test !isempty(evts)
         # every evt is correlated to the request + eval
-        @test all(e -> e.id == 7, evts)
-        @test all(e -> e.payload.eval_id == 99, evts)
-        framekinds = [e.payload.frame.kind for e in evts]
+        @test all(e -> e[:id] == 7, evts)
+        @test all(e -> e[:payload][:eval_id] == 99, evts)
+        framekinds = [e[:payload][:frame][:kind] for e in evts]
         @test "stdout" in framekinds
         @test "value" in framekinds
         @test last(framekinds) == "done"       # done is the terminal frame
         # terminal res ack
         res = envs[end]
-        @test res.kind == "res"
-        @test res.op == "repl.eval"
-        @test res.payload.eval_id == 99
+        @test res[:kind] == "res"
+        @test res[:op] == "repl.eval"
+        @test res[:payload][:eval_id] == 99
     end
 
     @testset "serve: run_file missing-file failure is VISIBLE (error+done frames)" begin
@@ -147,7 +148,7 @@ const DR = ShipToolsRepl
         # the 2026-07-24 "--fresh include never runs" field failure. The
         # failure must stream as error+done frames like any other eval error.
         bs_in, bs_out, _ = drive(String[])
-        req = JSON3.write(Dict(
+        req = sprint(DR.json_write, Dict(
             :v => 1, :id => 9, :op => "repl.run_file",
             :payload => Dict(:eval_id => 77, :path => "/nonexistent/nope.jl"),
         ))
@@ -155,14 +156,14 @@ const DR = ShipToolsRepl
         flush(bs_in)
         envs = read_until_res(bs_out)
         close(bs_in)
-        evts = [e for e in envs if get(e, :kind, "") == "evt" && e.op == "repl.frame"]
-        framekinds = [e.payload.frame.kind for e in evts]
+        evts = [e for e in envs if get(e, :kind, "") == "evt" && e[:op] == "repl.frame"]
+        framekinds = [e[:payload][:frame][:kind] for e in evts]
         @test "error" in framekinds
         @test last(framekinds) == "done"
-        @test all(e -> e.payload.eval_id == 77, evts)
+        @test all(e -> e[:payload][:eval_id] == 77, evts)
         res = envs[end]
-        @test res.kind == "res" && res.op == "repl.run_file"
-        @test occursin("no such file", String(res.payload.error))
+        @test res[:kind] == "res" && res[:op] == "repl.run_file"
+        @test occursin("no such file", String(res[:payload][:error]))
     end
 
     @testset "serve: run_file include announces a browser frame mid-include" begin
@@ -177,7 +178,7 @@ const DR = ShipToolsRepl
             nothing
             """)
         bs_in, bs_out, _ = drive(String[])
-        req = JSON3.write(Dict(
+        req = sprint(DR.json_write, Dict(
             :v => 1, :id => 11, :op => "repl.run_file",
             :payload => Dict(:eval_id => 78, :path => path, :fresh => false),
         ))
@@ -186,27 +187,27 @@ const DR = ShipToolsRepl
         envs = read_until_res(bs_out)
         close(bs_in)
         rm(path; force = true)
-        evts = [e for e in envs if get(e, :kind, "") == "evt" && e.op == "repl.frame"]
-        framekinds = [e.payload.frame.kind for e in evts]
+        evts = [e for e in envs if get(e, :kind, "") == "evt" && e[:op] == "repl.frame"]
+        framekinds = [e[:payload][:frame][:kind] for e in evts]
         @test "browser" in framekinds
         @test "stdout" in framekinds
         @test last(framekinds) == "done"
-        bf = evts[findfirst(==("browser"), framekinds)].payload.frame
-        @test bf.url == "http://127.0.0.1:59994/" && bf.open == true
-        @test all(e -> e.payload.eval_id == 78, evts)
+        bf = evts[findfirst(==("browser"), framekinds)][:payload][:frame]
+        @test bf[:url] == "http://127.0.0.1:59994/" && bf[:open] == true
+        @test all(e -> e[:payload][:eval_id] == 78, evts)
     end
 
     @testset "serve: repl.interrupt cancels a running eval" begin
         bs_in, bs_out, _ = drive(String[])
         # A long, yielding eval so the dispatch loop stays responsive to interrupt.
-        evalreq = JSON3.write(Dict(
+        evalreq = sprint(DR.json_write, Dict(
             :v => 1, :id => 1, :op => "repl.eval",
             :payload => Dict(:eval_id => 1, :code => "sleep(60)"),
         ))
         write(bs_in, evalreq * "\n"); flush(bs_in)
         # Let the eval task actually start before interrupting.
         sleep(1.0)
-        intreq = JSON3.write(Dict(
+        intreq = sprint(DR.json_write, Dict(
             :v => 1, :id => 2, :op => "repl.interrupt", :payload => Dict(),
         ))
         write(bs_in, intreq * "\n"); flush(bs_in)
@@ -220,12 +221,12 @@ const DR = ShipToolsRepl
         while time() < deadline && !(saw_eval_done && saw_interrupt_res)
             line = readline(bs_out)
             isempty(line) && (eof(bs_out) ? break : continue)
-            env = JSON3.read(line)
-            if get(env, :kind, "") == "res" && env.op == "repl.interrupt"
+            env = DR.json_read(line)
+            if get(env, :kind, "") == "res" && env[:op] == "repl.interrupt"
                 saw_interrupt_res = true
-                @test env.payload.interrupted == true
-            elseif get(env, :kind, "") == "evt" && env.op == "repl.frame" && env.id == 1
-                k = env.payload.frame.kind
+                @test env[:payload][:interrupted] == true
+            elseif get(env, :kind, "") == "evt" && env[:op] == "repl.frame" && env[:id] == 1
+                k = env[:payload][:frame][:kind]
                 k == "error" && (saw_eval_error = true)
                 k == "done" && (saw_eval_done = true)
             end
@@ -295,11 +296,11 @@ const DR = ShipToolsRepl
         DR.serve(IOBuffer(""), out)   # empty input: dispatch loop exits immediately
         lines = split(String(take!(out)), '\n'; keepempty = false)
         @test !isempty(lines)
-        first_env = JSON3.read(lines[1])
-        @test first_env.kind == "evt"
-        @test first_env.op == "repl.ready"
-        @test first_env.payload.protocol == 1
-        @test first_env.payload.julia == string(VERSION)
+        first_env = DR.json_read(lines[1])
+        @test first_env[:kind] == "evt"
+        @test first_env[:op] == "repl.ready"
+        @test first_env[:payload][:protocol] == 1
+        @test first_env[:payload][:julia] == string(VERSION)
         # Nothing else is emitted for empty input — the sentinel is serve's
         # ONLY unsolicited envelope, so old supervisors (first-line trigger)
         # see exactly one boot line and new ones see a designed signal.
@@ -321,5 +322,81 @@ const DR = ShipToolsRepl
         # stack — see the `Base.displayable` comment) and nothing else.
         @test displayable(DR.WGLDisplay(), MIME("text/html"))
         @test !displayable(DR.WGLDisplay(), MIME("text/plain"))
+    end
+
+    @testset "ShipToolsRepl is stacked under the user's environment; a registered dependency can be shadowed by the user's manifest (Parsers 3 killed JSON3, 2026-09-18)" begin
+        project = Pkg.TOML.parsefile(joinpath(pkgdir(ShipToolsRepl), "Project.toml"))
+        deps = get(project, "deps", Dict{String,Any}())
+        @test !isempty(deps)   # sanity: the guard isn't vacuously true
+        stdlib_uuids = Set(keys(Pkg.Types.stdlibs()))
+        for (name, uuid_str) in deps
+            @test Base.UUID(uuid_str) in stdlib_uuids
+        end
+    end
+
+    @testset "json codec: round-trip and RFC 8259 details" begin
+        @testset "nested Dict/Vector round-trip" begin
+            x = Dict(:a => 1, :b => Any[1, 2.5, "three", true, false, nothing],
+                      :c => Dict(:d => "nested"))
+            y = DR.json_read(sprint(DR.json_write, x))
+            @test y[:a] == 1
+            @test y[:b] == Any[1, 2.5, "three", true, false, nothing]
+            @test y[:c][:d] == "nested"
+        end
+
+        @testset "string escapes read back exactly" begin
+            s = "quote\"backslash\\slash/bell\bform\fnewline\nreturn\rtab\t"
+            @test DR.json_read(sprint(DR.json_write, s)) == s
+            # A control character with no short escape still round-trips via \u00XX.
+            @test DR.json_read(sprint(DR.json_write, "\x01\x1f")) == "\x01\x1f"
+        end
+
+        @testset "surrogate pair decodes to the real character" begin
+            @test DR.json_read("\"\\ud83d\\ude00\"") == "😀"
+            # Writing it back out doesn't need to re-escape it — native UTF-8
+            # bytes are legal JSON text — but it still round-trips.
+            @test DR.json_read(sprint(DR.json_write, "😀")) == "😀"
+            @test_throws ArgumentError DR.json_read("\"\\ud83d\"")   # unpaired high
+            @test_throws ArgumentError DR.json_read("\"\\ude00\"")  # unpaired low
+        end
+
+        @testset "big integers and floats" begin
+            @test DR.json_read("9223372036854775807") == typemax(Int64)
+            @test DR.json_read("99999999999999999999999999") isa Float64  # overflow -> Float64
+            @test DR.json_read("3.5") === 3.5
+            @test DR.json_read("1e3") === 1.0e3
+            @test DR.json_read("-0.5") === -0.5
+        end
+
+        @testset "non-finite floats write as null (serde_json has no NaN/Inf token)" begin
+            @test sprint(DR.json_write, NaN) == "null"
+            @test sprint(DR.json_write, Inf) == "null"
+            @test sprint(DR.json_write, -Inf) == "null"
+            @test DR.json_read(sprint(DR.json_write, NaN)) === nothing
+        end
+
+        @testset "Symbol keys and NamedTuple objects" begin
+            @test sprint(DR.json_write, Dict(:x => 1)) == "{\"x\":1}"
+            @test DR.json_read(sprint(DR.json_write, (a = 1, b = "two"))) ==
+                  Dict{Symbol,Any}(:a => 1, :b => "two")
+        end
+
+        @testset "a real request line parses, a real envelope round-trips" begin
+            # Same envelope shape as the fixture in rust/backend/src/repl.rs's
+            # own tests: {"v":1,"id":1,"kind":"res","op":"repl.eval","payload":{"answered":true}}
+            line = "{\"v\":1,\"id\":1,\"kind\":\"res\",\"op\":\"repl.eval\",\"payload\":{\"answered\":true}}"
+            req = DR.json_read(line)
+            @test req[:id] == 1
+            @test req[:op] == "repl.eval"
+            @test req[:payload][:answered] == true
+
+            env = Dict(:v => 1, :id => UInt64(7), :kind => "res", :op => "repl.eval",
+                       :payload => Dict(:eval_id => 99, :mode => "julia", :elapsed_ms => 12))
+            out = sprint(DR.json_write, env)
+            @test DR.json_read(out) == Dict{Symbol,Any}(
+                :v => 1, :id => 7, :kind => "res", :op => "repl.eval",
+                :payload => Dict{Symbol,Any}(:eval_id => 99, :mode => "julia", :elapsed_ms => 12),
+            )
+        end
     end
 end

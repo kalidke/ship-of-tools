@@ -401,6 +401,46 @@ case "$OS" in
         die "this installer covers Linux and macOS. Windows uses source setup unless a release zip exists; see docs/INSTALL-AGENT.md section 2b" ;;
     *)  die "unsupported OS $OS. Linux/macOS: this installer; Windows: docs/INSTALL-AGENT.md section 2b" ;;
 esac
+
+# Finding 2 (v0.6.5 macOS field report): the daemon correctly REFUSES to
+# put capsule records on a remote filesystem (`rust/log/src/fsutil.rs`
+# `preflight_volume`'s statfs denylist), but today the only place that
+# says so is the backend's own journal -- from the frontend it just looks
+# like the retry blink, "supervisor lane not answering", forever. Surfacing
+# the real reason in the pane itself needs a design pass (deferred); for
+# now, warn here, at install time, on the two directories that matter:
+# $HOME (the default project root) and the state dir the daemon will
+# actually use. Linux only -- `stat -f -c %T` is GNU coreutils, and this
+# whole failure mode is Linux/Windows-only today anyway (capsule mode
+# isn't wired up on macOS -- see `rust/log/src/fsutil.rs`'s
+# `preflight_volume` non-Linux-unix arm). Warn, never abort: a remote
+# home is a real, working (if degraded) setup for everything except
+# capsule rows.
+if [ "$OS" = Linux ] && command -v stat >/dev/null 2>&1; then
+    # Mirrors `REMOTE_FS_TYPES`' names in fsutil.rs (NFS, SMB, CIFS, SMB2,
+    # 9p, FUSE) as GNU `stat -f -c %T` actually spells them.
+    check_remote_fs() {
+        local label="$1" dir="$2"
+        local fstype
+        fstype="$(stat -f -c %T "$dir" 2>/dev/null)" || return 0
+        case "$fstype" in
+            nfs|nfs4|cifs|smb2|fuse.sshfs|9p)
+                say "WARNING: $label ($dir) is on a remote filesystem ($fstype)."
+                say "  Capsule session records cannot live on a remote filesystem"
+                say "  (ADR 0043 decision 23). Set XDG_STATE_HOME to a local-disk"
+                say "  directory in the environment sotd starts from -- for a"
+                say "  systemd install: systemctl --user set-environment"
+                say "  XDG_STATE_HOME=/path/on/local/disk, or export it in"
+                say "  ~/.bashrc (which the unit sources) -- then restart sotd."
+                say "  Whichever directory you choose, sotd requires it to be owned by"
+                say "  you with mode 700 (it refuses to start otherwise) and does not"
+                say "  back it up -- pick a path that persists across reboots, not /tmp."
+                ;;
+        esac
+    }
+    check_remote_fs '$HOME' "$HOME"
+    check_remote_fs 'the state dir' "${XDG_STATE_HOME:-$HOME/.local/state}"
+fi
 for t in curl tar; do command -v "$t" >/dev/null || die "$t is required"; done
 # The glibc floor for the frontend binary is checked further down, once the
 # role is resolved (WANT_FRONTEND) — that now needs the declared topology,
@@ -453,6 +493,21 @@ done
 rm -f "$PREFIX"/updates/last-good-*.json "$PREFIX"/updates/just-applied-* 2>/dev/null || true
 say "binaries: $("$PREFIX/bin/sotd" --version)"
 DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
+
+# ---- heal a pre-0.6 hosts.toml (finding 3a, v0.6.5 macOS field report) -----------
+# The old grammar (`default_host` at top level) is a loud parse error under
+# the current one (rust/protocol/src/topology.rs), not a silently-kept
+# file -- an installer that preserved one across an upgrade left the box
+# with NO topology plan at all, which is what then walked
+# `scripts/launch-sot.sh` into the bash-3.2 unbound-array crash (finding
+# 3b, fixed separately). Move it aside, never delete it, so `--hub` above
+# or a plain `sotd topology sync --hub <alias>` writes the current
+# grammar fresh on next launch.
+if [ -f "$CONFIG/hosts.toml" ] && grep -q '^default_host' "$CONFIG/hosts.toml" 2>/dev/null; then
+    OLD_HOSTS="$CONFIG/hosts.toml.v1-$(date +%Y%m%d%H%M%S)"
+    mv "$CONFIG/hosts.toml" "$OLD_HOSTS"
+    say "pre-0.6 hosts.toml moved aside to $OLD_HOSTS; the hub sync writes the current grammar on next launch (or run: sotd topology sync --hub <alias>)"
+fi
 
 # ---- role resolution: the declared topology, else flags -------------------------
 # D9 (dev/output/topology-plan.md §C/§D): the hub's hosts.toml is canonical —

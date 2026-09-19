@@ -283,6 +283,46 @@ Pure queries (no startup side effects, answered before any of the above):
     if let Err(e) = sot_log::winhandle::harden_own_stdio(true) {
         eprintln!("sotd: could not harden inherited stdio ({e}); continuing");
     }
+
+    // Security review addendum (item 2b, v0.6.5 macOS field report): the
+    // runtime dir and its sockets already get a symlink/ownership/mode
+    // check before anything is trusted to live there; the STATE root
+    // `XDG_STATE_HOME` selects did not. On a shared host that root can
+    // sit under a world-writable sticky parent (e.g. `/scratch`), where
+    // an attacker-precreated or symlinked directory would receive
+    // session records. Checked here, at the very top of startup, before
+    // `open_private_log_file` below (or anything else) ever touches it —
+    // every daemon gets this, not only one that goes on to create a
+    // capsule row (`capsule_workspace::qualified_state_root` applies the
+    // SAME check again per row create/attach, as defense in depth
+    // against the directory being altered after this boot-time check).
+    // A symlink or a foreign owner is refused outright. A mode that lets
+    // group/other in on a directory this uid owns is repaired to 0700
+    // first (what the previous `ensure_private_dir` always did), so a
+    // hand-made `mkdir` under a 022 umask does not brick the daemon on
+    // the next boot. Tracing isn't initialized yet at this point, so this
+    // is stderr-only, same as the harden_own_stdio fallback right above.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = paths::state_dir();
+        if let Ok(meta) = std::fs::symlink_metadata(&dir) {
+            if meta.is_dir()
+                && meta.uid() == paths::current_uid()
+                && meta.permissions().mode() & 0o077 != 0
+            {
+                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+    }
+    if let Err(e) = paths::secure_private_dir(&paths::state_dir()) {
+        eprintln!(
+            "sotd: state dir {} is not private ({e}) — refusing to start",
+            paths::state_dir().display()
+        );
+        std::process::exit(1);
+    }
+
     let log_file = open_private_log_file();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -295,6 +335,29 @@ Pure queries (no startup side effects, answered before any of the above):
         .init();
 
     let opts = parse_args().context("parsing command-line arguments")?;
+
+    // Finding 1, v0.6.5 macOS field report: refuse to serve a capsule row
+    // sotd can never actually start, rather than booting cleanly and
+    // leaving every pane blinking "supervisor lane not answering" while
+    // the journal claims a start that produced no process. A pre-0.6
+    // `sot-apply` (run by an old install's updater/systemd unit) only
+    // knew to swap `sot` and `sotd`; `sot-capsule` (new in 0.6) is left
+    // behind in the staged tarball. Plain check, no auto-repair — the
+    // fix is a real reinstall (docs/INSTALL-AGENT.md), which
+    // `sot-apply.sh` itself cannot retroactively become for a box already
+    // running the old copy (see that script's own re-exec-the-staged-copy
+    // comment for the case this DOES cover).
+    if let Ok(exe) = std::env::current_exe() {
+        if !capsule_workspace::capsule_sibling_present(&exe) {
+            let msg = format!(
+                "sotd: sot-capsule is missing next to sotd ({}); this install was upgraded by a pre-0.6 apply — re-run the installer: fetch docs/INSTALL-AGENT.md from main and follow it",
+                exe.display()
+            );
+            eprintln!("{msg}");
+            tracing::error!("{msg}");
+            std::process::exit(1);
+        }
+    }
 
     tracing::info!(
         socket = ?opts.socket,

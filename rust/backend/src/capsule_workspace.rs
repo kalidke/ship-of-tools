@@ -98,8 +98,18 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 pub fn qualified_state_root() -> Result<PathBuf, String> {
     let root = sot_log::state_dir::sot_state_dir()
         .ok_or_else(|| format!("could not resolve this machine's state root ({STATE_ROOT_HINT} unset)"))?;
-    crate::paths::ensure_private_dir(&root)
-        .map_err(|e| format!("could not create the state root {root:?}: {e}"))?;
+    // Security review addendum (item 2b, v0.6.5 macOS field report): the
+    // runtime dir and sockets already get `is_private_dir`'s
+    // symlink/ownership/mode check; this root -- what `XDG_STATE_HOME`
+    // selects -- did not, and on a shared host it can sit under a
+    // world-writable sticky parent (e.g. /scratch), where an attacker-
+    // precreated or symlinked directory would receive session records.
+    // `secure_private_dir` is the create-or-verify guard the tmux socket
+    // dir already uses for exactly this threat model (atomic 0700 create
+    // when absent; symlink/owner/mode-checked, never trusted, when
+    // present) -- reused here rather than a second bespoke check.
+    crate::paths::secure_private_dir(&root)
+        .map_err(|e| format!("could not secure the state root {root:?}: {e}"))?;
     let root = std::fs::canonicalize(&root)
         .map_err(|e| format!("could not resolve the state root {root:?}: {e}"))?;
     #[cfg(target_os = "linux")]
@@ -861,6 +871,90 @@ pub enum EndRunOutcome {
 /// exit-status read, existed here before decision 33 deleted the
 /// adopted-leg watch entirely — a watchdog now exists only for a
 /// `Child` this daemon itself spawned.)
+/// This platform's `sot-capsule` sibling file name — kept OUTSIDE `mod
+/// runtime` (windows/linux only, see that module's own doc) so the
+/// daemon-startup sanity check right below it compiles and runs on every
+/// platform `sotd` ships for, macOS included, even though the runtime
+/// itself does not yet spawn the binary there. Duplicates `mod runtime`'s
+/// own `CAPSULE_EXE` value rather than reaching across the cfg boundary —
+/// the two are pinned together by the test below.
+#[cfg(windows)]
+const CAPSULE_SIBLING_NAME: &str = "sot-capsule.exe";
+#[cfg(not(windows))]
+const CAPSULE_SIBLING_NAME: &str = "sot-capsule";
+
+/// Whether the `sot-capsule` sibling binary exists next to `daemon_exe`
+/// and (on Unix) is executable — ADR 0043 decision 22's sibling-binary
+/// contract, checked once at daemon startup (`main.rs`, right after arg
+/// parsing, before the socket is bound). `false` here after an in-place
+/// upgrade means a pre-0.6 `sot-apply` swapped only `sot`/`sotd` and left
+/// the newer `sot-capsule` unstaged (finding 1, v0.6.5 macOS field
+/// report): every capsule row then blinks "supervisor lane not
+/// answering" forever while the journal claims a start that produced no
+/// process. Pure path/metadata check, no `current_exe()` call, so it is
+/// unit-testable against a plain temp directory.
+pub fn capsule_sibling_present(daemon_exe: &Path) -> bool {
+    let sibling = daemon_exe.with_file_name(CAPSULE_SIBLING_NAME);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(&sibling)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        sibling.is_file()
+    }
+}
+
+#[cfg(test)]
+mod capsule_sibling_present_tests {
+    use super::*;
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sot-capsule-sibling-test-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    #[test]
+    fn present_when_executable_sibling_exists() {
+        let dir = scratch_dir("present");
+        let daemon = dir.join("sotd");
+        let sibling = dir.join(CAPSULE_SIBLING_NAME);
+        std::fs::write(&sibling, b"#!/bin/sh\n").expect("write sibling");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&sibling, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        assert!(capsule_sibling_present(&daemon));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn absent_when_sibling_missing() {
+        let dir = scratch_dir("absent");
+        let daemon = dir.join("sotd");
+        assert!(!capsule_sibling_present(&daemon));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absent_when_sibling_not_executable() {
+        let dir = scratch_dir("noexec");
+        let daemon = dir.join("sotd");
+        let sibling = dir.join(CAPSULE_SIBLING_NAME);
+        std::fs::write(&sibling, b"#!/bin/sh\n").expect("write sibling");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&sibling, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        assert!(!capsule_sibling_present(&daemon));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
 #[cfg(any(windows, target_os = "linux"))]
 mod runtime {
     use super::{

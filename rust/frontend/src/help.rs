@@ -427,10 +427,11 @@ pub fn render(frame: &mut Frame<'_>, rect: Rect, help: &Help, bindings: &KeyBind
     frame.render_widget(
         Paragraph::new(truncate(
             &format!(
-                "{} Select · {} Scope · {} Manual · {} Return",
+                "{} Select · {} Scope · {} Manual · {} Cheat sheet · {} Return",
                 bindings.first_label(Action::HelpDown),
                 bindings.first_label(Action::HelpScope),
                 bindings.first_label(Action::HelpManual),
+                bindings.first_label(Action::HelpCheatSheet),
                 bindings.first_label(Action::HelpClose)
             ),
             width,
