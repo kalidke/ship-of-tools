@@ -375,6 +375,19 @@ try { Write-Utf8NoBom $lgTmp $lgBody } catch {
 Move-Item -LiteralPath $lgTmp -Destination $LastGood -Force -ErrorAction SilentlyContinue
 
 # ---- the flip: binaries, then pointers -- all-or-restore ---------------------
+# Restore-Previous does NOT exit itself. A function-scope `exit` was
+# observed NOT to terminate the script on the launch path (2026-09-18 field
+# report): a restore ran mid-transaction, logged its line, and then the
+# repo\current junction flip, the install.json rewrite and the APPLIED line
+# all ran anyway on TOP of the just-restored binaries -- install.json ended
+# up naming the new tag while the binaries on disk were back at the old
+# one. The FE updater compares its own binary version against the
+# manifest, saw them disagree, and re-staged and re-armed the SAME update
+# forever. Restore-Previous now only restores state and marks the
+# transaction failed; every call site below checks $script:applyFailed
+# immediately after and exits from TOP-LEVEL script scope, which does end
+# the script.
+$script:applyFailed = $false
 function Restore-Previous([string]$why) {
     Write-ApplyLog "$why -- restoring previous binaries and pointers"
     foreach ($r in @('sot.exe', 'sotd.exe', 'sot-capsule.exe')) {
@@ -389,8 +402,15 @@ function Restore-Previous([string]$why) {
     }
     # Pending stays: the stage verified clean, so the failure is local
     # (permissions, disk); retrying at the next launch is safe and fail-open.
-    Exit-Apply 0
+    $script:applyFailed = $true
 }
+
+# Stale-aside binaries from an earlier apply (below): a copy still pinned
+# by a live capsule supervisor at the time fails Remove-Item silently and
+# is simply left for next time -- same sweep launch-sot.ps1 runs for its
+# dev-tree rebuild (~1486-1500).
+Get-ChildItem -Path (Join-Path $BinDir '*-stale-*.exe') -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
 if (-not (Test-Path -LiteralPath $BinDir)) { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
 foreach ($b in @('sot.exe', 'sotd.exe', 'sot-capsule.exe')) {
@@ -404,17 +424,43 @@ foreach ($b in @('sot.exe', 'sotd.exe', 'sot-capsule.exe')) {
         Copy-Item -LiteralPath $src -Destination "$dst.new" -Force -ErrorAction Stop
         Move-Item -LiteralPath "$dst.new" -Destination $dst -Force -ErrorAction Stop
     } catch {
-        Restore-Previous "installing $b failed: $($_.Exception.Message)"
+        $firstErr = $_.Exception.Message
+        if ((Test-Path -LiteralPath "$dst.new") -and (Test-Path -LiteralPath $dst)) {
+            # A live capsule supervisor keeps sot-capsule.exe mapped, and
+            # Move-Item's -Force cannot overwrite a mapped image on Windows
+            # ("Cannot create a file when that file already exists" -- the
+            # 2026-09-18 field report, four live rows on a frontend box).
+            # Renaming a mapped image IS allowed though (the running
+            # process keeps executing the renamed file until it exits), so
+            # free the canonical path that way instead of giving up -- the
+            # same move launch-sot.ps1 makes for its dev-tree rebuild
+            # (~1486-1500). .prev already holds a copy taken above, so
+            # -Rollback is unaffected.
+            $staleName = "$([System.IO.Path]::GetFileNameWithoutExtension($b))-stale-$(Get-Date -Format 'yyyyMMdd-HHmmss').exe"
+            try {
+                Rename-Item -LiteralPath $dst -NewName $staleName -ErrorAction Stop
+                Move-Item -LiteralPath "$dst.new" -Destination $dst -Force -ErrorAction Stop
+            } catch {
+                Restore-Previous "installing $b failed: $($_.Exception.Message)"
+            }
+        } else {
+            Restore-Previous "installing $b failed: $firstErr"
+        }
     }
+    if ($script:applyFailed) { break }
 }
+if ($script:applyFailed) { Exit-Apply 0 }
 
 if (-not (Set-Junction (Join-Path $Prefix 'repo\current') $checkout)) { Restore-Previous 'flipping repo\current failed' }
+if ($script:applyFailed) { Exit-Apply 0 }
 $flipped = Get-ComparablePath (Get-JunctionTarget (Join-Path $Prefix 'repo\current'))
 $wanted  = Get-ComparablePath $checkout
 if ($flipped -ne $wanted) {
     Restore-Previous "repo\current did not flip (points at '$flipped', wanted '$wanted')"
+    if ($script:applyFailed) { Exit-Apply 0 }
 }
 if (-not (Set-Junction (Join-Path $Prefix 'julia\current') $checkout)) { Restore-Previous 'flipping julia\current failed' }
+if ($script:applyFailed) { Exit-Apply 0 }
 
 # ---- rewrite install.json (preserve role/prefix/config/service) -------------
 if ($installText) {
@@ -427,11 +473,34 @@ if ($installText) {
         Restore-Previous "rewriting install.json failed: $($_.Exception.Message)"
     }
 }
+if ($script:applyFailed) { Exit-Apply 0 }
 
-# Success: arm the crash-loop health window, clear the pointer.
-New-Item -ItemType File -Path $Marker -Force | Out-Null
-Remove-Pending
-Write-ApplyLog "APPLIED $tag (previous kept as .prev; rollback marker armed)"
+# ---- post-check: every staged binary now hashes equal to its source -------
+# Belt-and-suspenders for the rename-aside path above: confirm the swap
+# actually landed before declaring success, instead of trusting that no
+# exception means no problem.
+foreach ($b in @('sot.exe', 'sotd.exe', 'sot-capsule.exe')) {
+    $src = Join-Path $staged $b
+    if (-not (Test-Path -LiteralPath $src)) { continue }
+    $dst = Join-Path $BinDir $b
+    $wantHash = Get-Sha256 $src
+    $gotHash  = Get-Sha256 $dst
+    if (-not $wantHash -or -not $gotHash -or $wantHash -ne $gotHash) {
+        Restore-Previous "post-check: $b hash mismatch after install (want $wantHash, got $gotHash)"
+        break
+    }
+}
+if ($script:applyFailed) { Exit-Apply 0 }
+
+# Success: arm the crash-loop health window, clear the pointer. Guarded
+# again on $script:applyFailed -- belt-and-suspenders with the early exits
+# above (see the Restore-Previous comment for why this script no longer
+# trusts a single control-flow path to end it on failure).
+if (-not $script:applyFailed) {
+    New-Item -ItemType File -Path $Marker -Force | Out-Null
+    Remove-Pending
+    Write-ApplyLog "APPLIED $tag (previous kept as .prev; rollback marker armed)"
+}
 
 # ---- prune: keep the new and previous version dirs --------------------------
 $keep = @($tag)
