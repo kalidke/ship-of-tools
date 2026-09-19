@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# comm-status-working.sh — Claude Code `UserPromptSubmit` hook: mark this comm
-# agent working, and say WHO started the turn.
+# comm-status-working.sh — Claude Code `UserPromptSubmit` hook: tell
+# comm-status.sh a turn is starting, and WHO started it.
 #
 # Wired as a global UserPromptSubmit hook in ~/.claude/settings.json (see comm.jl
 # / update_comm). It fires the INSTANT a turn starts — automatic, deterministic,
@@ -8,35 +8,25 @@
 # replaces pane-scraping: a turn starting IS the agent beginning to work, known
 # the moment it happens rather than guessed from the screen 2 seconds later.
 #
-# comm-status.sh keeps the prior summary when none is passed, so the model's last
-# "working on X" note (if it set one) rides along with the working state.
-#
 # Safety rests entirely on comm-status.sh's own self-gating: in any session that
-# is NOT a joined comm agent ($NAME empty, or no registry row) it is a silent
-# no-op with rc 0. We swallow output and always exit 0 so the hook can never
-# block or delay a turn.
+# is NOT a joined comm agent ($NAME empty, or no registry row) the `prompt`
+# event is a silent no-op with rc 0. We swallow output and always exit 0 so
+# the hook can never block or delay a turn.
 #
 # Source of truth: comm/adapters/claude/hooks/comm-status-working.sh in Ship of Tools,
 # deployed to ~/.sot-comm/bin by ShipTools.update_comm(). Edit it there.
 #
-# SOFT write: a turn starting is truthfully "working", but it must PRESERVE a
-# live sticky-waiting marker (see comm-status.sh header) — the user prompting
-# the session doesn't finish its background job. Only the model's explicit
-# non-soft report clears the marker.
-#
-# TURN ORIGIN (ADR 0044, 2026-09-08): this hook is the ONE writer that can tell
-# a genuine human prompt from a machine-initiated turn — teammate relay
-# messages, task/monitor notifications, system notifications also fire
+# TURN ORIGIN (ADR 0044): this hook is the ONE writer that can tell a genuine
+# human prompt from a machine-initiated turn — teammate relay messages,
+# task/monitor notifications, system notifications also fire
 # UserPromptSubmit. It classifies by prompt shape (stdin is the hook's JSON
-# envelope, {"prompt": ...}) and passes COMM_STATUS_ORIGIN=user|machine. Every
-# decision that depends on it lives in comm-status.sh, not here:
-#   - (The 2026-07-04 hierarchy guard that held a BLOCKED or DONE row through
-#     a machine turn was deleted 2026-09-18, owner: green after any prompt
-#     until something else takes over; ADR 0044 amendment.) comm-status.sh
-#     still holds a sticky-waiting row on a machine origin — and
-#     still records the origin, so the turn-end floor can never read a stale
-#     "user" from an earlier turn and paint a machine turn blue.
-#   - The turn-end floor paints blue only for origin=user (ADR 0044).
+# envelope, {"prompt": ...}) and passes COMM_STATUS_ORIGIN=user|machine to the
+# `prompt` event: comm-status.sh sets `floor` to that origin, and a `user`
+# origin also clears an open `question` and a stale `done` (typing into the
+# session answers it and reads it). A machine origin clears nothing — the
+# reduction (comm-status.sh) puts `floor` above `waiting`, so a purple row
+# never needs a hold: a machine wake simply paints green for the turn and the
+# closing Stop puts the row back where the still-set facts say it belongs.
 set -uo pipefail
 # A headless claude launched BY comm tooling (the turn auditor's tier-2 call)
 # runs these same hooks under the parent's identity: its prompt hook painted
@@ -63,5 +53,5 @@ case "$prompt" in
     "Another Claude session sent a message"*|*"<teammate-message"*|*"<agent-message"*|*"<cross-session-message"*|"Stop hook feedback:"*)
         ORIGIN=machine ;;
 esac
-COMM_STATUS_SOFT=1 COMM_STATUS_ORIGIN="$ORIGIN" "$STATUS" working >/dev/null 2>&1 || true
+COMM_STATUS_ORIGIN="$ORIGIN" "$STATUS" prompt >/dev/null 2>&1 || true
 exit 0

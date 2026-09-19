@@ -45,11 +45,11 @@
 #       signal (only the AskUserQuestion tool does), so without this the row looks
 #       idle while the agent is actually waiting.
 #
-#   (2) TURN-END FLOOR. Otherwise floor the row with a SOFT `done`: blue
-#       ("finished a turn you asked for, unread") when the row was working from
-#       a genuine prompt, gray otherwise -- comm-status.sh's soft-floor guard
-#       decides, and never clobbers a deliberate blocked/waiting/done (owner
-#       decision 2026-09-08, BLUE/GRAY = UNREAD/READ; see that script's header).
+#   (2) TURN END. Otherwise send `stop`: comm-status.sh sets `done` only when
+#       `floor` was `user` and neither `question` nor `waiting` is set, then
+#       clears `floor` — the row is a set of facts, and the reduction (not
+#       this hook) decides blue/gray/red/purple from whatever facts remain
+#       (ADR 0044 amendment 2026-09-19).
 #
 # Wired as a global Stop hook in ~/.claude/settings.json (comm.jl / update_comm).
 # It fires at every turn-end in EVERY session. CRITICAL SAFETY: the nudge (which
@@ -72,11 +72,11 @@ STATUS="$HOME_DIR/bin/comm-status.sh"
 REGISTRY="$HOME_DIR/registry.json"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Deployment-order tolerance (Codex review, #223): an OLDER comm-status.sh
-# guards only a soft `idle`, so sending it `done` would paint a blocked or
-# waiting row blue. Send `done` only to a script that has the soft floor.
-FLOOR=idle; grep -q soft_floor "$STATUS" 2>/dev/null && FLOOR=done
-turn_floor() { [ -x "$STATUS" ] && COMM_STATUS_SOFT=1 "$STATUS" "$FLOOR" >/dev/null 2>&1 || true; }
+# Every Stop ends with `stop`, whatever else this hook did first (the marker
+# stamp, the nudge continuation): it sets `done` only when `floor` was `user`
+# and neither `question` nor `waiting` is set, then clears `floor` — a fact
+# already set (by the marker, or an earlier declaration) survives untouched.
+turn_floor() { [ -x "$STATUS" ] && "$STATUS" stop >/dev/null 2>&1 || true; }
 
 # Stop-hook input (JSON on stdin): {stop_hook_active, transcript_path, ...}.
 input="$(cat 2>/dev/null || true)"
@@ -179,9 +179,13 @@ if [ -n "$last_text" ]; then
     fi
 fi
 if [ -n "$marker_state" ]; then
-    # Explicit (not soft): the marker IS the model's report. `waiting` sets
-    # the sticky purple; every other marker clears it.
+    # Explicit: the marker IS the model's report. `waiting` sets the fact;
+    # every other marker clears it (comm-status.sh's declaration reduction).
     [ -x "$STATUS" ] && "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || true
+    # Every Stop still ends with `stop` (ADR 0044 amendment): it clears
+    # `floor` and sets `done` only when floor was user AND neither `question`
+    # nor `waiting` is set — the fact the marker just set survives untouched.
+    turn_floor
 
     # ARTIFACT AUDIT EXCEPTION (2026-09-14): the row is already stamped from
     # the marker above -- this only catches a result the closing block named
@@ -213,13 +217,17 @@ fi
 # floor + let the turn end (one nudge per turn, no infinite continue-loop).
 [ "$(jqget '.stop_hook_active // false')" = "true" ] && { turn_floor; exit 0; }
 
-# A parked end state without its report. The row is blocked / waiting / done
-# at Stop time only when the MODEL stamped it (or a sticky waiting held
-# through the turn); on a HUMAN turn that owes the matching closing block.
-# One nudge, then the continuation's marker stamps the row above. A machine
-# wake (relay, Monitor, notification) never nudges: floor and end.
-cur="$(jq -r --arg n "$NAME" '.agents[$n] | (.state // "") + "|" + (.turn_origin // "")' "$REGISTRY" 2>/dev/null || echo "|")"
-origin="${cur#*|}"; cur="${cur%%|*}"
+# A parked end state without its report. The row shows `blocked` or `done`
+# at Stop time only when the MODEL stamped it this turn; on a HUMAN turn
+# that owes the matching closing block. One nudge, then the continuation's
+# marker stamps the row above. A machine wake (relay, Monitor, notification)
+# never nudges: floor and end. A `waiting` fact is NEVER nudged here — it is
+# not this turn's word, and a wait carried over from an earlier turn would
+# otherwise nudge every short exchange on the row (ADR 0044 amendment, a
+# deleted arm); a turn that IS newly waiting still declares SITREP-WAITING:
+# and the marker path above sets it.
+row_facts="$(jq -r --arg n "$NAME" '.agents[$n] | (.floor // "") + "|" + (if .question != null then "blocked" elif .done == true then "done" else "" end)' "$REGISTRY" 2>/dev/null || echo "|")"
+origin="${row_facts%%|*}"; parked="${row_facts#*|}"
 stored_origin="$origin"
 
 # TURN ORIGIN CORRECTION (2026-09-15): UserPromptSubmit does not fire for
@@ -239,23 +247,22 @@ case "$prompt_text" in
         origin=machine ;;
 esac
 # Correct the registry too, not just this run's decision, so the plain
-# turn-end floor (reached on every OTHER path below) also paints gray
-# rather than blue -- it re-reads turn_origin fresh, not this script's
-# $origin. Reuses comm-status.sh's own soft-working origin write (see its
-# header): with $cur parked or "working", this can only hold the row and
-# stamp turn_origin -- it never flips the state.
+# turn-end `stop` (reached on every OTHER path below) also floors gray
+# rather than blue -- it re-reads `floor` fresh, not this script's $origin.
+# Reuses comm-status.sh's own `prompt` event: a machine origin only sets
+# `floor`, clearing nothing else, so this corrects provenance without
+# touching the question/done/waiting facts already on the row.
 if [ "$origin" = machine ] && [ "$stored_origin" != machine ] && [ -x "$STATUS" ]; then
-    COMM_STATUS_SOFT=1 COMM_STATUS_ORIGIN=machine "$STATUS" working >/dev/null 2>&1 || true
+    COMM_STATUS_ORIGIN=machine "$STATUS" prompt >/dev/null 2>&1 || true
 fi
-case "$cur" in
-    blocked|waiting|done)
+case "$parked" in
+    blocked|done)
         if [ "$origin" = user ]; then
-            case "$cur" in
+            case "$parked" in
                 blocked) owed='SITREP-QUESTION: <the exact question, one sentence>  then the context needed to answer it cold: what was being done, the options and what follows from each, the default if unanswered, what is irreversible' ;;
-                waiting) owed='SITREP-WAITING: <what is being waited on, one sentence>  then EVERY armed monitor, background job, subagent and peer request: what it is, what completion looks like, expected duration, the fallback if it never lands, and what happens when it does' ;;
                 *)       owed='SITREP: <one-line headline>  then the sitrep chain (the sitrep skill): issue in context, diagnosis, design, result with its scale, interpretation, plan' ;;
             esac
-            jq -nc --arg s "$cur" --arg o "$owed" '{
+            jq -nc --arg s "$parked" --arg o "$owed" '{
               decision: "block",
               reason: ("Your row ends this turn as `" + $s + "` but the reply carries no closing marker. Write the closing block now, as the last thing in your reply, opening with the marker line:  " + $o + ".  The Stop hook stamps the row from that line (the rest of the marker line is the nav summary). If the state is wrong, run comm-status.sh with the right one and still close with the matching marker.")
             }'
