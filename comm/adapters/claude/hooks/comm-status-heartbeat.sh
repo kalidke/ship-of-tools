@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
-# comm-status-heartbeat.sh — Claude Code `PostToolUse` hook: keep a WORKING
-# session's state-nav stamp fresh during LONG turns.
+# comm-status-heartbeat.sh — Claude Code `PostToolUse` hook. Two jobs:
 #
-# Why: the nav wilts (whitens) a `working` row whose status_at is older than
-# 10 min (AGENT_STALE_MINUTES) — the "claims working but silent" signal. But
-# status_at was only written at turn START, so a legitimately-busy session on
-# a long turn (heavy Julia runs) wilted white while working (the maintainer, 2026-07-03:
-# "why does a peer session keep reverting to white while it's working"). This hook
-# re-stamps on tool activity, THROTTLED to once per 60s, so:
-#   - a busy session's row stays solid working-green however long the turn;
-#   - wilt now fires only on 10+ min of ZERO tool activity — a real stall.
+#   (1) The AskUserQuestion ANSWER (ADR 0044 amendment): that tool's
+#       PostToolUse is the owner typing the answer — the session yielding to
+#       the harness pause is over. Sends `prompt` with origin `user` for that
+#       tool call, exactly as if a fresh UserPromptSubmit had fired, and
+#       exits (no heartbeat write this call).
+#   (2) The HEARTBEAT: writes NO fact. It only refreshes `status_at` on tool
+#       activity, THROTTLED to once per 60s, so a legitimately-busy session on
+#       a long turn (heavy Julia runs) doesn't wilt white — the nav wilts a
+#       `working` row whose status_at is older than 10 min
+#       (AGENT_STALE_MINUTES), and status_at was only written at turn START
+#       (the maintainer, 2026-07-03: "why does a peer session keep reverting
+#       to white while it's working"). It never sets a floor — a subagent or
+#       lane sharing the lead's handle would otherwise paint a stopped, red
+#       or purple lead green for hours; a hook-less machine wake therefore
+#       runs without green, and the Stop hook's origin correction + `stop`
+#       still close it correctly.
 #
-# Cheap by construction: the no-op path (not a comm agent / not working /
-# stamp fresh) is a couple of jq reads; the registry write happens at most
-# once a minute. Always exits 0 — a hook must never wedge a turn.
+# Cheap by construction: the no-op path (not a comm agent / no floor / stamp
+# fresh) is a couple of jq reads; the registry write happens at most once a
+# minute. Always exits 0 — a hook must never wedge a turn.
 #
 # Source of truth: comm/adapters/claude/hooks/comm-status-heartbeat.sh in
 # Ship of Tools, deployed to ~/.sot-comm/bin by ShipTools.update_comm().
@@ -29,6 +36,28 @@ REGISTRY="$COMM_HOME/registry.json"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 [ -f "$REGISTRY" ] || exit 0
+
+# Read stdin (the hook's JSON envelope) up front, before the early-throttle
+# exit below can short-circuit: the AskUserQuestion answer check right after
+# needs it every call, throttle or no throttle.
+tool="$(jq -r '.tool_name // ""' 2>/dev/null || true)"
+
+# The AskUserQuestion ANSWER (ADR 0044 amendment): this tool's PostToolUse
+# fires once the owner has typed the answer and the harness resumes — the
+# session is no longer yielding. Sends `prompt` (origin user) exactly like a
+# fresh turn start, once per dialog, and skips the heartbeat write below
+# entirely (comm-status.sh takes the spinning lock; a tool-call-rate write
+# here would be the wrong cost model for it). Runs BEFORE the early throttle
+# and this hook's own identity resolution below: a teammate's or subagent's
+# tool call sharing this session id can re-touch the throttle tick (below)
+# while the dialog is open, and gating the answer on that tick or on NAME
+# here would let such a call swallow the owner's answer (review finding 1,
+# 2026-09-19). comm-status.sh resolves identity and self-gates on its own
+# registry row, so no NAME is needed here.
+if [ "$tool" = AskUserQuestion ]; then
+    COMM_STATUS_ORIGIN=user "$COMM_HOME/bin/comm-status.sh" prompt >/dev/null 2>&1 || true
+    exit 0
+fi
 
 # EARLY THROTTLE (2026-09-17): everything below -- comm-context.sh above all --
 # costs ~7s on Windows (git rev-parse + hostname + jq + sourcing comm-lib.sh,
@@ -86,7 +115,7 @@ if [ -x "$SELF_DIR/comm-context.sh" ]; then
 fi
 [ -n "${NAME:-}" ] || exit 0
 
-row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.state // "") + "|" + (.status_at // "") else "" end' "$REGISTRY" 2>/dev/null || true)"
+row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.floor // "") + "|" + (.status_at // "") else "" end' "$REGISTRY" 2>/dev/null || true)"
 [ -n "$row" ] || exit 0
 
 # DEAF-SESSION WARNING (2026-09-15): a session whose harness inbox Monitor
@@ -133,52 +162,17 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     fi
 fi
 
-state="${row%%|*}"; at="${row#*|}"
-# HIERARCHY (red > green > purple, maintainer 2026-07-04, refined 2026-07-17):
-# tool activity means the session is ACTIVELY WORKING, so a `waiting` row with NO
-# live sticky marker promotes to working-green for the duration (covers turns
-# that start WITHOUT a UserPromptSubmit — monitor/notification wakes — which
-# previously sat purple through real work). BUT a `waiting` row WITH a live
-# sticky marker STAYS purple: the session explicitly declared it's waiting on a
-# spawned job, so tool activity is polling those agents, not its own work
-# (maintainer 2026-07-17: "green while only waiting for subagents"). See the
-# `hold_purple` logic below. `blocked` is NEVER touched: red persists through any
-# background activity until the user answers or the model explicitly clears.
-case "$state" in
-    working) ;;      # refresh path below (throttled)
-    waiting) ;;      # stay-purple (live marker) or promote (expired/none) — below
-    *) exit 0 ;;
-esac
+floor="${row%%|*}"; at="${row#*|}"
 
-# A live sticky-`waiting` marker holds the row PURPLE regardless of current state:
-#   - on a `waiting` row it PREVENTS the promote-to-green (the session declared it
-#     is waiting on a spawned job/agents, so tool activity is polling them, not
-#     its own work);
-#   - on a `working` row it DEMOTES back to purple — the row was promoted to green
-#     by a hook while the wait was still on (an EXPLICIT working/idle/done clears
-#     the marker, so a live marker means the wait genuinely continues).
-# Refines the 2026-07-04 promote-on-activity rule per the maintainer (2026-07-17:
-# "green while only waiting for subagents"). No live marker → tool activity is
-# real work → green. The marker's 2h TTL self-heals a forgotten waiting.
-STICKY_MAX_AGE_S=7200
-hold_purple=0
-sat="$(jq -r --arg n "$NAME" '.agents[$n].sticky_at // ""' "$REGISTRY" 2>/dev/null)"
-if [ -n "$sat" ]; then
-    sat_s=$(date -u -d "$sat" +%s 2>/dev/null || echo 0)
-    now_hb=$(date -u +%s)
-    [ "$sat_s" -gt 0 ] && [ $((now_hb - sat_s)) -lt "$STICKY_MAX_AGE_S" ] && hold_purple=1
-fi
-if [ "$hold_purple" = 1 ]; then newstate=waiting; else newstate=working; fi
-
-# Throttle a plain REFRESH (newstate == current state) to once per 60s so a busy
-# row's anti-wilt stamp doesn't churn the registry. A STATE CHANGE (promote
-# waiting->working, or demote working->waiting) bypasses the throttle so the
-# color flips at the first tool call of the turn.
-if [ "$newstate" = "$state" ]; then
-    now_s=$(date -u +%s)
-    at_s=$(date -u -d "$at" +%s 2>/dev/null || echo 0)
-    [ $((now_s - at_s)) -ge 60 ] || exit 0
-fi
+# No floor → no turn is running → nothing to refresh (a subagent/lane
+# sharing the lead's handle must never paint a stopped, red or purple lead
+# green here — the heartbeat sets no fact, ever). A fresh stamp → nothing to
+# do; refresh only once the stamp is 60s or older (avoids registry churn on
+# every tool call of a busy turn).
+[ -n "$floor" ] || exit 0
+now_s=$(date -u +%s)
+at_s=$(date -u -d "$at" +%s 2>/dev/null || echo 0)
+[ $((now_s - at_s)) -ge 60 ] || exit 0
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # Best-effort merge under the registry's mkdir-spinlock convention
@@ -188,9 +182,9 @@ ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 LOCKDIR="$COMM_HOME/.registry.lock"
 if mkdir "$LOCKDIR" 2>/dev/null; then
     trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
-    jq --arg n "$NAME" --arg t "$ts" --arg st "$newstate" \
-       'if .agents[$n] and (.agents[$n].state == "working" or .agents[$n].state == "waiting")
-        then .agents[$n] += {state:$st, status_at:$t, last_seen:$t} else . end' \
+    jq --arg n "$NAME" --arg t "$ts" \
+       'if .agents[$n] and .agents[$n].floor
+        then .agents[$n] += {status_at:$t, last_seen:$t} else . end' \
        "$REGISTRY" > "$REGISTRY.hb.tmp" 2>/dev/null && mv "$REGISTRY.hb.tmp" "$REGISTRY"
     rmdir "$LOCKDIR" 2>/dev/null
     trap - EXIT

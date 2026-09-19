@@ -140,3 +140,123 @@ that ends parked (blocked / waiting / done) gets one nudge naming the shape
 it owes; a machine wake never nudges, and a plain answer floors as above.
 Seven more scenarios cover it in the same suite. Mechanics: the sot-comm
 skill's `references/work-state.md`.
+
+## Amendment 2026-09-19 — the row is a set of facts; the colour is their reduction
+
+**Owner ruling.** A session row can hold several facts at once. The display
+shows ONE colour, by priority: white/star (a result badge or an unread
+message, cleared by viewing) > red (a question open for the owner AND the
+session stopped) > green (the session has the floor) > purple (a launched
+job/subagent/peer still running) > blue (an effort closed, unviewed) > gray.
+Red and green outrank purple *structurally*, so "the user comes first" and
+"a resumed turn is green with jobs in flight" need no hold logic. The
+frontend is unchanged: one `state` per row; the badge is its own overlay.
+
+### Decision
+
+**1. Facts, not one state.** The registry row carries these fields, each
+serving one invariant:
+
+| field | value | invariant |
+|---|---|---|
+| `floor` | `user` \| `machine` (absent = stopped) | green = the session is running, whoever prompted it; the value is the turn's provenance (blue and the Stop nudges are reserved for a turn a human asked for — ADR 0044 §3, unchanged) |
+| `question` | the question text | red = a question is open for the owner; the row shows which |
+| `waiting` | the wait summary | purple = something the session launched is still owed; the row shows what |
+| `done` | `true` | blue = a result landed that the owner has not viewed |
+| `note` | the declaration's own line | the displayed line returns to it when red or purple lifts |
+| `state`, `summary` | the reduction | the daemon and frontend read one display state and one line, as today |
+| `status_at` | as today | the stale-green wilt |
+
+Absent all four facts, the row is gray. `turn_origin` folds into `floor`'s
+value; `sticky` / `sticky_at` fold into `waiting`. Deleted: the sticky
+marker, `soft_floor`, `marker_live`, `write_origin`, the hold ladder, the
+2 h sticky self-heal (purple is the session's declaration and ends when it
+says `working`/`idle`/`done`; a time-out would hide a session that failed
+to report — the same "no aging" ruling blue already has), the Stop hook's
+`soft_floor` grep, the heartbeat's promote/demote arithmetic, and the
+Stop hook's waiting nudge (a wait carried over from an earlier turn would
+nudge every short exchange on that row; the marker stamps stay).
+
+**2. The reduction, computed in ONE place: `comm-status.sh`.** Every write
+re-reduces and stores `state` and `summary`:
+
+```
+question set and floor absent  -> blocked   summary = question
+floor present                  -> working   summary = note
+waiting set                    -> waiting   summary = waiting
+done set                       -> done      summary = note
+otherwise                      -> idle      summary = note
+```
+
+Option (a) over reducing in the daemon: the only fact the daemon owns is
+"the owner viewed this row", and the badge lives in the frontend's own
+pending-result map (ADR 0025 §1). Reducing in Rust would change the registry
+contract for no fact the script cannot see; the daemon's one write (§4)
+needs no knowledge of the priorities because `done` is the lowest tier.
+
+**3. Writers are events (hooks) or declarations (the model).** The
+`COMM_STATUS_SOFT` flag is deleted; the verb says who writes.
+
+- Hook events: `prompt` (`COMM_STATUS_ORIGIN=user|machine`, default
+  machine): sets `floor` to the origin; a *user* prompt also clears
+  `question` and `done` (typing into the session answers and reads it); a
+  machine prompt clears nothing. `stop` (the Stop hook, sent at EVERY turn
+  end, after any marker stamp): sets `done` when `floor` was `user` and
+  neither `question` nor `waiting` is set, then clears `floor`. The
+  PostToolUse heartbeat writes no fact: it refreshes `status_at` when
+  `floor` is set and the stamp is over a minute old (unlocked read first,
+  no write otherwise, as today). It never sets a floor — a subagent or lane
+  sharing the lead's handle would otherwise paint a stopped, red or purple
+  lead green for hours. A hook-less machine wake therefore runs without
+  green; its Stop's origin correction and `stop` still close it correctly.
+- Declarations: `blocked "<q>"` sets `question` (keeps `waiting`: red
+  outranks purple, and the wait returns when the answer turn ends).
+  `waiting "<s>"` sets `waiting` (keeps `question`). `working`, `idle` and
+  `done` clear `question` and `waiting`; `done` sets `done`, the other two
+  clear it.
+- `AskUserQuestion` (Claude) and the permission prompt (Codex,
+  `PermissionRequest`) are the session yielding to the owner while the
+  harness is paused: their PreToolUse hooks send `blocked` then `stop`, and
+  clear the heartbeat's throttle tick so the answer is never swallowed. The
+  answer arrives as the tool's PostToolUse: the heartbeat sends `prompt`
+  with origin `user` for that tool name (the owner typed it).
+- The Stop hook's marker parsing (`SITREP:` / `SITREP-QUESTION:` /
+  `SITREP-WAITING:` → `done` / `blocked` / `waiting`) is unchanged; it
+  reads `floor` for the turn's origin before `stop` clears it. "Parked
+  without a marker" means `question` or `done` set at Stop — both are
+  per-turn facts, since a user prompt clears them. The turn auditor's
+  stale-waiting check reads `waiting` where it read `sticky`.
+
+**4. Viewing clears `done` and the badge, never `question` or `waiting`.**
+The daemon's read-clears-blue write (`clear_comm_unread`) removes the `done`
+key whenever a person views the row, and sets `state` to `idle` only when
+the state is `done` — a `done` hidden under a running floor or a wait is
+still unviewed until then, and removing it leaves the reduction consistent
+because nothing below blue exists. The frontend clears its badge on the same
+person-driven view switch it does today. Viewing is not answering and not
+finishing a job: a red or purple row's facts are untouched.
+
+**5. Stale green.** Unchanged: the heartbeat refreshes `status_at` once a
+minute while `floor` is set; the frontend wilts `working` after ten minutes.
+
+**6. Deployment.** No migration block: rows are rewritten at every turn,
+the script and hooks deploy together, and the daemon and frontend read
+`state` throughout. The first new write deletes the three legacy keys; a
+row parked at the instant of deployment keeps its colour until its next
+event. The old-hook-on-new-script window is sub-second.
+
+**7. Test suite.** `test-status-floor.sh` becomes the executable spec of
+the reduction: one case per table row, the lifecycle cases re-expressed
+against the facts, every marker, nudge, audit, race, failed-write and deaf
+case kept except the waiting nudge, and the sticky, hold and
+deployment-tolerance cases deleted with the code they tested.
+
+### Consequences
+
+The three field-history failures are structural now: a machine prompt
+cannot hold purple over a running turn; a session cannot end
+SITREP-WAITING on the owner's question without showing red once stopped;
+an unanswered question returns red without re-emitting the marker.
+`comm-status.sh` trades its hold ladder for a six-line reduction. White
+today means the frontend badge only: no "unread message" row fact exists
+yet; when one does it joins the badge as an overlay under the same rule.

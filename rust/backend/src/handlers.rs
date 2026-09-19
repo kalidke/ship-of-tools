@@ -6390,14 +6390,18 @@ fn remove_comm_agents_for_workspace_bounded(
     .unwrap_or_default()
 }
 
-/// Clear a `done` row's blue after a PERSON switched the view onto it
+/// Clear a row's `done` fact after a PERSON switched the view onto it
 /// (`workspace.activate { read: true }` — ADR 0044 "Viewing clears blue").
-/// Flips `.agents[<handle>].state` from `"done"` to `"idle"` and writes
-/// NOTHING else: the summary survives (the row reads `idle · last: …`) and
-/// `status_at` is untouched, so reading a parked row doesn't make it look
-/// recently active. `blocked`, `waiting`, `working`, and an already-`idle`
-/// row are never touched — viewing is not answering, and it is not
-/// finishing a job.
+/// Removes `.agents[<handle>].done` and writes NOTHING else, EXCEPT: when
+/// `state` was `"done"` (the fact was the display), it flips to `"idle"` too
+/// — a `done` fact hidden under a running `floor` or a `waiting` is still
+/// unviewed, and removing it leaves the reduction consistent because
+/// nothing below blue exists (ADR 0044 amendment, 2026-09-19: the row is a
+/// set of facts, `clear_comm_unread` only ever removes this one). The
+/// summary survives (the row reads `idle · last: …`) and `status_at` is
+/// untouched, so reading a parked row doesn't make it look recently active.
+/// `question`, `waiting`, `floor`, and a row with no `done` fact at all are
+/// never touched — viewing is not answering, and it is not finishing a job.
 ///
 /// Two phases, both filtered through `comm_handle_for_workspace` — THE SAME
 /// row-binding rule `handle_workspace_list` uses (declared `agent_handle`
@@ -6405,11 +6409,11 @@ fn remove_comm_agents_for_workspace_bounded(
 /// workspace's blue clears exactly the same way a tmux one's does:
 ///
 /// 1. **Unlocked pre-check** — read the registry once, resolve the handle,
-///    require the row to pass `host_matches` and have `state == "done"`.
-///    Anything else returns with no lock taken and no write — the common
-///    activate (nothing to clear, or no registry at all) costs one file
-///    read, same as the `workspace.list` call that follows every activate
-///    on the wire.
+///    require the row to pass `host_matches` and carry a `done` key (any
+///    value). Anything else returns with no lock taken and no write — the
+///    common activate (nothing to clear, or no registry at all) costs one
+///    file read, same as the `workspace.list` call that follows every
+///    activate on the wire.
 /// 2. **Lock, then re-read and re-decide inside it.** ADR 0044 round 2:
 ///    read-decide-write is one critical section; the pre-check is only a
 ///    filter and can never itself cause a write.
@@ -6432,9 +6436,7 @@ fn clear_comm_unread(ws: &Workspace, host: &str) {
         .as_ref()
         .and_then(|a| a.get(&handle))
         .filter(|entry| host_matches(entry, host))
-        .and_then(|entry| entry.get("state"))
-        .and_then(|v| v.as_str())
-        .map(|s| s == "done")
+        .map(|entry| entry.get("done").is_some())
         .unwrap_or(false);
     if !is_done {
         return;
@@ -6461,21 +6463,23 @@ fn clear_comm_unread(ws: &Workspace, host: &str) {
         let Some(entry) = agents.get_mut(&handle) else {
             return;
         };
-        let still_done = host_matches(entry, host)
-            && entry.get("state").and_then(|v| v.as_str()) == Some("done");
+        let still_done = host_matches(entry, host) && entry.get("done").is_some();
         if !still_done {
             return;
         }
         let Some(entry_obj) = entry.as_object_mut() else {
             return;
         };
-        // ONLY `state`. Not `status_at`, `last_seen`, `summary`, or
-        // `turn_origin` — reading is not activity and must not make a
-        // parked row look recently touched.
-        entry_obj.insert(
-            "state".to_string(),
-            serde_json::Value::String("idle".to_string()),
-        );
+        // ONLY the `done` fact and, when it was the display, `state`. Not
+        // `status_at`, `last_seen`, `summary`, `note`, `question`,
+        // `waiting` or `floor`.
+        entry_obj.remove("done");
+        if entry_obj.get("state").and_then(|v| v.as_str()) == Some("done") {
+            entry_obj.insert(
+                "state".to_string(),
+                serde_json::Value::String("idle".to_string()),
+            );
+        }
 
         let mut serialized = match serde_json::to_vec_pretty(&root) {
             Ok(s) => s,
@@ -7965,6 +7969,7 @@ mod clear_comm_unread_tests {
                 "host-2-be-x": {
                     "host": "hostB",
                     "state": "done",
+                    "done": true,
                     "summary": "not yours",
                     "status_at": "2026-09-08T00:00:00Z",
                 },
@@ -8049,6 +8054,7 @@ mod clear_comm_unread_tests {
                 "host-4-be-x": {
                     "host": "host-4",
                     "state": "done",
+                    "done": true,
                     "summary": "probe summary",
                     "status_at": "2026-09-08T00:00:00Z",
                 },
@@ -8089,6 +8095,7 @@ mod clear_comm_unread_tests {
                 "capsule-handle-x": {
                     "host": "host-4",
                     "state": "done",
+                    "done": true,
                     "summary": "probe summary",
                     "status_at": "2026-09-08T00:00:00Z",
                 },
@@ -8106,8 +8113,74 @@ mod clear_comm_unread_tests {
             serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
         let row = &after["agents"]["capsule-handle-x"];
         assert_eq!(row["state"], "idle");
+        assert!(row.get("done").is_none(), "the done fact must be removed");
         assert_eq!(row["summary"], "probe summary");
         assert_eq!(row["status_at"], "2026-09-08T00:00:00Z");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn done_fact_removed_but_state_untouched_when_a_floor_or_wait_outranks_it() {
+        // ADR 0044 amendment: `done` can sit under a running `floor` or a
+        // `waiting` (the model stamped `done` mid-turn, or a wait was
+        // declared after). Viewing removes the stale `done` fact so it
+        // doesn't reappear once the floor/wait lifts, but must NOT touch the
+        // higher-priority display the reduction already picked.
+        let _guard = guarded();
+        let dir = temp_home("done-under-waiting");
+        let registry_path = write_registry(
+            &dir,
+            serde_json::json!({
+                "host-4-be-x": {
+                    "host": "host-4",
+                    "state": "waiting",
+                    "waiting": "job",
+                    "done": true,
+                    "summary": "job",
+                    "status_at": "2026-09-08T00:00:00Z",
+                },
+            }),
+        );
+
+        // A non-empty `agent_name` so `comm_handle_for_workspace` actually
+        // resolves to this row (an empty one, as most sibling tests here
+        // use, means "nothing to bind to" and the call returns before ever
+        // reaching the row — fine for an untouched-either-way assertion,
+        // not for this one, which needs the write to actually run).
+        clear_comm_unread(&mk_ws("x", "host-4-be-x"), "host-4");
+
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let row = &after["agents"]["host-4-be-x"];
+        assert_eq!(row["state"], "waiting", "state must stay waiting, not flip to idle");
+        assert!(row.get("done").is_none(), "the stale done fact must still be removed");
+        assert_eq!(row["waiting"], "job", "waiting must survive untouched");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_done_fact_at_all_is_a_no_op() {
+        let _guard = guarded();
+        let dir = temp_home("no-done-fact");
+        let registry_path = write_registry(
+            &dir,
+            serde_json::json!({
+                "host-4-be-x": {
+                    "host": "host-4",
+                    "state": "idle",
+                    "summary": "unchanged",
+                    "status_at": "2026-09-08T00:00:00Z",
+                },
+            }),
+        );
+        let before = std::fs::read(&registry_path).unwrap();
+
+        clear_comm_unread(&mk_ws("x", "host-4-be-x"), "host-4");
+
+        let after = std::fs::read(&registry_path).unwrap();
+        assert_eq!(before, after, "a row with no done fact must never be rewritten");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -8257,6 +8330,7 @@ mod workspace_activate_read_tests {
                     "host-4-activate-capsule-x": {
                         "host": "host-4",
                         "state": "done",
+                        "done": true,
                         "summary": "capsule probe summary",
                         "status_at": "2026-09-08T00:00:00Z",
                     }
@@ -8275,6 +8349,7 @@ mod workspace_activate_read_tests {
             serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
         let row = &after["agents"]["host-4-activate-capsule-x"];
         assert_eq!(row["state"], "idle");
+        assert!(row.get("done").is_none(), "the done fact must be removed");
         assert_eq!(row["summary"], "capsule probe summary");
         assert_eq!(row["status_at"], "2026-09-08T00:00:00Z");
 
