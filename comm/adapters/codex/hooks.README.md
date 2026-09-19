@@ -18,15 +18,20 @@ like a Claude Code session does:
 `PermissionRequest` maps to blocked because codex has no `AskUserQuestion` tool;
 a permission prompt is its nearest "needs the USER to act", which is what red
 means. Its payload carries a top-level `tool_name`, which is why
-`codex-status-blocked.sh` can name the asking tool in the summary. Because these
-are the same bin scripts the Claude adapter uses (the payloads share the field
-names that matter — notably `prompt`), the state HIERARCHY (blocked/red >
-working/green > waiting/purple > done/blue > idle, 2360fca; the turn-end floor
-writes `done` only for a human-started turn, ADR 0044) is enforced
-identically: the hook classifies the prompt's origin and `comm-status.sh`
-applies the machine-turn guard and stamps `turn_origin`, the heartbeat's
-waiting→working promotion, the soft floor's sticky demote. Every script self-gates on the pane's registry row, so
-codex sessions **outside** Ship of Tools are silent no-ops.
+`codex-status-blocked.sh` can name the asking tool in the summary; like the
+Claude adapter's own `AskUserQuestion` hook, it clears the heartbeat's
+throttle tick first, then sends `blocked` followed by `stop` — the session
+is yielding to the owner exactly like a real turn end.
+
+Because these are the same bin scripts the Claude adapter uses (the payloads
+share the field names that matter — notably `prompt`), a codex row is a set
+of FACTS reduced the same way (ADR 0044 amendment, 2026-09-19): `floor`
+(green, set by the `prompt` event to the origin), `question` (red),
+`waiting` (purple), `done` (blue) and `note`. The display picks the highest
+priority fact present — question-with-no-floor, then floor, then waiting,
+then done, else idle — recomputed on every write. Every script self-gates on
+the pane's registry row, so codex sessions **outside** Ship of Tools are
+silent no-ops.
 
 `ShipTools.update_comm()` deploys the file into the sot-comm plugin under
 `$CODEX_HOME` (`codex plugin add` re-copies it on every run, so a repo edit does

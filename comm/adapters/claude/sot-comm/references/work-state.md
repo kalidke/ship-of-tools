@@ -12,80 +12,69 @@ with the question first and the running jobs listed after it. `waiting` is only
 for a turn where nothing needs the user; a purple row that is really waiting on
 the owner is a question they never see (owner, 2026-09-19).
 
-## Sticky waiting — the actual mechanism
+## The facts, and the reduction that colours them (ADR 0044 amendment, 2026-09-19)
 
-`comm-status.sh waiting "..."` writes a sticky marker. Session hooks then
-behave differently while it's live:
+A row is a small SET OF FACTS, not one state you set directly:
 
-- `UserPromptSubmit` writes a *soft* `working` (you show green while actively
-  processing — true in the moment).
-- `Stop` writes a *soft* `done` (the turn-end floor, below), but the sticky
-  marker **demotes you straight back to purple**, restoring your `waiting`
-  summary. You do NOT need to re-assert `waiting` at every turn end — it
-  survives intervening turns on its own.
-- An explicit `blocked` clears the marker like any other explicit state
-  (2026-09-18): a question is the newest word on the turn's end state, and a
-  marker kept underneath it turned a red question purple on the next tool
-  call. Still waiting on the job after the answer? Say so again with
-  `SITREP-WAITING:`.
+| field | value | set by | cleared by |
+|---|---|---|---|
+| `floor` | `user` \| `machine` | the `prompt` event, to the origin | the `stop` event |
+| `question` | the question text | `blocked "<q>"` | a `prompt` event with origin `user`; explicit `working`/`idle`/`done` |
+| `waiting` | the wait summary | `waiting "<s>"` | explicit `working`/`idle`/`done` |
+| `done` | `true` | explicit `done`; `stop` (when `floor` was `user` and nothing else is pending) | a `prompt` event with origin `user`; explicit `working`/`idle`/`blocked`/`waiting`; viewing the row |
+| `note` | the declaration's own line | any declaration with a summary | a declaration with `""` |
 
-The marker clears two ways:
-1. **You explicitly report** `working` / `idle` / `done` (i.e. you ran
-   `comm-status.sh` yourself, not a hook) when the job actually lands — this
-   is the accurate signal and the one to prefer.
-2. **Self-heal**: a marker older than **2h** is dropped by the next turn-end,
-   so a forgotten purple can't lie forever. Re-assert `waiting` yourself for
-   a genuinely longer job.
+Every write (event or declaration) re-reduces `state` and `summary` from
+whatever facts remain, in ONE place, `comm-status.sh`:
 
-## Blue / gray — the turn-end floor (owner decision 2026-09-08)
+```
+question set and floor absent  -> blocked   summary = question
+floor present                  -> working   summary = note
+waiting set                    -> waiting   summary = waiting
+done set                       -> done      summary = note
+otherwise                      -> idle      summary = note
+```
 
-Blue and gray are an **unread / read** pair, stamped by hooks, not by you:
+Green (`floor`) and red (`question`) both outrank purple (`waiting`)
+*structurally* — a running or answering turn is never held behind a wait —
+so "the user comes first" and "a resumed turn is green with jobs in flight"
+need no special-case hold logic. `waiting` is cleared only by an explicit
+report, never by a timer: a forgotten purple is the session's own word to
+retract, the same "no aging" rule blue already follows.
 
-- The `Stop` hook floors every turn end with a *soft* `done`. `comm-status.sh`
-  turns it **blue** only when the row was `working` from a **genuine human
-  prompt** (`turn_origin == user`, written by the `UserPromptSubmit` hook's soft
-  `working`): "this session finished a turn you asked for and you have not
-  been back since".
-- A turn a **machine** started — a relay message, a Monitor event, a task
-  notification — floors to **gray** `idle`, whatever it did: a peer's ack must
-  not paint a parked row blue. The prompt itself paints **green** whoever
-  sent it: a running session is green until something else takes over
-  (owner, 2026-09-18). A red question the turn did not answer comes back
-  through the closing `SITREP-QUESTION:` marker. If such a turn landed a real result, report
-  `comm-status.sh done "<summary>"` yourself — that explicit blue is the
-  accurate signal and the skill rule already asks for it.
-- **Never stamp `done` by hand mid-turn.** Blue means "finished, nothing
-  running"; a turn that stamps `done` and keeps editing sits blue for the
-  rest of its work, and nothing restamps green until the next prompt (a
-  slides session did this for ten turns, 2026-09-18). Close an effort with
-  the `SITREP:` marker as the reply's last block and let the Stop hook stamp
-  `done` at the moment the turn actually ends. If you do continue after an
-  explicit `done`, stamp `working` first.
-- Blue clears on the user's **next genuine prompt** (→ green) or any explicit
-  report. There is **no time-based decay**: a parked blue row is an honest
-  "you never came back", not a bug. A `blocked`/`waiting`/explicit `done` row
-  is never touched by the floor (same guards as the old soft idle).
+`blocked "<q>"` KEEPS an existing `waiting`: both facts can be true, and
+red simply outranks purple in the display until the question is answered,
+at which point the wait (if still real) shows again. `waiting "<s>"`
+likewise keeps `question`. `working`/`idle`/`done` all clear both.
 
-### Viewing clears blue (owner decision 2026-09-08)
+`AskUserQuestion` (Claude) and the permission prompt (Codex) are the
+session yielding to the owner while the harness pauses: their PreToolUse
+hooks send `blocked` then `stop` — a real turn end, not a hold. The
+answer arrives as that tool's PostToolUse, which sends `prompt` with
+origin `user`, exactly like a fresh turn start.
 
-Blue is *unread*, and there are two ways to read a session: type into it, or
-look at it. Only the first cleared blue, so rows the user read and moved on
-from stayed blue forever.
+### Viewing clears the `done` fact and the badge, never `question` or `waiting`
 
-**Switching the frontend's view to a workspace clears that row's blue.** The
-frontend already tells the daemon "my view is now this workspace"
+`done` is *unread*, and there are two ways to read a session: type into it,
+or look at it. Only the first cleared it, so rows the user read and moved
+on from stayed blue forever.
+
+**Switching the frontend's view to a workspace clears that row's `done`.**
+The frontend already tells the daemon "my view is now this workspace"
 (`workspace.activate`); the switches a **person** performs — Sessions-Enter,
 Shift+Left/Right cycling — now carry `read: true` on that same signal. The
-daemon flips a `done` row to `idle` and **writes nothing else**: the summary
-survives (the row reads `idle · last: …`), and `status_at` is untouched, so
-reading a parked row does not make it look recently active.
+daemon removes the `done` fact and, ONLY when `state` was `"done"` (the fact
+was the display), flips `state` to `"idle"` too — a `done` fact sitting
+under a running `floor` or a `waiting` is still unviewed, and removing it
+leaves the reduction consistent because nothing below blue exists. The
+summary survives (the row reads `idle · last: …`), and `status_at` is
+untouched, so reading a parked row does not make it look recently active.
 
-**Both blues clear.** The floor's blue and an explicit `comm-status.sh done
-"<summary>"` mean the same thing — a result you have not seen — and the
-registry does not record which writer stamped it. Telling them apart would
-mean a new field that serves no other invariant. One rule: `done` → `idle`.
-`blocked`, `waiting` and `working` are never touched — viewing is not
-answering, and it is not finishing a job.
+**Both blues clear the same way.** The floor's `done` and an explicit
+`comm-status.sh done "<summary>"` mean the same thing — a result you have
+not seen — and the registry does not record which writer set it. `question`,
+`waiting` and `floor` are never touched — viewing is not answering, and it
+is not finishing a job.
 
 **A 10 s dwell (owner decision 2026-09-08 evening).** A switch alone does
 not count: the frontend arms a mark when a person switches to a row and sends
@@ -99,11 +88,7 @@ a cross-workspace `show-result`), a `workspace.create` auto-switch, a destroy
 bounce and a reconnect re-announce all send `activate` with `read: false`.
 The daemon never infers that a person looked.
 
-*No time-based decay still stands.* Only a read clears blue.
-
-`turn_origin` is a registry field on the row, written only by the soft
-`working` write; nothing else reads it. Absent provenance fails gray, so a box
-still on the old hooks never paints blue by accident.
+*No time-based decay still stands.* Only a read clears the `done` fact.
 
 ## Closing markers — the turn-end word (2026-09-09)
 
@@ -111,15 +96,19 @@ A reply whose closing block opens a line with `SITREP:`, `SITREP-QUESTION:`
 or `SITREP-WAITING:` declares the turn's end state (done / blocked /
 waiting) and carries the report that state demands (the `sitrep` skill
 holds the three shapes). The `Stop` hook stamps that state **explicitly** —
-`waiting` sets the sticky marker, `done` paints blue — with the rest of the
-marker line as the row summary (the next non-empty line when the marker
-stands alone). A marker ends the hook: no floor, no auditor, no nudge.
+the matching declaration sets the fact — with the rest of the marker line
+as the row summary (the next non-empty line when the marker stands alone).
+A marker is followed by `stop` as normal, so the fact it just set survives:
+no nudge, no auditor.
 
-Without a marker, a **human** turn that ends with a `blocked` / `waiting` /
-`done` row gets one Stop nudge naming the shape it owes; the continuation's
-marker then stamps the row. A machine wake (relay, Monitor, notification)
-never nudges — a peer's ack on a parked row is not a report — and a plain
-answer with no explicit state floors exactly as before.
+Without a marker, a **human** turn that ends `blocked` / `done` gets one
+Stop nudge naming the shape it owes; the continuation's marker then stamps
+the row. A `waiting` fact is NEVER nudged here — it is not this turn's word,
+and a wait carried over from an earlier turn would otherwise nudge every
+short exchange on the row; a turn that IS newly waiting still declares
+`SITREP-WAITING:` and the marker sets it. A machine wake (relay, Monitor,
+notification) never nudges — a peer's ack on a parked row is not a report —
+and a plain answer with no explicit state floors exactly as before.
 
 **Effort vs exchange (2026-09-10).** The parked-row nudge only ever reached a
 session that had already stamped itself; the sessions that never stamp ended

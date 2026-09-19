@@ -105,11 +105,14 @@ cannot disagree. No separate status call is needed at turn end.
 | `SITREP-WAITING: <what for>` (only when nothing needs the user; if any item does, the marker is `SITREP-QUESTION:` with the jobs listed after the question) | waiting (purple) | one sentence, then EVERY armed monitor, background job, subagent and peer request: what it is, what completion looks like, expected duration, the fallback if it never lands, and what happens when it does |
 
 The marker starts a line (bold-wrapping it is fine). The block is the last
-thing in the reply. A turn that ends parked (blocked / waiting / done) from a
+thing in the reply. A turn that ends parked (blocked / done) from a
 human prompt and carries no marker is nudged once for the shape it owes; a
 long human turn ending green without one is asked once whether it closed an
 effort (then it owes `SITREP:`) or was a step in an exchange (then nothing);
-a plain answer needs no marker and floors as before. The language rules are
+a plain answer needs no marker and floors as before. Red shows once the turn
+actually ends, not while it's still running; a wait declared earlier returns
+purple on its own once an answered question's turn closes — you don't
+re-declare it. The language rules are
 yours to keep: the hook never sends a block back (a send-back can only append
 a second block under the first, which is what a reader then sees). The question and waiting
 blocks follow the same language rules as the sitrep: plain words, no
