@@ -349,6 +349,14 @@ function Invoke-SelfUpdatePrelude {
     if ($env:SOT_LAUNCH_REEXEC) { Remove-Item Env:\SOT_LAUNCH_REEXEC -ErrorAction SilentlyContinue }
 }
 
+# Captured ONCE before the prelude clears the env var: a post-apply handover
+# (below) re-execs the pinned launcher, and that second pass must not delete
+# the just-applied marker or run sot-apply again (the pending pointer is
+# already consumed, so sot-apply would exit without rewriting the marker and
+# the pass would lose the "an update just landed" fact -- no comm update, no
+# crash-loop rollback window; field report, 2026-09-19). It is also the
+# guard that stops the handover from looping.
+$script:reexecd = [bool]$env:SOT_LAUNCH_REEXEC
 Invoke-SelfUpdatePrelude -AllowReexec
 
 Add-Type -AssemblyName System.Windows.Forms   # MessageBox for the fatal dialogs below
@@ -654,7 +662,11 @@ function Invoke-PendingApply {
         }
     }
 
-    if (-not $NoUpdate -and (Test-Path $sotApply)) {
+    # A re-exec'd pass (post-apply handover) keeps the marker the first pass
+    # left and does not run sot-apply again: $script:sotJustApplied below
+    # then reads true from that marker, so the comm update and the
+    # crash-loop window follow the apply on the fresh-launch path too.
+    if (-not $NoUpdate -and -not $script:reexecd -and (Test-Path $sotApply)) {
         Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
         Set-LaunchStatus 'Applying update...'
         $applyOut = & $sotApply 6>&1 2>&1
@@ -713,7 +725,7 @@ Invoke-PendingApply
 # ---------------------------------------------------------------------------
 $pinnedLauncher = Join-Path $repoCurrent 'scripts\launch-sot.ps1'
 if ((Test-Path -LiteralPath (Join-Path $prefixDir 'install.json')) -and
-    -not $env:SOT_LAUNCH_REEXEC -and
+    -not $env:SOT_LAUNCH_REEXEC -and -not $script:reexecd -and
     (($pinnedLauncher -ne $PSCommandPath) -or $script:sotJustApplied) -and
     (-not $script:sotPinned -or $script:sotJustApplied) -and
     (Test-Path -LiteralPath $pinnedLauncher)) {
