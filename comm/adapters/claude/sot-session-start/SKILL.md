@@ -73,7 +73,11 @@ rule after every outcome. `comm-status.sh waiting "<what>"` (purple) the moment
 you launch a background job, subagent, Codex run or hand work to a peer; it is
 sticky across turns until you stamp `working`/`idle`/`done` when the job lands.
 A background job never makes you idle; `blocked` (red) only when the user must
-act. Mechanics: the sot-comm skill's `references/work-state.md`.
+act. Precedence when both hold: if ANY item needs the user (a go-ahead, a
+file, a decision), the turn ends `blocked` with `SITREP-QUESTION:` and the
+question first, running jobs listed after it; `waiting` is only for a turn
+where nothing needs the user. Mechanics: the sot-comm skill's
+`references/work-state.md`.
 
 A Ship of Tools checkout gets the sot-specific layer (FE ping, bus count)
 folded into phase 2 for free — no separate skill. `ccb` launches this skill.

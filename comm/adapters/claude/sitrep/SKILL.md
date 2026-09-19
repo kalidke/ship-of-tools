@@ -102,7 +102,7 @@ cannot disagree. No separate status call is needed at turn end.
 |---|---|---|
 | `SITREP: <headline>` | done (blue) | one-line headline, then the chain above |
 | `SITREP-QUESTION: <the question>` | blocked (red) | the exact question in one sentence, then the context to answer it cold: what was being done, the options and what follows from each, the default if unanswered, what is irreversible |
-| `SITREP-WAITING: <what for>` | waiting (purple) | one sentence, then EVERY armed monitor, background job, subagent and peer request: what it is, what completion looks like, expected duration, the fallback if it never lands, and what happens when it does |
+| `SITREP-WAITING: <what for>` (only when nothing needs the user; if any item does, the marker is `SITREP-QUESTION:` with the jobs listed after the question) | waiting (purple) | one sentence, then EVERY armed monitor, background job, subagent and peer request: what it is, what completion looks like, expected duration, the fallback if it never lands, and what happens when it does |
 
 The marker starts a line (bold-wrapping it is fine). The block is the last
 thing in the reply. A turn that ends parked (blocked / waiting / done) from a
