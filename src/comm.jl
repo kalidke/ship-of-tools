@@ -898,11 +898,14 @@ function _install_claude_hooks(srchooks::AbstractString, claude_dir::AbstractStr
     isempty(installed) && return nothing
     _install_files(srchooks, bin, installed; executable = Returns(true))
     @info "Installed comm hook scripts" hooks = installed dir = bin
-    # Register the work-state hooks. Together they make work-state event-driven —
-    # a turn starting → working, an AskUserQuestion → blocked, a turn ending →
-    # idle. Retire any stale comm wiring first (e.g. the old Notification→blocked
-    # that lit agents red on plain idle) so settings ends up matching the current
-    # set declaratively, then add each via a non-clobbering merge.
+    # Register the work-state hooks. Together they write the FACTS a row is
+    # reduced from (ADR 0044 amendment): a turn starting sets `floor`, an
+    # AskUserQuestion sets `question` then clears `floor` (a real turn end),
+    # a turn ending sets `done` when nothing else is pending and clears
+    # `floor`. Retire any stale comm wiring first (e.g. the old
+    # Notification→blocked that lit agents red on plain idle) so settings
+    # ends up matching the current set declaratively, then add each via a
+    # non-clobbering merge.
     _remove_stale_comm_hooks!(claude_dir)
     for (event, script, matcher) in _COMM_STATE_HOOKS
         _add_comm_hook!(event, script, claude_dir; matcher = matcher)
@@ -913,20 +916,25 @@ end
 # The comm lifecycle hooks: (Claude Code event, script in ~/.sot-comm/bin, tool
 # matcher | nothing). The first four are the instant + automatic WORK-STATE
 # source that replaces pane-scraping — Claude fires these on its own lifecycle,
-# with zero model help. `blocked` keys off the AskUserQuestion tool (PreToolUse),
-# NOT Notification: Notification also fires on plain idle, which lit agents red
-# while merely waiting. A question asked in plain text has no automatic signal —
-# an agent self-reports `comm-status.sh blocked "<q>"` for those (the Stop idle
-# floor won't clobber it). The last TWO entries are NOT state hooks: they tell a
-# context-wiped session (compaction / `/clear`) to re-run its session-start skill
-# — the receive path survives both, so the re-run restores context only (below).
+# with zero model help. A row is a set of FACTS reduced to one display state
+# by comm-status.sh (ADR 0044 amendment, 2026-09-19): `blocked` keys off the
+# AskUserQuestion tool (PreToolUse), NOT Notification: Notification also fires
+# on plain idle, which lit agents red while merely waiting. A question asked
+# in plain text has no automatic signal — an agent self-reports
+# `comm-status.sh blocked "<q>"` for those. The last TWO entries are NOT state
+# hooks: they tell a context-wiped session (compaction / `/clear`) to re-run
+# its session-start skill — the receive path survives both, so the re-run
+# restores context only (below).
 const _COMM_STATE_HOOKS = [
-    ("UserPromptSubmit", "comm-status-working.sh", nothing),     # turn starts   → working
-    ("PreToolUse", "comm-status-blocked.sh", "AskUserQuestion"), # opens question → blocked
-    ("Stop", "comm-status-idle.sh", nothing),                    # turn ends     → idle
+    ("UserPromptSubmit", "comm-status-working.sh", nothing),     # turn starts    → prompt (sets floor)
+    ("PreToolUse", "comm-status-blocked.sh", "AskUserQuestion"), # opens question → blocked, then stop (a real turn end)
+    ("Stop", "comm-status-idle.sh", nothing),                    # turn ends      → stop (done iff floor=user, nothing pending)
     # Long-turn heartbeat: re-stamps a WORKING row's status_at on tool
     # activity (throttled to 60s) so the nav's 10-min wilt marks real stalls,
     # not long busy turns ("a peer session reverting to white", 2026-07-03).
+    # Writes no fact of its own. The SAME tool call's answer, when tool_name
+    # is AskUserQuestion, is instead the owner replying: sends prompt origin
+    # user (a fresh turn start), not a heartbeat refresh.
     ("PostToolUse", "comm-status-heartbeat.sh", nothing),
     # Post-compaction re-bootstrap (2026-07-19, Keith): SessionStart fires with
     # source=compact after a context summary; the hook (matcher-scoped to

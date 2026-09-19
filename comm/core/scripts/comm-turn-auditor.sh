@@ -80,7 +80,7 @@ tools="$(printf '%s\n' "$tail_lines" \
                                 | map(select(. != null)) | join(" | ")) | tostring | .[0:200])' 2>/dev/null \
     | tail -n 40)"
 
-row_state="$(jq -r --arg n "$NAME" '.agents[$n] | (.state // "?") + " sticky=" + (.sticky // "-")' "$REGISTRY" 2>/dev/null)"
+row_state="$(jq -r --arg n "$NAME" '.agents[$n] | (.state // "?") + " waiting=" + (.waiting // "-")' "$REGISTRY" 2>/dev/null)"
 
 # ---- tier 1: candidate filters ----------------------------------------------
 # .md is common in tool args that are plain reads (CLAUDE.md, README.md,
@@ -103,12 +103,12 @@ if checks_enabled artifact; then
     fi
 fi
 
-# Stale waiting: the row carries a sticky waiting marker, but this turn
-# CONSUMED a background completion (a task-notification in the tail) without
-# re-arming anything — the wait likely ended and the marker now paints a
-# false purple with a dead summary between turns (a peer session, 2026-07-04).
+# Stale waiting: the row carries a `waiting` fact, but this turn CONSUMED a
+# background completion (a task-notification in the tail) without re-arming
+# anything — the wait likely ended and the fact now paints a false purple
+# with a dead summary between turns (a peer session, 2026-07-04).
 case "$row_state" in
-  *sticky=[!-]*)
+  *waiting=[!-]*)
     if checks_enabled stale-waiting \
         && printf '%s\n%s' "$tools" "$last_text" | grep -qiE "task-notification|completed|finished" \
         && ! printf '%s' "$tools" | grep -qE 'RUN_IN_BACKGROUND|^Monitor '; then
@@ -132,7 +132,7 @@ fi
 # suppressing a nudge is the conservative direction.
 bg_tools="$(printf '%s' "$tools" | grep -vE 'comm-watch\.sh')"
 if checks_enabled background && printf '%s' "$bg_tools" | grep -qE 'RUN_IN_BACKGROUND|^Monitor |^Agent |^Task '; then
-    case "$row_state" in waiting*|blocked*|*sticky=[!-]*) ;; *) candidates+=("background") ;; esac
+    case "$row_state" in waiting*|blocked*|*waiting=[!-]*) ;; *) candidates+=("background") ;; esac
 fi
 
 # Clean at tier 1 → audited clean (empty stdout): cheaper AND stricter than the
@@ -190,10 +190,10 @@ A
 B
         ;;
     stale-waiting) cat <<'S'
-- stale-waiting: the registry row carries a sticky waiting marker, but this
-  turn consumed the completion of the awaited work (task-notification handled)
-  and armed nothing new — the marker is now stale and paints a false purple
-  with a dead summary between turns. Finding message: tell the session to run
+- stale-waiting: the registry row carries a wait, but this turn consumed the
+  completion of the awaited work (task-notification handled) and armed
+  nothing new — the fact is now stale and paints a false purple with a dead
+  summary between turns. Finding message: tell the session to run
   comm-status.sh working "<current activity>" (or idle/done) to CLEAR the
   finished wait — or, if it genuinely still waits on something else, to
   re-state it: comm-status.sh waiting "<the actual current wait>".
