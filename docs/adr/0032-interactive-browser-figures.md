@@ -105,7 +105,11 @@ WGLMakie` resolves from whatever WGLMakie the user's env pins. `ShipToolsRepl`
 stays plotting-free and backend-agnostic; the serving helper resolves
 `Main.Bonito`/`Main.WGLMakie` dynamically at call time and errors cleanly if they
 aren't loaded. This keeps REPL startup/precompile light (Makie is heavy) and
-avoids coupling the shim to one plotting stack.
+avoids coupling the shim to one plotting stack. The same stacking is why
+`ShipToolsRepl`'s own `[deps]` are stdlib-only (2026-09-18): a *registered*
+dependency, not just a weakdep like WGLMakie, can just as easily be shadowed
+by the user's manifest — a CairoMakie-pinned `Parsers 3.0.0` shadowed JSON3's
+own `Parsers` dependency and broke the shim for every such user.
 
 ### 3. A new `browser` REPL frame kind carries the URL — no new op, no backend change
 

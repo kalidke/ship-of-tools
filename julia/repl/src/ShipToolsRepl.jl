@@ -1,13 +1,37 @@
+"""
+    ShipToolsRepl
+
+The persistent Julia REPL shim the backend daemon supervises for every
+workspace. Speaks a length-prefixed-free, newline-delimited JSON protocol
+over stdin/stdout (see `serve`).
+
+**Invariant: `[deps]` is stdlib only.** The daemon launches this package
+STACKED under the user's own project via `JULIA_LOAD_PATH=@:<repl_project>:`
+(`rust/backend/src/repl.rs`, `spawn_supervisor_with_project`; ADR 0032 §2) so
+`using ShipToolsRepl` resolves even though `--project` points at the user's
+env. Julia resolves a package's own dependencies by walking that same load
+path, so a registered dependency of THIS package can be shadowed by whatever
+version the user's manifest happens to pin for it. That shadowing killed the
+shim outright once already: `JSON3`'s dependency `Parsers` was shadowed by a
+CairoMakie-pinned `Parsers 3.0.0` that no `JSON3` release supports, and the
+shim failed to precompile for every user with that combination in their
+project (2026-09-18). The fix is the invariant, not a version pin — a stacked
+shim must share NO registered package with any user project, ever — so
+`ShipToolsRepl` depends only on stdlib (`Base64`, `Pkg`, `Sockets`), and its
+own JSON codec lives in `json.jl` rather than pulling one in. The guard test
+in `test/runtests.jl` enforces this by walking `Project.toml`'s `[deps]`.
+"""
 module ShipToolsRepl
 
 using Base64
-using JSON3
 using Pkg
 using Sockets
 
 export serve, browserview, BrowserView, wglshow
 
 const PROTOCOL_VERSION = 1
+
+include("json.jl")
 
 """
     BrowserView(url)
@@ -385,7 +409,7 @@ function serve(io_in::IO, io_out::IO)
     for line in eachline(io_in)
         isempty(strip(line)) && continue
         req = try
-            JSON3.read(line)
+            json_read(line)
         catch e
             write_envelope(io_out, "res", 0, "repl.parse_error",
                 Dict(:error => "bad request: $(e)"))
@@ -754,8 +778,10 @@ end
 
 Drain `pipe` to eof, emitting `{kind, text}` frames as bytes arrive. Buffers a
 short trailing remainder so a UTF-8 multibyte char split across two
-`readavailable` chunks isn't emitted as invalid UTF-8 (which JSON3 would
-reject).
+`readavailable` chunks isn't emitted as invalid UTF-8 (`utf8_prefix` checks
+`isvalid` before releasing a chunk, so a split character waits for its other
+half rather than becoming a malformed `String` that `json_write` would then
+serialize as garbage).
 """
 function stream_pipe(pipe, emit, kind)
     leftover = UInt8[]
@@ -925,7 +951,7 @@ end
 function write_envelope(io::IO, kind, id, op, payload)
     env = Dict(:v => PROTOCOL_VERSION, :id => id, :kind => kind, :op => op, :payload => payload)
     lock(OUT_LOCK) do
-        JSON3.write(io, env)
+        json_write(io, env)
         write(io, '\n')
         flush(io)
     end
