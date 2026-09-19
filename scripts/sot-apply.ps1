@@ -71,6 +71,35 @@ $InstallJson = Join-Path $Prefix 'install.json'
 
 if (-not (Test-Path -LiteralPath $Updates)) { exit 0 }
 
+# ---- prefer a STAGED release's OWN sot-apply, once --------------------------
+# Mirror of sot-apply.sh's "prefer a STAGED release's OWN sot-apply" guard
+# (see that script's comment): the INSTALLED copy of this script -- the one
+# running right now -- can predate fixes a newer release's own copy carries.
+# When a pending update has already prepared a checkout with its own
+# scripts\sot-apply.ps1, hand off to it instead of running our own, older
+# logic, so a box on an old apply gets the fixed one as soon as it is staged.
+# Must happen BEFORE the staging lock below: `& $stageApply` below runs to
+# completion (this is PowerShell, not `exec` -- there is no process-image
+# replacement to worry about, but re-entering under our own lock would just
+# make the staged copy find the dir already there and refuse ("staging lock
+# held")), and Exit-Apply/the lock aren't defined yet at this point anyway.
+# SOT_APPLY_REEXECED stops this from ever looping (the staged copy sees it
+# set and skips straight past this block). Only helps FUTURE upgrades: an
+# old box's old apply predates this guard too, so it can never reach it.
+if (-not $env:SOT_APPLY_REEXECED -and (Test-Path -LiteralPath $Pending)) {
+    $stagePtr = $null
+    try { $stagePtr = (Get-Content -LiteralPath $Pending -Raw -ErrorAction Stop | ConvertFrom-Json) } catch {}
+    if ($stagePtr -and $stagePtr.checkout) {
+        $stageApply = Join-Path ([string]$stagePtr.checkout) 'scripts\sot-apply.ps1'
+        if (Test-Path -LiteralPath $stageApply) {
+            Write-ApplyLog "re-executing the staged sot-apply ($stageApply)"
+            $env:SOT_APPLY_REEXECED = '1'
+            & $stageApply @PSBoundParameters
+            exit $LASTEXITCODE
+        }
+    }
+}
+
 # ---- staging lock (shared with the Rust updater) ----------------------------
 # Directory-creation as mutex, exactly like the .sh's `mkdir` -- arm/apply/
 # rollback are one critical section against the stager.
