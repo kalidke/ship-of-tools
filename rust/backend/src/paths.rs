@@ -445,6 +445,13 @@ pub fn secure_private_dir(dir: &Path) -> Result<()> {
 
     match std::fs::symlink_metadata(dir) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // A fresh box has no `~/.local/state` yet (the release smoke's
+            // container had none): the parents are ordinary directories,
+            // only the leaf is the private one.
+            if let Some(parent) = dir.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("create parent of {}", dir.display()))?;
+            }
             std::fs::DirBuilder::new()
                 .mode(0o700)
                 .create(dir)
@@ -541,6 +548,16 @@ mod tests {
 /// hole, since `tmux.rs`/`pty.rs` call THIS, not `is_private_dir` directly).
 #[cfg(all(test, unix))]
 mod secure_private_dir_tests {
+
+    #[test]
+    fn a_missing_parent_is_created_and_the_leaf_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let leaf = root.path().join("a").join("b").join("sot");
+        secure_private_dir(&leaf).unwrap();
+        assert_eq!(std::fs::metadata(&leaf).unwrap().permissions().mode() & 0o777, 0o700);
+        secure_private_dir(&leaf).unwrap(); // idempotent on the second boot
+    }
     use super::secure_private_dir;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
