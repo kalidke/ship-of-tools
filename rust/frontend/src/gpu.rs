@@ -19960,7 +19960,7 @@ impl ApplicationHandler for App {
                         // When the REPL drawer is closed, don't let
                         // spatial Down land focus on the invisible Repl
                         // slot. User must explicitly
-                        // summon the drawer (Ctrl+J) before it can take
+                        // summon the drawer (Primary+J) before it can take
                         // focus. Same rule for the LLM pane while
                         // wide-preview hides it — keystrokes must never
                         // route to an invisible pty.
@@ -19969,7 +19969,13 @@ impl ApplicationHandler for App {
                         {
                             state.focus = next;
                         }
-                        state.last_key = Some(format!("Ctrl+{label}"));
+                        // Keymap-driven label (Ctrl+Arrow on Windows/Linux,
+                        // Cmd+Arrow on macOS) instead of a hard-coded
+                        // "Ctrl+" prefix, which used to print "Ctrl+Left"
+                        // even once the chord was remapped.
+                        state.last_key = Some(state.bindings.first_label(
+                            action.expect("dir implies a resolved focus action"),
+                        ));
                         state.window.request_redraw();
                         return;
                     }
@@ -20929,7 +20935,7 @@ impl ApplicationHandler for App {
                                     _ => {}
                                 }
                             }
-                            if let Some(bytes) = key_to_pty_bytes(&event.logical_key, ctrl, shift) {
+                            if let Some(bytes) = key_to_pty_bytes(&event.logical_key, ctrl, shift, super_) {
                                 // Typing snaps back to the live tail so the
                                 // cursor/prompt is visible (standard emulator
                                 // behaviour).
@@ -21077,13 +21083,21 @@ impl ApplicationHandler for App {
                                 state.repl_scroll = 0;
                             }
                             Key::Character(s) => {
-                                // `]` at start of empty input enters
-                                // pkg mode and consumes the keypress —
-                                // again mirroring the standard REPL.
-                                if s.as_str() == "]"
+                                // A Command chord that didn't resolve to an
+                                // action above must not leak into the Julia
+                                // input either (macOS: winit delivers
+                                // Cmd+<letter> as a plain Character with
+                                // `super_` set — the same invariant
+                                // `key_to_pty_bytes` enforces for the ptys).
+                                if cfg!(target_os = "macos") && super_ {
+                                    // consumed, not typed
+                                } else if s.as_str() == "]"
                                     && state.repl_input.is_empty()
                                     && !state.repl_pkg_mode
                                 {
+                                    // `]` at start of empty input enters
+                                    // pkg mode and consumes the keypress —
+                                    // again mirroring the standard REPL.
                                     state.repl_pkg_mode = true;
                                     state.repl_scroll = 0;
                                 } else {
@@ -21382,8 +21396,14 @@ impl ApplicationHandler for App {
                                     buf_changed = true;
                                 }
                                 Key::Character(s) => {
+                                    // Same invariant as the Julia input line
+                                    // and `key_to_pty_bytes`: a Command
+                                    // chord that resolved to no editor
+                                    // action must not insert text either.
+                                    let is_command =
+                                        cfg!(target_os = "macos") && super_;
                                     for c in s.chars() {
-                                        if !c.is_control() {
+                                        if !is_command && !c.is_control() {
                                             edit.buf.insert_char(c);
                                             buf_changed = true;
                                         }
@@ -21876,7 +21896,7 @@ impl ApplicationHandler for App {
                             }
                         }
                         let bytes: Option<Vec<u8>> =
-                            key_to_pty_bytes(&event.logical_key, ctrl, shift);
+                            key_to_pty_bytes(&event.logical_key, ctrl, shift, super_);
                         if let Some(bytes) = bytes {
                             // Any byte we send to the pty snaps the
                             // view back to live so what the user is
@@ -22571,7 +22591,15 @@ fn emit_scan_type(
 /// 0x02, …) so shell editing, signals, and tmux prefixes work; non-letters
 /// under Ctrl pass through verbatim. Returns `None` for keys with no PTY
 /// encoding (bare modifiers, etc.).
-fn key_to_pty_bytes(key: &Key, ctrl: bool, shift: bool) -> Option<Vec<u8>> {
+fn key_to_pty_bytes(key: &Key, ctrl: bool, shift: bool, super_: bool) -> Option<Vec<u8>> {
+    // A Command chord is never terminal input: it either resolved to an app
+    // action above (handled before this call), or it is residual input that
+    // must not leak into the shell as a raw keystroke -- macOS delivers
+    // Cmd+<letter> as a plain Character with `super_` set, which is exactly
+    // the bug this guard exists for.
+    if super_ {
+        return None;
+    }
     match key {
         Key::Named(NamedKey::Enter) => Some(b"\r".to_vec()),
         Key::Named(NamedKey::Backspace) => Some(b"\x7f".to_vec()),
@@ -23607,18 +23635,33 @@ mod tests {
         // Claude Code's plan-mode cycle above all — sees the chord. Regression
         // guard: before the `shift` arg this collapsed to a plain `\t`.
         assert_eq!(
-            key_to_pty_bytes(&Key::Named(NamedKey::Tab), false, true),
+            key_to_pty_bytes(&Key::Named(NamedKey::Tab), false, true, false),
             Some(b"\x1b[Z".to_vec())
         );
         // Plain Tab stays a literal tab for shell/editor completion.
         assert_eq!(
-            key_to_pty_bytes(&Key::Named(NamedKey::Tab), false, false),
+            key_to_pty_bytes(&Key::Named(NamedKey::Tab), false, false, false),
             Some(b"\t".to_vec())
         );
         // Ctrl+Tab (no shift) has no distinct pty encoding here — still `\t`.
         assert_eq!(
-            key_to_pty_bytes(&Key::Named(NamedKey::Tab), true, false),
+            key_to_pty_bytes(&Key::Named(NamedKey::Tab), true, false, false),
             Some(b"\t".to_vec())
+        );
+    }
+
+    #[test]
+    fn command_chord_never_reaches_the_pty_as_text() {
+        // macOS bug this guards: Cmd+C fell through and typed a literal "c"
+        // into the shell/LLM pane, because the pty encoder had no idea
+        // Command was held. Ctrl+C is unaffected -- still the interrupt byte.
+        assert_eq!(
+            key_to_pty_bytes(&Key::Character("c".into()), false, false, true),
+            None
+        );
+        assert_eq!(
+            key_to_pty_bytes(&Key::Character("c".into()), true, false, false),
+            Some(vec![0x03])
         );
     }
 

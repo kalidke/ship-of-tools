@@ -3,8 +3,8 @@
 The focused pane's border shows useful actions with their **loaded shortcuts**.
 Help and keyboard dispatch use the same action catalog and context checks.
 
-- **Ctrl+?** shows the current pane's actions for five seconds, followed by a short fade.
-- Press **Ctrl+? again** while it is visible to open the same context in the **Help drawer**.
+- **Primary+?** (`Ctrl+?` on Windows/Linux, `⌘?` on macOS) shows the current pane's actions for five seconds, followed by a short fade.
+- Press it **again** while it is visible to open the same context in the **Help drawer**.
 - **F1** opens or closes Help directly. Both shortcuts are rebindable.
 - **Escape** dismisses the temporary overlay. Any ordinary command dismisses it and still performs its normal action.
 - If the action list cannot fit legibly inside the pane, Help opens in the drawer directly.
@@ -19,8 +19,9 @@ use arrows to select, Tab to switch between this pane and all panes, and Enter
 to open the selected action's manual section. A shadowed shortcut is identified
 instead of being advertised as working. Embedded terminal applications own
 their own shortcuts; the catalog describes SoT controls around them.
-**Ctrl+p** in the Help drawer writes a printable cheat sheet of the loaded
-bindings and opens it in the browser; print it or save it as PDF there.
+**Primary+p** (`Ctrl+p` on Windows/Linux, `⌘P` on macOS) in the Help drawer
+writes a printable cheat sheet of the loaded bindings and opens it in the
+browser; print it or save it as PDF there.
 
 ## Configuration
 
@@ -28,7 +29,7 @@ Each action maps to one chord or a list of chords in a `[keys]` table:
 
 ```toml
 [keys]
-help.toggle = "Ctrl+?"
+help.toggle = "Primary+?"
 drawer.help = "F1"
 files.run_current = "F8"
 preview.png.zoom_in = ["Shift+ArrowUp", "+", "="]
@@ -62,7 +63,11 @@ stay distinct. Other layouts see the symbol they actually deliver.
 
 Supported modifier names are `Ctrl`/`Control`, `Alt`/`Option`, `Shift`, and
 `Super`/`Cmd`/`Command`/`Win`. The legacy `Meta` alias continues to mean `Alt`.
-`Primary` means Command on macOS and Control on Windows/Linux.
+`Primary` means Command on macOS and Control on Windows/Linux; most defaults
+that are app-level chords (not terminal control codes) are spelled with it.
+Help and the printable cheat sheet always show the resolved form for the
+frontend's own OS (`Ctrl+?` on Windows/Linux, `⌘?` on macOS), never the word
+`Primary` itself.
 
 The **frontend OS** determines shortcut notation, including when a Mac frontend
 connects to a Linux backend: Control is `⌃`, Command is `⌘`, Option is `⌥`, and
@@ -77,8 +82,15 @@ insensitive (`Ctrl+s` and `Ctrl+S` mean the same chord).
 Character shortcuts use the active keyboard layout. `Ctrl+?` means Control plus
 the question-mark character, without assuming its physical key position.
 `Ctrl+Shift+/` explicitly binds the shifted slash key in the active layout.
-Option-modified letters also match the layout's unmodified letter on macOS.
+Option-modified keys match the layout's unmodified key on macOS (`Option+=`
+delivers `≠` on a US layout; the chord still reads as `=`).
 All shortcuts can be reassigned for layouts or OS shortcuts that conflict.
+
+macOS reserves some chords at the system level regardless of what SoT binds:
+Control+Arrow switches Spaces or opens Mission Control, and F11 shows the
+desktop, which is why pane focus is `⌘Arrow` there and fullscreen also accepts
+`Ctrl+Cmd+F` (F11 still works if that system shortcut is off). `⌘Q` and `⌘H`
+are handled by the OS-level application menu, not by SoT's own key dispatch.
 
 ## Default actions
 
@@ -87,39 +99,39 @@ Normal text entry and terminal-application controls retain their own input handl
 
 | Action | Default shortcut(s) | Description |
 |---|---|---|
-| `help.toggle` | `Ctrl+?` | Show actions here for five seconds; press again to browse them in the Help drawer. |
+| `help.toggle` | `Primary+?` | Show actions here for five seconds; press again to browse them in the Help drawer. |
 | `drawer.help` | `F1` | Browse and search actions for the pane you were using. Escape restores the previous drawer. |
 | `transport.reconnect` | `F5` | Retry backend connections immediately. |
-| `view.fullscreen` | `F11` | Toggle borderless fullscreen. |
-| `font.scale_up` | `Ctrl+=` / `Ctrl++` | Increase the frontend font size. |
-| `font.scale_down` | `Ctrl+-` / `Ctrl+_` | Decrease the frontend font size. |
-| `font.scale_reset` | `Ctrl+0` | Restore the default frontend font size. |
-| `focus.pane_left` | `Ctrl+ArrowLeft` | Move keyboard focus to the pane on the left. |
-| `focus.pane_right` | `Ctrl+ArrowRight` | Move keyboard focus to the pane on the right. |
-| `focus.pane_up` | `Ctrl+ArrowUp` | Move keyboard focus to the pane above. |
-| `focus.pane_down` | `Ctrl+ArrowDown` | Move keyboard focus to the drawer or pane below. |
+| `view.fullscreen` | `F11` (+ `Ctrl+Super+f` on macOS) | Toggle borderless fullscreen. |
+| `font.scale_up` | `Primary+=` / `Primary++` | Increase the frontend font size. |
+| `font.scale_down` | `Primary+-` / `Primary+_` | Decrease the frontend font size. |
+| `font.scale_reset` | `Primary+0` | Restore the default frontend font size. |
+| `focus.pane_left` | `Primary+ArrowLeft` | Move keyboard focus to the pane on the left. |
+| `focus.pane_right` | `Primary+ArrowRight` | Move keyboard focus to the pane on the right. |
+| `focus.pane_up` | `Primary+ArrowUp` | Move keyboard focus to the pane above. |
+| `focus.pane_down` | `Primary+ArrowDown` | Move keyboard focus to the drawer or pane below. |
 | `workspace.cycle_next` | `Shift+ArrowRight` | Switch to the next workspace. |
 | `workspace.cycle_prev` | `Shift+ArrowLeft` | Switch to the previous workspace. |
 | `pane.maximize` | `Alt+=` | Fill the window with the focused pane. |
 | `pane.restore` | `Escape` | Undo maximization, then wide preview, one layer at a time. |
 | `layout.wide_preview` | `Alt++` | Hide or show the agent column to give the preview more room. |
-| `view.selfie` | `Ctrl+Shift+S` | Save a PNG of the whole frontend window. |
-| `drawer.repl` | `Ctrl+j` | Show or hide the Julia REPL. Changing drawer views keeps Julia running. |
-| `drawer.terminal` | `Ctrl+t` | Show or hide the frontend-local terminal. |
-| `drawer.monitor` | `Ctrl+m` | Show or hide host resource charts. |
+| `view.selfie` | `Primary+Shift+S` | Save a PNG of the whole frontend window. |
+| `drawer.repl` | `Primary+j` | Show or hide the Julia REPL. Changing drawer views keeps Julia running. |
+| `drawer.terminal` | `Primary+t` | Show or hide the frontend-local terminal. |
+| `drawer.monitor` | `Primary+m` | Show or hide host resource charts. |
 | `view.scroll_line_up` | `Alt+ArrowUp` | Scroll without moving the input cursor. |
 | `view.scroll_line_down` | `Alt+ArrowDown` | Scroll without moving the input cursor. |
 | `preview.table_left` | `h` / `ArrowLeft` | Move horizontally through a wide text table. |
 | `preview.table_right` | `l` / `ArrowRight` | Move horizontally through a wide text table. |
 | `preview.table_reset` | `0` | Return to the left edge of a wide table. |
-| `session.create_codex` | `Ctrl+Enter` | Create a workspace in the selected folder with a Codex agent. |
+| `session.create_codex` | `Primary+Enter` | Create a workspace in the selected folder with a Codex agent. |
 | `session.create_bare` | `Shift+Enter` | Create a workspace in the selected folder with a shell and no agent. |
 | `session.create` | `Enter` | Create a workspace in the selected folder with a Claude Code agent. |
 | `session.account_next` | `Tab` | Cycle which login account the new session will use. Hidden when only one account is discovered. |
-| `quit` | `Ctrl+q` | Close the frontend from navigation focus. |
-| `files.copy_path` | `Ctrl+c` / `c` | Copy the selected file's backend path to the clipboard. |
-| `files.new` | `Ctrl+n` | Create a file, or a folder when the name ends with /, in the selected directory. |
-| `files.delete` | `Ctrl+d` | Delete the selected file after confirmation. Directories are refused. |
+| `quit` | `Primary+q` | Close the frontend from navigation focus. |
+| `files.copy_path` | `Primary+c` / `c` | Copy the selected file's backend path to the clipboard. |
+| `files.new` | `Primary+n` | Create a file, or a folder when the name ends with /, in the selected directory. |
+| `files.delete` | `Primary+d` | Delete the selected file after confirmation. Directories are refused. |
 | `nav.down` | `ArrowDown` | Select the next row. |
 | `nav.up` | `ArrowUp` | Select the previous row. |
 | `nav.expand` | `ArrowRight` | Expand the selected node or descend into a folder. |
@@ -141,7 +153,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `files.run_current` | `Shift+r` | Run the selected Julia file using the current Julia session and its variables. |
 | `repl.clear` | `Ctrl+l` | Clear the displayed REPL output; Julia's variables remain. |
 | `input.paste` | `Ctrl+v` / `Super+v` / `Shift+Insert` | Paste the clipboard into this pane. |
-| `agent.copy` | `Ctrl+Shift+c` | Copy selected agent output to the clipboard. |
+| `agent.copy` | `Primary+Shift+c` | Copy selected agent output to the clipboard. |
 | `preview.page_next` | `n` / `PageDown` | Show the next page of the displayed document. |
 | `preview.page_prev` | `p` / `PageUp` | Show the previous page of the displayed document. |
 | `preview.png.reset` | `r` / `0` | Reset zoom and pan to fit the image in the pane. |
@@ -151,9 +163,9 @@ Normal text entry and terminal-application controls retain their own input handl
 | `preview.png.pan_right` | `ArrowRight` | Move across the zoomed image. |
 | `preview.png.pan_up` | `ArrowUp` | Move across the zoomed image. |
 | `preview.png.pan_down` | `ArrowDown` | Move across the zoomed image. |
-| `preview.scalebar.toggle` | `Ctrl+s` | Toggle the physical scalebar, or enter the pixel size when scale is unknown. |
+| `preview.scalebar.toggle` | `Primary+s` | Toggle the physical scalebar, or enter the pixel size when scale is unknown. |
 | `view.return_nav` | `Escape` | Move focus back to the navigation tree. |
-| `preview.capture` | `c` / `Ctrl+c` | Crop the visible image region and attach it to the agent input. |
+| `preview.capture` | `c` / `Primary+c` | Crop the visible image region and attach it to the agent input. |
 | `preview.copy_code` | `y` | Copy the displayed markdown code blocks to the clipboard. |
 | `preview.edit` | `e` | Edit the displayed file or its concept annotation. |
 | `view.page_up` | `PageUp` | Scroll back through this pane. |
@@ -170,7 +182,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `help.page_down` | `PageDown` | Next actions in the Help drawer. |
 | `help.scope` | `Tab` | This pane or all panes in the Help drawer. |
 | `help.manual` | `Enter` | Open manual in the Help drawer. |
-| `help.cheatsheet` | `Ctrl+p` | Write a printable page of every listed action and its loaded shortcuts, and open it in the browser (print or save as PDF there). |
+| `help.cheatsheet` | `Primary+p` | Write a printable page of every listed action and its loaded shortcuts, and open it in the browser (print or save as PDF there). |
 | `help.close` | `Escape` | Return to work in the Help drawer. |
 | `files.confirm_delete` | `y` / `Shift+y` | Delete the file named in the confirmation prompt. Any other key cancels. |
 | `edit.confirm_discard` | `y` / `Shift+y` / `Escape` | Discard unsaved edits and close the editor. Another key returns to editing. |

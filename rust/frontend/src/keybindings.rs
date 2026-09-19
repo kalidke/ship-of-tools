@@ -72,39 +72,39 @@ macro_rules! actions {
     }
 }
 actions! {
-    ToggleHelp, "help.toggle", ["Ctrl+?"], "Pane actions", "Show actions here for five seconds; press again to browse them in the Help drawer.", "Help", Global;
+    ToggleHelp, "help.toggle", ["Primary+?"], "Pane actions", "Show actions here for five seconds; press again to browse them in the Help drawer.", "Help", Global;
     ToggleHelpDrawer, "drawer.help", ["F1"], "Help drawer", "Browse and search actions for the pane you were using. Escape restores the previous drawer.", "Help", Global;
     Reconnect, "transport.reconnect", ["F5"], "Reconnect", "Retry backend connections immediately.", "Window", Global;
     ToggleFullscreen, "view.fullscreen", ["F11"], "Fullscreen", "Toggle borderless fullscreen.", "Window", Global;
-    FontScaleUp, "font.scale_up", ["Ctrl+=", "Ctrl++"], "Larger text", "Increase the frontend font size.", "Window", Global;
-    FontScaleDown, "font.scale_down", ["Ctrl+-", "Ctrl+_"], "Smaller text", "Decrease the frontend font size.", "Window", Global;
-    FontScaleReset, "font.scale_reset", ["Ctrl+0"], "Reset text size", "Restore the default frontend font size.", "Window", Global;
-    FocusPaneLeft, "focus.pane_left", ["Ctrl+ArrowLeft"], "Focus left", "Move keyboard focus to the pane on the left.", "Window", Global;
-    FocusPaneRight, "focus.pane_right", ["Ctrl+ArrowRight"], "Focus right", "Move keyboard focus to the pane on the right.", "Window", Global;
-    FocusPaneUp, "focus.pane_up", ["Ctrl+ArrowUp"], "Focus above", "Move keyboard focus to the pane above.", "Window", Global;
-    FocusPaneDown, "focus.pane_down", ["Ctrl+ArrowDown"], "Focus below", "Move keyboard focus to the drawer or pane below.", "Window", Global;
+    FontScaleUp, "font.scale_up", ["Primary+=", "Primary++"], "Larger text", "Increase the frontend font size.", "Window", Global;
+    FontScaleDown, "font.scale_down", ["Primary+-", "Primary+_"], "Smaller text", "Decrease the frontend font size.", "Window", Global;
+    FontScaleReset, "font.scale_reset", ["Primary+0"], "Reset text size", "Restore the default frontend font size.", "Window", Global;
+    FocusPaneLeft, "focus.pane_left", ["Primary+ArrowLeft"], "Focus left", "Move keyboard focus to the pane on the left.", "Window", Global;
+    FocusPaneRight, "focus.pane_right", ["Primary+ArrowRight"], "Focus right", "Move keyboard focus to the pane on the right.", "Window", Global;
+    FocusPaneUp, "focus.pane_up", ["Primary+ArrowUp"], "Focus above", "Move keyboard focus to the pane above.", "Window", Global;
+    FocusPaneDown, "focus.pane_down", ["Primary+ArrowDown"], "Focus below", "Move keyboard focus to the drawer or pane below.", "Window", Global;
     WorkspaceCycleNext, "workspace.cycle_next", ["Shift+ArrowRight"], "Next session", "Switch to the next workspace.", "Window", Workspace;
     WorkspaceCyclePrev, "workspace.cycle_prev", ["Shift+ArrowLeft"], "Previous session", "Switch to the previous workspace.", "Window", Workspace;
     MaximizePane, "pane.maximize", ["Alt+="], "Maximize pane", "Fill the window with the focused pane.", "Window", Global;
     RestoreLayout, "pane.restore", ["Escape"], "Restore layout", "Undo maximization, then wide preview, one layer at a time.", "Window", Restore;
     ToggleWidePreview, "layout.wide_preview", ["Alt++"], "Wide preview", "Hide or show the agent column to give the preview more room.", "Window", Global;
-    Selfie, "view.selfie", ["Ctrl+Shift+S"], "Screenshot", "Save a PNG of the whole frontend window.", "Window", Global;
-    ToggleReplDrawer, "drawer.repl", ["Ctrl+j"], "Julia drawer", "Show or hide the Julia REPL. Changing drawer views keeps Julia running.", "Drawers", Global;
-    ToggleTerminalDrawer, "drawer.terminal", ["Ctrl+t"], "Terminal drawer", "Show or hide the frontend-local terminal.", "Drawers", Global;
-    ToggleMonitorDrawer, "drawer.monitor", ["Ctrl+m"], "Monitor drawer", "Show or hide host resource charts.", "Drawers", Global;
+    Selfie, "view.selfie", ["Primary+Shift+S"], "Screenshot", "Save a PNG of the whole frontend window.", "Window", Global;
+    ToggleReplDrawer, "drawer.repl", ["Primary+j"], "Julia drawer", "Show or hide the Julia REPL. Changing drawer views keeps Julia running.", "Drawers", Global;
+    ToggleTerminalDrawer, "drawer.terminal", ["Primary+t"], "Terminal drawer", "Show or hide the frontend-local terminal.", "Drawers", Global;
+    ToggleMonitorDrawer, "drawer.monitor", ["Primary+m"], "Monitor drawer", "Show or hide host resource charts.", "Drawers", Global;
     ScrollLineUp, "view.scroll_line_up", ["Alt+ArrowUp"], "Scroll up one line", "Scroll without moving the input cursor.", "Scroll", Scroll;
     ScrollLineDown, "view.scroll_line_down", ["Alt+ArrowDown"], "Scroll down one line", "Scroll without moving the input cursor.", "Scroll", Scroll;
     TableLeft, "preview.table_left", ["h", "ArrowLeft"], "Scroll left", "Move horizontally through a wide text table.", "Text", Text;
     TableRight, "preview.table_right", ["l", "ArrowRight"], "Scroll right", "Move horizontally through a wide text table.", "Text", Text;
     TableReset, "preview.table_reset", ["0"], "Table start", "Return to the left edge of a wide table.", "Text", Text;
-    SessionCreateCodex, "session.create_codex", ["Ctrl+Enter"], "Create with Codex", "Create a workspace in the selected folder with a Codex agent.", "Picker", Picker;
+    SessionCreateCodex, "session.create_codex", ["Primary+Enter"], "Create with Codex", "Create a workspace in the selected folder with a Codex agent.", "Picker", Picker;
     SessionCreateBare, "session.create_bare", ["Shift+Enter"], "Create without agent", "Create a workspace in the selected folder with a shell and no agent.", "Picker", Picker;
     SessionCreate, "session.create", ["Enter"], "Create with Claude", "Create a workspace in the selected folder with a Claude Code agent.", "Picker", Picker;
     SessionAccountNext, "session.account_next", ["Tab"], "Next account", "Cycle which login account the new session will use. Hidden when only one account is discovered.", "Picker", Picker;
-    Quit, "quit", ["Ctrl+q"], "Quit SoT", "Close the frontend from navigation focus.", "Navigation", Nav;
-    CopyPath, "files.copy_path", ["Ctrl+c", "c"], "Copy path", "Copy the selected file's backend path to the clipboard.", "Files", FileNav;
-    NewFile, "files.new", ["Ctrl+n"], "New file or folder", "Create a file, or a folder when the name ends with /, in the selected directory.", "Files", Files;
-    DeleteFile, "files.delete", ["Ctrl+d"], "Delete file", "Delete the selected file after confirmation. Directories are refused.", "Files", FileNav;
+    Quit, "quit", ["Primary+q"], "Quit SoT", "Close the frontend from navigation focus.", "Navigation", Nav;
+    CopyPath, "files.copy_path", ["Primary+c", "c"], "Copy path", "Copy the selected file's backend path to the clipboard.", "Files", FileNav;
+    NewFile, "files.new", ["Primary+n"], "New file or folder", "Create a file, or a folder when the name ends with /, in the selected directory.", "Files", Files;
+    DeleteFile, "files.delete", ["Primary+d"], "Delete file", "Delete the selected file after confirmation. Directories are refused.", "Files", FileNav;
     NavDown, "nav.down", ["ArrowDown"], "Move down", "Select the next row.", "Navigation", Navigation;
     NavUp, "nav.up", ["ArrowUp"], "Move up", "Select the previous row.", "Navigation", Navigation;
     NavExpand, "nav.expand", ["ArrowRight"], "Expand", "Expand the selected node or descend into a folder.", "Navigation", Navigation;
@@ -126,7 +126,7 @@ actions! {
     RunCurrent, "files.run_current", ["Shift+r"], "Run in current REPL", "Run the selected Julia file using the current Julia session and its variables.", "Julia", Julia;
     ReplClear, "repl.clear", ["Ctrl+l"], "Clear scrollback", "Clear the displayed REPL output; Julia's variables remain.", "Julia", Repl;
     Paste, "input.paste", ["Ctrl+v", "Super+v", "Shift+Insert"], "Paste", "Paste the clipboard into this pane.", "Input", Pty;
-    CopySelection, "agent.copy", ["Ctrl+Shift+c"], "Copy selection", "Copy selected agent output to the clipboard.", "Agent", Llm;
+    CopySelection, "agent.copy", ["Primary+Shift+c"], "Copy selection", "Copy selected agent output to the clipboard.", "Agent", Llm;
     PageNext, "preview.page_next", ["n", "PageDown"], "Next page", "Show the next page of the displayed document.", "Pages", Pages;
     PagePrev, "preview.page_prev", ["p", "PageUp"], "Previous page", "Show the previous page of the displayed document.", "Pages", Pages;
     PreviewPngReset, "preview.png.reset", ["r", "0"], "Fit image", "Reset zoom and pan to fit the image in the pane.", "Image", Image;
@@ -136,9 +136,9 @@ actions! {
     PreviewPngPanRight, "preview.png.pan_right", ["ArrowRight"], "Pan right", "Move across the zoomed image.", "Image", Image;
     PreviewPngPanUp, "preview.png.pan_up", ["ArrowUp"], "Pan up", "Move across the zoomed image.", "Image", Image;
     PreviewPngPanDown, "preview.png.pan_down", ["ArrowDown"], "Pan down", "Move across the zoomed image.", "Image", Image;
-    PreviewScalebarToggle, "preview.scalebar.toggle", ["Ctrl+s"], "Scalebar", "Toggle the physical scalebar, or enter the pixel size when scale is unknown.", "Image", Image;
+    PreviewScalebarToggle, "preview.scalebar.toggle", ["Primary+s"], "Scalebar", "Toggle the physical scalebar, or enter the pixel size when scale is unknown.", "Image", Image;
     ReturnNav, "view.return_nav", ["Escape"], "Return to navigation", "Move focus back to the navigation tree.", "View", Reading;
-    CaptureRegion, "preview.capture", ["c", "Ctrl+c"], "Send visible region", "Crop the visible image region and attach it to the agent input.", "Image", Image;
+    CaptureRegion, "preview.capture", ["c", "Primary+c"], "Send visible region", "Crop the visible image region and attach it to the agent input.", "Image", Image;
     CopyCode, "preview.copy_code", ["y"], "Copy code blocks", "Copy the displayed markdown code blocks to the clipboard.", "Text", Text;
     EditFile, "preview.edit", ["e"], "Edit", "Edit the displayed file or its concept annotation.", "Text", PreviewFile;
     ScrollPageUp, "view.page_up", ["PageUp"], "Scroll up", "Scroll back through this pane.", "Scroll", PageScroll;
@@ -155,7 +155,7 @@ actions! {
     HelpPageDown, "help.page_down", ["PageDown"], "Next actions", "Next actions in the Help drawer.", "Help", Help;
     HelpScope, "help.scope", ["Tab"], "This pane or all panes", "This pane or all panes in the Help drawer.", "Help", Help;
     HelpManual, "help.manual", ["Enter"], "Open manual", "Open manual in the Help drawer.", "Help", Help;
-    HelpCheatSheet, "help.cheatsheet", ["Ctrl+p"], "Print cheat sheet", "Write a printable page of every listed action and its loaded shortcuts, and open it in the browser (print or save as PDF there).", "Help", Help;
+    HelpCheatSheet, "help.cheatsheet", ["Primary+p"], "Print cheat sheet", "Write a printable page of every listed action and its loaded shortcuts, and open it in the browser (print or save as PDF there).", "Help", Help;
     HelpClose, "help.close", ["Escape"], "Return to work", "Return to work in the Help drawer.", "Help", Help;
     DeleteConfirm, "files.confirm_delete", ["y", "Shift+y"], "Confirm deletion", "Delete the file named in the confirmation prompt. Any other key cancels.", "Input", DeleteConfirm;
     DiscardConfirm, "edit.confirm_discard", ["y", "Shift+y", "Escape"], "Discard edits", "Discard unsaved edits and close the editor. Another key returns to editing.", "Editor", DiscardConfirm;
@@ -282,6 +282,12 @@ impl Chord {
         !self.ctrl && !self.alt && !self.super_ && matches!(self.key, ChordKey::Char(_))
     }
     fn matches_input(&self, key: &Key, base: Option<&Key>, m: Modifiers) -> bool {
+        self.matches_input_on(key, base, m, cfg!(target_os = "macos"))
+    }
+    /// `mac` is threaded through as a plain argument (not read from `cfg!`
+    /// inline) so tests can exercise the macOS-only branch below from any
+    /// host; the one production call site above always passes the real OS.
+    fn matches_input_on(&self, key: &Key, base: Option<&Key>, m: Modifiers, mac: bool) -> bool {
         if (self.ctrl, self.alt, self.super_) != (m.ctrl, m.alt, m.super_) {
             return false;
         }
@@ -321,7 +327,19 @@ impl Chord {
                 // Option may transform a letter on macOS. Explicit shifted base
                 // punctuation (Ctrl+Shift+/) also uses the layout's unmodified key.
                 // Never treat an unshifted '=' as '+' through this fallback.
-                (letter && (m.ctrl || m.alt || m.super_) || self.shift) && base.is_some_and(same)
+                if (letter && (m.ctrl || m.alt || m.super_) || self.shift) && base.is_some_and(same) {
+                    return true;
+                }
+                // macOS-only: Option also transforms many non-letter keys
+                // (Option+= delivers "≠", base "="), so a symbol chord like
+                // Alt+= can only fire there by reading the layout base too.
+                // Gated to macOS: a US-International Linux layout delivers
+                // Alt+AltGr+= as "×" (base "=", alt set, no shift) and must
+                // keep typing "×", not fire Alt+= -- verified against
+                // installed XKB data, not a hypothetical. `m.shift ==
+                // self.shift` keeps the existing "Alt+= must not claim
+                // Alt+Shift+=" guarantee.
+                mac && !letter && m.alt && m.shift == self.shift && base.is_some_and(same)
             }
             _ => false,
         }
@@ -384,7 +402,7 @@ pub struct KeyBindings {
 }
 impl KeyBindings {
     pub fn defaults() -> Self {
-        Self {
+        let mut b = Self {
             chords: ACTIONS
                 .iter()
                 .map(|s| {
@@ -397,7 +415,18 @@ impl KeyBindings {
                     )
                 })
                 .collect(),
+        };
+        // F11 fullscreen is claimed by macOS Mission Control ("Show
+        // Desktop"); add the Mac convention as an extra chord rather than
+        // replacing F11 (which still works when the owner has that Mission
+        // Control shortcut off). Every other OS keeps F11 alone.
+        if cfg!(target_os = "macos") {
+            b.chords
+                .get_mut(&Action::ToggleFullscreen)
+                .expect("ToggleFullscreen is in ACTIONS")
+                .push(Chord::parse("Ctrl+Super+f").expect("valid default keybinding"));
         }
+        b
     }
     pub fn load_layered() -> Self {
         let mut b = Self::defaults();
@@ -623,6 +652,19 @@ fn find_keybindings_file() -> Option<PathBuf> {
     None
 }
 
+/// Test helper: the modifiers `Primary` resolves to on this OS (Ctrl on
+/// Windows/Linux, Cmd/Super on macOS) -- mirrors `Chord::parse`'s own
+/// "primary" branch so tests stay honest about what a respelled default
+/// actually requires on each platform.
+#[cfg(test)]
+fn primary() -> Modifiers {
+    Modifiers {
+        ctrl: !cfg!(target_os = "macos"),
+        super_: cfg!(target_os = "macos"),
+        ..Modifiers::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,25 +697,33 @@ mod tests {
         assert_eq!(c.key, ChordKey::Named(NamedKey::F11));
     }
 
-    /// ADR 0034: the scalebar toggle is Ctrl+S (maintainer, 2026-07-20). Pin it
+    /// ADR 0034: the scalebar toggle is Primary+S (Ctrl on Windows/Linux, Cmd
+    /// on macOS; maintainer, 2026-07-20, respelled 2026-09-18). Pin it
     /// against the two neighbours that make it a live collision risk — bare `s`
-    /// is the Sessions-mode switch and Ctrl+Shift+S is the selfie — so a future
-    /// rebind can't silently make one of them fire the scalebar (or vice versa).
+    /// is the Sessions-mode switch and Primary+Shift+S is the selfie — so a
+    /// future rebind can't silently make one of them fire the scalebar (or
+    /// vice versa).
     #[test]
     fn scalebar_toggle_is_ctrl_s_and_does_not_collide() {
         let b = KeyBindings::defaults();
         let s = Key::Character("s".into());
 
-        // Ctrl+S fires the toggle.
-        assert!(b.matches(Action::PreviewScalebarToggle, &s, true, false, false));
+        // Primary+S fires the toggle.
+        assert_eq!(
+            b.resolve(&s, None, primary(), false, |_| true),
+            Some(Action::PreviewScalebarToggle)
+        );
         // Bare `s` does NOT (that's Sessions mode).
         assert!(!b.matches(Action::PreviewScalebarToggle, &s, false, false, false));
         // ...and bare `s` still reaches Sessions mode.
         assert!(b.matches(Action::ModeSessions, &s, false, false, false));
-        // Ctrl+S must not fire Sessions mode.
-        assert!(!b.matches(Action::ModeSessions, &s, true, false, false));
-        // Ctrl+Shift+S is the selfie, not the scalebar.
-        assert!(b.matches(Action::Selfie, &s, true, false, true));
+        // Primary+S must not fire Sessions mode.
+        assert_ne!(b.resolve(&s, None, primary(), false, |_| true), Some(Action::ModeSessions));
+        // Primary+Shift+S is the selfie, not the scalebar.
+        assert_eq!(
+            b.resolve(&s, None, Modifiers { shift: true, ..primary() }, false, |_| true),
+            Some(Action::Selfie)
+        );
     }
 
     #[test]
@@ -749,44 +799,37 @@ mod tests {
     fn selfie_default_is_ctrl_shift_s() {
         let b = KeyBindings::defaults();
         let s = Key::Character("S".into());
-        assert!(b.matches(Action::Selfie, &s, true, false, true));
+        let shift_primary = Modifiers { shift: true, ..primary() };
+        assert_eq!(b.resolve(&s, None, shift_primary, false, |_| true), Some(Action::Selfie));
         // Lowercase (caps-lock / layouts that don't upcase) still matches.
         let lower = Key::Character("s".into());
-        assert!(b.matches(Action::Selfie, &lower, true, false, true));
-        // Ctrl without Shift must NOT trigger it.
-        assert!(!b.matches(Action::Selfie, &s, true, false, false));
+        assert_eq!(b.resolve(&lower, None, shift_primary, false, |_| true), Some(Action::Selfie));
+        // Primary without Shift must NOT trigger it.
+        assert_ne!(b.resolve(&s, None, primary(), false, |_| true), Some(Action::Selfie));
     }
     #[test]
     fn help_supports_control_question_mark_and_remapping() {
         let mut b = KeyBindings::defaults();
         let q = Key::Character("?".into());
-        let modifiers = Modifiers {
-            ctrl: true,
-            shift: true,
-            ..Modifiers::default()
-        };
+        // The default is Primary+? (Ctrl on Windows/Linux, Cmd on macOS).
+        let default_mods = Modifiers { shift: true, ..primary() };
         assert_eq!(
-            b.resolve(&q, Some(&Key::Character("/".into())), modifiers, false, |_| true),
+            b.resolve(&q, Some(&Key::Character("/".into())), default_mods, false, |_| true),
             Some(Action::ToggleHelp)
         );
         assert_eq!(b.resolve(&q, None, Modifiers::default(), false, |_| true), None);
         b.merge_text("help.toggle = \"Cmd+Shift+/\"");
+        let cmd_shift = Modifiers {
+            super_: true,
+            shift: true,
+            ..Modifiers::default()
+        };
         assert_eq!(
-            b.resolve(
-                &q,
-                Some(&Key::Character("/".into())),
-                Modifiers {
-                    super_: true,
-                    shift: true,
-                    ..Modifiers::default()
-                },
-                false,
-                |_| true
-            ),
+            b.resolve(&q, Some(&Key::Character("/".into())), cmd_shift, false, |_| true),
             Some(Action::ToggleHelp)
         );
         assert_ne!(
-            b.resolve(&q, None, modifiers, false, |_| true),
+            b.resolve(&q, None, default_mods, false, |_| true),
             Some(Action::ToggleHelp)
         );
         assert_eq!(b.labels_for(Action::ToggleHelp, true), "⇧⌘/");
@@ -826,6 +869,9 @@ mod tests {
             image: true,
             ..Default::default()
         };
+        // Bare Super+S: on macOS that IS Primary+S (the scalebar toggle's
+        // own default, respelled 2026-09-18); everywhere else Super+S binds
+        // nothing.
         assert_eq!(
             b.resolve(
                 &Key::Character("s".into()),
@@ -837,17 +883,17 @@ mod tests {
                 false,
                 |a| image.allows(a)
             ),
-            None
+            if cfg!(target_os = "macos") {
+                Some(Action::PreviewScalebarToggle)
+            } else {
+                None
+            }
         );
         assert_eq!(
             b.resolve(
                 &Key::Character("S".into()),
                 None,
-                Modifiers {
-                    ctrl: true,
-                    shift: true,
-                    ..Modifiers::default()
-                },
+                Modifiers { shift: true, ..primary() },
                 false,
                 |a| image.allows(a)
             ),
@@ -870,7 +916,11 @@ mod tests {
     #[test]
     fn remapped_file_actions_and_conflicts_are_honest() {
         let mut b = KeyBindings::defaults();
-        b.merge_text("files.run_fresh = \"F8\"\npane.maximize = \"Ctrl+m\"");
+        // Override with the same "Primary" spelling drawer.monitor's own
+        // default now uses, so the collision holds on every OS (Ctrl+m on
+        // Windows/Linux, Cmd+m on macOS) instead of only on the ones where
+        // Primary still happens to mean Ctrl.
+        b.merge_text("files.run_fresh = \"F8\"\npane.maximize = \"Primary+m\"");
         let c = crate::help::Context {
             file: Some("fit.jl".into()),
             ..Default::default()
@@ -922,6 +972,40 @@ mod tests {
         b.merge_text("help.toggle = [\"Ctrl+,\", \"#\"] # comment");
         assert_eq!(b.labels_for(Action::ToggleHelp, false), "Ctrl+, / #");
     }
+
+    /// macOS Option transforms non-letter keys too (⌥= delivers "≠", base
+    /// "="), so `pane.maximize` (Alt+=) needs the layout base on that OS.
+    /// `matches_input_on`'s explicit `mac` argument lets this run on any
+    /// host: pass `true` for the branch macOS gets, `false` for the branch
+    /// every other OS gets (they must both hold, since CI only runs Linux).
+    #[test]
+    fn option_equals_uses_layout_base_on_macos_only() {
+        let c = Chord::parse("Alt+=").unwrap();
+        let ne = Key::Character("≠".into());
+        let base = Some(Key::Character("=".into()));
+        let alt = Modifiers { alt: true, ..Modifiers::default() };
+        assert!(c.matches_input_on(&ne, base.as_ref(), alt, true));
+        assert!(!c.matches_input_on(&ne, base.as_ref(), alt, false));
+        // The existing negative case (Alt+= must not claim Alt+Shift+=)
+        // holds either way -- Shift mismatches the chord on both branches.
+        let alt_shift = Modifiers { alt: true, shift: true, ..Modifiers::default() };
+        assert!(!c.matches_input_on(&ne, base.as_ref(), alt_shift, true));
+    }
+
+    /// ⌥⇧= delivers "±" on a Mac; this already fires on every OS today
+    /// through the pre-existing Windows shifted-base path (`us_shifted("=")
+    /// == "+"` against the base), not the new macOS-only branch above --
+    /// pinned here so that stays true once that branch exists alongside it.
+    #[test]
+    fn option_shift_equals_fires_via_shifted_base_on_every_os() {
+        let c = Chord::parse("Alt++").unwrap();
+        let pm = Key::Character("±".into());
+        let base = Some(Key::Character("=".into()));
+        let alt_shift = Modifiers { alt: true, shift: true, ..Modifiers::default() };
+        assert!(c.matches_input_on(&pm, base.as_ref(), alt_shift, true));
+        assert!(c.matches_input_on(&pm, base.as_ref(), alt_shift, false));
+    }
+
     #[test]
     fn primary_uses_frontend_os_and_control_never_becomes_command() {
         let primary = Chord::parse("Primary+p").unwrap();
@@ -960,10 +1044,9 @@ mod literal_text_tests {
         assert_eq!(b.resolve(&q, None, Modifiers::default(), false, |_| true), Some(Action::ToggleHelp));
         // A text-consuming pane: the character is typed, nothing fires.
         assert_eq!(b.resolve(&q, None, Modifiers::default(), true, |_| true), None);
-        // ...but a modified chord (Ctrl+t, the terminal drawer) still does.
+        // ...but a modified chord (Primary+t, the terminal drawer) still does.
         let t = Key::Character("t".into());
-        let ctrl = Modifiers { ctrl: true, ..Modifiers::default() };
-        assert_eq!(b.resolve(&t, None, ctrl, true, |_| true), Some(Action::ToggleTerminalDrawer));
+        assert_eq!(b.resolve(&t, None, primary(), true, |_| true), Some(Action::ToggleTerminalDrawer));
         // Help advertises accordingly: no label for the bare override in a text pane.
         assert!(b.active_labels(Action::ToggleHelp, true, |_| true).is_empty());
         assert!(!b.active_labels(Action::ToggleHelp, false, |_| true).is_empty());
@@ -981,7 +1064,12 @@ mod windows_shifted_punctuation_tests {
     /// `Ctrl+/` must not (the user typed "?").
     #[test]
     fn windows_delivers_the_unshifted_key_and_ctrl_question_still_fires() {
-        let b = KeyBindings::defaults();
+        let mut b = KeyBindings::defaults();
+        // This test documents literal Windows delivery, independent of
+        // whatever Primary resolves to on the OS actually running it --
+        // bind the literal chord instead of relying on the (now
+        // OS-resolved) default.
+        b.merge_text("help.toggle = \"Ctrl+?\"");
         let slash = Key::Character("/".into());
         let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Modifiers::default() };
         assert_eq!(
@@ -1003,7 +1091,7 @@ mod windows_shifted_punctuation_tests {
     fn a_directly_delivered_question_mark_still_matches() {
         let b = KeyBindings::defaults();
         let q = Key::Character("?".into());
-        let m = Modifiers { ctrl: true, shift: true, ..Modifiers::default() };
+        let m = Modifiers { shift: true, ..primary() };
         assert_eq!(b.resolve(&q, Some(&Key::Character("/".into())), m, false, |_| true), Some(Action::ToggleHelp));
     }
 }
