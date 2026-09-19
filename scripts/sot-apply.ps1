@@ -149,6 +149,26 @@ function Get-Sha256([string]$path) {
     catch { return $null }
 }
 
+# One definition of "binaries match the stage" -- used both by the
+# already-at-tag short circuit below (install.json can say the new tag
+# while the binaries are still the old ones: exactly what a failed swap
+# under the pre-fix apply left behind) and by the post-install post-check
+# further down. A staged binary this release doesn't ship is skipped, same
+# policy as the copy loop; a hash that can't be read (missing file, locked
+# handle) counts as a mismatch, never a match. Returns $null when every
+# staged binary matches, else the name of the first one that doesn't.
+function Get-StageMismatch([string]$staged, [string]$binDir) {
+    foreach ($b in @('sot.exe', 'sotd.exe', 'sot-capsule.exe')) {
+        $src = Join-Path $staged $b
+        if (-not (Test-Path -LiteralPath $src)) { continue }
+        $dst = Join-Path $binDir $b
+        $wantHash = Get-Sha256 $src
+        $gotHash  = Get-Sha256 $dst
+        if (-not $wantHash -or -not $gotHash -or $wantHash -ne $gotHash) { return $b }
+    }
+    return $null
+}
+
 # Surgical field rewrite, NOT a parse+reserialize: install.json's schema is
 # additive by design ("a newer installer can extend the schema"), so a
 # round-trip through ConvertTo-Json would silently drop fields this script
@@ -313,7 +333,17 @@ $top = $asset -replace '\.zip$', '' -replace '\.tar\.gz$', ''
 $staged = Join-Path $ready $top
 
 if ($curTag -eq $tag) {
-    Write-ApplyLog "install is already at $tag -- clearing stale pending pointer"; Remove-Pending; Exit-Apply 0
+    # install.json agreeing with the pending tag is not proof the binaries
+    # ever landed -- the pre-fix apply flipped the pointers after a failed
+    # binary swap, so a box in that state re-armed a pending update that
+    # this short circuit then dropped as "already installed" forever. Only
+    # drop the pointer when every staged binary actually matches what is
+    # in $BinDir; otherwise fall through to the normal install path below,
+    # which re-verifies the stage and redoes the swap.
+    if (-not (Get-StageMismatch $staged $BinDir)) {
+        Write-ApplyLog "install is already at $tag -- clearing stale pending pointer"; Remove-Pending; Exit-Apply 0
+    }
+    Write-ApplyLog "install.json says $tag but a staged binary differs from the installed one -- installing"
 }
 
 # ---- verify the whole transaction BEFORE touching anything ------------------
@@ -478,17 +508,11 @@ if ($script:applyFailed) { Exit-Apply 0 }
 # ---- post-check: every staged binary now hashes equal to its source -------
 # Belt-and-suspenders for the rename-aside path above: confirm the swap
 # actually landed before declaring success, instead of trusting that no
-# exception means no problem.
-foreach ($b in @('sot.exe', 'sotd.exe', 'sot-capsule.exe')) {
-    $src = Join-Path $staged $b
-    if (-not (Test-Path -LiteralPath $src)) { continue }
-    $dst = Join-Path $BinDir $b
-    $wantHash = Get-Sha256 $src
-    $gotHash  = Get-Sha256 $dst
-    if (-not $wantHash -or -not $gotHash -or $wantHash -ne $gotHash) {
-        Restore-Previous "post-check: $b hash mismatch after install (want $wantHash, got $gotHash)"
-        break
-    }
+# exception means no problem. Same comparison as the already-at-tag short
+# circuit above, via Get-StageMismatch.
+$mismatch = Get-StageMismatch $staged $BinDir
+if ($mismatch) {
+    Restore-Previous "post-check: $mismatch hash mismatch after install"
 }
 if ($script:applyFailed) { Exit-Apply 0 }
 
