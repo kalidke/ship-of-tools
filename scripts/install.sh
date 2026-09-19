@@ -401,6 +401,43 @@ case "$OS" in
         die "this installer covers Linux and macOS. Windows uses source setup unless a release zip exists; see docs/INSTALL-AGENT.md section 2b" ;;
     *)  die "unsupported OS $OS. Linux/macOS: this installer; Windows: docs/INSTALL-AGENT.md section 2b" ;;
 esac
+
+# Finding 2 (v0.6.5 macOS field report): the daemon correctly REFUSES to
+# put capsule records on a remote filesystem (`rust/log/src/fsutil.rs`
+# `preflight_volume`'s statfs denylist), but today the only place that
+# says so is the backend's own journal -- from the frontend it just looks
+# like the retry blink, "supervisor lane not answering", forever. Surfacing
+# the real reason in the pane itself needs a design pass (deferred); for
+# now, warn here, at install time, on the two directories that matter:
+# $HOME (the default project root) and the state dir the daemon will
+# actually use. Linux only -- `stat -f -c %T` is GNU coreutils, and this
+# whole failure mode is Linux/Windows-only today anyway (capsule mode
+# isn't wired up on macOS -- see `rust/log/src/fsutil.rs`'s
+# `preflight_volume` non-Linux-unix arm). Warn, never abort: a remote
+# home is a real, working (if degraded) setup for everything except
+# capsule rows.
+if [ "$OS" = Linux ] && command -v stat >/dev/null 2>&1; then
+    # Mirrors `REMOTE_FS_TYPES`' names in fsutil.rs (NFS, SMB, CIFS, SMB2,
+    # 9p, FUSE) as GNU `stat -f -c %T` actually spells them.
+    check_remote_fs() {
+        local label="$1" dir="$2"
+        local fstype
+        fstype="$(stat -f -c %T "$dir" 2>/dev/null)" || return 0
+        case "$fstype" in
+            nfs|nfs4|cifs|smb2|fuse.sshfs|9p)
+                say "WARNING: $label ($dir) is on a remote filesystem ($fstype)."
+                say "  Capsule session records cannot live on a remote filesystem"
+                say "  (ADR 0043 decision 23). Set XDG_STATE_HOME to a local-disk"
+                say "  directory in the environment sotd starts from -- for a"
+                say "  systemd install: systemctl --user set-environment"
+                say "  XDG_STATE_HOME=/path/on/local/disk, or export it in"
+                say "  ~/.bashrc (which the unit sources) -- then restart sotd."
+                ;;
+        esac
+    }
+    check_remote_fs '$HOME' "$HOME"
+    check_remote_fs 'the state dir' "${XDG_STATE_HOME:-$HOME/.local/state}"
+fi
 for t in curl tar; do command -v "$t" >/dev/null || die "$t is required"; done
 # The glibc floor for the frontend binary is checked further down, once the
 # role is resolved (WANT_FRONTEND) — that now needs the declared topology,

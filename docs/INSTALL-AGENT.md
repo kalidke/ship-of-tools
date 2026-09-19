@@ -433,6 +433,7 @@ top line of the nav pane always shows the pane-switch keys.**
 | backend socket missing | old TCP-based service unit or failed daemon start → reinstall/restart the socket-based `sotd.service` |
 | Julia instantiate fails "project and manifest are out of sync" (often naming a stdlib, e.g. `Sockets`) | stale `Manifest.toml` from a previous install left in the checkout's env dirs → re-run the installer (it drops stale manifests since 2026-08-11); manual fix: `rm ~/.local/share/sot/repo/current/julia/{kernel,repl,pluto}/Manifest.toml` and re-run |
 | Julia instantiate slow on first run | normal (precompilation); minutes, once |
+| session rows die / capsule pane blinks "supervisor lane not answering" forever, journal claims a start that produced no process | `$HOME` or the state dir is on a remote filesystem (NFS/CIFS/SMB2/9p/FUSE) — capsule records need a local disk (ADR 0043 decision 23) → set `XDG_STATE_HOME` to a local-disk directory (`systemctl --user set-environment XDG_STATE_HOME=/path`, or export it in `~/.bashrc`, which the unit sources) and restart `sotd` |
 
 ## 6. After the install
 
