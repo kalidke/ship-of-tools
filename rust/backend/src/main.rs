@@ -296,9 +296,25 @@ Pure queries (no startup side effects, answered before any of the above):
     // capsule row (`capsule_workspace::qualified_state_root` applies the
     // SAME check again per row create/attach, as defense in depth
     // against the directory being altered after this boot-time check).
-    // Plain refusal, no auto-repair; tracing isn't initialized yet at
-    // this point, so this is stderr-only, same as the harden_own_stdio
-    // fallback right above.
+    // A symlink or a foreign owner is refused outright. A mode that lets
+    // group/other in on a directory this uid owns is repaired to 0700
+    // first (what the previous `ensure_private_dir` always did), so a
+    // hand-made `mkdir` under a 022 umask does not brick the daemon on
+    // the next boot. Tracing isn't initialized yet at this point, so this
+    // is stderr-only, same as the harden_own_stdio fallback right above.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = paths::state_dir();
+        if let Ok(meta) = std::fs::symlink_metadata(&dir) {
+            if meta.is_dir()
+                && meta.uid() == paths::current_uid()
+                && meta.permissions().mode() & 0o077 != 0
+            {
+                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+    }
     if let Err(e) = paths::secure_private_dir(&paths::state_dir()) {
         eprintln!(
             "sotd: state dir {} is not private ({e}) — refusing to start",
