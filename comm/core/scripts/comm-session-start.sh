@@ -359,7 +359,12 @@ if [ -z "$HANDLE" ]; then
 fi
 
 LISTEN_OUT="$("$SCRIPT_DIR/comm-listen.sh" 2>&1)"; listen_rc=$?
-printf '%s\n' "$LISTEN_OUT"
+# LISTEN_OUT is read ONLY for listen_rc's sake, never echoed: comm-listen.sh's
+# own start banner (its "NEXT (required...) ... Monitor command: ..." block,
+# ~comm-listen.sh:195) is a free-form multi-line explainer meant for a human
+# running it directly, not for this script's one-line-per-outcome contract —
+# dumping it here duplicated (and predated) the MONITOR/WAKE line this script
+# prints itself below with the resolved absolute path.
 if [ "$IS_WINDOWS" = 1 ]; then
     LISTENER_STATE="n/a"
 elif [ "$listen_rc" -eq 0 ]; then
@@ -385,7 +390,21 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     if CAPSULE_WS_ID="$(sot_capsule_workspace_id 2>/dev/null)"; then
         if _survived "$HANDLE"; then
             WAKE_ACTIVE=1
-        elif SOT_SEND_TIMEOUT=10 sot_pty_screen "$CAPSULE_WS_ID" >/dev/null 2>&1; then
+        # sot_pty_screen -> sot_oneshot_request reads $ENDPOINT from the
+        # CALLER's scope (comm-lib.sh's own contract — see sot_oneshot_request's
+        # doc comment); every other call site in this file (the SURVIVED
+        # agent.join re-declare above) resolves it first the same way. Without
+        # this, $ENDPOINT was never set here, and under this script's own
+        # `set -u`, sot_oneshot_request's `case "$ENDPOINT" in` died with
+        # "ENDPOINT: unbound variable" — a genuine capsule row (a resolvable
+        # $CAPSULE_WS_ID) crashed this whole script silently right here, output
+        # eaten by the elif's own >/dev/null 2>&1, exit 1, no BOOTSTRAP-ARM at
+        # all (field-reproduced 2026-09-19). Resolving it first both fixes the
+        # crash and lets pty.screen actually run, which is also why a capsule
+        # row landed on the MONITOR fallback instead of WAKE: the probe below
+        # never even attempted to answer before this.
+        elif ENDPOINT="$(sot_daemon_endpoint 2>/dev/null)" && [ -n "$ENDPOINT" ] \
+             && SOT_SEND_TIMEOUT=10 sot_pty_screen "$CAPSULE_WS_ID" >/dev/null 2>&1; then
             # Ping-wake honesty: only claim the watcher is armed once this
             # daemon has proven, right now, that it can answer pty.screen at
             # all — the watcher's own prompt-free gate depends on that same
@@ -418,3 +437,9 @@ else
     echo "BOOTSTRAP-ARM handle=$HANDLE listener=$LISTENER_STATE identity=$IDENTITY MONITOR: $MONITOR_CMD (persistent; if the harness ends it, re-arm on the notice - this hook warns if you miss one)"
 fi
 _workstate_rule
+# A good join (this point is only ever reached after printing BOOTSTRAP-ARM
+# above) is success, full stop -- never let a well-behaved but non-integer-0
+# exit status trailing off the end of the script (a heredoc's `cat`, some
+# future addition here) silently turn a good bootstrap into a caller-visible
+# failure the way the missing $ENDPOINT above just did.
+exit 0
