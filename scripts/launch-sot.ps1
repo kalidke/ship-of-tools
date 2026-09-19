@@ -24,7 +24,10 @@
 # Overrides (env vars):
 #   SOT_HOST_NAME    Which declared host is the PRIMARY (default: the plan's hub)
 #   SOT_HOST         Same, pre-topology-plan name (still honoured)
-#   SOT_TCP_PORT     Local loopback port for the primary's tunnel (default: the plan's own port)
+#   SOT_TCP_PORT     Local loopback port for the primary's tunnel, but only
+#                    when no topology plan exists yet -- a plan's own port
+#                    always wins over this (see the port-priority comment
+#                    further down)
 #   SOT_TOKEN        App-level auth token for TCP fallback only
 #
 # Every OTHER dialable host `sotd topology plan` names gets its own tunnel
@@ -964,13 +967,26 @@ $script:backendHost = if ($env:SOT_HOST_NAME) {
 # remains -- see the "nothing at all can start" check right before the
 # frontend launches.
 # The plan's own ordinal port for $backendHost (the hub is always 18743)
-# wins; SOT_TCP_PORT still overrides it, and 18743 is the last-resort
-# fallback for a box with no plan at all (no sotd binary yet).
+# wins; SOT_TCP_PORT is honoured only when NO plan exists (no sotd binary
+# yet), and 18743 is the last-resort fallback below that.
+#
+# 2026-09-18 field report: the OLD order checked $env:SOT_TCP_PORT FIRST,
+# so a session shell that had inherited a stale export from an earlier
+# launch (this same line, below, on a box that has since re-planned to a
+# different port) tunnelled on the OLD port while the frontend's --dial
+# args -- built straight from $plan.Dials, never from $tcpPort -- pointed
+# at the plan's CURRENT one: a live tunnel on 18743 beside a dial for
+# 18838. The plan is this box's own freshly-computed truth; the inherited
+# env is carried state from whenever it was last set, possibly by a
+# different process. One $script:tcpPort now feeds both the tunnel -L
+# (~1080, ~1717, ~1933) and the export below, so there is exactly one
+# source for what "the port" means in this launch.
 $planPrimaryPort = ($plan.Tunnels | Where-Object { $_.Host -eq $backendHost } | Select-Object -First 1).Port
-$script:tcpPort = if ($env:SOT_TCP_PORT) {
-    [int]$env:SOT_TCP_PORT
-} elseif ($planPrimaryPort) {
+$script:tcpPort = if ($planPrimaryPort) {
     $planPrimaryPort
+} elseif ($env:SOT_TCP_PORT) {
+    Write-SupLog "no topology plan: SOT_TCP_PORT=$($env:SOT_TCP_PORT) used"
+    [int]$env:SOT_TCP_PORT
 } else {
     18743
 }
@@ -980,7 +996,11 @@ $script:tcpPort = if ($env:SOT_TCP_PORT) {
 # to fall back on, and this line runs before Invoke-LocalDaemonEnsure below
 # starts the local daemon -- so setting it here, once, lets the daemon (and
 # anything it in turn spawns, e.g. a capsule inheriting the daemon's env)
-# see the per-user-derived port instead of always the fixed default.
+# see the per-user-derived port instead of always the fixed default. Set
+# from $tcpPort (the plan's own value whenever a plan exists) -- never a
+# re-echo of whatever SOT_TCP_PORT happened to already be in the
+# environment, which is exactly the stale value this export used to
+# perpetuate into every child (and every child's own later shell) above.
 $env:SOT_TCP_PORT = "$tcpPort"
 # Always queried on the remote (New-RemoteEnsureCommand above) -- no more
 # config-file/env override; see the host-registry comment above.
