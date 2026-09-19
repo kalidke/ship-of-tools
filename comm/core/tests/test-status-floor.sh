@@ -61,15 +61,17 @@ I() { printf '{}' | bash "$HOOKS_DIR/comm-status-idle.sh"; }
 B() { printf '{"tool_name":"AskUserQuestion"}' | bash "$HOOKS_DIR/comm-status-blocked.sh"; }
 # HB: a heartbeat tool call (PostToolUse, tool_name=Bash). HBQ: the
 # AskUserQuestion ANSWER's PostToolUse. Both route through FLAT_BIN_DIR so
-# the hook's own NAME resolution (SELF_DIR/comm-context.sh) succeeds, and
-# both clear the 10s early-throttle tick first: each call in a test is its
-# own tool call in its own right, not a repeat within one live turn.
+# the hook's own NAME resolution (SELF_DIR/comm-context.sh) succeeds. HB
+# clears the 10s early-throttle tick first: each HB call in a test is its
+# own tool call in its own right, not a repeat within one live turn. HBQ
+# does NOT clear it — the answer branch runs before that throttle check
+# (review finding 2026-09-19), so a call must prove it fires even with a
+# fresh tick left over from an earlier HB/B call in the same test.
 HB() {
     rm -f "$SOT_COMM_HOME"/state/hb-*.tick 2>/dev/null
     printf '{"tool_name":"Bash"}' | bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh"
 }
 HBQ() {
-    rm -f "$SOT_COMM_HOME"/state/hb-*.tick 2>/dev/null
     printf '{"tool_name":"AskUserQuestion"}' | bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh"
 }
 # IT TEXT [stop_hook_active]: Stop with a transcript whose last assistant message is TEXT.
@@ -277,6 +279,13 @@ case_explicit_idle_then_stop_stays_idle() {
     seed idle; "$ST" idle >/dev/null; "$ST" stop >/dev/null
     expect idle/-/-/-/- stays
 }
+# A teammate's or subagent's tool call sharing this session id can land
+# moments before the owner answers, leaving the heartbeat's 10s throttle
+# tick fresh right when the answer's PostToolUse fires (review finding
+# 2026-09-19). HB sets that tick and B never touches it, so by the time HBQ
+# runs the tick is still well under 10s old — HBQ deliberately does NOT
+# clear it (unlike HB) so this proves the AskUserQuestion branch fires
+# before that throttle check, not because the test cleared the obstacle.
 case_ask_user_question_within_throttle_window() {
     seed idle; W "$GENUINE"
     HB

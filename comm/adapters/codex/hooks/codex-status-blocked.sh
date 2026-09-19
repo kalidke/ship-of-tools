@@ -8,10 +8,14 @@
 # comm-status.sh's `blocked` sets `question` and PRESERVES `waiting` (both
 # can be true; red outranks purple in the reduction). The prompt then PAUSES
 # for the user, so this hook also sends `stop` — the session is yielding to
-# the owner exactly like a real turn end (ADR 0044 amendment) — after
-# clearing the heartbeat's throttle tick (same key formula as
-# comm-status-heartbeat.sh's own) so the 10s early throttle can't swallow the
-# answer's next tool call.
+# the owner exactly like a real turn end (ADR 0044 amendment).
+#
+# UNLIKE Claude's AskUserQuestion, codex has no PostToolUse for the answer —
+# comm-status-heartbeat.sh's AskUserQuestion branch is Claude-tool-name-only
+# and never fires here (review finding 2026-09-19: do not claim a mechanism
+# that doesn't exist). The red clears on this session's next genuine
+# UserPromptSubmit (comm-status-working.sh's `prompt` event, origin user),
+# same as the pre-amendment hierarchy guard did.
 #
 # Self-gating: comm-status.sh no-ops in any pane without a registry row, so
 # non-SoT codex sessions are untouched. Always exits 0 — a hook must never
@@ -23,7 +27,6 @@ set -uo pipefail
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$COMM_HOME/bin/comm-status.sh"
 [ -x "$STATUS" ] || exit 0
-rm -f "$COMM_HOME/state/hb-$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-$PPID}}" | tr -c 'A-Za-z0-9._-' '_').tick" 2>/dev/null
 tool="$(jq -r '.tool_name // ""' 2>/dev/null || true)"
 "$STATUS" blocked "codex permission request${tool:+: $tool}" >/dev/null 2>&1 || true
 "$STATUS" stop >/dev/null 2>&1 || true

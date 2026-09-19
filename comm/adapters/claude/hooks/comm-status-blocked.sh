@@ -20,10 +20,11 @@
 # with `comm-status.sh blocked "<the question>"` right before asking (the question
 # becomes the row summary).
 #
-# The heartbeat's throttle tick is cleared FIRST (same key formula as
-# comm-status-heartbeat.sh's own): the answer arrives as this tool's
-# PostToolUse, and the 10s early-throttle exit would otherwise sometimes
-# swallow it, leaving the row red after the user already answered.
+# The answer arrives as this same tool's PostToolUse, handled by
+# comm-status-heartbeat.sh's own AskUserQuestion branch (which runs before
+# its early-throttle tick check, review finding 2026-09-19: a teammate's or
+# subagent's tool call sharing this session id must never be able to swallow
+# the owner's answer by re-touching that tick) — nothing needs clearing here.
 #
 # Safety rests on comm-status.sh's self-gating: a non-comm session is a silent
 # no-op (rc 0). Output swallowed, always exit 0 so the hook can never block.
@@ -38,7 +39,6 @@
 [ "${SOT_COMM_HOOKS:-}" = off ] && exit 0
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$COMM_HOME/bin/comm-status.sh"
-rm -f "$COMM_HOME/state/hb-$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-$PPID}}" | tr -c 'A-Za-z0-9._-' '_').tick" 2>/dev/null
 if [ -x "$STATUS" ]; then
     "$STATUS" blocked >/dev/null 2>&1 || true
     "$STATUS" stop >/dev/null 2>&1 || true

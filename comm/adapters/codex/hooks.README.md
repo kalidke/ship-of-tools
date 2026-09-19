@@ -18,10 +18,12 @@ like a Claude Code session does:
 `PermissionRequest` maps to blocked because codex has no `AskUserQuestion` tool;
 a permission prompt is its nearest "needs the USER to act", which is what red
 means. Its payload carries a top-level `tool_name`, which is why
-`codex-status-blocked.sh` can name the asking tool in the summary; like the
-Claude adapter's own `AskUserQuestion` hook, it clears the heartbeat's
-throttle tick first, then sends `blocked` followed by `stop` — the session
-is yielding to the owner exactly like a real turn end.
+`codex-status-blocked.sh` can name the asking tool in the summary; it sends
+`blocked` followed by `stop` — the session is yielding to the owner exactly
+like a real turn end. UNLIKE Claude's `AskUserQuestion`, there is no
+PostToolUse for the answer (the shared heartbeat script's answer branch
+matches only that Claude tool name), so the red clears on this session's
+next genuine `UserPromptSubmit`, not on the approval itself.
 
 Because these are the same bin scripts the Claude adapter uses (the payloads
 share the field names that matter — notably `prompt`), a codex row is a set

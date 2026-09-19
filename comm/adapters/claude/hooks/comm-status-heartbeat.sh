@@ -39,8 +39,25 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Read stdin (the hook's JSON envelope) up front, before the early-throttle
 # exit below can short-circuit: the AskUserQuestion answer check right after
-# the identity gate needs it every call, throttle or no throttle.
+# needs it every call, throttle or no throttle.
 tool="$(jq -r '.tool_name // ""' 2>/dev/null || true)"
+
+# The AskUserQuestion ANSWER (ADR 0044 amendment): this tool's PostToolUse
+# fires once the owner has typed the answer and the harness resumes — the
+# session is no longer yielding. Sends `prompt` (origin user) exactly like a
+# fresh turn start, once per dialog, and skips the heartbeat write below
+# entirely (comm-status.sh takes the spinning lock; a tool-call-rate write
+# here would be the wrong cost model for it). Runs BEFORE the early throttle
+# and this hook's own identity resolution below: a teammate's or subagent's
+# tool call sharing this session id can re-touch the throttle tick (below)
+# while the dialog is open, and gating the answer on that tick or on NAME
+# here would let such a call swallow the owner's answer (review finding 1,
+# 2026-09-19). comm-status.sh resolves identity and self-gates on its own
+# registry row, so no NAME is needed here.
+if [ "$tool" = AskUserQuestion ]; then
+    COMM_STATUS_ORIGIN=user "$COMM_HOME/bin/comm-status.sh" prompt >/dev/null 2>&1 || true
+    exit 0
+fi
 
 # EARLY THROTTLE (2026-09-17): everything below -- comm-context.sh above all --
 # costs ~7s on Windows (git rev-parse + hostname + jq + sourcing comm-lib.sh,
@@ -97,17 +114,6 @@ if [ -x "$SELF_DIR/comm-context.sh" ]; then
     [ -n "${_ctx:-}" ] && eval "$_ctx" 2>/dev/null || true
 fi
 [ -n "${NAME:-}" ] || exit 0
-
-# The AskUserQuestion ANSWER (ADR 0044 amendment): this tool's PostToolUse
-# fires once the owner has typed the answer and the harness resumes — the
-# session is no longer yielding. Send `prompt` (origin user) exactly like a
-# fresh turn start, once per dialog, and skip the heartbeat write below
-# entirely (comm-status.sh takes the spinning lock; a tool-call-rate write
-# here would be the wrong cost model for it).
-if [ "$tool" = AskUserQuestion ]; then
-    COMM_STATUS_ORIGIN=user "$COMM_HOME/bin/comm-status.sh" prompt >/dev/null 2>&1 || true
-    exit 0
-fi
 
 row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.floor // "") + "|" + (.status_at // "") else "" end' "$REGISTRY" 2>/dev/null || true)"
 [ -n "$row" ] || exit 0

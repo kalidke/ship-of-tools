@@ -55,10 +55,14 @@ this closed an effort, end normally if it was a step". A turn that already
 carries its block is never nudged, whatever the block says — a send-back can
 only append, and the owner would read two reports.
 
-**Precedence: blocked > waiting > done > idle.** **Waiting is sticky** — set it
-once; it survives intervening turns until you report `working`/`idle`/`done`, or
-self-heals after 2h. Blue clears on the user's next genuine prompt — never by
-age. Mechanics + fixture-testing rule + turn-end auditor: `references/work-state.md`.
+**The row is a set of facts (floor/question/waiting/done), reduced to one
+colour: a running turn (green) or an open question with no turn running
+(red) both outrank a wait (purple), which outranks an unviewed result
+(blue), which outranks nothing set (gray).** `waiting` is set once; it
+survives intervening turns until you report `working`/`idle`/`done` — there
+is no time-based self-heal, the same as blue. Blue clears on the user's next
+genuine prompt, or on viewing the row — never by age. Mechanics + fixture-
+testing rule + turn-end auditor: `references/work-state.md`.
 
 ## After you send — trust your Monitor
 

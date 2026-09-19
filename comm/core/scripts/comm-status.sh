@@ -101,8 +101,8 @@ status_txn() {
             | del(.floor)
           else   # declarations
             (if $h == "1" then .note = $sum else . end)
-            | if $st == "blocked" then .question = (if $h == "1" then $sum else (.note // "") end) | del(.done)
-              elif $st == "waiting" then .waiting = (if $h == "1" then $sum else (.note // "") end) | del(.done)
+            | if $st == "blocked" then .question = (if $h == "1" then $sum else (.note // "") end)
+              elif $st == "waiting" then .waiting = (if $h == "1" then $sum else (.note // "") end)
               elif $st == "done" then .done = true | del(.question, .waiting)
               else del(.question, .waiting, .done) end   # working, idle
           end
