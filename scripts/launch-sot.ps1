@@ -632,27 +632,40 @@ Initialize-InstallLayout
 # -- see its own comment further below), but it stops the daemon itself,
 # right before ITS OWN pair rebuild -- gating THIS earlier stop on
 # SOT_LAUNCH_REBUILD too would just double the stop/restart for no benefit.
-if (-not $NoUpdate -and (Test-Path $sotLocalDaemon)) {
-    $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
-    if ($updatePending) {
-        Write-SupLog 'local daemon: stopping before apply so it does not pin a stale binary'
-        $stopOut = & $sotLocalDaemon -Stop 6>&1 2>&1
-        foreach ($l in @($stopOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+#
+# A function, not inline, so an exit-76 CONVERGE respawn (see the do/while
+# loop) can call it too: a PINNED install's ONLY apply path used to be this
+# top-level call, so an update armed while the supervisor was already
+# resident (relaunch-sot.ps1 -Converge, or the frontend's own update
+# banner) sat unapplied until the box's next full process start --
+# Invoke-SelfUpdatePrelude is a no-op for a pinned install ("updates arrive
+# via sot-apply, no pull"), so nothing else in the converge path ever
+# invoked sot-apply.ps1 (2026-09-18 field report).
+function Invoke-PendingApply {
+    if (-not $NoUpdate -and (Test-Path $sotLocalDaemon)) {
+        $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
+        if ($updatePending) {
+            Write-SupLog 'local daemon: stopping before apply so it does not pin a stale binary'
+            $stopOut = & $sotLocalDaemon -Stop 6>&1 2>&1
+            foreach ($l in @($stopOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+        }
     }
-}
 
-if (-not $NoUpdate -and (Test-Path $sotApply)) {
-    Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
-    Set-LaunchStatus 'Applying update...'
-    $applyOut = & $sotApply 6>&1 2>&1
-    foreach ($l in @($applyOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+    if (-not $NoUpdate -and (Test-Path $sotApply)) {
+        Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
+        Set-LaunchStatus 'Applying update...'
+        $applyOut = & $sotApply 6>&1 2>&1
+        foreach ($l in @($applyOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+    }
+    # Read ONCE, right after the apply attempt above -- Invoke-FreshnessPass
+    # and the migration/handover block below both need "did an update just
+    # land", and the marker FILE itself stays present for the rest of this
+    # launch (the crash-loop read further down needs that), so a $script:
+    # flag is the one-shot signal that gets CONSUMED (see
+    # Invoke-FreshnessPass) instead.
+    $script:sotJustApplied = Test-Path -LiteralPath $applyMarker
 }
-# Read ONCE, right after the apply attempt above -- Invoke-FreshnessPass and
-# the migration/handover block below both need "did an update just land",
-# and the marker FILE itself stays present for the rest of this launch (the
-# crash-loop read further down needs that), so a $script: flag is the one-
-# shot signal that gets CONSUMED (see Invoke-FreshnessPass) instead.
-$script:sotJustApplied = Test-Path -LiteralPath $applyMarker
+Invoke-PendingApply
 
 # ---------------------------------------------------------------------------
 # Migration + post-apply handover onto the pinned launcher (docs/adr/
@@ -669,22 +682,40 @@ $script:sotJustApplied = Test-Path -LiteralPath $applyMarker
 #
 # Gated on install.json existing -- the updater's own release-install marker
 # (rust/updater/src/manifest.rs); a dev clone never writes one. $pinnedLauncher
-# -ne $PSCommandPath is what actually stops this from recursing: a copy that
-# IS ALREADY $pinnedLauncher has nothing left to hand over to, regardless of
-# $script:sotPinned's own value -- the previous version of this block
-# skipped straight to trusting the predicate here and could loop when the
-# two disagreed. -not $env:SOT_LAUNCH_REEXEC is redundant with that (both
-# Invoke-SelfUpdatePrelude paths always clear it before this point) but kept
-# as defense in depth. Test-Path $pinnedLauncher guards the obvious case of
-# nothing to hand over to yet (Initialize-InstallLayout failed to pin a tag).
+# -ne $PSCommandPath used to be the ONLY thing that let this fire, on the
+# reasoning that a copy already AT $pinnedLauncher has nothing left to hand
+# over to -- true for migration, but wrong for the post-apply case: on an
+# already-pinned install $PSCommandPath and $pinnedLauncher are the SAME
+# junction path string both before and after sot-apply.ps1 flips the
+# junction underneath this running process, so the string compare can never
+# see the change. That silently skipped the post-apply handover on every
+# Windows box past its first migration -- exactly the common case -- and
+# left THIS process (helpers dot-sourced once, near the top of the file,
+# from the OLD target) driving the rest of the launch against the NEW
+# tag's binaries with the old copy's logic (2026-09-18 field report: a
+# v0.6.2 launcher that had just applied v0.6.4 died silently later reading
+# v0.6.4's sot-hosts.ps1/sot-install-layout.ps1). Fixed by OR-ing in
+# $script:sotJustApplied, which is true only for the one launch that just
+# ran sot-apply.ps1 -- $pinnedLauncher then resolves through the junction
+# to the NEW tag's file even though its string is unchanged.
+# Recursion is stopped two ways, not just the path compare: -not
+# $env:SOT_LAUNCH_REEXEC (kept as defense in depth even though both
+# Invoke-SelfUpdatePrelude paths always clear it before this point), and --
+# for the sotJustApplied arm specifically -- Invoke-PendingApply always
+# clears $applyMarker before invoking sot-apply.ps1, so the re-exec'd
+# process finds nothing pending, sot-apply.ps1 exits without rewriting the
+# marker, and $script:sotJustApplied comes back false on the second pass.
+# Test-Path $pinnedLauncher guards the obvious case of nothing to hand over
+# to yet (Initialize-InstallLayout failed to pin a tag).
 # ---------------------------------------------------------------------------
 $pinnedLauncher = Join-Path $repoCurrent 'scripts\launch-sot.ps1'
 if ((Test-Path -LiteralPath (Join-Path $prefixDir 'install.json')) -and
     -not $env:SOT_LAUNCH_REEXEC -and
-    ($pinnedLauncher -ne $PSCommandPath) -and
+    (($pinnedLauncher -ne $PSCommandPath) -or $script:sotJustApplied) -and
     (-not $script:sotPinned -or $script:sotJustApplied) -and
     (Test-Path -LiteralPath $pinnedLauncher)) {
-    Write-SupLog "migration: handing over to $pinnedLauncher"
+    $handoverReason = if ($pinnedLauncher -ne $PSCommandPath) { 'migration' } else { 'post-apply refresh' }
+    Write-SupLog "$handoverReason: handing over to $pinnedLauncher"
     $shortcutScript = Join-Path $PSScriptRoot 'install-shortcut.ps1'
     if (Test-Path -LiteralPath $shortcutScript) {
         try {
@@ -1915,6 +1946,16 @@ try {
             # the respawn, exactly as on the first launch.
             Start-Splash
             $splashDismissed = $false
+            # A pinned install's updates arrive ONLY through sot-apply.ps1 --
+            # Invoke-SelfUpdatePrelude below is a no-op for one -- so an
+            # armed update sitting on an already-resident supervisor was
+            # never applied until the next full process start (2026-09-18
+            # field report). Gated on the pending pointer actually existing
+            # so a converge with nothing armed doesn't pay a sot-apply.ps1
+            # spawn every time.
+            if (Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')) {
+                Invoke-PendingApply
+            }
             Invoke-SelfUpdatePrelude
             Invoke-FreshnessPass
             Update-SotTopologyPlan
