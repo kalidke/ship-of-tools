@@ -154,14 +154,14 @@ status_txn() {
                 age="$(sticky_age_s)"
                 if [ -z "$age" ]; then
                     hold=1   # legacy marker-less waiting: nothing to restore at turn end
-                elif marker_live "$age"; then
-                    # A live sticky marker: a HUMAN prompt paints green for the
-                    # turn (the marker stays; the turn-end floor restores purple
-                    # while it lives -- see soft_floor below); a machine wake
-                    # stays purple (owner, 2026-09-08: "aren't you supposed to
-                    # be green?" while a sticky waiting held through the turn).
-                    [ "$TURN_ORIGIN" = user ] || hold=1
-                fi ;;
+                fi
+                # A live sticky marker: ANY prompt paints green for the turn --
+                # a human prompt or a machine wake (a subagent, monitor or relay
+                # notification resumes real work too; owner, 2026-09-19: a
+                # session ran suites and merges for two hours under a purple
+                # left by the previous turn's marker). The marker stays; the
+                # turn-end floor restores purple while it lives (soft_floor).
+                ;;
         esac
         if [ "$hold" = 1 ]; then write_origin "$TURN_ORIGIN"; return; fi
     fi

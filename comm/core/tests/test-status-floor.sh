@@ -144,7 +144,8 @@ case_blocked_answered_ends_blue() { seed blocked; W "$GENUINE"; expect working/u
 # down, so the parent's fresh red stays red through the child's prompt and Stop.
 case_headless_child_hooks_stand_down() { seed idle; W "$GENUINE"; "$ST" blocked "q?"; SOT_COMM_HOOKS=off W "$GENUINE"; expect blocked/user/- child-prompt && SOT_COMM_HOOKS=off HB && expect blocked/user/- child-tool && SOT_COMM_HOOKS=off I && expect blocked/user/- child-stop; }
 case_blue_cleared_by_next_prompt() { seed idle; "$ST" done "shipped"; expect done/-/- explicit && W "$GENUINE"; expect working/user/- next; }
-case_machine_wake_on_sticky_then_explicit_working_ends_gray() { seed idle; W "$GENUINE"; "$ST" waiting "job"; W "$RELAY"; expect waiting/machine/sticky wake && "$ST" working "finishing"; expect working/machine/- explicit && I && expect idle/machine/- end; }
+case_machine_wake_on_sticky_then_explicit_working_ends_gray() { seed idle; W "$GENUINE"; "$ST" waiting "job"; W "$RELAY"; expect working/machine/sticky wake && "$ST" working "finishing"; expect working/machine/- explicit && I && expect idle/machine/- end; }
+case_machine_wake_on_sticky_goes_green_and_stop_restores_purple() { seed idle; W "$GENUINE"; "$ST" waiting "job"; W "$RELAY"; expect working/machine/sticky wake && I && expect waiting/machine/sticky end; }
 case_user_prompt_on_sticky_then_explicit_working_ends_blue() { seed idle; W "$RELAY"; "$ST" waiting "job"; W "$GENUINE"; expect working/user/sticky prompt && "$ST" working "finishing"; expect working/user/- explicit && I; expect done/user/- end; }
 case_machine_turn_with_tool_work_ends_gray() { seed idle; W "$RELAY"; HB; expect working/machine/- tool && I && expect idle/machine/- end; }
 case_pre_field_working_row_floors_gray() { seed working; I; expect idle/-/- end; }
@@ -507,6 +508,7 @@ check "blocked answered by the user ends blue" case_blocked_answered_ends_blue
 check "headless child hooks stand down on SOT_COMM_HOOKS=off" case_headless_child_hooks_stand_down
 check "explicit done is cleared by the next genuine prompt" case_blue_cleared_by_next_prompt
 check "machine wake on sticky purple then explicit working ends gray" case_machine_wake_on_sticky_then_explicit_working_ends_gray
+check "a machine wake on sticky purple goes green; Stop restores purple" case_machine_wake_on_sticky_goes_green_and_stop_restores_purple
 check "user prompt on sticky purple then explicit working ends blue" case_user_prompt_on_sticky_then_explicit_working_ends_blue
 check "a machine turn with tool work ends gray" case_machine_turn_with_tool_work_ends_gray
 check "a working row from before the field existed floors gray" case_pre_field_working_row_floors_gray
