@@ -1974,6 +1974,11 @@ fn run_steady_state<E: Endpoint>(
     last_input_outcome: &Arc<Mutex<Option<InputOutcome>>>,
     take_epoch_pub: &Arc<AtomicU64>,
 ) -> SteadyOutcome {
+    // Whether the pane header currently shows the missed-probe line below:
+    // one missed `Status` (a stalled link, not a dead supervisor) must not
+    // retitle the pane until the next reattach -- the next answered probe
+    // restores "attached" so the header tells the truth again.
+    let mut probe_missed = false;
     loop {
         match cmd_rx.recv_timeout(WORKER_TICK) {
             Ok(WorkerMsg::Shutdown) => return SteadyOutcome::Shutdown,
@@ -2062,6 +2067,10 @@ fn run_steady_state<E: Endpoint>(
                     if let ReconnectDecision::Terminal(reason) = reconnect.classify_supervisor_phase(phase) {
                         return SteadyOutcome::Terminal(format!("supervisor: {reason:?}"));
                     }
+                    if probe_missed {
+                        probe_missed = false;
+                        emit(WorkerEvent::Status("attached".to_string()));
+                    }
                 }
                 Err(_) => {
                     // Codex review round, finding 8: the attach
@@ -2072,9 +2081,23 @@ fn run_steady_state<E: Endpoint>(
                     // NEVER be consulted from this branch. "The capsule
                     // survives headless": keep going.
                     reconnect.clear_unresponsive();
-                    emit(WorkerEvent::Status(
-                        "supervisor lane not answering \u{2014} the session is still live".to_string(),
-                    ));
+                    // The probe's own deadline shut this socket down
+                    // (`cancel` is `shutdown(SHUT_RDWR)`), so the lane
+                    // is dead from here on whatever the supervisor does
+                    // next -- one stalled link would otherwise leave
+                    // every later probe failing and the header lying
+                    // until the next reattach. Re-dial now; the next
+                    // answered probe restores "attached".
+                    if let Ok((c, _)) = connect_supervisor_lane::<E>(endpoint, h) {
+                        *supervisor_conn = c;
+                        *sup_reader = FrameReader::new();
+                    }
+                    if !probe_missed {
+                        probe_missed = true;
+                        emit(WorkerEvent::Status(
+                            "supervisor lane not answering \u{2014} the session is still live".to_string(),
+                        ));
+                    }
                 }
             }
         }
