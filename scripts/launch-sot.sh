@@ -343,4 +343,11 @@ while IFS='|' read -r d_tag d_host d_endpoint; do
 done <<EOF
 $PLAN
 EOF
-exec "${SOT_FRONTEND_BIN:-$REPO/rust/target/release/sot}" "${dial_args[@]}"
+# Finding 3b (v0.6.5 macOS field report): bash 3.2 (macOS's stock
+# /bin/bash, still there under set -u) treats an EMPTY array's
+# "${arr[@]}" expansion as an unset variable and aborts -- the
+# portable ${arr[@]+"${arr[@]}"} form below only expands the array
+# when it has at least one element, and is a no-op otherwise (a
+# hosts.toml with no usable plan means zero --dial args, which is a
+# normal, supported "run offline" case, not an error).
+exec "${SOT_FRONTEND_BIN:-$REPO/rust/target/release/sot}" ${dial_args[@]+"${dial_args[@]}"}

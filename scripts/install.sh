@@ -491,6 +491,21 @@ rm -f "$PREFIX"/updates/last-good-*.json "$PREFIX"/updates/just-applied-* 2>/dev
 say "binaries: $("$PREFIX/bin/sotd" --version)"
 DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 
+# ---- heal a pre-0.6 hosts.toml (finding 3a, v0.6.5 macOS field report) -----------
+# The old grammar (`default_host` at top level) is a loud parse error under
+# the current one (rust/protocol/src/topology.rs), not a silently-kept
+# file -- an installer that preserved one across an upgrade left the box
+# with NO topology plan at all, which is what then walked
+# `scripts/launch-sot.sh` into the bash-3.2 unbound-array crash (finding
+# 3b, fixed separately). Move it aside, never delete it, so `--hub` above
+# or a plain `sotd topology sync --hub <alias>` writes the current
+# grammar fresh on next launch.
+if [ -f "$CONFIG/hosts.toml" ] && grep -q '^default_host' "$CONFIG/hosts.toml" 2>/dev/null; then
+    OLD_HOSTS="$CONFIG/hosts.toml.v1-$(date +%Y%m%d%H%M%S)"
+    mv "$CONFIG/hosts.toml" "$OLD_HOSTS"
+    say "pre-0.6 hosts.toml moved aside to $OLD_HOSTS; the hub sync writes the current grammar on next launch (or run: sotd topology sync --hub <alias>)"
+fi
+
 # ---- role resolution: the declared topology, else flags -------------------------
 # D9 (dev/output/topology-plan.md §C/§D): the hub's hosts.toml is canonical —
 # when it names this host, that entry's daemon/frontend flags decide what's
