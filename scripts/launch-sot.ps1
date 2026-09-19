@@ -718,7 +718,7 @@ if ((Test-Path -LiteralPath (Join-Path $prefixDir 'install.json')) -and
     (-not $script:sotPinned -or $script:sotJustApplied) -and
     (Test-Path -LiteralPath $pinnedLauncher)) {
     $handoverReason = if ($pinnedLauncher -ne $PSCommandPath) { 'migration' } else { 'post-apply refresh' }
-    Write-SupLog "$handoverReason: handing over to $pinnedLauncher"
+    Write-SupLog "${handoverReason}: handing over to $pinnedLauncher"
     $shortcutScript = Join-Path $PSScriptRoot 'install-shortcut.ps1'
     if (Test-Path -LiteralPath $shortcutScript) {
         try {
@@ -1435,7 +1435,41 @@ function Invoke-FreshnessPass {
         $justApplied = $script:sotJustApplied
         $script:sotJustApplied = $false
         if ($justApplied -or $commMissing) {
-            Invoke-CommUpdate
+            # The converge path (Invoke-PendingApply -> Invoke-SelfUpdatePrelude
+            # -> Invoke-FreshnessPass, in the do/while loop further down) has
+            # no process re-exec -- unlike the fresh-launch migration/
+            # post-apply handover above, which re-execs into the new tag and
+            # so runs Initialize-InstallLayout fresh -- so a tag that just
+            # landed here via sot-apply.ps1 can still be uninstantiated: the
+            # Windows updater's prepare step never runs Pkg.instantiate()
+            # (rust/frontend/src/selfupdate.rs's PrepareSpec always sets
+            # julia_bin: None), so prepared.json carries
+            # julia_instantiated: false for every Windows tag. Without this,
+            # Invoke-CommUpdate below ran `using ShipTools` against an
+            # uninstantiated checkout, and its stderr -- turned into
+            # terminating errors by $ErrorActionPreference = 'Stop' + 2>&1,
+            # same footgun as the dev-checkout branch below -- killed the
+            # launcher silently right here. Initialize-InstallLayout is
+            # idempotent (it returns immediately once
+            # julia\kernel\Manifest.toml exists), so calling it again is the
+            # converge-path equivalent of the fresh-path handover: free on
+            # the common already-instantiated case, and it does the missing
+            # instantiate here otherwise.
+            Initialize-InstallLayout
+            # Relax 'Stop' -> 'Continue' around update_comm() itself too --
+            # belt-and-suspenders with the instantiate above, and the same
+            # relaxation the dev-checkout branch below already uses. Never
+            # fatal: log and move on, don't let a freshness step brick the
+            # launch.
+            $savedEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                Invoke-CommUpdate
+            } catch {
+                Write-SupLog "freshness: ShipTools.update_comm() threw (non-fatal): $($_.Exception.Message)"
+            } finally {
+                $ErrorActionPreference = $savedEAP
+            }
         } else {
             Write-SupLog 'freshness: pinned checkout - comm already installed and nothing just applied, skipping'
         }
