@@ -4,6 +4,14 @@ Read this when the one-paragraph summary in `SKILL.md` isn't enough — e.g.
 you're testing the state machinery itself, or a `waiting` row isn't clearing
 the way you expect.
 
+## Precedence: the user first
+
+When a turn both needs the user (a go-ahead, a pasted file, a decision) and has
+jobs running, the row is `blocked` and the closing marker is `SITREP-QUESTION:`
+with the question first and the running jobs listed after it. `waiting` is only
+for a turn where nothing needs the user; a purple row that is really waiting on
+the owner is a question they never see (owner, 2026-09-19).
+
 ## Sticky waiting — the actual mechanism
 
 `comm-status.sh waiting "..."` writes a sticky marker. Session hooks then

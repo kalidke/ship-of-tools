@@ -64,4 +64,5 @@ Work-state (the nav row colour) is yours to stamp: `comm-status.sh waiting
 "<what>"` (purple) the moment you launch a background job or hand work to a
 peer — sticky until you stamp `working`/`idle`/`done` when it lands. A
 background job never makes you idle; `blocked` (red) only when the user must
-act.
+act. If any item needs the user while jobs also run, the turn ends `blocked`
+with the question first; `waiting` only when nothing needs the user.
