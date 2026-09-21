@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.5-rc1"
+version = "0.6.5"
 edition = "2021"
 authors = ["kalidke"]
 license = "AGPL-3.0-or-later"
