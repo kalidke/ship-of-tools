@@ -96,9 +96,34 @@ case_dead_bridge_is_reported_down_and_never_says_do_not_relisten() {
         || { echo "    got '$(printf '%s' "$out" | head -n1)'"; return 1; }
     printf '%s' "$out" | grep -q "re-listen" \
         && { echo "    told a deaf session not to re-listen"; return 1; }
-    printf '%s' "$out" | grep -q "comm-listen.sh now" \
-        || { echo "    no instruction to restart the listener"; return 1; }
+    printf '%s' "$out" | grep -q "comm-listen.sh --name $NAME now" \
+        || { echo "    no handle-explicit instruction to restart the listener"; return 1; }
     ! sot_bridge_running_for "$NAME" || { echo "    the query path started a bridge"; return 1; }
+}
+
+# The bootstrap path (no flags) is the half that must HEAL, not only
+# report -- Codex review of PR 254: both cases above call --context, so a
+# regression that turned `_ensure_bridge` back into a query would leave
+# them green.
+boot() { CLAUDE_CODE_SESSION_ID="$1" timeout 30 bash "$SCRIPTS_DIR/comm-session-start.sh" 2>"$WORK/err" | head -n1; }
+
+case_bootstrap_restarts_a_dead_bridge() {
+    local p; p="$(sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
+    sot_bridge_stop "$NAME" 2>/dev/null || true
+    local out; out="$(boot sess-A)"
+    [[ "$out" == "SURVIVED handle=$NAME listener=restarted" ]] || { echo "    got '$out' (err: $(head -c 300 "$WORK/err"))"; return 1; }
+    sot_bridge_running_for "$NAME" || { echo "    reported restarted with no bridge running"; return 1; }
+    sot_bridge_stop "$NAME"
+}
+case_two_racing_starts_leave_one_bridge() {
+    sot_bridge_stop "$NAME" 2>/dev/null || true
+    sot_bridge_start "$NAME" "$WORK/fake-relay.sh" & local a=$!
+    sot_bridge_start "$NAME" "$WORK/fake-relay.sh" & local b=$!
+    wait "$a" "$b" 2>/dev/null
+    sleep 0.3
+    local n; n="$(pgrep -u "$(id -un)" -f "fake-relay.sh $NAME\$" 2>/dev/null | wc -l)"
+    [ "$n" -le 1 ] || { echo "    $n bridge loops survived a concurrent start"; return 1; }
+    sot_bridge_stop "$NAME"
 }
 
 check "own live watcher survives, untouched" case_own_live_watcher_survives
@@ -108,4 +133,6 @@ check "dead pid is not survived" case_dead_pid_is_not_survived
 check "no session id in the environment: liveness alone decides" case_no_session_id_in_env_trusts_liveness
 check "a live bridge reads listener=up and keeps the do-not-re-listen line" case_live_bridge_is_reported_up_and_keeps_the_do_not_relisten_line
 check "a dead bridge reads listener=down and is never told not to re-listen" case_dead_bridge_is_reported_down_and_never_says_do_not_relisten
+check "the bootstrap path restarts a dead bridge" case_bootstrap_restarts_a_dead_bridge
+check "two racing starts leave at most one bridge" case_two_racing_starts_leave_one_bridge
 echo; echo "$PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

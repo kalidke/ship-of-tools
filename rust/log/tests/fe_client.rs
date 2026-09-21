@@ -477,6 +477,10 @@ fn a_missed_liveness_probe_clears_on_the_next_answer() {
     let banner = poll_screen(&mut client, Duration::from_secs(30), |t| t.trim().chars().any(|c| !c.is_whitespace()));
     assert!(banner, "no checkpoint reached the client (status={})", client.status_line());
     assert_eq!(client.status_line(), "attached");
+    // A fresh attach episode emits its own Notice; holding it here makes
+    // "no reattach happened" an observation rather than an inference from
+    // a status sequence that one `pump()` can swallow whole (Codex review).
+    let notice_before = client.notice().map(str::to_string);
 
     // Freeze the supervisor past the probe budget: the lane is up, the
     // pipe is alive, nothing answers -- a stalled link looks the same.
@@ -511,7 +515,22 @@ fn a_missed_liveness_probe_clears_on_the_next_answer() {
     );
     assert!(!client.is_dead());
     assert!(seen.len() == 2 && seen[0].contains("not answering"), "expected blink then attached, saw {seen:?}");
+    assert_eq!(
+        client.notice().map(str::to_string),
+        notice_before,
+        "the header recovered through a NEW attach episode, not the re-dialed lane"
+    );
 
+    // Teardown goes over a FRESH control lane. SIGSTOP freezes every
+    // deadline this supervisor holds and they all come due at once on
+    // SIGCONT, so the control connection opened before the freeze is
+    // closed from under us -- an artifact of how the test stalls the
+    // peer, not of anything the client did (verified: the supervisor is
+    // alive and answering, only this one pre-freeze connection is gone).
+    // Re-dialing also proves the supervisor is healthy enough to accept a
+    // new lane after the stall.
+    drop(conn);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
     end_run_and_wait_verified(&conn, &voyage);
     let _ = command(&conn, "probe-blink-stop", SupervisorOp::Stop);
     let child = guard.0.take().unwrap();

@@ -221,12 +221,12 @@ EOF
     case "$listener" in
         restarted)
             cat <<EOF
-Your Monitor (comm-watch.sh $h) never stopped, but your inbox listener had DIED and was restarted just now — both halves are live again. Prove it with comm-listen.sh --selftest if the next minutes matter, and run comm-poll.sh for anything that landed while it was down. Do not re-join.
+Your Monitor (comm-watch.sh $h) never stopped, but your inbox listener had DIED and was restarted just now — both halves are live again. Prove it with comm-listen.sh --name $h --selftest if the next minutes matter, and run comm-poll.sh for anything that landed while it was down. Do not re-join.
 EOF
             ;;
         down)
             cat <<EOF
-Your Monitor (comm-watch.sh $h) never stopped, but your inbox listener is DOWN: nothing is writing durable mail to your inbox, however healthy the nav row looks. Run comm-listen.sh now, then comm-poll.sh. Do not re-join.
+Your Monitor (comm-watch.sh $h) never stopped, but your inbox listener is DOWN: nothing is writing durable mail to your inbox, however healthy the nav row looks. Run comm-listen.sh --name $h now, then comm-poll.sh. Do not re-join. (The handle is spelled out because a pinned identity and this shell's own derivation can differ, and a bare comm-listen.sh would then revive the wrong one.)
 EOF
             ;;
         *)
