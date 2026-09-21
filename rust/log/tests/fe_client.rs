@@ -442,6 +442,102 @@ fn attach_as_watcher_receives_the_checkpoint() {
 }
 
 // -----------------------------------------------------------------------
+// A missed liveness probe is a blink, not a retitle: the next answered
+// probe restores "attached"
+// -----------------------------------------------------------------------
+
+#[test]
+#[cfg(target_os = "linux")]
+fn a_missed_liveness_probe_clears_on_the_next_answer() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let child = spawn_supervisor(&state_dir, "--start", SHELL);
+    let sup_pid = child.id();
+    let mut guard = KillGuard(Some(child));
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+
+    let (_woke, wake) = wake_flag();
+    let mut client = FeAttachClient::attach(
+        PlatformEndpoint::default(),
+        h.clone(),
+        80,
+        24,
+        "fe-client-probe-blink".to_string(),
+        "test-handle".to_string(),
+        None,
+        wake,
+    )
+    .expect("attach");
+    let banner = poll_screen(&mut client, Duration::from_secs(30), |t| t.trim().chars().any(|c| !c.is_whitespace()));
+    assert!(banner, "no checkpoint reached the client (status={})", client.status_line());
+    assert_eq!(client.status_line(), "attached");
+    // A fresh attach episode emits its own Notice; holding it here makes
+    // "no reattach happened" an observation rather than an inference from
+    // a status sequence that one `pump()` can swallow whole (Codex review).
+    let notice_before = client.notice().map(str::to_string);
+
+    // Freeze the supervisor past the probe budget: the lane is up, the
+    // pipe is alive, nothing answers -- a stalled link looks the same.
+    assert_eq!(unsafe { libc::kill(sup_pid as libc::pid_t, libc::SIGSTOP) }, 0);
+    poll_until(
+        || {
+            client.pump();
+            client.status_line().contains("not answering").then_some(())
+        },
+        Duration::from_secs(20),
+        "the missed-probe status to appear",
+    );
+    assert!(!client.is_dead(), "a missed probe on a live pipe is never terminal");
+    assert_eq!(unsafe { libc::kill(sup_pid as libc::pid_t, libc::SIGCONT) }, 0);
+
+    // The very next answered probe restores the header -- through the
+    // re-dialed lane, never a reattach: no other status text may show
+    // between the blink and "attached". Before the fix the blink stayed
+    // until the next reattach.
+    let mut seen: Vec<String> = Vec::new();
+    poll_until(
+        || {
+            client.pump();
+            let s = client.status_line().to_string();
+            if seen.last() != Some(&s) {
+                seen.push(s.clone());
+            }
+            (s == "attached").then_some(())
+        },
+        Duration::from_secs(20),
+        "the header to read attached again after the supervisor answers",
+    );
+    assert!(!client.is_dead());
+    assert!(seen.len() == 2 && seen[0].contains("not answering"), "expected blink then attached, saw {seen:?}");
+    assert_eq!(
+        client.notice().map(str::to_string),
+        notice_before,
+        "the header recovered through a NEW attach episode, not the re-dialed lane"
+    );
+
+    // Teardown goes over a FRESH control lane. SIGSTOP freezes every
+    // deadline this supervisor holds and they all come due at once on
+    // SIGCONT, so the control connection opened before the freeze is
+    // closed from under us -- an artifact of how the test stalls the
+    // peer, not of anything the client did (verified: the supervisor is
+    // alive and answering, only this one pre-freeze connection is gone).
+    // Re-dialing also proves the supervisor is healthy enough to accept a
+    // new lane after the stall.
+    drop(conn);
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    end_run_and_wait_verified(&conn, &voyage);
+    let _ = command(&conn, "probe-blink-stop", SupervisorOp::Stop);
+    let child = guard.0.take().unwrap();
+    wait_for_exit(child, Duration::from_secs(30));
+}
+
+// -----------------------------------------------------------------------
 // Ruling: first input takes the pen and the resize precedes the flush
 // -----------------------------------------------------------------------
 

@@ -99,6 +99,22 @@ pub(crate) const WRITE_BUDGET: Duration = Duration::from_secs(2);
 /// (ruling (d)) must become visible promptly, but polling faster than
 /// this buys nothing beyond load.
 const LIVENESS_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// A re-dial after a missed probe is PACED. The dead socket must be
+/// replaced, but a supervisor that is slow rather than gone would
+/// otherwise be dialed every two seconds for as long as the stall lasts,
+/// and each dial it cannot yet accept sits in its listener backlog
+/// (bounded by `MAX_LANE_INSTANCES`) waiting to claim a slot the moment
+/// it wakes. One dial, then a doubling wait, reset by the first answered
+/// probe: recovery stays immediate and a minute-long stall costs a
+/// handful of dials instead of thirty.
+const SUPERVISOR_REDIAL_INITIAL: Duration = Duration::from_secs(2);
+const SUPERVISOR_REDIAL_MAX: Duration = Duration::from_secs(30);
+
+/// The one wording for a missed liveness probe, shared by the emit and by
+/// the restore that undoes it: the restore compares against it, so the two
+/// cannot drift apart into a header that never clears.
+const PROBE_MISSED_STATUS: &str = "supervisor lane not answering \u{2014} the session is still live";
 /// The worker's own message-loop tick — bounds how promptly a command
 /// (input/resize/quit) is serviced and how often the pure tick-driven
 /// timers (quit cutoff, checkpoint-in-flight retry, backoff) advance.
@@ -1974,6 +1990,29 @@ fn run_steady_state<E: Endpoint>(
     last_input_outcome: &Arc<Mutex<Option<InputOutcome>>>,
     take_epoch_pub: &Arc<AtomicU64>,
 ) -> SteadyOutcome {
+    // Whether the pane header currently shows the missed-probe line below:
+    // one missed `Status` (a stalled link, not a dead supervisor) must not
+    // retitle the pane until the next reattach -- the next answered probe
+    // restores "attached" so the header tells the truth again.
+    let mut probe_missed = false;
+    // Paced re-dial state (see SUPERVISOR_REDIAL_INITIAL): `redial_at` is
+    // the earliest instant another dial is allowed, `None` meaning "now".
+    let mut redial_at: Option<Instant> = None;
+    let mut redial_backoff = SUPERVISOR_REDIAL_INITIAL;
+    // Codex review (PR 254): `probe_missed` alone records that a probe was
+    // missed, NOT that the blink is still what the pane shows. Anything
+    // else this loop reaches (a quit canceling outstanding input, a take
+    // transaction) emits its own status in between, and restoring
+    // "attached" over THAT is the same clobber this change exists to
+    // remove. So the loop's every emit goes through here first and the
+    // restore is conditional on the blink still being the last word.
+    let last_status = std::cell::RefCell::new(String::new());
+    let emit = |e: WorkerEvent| {
+        if let WorkerEvent::Status(s) = &e {
+            *last_status.borrow_mut() = s.clone();
+        }
+        emit(e)
+    };
     loop {
         match cmd_rx.recv_timeout(WORKER_TICK) {
             Ok(WorkerMsg::Shutdown) => return SteadyOutcome::Shutdown,
@@ -2059,8 +2098,16 @@ fn run_steady_state<E: Endpoint>(
                     // absent/unresponsive; the voyage pipe question
                     // never even arises (ruling (d), finding 8).
                     reconnect.clear_unresponsive();
+                    redial_at = None;
+                    redial_backoff = SUPERVISOR_REDIAL_INITIAL;
                     if let ReconnectDecision::Terminal(reason) = reconnect.classify_supervisor_phase(phase) {
                         return SteadyOutcome::Terminal(format!("supervisor: {reason:?}"));
+                    }
+                    if probe_missed {
+                        probe_missed = false;
+                        if *last_status.borrow() == PROBE_MISSED_STATUS {
+                            emit(WorkerEvent::Status("attached".to_string()));
+                        }
                     }
                 }
                 Err(_) => {
@@ -2072,9 +2119,28 @@ fn run_steady_state<E: Endpoint>(
                     // NEVER be consulted from this branch. "The capsule
                     // survives headless": keep going.
                     reconnect.clear_unresponsive();
-                    emit(WorkerEvent::Status(
-                        "supervisor lane not answering \u{2014} the session is still live".to_string(),
-                    ));
+                    // The probe's own deadline shut this socket down
+                    // (`cancel` is `shutdown(SHUT_RDWR)`), so the lane
+                    // is dead from here on whatever the supervisor does
+                    // next -- one stalled link would otherwise leave
+                    // every later probe failing and the header lying
+                    // until the next reattach. Re-dial now; the next
+                    // answered probe restores "attached".
+                    if redial_at.is_none_or(|t| now >= t) {
+                        if let Ok((c, _)) = connect_supervisor_lane::<E>(endpoint, h) {
+                            *supervisor_conn = c;
+                            *sup_reader = FrameReader::new();
+                            redial_at = None;
+                            redial_backoff = SUPERVISOR_REDIAL_INITIAL;
+                        } else {
+                            redial_at = Some(now + redial_backoff);
+                            redial_backoff = (redial_backoff * 2).min(SUPERVISOR_REDIAL_MAX);
+                        }
+                    }
+                    if !probe_missed {
+                        probe_missed = true;
+                        emit(WorkerEvent::Status(PROBE_MISSED_STATUS.to_string()));
+                    }
                 }
             }
         }

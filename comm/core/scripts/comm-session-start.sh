@@ -161,6 +161,38 @@ _survived() {
         || pgrep -u "$(id -un)" -f "comm-wake\\.sh ${h_re} " >/dev/null 2>&1
 }
 
+# The OTHER half of receiving (2026-09-20, a peer session's field report).
+# `_survived` answers one question only: will anything WAKE this session
+# (a watcher/ping marker armed by THIS session). It says nothing about
+# whether anything WRITES to the inbox — that is the relay bridge. A
+# session that kept its watcher but lost its bridge was told "it survived
+# this wipe. Do not re-join, re-listen, or re-poll" — the one instruction
+# that guaranteed it stayed deaf to durable mail while its nav row looked
+# healthy. So the bridge is now reported as its own fact, and the
+# do-not-re-listen sentence is printed only when that fact is `up`.
+#
+# `$1` is the handle; prints exactly one word:
+#   n/a        no bridge on this platform (Windows: the FE files frames itself)
+#   up         a bridge for this handle is running
+#   down       none is running (the caller decides whether to start one)
+_bridge_state() {
+    [ "$IS_WINDOWS" = 1 ] && { echo "n/a"; return 0; }
+    if sot_bridge_running_for "$1"; then echo "up"; else echo "down"; fi
+}
+
+# The bootstrap's half: a `down` bridge is started here and re-checked, so
+# the word printed is what is TRUE after the attempt, never what was
+# intended. The query path (`--context`, the wipe hook) never calls this —
+# a question must not start processes, and a bridge parented to a hook
+# shell is not one this script can promise anything about.
+_ensure_bridge() {
+    local h="$1" state
+    state="$(_bridge_state "$h")"
+    [ "$state" = "down" ] || { echo "$state"; return 0; }
+    sot_bridge_start "$h" "$COMM_HOME/bin/comm-relay.sh" 2>/dev/null || true
+    if sot_bridge_running_for "$h"; then echo "restarted"; else echo "down"; fi
+}
+
 # The work-state rule, printed on EVERY bootstrap outcome (fresh, survived,
 # catch-up): the nav row colour is derived from it, and a session that
 # launches a background job without stamping `waiting` shows green while the
@@ -175,7 +207,7 @@ EOF
 }
 
 _context_block() {
-    local h="$1" inbox
+    local h="$1" listener="${2:-n/a}" inbox
     if [ "$IS_WINDOWS" = 1 ]; then
         inbox="${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}/sot/fe-inbox.jsonl"
     else
@@ -186,17 +218,32 @@ You are @$h. Inbox: $inbox
 Verbs: comm-relay.sh send @<peer> "msg" | comm-poll.sh | comm-status.sh <working|waiting|blocked|done|idle> "why" | comm-list.sh | bus.sh sync
 EOF
     _workstate_rule
-    cat <<EOF
-Your Monitor (comm-watch.sh $h) never stopped: it survived this wipe. Do not re-join, re-listen, or re-poll.
+    case "$listener" in
+        restarted)
+            cat <<EOF
+Your Monitor (comm-watch.sh $h) never stopped, but your inbox listener had DIED and was restarted just now — both halves are live again. Prove it with comm-listen.sh --name $h --selftest if the next minutes matter, and run comm-poll.sh for anything that landed while it was down. Do not re-join.
 EOF
+            ;;
+        down)
+            cat <<EOF
+Your Monitor (comm-watch.sh $h) never stopped, but your inbox listener is DOWN: nothing is writing durable mail to your inbox, however healthy the nav row looks. Run comm-listen.sh --name $h now, then comm-poll.sh. Do not re-join. (The handle is spelled out because a pinned identity and this shell's own derivation can differ, and a bare comm-listen.sh would then revive the wrong one.)
+EOF
+            ;;
+        *)
+            cat <<EOF
+Your Monitor (comm-watch.sh $h) never stopped and your inbox listener is up: it survived this wipe. Do not re-join, re-listen, or re-poll.
+EOF
+            ;;
+    esac
 }
 
 if [ "$MODE" = "context" ]; then
     eval "$(SOT_COMM_READONLY=1 "$SCRIPT_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
     H="${SOT_COMM_NAME:-${NAME:-}}"
     if [ -n "$H" ] && _survived "$H"; then
-        echo "SURVIVED handle=$H"
-        _context_block "$H"
+        LISTENER="$(_bridge_state "$H")"
+        echo "SURVIVED handle=$H listener=$LISTENER"
+        _context_block "$H" "$LISTENER"
     else
         echo "NOT SURVIVED handle=${H:-none} — run comm-session-start.sh (no flags) now to rebootstrap; a wipe hook alone never re-joins/re-polls/re-arms."
     fi
@@ -313,7 +360,8 @@ elif [ -n "${NAME:-}" ]; then
 fi
 
 if [ -n "$H" ] && _survived "$H"; then
-    echo "SURVIVED handle=$H"
+    LISTENER="$(_ensure_bridge "$H")"
+    echo "SURVIVED handle=$H listener=$LISTENER"
     # Manager review (S5): a survived listener never re-runs comm-join.sh
     # (that's the whole point of "survived" — nothing was re-joined), so
     # this is the ONLY place a --continue restart re-declares to the
@@ -335,7 +383,7 @@ if [ -n "$H" ] && _survived "$H"; then
             echo "comm-session-start.sh: WARNING — SOT_WORKSPACE_ID is set but no daemon endpoint could be resolved; the daemon won't learn '@$H' until the next comm-session-start." >&2
         fi
     fi
-    _context_block "$H"
+    _context_block "$H" "$LISTENER"
     exit 0
 fi
 

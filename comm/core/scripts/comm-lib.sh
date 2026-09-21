@@ -473,13 +473,34 @@ sot_bridge_stop() {
 # open by it) and record its pid. Output goes to state/bridge-NAME.log,
 # truncated at each start.
 sot_bridge_start() {
-    local name="$1" relay="$2" log
-    sot_bridge_stop "$name"
+    local name="$1" relay="$2" log lockdir held=0 spins=0
     mkdir -p "$COMM_HOME/state"
+    # Codex review (PR 254): stop-then-start is a read-modify-write over
+    # one pidfile, and two bootstraps racing it (a session's own and a
+    # hook, say) each cleared the strays and each started a loop -- every
+    # inbound frame filed twice, and the loop that lost the pidfile race
+    # left behind as an unkillable stray. `mkdir` is the portable atomic
+    # test-and-set (bash 3.2 on macOS has no `{fd}` allocation, and the
+    # home is NFS): whoever creates the directory owns the start.
+    #
+    # After ~5s we proceed WITHOUT the lock rather than refuse to start:
+    # a crashed holder must never be able to make a session permanently
+    # deaf, and starting unlocked is exactly the behaviour this had
+    # before the lock existed.
+    lockdir="$COMM_HOME/state/bridge-$name.lock.d"
+    while :; do
+        if mkdir "$lockdir" 2>/dev/null; then held=1; break; fi
+        spins=$((spins + 1))
+        [ "$spins" -ge 50 ] && break
+        sleep 0.1
+    done
+    sot_bridge_stop "$name"
     log="$COMM_HOME/state/bridge-$name.log"
     : > "$log"
     bash -c "$BRIDGE_LOOP" "$BRIDGE_ARGV0" "$relay" "$name" </dev/null >>"$log" 2>&1 &
     printf '%s\n' "$!" > "$(sot_bridge_pidfile "$name")"
+    [ "$held" = 1 ] && rmdir "$lockdir" 2>/dev/null
+    return 0
 }
 
 # --- live delivery into a workspace row (comm-send.sh, comm-bootstrap.sh,
