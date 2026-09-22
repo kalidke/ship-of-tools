@@ -1,4 +1,4 @@
-#![cfg(any(target_os = "linux", windows))] // seals a segment -> needs the store's rename arm (ADR 0039 / ADR 0041 windows port)
+#![cfg(any(unix, windows))] // seals a segment -> needs the store's rename arm (linux renameat2 / macOS renamex_np / windows MoveFileExW; ADR 0039 / ADR 0041 windows+macOS ports)
 //! Golden fixture: pins the v1 wire bytes. If this test fails after a code
 //! change, the FORMAT changed — that is a versioning event (ADR 0039), not a
 //! test to update casually. The fixture doubles as the cross-language
