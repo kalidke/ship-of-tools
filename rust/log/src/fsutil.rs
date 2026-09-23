@@ -508,10 +508,55 @@ pub fn dir_identity(dir: &Path) -> Result<DirIdentity> {
 ///   kernel resolves directly against the descriptor's inode, immune to
 ///   any later rename/exchange of the pathname that reached it.
 ///   `pinned_path` is exactly that string.
-/// - **Every other unix**: this store already fails closed there (no
-///   atomic no-replace rename — see `rename_noreplace_raw`'s own doc), so
-///   `pinned_path` here is just the real path, unprotected against this
-///   SPECIFIC race — not a new gap, the pre-existing one.
+/// - **macOS**: no pin, and this branch does not pretend to be one. The
+///   Linux arm rests on a `/proc` magic symlink the kernel resolves
+///   against the DESCRIPTOR's inode; macOS has no equivalent — its
+///   `/dev/fd/<n>` yields a dup of the descriptor, and traversing INTO
+///   it as a path component is not a documented property of that
+///   interface — and with no Mac on this bench nothing here can settle
+///   that either way. An unverifiable claim is not a mechanism, so
+///   `pinned_path` is the real path here and what holds this branch up
+///   is an argument, stated in full:
+///
+///   **Which race is being argued about.** The residual is the TOCTOU
+///   named at the top of this doc: a rename or exchange of the
+///   CONTAINING directory's own pathname landing AFTER [`Self::open`]'s
+///   identity check and BEFORE (or between) the later path-based opens.
+///   It is NOT the store's own create-or-fail race: `renamex_np` with
+///   `RENAME_EXCL` (`rename_noreplace_raw`'s macOS arm) plus
+///   `preflight_volume`'s live probe cover that one atomically, and they
+///   bear on this one not at all. This bullet's earlier wording declared
+///   the branch safe *because the store failed closed on non-Linux* —
+///   which the macOS store has since made false, and which was never an
+///   argument about this race in the first place. The two are separate;
+///   only the second is a pin's business.
+///
+///   **What is still checked.** Everything up to the pin, on the handle
+///   and never by a second stat-by-path: `voyage.rs`'s `open_prepared`
+///   compares [`Self::identity`] against the identity captured during
+///   preparation and refuses on a mismatch. A swap landing before the
+///   pin is therefore loud on every platform, macOS included. Unguarded
+///   here is only the window from that comparison to the end of the
+///   fenced open sequence.
+///
+///   **Why that window is accepted, not closed.** Exploiting it needs a
+///   process that can rename the store root's own pathname — which means
+///   write access to the root's PARENT, the state-root container this
+///   crate itself only ever creates one level of, owned by the running
+///   user. A process holding that access has no need of this race: it
+///   can replace, empty or scribble on the store directly, and no
+///   descriptor-level pin on any platform defends against that. Linux
+///   takes its pin anyway because the pin costs one `format!`. The macOS
+///   equivalent costs a conversion of every consumer of
+///   [`Self::pinned_path`] to `*at`-relative resolution through the held
+///   dirfd (`openat`/`renameat`/`fstatat`) — the real POSIX pin, and the
+///   fix on the day this window stops being acceptable. **Unlike the
+///   Windows bullet above, this one has no standing referee: no CI leg
+///   exercises it.**
+/// - **Every other unix**: unreachable. `rename_noreplace_raw` has no arm
+///   outside Linux/macOS/Windows, so this crate does not build there at
+///   all — there is no store to race against. `pinned_path` is the real
+///   path for the same reason macOS's is.
 pub struct PinnedDir {
     handle: File,
     #[cfg(not(target_os = "linux"))]
