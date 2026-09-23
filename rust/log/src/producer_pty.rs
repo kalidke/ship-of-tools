@@ -55,6 +55,47 @@
 //!   binary's own architecture can ever produce, so it is not one this
 //!   check needs to detect. Everything else in `pre_exec` keeps its
 //!   original order, unchanged, after this new leading step.
+//! - **macOS gets NO twin of that arming dance, and needs no lease
+//!   either — the pty hangup IS its parent-death mechanism.** The plan
+//!   that reached this file asked for an inherited pipe here (parent
+//!   holds the write end, child polls the read end for EOF). Two
+//!   independent reasons it is not written. FIRST, it is not
+//!   implementable AT THIS SITE at all: the "child" here is the agent
+//!   binary itself — `claude`, a shell, whatever `producer_argv` names —
+//!   third-party code that `exec` replaces us with, so nothing of ours
+//!   survives to poll any descriptor. `PR_SET_PDEATHSIG` works precisely
+//!   because it is a KERNEL property of the process that outlives `exec`
+//!   and asks the child for no cooperation whatsoever; a lease would
+//!   need a monitor process wedged between this one and the agent, which
+//!   is a new process in every capsule tree. SECOND, and the reason the
+//!   first does not matter: macOS already HAS a kernel property covering
+//!   exactly this relation. This process is the only holder of a MASTER
+//!   descriptor — `openpty` hands back exactly two fds, both marked
+//!   `CLOEXEC` above BEFORE any fork (so no other spawn of ours can
+//!   carry one past its own `exec`), and `pre_exec` below severs this
+//!   child's own inherited copies with `close_range`/the bounded close
+//!   loop before `exec`. So the LAST master fd in existence closes
+//!   exactly when THIS process's descriptor table is torn down — which
+//!   the kernel does on EVERY exit path, `SIGKILL` included, with no
+//!   destructor of ours involved (`Drop`'s `killpg` is the graceful
+//!   path's belt, not this one's). The kernel then hangs the pty up and
+//!   signals the session that took it as its controlling terminal: this
+//!   child, which `setsid` + `TIOCSCTTY` two steps below made the leader
+//!   of that session. That is not an inference —
+//!   `tests/macos_kernel_facts.rs`'s
+//!   `closing_the_pty_master_hangs_up_and_reaps_the_child` pins it on a
+//!   real Mac (its fact 2) and prints the latency it measured; an OS
+//!   that stops doing it reports itself as a named red test, which is
+//!   the moment to revisit this paragraph. Nothing needs ordering
+//!   FIRST here the way PDEATHSIG does, because there is no fork-to-arm
+//!   window to guard: the pty is created before the fork and the child
+//!   is attached to it by `pre_exec` itself. The one honest narrowing
+//!   versus Linux: `SIGHUP` is catchable, `SIGKILL` is not, so a
+//!   producer that deliberately ignores `SIGHUP` outlives the hangup —
+//!   holding a revoked terminal, its stdio at EOF, unable to talk to
+//!   anyone. Reaping THAT belongs to whatever sweeps an orphaned process
+//!   group (the supervisor's own domain), never to a mechanism at this
+//!   site, and it is the only difference this deletion leaves standing.
 //! - **Exit is OBSERVED without reaping; the leader is reaped EXACTLY ONCE,
 //!   LAST, in `Drop`; domain emptiness is judged by LIVE members, never by
 //!   reaped-ness (decision 13/14).** The first version's `wait` called
@@ -390,6 +431,13 @@ impl Producer for PtyProducer {
                         libc::_exit(1);
                     }
                 }
+                // Every other unix gets NO arm here, by decision and
+                // not by omission: the pty this producer is built on
+                // hangs up when the last MASTER fd closes, and this
+                // process holds the only ones there are — on any exit
+                // path it can take, `SIGKILL` included. See the module
+                // doc's own "macOS gets NO twin" point for the argument
+                // and for the macOS CI test that pins it.
                 // Verbatim from `capsule_legacy.rs`'s own `spawn_on_pty`
                 // (ADR 0043 decision 14 carries it into this producer
                 // as-is, after the new leading step above): new session;
