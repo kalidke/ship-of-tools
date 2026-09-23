@@ -43,9 +43,18 @@ pub mod challenge_win;
 // connection challenge -- SO_PEERCRED same-user check, race-free pidfd
 // pinning, and the retained-pidfd process handle. `pub`, matching
 // `challenge_win`: Linux-only, self-gated (see the module's own
-// `#![cfg(target_os = "linux")]`); other Unix fails closed at
-// `socket_unix::connect_voyage_socket`'s own stub instead.
+// `#![cfg(target_os = "linux")]`); a non-Linux Unix with no half of its
+// own fails closed at `socket_unix::connect_voyage_socket`'s own stub
+// instead.
 pub mod challenge_unix;
+// M2 (ADR 0043 decision 8, the macOS lane): the macOS half of the same-
+// connection challenge -- ONE `LOCAL_PEERTOKEN` getsockopt, whose audit
+// token carries the peer's pid AND the kernel's own reuse generation
+// together, so none of the Linux half's pinning machinery has a twin
+// here. `pub`, matching its two siblings: macOS-only, self-gated (see
+// the module's own `#![cfg(target_os = "macos")]`); every OTHER
+// non-Linux Unix still fails closed at the stub.
+pub mod challenge_macos;
 // L1-unix LU3a (ADR 0043 decision 19): the three seam traits landed
 // before any consumer uses them -- `Client` (blanket-implements
 // `challenge::ChallengeableConnection`), `PeerProcess`, `Endpoint`.
