@@ -14,11 +14,18 @@
 //!
 //! Rules: exactly one `hub`, and it names a listed host; a section key is a
 //! plain host name (`[a-z0-9][a-z0-9._-]*`, i.e. what `host_name()` yields);
-//! any other key or section is an error naming it — this is also the
-//! schema check: an old-grammar file (`default_host`, per host
-//! `ssh_alias`/`remote_repo`/`tcp_port`/`remote_socket`/`socket`/
-//! `remote_home`) fails on its first unknown key, naming the line; a key
-//! given twice in a section is an error; a hub must be a `daemon` host.
+//! an unknown TOP-LEVEL key or section is an error naming it — this is also
+//! the schema check: an old-grammar file (`default_host` at top level)
+//! fails on its first unknown key, naming the line. An unknown key INSIDE
+//! `[host.<name>]` (the old `ssh_alias`/`remote_repo`/`tcp_port`/
+//! `remote_socket`/`socket`/`remote_home` shape included) is instead
+//! collected as a WARNING, not fatal — the host still parses with its known
+//! keys applied, and `sotd topology status` prints the warning, naming the
+//! host and the key. This is forward compatibility: the hub's canonical
+//! file can grow a per-host key an older box's build does not know yet
+//! without that box losing its whole topology (a rollout, not a fleet
+//! outage). A key given twice in a section is still an error; a hub must be
+//! a `daemon` host.
 //!
 //! **Search order** (the only one): `$SOT_HOSTS` when set (tests, scratch
 //! daemons), else `<config dir>/hosts.toml` where the config dir is
@@ -83,6 +90,12 @@ pub struct Topology {
     pub hosts: Vec<HostDecl>,
     /// `(label, ssh target)`; an empty target means "the label".
     pub monitor: Vec<(String, String)>,
+    /// Unknown keys seen inside a `[host.<name>]` block, one message per
+    /// key, in file order. Collected rather than fatal — forward
+    /// compatibility (module doc) — and empty on a file with none.
+    /// `sotd topology status` is where these surface; never `plan`, whose
+    /// output both launchers parse line-by-line.
+    pub warnings: Vec<String>,
 }
 
 impl Topology {
@@ -153,6 +166,7 @@ pub fn parse(text: &str) -> Result<Topology, String> {
     let mut hub: Option<String> = None;
     let mut hosts: Vec<HostDecl> = Vec::new();
     let mut monitor: Vec<(String, String)> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     let mut section = Section::Top;
     let mut seen: Vec<String> = Vec::new();
 
@@ -217,7 +231,10 @@ pub fn parse(text: &str) -> Result<Topology, String> {
                         let b = val.bool().ok_or_else(|| format!("line {n}: `{key}` must be true or false"))?;
                         if key == "daemon" { host.daemon = b } else { host.frontend = b }
                     }
-                    other => return Err(format!("line {n}: unknown key `{other}` in [host.{}]", host.name)),
+                    // A per-host key stays unknown to THIS build without
+                    // costing the box its whole topology — collected, not
+                    // fatal (module doc: forward compatibility).
+                    other => warnings.push(format!("line {n}: unknown key `{other}` in [host.{}] — ignored by this build", host.name)),
                 }
             }
             Section::Monitor => {
@@ -234,7 +251,7 @@ pub fn parse(text: &str) -> Result<Topology, String> {
     if !hub_host.daemon {
         return Err(format!("hub `{hub}` has `daemon = false`; the hub runs the relay daemon, so `[host.{hub}]` needs `daemon = true`"));
     }
-    Ok(Topology { hub, hosts, monitor })
+    Ok(Topology { hub, hosts, monitor, warnings })
 }
 
 enum Value<'a> {
@@ -533,6 +550,11 @@ pub fn status_table(topo: &Topology) -> String {
             out.push_str(&format!("{label} monitor-only {target}\n"));
         }
     }
+    // Surfaced here and only here (module doc): the person who edited the
+    // file is looking at `status`, not at `plan`'s line-oriented output.
+    for w in &topo.warnings {
+        out.push_str(&format!("WARNING {w}\n"));
+    }
     out
 }
 
@@ -689,11 +711,45 @@ gpu-box = "other-user@gpu-box"
     }
 
     #[test]
-    fn unknown_key_names_the_key() {
-        let e = parse("hub = \"a\"\n[host.a]\ncolour = \"red\"\n").unwrap_err();
-        assert!(e.contains("line 3") && e.contains("unknown key `colour`"), "{e}");
+    fn unknown_top_level_key_still_errors() {
+        // The top-level vocabulary is fixed and tiny (`hub` only) — a typo
+        // there is a real mistake and still fails loudly, message unchanged.
         let e = parse("hub = \"a\"\nsize = 3\n[host.a]\n").unwrap_err();
         assert!(e.contains("unknown key `size`"), "{e}");
+    }
+
+    /// Was `unknown_key_names_the_key`'s host-level half, which asserted an
+    /// unknown `[host.<name>]` key was a hard error — that was the old
+    /// contract. Changed deliberately: it is now a collected warning, and
+    /// the host's known keys (`daemon` here) still apply.
+    #[test]
+    fn unknown_host_key_is_a_collected_warning_not_an_error() {
+        let t = parse("hub = \"a\"\n[host.a]\ndaemon = true\ncolour = \"red\"\n").unwrap();
+        assert!(t.host("a").unwrap().daemon, "the host's known keys still apply");
+        assert_eq!(t.warnings.len(), 1);
+        assert!(
+            t.warnings[0].contains("line 4") && t.warnings[0].contains("unknown key `colour`") && t.warnings[0].contains("[host.a]"),
+            "{:?}",
+            t.warnings
+        );
+    }
+
+    #[test]
+    fn several_unknown_host_keys_across_hosts_all_collected_in_order() {
+        let text = "hub = \"a\"\n[host.a]\ndaemon = true\nfoo = \"x\"\n[host.b]\nbar = 1\nbaz = true\n";
+        let t = parse(text).unwrap();
+        assert_eq!(t.hosts.len(), 2);
+        assert_eq!(t.warnings.len(), 3, "{:?}", t.warnings);
+        assert!(t.warnings[0].contains("[host.a]") && t.warnings[0].contains("unknown key `foo`"), "{:?}", t.warnings);
+        assert!(t.warnings[1].contains("[host.b]") && t.warnings[1].contains("unknown key `bar`"), "{:?}", t.warnings);
+        assert!(t.warnings[2].contains("[host.b]") && t.warnings[2].contains("unknown key `baz`"), "{:?}", t.warnings);
+    }
+
+    #[test]
+    fn status_table_surfaces_host_key_warnings() {
+        let t = parse("hub = \"a\"\n[host.a]\ndaemon = true\ncolour = \"red\"\n").unwrap();
+        let out = status_table(&t);
+        assert!(out.contains("WARNING") && out.contains("unknown key `colour`") && out.contains("[host.a]"), "{out}");
     }
 
     #[test]
@@ -704,16 +760,24 @@ gpu-box = "other-user@gpu-box"
         assert!(e.contains("unknown section `[hosts]`"), "{e}");
     }
 
-    /// The v1 shim is gone: an old-grammar file (real shape: `default_host`
-    /// at top level, a host carrying `socket`) is now a loud parse error at
-    /// its first unknown key, naming the line — never a silently-kept file.
+    /// The v1 shim is gone at the TOP LEVEL: an old-grammar file's
+    /// `default_host` is still a loud parse error at its first unknown key,
+    /// naming the line — that vocabulary is fixed and tiny, so this half of
+    /// the old test is unchanged. Its second half asserted an old per-host
+    /// key (`ssh_alias`) was ALSO a hard error — that was the old contract;
+    /// changed deliberately (see `unknown_host_key_is_a_collected_warning_
+    /// not_an_error`): a per-host key this build does not know is now
+    /// forward-compatible, collected as a warning instead of losing the
+    /// whole file.
     #[test]
-    fn old_grammar_file_fails_on_first_unknown_key() {
+    fn old_grammar_top_level_key_still_fails_host_key_is_only_a_warning() {
         let text = "\u{feff}default_host = \"hub\"\n\n[host.hub]\nsocket = \"/run/user/1000/sot/sessions/sot.sock\"\n";
         let e = parse(text).unwrap_err();
         assert!(e.contains("line 1") && e.contains("unknown key `default_host`"), "{e}");
-        let e = parse("hub = \"a\"\n[host.a]\nssh_alias = \"a\"\n").unwrap_err();
-        assert!(e.contains("unknown key `ssh_alias`"), "{e}");
+
+        let t = parse("hub = \"a\"\n[host.a]\ndaemon = true\nssh_alias = \"a\"\n").unwrap();
+        assert_eq!(t.warnings.len(), 1);
+        assert!(t.warnings[0].contains("unknown key `ssh_alias`") && t.warnings[0].contains("[host.a]"), "{:?}", t.warnings);
     }
 
     #[test]
