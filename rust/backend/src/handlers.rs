@@ -2983,6 +2983,195 @@ fn canonicalize_within_any_workspace(
         .find_map(|ws| canonical_under_root(path, &ws.project_root))
 }
 
+/// Same confinement as `canonicalize_within_any_workspace`, but also hands
+/// back the matching workspace's own canonical root — `docs.open`'s
+/// site-root walk (its only caller) needs that bound to climb toward without
+/// running a second, possibly-disagreeing confinement check of its own.
+fn canonicalize_and_workspace_root(
+    path: &std::path::Path,
+    workspaces: &Workspaces,
+) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    workspaces.list().iter().find_map(|ws| {
+        let canon_root = ws.project_root.canonicalize().ok()?;
+        canonical_under_root(path, &ws.project_root).map(|canon_path| (canon_path, canon_root))
+    })
+}
+
+/// `docs.open`'s site-root walk (v0.6.6): starting from `start` (a subpage's
+/// own directory), climb toward the OUTERMOST ancestor — bounded by
+/// `workspace_root`, never above it — that sits in an unbroken chain of
+/// directories each directly holding an `index.html`/`index.htm`.
+///
+/// The chain's first (innermost) member need not be `start` itself: a
+/// subpage's own directory (`<site>/api/` for `<site>/api/reference.html`)
+/// usually has no index of its own — only the site root a few levels up
+/// does — and that gap is normal, not a stop signal, so the search for the
+/// first hit climbs through it freely. Once a hit is found, further climbing
+/// requires an unbroken chain: an unrelated ancestor higher up that happens
+/// to ALSO hold an index.html (a different, coincidental site one level
+/// further out) is never folded in — the walk stops at the first ancestor
+/// above the chain that lacks one.
+///
+/// Every directory visited is a `.parent()` of the already-canonical path the
+/// caller confined, so no new symlink resolution happens on the way up; the
+/// `workspace_root` bound (itself canonical) keeps the walk from ever
+/// producing a root outside the workspace. Returns `None` if nothing from
+/// `start` up to and including `workspace_root` has an index — the caller's
+/// documented fallback.
+async fn find_site_root(
+    start: &std::path::Path,
+    workspace_root: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    async fn has_index(dir: &std::path::Path) -> bool {
+        for name in ["index.html", "index.htm"] {
+            if tokio::fs::metadata(dir.join(name))
+                .await
+                .map(|m| m.is_file())
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    // Find the first (innermost) ancestor — starting at `start` — that has
+    // an index, tolerating any number of index-less directories below it.
+    let mut cur = start.to_path_buf();
+    let first_hit = loop {
+        if has_index(&cur).await {
+            break Some(cur.clone());
+        }
+        if cur == workspace_root {
+            break None;
+        }
+        match cur.parent() {
+            Some(p) if p.starts_with(workspace_root) => cur = p.to_path_buf(),
+            _ => break None,
+        }
+    };
+    let mut root = first_hit?;
+
+    // Extend upward through the UNBROKEN chain above the first hit.
+    loop {
+        if root == workspace_root {
+            break;
+        }
+        let Some(parent) = root.parent() else { break };
+        if !parent.starts_with(workspace_root) || !has_index(parent).await {
+            break;
+        }
+        root = parent.to_path_buf();
+    }
+    Some(root)
+}
+
+#[cfg(test)]
+mod find_site_root_tests {
+    // `docs.open`'s site-root walk (v0.6.6), tested directly against real
+    // temp directories rather than through the full handler: `find_site_root`
+    // is a pure path-and-filesystem function with no `Session`/`Workspaces`/
+    // `site_serve` dependency, so it's the cheap, isolated place to pin the
+    // walk's boundary behaviour. `handle_docs_open` end to end has no
+    // existing test harness in this crate (no test binds the real
+    // `site_serve` listener `bound_site_port()` requires) — out of scope to
+    // add here; see the report for what that leaves unverified.
+    use super::find_site_root;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sot-find-site-root-test-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn climbs_through_index_less_dirs_to_a_distant_site_index() {
+        // <ws>/site/index.html, subpage two levels down at
+        // <ws>/site/guide/api/reference.html — `guide/` and `guide/api/`
+        // have no index of their own, matching a typical Documenter/
+        // project-log-style tree where only the top has one.
+        let ws = scratch("climb");
+        let site = ws.join("site");
+        let sub = site.join("guide").join("api");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(site.join("index.html"), "<html></html>").unwrap();
+        std::fs::write(sub.join("reference.html"), "<html></html>").unwrap();
+
+        let root = find_site_root(&sub, &ws).await.expect("site root found");
+        assert_eq!(root, site, "climbs past two index-less dirs to the site root");
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn stops_at_the_outermost_of_an_unbroken_chain() {
+        // <ws>/site/index.html AND <ws>/index.html both exist (the outer one
+        // stands in for an "unrelated parent that happens to hold one" —
+        // e.g. a repo-level landing page one level above the real site).
+        // The chain breaks between them (nothing between `site/` and `ws`
+        // lacks an index here because they're adjacent, so pin a THIRD
+        // level: <ws>/outer/site/index.html with <ws>/outer/ having none),
+        // proving the walk stops at `site/`, not `outer/`'s parent.
+        let ws = scratch("stop-outer");
+        let outer = ws.join("outer");
+        let site = outer.join("site");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(site.join("index.html"), "<html></html>").unwrap();
+        std::fs::write(ws.join("index.html"), "<html></html>").unwrap(); // unrelated
+        std::fs::write(site.join("page.html"), "<html></html>").unwrap();
+
+        let root = find_site_root(&site, &ws)
+            .await
+            .expect("site root found");
+        assert_eq!(
+            root, site,
+            "must not walk past the outermost index.html (site/) into the \
+             unrelated ws/index.html one level further out, across the gap \
+             at outer/ which has no index of its own"
+        );
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn no_index_anywhere_up_to_the_workspace_root_is_none() {
+        // The project-log shape: a standalone page with a SIBLING assets/
+        // dir, no index.html anywhere above it up to the workspace root.
+        // This is the documented fallback case — `find_site_root` returns
+        // `None` and the caller keeps the pre-fix parent-rooted behaviour.
+        let ws = scratch("no-index");
+        let page_dir = ws.join("journal");
+        std::fs::create_dir_all(&page_dir).unwrap();
+        std::fs::create_dir_all(ws.join("assets")).unwrap();
+        std::fs::write(page_dir.join("2026-09-01.html"), "<html></html>").unwrap();
+
+        assert_eq!(find_site_root(&page_dir, &ws).await, None);
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn site_root_exactly_at_the_workspace_root_stops_there() {
+        // <ws>/index.html with the page directly inside <ws> — the walk
+        // must find <ws> itself and never look above it.
+        let ws = scratch("at-root");
+        std::fs::write(ws.join("index.html"), "<html></html>").unwrap();
+        std::fs::write(ws.join("page.html"), "<html></html>").unwrap();
+
+        let root = find_site_root(&ws, &ws).await.expect("site root found");
+        assert_eq!(root, ws, "the workspace root itself is the site root");
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+}
+
 /// Constant-time byte comparison for secrets (the app-level auth token here;
 /// `site_serve` duplicates this for its pool-port cookie secret). No `subtle`
 /// crate in the dependency tree — this is the standard XOR-accumulate idiom,
@@ -3168,9 +3357,9 @@ pub async fn handle_video_open(
 /// browser with full CSS/JS/sub-page fidelity. (Op name is legacy from the
 /// Documenter first cut; it now serves any directory, not just
 /// `docs/build`.) `req.path` is the cursored file's absolute backend path;
-/// the handler roots the `site_serve` server at that file's **own
-/// directory** (its site root) and returns the URL. The launcher
-/// SSH-forwards the port. ADR 0024.
+/// the handler roots the `site_serve` server at that file's **site root**
+/// (not just its own directory — see the rooting rule below) and returns the
+/// URL. The launcher SSH-forwards the port. ADR 0024.
 ///
 /// Confined to the workspace's project root (security review): `site_serve`'s
 /// port has no auth of its own, so rooting it at an arbitrary absolute
@@ -3180,7 +3369,21 @@ pub async fn handle_video_open(
 /// Rooting rule (so both relative AND root-relative `/asset` links resolve):
 /// - cursor on a directory → serve it, open `/` (its `index.html`);
 /// - cursor on `index.html`/`index.htm` → serve its parent, open `/`;
-/// - cursor on any other file → serve its parent, open `/<filename>`.
+/// - cursor on any other file → walk UP from its directory to the OUTERMOST
+///   ancestor (bounded by the workspace root) that sits in an unbroken chain
+///   of directories each directly holding an `index.html`/`index.htm` (see
+///   `find_site_root`) — that ancestor is the site root, and `rel` is the
+///   path from it down to the file. A subpage like `<site>/api/reference.html`
+///   is served at the SITE's root, not `api/`'s, so `../assets/x.css` from
+///   inside it resolves instead of escaping the served root and 404ing (this
+///   was the bug: rooting at the subpage's own directory). If no ancestor up
+///   to the workspace root has an index (v0.6.6: e.g. a project-log page
+///   whose assets sit in a sibling `assets/` one level up, with no per-page
+///   index anywhere), this falls back to the PRE-FIX behaviour — root = the
+///   file's own parent — as a documented limitation: a page in that shape
+///   using a parent-relative asset link still 404s. Fixing that would mean
+///   parsing the page's own HTML for its relative links, which this handler
+///   deliberately does not do (no HTML heuristics for routing decisions).
 pub async fn handle_docs_open(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -3237,7 +3440,11 @@ pub async fn handle_docs_open(
     // workspace (not just the default — same check as `pluto.open`'s), and
     // derive (root, rel, entry) from THIS canonical path for everything
     // downstream. The raw `p`/`req.path` is never read or scanned again below.
-    let canon_p = match canonicalize_within_any_workspace(p, workspaces) {
+    // Also keep that workspace's own canonical root (`ws_root`): the
+    // site-root walk below (v0.6.6) needs a bound it cannot climb past, and
+    // this is the SAME confinement check's own root, not a second lookup
+    // that could disagree with it.
+    let (canon_p, ws_root) = match canonicalize_and_workspace_root(p, workspaces) {
         Some(c) => c,
         None => {
             return Ok(err(
@@ -3265,7 +3472,22 @@ pub async fn handle_docs_open(
         if fname.eq_ignore_ascii_case("index.html") || fname.eq_ignore_ascii_case("index.htm") {
             (parent, String::new(), canon_p.clone())
         } else {
-            (parent, fname, canon_p.clone())
+            match find_site_root(&parent, &ws_root).await {
+                Some(site_root) => {
+                    // `site_root` is an ancestor of `parent` (= `canon_p`'s
+                    // own parent), found by walking UP from it, so `canon_p`
+                    // always strips cleanly; the fallback is unreachable.
+                    let rel = canon_p
+                        .strip_prefix(&site_root)
+                        .unwrap_or(canon_p.as_path())
+                        .to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/");
+                    (site_root, rel, canon_p.clone())
+                }
+                // No ancestor up to `ws_root` holds an index.html — documented
+                // fallback (see the doc comment above): pre-fix behaviour.
+                None => (parent, fname, canon_p.clone()),
+            }
         }
     };
 
