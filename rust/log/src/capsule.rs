@@ -2460,12 +2460,15 @@ mod base64_engine {
 /// on unchanged code. The flood test keeps the properties that are always
 /// true (no deadlock, verify-green, bookkeeping live); the bound itself is
 /// a plain condvar protocol, provable right at the primitive.
-// The voyage store's durability arms exist for Linux and Windows only (`fsutil`
-// fails closed elsewhere with `Error::Unsupported`), so these unit tests —
-// which open a real store — are gated exactly like `voyage`'s and
-// `recovery`'s: they ran only on Windows until LU2a made this module
-// neutral, and the macOS CI leg then hit the fail-closed arm.
-#[cfg(all(test, any(target_os = "linux", windows)))]
+// These unit tests open a real store, so they run wherever the store has a
+// real rename arm. That was Linux and Windows only until M1 gave `fsutil`
+// its `renamex_np` arm; macOS is now a third, and the gate says so. Every
+// OTHER Unix still hits `fsutil`'s fail-closed arm, which is why this is
+// three named targets and not bare `any(unix, windows)`. Nothing in this
+// module reads `/proc`, opens a pidfd or expects PDEATHSIG — it is a
+// condvar protocol and a run-end marker — so no test inside needed a
+// narrower gate of its own before this one widened.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
 mod tests {
     use super::*;
     use std::thread;

@@ -1,4 +1,4 @@
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 //! Integration tests for the capsule runtime (`src/capsule.rs`, ADR 0041
 //! step 4; ADR 0043 "Decisions for LU2": renamed from `tests/capsule_win.rs`
 //! in L1-unix LU2a when the writer loop became generic over `Producer`,
@@ -9,18 +9,24 @@
 //! the rest are kept here too for one home and one
 //! `cargo test -p sot-log --test capsule` filter.
 //!
-//! `any(target_os = "linux", windows)`, not bare `unix`/unconditional
-//! (LU2b deviation from the ADR's own forward-looking "every platform"
-//! phrasing): `capsule::run`'s own `self_status` (ADR 0043 decision 16)
-//! fails closed with `Error::Unsupported` on any Unix that is not Linux
-//! (no start-time identity exists there), so a real `PtyProducer`-driven
-//! `capsule::run` call panics immediately on macOS regardless of which
-//! test calls it — exactly the crate's own existing precedent
-//! (`capsule.rs`'s internal `#[cfg(all(test, any(target_os = "linux",
-//! windows)))] mod tests`, gated for the identical reason: the voyage
-//! store's durability arms are Linux/Windows-only too). Matches ADR 0043's
-//! own "Open for the maintainer" item 1 (macOS capsules are out of scope
-//! until someone needs them).
+//! Three named targets, not bare `unix`/unconditional: `capsule::run`
+//! needs two things a platform either has or does not — a `self_status`
+//! (ADR 0043 decision 16) and a store rename arm — and on any Unix that
+//! is neither Linux nor macOS both still fail closed with
+//! `Error::Unsupported`, so a real `PtyProducer`-driven `capsule::run`
+//! call would panic there regardless of which test called it. Both of
+//! the reasons this gate ONCE excluded macOS are gone: M1 gave `fsutil`
+//! its `renamex_np` arm, and `self_status` has a macOS arm over the
+//! `pidversion` the audit token carries. The same two facts widened
+//! `capsule.rs`'s own internal `#[cfg(all(test, ...))] mod tests` gate,
+//! which was gated for the identical reason and still is.
+//!
+//! Nothing in this file reads `/proc`, opens a pidfd or expects
+//! PDEATHSIG: the Linux-kernel-specific mechanism lives in
+//! `tests/supervisor.rs`, which keeps its own gate. `unix_only` below is
+//! `cfg(unix)` because what it exercises — a real spawn failure, a real
+//! signal death, pty geometry — is Unix mechanism, not Linux mechanism,
+//! and it now runs on macOS too.
 //!
 //! The host-handshake byte state machine's own unit tests
 //! (`host_handshake.rs`) are pure and run everywhere already; what these
