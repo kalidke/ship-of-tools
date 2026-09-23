@@ -399,6 +399,24 @@ impl Producer for PtyProducer {
         // from the console itself, never from TERM.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // ...and `NO_COLOR` does not get to contradict those two lines.
+        // It is dropped here for the same reason they are set: this
+        // process OWNS the terminal the producer talks to, so it is the
+        // only party in a position to say what that terminal can do. A
+        // `NO_COLOR` that arrives here is ambient inheritance, never a
+        // statement about this row — a daemon relaunched from inside a
+        // capsule hands its whole environment to the next daemon, and
+        // every row's agent under it then ran colourless for no reason
+        // (field report, 2026-09-17). The daemon scrubs it at the
+        // supervisor spawn already; this is the LAST hop, and the only
+        // one that also covers a leg started by hand, by a test
+        // harness, or by a future spawn path that does not pass through
+        // that scrub. A row that genuinely wants a colourless agent has
+        // to say so under a name inheritance cannot forge — its own
+        // producer argv, or a dedicated `SOT_*` variable translated back
+        // into `NO_COLOR` right here — and since no such knob exists
+        // today, none is invented here for nobody to set.
+        cmd.env_remove("NO_COLOR");
         let slave_raw = slave.as_raw_fd();
         // SAFETY: this closure runs on the forked child, between fork and
         // exec — only async-signal-safe calls, per `pre_exec`'s own
