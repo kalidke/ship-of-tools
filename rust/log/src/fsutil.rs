@@ -762,12 +762,16 @@ pub fn create_dir_protected(path: &Path) -> Result<()> {
 
 /// Owns a security descriptor built by `ConvertStringSecurityDescriptorToSecurityDescriptorW`
 /// (`LocalAlloc`'d by that API) for exactly as long as the caller needs it
-/// live; freed on drop. `pub(crate)` (ADR 0041 step 5): `pipe_win.rs`, a
-/// sibling module, builds and consumes the pipe-flavored descriptor below
-/// through this same type — the `sd` field itself stays private, `as_ptr`
-/// is the one crate-visible seam into it.
+/// live; freed on drop. `pub` (ADR 0041 step 5, widened for the session-pipe
+/// hardening fix): `pipe_win.rs`, a sibling module, builds and consumes the
+/// pipe-flavored descriptor below through this same type, and `sot-backend`
+/// — a different crate entirely — reaches it through the `fsutil::
+/// owner_protected_pipe_descriptor` facade (see that re-export in `lib.rs`)
+/// to give its `interprocess`-backed session pipe the identical posture.
+/// The `sd` field itself stays private either way; `as_ptr` is the one
+/// seam into it.
 #[cfg(windows)]
-pub(crate) struct OwnerProtectedDescriptor {
+pub struct OwnerProtectedDescriptor {
     sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
 }
 
@@ -777,7 +781,7 @@ impl OwnerProtectedDescriptor {
     /// field. Borrowed, not transferred — the returned pointer is valid only
     /// as long as `self` is alive, exactly like `create_dir_protected`'s own
     /// direct use of the (formerly private) `sd` field.
-    pub(crate) fn as_ptr(&self) -> windows_sys::Win32::Security::PSECURITY_DESCRIPTOR {
+    pub fn as_ptr(&self) -> windows_sys::Win32::Security::PSECURITY_DESCRIPTOR {
         self.sd
     }
 }
@@ -946,8 +950,16 @@ fn owner_protected_descriptor() -> Result<OwnerProtectedDescriptor> {
 /// so it is deliberately absent here rather than copy-pasted from the
 /// directory flavor. `SE_DACL_PROTECTED` (the `P` flag) is preserved
 /// identically — a permissive ancestor still can never inject ACEs.
+///
+/// `pub` and re-exported (`fsutil::owner_protected_pipe_descriptor` in
+/// `lib.rs`): `sot-backend`'s session pipe — a second, `interprocess`-backed
+/// pipe family the daemon binds directly, not through this module — used to
+/// carry the Windows default descriptor (`Everyone`/`ANONYMOUS LOGON` read).
+/// It now builds its `interprocess::os::windows::security_descriptor::
+/// SecurityDescriptor` from THIS SDDL rather than a second copy of it, so
+/// the two pipe families share one owner-only posture instead of drifting.
 #[cfg(windows)]
-pub(crate) fn owner_protected_pipe_descriptor() -> Result<OwnerProtectedDescriptor> {
+pub fn owner_protected_pipe_descriptor() -> Result<OwnerProtectedDescriptor> {
     owner_protected_descriptor_with_ace("", "FA")
 }
 
