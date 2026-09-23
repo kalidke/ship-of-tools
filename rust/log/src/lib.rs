@@ -228,6 +228,15 @@ mod fsutil;
 // module is unreachable from another crate), so this is its facade,
 // mirroring `fence::lock_supervisor`'s own one-function reach-through.
 pub use fsutil::lock_writer;
+// Windows session-pipe hardening fix: `sot-backend`'s session listener
+// (`server.rs::run_local`, bound through the `interprocess` crate, NOT
+// this module's own `pipe_win.rs` transport) needs the SAME protected,
+// owner-only descriptor `pipe_win.rs`'s pipe instances already carry --
+// one more `fsutil` reach-through, same shape as `lock_writer` above,
+// so the two pipe families share one SDDL string instead of a second
+// one drifting into existence beside it.
+#[cfg(windows)]
+pub use fsutil::owner_protected_pipe_descriptor;
 
 pub use envelope::*;
 pub use record::{RecordKind, TailClass, CODEC_JSON, MAGIC, PRELUDE_LEN, RECORD_MAX_BODY};
