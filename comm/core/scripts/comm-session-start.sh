@@ -206,6 +206,18 @@ Turn end: when a turn CLOSES an effort (a result landed, a fix shipped, a diagno
 EOF
 }
 
+# Capabilities a session cannot discover on its own, printed on EVERY
+# bootstrap outcome beside the work-state rule. Two sessions independently
+# reported (2026-09-23) that they had never once used the workspace REPL --
+# "invisible, not confusing" -- and both said the same thing unprompted:
+# they read THIS output every time, and a skill they must already know to
+# open would never have reached them. Quoted heredoc: nothing here expands.
+_capability_lines() {
+    cat <<'CAPEOF'
+Julia: this workspace has a PERSISTENT REPL you can drive — sot-fe repl eval "$SOT_WORKSPACE_ID" --code '<code>' | sot-fe repl run <ws> <file.jl>. Packages stay loaded between runs and the call returns real output; use it instead of spawning julia for anything that re-pays a heavy package load. One eval at a time, and Main is shared with the owner's drawer — read the julia-repl skill before the first call.
+CAPEOF
+}
+
 _context_block() {
     local h="$1" listener="${2:-n/a}" inbox
     if [ "$IS_WINDOWS" = 1 ]; then
@@ -218,6 +230,7 @@ You are @$h. Inbox: $inbox
 Verbs: comm-relay.sh send @<peer> "msg" | comm-poll.sh | comm-status.sh <working|waiting|blocked|done|idle> "why" | comm-list.sh | bus.sh sync
 EOF
     _workstate_rule
+    _capability_lines
     case "$listener" in
         restarted)
             cat <<EOF
@@ -320,6 +333,7 @@ if [ "$MODE" = "catchup" ]; then
 
     echo "BOOTSTRAP handle=$H poll=${POLL_COUNT:-0} selftest=$SELFTEST bus=$BUS identity=ok"
     _workstate_rule
+    _capability_lines
     exit 0
 fi
 
@@ -485,6 +499,7 @@ else
     echo "BOOTSTRAP-ARM handle=$HANDLE listener=$LISTENER_STATE identity=$IDENTITY MONITOR: $MONITOR_CMD (persistent; if the harness ends it, re-arm on the notice - this hook warns if you miss one)"
 fi
 _workstate_rule
+_capability_lines
 # A good join (this point is only ever reached after printing BOOTSTRAP-ARM
 # above) is success, full stop -- never let a well-behaved but non-integer-0
 # exit status trailing off the end of the script (a heredoc's `cat`, some
