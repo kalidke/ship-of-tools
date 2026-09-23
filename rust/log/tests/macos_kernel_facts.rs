@@ -317,21 +317,29 @@ fn client_fd_reports_the_server_pid_via_local_peertoken() {
     // BSD accept() can hand back the listener's O_NONBLOCK; make the
     // connection explicitly blocking-with-a-timeout rather than relying on
     // which behaviour this kernel has.
-    conn.set_nonblocking(false).expect("conn set_nonblocking(false)");
-    conn.set_read_timeout(Some(READ_TIMEOUT))
-        .expect("conn set_read_timeout");
+    // Darwin refuses `SO_RCVTIMEO` on an ACCEPTED AF_UNIX socket (EINVAL),
+    // though it honours it on a CONNECTED one -- `tests/socket_unix.rs`
+    // sets it on the connect side and is green on this leg. So the kernel
+    // cannot bound the read below; the deadline in `read_line_bounded`
+    // does. Recorded as an observation, never asserted: it is a portability
+    // fact about the platform, not the fact this test exists to pin.
+    conn.set_nonblocking(true).expect("conn set_nonblocking(true)");
+    let rcvtimeo = match conn.set_read_timeout(Some(READ_TIMEOUT)) {
+        Ok(()) => "ok".to_string(),
+        Err(e) => format!("unsupported ({e})"),
+    };
 
     // The cheap half: what the SERVER sees for its client. Recorded, not
     // asserted — the client's half is the one `authenticate_server` needs.
     let server_view = read_peer_token(conn.as_raw_fd());
 
     let mut client_report = String::new();
-    let read_result = BufReader::new(&conn).read_line(&mut client_report);
+    let read_result = read_line_bounded(&conn, &mut client_report, READ_TIMEOUT);
     let child_status = reap_bounded(&mut child, CHILD_REAP_TIMEOUT);
     let client_report = client_report.trim().to_string();
 
     let summary = format!(
-        "\n  server_pid={server_pid} client_pid={client_pid} child={child_status}\
+        "\n  server_pid={server_pid} client_pid={client_pid} child={child_status} so_rcvtimeo={rcvtimeo}\
          \n  CLIENT view (its own fd; the peer is the SERVER): {client_report}\
          \n  SERVER view (its own fd; the peer is the CLIENT): {}",
         describe(&server_view)
@@ -583,4 +591,41 @@ fn closing_the_pty_master_hangs_up_and_reaps_the_child() {
          Investigate the spawn, do not relax the assertion.",
         status.code()
     );
+}
+
+/// Read one newline-terminated report with OUR deadline rather than the
+/// kernel's: Darwin refuses `SO_RCVTIMEO` on an accepted AF_UNIX socket, so
+/// the socket is non-blocking and the bound lives here. Returns what
+/// `read_line` would: the byte count, `Ok(0)` for a clean EOF with nothing
+/// said, and `TimedOut` when the peer went quiet -- each of which the
+/// caller already renders with the full observation block.
+fn read_line_bounded(
+    conn: &UnixStream,
+    out: &mut String,
+    bound: Duration,
+) -> std::io::Result<usize> {
+    let deadline = Instant::now() + bound;
+    let mut reader = conn;
+    let mut buf = [0u8; 512];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => return Ok(out.len()),
+            Ok(n) => {
+                out.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if out.contains('\n') {
+                    return Ok(out.len());
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        ErrorKind::TimedOut,
+                        format!("the client said nothing within {bound:?}"),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
