@@ -37,6 +37,7 @@ mod session;
 mod session_state;
 mod site_serve;
 mod status_cli;
+mod stdio_bridge;
 mod topology_cli;
 mod topology_dial;
 mod topology_set;
@@ -211,6 +212,16 @@ async fn main() -> Result<()> {
                     eprintln!("sotd agent-exec: exec {:?} failed: {err}", argv[0]);
                     std::process::exit(2);
                 }
+            }
+            // The last inch of a cross-host dial: connect to THIS box's
+            // own endpoint for a label and shuttle stdin/stdout. Sits in
+            // this early block for the same reason the queries above do —
+            // it must not create the daemon's log file or state dir as a
+            // byproduct — and additionally because anything those steps
+            // printed would land on the byte stream it owns.
+            "stdio-bridge" => {
+                let args: Vec<String> = std::env::args().skip(2).collect();
+                std::process::exit(stdio_bridge::run(&args));
             }
             // The declared topology (`hosts.toml` v2): what this box
             // derives from it — the launcher's tunnel/dial plan, the relay
