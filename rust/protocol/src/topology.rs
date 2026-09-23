@@ -323,10 +323,35 @@ pub fn relay_endpoint(topo: &Topology, self_host: &str) -> Result<String, String
     } else if host.frontend {
         format!("tcp:127.0.0.1:{}", hub_local_port())
     } else {
-        let run = crate::runtime_sot_dir();
-        let base = run.parent().map(PathBuf::from).unwrap_or(run);
-        format!("unix:{}", base.join("sot-relay.sock").display())
+        format!("unix:{}", runtime_relay_dir().join("sot-relay.sock").display())
     })
+}
+
+/// The directory the hub's sockets live in: the runtime dir's PARENT
+/// (`/run/user/<uid>`), not the `sot/` subdirectory under it — the place
+/// `sot-relay-tunnel@` has always landed `sot-relay.sock`, and now also
+/// the hub's per-host sockets ([`relay_socket_path`]).
+fn runtime_relay_dir() -> PathBuf {
+    let run = crate::runtime_sot_dir();
+    run.parent().map(PathBuf::from).unwrap_or(run)
+}
+
+/// The hub's own socket for `host` — `<runtime base>/sot-host-<host>.sock`,
+/// a sibling of the comm relay's `sot-relay.sock`. The hub binds one per
+/// host it serves ([`relay_hosts`], unit [`relay_unit`]) and every peer
+/// forwards to it; the last inch beyond it is a `sotd stdio-bridge` on the
+/// box that owns the endpoint, so no caller ever learns that box's
+/// endpoint shape. A host name is already restricted to the characters a
+/// filename wants (`is_plain_host_name`), so the name IS the slug.
+///
+/// Two things this path is NOT. It is not derivable off the hub — like
+/// every path here it belongs to the box that owns it, so a peer asks the
+/// hub for it (`sotd topology relay-sockets`) exactly as it already asks
+/// for the hub's own socket. And it is not a liveness claim: systemd
+/// creates the socket whether or not the box behind it is up, and only a
+/// completed hello ever proves the latter.
+pub fn relay_socket_path(host: &str) -> PathBuf {
+    runtime_relay_dir().join(format!("sot-host-{host}.sock"))
 }
 
 /// `sotd topology plan --self <host>` — plain lines, one fact per line,
@@ -341,12 +366,20 @@ pub fn relay_endpoint(topo: &Topology, self_host: &str) -> Result<String, String
 /// self <host>
 /// hub <host>
 /// relay-endpoint <endpoint>          # what SOT_RELAY_ENDPOINT is on this box
-/// dial <host> <endpoint>             # one per dialable host (daemon, not frontend —
-///                                    # D8: a frontend box's daemon is never dialled
-///                                    # from elsewhere): this box's own socket for
-///                                    # itself, tcp:127.0.0.1:<port> for others
-/// tunnel <host> <port>               # one per dialable host except self:
-///                                    # ssh -L <port>:$(ssh <host> sotd session-socket-path sot) <host>
+/// dial <host> <endpoint>             # one per dialable host (every box declaring
+///                                    # `daemon`): this box's own socket for itself;
+///                                    # ON THE HUB, the hub's own relay socket for a
+///                                    # remote host; tcp:127.0.0.1:<port> elsewhere
+/// tunnel <host> <port>               # one per dialable host except self, and none
+///                                    # at all on the hub (whose `dial` endpoints are
+///                                    # already local): forward this port TO THE HUB'S
+///                                    # socket for that host —
+///                                    # ssh -L <port>:<the hub's socket for <host>> <hub>
+///                                    # — never an ssh into <host> itself. The hub's
+///                                    # socket for the hub is its own session socket;
+///                                    # for any other host it is `relay_socket_path`,
+///                                    # which only the hub can derive (ask it with
+///                                    # `sotd topology relay-sockets`).
 /// ```
 pub fn plan(topo: &Topology, self_host: &str) -> Result<String, String> {
     let relay = relay_endpoint(topo, self_host)?;
@@ -354,21 +387,41 @@ pub fn plan(topo: &Topology, self_host: &str) -> Result<String, String> {
     for (name, endpoint) in dial_endpoints(topo, self_host) {
         out.push_str(&format!("dial {name} {endpoint}\n"));
     }
-    for h in dialable_hosts(topo).filter(|h| h.name != self_host) {
-        out.push_str(&format!("tunnel {} {}\n", h.name, topo.local_port(&h.name).expect("listed")));
+    // Nothing to forward on the hub: every `dial` line it just emitted is
+    // already a local socket. A `tunnel` line there would name a forward
+    // from the hub to itself.
+    if self_host != topo.hub {
+        for h in dialable_hosts(topo).filter(|h| h.name != self_host) {
+            out.push_str(&format!("tunnel {} {}\n", h.name, topo.local_port(&h.name).expect("listed")));
+        }
     }
     Ok(out)
 }
 
-/// Every "dialable" host — `daemon && !frontend` (D8: a `frontend` box's
-/// daemon is never dialled from elsewhere) — in file order.
+/// Every "dialable" host — every box declaring `daemon` — in file order.
+///
+/// This was `daemon && !frontend` (D8), on the assumption that a box
+/// running a frontend is a personal machine whose rows are nobody else's
+/// business, and which nothing could reach anyway without ssh access to
+/// it. Both halves of that assumption are retired. A box can run a
+/// frontend AND host rows others want — an instrument machine with a
+/// screen on it is the shape that forced this — and reaching one now
+/// costs ssh access from the HUB only: a peer forwards to the hub's
+/// socket for that host ([`relay_socket_path`]), never to the host. So
+/// `daemon` means what it says: this box runs a daemon, so it can be
+/// dialled, screen or no screen.
+///
+/// [`tunnel_hosts`] is a SEPARATE list and still skips `frontend` boxes —
+/// the comm relay's reverse tunnels are not this.
 pub fn dialable_hosts(topo: &Topology) -> impl Iterator<Item = &HostDecl> {
-    topo.hosts.iter().filter(|h| h.daemon && !h.frontend)
+    topo.hosts.iter().filter(|h| h.daemon)
 }
 
 /// `(host, endpoint)` for every [`dialable_hosts`] entry, resolved for
-/// `self_host`: its own local socket for itself, `tcp:127.0.0.1:<ordinal
-/// port>` for every other one. This is `plan`'s own `dial` line
+/// `self_host`: its own local socket for itself; on the hub, the hub's own
+/// socket for a remote host ([`relay_socket_path`] — no forward needed,
+/// it is right there); `tcp:127.0.0.1:<ordinal port>` on every other box,
+/// where that port is a forward to the same hub socket. This is `plan`'s own `dial` line
 /// resolution, factored out so a caller that wants it as DATA — `sotd
 /// status` (topology plan §E), which actually dials each entry rather than
 /// printing it — shares the identical mapping instead of re-deriving it or
@@ -378,6 +431,8 @@ pub fn dial_endpoints(topo: &Topology, self_host: &str) -> Vec<(String, String)>
         .map(|h| {
             let endpoint = if h.name == self_host {
                 local_endpoint("sot")
+            } else if self_host == topo.hub {
+                format!("unix:{}", relay_socket_path(&h.name).display())
             } else {
                 format!("tcp:127.0.0.1:{}", topo.local_port(&h.name).expect("listed host has a port"))
             };
@@ -575,49 +630,98 @@ pub fn tunnel_hosts(topo: &Topology) -> Vec<&str> {
     topo.hosts.iter().filter(|h| h.name != topo.hub && !h.frontend).map(|h| h.name.as_str()).collect()
 }
 
-/// Refuse anywhere but the hub, naming it — `apply` enables/disables
-/// systemd units and must not run on a box's say-so alone.
-pub fn require_hub(topo: &Topology, self_host: &str) -> Result<(), String> {
+/// The `sot-host-relay@<host>` unit name for the hub's own socket for a
+/// host: the listener a peer forwards to, whose per-connection instance
+/// runs `sotd stdio-bridge` on that host.
+pub fn relay_unit(host: &str) -> String {
+    format!("sot-host-relay@{host}")
+}
+
+/// Hosts the hub serves a socket for: every [`dialable_hosts`] entry but
+/// the hub itself, whose endpoint is its own session socket and needs no
+/// relay. File order, like every other derived list here.
+pub fn relay_hosts(topo: &Topology) -> Vec<&str> {
+    dialable_hosts(topo).filter(|h| h.name != topo.hub).map(|h| h.name.as_str()).collect()
+}
+
+/// Refuse anywhere but the hub, naming it and the subcommand — these
+/// derivations are the HUB'S (it enables/disables the hub's systemd units,
+/// or prints paths in the hub's own runtime dir), and answering them
+/// elsewhere would be a confident wrong answer rather than a refusal.
+pub fn require_hub(topo: &Topology, self_host: &str, subcommand: &str) -> Result<(), String> {
     if self_host != topo.hub {
         return Err(format!(
-            "this box (`{self_host}`) is not the hub (`{}`); run `sotd topology apply` there instead",
+            "this box (`{self_host}`) is not the hub (`{}`); run `sotd topology {subcommand}` there instead",
             topo.hub
         ));
     }
     Ok(())
 }
 
-/// What `apply` does to the hub's `sot-relay-tunnel@*` instances: enable
-/// what's wanted and not yet enabled, disable what's enabled and no longer
-/// wanted. Pure — `enabled_now` is whatever the caller already queried
-/// from `systemctl`, so this is testable against a fixture with no
-/// systemd, and a second call with `enabled_now == tunnel_hosts(topo)` is
-/// a no-op by construction (both lists come back empty).
+/// One unit family's convergence: enable what's wanted and not yet
+/// enabled, disable what's enabled and no longer wanted. HOST names, not
+/// unit names — the caller owns the `@`-template spelling.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ApplyPlan {
+pub struct UnitDiff {
     pub enable: Vec<String>,
     pub disable: Vec<String>,
 }
 
-pub fn apply_plan(topo: &Topology, enabled_now: &[String]) -> ApplyPlan {
-    let want: Vec<String> = tunnel_hosts(topo).into_iter().map(str::to_string).collect();
-    let enable = want.iter().filter(|h| !enabled_now.iter().any(|e| e == *h)).cloned().collect();
-    let disable = enabled_now.iter().filter(|e| !want.contains(e)).cloned().collect();
-    ApplyPlan { enable, disable }
+impl UnitDiff {
+    pub fn is_empty(&self) -> bool {
+        self.enable.is_empty() && self.disable.is_empty()
+    }
 }
 
-/// The name apply's own drop-in owns inside `sot-relay-tunnel@<host>.service.d/`
-/// — fixed, so a hand-made drop-in beside it under any other name is never
-/// touched by a re-apply.
-pub const TUNNEL_DROPIN_FILE: &str = "topology.conf";
+fn converge(want: &[&str], enabled_now: &[String]) -> UnitDiff {
+    UnitDiff {
+        enable: want.iter().filter(|h| !enabled_now.iter().any(|e| e == *h)).map(|h| h.to_string()).collect(),
+        disable: enabled_now.iter().filter(|e| !want.contains(&e.as_str())).cloned().collect(),
+    }
+}
 
-/// The `ConditionHost=` drop-in text for one tunnel instance: the shared
-/// home means the same `[host.*]` list — and the same
+/// What `apply` does to the hub's TWO unit families: `sot-relay-tunnel@*`
+/// (the comm relay's reverse tunnels, [`tunnel_hosts`]) and
+/// `sot-host-relay@*` (the hub's own socket per dialable host,
+/// [`relay_hosts`]). Two lists because the two families answer different
+/// questions — a `frontend` box carries no relay tunnel but is dialable,
+/// and a `daemon = false` server is the reverse — so one list could not
+/// serve both without lying about one of them.
+///
+/// Pure: each `*_enabled_now` is whatever the caller already queried from
+/// `systemctl`, so this is testable against a fixture with no systemd, and
+/// a second call with the wanted lists is a no-op by construction.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ApplyPlan {
+    pub tunnels: UnitDiff,
+    pub relays: UnitDiff,
+}
+
+impl ApplyPlan {
+    pub fn is_empty(&self) -> bool {
+        self.tunnels.is_empty() && self.relays.is_empty()
+    }
+}
+
+pub fn apply_plan(topo: &Topology, tunnels_enabled_now: &[String], relays_enabled_now: &[String]) -> ApplyPlan {
+    ApplyPlan {
+        tunnels: converge(&tunnel_hosts(topo), tunnels_enabled_now),
+        relays: converge(&relay_hosts(topo), relays_enabled_now),
+    }
+}
+
+/// The name apply's own drop-in owns inside an instance's `.service.d/`
+/// — fixed, and the same in both unit families, so a hand-made drop-in
+/// beside it under any other name is never touched by a re-apply.
+pub const APPLY_DROPIN_FILE: &str = "topology.conf";
+
+/// The `ConditionHost=` drop-in text for one instance of either family:
+/// the shared home means the same `[host.*]` list — and the same
 /// `~/.config/systemd/user` — is visible on every box that shares it, so
-/// enabling `sot-relay-tunnel@<host>` there would start it on all of them.
-/// This pins execution to the box whose hostname is the hub (host names
-/// equal `host_name()`, module doc, so a plain match is enough).
-pub fn tunnel_dropin(hub: &str) -> String {
+/// enabling an instance there would start it on all of them. This pins
+/// execution to the box whose hostname is the hub (host names equal
+/// `host_name()`, module doc, so a plain match is enough).
+pub fn apply_dropin(hub: &str) -> String {
     format!(
         "# Generated by `sotd topology apply` — regenerated on every apply, do not edit by hand.\n[Unit]\nConditionHost={hub}\n"
     )
@@ -802,20 +906,41 @@ gpu-box = "other-user@gpu-box"
         let base = hub_local_port_for(TEST_USER);
         let t = parse(V2).unwrap();
         let own = local_endpoint("sot");
-        // gamma is daemon+frontend: never dialled from elsewhere (D8), and
-        // its own daemon is the launcher's implicit local connection.
+        let gamma_port = t.local_port("gamma").expect("gamma is listed");
+        // gamma is daemon AND frontend: dialable all the same, and on its
+        // own box that dial is the implicit local connection.
         assert_eq!(
             plan(&t, "gamma").unwrap(),
-            format!("self gamma\nhub alpha\nrelay-endpoint tcp:127.0.0.1:{base}\ndial alpha tcp:127.0.0.1:{base}\ntunnel alpha {base}\n")
+            format!("self gamma\nhub alpha\nrelay-endpoint tcp:127.0.0.1:{base}\ndial alpha tcp:127.0.0.1:{base}\ndial gamma {own}\ntunnel alpha {base}\n")
         );
+        // On the hub every dial is already local — its own socket for
+        // itself, its own relay socket for gamma — so no tunnel lines.
         assert_eq!(
             plan(&t, "alpha").unwrap(),
-            format!("self alpha\nhub alpha\nrelay-endpoint {own}\ndial alpha {own}\n")
+            format!(
+                "self alpha\nhub alpha\nrelay-endpoint {own}\ndial alpha {own}\ndial gamma unix:{}\n",
+                relay_socket_path("gamma").display()
+            )
         );
-        let beta = plan(&t, "beta").unwrap();
+        // A peer reaches gamma the same way it reaches any other host: a
+        // forward to the hub, on gamma's own ordinal port.
+        let beta_plan = plan(&t, "beta").unwrap();
+        assert!(beta_plan.contains(&format!("dial gamma tcp:127.0.0.1:{gamma_port}\n")), "{beta_plan}");
+        assert!(beta_plan.contains(&format!("tunnel gamma {gamma_port}\n")), "{beta_plan}");
+        let beta = beta_plan;
         assert!(beta.lines().nth(2).unwrap().starts_with("relay-endpoint unix:"), "{beta}");
         assert!(beta.lines().nth(2).unwrap().ends_with("sot-relay.sock"), "{beta}");
         assert!(plan(&t, "nobody").unwrap_err().contains("`nobody` is not a listed host"));
+    }
+
+    #[test]
+    fn relay_socket_path_is_a_sibling_of_the_relay_socket() {
+        let a = relay_socket_path("gamma");
+        assert_eq!(a.file_name().unwrap(), "sot-host-gamma.sock");
+        let relay = crate::runtime_sot_dir();
+        let base = relay.parent().map(PathBuf::from).unwrap_or(relay);
+        assert_eq!(a.parent().unwrap(), base, "the hub's per-host sockets sit beside sot-relay.sock");
+        assert_ne!(relay_socket_path("gamma"), relay_socket_path("delta"));
     }
 
     #[test]
@@ -834,53 +959,74 @@ hub = "hub"
 daemon = true
 
 [host.remote-a]
+daemon = true
 
 [host.remote-b]
 
 [host.fe]
+daemon = true
 frontend = true
 "#;
 
+    /// The comm relay's reverse tunnels are a separate concern from who is
+    /// dialable, and this is what pins them apart: `fe` is dialable (it
+    /// declares `daemon`) and still carries no tunnel, `remote-b` carries
+    /// a tunnel and is not dialable at all.
     #[test]
     fn tunnel_hosts_excludes_hub_and_frontend() {
         let t = parse(APPLY_FIXTURE).unwrap();
         assert_eq!(tunnel_hosts(&t), vec!["remote-a", "remote-b"]);
-        // gamma in V2 is daemon AND frontend: still excluded (frontend wins).
+        assert_eq!(relay_hosts(&t), vec!["remote-a", "fe"]);
+        // gamma in V2 is daemon AND frontend: no tunnel, but dialable.
         let v2 = parse(V2).unwrap();
         assert_eq!(tunnel_hosts(&v2), vec!["beta"]);
+        assert_eq!(relay_hosts(&v2), vec!["gamma"]);
     }
 
     #[test]
     fn require_hub_refuses_elsewhere() {
         let t = parse(APPLY_FIXTURE).unwrap();
-        assert!(require_hub(&t, "hub").is_ok());
-        let e = require_hub(&t, "remote-a").unwrap_err();
-        assert!(e.contains("`remote-a`") && e.contains("`hub`"), "{e}");
+        assert!(require_hub(&t, "hub", "apply").is_ok());
+        let e = require_hub(&t, "remote-a", "relay-sockets").unwrap_err();
+        assert!(e.contains("`remote-a`") && e.contains("`hub`") && e.contains("relay-sockets"), "{e}");
     }
 
     #[test]
     fn apply_plan_enables_disables_and_settles() {
         let t = parse(APPLY_FIXTURE).unwrap();
-        // Nothing enabled yet: enable both, disable nothing.
-        let p = apply_plan(&t, &[]);
-        assert_eq!(p.enable, vec!["remote-a", "remote-b"]);
-        assert!(p.disable.is_empty());
-        // A stale instance (no longer declared) alongside one still wanted.
-        let p = apply_plan(&t, &["remote-a".to_string(), "gone".to_string()]);
-        assert_eq!(p.enable, vec!["remote-b"]);
-        assert_eq!(p.disable, vec!["gone"]);
+        // Nothing enabled yet: enable everything each family wants.
+        let p = apply_plan(&t, &[], &[]);
+        assert_eq!(p.tunnels.enable, vec!["remote-a", "remote-b"]);
+        assert!(p.tunnels.disable.is_empty());
+        // Exactly one relay per dialable non-hub host, and no other.
+        assert_eq!(p.relays.enable, vec!["remote-a", "fe"]);
+        assert!(p.relays.disable.is_empty());
+        // A stale instance (no longer declared) alongside one still wanted,
+        // in each family independently.
+        let p = apply_plan(&t, &["remote-a".to_string(), "gone".to_string()], &["fe".to_string(), "remote-b".to_string()]);
+        assert_eq!(p.tunnels.enable, vec!["remote-b"]);
+        assert_eq!(p.tunnels.disable, vec!["gone"]);
+        assert_eq!(p.relays.enable, vec!["remote-a"]);
+        // `remote-b` carries a tunnel but declares no daemon: a relay for
+        // it is exactly the kind of stale instance apply takes away.
+        assert_eq!(p.relays.disable, vec!["remote-b"]);
         // Second run, now converged: a true no-op.
-        let p = apply_plan(&t, &["remote-a".to_string(), "remote-b".to_string()]);
-        assert!(p.enable.is_empty() && p.disable.is_empty());
+        let p = apply_plan(
+            &t,
+            &["remote-a".to_string(), "remote-b".to_string()],
+            &["remote-a".to_string(), "fe".to_string()],
+        );
+        assert!(p.is_empty(), "{p:?}");
     }
 
     #[test]
-    fn tunnel_dropin_text_is_exact() {
+    fn apply_dropin_text_is_exact() {
         assert_eq!(
-            tunnel_dropin("hub"),
+            apply_dropin("hub"),
             "# Generated by `sotd topology apply` — regenerated on every apply, do not edit by hand.\n[Unit]\nConditionHost=hub\n"
         );
         assert_eq!(tunnel_unit("remote-a"), "sot-relay-tunnel@remote-a");
+        assert_eq!(relay_unit("remote-a"), "sot-host-relay@remote-a");
     }
 
     #[test]
