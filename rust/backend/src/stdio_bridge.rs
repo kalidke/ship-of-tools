@@ -24,16 +24,13 @@
 //!    translation. A payload carrying both `\n` and `\r\n` survives
 //!    unchanged (Rust's own stdio translates nothing on any platform; the
 //!    caller must not run this under a pty, whose line discipline would).
-//! 3. **The exit code names the cause.** "It exited" is not a diagnosis
-//!    when the only record is a journal line on another box:
-//!
-//!    | code | meaning |
-//!    |---|---|
-//!    | 0 | clean EOF — one side closed, everything read was copied |
-//!    | 2 | usage: no `--label`, or an argument this does not take |
-//!    | 3 | the endpoint is absent — no daemon here, or not started yet |
-//!    | 4 | the endpoint is there but refused the connection, or timed out |
-//!    | 5 | an I/O error mid-copy, on either side |
+//! 3. **Zero on a clean EOF; nonzero and exactly one stderr line naming
+//!    the cause on any failure.** The line is the diagnosis — an absent
+//!    endpoint, a refused connect, a copy that died — and the caller's
+//!    journal is its only reader. There is deliberately no per-cause exit
+//!    code: nothing branches on one, and a code nobody reads is a promise
+//!    that has to stay true forever for nothing in return. The day
+//!    something does branch, it gets a code of its own then.
 //!
 //! The platform split is the connect and nothing else: one `Bridged` type
 //! per target, one `connect`, and a single copy loop over both.
@@ -45,10 +42,9 @@ use std::sync::Arc;
 
 use sot_log::transport::TransportError;
 
-pub const EXIT_USAGE: i32 = 2;
-pub const EXIT_NO_ENDPOINT: i32 = 3;
-pub const EXIT_CONNECT: i32 = 4;
-pub const EXIT_COPY: i32 = 5;
+/// The one failure code. It says "this did not work" and nothing more —
+/// the stderr line says which thing.
+const EXIT_FAILED: i32 = 1;
 
 /// One copy chunk. Big enough that a screenful of terminal output is one
 /// write; small enough to stay on the stack in both directions.
@@ -80,24 +76,12 @@ fn connect(path: &Path) -> Result<Bridged, TransportError> {
     sot_log::pipe_win::connect_pipe_path_unchallenged(text, &dial_cancel)
 }
 
-/// `NotFound` is the one connect failure worth its own code: on both
-/// platforms it means the endpoint does not exist (no daemon, or not yet
-/// bound), which is a different thing to diagnose than a refusal by one
-/// that does. Both connectors treat a missing endpoint as fatal on the
-/// first attempt, so neither waits out its connect bound to say so.
-fn connect_exit(e: &TransportError) -> i32 {
-    match e {
-        TransportError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => EXIT_NO_ENDPOINT,
-        _ => EXIT_CONNECT,
-    }
-}
-
 pub fn run(args: &[String]) -> i32 {
     let label = match args {
         [flag, label] if flag == "--label" => label.clone(),
         _ => {
             eprintln!("Usage: sotd stdio-bridge --label <label>");
-            return EXIT_USAGE;
+            return EXIT_FAILED;
         }
     };
 
@@ -105,8 +89,14 @@ pub fn run(args: &[String]) -> i32 {
     let client = match connect(&path) {
         Ok(c) => Arc::new(c),
         Err(e) => {
+            // The whole diagnosis in one line: which endpoint, and what
+            // it said — an absent one and a refusing one read differently
+            // here without needing to read differently in `$?`. Both
+            // connectors treat a missing endpoint as fatal on the first
+            // attempt, so this is said at once rather than after a
+            // connect bound.
             eprintln!("sotd stdio-bridge: {}: {e}", path.display());
-            return connect_exit(&e);
+            return EXIT_FAILED;
         }
     };
 
@@ -128,14 +118,14 @@ pub fn run(args: &[String]) -> i32 {
                     Ok(n) => {
                         if let Err(e) = client.write_all(&buf[..n]) {
                             eprintln!("sotd stdio-bridge: writing to the daemon: {e}");
-                            upstream.store(EXIT_COPY, Ordering::SeqCst);
+                            upstream.store(EXIT_FAILED, Ordering::SeqCst);
                             break;
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(e) => {
                         eprintln!("sotd stdio-bridge: reading stdin: {e}");
-                        upstream.store(EXIT_COPY, Ordering::SeqCst);
+                        upstream.store(EXIT_FAILED, Ordering::SeqCst);
                         break;
                     }
                 }
@@ -159,13 +149,13 @@ pub fn run(args: &[String]) -> i32 {
                 // reply until the next write deadlocks both ends.
                 if let Err(e) = stdout.write_all(&buf[..n]).and_then(|()| stdout.flush()) {
                     eprintln!("sotd stdio-bridge: writing to stdout: {e}");
-                    return EXIT_COPY;
+                    return EXIT_FAILED;
                 }
             }
             Err(TransportError::Cancelled) => return upstream.load(Ordering::SeqCst),
             Err(e) => {
                 eprintln!("sotd stdio-bridge: reading from the daemon: {e}");
-                return EXIT_COPY;
+                return EXIT_FAILED;
             }
         }
     }
