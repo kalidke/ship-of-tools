@@ -8,8 +8,7 @@
 //! both sides must agree on:
 //!
 //! - release discovery: list releases, pick a tag via [`select::select_target`]
-//!   (channel implied by the installed version — ADR 0030 §4 amendment
-//!   2026-09-08), then pin the chosen tag's `SHA256SUMS` into a full
+//!   (newest release, rc or not — ADR 0030 §4 amendment 2026-09-24), then pin the chosen tag's `SHA256SUMS` into a full
 //!   [`identity::ReleaseIdentity`],
 //! - fetch backends (`curl` default / `gh` for private forks / local dir for
 //!   tests and sideload),
