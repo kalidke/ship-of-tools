@@ -894,12 +894,13 @@ impl LegLease {
     /// macOS has no `pipe2` at all, so there the pipe exists for a
     /// moment WITHOUT the flag. **What recovers `pipe2`'s atomicity
     /// here is placement, not a flag**: this runs at `supervise_inner`'s
-    /// top — after the fence and the lane bind, both of which spawn no
-    /// thread, and before `spawn_recovery`, which is this process's
-    /// FIRST thread and its first fork+exec. There is no second thread
-    /// in existence to race the `fcntl` with, so the window `pipe2`
-    /// closes is a window nothing can enter. Keep this call where it
-    /// is; moving it below `spawn_recovery` would reopen it on macOS.
+    /// top — after the fence and the lane bind, neither of which spawns
+    /// a thread, and before `spawn_recovery`, which is this process's
+    /// FIRST thread of any kind; the first fork+exec is a leg spawn,
+    /// later still. So while the pipe is briefly flagless there is no
+    /// second thread in existence to `fork` from it, and the window
+    /// `pipe2` closes is a window nothing can enter. Keep this call
+    /// where it is; moving it below `spawn_recovery` would reopen it.
     /// The `FD_CLOEXEC` pass below is therefore written unconditionally
     /// rather than `cfg`-split: on Linux it re-asserts what `pipe2`
     /// already did (two syscalls per end, once per supervisor life), so
