@@ -1305,54 +1305,6 @@ mod runtime {
         spawn_detached(build, state_dir, workspace_id)
     }
 
-    /// [`spawn_detached_supervisor`] plus identity (R4b): an unreadable identity kills+reaps and reports a failed spawn.
-    fn spawn_detached_supervisor_with_identity(
-        sot_capsule_exe: &Path,
-        state_dir: &Path,
-        mode: StartMode,
-        agent_argv: &[String],
-        cwd: &Path,
-        agent_name: &str,
-        workspace_id: &str,
-        slug: &str,
-        agent_kind: &str,
-        account: &str,
-    ) -> std::io::Result<(Child, crate::workspaces::SupervisorIdentity)> {
-        let mut child = spawn_detached_supervisor(
-            sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, workspace_id, slug, agent_kind, account,
-        )?;
-        match spawned_identity(&child) {
-            Some(identity) => Ok((child, identity)),
-            None => {
-                // Signal only -- tokio reaps a dropped child in the
-                // background, so no wait/poll belongs on this path. If
-                // the signal itself failed to send, `try_wait` (one
-                // non-blocking check, never a poll loop) tells apart
-                // "already gone" from "possibly still running" so a
-                // silently dropped, possibly-live process is never
-                // reported as a clean failure. A live child surviving a
-                // failed SIGKILL of a process WE JUST SPAWNED is not
-                // expected on either platform; every branch below
-                // reports the pid rather than waiting it out.
-                let pid = child.id();
-                let detail = match child.start_kill() {
-                    Ok(()) => String::new(),
-                    Err(kill_err) => match child.try_wait() {
-                        Ok(Some(_)) => format!(" (kill also failed: {kill_err}, but it had already exited)"),
-                        Ok(None) => format!(" (kill failed: {kill_err}; pid {pid:?} may still be running)"),
-                        Err(wait_err) => {
-                            format!(" (kill failed: {kill_err}; try_wait also failed: {wait_err}; pid {pid:?} may still be running)")
-                        }
-                    },
-                };
-                drop(child);
-                Err(std::io::Error::other(format!(
-                    "capsule supervisor spawned but its own identity could not be read{detail}"
-                )))
-            }
-        }
-    }
-
     /// Decision 22's second fork: how a built `Command` is actually
     /// detached from the daemon so the supervisor authority survives the
     /// daemon's own exit.
@@ -2039,14 +1991,16 @@ mod runtime {
             .resolve(Some(&workspace_id))
             .map(|ws| (ws.agent(), ws.account.clone()))
             .unwrap_or_default();
-        // A fresh spawn begins a fresh epoch (R4b: identity must be readable or this is a failed spawn).
-        let (child, identity) = spawn_detached_supervisor_with_identity(
+        let child = spawn_detached_supervisor(
             sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug, &agent_kind, &account,
         )?;
-        if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
-            ws.begin_supervisor_epoch(identity);
-        }
+        // The supervisor authors its own identity; this daemon only
+        // LEARNS it, here, from the first status the settle draws out.
+        // A settle that yields no `Phase` leaves the row unclaimed --
+        // best-effort by design, since the background observer adopts
+        // whenever the lane does answer.
         let (phase, observation) = settle_after_spawn(state_dir, &workspace_id);
+        let identity = identity_of(&observation);
         if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
             observe_with_adoption(&ws, observation);
         }
@@ -2291,7 +2245,7 @@ mod runtime {
         // row with no watchdog (never started, terminal, or a live
         // authority merely ADOPTED at boot) reaches the spawn below
         // unchanged.
-        if ws.watchdog_identity().is_some() {
+        if ws.watchdog_owner().is_some() {
             return Ok(phase);
         }
         let argv = agent_argv(agent_kind)?;
@@ -2488,7 +2442,7 @@ mod runtime {
         // `mode`: `start_mode_for_phase` already maps a transient
         // `starting` read to `None`, "nothing to do", which is exactly
         // the stale-snapshot bug this closes).
-        if !is_resting_phase(initial_phase, ws.watchdog_identity().is_some()) {
+        if !is_resting_phase(initial_phase, ws.watchdog_owner().is_some()) {
             return LockedStep::WaitForSettle;
         }
         // R4c: Reconnect permits only StartMode::Resume -- never a row's first-ever start.
@@ -2731,40 +2685,47 @@ mod runtime {
         true
     }
 
-    /// Reads identity off the OS with no network -- works even before the lane answers.
-    ///
-    /// Correctly Linux-only, and the reason there is no macOS twin is
-    /// the reason this whole module has no macOS arm: `created` is
-    /// per-platform by definition (`sot_log::client::PeerIdentity`), and
-    /// what a macOS supervisor reports is its `pidversion`
-    /// (`sot_log::supervisor::self_pid_and_created`'s own macOS arm), not
-    /// a start time. A start time read here would typecheck, carry a
-    /// plausible number, and make every adoption comparison `Foreign` --
-    /// the exact class of silent half-mechanism this lane went looking
-    /// for. See `mod runtime`'s own gate above for the ruling that is
-    /// owed before this can have a Darwin twin.
-    #[cfg(target_os = "linux")]
-    fn spawned_identity(child: &Child) -> Option<crate::workspaces::SupervisorIdentity> {
-        let pid = child.id()?;
-        let created = sot_log::challenge_unix::process_start_ticks(pid).ok()?;
-        Some(crate::workspaces::SupervisorIdentity { pid, created })
-    }
-    // `raw_handle()` is `Child`'s own inherent Windows accessor (not via `AsRawHandle`).
-    #[cfg(windows)]
-    fn spawned_identity(child: &Child) -> Option<crate::workspaces::SupervisorIdentity> {
-        let pid = child.id()?;
-        let handle = child.raw_handle()? as windows_sys::Win32::Foundation::HANDLE;
-        let created = sot_log::challenge_win::creation_filetime_bits(handle).ok()?;
-        Some(crate::workspaces::SupervisorIdentity { pid, created })
+    /// The identity a settle learned, if its lane answered at all — the
+    /// ONE place a daemon-spawned supervisor's identity now comes from
+    /// (supervisor-epoch ruling: the supervisor authors it, this daemon
+    /// only learns it over the lane, on every platform). Every caller
+    /// OVERWRITES with this, never merely sets: a settle that came back
+    /// anything other than `Phase` must clear the previous leg's
+    /// identity too, or a later terminal mark could be credited to a
+    /// prior, now-dead spawn.
+    fn identity_of(observation: &crate::workspaces::Observation) -> Option<crate::workspaces::SupervisorIdentity> {
+        match observation {
+            crate::workspaces::Observation::Phase { supervisor, .. } => Some(*supervisor),
+            _ => None,
+        }
     }
 
-    /// A watchdog's exit-classification observation (R4b: always a real identity); no guard needed.
-    fn observe_terminal(workspaces: &Workspaces, workspace_id: &str, identity: crate::workspaces::SupervisorIdentity) {
+    /// Mints an ownership token for one watchdog install — unique for
+    /// this daemon's lifetime, which is the whole guarantee
+    /// `Workspace::watchdog_owner` needs (see that field's own doc).
+    fn next_watchdog_owner() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A watchdog's exit-classification observation; no guard needed.
+    /// `Some` judges the mark against the identity the leg's own settle
+    /// learned, exactly as before. `None` — a leg that exited before
+    /// ever answering its lane, which `sot-capsule supervise` does on
+    /// every bootstrap failure (it returns `EXIT_TERMINAL` from three
+    /// sites ahead of its own accept loop) — marks
+    /// [`crate::workspaces::Observation::TerminalUnclaimed`] instead, so
+    /// the row still latches `terminal` rather than reading `stopped`
+    /// and re-spawning the same instant failure on every attach.
+    fn observe_terminal(workspaces: &Workspaces, workspace_id: &str, identity: Option<crate::workspaces::SupervisorIdentity>) {
         if let Some(ws) = workspaces.resolve(Some(workspace_id)) {
-            super::observer::observe(
-                &ws,
-                crate::workspaces::Observation::Phase { phase: crate::workspaces::Phase::Terminal, supervisor: identity, voyage: None },
-            );
+            let observation = match identity {
+                Some(supervisor) => {
+                    crate::workspaces::Observation::Phase { phase: crate::workspaces::Phase::Terminal, supervisor, voyage: None }
+                }
+                None => crate::workspaces::Observation::TerminalUnclaimed,
+            };
+            super::observer::observe(&ws, observation);
         }
     }
 
@@ -2826,7 +2787,7 @@ mod runtime {
         agent_kind: String,
         account: String,
         child: Child,
-        initial_identity: crate::workspaces::SupervisorIdentity,
+        initial_identity: Option<crate::workspaces::SupervisorIdentity>,
         workspaces: Workspaces,
     ) {
         tokio::spawn(async move {
@@ -2835,40 +2796,39 @@ mod runtime {
             };
             // Ruling: the watchdog is the single writer of restarts for a
             // child this daemon spawned. This guard is the ONE place the
-            // row's `watchdog_identity` fact is announced (constructor,
-            // and `advance` on every respawn) and retracted (Drop) -- a
-            // compare-and-clear against THIS task's own last-announced
-            // identity, never a plain overwrite, so a superseded
+            // row's `watchdog_owner` fact is announced (constructor) and
+            // retracted (Drop) -- a compare-and-clear against THIS
+            // task's own token, never a plain clear, so a superseded
             // watchdog's belated cleanup can never erase a replacement's
-            // ownership set after it.
-            struct WatchdogIdentityGuard {
+            // ownership set after it. One token per task, minted once:
+            // ownership is a property of the WATCHDOG, not of whichever
+            // leg it currently holds, so a respawn has nothing to
+            // announce here.
+            struct WatchdogOwnerGuard {
                 workspaces: Workspaces,
                 workspace_id: String,
-                last_identity: crate::workspaces::SupervisorIdentity,
+                token: u64,
             }
-            impl WatchdogIdentityGuard {
-                fn new(workspaces: Workspaces, workspace_id: String, identity: crate::workspaces::SupervisorIdentity) -> Self {
+            impl WatchdogOwnerGuard {
+                fn new(workspaces: Workspaces, workspace_id: String) -> Self {
+                    let token = next_watchdog_owner();
                     if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
-                        ws.set_watchdog_identity(identity);
+                        ws.set_watchdog_owner(token);
                     }
-                    Self { workspaces, workspace_id, last_identity: identity }
-                }
-                fn advance(&mut self, identity: crate::workspaces::SupervisorIdentity) {
-                    if let Some(ws) = self.workspaces.resolve(Some(&self.workspace_id)) {
-                        ws.set_watchdog_identity(identity);
-                    }
-                    self.last_identity = identity;
+                    Self { workspaces, workspace_id, token }
                 }
             }
-            impl Drop for WatchdogIdentityGuard {
+            impl Drop for WatchdogOwnerGuard {
                 fn drop(&mut self) {
                     if let Some(ws) = self.workspaces.resolve(Some(&self.workspace_id)) {
-                        ws.clear_watchdog_identity_if(self.last_identity);
+                        ws.clear_watchdog_owner_if(self.token);
                     }
                 }
             }
-            let mut watchdog_identity_guard = WatchdogIdentityGuard::new(workspaces.clone(), workspace_id.clone(), initial_identity);
-            // Reused by every exit classification until a restart begins a fresh epoch.
+            let _watchdog_owner_guard = WatchdogOwnerGuard::new(workspaces.clone(), workspace_id.clone());
+            // What each exit classification is judged against: the
+            // identity the CURRENT leg's own settle learned, or `None`
+            // when its lane never answered.
             let mut current_identity = initial_identity;
             let mut leg_opt = Some(child);
             let mut restart_times: Vec<Instant> = Vec::new();
@@ -2944,7 +2904,7 @@ mod runtime {
                         let agent_kind_for_spawn = agent_kind.clone();
                         let account_for_spawn = account.clone();
                         let spawn_result = tokio::task::spawn_blocking(move || {
-                            spawn_detached_supervisor_with_identity(
+                            spawn_detached_supervisor(
                                 &exe,
                                 &dir,
                                 StartMode::Resume,
@@ -2959,23 +2919,29 @@ mod runtime {
                         })
                         .await;
                         match spawn_result {
-                            Ok(Ok((child, identity))) => {
-                                // A fresh leg begins a fresh epoch, like the first spawn.
-                                current_identity = identity;
-                                watchdog_identity_guard.advance(identity);
-                                if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
-                                    ws.begin_supervisor_epoch(identity);
-                                }
+                            Ok(Ok(child)) => {
                                 // Settle BEFORE this guard drops — the
-                                // SAME shared wait `start_supervisor`
+                                // SAME shared wait `spawn_and_watch`
                                 // itself uses; see `settle_after_spawn`'s
                                 // own doc for why a fresh spawn cannot
                                 // skip this without reopening the exact
                                 // guard-release race this restart's own
-                                // recheck above just closed.
+                                // recheck above just closed. A fresh leg
+                                // begins a fresh epoch exactly as the
+                                // first spawn does: by being adopted
+                                // from what it answers.
                                 let settle_dir = state_dir.clone();
                                 let settle_wsid = workspace_id.clone();
                                 let settled = tokio::task::spawn_blocking(move || settle_after_spawn(&settle_dir, &settle_wsid)).await;
+                                // Always OVERWRITE, never merely set: a
+                                // settle that yields no `Phase` clears
+                                // the PREVIOUS leg's identity, or the
+                                // next terminal mark would be credited
+                                // to a spawn that is already dead.
+                                current_identity = match &settled {
+                                    Ok((_phase, observation)) => identity_of(observation),
+                                    Err(_join_err) => None,
+                                };
                                 if let (Ok((_phase, observation)), Some(ws)) = (settled, workspaces.resolve(Some(&workspace_id))) {
                                     observe_with_adoption(&ws, observation);
                                 }

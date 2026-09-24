@@ -2577,6 +2577,94 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
 /// forever -- the row could never actually be destroyed. On Windows this
 /// test uses the SAME "no `claude` on a CI runner's PATH" precondition to
 /// force the failure deterministically (no new fixture machinery). On
+/// The supervisor-epoch ruling's addition (b), end to end: a capsule
+/// that dies inside its OWN bootstrap -- before it ever binds its lane,
+/// so no `status` is ever served and no identity ever reaches this
+/// daemon -- still latches the row `terminal` rather than leaving it
+/// `stopped` to re-spawn the same instant failure on every attach. This
+/// class is not hypothetical: a capsule dying at bootstrap is exactly
+/// how the state-root failure on a shared home presented, and `terminal`
+/// on the row was the signal the operator read.
+///
+/// The trigger is `sot-capsule supervise`'s own first act,
+/// `create_dir_all(<state_dir>/voyages)`, which runs BEFORE the
+/// authority fence, the lane bind and the parent-death lease: a regular
+/// FILE at that path makes it fail, and the supervisor returns
+/// `EXIT_TERMINAL` having answered nothing. A file rather than a
+/// permission bit on purpose -- `chmod` proves nothing when the suite
+/// happens to run as root.
+///
+/// Note what CANNOT explain a pass here: with no answered status there
+/// is no `Observation::Phase` to carry a `Terminal`, so the only path to
+/// this row's phase is `Observation::TerminalUnclaimed`. Before the
+/// ruling the mark rode the identity the daemon read off the OS at
+/// spawn; this test is the guard on the replacement.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_capsule_that_dies_before_its_lane_answers_still_latches_the_row_terminal() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("tub");
+    // A REAL (if unlaunchable) agent, so the default row is not the
+    // inert anchor -- the same precondition the unlaunchable-agent test
+    // below establishes, and for the same reason. The agent itself never
+    // runs here: its supervisor dies first.
+    env.seed_default_capsule_toml("claude");
+    let fake_claude_dir = env.seed_fake_unlaunchable_claude();
+    env.spawn_sotd_with_prepended_path(&fake_claude_dir);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let default_row = list_payload["workspaces"]
+        .as_array()
+        .expect("workspaces array")
+        .iter()
+        .find(|w| w["is_default"].as_bool() == Some(true))
+        .cloned()
+        .expect("a default workspace row");
+    let default_workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
+    let default_target = default_row["session_name"].as_str().expect("session_name").to_string();
+
+    // Block the bootstrap. The daemon never creates a state directory
+    // itself (rule C), so both of these are this test's own doing.
+    let state_dir_path = env.state_root.join("sot").join("workspaces").join(&default_workspace_id);
+    std::fs::create_dir_all(&state_dir_path).expect("mkdir the row's state dir");
+    std::fs::write(state_dir_path.join("voyages"), b"not a directory").expect("write the blocking file");
+
+    let pty_req = serde_json::json!({
+        "cols": 80, "rows": 24, "user_switch": true, "target": default_target,
+    });
+    let _ = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
+    next_id += 1;
+
+    let terminal_deadline = Instant::now() + BOUND;
+    loop {
+        let id = next_id;
+        next_id += 1;
+        let payload = call(&mut conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        if let Some(row) = find_row(&payload, &default_workspace_id) {
+            if row["phase"].as_str() == Some("terminal") {
+                break;
+            }
+            assert!(
+                Instant::now() < terminal_deadline,
+                "a capsule that died before answering its lane left the row at {:?}, never \"terminal\"",
+                row["phase"]
+            );
+        }
+        assert!(Instant::now() < terminal_deadline, "timed out waiting for the row to latch \"terminal\"");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 /// Linux a genuinely absent `claude` does NOT reproduce the same
 /// scenario: `agent_argv`'s own resolution step (`resolve_claude`)
 /// refuses at the DAEMON level instead, before `sot-capsule` is ever

@@ -200,18 +200,20 @@ pub struct Workspace {
     pub(crate) agent_handle: Mutex<String>,
     /// Never persisted; written only through [`Workspace::apply_phase_observation`].
     phase_cell: Mutex<PhaseCell>,
-    /// `Some` for exactly as long as a watchdog task owns restarting this
-    /// row's own daemon-spawned child — updated to the watchdog's own
-    /// CURRENT child on every respawn; cleared by a compare-and-clear
-    /// (`Workspace::clear_watchdog_identity_if`) that only ever erases
-    /// what that same task itself last wrote, so a superseded watchdog's
-    /// own belated cleanup can never erase a replacement's ownership.
-    /// The one fact `ensure_started_locked`/`resume_locked` consult
-    /// before spawning a resume, so activation never races the
-    /// watchdog's own backoff/restart budget. `None` for a row with no
-    /// watchdog: never started, terminal, or a live authority merely
-    /// ADOPTED at boot.
-    watchdog_identity: Mutex<Option<SupervisorIdentity>>,
+    /// `Some(token)` for exactly as long as a watchdog task owns
+    /// restarting this row's own daemon-spawned child. An OWNERSHIP
+    /// TOKEN, not an identity: every read is `is_some()` plus a
+    /// compare-and-clear, so what the value must guarantee is only that
+    /// no two watchdogs can ever hold the same one. A per-daemon counter
+    /// gives that outright, where a supervisor identity gave it merely
+    /// by luck — two successive legs can share a pid AND a creation
+    /// tick, and a superseded watchdog's belated cleanup would then
+    /// erase its replacement's ownership. The one fact
+    /// `ensure_started_locked`/`resume_locked` consult before spawning a
+    /// resume, so activation never races the watchdog's own
+    /// backoff/restart budget. `None` for a row with no watchdog: never
+    /// started, terminal, or a live authority merely ADOPTED at boot.
+    watchdog_owner: Mutex<Option<u64>>,
     /// The most recent FAILED start-on-attach activation's detail, kept
     /// until the next attempt — never implies `phase == Terminal`.
     activation_error: Mutex<Option<String>>,
@@ -249,7 +251,7 @@ impl std::fmt::Debug for Workspace {
             .field("account", &self.account)
             .field("agent_handle", &self.agent_handle())
             .field("phase", &self.phase())
-            .field("watchdog_identity", &self.watchdog_identity())
+            .field("watchdog_owner", &self.watchdog_owner())
             .field("activation_error", &self.activation_error())
             .field("files_mode_built", &self.files_mode.get().is_some())
             .field("concept_built", &self.concept.get().is_some())
@@ -294,7 +296,7 @@ impl Workspace {
             account: String::new(),
             agent_handle: Mutex::new(String::new()),
             phase_cell: Mutex::new(PhaseCell::default()),
-            watchdog_identity: Mutex::new(None),
+            watchdog_owner: Mutex::new(None),
             activation_error: Mutex::new(None),
             files_mode: OnceLock::new(),
             concept: OnceLock::new(),
@@ -339,23 +341,22 @@ impl Workspace {
     /// Whether a watchdog currently owns this row's restarts — see the
     /// field's own doc. Read by [`crate::capsule_workspace::runtime::
     /// resume_locked`] before ever spawning a resume.
-    pub(crate) fn watchdog_identity(&self) -> Option<SupervisorIdentity> {
-        *self.watchdog_identity.lock().unwrap_or_else(|e| e.into_inner())
+    pub(crate) fn watchdog_owner(&self) -> Option<u64> {
+        *self.watchdog_owner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The watchdog task's own announcement — called on install and on
-    /// every respawn it performs itself. Always a plain overwrite: the
-    /// caller is by construction the CURRENT watchdog announcing its own
-    /// latest child.
-    pub(crate) fn set_watchdog_identity(&self, identity: SupervisorIdentity) {
-        *self.watchdog_identity.lock().unwrap_or_else(|e| e.into_inner()) = Some(identity);
+    /// The watchdog task's own announcement, once, at install — a plain
+    /// overwrite: the caller is by construction the newest watchdog, and
+    /// its token is unique for this daemon's lifetime.
+    pub(crate) fn set_watchdog_owner(&self, token: u64) {
+        *self.watchdog_owner.lock().unwrap_or_else(|e| e.into_inner()) = Some(token);
     }
 
     /// Compare-and-clear: `None`s the field only if it still holds
     /// `expected` — a superseded watchdog's own belated cleanup can
     /// never erase a replacement's ownership set after it.
-    pub(crate) fn clear_watchdog_identity_if(&self, expected: SupervisorIdentity) {
-        let mut cell = self.watchdog_identity.lock().unwrap_or_else(|e| e.into_inner());
+    pub(crate) fn clear_watchdog_owner_if(&self, expected: u64) {
+        let mut cell = self.watchdog_owner.lock().unwrap_or_else(|e| e.into_inner());
         if *cell == Some(expected) {
             *cell = None;
         }
