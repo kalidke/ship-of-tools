@@ -112,6 +112,12 @@ pub mod probe_win;
 // `SpawnedChild`, over pidfds. `pub`, matching `probe_win`: self-gated
 // (see the module's own `#![cfg(target_os = "linux")]`).
 pub mod probe_unix;
+// The macOS half of the same seam -- `RealProbeOps` and `SpawnedChild`,
+// over a `kqueue` `EVFILT_PROC`/`NOTE_EXIT` knote. A separate module,
+// not a widened `probe_unix`: every mechanism there is a pidfd, and
+// Darwin has none. `pub`, matching its two siblings: self-gated (see the
+// module's own `#![cfg(target_os = "macos")]`).
+pub mod probe_macos;
 // Crate-private (Codex review finding, capsule_win.rs round): ADR 0041's
 // "one private machine" ruling means this module's items are not part of
 // the crate's public API — `capsule_win.rs` is the only real caller and

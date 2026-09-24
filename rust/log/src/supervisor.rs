@@ -262,6 +262,8 @@ use crate::pointer::{self, PointerState};
 use crate::probe_win::RealProbeOps;
 #[cfg(target_os = "linux")]
 use crate::probe_unix::RealProbeOps;
+#[cfg(target_os = "macos")]
+use crate::probe_macos::RealProbeOps;
 use crate::recovery::{self, LatestLegState};
 use crate::segment::RetentionClass;
 // L1-unix LU3b: the client-side supervisor-lane helpers (and the shared
