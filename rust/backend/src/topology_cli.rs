@@ -226,6 +226,14 @@ fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
     // while the relay's unit text is per host (`topology::relay_unit` says
     // why systemd leaves no choice), so apply writes the pair before
     // enabling it and takes it away again on disable.
+    // BEST EFFORT, not all-or-nothing: one host that is powered off or
+    // refusing ssh must not stop every other host being converged. A `?`
+    // here aborted the whole fleet on the first failing unit -- including
+    // work for hosts that were fine -- and left the operator to guess how
+    // far it got. Each unit's failure is reported as it happens, the rest
+    // still run, and the aggregate is returned at the end so the exit
+    // status is still honest.
+    let mut failures: Vec<String> = Vec::new();
     for (diff, unit, generated) in [
         (&plan.tunnels, topology::tunnel_unit as fn(&str) -> String, false),
         (&plan.relays, topology::relay_unit as fn(&str) -> String, true),
@@ -233,24 +241,44 @@ fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
         for h in &diff.enable {
             println!("{verb}enable {}", unit(h));
             if !dry_run {
-                if generated {
-                    write_relay_units(h)?;
+                let step = || -> Result<(), String> {
+                    if generated {
+                        write_relay_units(h)?;
+                    }
+                    write_dropin(&unit(h), &topo.hub)?;
+                    run_systemctl(&["--user", "daemon-reload"])?;
+                    run_systemctl(&["--user", "enable", "--now", &unit(h)])
+                };
+                if let Err(e) = step() {
+                    eprintln!("  FAILED {}: {e}", unit(h));
+                    failures.push(format!("{}: {e}", unit(h)));
                 }
-                write_dropin(&unit(h), &topo.hub)?;
-                run_systemctl(&["--user", "daemon-reload"])?;
-                run_systemctl(&["--user", "enable", "--now", &unit(h)])?;
             }
         }
         for h in &diff.disable {
             println!("{verb}disable {}", unit(h));
             if !dry_run {
-                run_systemctl(&["--user", "disable", "--now", &unit(h)])?;
-                remove_dropin(&unit(h))?;
-                if generated {
-                    remove_relay_units(h)?;
+                let step = || -> Result<(), String> {
+                    run_systemctl(&["--user", "disable", "--now", &unit(h)])?;
+                    remove_dropin(&unit(h))?;
+                    if generated {
+                        remove_relay_units(h)?;
+                    }
+                    Ok(())
+                };
+                if let Err(e) = step() {
+                    eprintln!("  FAILED {}: {e}", unit(h));
+                    failures.push(format!("{}: {e}", unit(h)));
                 }
             }
         }
+    }
+    if !failures.is_empty() {
+        return Err(format!(
+            "{} unit(s) failed; every other unit in the plan was applied:\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        ));
     }
     if dry_run {
         println!("(dry run — pass --yes to apply)");
@@ -275,7 +303,17 @@ fn enabled_hosts((prefix, suffix): (&str, &str)) -> Result<Vec<String>, String> 
         .output()
         .map_err(|e| format!("systemctl --user list-unit-files: {e}"))?;
     if !out.status.success() {
-        return Err(format!("systemctl --user list-unit-files: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        // systemd exits 1 when a PATTERN matched no unit files, with
+        // nothing on stderr -- which is the ordinary state of a family
+        // before its first host is enrolled, not a failure. Treating it
+        // as one made `apply` refuse on exactly the bootstrap it exists
+        // to perform, and report it as an error naming nothing.
+        let err = String::from_utf8_lossy(&out.stderr);
+        let err = err.trim();
+        if err.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(format!("systemctl --user list-unit-files: {err}"));
     }
     let text = String::from_utf8_lossy(&out.stdout);
     Ok(text
@@ -353,7 +391,22 @@ fn write_dropin(unit: &str, hub: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    std::fs::write(&path, topology::apply_dropin(hub)).map_err(|e| format!("{}: {e}", path.display()))
+    // `ConditionHost=` is compared against the hostname systemd sees, which
+    // on a domain-joined box is the FQDN -- so the topology's SHORT hub name
+    // never matched and every generated unit was enabled, correct and
+    // permanently skipped. `apply` only ever runs ON the hub (`require_hub`),
+    // so the hostname this process reads IS the value to write: exact, no
+    // glob. A glob (`<hub>*`) also matches, but it would match a different
+    // box whose name merely starts the same -- and the shared home these
+    // units live on is precisely where such a collision would bite, which is
+    // the condition's whole reason for existing.
+    let condition_host = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|h| h.trim().to_string())
+        .ok()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| hub.to_string());
+    std::fs::write(&path, topology::apply_dropin(&condition_host))
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Removes apply's own drop-in file, then the `.d/` directory only if that
