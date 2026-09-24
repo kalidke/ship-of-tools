@@ -35,33 +35,52 @@ done
 TAG="v$VERSION"
 
 # ---- preflight -------------------------------------------------------------
+# A tag is cut from main, or from the release line's candidate branch
+# (`fixes/<version>` — the accumulation branch every rc of a line is tagged
+# from; owner ruling 2026-09-24: work accumulates there and main moves only on
+# the owner's call). Nothing else, because a tag from an arbitrary branch is a
+# release whose history nobody can find. Whichever it is, `$branch` is then the
+# one thing the CI gate reads and the push pushes — below here the script never
+# names a branch again.
 branch=$(git rev-parse --abbrev-ref HEAD)
-[[ "$branch" == "main" ]] || { echo "preflight: on '$branch', releases cut from main" >&2; exit 1; }
+case "$branch" in
+    main | fixes/*) ;;
+    *) echo "preflight: on '$branch' — a tag is cut from main or from a candidate branch (fixes/*)" >&2; exit 1 ;;
+esac
 if [[ $ALLOW_DIRTY -eq 0 && -n "$(git status --porcelain)" ]]; then
     echo "preflight: working tree not clean (see git status; --allow-dirty to override)" >&2; exit 1
 fi
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && { echo "preflight: tag $TAG already exists" >&2; exit 1; }
-git fetch -q origin main
-if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
-    echo "preflight: HEAD != origin/main — pull/push first" >&2; exit 1
+# Explicit refspec: `git fetch origin <branch>` only updates the tracking ref
+# opportunistically, and the comparison below has to read a ref that is
+# certainly fresh. A branch that isn't on origin yet fails here by design —
+# CI cannot have run on what was never pushed.
+git fetch -q origin "refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null \
+    || { echo "preflight: $branch is not on origin — push it and let CI run there first" >&2; exit 1; }
+if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$branch")" ]]; then
+    echo "preflight: HEAD != origin/$branch — pull/push first" >&2; exit 1
 fi
 # CI is the TAG gate, not the per-PR gate (owner ruling 2026-09-08): the
-# Rust and CI workflows run on pushes to main (path-filtered, so a docs-only
-# HEAD may have no Rust run of its own), so the LATEST run of each on main
-# must be green and must sit at HEAD or an ancestor of it. Anything else
+# Rust and CI workflows are path-filtered (so a docs-only HEAD may have no
+# Rust run of its own), so the LATEST run of each ON THE BRANCH BEING CUT must
+# be green and must sit at HEAD or an ancestor of it. Anything else
 # (failed, cancelled, still running, a run on a commit not in HEAD's history)
 # refuses the cut; rerun a flaky leg (`gh run rerun <id> --failed`), never
-# skip it. gh is required — a release is never cut blind.
-command -v gh >/dev/null 2>&1 || { echo "preflight: gh not found — CI on main cannot be verified" >&2; exit 1; }
+# skip it. gh is required — a release is never cut blind. A candidate branch
+# only has runs if the workflows trigger on it, or if someone dispatched them
+# there (`gh workflow run <wf> --ref <branch>`); an empty list REFUSES the cut
+# rather than waving it through, which is the whole reason this reads the
+# branch instead of main.
+command -v gh >/dev/null 2>&1 || { echo "preflight: gh not found — CI on $branch cannot be verified" >&2; exit 1; }
 for wf in rust.yml CI.yml; do
     # The version-stamp commit's run is skipped by the workflows' own `if`
     # (2026-09-18), so read past skipped runs to the latest real verdict.
-    run="$(gh run list --branch main --workflow "$wf" --limit 5 --json headSha,status,conclusion,databaseId \
+    run="$(gh run list --branch "$branch" --workflow "$wf" --limit 5 --json headSha,status,conclusion,databaseId \
         --jq '[.[] | select(.conclusion != "skipped")][0] | "\(.headSha) \(.status) \(.conclusion) \(.databaseId)"' 2>/dev/null || true)"
-    [[ -n "$run" && "$run" != "null null null null" ]] || { echo "preflight: no $wf run on main — push and let CI finish, or: gh workflow run $wf --ref main" >&2; exit 1; }
+    [[ -n "$run" && "$run" != "null null null null" ]] || { echo "preflight: no $wf run on $branch — push and let CI finish, or: gh workflow run $wf --ref $branch" >&2; exit 1; }
     read -r run_sha run_status run_concl run_id <<<"$run"
     if [[ "$run_concl" != "success" ]]; then
-        echo "preflight: latest $wf run on main (id $run_id, ${run_sha:0:8}) is $run_status/$run_concl — rerun it (gh run rerun $run_id --failed) and cut when green" >&2; exit 1
+        echo "preflight: latest $wf run on $branch (id $run_id, ${run_sha:0:8}) is $run_status/$run_concl — rerun it (gh run rerun $run_id --failed) and cut when green" >&2; exit 1
     fi
     git merge-base --is-ancestor "$run_sha" HEAD \
         || { echo "preflight: latest green $wf run is at ${run_sha:0:8}, which is not in HEAD's history" >&2; exit 1; }
@@ -130,6 +149,6 @@ fi
 git add -- "${STAMPED[@]}" ${NEW_FILES[@]+"${NEW_FILES[@]}"}
 git commit -m "release: $TAG"
 git tag -a "$TAG" -m "Ship of Tools $TAG"
-git push origin main "$TAG"
+git push origin "$branch" "$TAG"
 
 echo "== $TAG pushed — release workflow: https://github.com/kalidke/ship-of-tools/actions/workflows/release.yml"
