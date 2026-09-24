@@ -21,10 +21,13 @@ Using it well (field lessons, 2026-09-17):
   through `tail`/`head` and never background it; a run that seems stuck for
   exactly `--timeout` means stale comm scripts on that box — reinstall
   (`/sot-install`) before building any workaround.
-- Anything longer than one line goes in `--stdin` (or a file inside the
-  workspace root for `repl run`, which refuses paths outside it). A
-  heavily quoted `--code` string fails at Julia's parser instantly, and a
-  fast completion leaves NO daemon log line — only slow ones are logged.
+- A line or two goes in `--code`. Anything longer goes in a `.jl` file
+  inside the workspace root (`repl run` refuses paths outside it; the
+  julia-repl skill keeps them in `dev/output/repl/`), run with `repl run`.
+  Its errors carry the file's line numbers, and the owner can read what
+  ran. A heavily quoted `--code` string fails at Julia's parser instantly,
+  and a fast completion leaves NO daemon log line — only slow ones are
+  logged.
 - Edits not taking effect: Revise tracks only packages loaded after
   `using Revise`; for a file loaded before that, `include` it again into
   its module. A binding created by `include` inside an eval is not visible
