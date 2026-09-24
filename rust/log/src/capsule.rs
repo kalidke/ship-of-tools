@@ -241,6 +241,18 @@ const OUTPUT_QUEUE_BUDGET_BYTES: u64 = 8 * 1024 * 1024;
 const TEARDOWN_REAP_TIMEOUT: Duration = Duration::from_secs(10);
 const TEARDOWN_REAP_POLL: Duration = Duration::from_millis(20);
 
+/// How long a terminal reader event that arrived BEFORE `close_output_side`
+/// gets to be explained by the producer's own exit (ADR 0043 decision 12, as
+/// amended). On macOS a session leader's exit revokes every fd on its
+/// controlling terminal -- the capsule's deliberately held slave included --
+/// from INSIDE the exit path, so the master can report its terminal state a
+/// moment before the leader is observable as exited. This bounds that
+/// kernel-internal window and nothing else: it is not a knob, not
+/// configurable, and expires only on a genuine anomaly, which is fatal. Four
+/// orders of magnitude above the window it covers and an order of magnitude
+/// below [`TEARDOWN_REAP_TIMEOUT`], so it can never mask a reap failure.
+const READER_END_EXIT_GRACE: Duration = Duration::from_secs(2);
+
 /// Bounded wait, during teardown Phase B, for the reader thread's own
 /// terminal event after the closer thread's `close_pty()` call is spawned.
 /// Starts the moment that thread is spawned — CONCURRENTLY with the
@@ -2055,6 +2067,14 @@ pub fn run<P: Producer>(
     // again, which is what makes admission revocation real). The wire
     // transport is serviced every iteration too (`service_transport_events!`
     // + `tick`) — see the module doc's "Step 5 (U2)" section.
+    // Set by the ONE rule below (both the main loop's arm and teardown
+    // Phase A's identical one): a terminal reader event that arrived before
+    // `close_output_side` and that a confirmed producer exit explained. Stays
+    // `None` on Linux and on Windows by those platforms' own contracts -- see
+    // the arm itself -- and its presence in `producer_dead.detail` is how the
+    // one admitted case is RECORDED rather than forgiven.
+    let mut output_ended_early: Option<String> = None;
+
     let exit_kind = 'main: loop {
         if producer.wait(Duration::ZERO)? {
             break 'main ExitKind::ProducerExited;
@@ -2131,17 +2151,28 @@ pub fn run<P: Producer>(
                 // whatever prompted this wake.
             }
             Ok(ReaderEvent::Done(result)) => {
-                // Reached only if the reader's read loop ended BEFORE this
-                // loop ever called `close_pty()` — exactly the anomaly
-                // `conpty.rs`'s own contract says shouldn't happen (ConPTY
-                // keeps `hOutput` open regardless of child lifetime until
-                // explicitly closed), whether that end was a graceful EOF
-                // or a real error. Capsule-fatal either way (review
-                // finding): bail unsealed, matching ADR 0039's crash shape
-                // — recovery seals whatever valid prefix already committed.
-                return Err(Error::State(format!(
-                    "capsule_win: reader reached its terminal state before close_pty was ever called: {result:?}"
-                )));
+                // The output side ended before this loop closed it, whether
+                // by a graceful EOF or a real error. Fatal UNLESS the
+                // producer's own exit explains it (ADR 0043 decision 12, as
+                // amended): on macOS the session leader's exit revokes every
+                // fd on the pty, this loop's deliberately held slave
+                // included, so the reader's terminal state can PRECEDE the
+                // exit being observable. Confirm it, bounded; never assume
+                // it. Unconfirmed, this stays the anomaly it always was --
+                // ConPTY keeps `hOutput` open regardless of child lifetime
+                // until explicitly closed, and Linux's held slave means the
+                // master sees nothing before the loop drops it, so on those
+                // platforms only a capsule-runtime defect gets here -- and it
+                // bails unsealed, matching ADR 0039's crash shape: recovery
+                // seals whatever valid prefix already committed.
+                if !producer.wait(READER_END_EXIT_GRACE)? {
+                    return Err(Error::State(format!(
+                        "capsule_win: reader reached its terminal state before close_pty was ever \
+                         called, and the producer was still alive {READER_END_EXIT_GRACE:?} later: {result:?}"
+                    )));
+                }
+                output_ended_early = Some(format!("{result:?}"));
+                break 'main ExitKind::ProducerExited;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Ok(ReaderEvent::ReaderGone) | Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -2234,21 +2265,34 @@ pub fn run<P: Producer>(
                 wake_pending.store(false, Ordering::Release);
             }
             Ok(ReaderEvent::Done(result)) => {
-                // Same anomaly as the main loop's identical check: nothing
-                // has called close_pty() yet, so this cannot be an
-                // ordinary end of the drain.
-                return Err(Error::State(format!(
-                    "capsule_win: reader reached its terminal state before close_pty was ever called: {result:?}"
-                )));
+                // The same rule as the main loop's identical arm, and for
+                // the same reason: nothing has called close_pty() yet, so
+                // this cannot be an ordinary end of the drain -- it is the
+                // producer's own exit revoking the pty, or it is a defect.
+                // The difference here is only that this loop has a reap to
+                // finish, so it records and keeps polling.
+                if !producer.wait(READER_END_EXIT_GRACE)? {
+                    return Err(Error::State(format!(
+                        "capsule_win: reader reached its terminal state during reap with the producer \
+                         still alive {READER_END_EXIT_GRACE:?} later: {result:?}"
+                    )));
+                }
+                output_ended_early = Some(format!("{result:?}"));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {} // just recheck active_processes
             Ok(ReaderEvent::ReaderGone) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 // Codex review (PR #227): see the main loop's identical arm
                 // — `ReaderGone` and a bare disconnect are the same "reader
-                // thread is gone without a terminal Done" condition.
-                return Err(Error::State(
-                    "capsule_win: the reader thread ended without a terminal Done event during reap".into(),
-                ));
+                // thread is gone without a terminal Done" condition. The one
+                // exception: after a terminal `Done` this teardown already
+                // accounted for (above, or in the main loop), the reader's
+                // own drop-guard `ReaderGone` is that event's EXPECTED
+                // trailer, not a second anomaly.
+                if output_ended_early.is_none() {
+                    return Err(Error::State(
+                        "capsule_win: the reader thread ended without a terminal Done event during reap".into(),
+                    ));
+                }
             }
         }
     }
@@ -2263,52 +2307,70 @@ pub fn run<P: Producer>(
     // of this drain (the close is what produces them) — unlike Phase A's
     // identical-looking check, neither is an anomaly here.
     let closer_handle = producer.close_output_side();
-    let drain_deadline = Instant::now() + TEARDOWN_DRAIN_TIMEOUT;
-    loop {
-        service_transport_events_teardown!();
-        execute_teardown_actions!(attach_proto.tick(Instant::now()));
-        eager_ground_check!();
-        // Codex review (PR #227): checked here, unconditionally, every
-        // iteration — mirroring Phase A's `reap_deadline` just above and
-        // the main loop's own commit-deadline fix — rather than only
-        // inside the `Timeout` arm below, where continuous transport
-        // activity could starve it exactly as it did the commit deadline.
-        if Instant::now() >= drain_deadline {
-            return Err(Error::State(
-                "capsule_win: reader did not reach EOF within the teardown drain timeout".into(),
-            ));
-        }
-        match output_rx.recv_timeout(TEARDOWN_DRAIN_POLL) {
-            Ok(ReaderEvent::Output(bytes)) => {
-                pace_output!(bytes);
-                maybe_rotate!(w);
-            }
-            Ok(ReaderEvent::TransportActivity) => {
-                // Switch-latency Phase 1 (c): same wake as both other
-                // sites -- see the main loop's own arm.
-                wake_pending.store(false, Ordering::Release);
-            }
-            Ok(ReaderEvent::Done(_)) => {
-                // Round-2 review, finding 5: service transport ONE more
-                // time at the exact instant EOF ends this drain, so a
-                // status/mgmt request that arrived just after the last
-                // loop-top poll still gets answered while the pipe is
-                // provably still live -- without this, everything from
-                // here to `shutdown_all`'s eventual close (the flush and
-                // joins below, the exit-status wait, writing lifecycle
-                // state, sealing) is a live-but-unserviced pipe tail.
-                service_transport_events_teardown!();
-                execute_teardown_actions!(attach_proto.tick(Instant::now()));
-                break;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Ok(ReaderEvent::ReaderGone) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // Codex review (PR #227): see the main loop's identical arm.
+    // The close itself is UNCONDITIONAL -- it drops the held slave (a
+    // real close(2), still owed on a revoked fd), keeps `Drop`
+    // idempotent, and yields the `closer_handle` the aggregate join
+    // below needs. Only the DRAIN is guarded: when the output side
+    // already reached its terminal state before this point (see the
+    // arms above), there is no EOF left for this loop to wait out, and
+    // waiting for one would burn `TEARDOWN_DRAIN_TIMEOUT` and then fail
+    // a run that is in fact complete.
+    if output_ended_early.is_none() {
+        let drain_deadline = Instant::now() + TEARDOWN_DRAIN_TIMEOUT;
+        loop {
+            service_transport_events_teardown!();
+            execute_teardown_actions!(attach_proto.tick(Instant::now()));
+            eager_ground_check!();
+            // Codex review (PR #227): checked here, unconditionally, every
+            // iteration — mirroring Phase A's `reap_deadline` just above and
+            // the main loop's own commit-deadline fix — rather than only
+            // inside the `Timeout` arm below, where continuous transport
+            // activity could starve it exactly as it did the commit deadline.
+            if Instant::now() >= drain_deadline {
                 return Err(Error::State(
-                    "capsule_win: the reader thread ended without a terminal Done event during drain".into(),
+                    "capsule_win: reader did not reach EOF within the teardown drain timeout".into(),
                 ));
             }
+            match output_rx.recv_timeout(TEARDOWN_DRAIN_POLL) {
+                Ok(ReaderEvent::Output(bytes)) => {
+                    pace_output!(bytes);
+                    maybe_rotate!(w);
+                }
+                Ok(ReaderEvent::TransportActivity) => {
+                    // Switch-latency Phase 1 (c): same wake as both other
+                    // sites -- see the main loop's own arm.
+                    wake_pending.store(false, Ordering::Release);
+                }
+                Ok(ReaderEvent::Done(_)) => {
+                    // Round-2 review, finding 5: service transport ONE more
+                    // time at the exact instant EOF ends this drain, so a
+                    // status/mgmt request that arrived just after the last
+                    // loop-top poll still gets answered while the pipe is
+                    // provably still live -- without this, everything from
+                    // here to `shutdown_all`'s eventual close (the flush and
+                    // joins below, the exit-status wait, writing lifecycle
+                    // state, sealing) is a live-but-unserviced pipe tail.
+                    service_transport_events_teardown!();
+                    execute_teardown_actions!(attach_proto.tick(Instant::now()));
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Ok(ReaderEvent::ReaderGone) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // Codex review (PR #227): see the main loop's identical arm.
+                    return Err(Error::State(
+                        "capsule_win: the reader thread ended without a terminal Done event during drain".into(),
+                    ));
+                }
+            }
         }
+    } else {
+        // The one thing the skipped drain's own EOF arm owes is the
+        // final transport service at the EOF instant (round-2 finding
+        // 5) -- pay it here instead, so a mgmt request that arrived
+        // just after the last loop-top poll is still answered while the
+        // pipe is provably live.
+        service_transport_events_teardown!();
+        execute_teardown_actions!(attach_proto.tick(Instant::now()));
     }
     flush_output!(w);
 
@@ -2415,6 +2477,18 @@ pub fn run<P: Producer>(
     }
     if let Some(reason) = &shutdown_reason {
         detail["reason"] = json!(reason);
+    }
+    // ADR 0043 decision 12, as amended: the output side ended before
+    // teardown closed it AND the producer's own exit explained it inside
+    // `READER_END_EXIT_GRACE` -- the one case the pre-close rule now admits,
+    // and it is admitted RECORDED, never silently. Additive and free-form
+    // exactly like `reason` above, absent unless that case occurred: on
+    // macOS it is the kernel's revoke on the session leader's exit (where
+    // the producer's last undrained output can be lost with it, which is
+    // precisely why the record says so); on Linux and Windows the arms that
+    // set it are unreachable, so no record written there ever carries it.
+    if let Some(how) = &output_ended_early {
+        detail["output_ended_early"] = json!(how);
     }
     let f = ctx.capsule_frame(Class::Lifecycle, json!({"kind": "producer_dead", "detail": detail}));
     w.append(&f, Commit::Immediate)?;
