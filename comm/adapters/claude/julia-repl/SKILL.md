@@ -92,7 +92,7 @@ evals.
 | Want | Command |
 |---|---|
 | Run a `.jl` file, get its output | `sot-fe repl run <ws> <path> [--timeout <s>]` |
-| Run a chunk | `sot-fe repl eval <ws> --code '<julia>'` (or `--stdin`) |
+| Run a line or two | `sot-fe repl eval <ws> --code '<julia>'` |
 | Is there a live kernel? | `sot-fe repl status [<ws>]` |
 | Stop a runaway eval, keep the packages | `sot-fe repl interrupt <ws>` |
 | Reset the kernel into a file's project | `sot-fe repl run <ws> <path> --fresh` |
