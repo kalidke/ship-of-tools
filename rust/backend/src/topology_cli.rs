@@ -40,8 +40,10 @@ Usage: sotd topology <subcommand>
                         families (enable/disable) plus each instance's
                         ConditionHost drop-in with the declared list —
                         sot-relay-tunnel@<host> (the comm relay's reverse
-                        tunnels) and sot-host-relay@<host> (the hub's own
-                        socket per dialable host).
+                        tunnels) and sot-host-relay-<host>.socket with its
+                        per-connection sot-host-relay-<host>@.service (the
+                        hub's own socket per dialable host, unit text and
+                        all: apply WRITES that pair, it is not shipped).
                         Default is a DRY RUN (prints what it would do);
                         --yes runs systemctl for real. --dry-run is
                         accepted too, as the explicit spelling of the
@@ -197,7 +199,10 @@ fn refuse_if_not_listed(fetched: &Topology, me: &str) -> Result<(), String> {
 /// systemd --user unit families (plus each instance's ConditionHost
 /// drop-in, `topology::apply_dropin`) with the declared list —
 /// `sot-relay-tunnel@<host>` for the comm relay's reverse tunnels, and
-/// `sot-host-relay@<host>` for the hub's own socket per dialable host.
+/// `sot-host-relay-<host>.socket` (plus the per-connection
+/// `sot-host-relay-<host>@.service`) for the hub's own socket per dialable
+/// host — a pair apply WRITES from `topology::relay_socket_unit` /
+/// `relay_service_unit`, since its text is per host.
 /// Refuses off the hub (`topology::require_hub`). `dry_run` prints every
 /// action without touching systemd or the filesystem — the default (ADR
 /// 0028 units forward a live relay port; this box silently flipping which
@@ -216,10 +221,21 @@ fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
         return Ok(());
     }
     let verb = if dry_run { "would " } else { "" };
-    for (diff, unit) in [(&plan.tunnels, topology::tunnel_unit as fn(&str) -> String), (&plan.relays, topology::relay_unit as fn(&str) -> String)] {
+    // `generated` is the difference between the two families: the reverse
+    // tunnel rides ONE hand-installed `sot-relay-tunnel@.service` template,
+    // while the relay's unit text is per host (`topology::relay_unit` says
+    // why systemd leaves no choice), so apply writes the pair before
+    // enabling it and takes it away again on disable.
+    for (diff, unit, generated) in [
+        (&plan.tunnels, topology::tunnel_unit as fn(&str) -> String, false),
+        (&plan.relays, topology::relay_unit as fn(&str) -> String, true),
+    ] {
         for h in &diff.enable {
             println!("{verb}enable {}", unit(h));
             if !dry_run {
+                if generated {
+                    write_relay_units(h)?;
+                }
                 write_dropin(&unit(h), &topo.hub)?;
                 run_systemctl(&["--user", "daemon-reload"])?;
                 run_systemctl(&["--user", "enable", "--now", &unit(h)])?;
@@ -230,6 +246,9 @@ fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
             if !dry_run {
                 run_systemctl(&["--user", "disable", "--now", &unit(h)])?;
                 remove_dropin(&unit(h))?;
+                if generated {
+                    remove_relay_units(h)?;
+                }
             }
         }
     }
@@ -239,14 +258,18 @@ fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
     Ok(())
 }
 
-const TUNNEL_TEMPLATE: &str = "sot-relay-tunnel@";
-const RELAY_TEMPLATE: &str = "sot-host-relay@";
+/// `(prefix, suffix)` around the host name in each family's unit names —
+/// `sot-relay-tunnel@<host>.service` and `sot-host-relay-<host>.socket`.
+/// Both halves are needed because only one family is an `@` template
+/// (`topology::relay_unit`).
+const TUNNEL_TEMPLATE: (&str, &str) = ("sot-relay-tunnel@", ".service");
+const RELAY_TEMPLATE: (&str, &str) = ("sot-host-relay-", ".socket");
 
-/// Host names of every instance of one `@` template systemd --user
-/// currently reports `enabled`. The only I/O `apply` does to read state;
+/// Host names of every unit in one family systemd --user currently
+/// reports `enabled`. The only I/O `apply` does to read state;
 /// `topology::apply_plan` is the pure decision made from its result.
-fn enabled_hosts(template: &str) -> Result<Vec<String>, String> {
-    let pattern = format!("{template}*.service");
+fn enabled_hosts((prefix, suffix): (&str, &str)) -> Result<Vec<String>, String> {
+    let pattern = format!("{prefix}*{suffix}");
     let out = std::process::Command::new("systemctl")
         .args(["--user", "list-unit-files", &pattern, "--no-legend", "--no-pager"])
         .output()
@@ -263,9 +286,36 @@ fn enabled_hosts(template: &str) -> Result<Vec<String>, String> {
             if w.next()? != "enabled" {
                 return None;
             }
-            unit.strip_prefix(template)?.strip_suffix(".service").map(str::to_string)
+            unit.strip_prefix(prefix)?.strip_suffix(suffix).filter(|h| !h.is_empty()).map(str::to_string)
         })
         .collect())
+}
+
+/// Writes the hub's listener and its per-connection bridge for one host
+/// (`topology::relay_socket_unit` / `relay_service_unit`), overwriting
+/// whatever was there: these two files are apply's, and the header in
+/// each says so. An override survives in a drop-in beside them, which
+/// apply never writes except for its own `topology.conf`.
+fn write_relay_units(host: &str) -> Result<(), String> {
+    let dir = systemd_user_dir()?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for (name, text) in
+        [(topology::relay_unit(host), topology::relay_socket_unit(host)), (topology::relay_service_unit_file(host), topology::relay_service_unit(host))]
+    {
+        let path = dir.join(&name);
+        std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Removes both generated files for a host. A missing one is not an
+/// error — the disable that precedes this is the operation that mattered.
+fn remove_relay_units(host: &str) -> Result<(), String> {
+    let dir = systemd_user_dir()?;
+    for name in [topology::relay_unit(host), topology::relay_service_unit_file(host)] {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+    Ok(())
 }
 
 /// `~/.config/systemd/user` — same `$XDG_CONFIG_HOME`-or-`$HOME/.config`
