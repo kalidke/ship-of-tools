@@ -8927,7 +8927,17 @@ mod workspace_destroy_default_row_tests {
         std::fs::create_dir_all(&root).unwrap();
         let canonical_root = root.canonicalize().expect("the scratch root was just created");
 
-        let runtime_dir = std::env::temp_dir().join(format!("sot-ws-destroy-listener-test-runtime-{stamp}"));
+        // NOT `temp_dir()`: a unix socket path is capped at `sun_path`
+        // (104 bytes on macOS, 108 on Linux) and macOS's temp dir is a
+        // deep `/var/folders/<..>/<..>/T/` path, so the supervisor socket
+        // built under it overflows and this test dies `PathTooLong` before
+        // it can assert anything. `/tmp` is also what `runtime_sot_dir`
+        // itself falls back to when no private runtime dir exists, which
+        // is the production shape on macOS -- so this keeps the test on
+        // the same path length the real thing gets. Kept short for the
+        // same reason: the name below plus `supervisor-<16 hex>.sock`
+        // must still fit.
+        let runtime_dir = std::path::PathBuf::from("/tmp").join(format!("sot-wsdl-rt-{stamp}"));
         std::fs::create_dir_all(&runtime_dir).unwrap();
         {
             use std::os::unix::fs::PermissionsExt as _;
