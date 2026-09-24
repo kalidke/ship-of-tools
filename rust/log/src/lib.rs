@@ -112,6 +112,12 @@ pub mod probe_win;
 // `SpawnedChild`, over pidfds. `pub`, matching `probe_win`: self-gated
 // (see the module's own `#![cfg(target_os = "linux")]`).
 pub mod probe_unix;
+// The macOS half of the same seam -- `RealProbeOps` and `SpawnedChild`,
+// over a `kqueue` `EVFILT_PROC`/`NOTE_EXIT` knote. A separate module,
+// not a widened `probe_unix`: every mechanism there is a pidfd, and
+// Darwin has none. `pub`, matching its two siblings: self-gated (see the
+// module's own `#![cfg(target_os = "macos")]`).
+pub mod probe_macos;
 // Crate-private (Codex review finding, capsule_win.rs round): ADR 0041's
 // "one private machine" ruling means this module's items are not part of
 // the crate's public API — `capsule_win.rs` is the only real caller and
@@ -198,9 +204,10 @@ pub mod segment;
 pub mod state_dir;
 // ADR 0041 step 6, unit U2: the authority -- `sot-capsule supervise`,
 // and `endrun`/`reset` as fence-acquiring in-process callers. L1-unix
-// LU3c: ungated to `#![cfg(any(windows, target_os = "linux"))]`, generic
-// over `client::PlatformEndpoint`/`transport::PlatformLaneServer` (the
-// platform chosen once, by those two aliases) rather than Windows-only —
+// LU3c: ungated to `#![cfg(any(windows, target_os = "linux",
+// target_os = "macos"))]`, generic over `client::PlatformEndpoint`/
+// `transport::PlatformLaneServer` (the platform chosen once, by those
+// two aliases) rather than Windows-only —
 // `pub`, matching `probe_win`/`supervisor_client`, and
 // `tests/supervisor.rs` needs to reach it.
 pub mod supervisor;
@@ -209,7 +216,7 @@ pub mod supervisor;
 // runtime) -- `pub`, matching `supervisor`/`fe_client_io`: generic over
 // `client::PlatformEndpoint` (L1-unix LU3b), so it now compiles on Linux
 // too, and `sot-backend` (a separate crate) needs to reach it.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod supervisor_client;
 pub mod verify;
 pub mod voyage;

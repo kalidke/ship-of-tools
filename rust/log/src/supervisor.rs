@@ -265,6 +265,8 @@ use crate::pointer::{self, PointerState};
 use crate::probe_win::RealProbeOps;
 #[cfg(target_os = "linux")]
 use crate::probe_unix::RealProbeOps;
+#[cfg(target_os = "macos")]
+use crate::probe_macos::RealProbeOps;
 use crate::recovery::{self, LatestLegState};
 use crate::segment::RetentionClass;
 // L1-unix LU3b: the client-side supervisor-lane helpers (and the shared
@@ -671,6 +673,27 @@ fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
 #[cfg(target_os = "linux")]
 fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
     Ok((std::process::id(), crate::challenge_unix::self_start_ticks()?))
+}
+
+/// ADR 0043 decision 21, the macOS arm — the exact twin of what
+/// `capsule.rs`'s own `self_status` reports on this target, for the
+/// identical adoption-challenge identity (decision 16), and it is NOT a
+/// start time. `created` is per-platform by definition ("whatever unit
+/// this OS's own `status_ok.created` carries, compared for equality
+/// only" — `client::PeerIdentity::created`), and on macOS that unit is
+/// the kernel's `pidversion`: `challenge_macos`'s step 5 compares a
+/// reply's `created` against the pidversion it read out of the peer's
+/// audit token. A start time here would type-check, carry a
+/// plausible-looking number, and make every macOS adoption challenge
+/// `Foreign`. `self_pidversion` is the self-facing twin that exists for
+/// exactly this call site, the way `self_start_ticks` is on Linux.
+///
+/// The pid is pinned against reuse by the pidversion, not by the pid:
+/// the generation counter is the kernel's own and monotonic per process
+/// INSTANCE, so a recycled pid carries a different one.
+#[cfg(target_os = "macos")]
+fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
+    Ok((std::process::id(), u64::from(crate::challenge_macos::self_pidversion()?)))
 }
 
 /// Truncate `detail` to fit within [`wire::MAX_SUPERVISOR_STRING_LEN`]

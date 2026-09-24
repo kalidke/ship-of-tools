@@ -164,11 +164,14 @@ pub trait Endpoint {
 /// on — the frontend (`fe_client_io.rs`) and `supervisor_client` are
 /// generic over [`Endpoint`] and instantiated with this, the ONLY place
 /// the platform is chosen for a client. Windows speaks `PipeEndpoint`,
-/// Linux speaks `SocketEndpoint`; no other platform has one yet (a
-/// generic build for one still needs a concrete `Endpoint` to
-/// monomorphize against, which is exactly what does not exist off these
-/// two today — see `fe_client_io`'s own top-of-module `cfg`).
+/// Linux and macOS BOTH speak `SocketEndpoint` — one alias arm, not two,
+/// because the Unix-socket endpoint is one implementation whose per-OS
+/// half is chosen inside `socket_unix` by its own `challenge_os` alias.
+/// No other platform has an endpoint yet (a generic build for one still
+/// needs a concrete `Endpoint` to monomorphize against, which is exactly
+/// what does not exist off these three today — see `fe_client_io`'s own
+/// top-of-module `cfg`).
 #[cfg(windows)]
 pub type PlatformEndpoint = crate::pipe_win::PipeEndpoint;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub type PlatformEndpoint = crate::socket_unix::SocketEndpoint;

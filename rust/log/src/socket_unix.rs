@@ -134,12 +134,25 @@
 #![cfg(unix)]
 
 use crate::client::Client;
-// `Endpoint`'s only implementor here (`SocketEndpoint`) is Linux-only
-// (`challenge_unix` is Linux-only) -- a plain, unconditional `use` would
-// warn "unused import" on a non-Linux Unix build (macOS CI), the same
-// device this crate already uses for `deadline.rs`/`exchange_identity`.
-#[cfg(target_os = "linux")]
+// `Endpoint`'s only implementor here (`SocketEndpoint`) exists on the two
+// Unix targets that have a peer-identity mechanism this crate trusts -- a
+// plain, unconditional `use` would warn "unused import" on any OTHER Unix
+// build, the same device this crate already uses for
+// `deadline.rs`/`exchange_identity`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::client::Endpoint;
+// The platform's own challenge module for THIS transport, chosen ONCE by
+// an alias -- the same device `client::PlatformEndpoint` and
+// `transport::PlatformLaneServer` already use, and the reason every
+// `Endpoint`/constructor body below is written once rather than twice.
+// Linux reads `SO_PEERCRED` plus a pidfd pin; macOS reads one
+// `LOCAL_PEERTOKEN` audit token carrying the peer's pid AND the kernel's
+// own reuse generation together (see either module's own doc). No other
+// Unix has one, which is what the gate above says.
+#[cfg(target_os = "linux")]
+use crate::challenge_unix as challenge_os;
+#[cfg(target_os = "macos")]
+use crate::challenge_macos as challenge_os;
 use crate::transport::{
     join_within, ClosedReason, LaneEvent, LaneServer, OutboundBudget, StartGate, TransportError,
     BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL, READ_BUF_LEN,
@@ -1998,21 +2011,23 @@ impl crate::challenge_macos::SocketChallengeable for SocketClient {
     }
 }
 
-/// L1-unix LU3a (ADR 0043 decision 19): the Linux `Endpoint` — a unit
-/// struct (the concrete pipe/socket family is the type itself, not a
+/// L1-unix LU3a (ADR 0043 decision 19): the Unix-socket `Endpoint` — a
+/// unit struct (the concrete pipe/socket family is the type itself, not a
 /// value any instance carries) delegating straight to the free functions
-/// this module already exposes. Linux-only: `challenge_unix` (and
-/// therefore `Self::Process`) is Linux-only (ADR 0043 decision 8) — other
-/// Unix has no `Endpoint` implementor for this transport at all, matching
-/// `connect_voyage_socket`'s own Linux-only body.
-#[cfg(target_os = "linux")]
+/// this module already exposes. ONE implementation for both targets that
+/// have a trusted peer-identity mechanism: everything that differs
+/// between Linux and macOS is already behind the `challenge_os` alias
+/// above, so there is no second `Endpoint` to keep in step with this one.
+/// The remaining Unix targets still have no implementor at all (ADR 0043
+/// decision 8), matching `connect_voyage_socket`'s own fail-closed arm.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Copy, Default)]
 pub struct SocketEndpoint;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Endpoint for SocketEndpoint {
     type Client = SocketClient;
-    type Process = crate::challenge_unix::ChallengedProcess;
+    type Process = challenge_os::ChallengedProcess;
 
     fn connect_voyage_unchallenged(
         &self,
@@ -2034,11 +2049,11 @@ impl Endpoint for SocketEndpoint {
         exchange: &mut dyn crate::exchange::IdentityExchange,
         reply_deadline: Instant,
     ) -> crate::challenge::ChallengeOutcome<Self::Process> {
-        crate::challenge_unix::challenge(conn, exchange, reply_deadline)
+        challenge_os::challenge(conn, exchange, reply_deadline)
     }
 
     fn authenticate_server(&self, conn: &Self::Client) -> crate::challenge::PeerAuthOutcome {
-        crate::challenge_unix::authenticate_server(conn)
+        challenge_os::authenticate_server(conn)
     }
 }
 
@@ -2343,17 +2358,17 @@ pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<Sock
 /// The supervisor lane's own raw connect, with NO authentication — see
 /// `pipe_win::connect_supervisor_pipe_unchallenged`'s own doc for why
 /// this intentionally has no `_unchallenged`-free sibling: the supervisor
-/// lane needs the full five-step [`crate::challenge_unix::challenge`],
+/// lane needs the full five-step `challenge_os::challenge`,
 /// which the caller composes itself on top of this. L1-unix LU3b: now
-/// called on Linux, via `Endpoint for SocketEndpoint`'s own
+/// called on Linux AND macOS, via `Endpoint for SocketEndpoint`'s own
 /// `connect_supervisor_unchallenged` (`fe_client_io.rs` and
 /// `supervisor_client`, both generic over `Endpoint`, are its callers)
-/// — the same `#[cfg_attr(not(target_os = "linux"), allow(dead_code))]`
-/// device its sibling [`connect_voyage_socket_unchallenged`] already
-/// uses, since this Unix-general module still compiles on a non-Linux
-/// Unix (macOS, experimental) where `SocketEndpoint` itself does not
-/// exist (ADR 0043 decision 8).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// — the same `#[cfg_attr(..., allow(dead_code))]` device its sibling
+/// [`connect_voyage_socket_unchallenged`] already uses, since this
+/// Unix-general module still compiles on a Unix with no `SocketEndpoint`
+/// of its own (ADR 0043 decision 8). That gate NARROWED when macOS gained
+/// one: on macOS this is now a live call site, not dead code.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketClient, TransportError> {
     let path = supervisor_socket_path(h)?;
     connect_unix_socket_unchallenged(&path)
@@ -2365,28 +2380,23 @@ pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketCl
 /// every ordinary caller uses, mirroring `pipe_win::connect_voyage_pipe`'s
 /// own doc almost verbatim: a raw successful `connect(2)` proves nothing
 /// about who is listening, so this runs
-/// [`crate::challenge_unix::authenticate_server`] (same-user identity
-/// only — NOT the full five-step `challenge()`, which additionally binds
-/// a reply's own pid/creation and needs a lane-specific request this
-/// layer must not consume) before returning `Ok(_)`. A failed
-/// authentication is a loud, typed [`TransportError::Foreign`] or
+/// the platform's own `authenticate_server` (same-user identity only —
+/// NOT the full five-step `challenge()`, which additionally binds a
+/// reply's own pid/creation and needs a lane-specific request this layer
+/// must not consume) before returning `Ok(_)`. A failed authentication is
+/// a loud, typed [`TransportError::Foreign`] or
 /// [`TransportError::Undetermined`] — never a silent retry.
-#[cfg(target_os = "linux")]
+///
+/// ONE body for both targets: which module answers is the `challenge_os`
+/// alias's business, not this function's. The two differ only in
+/// mechanism — Linux reads `SO_PEERCRED` plus a pidfd pin, macOS one
+/// `LOCAL_PEERTOKEN` audit token carrying pid and reuse generation
+/// together (M2) — and that difference is already stated once, where the
+/// alias is declared.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn connect_voyage_socket(voyage_id: &str) -> Result<SocketClient, TransportError> {
     let client = connect_voyage_socket_unchallenged(voyage_id)?;
-    map_peer_auth_outcome(crate::challenge_unix::authenticate_server(&client))?;
-    Ok(client)
-}
-
-/// The macOS twin of the Linux constructor above, identical in every
-/// respect except which module's `authenticate_server` runs: there, one
-/// `SO_PEERCRED` plus a pidfd pin; here, one `LOCAL_PEERTOKEN`
-/// getsockopt whose audit token already carries the peer's pid AND the
-/// kernel's reuse generation (M2 -- see `challenge_macos`'s own doc).
-#[cfg(target_os = "macos")]
-pub fn connect_voyage_socket(voyage_id: &str) -> Result<SocketClient, TransportError> {
-    let client = connect_voyage_socket_unchallenged(voyage_id)?;
-    map_peer_auth_outcome(crate::challenge_macos::authenticate_server(&client))?;
+    map_peer_auth_outcome(challenge_os::authenticate_server(&client))?;
     Ok(client)
 }
 
