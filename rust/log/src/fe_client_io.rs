@@ -34,11 +34,11 @@
 use crate::attach_worker::{AttachWorker, DEFAULT_INGRESS_BOUND_BYTES};
 pub use crate::attach_worker::{InputOutcome, WorkerEvent};
 use crate::client::Endpoint;
-// `PlatformEndpoint` only EXISTS on Windows/Linux (`client.rs`'s own
+// `PlatformEndpoint` only EXISTS on Windows, Linux and macOS (`client.rs`'s own
 // cfg) -- this module's one remaining platform tie, confined to
 // `FeAttachClient`'s default type parameter and the unit tests below
 // that construct it directly.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use crate::client::PlatformEndpoint;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -97,8 +97,8 @@ impl std::fmt::Display for FeAttachError {
 /// still compiles the same struct. No separate `PhantomData<E>` marker
 /// is needed: `worker: AttachWorker<E>` already names `E` in a field.
 pub struct FeAttachClient<
-    #[cfg(any(windows, target_os = "linux"))] E: Endpoint = PlatformEndpoint,
-    #[cfg(not(any(windows, target_os = "linux")))] E: Endpoint,
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))] E: Endpoint = PlatformEndpoint,
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))] E: Endpoint,
 > {
     parser: vt100_ctt::Parser,
     /// The pane's current `(rows, cols)` — the CALLER's rect, tracked
@@ -649,8 +649,8 @@ mod tests {
     /// privacy lets the struct literal reach every private field, and
     /// `pump` neither knows nor cares whether `events_tx` belongs to a
     /// worker thread or a test.
-    // `PlatformEndpoint` only exists on Windows/Linux.
-    #[cfg(any(windows, target_os = "linux"))]
+    // `PlatformEndpoint` only exists on Windows, Linux and macOS.
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     #[test]
     fn checkpoint_event_marks_the_client_checkpointed() {
         let (events_tx, events_rx) = mpsc::channel();
@@ -692,8 +692,8 @@ mod tests {
     /// `is_checkpointed` still goes `true` (LU6a's own "the checkpoint
     /// EVENT landed either way") -- the exact gap `restore_ok` exists to
     /// close for a caller's instrumentation.
-    // `PlatformEndpoint` only exists on Windows/Linux.
-    #[cfg(any(windows, target_os = "linux"))]
+    // `PlatformEndpoint` only exists on Windows, Linux and macOS.
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     #[test]
     fn checkpoint_event_with_undecodable_bytes_marks_checkpointed_but_not_restore_ok() {
         let (events_tx, events_rx) = mpsc::channel();
@@ -733,8 +733,8 @@ mod tests {
     /// the worker's own mgmt-lane lookup for the NEW leg has produced its
     /// own `Notice` -- would see leg A's stale text rendered over leg B's
     /// freshly restored screen.
-    // `PlatformEndpoint` only exists on Windows/Linux.
-    #[cfg(any(windows, target_os = "linux"))]
+    // `PlatformEndpoint` only exists on Windows, Linux and macOS.
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     #[test]
     fn checkpoint_event_clears_a_notice_left_over_from_the_previous_leg() {
         let (events_tx, events_rx) = mpsc::channel();
@@ -783,8 +783,8 @@ mod tests {
     /// each report `restore_ok` for THEIR OWN restore, not a value stuck
     /// from an earlier one -- proven here across three in a row:
     /// success, failure, success again.
-    // `PlatformEndpoint` only exists on Windows/Linux.
-    #[cfg(any(windows, target_os = "linux"))]
+    // `PlatformEndpoint` only exists on Windows, Linux and macOS.
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     #[test]
     fn restore_ok_reflects_only_the_most_recent_checkpoint_across_several_in_a_row() {
         let (events_tx, events_rx) = mpsc::channel();
