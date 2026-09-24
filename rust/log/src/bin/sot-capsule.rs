@@ -19,7 +19,7 @@
 /// Neutral (ADR 0043 "Decisions for LU2" LU2b: renamed from the
 /// Windows-only `MAX_PIPE_INSTANCES` now that ONE `cmd_run` drives both
 /// platforms' own transport constructor with it).
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 const MAX_TRANSPORT_CONNECTIONS: u32 = 8;
 
 /// `run`, plus (ADR 0041 step 6 U2) `supervise`/`endrun`/`reset` — see
@@ -28,8 +28,10 @@ const MAX_TRANSPORT_CONNECTIONS: u32 = 8;
 /// `supervise`/`endrun`/`reset`/`build-id` main and the separate
 /// Linux-only `run`/`claude` main into one dispatch) — `claude` (ADR
 /// 0040's own, unrelated producer) is the ONLY Linux-only subcommand,
-/// since it has no Windows counterpart.
-#[cfg(any(windows, target_os = "linux"))]
+/// since it has no Windows counterpart. `run` is `cfg(unix)`: its
+/// producer and transport are the Unix ones, and a macOS supervisor
+/// spawns its legs through exactly this arm.
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let top_usage = "usage: sot-capsule <run|supervise|endrun|reset|build-id> ...\n       \
@@ -50,7 +52,7 @@ sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-vers
         Some("run") => cmd_run::<sot_log::producer_conpty::ConptyProducer, _, _>(&args[1..], |n| {
             sot_log::pipe_transport::PipeTransport::new(n)
         }),
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         Some("run") => cmd_run::<sot_log::producer_pty::PtyProducer, _, _>(&args[1..], |n| {
             sot_log::socket_transport::SocketTransport::new(n)
         }),
@@ -78,7 +80,7 @@ sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-vers
 /// whatever attaches to it) and no `--echo` (fan-out is the real
 /// subscriber path). Ctrl+C still simply kills this whole process when
 /// run bare (no supervisor) — FE-loss, not EndRun (ADR 0041 Lifecycle).
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn cmd_run<P, T, F>(args: &[String], make_transport: F)
 where
     P: sot_log::producer::Producer,
@@ -322,7 +324,7 @@ where
 /// the very first leg's own argv, and again from any later leg that
 /// follows one this process classified unstable — see
 /// `SuperviseConfig::first_leg_without`.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn cmd_supervise(args: &[String]) {
     let usage = "usage: sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
 [--rows <n>] [--survival <normal|degraded>] [--first-leg-without <token>]... \
@@ -411,7 +413,7 @@ fn cmd_supervise(args: &[String]) {
 /// (ADR 0041 step 6 U2): the no-supervisor path's own fence-acquiring
 /// EndRun. Fails loudly (never terminates blind) if a real supervisor is
 /// already the authority — see `sot_log::supervisor::endrun`'s own doc.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn cmd_endrun(args: &[String]) {
     let usage = "usage: sot-capsule endrun <state_dir> [--voyage <id>] [--reason <text>]";
     if args.is_empty() {
@@ -445,7 +447,7 @@ fn cmd_endrun(args: &[String]) {
 /// `sot-capsule reset <state_dir> [--voyage <id>]` (ADR 0041 step 6 U2):
 /// the no-supervisor path's own fence-acquiring reset — proceeds ONLY on
 /// a classifier ABSENT taken while holding the fence.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn cmd_reset(args: &[String]) {
     let usage = "usage: sot-capsule reset <state_dir> [--voyage <id>]";
     if args.is_empty() {
@@ -471,9 +473,9 @@ fn cmd_reset(args: &[String]) {
     std::process::exit(sot_log::supervisor::reset(&state_dir, voyage));
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn main() {
-    eprintln!("sot-capsule requires Linux or Windows (ADR 0039 P1 Linux; ADR 0041 P3 Windows; macOS has no capsule)");
+    eprintln!("sot-capsule requires Linux, macOS or Windows (ADR 0039 P1 Linux; ADR 0041 P3 Windows; ADR 0043 macOS) -- this platform has no supervisor half");
     std::process::exit(2);
 }
 
