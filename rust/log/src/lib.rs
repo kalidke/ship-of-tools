@@ -155,7 +155,8 @@ pub mod exchange;
 // machines (the six FE rulings from "Step 6 as specified") -- portable,
 // like `pointer`/`exchange`/`rollout`: no OS call, so it is genuinely
 // tested on every CI platform. The runtime that wires these to a real
-// `Endpoint` (Windows: `PipeEndpoint`; Linux: `SocketEndpoint`; any other
+// `Endpoint` (Windows: `PipeEndpoint`; Linux and macOS: `SocketEndpoint`
+// -- one endpoint, per `client::PlatformEndpoint`'s own cfg; any other
 // platform: whatever the caller names, e.g. `sot-protocol`'s
 // `DaemonLaneEndpoint`) lives in `fe_client_io` (L1-unix LU3b: renamed
 // from `fe_client_win`, generic over `client::Endpoint` -- no platform
@@ -295,7 +296,8 @@ pub enum Error {
     #[error("parent-death lease broken; exiting without binding the voyage")]
     LeaseBroken,
     /// The voyage store requires OS durability primitives this platform
-    /// lacks (Linux and Windows have real arms; others fail closed).
+    /// lacks (Windows, Linux and macOS have real arms; any other Unix
+    /// fails closed).
     #[error("unsupported on this platform: {0}")]
     Unsupported(&'static str),
     /// A ConPTY/job OPERATION failed (Windows-only: `conpty` module) — a

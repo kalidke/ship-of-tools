@@ -244,27 +244,30 @@ pub fn self_pidversion() -> io::Result<u32> {
 
 /// Register a `NOTE_EXIT` knote for `pid` on a fresh `kqueue`, and
 /// return the kqueue fd that now IS this process's death signal.
+/// `Ok(None)` is `ESRCH`.
 ///
 /// The knote attaches to the live `proc` the number currently names, so
 /// what comes back identifies the INSTANCE -- which is the whole reason
 /// this can stand in for a pidfd. Fails closed: `proc_find` does not
 /// return zombies, so an already-exited pid is `ESRCH` rather than a
 /// registration that will never fire, and a never-existed pid is the
-/// same. What `ESRCH` MEANS depends on who owns the pid -- for a peer we
+/// same. What `ESRCH` MEANS depends on who owns the pid, and this
+/// function deliberately does not decide -- it hands the caller an
+/// `Option` and each call site states its own reading: for a peer we
 /// did not spawn it is "unprovable" ([`challenge()`] returns
-/// `Undetermined`); for our own unreaped child the zombie pins the
-/// number, so it provably means "already exited" (`probe_macos`'s
-/// reading -- same errno, two correct answers, and the type that
-/// receives it encodes which).
+/// `Undetermined`); for `probe_macos`'s own unreaped child the zombie
+/// pins the number, so it provably means "already exited" and that
+/// handle is built already latched. Same errno, two correct answers,
+/// neither flattened into this mechanism.
 ///
 /// `EV_RECEIPT` with a one-entry eventlist is what makes the attach
 /// result deterministic: the kernel always writes back one `EV_ERROR`
 /// event carrying the errno in `data` (zero on success), instead of the
 /// caller having to distinguish "kevent returned -1" from "the change
 /// was rejected". No `EV_ONESHOT` and no `EV_CLEAR`: neither names an
-/// invariant here, and the latch on [`ChallengedProcess`] already owns
-/// the once-only semantics.
-pub(crate) fn watch_exit(pid: u32) -> io::Result<OwnedFd> {
+/// invariant here, and the latch each owner carries already owns the
+/// once-only semantics.
+pub(crate) fn watch_exit(pid: u32) -> io::Result<Option<OwnedFd>> {
     // SAFETY: `kqueue()` takes no arguments and returns a fresh fd or -1.
     let raw = unsafe { libc::kqueue() };
     if raw < 0 {
@@ -296,10 +299,20 @@ pub(crate) fn watch_exit(pid: u32) -> io::Result<OwnedFd> {
     if rc < 0 {
         return Err(io::Error::last_os_error());
     }
-    if rc > 0 && (out.flags & libc::EV_ERROR) != 0 && out.data != 0 {
-        return Err(io::Error::from_raw_os_error(out.data as i32));
+    if rc == 0 {
+        // `EV_RECEIPT` guarantees exactly one receipt event per change,
+        // so this cannot happen; refuse rather than return a kqueue
+        // whose knote was never confirmed.
+        return Err(io::Error::other("kevent(EV_RECEIPT) returned no receipt"));
     }
-    Ok(kq)
+    if (out.flags & libc::EV_ERROR) != 0 {
+        return match out.data as libc::c_int {
+            0 => Ok(Some(kq)), // `EV_RECEIPT`'s own success receipt
+            libc::ESRCH => Ok(None),
+            e => Err(io::Error::from_raw_os_error(e)),
+        };
+    }
+    Ok(Some(kq))
 }
 
 /// Drain one `NOTE_EXIT` from a [`watch_exit`] kqueue: `Ok(true)` iff
@@ -313,7 +326,13 @@ pub(crate) fn watch_exit(pid: u32) -> io::Result<OwnedFd> {
 /// rather than silently improving one platform. An `EV_ERROR` event
 /// with a real errno is also `Err` and NOT an exit: this kqueue carries
 /// exactly one knote, and reporting "the knote broke" as "the process
-/// died" would retire a live leg.
+/// died" would retire a live leg. The ONE errno that is not "the knote
+/// broke" is `ESRCH` -- the kernel saying the knote's own `proc` is not
+/// there -- which is the very fact `NOTE_EXIT` reports, and it reads the
+/// same for both owners: an ATTACHED watch (the only kind reaching this
+/// function) names an instance, so "no such process" is that instance
+/// gone. Unlike the ESRCH at attach time ([`watch_exit`]), it carries no
+/// per-owner policy.
 pub(crate) fn drain_exit(kq: RawFd, timeout: Duration) -> io::Result<bool> {
     let mut ev: libc::kevent = unsafe { std::mem::zeroed() };
     let ts = kevent_timeout(timeout);
@@ -327,10 +346,16 @@ pub(crate) fn drain_exit(kq: RawFd, timeout: Duration) -> io::Result<bool> {
     if rc == 0 {
         return Ok(false);
     }
+    // `data` is an errno ONLY on an `EV_ERROR` event -- on the real
+    // `NOTE_EXIT` it carries the exit STATUS, which is why the flag is
+    // checked first.
     if (ev.flags & libc::EV_ERROR) != 0 && ev.data != 0 {
+        if ev.data as libc::c_int == libc::ESRCH {
+            return Ok(true);
+        }
         return Err(io::Error::from_raw_os_error(ev.data as i32));
     }
-    Ok(true)
+    Ok(ev.fflags & libc::NOTE_EXIT != 0)
 }
 
 /// `Duration` -> the `timespec` `kevent` takes by POINTER. The one
@@ -712,7 +737,14 @@ pub fn challenge(
     // trust boundary step 3 above already rests on (property 20). Not a
     // new exposure; the existing one.
     let kq = match watch_exit(pid) {
-        Ok(kq) => kq,
+        Ok(Some(kq)) => kq,
+        // THIS caller's reading of `ESRCH` (`Ok(None)`): the peer is
+        // nobody's child here, so nothing pins its number and an
+        // unattachable pid proves only that it cannot be watched --
+        // "unprovable", never "it exited". (`probe_macos`, whose child
+        // IS pinned by its own zombie, reads the same errno as proof of
+        // exit; see [`watch_exit`].)
+        Ok(None) => return ChallengeOutcome::Undetermined,
         // Nothing here says the peer is WRONG -- only that it cannot be
         // watched, and an unwatchable peer must not be minted as a
         // proof that carries a death signal.

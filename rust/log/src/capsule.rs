@@ -955,13 +955,13 @@ pub fn run<P: Producer>(
     commands: mpsc::Receiver<Command>,
     transport: &mut dyn Transport,
 ) -> Result<ExitSummary> {
-    // A platform this build has no real `self_status` for (any non-Linux
-    // Unix) must refuse BEFORE any durable side effect: without this, such
-    // a call would bind the transport, open a segment and commit
-    // `take_state`, and only then fail on `Unsupported` — an unsupported
-    // call must not change history. On Windows and Linux this is a no-op
-    // (the real `self_status` succeeds) and nothing about either path
-    // moves.
+    // A platform this build has no real `self_status` for (any Unix that
+    // is neither Linux nor macOS) must refuse BEFORE any durable side
+    // effect: without this, such a call would bind the transport, open a
+    // segment and commit `take_state`, and only then fail on
+    // `Unsupported` — an unsupported call must not change history. On
+    // Windows, Linux and macOS the real `self_status` succeeds, so this
+    // is a no-op and nothing about any of those paths moves.
     #[cfg(not(windows))]
     let _ = self_status(config.survival)?;
     // Resolve ONCE — the fresh `producer_pty`/`socket_transport` pair on
