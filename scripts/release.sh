@@ -35,17 +35,19 @@ done
 TAG="v$VERSION"
 
 # ---- preflight -------------------------------------------------------------
-# A tag is cut from main, or from the release line's candidate branch
-# (`fixes/<version>` — the accumulation branch every rc of a line is tagged
-# from; owner ruling 2026-09-24: work accumulates there and main moves only on
-# the owner's call). Nothing else, because a tag from an arbitrary branch is a
-# release whose history nobody can find. Whichever it is, `$branch` is then the
-# one thing the CI gate reads and the push pushes — below here the script never
-# names a branch again.
+# Two places a tag is legitimately cut from (owner ruling 2026-09-24):
+# CANDIDATES from the release line's own branch (`fixes/<version>` or
+# `rc/<version>`), which is where work accumulates from one tag until the next;
+# and the FINAL release from main, which the candidate branch merges into once
+# the line is ready. So main only ever advances to states that shipped, and a
+# checkout following it is never mid-candidate. Nothing else is accepted,
+# because a tag from an arbitrary branch is a release whose history nobody can
+# find. Whichever it is, `$branch` is then the one thing the CI gate reads and
+# the push pushes — below here the script never names a branch again.
 branch=$(git rev-parse --abbrev-ref HEAD)
 case "$branch" in
-    main | fixes/*) ;;
-    *) echo "preflight: on '$branch' — a tag is cut from main or from a candidate branch (fixes/*)" >&2; exit 1 ;;
+    main | fixes/* | rc/*) ;;
+    *) echo "preflight: on '$branch' — a tag is cut from main (final) or from a release line's candidate branch (fixes/* or rc/*)" >&2; exit 1 ;;
 esac
 if [[ $ALLOW_DIRTY -eq 0 && -n "$(git status --porcelain)" ]]; then
     echo "preflight: working tree not clean (see git status; --allow-dirty to override)" >&2; exit 1
