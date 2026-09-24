@@ -249,7 +249,7 @@
 //! [`probe_writer_liveness`] use on both platforms now, instead of a
 //! Windows-shaped inline `NotFound` guard.
 
-#![cfg(any(windows, target_os = "linux"))]
+#![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 
 use crate::attach_proto::ConnId;
 use crate::challenge::ChallengeOutcome;
@@ -1193,14 +1193,22 @@ fn finish_end_run_with_process(
             matches!(process.wait(KILL_WAIT_BOUND), Ok(true))
         }
     };
-    // Single-owner reaping (review round), Linux only: whichever `wait`
+    // Single-owner reaping (review round), every Unix: whichever `wait`
     // call above actually confirmed the exit (the graceful one, or the
     // terminate-then-wait fallback), `process` is never read again past
     // this point — reap it now, explicitly (see `ChallengedProcess::reap`'s
     // own doc). A Windows process HANDLE has no zombie/reap concept at
     // all — `Drop`'s own `CloseHandle` is the whole cleanup there, so the
     // Windows `Process` type gains nothing from a call here.
-    #[cfg(target_os = "linux")]
+    //
+    // `cfg(unix)`, NOT `cfg(target_os = "linux")`: the concept this gate
+    // names is "this OS has zombies", which is every Unix, and spelling
+    // it `linux` made the macOS build compile the call away to NOTHING —
+    // a supervisor that never reaps, leaking a zombie per leg, with no
+    // compiler and no CI able to say so. The module gate above is
+    // `any(windows, linux, macos)`, so `unix` here is exactly those two
+    // Unixes and both have a real `reap`.
+    #[cfg(unix)]
     if confirmed_exit {
         process.reap();
     }
@@ -1648,7 +1656,10 @@ fn take_worker_handle(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>
 /// `AuthorityState::retired_legs`'s own doc for the full rationale and
 /// [`reap_retired_legs`] for the other half (the main loop's own poll).
 fn retire_leg(retired_legs: &mut Vec<Process>, process: Process) {
-    #[cfg(target_os = "linux")]
+    // `cfg(unix)` rather than `linux`: see `finish_end_run_with_process`'s
+    // own reap comment — the gate names "this OS has zombies", and
+    // spelling it `linux` made macOS silently skip the reap entirely.
+    #[cfg(unix)]
     if matches!(process.wait(Duration::ZERO), Ok(true)) {
         process.reap();
         return;
@@ -1670,7 +1681,8 @@ fn reap_retired_legs(retired_legs: &mut Vec<Process>) {
     retired_legs.retain(|process| {
         let exited = matches!(process.wait(Duration::ZERO), Ok(true));
         if exited {
-            #[cfg(target_os = "linux")]
+            // `cfg(unix)`, not `linux` — same reason as `retire_leg`'s.
+            #[cfg(unix)]
             process.reap();
         }
         !exited
@@ -2983,7 +2995,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             },
             Lifecycle::Ready { process } => match process.wait(Duration::ZERO) {
                 Ok(true) => {
-                    // Single-owner reaping (review round), Linux only:
+                    // Single-owner reaping (review round), every Unix:
                     // `wait` just confirmed this leg's exit and nothing
                     // below reads `process` again — reap it now,
                     // explicitly, here rather than relying on an implicit
@@ -2992,7 +3004,14 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     // used to describe. A Windows process HANDLE has no
                     // zombie/reap concept — `Drop`'s own `CloseHandle` is
                     // the whole cleanup there.
-                    #[cfg(target_os = "linux")]
+                    //
+                    // `cfg(unix)`, not `linux` — see
+                    // `finish_end_run_with_process`'s own reap comment.
+                    // This is the site a long-running macOS supervisor
+                    // would have leaked from hardest: one zombie per
+                    // natural leg exit, forever, because `SIGCHLD` is
+                    // `SIG_DFL` and nothing else auto-reaps.
+                    #[cfg(unix)]
                     process.reap();
                     // N1 (Codex review round 3): stability is judged on
                     // the PRODUCER's own recorded lifetime
