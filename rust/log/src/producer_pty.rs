@@ -81,12 +81,21 @@
 //!   path's belt, not this one's). The kernel then hangs the pty up and
 //!   signals the session that took it as its controlling terminal: this
 //!   child, which `setsid` + `TIOCSCTTY` two steps below made the leader
-//!   of that session. That is not an inference —
-//!   `tests/macos_kernel_facts.rs`'s
-//!   `closing_the_pty_master_hangs_up_and_reaps_the_child` pins it on a
-//!   real Mac (its fact 2) and prints the latency it measured; an OS
-//!   that stops doing it reports itself as a named red test, which is
-//!   the moment to revisit this paragraph. Nothing needs ordering
+//!   of that session. `tests/macos_kernel_facts.rs` pins that on a real
+//!   Mac and prints the latency it measured, in BOTH configurations that
+//!   matter: its fact 2
+//!   (`closing_the_pty_master_hangs_up_and_reaps_the_child`) drops the
+//!   parent's slave right after the spawn, and its fact 2b
+//!   (`..._with_the_slave_held`) holds a slave across the master close —
+//!   which is the shape THIS crate actually runs, because decision 12
+//!   holds one for the whole run. Only fact 2b speaks for the shipped
+//!   configuration; until it has run green on a real Mac, the shipped
+//!   shape's half of this paragraph is an INFERENCE (a well-founded one:
+//!   the hangup is a carrier drop on the MASTER's last close and is not
+//!   gated on how many openers the slave side has, which is exactly what
+//!   fact 2b exists to confirm). An OS that stops doing either reports
+//!   itself as a named red test, which is the moment to revisit this
+//!   paragraph. Nothing needs ordering
 //!   FIRST here the way PDEATHSIG does, because there is no fork-to-arm
 //!   window to guard: the pty is created before the fork and the child
 //!   is attached to it by `pre_exec` itself. The one honest narrowing

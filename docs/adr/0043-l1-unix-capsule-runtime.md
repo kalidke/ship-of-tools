@@ -325,6 +325,87 @@ and sealing — is platform-neutral and moves unchanged.
     (terminate the domain) and Phase B (close, then drain) exactly as on Windows. (An
     earlier draft held the EIO behind a flag-and-condvar gate; it lost post-reopen output
     and could strand the reader — replaced 2026-09-07.)
+
+    **AMENDED 2026-09-24, the macOS pty revoke.** Decision 12 buys two distinct
+    things and they do not fare the same on BSD. The PRIMARY purchase — no
+    spurious mid-run EIO, the LU2b zero-frame bug — survives intact on every
+    Unix: XNU's `VNOP_REVOKE(ttyvp, REVOKEALL)` fires on the session LEADER's
+    exit, not on an ordinary close by any process, so a macOS producer that
+    closes and reopens its tty mid-run is covered exactly as on Linux, by the
+    same held slave. The COROLLARY — "the output side reports EOF only after the
+    loop closed it" — is FALSE on macOS and cannot be bought back in userspace:
+    the leader's exit invalidates every descriptor on that controlling terminal
+    SYSTEM-WIDE, this loop's deliberately held slave included. There is no fd to
+    hold, no flag to set and no ordering to choose that survives it — the kernel
+    is revoking, not us closing. (Linux's `disassociate_ctty` only `SIGHUP`s the
+    foreground process group and leaves other openers alone, which is why the
+    corollary holds there; ConPTY keeps `hOutput` open until
+    `ClosePseudoConsole`, which is why it holds on Windows.)
+
+    The replacement invariant, which is what the loop now enforces on every
+    platform:
+
+    > The producer's output stream may end before `close_output_side` only as a
+    > consequence of the producer's own exit. A terminal reader event that the
+    > producer's exit does not explain, within a bounded confirmation window, is
+    > capsule-fatal.
+
+    A terminal reader event arriving before the close is therefore confirmed
+    against the producer's own exit with the trait's existing bounded `wait`
+    (`READER_END_EXIT_GRACE`, 2s — orders of magnitude above the kernel-internal
+    window it covers and an order of magnitude below `TEARDOWN_REAP_TIMEOUT`, so
+    it can never mask a reap failure). Confirmed: the run proceeds to teardown and
+    seals, and the case is RECORDED — `producer_dead.detail.output_ended_early`
+    carries the terminal event that arrived early, an additive free-form field
+    exactly like `reason` and `producer_uptime_ms`. Unconfirmed: capsule-fatal,
+    unsealed, with the producer's liveness named in the error. Still fatal
+    everywhere, unchanged: a terminal reader event with the producer alive past
+    the grace (a lost or duplicated slave fd, a reader bug, a third party closing
+    our descriptors) and a `ReaderGone`/disconnect with no preceding terminal
+    event at all. The rule is runtime, not `cfg`: on Linux and Windows the arm is
+    unreachable for those platforms' own reasons above, they take today's path,
+    and the field is absent from every record they write — asserted as a test, not
+    trusted.
+
+    **What a Mac user loses, stated rather than left as folklore.** (i) The revoke
+    flushes the tty's queues, so bytes the producer wrote but our reader had not
+    yet drained at the instant the leader exits can be discarded: an agent's last
+    line before exiting may be missing from the record. The exposure is only what
+    sits in the tty buffer at that instant — the reader drains continuously in
+    `READ_CHUNK` reads — but it is not zero, and on Linux it is zero by
+    construction. (ii) A weaker defect signal at exactly one instant: a
+    capsule-runtime defect that loses the held slave AND coincides with a producer
+    exit inside the grace is recorded rather than fatal, because on Darwin it is
+    indistinguishable from the kernel's own revoke. The record stays honest — it
+    seals what was committed and never claims a completeness it does not have.
+
+    **The known price of buying the corollary back, DEFERRED.** Stop letting the
+    agent binary BE the session leader: interpose our own small leader that does
+    `setsid` + `TIOCSCTTY`, forks the agent, and exits only after the agent is
+    reaped and the pty drained. That delays the revoke past our close and restores
+    the corollary exactly. It costs a second process in every capsule tree — the
+    same cost the macOS parent-death lease deletion rejected for the same reason
+    (`rust/log/src/producer_pty.rs`'s module doc). Not taken; recorded here so a
+    future maintainer does not re-derive it.
+
+    **Domain emptiness, and the closure of "Open for the maintainer" item 1.**
+    Emptiness of the kill domain is judged by exactly ONE mechanism, and that
+    mechanism ENUMERATES members; a signalling error is never evidence of
+    emptiness. `terminate_domain`'s `killpg(pgid, SIGKILL)` is a REQUEST, so it
+    tolerates both `ESRCH` and `EPERM` — both mean "nothing in this group could be
+    signalled by me", Linux picking `ESRCH` for a group whose only member is the
+    unreaped leader zombie where Darwin picks `EPERM` (POSIX permits either) — and
+    neither is read as emptiness. The coarse `killpg(pgid, 0)` emptiness probe the
+    non-Linux arm used is DELETED, not widened: on Darwin `EPERM` cannot
+    distinguish a zombie-only group from a live member this uid may not signal (an
+    agent shell that ran `sudo`), and reading it as empty would seal a capsule
+    over a live descendant in its own domain. macOS gets the twin of the Linux
+    `/proc` scan — `proc_listpgrppids` + `PROC_PIDTBSDINFO.pbi_status`, failing
+    closed on any member it cannot classify — and any other Unix refuses the
+    question outright (decision 16's shape), which `capsule::run`'s own
+    fail-closed top already makes unreachable. The accepted gap that arm carried
+    (a zombie leader reading as not-empty on non-Linux Unix) is therefore gone on
+    both supported platforms rather than patched.
 13. **`ExitStatus` is `Code(u32) | Signal(i32)`.** Windows always yields `Code` and keeps
     the unsigned DWORD end-to-end (a high-bit NTSTATUS is never sign-flipped; that test
     stays). Unix yields `Code` for a normal exit and `Signal` for a signal death, which
@@ -895,8 +976,10 @@ pre-attach backoff; a terminal pointer-absent while the supervisor is starting.
 
 ## Open for the maintainer
 
-1. macOS: fail closed at the challenge (no capsules on macOS) until someone
-   needs them — acceptable?
+1. ~~macOS: fail closed at the challenge (no capsules on macOS) until someone
+   needs them — acceptable?~~ CLOSED 2026-09-24: macOS gets a capsule row, and
+   the coarser non-Linux emptiness fallback this item licensed is deleted in
+   favour of a real member scan — see decision 12's amendment.
 2. Capacity semantics (decision 4): accept-then-close, with the retry split
    between a bounded non-blocking `connect` and the request layer's
    `Undetermined`, instead of a kernel-level refusal — acceptable?
