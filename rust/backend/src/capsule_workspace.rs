@@ -3299,6 +3299,15 @@ mod observer_tests {
 
     /// A registered capsule row with its epoch begun at `supervisor` (RA).
     fn seeded_capsule_row(supervisor: SupervisorIdentity) -> std::sync::Arc<Workspace> {
+        let ws = unclaimed_capsule_row();
+        ws.begin_supervisor_epoch(supervisor);
+        ws
+    }
+
+    /// The same row with NO epoch yet -- the empty cell the ruling's
+    /// addition (a) is about: a row the daemon has spawned for but whose
+    /// lane has not yet answered, or one only ever read as stopped.
+    fn unclaimed_capsule_row() -> std::sync::Arc<Workspace> {
         let reg = Workspaces::new();
         let mut ws = Workspace::from_label(
             "observer-test",
@@ -3309,9 +3318,7 @@ mod observer_tests {
             String::new(),
         );
         ws.runtime = "capsule".to_string();
-        let ws = reg.insert(ws);
-        ws.begin_supervisor_epoch(supervisor);
-        ws
+        reg.insert(ws)
     }
 
     fn identity(pid: u32, created: u64) -> SupervisorIdentity {
@@ -3418,6 +3425,64 @@ mod observer_tests {
 
         observe(&ws, Observation::Phase { phase: Phase::Ready, supervisor: a, voyage: Some(v2) });
         assert_eq!(ws.phase(), Phase::Ready, "a strictly newer voyage supersedes the latch");
+    }
+
+    /// Addition (a): an empty cell takes the FIRST prover -- and only
+    /// the first. The rejection half is the same rule RA blocker 2
+    /// asserts, re-run against the adopting branch to prove the adoption
+    /// is scoped to `None` and never widens who may claim a claimed row.
+    #[test]
+    fn an_empty_cell_adopts_its_first_prover_and_then_judges_strangers() {
+        let a = identity(1, 100);
+        let ws = unclaimed_capsule_row();
+        assert_eq!(ws.current_supervisor(), None, "an unclaimed row has no epoch");
+
+        // Two failed rounds first: an empty cell that is already
+        // `Unreachable` must still adopt, and adoption must reset the
+        // failure count, exactly as `begin_supervisor_epoch` does.
+        observe(&ws, Observation::Failed);
+        observe(&ws, Observation::Failed);
+        assert_eq!(ws.phase(), Phase::Unreachable);
+
+        observe(&ws, phase_obs(Phase::Ready, a));
+        assert_eq!(ws.current_supervisor(), Some(a), "the first prover becomes the epoch");
+        assert_eq!(ws.phase(), Phase::Ready);
+
+        observe(&ws, phase_obs(Phase::Ending, identity(2, 100)));
+        assert_eq!(ws.phase(), Phase::Ready, "a claimed cell still rejects a stranger");
+        assert_eq!(ws.current_supervisor(), Some(a));
+    }
+
+    /// Addition (b): a bootstrap-failing leg latches its row `terminal`
+    /// without an identity, and a later genuine authority adopts and
+    /// clears it -- a row whose lane answers is not terminal.
+    #[test]
+    fn terminal_unclaimed_latches_an_empty_cell_and_a_later_authority_clears_it() {
+        let ws = unclaimed_capsule_row();
+        assert!(ws.apply_phase_observation(Observation::TerminalUnclaimed));
+        assert_eq!(ws.phase(), Phase::Terminal);
+        assert_eq!(ws.current_supervisor(), None, "the mark leaves the cell claimable");
+
+        observe(&ws, Observation::Stopped);
+        assert_eq!(ws.phase(), Phase::Terminal, "the latch holds against a plain stopped read");
+
+        let a = identity(7, 700);
+        observe(&ws, phase_obs(Phase::Ready, a));
+        assert_eq!(ws.phase(), Phase::Ready, "an authority that actually answers clears the latch");
+        assert_eq!(ws.current_supervisor(), Some(a));
+    }
+
+    /// The other half of (b): a cell claimed at any point in this
+    /// daemon's life is closed to it, so a stale watchdog can never
+    /// latch a row it no longer owns.
+    #[test]
+    fn terminal_unclaimed_is_refused_by_a_claimed_cell() {
+        let a = identity(1, 100);
+        let ws = seeded_capsule_row(a);
+        observe(&ws, phase_obs(Phase::Ready, a));
+
+        assert!(!ws.apply_phase_observation(Observation::TerminalUnclaimed));
+        assert_eq!(ws.phase(), Phase::Ready);
     }
 
     /// `activation_error` is retained until the next attempt; orthogonal to phase.

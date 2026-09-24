@@ -109,6 +109,19 @@ pub(crate) enum Observation {
     Stopped,
     Foreign,
     Failed,
+    /// A leg this daemon spawned exited terminal (69) before ANY
+    /// authority ever claimed the row -- the supervisor died inside its
+    /// own bootstrap (lane bind, parent-death lease), so no `status`
+    /// was ever served and there is no identity to mark against.
+    /// Applied ONLY to an empty cell: `begin_supervisor_epoch` never
+    /// writes `None`, so a cell claimed at any point in this daemon's
+    /// life is closed to it and a stale watchdog cannot latch a row it
+    /// no longer owns. Latches like any `Terminal` -- the operator
+    /// signal a bootstrap failure must leave behind, rather than a
+    /// `stopped` row that re-spawns the same instant failure on every
+    /// attach -- while leaving the cell claimable, so a genuine
+    /// authority answering later adopts and clears it.
+    TerminalUnclaimed,
 }
 
 /// One lock: a rejection check and the write it gates share one critical section.
@@ -352,15 +365,29 @@ impl Workspace {
         self.phase_cell.lock().unwrap_or_else(|e| e.into_inner()).supervisor
     }
 
-    /// The observer's single write path. Rejects unless `supervisor`
-    /// EQUALS the cell's current epoch (never an ordering comparison);
-    /// within an epoch, phases are voyage-ordered and `Terminal`/
-    /// `EndedNoRespawn` latches reject anything but a strictly newer
-    /// voyage.
+    /// The observer's single write path. One sentence: an EMPTY cell
+    /// takes the first prover; a non-empty cell changes epoch only
+    /// under the row guard (through [`Workspace::begin_supervisor_epoch`]).
+    /// So a `Phase` observation is rejected unless `supervisor` EQUALS
+    /// the cell's current epoch (never an ordering comparison) -- with
+    /// `supervisor: None` meaning "unclaimed", which the observation
+    /// itself then claims. Within an epoch, phases are voyage-ordered
+    /// and `Terminal`/`EndedNoRespawn` latches reject anything but a
+    /// strictly newer voyage.
     pub(crate) fn apply_phase_observation(&self, observation: Observation) -> bool {
         let mut cell = self.phase_cell.lock().unwrap_or_else(|e| e.into_inner());
         match observation {
             Observation::Phase { phase, supervisor, voyage } => {
+                // An unclaimed cell adopts its first prover, on exactly
+                // the terms `begin_supervisor_epoch` would -- a fresh
+                // epoch, judged below like any other. This is what keeps
+                // the post-spawn settle bound BEST-EFFORT rather than
+                // correctness-critical: a supervisor that first answers
+                // after the deadline is adopted by the next background
+                // poll instead of being rejected forever.
+                if cell.supervisor.is_none() {
+                    *cell = PhaseCell { supervisor: Some(supervisor), ..PhaseCell::default() };
+                }
                 if cell.supervisor != Some(supervisor) {
                     return false;
                 }
@@ -397,6 +424,15 @@ impl Workspace {
                     return false;
                 }
                 cell.phase = if matches!(observation, Observation::Stopped) { Phase::Stopped } else { Phase::Foreign };
+                cell.consecutive_failures = 0;
+                true
+            }
+            // Claimed rows are closed to it -- see the variant's own doc.
+            Observation::TerminalUnclaimed => {
+                if cell.supervisor.is_some() {
+                    return false;
+                }
+                cell.phase = Phase::Terminal;
                 cell.consecutive_failures = 0;
                 true
             }
