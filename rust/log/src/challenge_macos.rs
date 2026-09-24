@@ -654,6 +654,13 @@ impl PeerProcess for ChallengedProcess {
 /// synchronous OS call with no wait to bound. `Proven` here means the
 /// FULL five-step proof -- see [`authenticate_server()`] for the
 /// deliberately separate, deliberately weaker steps-1-3-only operation.
+///
+/// The one macOS-shaped addition to that order: the [`watch_exit`]
+/// registration sits BETWEEN step 3 and step 4, which is what makes the
+/// death watch bind the same instance the proof names. It is not a
+/// sixth step and it changes no outcome -- it only fails `Undetermined`
+/// -- but its POSITION is load-bearing, and the body says at length
+/// why.
 pub fn challenge(
     conn: &dyn SocketChallengeable,
     exchange: &mut dyn IdentityExchange,
