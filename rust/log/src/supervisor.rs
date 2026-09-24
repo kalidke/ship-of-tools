@@ -983,7 +983,6 @@ fn build_run_command(
     // leg pair is unsupported there until that exchange is versioned.
     #[cfg(target_os = "linux")]
     let mut command = {
-        use std::os::unix::process::CommandExt;
         let mut c = std::process::Command::new("/proc/self/exe");
         c.arg0(capsule_exe);
         c
