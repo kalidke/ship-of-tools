@@ -62,9 +62,34 @@ fn runtime_root() -> &'static Path {
         // and this process must read it back through the same derivation
         // the children use.
         std::env::set_var("XDG_RUNTIME_DIR", tmp.path());
+        // Every endpoint here is a sibling in one sessions dir; derive it
+        // rather than spelling the layout out a second time.
+        let sessions = sot_protocol::session_socket_path("any").parent().expect("a socket has a parent").to_path_buf();
+        create_private_under(tmp.path(), &sessions);
         tmp
     });
     dir.path()
+}
+
+/// Creates `dir` and every component of it below `root` with an explicit
+/// `0700`, mirroring `paths::secure_socket_dir` — the check the daemon
+/// applies to its own socket's parents, and BAILS on. A plain
+/// `create_dir_all` here would leave whatever the ambient umask allows:
+/// `0700` on a box with a `0077` umask, `0755` on a CI runner's `0022`,
+/// where the daemon then refuses to bind and the wait below has nothing
+/// to wait for.
+fn create_private_under(root: &Path, dir: &Path) {
+    use std::os::unix::fs::DirBuilderExt;
+    let rel = dir.strip_prefix(root).expect("the endpoint lives under this suite's runtime root");
+    let mut cur = root.to_path_buf();
+    for comp in rel.components() {
+        cur.push(comp);
+        match std::fs::DirBuilder::new().mode(0o700).create(&cur) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => panic!("mkdir {}: {e}", cur.display()),
+        }
+    }
 }
 
 const BOUND: Duration = Duration::from_secs(20);
@@ -124,7 +149,6 @@ fn bytes_survive_both_newline_forms_and_stdout_carries_nothing_else() {
     // plain echo listener rather than a daemon, so the bytes coming back
     // are known exactly.
     let socket = sot_protocol::session_socket_path(label);
-    std::fs::create_dir_all(socket.parent().expect("socket has a parent")).expect("mkdir sessions");
     let listener = UnixListener::bind(&socket).expect("bind the echo listener");
     let echo = std::thread::spawn(move || {
         let (mut conn, _) = listener.accept().expect("accept");
@@ -185,6 +209,12 @@ fn a_missing_endpoint_exits_promptly_with_one_stderr_line_and_no_stdout() {
     assert!(elapsed < Duration::from_secs(2), "took {elapsed:?} to report an endpoint that is not there");
 }
 
+/// Whatever the daemon managed to say before giving up.
+#[cfg(target_os = "linux")]
+fn daemon_said(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| format!("<its stderr is unreadable: {e}>")).trim().to_string()
+}
+
 /// Linux-only for the same reason `status_integration.rs` is: it spawns a
 /// real `sotd` and waits for it to bind. Everything the bridge itself does
 /// is covered above on every Unix.
@@ -198,6 +228,10 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
 
     let hosts_toml = env._tmp.path().join("hosts.toml");
     std::fs::write(&hosts_toml, format!("hub = \"{TEST_STATE_HOST}\"\n\n[host.{TEST_STATE_HOST}]\ndaemon = true\n")).expect("write hosts.toml");
+    // The daemon's own stderr, kept rather than discarded: when it
+    // refuses to start there is one line saying so, and the wait below
+    // has no other way to report why nothing ever bound.
+    let daemon_stderr = env._tmp.path().join("sotd.stderr");
     let daemon = Command::new(sotd_exe())
         .arg("--label")
         .arg(label)
@@ -218,16 +252,29 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
         .env_remove("SOT_PROJECT_ROOT")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(std::fs::File::create(&daemon_stderr).expect("create the daemon's stderr file")))
         .spawn()
         .expect("spawn sotd");
     env.daemon.borrow_mut().replace(daemon);
 
     let socket = sot_protocol::session_socket_path(label);
-    std::fs::create_dir_all(socket.parent().expect("socket has a parent")).expect("mkdir sessions");
     let deadline = Instant::now() + BOUND;
     while UnixStream::connect(&socket).is_err() {
-        assert!(Instant::now() < deadline, "sotd never bound {}", socket.display());
+        // A daemon that has exited will never bind, however slow the
+        // runner is — so this wait ends on the condition (bound, or
+        // gone), and BOUND covers only the honest case of one that is
+        // still starting. Sleeping out twenty seconds to then report
+        // nothing is what hid the cause of this test's first CI failure.
+        let exited = env.daemon.borrow_mut().as_mut().expect("the daemon is tracked").try_wait().expect("try_wait the daemon");
+        if let Some(status) = exited {
+            panic!("sotd exited {status} without binding {}: {}", socket.display(), daemon_said(&daemon_stderr));
+        }
+        assert!(
+            Instant::now() < deadline,
+            "sotd is still running but never bound {} within {BOUND:?}: {}",
+            socket.display(),
+            daemon_said(&daemon_stderr)
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
 
