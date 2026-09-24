@@ -103,7 +103,6 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 ///    list happens to miss. Then `preflight_volume` itself, mapped to
 ///    its `Display` text. Windows: unchanged — the existing NTFS-only
 ///    arm already refuses everything this would and more.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn qualified_state_root() -> Result<PathBuf, String> {
     let root = sot_log::state_dir::sot_state_dir()
         .ok_or_else(|| format!("could not resolve this machine's state root ({STATE_ROOT_HINT} unset)"))?;
@@ -157,7 +156,6 @@ pub fn qualified_state_root() -> Result<PathBuf, String> {
 /// project root. Each side is canonicalized first, falling back to its
 /// given spelling if that fails, so a symlinked root is judged by what it
 /// resolves to, not its spelling.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn state_root_inside_project(state_dir: &Path, project_root: &Path) -> bool {
     let state_dir = std::fs::canonicalize(state_dir).unwrap_or_else(|_| state_dir.to_path_buf());
     let project_root = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
@@ -276,7 +274,6 @@ mod macos_only {
 /// recipe, sharing ONE resume token, `--continue`, stripped from a row's
 /// first-ever leg ([`first_leg_without_continue`]). `"none"` is the bare
 /// platform shell; every other kind is refused, never substituted.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn agent_argv(agent_kind: &str) -> Result<Vec<String>, String> {
     match agent_kind {
         "none" => Ok(vec![none_argv()]),
@@ -795,7 +792,6 @@ fn capsule_comm_home_str() -> Option<String> {
 /// the cross-platform test suite even though
 /// [`runtime::spawn_detached_supervisor`], its only caller, is gated to
 /// Windows and Linux only.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
     let mut env = crate::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
     if !agent_name.is_empty() {
@@ -1061,7 +1057,6 @@ mod capsule_sibling_present_tests {
 /// `setsid` capsule survives its spawning `sotd` under launchd, that a
 /// row reaches `ready` with a real agent attached, and that a
 /// bootstrap-failing capsule latches `TerminalUnclaimed`.
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod runtime {
     use super::{
         agent_argv, capsule_supervisor_env, first_leg_without_continue, mode_flag, ActivationIntent,
@@ -3212,11 +3207,9 @@ mod runtime {
     }
 }
 
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub use runtime::*;
 
 /// One lifecycle observer per capsule row -- the SINGLE writer of `Workspace::phase`.
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod observer {
     use super::{local_phase, phase_for_missing_pointer, state_dir_for};
     use crate::workspaces::{Observation, SupervisorIdentity, Workspace, Workspaces};
@@ -3297,7 +3290,6 @@ pub mod observer {
     }
 }
 
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[cfg(test)]
 mod observer_tests {
     use super::observer::observe;
@@ -3527,9 +3519,8 @@ mod observer_tests {
 /// that cannot run a capsule row in the first place. (macOS lane,
 /// corrected: `FeAttachClient` is NO LONGER what gates this —
 /// `sot_log::fe_client_io` is ungated since ADR 0045 decision 1, and only
-/// its `PlatformEndpoint`-typed default is cfg'd. The reason is now
-/// solely `mod runtime`'s own; when that widens, so does this.)
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+/// its `PlatformEndpoint`-typed default is cfg'd. The reason was solely
+/// `mod runtime`'s own gate, and that gate is gone — so is this one.)
 pub mod headless {
     use std::path::Path;
     use std::time::{Duration, Instant};
@@ -3849,7 +3840,6 @@ pub mod headless {
     }
 }
 
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[cfg(test)]
 mod headless_size_gate_tests {
     // Pure size-gate tests: `type_into` checks the payload length BEFORE
@@ -3978,7 +3968,6 @@ mod tests {
     // against), a present leg, or a still-held fence each keep the row
     // instead.
     #[test]
-    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn end_run_is_unheld_only_when_both_the_fence_and_the_leg_are_proven_absent() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state_dir = dir.path();
@@ -4041,7 +4030,6 @@ mod tests {
     // lives inside `mod runtime`, gated like every other function this
     // module's tests reach.
     #[test]
-    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn lock_contention_is_recognized_only_by_its_own_message() {
         assert!(
             is_lock_contention("lock held by another process: \"/tmp/x/writer.lock\""),

@@ -1,4 +1,3 @@
-#![cfg(any(windows, target_os = "linux"))]
 //! lane_bridge.rs — ADR 0045 decision 2: `lane.connect`, the daemon-side
 //! half of "one attach path: through the daemon, local or remote"
 //! (decision 1). A dedicated connection whose first frame is
@@ -13,13 +12,14 @@
 //! (steps 4-5 of the challenge) over the pipe, bound against the `pid`/
 //! `created` this module reports from ITS OWN dial (steps 1-3).
 //!
-//! Capsule-runtime-gated exactly like `capsule_workspace.rs`'s own `mod
-//! runtime`: this whole file, and `server.rs`'s peek call into it, are
-//! `#[cfg(any(windows, target_os = "linux"))]` — a host with no capsule
-//! runtime at all (macOS) never sees this module; `lane.connect` there
-//! falls into the ordinary control loop and gets whatever "unknown op"
-//! answer every unrouted op already does, exactly as every other
-//! capsule-only surface behaves on that platform.
+//! Ungated, exactly like `capsule_workspace.rs`'s own `mod runtime`
+//! (macOS wiring lane): the capsule runtime is this daemon's runtime on
+//! every host it builds for, so `lane.connect` is answered the same way
+//! everywhere. What differs per platform is one leaf — `pipe_upstream`'s
+//! `cfg(unix)`/`cfg(windows)` arms below — not whether this surface
+//! exists at all. A port to a host with neither arm fails to compile
+//! there, loudly, which is the honest answer; it never silently
+//! degrades into a workspace with no supervisor.
 
 use std::path::{Path, PathBuf};
 
@@ -327,8 +327,12 @@ where
 /// Convert the blocking client this dial produced into an async duplex
 /// stream on the daemon's own Tokio runtime, then hand off to
 /// [`crate::proxy::pipe_bidirectional`] — the SAME pipe body
-/// `proxy.connect` uses, generic over the upstream type.
-#[cfg(target_os = "linux")]
+/// `proxy.connect` uses, generic over the upstream type. `cfg(unix)`,
+/// not `cfg(target_os = "linux")`: `socket_unix::SocketClient` is one
+/// implementation for every Unix (`client.rs`'s own `PlatformEndpoint`
+/// alias picks it for Linux and macOS alike), and a Unix stream adopted
+/// from a raw fd is the same operation on both.
+#[cfg(unix)]
 async fn pipe_upstream<R, W>(rx: R, tx: W, conn: sot_log::socket_unix::SocketClient, what: &str) -> Result<()>
 where
     R: AsyncBufRead + Unpin,
@@ -340,7 +344,7 @@ where
     crate::proxy::pipe_bidirectional(rx, tx, upstream, what).await
 }
 
-/// Windows twin of the Linux `pipe_upstream` above: the pipe handle was
+/// Windows twin of the Unix `pipe_upstream` above: the pipe handle was
 /// opened `FILE_FLAG_OVERLAPPED` (`pipe_win.rs`'s own connect), so it is
 /// valid for `NamedPipeClient::from_raw_handle` to adopt — `unsafe` only
 /// because that constructor trusts the caller's word that the handle is

@@ -806,7 +806,6 @@ impl Workspaces {
     }
 
     /// A finished handle reads as absent.
-    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
     pub(crate) fn has_observer(&self, workspace_id: &str) -> bool {
         let g = self.inner.read().expect("workspaces lock");
         g.observers.get(workspace_id).map(|(h, _)| !h.is_finished()).unwrap_or(false)
@@ -814,7 +813,6 @@ impl Workspaces {
 
     /// Checked against the SAME registry lock `remove_by_id` uses: a row removed
     /// mid-spawn gets its handle aborted immediately instead of stored.
-    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
     pub(crate) fn install_observer(
         &self,
         workspace_id: &str,

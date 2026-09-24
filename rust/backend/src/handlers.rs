@@ -3959,27 +3959,20 @@ const MAX_PTY_INPUT_ORIGIN_LEN: usize = 128;
 /// One capsule-lane op's absolute deadline (ADR 0042 amendment: "the whole
 /// operation runs under ONE deadline (5 s): attach, checkpoint, take,
 /// input, ack, detach"). Shared by both `pty.input` and `pty.screen`'s
-/// capsule arms — gated like `capsule_workspace::headless` itself, since
-/// only those arms ever read it.
-#[cfg(any(windows, target_os = "linux"))]
+/// capsule arms, which are the only readers.
 const CAPSULE_OP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Bounds for [`crate::capsule_workspace::headless::write_and_enter`]'s
 /// pacing wait — never a confirmation, only pacing.
-#[cfg(any(windows, target_os = "linux"))]
 const CAPSULE_WRITE_QUIET_BUDGET: std::time::Duration = std::time::Duration::from_millis(300);
-#[cfg(any(windows, target_os = "linux"))]
 const CAPSULE_WRITE_PACING_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// What a capsule-runtime `pty.input`/`pty.screen` op's `spawn_blocking`
 /// closure reports — computed OFF the async runtime (the phase probe and
 /// the headless client both make blocking IPC calls), then translated to a
-/// response frame back on the async side. Gated like `capsule_workspace::
-/// headless` itself (windows/linux only — that module simply does not
-/// exist on any other host, so neither can a variant naming its error
-/// type); the `#[cfg(not(...))]` arms in `handle_pty_input`/
-/// `handle_pty_screen` never construct this enum at all on those hosts.
-#[cfg(any(windows, target_os = "linux"))]
+/// response frame back on the async side. Ungated, like
+/// `capsule_workspace::headless` itself (macOS wiring lane): one variant
+/// set, one outcome shape, on every host this daemon builds for.
 enum CapsuleOpOutcome<T> {
     Ok(T),
     NotReady(&'static str),
@@ -3997,7 +3990,6 @@ enum CapsuleOpOutcome<T> {
 /// was submitted", generalized to the wire's own explicit "unknown" answer
 /// too: both cases mean the same thing, "we do not know if this landed in
 /// the record," and the daemon never retries either one on its own).
-#[cfg(any(windows, target_os = "linux"))]
 fn headless_error_payload(
     e: crate::capsule_workspace::headless::HeadlessError,
     fail_code: &'static str,
@@ -4113,7 +4105,6 @@ pub async fn handle_pty_input(
 
     match ws.runtime.as_str() {
         "capsule" => {
-            #[cfg(any(windows, target_os = "linux"))]
             {
                 let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
                     let payload = json!({
@@ -4212,19 +4203,6 @@ pub async fn handle_pty_input(
                     }
                 }
             }
-            #[cfg(not(any(windows, target_os = "linux")))]
-            {
-                // `controller_id` is only ever consumed by the
-                // windows/linux arm above; on any other host it is
-                // resolved (for `bad_origin` validation) but never used.
-                let _ = &controller_id;
-                let payload = json!({
-                    "error": "capsule runtime not available on this host",
-                    "code": "capsule_input_failed",
-                    "phase": "attach",
-                });
-                Ok(vec![(Frame::res(req_id, op::PTY_INPUT, payload), None)])
-            }
         }
         other => {
             let payload = json!({
@@ -4258,7 +4236,6 @@ pub async fn handle_pty_screen(
 
     match ws.runtime.as_str() {
         "capsule" => {
-            #[cfg(any(windows, target_os = "linux"))]
             {
                 let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
                     let payload = json!({
@@ -4347,15 +4324,6 @@ pub async fn handle_pty_screen(
                         Ok(vec![(Frame::res(req_id, op::PTY_SCREEN, payload), None)])
                     }
                 }
-            }
-            #[cfg(not(any(windows, target_os = "linux")))]
-            {
-                let payload = json!({
-                    "error": "capsule runtime not available on this host",
-                    "code": "capsule_screen_failed",
-                    "phase": "attach",
-                });
-                Ok(vec![(Frame::res(req_id, op::PTY_SCREEN, payload), None)])
             }
         }
         other => {
@@ -4547,12 +4515,10 @@ pub async fn handle_workspace_create(
     // ADR 0043 decision 23: refuse an unqualified state root at the SAME
     // "before any state mutation" moment `capsule_argv` above already
     // established — before `ws_seed`, before `workspaces.insert`, before
-    // any toml. Gated identically to the capsule runtime's own
-    // availability check further down (`#[cfg(any(windows, target_os =
-    // "linux"))]`): a platform with no capsule runtime AT ALL (macOS)
-    // keeps its existing "runtime not available" refusal below instead of
-    // a state-root diagnosis that would be beside the point there.
-    #[cfg(any(windows, target_os = "linux"))]
+    // any toml. Ungated, like the capsule spawn further down (macOS
+    // wiring lane): there is no host this daemon builds for that lacks a
+    // capsule runtime, so there is no second, platform-shaped refusal for
+    // this check to defer to.
     let capsule_state_root: Option<std::path::PathBuf> = if runtime == "capsule" {
         match crate::capsule_workspace::qualified_state_root() {
             Ok(root) => Some(root),
@@ -4570,8 +4536,6 @@ pub async fn handle_workspace_create(
     } else {
         None
     };
-    #[cfg(not(any(windows, target_os = "linux")))]
-    let capsule_state_root: Option<std::path::PathBuf> = None;
     // A second refusal at the same before-any-mutation moment: a state
     // root resolving INSIDE this workspace's own project root would sit
     // under this daemon's project-root file watcher, whose open
@@ -4639,18 +4603,13 @@ pub async fn handle_workspace_create(
     }
 
     // ADR 0043 decision 22: branch on the resolved runtime VALUE, not a
-    // platform cfg — `ws_handle.runtime` is exhaustive over the two
-    // runtimes this daemon can ever create (see `Workspace::runtime`'s
-    // own doc); both arms compile on every platform this daemon builds
-    // for (on Windows the tmux arm is simply unreachable — "tmux" is
-    // refused above before either arm is ever entered).
-    // ADR 0043 decision 22: the capsule runtime itself only compiles
-    // on Windows and Linux (`capsule_workspace::runtime`'s own
-    // gate) — on any other host (macOS stays experimental) an
-    // explicit `"runtime":"capsule"` request is refused gracefully,
-    // the same "not available" shape `destroy_capsule_workspace`
-    // reports for a row that somehow already has one.
-    #[cfg(any(windows, target_os = "linux"))]
+    // platform cfg. Since ADR 0046 decision 5 that value is always
+    // "capsule" for a NEW row, and since the macOS wiring lane the
+    // capsule runtime carries no platform gate at all: one spawn path,
+    // every host this daemon builds for. What differs per platform lives
+    // in `capsule_workspace`'s own leaf `cfg(unix)`/`cfg(windows)` arms,
+    // so a host with neither fails to COMPILE rather than quietly
+    // creating a row it can never supervise.
     {
     // ADR 0042 slice L1a, Codex review finding 1: the capsule spawn —
     // and, unlike the tmux path below, a SYNCHRONOUS failure here
@@ -4775,31 +4734,6 @@ pub async fn handle_workspace_create(
             )]);
         }
     }
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = &capsule_argv;
-        let _ = &capsule_state_root;
-        tracing::warn!(workspace_id = %ws_handle.workspace_id, "workspace.create: capsule runtime requested but not available on this host; rolling back");
-        let _ = workspaces.remove_by_id(&ws_handle.workspace_id);
-        for toml_path in [
-            crate::workspaces::toml_path_for(&ws_handle.slug),
-            crate::workspaces::legacy_toml_path_for(&ws_handle.slug),
-        ] {
-            match std::fs::remove_file(&toml_path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => tracing::warn!(error = %e, path = ?toml_path, "workspace.create rollback: toml remove failed"),
-            }
-        }
-        let payload = json!({
-            "error": "the capsule runtime is not available on this host",
-            "code": "runtime_not_available",
-        });
-        return Ok(vec![(
-            Frame::res(req_id, op::WORKSPACE_CREATE, payload),
-            None,
-        )]);
     }
 
     let res = WorkspaceCreateRes {
@@ -4986,7 +4920,6 @@ async fn destroy_capsule_workspace(
     project_root: &std::path::Path,
     workspaces: &Workspaces,
 ) -> (CapsuleDestroyOutcome, Option<tokio::sync::OwnedMutexGuard<()>>) {
-    #[cfg(any(windows, target_os = "linux"))]
     {
         let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
             return (
@@ -5148,20 +5081,6 @@ async fn destroy_capsule_workspace(
                 None,
             ),
         }
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = (workspace_id, reason, agent_kind, agent_name, slug, project_root, workspaces);
-        // Unreachable in practice: no workspace has `runtime == "capsule"`
-        // off Windows/Linux (see `Workspace::runtime`'s own doc) — a host
-        // this crate compiles for but the capsule runtime does not
-        // (ADR 0043: macOS stays experimental).
-        (
-            CapsuleDestroyOutcome::Kept {
-                detail: "the capsule runtime is not available on this host".to_string(),
-            },
-            None,
-        )
     }
 }
 
@@ -8703,13 +8622,10 @@ mod workspace_destroy_default_row_tests {
     // and every one now runs through the same scratch config root.
     // Same technique as `workspaces.rs`'s own `env_guarded`, serialized
     // under the crate-wide lock so this never races another module's
-    // env-mutating test. Every caller is now
-    // `#[cfg(any(windows, target_os = "linux"))]` (the absence proof
-    // `seed_provably_unheld_state_dir` builds only means anything there),
-    // so this whole cluster is unused dead code elsewhere -- allowed
-    // rather than gating the struct/fns themselves and losing the single
-    // definition every platform's `cargo check` still type-checks.
-    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+    // env-mutating test. Ungated since the macOS wiring lane: the
+    // absence proof `seed_provably_unheld_state_dir` builds means
+    // something on every host this daemon builds for, so this cluster
+    // has real callers everywhere and needs no dead-code suppression.
     struct EnvGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
         xdg_config_home: Option<std::ffi::OsString>,
@@ -8755,7 +8671,6 @@ mod workspace_destroy_default_row_tests {
         }
     }
 
-    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
     fn env_guarded() -> EnvGuard {
         let serial = crate::paths::ENV_TEST_LOCK
             .lock()
@@ -8807,7 +8722,6 @@ mod workspace_destroy_default_row_tests {
     /// their own distinct subtree name under it (`state_dir.rs`'s own
     /// doc), so the two never collide even sharing one root; "nothing
     /// exists under `dir`" fixtures stay literally true either way.
-    #[cfg(any(windows, target_os = "linux"))]
     fn pin_local_state_root(dir: &std::path::Path) -> std::path::PathBuf {
         #[cfg(windows)]
         std::env::set_var("LOCALAPPDATA", dir);
@@ -8835,16 +8749,10 @@ mod workspace_destroy_default_row_tests {
     /// deleted unguarded fast path (Codex review, 2026-09-11: that path
     /// returned `Removable` on the daemon's own say-so alone, with no
     /// proof at all) — same technique `capsule_workspace`'s own
-    /// absence-proof unit tests use. Really `#[cfg]`-gated, not merely
-    /// `allow(dead_code)`: the body reaches `capsule_workspace::runtime`,
-    /// which is gated `#[cfg(any(windows, target_os = "linux"))]` at its
-    /// own root — nonexistent on every other host, not merely unused.
-    /// (macOS lane, corrected: `sot_log::supervisor` itself is NO LONGER
-    /// the thing missing here — its own root gate admits `target_os =
-    /// "macos"` today. The daemon-side runtime is what does not exist on
-    /// Darwin yet; see `capsule_workspace`'s `mod runtime` gate for the
-    /// one ruling that is owed before it can.)
-    #[cfg(any(windows, target_os = "linux"))]
+    /// absence-proof unit tests use. Ungated since the macOS wiring
+    /// lane: the body reaches `capsule_workspace::runtime`, which no
+    /// longer carries a platform gate at its own root, so this fixture
+    /// exists wherever the daemon does.
     fn seed_provably_unheld_state_dir(state_root: &std::path::Path, workspace_id: &str) {
         let state_dir = crate::capsule_workspace::state_dir_for(state_root, workspace_id);
         std::fs::create_dir_all(&state_dir).expect("create the fake state dir");
@@ -8923,10 +8831,9 @@ mod workspace_destroy_default_row_tests {
     // either) — the orphan-removal fix this test now covers: proven,
     // not merely refused, so the row's run is confirmed ended
     // (`orphan_removed`) exactly as a real end would be, never the
-    // flat refusal AND never a bare `Kept`. Where the capsule runtime
-    // doesn't compile at all (e.g. macOS), the portable fallback arm
-    // still reports the generic `Kept` code instead — no proof
-    // machinery exists there to reach at all.
+    // flat refusal AND never a bare `Kept`. One outcome on every host
+    // since the macOS wiring lane: there is no platform-shaped fallback
+    // arm left for this to mean something different on.
     // Pinned hermetic (Codex review, 2026-09-11): this test used to read
     // `sot_log::state_dir::sot_state_dir()`'s REAL, unpinned environment —
     // fine on a dev box whose shell always exports a stable, qualified
@@ -8944,7 +8851,6 @@ mod workspace_destroy_default_row_tests {
     #[tokio::test]
     async fn default_capsule_workspace_with_no_state_dir_is_proven_orphaned_not_a_flat_refusal() {
         let _guard = env_guarded();
-        #[cfg(any(windows, target_os = "linux"))]
         let scratch = std::env::temp_dir().join(format!(
             "sot-ws-destroy-missing-test-{}-{}",
             std::process::id(),
@@ -8959,7 +8865,6 @@ mod workspace_destroy_default_row_tests {
         // nothing under it is: the point of this test is that THIS ROW's
         // own state dir does not exist on disk at all, and nothing was
         // ever bound at its lane address either.
-        #[cfg(any(windows, target_os = "linux"))]
         {
             let root = pin_local_state_root(&scratch);
             std::fs::create_dir_all(&root).unwrap();
@@ -8972,7 +8877,6 @@ mod workspace_destroy_default_row_tests {
             Some("default_workspace_not_destroyable"),
             "a capsule default row must not get the flat tmux-style refusal: {payload:?}"
         );
-        #[cfg(any(windows, target_os = "linux"))]
         {
             assert_eq!(
                 payload.get("code").and_then(|v| v.as_str()),
@@ -8985,15 +8889,8 @@ mod workspace_destroy_default_row_tests {
                 "the orphan proof's own distinct outcome must be visible: {payload:?}"
             );
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
-        assert_eq!(
-            payload.get("code").and_then(|v| v.as_str()),
-            Some("capsule_end_not_reached"),
-            "payload: {payload:?}"
-        );
         assert!(reg.resolve(Some(&id)).is_some(), "the default row is never removed either way");
 
-        #[cfg(any(windows, target_os = "linux"))]
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
@@ -9010,16 +8907,14 @@ mod workspace_destroy_default_row_tests {
     /// refusing. `SOT_RUNTIME_DIR` is pinned to a fresh, private (owner-
     /// only) scratch dir so the real socket path (`sot_log::socket_unix::
     /// supervisor_socket_path`) never collides with a real session.
-    /// macOS lane disposition: correctly Linux-only for now, and NOT
-    /// because of the socket — `sot_log::socket_unix` and
-    /// `supervisor_client` both compile for Darwin. It is the assertion
-    /// target: this proves `capsule_workspace::runtime::
-    /// is_definitely_orphaned`'s refusing half, and that function lives
-    /// inside `mod runtime`, which has no macOS arm yet. This gate
-    /// widens to `cfg(unix)` in the same change that widens that module,
-    /// never before it.
+    /// `cfg(unix)`: the assertion target is `capsule_workspace::runtime::
+    /// is_definitely_orphaned`'s refusing half, and `mod runtime` lost
+    /// its platform gate in the macOS wiring lane — exactly the change
+    /// this gate's predecessor said it would widen with. The socket half
+    /// was never the constraint (`sot_log::socket_unix` and
+    /// `supervisor_client` both compile for Darwin).
     #[tokio::test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     async fn a_reachable_listener_with_no_state_dir_still_refuses() {
         let _guard = env_guarded();
         let stamp = format!(
@@ -9091,7 +8986,6 @@ mod workspace_destroy_default_row_tests {
     // "linux"))]` arm -- every other host takes the unconditional `Kept`
     // fallback regardless of any on-disk fixture.
     #[tokio::test]
-    #[cfg(any(windows, target_os = "linux"))]
     async fn a_capsule_workspace_marked_terminal_still_needs_the_absence_proof() {
         let _guard = env_guarded();
         let scratch = std::env::temp_dir().join(format!(
@@ -9160,11 +9054,10 @@ mod workspace_destroy_default_row_tests {
     // scratch dir so neither the toml write nor the state dir ever
     // touches a real `~/.config/sot` or `~/.local/state/sot`.
     //
-    // Gated: the absence proof `seed_provably_unheld_state_dir` targets
-    // only exists inside `destroy_capsule_workspace`'s `#[cfg(any(windows,
-    // target_os = "linux"))]` arm.
+    // The absence proof `seed_provably_unheld_state_dir` targets is
+    // `destroy_capsule_workspace`'s one, ungated path (macOS wiring
+    // lane), so this runs on every host.
     #[tokio::test]
-    #[cfg(any(windows, target_os = "linux"))]
     async fn default_row_confirmed_ended_resets_agent_persists_toml_and_broadcasts() {
         let _guard = env_guarded();
         let dir = std::env::temp_dir().join(format!(
@@ -9249,12 +9142,10 @@ mod workspace_destroy_default_row_tests {
     // another, to prove the prune is host-scoped exactly like the
     // destroy-path prune it mirrors.
     //
-    // Gated: same reason as the reset test above -- the confirmed-end
-    // outcome `seed_provably_unheld_state_dir` produces only reaches
-    // `Removable` through `destroy_capsule_workspace`'s `#[cfg(any(windows,
-    // target_os = "linux"))]` arm.
+    // Same reason as the reset test above -- the confirmed-end outcome
+    // `seed_provably_unheld_state_dir` produces reaches `Removable`
+    // through `destroy_capsule_workspace`'s one, ungated path.
     #[tokio::test]
-    #[cfg(any(windows, target_os = "linux"))]
     async fn default_row_end_prunes_the_rows_registry_row() {
         let _guard = env_guarded();
         let stamp = format!(

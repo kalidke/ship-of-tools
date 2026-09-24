@@ -397,7 +397,6 @@ fn test_slow_concept_read_delay() -> std::time::Duration {
 /// `"waitforsettle"`), which is a different module but shares this
 /// exact barrier-path convention. No-op unless `SOT_TEST_ACTIVATION_
 /// BARRIER` is set.
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub(crate) fn record_test_activation_marker(kind: &str) {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let Ok(barrier_path) = std::env::var("SOT_TEST_ACTIVATION_BARRIER") else {
@@ -413,7 +412,6 @@ pub(crate) fn record_test_activation_marker(kind: &str) {
 /// `SOT_TEST_ACTIVATION_BARRIER` names a path, blocks until the test
 /// creates that file (not a guessed sleep), giving up past a 30s bound.
 /// No-op in production.
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 async fn wait_for_test_activation_barrier() {
     let Ok(path) = std::env::var("SOT_TEST_ACTIVATION_BARRIER") else {
         return;
@@ -644,15 +642,12 @@ pub async fn run(opts: Opts) -> Result<()> {
     // does not exist yet at all ("no leg at all -> spawn a new leg").
     // Codex review finding 10: runs OFF the startup critical path (a
     // detached task, never awaited) with its own bounded concurrency —
-    // see `capsule_workspace::resume_all`'s own doc. Gated to Windows and
-    // Linux only (ADR 0043 decision 22): on any other host
-    // `workspace.create` never marks a workspace `"capsule"` (see
-    // `handlers.rs`), so there is nothing to resume there. On Linux this
-    // now finds the same kind of candidates it always found on Windows —
-    // every NEW workspace defaults to `"capsule"` there too (ADR 0042
-    // L6 / this repo's B6 lane) — plus any surviving `"tmux"` row from
-    // before the flip, which this scan still ignores exactly as before.
-    #[cfg(any(windows, target_os = "linux"))]
+    // see `capsule_workspace::resume_all`'s own doc. Ungated since the
+    // macOS wiring lane: every NEW workspace resolves to `"capsule"` on
+    // every host this daemon builds for (ADR 0042 L6 / this repo's B6
+    // lane, ADR 0046 decision 5), so every host has rows to resume —
+    // plus any surviving `"tmux"` row from before the flip, which this
+    // scan still ignores exactly as before.
     if let Some(state_root) = sot_log::state_dir::sot_state_dir() {
         tokio::spawn(crate::capsule_workspace::resume_all(state_root, workspaces.clone()));
     } else {
@@ -1130,13 +1125,11 @@ where
                 )
                 .await;
             }
-            // ADR 0045 decision 2: capsule-runtime-gated exactly like
-            // `lane_bridge.rs` itself — on a host with no capsule runtime
-            // at all (macOS), `lane.connect` is not specially peeked and
-            // falls into the ordinary control loop below, which answers
-            // whatever "unknown op" every other unrouted op string
-            // already does.
-            #[cfg(any(windows, target_os = "linux"))]
+            // ADR 0045 decision 2: peeked on every host, exactly like
+            // `lane_bridge.rs` itself is compiled on every host (macOS
+            // wiring lane) — one attach path, local or remote, with no
+            // platform where `lane.connect` silently falls through to
+            // the "unknown op" answer instead.
             if f.kind == Kind::Req && f.op == op::LANE_CONNECT {
                 tracing::info!(transport, "lane.connect — leaving control loop for a raw pipe");
                 return crate::lane_bridge::handle_lane_connect(
@@ -1893,7 +1886,6 @@ where
                 // lane probe here -- `ensure_started` runs
                 // fire-and-forget in the background under its own
                 // guard, so a stale cached `Ready` never blocks it.
-                #[cfg(any(windows, target_os = "linux"))]
                 {
                     match state_root.clone() {
                         None => {
