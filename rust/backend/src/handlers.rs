@@ -8836,10 +8836,14 @@ mod workspace_destroy_default_row_tests {
     /// returned `Removable` on the daemon's own say-so alone, with no
     /// proof at all) — same technique `capsule_workspace`'s own
     /// absence-proof unit tests use. Really `#[cfg]`-gated, not merely
-    /// `allow(dead_code)`: the body reaches `sot_log::supervisor`, a
-    /// module gated `#![cfg(any(windows, target_os = "linux"))]` at its
-    /// own root (`log/src/supervisor.rs`) — nonexistent on every other
-    /// host, not merely unused.
+    /// `allow(dead_code)`: the body reaches `capsule_workspace::runtime`,
+    /// which is gated `#[cfg(any(windows, target_os = "linux"))]` at its
+    /// own root — nonexistent on every other host, not merely unused.
+    /// (macOS lane, corrected: `sot_log::supervisor` itself is NO LONGER
+    /// the thing missing here — its own root gate admits `target_os =
+    /// "macos"` today. The daemon-side runtime is what does not exist on
+    /// Darwin yet; see `capsule_workspace`'s `mod runtime` gate for the
+    /// one ruling that is owed before it can.)
     #[cfg(any(windows, target_os = "linux"))]
     fn seed_provably_unheld_state_dir(state_root: &std::path::Path, workspace_id: &str) {
         let state_dir = crate::capsule_workspace::state_dir_for(state_root, workspace_id);
@@ -9006,6 +9010,14 @@ mod workspace_destroy_default_row_tests {
     /// refusing. `SOT_RUNTIME_DIR` is pinned to a fresh, private (owner-
     /// only) scratch dir so the real socket path (`sot_log::socket_unix::
     /// supervisor_socket_path`) never collides with a real session.
+    /// macOS lane disposition: correctly Linux-only for now, and NOT
+    /// because of the socket — `sot_log::socket_unix` and
+    /// `supervisor_client` both compile for Darwin. It is the assertion
+    /// target: this proves `capsule_workspace::runtime::
+    /// is_definitely_orphaned`'s refusing half, and that function lives
+    /// inside `mod runtime`, which has no macOS arm yet. This gate
+    /// widens to `cfg(unix)` in the same change that widens that module,
+    /// never before it.
     #[tokio::test]
     #[cfg(target_os = "linux")]
     async fn a_reachable_listener_with_no_state_dir_still_refuses() {

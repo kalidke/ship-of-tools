@@ -84,16 +84,25 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 ///    canonicalized: everything downstream judges the RESOLVED
 ///    destination, a symlink or a nested mount included, never `$HOME` by
 ///    inference.
-/// 3. On Linux, `statfs` the resolved root and refuse VOLATILE types
-///    (tmpfs, ramfs) — a SECOND, daemon-side deny list answering a
-///    different question than [`sot_log::state_dir::preflight_volume`]'s own
-///    remote-fs one: that one asks whether the store's primitives work at
-///    all (tmpfs passes — see its own doc); this one asks whether the
-///    root is durable enough to keep RESUMING capsule rows from across a
-///    daemon restart, which tmpfs/ramfs answer no to regardless of how
-///    well they support rename/fsync. Then `preflight_volume` itself,
-///    mapped to its `Display` text. Windows: unchanged — the existing
-///    NTFS-only arm already refuses everything this would and more.
+/// 3. `statfs` the resolved root and refuse a root that is not durable
+///    enough to keep RESUMING capsule rows from across a daemon restart
+///    — a SECOND, daemon-side deny list answering a different question
+///    than [`sot_log::state_dir::preflight_volume`]'s own remote-fs one:
+///    that one asks whether the store's primitives work at all (tmpfs
+///    passes — see its own doc); this one asks about durability, which
+///    tmpfs/ramfs answer no to regardless of how well they support
+///    rename/fsync. Each Unix asks it the way ITS OWN `statfs(2)`
+///    actually answers, exactly as `sot_log::fsutil::remote_volume_name`
+///    already splits: Linux matches the `f_type` magic against its own
+///    volatile list ([`linux_only`]); macOS has no tmpfs or ramfs to
+///    name at all, and a RAM disk there mounts as plain `apfs`/`hfs`, so
+///    a fstype list would be an empty gesture — Darwin's own honest
+///    answer is the `MNT_LOCAL` mount flag, "stored locally"
+///    ([`macos_only`]), which is also the one check that catches a
+///    network home whose fstype spelling `preflight_volume`'s substring
+///    list happens to miss. Then `preflight_volume` itself, mapped to
+///    its `Display` text. Windows: unchanged — the existing NTFS-only
+///    arm already refuses everything this would and more.
 #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn qualified_state_root() -> Result<PathBuf, String> {
     let root = sot_log::state_dir::sot_state_dir()
@@ -120,6 +129,17 @@ pub fn qualified_state_root() -> Result<PathBuf, String> {
             return Err(format!(
                 "state root {root:?} is on {name}: capsule records need durable, non-volatile \
                  storage (set XDG_STATE_HOME to a local disk; ADR 0043 decision 23)"
+            ));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if !macos_only::mounted_locally(&root)
+            .map_err(|e| format!("could not statfs the state root {root:?}: {e}"))?
+        {
+            return Err(format!(
+                "state root {root:?} is not on a locally attached filesystem: capsule records need \
+                 durable, non-volatile storage (set XDG_STATE_HOME to a local disk; ADR 0043 decision 23)"
             ));
         }
     }
@@ -199,8 +219,60 @@ mod linux_only {
     }
 }
 
+/// [`linux_only`]'s Darwin twin: the same "is this root durable enough
+/// to resume capsule rows from" question, asked the way macOS actually
+/// answers it. There is no `f_type` magic to match (that field does not
+/// exist in Darwin's `statfs`) and no tmpfs or ramfs to match it
+/// against — a macOS RAM disk is `hdiutil` + `newfs_hfs`, and it mounts
+/// as ordinary `apfs`/`hfs`, indistinguishable by type from the
+/// internal disk. So this asks the mount flag instead: `MNT_LOCAL`, "the
+/// filesystem is stored locally", which is false for exactly the mounts
+/// a capsule state root must never sit on (NFS, SMB, WebDAV, AFP, a
+/// `fuse-t` network bridge) and true for the internal disk and any
+/// directly attached volume. Strictly wider than the fstype spelling
+/// `sot_log::fsutil::remote_volume_name` matches by substring, which is
+/// why it is worth having as this daemon's own second gate rather than
+/// leaving the whole question to `preflight_volume`.
+#[cfg(target_os = "macos")]
+mod macos_only {
+    use std::path::Path;
+
+    /// `true` iff `dir`'s mount carries `MNT_LOCAL`. Mirrors
+    /// `sot_log::fsutil`'s own macOS `statfs` call shape rather than
+    /// adding a second one with different error handling.
+    pub(super) fn mounted_locally(dir: &Path) -> std::io::Result<bool> {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let c_dir = CString::new(dir.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "nul byte in state root path"))?;
+        let mut buf: std::mem::MaybeUninit<libc::statfs> = std::mem::MaybeUninit::uninit();
+        // SAFETY: `buf` is a valid out-param for `statfs(2)`, read back
+        // only once the call itself has reported success.
+        let rc = unsafe { libc::statfs(c_dir.as_ptr(), buf.as_mut_ptr()) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let buf = unsafe { buf.assume_init() };
+        Ok((buf.f_flags & libc::MNT_LOCAL as u32) != 0)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_build_directory_is_mounted_locally() {
+            // A CI runner's and a developer's checkout are both on the
+            // boot volume; a state root that is NOT local is exactly what
+            // `qualified_state_root` exists to refuse, so this asserts
+            // the true half against a directory that certainly qualifies.
+            assert!(mounted_locally(std::path::Path::new(".")).expect("statfs ."));
+        }
+    }
+}
+
 /// The agent argv `sot-capsule supervise` spawns as its producer.
-/// `"claude"` and `"codex"` (Linux only) each get their own launcher
+/// `"claude"` and `"codex"` (Unix only) each get their own launcher
 /// recipe, sharing ONE resume token, `--continue`, stripped from a row's
 /// first-ever leg ([`first_leg_without_continue`]). `"none"` is the bare
 /// platform shell; every other kind is refused, never substituted.
@@ -263,7 +335,7 @@ fn claude_recipe(resume: bool, extra: &[String]) -> Vec<String> {
 }
 
 /// ADR 0046 decision 4, stated once for both arms below: resolving
-/// `claude` to an ABSOLUTE path is Linux-only ([`resolve_claude`]) —
+/// `claude` to an ABSOLUTE path is a Unix thing ([`resolve_claude`]) —
 /// Windows keeps the literal name from [`claude_recipe`] and relies on
 /// the daemon's own `PATH` (a detached child inherits it); that stays
 /// out of scope here, not a gap this decision closes.
@@ -271,7 +343,18 @@ fn claude_recipe(resume: bool, extra: &[String]) -> Vec<String> {
 fn claude_argv() -> Result<Vec<String>, String> {
     Ok(claude_recipe(true, &[]))
 }
-#[cfg(target_os = "linux")]
+/// macOS lane: widened from `target_os = "linux"` to `unix`, a DELETION
+/// of the third arm that used to refuse here ("claude has no capsule
+/// launcher on this host"). That refusal outlived its reason.
+/// [`resolve_claude`] — the whole resolution rule — is already
+/// `cfg(unix)` and already exercised on macOS by [`agent_exec_argv`],
+/// which is how `ccb` itself launches there; a launcher recipe that
+/// differs from `agent-exec`'s only by `--continue` cannot need a
+/// narrower platform gate than the resolver it calls. The remaining
+/// macOS gap is in the capsule RUNTIME, not in this argv (see `mod
+/// runtime`'s own gate below), and a stale refusal here would only
+/// mislabel that gap.
+#[cfg(unix)]
 fn claude_argv() -> Result<Vec<String>, String> {
     let claude = resolve_claude(
         std::env::var_os("PATH").as_deref(),
@@ -281,19 +364,16 @@ fn claude_argv() -> Result<Vec<String>, String> {
     argv[0] = claude;
     Ok(argv)
 }
-/// ADR 0043 decision 22: no known Windows-style launcher exists for
-/// `claude` on any Unix other than Linux either — macOS stays
-/// experimental (ADR 0043 §"Open for the maintainer"), so this refuses
-/// rather than guessing a resolution rule nothing has validated there.
-#[cfg(not(any(windows, target_os = "linux")))]
-fn claude_argv() -> Result<Vec<String>, String> {
-    Err("claude has no capsule launcher on this host".to_string())
-}
 
 /// `"codex"`'s capsule recipe: `ccx --capsule --continue`. `--capsule`
 /// keys `ccx`'s capsule behavior directly (never an inherited env var)
 /// and is never stripped; `--continue` is the shared first-leg token.
-#[cfg(target_os = "linux")]
+/// macOS lane: `unix`, not `target_os = "linux"` — `ccx` is the same
+/// shell script installed to the same `~/.local/bin` on every Unix, so
+/// the Linux gate here was naming the install layout of one host, not a
+/// mechanism. The separate `not(any(windows, linux))` arm that refused
+/// "codex has no capsule launcher on this host" is DELETED with it.
+#[cfg(unix)]
 fn codex_argv() -> Result<Vec<String>, String> {
     let ccx = resolve_ccx(
         std::env::var_os("PATH").as_deref(),
@@ -306,10 +386,6 @@ fn codex_argv() -> Result<Vec<String>, String> {
 #[cfg(windows)]
 fn codex_argv() -> Result<Vec<String>, String> {
     Err("codex has no capsule launcher on Windows (ccx is a bash script with no .ps1 counterpart)".to_string())
-}
-#[cfg(not(any(windows, target_os = "linux")))]
-fn codex_argv() -> Result<Vec<String>, String> {
-    Err("codex has no capsule launcher on this host".to_string())
 }
 
 /// Unix-only argv for `sotd agent-exec <kind> [flags…]` (ADR 0046
@@ -373,10 +449,10 @@ pub fn agent_exec_argv(kind: &str, extra: &[String]) -> Result<Vec<String>, Stri
 /// without mutating global process state — [`claude_argv`]'s Linux arm
 /// and [`agent_exec_argv`]'s `"claude"` arm are the two real callers,
 /// each supplying the process's own `PATH`/`HOME`; `claude_argv` itself
-/// stays Linux-only ABOVE (the capsule launcher's own, narrower,
-/// unvalidated-elsewhere restriction, unchanged by this widening) —
-/// widening this shared helper is what lets `agent_exec_argv` resolve a
-/// real `claude` on any Unix WITHOUT going through that restriction.
+/// is `cfg(unix)` ABOVE as well (macOS lane: the narrower gate it used to
+/// carry named no mechanism this resolver does not already provide, and
+/// is deleted) — widening this shared helper is what let `agent_exec_argv`
+/// resolve a real `claude` on any Unix in the first place.
 #[cfg(unix)]
 fn resolve_claude(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<String, String> {
     // Review round, reproduced: a RELATIVE `PATH` entry resolves against
@@ -414,7 +490,9 @@ fn resolve_claude(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Re
 
 /// [`codex_argv`]'s resolver: same PATH-then-`~/.local/bin` search as
 /// [`resolve_claude`], minus its claude-only `.claude/local` fallback.
-#[cfg(target_os = "linux")]
+/// `cfg(unix)` alongside its one caller — nothing in this search is
+/// Linux-specific.
+#[cfg(unix)]
 fn resolve_ccx(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<String, String> {
     let mut dirs: Vec<PathBuf> = path_var
         .map(std::env::split_paths)
@@ -955,6 +1033,33 @@ mod capsule_sibling_present_tests {
     }
 }
 
+/// macOS lane, the one gate this milestone could NOT widen, and exactly
+/// why — so the next reader does not mistake its absence for an
+/// oversight. Everything below `sot-capsule` needs is already there on
+/// Darwin: the `supervise` subcommand is built and shipped in the macOS
+/// release archive, `sot_log::supervisor_client` compiles for macOS, the
+/// death watch is a kqueue `NOTE_EXIT` knote and the parent-death lease
+/// works. The single blocker is [`spawned_identity`] (see its own doc):
+/// this daemon must read a FRESHLY SPAWNED supervisor's identity in the
+/// same unit that supervisor will later report over the wire, and on
+/// macOS that unit is the kernel's `pidversion`, which is readable ONLY
+/// out of an audit token — from `mach_task_self()` for oneself, or from
+/// a socket peer's `LOCAL_PEERTOKEN`. Neither exists for a child this
+/// daemon has only just forked: `task_for_pid` on anyone else is
+/// entitlement-gated, and no `proc_pidinfo`/`sysctl` flavor carries
+/// `p_idversion`. `spawn_detached_supervisor_with_identity` treats an
+/// unreadable identity as a spawn FAILURE (kills and reaps the child),
+/// so widening this gate without first ruling on where macOS gets that
+/// identity would make every capsule row on a Mac die at spawn —
+/// precisely the silent half-a-mechanism this lane exists to prevent.
+/// The two candidate shapes, both lifecycle rulings rather than code
+/// this lane may choose between: take the identity from the lane's own
+/// first answered `query_status` (`probe` already returns it) under a
+/// bounded post-spawn wait, or let `SupervisorIdentity` carry a
+/// "pending, pinned by a kqueue handle" state that the first observation
+/// resolves. Until one is ratified, a macOS host's `workspace.create`
+/// keeps today's tmux path, unchanged and working — a row that runs,
+/// not a row that vanishes.
 #[cfg(any(windows, target_os = "linux"))]
 mod runtime {
     use super::{
@@ -1024,7 +1129,13 @@ mod runtime {
     /// install layout puts it", ADR 0042 L1a) on both platforms.
     #[cfg(windows)]
     const CAPSULE_EXE: &str = "sot-capsule.exe";
-    #[cfg(target_os = "linux")]
+    /// `not(windows)`, not `target_os = "linux"`: the extensionless name
+    /// is a Unix fact, not a Linux one, and the release archive stages it
+    /// next to `sotd` on the macOS leg exactly as it does on the Linux
+    /// one — so this arm is already correct for the day `mod runtime`'s
+    /// own gate widens, and gating it narrower would only make that day's
+    /// diff bigger without naming an invariant of its own.
+    #[cfg(not(windows))]
     const CAPSULE_EXE: &str = "sot-capsule";
 
     pub fn sot_capsule_exe() -> std::io::Result<PathBuf> {
@@ -1286,6 +1397,20 @@ mod runtime {
     }
 
     /// Bounds a wedged user bus so a launch never hangs.
+    ///
+    /// This constant and the three items after it ([`STDERR_DRAIN_BOUND`],
+    /// [`drain_stderr_bounded`], [`user_scope_available`]) are correctly
+    /// Linux-only and stay that way: every one of them exists to bound a
+    /// `systemd-run --user --scope` probe, and the thing they are
+    /// escaping -- a `KillMode=control-group` user service whose cgroup
+    /// reaps everything the daemon leaves behind -- has no Darwin
+    /// counterpart. launchd's own reaping is by PROCESS GROUP, and
+    /// `pre_exec(setsid)` in the shared spawn below already leaves it;
+    /// so on macOS the bare detached spawn IS the normal-survival case
+    /// and there is nothing to probe, no degraded fallback to fall to,
+    /// and no bus to wedge. A macOS `spawn_detached` is therefore the
+    /// Linux one with the whole probe deleted, not a port of it -- which
+    /// is why these four have no `cfg(unix)` future and are left alone.
     #[cfg(target_os = "linux")]
     const USER_SCOPE_PROBE_BOUND: Duration = Duration::from_secs(5);
 
@@ -1387,6 +1512,14 @@ mod runtime {
     /// into the supervisor unchanged, same as the bare spawn. A spawn
     /// error after a GRANTED probe propagates here unchanged — never a
     /// retry into the bare branch.
+    ///
+    /// macOS, when `mod runtime`'s gate widens: this function's body
+    /// minus the probe -- `build("normal", false)` plus the same
+    /// `pre_exec(setsid)`, and `"normal"` is the honest survival value
+    /// there, not a concession. launchd reaps a stopped job by killing
+    /// its process group unless `AbandonProcessGroup` is set, and
+    /// `setsid` puts the supervisor in a brand-new session and process
+    /// group before the exec, so it is already outside that domain.
     ///
     /// `setsid`'s failure is PROPAGATED (review round, reproduced): in a
     /// FRESH fork child, immediately post-fork, pre-exec, it cannot fail
@@ -2589,6 +2722,17 @@ mod runtime {
     }
 
     /// Reads identity off the OS with no network -- works even before the lane answers.
+    ///
+    /// Correctly Linux-only, and the reason there is no macOS twin is
+    /// the reason this whole module has no macOS arm: `created` is
+    /// per-platform by definition (`sot_log::client::PeerIdentity`), and
+    /// what a macOS supervisor reports is its `pidversion`
+    /// (`sot_log::supervisor::self_pid_and_created`'s own macOS arm), not
+    /// a start time. A start time read here would typecheck, carry a
+    /// plausible number, and make every adoption comparison `Foreign` --
+    /// the exact class of silent half-mechanism this lane went looking
+    /// for. See `mod runtime`'s own gate above for the ruling that is
+    /// owed before this can have a Darwin twin.
     #[cfg(target_os = "linux")]
     fn spawned_identity(child: &Child) -> Option<crate::workspaces::SupervisorIdentity> {
         let pid = child.id()?;
@@ -3307,9 +3451,12 @@ mod observer_tests {
 /// and never resizes the pane (ADR 0041's take-on-first-input semantics,
 /// applied to a second kind of client); `screen_of` attaches as a pure
 /// WATCHER and never takes at all. Platform-neutral: gated the same as
-/// `mod runtime` above (`FeAttachClient` itself is `#![cfg(any(windows,
-/// target_os = "linux"))]`-gated in `sot_log`), so this module simply does
-/// not exist on a host that cannot run a capsule row in the first place.
+/// `mod runtime` above, so this module simply does not exist on a host
+/// that cannot run a capsule row in the first place. (macOS lane,
+/// corrected: `FeAttachClient` is NO LONGER what gates this —
+/// `sot_log::fe_client_io` is ungated since ADR 0045 decision 1, and only
+/// its `PlatformEndpoint`-typed default is cfg'd. The reason is now
+/// solely `mod runtime`'s own; when that widens, so does this.)
 #[cfg(any(windows, target_os = "linux"))]
 pub mod headless {
     use std::path::Path;
@@ -3929,7 +4076,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn agent_argv_claude_fails_closed_when_nothing_resolves() {
         // No PATH, no HOME: nothing to search, so this must refuse
         // rather than hand `sot-capsule` an unresolved bare "claude" it
@@ -3955,12 +4102,6 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         assert!(result.is_err());
-    }
-
-    #[test]
-    #[cfg(not(any(windows, target_os = "linux")))]
-    fn agent_argv_claude_is_refused_off_windows_and_linux() {
-        assert!(agent_argv("claude").is_err());
     }
 
     #[test]
@@ -3994,7 +4135,7 @@ mod tests {
     }
 
     /// Guards PATH/HOME/SOT_COMM_HOME for one `agent_argv("codex")` call.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn with_codex_env<T>(path: Option<&std::path::Path>, home: Option<&std::path::Path>, comm_home: Option<&std::path::Path>, f: impl FnOnce() -> T) -> T {
         let _guard = self_file_env_guarded();
         let prior = (std::env::var_os("PATH"), std::env::var_os("HOME"), std::env::var_os("SOT_COMM_HOME"));
@@ -4026,14 +4167,14 @@ mod tests {
         result
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn write_stub_ccx(path: &Path) {
         std::fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
         set_executable(path);
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn agent_argv_codex_resolves_ccx_and_ends_in_capsule_continue() {
         let dir = tempfile_test_dir();
         let ccx = dir.path().join("ccx");
@@ -4047,7 +4188,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn agent_argv_codex_fails_closed_when_nothing_resolves() {
         let result = with_codex_env(None, None, None, || agent_argv("codex"));
         assert!(result.is_err());
@@ -4058,12 +4199,6 @@ mod tests {
     fn agent_argv_codex_is_refused_on_windows() {
         let err = agent_argv("codex").unwrap_err();
         assert!(err.contains("ccx"), "got: {err}");
-    }
-
-    #[test]
-    #[cfg(not(any(windows, target_os = "linux")))]
-    fn agent_argv_codex_is_refused_off_windows_and_linux() {
-        assert!(agent_argv("codex").is_err());
     }
 
     #[test]
@@ -4143,7 +4278,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn resolve_ccx_finds_an_executable_on_path() {
         let dir = tempfile_test_dir();
         let ccx = dir.path().join("ccx");
@@ -4154,7 +4289,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn resolve_ccx_falls_back_to_local_bin_under_home() {
         let dir = tempfile_test_dir();
         let local_bin = dir.path().join(".local/bin");
@@ -4166,7 +4301,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn resolve_ccx_names_every_directory_it_searched() {
         let err = resolve_ccx(None, None).unwrap_err();
         assert!(err.contains("ccx not found"), "{err}");
