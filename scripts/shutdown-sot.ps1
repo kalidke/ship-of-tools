@@ -106,9 +106,35 @@ $portAlt = ($tunnelPorts | ForEach-Object { "-L ${_}:" }) -join '|'
 
 $supRe = '-File.*launch-(sot|devenv)\.ps1'
 $tunRe = "$portAlt|-L 1234:127\.0\.0\.1:1234"
-function Get-Sup  { Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match $supRe } }
-function Get-FE   { Get-CimInstance Win32_Process -Filter "Name='sot.exe'" }
-function Get-Tun  { Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" | Where-Object { $_.CommandLine -match $tunRe } }
+
+# SCOPE EVERY MATCH TO THIS INSTALL. A shared instrument box runs one sot per
+# OS user, each from its own profile, and these matchers claimed the machine:
+# `Get-FE` took every `sot.exe` regardless of owner. Run from an elevated
+# session it had the authority to act on them, so a teardown here ended
+# another user's session too (observed 2026-09-24 on a two-user box: the log
+# read `kill FE pid=...` twice and only one was ours).
+#
+# Path is a STRONGER test than owner for our own binaries: it also ignores a
+# second install under the SAME account. `ssh.exe` is a system binary, so
+# tunnels fall back to the owner, and a tunnel we cannot attribute is LEFT
+# ALONE and logged -- an orphan tunnel is recoverable and visible (this
+# script's own header records one reaching four days), whereas killing a
+# stranger's is neither.
+$ourPrefixes = @((Join-Path $env:LOCALAPPDATA 'sot\'), (Join-Path $repo 'rust\target\release\'))
+function Test-OurPath([string]$path) {
+    if (-not $path) { return $false }
+    foreach ($pre in $ourPrefixes) {
+        if ($path.StartsWith($pre, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+function Test-OurOwner($proc) {
+    try { return ((Invoke-CimMethod -InputObject $proc -MethodName GetOwner).User -eq $env:USERNAME) }
+    catch { W ("skip: cannot attribute pid=" + $proc.ProcessId + " (" + $proc.Name + ") -- leaving it alone"); return $false }
+}
+function Get-Sup  { Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match $supRe -and $_.CommandLine -like "*$env:USERPROFILE*" } }
+function Get-FE   { Get-CimInstance Win32_Process -Filter "Name='sot.exe'" | Where-Object { Test-OurPath $_.ExecutablePath } }
+function Get-Tun  { Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" | Where-Object { $_.CommandLine -match $tunRe -and (Test-OurOwner $_) } }
 
 W "=== shutdown-sot start (ports=$($tunnelPorts -join ','), host=$SshAlias) ==="
 W ("pre: FE=[{0}] supervisor=[{1}] tunnel=[{2}]" -f `
