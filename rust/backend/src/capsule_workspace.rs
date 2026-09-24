@@ -40,14 +40,14 @@ use std::path::{Path, PathBuf};
 /// constant unconditionally, so it must exist wherever that function's
 /// body does; the text is identical to what the Linux-only arm already
 /// said, since `sot_state_dir`'s own resolution order is the same on
-/// every non-Windows host. Every ACTUAL caller stays gated to Windows and
-/// Linux (`#[cfg(any(windows, target_os = "linux"))]`, matching the
-/// capsule runtime's own availability) — macOS never reaches this text at
-/// all, hence the `allow(dead_code)` below on the arm that serves it.
+/// every non-Windows host. Every ACTUAL caller is gated to the three
+/// platforms the capsule runtime exists on — a Unix that is neither
+/// Linux nor macOS never reaches this text at all, hence the
+/// `allow(dead_code)` below on the arm that serves it.
 #[cfg(windows)]
 pub(crate) const STATE_ROOT_HINT: &str = "%LOCALAPPDATA%";
 #[cfg(not(windows))]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 pub(crate) const STATE_ROOT_HINT: &str = "$XDG_STATE_HOME or $HOME";
 
 /// `<state-root>/workspaces/<workspace_id>/` — the capsule's own state
@@ -950,12 +950,11 @@ pub enum EndRunOutcome {
 /// adopted-leg watch entirely — a watchdog now exists only for a
 /// `Child` this daemon itself spawned.)
 /// This platform's `sot-capsule` sibling file name — kept OUTSIDE `mod
-/// runtime` (windows/linux only, see that module's own doc) so the
-/// daemon-startup sanity check right below it compiles and runs on every
-/// platform `sotd` ships for, macOS included, even though the runtime
-/// itself does not yet spawn the binary there. Duplicates `mod runtime`'s
-/// own `CAPSULE_EXE` value rather than reaching across the cfg boundary —
-/// the two are pinned together by the test below.
+/// runtime` so the daemon-startup sanity check right below it compiles
+/// and runs even where that module does not (a Unix that is neither
+/// Linux nor macOS). Duplicates `mod runtime`'s own `CAPSULE_EXE` value
+/// rather than reaching across the cfg boundary — the two are pinned
+/// together by the test below.
 #[cfg(windows)]
 const CAPSULE_SIBLING_NAME: &str = "sot-capsule.exe";
 #[cfg(not(windows))]
@@ -1033,34 +1032,36 @@ mod capsule_sibling_present_tests {
     }
 }
 
-/// macOS lane, the one gate this milestone could NOT widen, and exactly
-/// why — so the next reader does not mistake its absence for an
-/// oversight. Everything below `sot-capsule` needs is already there on
-/// Darwin: the `supervise` subcommand is built and shipped in the macOS
-/// release archive, `sot_log::supervisor_client` compiles for macOS, the
-/// death watch is a kqueue `NOTE_EXIT` knote and the parent-death lease
-/// works. The single blocker is [`spawned_identity`] (see its own doc):
-/// this daemon must read a FRESHLY SPAWNED supervisor's identity in the
-/// same unit that supervisor will later report over the wire, and on
-/// macOS that unit is the kernel's `pidversion`, which is readable ONLY
-/// out of an audit token — from `mach_task_self()` for oneself, or from
-/// a socket peer's `LOCAL_PEERTOKEN`. Neither exists for a child this
-/// daemon has only just forked: `task_for_pid` on anyone else is
-/// entitlement-gated, and no `proc_pidinfo`/`sysctl` flavor carries
-/// `p_idversion`. `spawn_detached_supervisor_with_identity` treats an
-/// unreadable identity as a spawn FAILURE (kills and reaps the child),
-/// so widening this gate without first ruling on where macOS gets that
-/// identity would make every capsule row on a Mac die at spawn —
-/// precisely the silent half-a-mechanism this lane exists to prevent.
-/// The two candidate shapes, both lifecycle rulings rather than code
-/// this lane may choose between: take the identity from the lane's own
-/// first answered `query_status` (`probe` already returns it) under a
-/// bounded post-spawn wait, or let `SupervisorIdentity` carry a
-/// "pending, pinned by a kqueue handle" state that the first observation
-/// resolves. Until one is ratified, a macOS host's `workspace.create`
-/// keeps today's tmux path, unchanged and working — a row that runs,
-/// not a row that vanishes.
-#[cfg(any(windows, target_os = "linux"))]
+/// Every platform `sotd` ships for. The gate this module carried until
+/// the supervisor-epoch ruling was never about what macOS can do:
+/// `sot-capsule supervise` is built and shipped in the macOS release
+/// archive, `sot_log::supervisor_client` compiles there, the death watch
+/// is a kqueue `NOTE_EXIT` knote and the parent-death lease works. The
+/// single blocker was a daemon-side read of a FRESHLY SPAWNED
+/// supervisor's identity, in the unit that supervisor would later report
+/// over the wire — on macOS the kernel's `pidversion`, readable only out
+/// of an audit token (`mach_task_self()` for oneself, a socket peer's
+/// `LOCAL_PEERTOKEN`), neither of which exists for a child this daemon
+/// has only just forked.
+///
+/// The ruling deleted the read rather than porting it: a supervisor's
+/// identity is authored by the supervisor and learned over the lane, on
+/// all three platforms. What macOS could not do, no platform now does —
+/// so there is nothing left here to gate. Linux lost only earliness,
+/// provably: `challenge_unix::self_start_ticks` (what a supervisor
+/// reports) is literally `process_start_ticks(std::process::id())`, the
+/// same read the daemon used to perform on the same pid, asserted by
+/// `rust/log/tests/supervisor.rs`'s own equality test.
+///
+/// What this module's macOS arm does NOT claim: that a capsule row
+/// actually works on a Mac. Nothing here has ever run on one. It
+/// compiles honestly and spawns honestly; the ruling's §7 lists what a
+/// real Mac must settle — that a supervisor's reported `pidversion`
+/// matches what this daemon's own `query_status` sees for it, that a
+/// `setsid` capsule survives its spawning `sotd` under launchd, that a
+/// row reaches `ready` with a real agent attached, and that a
+/// bootstrap-failing capsule latches `TerminalUnclaimed`.
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod runtime {
     use super::{
         agent_argv, capsule_supervisor_env, first_leg_without_continue, mode_flag, ActivationIntent,
@@ -1465,13 +1466,8 @@ mod runtime {
     /// error after a GRANTED probe propagates here unchanged — never a
     /// retry into the bare branch.
     ///
-    /// macOS, when `mod runtime`'s gate widens: this function's body
-    /// minus the probe -- `build("normal", false)` plus the same
-    /// `pre_exec(setsid)`, and `"normal"` is the honest survival value
-    /// there, not a concession. launchd reaps a stopped job by killing
-    /// its process group unless `AbandonProcessGroup` is set, and
-    /// `setsid` puts the supervisor in a brand-new session and process
-    /// group before the exec, so it is already outside that domain.
+    /// The macOS twin below is this body minus the probe; see its own
+    /// doc for why that platform needs no escape.
     ///
     /// `setsid`'s failure is PROPAGATED (review round, reproduced): in a
     /// FRESH fork child, immediately post-fork, pre-exec, it cannot fail
@@ -1508,6 +1504,41 @@ mod runtime {
                 build("degraded", false)
             }
         };
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        cmd.spawn()
+    }
+
+    /// macOS: the Linux twin's body minus the probe. There is no
+    /// transient-scope equivalent to attempt — `systemd-run --user
+    /// --scope` is a systemd mechanism, not a Unix one — and none is
+    /// needed, so `"normal"` is the honest survival value here rather
+    /// than a concession: launchd reaps a stopped job by killing its
+    /// process group unless `AbandonProcessGroup` is set, and `setsid`
+    /// puts the supervisor in a brand-new session and process group
+    /// before the exec, already outside that domain. `build`'s `scoped`
+    /// argument is therefore always `false`, as it is on Windows.
+    /// `setsid`'s failure propagates for exactly the reason the Linux
+    /// twin's does — see its own doc.
+    ///
+    /// Unrun on a real Mac (`mod runtime`'s own gate doc, and the
+    /// ruling's §7 item 2): that a `setsid` capsule survives its
+    /// spawning `sotd`'s exit under launchd is a claim only a Mac
+    /// settles. The Linux cgroup hazard has no macOS analogue, which is
+    /// why this arm is plausible, not why it is proven.
+    #[cfg(target_os = "macos")]
+    fn spawn_detached(
+        build: impl Fn(&str, bool) -> Command,
+        _state_dir: &Path,
+        _workspace_id: &str,
+    ) -> std::io::Result<Child> {
+        let mut cmd = build("normal", false);
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -3181,11 +3212,11 @@ mod runtime {
     }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub use runtime::*;
 
 /// One lifecycle observer per capsule row -- the SINGLE writer of `Workspace::phase`.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod observer {
     use super::{local_phase, phase_for_missing_pointer, state_dir_for};
     use crate::workspaces::{Observation, SupervisorIdentity, Workspace, Workspaces};
@@ -3266,7 +3297,7 @@ pub mod observer {
     }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[cfg(test)]
 mod observer_tests {
     use super::observer::observe;
@@ -3498,7 +3529,7 @@ mod observer_tests {
 /// `sot_log::fe_client_io` is ungated since ADR 0045 decision 1, and only
 /// its `PlatformEndpoint`-typed default is cfg'd. The reason is now
 /// solely `mod runtime`'s own; when that widens, so does this.)
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod headless {
     use std::path::Path;
     use std::time::{Duration, Instant};
@@ -3818,7 +3849,7 @@ pub mod headless {
     }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[cfg(test)]
 mod headless_size_gate_tests {
     // Pure size-gate tests: `type_into` checks the payload length BEFORE
@@ -3947,7 +3978,7 @@ mod tests {
     // against), a present leg, or a still-held fence each keep the row
     // instead.
     #[test]
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn end_run_is_unheld_only_when_both_the_fence_and_the_leg_are_proven_absent() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state_dir = dir.path();
@@ -4010,7 +4041,7 @@ mod tests {
     // lives inside `mod runtime`, gated like every other function this
     // module's tests reach.
     #[test]
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn lock_contention_is_recognized_only_by_its_own_message() {
         assert!(
             is_lock_contention("lock held by another process: \"/tmp/x/writer.lock\""),

@@ -397,7 +397,7 @@ fn test_slow_concept_read_delay() -> std::time::Duration {
 /// `"waitforsettle"`), which is a different module but shares this
 /// exact barrier-path convention. No-op unless `SOT_TEST_ACTIVATION_
 /// BARRIER` is set.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub(crate) fn record_test_activation_marker(kind: &str) {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let Ok(barrier_path) = std::env::var("SOT_TEST_ACTIVATION_BARRIER") else {
@@ -413,7 +413,7 @@ pub(crate) fn record_test_activation_marker(kind: &str) {
 /// `SOT_TEST_ACTIVATION_BARRIER` names a path, blocks until the test
 /// creates that file (not a guessed sleep), giving up past a 30s bound.
 /// No-op in production.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 async fn wait_for_test_activation_barrier() {
     let Ok(path) = std::env::var("SOT_TEST_ACTIVATION_BARRIER") else {
         return;
