@@ -16,12 +16,21 @@ otherwise *name a path* or *paste a URL*), and on "open it in the browser",
 | You produced | Command | Lands in |
 |---|---|---|
 | Image, figure, PDF, markdown, source file | `show-result <path>` | FE nav + preview pane (badge) |
-| Local built site / self-contained `.html` on backend disk | `sot-fe docs <ws> <abs-path>` | FE machine's OS browser |
+| A built site, ANY page inside it, or a self-contained `.html` | `sot-fe docs <ws> <abs-path>` | FE machine's OS browser |
 | An http(s) URL — page, PR, CI run, dashboard | `sot-fe open-url <url>` | FE machine's OS browser |
 
 `open-url` is http(s)-only, no workspace. `docs` needs an ABSOLUTE backend
 path (confined to a workspace root) — use it for anything that must actually
 run (JS/WebGL). Both broadcast; `--fe <host>` targets the FE on that host.
+
+**Point `docs` straight at the SUBPAGE you mean** — a project-log entry, one
+page of a built manual, a report deep in a tree. The daemon finds the site
+root for you (the outermost ancestor holding an `index.html`, never above the
+workspace root) and opens your page relative to it, so stylesheets, sibling
+assets and cross-page links all resolve. Do NOT open the site's index and
+tell the user to click through, and do not paste a `file://` path: before
+v0.6.6 a subpage was served from its own directory and arrived unstyled,
+which is the failure this replaces.
 
 ## How
 

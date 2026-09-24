@@ -1257,57 +1257,63 @@ function Start-SotControlTunnel {
 }
 
 # ---------------------------------------------------------------------------
-# Every OTHER dialable host in the plan gets its own tunnel too (ADR 0042
-# L2b design E) -- $backendHost's tunnel is $sshArgs/Start-SotTunnel
-# above/below; this loop covers every remaining `tunnel <host> <port>`
-# line (topology plan already excludes self and frontend hosts -- D8 -- so
-# nothing here needs its own filter beyond skipping the primary). Ensure+
-# resolve reuses New-RemoteEnsureCommand and the same $sshRemoteOpts (codex
-# follow-up, item 5) as the primary's own attempt, but every failure here
-# is NONFATAL: one log line and the launch continues without that host's
-# tunnel. The frontend's own dial list (built from the SAME plan,
-# independent of whether the tunnel actually came up -- see $frontendArgs
-# below) then shows that host unreachable and keeps retrying -- never a
-# reason to fail the whole launch. The host name IS the ssh alias now
-# (topology grammar v2: the `[host.<name>]` key is the alias), so there is
-# no more separate ssh_alias/KEY distinction to reconcile.
+# Every OTHER dialable host in the plan is forwarded FROM THE HUB (ADR
+# 0048) -- $backendHost's tunnel is $sshArgs/Start-SotTunnel above/below;
+# this loop covers every remaining `tunnel <host> <port>` line (topology
+# plan already excludes self -- D8 -- so nothing here needs its own filter
+# beyond skipping the primary). The hub holds one socket per host it
+# serves, each connection to it carrying a `sotd stdio-bridge` on the far
+# box, so a peer forwards that host's ordinal port to the hub's socket for
+# it and opens ssh to NO box but the hub. Gone with the old shape: the
+# per-host ensure round trip (an enrolled box runs sotd as a service --
+# nobody starts someone else's daemon any more) and the remote socket-path
+# parse (that path is now the hub's own, and the hub is asked once, below).
+# Still NONFATAL per host: one log line and the launch continues, and the
+# frontend's own dial list (built from the SAME plan, independent of
+# whether the tunnel came up -- see $frontendArgs below) shows that host
+# unreachable and keeps retrying.
 # ---------------------------------------------------------------------------
+# `<host> <path>` from the hub, once per launch: the hub's own paths, so
+# the hub is the only box that can answer -- the same round trip the
+# primary's own socket already costs. An unreachable hub leaves the map
+# empty and every host below is skipped with a line.
+$relaySockets = @{}
+if ($plan.Hub) {
+    $savedEAP2 = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $relayOut = ssh $sshRemoteOpts $plan.Hub 'export PATH="$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"; sotd topology relay-sockets' 2>&1
+    $relayExit = $LASTEXITCODE
+    $ErrorActionPreference = $savedEAP2
+    if ($relayExit -ne 0) {
+        Write-SupLog "tunnel: hub '$($plan.Hub)' did not answer 'sotd topology relay-sockets' (ssh exit $relayExit) - no cross-host forwards this launch"
+    } else {
+        # `<host> <path>`, remainder intact -- the same one-split-at-a-time
+        # rule sot-hosts.ps1 reads `topology plan` with, for the same reason
+        # (a path may contain spaces).
+        foreach ($line in $relayOut) {
+            $parts = "$line".Trim() -split ' ', 2
+            if ($parts.Length -eq 2 -and $parts[0] -and $parts[1]) { $relaySockets[$parts[0]] = $parts[1] }
+        }
+    }
+}
 $extraTunnels = @()
 foreach ($item in $plan.Tunnels) {
     if ($item.Host -eq $backendHost) { continue }
-    Set-LaunchStatus "Checking backend on $($item.Host)..."
-    $extraCmd = New-RemoteEnsureCommand -Restart $RestartBackend
-    $savedEAP2 = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    $extraStatus = ssh $sshRemoteOpts $item.Host $extraCmd 2>&1
-    $extraExit = $LASTEXITCODE
-    $ErrorActionPreference = $savedEAP2
-    $extraStatusText = ($extraStatus | Out-String)
-    if ($extraExit -ne 0) {
-        Write-SupLog "tunnel: host '$($item.Host)' unreachable (ssh exit $extraExit) - skipping"
-        continue
-    }
-    if ($extraStatusText -match 'socket MISSING') {
-        Write-SupLog "tunnel: host '$($item.Host)' backend socket missing - skipping"
-        continue
-    }
-    $extraRemoteSocket = $null
-    if ($extraStatusText -match 'backend-socket:[ \t]*(\S+)') {
-        $extraRemoteSocket = $matches[1]
-    }
+    Set-LaunchStatus "Forwarding $($item.Host) from the hub..."
+    $extraRemoteSocket = $relaySockets[$item.Host]
     if (-not $extraRemoteSocket) {
-        Write-SupLog "tunnel: host '$($item.Host)' did not report a socket path - skipping"
+        Write-SupLog "tunnel: host '$($item.Host)' has no relay socket on hub '$($plan.Hub)' (enrol it: sotd topology apply) - skipping"
         continue
     }
     $extraArgs = @()
     $extraArgs += $sshCommonArgs
-    $extraArgs += @('-L', "$($item.Port):$extraRemoteSocket", $item.Host)
+    $extraArgs += @('-L', "$($item.Port):$extraRemoteSocket", $plan.Hub)
     try {
         $proc = Start-Process -FilePath ssh -ArgumentList $extraArgs -WindowStyle Hidden `
             -RedirectStandardError (Join-Path $logDir "tunnel-$($item.Host).stderr.log") -PassThru
         $extraTunnels += [PSCustomObject]@{
             HostName     = $item.Host
-            SshAlias     = $item.Host
+            SshAlias     = $plan.Hub   # the ssh target IS the hub now (ADR 0048)
             LocalPort    = $item.Port
             RemoteSocket = $extraRemoteSocket
             Args         = $extraArgs
@@ -1885,9 +1891,15 @@ try {
         # (same as the old always-pass `--tcp`) -- a tunnel that didn't come
         # up just means the frontend shows that host unreachable and keeps
         # retrying, never a reason to hold an arg back.
+        # This box is now DIALABLE in its own right if it declares `daemon`
+        # (ADR 0048 widened that predicate), so without this filter it would
+        # arrive twice: once as $localSocket and once as a --dial to itself,
+        # and the frontend would render its rows under two hosts. The local
+        # socket wins -- it is the direct connection, not a dial.
         $frontendArgs = @()
         if ($localSocket) { $frontendArgs += @('--socket', $localSocket) }
         foreach ($d in $plan.Dials) {
+            if ($localSocket -and $plan.Self -and $d.Host -eq $plan.Self) { continue }
             $frontendArgs += @('--dial', "$($d.Host)=$($d.Endpoint)")
         }
         if ($relaunchNext) { $frontendArgs += '--relaunched' }

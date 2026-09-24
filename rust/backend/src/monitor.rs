@@ -588,6 +588,12 @@ mod tests {
     /// proves every N/A spelling nvidia-smi actually uses -- "[N/A]", bare
     /// "N/A", "Not Supported", and an empty field -- renders as `null` while
     /// a real number on the *same* row survives untouched.
+    /// macOS lane disposition: correctly Linux-only, permanently.
+    /// `SAMPLER_SH` itself is a `/proc`-reader (`/proc/stat`,
+    /// `/proc/meminfo`, `/proc/cpuinfo`) — none of which Darwin has — so
+    /// running the REAL shipped script, which is the whole point of this
+    /// test, cannot mean anything there. A macOS monitor pane needs a
+    /// different sampler, not a widened gate on this one.
     #[cfg(target_os = "linux")]
     #[test]
     fn sampler_script_treats_every_na_spelling_as_not_reported() {

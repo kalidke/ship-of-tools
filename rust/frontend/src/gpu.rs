@@ -1427,6 +1427,20 @@ fn preview_targets_active_ws(
     target.is_some() && target == current
 }
 
+/// Which host a cross-workspace preview badge is filed under. `from_host` is
+/// the connection that delivered the `FeCommand` — the daemon that actually
+/// owns the target workspace — and wins whenever it's known; `active_host`
+/// (whatever host the FE's view happened to be on when the badge arrived) is
+/// only the fallback for a locally-originated dispatch (`from_host: None`).
+/// Filing under `active_host` unconditionally was the bug: the view can move
+/// to a different host between the badge and the later switch, and the
+/// switch-time consume looks the entry up under the switched-TO
+/// `active_host` — a badge keyed on the wrong host is never found. Pure so
+/// the key choice is unit-testable without a live `State`.
+fn badge_host_key(from_host: Option<&HostKey>, active_host: &HostKey) -> HostKey {
+    from_host.cloned().unwrap_or_else(|| active_host.clone())
+}
+
 /// Hard cap on a stored figure caption, in CHARACTERS (not bytes — truncating
 /// UTF-8 by byte offset panics mid-codepoint). A caption names what a figure is;
 /// past a couple of lines it stops being a caption and starts covering the image
@@ -7904,9 +7918,15 @@ impl State {
                 } else {
                     // Badge floor: record + badge; the pending preview (body +
                     // nav-cursor reveal) is driven when the user next switches
-                    // to `workspace` (see `switch_to_workspace`).
-                    tracing::info!(%workspace, %path, "fe-command: preview (badge)");
-                    self.mark_pending_nav(self.active_host.clone(), workspace, path);
+                    // to `workspace` (see `switch_to_workspace`). Filed under
+                    // the DELIVERING host (`badge_host_key`) — the daemon that
+                    // owns `workspace` — not unconditionally `active_host`,
+                    // which is only the view's host at arrival time and can
+                    // differ from it (see `badge_host_key`'s doc comment).
+                    let host = badge_host_key(from_host, &self.active_host);
+                    tracing::info!(%workspace, %path, target_host = %host,
+                        active_host = %self.active_host, "fe-command: preview (badge)");
+                    self.mark_pending_nav(host, workspace, path);
                 }
             }
             FeCommand::Reveal {
@@ -7923,7 +7943,7 @@ impl State {
                 // or issue a separate cursor move. The cross-ws force-show/badge
                 // semantics are shared too, as is a `--roi` viewport aim (the
                 // sot-fe CLI attaches roi to either verb).
-                self.dispatch_fe_command(None, FeCommand::Preview {
+                self.dispatch_fe_command(from_host, FeCommand::Preview {
                     workspace,
                     path,
                     urgent,
@@ -9004,7 +9024,11 @@ impl State {
                     generation,
                 }) {
                     tracing::warn!(error = %e, %node_id,
-                        "pending nav.preview: drop preview.get on switch — channel closed");
+                        "pending nav.preview: drop preview.get on switch — channel closed, keeping badge");
+                    // The send failed, so nothing will ever land for this
+                    // file — put the entry back rather than let the removal
+                    // above silently lose the badge on a closed channel.
+                    self.pending_nav.insert(pending_key, path);
                 } else {
                     self.preview_node_id_fired = Some(node_id.clone());
                     self.preview_anchor_line = None;
@@ -24796,6 +24820,30 @@ mod tests {
             pending_nav.get(&beta_pkg).map(String::as_str),
             Some("src/z.jl"),
             "a same-slug entry on a different host must not collide"
+        );
+    }
+
+    #[test]
+    fn badge_host_key_prefers_the_delivering_host() {
+        // A badge delivered from host A while the view sits on host B must
+        // file under A -- the badge-key bug filed it under B (active_host),
+        // so a later switch to A's workspace (which looks the entry up under
+        // the switched-TO active_host, i.e. A once the switch lands) never
+        // found it.
+        let from_a: HostKey = "host-a".to_string();
+        let active_b: HostKey = "host-b".to_string();
+        assert_eq!(
+            badge_host_key(Some(&from_a), &active_b),
+            "host-a",
+            "a known delivering host wins over the view's current host"
+        );
+        // A locally-originated dispatch (from_host: None) has no delivering
+        // host to prefer, so it falls back to active_host -- the only case
+        // the pre-fix code was actually correct for.
+        assert_eq!(
+            badge_host_key(None, &active_b),
+            "host-b",
+            "no delivering host known -> falls back to active_host"
         );
     }
 

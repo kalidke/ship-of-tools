@@ -640,8 +640,11 @@ pub trait LaneServer: Sized {
 /// lane a step-6 supervisor binds on the platform it runs on, chosen
 /// ONCE by this alias (never by threading a type parameter through
 /// `supervisor.rs`'s own state machine). Windows speaks `PipeServer`;
-/// Linux speaks `SocketServer`.
+/// Linux and macOS both speak `SocketServer`, which is `#![cfg(unix)]`
+/// and needs no per-OS half at all: a LISTENER has no peer identity to
+/// read, so the one mechanism that separates the two Unixes never
+/// reaches this side of the lane.
 #[cfg(windows)]
 pub type PlatformLaneServer = crate::pipe_win::PipeServer;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub type PlatformLaneServer = crate::socket_unix::SocketServer;

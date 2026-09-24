@@ -211,7 +211,10 @@
 //! process's child at all — its own parent reaps it, not us.
 //!
 //! The parent-death lease (`LegLease`/[`SpawnLease`], replacing the
-//! Windows-only `lease` module here) is a `pipe2(O_CLOEXEC)`: this
+//! Windows-only `lease` module here) is a close-on-exec pipe
+//! (`pipe2(O_CLOEXEC)` where that call exists, `pipe` plus `fcntl` on
+//! macOS, which has none — see [`LegLease::create`] for why the
+//! difference is not a race): this
 //! process holds the WRITE end for its whole life and never writes to
 //! it; the read end reaches the leg as `--parent-lease-fd 3`, installed
 //! by [`build_run_command`]'s own `pre_exec` (a `dup2` onto the fixed fd,
@@ -249,7 +252,7 @@
 //! [`probe_writer_liveness`] use on both platforms now, instead of a
 //! Windows-shaped inline `NotFound` guard.
 
-#![cfg(any(windows, target_os = "linux"))]
+#![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 
 use crate::attach_proto::ConnId;
 use crate::challenge::ChallengeOutcome;
@@ -262,6 +265,8 @@ use crate::pointer::{self, PointerState};
 use crate::probe_win::RealProbeOps;
 #[cfg(target_os = "linux")]
 use crate::probe_unix::RealProbeOps;
+#[cfg(target_os = "macos")]
+use crate::probe_macos::RealProbeOps;
 use crate::recovery::{self, LatestLegState};
 use crate::segment::RetentionClass;
 // L1-unix LU3b: the client-side supervisor-lane helpers (and the shared
@@ -282,7 +287,7 @@ use std::fmt;
 use std::io::Write as _;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -670,6 +675,27 @@ fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
     Ok((std::process::id(), crate::challenge_unix::self_start_ticks()?))
 }
 
+/// ADR 0043 decision 21, the macOS arm — the exact twin of what
+/// `capsule.rs`'s own `self_status` reports on this target, for the
+/// identical adoption-challenge identity (decision 16), and it is NOT a
+/// start time. `created` is per-platform by definition ("whatever unit
+/// this OS's own `status_ok.created` carries, compared for equality
+/// only" — `client::PeerIdentity::created`), and on macOS that unit is
+/// the kernel's `pidversion`: `challenge_macos`'s step 5 compares a
+/// reply's `created` against the pidversion it read out of the peer's
+/// audit token. A start time here would type-check, carry a
+/// plausible-looking number, and make every macOS adoption challenge
+/// `Foreign`. `self_pidversion` is the self-facing twin that exists for
+/// exactly this call site, the way `self_start_ticks` is on Linux.
+///
+/// The pid is pinned against reuse by the pidversion, not by the pid:
+/// the generation counter is the kernel's own and monotonic per process
+/// INSTANCE, so a recycled pid carries a different one.
+#[cfg(target_os = "macos")]
+fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
+    Ok((std::process::id(), u64::from(crate::challenge_macos::self_pidversion()?)))
+}
+
 /// Truncate `detail` to fit within [`wire::MAX_SUPERVISOR_STRING_LEN`]
 /// bytes, on a UTF-8 boundary. Finds the boundary BEFORE truncating
 /// (Codex review round 2, finding M4): `String::truncate` itself panics
@@ -836,26 +862,26 @@ const DETACHED_PROCESS: u32 = 0x0000_0008;
 /// `fcntl`, since `dup2(fd, fd)` is specified as a no-op that would leave
 /// the flag set and the lease would close at `exec`). Matches
 /// `bin/sot-capsule.rs`'s own `run` arm parser.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 const PARENT_LEASE_FD: std::os::fd::RawFd = 3;
 
 /// The parent-death lease handed to ONE freshly spawned leg (ADR 0043
 /// decisions 15/21) — per platform, since the mechanism differs: Windows
 /// passes the lease's own kernel-object NAME as a CLI argument (cheap to
-/// clone per spawn); Linux passes an owned, dup'd read-end fd that
+/// clone per spawn); Unix passes an owned, dup'd read-end fd that
 /// [`build_run_command`]'s own `pre_exec` installs at a fixed number in
 /// the child. Produced fresh for EACH spawn by [`LegLease::for_spawn`] —
 /// the supervisor's own [`LegLease`] is held once, for this process's
 /// whole life; this is what it hands to every leg spawned from it.
 #[cfg(windows)]
 struct SpawnLease(String);
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 struct SpawnLease(std::os::fd::OwnedFd);
 
 /// The supervisor's own held parent-death lease — created ONCE, at
 /// startup, and kept for this process's whole life (ADR 0043 decisions
-/// 15/21). Windows: exactly today's named, owned mutex. Linux: a
-/// `pipe2(O_CLOEXEC)` — this process holds the WRITE end for its whole
+/// 15/21). Windows: exactly today's named, owned mutex. Unix: a
+/// close-on-exec pipe — this process holds the WRITE end for its whole
 /// life and NEVER writes to it (the read end going broken/closed, from
 /// this end's own perspective, is never observed by this process at all;
 /// it is the LEG's own signal, read once, non-blocking, right after it
@@ -865,7 +891,7 @@ struct LegLease {
     name: String,
     _lease: crate::lease::Lease,
 }
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 struct LegLease {
     read: std::os::fd::OwnedFd,
     _write: std::os::fd::OwnedFd,
@@ -879,26 +905,60 @@ impl LegLease {
         Ok(Self { name, _lease })
     }
 
-    /// `_h` is unused on Linux — the pipe is anonymous, unlike Windows'
+    /// `_h` is unused on Unix — the pipe is anonymous, unlike Windows'
     /// named mutex, so there is nothing here for a state-dir hash to
     /// scope; kept as a parameter so both platforms share one call site
     /// in `supervise_inner`.
-    #[cfg(target_os = "linux")]
+    ///
+    /// `O_CLOEXEC` on BOTH ends is the whole correctness of the lease:
+    /// a write end leaked past an `exec` into ANY child keeps the pipe
+    /// open after this process dies, and the leg then never sees its
+    /// parent go. Linux gets that flag inside the one `pipe2` call;
+    /// macOS has no `pipe2` at all, so there the pipe exists for a
+    /// moment WITHOUT the flag. **What recovers `pipe2`'s atomicity
+    /// here is placement, not a flag**: this runs at `supervise_inner`'s
+    /// top — after the fence and the lane bind, neither of which spawns
+    /// a thread, and before `spawn_recovery`, which is this process's
+    /// FIRST thread of any kind; the first fork+exec is a leg spawn,
+    /// later still. So while the pipe is briefly flagless there is no
+    /// second thread in existence to `fork` from it, and the window
+    /// `pipe2` closes is a window nothing can enter. Keep this call
+    /// where it is; moving it below `spawn_recovery` would reopen it.
+    /// The `FD_CLOEXEC` pass below is therefore written unconditionally
+    /// rather than `cfg`-split: on Linux it re-asserts what `pipe2`
+    /// already did (two syscalls per end, once per supervisor life), so
+    /// the invariant is checked in code on every platform instead of
+    /// being claimed by a flag on one of them.
+    #[cfg(unix)]
     fn create(_h: &str) -> std::io::Result<Self> {
-        use std::os::fd::FromRawFd;
+        use std::os::fd::{AsRawFd, FromRawFd};
         let mut fds = [0i32; 2];
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        #[cfg(target_os = "linux")]
+        let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+        #[cfg(not(target_os = "linux"))]
+        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        if rc != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        // SAFETY: `pipe2` just returned two freshly opened, valid,
-        // uniquely-owned fds on success.
+        // SAFETY: the `pipe`/`pipe2` above just returned two freshly
+        // opened, valid, uniquely-owned fds on success. Owned FIRST, so
+        // an `fcntl` failure below closes both rather than leaking them.
         let read = unsafe { std::os::fd::OwnedFd::from_raw_fd(fds[0]) };
         let write = unsafe { std::os::fd::OwnedFd::from_raw_fd(fds[1]) };
+        for fd in [read.as_raw_fd(), write.as_raw_fd()] {
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            if flags < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
         Ok(Self { read, _write: write })
     }
 
     /// A fresh handle for ONE spawn attempt — Windows clones the (cheap)
-    /// name string; Linux dups the read end, since the fd
+    /// name string; Unix dups the read end, since the fd
     /// `build_run_command`'s own `pre_exec` installs into the child is
     /// consumed by THAT leg's own fd table, independent of every other
     /// leg this same lease will ever be handed to.
@@ -907,7 +967,7 @@ impl LegLease {
         {
             Ok(SpawnLease(self.name.clone()))
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             Ok(SpawnLease(self.read.try_clone()?))
         }
@@ -947,7 +1007,6 @@ fn build_run_command(
     // leg pair is unsupported there until that exchange is versioned.
     #[cfg(target_os = "linux")]
     let mut command = {
-        use std::os::unix::process::CommandExt;
         let mut c = std::process::Command::new("/proc/self/exe");
         c.arg0(capsule_exe);
         c
@@ -966,7 +1025,7 @@ fn build_run_command(
     {
         command.arg("--parent-lease-name").arg(&lease.0);
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         // ADR 0043 decision 21: the read end reaches the leg as the
         // FIXED fd `PARENT_LEASE_FD`, installed by this `pre_exec` --
@@ -1193,14 +1252,22 @@ fn finish_end_run_with_process(
             matches!(process.wait(KILL_WAIT_BOUND), Ok(true))
         }
     };
-    // Single-owner reaping (review round), Linux only: whichever `wait`
+    // Single-owner reaping (review round), every Unix: whichever `wait`
     // call above actually confirmed the exit (the graceful one, or the
     // terminate-then-wait fallback), `process` is never read again past
     // this point — reap it now, explicitly (see `ChallengedProcess::reap`'s
     // own doc). A Windows process HANDLE has no zombie/reap concept at
     // all — `Drop`'s own `CloseHandle` is the whole cleanup there, so the
     // Windows `Process` type gains nothing from a call here.
-    #[cfg(target_os = "linux")]
+    //
+    // `cfg(unix)`, NOT `cfg(target_os = "linux")`: the concept this gate
+    // names is "this OS has zombies", which is every Unix, and spelling
+    // it `linux` made the macOS build compile the call away to NOTHING —
+    // a supervisor that never reaps, leaking a zombie per leg, with no
+    // compiler and no CI able to say so. The module gate above is
+    // `any(windows, linux, macos)`, so `unix` here is exactly those two
+    // Unixes and both have a real `reap`.
+    #[cfg(unix)]
     if confirmed_exit {
         process.reap();
     }
@@ -1648,7 +1715,10 @@ fn take_worker_handle(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>
 /// `AuthorityState::retired_legs`'s own doc for the full rationale and
 /// [`reap_retired_legs`] for the other half (the main loop's own poll).
 fn retire_leg(retired_legs: &mut Vec<Process>, process: Process) {
-    #[cfg(target_os = "linux")]
+    // `cfg(unix)` rather than `linux`: see `finish_end_run_with_process`'s
+    // own reap comment — the gate names "this OS has zombies", and
+    // spelling it `linux` made macOS silently skip the reap entirely.
+    #[cfg(unix)]
     if matches!(process.wait(Duration::ZERO), Ok(true)) {
         process.reap();
         return;
@@ -1670,7 +1740,8 @@ fn reap_retired_legs(retired_legs: &mut Vec<Process>) {
     retired_legs.retain(|process| {
         let exited = matches!(process.wait(Duration::ZERO), Ok(true));
         if exited {
-            #[cfg(target_os = "linux")]
+            // `cfg(unix)`, not `linux` — same reason as `retire_leg`'s.
+            #[cfg(unix)]
             process.reap();
         }
         !exited
@@ -2714,12 +2785,15 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     // SIG_DFL here, as the very first thing this function does -- never
     // merely assumed. Whatever launched this process (a daemon, a shell)
     // may have inherited `SIG_IGN` across `exec`, which auto-reaps every
-    // child immediately and silently breaks the pid pin
-    // `SpawnedChild::from_child`'s own `pidfd_open` relies on (a reaped
-    // pid can be recycled before `pidfd_open` ever runs) -- reproduced.
-    // This process OWNS the disposition it depends on, the same line
+    // child immediately and silently breaks the pid pin every Unix leg
+    // identity is built on: on Linux a reaped pid can be recycled before
+    // `SpawnedChild::from_child`'s own `pidfd_open` ever runs
+    // (reproduced), and on macOS, which pins a leg by (pid, start time)
+    // instead, a pid that vanishes before it is read is the same hole by
+    // another road. Unix-wide for that reason, not Linux-specific: this
+    // process OWNS the disposition it depends on, the same line
     // `producer_pty`'s own `spawn` already draws for its forked child.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         if unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) } == libc::SIG_ERR {
             return Err(crate::Error::Io(std::io::Error::last_os_error()));
@@ -2983,7 +3057,7 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             },
             Lifecycle::Ready { process } => match process.wait(Duration::ZERO) {
                 Ok(true) => {
-                    // Single-owner reaping (review round), Linux only:
+                    // Single-owner reaping (review round), every Unix:
                     // `wait` just confirmed this leg's exit and nothing
                     // below reads `process` again — reap it now,
                     // explicitly, here rather than relying on an implicit
@@ -2992,7 +3066,14 @@ fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
                     // used to describe. A Windows process HANDLE has no
                     // zombie/reap concept — `Drop`'s own `CloseHandle` is
                     // the whole cleanup there.
-                    #[cfg(target_os = "linux")]
+                    //
+                    // `cfg(unix)`, not `linux` — see
+                    // `finish_end_run_with_process`'s own reap comment.
+                    // This is the site a long-running macOS supervisor
+                    // would have leaked from hardest: one zombie per
+                    // natural leg exit, forever, because `SIGCHLD` is
+                    // `SIG_DFL` and nothing else auto-reaps.
+                    #[cfg(unix)]
                     process.reap();
                     // N1 (Codex review round 3): stability is judged on
                     // the PRODUCER's own recorded lifetime

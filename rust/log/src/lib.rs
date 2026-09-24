@@ -43,9 +43,18 @@ pub mod challenge_win;
 // connection challenge -- SO_PEERCRED same-user check, race-free pidfd
 // pinning, and the retained-pidfd process handle. `pub`, matching
 // `challenge_win`: Linux-only, self-gated (see the module's own
-// `#![cfg(target_os = "linux")]`); other Unix fails closed at
-// `socket_unix::connect_voyage_socket`'s own stub instead.
+// `#![cfg(target_os = "linux")]`); a non-Linux Unix with no half of its
+// own fails closed at `socket_unix::connect_voyage_socket`'s own stub
+// instead.
 pub mod challenge_unix;
+// M2 (ADR 0043 decision 8, the macOS lane): the macOS half of the same-
+// connection challenge -- ONE `LOCAL_PEERTOKEN` getsockopt, whose audit
+// token carries the peer's pid AND the kernel's own reuse generation
+// together, so none of the Linux half's pinning machinery has a twin
+// here. `pub`, matching its two siblings: macOS-only, self-gated (see
+// the module's own `#![cfg(target_os = "macos")]`); every OTHER
+// non-Linux Unix still fails closed at the stub.
+pub mod challenge_macos;
 // L1-unix LU3a (ADR 0043 decision 19): the three seam traits landed
 // before any consumer uses them -- `Client` (blanket-implements
 // `challenge::ChallengeableConnection`), `PeerProcess`, `Endpoint`.
@@ -103,6 +112,12 @@ pub mod probe_win;
 // `SpawnedChild`, over pidfds. `pub`, matching `probe_win`: self-gated
 // (see the module's own `#![cfg(target_os = "linux")]`).
 pub mod probe_unix;
+// The macOS half of the same seam -- `RealProbeOps` and `SpawnedChild`,
+// over a `kqueue` `EVFILT_PROC`/`NOTE_EXIT` knote. A separate module,
+// not a widened `probe_unix`: every mechanism there is a pidfd, and
+// Darwin has none. `pub`, matching its two siblings: self-gated (see the
+// module's own `#![cfg(target_os = "macos")]`).
+pub mod probe_macos;
 // Crate-private (Codex review finding, capsule_win.rs round): ADR 0041's
 // "one private machine" ruling means this module's items are not part of
 // the crate's public API — `capsule_win.rs` is the only real caller and
@@ -140,7 +155,8 @@ pub mod exchange;
 // machines (the six FE rulings from "Step 6 as specified") -- portable,
 // like `pointer`/`exchange`/`rollout`: no OS call, so it is genuinely
 // tested on every CI platform. The runtime that wires these to a real
-// `Endpoint` (Windows: `PipeEndpoint`; Linux: `SocketEndpoint`; any other
+// `Endpoint` (Windows: `PipeEndpoint`; Linux and macOS: `SocketEndpoint`
+// -- one endpoint, per `client::PlatformEndpoint`'s own cfg; any other
 // platform: whatever the caller names, e.g. `sot-protocol`'s
 // `DaemonLaneEndpoint`) lives in `fe_client_io` (L1-unix LU3b: renamed
 // from `fe_client_win`, generic over `client::Endpoint` -- no platform
@@ -189,9 +205,10 @@ pub mod segment;
 pub mod state_dir;
 // ADR 0041 step 6, unit U2: the authority -- `sot-capsule supervise`,
 // and `endrun`/`reset` as fence-acquiring in-process callers. L1-unix
-// LU3c: ungated to `#![cfg(any(windows, target_os = "linux"))]`, generic
-// over `client::PlatformEndpoint`/`transport::PlatformLaneServer` (the
-// platform chosen once, by those two aliases) rather than Windows-only —
+// LU3c: ungated to `#![cfg(any(windows, target_os = "linux",
+// target_os = "macos"))]`, generic over `client::PlatformEndpoint`/
+// `transport::PlatformLaneServer` (the platform chosen once, by those
+// two aliases) rather than Windows-only —
 // `pub`, matching `probe_win`/`supervisor_client`, and
 // `tests/supervisor.rs` needs to reach it.
 pub mod supervisor;
@@ -200,7 +217,7 @@ pub mod supervisor;
 // runtime) -- `pub`, matching `supervisor`/`fe_client_io`: generic over
 // `client::PlatformEndpoint` (L1-unix LU3b), so it now compiles on Linux
 // too, and `sot-backend` (a separate crate) needs to reach it.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod supervisor_client;
 pub mod verify;
 pub mod voyage;
@@ -219,6 +236,15 @@ mod fsutil;
 // module is unreachable from another crate), so this is its facade,
 // mirroring `fence::lock_supervisor`'s own one-function reach-through.
 pub use fsutil::lock_writer;
+// Windows session-pipe hardening fix: `sot-backend`'s session listener
+// (`server.rs::run_local`, bound through the `interprocess` crate, NOT
+// this module's own `pipe_win.rs` transport) needs the SAME protected,
+// owner-only descriptor `pipe_win.rs`'s pipe instances already carry --
+// one more `fsutil` reach-through, same shape as `lock_writer` above,
+// so the two pipe families share one SDDL string instead of a second
+// one drifting into existence beside it.
+#[cfg(windows)]
+pub use fsutil::owner_protected_pipe_descriptor;
 
 pub use envelope::*;
 pub use record::{RecordKind, TailClass, CODEC_JSON, MAGIC, PRELUDE_LEN, RECORD_MAX_BODY};
@@ -270,7 +296,8 @@ pub enum Error {
     #[error("parent-death lease broken; exiting without binding the voyage")]
     LeaseBroken,
     /// The voyage store requires OS durability primitives this platform
-    /// lacks (Linux and Windows have real arms; others fail closed).
+    /// lacks (Windows, Linux and macOS have real arms; any other Unix
+    /// fails closed).
     #[error("unsupported on this platform: {0}")]
     Unsupported(&'static str),
     /// A ConPTY/job OPERATION failed (Windows-only: `conpty` module) — a

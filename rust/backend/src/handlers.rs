@@ -2983,6 +2983,195 @@ fn canonicalize_within_any_workspace(
         .find_map(|ws| canonical_under_root(path, &ws.project_root))
 }
 
+/// Same confinement as `canonicalize_within_any_workspace`, but also hands
+/// back the matching workspace's own canonical root — `docs.open`'s
+/// site-root walk (its only caller) needs that bound to climb toward without
+/// running a second, possibly-disagreeing confinement check of its own.
+fn canonicalize_and_workspace_root(
+    path: &std::path::Path,
+    workspaces: &Workspaces,
+) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    workspaces.list().iter().find_map(|ws| {
+        let canon_root = ws.project_root.canonicalize().ok()?;
+        canonical_under_root(path, &ws.project_root).map(|canon_path| (canon_path, canon_root))
+    })
+}
+
+/// `docs.open`'s site-root walk (v0.6.6): starting from `start` (a subpage's
+/// own directory), climb toward the OUTERMOST ancestor — bounded by
+/// `workspace_root`, never above it — that sits in an unbroken chain of
+/// directories each directly holding an `index.html`/`index.htm`.
+///
+/// The chain's first (innermost) member need not be `start` itself: a
+/// subpage's own directory (`<site>/api/` for `<site>/api/reference.html`)
+/// usually has no index of its own — only the site root a few levels up
+/// does — and that gap is normal, not a stop signal, so the search for the
+/// first hit climbs through it freely. Once a hit is found, further climbing
+/// requires an unbroken chain: an unrelated ancestor higher up that happens
+/// to ALSO hold an index.html (a different, coincidental site one level
+/// further out) is never folded in — the walk stops at the first ancestor
+/// above the chain that lacks one.
+///
+/// Every directory visited is a `.parent()` of the already-canonical path the
+/// caller confined, so no new symlink resolution happens on the way up; the
+/// `workspace_root` bound (itself canonical) keeps the walk from ever
+/// producing a root outside the workspace. Returns `None` if nothing from
+/// `start` up to and including `workspace_root` has an index — the caller's
+/// documented fallback.
+async fn find_site_root(
+    start: &std::path::Path,
+    workspace_root: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    async fn has_index(dir: &std::path::Path) -> bool {
+        for name in ["index.html", "index.htm"] {
+            if tokio::fs::metadata(dir.join(name))
+                .await
+                .map(|m| m.is_file())
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    // Find the first (innermost) ancestor — starting at `start` — that has
+    // an index, tolerating any number of index-less directories below it.
+    let mut cur = start.to_path_buf();
+    let first_hit = loop {
+        if has_index(&cur).await {
+            break Some(cur.clone());
+        }
+        if cur == workspace_root {
+            break None;
+        }
+        match cur.parent() {
+            Some(p) if p.starts_with(workspace_root) => cur = p.to_path_buf(),
+            _ => break None,
+        }
+    };
+    let mut root = first_hit?;
+
+    // Extend upward through the UNBROKEN chain above the first hit.
+    loop {
+        if root == workspace_root {
+            break;
+        }
+        let Some(parent) = root.parent() else { break };
+        if !parent.starts_with(workspace_root) || !has_index(parent).await {
+            break;
+        }
+        root = parent.to_path_buf();
+    }
+    Some(root)
+}
+
+#[cfg(test)]
+mod find_site_root_tests {
+    // `docs.open`'s site-root walk (v0.6.6), tested directly against real
+    // temp directories rather than through the full handler: `find_site_root`
+    // is a pure path-and-filesystem function with no `Session`/`Workspaces`/
+    // `site_serve` dependency, so it's the cheap, isolated place to pin the
+    // walk's boundary behaviour. `handle_docs_open` end to end has no
+    // existing test harness in this crate (no test binds the real
+    // `site_serve` listener `bound_site_port()` requires) — out of scope to
+    // add here; see the report for what that leaves unverified.
+    use super::find_site_root;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sot-find-site-root-test-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn climbs_through_index_less_dirs_to_a_distant_site_index() {
+        // <ws>/site/index.html, subpage two levels down at
+        // <ws>/site/guide/api/reference.html — `guide/` and `guide/api/`
+        // have no index of their own, matching a typical Documenter/
+        // project-log-style tree where only the top has one.
+        let ws = scratch("climb");
+        let site = ws.join("site");
+        let sub = site.join("guide").join("api");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(site.join("index.html"), "<html></html>").unwrap();
+        std::fs::write(sub.join("reference.html"), "<html></html>").unwrap();
+
+        let root = find_site_root(&sub, &ws).await.expect("site root found");
+        assert_eq!(root, site, "climbs past two index-less dirs to the site root");
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn stops_at_the_outermost_of_an_unbroken_chain() {
+        // <ws>/site/index.html AND <ws>/index.html both exist (the outer one
+        // stands in for an "unrelated parent that happens to hold one" —
+        // e.g. a repo-level landing page one level above the real site).
+        // The chain breaks between them (nothing between `site/` and `ws`
+        // lacks an index here because they're adjacent, so pin a THIRD
+        // level: <ws>/outer/site/index.html with <ws>/outer/ having none),
+        // proving the walk stops at `site/`, not `outer/`'s parent.
+        let ws = scratch("stop-outer");
+        let outer = ws.join("outer");
+        let site = outer.join("site");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(site.join("index.html"), "<html></html>").unwrap();
+        std::fs::write(ws.join("index.html"), "<html></html>").unwrap(); // unrelated
+        std::fs::write(site.join("page.html"), "<html></html>").unwrap();
+
+        let root = find_site_root(&site, &ws)
+            .await
+            .expect("site root found");
+        assert_eq!(
+            root, site,
+            "must not walk past the outermost index.html (site/) into the \
+             unrelated ws/index.html one level further out, across the gap \
+             at outer/ which has no index of its own"
+        );
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn no_index_anywhere_up_to_the_workspace_root_is_none() {
+        // The project-log shape: a standalone page with a SIBLING assets/
+        // dir, no index.html anywhere above it up to the workspace root.
+        // This is the documented fallback case — `find_site_root` returns
+        // `None` and the caller keeps the pre-fix parent-rooted behaviour.
+        let ws = scratch("no-index");
+        let page_dir = ws.join("journal");
+        std::fs::create_dir_all(&page_dir).unwrap();
+        std::fs::create_dir_all(ws.join("assets")).unwrap();
+        std::fs::write(page_dir.join("2026-09-01.html"), "<html></html>").unwrap();
+
+        assert_eq!(find_site_root(&page_dir, &ws).await, None);
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn site_root_exactly_at_the_workspace_root_stops_there() {
+        // <ws>/index.html with the page directly inside <ws> — the walk
+        // must find <ws> itself and never look above it.
+        let ws = scratch("at-root");
+        std::fs::write(ws.join("index.html"), "<html></html>").unwrap();
+        std::fs::write(ws.join("page.html"), "<html></html>").unwrap();
+
+        let root = find_site_root(&ws, &ws).await.expect("site root found");
+        assert_eq!(root, ws, "the workspace root itself is the site root");
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+}
+
 /// Constant-time byte comparison for secrets (the app-level auth token here;
 /// `site_serve` duplicates this for its pool-port cookie secret). No `subtle`
 /// crate in the dependency tree — this is the standard XOR-accumulate idiom,
@@ -3168,9 +3357,9 @@ pub async fn handle_video_open(
 /// browser with full CSS/JS/sub-page fidelity. (Op name is legacy from the
 /// Documenter first cut; it now serves any directory, not just
 /// `docs/build`.) `req.path` is the cursored file's absolute backend path;
-/// the handler roots the `site_serve` server at that file's **own
-/// directory** (its site root) and returns the URL. The launcher
-/// SSH-forwards the port. ADR 0024.
+/// the handler roots the `site_serve` server at that file's **site root**
+/// (not just its own directory — see the rooting rule below) and returns the
+/// URL. The launcher SSH-forwards the port. ADR 0024.
 ///
 /// Confined to the workspace's project root (security review): `site_serve`'s
 /// port has no auth of its own, so rooting it at an arbitrary absolute
@@ -3180,7 +3369,21 @@ pub async fn handle_video_open(
 /// Rooting rule (so both relative AND root-relative `/asset` links resolve):
 /// - cursor on a directory → serve it, open `/` (its `index.html`);
 /// - cursor on `index.html`/`index.htm` → serve its parent, open `/`;
-/// - cursor on any other file → serve its parent, open `/<filename>`.
+/// - cursor on any other file → walk UP from its directory to the OUTERMOST
+///   ancestor (bounded by the workspace root) that sits in an unbroken chain
+///   of directories each directly holding an `index.html`/`index.htm` (see
+///   `find_site_root`) — that ancestor is the site root, and `rel` is the
+///   path from it down to the file. A subpage like `<site>/api/reference.html`
+///   is served at the SITE's root, not `api/`'s, so `../assets/x.css` from
+///   inside it resolves instead of escaping the served root and 404ing (this
+///   was the bug: rooting at the subpage's own directory). If no ancestor up
+///   to the workspace root has an index (v0.6.6: e.g. a project-log page
+///   whose assets sit in a sibling `assets/` one level up, with no per-page
+///   index anywhere), this falls back to the PRE-FIX behaviour — root = the
+///   file's own parent — as a documented limitation: a page in that shape
+///   using a parent-relative asset link still 404s. Fixing that would mean
+///   parsing the page's own HTML for its relative links, which this handler
+///   deliberately does not do (no HTML heuristics for routing decisions).
 pub async fn handle_docs_open(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -3237,7 +3440,11 @@ pub async fn handle_docs_open(
     // workspace (not just the default — same check as `pluto.open`'s), and
     // derive (root, rel, entry) from THIS canonical path for everything
     // downstream. The raw `p`/`req.path` is never read or scanned again below.
-    let canon_p = match canonicalize_within_any_workspace(p, workspaces) {
+    // Also keep that workspace's own canonical root (`ws_root`): the
+    // site-root walk below (v0.6.6) needs a bound it cannot climb past, and
+    // this is the SAME confinement check's own root, not a second lookup
+    // that could disagree with it.
+    let (canon_p, ws_root) = match canonicalize_and_workspace_root(p, workspaces) {
         Some(c) => c,
         None => {
             return Ok(err(
@@ -3265,7 +3472,22 @@ pub async fn handle_docs_open(
         if fname.eq_ignore_ascii_case("index.html") || fname.eq_ignore_ascii_case("index.htm") {
             (parent, String::new(), canon_p.clone())
         } else {
-            (parent, fname, canon_p.clone())
+            match find_site_root(&parent, &ws_root).await {
+                Some(site_root) => {
+                    // `site_root` is an ancestor of `parent` (= `canon_p`'s
+                    // own parent), found by walking UP from it, so `canon_p`
+                    // always strips cleanly; the fallback is unreachable.
+                    let rel = canon_p
+                        .strip_prefix(&site_root)
+                        .unwrap_or(canon_p.as_path())
+                        .to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/");
+                    (site_root, rel, canon_p.clone())
+                }
+                // No ancestor up to `ws_root` holds an index.html — documented
+                // fallback (see the doc comment above): pre-fix behaviour.
+                None => (parent, fname, canon_p.clone()),
+            }
         }
     };
 
@@ -3737,27 +3959,20 @@ const MAX_PTY_INPUT_ORIGIN_LEN: usize = 128;
 /// One capsule-lane op's absolute deadline (ADR 0042 amendment: "the whole
 /// operation runs under ONE deadline (5 s): attach, checkpoint, take,
 /// input, ack, detach"). Shared by both `pty.input` and `pty.screen`'s
-/// capsule arms — gated like `capsule_workspace::headless` itself, since
-/// only those arms ever read it.
-#[cfg(any(windows, target_os = "linux"))]
+/// capsule arms, which are the only readers.
 const CAPSULE_OP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Bounds for [`crate::capsule_workspace::headless::write_and_enter`]'s
 /// pacing wait — never a confirmation, only pacing.
-#[cfg(any(windows, target_os = "linux"))]
 const CAPSULE_WRITE_QUIET_BUDGET: std::time::Duration = std::time::Duration::from_millis(300);
-#[cfg(any(windows, target_os = "linux"))]
 const CAPSULE_WRITE_PACING_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// What a capsule-runtime `pty.input`/`pty.screen` op's `spawn_blocking`
 /// closure reports — computed OFF the async runtime (the phase probe and
 /// the headless client both make blocking IPC calls), then translated to a
-/// response frame back on the async side. Gated like `capsule_workspace::
-/// headless` itself (windows/linux only — that module simply does not
-/// exist on any other host, so neither can a variant naming its error
-/// type); the `#[cfg(not(...))]` arms in `handle_pty_input`/
-/// `handle_pty_screen` never construct this enum at all on those hosts.
-#[cfg(any(windows, target_os = "linux"))]
+/// response frame back on the async side. Ungated, like
+/// `capsule_workspace::headless` itself (macOS wiring lane): one variant
+/// set, one outcome shape, on every host this daemon builds for.
 enum CapsuleOpOutcome<T> {
     Ok(T),
     NotReady(&'static str),
@@ -3775,7 +3990,6 @@ enum CapsuleOpOutcome<T> {
 /// was submitted", generalized to the wire's own explicit "unknown" answer
 /// too: both cases mean the same thing, "we do not know if this landed in
 /// the record," and the daemon never retries either one on its own).
-#[cfg(any(windows, target_os = "linux"))]
 fn headless_error_payload(
     e: crate::capsule_workspace::headless::HeadlessError,
     fail_code: &'static str,
@@ -3891,7 +4105,6 @@ pub async fn handle_pty_input(
 
     match ws.runtime.as_str() {
         "capsule" => {
-            #[cfg(any(windows, target_os = "linux"))]
             {
                 let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
                     let payload = json!({
@@ -3990,19 +4203,6 @@ pub async fn handle_pty_input(
                     }
                 }
             }
-            #[cfg(not(any(windows, target_os = "linux")))]
-            {
-                // `controller_id` is only ever consumed by the
-                // windows/linux arm above; on any other host it is
-                // resolved (for `bad_origin` validation) but never used.
-                let _ = &controller_id;
-                let payload = json!({
-                    "error": "capsule runtime not available on this host",
-                    "code": "capsule_input_failed",
-                    "phase": "attach",
-                });
-                Ok(vec![(Frame::res(req_id, op::PTY_INPUT, payload), None)])
-            }
         }
         other => {
             let payload = json!({
@@ -4036,7 +4236,6 @@ pub async fn handle_pty_screen(
 
     match ws.runtime.as_str() {
         "capsule" => {
-            #[cfg(any(windows, target_os = "linux"))]
             {
                 let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
                     let payload = json!({
@@ -4125,15 +4324,6 @@ pub async fn handle_pty_screen(
                         Ok(vec![(Frame::res(req_id, op::PTY_SCREEN, payload), None)])
                     }
                 }
-            }
-            #[cfg(not(any(windows, target_os = "linux")))]
-            {
-                let payload = json!({
-                    "error": "capsule runtime not available on this host",
-                    "code": "capsule_screen_failed",
-                    "phase": "attach",
-                });
-                Ok(vec![(Frame::res(req_id, op::PTY_SCREEN, payload), None)])
             }
         }
         other => {
@@ -4325,12 +4515,10 @@ pub async fn handle_workspace_create(
     // ADR 0043 decision 23: refuse an unqualified state root at the SAME
     // "before any state mutation" moment `capsule_argv` above already
     // established — before `ws_seed`, before `workspaces.insert`, before
-    // any toml. Gated identically to the capsule runtime's own
-    // availability check further down (`#[cfg(any(windows, target_os =
-    // "linux"))]`): a platform with no capsule runtime AT ALL (macOS)
-    // keeps its existing "runtime not available" refusal below instead of
-    // a state-root diagnosis that would be beside the point there.
-    #[cfg(any(windows, target_os = "linux"))]
+    // any toml. Ungated, like the capsule spawn further down (macOS
+    // wiring lane): there is no host this daemon builds for that lacks a
+    // capsule runtime, so there is no second, platform-shaped refusal for
+    // this check to defer to.
     let capsule_state_root: Option<std::path::PathBuf> = if runtime == "capsule" {
         match crate::capsule_workspace::qualified_state_root() {
             Ok(root) => Some(root),
@@ -4348,8 +4536,6 @@ pub async fn handle_workspace_create(
     } else {
         None
     };
-    #[cfg(not(any(windows, target_os = "linux")))]
-    let capsule_state_root: Option<std::path::PathBuf> = None;
     // A second refusal at the same before-any-mutation moment: a state
     // root resolving INSIDE this workspace's own project root would sit
     // under this daemon's project-root file watcher, whose open
@@ -4417,18 +4603,13 @@ pub async fn handle_workspace_create(
     }
 
     // ADR 0043 decision 22: branch on the resolved runtime VALUE, not a
-    // platform cfg — `ws_handle.runtime` is exhaustive over the two
-    // runtimes this daemon can ever create (see `Workspace::runtime`'s
-    // own doc); both arms compile on every platform this daemon builds
-    // for (on Windows the tmux arm is simply unreachable — "tmux" is
-    // refused above before either arm is ever entered).
-    // ADR 0043 decision 22: the capsule runtime itself only compiles
-    // on Windows and Linux (`capsule_workspace::runtime`'s own
-    // gate) — on any other host (macOS stays experimental) an
-    // explicit `"runtime":"capsule"` request is refused gracefully,
-    // the same "not available" shape `destroy_capsule_workspace`
-    // reports for a row that somehow already has one.
-    #[cfg(any(windows, target_os = "linux"))]
+    // platform cfg. Since ADR 0046 decision 5 that value is always
+    // "capsule" for a NEW row, and since the macOS wiring lane the
+    // capsule runtime carries no platform gate at all: one spawn path,
+    // every host this daemon builds for. What differs per platform lives
+    // in `capsule_workspace`'s own leaf `cfg(unix)`/`cfg(windows)` arms,
+    // so a host with neither fails to COMPILE rather than quietly
+    // creating a row it can never supervise.
     {
     // ADR 0042 slice L1a, Codex review finding 1: the capsule spawn —
     // and, unlike the tmux path below, a SYNCHRONOUS failure here
@@ -4553,31 +4734,6 @@ pub async fn handle_workspace_create(
             )]);
         }
     }
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = &capsule_argv;
-        let _ = &capsule_state_root;
-        tracing::warn!(workspace_id = %ws_handle.workspace_id, "workspace.create: capsule runtime requested but not available on this host; rolling back");
-        let _ = workspaces.remove_by_id(&ws_handle.workspace_id);
-        for toml_path in [
-            crate::workspaces::toml_path_for(&ws_handle.slug),
-            crate::workspaces::legacy_toml_path_for(&ws_handle.slug),
-        ] {
-            match std::fs::remove_file(&toml_path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => tracing::warn!(error = %e, path = ?toml_path, "workspace.create rollback: toml remove failed"),
-            }
-        }
-        let payload = json!({
-            "error": "the capsule runtime is not available on this host",
-            "code": "runtime_not_available",
-        });
-        return Ok(vec![(
-            Frame::res(req_id, op::WORKSPACE_CREATE, payload),
-            None,
-        )]);
     }
 
     let res = WorkspaceCreateRes {
@@ -4764,7 +4920,6 @@ async fn destroy_capsule_workspace(
     project_root: &std::path::Path,
     workspaces: &Workspaces,
 ) -> (CapsuleDestroyOutcome, Option<tokio::sync::OwnedMutexGuard<()>>) {
-    #[cfg(any(windows, target_os = "linux"))]
     {
         let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
             return (
@@ -4926,20 +5081,6 @@ async fn destroy_capsule_workspace(
                 None,
             ),
         }
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = (workspace_id, reason, agent_kind, agent_name, slug, project_root, workspaces);
-        // Unreachable in practice: no workspace has `runtime == "capsule"`
-        // off Windows/Linux (see `Workspace::runtime`'s own doc) — a host
-        // this crate compiles for but the capsule runtime does not
-        // (ADR 0043: macOS stays experimental).
-        (
-            CapsuleDestroyOutcome::Kept {
-                detail: "the capsule runtime is not available on this host".to_string(),
-            },
-            None,
-        )
     }
 }
 
@@ -8481,13 +8622,10 @@ mod workspace_destroy_default_row_tests {
     // and every one now runs through the same scratch config root.
     // Same technique as `workspaces.rs`'s own `env_guarded`, serialized
     // under the crate-wide lock so this never races another module's
-    // env-mutating test. Every caller is now
-    // `#[cfg(any(windows, target_os = "linux"))]` (the absence proof
-    // `seed_provably_unheld_state_dir` builds only means anything there),
-    // so this whole cluster is unused dead code elsewhere -- allowed
-    // rather than gating the struct/fns themselves and losing the single
-    // definition every platform's `cargo check` still type-checks.
-    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+    // env-mutating test. Ungated since the macOS wiring lane: the
+    // absence proof `seed_provably_unheld_state_dir` builds means
+    // something on every host this daemon builds for, so this cluster
+    // has real callers everywhere and needs no dead-code suppression.
     struct EnvGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
         xdg_config_home: Option<std::ffi::OsString>,
@@ -8533,7 +8671,6 @@ mod workspace_destroy_default_row_tests {
         }
     }
 
-    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
     fn env_guarded() -> EnvGuard {
         let serial = crate::paths::ENV_TEST_LOCK
             .lock()
@@ -8585,7 +8722,6 @@ mod workspace_destroy_default_row_tests {
     /// their own distinct subtree name under it (`state_dir.rs`'s own
     /// doc), so the two never collide even sharing one root; "nothing
     /// exists under `dir`" fixtures stay literally true either way.
-    #[cfg(any(windows, target_os = "linux"))]
     fn pin_local_state_root(dir: &std::path::Path) -> std::path::PathBuf {
         #[cfg(windows)]
         std::env::set_var("LOCALAPPDATA", dir);
@@ -8613,12 +8749,10 @@ mod workspace_destroy_default_row_tests {
     /// deleted unguarded fast path (Codex review, 2026-09-11: that path
     /// returned `Removable` on the daemon's own say-so alone, with no
     /// proof at all) — same technique `capsule_workspace`'s own
-    /// absence-proof unit tests use. Really `#[cfg]`-gated, not merely
-    /// `allow(dead_code)`: the body reaches `sot_log::supervisor`, a
-    /// module gated `#![cfg(any(windows, target_os = "linux"))]` at its
-    /// own root (`log/src/supervisor.rs`) — nonexistent on every other
-    /// host, not merely unused.
-    #[cfg(any(windows, target_os = "linux"))]
+    /// absence-proof unit tests use. Ungated since the macOS wiring
+    /// lane: the body reaches `capsule_workspace::runtime`, which no
+    /// longer carries a platform gate at its own root, so this fixture
+    /// exists wherever the daemon does.
     fn seed_provably_unheld_state_dir(state_root: &std::path::Path, workspace_id: &str) {
         let state_dir = crate::capsule_workspace::state_dir_for(state_root, workspace_id);
         std::fs::create_dir_all(&state_dir).expect("create the fake state dir");
@@ -8697,10 +8831,9 @@ mod workspace_destroy_default_row_tests {
     // either) — the orphan-removal fix this test now covers: proven,
     // not merely refused, so the row's run is confirmed ended
     // (`orphan_removed`) exactly as a real end would be, never the
-    // flat refusal AND never a bare `Kept`. Where the capsule runtime
-    // doesn't compile at all (e.g. macOS), the portable fallback arm
-    // still reports the generic `Kept` code instead — no proof
-    // machinery exists there to reach at all.
+    // flat refusal AND never a bare `Kept`. One outcome on every host
+    // since the macOS wiring lane: there is no platform-shaped fallback
+    // arm left for this to mean something different on.
     // Pinned hermetic (Codex review, 2026-09-11): this test used to read
     // `sot_log::state_dir::sot_state_dir()`'s REAL, unpinned environment —
     // fine on a dev box whose shell always exports a stable, qualified
@@ -8718,7 +8851,6 @@ mod workspace_destroy_default_row_tests {
     #[tokio::test]
     async fn default_capsule_workspace_with_no_state_dir_is_proven_orphaned_not_a_flat_refusal() {
         let _guard = env_guarded();
-        #[cfg(any(windows, target_os = "linux"))]
         let scratch = std::env::temp_dir().join(format!(
             "sot-ws-destroy-missing-test-{}-{}",
             std::process::id(),
@@ -8733,7 +8865,6 @@ mod workspace_destroy_default_row_tests {
         // nothing under it is: the point of this test is that THIS ROW's
         // own state dir does not exist on disk at all, and nothing was
         // ever bound at its lane address either.
-        #[cfg(any(windows, target_os = "linux"))]
         {
             let root = pin_local_state_root(&scratch);
             std::fs::create_dir_all(&root).unwrap();
@@ -8746,7 +8877,6 @@ mod workspace_destroy_default_row_tests {
             Some("default_workspace_not_destroyable"),
             "a capsule default row must not get the flat tmux-style refusal: {payload:?}"
         );
-        #[cfg(any(windows, target_os = "linux"))]
         {
             assert_eq!(
                 payload.get("code").and_then(|v| v.as_str()),
@@ -8759,15 +8889,8 @@ mod workspace_destroy_default_row_tests {
                 "the orphan proof's own distinct outcome must be visible: {payload:?}"
             );
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
-        assert_eq!(
-            payload.get("code").and_then(|v| v.as_str()),
-            Some("capsule_end_not_reached"),
-            "payload: {payload:?}"
-        );
         assert!(reg.resolve(Some(&id)).is_some(), "the default row is never removed either way");
 
-        #[cfg(any(windows, target_os = "linux"))]
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
@@ -8784,8 +8907,14 @@ mod workspace_destroy_default_row_tests {
     /// refusing. `SOT_RUNTIME_DIR` is pinned to a fresh, private (owner-
     /// only) scratch dir so the real socket path (`sot_log::socket_unix::
     /// supervisor_socket_path`) never collides with a real session.
+    /// `cfg(unix)`: the assertion target is `capsule_workspace::runtime::
+    /// is_definitely_orphaned`'s refusing half, and `mod runtime` lost
+    /// its platform gate in the macOS wiring lane — exactly the change
+    /// this gate's predecessor said it would widen with. The socket half
+    /// was never the constraint (`sot_log::socket_unix` and
+    /// `supervisor_client` both compile for Darwin).
     #[tokio::test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     async fn a_reachable_listener_with_no_state_dir_still_refuses() {
         let _guard = env_guarded();
         let stamp = format!(
@@ -8857,7 +8986,6 @@ mod workspace_destroy_default_row_tests {
     // "linux"))]` arm -- every other host takes the unconditional `Kept`
     // fallback regardless of any on-disk fixture.
     #[tokio::test]
-    #[cfg(any(windows, target_os = "linux"))]
     async fn a_capsule_workspace_marked_terminal_still_needs_the_absence_proof() {
         let _guard = env_guarded();
         let scratch = std::env::temp_dir().join(format!(
@@ -8926,11 +9054,10 @@ mod workspace_destroy_default_row_tests {
     // scratch dir so neither the toml write nor the state dir ever
     // touches a real `~/.config/sot` or `~/.local/state/sot`.
     //
-    // Gated: the absence proof `seed_provably_unheld_state_dir` targets
-    // only exists inside `destroy_capsule_workspace`'s `#[cfg(any(windows,
-    // target_os = "linux"))]` arm.
+    // The absence proof `seed_provably_unheld_state_dir` targets is
+    // `destroy_capsule_workspace`'s one, ungated path (macOS wiring
+    // lane), so this runs on every host.
     #[tokio::test]
-    #[cfg(any(windows, target_os = "linux"))]
     async fn default_row_confirmed_ended_resets_agent_persists_toml_and_broadcasts() {
         let _guard = env_guarded();
         let dir = std::env::temp_dir().join(format!(
@@ -9015,12 +9142,10 @@ mod workspace_destroy_default_row_tests {
     // another, to prove the prune is host-scoped exactly like the
     // destroy-path prune it mirrors.
     //
-    // Gated: same reason as the reset test above -- the confirmed-end
-    // outcome `seed_provably_unheld_state_dir` produces only reaches
-    // `Removable` through `destroy_capsule_workspace`'s `#[cfg(any(windows,
-    // target_os = "linux"))]` arm.
+    // Same reason as the reset test above -- the confirmed-end outcome
+    // `seed_provably_unheld_state_dir` produces reaches `Removable`
+    // through `destroy_capsule_workspace`'s one, ungated path.
     #[tokio::test]
-    #[cfg(any(windows, target_os = "linux"))]
     async fn default_row_end_prunes_the_rows_registry_row() {
         let _guard = env_guarded();
         let stamp = format!(

@@ -457,8 +457,9 @@ fn wall_ms() -> i64 {
 ///
 /// Per-platform sibling (ADR 0043 decision 16: "per-platform siblings,
 /// not knobs") — the Linux sibling just below is
-/// `(getpid, challenge_unix::self_start_ticks())`; any other Unix fails
-/// closed (no start-time identity exists there yet).
+/// `(getpid, challenge_unix::self_start_ticks())` and the macOS one
+/// `(getpid, challenge_macos::self_pidversion())`; any OTHER Unix fails
+/// closed (no instance identity exists there yet).
 #[cfg(windows)]
 fn self_status(survival: Survival) -> Result<MgmtStatus> {
     use windows_sys::Win32::Foundation::FILETIME;
@@ -498,14 +499,33 @@ fn self_status(survival: Survival) -> Result<MgmtStatus> {
     Ok(MgmtStatus { pid, created, survival })
 }
 
-/// Any OTHER Unix (ADR 0043 decision 16): no portable start-time identity
-/// exists there (macOS has no pid in `getpeereid` either — see
-/// `challenge_unix.rs`'s own doc) — every caller of `run` fails closed
-/// here rather than fabricating a status this platform has no real
-/// answer for.
-#[cfg(not(any(windows, target_os = "linux")))]
+/// ADR 0043 decision 16, the macOS arm — `getpid()` plus
+/// `challenge_macos::self_pidversion()`. The UNIT differs from Linux's
+/// and that is the whole point: every platform's `created` is "whatever
+/// this OS's own `status_ok.created` carries, compared for equality
+/// only" (`client::PeerIdentity::created`), and on macOS that unit is
+/// the `pidversion` the peer's audit token carries — NOT a start time.
+/// `challenge_macos`'s step 5 compares a reply's `created` against the
+/// pidversion it read out of the token, so a start time reported here
+/// would make every macOS adoption challenge `Foreign`. `self_pidversion`
+/// exists for exactly this call site: it is the self-facing twin of the
+/// value a client reads off its own socket, the same way
+/// `self_start_ticks` is on Linux.
+#[cfg(target_os = "macos")]
+fn self_status(survival: Survival) -> Result<MgmtStatus> {
+    let pid = std::process::id();
+    let created = crate::challenge_macos::self_pidversion()
+        .map_err(|e| Error::State(format!("capsule: self_pidversion failed: {e}")))?;
+    Ok(MgmtStatus { pid, created: u64::from(created), survival })
+}
+
+/// Any OTHER Unix (ADR 0043 decision 16): no instance identity exists
+/// there — no `/proc` start ticks, no audit token — so every caller of
+/// `run` fails closed here rather than fabricating a status this
+/// platform has no real answer for.
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn self_status(_survival: Survival) -> Result<MgmtStatus> {
-    Err(Error::Unsupported("self_status: this unix has no start-time identity"))
+    Err(Error::Unsupported("self_status: this unix has no instance identity"))
 }
 
 struct BudgetState {
@@ -935,13 +955,13 @@ pub fn run<P: Producer>(
     commands: mpsc::Receiver<Command>,
     transport: &mut dyn Transport,
 ) -> Result<ExitSummary> {
-    // A platform this build has no real `self_status` for (any non-Linux
-    // Unix) must refuse BEFORE any durable side effect: without this, such
-    // a call would bind the transport, open a segment and commit
-    // `take_state`, and only then fail on `Unsupported` — an unsupported
-    // call must not change history. On Windows and Linux this is a no-op
-    // (the real `self_status` succeeds) and nothing about either path
-    // moves.
+    // A platform this build has no real `self_status` for (any Unix that
+    // is neither Linux nor macOS) must refuse BEFORE any durable side
+    // effect: without this, such a call would bind the transport, open a
+    // segment and commit `take_state`, and only then fail on
+    // `Unsupported` — an unsupported call must not change history. On
+    // Windows, Linux and macOS the real `self_status` succeeds, so this
+    // is a no-op and nothing about any of those paths moves.
     #[cfg(not(windows))]
     let _ = self_status(config.survival)?;
     // Resolve ONCE — the fresh `producer_pty`/`socket_transport` pair on
@@ -2440,12 +2460,15 @@ mod base64_engine {
 /// on unchanged code. The flood test keeps the properties that are always
 /// true (no deadlock, verify-green, bookkeeping live); the bound itself is
 /// a plain condvar protocol, provable right at the primitive.
-// The voyage store's durability arms exist for Linux and Windows only (`fsutil`
-// fails closed elsewhere with `Error::Unsupported`), so these unit tests —
-// which open a real store — are gated exactly like `voyage`'s and
-// `recovery`'s: they ran only on Windows until LU2a made this module
-// neutral, and the macOS CI leg then hit the fail-closed arm.
-#[cfg(all(test, any(target_os = "linux", windows)))]
+// These unit tests open a real store, so they run wherever the store has a
+// real rename arm. That was Linux and Windows only until M1 gave `fsutil`
+// its `renamex_np` arm; macOS is now a third, and the gate says so. Every
+// OTHER Unix still hits `fsutil`'s fail-closed arm, which is why this is
+// three named targets and not bare `any(unix, windows)`. Nothing in this
+// module reads `/proc`, opens a pidfd or expects PDEATHSIG — it is a
+// condvar protocol and a run-end marker — so no test inside needed a
+// narrower gate of its own before this one widened.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
 mod tests {
     use super::*;
     use std::thread;

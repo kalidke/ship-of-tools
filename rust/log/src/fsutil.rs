@@ -1,8 +1,10 @@
 //! Durability primitives: volume preflight, dir fsync, no-clobber rename,
-//! exclusive lock. Two real platform arms (Linux since P1, Windows since P3 —
-//! ADR 0041 §store port); the pure codec compiles everywhere, but voyage
-//! stores refuse to open where the OS can't guarantee these semantics
-//! (non-Linux unix fails closed in `rename_noreplace_raw`).
+//! exclusive lock. Three real platform arms (Linux since P1, Windows since
+//! P3, macOS since the M1 capsule-lane port — ADR 0041 §store port); the
+//! pure codec compiles everywhere, but `rename_noreplace_raw`/
+//! `preflight_volume` have no fourth arm — every other unix does not build
+//! this crate at all, rather than carry a stub that fails closed at
+//! runtime.
 
 use crate::{Error, Result};
 use std::fs::File;
@@ -57,22 +59,22 @@ fn io_ctx(e: std::io::Error, what: std::fmt::Arguments<'_>) -> Error {
     Error::Io(std::io::Error::new(e.kind(), format!("{head}{code}{sep}{tail}")))
 }
 
-/// Volume preflight (ADR 0041 Windows arm; ADR 0043 decision 23 Linux arm):
-/// proves the store's OWN primitives work on `dir`'s filesystem BEFORE any
-/// `.creating` mutation in bootstrap, and again on the resolved voyage dir
-/// at `open_for_writing` (so the Claude producer and every direct store
-/// user get it too). This checks two things and ONLY two things: known
-/// EXCLUSIONS (a `statfs` denylist of remote filesystem types on Linux;
-/// local NTFS by allowlist on Windows) and the filesystem OPERATIONS this
-/// crate actually depends on (`RENAME_NOREPLACE`, a directory fsync).
-/// Durable, host-exclusive backing and retention are deployment
-/// prerequisites this cannot observe from a live probe (ADR 0043 decision
-/// 23's own open item 4) — proving them is out of scope by design, not an
-/// oversight.
-#[cfg(target_os = "linux")]
+/// Volume preflight (ADR 0041 Windows arm; ADR 0043 decision 23 Linux +
+/// macOS arm): proves the store's OWN primitives work on `dir`'s
+/// filesystem BEFORE any `.creating` mutation in bootstrap, and again on
+/// the resolved voyage dir at `open_for_writing` (so the Claude producer
+/// and every direct store user get it too). This checks two things and
+/// ONLY two things: known EXCLUSIONS (a `statfs` denylist of remote
+/// filesystem types, shared by Linux and macOS — see
+/// [`remote_volume_name`]; local NTFS by allowlist on Windows) and the
+/// filesystem OPERATIONS this crate actually depends on
+/// (`RENAME_NOREPLACE`, a directory fsync). Durable, host-exclusive
+/// backing and retention are deployment prerequisites this cannot observe
+/// from a live probe (ADR 0043 decision 23's own open item 4) — proving
+/// them is out of scope by design, not an oversight.
+#[cfg(unix)]
 pub fn preflight_volume(dir: &Path) -> Result<()> {
-    let f_type = statfs_type(dir)?;
-    if let Some(name) = remote_fs_name(f_type) {
+    if let Some(name) = remote_volume_name(dir)? {
         return Err(Error::Io(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             format!(
@@ -86,22 +88,16 @@ pub fn preflight_volume(dir: &Path) -> Result<()> {
     // every suite must keep running on) is not on the denylist above but
     // DOES support both, so it passes here; a type this denylist doesn't
     // know about but that genuinely lacks RENAME_NOREPLACE fails HERE
-    // instead of silently proceeding.
+    // instead of silently proceeding. This is also what makes a non-APFS
+    // macOS volume (RENAME_EXCL is APFS-only) fail closed: there is no
+    // separate macOS check for it above, because the probe below already
+    // calls the real `rename_noreplace_raw` and surfaces whatever the
+    // kernel refuses it with.
     let nonce = preflight_nonce();
     probe_rename_noreplace_pair(dir, PreflightEntryKind::Dir, &nonce)?;
     probe_rename_noreplace_pair(dir, PreflightEntryKind::File, &nonce)?;
     fsync_dir(dir).map_err(|e| preflight_refusal(dir, format_args!("could not fsync the directory after the probes ({e})")))?;
     Ok(())
-}
-
-/// Every other unix fails closed here too — one refusal at the same seam
-/// `rename_noreplace_raw`'s own non-Linux-unix arm already refuses at,
-/// named identically, so a caller sees the SAME diagnosis preflight would
-/// have given it two steps earlier rather than a second, differently
-/// worded one.
-#[cfg(all(unix, not(target_os = "linux")))]
-pub fn preflight_volume(_dir: &Path) -> Result<()> {
-    Err(Error::Unsupported("capsule records need Linux renameat2"))
 }
 
 /// `dir`'s filesystem type magic number (`statfs(2)`'s own `f_type`),
@@ -128,16 +124,23 @@ fn statfs_type(dir: &Path) -> Result<i64> {
     Ok(buf.f_type as i64)
 }
 
-/// Remote filesystem magic numbers `statfs(2)` can report (ADR 0043
-/// decision 23's own deny list) — one name per magic, checked with
-/// [`remote_fs_name`] below. tmpfs is deliberately ABSENT: developer
-/// `/tmp` is often tmpfs and every suite must keep running there; the
-/// DAEMON's own, separate volatile-type refusal
+/// Remote filesystem names `statfs(2)` can report (ADR 0043 decision
+/// 23's own deny list) — ONE list shared by every unix arm, not forked
+/// per platform: Linux's `statfs(2)` gives only a numeric magic, so
+/// [`remote_fs_name`] keys into this by the `i64` column; macOS's own
+/// `statfs(2)` gives the name directly in `f_fstypename` instead (its
+/// `f_type` is NOT the stable, ABI-fixed magic Linux's is — Apple assigns
+/// it per registered VFS at boot, not a documented constant — so relying
+/// on it there would be inventing a second, unstable denylist rather than
+/// reusing this one), so [`remote_volume_name`]'s macOS arm keys into the
+/// SAME `&str` column instead, by substring. tmpfs is deliberately
+/// ABSENT: developer `/tmp` is often tmpfs and every suite must keep
+/// running there; the DAEMON's own, separate volatile-type refusal
 /// (`capsule_workspace::qualified_state_root`) is what refuses tmpfs, on
 /// the resolved destination, not this probe. Unknown types are not
 /// refused by this list at all — the two `RENAME_NOREPLACE` probes below
 /// are what actually decides an unlisted type.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 const REMOTE_FS_TYPES: &[(i64, &str)] = &[
     (0x6969, "NFS"),
     (0x517B, "SMB"),
@@ -148,10 +151,52 @@ const REMOTE_FS_TYPES: &[(i64, &str)] = &[
 ];
 
 /// Pure lookup, unit-tested directly against [`REMOTE_FS_TYPES`] — never by
-/// faking `statfs`.
+/// faking `statfs`. Linux only: the `i64` it takes is a Linux `statfs(2)`
+/// magic, meaningless on macOS (see [`REMOTE_FS_TYPES`]'s own doc) — that
+/// arm is [`remote_volume_name`]'s macOS half instead.
 #[cfg(target_os = "linux")]
 fn remote_fs_name(f_type: i64) -> Option<&'static str> {
     REMOTE_FS_TYPES.iter().find(|(magic, _)| *magic == f_type).map(|(_, name)| *name)
+}
+
+/// `preflight_volume`'s own "is this a remote/incompatible filesystem"
+/// check, one implementation per unix arm so each reads `dir`'s
+/// filesystem type off `statfs(2)` the way ITS OWN os actually reports it
+/// (see [`REMOTE_FS_TYPES`]'s own doc for why that split is real, not a
+/// forked denylist).
+#[cfg(target_os = "linux")]
+fn remote_volume_name(dir: &Path) -> Result<Option<&'static str>> {
+    Ok(remote_fs_name(statfs_type(dir)?))
+}
+
+/// macOS's `f_fstypename` is a short, null-terminated name (e.g. "apfs",
+/// "nfs", "smbfs", "msdos", "macfuse") — read directly, lowercased, and
+/// matched by SUBSTRING against [`REMOTE_FS_TYPES`]'s own names: macOS
+/// doesn't distinguish CIFS from SMB2 the way Linux's magics do (every
+/// SMB dialect mounts as "smbfs"), and third-party FUSE mounts vary their
+/// exact name ("macfuse", "osxfuse", "fuse-t"), so substring-on-"FUSE" is
+/// what actually catches them, not an exact match.
+#[cfg(target_os = "macos")]
+fn remote_volume_name(dir: &Path) -> Result<Option<&'static str>> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let c_dir =
+        CString::new(dir.as_os_str().as_bytes()).map_err(|_| Error::State("nul in path".into()))?;
+    let mut buf: std::mem::MaybeUninit<libc::statfs> = std::mem::MaybeUninit::uninit();
+    // SAFETY: `buf` is a valid out-param for `statfs(2)`, written only on
+    // success (rc == 0), which is the only case this reads it back.
+    let rc = unsafe { libc::statfs(c_dir.as_ptr(), buf.as_mut_ptr()) };
+    if rc != 0 {
+        let e = std::io::Error::last_os_error();
+        return Err(Error::Io(std::io::Error::new(e.kind(), format!("statfs {dir:?}: {e}"))));
+    }
+    let buf = unsafe { buf.assume_init() };
+    let raw: Vec<u8> = buf.f_fstypename.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+    let fstypename = String::from_utf8_lossy(&raw).to_ascii_lowercase();
+    Ok(REMOTE_FS_TYPES
+        .iter()
+        .map(|&(_, name)| name)
+        .find(|name| fstypename.contains(&name.to_ascii_lowercase())))
 }
 
 /// One `Error::Io(Unsupported)` shape shared by every preflight refusal —
@@ -159,7 +204,7 @@ fn remote_fs_name(f_type: i64) -> Option<&'static str> {
 /// verbatim), every probe failure below goes through this instead so a
 /// caller matching on `ErrorKind::Unsupported` sees the identical kind
 /// regardless of which check inside `preflight_volume` actually failed.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn preflight_refusal(dir: &Path, detail: std::fmt::Arguments<'_>) -> Error {
     Error::Io(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -175,14 +220,14 @@ fn preflight_refusal(dir: &Path, detail: std::fmt::Arguments<'_>) -> Error {
 /// AND a temp file pair"), since a store publishes both kinds and a
 /// filesystem could in principle support `RENAME_NOREPLACE` for one but
 /// not the other.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[derive(Clone, Copy)]
 enum PreflightEntryKind {
     Dir,
     File,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl PreflightEntryKind {
     fn label(self) -> &'static str {
         match self {
@@ -234,7 +279,7 @@ impl PreflightEntryKind {
 /// nonce let collide on `b` ("File exists") and refuse a perfectly good
 /// root. A unit test proves the seeded refusal by calling this probe with
 /// a nonce of its own choosing and pre-occupying that `b`.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn probe_rename_noreplace_pair(dir: &Path, kind: PreflightEntryKind, nonce: &str) -> Result<()> {
     let (a, b) = preflight_pair_paths(dir, kind, nonce);
     let first = b"sot-preflight-first";
@@ -285,7 +330,7 @@ fn probe_rename_noreplace_pair(dir: &Path, kind: PreflightEntryKind, nonce: &str
 /// `<pid, 8 hex>-<per-process sequence, hex>`: unique per
 /// [`preflight_volume`] call across processes AND threads (see
 /// [`probe_rename_noreplace_pair`]'s own doc for why both matter).
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn preflight_nonce() -> String {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -297,7 +342,7 @@ fn preflight_nonce() -> String {
 /// factored out so this module's own unit tests can reconstruct the
 /// identical name and pre-seed `b` (see that function's own doc) without
 /// any test-only seam into the probe itself.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn preflight_pair_paths(dir: &Path, kind: PreflightEntryKind, nonce: &str) -> (PathBuf, PathBuf) {
     let label = kind.label();
     (
@@ -463,10 +508,55 @@ pub fn dir_identity(dir: &Path) -> Result<DirIdentity> {
 ///   kernel resolves directly against the descriptor's inode, immune to
 ///   any later rename/exchange of the pathname that reached it.
 ///   `pinned_path` is exactly that string.
-/// - **Every other unix**: this store already fails closed there (no
-///   atomic no-replace rename — see `rename_noreplace_raw`'s own doc), so
-///   `pinned_path` here is just the real path, unprotected against this
-///   SPECIFIC race — not a new gap, the pre-existing one.
+/// - **macOS**: no pin, and this branch does not pretend to be one. The
+///   Linux arm rests on a `/proc` magic symlink the kernel resolves
+///   against the DESCRIPTOR's inode; macOS has no equivalent — its
+///   `/dev/fd/<n>` yields a dup of the descriptor, and traversing INTO
+///   it as a path component is not a documented property of that
+///   interface — and with no Mac on this bench nothing here can settle
+///   that either way. An unverifiable claim is not a mechanism, so
+///   `pinned_path` is the real path here and what holds this branch up
+///   is an argument, stated in full:
+///
+///   **Which race is being argued about.** The residual is the TOCTOU
+///   named at the top of this doc: a rename or exchange of the
+///   CONTAINING directory's own pathname landing AFTER [`Self::open`]'s
+///   identity check and BEFORE (or between) the later path-based opens.
+///   It is NOT the store's own create-or-fail race: `renamex_np` with
+///   `RENAME_EXCL` (`rename_noreplace_raw`'s macOS arm) plus
+///   `preflight_volume`'s live probe cover that one atomically, and they
+///   bear on this one not at all. This bullet's earlier wording declared
+///   the branch safe *because the store failed closed on non-Linux* —
+///   which the macOS store has since made false, and which was never an
+///   argument about this race in the first place. The two are separate;
+///   only the second is a pin's business.
+///
+///   **What is still checked.** Everything up to the pin, on the handle
+///   and never by a second stat-by-path: `voyage.rs`'s `open_prepared`
+///   compares [`Self::identity`] against the identity captured during
+///   preparation and refuses on a mismatch. A swap landing before the
+///   pin is therefore loud on every platform, macOS included. Unguarded
+///   here is only the window from that comparison to the end of the
+///   fenced open sequence.
+///
+///   **Why that window is accepted, not closed.** Exploiting it needs a
+///   process that can rename the store root's own pathname — which means
+///   write access to the root's PARENT, the state-root container this
+///   crate itself only ever creates one level of, owned by the running
+///   user. A process holding that access has no need of this race: it
+///   can replace, empty or scribble on the store directly, and no
+///   descriptor-level pin on any platform defends against that. Linux
+///   takes its pin anyway because the pin costs one `format!`. The macOS
+///   equivalent costs a conversion of every consumer of
+///   [`Self::pinned_path`] to `*at`-relative resolution through the held
+///   dirfd (`openat`/`renameat`/`fstatat`) — the real POSIX pin, and the
+///   fix on the day this window stops being acceptable. **Unlike the
+///   Windows bullet above, this one has no standing referee: no CI leg
+///   exercises it.**
+/// - **Every other unix**: unreachable. `rename_noreplace_raw` has no arm
+///   outside Linux/macOS/Windows, so this crate does not build there at
+///   all — there is no store to race against. `pinned_path` is the real
+///   path for the same reason macOS's is.
 pub struct PinnedDir {
     handle: File,
     #[cfg(not(target_os = "linux"))]
@@ -717,12 +807,16 @@ pub fn create_dir_protected(path: &Path) -> Result<()> {
 
 /// Owns a security descriptor built by `ConvertStringSecurityDescriptorToSecurityDescriptorW`
 /// (`LocalAlloc`'d by that API) for exactly as long as the caller needs it
-/// live; freed on drop. `pub(crate)` (ADR 0041 step 5): `pipe_win.rs`, a
-/// sibling module, builds and consumes the pipe-flavored descriptor below
-/// through this same type — the `sd` field itself stays private, `as_ptr`
-/// is the one crate-visible seam into it.
+/// live; freed on drop. `pub` (ADR 0041 step 5, widened for the session-pipe
+/// hardening fix): `pipe_win.rs`, a sibling module, builds and consumes the
+/// pipe-flavored descriptor below through this same type, and `sot-backend`
+/// — a different crate entirely — reaches it through the `fsutil::
+/// owner_protected_pipe_descriptor` facade (see that re-export in `lib.rs`)
+/// to give its `interprocess`-backed session pipe the identical posture.
+/// The `sd` field itself stays private either way; `as_ptr` is the one
+/// seam into it.
 #[cfg(windows)]
-pub(crate) struct OwnerProtectedDescriptor {
+pub struct OwnerProtectedDescriptor {
     sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
 }
 
@@ -732,7 +826,7 @@ impl OwnerProtectedDescriptor {
     /// field. Borrowed, not transferred — the returned pointer is valid only
     /// as long as `self` is alive, exactly like `create_dir_protected`'s own
     /// direct use of the (formerly private) `sd` field.
-    pub(crate) fn as_ptr(&self) -> windows_sys::Win32::Security::PSECURITY_DESCRIPTOR {
+    pub fn as_ptr(&self) -> windows_sys::Win32::Security::PSECURITY_DESCRIPTOR {
         self.sd
     }
 }
@@ -901,8 +995,16 @@ fn owner_protected_descriptor() -> Result<OwnerProtectedDescriptor> {
 /// so it is deliberately absent here rather than copy-pasted from the
 /// directory flavor. `SE_DACL_PROTECTED` (the `P` flag) is preserved
 /// identically — a permissive ancestor still can never inject ACEs.
+///
+/// `pub` and re-exported (`fsutil::owner_protected_pipe_descriptor` in
+/// `lib.rs`): `sot-backend`'s session pipe — a second, `interprocess`-backed
+/// pipe family the daemon binds directly, not through this module — used to
+/// carry the Windows default descriptor (`Everyone`/`ANONYMOUS LOGON` read).
+/// It now builds its `interprocess::os::windows::security_descriptor::
+/// SecurityDescriptor` from THIS SDDL rather than a second copy of it, so
+/// the two pipe families share one owner-only posture instead of drifting.
 #[cfg(windows)]
-pub(crate) fn owner_protected_pipe_descriptor() -> Result<OwnerProtectedDescriptor> {
+pub fn owner_protected_pipe_descriptor() -> Result<OwnerProtectedDescriptor> {
     owner_protected_descriptor_with_ace("", "FA")
 }
 
@@ -1009,17 +1111,31 @@ pub fn rename_noreplace_raw(from: &Path, to: &Path) -> Result<()> {
     }
 }
 
-/// Non-Linux unix FAILS CLOSED (review finding on the first cut, which used
-/// hard_link + unlink here): that pair is not atomic, so a crash between the
-/// two syscalls leaves `.open` and `.sotseg` coexisting — a state the
-/// reconciliation table rightly treats as loud. Silently weaker atomicity is
-/// the thing this crate exists to refuse; macOS gets a real arm
-/// (renamex_np) when a macOS FE exists to dogfood it (ADR 0041 scope note).
-#[cfg(all(unix, not(target_os = "linux")))]
-pub fn rename_noreplace_raw(_from: &Path, _to: &Path) -> Result<()> {
-    Err(Error::Unsupported(
-        "atomic no-clobber rename requires Linux renameat2 in v1",
-    ))
+/// macOS arm (ADR 0041 §store port; ADR 0039 rename rule): `renamex_np`
+/// with `RENAME_EXCL` is the kernel's own atomic no-replace rename, same
+/// shape as Linux's `renameat2` above — the existence check and the
+/// rename are ONE kernel op, so a collision surfaces as the same
+/// `AlreadyExists` a caller already matches on (macOS reports it as
+/// `EEXIST`, exactly like Linux's `RENAME_NOREPLACE`). Guaranteed atomic
+/// only on APFS; a volume that can't honor `RENAME_EXCL` fails this call
+/// with `ENOTSUP`/`EINVAL` rather than silently falling back to a
+/// non-atomic rename — `preflight_volume`'s probe below calls this SAME
+/// function for real, so that failure is what turns "not actually atomic
+/// here" into a loud refusal before any store opens.
+#[cfg(target_os = "macos")]
+pub fn rename_noreplace_raw(from: &Path, to: &Path) -> Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let f = CString::new(from.as_os_str().as_bytes()).map_err(|_| Error::State("nul in path".into()))?;
+    let t = CString::new(to.as_os_str().as_bytes()).map_err(|_| Error::State("nul in path".into()))?;
+    // SAFETY: `f` and `t` are valid, NUL-terminated C strings for the
+    // duration of this call; `renamex_np` only reads them.
+    let rc = unsafe { libc::renamex_np(f.as_ptr(), t.as_ptr(), libc::RENAME_EXCL) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(Error::Io(std::io::Error::last_os_error()))
+    }
 }
 
 /// Windows arm (ADR 0041 §store port): `MoveFileExW` with flags 0 —
@@ -1485,10 +1601,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // ADR 0043 decision 23: `preflight_volume` on Linux
+    // ADR 0043 decision 23: `preflight_volume` on Linux and macOS
     // -----------------------------------------------------------------
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn no_preflight_residue(dir: &Path) -> bool {
         std::fs::read_dir(dir)
             .unwrap()
@@ -1511,7 +1627,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn preflight_volume_passes_on_an_ordinary_tempdir_and_leaves_no_residue() {
         let dir = tempfile::tempdir().unwrap();
         preflight_volume(dir.path()).unwrap();
@@ -1519,14 +1635,16 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn preflight_volume_passes_on_tmpfs() {
         // tmpfs is ALLOWED here (decision 23: developer `/tmp` is often
         // tmpfs, and every suite must keep running there) — this is the
         // daemon's own, separate volatile-type refusal to make
         // (`capsule_workspace::qualified_state_root`), never this probe's.
-        // Skipped, not failed, when `/dev/shm` isn't mounted (some
-        // container images omit it).
+        // Skipped, not failed, when `/dev/shm` isn't mounted — some
+        // container images omit it, and macOS never mounts tmpfs there at
+        // all (no `/dev/shm`), so this always skips on macOS rather than
+        // asserting anything about its filesystem.
         let base = Path::new("/dev/shm");
         if !base.is_dir() {
             eprintln!("skipping preflight_volume_passes_on_tmpfs: /dev/shm is not mounted here");
@@ -1550,7 +1668,7 @@ mod tests {
     /// [`probe_rename_noreplace_pair`]'s own `own_b` tracking. (The public
     /// [`preflight_volume`] mints a fresh per-call nonce precisely so no
     /// outside party can predict or collide with it.)
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn assert_preflight_volume_refuses_a_seeded_collision(kind: PreflightEntryKind) {
         let dir = tempfile::tempdir().unwrap();
         let nonce = "seeded-test";
@@ -1571,13 +1689,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn preflight_volume_refuses_a_seeded_collision_for_the_dir_pair() {
         assert_preflight_volume_refuses_a_seeded_collision(PreflightEntryKind::Dir);
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn preflight_volume_refuses_a_seeded_collision_for_the_file_pair() {
         assert_preflight_volume_refuses_a_seeded_collision(PreflightEntryKind::File);
     }

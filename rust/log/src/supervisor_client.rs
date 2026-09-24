@@ -1,4 +1,4 @@
-#![cfg(any(windows, target_os = "linux"))]
+#![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 //! ADR 0042 slice L1a, generalized by L1-unix LU3b (ADR 0043 decision
 //! 20): a small, PRODUCTION supervisor-lane client for a caller OUTSIDE
 //! this crate that is not the FE — today, the backend daemon's own

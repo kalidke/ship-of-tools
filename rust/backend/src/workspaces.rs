@@ -109,6 +109,19 @@ pub(crate) enum Observation {
     Stopped,
     Foreign,
     Failed,
+    /// A leg this daemon spawned exited terminal (69) before ANY
+    /// authority ever claimed the row -- the supervisor died inside its
+    /// own bootstrap (lane bind, parent-death lease), so no `status`
+    /// was ever served and there is no identity to mark against.
+    /// Applied ONLY to an empty cell: `begin_supervisor_epoch` never
+    /// writes `None`, so a cell claimed at any point in this daemon's
+    /// life is closed to it and a stale watchdog cannot latch a row it
+    /// no longer owns. Latches like any `Terminal` -- the operator
+    /// signal a bootstrap failure must leave behind, rather than a
+    /// `stopped` row that re-spawns the same instant failure on every
+    /// attach -- while leaving the cell claimable, so a genuine
+    /// authority answering later adopts and clears it.
+    TerminalUnclaimed,
 }
 
 /// One lock: a rejection check and the write it gates share one critical section.
@@ -187,18 +200,20 @@ pub struct Workspace {
     pub(crate) agent_handle: Mutex<String>,
     /// Never persisted; written only through [`Workspace::apply_phase_observation`].
     phase_cell: Mutex<PhaseCell>,
-    /// `Some` for exactly as long as a watchdog task owns restarting this
-    /// row's own daemon-spawned child — updated to the watchdog's own
-    /// CURRENT child on every respawn; cleared by a compare-and-clear
-    /// (`Workspace::clear_watchdog_identity_if`) that only ever erases
-    /// what that same task itself last wrote, so a superseded watchdog's
-    /// own belated cleanup can never erase a replacement's ownership.
-    /// The one fact `ensure_started_locked`/`resume_locked` consult
-    /// before spawning a resume, so activation never races the
-    /// watchdog's own backoff/restart budget. `None` for a row with no
-    /// watchdog: never started, terminal, or a live authority merely
-    /// ADOPTED at boot.
-    watchdog_identity: Mutex<Option<SupervisorIdentity>>,
+    /// `Some(token)` for exactly as long as a watchdog task owns
+    /// restarting this row's own daemon-spawned child. An OWNERSHIP
+    /// TOKEN, not an identity: every read is `is_some()` plus a
+    /// compare-and-clear, so what the value must guarantee is only that
+    /// no two watchdogs can ever hold the same one. A per-daemon counter
+    /// gives that outright, where a supervisor identity gave it merely
+    /// by luck — two successive legs can share a pid AND a creation
+    /// tick, and a superseded watchdog's belated cleanup would then
+    /// erase its replacement's ownership. The one fact
+    /// `ensure_started_locked`/`resume_locked` consult before spawning a
+    /// resume, so activation never races the watchdog's own
+    /// backoff/restart budget. `None` for a row with no watchdog: never
+    /// started, terminal, or a live authority merely ADOPTED at boot.
+    watchdog_owner: Mutex<Option<u64>>,
     /// The most recent FAILED start-on-attach activation's detail, kept
     /// until the next attempt — never implies `phase == Terminal`.
     activation_error: Mutex<Option<String>>,
@@ -236,7 +251,7 @@ impl std::fmt::Debug for Workspace {
             .field("account", &self.account)
             .field("agent_handle", &self.agent_handle())
             .field("phase", &self.phase())
-            .field("watchdog_identity", &self.watchdog_identity())
+            .field("watchdog_owner", &self.watchdog_owner())
             .field("activation_error", &self.activation_error())
             .field("files_mode_built", &self.files_mode.get().is_some())
             .field("concept_built", &self.concept.get().is_some())
@@ -281,7 +296,7 @@ impl Workspace {
             account: String::new(),
             agent_handle: Mutex::new(String::new()),
             phase_cell: Mutex::new(PhaseCell::default()),
-            watchdog_identity: Mutex::new(None),
+            watchdog_owner: Mutex::new(None),
             activation_error: Mutex::new(None),
             files_mode: OnceLock::new(),
             concept: OnceLock::new(),
@@ -326,23 +341,22 @@ impl Workspace {
     /// Whether a watchdog currently owns this row's restarts — see the
     /// field's own doc. Read by [`crate::capsule_workspace::runtime::
     /// resume_locked`] before ever spawning a resume.
-    pub(crate) fn watchdog_identity(&self) -> Option<SupervisorIdentity> {
-        *self.watchdog_identity.lock().unwrap_or_else(|e| e.into_inner())
+    pub(crate) fn watchdog_owner(&self) -> Option<u64> {
+        *self.watchdog_owner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The watchdog task's own announcement — called on install and on
-    /// every respawn it performs itself. Always a plain overwrite: the
-    /// caller is by construction the CURRENT watchdog announcing its own
-    /// latest child.
-    pub(crate) fn set_watchdog_identity(&self, identity: SupervisorIdentity) {
-        *self.watchdog_identity.lock().unwrap_or_else(|e| e.into_inner()) = Some(identity);
+    /// The watchdog task's own announcement, once, at install — a plain
+    /// overwrite: the caller is by construction the newest watchdog, and
+    /// its token is unique for this daemon's lifetime.
+    pub(crate) fn set_watchdog_owner(&self, token: u64) {
+        *self.watchdog_owner.lock().unwrap_or_else(|e| e.into_inner()) = Some(token);
     }
 
     /// Compare-and-clear: `None`s the field only if it still holds
     /// `expected` — a superseded watchdog's own belated cleanup can
     /// never erase a replacement's ownership set after it.
-    pub(crate) fn clear_watchdog_identity_if(&self, expected: SupervisorIdentity) {
-        let mut cell = self.watchdog_identity.lock().unwrap_or_else(|e| e.into_inner());
+    pub(crate) fn clear_watchdog_owner_if(&self, expected: u64) {
+        let mut cell = self.watchdog_owner.lock().unwrap_or_else(|e| e.into_inner());
         if *cell == Some(expected) {
             *cell = None;
         }
@@ -352,15 +366,29 @@ impl Workspace {
         self.phase_cell.lock().unwrap_or_else(|e| e.into_inner()).supervisor
     }
 
-    /// The observer's single write path. Rejects unless `supervisor`
-    /// EQUALS the cell's current epoch (never an ordering comparison);
-    /// within an epoch, phases are voyage-ordered and `Terminal`/
-    /// `EndedNoRespawn` latches reject anything but a strictly newer
-    /// voyage.
+    /// The observer's single write path. One sentence: an EMPTY cell
+    /// takes the first prover; a non-empty cell changes epoch only
+    /// under the row guard (through [`Workspace::begin_supervisor_epoch`]).
+    /// So a `Phase` observation is rejected unless `supervisor` EQUALS
+    /// the cell's current epoch (never an ordering comparison) -- with
+    /// `supervisor: None` meaning "unclaimed", which the observation
+    /// itself then claims. Within an epoch, phases are voyage-ordered
+    /// and `Terminal`/`EndedNoRespawn` latches reject anything but a
+    /// strictly newer voyage.
     pub(crate) fn apply_phase_observation(&self, observation: Observation) -> bool {
         let mut cell = self.phase_cell.lock().unwrap_or_else(|e| e.into_inner());
         match observation {
             Observation::Phase { phase, supervisor, voyage } => {
+                // An unclaimed cell adopts its first prover, on exactly
+                // the terms `begin_supervisor_epoch` would -- a fresh
+                // epoch, judged below like any other. This is what keeps
+                // the post-spawn settle bound BEST-EFFORT rather than
+                // correctness-critical: a supervisor that first answers
+                // after the deadline is adopted by the next background
+                // poll instead of being rejected forever.
+                if cell.supervisor.is_none() {
+                    *cell = PhaseCell { supervisor: Some(supervisor), ..PhaseCell::default() };
+                }
                 if cell.supervisor != Some(supervisor) {
                     return false;
                 }
@@ -397,6 +425,15 @@ impl Workspace {
                     return false;
                 }
                 cell.phase = if matches!(observation, Observation::Stopped) { Phase::Stopped } else { Phase::Foreign };
+                cell.consecutive_failures = 0;
+                true
+            }
+            // Claimed rows are closed to it -- see the variant's own doc.
+            Observation::TerminalUnclaimed => {
+                if cell.supervisor.is_some() {
+                    return false;
+                }
+                cell.phase = Phase::Terminal;
                 cell.consecutive_failures = 0;
                 true
             }
@@ -769,7 +806,6 @@ impl Workspaces {
     }
 
     /// A finished handle reads as absent.
-    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
     pub(crate) fn has_observer(&self, workspace_id: &str) -> bool {
         let g = self.inner.read().expect("workspaces lock");
         g.observers.get(workspace_id).map(|(h, _)| !h.is_finished()).unwrap_or(false)
@@ -777,7 +813,6 @@ impl Workspaces {
 
     /// Checked against the SAME registry lock `remove_by_id` uses: a row removed
     /// mid-spawn gets its handle aborted immediately instead of stored.
-    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
     pub(crate) fn install_observer(
         &self,
         workspace_id: &str,

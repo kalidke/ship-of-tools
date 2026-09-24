@@ -75,11 +75,19 @@ tempfile = { workspace = true }
 # and confirms the contained supervisor via `OpenProcess`/`IsProcessInJob` —
 # `sot-log` already depends on `windows-sys` with these same features, but a
 # dependency is not transitively `use`-able, so the test needs its own.
+# `Win32_Storage_FileSystem`/`Win32_Security`/`Win32_Security_Authorization`
+# added for `server.rs`'s own session-pipe ACL test (the `GetSecurityInfo`/
+# SDDL round-trip `sot-log`'s `tests/pipe_win.rs` already uses for its twin
+# test on the voyage/supervisor pipes) — same feature set that crate's own
+# Cargo.toml lists for the identical purpose.
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_Security_Authorization",
 ] }
 
 # ADR 0043 decision 32 (lane L2): `tests/capsule_workspaces.rs` names its

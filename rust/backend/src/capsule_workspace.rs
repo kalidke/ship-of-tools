@@ -40,14 +40,14 @@ use std::path::{Path, PathBuf};
 /// constant unconditionally, so it must exist wherever that function's
 /// body does; the text is identical to what the Linux-only arm already
 /// said, since `sot_state_dir`'s own resolution order is the same on
-/// every non-Windows host. Every ACTUAL caller stays gated to Windows and
-/// Linux (`#[cfg(any(windows, target_os = "linux"))]`, matching the
-/// capsule runtime's own availability) — macOS never reaches this text at
-/// all, hence the `allow(dead_code)` below on the arm that serves it.
+/// every non-Windows host. Every ACTUAL caller is gated to the three
+/// platforms the capsule runtime exists on — a Unix that is neither
+/// Linux nor macOS never reaches this text at all, hence the
+/// `allow(dead_code)` below on the arm that serves it.
 #[cfg(windows)]
 pub(crate) const STATE_ROOT_HINT: &str = "%LOCALAPPDATA%";
 #[cfg(not(windows))]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 pub(crate) const STATE_ROOT_HINT: &str = "$XDG_STATE_HOME or $HOME";
 
 /// `<state-root>/workspaces/<workspace_id>/` — the capsule's own state
@@ -84,17 +84,25 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 ///    canonicalized: everything downstream judges the RESOLVED
 ///    destination, a symlink or a nested mount included, never `$HOME` by
 ///    inference.
-/// 3. On Linux, `statfs` the resolved root and refuse VOLATILE types
-///    (tmpfs, ramfs) — a SECOND, daemon-side deny list answering a
-///    different question than [`sot_log::state_dir::preflight_volume`]'s own
-///    remote-fs one: that one asks whether the store's primitives work at
-///    all (tmpfs passes — see its own doc); this one asks whether the
-///    root is durable enough to keep RESUMING capsule rows from across a
-///    daemon restart, which tmpfs/ramfs answer no to regardless of how
-///    well they support rename/fsync. Then `preflight_volume` itself,
-///    mapped to its `Display` text. Windows: unchanged — the existing
-///    NTFS-only arm already refuses everything this would and more.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+/// 3. `statfs` the resolved root and refuse a root that is not durable
+///    enough to keep RESUMING capsule rows from across a daemon restart
+///    — a SECOND, daemon-side deny list answering a different question
+///    than [`sot_log::state_dir::preflight_volume`]'s own remote-fs one:
+///    that one asks whether the store's primitives work at all (tmpfs
+///    passes — see its own doc); this one asks about durability, which
+///    tmpfs/ramfs answer no to regardless of how well they support
+///    rename/fsync. Each Unix asks it the way ITS OWN `statfs(2)`
+///    actually answers, exactly as `sot_log::fsutil::remote_volume_name`
+///    already splits: Linux matches the `f_type` magic against its own
+///    volatile list ([`linux_only`]); macOS has no tmpfs or ramfs to
+///    name at all, and a RAM disk there mounts as plain `apfs`/`hfs`, so
+///    a fstype list would be an empty gesture — Darwin's own honest
+///    answer is the `MNT_LOCAL` mount flag, "stored locally"
+///    ([`macos_only`]), which is also the one check that catches a
+///    network home whose fstype spelling `preflight_volume`'s substring
+///    list happens to miss. Then `preflight_volume` itself, mapped to
+///    its `Display` text. Windows: unchanged — the existing NTFS-only
+///    arm already refuses everything this would and more.
 pub fn qualified_state_root() -> Result<PathBuf, String> {
     let root = sot_log::state_dir::sot_state_dir()
         .ok_or_else(|| format!("could not resolve this machine's state root ({STATE_ROOT_HINT} unset)"))?;
@@ -123,6 +131,17 @@ pub fn qualified_state_root() -> Result<PathBuf, String> {
             ));
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        if !macos_only::mounted_locally(&root)
+            .map_err(|e| format!("could not statfs the state root {root:?}: {e}"))?
+        {
+            return Err(format!(
+                "state root {root:?} is not on a locally attached filesystem: capsule records need \
+                 durable, non-volatile storage (set XDG_STATE_HOME to a local disk; ADR 0043 decision 23)"
+            ));
+        }
+    }
     sot_log::state_dir::preflight_volume(&root).map_err(|e| e.to_string())?;
     Ok(root)
 }
@@ -137,7 +156,6 @@ pub fn qualified_state_root() -> Result<PathBuf, String> {
 /// project root. Each side is canonicalized first, falling back to its
 /// given spelling if that fails, so a symlinked root is judged by what it
 /// resolves to, not its spelling.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn state_root_inside_project(state_dir: &Path, project_root: &Path) -> bool {
     let state_dir = std::fs::canonicalize(state_dir).unwrap_or_else(|_| state_dir.to_path_buf());
     let project_root = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
@@ -199,12 +217,63 @@ mod linux_only {
     }
 }
 
+/// [`linux_only`]'s Darwin twin: the same "is this root durable enough
+/// to resume capsule rows from" question, asked the way macOS actually
+/// answers it. There is no `f_type` magic to match (that field does not
+/// exist in Darwin's `statfs`) and no tmpfs or ramfs to match it
+/// against — a macOS RAM disk is `hdiutil` + `newfs_hfs`, and it mounts
+/// as ordinary `apfs`/`hfs`, indistinguishable by type from the
+/// internal disk. So this asks the mount flag instead: `MNT_LOCAL`, "the
+/// filesystem is stored locally", which is false for exactly the mounts
+/// a capsule state root must never sit on (NFS, SMB, WebDAV, AFP, a
+/// `fuse-t` network bridge) and true for the internal disk and any
+/// directly attached volume. Strictly wider than the fstype spelling
+/// `sot_log::fsutil::remote_volume_name` matches by substring, which is
+/// why it is worth having as this daemon's own second gate rather than
+/// leaving the whole question to `preflight_volume`.
+#[cfg(target_os = "macos")]
+mod macos_only {
+    use std::path::Path;
+
+    /// `true` iff `dir`'s mount carries `MNT_LOCAL`. Mirrors
+    /// `sot_log::fsutil`'s own macOS `statfs` call shape rather than
+    /// adding a second one with different error handling.
+    pub(super) fn mounted_locally(dir: &Path) -> std::io::Result<bool> {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let c_dir = CString::new(dir.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "nul byte in state root path"))?;
+        let mut buf: std::mem::MaybeUninit<libc::statfs> = std::mem::MaybeUninit::uninit();
+        // SAFETY: `buf` is a valid out-param for `statfs(2)`, read back
+        // only once the call itself has reported success.
+        let rc = unsafe { libc::statfs(c_dir.as_ptr(), buf.as_mut_ptr()) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let buf = unsafe { buf.assume_init() };
+        Ok((buf.f_flags & libc::MNT_LOCAL as u32) != 0)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_build_directory_is_mounted_locally() {
+            // A CI runner's and a developer's checkout are both on the
+            // boot volume; a state root that is NOT local is exactly what
+            // `qualified_state_root` exists to refuse, so this asserts
+            // the true half against a directory that certainly qualifies.
+            assert!(mounted_locally(std::path::Path::new(".")).expect("statfs ."));
+        }
+    }
+}
+
 /// The agent argv `sot-capsule supervise` spawns as its producer.
-/// `"claude"` and `"codex"` (Linux only) each get their own launcher
+/// `"claude"` and `"codex"` (Unix only) each get their own launcher
 /// recipe, sharing ONE resume token, `--continue`, stripped from a row's
 /// first-ever leg ([`first_leg_without_continue`]). `"none"` is the bare
 /// platform shell; every other kind is refused, never substituted.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn agent_argv(agent_kind: &str) -> Result<Vec<String>, String> {
     match agent_kind {
         "none" => Ok(vec![none_argv()]),
@@ -263,7 +332,7 @@ fn claude_recipe(resume: bool, extra: &[String]) -> Vec<String> {
 }
 
 /// ADR 0046 decision 4, stated once for both arms below: resolving
-/// `claude` to an ABSOLUTE path is Linux-only ([`resolve_claude`]) —
+/// `claude` to an ABSOLUTE path is a Unix thing ([`resolve_claude`]) —
 /// Windows keeps the literal name from [`claude_recipe`] and relies on
 /// the daemon's own `PATH` (a detached child inherits it); that stays
 /// out of scope here, not a gap this decision closes.
@@ -271,7 +340,18 @@ fn claude_recipe(resume: bool, extra: &[String]) -> Vec<String> {
 fn claude_argv() -> Result<Vec<String>, String> {
     Ok(claude_recipe(true, &[]))
 }
-#[cfg(target_os = "linux")]
+/// macOS lane: widened from `target_os = "linux"` to `unix`, a DELETION
+/// of the third arm that used to refuse here ("claude has no capsule
+/// launcher on this host"). That refusal outlived its reason.
+/// [`resolve_claude`] — the whole resolution rule — is already
+/// `cfg(unix)` and already exercised on macOS by [`agent_exec_argv`],
+/// which is how `ccb` itself launches there; a launcher recipe that
+/// differs from `agent-exec`'s only by `--continue` cannot need a
+/// narrower platform gate than the resolver it calls. The remaining
+/// macOS gap is in the capsule RUNTIME, not in this argv (see `mod
+/// runtime`'s own gate below), and a stale refusal here would only
+/// mislabel that gap.
+#[cfg(unix)]
 fn claude_argv() -> Result<Vec<String>, String> {
     let claude = resolve_claude(
         std::env::var_os("PATH").as_deref(),
@@ -281,19 +361,16 @@ fn claude_argv() -> Result<Vec<String>, String> {
     argv[0] = claude;
     Ok(argv)
 }
-/// ADR 0043 decision 22: no known Windows-style launcher exists for
-/// `claude` on any Unix other than Linux either — macOS stays
-/// experimental (ADR 0043 §"Open for the maintainer"), so this refuses
-/// rather than guessing a resolution rule nothing has validated there.
-#[cfg(not(any(windows, target_os = "linux")))]
-fn claude_argv() -> Result<Vec<String>, String> {
-    Err("claude has no capsule launcher on this host".to_string())
-}
 
 /// `"codex"`'s capsule recipe: `ccx --capsule --continue`. `--capsule`
 /// keys `ccx`'s capsule behavior directly (never an inherited env var)
 /// and is never stripped; `--continue` is the shared first-leg token.
-#[cfg(target_os = "linux")]
+/// macOS lane: `unix`, not `target_os = "linux"` — `ccx` is the same
+/// shell script installed to the same `~/.local/bin` on every Unix, so
+/// the Linux gate here was naming the install layout of one host, not a
+/// mechanism. The separate `not(any(windows, linux))` arm that refused
+/// "codex has no capsule launcher on this host" is DELETED with it.
+#[cfg(unix)]
 fn codex_argv() -> Result<Vec<String>, String> {
     let ccx = resolve_ccx(
         std::env::var_os("PATH").as_deref(),
@@ -306,10 +383,6 @@ fn codex_argv() -> Result<Vec<String>, String> {
 #[cfg(windows)]
 fn codex_argv() -> Result<Vec<String>, String> {
     Err("codex has no capsule launcher on Windows (ccx is a bash script with no .ps1 counterpart)".to_string())
-}
-#[cfg(not(any(windows, target_os = "linux")))]
-fn codex_argv() -> Result<Vec<String>, String> {
-    Err("codex has no capsule launcher on this host".to_string())
 }
 
 /// Unix-only argv for `sotd agent-exec <kind> [flags…]` (ADR 0046
@@ -373,10 +446,10 @@ pub fn agent_exec_argv(kind: &str, extra: &[String]) -> Result<Vec<String>, Stri
 /// without mutating global process state — [`claude_argv`]'s Linux arm
 /// and [`agent_exec_argv`]'s `"claude"` arm are the two real callers,
 /// each supplying the process's own `PATH`/`HOME`; `claude_argv` itself
-/// stays Linux-only ABOVE (the capsule launcher's own, narrower,
-/// unvalidated-elsewhere restriction, unchanged by this widening) —
-/// widening this shared helper is what lets `agent_exec_argv` resolve a
-/// real `claude` on any Unix WITHOUT going through that restriction.
+/// is `cfg(unix)` ABOVE as well (macOS lane: the narrower gate it used to
+/// carry named no mechanism this resolver does not already provide, and
+/// is deleted) — widening this shared helper is what let `agent_exec_argv`
+/// resolve a real `claude` on any Unix in the first place.
 #[cfg(unix)]
 fn resolve_claude(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<String, String> {
     // Review round, reproduced: a RELATIVE `PATH` entry resolves against
@@ -414,7 +487,9 @@ fn resolve_claude(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Re
 
 /// [`codex_argv`]'s resolver: same PATH-then-`~/.local/bin` search as
 /// [`resolve_claude`], minus its claude-only `.claude/local` fallback.
-#[cfg(target_os = "linux")]
+/// `cfg(unix)` alongside its one caller — nothing in this search is
+/// Linux-specific.
+#[cfg(unix)]
 fn resolve_ccx(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<String, String> {
     let mut dirs: Vec<PathBuf> = path_var
         .map(std::env::split_paths)
@@ -717,7 +792,6 @@ fn capsule_comm_home_str() -> Option<String> {
 /// the cross-platform test suite even though
 /// [`runtime::spawn_detached_supervisor`], its only caller, is gated to
 /// Windows and Linux only.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
     let mut env = crate::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
     if !agent_name.is_empty() {
@@ -872,12 +946,11 @@ pub enum EndRunOutcome {
 /// adopted-leg watch entirely — a watchdog now exists only for a
 /// `Child` this daemon itself spawned.)
 /// This platform's `sot-capsule` sibling file name — kept OUTSIDE `mod
-/// runtime` (windows/linux only, see that module's own doc) so the
-/// daemon-startup sanity check right below it compiles and runs on every
-/// platform `sotd` ships for, macOS included, even though the runtime
-/// itself does not yet spawn the binary there. Duplicates `mod runtime`'s
-/// own `CAPSULE_EXE` value rather than reaching across the cfg boundary —
-/// the two are pinned together by the test below.
+/// runtime` so the daemon-startup sanity check right below it compiles
+/// and runs even where that module does not (a Unix that is neither
+/// Linux nor macOS). Duplicates `mod runtime`'s own `CAPSULE_EXE` value
+/// rather than reaching across the cfg boundary — the two are pinned
+/// together by the test below.
 #[cfg(windows)]
 const CAPSULE_SIBLING_NAME: &str = "sot-capsule.exe";
 #[cfg(not(windows))]
@@ -955,7 +1028,35 @@ mod capsule_sibling_present_tests {
     }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+/// Every platform `sotd` ships for. The gate this module carried until
+/// the supervisor-epoch ruling was never about what macOS can do:
+/// `sot-capsule supervise` is built and shipped in the macOS release
+/// archive, `sot_log::supervisor_client` compiles there, the death watch
+/// is a kqueue `NOTE_EXIT` knote and the parent-death lease works. The
+/// single blocker was a daemon-side read of a FRESHLY SPAWNED
+/// supervisor's identity, in the unit that supervisor would later report
+/// over the wire — on macOS the kernel's `pidversion`, readable only out
+/// of an audit token (`mach_task_self()` for oneself, a socket peer's
+/// `LOCAL_PEERTOKEN`), neither of which exists for a child this daemon
+/// has only just forked.
+///
+/// The ruling deleted the read rather than porting it: a supervisor's
+/// identity is authored by the supervisor and learned over the lane, on
+/// all three platforms. What macOS could not do, no platform now does —
+/// so there is nothing left here to gate. Linux lost only earliness,
+/// provably: `challenge_unix::self_start_ticks` (what a supervisor
+/// reports) is literally `process_start_ticks(std::process::id())`, the
+/// same read the daemon used to perform on the same pid, asserted by
+/// `rust/log/tests/supervisor.rs`'s own equality test.
+///
+/// What this module's macOS arm does NOT claim: that a capsule row
+/// actually works on a Mac. Nothing here has ever run on one. It
+/// compiles honestly and spawns honestly; the ruling's §7 lists what a
+/// real Mac must settle — that a supervisor's reported `pidversion`
+/// matches what this daemon's own `query_status` sees for it, that a
+/// `setsid` capsule survives its spawning `sotd` under launchd, that a
+/// row reaches `ready` with a real agent attached, and that a
+/// bootstrap-failing capsule latches `TerminalUnclaimed`.
 mod runtime {
     use super::{
         agent_argv, capsule_supervisor_env, first_leg_without_continue, mode_flag, ActivationIntent,
@@ -1024,7 +1125,13 @@ mod runtime {
     /// install layout puts it", ADR 0042 L1a) on both platforms.
     #[cfg(windows)]
     const CAPSULE_EXE: &str = "sot-capsule.exe";
-    #[cfg(target_os = "linux")]
+    /// `not(windows)`, not `target_os = "linux"`: the extensionless name
+    /// is a Unix fact, not a Linux one, and the release archive stages it
+    /// next to `sotd` on the macOS leg exactly as it does on the Linux
+    /// one — so this arm is already correct for the day `mod runtime`'s
+    /// own gate widens, and gating it narrower would only make that day's
+    /// diff bigger without naming an invariant of its own.
+    #[cfg(not(windows))]
     const CAPSULE_EXE: &str = "sot-capsule";
 
     pub fn sot_capsule_exe() -> std::io::Result<PathBuf> {
@@ -1194,54 +1301,6 @@ mod runtime {
         spawn_detached(build, state_dir, workspace_id)
     }
 
-    /// [`spawn_detached_supervisor`] plus identity (R4b): an unreadable identity kills+reaps and reports a failed spawn.
-    fn spawn_detached_supervisor_with_identity(
-        sot_capsule_exe: &Path,
-        state_dir: &Path,
-        mode: StartMode,
-        agent_argv: &[String],
-        cwd: &Path,
-        agent_name: &str,
-        workspace_id: &str,
-        slug: &str,
-        agent_kind: &str,
-        account: &str,
-    ) -> std::io::Result<(Child, crate::workspaces::SupervisorIdentity)> {
-        let mut child = spawn_detached_supervisor(
-            sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, workspace_id, slug, agent_kind, account,
-        )?;
-        match spawned_identity(&child) {
-            Some(identity) => Ok((child, identity)),
-            None => {
-                // Signal only -- tokio reaps a dropped child in the
-                // background, so no wait/poll belongs on this path. If
-                // the signal itself failed to send, `try_wait` (one
-                // non-blocking check, never a poll loop) tells apart
-                // "already gone" from "possibly still running" so a
-                // silently dropped, possibly-live process is never
-                // reported as a clean failure. A live child surviving a
-                // failed SIGKILL of a process WE JUST SPAWNED is not
-                // expected on either platform; every branch below
-                // reports the pid rather than waiting it out.
-                let pid = child.id();
-                let detail = match child.start_kill() {
-                    Ok(()) => String::new(),
-                    Err(kill_err) => match child.try_wait() {
-                        Ok(Some(_)) => format!(" (kill also failed: {kill_err}, but it had already exited)"),
-                        Ok(None) => format!(" (kill failed: {kill_err}; pid {pid:?} may still be running)"),
-                        Err(wait_err) => {
-                            format!(" (kill failed: {kill_err}; try_wait also failed: {wait_err}; pid {pid:?} may still be running)")
-                        }
-                    },
-                };
-                drop(child);
-                Err(std::io::Error::other(format!(
-                    "capsule supervisor spawned but its own identity could not be read{detail}"
-                )))
-            }
-        }
-    }
-
     /// Decision 22's second fork: how a built `Command` is actually
     /// detached from the daemon so the supervisor authority survives the
     /// daemon's own exit.
@@ -1286,6 +1345,20 @@ mod runtime {
     }
 
     /// Bounds a wedged user bus so a launch never hangs.
+    ///
+    /// This constant and the three items after it ([`STDERR_DRAIN_BOUND`],
+    /// [`drain_stderr_bounded`], [`user_scope_available`]) are correctly
+    /// Linux-only and stay that way: every one of them exists to bound a
+    /// `systemd-run --user --scope` probe, and the thing they are
+    /// escaping -- a `KillMode=control-group` user service whose cgroup
+    /// reaps everything the daemon leaves behind -- has no Darwin
+    /// counterpart. launchd's own reaping is by PROCESS GROUP, and
+    /// `pre_exec(setsid)` in the shared spawn below already leaves it;
+    /// so on macOS the bare detached spawn IS the normal-survival case
+    /// and there is nothing to probe, no degraded fallback to fall to,
+    /// and no bus to wedge. A macOS `spawn_detached` is therefore the
+    /// Linux one with the whole probe deleted, not a port of it -- which
+    /// is why these four have no `cfg(unix)` future and are left alone.
     #[cfg(target_os = "linux")]
     const USER_SCOPE_PROBE_BOUND: Duration = Duration::from_secs(5);
 
@@ -1388,6 +1461,9 @@ mod runtime {
     /// error after a GRANTED probe propagates here unchanged — never a
     /// retry into the bare branch.
     ///
+    /// The macOS twin below is this body minus the probe; see its own
+    /// doc for why that platform needs no escape.
+    ///
     /// `setsid`'s failure is PROPAGATED (review round, reproduced): in a
     /// FRESH fork child, immediately post-fork, pre-exec, it cannot fail
     /// for the "already a session/process-group leader" reason a plain
@@ -1423,6 +1499,41 @@ mod runtime {
                 build("degraded", false)
             }
         };
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        cmd.spawn()
+    }
+
+    /// macOS: the Linux twin's body minus the probe. There is no
+    /// transient-scope equivalent to attempt — `systemd-run --user
+    /// --scope` is a systemd mechanism, not a Unix one — and none is
+    /// needed, so `"normal"` is the honest survival value here rather
+    /// than a concession: launchd reaps a stopped job by killing its
+    /// process group unless `AbandonProcessGroup` is set, and `setsid`
+    /// puts the supervisor in a brand-new session and process group
+    /// before the exec, already outside that domain. `build`'s `scoped`
+    /// argument is therefore always `false`, as it is on Windows.
+    /// `setsid`'s failure propagates for exactly the reason the Linux
+    /// twin's does — see its own doc.
+    ///
+    /// Unrun on a real Mac (`mod runtime`'s own gate doc, and the
+    /// ruling's §7 item 2): that a `setsid` capsule survives its
+    /// spawning `sotd`'s exit under launchd is a claim only a Mac
+    /// settles. The Linux cgroup hazard has no macOS analogue, which is
+    /// why this arm is plausible, not why it is proven.
+    #[cfg(target_os = "macos")]
+    fn spawn_detached(
+        build: impl Fn(&str, bool) -> Command,
+        _state_dir: &Path,
+        _workspace_id: &str,
+    ) -> std::io::Result<Child> {
+        let mut cmd = build("normal", false);
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -1872,6 +1983,15 @@ mod runtime {
     /// the whole spawn attempt (`start_supervisor`'s own doc), so nothing
     /// here needs to signal "the launch is no longer in flight" the way
     /// the old `starting` claim did.
+    ///
+    /// Order (supervisor-epoch ruling): spawn, SETTLE, adopt, install
+    /// the watchdog — the settle moved inward by one frame from
+    /// [`start_supervisor`], where it used to sit. Same 2s bound, same
+    /// caller's guard, same total latency; what changes is that the
+    /// window between spawn and first answered status now contains no
+    /// watchdog at all, so no terminal mark and no second spawn can
+    /// land inside it. The phase this settles to is what the caller
+    /// reports.
     pub fn spawn_and_watch(
         sot_capsule_exe: &Path,
         state_dir: &Path,
@@ -1882,7 +2002,7 @@ mod runtime {
         workspace_id: String,
         slug: String,
         workspaces: Workspaces,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<&'static str> {
         // Accounts brief: resolved from the registry HERE, the one place
         // every spawn path (create, resume, the watchdog's own restart
         // below) already converges with both `workspace_id` and
@@ -1897,12 +2017,18 @@ mod runtime {
             .resolve(Some(&workspace_id))
             .map(|ws| (ws.agent(), ws.account.clone()))
             .unwrap_or_default();
-        // A fresh spawn begins a fresh epoch (R4b: identity must be readable or this is a failed spawn).
-        let (child, identity) = spawn_detached_supervisor_with_identity(
+        let child = spawn_detached_supervisor(
             sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug, &agent_kind, &account,
         )?;
+        // The supervisor authors its own identity; this daemon only
+        // LEARNS it, here, from the first status the settle draws out.
+        // A settle that yields no `Phase` leaves the row unclaimed --
+        // best-effort by design, since the background observer adopts
+        // whenever the lane does answer.
+        let (phase, observation) = settle_after_spawn(state_dir, &workspace_id);
+        let identity = identity_of(&observation);
         if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
-            ws.begin_supervisor_epoch(identity);
+            observe_with_adoption(&ws, observation);
         }
         install_watchdog(
             workspace_id,
@@ -1918,7 +2044,7 @@ mod runtime {
             identity,
             workspaces,
         );
-        Ok(())
+        Ok(phase)
     }
 
     /// The spawn path shared by `workspace.create` (mode `Start` always — a
@@ -1947,10 +2073,12 @@ mod runtime {
     ///
     /// Codex review (2026-09-11): establishes lane REACHABILITY before
     /// returning, not merely a successful spawn — [`settle_after_spawn`],
-    /// still under the caller's own guard. Every spawner converges on
-    /// this ONE wait: fresh attach (`ensure_started`'s Start arm), a
-    /// resume (`resume_locked`), `workspace.create`, and `resume_all` all
-    /// call this function and get it for free. The watchdog's own
+    /// still under the caller's own guard, now performed one frame
+    /// inward by [`spawn_and_watch`] and simply handed back here. Every
+    /// spawner converges on this ONE wait: fresh attach
+    /// (`ensure_started`'s Start arm), a resume (`resume_locked`),
+    /// `workspace.create`, and `resume_all` all call this function and
+    /// get it for free. The watchdog's own
     /// restart is the one spawner that does NOT — it never installs a
     /// SECOND watchdog on top of its own loop, so it calls
     /// [`spawn_detached_supervisor`] directly and then
@@ -1981,12 +2109,7 @@ mod runtime {
             slug.to_string(),
             workspaces.clone(),
         )
-        .map_err(|e| format!("capsule supervisor spawn failed: {e}"))?;
-        let (phase, observation) = settle_after_spawn(&state_dir, workspace_id);
-        if let Some(ws) = workspaces.resolve(Some(workspace_id)) {
-            super::observer::observe(&ws, observation);
-        }
-        Ok(phase)
+        .map_err(|e| format!("capsule supervisor spawn failed: {e}"))
     }
 
     /// Bound for [`settle_after_spawn`] — the ONE deadline every spawn
@@ -2148,7 +2271,7 @@ mod runtime {
         // row with no watchdog (never started, terminal, or a live
         // authority merely ADOPTED at boot) reaches the spawn below
         // unchanged.
-        if ws.watchdog_identity().is_some() {
+        if ws.watchdog_owner().is_some() {
             return Ok(phase);
         }
         let argv = agent_argv(agent_kind)?;
@@ -2345,7 +2468,7 @@ mod runtime {
         // `mode`: `start_mode_for_phase` already maps a transient
         // `starting` read to `None`, "nothing to do", which is exactly
         // the stale-snapshot bug this closes).
-        if !is_resting_phase(initial_phase, ws.watchdog_identity().is_some()) {
+        if !is_resting_phase(initial_phase, ws.watchdog_owner().is_some()) {
             return LockedStep::WaitForSettle;
         }
         // R4c: Reconnect permits only StartMode::Resume -- never a row's first-ever start.
@@ -2588,29 +2711,47 @@ mod runtime {
         true
     }
 
-    /// Reads identity off the OS with no network -- works even before the lane answers.
-    #[cfg(target_os = "linux")]
-    fn spawned_identity(child: &Child) -> Option<crate::workspaces::SupervisorIdentity> {
-        let pid = child.id()?;
-        let created = sot_log::challenge_unix::process_start_ticks(pid).ok()?;
-        Some(crate::workspaces::SupervisorIdentity { pid, created })
-    }
-    // `raw_handle()` is `Child`'s own inherent Windows accessor (not via `AsRawHandle`).
-    #[cfg(windows)]
-    fn spawned_identity(child: &Child) -> Option<crate::workspaces::SupervisorIdentity> {
-        let pid = child.id()?;
-        let handle = child.raw_handle()? as windows_sys::Win32::Foundation::HANDLE;
-        let created = sot_log::challenge_win::creation_filetime_bits(handle).ok()?;
-        Some(crate::workspaces::SupervisorIdentity { pid, created })
+    /// The identity a settle learned, if its lane answered at all — the
+    /// ONE place a daemon-spawned supervisor's identity now comes from
+    /// (supervisor-epoch ruling: the supervisor authors it, this daemon
+    /// only learns it over the lane, on every platform). Every caller
+    /// OVERWRITES with this, never merely sets: a settle that came back
+    /// anything other than `Phase` must clear the previous leg's
+    /// identity too, or a later terminal mark could be credited to a
+    /// prior, now-dead spawn.
+    fn identity_of(observation: &crate::workspaces::Observation) -> Option<crate::workspaces::SupervisorIdentity> {
+        match observation {
+            crate::workspaces::Observation::Phase { supervisor, .. } => Some(*supervisor),
+            _ => None,
+        }
     }
 
-    /// A watchdog's exit-classification observation (R4b: always a real identity); no guard needed.
-    fn observe_terminal(workspaces: &Workspaces, workspace_id: &str, identity: crate::workspaces::SupervisorIdentity) {
+    /// Mints an ownership token for one watchdog install — unique for
+    /// this daemon's lifetime, which is the whole guarantee
+    /// `Workspace::watchdog_owner` needs (see that field's own doc).
+    fn next_watchdog_owner() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A watchdog's exit-classification observation; no guard needed.
+    /// `Some` judges the mark against the identity the leg's own settle
+    /// learned, exactly as before. `None` — a leg that exited before
+    /// ever answering its lane, which `sot-capsule supervise` does on
+    /// every bootstrap failure (it returns `EXIT_TERMINAL` from three
+    /// sites ahead of its own accept loop) — marks
+    /// [`crate::workspaces::Observation::TerminalUnclaimed`] instead, so
+    /// the row still latches `terminal` rather than reading `stopped`
+    /// and re-spawning the same instant failure on every attach.
+    fn observe_terminal(workspaces: &Workspaces, workspace_id: &str, identity: Option<crate::workspaces::SupervisorIdentity>) {
         if let Some(ws) = workspaces.resolve(Some(workspace_id)) {
-            super::observer::observe(
-                &ws,
-                crate::workspaces::Observation::Phase { phase: crate::workspaces::Phase::Terminal, supervisor: identity, voyage: None },
-            );
+            let observation = match identity {
+                Some(supervisor) => {
+                    crate::workspaces::Observation::Phase { phase: crate::workspaces::Phase::Terminal, supervisor, voyage: None }
+                }
+                None => crate::workspaces::Observation::TerminalUnclaimed,
+            };
+            super::observer::observe(&ws, observation);
         }
     }
 
@@ -2672,7 +2813,7 @@ mod runtime {
         agent_kind: String,
         account: String,
         child: Child,
-        initial_identity: crate::workspaces::SupervisorIdentity,
+        initial_identity: Option<crate::workspaces::SupervisorIdentity>,
         workspaces: Workspaces,
     ) {
         tokio::spawn(async move {
@@ -2681,40 +2822,39 @@ mod runtime {
             };
             // Ruling: the watchdog is the single writer of restarts for a
             // child this daemon spawned. This guard is the ONE place the
-            // row's `watchdog_identity` fact is announced (constructor,
-            // and `advance` on every respawn) and retracted (Drop) -- a
-            // compare-and-clear against THIS task's own last-announced
-            // identity, never a plain overwrite, so a superseded
+            // row's `watchdog_owner` fact is announced (constructor) and
+            // retracted (Drop) -- a compare-and-clear against THIS
+            // task's own token, never a plain clear, so a superseded
             // watchdog's belated cleanup can never erase a replacement's
-            // ownership set after it.
-            struct WatchdogIdentityGuard {
+            // ownership set after it. One token per task, minted once:
+            // ownership is a property of the WATCHDOG, not of whichever
+            // leg it currently holds, so a respawn has nothing to
+            // announce here.
+            struct WatchdogOwnerGuard {
                 workspaces: Workspaces,
                 workspace_id: String,
-                last_identity: crate::workspaces::SupervisorIdentity,
+                token: u64,
             }
-            impl WatchdogIdentityGuard {
-                fn new(workspaces: Workspaces, workspace_id: String, identity: crate::workspaces::SupervisorIdentity) -> Self {
+            impl WatchdogOwnerGuard {
+                fn new(workspaces: Workspaces, workspace_id: String) -> Self {
+                    let token = next_watchdog_owner();
                     if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
-                        ws.set_watchdog_identity(identity);
+                        ws.set_watchdog_owner(token);
                     }
-                    Self { workspaces, workspace_id, last_identity: identity }
-                }
-                fn advance(&mut self, identity: crate::workspaces::SupervisorIdentity) {
-                    if let Some(ws) = self.workspaces.resolve(Some(&self.workspace_id)) {
-                        ws.set_watchdog_identity(identity);
-                    }
-                    self.last_identity = identity;
+                    Self { workspaces, workspace_id, token }
                 }
             }
-            impl Drop for WatchdogIdentityGuard {
+            impl Drop for WatchdogOwnerGuard {
                 fn drop(&mut self) {
                     if let Some(ws) = self.workspaces.resolve(Some(&self.workspace_id)) {
-                        ws.clear_watchdog_identity_if(self.last_identity);
+                        ws.clear_watchdog_owner_if(self.token);
                     }
                 }
             }
-            let mut watchdog_identity_guard = WatchdogIdentityGuard::new(workspaces.clone(), workspace_id.clone(), initial_identity);
-            // Reused by every exit classification until a restart begins a fresh epoch.
+            let _watchdog_owner_guard = WatchdogOwnerGuard::new(workspaces.clone(), workspace_id.clone());
+            // What each exit classification is judged against: the
+            // identity the CURRENT leg's own settle learned, or `None`
+            // when its lane never answered.
             let mut current_identity = initial_identity;
             let mut leg_opt = Some(child);
             let mut restart_times: Vec<Instant> = Vec::new();
@@ -2790,7 +2930,7 @@ mod runtime {
                         let agent_kind_for_spawn = agent_kind.clone();
                         let account_for_spawn = account.clone();
                         let spawn_result = tokio::task::spawn_blocking(move || {
-                            spawn_detached_supervisor_with_identity(
+                            spawn_detached_supervisor(
                                 &exe,
                                 &dir,
                                 StartMode::Resume,
@@ -2805,25 +2945,31 @@ mod runtime {
                         })
                         .await;
                         match spawn_result {
-                            Ok(Ok((child, identity))) => {
-                                // A fresh leg begins a fresh epoch, like the first spawn.
-                                current_identity = identity;
-                                watchdog_identity_guard.advance(identity);
-                                if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
-                                    ws.begin_supervisor_epoch(identity);
-                                }
+                            Ok(Ok(child)) => {
                                 // Settle BEFORE this guard drops — the
-                                // SAME shared wait `start_supervisor`
+                                // SAME shared wait `spawn_and_watch`
                                 // itself uses; see `settle_after_spawn`'s
                                 // own doc for why a fresh spawn cannot
                                 // skip this without reopening the exact
                                 // guard-release race this restart's own
-                                // recheck above just closed.
+                                // recheck above just closed. A fresh leg
+                                // begins a fresh epoch exactly as the
+                                // first spawn does: by being adopted
+                                // from what it answers.
                                 let settle_dir = state_dir.clone();
                                 let settle_wsid = workspace_id.clone();
                                 let settled = tokio::task::spawn_blocking(move || settle_after_spawn(&settle_dir, &settle_wsid)).await;
+                                // Always OVERWRITE, never merely set: a
+                                // settle that yields no `Phase` clears
+                                // the PREVIOUS leg's identity, or the
+                                // next terminal mark would be credited
+                                // to a spawn that is already dead.
+                                current_identity = match &settled {
+                                    Ok((_phase, observation)) => identity_of(observation),
+                                    Err(_join_err) => None,
+                                };
                                 if let (Ok((_phase, observation)), Some(ws)) = (settled, workspaces.resolve(Some(&workspace_id))) {
-                                    super::observer::observe(&ws, observation);
+                                    observe_with_adoption(&ws, observation);
                                 }
                                 leg_opt = Some(child);
                             }
@@ -3061,11 +3207,9 @@ mod runtime {
     }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
 pub use runtime::*;
 
 /// One lifecycle observer per capsule row -- the SINGLE writer of `Workspace::phase`.
-#[cfg(any(windows, target_os = "linux"))]
 pub mod observer {
     use super::{local_phase, phase_for_missing_pointer, state_dir_for};
     use crate::workspaces::{Observation, SupervisorIdentity, Workspace, Workspaces};
@@ -3146,7 +3290,6 @@ pub mod observer {
     }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
 #[cfg(test)]
 mod observer_tests {
     use super::observer::observe;
@@ -3155,6 +3298,15 @@ mod observer_tests {
 
     /// A registered capsule row with its epoch begun at `supervisor` (RA).
     fn seeded_capsule_row(supervisor: SupervisorIdentity) -> std::sync::Arc<Workspace> {
+        let ws = unclaimed_capsule_row();
+        ws.begin_supervisor_epoch(supervisor);
+        ws
+    }
+
+    /// The same row with NO epoch yet -- the empty cell the ruling's
+    /// addition (a) is about: a row the daemon has spawned for but whose
+    /// lane has not yet answered, or one only ever read as stopped.
+    fn unclaimed_capsule_row() -> std::sync::Arc<Workspace> {
         let reg = Workspaces::new();
         let mut ws = Workspace::from_label(
             "observer-test",
@@ -3165,9 +3317,7 @@ mod observer_tests {
             String::new(),
         );
         ws.runtime = "capsule".to_string();
-        let ws = reg.insert(ws);
-        ws.begin_supervisor_epoch(supervisor);
-        ws
+        reg.insert(ws)
     }
 
     fn identity(pid: u32, created: u64) -> SupervisorIdentity {
@@ -3276,6 +3426,64 @@ mod observer_tests {
         assert_eq!(ws.phase(), Phase::Ready, "a strictly newer voyage supersedes the latch");
     }
 
+    /// Addition (a): an empty cell takes the FIRST prover -- and only
+    /// the first. The rejection half is the same rule RA blocker 2
+    /// asserts, re-run against the adopting branch to prove the adoption
+    /// is scoped to `None` and never widens who may claim a claimed row.
+    #[test]
+    fn an_empty_cell_adopts_its_first_prover_and_then_judges_strangers() {
+        let a = identity(1, 100);
+        let ws = unclaimed_capsule_row();
+        assert_eq!(ws.current_supervisor(), None, "an unclaimed row has no epoch");
+
+        // Two failed rounds first: an empty cell that is already
+        // `Unreachable` must still adopt, and adoption must reset the
+        // failure count, exactly as `begin_supervisor_epoch` does.
+        observe(&ws, Observation::Failed);
+        observe(&ws, Observation::Failed);
+        assert_eq!(ws.phase(), Phase::Unreachable);
+
+        observe(&ws, phase_obs(Phase::Ready, a));
+        assert_eq!(ws.current_supervisor(), Some(a), "the first prover becomes the epoch");
+        assert_eq!(ws.phase(), Phase::Ready);
+
+        observe(&ws, phase_obs(Phase::Ending, identity(2, 100)));
+        assert_eq!(ws.phase(), Phase::Ready, "a claimed cell still rejects a stranger");
+        assert_eq!(ws.current_supervisor(), Some(a));
+    }
+
+    /// Addition (b): a bootstrap-failing leg latches its row `terminal`
+    /// without an identity, and a later genuine authority adopts and
+    /// clears it -- a row whose lane answers is not terminal.
+    #[test]
+    fn terminal_unclaimed_latches_an_empty_cell_and_a_later_authority_clears_it() {
+        let ws = unclaimed_capsule_row();
+        assert!(ws.apply_phase_observation(Observation::TerminalUnclaimed));
+        assert_eq!(ws.phase(), Phase::Terminal);
+        assert_eq!(ws.current_supervisor(), None, "the mark leaves the cell claimable");
+
+        observe(&ws, Observation::Stopped);
+        assert_eq!(ws.phase(), Phase::Terminal, "the latch holds against a plain stopped read");
+
+        let a = identity(7, 700);
+        observe(&ws, phase_obs(Phase::Ready, a));
+        assert_eq!(ws.phase(), Phase::Ready, "an authority that actually answers clears the latch");
+        assert_eq!(ws.current_supervisor(), Some(a));
+    }
+
+    /// The other half of (b): a cell claimed at any point in this
+    /// daemon's life is closed to it, so a stale watchdog can never
+    /// latch a row it no longer owns.
+    #[test]
+    fn terminal_unclaimed_is_refused_by_a_claimed_cell() {
+        let a = identity(1, 100);
+        let ws = seeded_capsule_row(a);
+        observe(&ws, phase_obs(Phase::Ready, a));
+
+        assert!(!ws.apply_phase_observation(Observation::TerminalUnclaimed));
+        assert_eq!(ws.phase(), Phase::Ready);
+    }
+
     /// `activation_error` is retained until the next attempt; orthogonal to phase.
     #[test]
     fn activation_error_is_independent_of_phase_and_clears_on_the_next_attempt() {
@@ -3307,10 +3515,12 @@ mod observer_tests {
 /// and never resizes the pane (ADR 0041's take-on-first-input semantics,
 /// applied to a second kind of client); `screen_of` attaches as a pure
 /// WATCHER and never takes at all. Platform-neutral: gated the same as
-/// `mod runtime` above (`FeAttachClient` itself is `#![cfg(any(windows,
-/// target_os = "linux"))]`-gated in `sot_log`), so this module simply does
-/// not exist on a host that cannot run a capsule row in the first place.
-#[cfg(any(windows, target_os = "linux"))]
+/// `mod runtime` above, so this module simply does not exist on a host
+/// that cannot run a capsule row in the first place. (macOS lane,
+/// corrected: `FeAttachClient` is NO LONGER what gates this —
+/// `sot_log::fe_client_io` is ungated since ADR 0045 decision 1, and only
+/// its `PlatformEndpoint`-typed default is cfg'd. The reason was solely
+/// `mod runtime`'s own gate, and that gate is gone — so is this one.)
 pub mod headless {
     use std::path::Path;
     use std::time::{Duration, Instant};
@@ -3630,7 +3840,6 @@ pub mod headless {
     }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
 #[cfg(test)]
 mod headless_size_gate_tests {
     // Pure size-gate tests: `type_into` checks the payload length BEFORE
@@ -3759,7 +3968,6 @@ mod tests {
     // against), a present leg, or a still-held fence each keep the row
     // instead.
     #[test]
-    #[cfg(any(windows, target_os = "linux"))]
     fn end_run_is_unheld_only_when_both_the_fence_and_the_leg_are_proven_absent() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state_dir = dir.path();
@@ -3822,7 +4030,6 @@ mod tests {
     // lives inside `mod runtime`, gated like every other function this
     // module's tests reach.
     #[test]
-    #[cfg(any(windows, target_os = "linux"))]
     fn lock_contention_is_recognized_only_by_its_own_message() {
         assert!(
             is_lock_contention("lock held by another process: \"/tmp/x/writer.lock\""),
@@ -3929,7 +4136,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn agent_argv_claude_fails_closed_when_nothing_resolves() {
         // No PATH, no HOME: nothing to search, so this must refuse
         // rather than hand `sot-capsule` an unresolved bare "claude" it
@@ -3955,12 +4162,6 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         assert!(result.is_err());
-    }
-
-    #[test]
-    #[cfg(not(any(windows, target_os = "linux")))]
-    fn agent_argv_claude_is_refused_off_windows_and_linux() {
-        assert!(agent_argv("claude").is_err());
     }
 
     #[test]
@@ -3994,7 +4195,7 @@ mod tests {
     }
 
     /// Guards PATH/HOME/SOT_COMM_HOME for one `agent_argv("codex")` call.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn with_codex_env<T>(path: Option<&std::path::Path>, home: Option<&std::path::Path>, comm_home: Option<&std::path::Path>, f: impl FnOnce() -> T) -> T {
         let _guard = self_file_env_guarded();
         let prior = (std::env::var_os("PATH"), std::env::var_os("HOME"), std::env::var_os("SOT_COMM_HOME"));
@@ -4026,14 +4227,14 @@ mod tests {
         result
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn write_stub_ccx(path: &Path) {
         std::fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
         set_executable(path);
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn agent_argv_codex_resolves_ccx_and_ends_in_capsule_continue() {
         let dir = tempfile_test_dir();
         let ccx = dir.path().join("ccx");
@@ -4047,7 +4248,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn agent_argv_codex_fails_closed_when_nothing_resolves() {
         let result = with_codex_env(None, None, None, || agent_argv("codex"));
         assert!(result.is_err());
@@ -4058,12 +4259,6 @@ mod tests {
     fn agent_argv_codex_is_refused_on_windows() {
         let err = agent_argv("codex").unwrap_err();
         assert!(err.contains("ccx"), "got: {err}");
-    }
-
-    #[test]
-    #[cfg(not(any(windows, target_os = "linux")))]
-    fn agent_argv_codex_is_refused_off_windows_and_linux() {
-        assert!(agent_argv("codex").is_err());
     }
 
     #[test]
@@ -4143,7 +4338,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn resolve_ccx_finds_an_executable_on_path() {
         let dir = tempfile_test_dir();
         let ccx = dir.path().join("ccx");
@@ -4154,7 +4349,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn resolve_ccx_falls_back_to_local_bin_under_home() {
         let dir = tempfile_test_dir();
         let local_bin = dir.path().join(".local/bin");
@@ -4166,7 +4361,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn resolve_ccx_names_every_directory_it_searched() {
         let err = resolve_ccx(None, None).unwrap_err();
         assert!(err.contains("ccx not found"), "{err}");

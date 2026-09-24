@@ -43,7 +43,14 @@ pub fn sotd_exe() -> PathBuf {
 /// `capsule_workspace::runtime`'s own `CAPSULE_EXE` fork.
 #[cfg(windows)]
 pub const CAPSULE_EXE_NAME: &str = "sot-capsule.exe";
-#[cfg(target_os = "linux")]
+/// macOS lane: `not(windows)`, matching `capsule_workspace::runtime`'s
+/// own `CAPSULE_EXE` — the extensionless name is a Unix fact, and a
+/// Linux-only gate here failed the whole `--tests` build on macOS.
+#[cfg(not(windows))]
+// Dead on a host with no capsule runtime in the daemon yet (macOS, until
+// `capsule_workspace::runtime`'s gate widens): every consumer of this
+// name is itself gated to the platforms that have one.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub const CAPSULE_EXE_NAME: &str = "sot-capsule";
 /// Resolved the same way production does — `current_exe().parent()` — but
 /// from the TEST binary's own known sibling (`sotd[.exe]`'s own directory),
@@ -71,7 +78,10 @@ pub fn sot_capsule_exe() -> PathBuf {
 fn test_socket_path(_runtime_dir: &Path, tag: &str) -> PathBuf {
     PathBuf::from(format!(r"\\.\pipe\sot-test-{tag}-{}", std::process::id()))
 }
-#[cfg(target_os = "linux")]
+/// macOS lane: `unix`, not Linux — a filesystem socket under the test's
+/// own runtime dir is portable to every Unix, and nothing in this path
+/// arithmetic is Linux-specific.
+#[cfg(unix)]
 fn test_socket_path(runtime_dir: &Path, tag: &str) -> PathBuf {
     runtime_dir.join(format!("wire-{tag}-{}.sock", std::process::id()))
 }
@@ -366,7 +376,12 @@ impl Env {
     pub fn app_config_dir(&self) -> PathBuf {
         self.state_root.join("sot").join("config")
     }
-    #[cfg(target_os = "linux")]
+    /// macOS lane: `not(windows)`, mirroring the SHIPPED
+    /// `workspaces::app_config_dir`, whose non-Windows arm is
+    /// `sot_log::state_dir::sot_config_dir()` (`$XDG_CONFIG_HOME`, else
+    /// `$HOME/.config`) on every Unix, macOS included — so the Linux gate
+    /// here was narrower than the behaviour it mirrors.
+    #[cfg(not(windows))]
     pub fn app_config_dir(&self) -> PathBuf {
         self.config_root.join("sot")
     }
