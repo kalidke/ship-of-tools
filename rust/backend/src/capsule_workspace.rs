@@ -2005,6 +2005,15 @@ mod runtime {
     /// the whole spawn attempt (`start_supervisor`'s own doc), so nothing
     /// here needs to signal "the launch is no longer in flight" the way
     /// the old `starting` claim did.
+    ///
+    /// Order (supervisor-epoch ruling): spawn, SETTLE, adopt, install
+    /// the watchdog — the settle moved inward by one frame from
+    /// [`start_supervisor`], where it used to sit. Same 2s bound, same
+    /// caller's guard, same total latency; what changes is that the
+    /// window between spawn and first answered status now contains no
+    /// watchdog at all, so no terminal mark and no second spawn can
+    /// land inside it. The phase this settles to is what the caller
+    /// reports.
     pub fn spawn_and_watch(
         sot_capsule_exe: &Path,
         state_dir: &Path,
@@ -2015,7 +2024,7 @@ mod runtime {
         workspace_id: String,
         slug: String,
         workspaces: Workspaces,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<&'static str> {
         // Accounts brief: resolved from the registry HERE, the one place
         // every spawn path (create, resume, the watchdog's own restart
         // below) already converges with both `workspace_id` and
@@ -2037,6 +2046,10 @@ mod runtime {
         if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
             ws.begin_supervisor_epoch(identity);
         }
+        let (phase, observation) = settle_after_spawn(state_dir, &workspace_id);
+        if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
+            observe_with_adoption(&ws, observation);
+        }
         install_watchdog(
             workspace_id,
             sot_capsule_exe.to_path_buf(),
@@ -2051,7 +2064,7 @@ mod runtime {
             identity,
             workspaces,
         );
-        Ok(())
+        Ok(phase)
     }
 
     /// The spawn path shared by `workspace.create` (mode `Start` always — a
@@ -2080,10 +2093,12 @@ mod runtime {
     ///
     /// Codex review (2026-09-11): establishes lane REACHABILITY before
     /// returning, not merely a successful spawn — [`settle_after_spawn`],
-    /// still under the caller's own guard. Every spawner converges on
-    /// this ONE wait: fresh attach (`ensure_started`'s Start arm), a
-    /// resume (`resume_locked`), `workspace.create`, and `resume_all` all
-    /// call this function and get it for free. The watchdog's own
+    /// still under the caller's own guard, now performed one frame
+    /// inward by [`spawn_and_watch`] and simply handed back here. Every
+    /// spawner converges on this ONE wait: fresh attach
+    /// (`ensure_started`'s Start arm), a resume (`resume_locked`),
+    /// `workspace.create`, and `resume_all` all call this function and
+    /// get it for free. The watchdog's own
     /// restart is the one spawner that does NOT — it never installs a
     /// SECOND watchdog on top of its own loop, so it calls
     /// [`spawn_detached_supervisor`] directly and then
@@ -2114,12 +2129,7 @@ mod runtime {
             slug.to_string(),
             workspaces.clone(),
         )
-        .map_err(|e| format!("capsule supervisor spawn failed: {e}"))?;
-        let (phase, observation) = settle_after_spawn(&state_dir, workspace_id);
-        if let Some(ws) = workspaces.resolve(Some(workspace_id)) {
-            super::observer::observe(&ws, observation);
-        }
-        Ok(phase)
+        .map_err(|e| format!("capsule supervisor spawn failed: {e}"))
     }
 
     /// Bound for [`settle_after_spawn`] — the ONE deadline every spawn
@@ -2967,7 +2977,7 @@ mod runtime {
                                 let settle_wsid = workspace_id.clone();
                                 let settled = tokio::task::spawn_blocking(move || settle_after_spawn(&settle_dir, &settle_wsid)).await;
                                 if let (Ok((_phase, observation)), Some(ws)) = (settled, workspaces.resolve(Some(&workspace_id))) {
-                                    super::observer::observe(&ws, observation);
+                                    observe_with_adoption(&ws, observation);
                                 }
                                 leg_opt = Some(child);
                             }
