@@ -1243,6 +1243,57 @@ fn start_reaches_ready_promptly() {
     let _ = wait_for_exit(child, Duration::from_secs(30));
 }
 
+/// The supervisor-epoch ruling's whole Linux safety argument, in
+/// executable form: the start-time the DAEMON reads off a freshly
+/// spawned supervisor is bit-identical to the `created` that same
+/// supervisor later authors for itself on the wire. They are not merely
+/// compatible units -- `challenge_unix::self_start_ticks` (what
+/// `capsule::self_status` reports) is literally
+/// `process_start_ticks(std::process::id())`, the same `/proc/<pid>/stat`
+/// field 22 read this test performs from the parent side. Because the
+/// two authors provably agree, the daemon's spawn-side read buys nothing
+/// but EARLINESS and was deleted; only the moment the value is learned
+/// changed, never the value. Worth keeping permanently: it pins the two
+/// authors together for as long as Linux has both.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let child = spawn_supervisor(&state_dir, "--start", SHELL);
+    let spawned_pid = child.id();
+    // The spawn-side read, performed EXACTLY as the daemon's deleted
+    // `spawned_identity` performed it: this pid, this function, from the
+    // parent, the instant after spawn.
+    let spawn_side_ticks =
+        sot_log::challenge_unix::process_start_ticks(spawned_pid).expect("read the child's own /proc start ticks");
+    let mut guard = KillGuard(Some(child));
+
+    let conn = wait_for_lane(&h, Duration::from_secs(30));
+    let (reported_pid, reported_created) =
+        match request_for_test(&conn, &SupervisorRequest::Status, Instant::now() + Duration::from_secs(5)).expect("status")
+        {
+            SupervisorReply::StatusOk { pid, created, .. } => (pid, created),
+            other => panic!("expected StatusOk, got {other:?}"),
+        };
+
+    assert_eq!(reported_pid, spawned_pid, "the supervisor reports the pid the daemon spawned");
+    assert_eq!(
+        reported_created, spawn_side_ticks,
+        "the supervisor's self-authored `created` must equal the start ticks the spawner read for the same pid -- \
+         if this ever fails, the daemon's spawn-side identity read was NOT a second implementation of the same value"
+    );
+
+    let _ = command(&conn, "identity-equality-stop", SupervisorOp::Stop);
+    let child = guard.0.take().unwrap();
+    let _ = wait_for_exit(child, Duration::from_secs(30));
+}
+
 /// ADR 0043 decision 33's retirement clause: a leg forks from the SUPERVISOR's own running
 /// image via `/proc/self/exe`, never a path string resolved fresh off
 /// disk at spawn time -- so an `sot-apply`-style rename of a new binary
