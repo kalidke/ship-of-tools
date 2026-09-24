@@ -50,21 +50,29 @@
 //! is what supplies the stickiness instead, and every entry point reads
 //! it first.
 //!
-//! # `Duration::ZERO` is `timespec { 0, 0 }`, never a null timeout
+//! # The kqueue mechanism itself lives in `challenge_macos`
 //!
-//! A null `timeout` to `kevent(2)` means BLOCK FOREVER. The supervisor
-//! polls with `Duration::ZERO` on every `Ready` tick, so the one
-//! mistake that would hang its main loop is spelled as an omission
-//! rather than as a wrong value — [`timeout_to_timespec`] exists so
-//! that pointer is never null, and its own test pins the zero case.
+//! Arming the knote, draining it, and the `Duration` -> `timespec`
+//! conversion `kevent(2)` takes BY POINTER (a null timeout means BLOCK
+//! FOREVER, and the supervisor polls with `Duration::ZERO` on every
+//! `Ready` tick) are `challenge_macos::watch_exit`/`drain_exit`,
+//! consumed here rather than written a second time — the direction this
+//! module already runs in everywhere else (`probe_unix` consumes
+//! `challenge_unix`), and the one place the zero-timeout mistake can be
+//! made is therefore also the one place a test pins it.
+//!
+//! What stays HERE is the policy that primitive deliberately refuses to
+//! decide: an `ESRCH` at attach time is proof of exit for THIS owned,
+//! zombie-pinned child, where for a peer nobody spawned it is merely
+//! unprovable.
 
 #![cfg(target_os = "macos")]
 
 use crate::challenge::ChallengeOutcome;
-use crate::challenge_macos::ChallengedProcess;
+use crate::challenge_macos::{drain_exit, watch_exit, ChallengedProcess};
 use crate::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
 use std::cell::Cell;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -104,113 +112,6 @@ const FAILURE_CLEANUP_REAP_BOUND: Duration = Duration::from_secs(2);
 /// place both halves stop using it.
 const NO_OWNER_READABLE_GENERATION: u64 = 0;
 
-/// `Duration` -> `timespec`, saturating rather than wrapping at both
-/// ends, mirroring `challenge_unix::poll_pidfd_readable`'s own
-/// `i32::try_from(millis).unwrap_or(i32::MAX)`. Its whole reason for
-/// existing is that the result is always a real struct a caller passes
-/// BY POINTER — see this module's own doc on the null timeout.
-fn timeout_to_timespec(timeout: Duration) -> libc::timespec {
-    match libc::time_t::try_from(timeout.as_secs()) {
-        Ok(tv_sec) => libc::timespec { tv_sec, tv_nsec: libc::c_long::from(timeout.subsec_nanos()) },
-        // Past `time_t`'s range there is no finer part left to carry.
-        Err(_) => libc::timespec { tv_sec: libc::time_t::MAX, tv_nsec: 0 },
-    }
-}
-
-/// Arm a fresh `kqueue` with an `EVFILT_PROC`/`NOTE_EXIT` knote on `pid`.
-///
-/// `Ok(None)` is `ESRCH` — the kernel's `proc_find` does not return
-/// zombies, so "not attachable" is what an already-exited process looks
-/// like here. WHO OWNS THE PID DECIDES WHAT THAT MEANS, and this
-/// function deliberately does not decide: for an owned child (the only
-/// caller in this module) the pid is pinned by the zombie, so it
-/// provably means *already exited*; for a peer nobody spawned it would
-/// mean *unprovable*. Same errno, two correct readings, and the type
-/// that receives it encodes the ownership.
-///
-/// `EV_ADD | EV_RECEIPT` with a one-entry eventlist, so an attach
-/// failure arrives deterministically as an `EV_ERROR` event carrying the
-/// errno in `data` rather than as a `kevent` return of `-1`. No
-/// `EV_ONESHOT` and no `EV_CLEAR`: neither names an invariant here, and
-/// the caller's own latch already owns the once-only semantics.
-fn exit_watch_open(pid: libc::pid_t) -> std::io::Result<Option<OwnedFd>> {
-    // SAFETY: `kqueue` takes no arguments and returns a new fd or -1.
-    let raw = unsafe { libc::kqueue() };
-    if raw < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // Wrapped immediately so every early return below closes it. No
-    // `FD_CLOEXEC` dance: a kqueue fd is not inherited across `fork(2)`
-    // at all, so there is no window in which a leg could hold one.
-    // SAFETY: `raw` was just returned by `kqueue` and is owned by nobody
-    // else.
-    let kq = unsafe { OwnedFd::from_raw_fd(raw) };
-
-    let change = libc::kevent {
-        ident: pid as libc::uintptr_t,
-        filter: libc::EVFILT_PROC,
-        flags: libc::EV_ADD | libc::EV_RECEIPT,
-        fflags: libc::NOTE_EXIT,
-        data: 0,
-        udata: std::ptr::null_mut(),
-    };
-    let mut out: libc::kevent = unsafe { std::mem::zeroed() };
-    let ts = timeout_to_timespec(Duration::ZERO);
-    // SAFETY: `kq` is live for the whole call; `change` and `out` are
-    // one real `kevent` each and the counts say so; `ts` is a real
-    // `timespec` (a null pointer here would mean "block forever").
-    let rc = unsafe { libc::kevent(kq.as_raw_fd(), &change, 1, &mut out, 1, &ts) };
-    if rc < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    if rc == 0 {
-        // `EV_RECEIPT` guarantees exactly one receipt event per change,
-        // so this cannot happen; refuse rather than return a kqueue
-        // whose knote was never confirmed.
-        return Err(std::io::Error::other("kevent(EV_RECEIPT) returned no receipt"));
-    }
-    if out.flags & libc::EV_ERROR != 0 {
-        return match out.data as libc::c_int {
-            0 => Ok(Some(kq)), // `EV_RECEIPT`'s own success receipt
-            libc::ESRCH => Ok(None),
-            e => Err(std::io::Error::from_raw_os_error(e)),
-        };
-    }
-    Ok(Some(kq))
-}
-
-/// Has this watch's process exited, within `timeout`? The twin of
-/// `challenge_unix::poll_pidfd_readable`, bound for bound: `EINTR` is
-/// an `Err` here exactly as it is there (`ProbeOps::wait_exit` maps
-/// `Err` to `WaitFailed`), rather than silently improving one platform.
-///
-/// Delivers at most once — the caller's latch is what makes a second
-/// call honest. See this module's own doc.
-fn poll_exit_watch(kq: RawFd, timeout: Duration) -> std::io::Result<bool> {
-    let mut out: libc::kevent = unsafe { std::mem::zeroed() };
-    let ts = timeout_to_timespec(timeout);
-    // SAFETY: `kq` is owned by the caller for the whole call; `out` is
-    // one real `kevent` and the count says so; `ts` is a real
-    // `timespec`, never null (see this module's doc).
-    let rc = unsafe { libc::kevent(kq, std::ptr::null(), 0, &mut out, 1, &ts) };
-    if rc < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    if rc == 0 {
-        return Ok(false); // the timeout expired with no exit
-    }
-    if out.flags & libc::EV_ERROR != 0 {
-        return match out.data as libc::c_int {
-            // The knote's process went away without the event this
-            // handle was waiting for. It is gone either way, and that
-            // is the answer being asked for.
-            libc::ESRCH => Ok(true),
-            e => Err(std::io::Error::from_raw_os_error(e)),
-        };
-    }
-    Ok(out.fflags & libc::NOTE_EXIT != 0)
-}
-
 /// A just-spawned, NOT YET CHALLENGED child process handle — the macOS
 /// twin of `probe_unix::SpawnedChild`, and identical in contract: Stage
 /// A's A1-A3 observations are about THIS type, never
@@ -227,7 +128,7 @@ pub struct SpawnedChild {
     /// The exit watch, or `None` when the child was already gone at
     /// attach time — in which case `exited` starts latched, which is the
     /// only reading `ESRCH` can have for a pid a zombie pins (see
-    /// [`exit_watch_open`]).
+    /// [`watch_exit`]).
     watch: Option<OwnedFd>,
     /// The stickiness a pidfd gets from the kernel and a knote does not
     /// — see this module's own doc. `Cell`, not an atomic, matching the
@@ -254,7 +155,7 @@ impl SpawnedChild {
     /// just spawned".
     fn from_child(child: std::process::Child) -> std::io::Result<Self> {
         let pid = child.id() as libc::pid_t;
-        match exit_watch_open(pid) {
+        match watch_exit(pid as u32) {
             Ok(watch) => {
                 let already_exited = watch.is_none();
                 drop(child);
@@ -315,7 +216,7 @@ impl SpawnedChild {
             return Ok(true);
         }
         let exited = match self.watch.as_ref() {
-            Some(kq) => poll_exit_watch(kq.as_raw_fd(), timeout)?,
+            Some(kq) => drain_exit(kq.as_raw_fd(), timeout)?,
             // Unreachable: a handle with no watch was constructed
             // already latched, and the latch is never cleared.
             None => true,
@@ -482,27 +383,3 @@ impl ProbeOps for RealProbeOps {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The one mistake in this module that would type-check, pass
-    /// review, and hang the supervisor's main loop on its first `Ready`
-    /// tick is a null `kevent` timeout. `Duration::ZERO` must therefore
-    /// be a REAL all-zero `timespec`, and both saturating ends must
-    /// stay finite.
-    #[test]
-    fn zero_timeout_is_a_zero_timespec_not_a_null_one() {
-        let zero = timeout_to_timespec(Duration::ZERO);
-        assert_eq!(zero.tv_sec, 0);
-        assert_eq!(zero.tv_nsec, 0);
-
-        let ms = timeout_to_timespec(Duration::from_millis(1500));
-        assert_eq!(ms.tv_sec, 1);
-        assert_eq!(ms.tv_nsec, 500_000_000);
-
-        let huge = timeout_to_timespec(Duration::new(u64::MAX, 999_999_999));
-        assert_eq!(huge.tv_sec, libc::time_t::MAX);
-        assert_eq!(huge.tv_nsec, 0);
-    }
-}
