@@ -190,8 +190,19 @@ sot_ensure_remote_host() {
         return 1
     fi
 
+    sot_forward_port "$name" "$port" "$remote_socket" "$alias"
+}
+
+# sot_forward_port <name> <port> <remote_socket> <ssh_target>
+# The one place a local port is forwarded to a socket on the other side.
+# Two callers, one rule: the hub's own daemon socket (above) and, since the
+# cross-host route landed, the hub's per-host relay socket (below) -- the
+# difference between them is WHICH socket on the hub, never how it is
+# opened. Nonfatal like its callers: one line and `return 1`.
+sot_forward_port() {
+    local name="$1" port="$2" remote_socket="$3" target="$4"
     # Reuse only a tunnel that visibly targets the same remote socket.
-    if pgrep -f "ssh .*${port}:${remote_socket}.*${alias}" >/dev/null 2>&1; then
+    if pgrep -f "ssh .*${port}:${remote_socket}.*${target}" >/dev/null 2>&1; then
         echo "tunnel: host '$name' port $port already forwards to $remote_socket -- reusing"
         return 0
     fi
@@ -200,9 +211,24 @@ sot_ensure_remote_host() {
         return 1
     fi
     sot_ssh_bounded -fN -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
-        -L "$port:$remote_socket" "$alias" \
+        -L "$port:$remote_socket" "$target" \
         || { echo "tunnel: host '$name' could not open SSH tunnel" >&2; return 1; }
-    echo "tunnel: host '$name' forwarding 127.0.0.1:$port -> $remote_socket"
+    echo "tunnel: host '$name' forwarding 127.0.0.1:$port -> $remote_socket (via $target)"
+}
+
+# sot_hub_relay_sockets <hub>
+# `<host> <path>` for every host the hub serves a socket for, asked ONCE
+# per launch (ADR 0048): these are the hub's own paths, so the hub is the
+# only box that can answer, exactly as it already is for its own session
+# socket. Nonfatal -- an unreachable hub prints nothing here and every
+# host below is simply skipped, which the frontend already renders as
+# unreachable-and-retrying.
+sot_hub_relay_sockets() {
+    local hub="$1"
+    [ -n "$hub" ] || return 0
+    sot_ssh_bounded "$hub" \
+        'export PATH="$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"; sotd topology relay-sockets' \
+        2>/dev/null
 }
 
 # shellcheck source=sot-hosts.sh
@@ -290,20 +316,29 @@ else
     echo "default remote: no declared hub and SOT_HOST/SOT_HOST_NAME unset - continuing without one"
 fi
 
-# 2b. Every OTHER dialable host in the plan gets its own tunnel too (ADR
-# 0042 L2b design E) — $HOST's own tunnel above is untouched. Topology
-# plan already excludes self and frontend hosts from `tunnel` lines (D8),
-# so nothing here needs its own filter beyond skipping the primary.
-# sot_ensure_remote_host does the ensure+resolve+open sequence, nonfatal:
-# any failure logs one line and moves on to the next host instead of
-# exiting the whole launch. The frontend's own --dial list (built from the
-# SAME plan below, independent of whether the tunnel actually came up)
-# shows an unreachable host as unreachable — that is the intended failure
-# mode here, not a launch abort.
+# 2b. Every OTHER dialable host in the plan is forwarded FROM THE HUB (ADR
+# 0048) — $HOST's own tunnel above is untouched. The hub holds one socket
+# per host it serves, and each connection to that socket carries a `sotd
+# stdio-bridge` on the far box, so this launcher forwards the host's
+# ordinal port to the hub's socket for it and opens ssh to no box but the
+# hub. Two things went away with the old per-host loop: the ensure round
+# trip (a peer no longer starts someone else's daemon — an enrolled box
+# runs sotd as a service) and the remote socket-path query (a path only
+# the owning box could answer, now the hub's own path). Still nonfatal per
+# host: one line, next host, and the frontend renders anything that didn't
+# come up as unreachable-and-retrying.
+HUB="$(sot_topology_field "$PLAN" HUB)"
+HUB="${HUB:-$HOST}"
+RELAY_SOCKETS="$(sot_hub_relay_sockets "$HUB")"
 while IFS='|' read -r t_tag t_name t_port; do
     [ "$t_tag" = "TUNNEL" ] || continue
     [ "$t_name" = "$HOST" ] && continue   # the primary host's tunnel is step 1-2 above
-    sot_ensure_remote_host "$t_name" "$t_name" "$t_port" || :
+    t_sock="$(printf '%s\n' "$RELAY_SOCKETS" | awk -v h="$t_name" '$1==h {print $2; exit}')"
+    if [ -z "$t_sock" ]; then
+        echo "tunnel: host '$t_name' has no relay socket on hub '$HUB' (enrol it: sotd topology apply) - skipping" >&2
+        continue
+    fi
+    sot_forward_port "$t_name" "$t_port" "$t_sock" "$HUB" || :
 done <<EOF
 $PLAN
 EOF
