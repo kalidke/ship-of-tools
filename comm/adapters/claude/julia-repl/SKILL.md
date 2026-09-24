@@ -58,6 +58,35 @@ So divide the labour; do not build a retry loop:
 If a fan-out must share compiled packages, serialize it through one caller
 that owns the REPL, and let the others stay on fresh processes.
 
+## HOW TO CALL IT — a line or two, or a file
+
+Every call is one of two shapes, never anything in between:
+
+- **A line or two with `eval --code`.** Read a value, check state, call one
+  function: `names(M)`, `stage_position(RIG)`, `length(frames)`.
+- **Anything longer goes in a `.jl` file under the workspace root, run with
+  `repl run`.** That means a loop, a sequence of hardware steps, a
+  multi-line function, or anything you expect to edit and run again.
+  Keep these in `dev/output/repl/<purpose>.jl`, one file per purpose, and
+  edit it in place between runs.
+
+Why a file wins past two lines:
+- **Errors carry the file's line numbers.** An error comes back as
+  `in expression starting at …/zstack.jl:14`, not a position inside a
+  quoted shell string.
+- **No shell quoting.** `$`, quotes and backslashes in Julia code stop
+  fighting the shell.
+- **The owner can read exactly what ran.** The file is a record of the
+  step, and re-running it after an edit is the iteration loop.
+- **It is re-runnable.** `repl run` re-`include`s the file, so edited
+  definitions take effect without Revise.
+
+`repl run` keeps the kernel's project. If the file sits under a different
+`Project.toml`, it runs anyway and prints a note; it never switches. A file
+that errors partway leaves everything it defined before the error in `Main`.
+Fix the file and run it again; don't patch around the half-state with
+evals.
+
 ## Commands
 
 | Want | Command |
@@ -132,6 +161,8 @@ There is no quiet mode.
 
 ## Don't
 
+- Pass more than a line or two through `--code`: write the file and
+  `repl run` it.
 - Define stubs, redirect imports or rebind consts in it — fresh process.
 - Drive it from parallel subagents: the second one gets `busy`.
 - Use it for throwaway parse checks — every run lands in the owner's history.
