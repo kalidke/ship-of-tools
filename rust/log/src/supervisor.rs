@@ -249,7 +249,7 @@
 //! [`probe_writer_liveness`] use on both platforms now, instead of a
 //! Windows-shaped inline `NotFound` guard.
 
-#![cfg(any(windows, target_os = "linux"))]
+#![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 
 use crate::attach_proto::ConnId;
 use crate::challenge::ChallengeOutcome;
