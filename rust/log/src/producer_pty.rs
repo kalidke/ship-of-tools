@@ -128,12 +128,18 @@
 //!   5) equals this producer's pgid AND whose state (field 3) is NOT
 //!   `Z`(zombie)/`X`(dead) — empty iff none exist; a zombie leader or a
 //!   zombie descendant is correctly excluded either way, matching the
-//!   ConPTY twin's own "active processes == 0" meaning. Non-Linux Unix has
-//!   no portable `/proc`-equivalent scan, so it falls back to the coarser
-//!   `killpg(pgid, 0) == ESRCH` probe — a real, accepted gap documented at
-//!   that arm's own doc (a zombie LEADER this producer has deliberately not
-//!   yet reaped still answers that probe as "exists", unlike the precise
-//!   Linux scan). Review round 2 refined the Linux scan further (see
+//!   ConPTY twin's own "active processes == 0" meaning. macOS asks the
+//!   SAME question through libproc (`proc_listpgrppids` +
+//!   `PROC_PIDTBSDINFO.pbi_status`) rather than by any signalling errno:
+//!   emptiness is judged by ONE mechanism and that mechanism ENUMERATES
+//!   members, on both supported platforms. The coarser `killpg(pgid, 0)
+//!   == ESRCH` probe non-Linux Unix once fell back to is DELETED, not
+//!   widened — on Darwin its error is EPERM for a zombie-only group AND
+//!   for a live member this uid may not signal, two answers a widening
+//!   cannot separate, and taking it for "empty" would seal a capsule over
+//!   a live descendant; a Unix that can enumerate neither now refuses the
+//!   question, which `capsule::run`'s own fail-closed top already makes
+//!   unreachable. Review round 2 refined the Linux scan further (see
 //!   `domain_is_empty`'s own doc): a per-PROCESS state field alone can lie
 //!   (a process whose main thread alone has exited still shows `Z` while
 //!   its worker threads run; a non-UTF-8 `comm` byte used to make the
@@ -600,11 +606,20 @@ impl Producer for PtyProducer {
     }
 
     fn terminate_domain(&self) -> Result<()> {
-        // ESRCH (decision 14): the domain is already empty -- a harmless
-        // no-op, not a failure.
+        // ESRCH (decision 14) and EPERM: neither is a failure of this
+        // call, and NEITHER is evidence of emptiness. Both mean "nothing
+        // in this group could be signalled by me" -- Linux picks ESRCH
+        // for a group whose only member is the leader zombie, Darwin
+        // picks EPERM (POSIX permits either for "no process could be
+        // signalled"), and EPERM ALSO covers a live member this uid may
+        // not signal (an agent shell that ran `sudo`). This call is a
+        // REQUEST; `domain_is_empty` is the only judge of what survived
+        // it -- so tolerating EPERM here cannot seal anything: a live
+        // member simply keeps the reap poll running until its own
+        // deadline fires.
         if unsafe { libc::killpg(self.pid, libc::SIGKILL) } != 0 {
             let err = io::Error::last_os_error();
-            if err.raw_os_error() != Some(libc::ESRCH) {
+            if !matches!(err.raw_os_error(), Some(libc::ESRCH) | Some(libc::EPERM)) {
                 return Err(Error::Io(err));
             }
         }
@@ -634,9 +649,8 @@ impl Producer for PtyProducer {
     /// its producer share ONE pid namespace and ONE `/proc` — true here
     /// because the producer is this process's own direct fork child, and
     /// `hidepid` (where configured) never hides a uid's own processes
-    /// from itself. Non-Linux Unix has no portable equivalent scan; see
-    /// this method's own sibling arm below for the documented, coarser
-    /// fallback there.
+    /// from itself. macOS asks the same question through libproc; see
+    /// this method's own sibling arm below.
     fn domain_is_empty(&self) -> Result<bool> {
         for entry in std::fs::read_dir("/proc").map_err(Error::Io)? {
             let Ok(entry) = entry else { continue };
@@ -666,27 +680,106 @@ impl Producer for PtyProducer {
         Ok(true)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    /// Live-member scan, the macOS twin of the Linux `/proc` scan above
+    /// and with the same meaning (decision 13/14): empty iff no member of
+    /// this process group is in a state that could still run.
+    /// `proc_listpgrppids` is the native form of the query the Linux arm
+    /// has to synthesise by walking `/proc` and comparing field 5, and
+    /// `PROC_PIDTBSDINFO`'s `pbi_status` is its state field. A zombie
+    /// leader this producer deliberately has not reaped (module doc) is
+    /// correctly excluded, which the `killpg(pgid, 0)` probe this
+    /// replaces could not do on Darwin AT ALL: Darwin answers that probe
+    /// with EPERM both for a zombie-only group AND for a live member this
+    /// uid may not signal (a `sudo` descendant), and no widening of a
+    /// signalling errno can tell those two apart -- reading it as empty
+    /// would seal a capsule over a live process in its own domain.
+    /// FAIL CLOSED throughout: any member we cannot classify, and any
+    /// listing we cannot complete, counts as LIVE, never as absent, so
+    /// the worst case is teardown's own reap deadline firing loudly
+    /// rather than a record sealed over a survivor.
     fn domain_is_empty(&self) -> Result<bool> {
-        // No portable `/proc`-equivalent scan exists here, so this is a
-        // DOCUMENTED, coarser fallback (review round): `killpg(pgid, 0)`
-        // only asks "does at least one process in this group exist",
-        // which a zombie answers "yes" to (a zombie's pid/pgid stay
-        // valid, just unable to receive real signals, until reaped) --
-        // unlike the precise Linux scan above, a domain containing ONLY
-        // an unreaped zombie leader (or zombie descendants) reads as
-        // "not empty" here. Accepted for non-Linux Unix, which this
-        // crate's own capsule support already treats as experimental
-        // (ADR 0043 "Open for the maintainer" item 1).
-        if unsafe { libc::killpg(self.pid, 0) } == 0 {
-            return Ok(false);
+        // The group can grow between sizing and listing, so a listing
+        // that exactly fills its buffer is not provably complete: ask
+        // again with more slack. Bounded -- a group that keeps outrunning
+        // the buffer is a group with members, which is the answer anyway.
+        const LISTING_ATTEMPTS: usize = 4;
+        const SLACK_MEMBERS: usize = 16;
+
+        let mut pids: Vec<libc::pid_t> = Vec::new();
+        let mut listed = None;
+        for _ in 0..LISTING_ATTEMPTS {
+            // A NULL buffer sizes the listing (libproc's own idiom); a
+            // negative return is a real failure and is NEVER Ok(true).
+            let sized = unsafe { libc::proc_listpgrppids(self.pid, std::ptr::null_mut(), 0) };
+            if sized < 0 {
+                return Err(Error::Io(io::Error::last_os_error()));
+            }
+            let members = sized as usize / std::mem::size_of::<libc::pid_t>();
+            pids.clear();
+            pids.resize(members + SLACK_MEMBERS, 0);
+            let bytes = std::mem::size_of_val(pids.as_slice()) as libc::c_int;
+            let filled = unsafe {
+                libc::proc_listpgrppids(self.pid, pids.as_mut_ptr().cast::<libc::c_void>(), bytes)
+            };
+            if filled < 0 {
+                return Err(Error::Io(io::Error::last_os_error()));
+            }
+            if filled == bytes {
+                continue; // buffer filled exactly -- the group may have outgrown it
+            }
+            listed = Some(filled as usize / std::mem::size_of::<libc::pid_t>());
+            break;
         }
-        let err = io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            Ok(true)
-        } else {
-            Err(Error::Io(err))
+        let Some(listed) = listed else {
+            return Ok(false); // could not complete a listing: fail closed
+        };
+
+        for &pid in &pids[..listed] {
+            if pid <= 0 {
+                continue; // padding, never a member
+            }
+            let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+            let want = std::mem::size_of::<libc::proc_bsdinfo>();
+            let got = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    std::ptr::addr_of_mut!(info).cast::<libc::c_void>(),
+                    want as libc::c_int,
+                )
+            };
+            if got == want as libc::c_int {
+                if info.pbi_status == libc::SZOMB {
+                    continue; // exited, awaiting reap -- it can never run again
+                }
+                return Ok(false);
+            }
+            // The member exited between the listing and this query: one
+            // fewer member to find, exactly as the Linux arm treats a
+            // stat file that vanishes mid-scan. Anything else (EPERM on a
+            // foreign-uid member, a short read) leaves it unclassified,
+            // and an unclassified member is a live one.
+            if io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+                return Ok(false);
+            }
         }
+        Ok(true)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    /// Decision 16's shape, applied here: a platform with no way to
+    /// ENUMERATE a process group has no honest answer to this question,
+    /// so it refuses rather than guessing from a signalling errno --
+    /// emptiness is judged by one mechanism and that mechanism lists
+    /// members. Unreachable in practice: `capsule::run` already fails
+    /// closed for these targets at its own top, before any producer
+    /// exists. This deletes a wrong answer; it removes no capability.
+    fn domain_is_empty(&self) -> Result<bool> {
+        Err(Error::Unsupported(
+            "domain_is_empty: this unix cannot enumerate a process group",
+        ))
     }
 
     fn close_output_side(&mut self) -> std::thread::JoinHandle<()> {
