@@ -1732,6 +1732,31 @@ where
                 handlers::handle_workspace_list(frame.id, frame.payload, &workspaces).await
             }
             op::ACCOUNTS_LIST => handlers::handle_accounts_list(frame.id, frame.payload).await,
+            // ADR 0046 decision 6: the ONE op whose reply must be written
+            // before its effect runs, because the caller IS the session
+            // being replaced. Written here rather than through the common
+            // path below (same reason `PTY_OPEN`'s arm writes its own) so
+            // the kill cannot precede the ack.
+            op::WORKSPACE_REAUTH => {
+                let (out, restart) =
+                    crate::reauth::handle_workspace_reauth(frame.id, frame.payload, &workspaces).await?;
+                for (f, blob) in &out {
+                    write_frame_to(&mut tx, f, blob.as_deref()).await?;
+                }
+                if let Some(plan) = restart {
+                    // Detached: this connection is about to lose its peer,
+                    // and the restart holds the row's guard for its whole
+                    // duration wherever it runs.
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            tokio::task::spawn_blocking(move || crate::reauth::restart_blocking(plan)).await
+                        {
+                            tracing::warn!(error = %e, "workspace.reauth: the restart task panicked");
+                        }
+                    });
+                }
+                continue;
+            }
             op::WORKSPACE_ACTIVATE => {
                 // Update `active_workspace` (declared above) HERE, inline —
                 // same pattern as HELLO's auth flag just above: peek the raw

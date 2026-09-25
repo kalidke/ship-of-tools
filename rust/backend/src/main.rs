@@ -30,6 +30,7 @@ mod monitor;
 mod paths;
 mod pluto;
 mod proxy;
+mod reauth;
 mod awareness;
 mod repl;
 mod server;

@@ -295,6 +295,62 @@ tmux; a capsule-capable install needs no tmux.
    capsule-capable install needs no tmux. The tmux deletion, family F and
    the `PROTOCOL_VERSION` bump are one second-sprint change.
 
+6. **A live row changes account in place, and resumes its conversation by
+   id.** Invariant: replacing a row's agent replaces the PROCESS, never the
+   row — so the record moves before the process does, and the reply is
+   written before the process is killed. `workspace.reauth {workspace_id,
+   account, resume}` (`reauth.rs`) is the one op whose caller is the thing
+   being replaced: a skill runs inside the leg, a Bash tool call is a child
+   of the leg, and only the supervisor ever puts a program on the capsule's
+   pty, so the row's own last act is one request to the daemon that owns it.
+   - **Reply before kill.** Every refusal is decided before anything is
+     touched, and the accept frame is physically written before the leg is
+     ended — the same ack-completion order the capsule's own mgmt lane
+     already drives `Action::Shutdown` in (`rust/log/src/capsule.rs:360`).
+     A refused reauth is a session still running, printing the refusal; an
+     accepted one is the last thing that session prints. The refusal
+     carries the accounts this daemon discovers, so no caller
+     re-implements discovery to explain one.
+   - **Record before restart.** `Workspace::account` and the row's toml
+     carry the new account while the OLD leg is still running, because
+     every path that later starts a leg reads that field from the registry
+     at spawn time (`capsule_workspace.rs`'s `spawn_and_watch`): this
+     call's own spawn, the watchdog's restart, the daemon's boot resume
+     and `pty.open`'s start-on-attach. One truth whichever wins, so the
+     worst case after an accept is a row resting at `ended_no_respawn`
+     that the next attach revives on the NEW login — never a row with no
+     way back. A record that will not persist is rolled back and refused,
+     not half-applied.
+   - **`--resume <id>`, never `--continue`.** `--continue` resolves "the
+     most recent conversation" out of `.claude.json`, which is per-account
+     and deliberately never shared (`accounts.rs`'s `SHARED_ENTRIES`), so
+     across a switch of login it names nothing or names a DIFFERENT
+     conversation. The transcript itself needs no copy — it is one file
+     under the shared `projects`, and nothing in it names an account — so
+     an explicit id is enough and is REQUIRED with no default. The id is
+     not persisted on the row: after this leg's first turn the new
+     account's own selector names this conversation, and an ordinary
+     restart lands on it.
+   - **Exactly one field changes.** `Workspaces::set_account` mutates that
+     one cell on the shared `Arc<Workspace>`, so `workspace_id`, `slug`,
+     `project_root`, `session_name` and the DECLARED `agent_handle`
+     (decision 1) all survive: same row, same comm identity, different
+     login. Re-calling `workspace.create` for the same slug is forbidden
+     as the shortcut it looks like — `Workspaces::insert` rebuilds the row
+     from `Workspace::meta_only`, which BLANKS the declared handle (the
+     row goes colourless), it spawns a second supervisor for a row that
+     already has one, and on a synchronous spawn failure it rolls back the
+     registry row and its toml, deleting a LIVE row.
+   Refused before anything is touched: an unknown row, a row whose runtime
+   is not `capsule`, a row whose agent is not `claude`, anything
+   `accounts::account_env` already refuses (an invalid name, a codex or
+   bash row, an undiscovered folder — answered with its own `mkdir` line),
+   an account with no `.credentials.json` (switching a live conversation
+   into a never-logged-in folder strands it behind a login prompt), the
+   account the row already runs, and an empty `resume`. Surface: one op,
+   one `sot-fe reauth` verb, one skill; no new shared entry, no new
+   persisted field.
+
 ## Consequences
 
 - **Wire, additive.** `HelloReq {host, role, instance, name}` alongside

@@ -47,7 +47,8 @@ pub use ops::{
     UpdateApplyReq, UpdateApplyRes, UpdateCheckReq, UpdateCheckRes, VersionQueryReq,
     VersionQueryRes, VideoOpenReq, VideoOpenRes, WorkspaceActivateReq, WorkspaceActivateRes,
     WorkspaceCreateReq, WorkspaceCreateRes, WorkspaceDestroyReq, WorkspaceDestroyRes,
-    WorkspaceListEntry, WorkspaceListReq, WorkspaceListRes,
+    WorkspaceListEntry, WorkspaceListReq, WorkspaceListRes, WorkspaceReauthReq,
+    WorkspaceReauthRes,
 };
 // `is_private_dir` stays module-private to `session_socket` (not
 // re-exported here): nothing outside that module calls it directly

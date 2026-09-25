@@ -179,11 +179,16 @@ pub struct Workspace {
     pub runtime: String,
     /// Accounts brief: which discovered account this row's agent runs
     /// under -- `""` (never persisted as `"default"`) means the agent's
-    /// own default config folder, today's behaviour exactly. Resolved
-    /// ONCE, at `workspace.create`, and recorded here; nothing later
-    /// re-derives or edits it this release (no `workspace.set` yet). An
-    /// older toml predates this key and loads as `""`, same default.
-    pub account: String,
+    /// own default config folder, today's behaviour exactly. Seeded at
+    /// `workspace.create` and, since ADR 0046 decision 6, the ONE field
+    /// `workspace.reauth` rewrites on a live row -- so it is
+    /// interior-mutable for the same reason `agent_handle` below is:
+    /// `Workspaces::set_account` mutates THIS cell on the SHARED
+    /// `Arc<Workspace>` in place, never through a replacement `insert`
+    /// (which would blank the declared handle and discard the row's
+    /// resource caches). Read through `account()` outside this module.
+    /// An older toml predates this key and loads as `""`, same default.
+    pub(crate) account: Mutex<String>,
     /// The sot-comm handle the session inside this workspace actually
     /// DECLARED via `agent.join` (ADR 0046 decision 1) — distinct from
     /// `agent_name` above, which is only the handle the workspace was
@@ -248,7 +253,7 @@ impl std::fmt::Debug for Workspace {
             .field("agent_name", &self.agent_name())
             .field("task", &self.task)
             .field("runtime", &self.runtime)
-            .field("account", &self.account)
+            .field("account", &self.account())
             .field("agent_handle", &self.agent_handle())
             .field("phase", &self.phase())
             .field("watchdog_owner", &self.watchdog_owner())
@@ -293,7 +298,7 @@ impl Workspace {
             // decided value (`load_toml`'s `account` key, `insert`,
             // `workspace.create`'s own resolution) sets it after
             // construction. `""` here is the default account.
-            account: String::new(),
+            account: Mutex::new(String::new()),
             agent_handle: Mutex::new(String::new()),
             phase_cell: Mutex::new(PhaseCell::default()),
             watchdog_owner: Mutex::new(None),
@@ -315,6 +320,13 @@ impl Workspace {
 
     pub fn agent(&self) -> String {
         self.agent.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Which account this row's agent spends right now -- `""` is the
+    /// agent's own default config folder. Changes only through
+    /// [`Workspaces::set_account`] (ADR 0046 decision 6).
+    pub fn account(&self) -> String {
+        self.account.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn agent_name(&self) -> String {
@@ -711,7 +723,7 @@ impl Workspaces {
                 // `ws`'s own value (not that default) is the new metadata
                 // that should win here, same as every other field above.
                 w.runtime = ws.runtime.clone();
-                w.account = ws.account.clone();
+                w.account = Mutex::new(ws.account());
                 w
             }
             None => ws,
@@ -923,6 +935,22 @@ impl Workspaces {
             g.by_id.get(workspace_id)?.clone()
         };
         *ws.agent_handle.lock().unwrap_or_else(|e| e.into_inner()) = handle.to_string();
+        Some(ws)
+    }
+
+    /// Record which account this row's agent runs as (ADR 0046 decision
+    /// 6, `workspace.reauth`), in place on the SHARED `Arc` exactly like
+    /// [`set_agent_handle`](Self::set_agent_handle) — the row keeps its
+    /// id, slug, root, session name and declared handle, and every later
+    /// spawn path reads the new value from the registry at spawn time
+    /// (`capsule_workspace::runtime::spawn_and_watch`). `None` when the
+    /// row is not registered; the caller persists the toml itself.
+    pub fn set_account(&self, workspace_id: &str, account: &str) -> Option<Arc<Workspace>> {
+        let ws = {
+            let g = self.inner.read().expect("workspaces lock");
+            g.by_id.get(workspace_id)?.clone()
+        };
+        *ws.account.lock().unwrap_or_else(|e| e.into_inner()) = account.to_string();
         Some(ws)
     }
 
@@ -1153,7 +1181,7 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
         // Accounts brief: an older toml predates this key too → "" (the
         // default account), matching `meta_only`'s own default.
         if let Some(a) = kv.get("account") {
-            ws.account = a.clone();
+            ws.account = Mutex::new(a.clone());
         }
         return Ok(Some(ws));
     }
@@ -1294,7 +1322,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
         "agent_handle  = {}\n",
         toml_quote(&ws.agent_handle())
     ));
-    body.push_str(&format!("account       = {}\n", toml_quote(&ws.account)));
+    body.push_str(&format!("account       = {}\n", toml_quote(&ws.account())));
 
     let final_text = if preserved.trim().is_empty() {
         body
@@ -2284,7 +2312,7 @@ created      = 1700000000
         assert_eq!(ws.runtime, "capsule");
         // Accounts brief: a toml predating the `account` key loads as
         // the default account, "".
-        assert_eq!(ws.account, "");
+        assert_eq!(ws.account(), "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2318,10 +2346,10 @@ created      = 1700000000
             String::new(),
             String::new(),
         );
-        ws.account = "team".to_string();
+        ws.account = Mutex::new("team".to_string());
         let toml_path = save(&ws).unwrap();
         let loaded = load_toml(&toml_path, false).unwrap().unwrap();
-        assert_eq!(loaded.account, "team");
+        assert_eq!(loaded.account(), "team");
 
         // An older toml predating the key: strip the line, reload, expect "".
         let text = std::fs::read_to_string(&toml_path).unwrap();
@@ -2332,7 +2360,7 @@ created      = 1700000000
             .collect();
         std::fs::write(&toml_path, stripped).unwrap();
         let reloaded = load_toml(&toml_path, false).unwrap().unwrap();
-        assert_eq!(reloaded.account, "", "an older toml with no key defaults to the default account");
+        assert_eq!(reloaded.account(), "", "an older toml with no key defaults to the default account");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
