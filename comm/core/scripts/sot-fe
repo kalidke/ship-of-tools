@@ -859,10 +859,25 @@ send_workspace_reauth() {
         echo "ERROR: CLAUDE_CODE_SESSION_ID is unset, so there is no transcript id to resume. Run this from inside the claude session being moved -- a reauth has no 'most recent conversation' to fall back to on another login." >&2
         exit 2
     fi
+    # Validated here, before it is bound, for the same reason comm-spawn.sh
+    # validates its own --account: it is what lets this bind the allowlisted
+    # `acc` name rather than a fresh one (see the jq --arg allowlist test's
+    # own doc). It also turns a typo into an immediate, clear refusal instead
+    # of a round trip that comes back "no such account".
+    case "$account" in
+        [a-z0-9]*) : ;;
+        *) echo "ERROR: '$account' is not an account name (expected ^[a-z0-9][a-z0-9_-]*$). Run 'sot-fe reauth' with no account to see the discovered ones." >&2; exit 2 ;;
+    esac
+    case "$account" in
+        *[!a-z0-9_-]*) echo "ERROR: '$account' is not an account name (expected ^[a-z0-9][a-z0-9_-]*$)." >&2; exit 2 ;;
+    esac
     export SEND_TIMEOUT="${TIMEOUT:-20}"
     local payload req
-    payload="$(jq -nc --arg w "$ws_id" --arg a "$account" --arg r "$resume" \
-        '{workspace_id:$w, account:$a, resume:$r}')"
+    # `acc` and `id` are the allowlisted names for a validated account name
+    # and an id; neither value can begin with "/" (the MSYS2 argv-conversion
+    # hazard those names exist to bound), so neither needs --rawfile.
+    payload="$(jq -nc --arg w "$ws_id" --arg acc "$account" --arg id "$resume" \
+        '{workspace_id:$w, account:$acc, resume:$id}')"
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"workspace.reauth", payload:$p}')"
     resp="$(sot_send "$req" workspace.reauth || true)"
     if [ -z "$resp" ]; then

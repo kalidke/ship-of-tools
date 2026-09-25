@@ -1697,8 +1697,10 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     # fixed set of literal verbs from a case dispatch, never raw text.
     # `ag` is comm-spawn.sh's --agent kind — validated to `claude|codex`
     # before it is ever bound, never raw text.
-    # `acc` is comm-spawn.sh's --account: validated to the account-name
-    # rule ^[a-z0-9][a-z0-9_-]*$ before it is bound, so never a leading "/".
+    # `acc` is an --account value, in comm-spawn.sh and in sot-fe's reauth
+    # verb: BOTH validate it to the account-name rule ^[a-z0-9][a-z0-9_-]*$
+    # before binding it, so it can never carry a leading "/". Reusing the
+    # name is only legitimate because the validation is reused with it.
     # A line whose first non-blank character is '#' is skipped entirely
     # (a prose mention of `--arg NAME`, not a real binding).
     # `o` = comm-status.sh's turn_origin (ADR 0044): the enum user|machine,
