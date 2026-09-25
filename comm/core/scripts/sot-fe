@@ -30,6 +30,7 @@
 #   sot-fe type   <workspace> [<text>] [--stdin] [--enter] [--origin <who>] [--timeout <s>]
 #   sot-fe screen <workspace>                      [--timeout <s>]
 #   sot-fe version                                 [--endpoint <ep>] [--timeout <s>]
+#   sot-fe reauth <workspace> <account>            [--timeout <s>]
 #
 #   preview  — switch the FE to <workspace>, Files mode, and preview <path>.
 #   reveal   — switch + reveal <path> in the file tree (cursor it, no preview).
@@ -124,6 +125,25 @@
 #              line, blank rows kept) and `cols=.. rows=.. cursor=r,c
 #              runtime=..` to stderr; exit 2 on a daemon-reported error.
 #              This is the READ half of the read-before-write policy above.
+#   reauth   — move a LIVE capsule row to another claude account and RESUME
+#              the same conversation there (ADR 0046 decision 6). The daemon
+#              ends the row's current leg and starts a new claude in it with
+#              that account's config dir, resuming this transcript by id
+#              (--resume, read from the caller's own CLAUDE_CODE_SESSION_ID
+#              -- never --continue, which reads a per-account selector the
+#              new login does not share). The row keeps its id, slug, root
+#              and declared handle; only which login it spends changes. Run
+#              it FROM the row being moved: the accept is written BEFORE the
+#              leg is killed, so `ok reauth_accepted` is the last thing that
+#              session prints. Refuses -- changing nothing -- a row that is
+#              not a capsule claude row, an account that is unknown or has
+#              no login yet, the account the row already runs, a missing
+#              transcript id, and a transcript that account cannot open; a
+#              refusal lists the accounts the daemon can see. Exit 0
+#              accepted, 2 refused, 1 no reply. Read the
+#              `reauth` skill first: everything in flight dies with the leg,
+#              and the new account has no server-side cache for the
+#              conversation.
 #   version  — what build the daemon at --endpoint is, plus every attached
 #              frontend and every capsule row's own PHASE, verbatim (ADR
 #              0030 §8 decision 31, ADR 0043 decision 31). One
@@ -821,6 +841,50 @@ send_pty_screen() {
         " runtime=\(.runtime)"' >&2
 }
 
+# ADR 0046 decision 6: move a live capsule row to another account and resume
+# the same conversation there. One request/response op (workspace.reauth).
+# The resume id comes from THIS session's own environment -- the caller is
+# the row being moved, and nothing else knows which conversation it is; an
+# absent one is refused here rather than silently becoming "the most recent
+# conversation" on a login that has no such record. The daemon writes its
+# accept BEFORE ending the leg, so a printed `ok` is honest even though this
+# very process is about to be replaced; anything after it belongs to the new
+# session, not this one.
+send_workspace_reauth() {
+    local ws="$1" account="$2" ws_id resp
+    _need_endpoint
+    ws_id="$(_ws_id_or_passthrough "$ws")"
+    local resume="${CLAUDE_CODE_SESSION_ID:-}"
+    if [ -z "$resume" ]; then
+        echo "ERROR: CLAUDE_CODE_SESSION_ID is unset, so there is no transcript id to resume. Run this from inside the claude session being moved -- a reauth has no 'most recent conversation' to fall back to on another login." >&2
+        exit 2
+    fi
+    export SEND_TIMEOUT="${TIMEOUT:-20}"
+    local payload req
+    payload="$(jq -nc --arg w "$ws_id" --arg a "$account" --arg r "$resume" \
+        '{workspace_id:$w, account:$a, resume:$r}')"
+    req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"workspace.reauth", payload:$p}')"
+    resp="$(sot_send "$req" workspace.reauth || true)"
+    if [ -z "$resp" ]; then
+        echo "ERROR: no response from workspace.reauth within ${SEND_TIMEOUT}s via $ENDPOINT. The accept is written BEFORE anything is torn down, so no reply means the switch did NOT happen -- check the row's phase before retrying." >&2
+        exit 1
+    fi
+    local err code
+    err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
+    if [ -n "$err" ]; then
+        code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
+        echo "ERROR: $err [$code]" >&2
+        # Discovery belongs to the daemon: print what IT can see rather than
+        # guessing at folders from here, and never create one -- an empty
+        # account folder is a valid account with NO login, which turns a
+        # reauth into a login prompt with the conversation stranded behind it.
+        printf '%s' "$resp" | jq -r '.payload.accounts // [] | if length > 0 then "  accounts this daemon can see: " + join(", ") else empty end' >&2
+        exit 2
+    fi
+    printf '%s' "$resp" | jq -r '"ok \(.payload.code) account=\(.payload.account) workspace=\(.payload.workspace_id)"'
+    echo "note: this session's leg is being replaced now -- everything in flight dies with it, and the resumed session starts on /sot-session-start." >&2
+}
+
 # ADR 0030 §8 decision 31 (ADR 0043 decision 31): what build the daemon at
 # --endpoint is, every frontend attached to it, and every capsule row's own
 # phase, verbatim — see this verb's own usage-block doc above for the full
@@ -1178,6 +1242,11 @@ case "$CMD" in
         WS="${POS[0]:-}"
         [ -n "$WS" ] || { echo "usage: sot-fe screen <workspace> [--timeout <s>]" >&2; exit 1; }
         send_pty_screen "$WS"
+        ;;
+    reauth)
+        WS="${POS[0]:-}"; ACCOUNT="${POS[1]:-}"
+        [ -n "$WS" ] && [ -n "$ACCOUNT" ] || { echo "usage: sot-fe reauth <workspace> <account> [--timeout <s>]  -- name the account; this verb never guesses which login was meant" >&2; exit 1; }
+        send_workspace_reauth "$WS" "$ACCOUNT"
         ;;
     version)
         send_version

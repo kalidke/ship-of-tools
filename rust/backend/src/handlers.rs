@@ -4596,7 +4596,7 @@ pub async fn handle_workspace_create(
         req.task.clone(),
     );
     ws_seed.runtime = runtime;
-    ws_seed.account = account;
+    ws_seed.account = std::sync::Mutex::new(account);
     let ws_handle = workspaces.insert(ws_seed);
     if let Err(e) = crate::workspaces::save(&ws_handle) {
         tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
@@ -6754,7 +6754,7 @@ pub async fn handle_workspace_list(
                 state_dir,
                 phase,
                 activation_error: ws.activation_error(),
-                account: ws.account.clone(),
+                account: ws.account(),
             }
         })
         .collect();

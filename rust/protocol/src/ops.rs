@@ -146,6 +146,19 @@ pub mod op {
     /// kernel-handle-constructed flag). The default workspace is
     /// included in the list and marked via `is_default`.
     pub const WORKSPACE_LIST: &str = "workspace.list";
+    /// Move a LIVE capsule row to another account and resume the same
+    /// conversation there (ADR 0046 decision 6). Request is
+    /// `WorkspaceReauthReq {workspace_id, account, resume}`; the reply is
+    /// `{"code":"reauth_accepted"}` written BEFORE the row's current leg
+    /// is ended, because the caller is the session being replaced. Every
+    /// refusal leaves the row exactly as it was, and answers with the
+    /// accounts this daemon can see — empty only for the two refusals
+    /// that precede discovery itself (a payload that will not parse, a
+    /// home that will not resolve). The row record is mutated in exactly
+    /// one field (`account`): id, slug, root and declared handle all
+    /// survive, so the replacement leg is the same row, same comm
+    /// identity, different login.
+    pub const WORKSPACE_REAUTH: &str = "workspace.reauth";
     /// Accounts brief (v0.6.0): enumerate every account this daemon's
     /// own home discovers RIGHT NOW — nothing declared, nothing cached.
     /// Empty request payload; response is `AccountsListRes`.
@@ -1338,6 +1351,33 @@ pub struct WorkspaceCreateRes {
     pub label: String,
     pub project_root: String,
     pub session_name: String,
+}
+
+/// `workspace.reauth` (ADR 0046 decision 6): which row, which account it
+/// should spend from now on, and which conversation the replacement leg
+/// resumes. `resume` is REQUIRED with no default — a resume id is the only
+/// honest selector across an account switch (`--continue` reads a
+/// per-account, never-shared `.claude.json`), so an absent one is a
+/// refusal, not a fallback. The caller reads the id out of its own
+/// environment (`CLAUDE_CODE_SESSION_ID`); nothing persists it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceReauthReq {
+    pub workspace_id: String,
+    pub account: String,
+    pub resume: String,
+}
+
+/// The accept. `code` is always `"reauth_accepted"`; `account` is the
+/// account's NAME, for a human to read — `"default"` for the default
+/// login, which the record itself stores as `""`. A REFUSAL is not this shape — it is the ordinary
+/// `{error, code, accounts}` payload every other op refuses with, and
+/// carries the discovered account names so the caller never re-implements
+/// discovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceReauthRes {
+    pub code: String,
+    pub workspace_id: String,
+    pub account: String,
 }
 
 /// `workspace.list` has no fields — the daemon always returns its full

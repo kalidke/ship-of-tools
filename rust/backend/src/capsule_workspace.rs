@@ -362,6 +362,35 @@ fn claude_argv() -> Result<Vec<String>, String> {
     Ok(argv)
 }
 
+/// The reauth leg's producer argv (ADR 0046 decision 6): the SAME
+/// [`claude_recipe`] every other claude leg is built from, with
+/// `--continue` OFF and an explicit `--resume <id>` in its place. The two
+/// are contradictory, and `--continue` cannot be used here at all: it
+/// resolves "the most recent conversation" from `.claude.json`, which is
+/// per-account and never shared (`accounts.rs`'s `SHARED_ENTRIES`), so
+/// the account being switched TO either has no such selector or has one
+/// naming a different conversation. The transcript itself is one file
+/// both accounts read (`projects` IS shared), which is why an id is
+/// enough and nothing is copied. The id is never persisted on the row:
+/// once this leg has taken a turn, the new account's own selector names
+/// this conversation and an ordinary [`claude_argv`] restart lands on it.
+#[cfg(unix)]
+pub fn claude_resume_argv(session_id: &str) -> Result<Vec<String>, String> {
+    let claude = resolve_claude(
+        std::env::var_os("PATH").as_deref(),
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    )?;
+    let mut argv = claude_recipe(false, &["--resume".to_string(), session_id.to_string()]);
+    argv[0] = claude;
+    Ok(argv)
+}
+/// Windows twin: the literal name from [`claude_recipe`], resolved by the
+/// daemon's own `PATH` exactly as [`claude_argv`]'s Windows arm is.
+#[cfg(windows)]
+pub fn claude_resume_argv(session_id: &str) -> Result<Vec<String>, String> {
+    Ok(claude_recipe(false, &["--resume".to_string(), session_id.to_string()]))
+}
+
 /// `"codex"`'s capsule recipe: `ccx --capsule --continue`. `--capsule`
 /// keys `ccx`'s capsule behavior directly (never an inherited env var)
 /// and is never stripped; `--continue` is the shared first-leg token.
@@ -2003,19 +2032,22 @@ mod runtime {
         slug: String,
         workspaces: Workspaces,
     ) -> std::io::Result<&'static str> {
-        // Accounts brief: resolved from the registry HERE, the one place
-        // every spawn path (create, resume, the watchdog's own restart
-        // below) already converges with both `workspace_id` and
-        // `workspaces` in hand -- rather than threading two more scalars
-        // through every caller up the chain (`start_supervisor`,
-        // `resume_locked`, `ensure_started`, …), which never otherwise
-        // need to know an agent's KIND, only its already-resolved argv.
+        // Accounts brief: resolved from the registry HERE, where every
+        // spawn path (create, resume, start-on-attach) already converges
+        // with both `workspace_id` and `workspaces` in hand -- rather than
+        // threading two more scalars through every caller up the chain
+        // (`start_supervisor`, `resume_locked`, `ensure_started`, …), which
+        // never otherwise need to know an agent's KIND, only its
+        // already-resolved argv. The pair is read at the moment of each
+        // spawn and never captured, so the watchdog's own crash-restart
+        // resolves it again rather than carrying this one (`workspace.
+        // reauth` can move the account under a parked watchdog).
         // `unwrap_or_default` (kind "", account "") on a row gone by now
         // degrades to `account_env`'s own empty-account no-op below --
         // never worse than the row simply not existing.
         let (agent_kind, account) = workspaces
             .resolve(Some(&workspace_id))
-            .map(|ws| (ws.agent(), ws.account.clone()))
+            .map(|ws| (ws.agent(), ws.account()))
             .unwrap_or_default();
         let child = spawn_detached_supervisor(
             sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug, &agent_kind, &account,
@@ -2038,8 +2070,6 @@ mod runtime {
             cwd.to_path_buf(),
             agent_name.to_string(),
             slug,
-            agent_kind,
-            account,
             child,
             identity,
             workspaces,
@@ -2805,13 +2835,6 @@ mod runtime {
         cwd: PathBuf,
         agent_name: String,
         slug: String,
-        // Accounts brief: captured once, at the same spot `argv`/`cwd`/
-        // `agent_name` already are (the row's own resolved values at
-        // spawn time -- account never changes mid-row this release, no
-        // `workspace.set` yet), and carried unchanged into every
-        // crash-restart spawn below.
-        agent_kind: String,
-        account: String,
         child: Child,
         initial_identity: Option<crate::workspaces::SupervisorIdentity>,
         workspaces: Workspaces,
@@ -2927,8 +2950,19 @@ mod runtime {
                         let agent_name_for_spawn = agent_name.clone();
                         let workspace_id_for_spawn = workspace_id.clone();
                         let slug_for_spawn = slug.clone();
-                        let agent_kind_for_spawn = agent_kind.clone();
-                        let account_for_spawn = account.clone();
+                        // Accounts brief + ADR 0046 decision 6: read at
+                        // RESTART time, never captured at install time.
+                        // `workspace.reauth` moves a live row's account
+                        // while its watchdog is parked on the OLD leg, so
+                        // a captured pair would respawn on the login the
+                        // row no longer has -- a live leg under a record
+                        // that says otherwise. Same resolve, same
+                        // `unwrap_or_default` degradation, as the first
+                        // leg's in `spawn_and_watch`.
+                        let (agent_kind_for_spawn, account_for_spawn) = workspaces
+                            .resolve(Some(&workspace_id))
+                            .map(|ws| (ws.agent(), ws.account()))
+                            .unwrap_or_default();
                         let spawn_result = tokio::task::spawn_blocking(move || {
                             spawn_detached_supervisor(
                                 &exe,
@@ -4388,6 +4422,21 @@ mod tests {
     fn first_leg_without_continue_only_on_start() {
         assert_eq!(first_leg_without_continue(StartMode::Start), ["--first-leg-without", "--continue"]);
         assert!(first_leg_without_continue(StartMode::Resume).is_empty());
+    }
+
+    // ADR 0046 decision 6: a reauth leg carries an explicit `--resume
+    // <id>` and NEVER `--continue`. Asserted on the recipe rather than on
+    // `claude_resume_argv` itself, which resolves a real `claude` binary
+    // from the environment — the FLAG shape is the decision; resolution is
+    // `resolve_claude`'s own, already tested above.
+    #[test]
+    fn a_reauth_leg_resumes_by_id_and_never_continues() {
+        let argv = claude_recipe(false, &["--resume".to_string(), "abc-123".to_string()]);
+        assert!(!argv.iter().any(|a| a == "--continue"), "{argv:?}");
+        let at = argv.iter().position(|a| a == "--resume").expect("--resume present");
+        assert_eq!(argv[at + 1], "abc-123");
+        assert_eq!(argv.last().map(String::as_str), Some("/sot-session-start"));
+        assert!(argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "auto"), "{argv:?}");
     }
 
     #[test]

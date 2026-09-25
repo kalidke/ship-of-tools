@@ -132,7 +132,7 @@ fn ping_read_deadline() -> std::time::Duration {
 /// `ClientGuard`. Cancel-safety is irrelevant on the timeout path: we tear the
 /// whole socket down, so a partially written frame is moot. Every
 /// per-connection evt/response write goes through this.
-async fn write_frame_to<W>(tx: &mut W, frame: &Frame, blob: Option<&[u8]>) -> Result<()>
+pub(crate) async fn write_frame_to<W>(tx: &mut W, frame: &Frame, blob: Option<&[u8]>) -> Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
@@ -1732,6 +1732,33 @@ where
                 handlers::handle_workspace_list(frame.id, frame.payload, &workspaces).await
             }
             op::ACCOUNTS_LIST => handlers::handle_accounts_list(frame.id, frame.payload).await,
+            // ADR 0046 decision 6: the ONE op whose reply must be written
+            // before its effect runs, because the caller IS the session
+            // being replaced. Written here rather than through the common
+            // path below (same reason `PTY_OPEN`'s arm writes its own) so
+            // the kill cannot precede the ack.
+            op::WORKSPACE_REAUTH => {
+                let (out, restart) =
+                    crate::reauth::handle_workspace_reauth(frame.id, frame.payload, &workspaces).await?;
+                // Both halves of the ordering live in `write_accept_then`,
+                // which a test pins: the frame goes out first, and a write
+                // that fails rolls the record back before the `?` here ends
+                // the connection.
+                crate::reauth::write_accept_then(&mut tx, &out, restart, |plan| {
+                    // Detached: this connection is about to lose its peer,
+                    // and the restart holds the row's guard for its whole
+                    // duration wherever it runs.
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            tokio::task::spawn_blocking(move || crate::reauth::restart_blocking(plan)).await
+                        {
+                            tracing::warn!(error = %e, "workspace.reauth: the restart task panicked");
+                        }
+                    });
+                })
+                .await?;
+                continue;
+            }
             op::WORKSPACE_ACTIVATE => {
                 // Update `active_workspace` (declared above) HERE, inline —
                 // same pattern as HELLO's auth flag just above: peek the raw
