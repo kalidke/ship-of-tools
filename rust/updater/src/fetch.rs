@@ -6,8 +6,8 @@
 //! not one: `list_releases` reads the public `GET
 //! /repos/<repo>/releases?per_page=20` REST listing (tag + prerelease flag
 //! for recent releases, no auth needed on a public repo), [`select_target`]
-//! picks the tag implied by the installed version's channel (ADR 0030 §4
-//! amendment 2026-09-08), then `latest` downloads that one tag's
+//! picks the newest release, rc or not (ADR 0030 §4 amendment
+//! 2026-09-24), then `latest` downloads that one tag's
 //! `SHA256SUMS` exactly like any other named release file (see
 //! `sums::discover`).
 //!
@@ -428,8 +428,13 @@ mod tests {
         .unwrap();
 
         let f = Fetcher::Dir(dir.clone());
-        // A stable install never sees the rcs.
-        assert!(f.latest("kalidke/ship-of-tools", "0.5.10").await.unwrap().is_none());
+        // A stable install moves onto the newest rc too.
+        let l = f
+            .latest("kalidke/ship-of-tools", "0.5.10")
+            .await
+            .unwrap()
+            .expect("rc.13 supersedes 0.5.10");
+        assert_eq!(l.tag.as_deref(), Some("v0.6.0-rc.13"));
         // An rc install tracks the newest rc.
         let l = f
             .latest("kalidke/ship-of-tools", "0.6.0-rc.11")
@@ -445,9 +450,9 @@ mod tests {
     /// stage/apply. Gated on `--ignored` (network-dependent, and the real
     /// listing changes daily); run manually after touching the discovery
     /// path. Proves `list_releases` parses live GitHub JSON and that
-    /// `select_target` keeps a stable-channel install off every listed
-    /// prerelease, without hardcoding today's actual tag numbers (the repo
-    /// cuts rcs daily, so any exact-tag assertion would rot).
+    /// `select_target` offers an old install the newest listed release, rc
+    /// or not, without hardcoding today's actual tag numbers (the repo cuts
+    /// rcs daily, so any exact-tag assertion would rot).
     #[tokio::test]
     #[ignore]
     async fn live_list_releases_against_real_repo() {
@@ -462,13 +467,13 @@ mod tests {
             assert!(crate::semver::parse_semver(tag).is_some(), "unparsable tag: {tag}");
         }
 
-        // A stable-channel install must never be pointed at a prerelease.
-        if let Some(tag) = select_target("0.0.1", &releases) {
-            assert!(
-                !tag.contains("-rc.") && !tag.contains("-alpha") && !tag.contains("-beta"),
-                "stable install selected a prerelease: {tag}"
-            );
-        }
+        // Any install is pointed at the newest listed release, rc or not.
+        let newest = releases
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .max_by(|a, b| crate::semver::compare_versions(a, b))
+            .unwrap();
+        assert_eq!(select_target("0.0.1", &releases).as_deref(), Some(newest));
 
         // A very-old prerelease install must be offered SOMETHING newer
         // (the live repo always has more recent releases than 0.0.1-rc.1).
