@@ -7503,6 +7503,33 @@ impl State {
         }
     }
 
+    /// Whether the caller may go on to open a browser tab, given the proxy
+    /// `target` `resolve_proxy_target` already decided and — only when that
+    /// target needed a bind attempt — how `TcpListener::bind` for its port
+    /// went. Pulled out of `ensure_proxy_for_url`'s tail so the exact case
+    /// the field report hit — a `Dial` target whose bind came back
+    /// `AddrInUse` — is unit-tested without a live `State`/window, same
+    /// shape as `resolve_proxy_target` itself.
+    ///
+    /// `target` alone answers it when no bind was attempted: `NotNeeded`
+    /// means the URL never routes through a proxy at all, so it's always
+    /// safe; `Refused` means there is no dial to proxy through, so it's
+    /// never safe. For `Dial`, `bind` carries what the port attempt found —
+    /// `Ok` means this frontend is about to serve it; any `Err`, most
+    /// pointedly `AddrInUse`, means something else already answers on that
+    /// port and opening now would show whatever THAT is, looking exactly
+    /// like the page the caller meant to show.
+    fn proxy_open_permitted(
+        target: &ProxyTarget,
+        bind: Option<&std::io::Result<std::net::TcpListener>>,
+    ) -> bool {
+        match target {
+            ProxyTarget::NotNeeded => true,
+            ProxyTarget::Refused(_) => false,
+            ProxyTarget::Dial(..) => bind.is_some_and(|r| r.is_ok()),
+        }
+    }
+
     /// ADR 0035: before opening a backend-served loopback URL in the browser,
     /// make sure its port is reachable. On a REMOTE, proxy-capable FE this
     /// lazily binds a local listener (once per port) that pipes to the daemon
@@ -7514,42 +7541,59 @@ impl State {
     /// — `event_host` off the announcement, or the `OpenUrl` command's
     /// `from_host`), so a figure served by a non-default host's daemon is
     /// proxied against THAT daemon, not silently skipped.
-    fn ensure_proxy_for_url(&mut self, host: &HostKey, url: &str) {
-        let (addr, token) = match Self::resolve_proxy_target(
+    ///
+    /// Returns whether the caller may go on to open `url` in the browser.
+    /// `true` means the page will be served by something this frontend
+    /// itself arranged — no proxy was ever needed, this FE already armed
+    /// the port earlier, or it just bound it now. `false` means the page
+    /// will NOT be served by anything of ours, and every path that returns
+    /// it has already written why to `self.status` — opening the browser
+    /// anyway is worse than not opening: a port held by an unknown local
+    /// listener renders someone else's page looking entirely normal,
+    /// indistinguishable from the one the caller meant to show.
+    /// `#[must_use]` so a new call site can't quietly repeat the bug this
+    /// fixed: opening unconditionally after a refusal this function itself
+    /// computed and discarded.
+    #[must_use]
+    fn ensure_proxy_for_url(&mut self, host: &HostKey, url: &str) -> bool {
+        let target = Self::resolve_proxy_target(
             host,
             &self.proxy_capable_hosts,
             &self.host_resolved_dial,
             &self.host_transports,
-        ) {
-            ProxyTarget::NotNeeded => return,
+        );
+        let (addr, token) = match &target {
+            ProxyTarget::NotNeeded => return true,
             ProxyTarget::Refused(reason) => {
                 tracing::warn!(%host, %reason, "proxy: refusing — no dial to proxy through");
-                self.status = reason;
+                self.status = reason.clone();
                 self.window.request_redraw();
-                return;
+                return false;
             }
-            ProxyTarget::Dial(addr, token) => (addr, token),
+            ProxyTarget::Dial(addr, token) => (*addr, token.clone()),
         };
         let Some(tx) = self.proxy_listener_tx.as_ref() else {
-            return;
+            return false; // past NotNeeded a proxy IS needed, and there's no manager to arm one
         };
         let Some(port) = crate::proxy_listen::proxy_port_from_url(url) else {
-            return;
+            return true; // nothing to proxy, so nothing to arm
         };
         if !self.proxy_ensured.insert(port) {
-            return; // already bound, or already found forwarded (AddrInUse)
+            return true; // already bound, or already found forwarded (AddrInUse)
         }
-        match std::net::TcpListener::bind(("127.0.0.1", port)) {
+        let bind = std::net::TcpListener::bind(("127.0.0.1", port));
+        let permit_open = Self::proxy_open_permitted(&target, Some(&bind));
+        match bind {
             Ok(listener) => {
                 if let Err(e) = listener.set_nonblocking(true) {
                     tracing::warn!(port, error = %e, "proxy: set_nonblocking failed; not arming");
                     self.proxy_ensured.remove(&port);
-                    return;
+                    return false;
                 }
                 if tx.send((listener, addr.to_string(), token)).is_err() {
                     tracing::warn!(port, "proxy: manager gone; not arming");
                     self.proxy_ensured.remove(&port);
-                    return;
+                    return false;
                 }
                 tracing::info!(port, %addr, "proxy: bound local listener for backend page");
             }
@@ -7583,6 +7627,7 @@ impl State {
                 self.proxy_ensured.remove(&port);
             }
         }
+        permit_open
     }
 
     /// Toggle the backend's Files-mode "show hidden files" flag for the active
@@ -7785,10 +7830,11 @@ impl State {
                 // command-file / internal dispatch names no host and gets the
                 // default — the only proxied one anyway.
                 let host = from_host.cloned().unwrap_or_else(|| self.default_host());
-                self.ensure_proxy_for_url(&host, &url);
-                match open_url_in_browser(&url) {
-                    Ok(()) => self.status = format!("opened in browser · {url}"),
-                    Err(e) => self.status = format!("open_url failed · {e}"),
+                if self.ensure_proxy_for_url(&host, &url) {
+                    match open_url_in_browser(&url) {
+                        Ok(()) => self.status = format!("opened in browser · {url}"),
+                        Err(e) => self.status = format!("open_url failed · {e}"),
+                    }
                 }
                 self.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
                 self.window.request_redraw();
@@ -13850,15 +13896,16 @@ impl State {
                                 self.window.request_redraw();
                                 continue;
                             }
-                            self.ensure_proxy_for_url(&event_host, &url);
-                            match open_url_in_browser(&url) {
-                                Ok(()) => {
-                                    self.status = format!("opened interactive figure · {url}")
-                                }
-                                Err(e) => {
-                                    tracing::warn!(error = %e, %url, "wgl: open_url_in_browser failed");
-                                    self.status =
-                                        format!("interactive figure · browser-open failed · {e}");
+                            if self.ensure_proxy_for_url(&event_host, &url) {
+                                match open_url_in_browser(&url) {
+                                    Ok(()) => {
+                                        self.status = format!("opened interactive figure · {url}")
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, %url, "wgl: open_url_in_browser failed");
+                                        self.status =
+                                            format!("interactive figure · browser-open failed · {e}");
+                                    }
                                 }
                             }
                             self.window.request_redraw();
@@ -14607,13 +14654,14 @@ impl State {
                 }
                 crate::transport::IncomingEvt::PlutoOpened { result } => match result {
                     Ok(url) => {
-                        self.ensure_proxy_for_url(&event_host, &url);
-                        if let Err(e) = open_url_in_browser(&url) {
-                            tracing::warn!(error = %e, %url,
-                                    "pluto: open_url_in_browser failed");
-                            self.status = format!("pluto.open browser-launch failed · {e}");
-                        } else {
-                            self.status = format!("pluto · opened {url}");
+                        if self.ensure_proxy_for_url(&event_host, &url) {
+                            if let Err(e) = open_url_in_browser(&url) {
+                                tracing::warn!(error = %e, %url,
+                                        "pluto: open_url_in_browser failed");
+                                self.status = format!("pluto.open browser-launch failed · {e}");
+                            } else {
+                                self.status = format!("pluto · opened {url}");
+                            }
                         }
                         self.window.request_redraw();
                     }
@@ -14625,13 +14673,14 @@ impl State {
                 },
                 crate::transport::IncomingEvt::DocsOpened { result } => match result {
                     Ok(url) => {
-                        self.ensure_proxy_for_url(&event_host, &url);
-                        if let Err(e) = open_url_in_browser(&url) {
-                            tracing::warn!(error = %e, %url,
-                                    "docs: open_url_in_browser failed");
-                            self.status = format!("docs.open browser-launch failed · {e}");
-                        } else {
-                            self.status = format!("docs · opened {url}");
+                        if self.ensure_proxy_for_url(&event_host, &url) {
+                            if let Err(e) = open_url_in_browser(&url) {
+                                tracing::warn!(error = %e, %url,
+                                        "docs: open_url_in_browser failed");
+                                self.status = format!("docs.open browser-launch failed · {e}");
+                            } else {
+                                self.status = format!("docs · opened {url}");
+                            }
                         }
                         self.window.request_redraw();
                     }
@@ -14643,13 +14692,14 @@ impl State {
                 },
                 crate::transport::IncomingEvt::VideoOpened { result } => match result {
                     Ok(url) => {
-                        self.ensure_proxy_for_url(&event_host, &url);
-                        if let Err(e) = open_url_in_browser(&url) {
-                            tracing::warn!(error = %e, %url,
-                                    "video: open_url_in_browser failed");
-                            self.status = format!("video.open browser-launch failed · {e}");
-                        } else {
-                            self.status = "video · opened in browser".to_string();
+                        if self.ensure_proxy_for_url(&event_host, &url) {
+                            if let Err(e) = open_url_in_browser(&url) {
+                                tracing::warn!(error = %e, %url,
+                                        "video: open_url_in_browser failed");
+                                self.status = format!("video.open browser-launch failed · {e}");
+                            } else {
+                                self.status = "video · opened in browser".to_string();
+                            }
                         }
                         self.window.request_redraw();
                     }
@@ -28362,6 +28412,45 @@ mod capsule_pane_tests {
             State::resolve_proxy_target(&host, &proxy_capable_hosts, &host_resolved_dial, &host_transports),
             ProxyTarget::NotNeeded
         );
+    }
+
+    /// The field report's exact shape: a `Dial` target (this host IS
+    /// proxy-capable and holds a resolved dial) whose bind attempt comes
+    /// back `AddrInUse` must refuse the open — the port already answers to
+    /// an unknown local listener, and opening would show whatever THAT
+    /// serves, looking exactly like the page the caller meant to show.
+    #[test]
+    fn proxy_open_permitted_refuses_an_addr_in_use_dial() {
+        let holder = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = holder.local_addr().unwrap().port();
+        let bind = std::net::TcpListener::bind(("127.0.0.1", port));
+        assert!(matches!(
+            bind.as_ref().err().map(std::io::Error::kind),
+            Some(std::io::ErrorKind::AddrInUse)
+        ));
+        let target = ProxyTarget::Dial("127.0.0.1:1".parse().unwrap(), None);
+        assert!(!State::proxy_open_permitted(&target, Some(&bind)));
+    }
+
+    /// The success half of the same `Dial` case — a bind that actually
+    /// lands permits the open: this frontend is the one about to serve it.
+    #[test]
+    fn proxy_open_permitted_allows_a_successful_dial_bind() {
+        let bind = std::net::TcpListener::bind(("127.0.0.1", 0));
+        assert!(bind.is_ok());
+        let target = ProxyTarget::Dial("127.0.0.1:1".parse().unwrap(), None);
+        assert!(State::proxy_open_permitted(&target, Some(&bind)));
+    }
+
+    /// `NotNeeded` and `Refused` never reach a bind attempt at all — the
+    /// decision is `target` alone with no `bind` result to consult.
+    #[test]
+    fn proxy_open_permitted_decides_not_needed_and_refused_without_a_bind() {
+        assert!(State::proxy_open_permitted(&ProxyTarget::NotNeeded, None));
+        assert!(!State::proxy_open_permitted(
+            &ProxyTarget::Refused("no dial".to_string()),
+            None
+        ));
     }
 
     // The `attach_direct` switch itself (parsing the daemon's refusal
