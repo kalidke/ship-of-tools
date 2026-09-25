@@ -263,9 +263,24 @@ send_frame() {  # $1 to, $2 text
                     return 0
                 fi
             done
-            echo "ERROR: no receiver — the daemon's roster shows nobody positioned to see $1." >&2
-            echo "       Use durable delivery instead: comm-send.sh @$1 \"msg\"" >&2
-            return 1
+            # Nothing in the roster names the target. That is NOT proof of
+            # absence, and it used to be reported as one. The roster belongs
+            # to the daemon THIS send reached, and a handle on another box
+            # registers on ITS OWN daemon — so for a cross-box target this
+            # branch is the normal case, not a fault, and the frame is
+            # forwarded and delivered regardless. Measured from both ends
+            # 2026-09-25: this line printed with exit 1 while the message
+            # landed in the target's inbox one second later and woke its
+            # pane. The relay is live-only and a reply is the only proof of
+            # delivery — which the docs already say — so a check that cannot
+            # prove absence warns and does not fail. The old "use durable
+            # delivery instead" advice is deleted with it: on the box where
+            # this fires, comm-send.sh cannot address that name either, so
+            # it sent obedient sessions down a route that always fails and
+            # more than one concluded the backend was dead.
+            echo "WARN: this daemon's roster does not name $1 — expected for a handle on another box. The frame was accepted; only a reply proves delivery." >&2
+            echo "relayed -> $1 via $ENDPOINT"
+            return 0
         fi
         # `receivers` absent: an OLD daemon answered — it can't prove a
         # receiver either way, so this is NOT a success to report; fall
