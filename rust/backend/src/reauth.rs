@@ -11,6 +11,15 @@
 // lane already uses for the identical problem (it drives `Action::Shutdown`
 // only after its ack was physically written).
 //
+// Three outcomes, not two, and all three leave ONE truth: a refusal (the
+// record never moved), an accept whose frame reached its reader (the record
+// moved and the leg is replaced), and an accept whose frame did NOT reach
+// it — a dead or non-draining peer, the connection ending on the `?` that
+// write returns. The third is the one that needs an act rather than a
+// return: nothing was torn down, so the live leg still spends the old
+// login, and the record is rolled back to say so
+// ([`ReauthRestart::rollback`]) before the error propagates.
+//
 // Why the record moves before the restart: every path that later starts a
 // leg for this row reads `Workspace::account` from the registry at spawn
 // time (`capsule_workspace::runtime::spawn_and_watch`) — this call's own
@@ -55,11 +64,16 @@ pub(crate) struct Refusal {
 /// out, so holding one means the record is already updated and the ack is
 /// the caller's next act.
 pub struct ReauthRestart {
-    workspace_id: String,
-    slug: String,
-    agent_name: String,
-    project_root: PathBuf,
-    account: String,
+    /// The row itself — the `Arc` [`Workspaces::set_account`] mutated,
+    /// carried rather than copied field by field so nothing here can drift
+    /// from the registry it was taken from: the id, slug, agent name, root
+    /// and the account all come off it, and the ACCOUNT is read fresh at
+    /// spawn time, the same rule the watchdog's crash restart follows.
+    row: std::sync::Arc<crate::workspaces::Workspace>,
+    /// The account this row ran as before the record moved — the value
+    /// [`Self::rollback`] puts back on every path that leaves the OLD leg
+    /// running.
+    previous: String,
     /// Absolute, canonicalized where possible (see `root_canonicalized`).
     state_root: PathBuf,
     root_canonicalized: bool,
@@ -73,6 +87,66 @@ pub struct ReauthRestart {
     /// boot resume and no start-on-attach can land a second supervisor in
     /// the window this call opens.
     _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl ReauthRestart {
+    /// Put the record back where the accept moved it from. Every caller is
+    /// the same shape: the switch did NOT happen, the old leg is still
+    /// running on the old login, and the record is the half that can still
+    /// be made to agree — a write that never reached its reader
+    /// ([`write_accept_then`]) and every outcome in [`restart_blocking`]
+    /// that could not end the leg. Consumes the plan, so the row's guard is
+    /// released only once the record is honest again.
+    pub fn rollback(self) {
+        // Through the registry, not through the `Arc` this plan holds: if a
+        // concurrent `workspace.create` swapped the row, the record that
+        // needs correcting is the one the registry answers with now.
+        let Some(row) = self.workspaces.set_account(&self.row.workspace_id, &self.previous) else {
+            return; // the row is gone; there is no record left to correct
+        };
+        tracing::warn!(
+            workspace_id = %self.row.workspace_id, account = %discovery_name(&self.previous),
+            "workspace.reauth: the switch did not take; the row's account is back to the login its live leg actually spends"
+        );
+        if let Err(e) = crate::workspaces::save(&row) {
+            tracing::error!(
+                workspace_id = %self.row.workspace_id, error = %e,
+                "workspace.reauth: rolled the account back in memory but could not persist it; a daemon restart would read the account this row never moved to"
+            );
+        }
+    }
+}
+
+/// The accept's ordering, in ONE place rather than in two adjacent
+/// statements: the frame goes out, and only then does anything touch the
+/// leg. A write that FAILS is the third outcome (see the module doc) — the
+/// caller never learned the switch happened, so the record is rolled back
+/// and the error still propagates, ending the connection exactly as a bare
+/// `?` did. Generic over the writer and over what a restart is handed to,
+/// so the order is pinned by a test instead of by adjacency; `server.rs`
+/// passes its own connection and its own detached-restart spawn.
+pub async fn write_accept_then<W, F>(
+    tx: &mut W,
+    out: &HandlerOutput,
+    restart: Option<ReauthRestart>,
+    run: F,
+) -> Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+    F: FnOnce(ReauthRestart),
+{
+    for (frame, blob) in out {
+        if let Err(e) = crate::server::write_frame_to(tx, frame, blob.as_deref()).await {
+            if let Some(plan) = restart {
+                plan.rollback();
+            }
+            return Err(e);
+        }
+    }
+    if let Some(plan) = restart {
+        run(plan);
+    }
+    Ok(())
 }
 
 /// `""` and the literal `"default"` both name the agent's own config
@@ -95,6 +169,21 @@ fn discovery_name(account: &str) -> &str {
     } else {
         account
     }
+}
+
+/// Whether `account` can actually open transcript `resume`: one
+/// `projects/<project>/<resume>.jsonl` under its own config dir
+/// ([`crate::accounts::claude_config_dir`]). Globbed over `projects`'
+/// children rather than rebuilding claude's own cwd-to-directory mangling
+/// — the id is unique across that tree, and a rule this daemon copied
+/// would be a rule it could get wrong.
+fn resume_reachable(home: &Path, account: &str, resume: &str) -> bool {
+    let transcript = format!("{resume}.jsonl");
+    let projects = crate::accounts::claude_config_dir(home, account).join("projects");
+    let Ok(entries) = std::fs::read_dir(projects) else {
+        return false;
+    };
+    entries.flatten().any(|e| e.path().join(&transcript).is_file())
 }
 
 /// Every refusal this op owns, decided BEFORE anything is touched, pure
@@ -173,9 +262,30 @@ pub(crate) fn check(
             "resume is required: name the transcript id to resume (the row's own CLAUDE_CODE_SESSION_ID) — there is no \"most recent conversation\" to fall back to on another login".to_string(),
         );
     }
+    // The refusal that protects the kill, and the reason it lives HERE:
+    // `claude --resume <id>` on an id the target cannot see exits at once,
+    // the supervisor flaps the row to `Terminal`, and the conversation is
+    // reachable again only by reauthing back — so the only actor that can
+    // read both accounts' folders proves reachability BEFORE the accept,
+    // rather than asking the leg to check its own grave.
+    if !resume_reachable(home, want, resume) {
+        return refuse(
+            "resume_unreachable",
+            format!(
+                "account {:?} cannot see transcript {resume:?}: no projects/*/{resume}.jsonl under its config dir — either that is not this conversation's id, or that account folder has its own REAL `projects` instead of the shared symlink, in which case the resume would land in a fresh, empty conversation",
+                discovery_name(want)
+            ),
+        );
+    }
     Ok(())
 }
 
+/// The ONE refusal frame this op builds — one constructor, so the
+/// discovered accounts ride on every refusal as both the module doc above
+/// and `ops.rs`'s wire doc promise. The only refusals that answer with an
+/// empty list are the two that genuinely precede discovery (a payload that
+/// will not parse, a home that will not resolve); a second bare
+/// constructor for them is exactly how the promise stopped being true.
 fn refused(req_id: u64, r: Refusal) -> HandlerOutput {
     vec![(
         Frame::res(
@@ -183,13 +293,6 @@ fn refused(req_id: u64, r: Refusal) -> HandlerOutput {
             op::WORKSPACE_REAUTH,
             json!({ "error": r.error, "code": r.code, "accounts": r.accounts }),
         ),
-        None,
-    )]
-}
-
-fn refused_bare(req_id: u64, error: String, code: &str) -> HandlerOutput {
-    vec![(
-        Frame::res(req_id, op::WORKSPACE_REAUTH, json!({ "error": error, "code": code })),
         None,
     )]
 }
@@ -203,39 +306,35 @@ pub async fn handle_workspace_reauth(
     payload_json: serde_json::Value,
     workspaces: &Workspaces,
 ) -> Result<(HandlerOutput, Option<ReauthRestart>)> {
+    // The two refusals that precede discovery: no home is resolved yet, so
+    // their account list is empty because there is nothing to list, not
+    // because this op withheld it.
     let req: sot_protocol::WorkspaceReauthReq = match serde_json::from_value(payload_json) {
         Ok(r) => r,
         Err(e) => {
-            return Ok((refused_bare(req_id, format!("workspace.reauth payload: {e}"), "bad_request"), None))
+            let error = format!("workspace.reauth payload: {e}");
+            return Ok((refused(req_id, Refusal { code: "bad_request", error, accounts: Vec::new() }), None));
         }
     };
     tracing::info!(workspace_id = %req.workspace_id, account = %req.account, "workspace.reauth");
 
     let Some(home) = crate::accounts::account_home() else {
-        return Ok((
-            refused_bare(
-                req_id,
-                "could not resolve this daemon's own home, so no account can be resolved against it".to_string(),
-                "no_home",
-            ),
-            None,
-        ));
+        let error = "could not resolve this daemon's own home, so no account can be resolved against it".to_string();
+        return Ok((refused(req_id, Refusal { code: "no_home", error, accounts: Vec::new() }), None));
     };
     let accounts = crate::accounts::discover_accounts(&home);
+    // Every refusal from here down carries what this daemon can see, by
+    // construction rather than per call site.
     let names: Vec<String> = accounts.iter().map(|a| a.name.clone()).collect();
+    let refuse = |code: &'static str, error: String| -> Result<(HandlerOutput, Option<ReauthRestart>)> {
+        Ok((refused(req_id, Refusal { code, error, accounts: names.clone() }), None))
+    };
+    // The one refusal a row can hit twice: once here, and once more after
+    // the guard is held, because a destroy could have won the wait.
+    let gone = || "the workspace was removed before its reauth could start".to_string();
 
     let Some(ws) = workspaces.resolve(Some(&req.workspace_id)) else {
-        return Ok((
-            refused(
-                req_id,
-                Refusal {
-                    code: "unknown_workspace",
-                    error: format!("no workspace {:?} is registered here", req.workspace_id),
-                    accounts: names,
-                },
-            ),
-            None,
-        ));
+        return refuse("unknown_workspace", format!("no workspace {:?} is registered here", req.workspace_id));
     };
     let want = normalize(&req.account).to_string();
     if let Err(r) = check(
@@ -256,33 +355,23 @@ pub async fn handle_workspace_reauth(
     // gone; membership is rechecked once the lock is actually held,
     // because a destroy could have won the wait.
     let Some(guard) = workspaces.capsule_guard(&ws.workspace_id) else {
-        return Ok((
-            refused_bare(req_id, "the workspace was removed before its reauth could start".to_string(), "unknown_workspace"),
-            None,
-        ));
+        return refuse("unknown_workspace", gone());
     };
     let guard = guard.lock_owned().await;
     if workspaces.resolve(Some(&ws.workspace_id)).is_none() {
-        return Ok((
-            refused_bare(req_id, "the workspace was removed before its reauth could start".to_string(), "unknown_workspace"),
-            None,
-        ));
+        return refuse("unknown_workspace", gone());
     }
 
     // Everything that can still fail has to fail BEFORE the record moves
     // and before the ack: after the ack there is no reader left to tell.
     let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
-        return Ok((
-            refused_bare(
-                req_id,
-                format!(
-                    "could not resolve this machine's state root ({} unset)",
-                    crate::capsule_workspace::STATE_ROOT_HINT
-                ),
-                "no_state_root",
+        return refuse(
+            "no_state_root",
+            format!(
+                "could not resolve this machine's state root ({} unset)",
+                crate::capsule_workspace::STATE_ROOT_HINT
             ),
-            None,
-        ));
+        );
     };
     // Same reason `workspace.destroy` canonicalizes the ROOT before
     // joining the row's id (see `destroy_capsule_workspace`): a live
@@ -301,44 +390,45 @@ pub async fn handle_workspace_reauth(
     };
     let argv = match crate::capsule_workspace::claude_resume_argv(&req.resume) {
         Ok(argv) => argv,
-        Err(e) => return Ok((refused_bare(req_id, e, "launcher_unresolved"), None)),
+        Err(e) => return refuse("launcher_unresolved", e),
     };
 
-    // The record moves now, while the old leg is still running.
+    // The record moves now, while the old leg is still running. What is
+    // persisted — and what the restart is built from — is the `Arc`
+    // `set_account` itself mutated, never the one resolved before the
+    // guard: `Workspaces::insert` is NOT taken under this guard, so a
+    // concurrent `workspace.create` for the same slug can swap the
+    // registry's `Arc` for this row inside the window, and saving the
+    // stale one would write the OLD account into a toml the registry no
+    // longer agrees with.
     let previous = ws.account();
-    if workspaces.set_account(&ws.workspace_id, &want).is_none() {
-        return Ok((
-            refused_bare(req_id, "the workspace was removed before its reauth could start".to_string(), "unknown_workspace"),
-            None,
-        ));
-    }
-    if let Err(e) = crate::workspaces::save(&ws) {
+    let Some(row) = workspaces.set_account(&ws.workspace_id, &want) else {
+        return refuse("unknown_workspace", gone());
+    };
+    if let Err(e) = crate::workspaces::save(&row) {
         // An unpersisted switch is a row that comes back on the OLD login
         // after any daemon restart while its live leg spends the new one —
         // two truths. Put the field back and refuse; nothing else has been
         // touched yet, so this is still a reauth that changed nothing.
         workspaces.set_account(&ws.workspace_id, &previous);
-        return Ok((
-            refused_bare(req_id, format!("could not persist the row's new account: {e}"), "persist_failed"),
-            None,
-        ));
+        return refuse("persist_failed", format!("could not persist the row's new account: {e}"));
     }
 
+    // `discovery_name`, not the normalized value: a switch TO the default
+    // account records `""` and must still ANSWER with a name, or the CLI
+    // prints `account=` and the human reads it as a missing field.
     let res = WorkspaceReauthRes {
         code: ACCEPTED_CODE.to_string(),
-        workspace_id: ws.workspace_id.clone(),
-        account: want.clone(),
+        workspace_id: row.workspace_id.clone(),
+        account: discovery_name(&want).to_string(),
     };
     let out = vec![(
         Frame::res(req_id, op::WORKSPACE_REAUTH, serde_json::to_value(res)?),
         None,
     )];
     let restart = ReauthRestart {
-        workspace_id: ws.workspace_id.clone(),
-        slug: ws.slug.clone(),
-        agent_name: ws.agent_name(),
-        project_root: ws.project_root.clone(),
-        account: want,
+        row,
+        previous,
         state_root,
         root_canonicalized,
         argv,
@@ -353,9 +443,10 @@ pub async fn handle_workspace_reauth(
 /// `EndRunOutcome` variant must be classified here as deliberately as in
 /// `handlers.rs`'s `capsule_destroy_outcome_of`, which partitions the same
 /// enum for the same underlying question ("does anything still hold this
-/// row?"). Anything not-over leaves the row exactly as it is — still
-/// running on the old login, with the new account already recorded, which
-/// the next restart of any kind picks up.
+/// row?"). Anything not-over leaves the leg exactly as it is — still
+/// running on the old login — so the caller rolls the RECORD back to that
+/// same login: a row nobody could replace must not be a row whose record
+/// already says it was.
 fn run_ended(outcome: &crate::capsule_workspace::EndRunOutcome) -> Result<(), String> {
     use crate::capsule_workspace::EndRunOutcome as O;
     match outcome {
@@ -368,46 +459,55 @@ fn run_ended(outcome: &crate::capsule_workspace::EndRunOutcome) -> Result<(), St
 /// End the row's current leg and spawn its replacement on the new account.
 /// BLOCKING — the caller runs it via `spawn_blocking`, AFTER the accept
 /// frame is physically written. Nothing here can answer the caller (it is
-/// the process being replaced), so every outcome is a log line.
+/// the process being replaced), so every outcome is a log line — and every
+/// outcome that leaves the OLD leg running is a [`ReauthRestart::rollback`]
+/// too: the record may not claim a switch that did not happen. Once the leg
+/// IS ended the record stands, whatever the replacement spawn does: every
+/// later start path reads the account off the registry.
 pub fn restart_blocking(plan: ReauthRestart) {
-    let state_dir = crate::capsule_workspace::state_dir_for(&plan.state_root, &plan.workspace_id);
-    let reason = format!("reauth to account {:?}", discovery_name(&plan.account));
+    let state_dir = crate::capsule_workspace::state_dir_for(&plan.state_root, &plan.row.workspace_id);
+    // Read off the ROW, not off a copy taken before the ack: what the
+    // replacement actually spends is whatever the registry says when
+    // `spawn_and_watch` resolves it, so naming that same value here keeps
+    // the log and the spawn from ever disagreeing.
+    let account = plan.row.account();
+    let reason = format!("reauth to account {:?}", discovery_name(&account));
     let outcome = match crate::capsule_workspace::end_run(&state_dir, &reason, plan.root_canonicalized) {
         Ok(o) => o,
         Err(e) => {
             tracing::warn!(
-                workspace_id = %plan.workspace_id, error = %e,
-                "workspace.reauth: could not end the row's leg; the row keeps running on its old login and the new account applies at its next restart"
+                workspace_id = %plan.row.workspace_id, error = %e,
+                "workspace.reauth: could not end the row's leg, so the switch did not happen; rolling the record back to the login the leg still spends"
             );
-            return;
+            return plan.rollback();
         }
     };
     if let Err(detail) = run_ended(&outcome) {
         tracing::warn!(
-            workspace_id = %plan.workspace_id, detail = %detail,
-            "workspace.reauth: the row's run did not end, so no replacement was spawned; the new account applies at its next restart"
+            workspace_id = %plan.row.workspace_id, detail = %detail,
+            "workspace.reauth: the row's run did not end, so no replacement was spawned; rolling the record back to the login the leg still spends"
         );
-        return;
+        return plan.rollback();
     }
     // `StartMode::Resume` — a reauth is never a row's first-ever run, and
     // the account itself is read back off the registry inside this call
     // (`spawn_and_watch`), which is why the record had to move first.
     match crate::capsule_workspace::start_supervisor(
         &plan.state_root,
-        &plan.workspace_id,
+        &plan.row.workspace_id,
         crate::capsule_workspace::StartMode::Resume,
         &plan.argv,
-        &plan.project_root,
-        &plan.agent_name,
-        &plan.slug,
+        &plan.row.project_root,
+        &plan.row.agent_name(),
+        &plan.row.slug,
         plan.workspaces.clone(),
     ) {
         Ok(phase) => tracing::info!(
-            workspace_id = %plan.workspace_id, account = %plan.account, phase,
+            workspace_id = %plan.row.workspace_id, account = %discovery_name(&account), phase,
             "workspace.reauth: replacement leg spawned on the new account"
         ),
         Err(e) => tracing::warn!(
-            workspace_id = %plan.workspace_id, error = %e,
+            workspace_id = %plan.row.workspace_id, error = %e,
             "workspace.reauth: the replacement leg did not spawn; the row rests until it is opened again, on the new account"
         ),
     }
@@ -416,6 +516,7 @@ pub fn restart_blocking(plan: ReauthRestart) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounts::claude_config_dir;
     use crate::workspaces::Workspace;
 
     /// Restores every variable these tests pin, under the crate-wide
@@ -499,6 +600,18 @@ mod tests {
     #[cfg(windows)]
     fn seed_claude_binary(_home: &Path) {}
 
+    /// One transcript the account owning `config_dir` can open:
+    /// `projects/<project>/<id>.jsonl`, the shape `check` globs for. In the
+    /// real tree a named account reaches the very same file through the
+    /// shared `projects` symlink (`accounts::SHARED_ENTRIES`); these tests
+    /// seed the folder being asked about directly, which is what the glob
+    /// resolves to either way.
+    fn seed_transcript(config_dir: &Path, id: &str) {
+        let project = config_dir.join("projects").join("-a-project-root");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join(format!("{id}.jsonl")), b"{}\n").unwrap();
+    }
+
     fn refusal_of(
         runtime: &str,
         agent_kind: &str,
@@ -578,9 +691,32 @@ mod tests {
         assert_eq!(r.code, "resume_required");
     }
 
+    // The refusal that protects the kill: an id the TARGET cannot open would
+    // be an accept, a killed session, a `claude --resume` that exits at once
+    // and a row flapped to Terminal. The daemon is the only actor that can
+    // see both folders, so it is the one that proves reachability.
+    #[test]
+    fn a_transcript_the_target_account_cannot_see_is_refused() {
+        let home = home_with(true, &[("team", true)]);
+        // The conversation exists — under the DEFAULT folder only, which is
+        // exactly what an account folder carrying its own REAL `projects`
+        // looks like from the target's side.
+        seed_transcript(&claude_config_dir(home.path(), ""), "sid");
+        let r = refusal_of("capsule", "claude", "", "team", "sid", home.path());
+        assert_eq!(r.code, "resume_unreachable");
+        assert!(r.error.contains("sid.jsonl"), "{}", r.error);
+        // …and an id that is simply not this conversation's is the same
+        // refusal, even with the folder fully shared.
+        seed_transcript(&claude_config_dir(home.path(), "team"), "sid");
+        let r = refusal_of("capsule", "claude", "", "team", "stale-id", home.path());
+        assert_eq!(r.code, "resume_unreachable");
+    }
+
     #[test]
     fn a_logged_in_account_on_a_claude_capsule_row_is_accepted() {
         let home = home_with(true, &[("team", true)]);
+        seed_transcript(&claude_config_dir(home.path(), "team"), "sid");
+        seed_transcript(&claude_config_dir(home.path(), ""), "sid");
         let accounts = crate::accounts::discover_accounts(home.path());
         assert!(check("capsule", "claude", "", "team", "sid", home.path(), &accounts).is_ok());
         // …and back to the default login, which is an account like any other.
@@ -616,14 +752,18 @@ mod tests {
         (reg, id, slug)
     }
 
-    async fn reauth(reg: &Workspaces, id: &str, account: &str, resume: &str) -> (serde_json::Value, Option<ReauthRestart>) {
-        let (out, restart) = handle_workspace_reauth(
+    async fn reauth_out(reg: &Workspaces, id: &str, account: &str, resume: &str) -> (HandlerOutput, Option<ReauthRestart>) {
+        handle_workspace_reauth(
             1,
             serde_json::json!({"workspace_id": id, "account": account, "resume": resume}),
             reg,
         )
         .await
-        .expect("the handler itself never errors; it refuses");
+        .expect("the handler itself never errors; it refuses")
+    }
+
+    async fn reauth(reg: &Workspaces, id: &str, account: &str, resume: &str) -> (serde_json::Value, Option<ReauthRestart>) {
+        let (out, restart) = reauth_out(reg, id, account, resume).await;
         (out[0].0.payload.clone(), restart)
     }
 
@@ -660,6 +800,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         pin_home(home.path(), scratch.path());
         seed_claude_binary(home.path());
+        seed_transcript(&claude_config_dir(home.path(), "team"), "sid-7");
         let (reg, id, slug) = seed_capsule_row("", "row-declared-handle");
 
         let (payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
@@ -686,11 +827,8 @@ mod tests {
     // ORDERING 2: the accept is ANSWERABLE before anything is torn down.
     // The accept path never dials the row's lane — its state dir does not
     // even exist here — and the only thing that can end the leg needs the
-    // `ReauthRestart` this call hands BACK, so a caller that writes the
-    // frame first cannot get the order wrong. What is NOT asserted here:
-    // that `server.rs` physically writes that frame before calling
-    // `restart_blocking` (no fake-connection harness exists at this layer);
-    // that ordering is the dispatcher arm's own two statements.
+    // `ReauthRestart` this call hands BACK. That the frame is physically
+    // written before the restart is handed that plan is ORDERING 3 below.
     #[tokio::test]
     async fn the_accept_is_answered_before_the_leg_is_touched() {
         let _g = env_guarded();
@@ -698,6 +836,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         pin_home(home.path(), scratch.path());
         seed_claude_binary(home.path());
+        seed_transcript(&claude_config_dir(home.path(), "team"), "sid-7");
         let (reg, id, _slug) = seed_capsule_row("", "row-declared-handle");
 
         let (payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
@@ -713,6 +852,182 @@ mod tests {
             "the accept path must not have dialed, created or ended anything: {state_dir:?}"
         );
         drop(restart);
+    }
+
+    /// The peer the ordering rule turns on, in its two states: one that
+    /// accepts what it is handed, one that is already GONE (the dead or
+    /// non-draining peer `write_frame_to` answers with an `Err`). The bytes
+    /// are shared rather than owned so the restart closure can see what
+    /// reached the wire BEFORE it ran.
+    struct Peer {
+        written: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        gone: bool,
+    }
+
+    impl tokio::io::AsyncWrite for Peer {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            if self.gone {
+                return std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "the peer is gone",
+                )));
+            }
+            self.written.lock().unwrap().extend_from_slice(buf);
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// The accept path with a transcript the target can open and a row on
+    /// the default login — the fixture both ordering tests start from.
+    /// Returns the registry, the row's id and slug.
+    fn accept_fixture(home: &Path, scratch: &Path) -> (Workspaces, String, String) {
+        pin_home(home, scratch);
+        seed_claude_binary(home);
+        seed_transcript(&claude_config_dir(home, "team"), "sid-7");
+        seed_capsule_row("", "row-declared-handle")
+    }
+
+    // ORDERING 3: the accept frame is PHYSICALLY WRITTEN before anything is
+    // handed the plan that can end the leg — the dispatcher's whole
+    // contract, pinned here rather than left to two adjacent statements in
+    // `server.rs`.
+    #[tokio::test]
+    async fn the_accept_frame_is_on_the_wire_before_the_restart_is_handed_the_plan() {
+        let _g = env_guarded();
+        let home = home_with(true, &[("team", true)]);
+        let scratch = tempfile::tempdir().unwrap();
+        let (reg, id, slug) = accept_fixture(home.path(), scratch.path());
+
+        let (out, restart) = reauth_out(&reg, &id, "team", "sid-7").await;
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut peer = Peer { written: written.clone(), gone: false };
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (seen_then, written_then) = (seen.clone(), written.clone());
+        write_accept_then(&mut peer, &out, restart, move |plan| {
+            *seen_then.lock().unwrap() = Some(written_then.lock().unwrap().clone());
+            // Never end a real leg from a unit test: dropping the plan
+            // releases the row's guard and touches nothing.
+            drop(plan);
+        })
+        .await
+        .expect("a peer that takes the write leaves the restart to run");
+
+        let seen = seen.lock().unwrap().clone().expect("the restart was handed the plan");
+        assert!(
+            String::from_utf8_lossy(&seen).contains(ACCEPTED_CODE),
+            "the accept must already be on the wire when the restart runs: {:?}",
+            String::from_utf8_lossy(&seen)
+        );
+        // Nothing rolled back: this is the accept that was read.
+        assert_eq!(reg.resolve(Some(&id)).unwrap().account(), "team");
+        let toml = std::fs::read_to_string(crate::workspaces::toml_path_for(&slug)).unwrap();
+        assert!(toml.contains("account       = \"team\""), "{toml}");
+    }
+
+    // ORDERING 4: the THIRD outcome — the accept never reached its reader.
+    // Nothing was torn down, so the live leg still spends the OLD login and
+    // the record has to go back to saying so; the error still propagates,
+    // because that connection is over either way.
+    #[tokio::test]
+    async fn an_accept_that_cannot_be_written_rolls_the_record_back() {
+        let _g = env_guarded();
+        let home = home_with(true, &[("team", true)]);
+        let scratch = tempfile::tempdir().unwrap();
+        let (reg, id, slug) = accept_fixture(home.path(), scratch.path());
+
+        let (out, restart) = reauth_out(&reg, &id, "team", "sid-7").await;
+        assert!(restart.is_some(), "the fixture must reach the accept");
+        let mut peer = Peer { written: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())), gone: true };
+        let err = write_accept_then(&mut peer, &out, restart, |_plan| {
+            panic!("the restart must never run when the accept did not reach the caller")
+        })
+        .await
+        .expect_err("a write that fails still ends the connection");
+        assert!(format!("{err:#}").contains("the peer is gone"), "{err:#}");
+
+        let after = reg.resolve(Some(&id)).expect("the row itself survives");
+        assert_eq!(after.account(), "", "the record is back on the login the live leg spends");
+        let toml = std::fs::read_to_string(crate::workspaces::toml_path_for(&slug)).unwrap();
+        assert!(toml.contains("account       = \"\""), "{toml}");
+        assert!(toml.contains("agent_handle  = \"row-declared-handle\""), "{toml}");
+    }
+
+    // NOTE 7: the record keeps the normalized `""`, but the REPLY names the
+    // account, or `sot-fe` prints `account=` and the human reads a field
+    // that failed to fill.
+    #[tokio::test]
+    async fn switching_to_the_default_account_answers_with_its_name_not_an_empty_string() {
+        let _g = env_guarded();
+        let home = home_with(true, &[("team", true)]);
+        let scratch = tempfile::tempdir().unwrap();
+        pin_home(home.path(), scratch.path());
+        seed_claude_binary(home.path());
+        seed_transcript(&claude_config_dir(home.path(), ""), "sid-7");
+        let (reg, id, _slug) = seed_capsule_row("team", "row-declared-handle");
+
+        let (payload, restart) = reauth(&reg, &id, "default", "sid-7").await;
+        assert_eq!(payload["code"], ACCEPTED_CODE);
+        assert_eq!(payload["account"], "default", "the reply names the account: {payload:?}");
+        assert_eq!(
+            reg.resolve(Some(&id)).unwrap().account(),
+            "",
+            "the record still holds the normalized default"
+        );
+        drop(restart);
+    }
+
+    // NOTE 8: the accounts ride on refusals decided AFTER the guard too,
+    // not just on the pre-guard ones — `persist_failed` is the one such
+    // refusal a test can provoke on demand (a config root that cannot hold
+    // the row's toml), and it is also the only path that puts the account
+    // back without a `ReauthRestart` to do it.
+    #[tokio::test]
+    async fn a_row_whose_toml_cannot_be_written_is_refused_with_the_accounts_and_the_account_put_back() {
+        let _g = env_guarded();
+        let home = home_with(true, &[("team", true)]);
+        let scratch = tempfile::tempdir().unwrap();
+        pin_home(home.path(), scratch.path());
+        seed_claude_binary(home.path());
+        seed_transcript(&claude_config_dir(home.path(), "team"), "sid-7");
+        // A config root that is a FILE: nothing can create the row's toml
+        // under it, so `save` fails where every other step has succeeded.
+        let blocked = scratch.path().join("not-a-directory");
+        std::fs::write(&blocked, b"").unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &blocked);
+        std::env::set_var("LOCALAPPDATA", &blocked);
+        let (reg, id, _slug) = seed_capsule_row("", "row-declared-handle");
+
+        let (payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+        assert!(restart.is_none(), "a refusal hands back no restart");
+        assert_eq!(payload["code"], "persist_failed");
+        let names: Vec<String> = payload["accounts"]
+            .as_array()
+            .expect("a post-guard refusal carries the accounts too")
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["default".to_string(), "team".to_string()]);
+        assert_eq!(
+            reg.resolve(Some(&id)).unwrap().account(),
+            "",
+            "an unpersisted switch leaves the record on the account the leg spends"
+        );
     }
 
     // `end_run`'s outcomes partition into "the run is over" (spawn the

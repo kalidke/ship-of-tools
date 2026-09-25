@@ -215,6 +215,22 @@ pub fn account_home() -> Option<PathBuf> {
     }
 }
 
+/// Where an account's claude config dir IS — the default folder for the
+/// default account (`""` or `"default"`), its own folder under
+/// `.claude-auth` for a named one. The ONE place that mapping lives:
+/// [`account_env`] hands it to the child as `CLAUDE_CONFIG_DIR`,
+/// [`ensure_account_links`] links the shared entries into it, and
+/// [`crate::reauth::check`] resolves the target account's transcripts
+/// under it. Never validates the name — a caller that takes one off the
+/// wire checks it first ([`check_account_name`]).
+pub fn claude_config_dir(home: &Path, account: &str) -> PathBuf {
+    if account.is_empty() || account == "default" {
+        home.join(CLAUDE_DIR_PREFIX)
+    } else {
+        home.join(CLAUDE_ACCOUNTS_DIR).join(account)
+    }
+}
+
 /// The load-bearing half: resolve `agent_kind`'s account env additions
 /// for `account`, against `home` — pure (no `std::env` read: `home` is
 /// explicit) so `workspace.create`'s fast-failure check and the real
@@ -240,7 +256,7 @@ pub fn account_env(agent_kind: &str, account: &str, home: &Path) -> Result<Vec<(
     check_account_name(account)?;
     match agent_kind {
         "claude" => {
-            let dir = home.join(CLAUDE_ACCOUNTS_DIR).join(account);
+            let dir = claude_config_dir(home, account);
             if !dir.is_dir() {
                 return Err(format!(
                     "unknown account {account:?}: mkdir -p ~/{CLAUDE_ACCOUNTS_DIR}/{account} -- the first session in it logs in"
@@ -311,8 +327,8 @@ pub fn ensure_account_links(home: &Path, account: &str) -> Result<(), String> {
         return Ok(());
     }
     check_account_name(account)?;
-    let default_dir = home.join(CLAUDE_DIR_PREFIX);
-    let account_dir = home.join(CLAUDE_ACCOUNTS_DIR).join(account);
+    let default_dir = claude_config_dir(home, "");
+    let account_dir = claude_config_dir(home, account);
     for name in SHARED_ENTRIES {
         let source = default_dir.join(name);
         if !source.exists() {

@@ -137,9 +137,10 @@
 #              leg is killed, so `ok reauth_accepted` is the last thing that
 #              session prints. Refuses -- changing nothing -- a row that is
 #              not a capsule claude row, an account that is unknown or has
-#              no login yet, the account the row already runs, and a missing
-#              transcript id; a refusal lists the accounts the daemon can
-#              see. Exit 0 accepted, 2 refused, 1 no reply. Read the
+#              no login yet, the account the row already runs, a missing
+#              transcript id, and a transcript that account cannot open; a
+#              refusal lists the accounts the daemon can see. Exit 0
+#              accepted, 2 refused, 1 no reply. Read the
 #              `reauth` skill first: everything in flight dies with the leg,
 #              and the new account has no server-side cache for the
 #              conversation.

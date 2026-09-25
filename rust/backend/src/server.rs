@@ -132,7 +132,7 @@ fn ping_read_deadline() -> std::time::Duration {
 /// `ClientGuard`. Cancel-safety is irrelevant on the timeout path: we tear the
 /// whole socket down, so a partially written frame is moot. Every
 /// per-connection evt/response write goes through this.
-async fn write_frame_to<W>(tx: &mut W, frame: &Frame, blob: Option<&[u8]>) -> Result<()>
+pub(crate) async fn write_frame_to<W>(tx: &mut W, frame: &Frame, blob: Option<&[u8]>) -> Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
@@ -1740,10 +1740,11 @@ where
             op::WORKSPACE_REAUTH => {
                 let (out, restart) =
                     crate::reauth::handle_workspace_reauth(frame.id, frame.payload, &workspaces).await?;
-                for (f, blob) in &out {
-                    write_frame_to(&mut tx, f, blob.as_deref()).await?;
-                }
-                if let Some(plan) = restart {
+                // Both halves of the ordering live in `write_accept_then`,
+                // which a test pins: the frame goes out first, and a write
+                // that fails rolls the record back before the `?` here ends
+                // the connection.
+                crate::reauth::write_accept_then(&mut tx, &out, restart, |plan| {
                     // Detached: this connection is about to lose its peer,
                     // and the restart holds the row's guard for its whole
                     // duration wherever it runs.
@@ -1754,7 +1755,8 @@ where
                             tracing::warn!(error = %e, "workspace.reauth: the restart task panicked");
                         }
                     });
-                }
+                })
+                .await?;
                 continue;
             }
             op::WORKSPACE_ACTIVATE => {

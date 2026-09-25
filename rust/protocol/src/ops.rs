@@ -151,8 +151,10 @@ pub mod op {
     /// `WorkspaceReauthReq {workspace_id, account, resume}`; the reply is
     /// `{"code":"reauth_accepted"}` written BEFORE the row's current leg
     /// is ended, because the caller is the session being replaced. Every
-    /// refusal happens before anything is touched, and answers with the
-    /// accounts this daemon can see. The row record is mutated in exactly
+    /// refusal leaves the row exactly as it was, and answers with the
+    /// accounts this daemon can see — empty only for the two refusals
+    /// that precede discovery itself (a payload that will not parse, a
+    /// home that will not resolve). The row record is mutated in exactly
     /// one field (`account`): id, slug, root and declared handle all
     /// survive, so the replacement leg is the same row, same comm
     /// identity, different login.
@@ -1365,8 +1367,9 @@ pub struct WorkspaceReauthReq {
     pub resume: String,
 }
 
-/// The accept. `code` is always `"reauth_accepted"`; `account` echoes what
-/// the row now records. A REFUSAL is not this shape — it is the ordinary
+/// The accept. `code` is always `"reauth_accepted"`; `account` is the
+/// account's NAME, for a human to read — `"default"` for the default
+/// login, which the record itself stores as `""`. A REFUSAL is not this shape — it is the ordinary
 /// `{error, code, accounts}` payload every other op refuses with, and
 /// carries the discovered account names so the caller never re-implements
 /// discovery.

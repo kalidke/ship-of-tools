@@ -2032,13 +2032,16 @@ mod runtime {
         slug: String,
         workspaces: Workspaces,
     ) -> std::io::Result<&'static str> {
-        // Accounts brief: resolved from the registry HERE, the one place
-        // every spawn path (create, resume, the watchdog's own restart
-        // below) already converges with both `workspace_id` and
-        // `workspaces` in hand -- rather than threading two more scalars
-        // through every caller up the chain (`start_supervisor`,
-        // `resume_locked`, `ensure_started`, …), which never otherwise
-        // need to know an agent's KIND, only its already-resolved argv.
+        // Accounts brief: resolved from the registry HERE, where every
+        // spawn path (create, resume, start-on-attach) already converges
+        // with both `workspace_id` and `workspaces` in hand -- rather than
+        // threading two more scalars through every caller up the chain
+        // (`start_supervisor`, `resume_locked`, `ensure_started`, …), which
+        // never otherwise need to know an agent's KIND, only its
+        // already-resolved argv. The pair is read at the moment of each
+        // spawn and never captured, so the watchdog's own crash-restart
+        // resolves it again rather than carrying this one (`workspace.
+        // reauth` can move the account under a parked watchdog).
         // `unwrap_or_default` (kind "", account "") on a row gone by now
         // degrades to `account_env`'s own empty-account no-op below --
         // never worse than the row simply not existing.
@@ -2067,8 +2070,6 @@ mod runtime {
             cwd.to_path_buf(),
             agent_name.to_string(),
             slug,
-            agent_kind,
-            account,
             child,
             identity,
             workspaces,
@@ -2834,13 +2835,6 @@ mod runtime {
         cwd: PathBuf,
         agent_name: String,
         slug: String,
-        // Accounts brief: captured once, at the same spot `argv`/`cwd`/
-        // `agent_name` already are (the row's own resolved values at
-        // spawn time -- account never changes mid-row this release, no
-        // `workspace.set` yet), and carried unchanged into every
-        // crash-restart spawn below.
-        agent_kind: String,
-        account: String,
         child: Child,
         initial_identity: Option<crate::workspaces::SupervisorIdentity>,
         workspaces: Workspaces,
@@ -2956,8 +2950,19 @@ mod runtime {
                         let agent_name_for_spawn = agent_name.clone();
                         let workspace_id_for_spawn = workspace_id.clone();
                         let slug_for_spawn = slug.clone();
-                        let agent_kind_for_spawn = agent_kind.clone();
-                        let account_for_spawn = account.clone();
+                        // Accounts brief + ADR 0046 decision 6: read at
+                        // RESTART time, never captured at install time.
+                        // `workspace.reauth` moves a live row's account
+                        // while its watchdog is parked on the OLD leg, so
+                        // a captured pair would respawn on the login the
+                        // row no longer has -- a live leg under a record
+                        // that says otherwise. Same resolve, same
+                        // `unwrap_or_default` degradation, as the first
+                        // leg's in `spawn_and_watch`.
+                        let (agent_kind_for_spawn, account_for_spawn) = workspaces
+                            .resolve(Some(&workspace_id))
+                            .map(|ws| (ws.agent(), ws.account()))
+                            .unwrap_or_default();
                         let spawn_result = tokio::task::spawn_blocking(move || {
                             spawn_detached_supervisor(
                                 &exe,

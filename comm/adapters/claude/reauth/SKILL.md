@@ -35,25 +35,17 @@ Each failure below is a refusal with the reason, not a workaround.
   itself; you never pass it.
 - **The named account equals `$SOT_ACCOUNT`** — nothing to do. Refuse rather
   than pay a restart for a no-op.
-- **The target account cannot see this conversation.** The transcript must be
-  reachable under the target's own config dir:
-
-  ```bash
-  cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-  mine="$(ls "$cfg"/projects/*/"$CLAUDE_CODE_SESSION_ID".jsonl)"
-  test -e "$HOME/.claude-auth/<account>/projects/$(basename "$(dirname "$mine")")/$(basename "$mine")"
-  ```
-
-  A miss means that account folder has its own REAL `projects` directory
-  instead of the shared symlink, so the resume would land in a FRESH, empty
-  conversation. Refuse and say so; do not switch.
 
 Everything else belongs to the daemon: whether the account is discovered,
 whether it is logged in, whether the name is valid, whether this row's agent
-is switchable. It refuses with the exact fix command and lists the accounts
-it can see. Print that verbatim. **Never create the account folder to make
-the refusal go away** — an empty folder is a valid account with no login, and
-the switch would strand the conversation behind a login prompt.
+is switchable, and **whether the target account can actually open this
+transcript** (it reads both folders, so it proves that itself — a miss means
+that account folder has its own REAL `projects` instead of the shared
+symlink, or that the id is not this conversation's). It refuses with the
+exact fix command and lists the accounts it can see. Print that verbatim.
+**Never create the account folder to make the refusal go away** — an empty
+folder is a valid account with no login, and the switch would strand the
+conversation behind a login prompt.
 
 ## What the switch costs
 
