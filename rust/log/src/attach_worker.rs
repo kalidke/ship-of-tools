@@ -160,6 +160,35 @@ pub(crate) enum LaneError {
     /// identity check on the lane it dialed could not complete. Retried
     /// exactly like `Unreachable`.
     Undetermined(String),
+    /// The capsule refused the attach, carrying the reason IT named
+    /// rather than collapsing into `Protocol("attach_refused")`. The
+    /// reason is not decoration: `SubscriberCap` held by orphaned watcher
+    /// connections never clears on its own, while `GroundTimeout` clears
+    /// within seconds — a caller that cannot tell the two apart retries
+    /// an unretryable state forever with nothing naming the cause.
+    AttachRefused(wire::AttachRefusedReason),
+}
+
+/// The pane wording for an `attach_refused` reason — the ONE place either
+/// reason becomes words, shared by [`LaneError`]'s own `Display` and the
+/// episode's status emit. Deliberately does not quote the capsule's
+/// subscriber cap as a number: that bound lives in `attach_proto` (and is
+/// scheduled to change), while the user's move does not depend on its
+/// value, and deliberately promises nothing about what a restart costs:
+/// restarting the daemon frees the held slots without ending a session
+/// whose supervisor got its own transient systemd scope (ADR 0043
+/// decision 32 — `capsule_workspace`'s Linux `spawn_detached`), but a
+/// supervisor launched after `user_scope_available()` was DENIED runs
+/// degraded in the daemon's own kill domain and dies with it. One pane
+/// status line cannot carry that fork, so the reassurance and its
+/// exception both live in the troubleshooting page instead.
+pub(crate) fn attach_refused_text(reason: wire::AttachRefusedReason) -> &'static str {
+    match reason {
+        wire::AttachRefusedReason::GroundTimeout => "capsule busy grounding a checkpoint \u{2014} retrying\u{2026}",
+        wire::AttachRefusedReason::SubscriberCap => {
+            "capsule watcher slots all taken \u{2014} restart the backend daemon to free them"
+        }
+    }
 }
 
 impl std::fmt::Display for LaneError {
@@ -173,6 +202,7 @@ impl std::fmt::Display for LaneError {
             LaneError::Refused { code, detail } => write!(f, "refused ({code}): {detail}"),
             LaneError::Unreachable(s) => write!(f, "unreachable: {s}"),
             LaneError::Undetermined(s) => write!(f, "undetermined: {s}"),
+            LaneError::AttachRefused(r) => write!(f, "attach refused: {}", attach_refused_text(*r)),
         }
     }
 }
@@ -718,11 +748,14 @@ fn attach_and_collect_checkpoint<E: Endpoint>(
                     return Ok(out);
                 }
             }
-            DecodedFrame::AttachServer(AttachServer::AttachRefused { .. }) => {
-                // GroundTimeout / SubscriberCap: transient, not named in
-                // the ADR's terminal list -- the reconnect episode
-                // simply retries (see `run_episode`'s caller).
-                return Err(LaneError::Protocol("attach_refused"));
+            DecodedFrame::AttachServer(AttachServer::AttachRefused { reason }) => {
+                // The episode still retries (neither reason is in the
+                // ADR's terminal list), but the reason RIDES OUT: only
+                // `GroundTimeout` is transient, and `SubscriberCap` held
+                // by orphaned watchers is permanent -- the caller names
+                // it in the row's status line rather than retrying in
+                // silence behind a pane that still reads "connecting...".
+                return Err(LaneError::AttachRefused(reason));
             }
             DecodedFrame::AttachServer(AttachServer::Output { .. }) => {
                 return Err(LaneError::Protocol("live output arrived before checkpoint completed"));
@@ -1298,7 +1331,16 @@ fn run_worker<E: Endpoint>(
         let checkpoint =
             match attach_and_collect_checkpoint::<E>(&voyage_conn, &mut attach_reader, &controller_id) {
                 Ok(c) => c,
-                Err(_) => {
+                Err(e) => {
+                    // A refusal the capsule NAMED is the one failure here
+                    // a user can act on, so it reaches the row's status
+                    // line (the same `WorkerEvent::Status` path every
+                    // other retrying lane failure uses). Every other
+                    // error keeps the silent retry: the pane's own
+                    // "connecting..." already says what is happening.
+                    if let LaneError::AttachRefused(reason) = e {
+                        emit(WorkerEvent::Status(attach_refused_text(reason).to_string()));
+                    }
                     match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
                         WaitOutcome::Shutdown => break 'episodes,
                         WaitOutcome::Continue => continue 'episodes,
@@ -2928,5 +2970,85 @@ mod tests {
             ReadyOutcome::ShouldExit => panic!("expected Ready(v2), got ShouldExit"),
             ReadyOutcome::Shutdown => panic!("expected Ready(v2), got Shutdown"),
         }
+    }
+
+    /// Answers the `attach` request with one scripted `attach_refused`
+    /// frame and nothing else — a second `read` would be the test's own
+    /// bug, since the refusal ends the transfer.
+    struct RefusingClient {
+        frame: Mutex<Option<Vec<u8>>>,
+    }
+    impl Client for RefusingClient {
+        fn write_all(&self, _bytes: &[u8]) -> Result<(), crate::transport::TransportError> {
+            Ok(())
+        }
+        fn read(&self, buf: &mut [u8]) -> Result<usize, crate::transport::TransportError> {
+            let frame = self.frame.lock().unwrap().take().expect("the refusal frame must end the transfer on its own");
+            buf[..frame.len()].copy_from_slice(&frame);
+            Ok(frame.len())
+        }
+        fn cancel(&self) {}
+    }
+
+    /// Only names [`RefusingClient`] as `Endpoint::Client` — this test
+    /// hands the connection in directly and never dials anything.
+    struct RefusingEndpoint;
+    impl Endpoint for RefusingEndpoint {
+        type Client = RefusingClient;
+        type Process = TestProcess;
+
+        fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            unreachable!("an_attach_refusal_carries_its_reason_to_the_caller never dials")
+        }
+        fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            unreachable!("an_attach_refusal_carries_its_reason_to_the_caller never dials")
+        }
+        fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+            unreachable!("an_attach_refusal_carries_its_reason_to_the_caller never challenges")
+        }
+        fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
+            unreachable!("an_attach_refusal_carries_its_reason_to_the_caller never authenticates")
+        }
+    }
+
+    /// The refusal reason must reach the caller, not collapse into one
+    /// anonymous `Protocol("attach_refused")`: `SubscriberCap` held by
+    /// orphaned watchers never clears on its own, so the episode that
+    /// retries it has to be able to SAY so (the row's status line), which
+    /// it cannot do from an error that dropped the reason on the floor.
+    #[test]
+    fn an_attach_refusal_carries_its_reason_to_the_caller() {
+        for reason in [wire::AttachRefusedReason::SubscriberCap, wire::AttachRefusedReason::GroundTimeout] {
+            let conn = RefusingClient {
+                frame: Mutex::new(Some(
+                    wire::encode_attach_server(&AttachServer::AttachRefused { reason }).expect("fixed-shape body"),
+                )),
+            };
+            let mut reader = FrameReader::new();
+            let err = attach_and_collect_checkpoint::<RefusingEndpoint>(&conn, &mut reader, "controller-1")
+                .expect_err("a refused attach must never yield a checkpoint");
+            match err {
+                LaneError::AttachRefused(got) => assert_eq!(got, reason, "the reason the capsule named must be the reason the caller sees"),
+                other => panic!("the refusal reason must survive to the caller, not become {other}"),
+            }
+        }
+
+        // The wording is the whole point of carrying the reason: only the
+        // permanent refusal names a recovery, and it names the ACTION and
+        // nothing more. It must NOT promise what the restart costs: a
+        // supervisor launched after `user_scope_available()` was denied runs
+        // in the daemon's own kill domain and dies with it, so an
+        // unconditional "sessions survive" would be false exactly for the
+        // user worst placed to know it. The reassurance and that exception
+        // both belong to the troubleshooting page, which states both.
+        let capped = attach_refused_text(wire::AttachRefusedReason::SubscriberCap);
+        assert!(
+            capped.contains("restart the backend daemon"),
+            "the permanent refusal must name its recovery in the pane line, got {capped:?}"
+        );
+        assert!(
+            !capped.contains("survive") && !capped.contains("keep running"),
+            "the pane line must not promise what a restart costs — the degraded-scope supervisor breaks that promise, got {capped:?}"
+        );
     }
 }
