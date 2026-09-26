@@ -184,28 +184,13 @@ fi
 # left to reap by pattern afterwards.
 case "$MODE" in
     start|selftest)
-        # `--owner <pid>` is an override for a caller with the better vantage;
-        # otherwise the owner is DISCOVERED from this process's own ancestry.
-        [[ "$OWNER_PID" =~ ^[0-9]+$ ]] || OWNER_PID="$(sot_owner_pid || true)"
-        # Third tier: the invoking shell. An agentless start IS legitimate --
-        # the bridge only FILES, and a human at a prompt is a reader -- so the
-        # absence of an agent must not refuse (CI's hermetic leg proved that
-        # refusing here breaks a real case, 2026-09-26). $PPID is a bash
-        # builtin, so it is portable to the macOS and git-bash legs, unlike a
-        # session id, which is a pid on Linux and a kernel address on BSD; and
-        # it fails SHORT, never immortal -- a caller that exits early leaves a
-        # bridge that dies within one poll and a `--status` that says so out
-        # loud, which is the property this ownership rule exists to protect.
-        # The agent tier stays FIRST: reverse them and every session's bridge
-        # silently shortens to the life of whatever launched it. One edge this
-        # does NOT guard, deliberately: a parent that outlives everything (a
-        # systemd unit starting a bridge directly) would own it forever, which
-        # is the harm this rule exists to prevent. Nothing starts a bridge that
-        # way today -- every caller is a session script, a hook or a test, all
-        # under an agent or a human shell -- so it is documented rather than
-        # special-cased. Add a guard the day a unit starts one.
-        [[ "$OWNER_PID" =~ ^[0-9]+$ ]] || OWNER_PID="$PPID"
-        [[ "$OWNER_PID" =~ ^[0-9]+$ && "$OWNER_PID" != 1 ]] || {
+        # Who owns a bridge is ONE decision and it lives in comm-lib.sh's
+        # `sot_bridge_owner_pid` — `--owner <pid>` first, then the nearest
+        # claude/codex ancestor, then the invoking shell. It is shared because
+        # the bootstrap path starts bridges too, and a second copy of the tiers
+        # is what made that path refuse an agentless start after this one
+        # stopped refusing it. Read the reasoning there; change it there.
+        OWNER_PID="$(sot_bridge_owner_pid "$OWNER_PID")" || {
             echo "ERROR: started with no live parent (PPID 1) — refusing an ownerless bridge; pass --owner <pid>" >&2
             exit 2
         } ;;

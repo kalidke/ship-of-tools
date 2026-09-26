@@ -541,6 +541,38 @@ sot_owner_pid() {
     return 1
 }
 
+# sot_bridge_owner_pid [PID] — the pid a BRIDGE is tethered to, decided HERE
+# because two callers start bridges (comm-listen.sh and the bootstrap's
+# `_ensure_bridge`), and a second copy of the decision is exactly how the
+# bootstrap kept reporting `down` after the listen path learned to accept an
+# agentless start (CI's hermetic leg, 2026-09-26). Three tiers, in order:
+#   1. an explicit pid from a caller with the better vantage,
+#   2. the nearest claude/codex ancestor,
+#   3. the invoking shell ($PPID — a bash builtin, so it holds on the macOS
+#      and git-bash legs too, unlike a session id, which is a pid on Linux and
+#      a kernel address on BSD).
+# An agentless start IS legitimate — the bridge only FILES, and a human at a
+# prompt is a reader — so the absence of an agent must not refuse; tier 3 fails
+# SHORT, never immortal, since a caller that exits early leaves a bridge that
+# dies within one poll and a `--status` that says so out loud, which is the
+# property this ownership rule exists to protect. The agent tier stays FIRST:
+# reverse them and every session's bridge silently shortens to the life of
+# whatever launched it. Prints nothing (rc 1) only when orphaned to PPID 1 — a
+# refusal at the call site, never an untethered bridge. One edge is documented
+# rather than guarded: a parent that outlives everything (a systemd unit
+# starting a bridge directly) would own it forever, which is the harm this rule
+# exists to prevent. Nothing starts one that way today — every caller is a
+# session script, a hook or a test. Add the guard the day a unit starts one.
+# A WATCHER is not a bridge: it types into a pty, so an agent ancestor is its
+# only correct owner and it keeps calling `sot_owner_pid` directly.
+sot_bridge_owner_pid() {
+    local owner="${1:-}"
+    [[ "$owner" =~ ^[0-9]+$ ]] || owner="$(sot_owner_pid || true)"
+    [[ "$owner" =~ ^[0-9]+$ ]] || owner="${PPID:-}"
+    [[ "$owner" =~ ^[0-9]+$ ]] && [ "$owner" != 1 ] || return 1
+    printf '%s\n' "$owner"
+}
+
 # sot_watcher_pid_for HANDLE — the live watcher pid recorded in
 # state/<handle>.watch, verified BY IDENTITY, else nothing (rc 1). `kill -0`
 # alone is not enough to act on: these markers live on a shared home and

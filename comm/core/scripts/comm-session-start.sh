@@ -165,8 +165,12 @@ _ensure_bridge() {
     local h="$1" state
     state="$(_bridge_state "$h")"
     [ "$state" = "down" ] || { echo "$state"; return 0; }
-    local owner; owner="$(sot_owner_pid || true)"
-    [[ "$owner" =~ ^[0-9]+$ ]] || { echo "down"; return 0; }
+    # Ownership is comm-lib.sh's `sot_bridge_owner_pid`, the same tiers
+    # comm-listen.sh uses. This path used to keep its own agent-only check, so
+    # a start with no discoverable agent reported `down` and never reached the
+    # shared logic at all — the fault CI's hermetic leg caught (2026-09-26).
+    local owner; owner="$(sot_bridge_owner_pid || true)"
+    [ -n "$owner" ] || { echo "down"; return 0; }
     sot_bridge_start "$h" "$COMM_HOME/bin/comm-relay.sh" "$owner" 2>/dev/null || true
     if sot_bridge_running_for "$h"; then echo "restarted"; else echo "down"; fi
 }
