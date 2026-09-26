@@ -11,10 +11,4 @@ references:
 # src/DemoProject.jl
 
 The whole package in one file: the `Waypoint` struct and three functions —
-`haversine`, `bearing`, and `route_length` (vector form only).
-
-*(This annotation is **deliberately stale** — its `synced_against` hash can
-never match the file, so the drift badge renders; and the prose above has
-genuinely drifted: the file has since grown a matrix method for
-`route_length` and a `plot_route` figure function. The docs screenshots use
-this to show what staleness looks like; do not "fix" it.)*
+`haversine`, `bearing`, and `route_length`.

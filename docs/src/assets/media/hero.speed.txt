@@ -1,0 +1,1 @@
+take 46s, cut to 18s: opens 3.20s in, on the typed request; 3.20s-5.70s real speed; 5.70s-22.80s (the agent working) sped up 4.28x; 22.80s-24.80s real speed; 24.80s-46s sped up 3.45x; last frame held 3.5s; the banner rows blanked while they show

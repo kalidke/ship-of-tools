@@ -13,9 +13,9 @@ This page documents the mode contract. For the conceptual overview see
 [The Dispatch ABI](abi.md); for the symbol reference see
 [API — ConceptExplorerCore](../ref/api-core.md).
 
-!!! note "Status: modes are kernel-hosted today"
-    The mode contract is part of the ABI, but in phase 1 the core modes live in
-    the Julia kernel, not in standalone plugin packages. The packages under
+!!! note "Status: modes are built into the frontend and backend today"
+    The mode contract is part of the ABI, but in phase 1 the core modes are
+    implemented in the Rust frontend and backend, not in plugin packages. The packages under
     `julia/plugins/` are all `FileType` plugins (Julia source, Markdown, JSON,
     plain text, PDF, video) — there is **no** mode-plugin package in the tree
     yet. This page describes the contract a third-party mode would dispatch on
@@ -88,7 +88,7 @@ between in the running app):
 | Mode | Column 1 → 2 → 3 | Preview |
 |------|------------------|---------|
 | Files | parent dir → current dir → contents | file at appropriate fidelity |
-| Modules (read-only) | modules → functions → methods | method source + concept artifact |
+| Modules (read-only) | modules → definitions (types, functions, macros, submodules) | method source + concept artifact |
 | Sessions | workspaces → timeline → detail | session detail |
 | Hosts | configured hosts → endpoint detail | host endpoint summary |
 

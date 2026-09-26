@@ -1,0 +1,414 @@
+/* Customize default theme styling by overriding CSS variables:
+https://github.com/vuejs/vitepress/blob/main/src/client/theme-default/styles/vars.css */
+/* Example */
+/* https://github.com/vuejs/vitepress/blob/main/template/.vitepress/theme/style.css */
+
+/* Fonts */
+@font-face {
+  font-family: JuliaMono-Regular;
+  src: url("https://cdn.jsdelivr.net/gh/cormullion/juliamono/webfonts/JuliaMono-Regular.woff2");
+}
+
+:root {
+scroll-behavior: smooth;
+/* Code Snippet font */
+--vp-font-family-mono: JuliaMono-Regular, monospace;
+}
+
+/* Disable contextual alternates (kind of like ligatures but different) in monospace, 
+ which turns `/>` to an up arrow and `|>` (the Julia pipe symbol) to an up arrow as well. */
+.mono-no-substitutions {
+font-family: "JuliaMono-Regular", monospace;
+font-feature-settings: "calt" off;
+}
+
+.mono-no-substitutions-alt {
+font-family: "JuliaMono-Regular", monospace;
+font-variant-ligatures: none;
+}
+
+pre, code {
+font-family: "JuliaMono-Regular", monospace;
+font-feature-settings: "calt" off;
+}
+
+ /* Reset text color of code blocks to default text color
+  * Vitepress uses --vp-c-brand-1 by default, which makes code look like links (#377) */
+:root {
+  --vp-code-color: var(--vp-c-text-1);
+}
+.custom-block.tip code {
+  color: var(--vp-c-text-1);
+  background-color: var(--vp-code-bg);
+}
+.custom-block.tip a>code {
+  color:var(--vp-c-tip-1);
+}
+
+/* Component: MathJax */
+
+
+.mjx-scroll-wrapper {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+
+mjx-container {
+  display: inline-block;
+  padding: 0.5rem 0;
+  margin: auto 2px -2px;
+  overflow: visible !important;  /* Override MathJax's overflow */
+  text-align: left;
+}
+
+mjx-container > svg {
+  display: inline-block;
+  height: auto;
+}
+
+mjx-container > svg[data-labels="true"] {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* @mdit/plugin-mathjax theming refs */
+
+mjx-container svg path {
+  fill: currentColor !important;
+  stroke: currentColor !important;
+}
+
+.MathJax_ref {
+  color: var(--vp-c-brand-1);
+}
+
+.MathJax_ref:hover {
+  color: var(--vp-c-brand-2);
+  cursor: pointer;
+}
+
+/* ===== Custom colors for input and output code blocks ===== */
+:root {
+  /* --vp-c-bg-input: #eef0f3; */
+  --vp-c-bg-output: #fbfbfb;
+  --vp-c-bg-output-outline: #e2e2e3;
+}
+
+.dark {
+  /* --vp-c-bg-input: #1a1a1a; */
+  --vp-c-bg-output: #1a1a1a;
+  --vp-c-bg-output-outline: #2e2e32;
+}
+
+/*
+.language-julia {
+  background-color: var(--vp-c-bg-input) !important;
+}
+*/
+
+.language- {
+  background-color: var(--vp-c-bg-output) !important;
+  outline: 1px solid var(--vp-c-bg-output-outline);
+}
+
+/* Julia REPL prompt syntax highlighting */
+/* prompt token behavior */
+.vp-doc .shiki .repl-prompt {
+  opacity: 1.0;
+  user-select: none;
+}
+
+:root:not(.dark) .vp-doc .shiki .repl-prompt-julia {
+  color: var(--sot-green);
+}
+
+:root:not(.dark) .vp-doc .shiki .repl-prompt-pkg {
+  color: var(--sot-blue);
+}
+
+.dark .vp-doc .shiki .repl-prompt-julia {
+  color: #5fbf4a;
+}
+
+.dark .vp-doc .shiki .repl-prompt-pkg {
+  color: var(--sot-blue-soft);
+}
+
+/* ===== Sidebar Drawer Toggle ===== */
+/* Smooth transitions for sidebar collapse/expand on desktop */
+@media (min-width: 960px) {
+  .VPSidebar {
+    transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.25s ease;
+  }
+
+  .VPContent.has-sidebar {
+    transition: padding-left 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                padding-right 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Smooth transitions for navbar elements (needed for expand-back too) */
+  .VPNavBar.has-sidebar .content {
+    transition: padding-left 0.35s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  }
+
+  .VPNavBar.has-sidebar .divider {
+    transition: padding-left 0.35s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  }
+
+  .VPNavBar.has-sidebar .title {
+    transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                padding 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.25s ease !important;
+  }
+
+  /* Collapsed state: zero the sidebar width variable so all layout formulas
+     (VitePress defaults + Enhanced Readabilities plugin) adjust automatically */
+  html.sidebar-drawer-collapsed {
+    --vp-sidebar-width: 0px !important;
+  }
+
+  html.sidebar-drawer-collapsed .VPSidebar {
+    transform: translateX(-100%);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* Original width mode only: let content fill space up to the aside */
+  html.sidebar-drawer-collapsed
+    body:not(.VPNolebaseEnhancedReadabilitiesLayoutSwitchFullWidth):not(.VPNolebaseEnhancedReadabilitiesLayoutSwitchSidebarWidthAdjustableOnly):not(.VPNolebaseEnhancedReadabilitiesLayoutSwitchBothWidthAdjustable)
+    .VPDoc.has-sidebar .container {
+    display: flex;
+    justify-content: center;
+    max-width: 992px;
+  }
+
+  html.sidebar-drawer-collapsed
+    body:not(.VPNolebaseEnhancedReadabilitiesLayoutSwitchFullWidth):not(.VPNolebaseEnhancedReadabilitiesLayoutSwitchSidebarWidthAdjustableOnly):not(.VPNolebaseEnhancedReadabilitiesLayoutSwitchBothWidthAdjustable)
+    .VPDoc.has-sidebar .content-container {
+    max-width: none;
+  }
+
+  /* Collapse the navbar title area (site logo + name) */
+  html.sidebar-drawer-collapsed .VPNavBar.has-sidebar .title,
+  html.sidebar-drawer-collapsed .VPNavBar.has-sidebar > .wrapper > .container > .title {
+    width: 0 !important;
+    overflow: hidden;
+    opacity: 0;
+    padding: 0 !important;
+    pointer-events: none;
+  }
+
+  /* Move drawer button closer to the edge */
+  html.sidebar-drawer-collapsed .VPNavBar.has-sidebar .content,
+  html.sidebar-drawer-collapsed .VPNavBar.has-sidebar > .wrapper > .container > .content {
+    padding-left: 8px !important;
+  }
+}
+
+/* ==========================================================================
+   Ship of Tools brand layer (overrides the DocumenterVitepress defaults above).
+   Blue is the wordmark; green / red / purple are the helm's Julia dots and
+   double as the app's work-state colours (working / needs you / waiting).
+   ========================================================================== */
+:root {
+  --sot-blue: #4063d8;
+  --sot-blue-soft: #6d8cf0;
+  --sot-green: #389826;
+  --sot-red: #cb3c33;
+  --sot-purple: #9558b2;
+  --sot-slate: #939dad;
+
+  --vp-c-brand-1: var(--sot-blue);
+  --vp-c-brand-2: #5476e6;
+  --vp-c-brand-3: #3354c4;
+  --vp-c-brand-soft: rgba(64, 99, 216, 0.14);
+  --vp-button-brand-bg: var(--sot-blue);
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-hover-bg: #3354c4;
+  --vp-button-brand-hover-border: transparent;
+  --vp-home-hero-name-color: var(--sot-blue);
+  --vp-home-hero-name-background: none;
+  --vp-home-hero-image-background-image: none;
+}
+
+html.dark {
+  --vp-c-bg: #0f1116;
+  --vp-c-bg-alt: #0b0d11;
+  --vp-c-bg-soft: #171a21;
+  --vp-c-bg-elv: #171a21;
+  --vp-c-divider: #262a33;
+  --vp-c-brand: var(--sot-blue-soft);
+  --vp-c-brand-1: var(--sot-blue-soft);
+  --vp-c-brand-2: #87a0f4;
+  --vp-c-brand-3: var(--sot-blue);
+  --vp-c-brand-soft: rgba(109, 140, 240, 0.16);
+  --vp-button-brand-bg: var(--sot-blue);
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-text: #fff;
+  --vp-button-brand-hover-bg: #5476e6;
+  --vp-button-brand-hover-border: transparent;
+  --vp-home-hero-name-color: var(--sot-blue-soft);
+  --vp-custom-block-tip-border: var(--sot-blue);
+}
+
+/* Hero: text only, no image; the demo loop sits directly under it, left-aligned
+   with the heading and as wide as the content column. The name and the
+   headline take one line each on a laptop screen, and the frame's width is
+   capped so the whole loop fits under the heading and buttons in the
+   viewport (above the fold at 1440x900); --sot-aspect comes from DemoLoop. */
+.VPHero .tagline { max-width: 640px; }
+.VPHome .VPHero.VPHomeHero { padding-bottom: 8px; }
+.VPHero.VPHomeHero .text { max-width: 1152px; }
+.VPHero.VPHomeHero .actions { padding-top: 8px; }
+@media (min-width: 960px) {
+  .VPHome .VPHero.VPHomeHero { padding-top: calc(var(--vp-nav-height) + 4px); }
+  .VPHero.VPHomeHero .name, .VPHero.VPHomeHero .text { font-size: 40px; line-height: 48px; }
+  .VPHero.VPHomeHero .tagline { padding-top: 8px; font-size: 18px; line-height: 28px; }
+}
+/* Phone: the two hero buttons share one row. */
+@media (max-width: 639px) {
+  .VPHero.VPHomeHero .actions { flex-wrap: nowrap; }
+  .VPHero.VPHomeHero .action .VPButton { padding: 0 14px; font-size: 14px; }
+}
+.sot-section.sot-hero-media { margin-top: 0; }
+.sot-hero-media .sot-media { margin-top: 0; }
+.sot-hero-media .sot-window {
+  max-width: min(100%, calc((100vh - 320px) * var(--sot-aspect, 1.7778)));
+}
+.sot-hero-media .sot-window video, .sot-hero-media .sot-window img { max-height: none; }
+.sot-hero-media .sot-media figcaption { max-width: none; }
+
+/* Tables read left to right; Documenter emits right-aligned unaligned columns. */
+.vp-doc th, .vp-doc td { text-align: left !important; }
+
+/* Plain-text and shell blocks (prompts to paste into an agent, install
+   commands) wrap instead of clipping. */
+.vp-doc div[class*="language-text"] pre,
+.vp-doc div[class*="language-text"] code,
+.vp-doc div[class*="language-bash"] pre,
+.vp-doc div[class*="language-bash"] code,
+.vp-doc div[class*="language-sh"] pre,
+.vp-doc div[class*="language-sh"] code { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Demo media: a subtle window frame around loops and screenshots. */
+.sot-media { margin: 1.5rem 0 2rem; }
+.sot-window {
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0b0d11;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+}
+/* One text scale for every clip and still: the frame is at most --sot-w wide
+   (the file's pixel width times MEDIA_SCALE, set by DemoLoop and DemoShot),
+   left-aligned with its caption. The landing hero keeps its own rule below;
+   on a phone every frame takes the column width. */
+/* A tall frame is also no wider than 70vh at its aspect, so the clip inside
+   (capped at 70vh below) fills it instead of showing side bars. */
+.sot-window { max-width: min(100%, var(--sot-w, 100%), calc(70vh * var(--sot-aspect, 1.7778))); }
+@media (max-width: 767px) { .sot-window { max-width: 100%; } }
+.sot-window a { display: block; }
+/* No clip or still is taller than about a screen: a tall one is scaled down
+   inside the full-width frame instead of filling the page. */
+.sot-window video, .sot-window img {
+  display: block; width: 100%; height: auto; max-height: 70vh;
+  object-fit: contain; margin: 0;
+}
+.sot-window video { cursor: pointer; }
+/* DemoLoop's enlarge control: a small button at the clip's bottom-right
+   corner, away from the window's title bar and clock. It shows while the
+   pointer is over the clip or the button has keyboard focus. */
+.sot-window { position: relative; }
+.sot-enlarge {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  opacity: 0;
+  transition: opacity 0.15s;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  background: rgba(11, 13, 17, 0.7);
+  color: #e6e6e6;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.sot-window:hover .sot-enlarge, .sot-enlarge:focus-visible { opacity: 1; }
+@media (hover: none) { .sot-enlarge { opacity: 1; } }
+.sot-enlarge:hover, .sot-enlarge:focus-visible { background: rgba(11, 13, 17, 0.9); border-color: #fff; }
+.sot-window video:fullscreen { object-fit: contain; background: #000; cursor: default; }
+.sot-media-empty { aspect-ratio: 16 / 9; width: 100%; }
+.sot-media figcaption {
+  margin-top: 0.6rem;
+  font-size: 0.9rem;
+  color: var(--vp-c-text-2);
+  text-align: left;
+  /* A caption wraps at its frame's width (at least 36rem, at most the column). */
+  max-width: min(100%, max(var(--sot-w, 100%), 36rem));
+}
+
+/* Feature gallery (features.md): a single readable column, same width as the
+   rest of the docs prose. A two-column CSS multi-column layout was tried and
+   dropped -- forced breaks at each group heading overflowed past the doc's
+   max-width and collided with the "On this page" sidebar. */
+.sot-gallery h3 { margin-top: 1.6rem; }
+.sot-gallery .sot-media { margin: 0.8rem 0 1.5rem; }
+
+/* Plain markdown screenshots on inner pages get the same frame treatment. */
+.vp-doc img[src*="screenshots"] {
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+
+/* Landing-page media sections and the work-state swatches. */
+.sot-section { max-width: 1152px; margin: 4rem auto 0; padding: 0; }
+.sot-section h2 { border-top: none; margin-top: 0; padding-top: 0; font-size: 1.6rem; }
+.sot-section .sot-why { color: var(--vp-c-text-2); max-width: 760px; }
+.sot-section .sot-why li { color: inherit; }
+.sot-state { display: inline-block; width: 0.8em; height: 0.8em; border-radius: 50%; margin-right: 0.4em; vertical-align: -0.05em; }
+.sot-state.working { background: var(--sot-green); }
+.sot-state.question { background: var(--sot-red); }
+.sot-state.waiting { background: var(--sot-purple); }
+.sot-state.done { background: var(--sot-blue); }
+.sot-state.idle { background: var(--sot-slate); }
+/* Landing page: a note that continues the section above sits close to it, and
+   the install command and agent prompt wrap on a phone instead of scrolling out
+   of sight. Julia blocks keep their lines and scroll. */
+.sot-section.sot-tight { margin-top: 1rem; }
+.VPHome div.language-bash pre,
+.VPHome div.language-bash code,
+.VPHome div.language-text pre,
+.VPHome div.language-text code { white-space: pre-wrap; word-break: break-all; }
+
+/* Sessions page: the host / session / REPL diagram. */
+.sot-model { margin: 1.5rem 0; font-size: 0.9rem; }
+.sot-model-host { border: 1px solid var(--vp-c-divider); border-radius: 10px; padding: 0.8rem; }
+.sot-model-title { font-weight: 600; margin-bottom: 0.5rem; }
+.sot-model-rows { display: flex; flex-wrap: wrap; gap: 0.8rem; }
+.sot-model-row { flex: 1 1 220px; border: 1px solid var(--sot-blue-soft); border-radius: 8px; padding: 0.6rem; }
+.sot-model-row span { display: block; margin-top: 0.35rem; padding: 0.2rem 0.5rem; border-radius: 6px; background: var(--vp-c-bg-soft); }
+
+/* Work-state table: the colour swatch sits in the Colour cell. */
+.vp-doc td:has(> .sot-state) { white-space: nowrap; }
+
+/* Wide tables scroll inside the content column instead of spilling past it. */
+.vp-doc table { display: block; max-width: 100%; overflow-x: auto; }
+
+/* Features page: the compact linked index under the intro. */
+.vp-doc ul.sot-index { list-style: none; padding-left: 0; font-size: 0.9rem; }
+.vp-doc ul.sot-index li { margin: 0.2rem 0; }
+
+/* Inner pages: prose lines stop near 72 characters; media, tables and code
+   keep the full column width. */
+.VPDoc .vp-doc p, .VPDoc .vp-doc ul, .VPDoc .vp-doc ol { max-width: 72ch; }
+.VPDoc .vp-doc .sot-media p { max-width: none; }

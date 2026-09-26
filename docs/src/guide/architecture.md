@@ -7,10 +7,13 @@ how the same architecture runs a remote project with almost no extra plumbing.
 
 ## The processes
 
+![Frontends connect over one socket to the backend daemon, which supervises the Julia kernel, the REPL and the agent-session capsules](../assets/architecture.svg)
+
+
 | Process | Language | Owns |
 |---------|----------|------|
 | Frontend | Rust (winit + wgpu) | the native window, chrome, preview rendering, keystrokes. Stateless about the project — it renders what the backend sends and forwards input. |
-| Backend daemon | Rust (tokio) | project state, file watching, process supervision, the orchestrator LLM session. Exposes a JSON line protocol to the frontend. |
+| Backend daemon | Rust (tokio) | project state, file watching, process supervision of the kernels, the REPL and the agent sessions, the comm relay. Exposes a JSON line protocol to the frontend. |
 | Julia kernel | Julia | dispatch tables, mode-tree computation, file-type-aware indexing, AST hashing, Julia-aware previews. Loads the project's `Project.toml` environment. |
 | REPL | Julia | your interactive session, supervised by the backend, with a display shim that emits structured frames (stdout, stderr, value, image, error) over stdio. |
 
@@ -24,8 +27,7 @@ daemon that supervises it.
 
 The three processes communicate over a socket locally exactly as they would
 across a network. That looks like overhead on a single box, but it is the whole
-point: **remote operation becomes almost free — same protocol, different
-transport.** The plumbing cost is paid once, up front, instead of being
+point: the same protocol serves local and remote; only the transport differs. The plumbing cost is paid once, up front, instead of being
 retrofitted later when local-only assumptions have already hardened.
 
 This directly serves a requirement: local and remote operation must offer the
@@ -76,7 +78,7 @@ end
 The frontend draws whatever tree the kernel sends and dispatches on `PreviewPayload`'s
 `mime` to pick a renderer. It never inspects `id` or `payload`; it never learns
 what a `:pngfile` *is*. The consequence is the load-bearing property of the whole
-design: **adding a new `FileType` requires zero Rust changes** (and a `Mode` too, once the mode-plugin seam is wired — modes are kernel-hosted today). A plugin
+design: **adding a new `FileType` requires zero Rust changes** (and a `Mode` too, once the mode-plugin seam is wired — modes are built into the frontend and backend today). A plugin
 that teaches the kernel to preview a new file format ships entirely in Julia, and
 the frontend renders it because the MIME type tells it how. See
 [`TreeNode`](@ref) and [`PreviewPayload`](@ref) in the API reference.
@@ -86,8 +88,8 @@ the frontend renders it because the MIME type tells it how. See
 The architecture's payoff shows up in the standard remote deployment: a Windows
 or local frontend driving a Linux backend where the Julia kernel and GPU live.
 
-- The **backend runs as a long-lived daemon on the remote**, supervised by a
-  named tmux session so it survives SSH disconnects.
+- The **backend runs as a long-lived daemon on the remote** — the
+  `systemd --user` unit `sotd.service` — so it survives SSH disconnects.
 - It listens on a **per-session Unix socket**, not a host-allocated TCP port.
 - The **frontend forwards that remote socket to a local one over `ssh -L`** —
   one tunnel, one socket — and speaks the same JSON line protocol it would speak
@@ -98,8 +100,9 @@ or local frontend driving a Linux backend where the Julia kernel and GPU live.
 
 A single daemon can host **one Julia kernel per workspace**, routed by
 `workspace_id`, so switching the active project is fast and never tears the kernel
-down. tmux itself acts as the session registry — listing, creating, and killing
-backends — rather than a second bespoke daemon.
+down. Each agent session runs in its own **capsule** supervisor, which the
+daemon starts and lists but does not hold up, so sessions survive frontend and
+daemon restarts alike — see [Sessions and persistence](../concepts/sessions.md).
 
 ## Where to go next
 

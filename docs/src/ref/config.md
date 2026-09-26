@@ -1,36 +1,39 @@
 # Configuration Files
 
 Three TOML files, each read by a different piece and none of them by more
-than one parser: `settings.toml` (layout + terminal, read by the frontend
-from `.sot/`, layered discovery), `hosts.toml` (the declared topology —
+than one parser: `settings.toml` (layout + terminal, read by the frontend,
+first file found wins), `hosts.toml` (the declared topology —
 hub, daemon and frontend hosts, monitor targets — read ONLY by
 `sot_protocol::topology`/`sotd topology`; the frontend reads no config
 file for hosts at all, see below), and `keybindings.toml` (chords, read by
-the frontend from `.sot/`). Keybindings have their own page —
+the frontend, same discovery). Keybindings have their own page —
 [Keybindings](keybindings.md) — so this page covers `settings.toml` and
 `hosts.toml`.
 
-`settings.toml` and `keybindings.toml` share a single-responsibility,
-layered-discovery pattern: a project file in `.sot/`, overridable by an env
-var and a per-user file, with built-in defaults underneath. Missing or
+`settings.toml` and `keybindings.toml` share one discovery pattern: the
+frontend reads the first file it finds among an env-var path, a `.sot/` file
+found by walking up from the frontend's working directory, and a per-user
+file, and never reads the others; built-in defaults fill anything the file
+leaves out. Missing or
 out-of-range values fall back to the default rather than crashing the
 chrome. `hosts.toml` has its own, simpler search order — see below.
 
 ## `settings.toml`
 
-Frontend layout and terminal settings.
+Frontend settings.
 
 ### Discovery order
 
 1. `$SOT_SETTINGS` — explicit path override.
-2. `<repo-root>/.sot/settings.toml` — the project's settings.
+2. `.sot/settings.toml`, found by walking upward from the frontend's working
+   directory (not the session's project).
 3. `$HOME/.config/sot/settings.toml` — per-user settings.
 4. Built-in defaults.
 
 Any value that is missing or out of range silently falls back to its default —
 the chrome never crashes on a malformed settings file.
 
-### `[layout]`
+### [`[layout]`](@id layout)
 
 Layout is **preset-based**, keyed by the primary monitor's aspect ratio — there
 is no in-session reflow. The top-level `[layout]` table selects the active
@@ -56,12 +59,14 @@ Laptop defaults to `0.18,0.32,0.50` widths with a `0.40` drawer; portrait drops
 the `llm` column (`nav,preview` at `0.30,0.70`, `0.40` drawer). Unknown keys and
 out-of-range values warn and fall back to the default.
 
-### `[terminal]`
+### Other sections
 
-Retired (ADR 0041's amendment retired the resume ritual; ADR 0042's amendment
-moved the frontend driver out of the drawer into its own local capsule
-session). The Terminal drawer runs a plain shell now; there is no
-`resume_command` setting to configure, so no new box should copy it back in.
+| Section / key | Type | Default | Meaning |
+|---------------|------|---------|---------|
+| `[terminal] shell` | string | *(auto)* | Shell the Terminal drawer spawns. Unset resolves per platform: `$SHELL`, then `/bin/bash`, `/bin/sh` on Unix; `pwsh.exe`, `powershell.exe`, `cmd.exe` on Windows. |
+| `[downloads] dir` | path | *(OS download dir)* | Local directory `d` (download) writes to. Empty means the OS download directory. |
+| `[sessions] new_session_root` | path | *(fallback chain)* | Backend-host directory the new-session picker starts browsing from. Unset falls back to `$SOT_PROJECTS_ROOT`, `$SOT_REMOTE_HOME`, the daemon's default root, then `$HOME`. |
+| `[drawer] attach_only` | bool | `false` | Windows only: the Terminal drawer attaches to a running capsule instead of spawning a local shell. Read when the drawer is created; takes a frontend restart. |
 
 ### `[gpu]`
 
@@ -116,9 +121,6 @@ widths        = "0.167,0.333,0.5"
 drawer        = "repl"
 drawer_height = "0.35"
 
-# The Terminal drawer runs a plain shell — the [terminal] resume_command
-# setting is retired and gone; no new box should copy it back in.
-
 [gpu]
 power_preference = "low"        # low (integrated, default) | high (discrete)
 
@@ -167,32 +169,21 @@ is canonical, and every other box's copy is a `sotd topology sync --hub
 ### `[host.<name>]`
 
 One section per host. `<name>` is the plain host name (`[a-z0-9][a-z0-9._-]*`)
-that box's own `host_name()` resolves to — it doubles as its SSH alias, so
-`~/.ssh/config` must have a matching entry for any host another box dials.
+that box's own `host_name()` resolves to — it doubles as its SSH alias.
+Every other box reaches a daemon host through SSH forwards to the hub, so only
+the hub needs an `~/.ssh/config` entry for each daemon host, and every other
+box needs one for the hub.
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `daemon` | bool | `false` | This host runs `sotd`; other boxes may dial it. `sotd topology plan` names it in a `dial`/`tunnel` line for every OTHER host that isn't itself frontend-only. |
-| `frontend` | bool | `false` | This host runs a frontend + launcher (dials the hub, is never dialled by anyone else — D8). |
+| `daemon` | bool | `false` | This host runs `sotd` and can be dialled. `sotd topology plan` emits a `dial` line for every daemon host, and on every box but the hub a `tunnel` line for each daemon host other than itself. |
+| `frontend` | bool | `false` | This host runs a frontend and its launcher. |
 
 A host can be `daemon = true`, `frontend = true`, neither (the section is
 otherwise pointless), or both (a workstation running its own daemon *and*
 driving a local frontend). The hub itself needs `daemon = true` too — it
 is still a listed host, just the one every other daemon host's relay
 handles register on.
-
-### Backend tmux socket
-
-`sotd` normally puts workspace tmux sessions on its private per-user tmux
-socket. For a one-time migration to existing `sot-be-*` sessions on another
-same-user tmux server, set `SOT_TMUX_SOCK` in the backend environment. `sotd
-tmux-socket-path` prints the effective path, including this override.
-
-`sotd` also needs **tmux ≥ 3.2** to stamp the pane's `SOT_*` awareness env via
-`new-session -e`. On older tmux it degrades gracefully — omitting `-e` and
-falling back to a best-effort `set-environment` — rather than failing, so the
-backend still runs; put a tmux ≥ 3.2 earlier on the daemon's `PATH` for full
-in-pane awareness.
 
 ### File-watcher budget
 
@@ -229,13 +220,11 @@ hub = "myserver"
 [host.myserver]
 daemon = true
 
-# A frontend box: dials the hub, is never dialled by anyone (D8) -- no
-# tunnel/dial line is emitted FOR it, only ones it consumes as the dialer.
+# A frontend box.
 [host.laptop]
 frontend = true
 
-# A second daemon host -- its own tunnel, opened alongside myserver's SSH
-# alias must be `otherbox` (the section key doubles as the alias).
+# A second daemon host; its SSH alias on the hub is `otherbox`.
 [host.otherbox]
 daemon = true
 
@@ -251,16 +240,18 @@ host-c = "host-c"
 ```text
 self laptop
 hub myserver
-relay-endpoint tcp:127.0.0.1:18743
-dial myserver tcp:127.0.0.1:18743
-dial otherbox tcp:127.0.0.1:18744
-tunnel myserver 18743
-tunnel otherbox 18744
+relay-endpoint tcp:127.0.0.1:<base>
+dial myserver tcp:127.0.0.1:<base>
+dial otherbox tcp:127.0.0.1:<base+1>
+tunnel myserver <base>
+tunnel otherbox <base+1>
 ```
 
-— which the launcher turns into two SSH tunnels and
-`--dial myserver=tcp:127.0.0.1:18743 --dial otherbox=tcp:127.0.0.1:18744`
-for the frontend.
+— which the launcher turns into two SSH forwards to the hub and
+`--dial myserver=tcp:127.0.0.1:<base> --dial otherbox=tcp:127.0.0.1:<base+1>`
+for the frontend. `<base>` is per OS user (`18743` plus a hash of the user
+name modulo 100), so two users on one box do not collide; read the actual
+ports from `sotd topology plan`, never hardcode them.
 
 ## See also
 

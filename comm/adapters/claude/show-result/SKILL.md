@@ -52,8 +52,10 @@ pace a burst across turns. From the FE's Terminal drawer instead of a
 backend session? Two env vars (`SOT_FE_ENDPOINT`, workspace slug) don't
 auto-populate there — `references/from-frontend.md`.
 
-**End your reply telling the user it's there**, e.g. *"...now showing in
-your nav pane"* — only after `sot-fe` actually succeeded.
+**End your reply telling the user it's there**, in words that hold whether
+or not they are viewing this session (you cannot tell), e.g. *"It's in this
+session's preview pane (badged on the row if you're elsewhere)."* — only
+after `sot-fe` actually succeeded.
 
 ## `--caption` — say what the figure IS
 

@@ -172,19 +172,17 @@ No concept entities yet. The docstring notes the future option: one
 
 ## Enabling it
 
-The plugin is loaded the same explicit way as any extension — list it in the
-project's `Project.toml` `[sot]` table:
+!!! warning "The `[sot].extensions` key is not implemented"
+    The planned way to enable a plugin is an `[sot]` table in the project's
+    `Project.toml` (see [Discovery & Configuration](discovery.md)). Nothing
+    reads that table yet.
 
-```toml
-[sot]
-extensions = ["HDF5Preview"]
-```
-
-The kernel `Base.require`s each entry at startup, in declared order, before
-serving requests (see [Discovery & Configuration](discovery.md)). For HDF5 specifically the kernel
-also supports lazy loading — it does not eagerly `using HDF5Preview`; the plugin
-is brought in on first `.h5` preview (or via a `plugins.load` op), so `HDF5_jll`
-is pulled only when a user actually opens an HDF5 file, never at kernel startup.
+Today the kernel loads HDF5Preview through its built-in extension table,
+`LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/ShipToolsKernel.jl`, which maps
+`.h5` to the package. It does not `using HDF5Preview` at startup; the plugin is
+loaded on the first `.h5` preview, so `HDF5_jll` is pulled only when a user
+actually opens an HDF5 file. Your own plugin loads the same way, from a source
+checkout; see the warning at the top of [Discovery & Configuration](discovery.md).
 
 ## The point
 

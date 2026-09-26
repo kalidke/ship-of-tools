@@ -43,7 +43,7 @@ actions override the defaults; unlisted actions keep their defaults:
 3. `$HOME/.config/sot/keybindings.toml`.
 4. Built-in defaults.
 
-Bindings load on frontend startup. Invalid entries log a warning and retain the
+Bindings load on frontend startup and again on a `reload_keybindings` command. Invalid entries log a warning and retain the
 previous binding. The active Help drawer and pane borders reflect that resolved
 result. When two actions share a chord in the same context, catalog order defines
 dispatch precedence; Help identifies a shadowed binding.

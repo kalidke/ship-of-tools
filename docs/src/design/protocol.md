@@ -72,8 +72,8 @@ Events: `tree.invalidate`, `repl.frame`, `chat.delta`, `file.changed`.
 
 The REPL produces multi-modal output — stdout, stderr, return values with one or
 more MIME representations, images (CairoMakie figures), and structured errors.
-The display shim in `repl/src/DisplayShim.jl` emits **length-prefixed JSON
-frames**; the backend wraps each into a `repl.frame` event on the main stream.
+The REPL shim in `julia/repl/src/ShipToolsRepl.jl` emits **newline-delimited
+JSON frames**; the backend wraps each into a `repl.frame` event on the main stream.
 
 The shape borrows IJulia's `display_data`, flattened: no separate metadata
 channel, every field at the top level of the frame.

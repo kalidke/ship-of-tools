@@ -1,8 +1,7 @@
 # DemoProject
 
-Great-circle navigation helpers, and the **Ship of Tools documentation
-fixture** — the small, stable workspace the docs screenshots are staged
-against.
+Great-circle navigation helpers: named waypoints, distance and bearing
+between them, route length, and a route plot.
 
 Distances use the haversine formula on a spherical Earth,
 
@@ -20,7 +19,8 @@ using DemoProject
 route = [
     Waypoint("Albuquerque", 35.08, -106.65),
     Waypoint("Santa Fe",    35.69, -105.94),
-    Waypoint("Black Mesa",  35.87, -106.08),  # research facility. probably fine
+    # research facility. probably fine
+    Waypoint("Black Mesa",  35.87, -106.08),
     Waypoint("Taos",        36.41, -105.57),
 ]
 
@@ -30,10 +30,3 @@ plot_route(route)            # CairoMakie figure: waypoints + per-leg distances
 ```
 
 Grace guides the traveler's bearing; `haversine` tells them how far.
-
-## Why this package exists
-
-Screenshots need content that never drifts: the module gives Modules mode a
-struct, documented functions, and a two-method function; this README gives the
-preview pane markdown with math; `.concept/` carries one current and one
-deliberately stale annotation so the drift badge is visible on demand.
