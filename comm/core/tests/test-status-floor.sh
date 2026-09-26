@@ -397,6 +397,26 @@ case_same_second_frame_is_still_announced() {
     [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("comm-poll"))' >/dev/null \
         || { echo "    the same-second frame was never announced: '$out'"; return 1; }
 }
+case_torn_line_does_not_silence_pending_mail() {
+    seed idle; _mail_reset
+    # A partial append ahead of the real message. Slurping the inbox as JSON
+    # failed outright on one of these, which read as "no mail" at every turn end
+    # from then on -- a handle permanently deaf while senders printed success.
+    printf '{"from":"peer","to":"%s","msg":"half a li\n' "$NAME" >> "$SOT_COMM_HOME/inbox/$NAME.jsonl"
+    _mail_line "$NAME"
+    local out; out="$(IT 'all done.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("comm-poll"))' >/dev/null \
+        || { echo "    a torn line silenced the announcement: '$out'"; return 1; }
+}
+case_offset_past_the_end_still_announces() {
+    seed idle; _mail_reset; _mail_line "$NAME"
+    # The inbox was cleared/truncated by hand; the cursor still names the longer
+    # file's offset. Left alone, this handle is never told about mail again.
+    printf '%s' "99" > "$SOT_COMM_HOME/read/$NAME.cursor"
+    local out; out="$(IT 'all done.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block"' >/dev/null \
+        || { echo "    a stale offset silenced the announcement: '$out'"; return 1; }
+}
 case_unwritable_tick_fails_open() {
     seed idle; _mail_reset; _mail_line "$NAME"
     # With no tick there is no bound, and a filesystem that refuses this write
@@ -795,6 +815,8 @@ check "a broadcast-only inbox never blocks the stop" case_broadcast_only_inbox_n
 check "a self-echo or a selftest frame never blocks the stop" case_self_echo_and_selftest_never_block
 check "an offset cursor covering the inbox never blocks the stop" case_offset_cursor_covering_the_inbox_never_blocks
 check "a frame filed in the same second as one already read is still announced" case_same_second_frame_is_still_announced
+check "a torn inbox line does not silence pending mail" case_torn_line_does_not_silence_pending_mail
+check "an offset past the end of the inbox still announces" case_offset_past_the_end_still_announces
 check "an unwritable tick fails open instead of blocking every turn" case_unwritable_tick_fails_open
 check "a legacy timestamp cursor that covers the inbox never blocks the stop" case_mail_older_than_the_cursor_never_blocks
 unset CLAUDE_CODE_SESSION_ID

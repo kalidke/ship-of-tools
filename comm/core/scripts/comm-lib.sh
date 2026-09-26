@@ -504,11 +504,27 @@ sot_watcher_pid_for() {
 # the one thing this design may not produce. A count cannot lose a frame that
 # way.
 #
-# sot_cursor_offset HANDLE — that offset. A LEGACY ts cursor is converted in
-# memory (never written here — only a real comm-poll.sh advances the cursor) by
-# counting the lines whose ts is at or before it, so history is not re-shown.
-# Anything unreadable or unparseable yields 0: on doubt this biases LOW, and
-# showing a frame twice is tolerable where dropping one is not.
+# sot_cursor_offset HANDLE — that offset. Three rules, each one a way this could
+# otherwise go silently deaf:
+#
+#   * A LEGACY ts cursor is converted in memory (never written here — only a real
+#     comm-poll.sh advances the cursor) by counting the lines BEFORE THE FIRST
+#     one whose ts is greater than it. Not "every line at or below it": stamps
+#     are only in order if every sender's clock agrees, and with a skewed clock
+#     across hosts (or two frames in one second) that count would step PAST an
+#     unread frame already on disk and it would never be shown. Stopping at the
+#     first greater line inherits no loss at all.
+#   * An unparseable line counts as read and never as a boundary. A torn append
+#     is realistic on a shared filesystem, and one must not be able to freeze
+#     the cursor: that makes a handle permanently deaf while its senders keep
+#     printing a success line.
+#   * An offset PAST the end of the inbox is 0. Production only appends, so this
+#     means the file was cleared, truncated or restored by hand — exactly the
+#     moment nobody suspects the cursor, and left as-is the handle never sees
+#     another message.
+#
+# Anything unreadable yields 0. On doubt this biases LOW: showing a frame twice
+# is tolerable where dropping one is not.
 sot_cursor_offset() {
     local handle="$1" cur n
     # $COMM_HOME, not the source-time $READ_DIR: comm-wake.sh re-derives its
@@ -518,13 +534,21 @@ sot_cursor_offset() {
     [ -n "$cur" ] || { printf '0\n'; return 0; }
     case "$cur" in
         ''|*[!0-9]*) ;;
-        *) printf '%s\n' "$cur"; return 0 ;;
+        *) _sot_clamp_offset "$handle" "$cur"; return 0 ;;
     esac
-    n="$(jq -rs --arg cur "$cur" \
-        '[ .[] | select((.ts // "") != "" and (.ts <= $cur)) ] | length' \
+    n="$(jq -Rrs --arg cur "$cur" '
+        [ split("\n")[] | select(length > 0)
+          | (((fromjson? // {}) | (.ts // "")) > $cur) ] as $past
+        | ($past | index(true)) // ($past | length)' \
         "$COMM_HOME/inbox/$handle.jsonl" 2>/dev/null)" || n=0
     [[ "$n" =~ ^[0-9]+$ ]] || n=0
-    printf '%s\n' "$n"
+    _sot_clamp_offset "$handle" "$n"
+}
+
+# _sot_clamp_offset HANDLE N — N, or 0 when it points past the end of the inbox.
+_sot_clamp_offset() {
+    local total; total="$(sot_inbox_lines "$1")"
+    if [ "$2" -gt "$total" ]; then printf '0\n'; else printf '%s\n' "$2"; fi
 }
 
 # sot_inbox_lines HANDLE — the inbox's line count (0 when absent).

@@ -249,16 +249,30 @@ if [ -r "$MAIL_INBOX" ]; then
     mail_cursor="$(cat "$HOME_DIR/read/$NAME.cursor" 2>/dev/null || true)"
     case "${mail_cursor:-0}" in
         ''|*[!0-9]*)
-            mail_pos="$(jq -rs --arg cur "$mail_cursor" \
-                '[ .[] | select((.ts // "") != "" and (.ts <= $cur)) ] | length' \
+            # A legacy ts cursor, converted the same way comm-lib.sh's
+            # sot_cursor_offset does it: the lines BEFORE THE FIRST one past the
+            # cursor, never "every line at or below it" (skewed clocks and
+            # same-second frames would step over something unread). `-R` so a
+            # torn line cannot abort the count -- it maps to false, read and
+            # never a boundary; slurping the file as JSON failed outright on one,
+            # which silently meant "no mail" at every turn end from then on.
+            mail_pos="$(jq -Rrs --arg cur "$mail_cursor" '
+                [ split("\n")[] | select(length > 0)
+                  | (((fromjson? // {}) | (.ts // "")) > $cur) ] as $past
+                | ($past | index(true)) // ($past | length)' \
                 "$MAIL_INBOX" 2>/dev/null || echo 0)" ;;
         *) mail_pos="$mail_cursor" ;;
     esac
     case "$mail_pos" in ''|*[!0-9]*) mail_pos=0 ;; esac
+    # An offset past the end means the inbox was cleared, truncated or restored
+    # by hand (production only appends). Left alone, this handle would never be
+    # told about another message.
+    [ "$mail_pos" -gt "$mail_total" ] && mail_pos=0
     mail_pending=0
     if [ "$mail_total" -gt "$mail_pos" ]; then
         mail_pending="$(sed -n "$((mail_pos + 1)),${mail_total}p" "$MAIL_INBOX" 2>/dev/null \
-            | jq -rs --arg me "$NAME" '[ .[]
+            | jq -Rrs --arg me "$NAME" '[ split("\n")[] | select(length > 0)
+                | (fromjson? // empty) | select(type == "object")
                 | select(((.to // "") != "") and (.from // "") != $me and (.from // "") != "__selftest__")
               ] | length' 2>/dev/null || echo 0)"
         case "$mail_pending" in ''|*[!0-9]*) mail_pending=0 ;; esac

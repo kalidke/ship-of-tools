@@ -28,6 +28,13 @@ count=0
 if [ "$total" -gt "$pos" ]; then
     while IFS= read -r line; do
         [ -z "$line" ] && continue
+        # A TORN or otherwise unparseable line is SKIPPED, never fatal: under
+        # this script's `set -e` a jq failure here exited the whole poll, which
+        # froze the cursor and left the handle permanently deaf while its senders
+        # kept printing a success line. It is still COUNTED as read (the cursor
+        # advances to $total below), so one bad line cannot pin the cursor
+        # either.
+        printf '%s' "$line" | jq -e 'type == "object"' >/dev/null 2>&1 || continue
         from="$(printf '%s' "$line" | jq -r '.from // ""' 2>/dev/null)"
         # Selftest frames (from:__selftest__) are wake-path proofs injected by
         # comm-listen.sh --selftest; they land in the durable inbox but are NOT
