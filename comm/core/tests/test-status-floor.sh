@@ -374,6 +374,39 @@ case_self_echo_and_selftest_never_block() {
     local out; out="$(IT 'all done.')"
     [ -z "$out" ] || { echo "    a self-echo or selftest frame blocked the stop: '$out'"; return 1; }
 }
+case_offset_cursor_covering_the_inbox_never_blocks() {
+    seed idle; _mail_reset; _mail_line "$NAME"
+    # The cursor is a LINE OFFSET: one line filed, one line read.
+    printf '%s' "1" > "$SOT_COMM_HOME/read/$NAME.cursor"
+    local out; out="$(IT 'all done.')"
+    [ -z "$out" ] || { echo "    mail the cursor already covers blocked the stop: '$out'"; return 1; }
+}
+case_same_second_frame_is_still_announced() {
+    seed idle; _mail_reset
+    # TWO frames stamped in the SAME second, one of them read. A timestamp
+    # cursor cannot tell them apart -- every comparison was strictly-greater, so
+    # the second frame was announced to nobody while its sender was told it had
+    # landed. The offset can: line 2 is pending.
+    local ts="2026-01-01T00:00:00Z" i
+    for i in 1 2; do
+        jq -nc --arg to "$NAME" --arg ts "$ts" --arg m "frame $i" \
+            '{from:"peer",to:$to,repo:"r",msg:$m,ts:$ts}' >> "$SOT_COMM_HOME/inbox/$NAME.jsonl"
+    done
+    printf '%s' "1" > "$SOT_COMM_HOME/read/$NAME.cursor"
+    local out; out="$(IT 'all done.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("comm-poll"))' >/dev/null \
+        || { echo "    the same-second frame was never announced: '$out'"; return 1; }
+}
+case_unwritable_tick_fails_open() {
+    seed idle; _mail_reset; _mail_line "$NAME"
+    # With no tick there is no bound, and a filesystem that refuses this write
+    # refuses comm-poll.sh's cursor write too -- so a block here would return at
+    # every turn end with nothing the session could do about it. Fail open.
+    chmod 000 "$SOT_COMM_HOME/state" 2>/dev/null
+    local out; out="$(IT 'all done.')"
+    chmod 755 "$SOT_COMM_HOME/state" 2>/dev/null
+    [ -z "$out" ] || { echo "    blocked with no way to record the bound: '$out'"; return 1; }
+}
 case_mail_older_than_the_cursor_never_blocks() {
     seed idle; _mail_reset
     jq -nc '{from:"peer",to:"'"$NAME"'",repo:"r",msg:"old",ts:"2020-01-01T00:00:00Z"}' \
@@ -740,7 +773,10 @@ check "pending directed mail blocks the stop, naming comm-poll" case_pending_mai
 check "a second stop for the same pending mail does not block again" case_second_stop_in_the_same_turn_does_not_block_again
 check "a broadcast-only inbox never blocks the stop" case_broadcast_only_inbox_never_blocks
 check "a self-echo or a selftest frame never blocks the stop" case_self_echo_and_selftest_never_block
-check "mail the read cursor already covers never blocks the stop" case_mail_older_than_the_cursor_never_blocks
+check "an offset cursor covering the inbox never blocks the stop" case_offset_cursor_covering_the_inbox_never_blocks
+check "a frame filed in the same second as one already read is still announced" case_same_second_frame_is_still_announced
+check "an unwritable tick fails open instead of blocking every turn" case_unwritable_tick_fails_open
+check "a legacy timestamp cursor that covers the inbox never blocks the stop" case_mail_older_than_the_cursor_never_blocks
 unset CLAUDE_CODE_SESSION_ID
 check "a human turn parked blocked without a marker is nudged once, row untouched" case_parked_user_turn_blocked_without_marker_is_nudged_once
 check "a human turn parked done without a marker is nudged once, row untouched" case_parked_user_turn_done_without_marker_is_nudged_once

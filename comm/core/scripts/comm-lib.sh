@@ -434,6 +434,107 @@ BRIDGE_LOOP='while :; do
     sleep 2
 done'
 
+# --- owned lifetimes: who a watcher or a bridge belongs to -------------------
+#
+# sot_owner_pid — the pid of the nearest ancestor whose command is `claude` or
+# `codex`, walking up from $PPID. Lives HERE, not in one caller, because every
+# process that outlives a turn has to end with the agent it serves, and a flag
+# a caller can forget leaves exactly one leg ownerless (the Codex watch leg was
+# that leg). A caller still directly attached to the agent may pass the pid it
+# already knows; anything spawned without one discovers it the same way here.
+# `ps -o comm=` is tried at each hop, then /proc; if neither answers the walk
+# stops and prints nothing (rc 1) — which is a REFUSAL at the call site, never
+# an untethered process.
+sot_owner_pid() {
+    local pid="${PPID:-}" comm ppid
+    while [ -n "$pid" ] && [ "$pid" != "1" ]; do
+        comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')"
+        if [ -z "$comm" ] && [ -r "/proc/$pid/comm" ]; then
+            comm="$(tr -d ' \t\n' < "/proc/$pid/comm" 2>/dev/null)"
+        fi
+        [ -n "$comm" ] || return 1
+        case "$comm" in
+            claude|codex) printf '%s\n' "$pid"; return 0 ;;
+        esac
+        ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+        if [ -z "$ppid" ] && [ -r "/proc/$pid/status" ]; then
+            ppid="$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null)"
+        fi
+        [ -n "$ppid" ] && [ "$ppid" != "$pid" ] || break
+        pid="$ppid"
+    done
+    return 1
+}
+
+# sot_watcher_pid_for HANDLE — the live watcher pid recorded in
+# state/<handle>.watch, verified BY IDENTITY, else nothing (rc 1). `kill -0`
+# alone is not enough to act on: these markers live on a shared home and
+# survive reboots, so a REUSED pid would let a teardown kill an unrelated
+# process and let the start-time mutex refuse a legitimate watcher forever. The
+# recorded pid must still BE a watcher for this handle — its command line names
+# one of the watcher scripts and the handle itself. Anything else (gone,
+# different command, no way to read one) means the marker is STALE: rc 1, and
+# the caller proceeds as if it were absent.
+sot_watcher_pid_for() {
+    local handle="$1" pid args
+    pid="$(sed -n '1p' "$COMM_HOME/state/$handle.watch" 2>/dev/null)"
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    if [ -r "/proc/$pid/cmdline" ]; then
+        args="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    else
+        args="$(ps -o args= -p "$pid" 2>/dev/null)"
+    fi
+    [ -n "$args" ] || return 1
+    case "$args" in
+        *comm-wake.sh*|*comm-watch.sh*|*codex-watch.sh*) ;;
+        *) return 1 ;;
+    esac
+    case "$args" in *"$handle"*) ;; *) return 1 ;; esac
+    printf '%s\n' "$pid"
+}
+
+# --- the read cursor: a LINE OFFSET into inbox/<handle>.jsonl ----------------
+#
+# read/<handle>.cursor holds the NUMBER of inbox lines the recipient has been
+# shown. It used to hold the newest-shown `ts`, and those stamps are
+# second-resolution while every comparison was strictly-greater: a frame filed
+# in the same second as one already read was never shown and never announced,
+# while the sender printed a success line — a false-positive acknowledgement,
+# the one thing this design may not produce. A count cannot lose a frame that
+# way.
+#
+# sot_cursor_offset HANDLE — that offset. A LEGACY ts cursor is converted in
+# memory (never written here — only a real comm-poll.sh advances the cursor) by
+# counting the lines whose ts is at or before it, so history is not re-shown.
+# Anything unreadable or unparseable yields 0: on doubt this biases LOW, and
+# showing a frame twice is tolerable where dropping one is not.
+sot_cursor_offset() {
+    local handle="$1" cur n
+    # $COMM_HOME, not the source-time $READ_DIR: comm-wake.sh re-derives its
+    # home inside its own main, and a helper reading a different one than its
+    # caller is a silently wrong answer.
+    cur="$(cat "$COMM_HOME/read/$handle.cursor" 2>/dev/null || true)"
+    [ -n "$cur" ] || { printf '0\n'; return 0; }
+    case "$cur" in
+        ''|*[!0-9]*) ;;
+        *) printf '%s\n' "$cur"; return 0 ;;
+    esac
+    n="$(jq -rs --arg cur "$cur" \
+        '[ .[] | select((.ts // "") != "" and (.ts <= $cur)) ] | length' \
+        "$COMM_HOME/inbox/$handle.jsonl" 2>/dev/null)" || n=0
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    printf '%s\n' "$n"
+}
+
+# sot_inbox_lines HANDLE — the inbox's line count (0 when absent).
+sot_inbox_lines() {
+    local n
+    n="$(wc -l < "$COMM_HOME/inbox/$1.jsonl" 2>/dev/null | tr -d ' ')"
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    printf '%s\n' "$n"
+}
+
 sot_bridge_pidfile() { printf '%s/state/bridge-%s.pid\n' "$COMM_HOME" "$1"; }
 
 # sot_bridge_pid_for NAME — print the live loop pid for NAME (rc 0), or

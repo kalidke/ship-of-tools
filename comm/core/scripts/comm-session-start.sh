@@ -64,36 +64,12 @@ IS_SOT=0
 
 _watch_marker() { printf '%s/state/%s.watch\n' "${SOT_COMM_HOME:-$HOME/.sot-comm}" "$1"; }
 
-# _wake_owner_pid -> the pid of the nearest ancestor whose command is
-# `claude` or `codex`, walking up from $PPID. This script is still directly
-# attached to that real originating process right now — a better vantage
-# than comm-wake.sh has once it's already backgrounded, which is why the pid
-# is found HERE and handed to it with `--owner <pid>` rather than
-# rediscovered there. `ps -o comm=` is tried at each hop; where it gives
-# nothing (unsupported on this platform, or the pid raced past), /proc is
-# tried next if it exists; if neither answers, the walk stops there and
-# prints nothing (no owner tie — comm-wake.sh runs untethered, same as
-# today when nothing claims it).
-_wake_owner_pid() {
-    local pid="${PPID:-}" comm ppid
-    while [ -n "$pid" ] && [ "$pid" != "1" ]; do
-        comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')"
-        if [ -z "$comm" ] && [ -r "/proc/$pid/comm" ]; then
-            comm="$(tr -d ' \t\n' < "/proc/$pid/comm" 2>/dev/null)"
-        fi
-        [ -n "$comm" ] || return 1
-        case "$comm" in
-            claude|codex) printf '%s\n' "$pid"; return 0 ;;
-        esac
-        ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
-        if [ -z "$ppid" ] && [ -r "/proc/$pid/status" ]; then
-            ppid="$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null)"
-        fi
-        [ -n "$ppid" ] && [ "$ppid" != "$pid" ] || break
-        pid="$ppid"
-    done
-    return 1
-}
+# The owner-pid walk lives in comm-lib.sh (`sot_owner_pid`) now: comm-wake.sh
+# and comm-listen.sh discover their own owner with it, so no caller can leave a
+# leg ownerless by forgetting a flag. This script still passes the pid it finds
+# to the watcher it spawns, because it is attached to the agent RIGHT NOW and
+# the watcher is about to be backgrounded — if its parent exits first the
+# watcher reparents to init and its own walk would find nothing.
 
 # _owns_handle H — does the registry currently attribute H to OUR
 # PROJECT_ROOT? A pgrep/marker match on H's watcher process is NOT proof of
@@ -141,10 +117,12 @@ _survived() {
         # it is reaped so it cannot fool the next check either. A marker with
         # no session line (a watcher older than this rule) keeps the old
         # liveness-only answer.
-        pid="$(sed -n '1p' "$marker" 2>/dev/null)"
+        # sot_watcher_pid_for verifies the recorded pid IS a watcher for this
+        # handle, not merely alive: on a shared home the marker outlives
+        # reboots, so a reused pid would report SURVIVED for a session with no
+        # watcher at all — deaf, and reporting healthy.
+        pid="$(sot_watcher_pid_for "$h")" || return 1
         sid="$(sed -n '2p' "$marker" 2>/dev/null)"
-        [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-        kill -0 "$pid" 2>/dev/null || return 1
         if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -n "$sid" ] && [ "$sid" != "$CLAUDE_CODE_SESSION_ID" ]; then
             kill "$pid" 2>/dev/null || true
             echo "ORPHAN watcher pid=$pid (armed by a previous session) reaped — re-arming" >&2
@@ -187,7 +165,9 @@ _ensure_bridge() {
     local h="$1" state
     state="$(_bridge_state "$h")"
     [ "$state" = "down" ] || { echo "$state"; return 0; }
-    sot_bridge_start "$h" "$COMM_HOME/bin/comm-relay.sh" "$(_wake_owner_pid || true)" 2>/dev/null || true
+    local owner; owner="$(sot_owner_pid || true)"
+    [[ "$owner" =~ ^[0-9]+$ ]] || { echo "down"; return 0; }
+    sot_bridge_start "$h" "$COMM_HOME/bin/comm-relay.sh" "$owner" 2>/dev/null || true
     if sot_bridge_running_for "$h"; then echo "restarted"; else echo "down"; fi
 }
 
@@ -273,7 +253,7 @@ if [ "$MODE" = "catchup" ]; then
     # BOOTSTRAP-ARM and the skill armed it before running this phase — Codex
     # review finding 5): its own wake-proof frame now has a live watcher to
     # catch it, instead of racing a Monitor that doesn't exist yet.
-    SELFTEST_OUT="$("$SCRIPT_DIR/comm-listen.sh" --owner "$(_wake_owner_pid || true)" --selftest 2>&1)"; rc=$?
+    SELFTEST_OUT="$("$SCRIPT_DIR/comm-listen.sh" --selftest 2>&1)"; rc=$?
     printf '%s\n' "$SELFTEST_OUT"
     case "$rc" in
         0) SELFTEST="ok" ;;
@@ -418,7 +398,7 @@ if [ -z "$HANDLE" ]; then
     exit 0
 fi
 
-LISTEN_OUT="$("$SCRIPT_DIR/comm-listen.sh" --owner "$(_wake_owner_pid || true)" 2>&1)"; listen_rc=$?
+LISTEN_OUT="$("$SCRIPT_DIR/comm-listen.sh" 2>&1)"; listen_rc=$?
 # LISTEN_OUT is read ONLY for listen_rc's sake, never echoed: comm-listen.sh's
 # own start banner (its "NEXT (required...) ... Monitor command: ..." block,
 # ~comm-listen.sh:195) is a free-form multi-line explainer meant for a human
@@ -476,7 +456,7 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
             # into a row that has moved on, and leaves a marker that makes the
             # next bootstrap report SURVIVED. comm-wake.sh refuses one anyway;
             # this keeps the fallback honest instead of spawning a doomed child.
-            WAKE_OWNER="$(_wake_owner_pid || true)"
+            WAKE_OWNER="$(sot_owner_pid || true)"
             if [ -n "$WAKE_OWNER" ]; then
                 SOT_WORKSPACE_ID="$CAPSULE_WS_ID" nohup "$SCRIPT_DIR/comm-wake.sh" "$HANDLE" --deliver ping --owner "$WAKE_OWNER" \
                     </dev/null >/dev/null 2>&1 &

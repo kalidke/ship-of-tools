@@ -99,8 +99,9 @@ deliver() {  # $1 = target name
     elif ! _live_endpoint; then
         woke=" — not woken: no daemon reachable from here"
     else
-        sot_pty_input_gated "$tws" "$(printf '%s' "$FORMATTED" | base64 | tr -d '\n')"
-        case $? in
+        local gate_rc=0
+        sot_pty_input_gated "$tws" "$(printf '%s' "$FORMATTED" | base64 | tr -d '\n')" || gate_rc=$?
+        case "$gate_rc" in
             0) woke=" +woken" ;;
             1) woke=" — not woken: row $tws is not at a free prompt" ;;
             *) woke=" — not woken: row $tws did not answer" ;;

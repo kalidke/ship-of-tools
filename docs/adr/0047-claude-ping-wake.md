@@ -76,13 +76,28 @@ what a missed ping costs and therefore what this watcher is allowed to do.
   to everything queued behind the message it never read. A genuinely new line
   now always pings. The one suppression left is content-based: a pending line
   the cursor's own ts already covers was read through a real poll.
-- **`--owner <pid>` is mandatory for `--deliver ping`** (exit 2 without it) and
-  the marker `state/<handle>.watch` is a start-time mutex: a live pid in it
-  refuses a second watcher (exit 4). The `pgrep` dedupe
-  `comm-session-start.sh` did from the outside is gone with it — a process
-  match could never tell whose session armed a watcher. `--deliver full`
-  (Codex's leg) keeps the optional tie: its documented start line passes no
-  pid, and where Codex's owner pid comes from is not settled here.
+- **Every leg is owned, and the owner is DISCOVERED.** `sot_owner_pid`
+  (comm-lib.sh) walks up to the nearest `claude`/`codex` ancestor, so
+  `comm-wake.sh` and `comm-listen.sh` find their own owner and REFUSE to start
+  when none can be found (exit 2). `--owner <pid>` remains only as an override
+  for a caller with a better vantage — `comm-session-start.sh` passes it to the
+  watcher it backgrounds, because a watcher whose parent exits first reparents
+  to init and its own walk would find nothing. Nothing depends on a flag a
+  caller could forget, which is what lets the rule cover Codex's `--deliver
+  full` leg too.
+- **The marker `state/<handle>.watch` is a start-time mutex, verified by
+  identity.** A live pid in it refuses a second watcher (exit 4) — but only
+  after `sot_watcher_pid_for` confirms that pid IS a watcher for this handle.
+  The marker outlives reboots on a shared home, and `codex-watch.sh` writes the
+  same file, so trusting `kill -0` alone would let a reused pid refuse every
+  start for that handle while the survival check reported healthy. The `pgrep`
+  dedupe `comm-session-start.sh` did from the outside is gone: a process match
+  could never tell whose session armed a watcher.
+- **The read cursor is a line offset, not a timestamp.** Stamps are
+  second-resolution and every comparison was strictly-greater, so a frame filed
+  in the same second as one already read was never shown and never announced
+  while its sender printed success. `comm-poll.sh` writes a line count;
+  `sot_cursor_offset` converts a legacy stamp once, on read.
 - **The prompt-free gate is one implementation**, `comm-lib.sh`'s
   `sot_prompt_free`, shared with the sender's poke (`sot_pty_input_gated`), so
   "free prompt" cannot come to mean two different things.

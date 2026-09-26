@@ -26,13 +26,15 @@
 #   comm-watch.sh <name>
 # See the sot-session-start SKILL.
 #
-# The bridge is OWNED: `--owner <pid>` is required to start one (a bridge with
-# no owner outlives its session, and while it holds a connection the daemon
-# counts it as a live receiver for that handle — an honest-looking ack for a
-# session that is gone). The loop polls its owner and exits with it, dropping
-# its pidfile. `--owner $$` is the idiom for a hand-started bridge.
+# The bridge is OWNED. It ends with the agent that started it: the loop polls
+# its owner and exits when it is gone, dropping its pidfile — because a bridge
+# with no owner outlives its session, and while it holds a connection the daemon
+# counts it as a live receiver for that handle, an honest-looking ack for
+# somebody who is gone. The owner is DISCOVERED (the nearest claude/codex
+# ancestor), so no caller has to pass anything; `--owner <pid>` overrides that
+# where the caller knows better. With no owner discoverable, a start REFUSES.
 #
-# Usage: comm-listen.sh --owner PID [--name NAME]   # start (default: your joined handle)
+# Usage: comm-listen.sh [--name NAME]   # start (default: your joined handle)
 #        comm-listen.sh --status
 #        comm-listen.sh --stop
 #        comm-listen.sh --selftest      # prove the receive path end-to-end (no peer
@@ -179,8 +181,11 @@ fi
 # left to reap by pattern afterwards.
 case "$MODE" in
     start|selftest)
+        # `--owner <pid>` is an override for a caller with the better vantage;
+        # otherwise the owner is DISCOVERED from this process's own ancestry.
+        [[ "$OWNER_PID" =~ ^[0-9]+$ ]] || OWNER_PID="$(sot_owner_pid || true)"
         [[ "$OWNER_PID" =~ ^[0-9]+$ ]] || {
-            echo "ERROR: --owner <pid> is required to start a bridge (it must end with the agent that owns it; use --owner \$\$ by hand)" >&2
+            echo "ERROR: no owning claude/codex ancestor found (and no --owner given) — refusing to start an ownerless bridge: while it holds a connection the daemon counts it as a live receiver for a session that is gone" >&2
             exit 2
         } ;;
 esac

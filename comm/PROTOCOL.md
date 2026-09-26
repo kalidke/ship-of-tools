@@ -16,7 +16,7 @@ all clients are mutually addressable through the same registry and inboxes.
   registry.json            # who is reachable + liveness  (source of truth for discovery)
   .registry.lock/          # mkdir-based spinlock for registry writes
   inbox/<name>.jsonl       # durable per-recipient queue (append-only)
-  read/<name>.cursor       # per-recipient read cursor (ISO ts of last-shown msg)
+  read/<name>.cursor       # per-recipient read cursor (COUNT of inbox lines shown)
   self/<host>__<pane>.txt  # this pane's chosen agent name (identity recovery)
 ```
 
@@ -72,8 +72,13 @@ renders `summary` as the per-session glance, colored by `state` and aged off
 {"from": "<name>", "to": "<name>|\"\"", "repo": "<repo>", "msg": "<text>", "ts": "2026-05-29T18:04:00Z"}
 ```
 
-ISO-8601 UTC timestamps sort lexically — the read cursor is just the `ts` of the
-last message shown.
+ISO-8601 UTC timestamps sort lexically, but they are NOT the read cursor: the
+cursor is the NUMBER of inbox lines already shown. Stamps are second-resolution
+and every comparison was strictly-greater, so a frame filed in the same second
+as one already read was shown to nobody while its sender was told it had
+landed. A count cannot lose a frame that way. `comm-poll.sh` is the only writer;
+a legacy timestamp cursor is converted on first read (the count of lines at or
+before it).
 
 `to` ranks the line for the recipient's inbox Monitor: their own name = directed,
 wakes the session; `""` = broadcast copy (relay cc traffic or
@@ -83,19 +88,23 @@ which is why an unstamped `--broadcast` once woke the whole network at once.
 
 ## Delivery — two modes, chosen by reachability, always visible
 
-1. **Durable always:** every send appends the frame to `inbox/<target>.jsonl`.
-2. **Live wake — directed sends only:** a directed send to a recipient whose
-   registry row names a workspace row on the sender's host is typed into
-   that row through the daemon's `pty.input` (Enter appended; the send
-   reports `delivered live` only when the daemon confirms `enter_sent`).
-   Otherwise the recipient's own inbox Monitor (`/sot-session-start`) polls
-   `inbox/<name>.jsonl` and wakes the session; a codex row is woken by
-   `codex-watch.sh`, which injects each directed frame through the same
-   `pty.input`. The message text is `[<from>:<repo>] <msg>`. **Broadcasts are
-   never typed** — text+Enter is a full interrupt (it submits into the
-   recipient's claude, costing a model turn), so broadcast copies are
-   durable-only and surface on the next `comm-poll`, matching the Monitor's
-   demotion rule.
+1. **The append IS the delivery:** every send appends the frame to
+   `inbox/<target>.jsonl`, and that is the acknowledgement — `filed -> @name`,
+   exit 0. A filed frame is read by the recipient's next turn boundary, because
+   its own end-of-turn hook reads the inbox and will not let a turn end while
+   directed mail sits past the cursor. That is how a BUSY session is reached: no
+   process, no keystrokes, no human.
+2. **The poke — directed sends only:** a directed send to a recipient whose
+   registry row names a workspace row on the sender's host is ALSO typed into
+   that row through the daemon's `pty.input` (Enter appended), so a session
+   sitting idle at its prompt does not wait for its next turn. It is typed only
+   when the row's current screen shows a free prompt — keystrokes would
+   otherwise land in an open dialog, menu or half-written draft. The send
+   reports `+woken` or `not woken: <reason>` as a DIAGNOSTIC; the verdict is the
+   filing either way. The message text is `[<from>:<repo>] <msg>`.
+   **Broadcasts are never typed** — text+Enter is a full interrupt (it submits
+   into the recipient's claude, costing a model turn), so broadcast copies are
+   durable-only and surface on the next `comm-poll`.
 
 **Ping delivery (Claude, capsule rows, ADR 0047):** a harness Monitor costs a
 model turn every ~30 minutes just to re-arm, so a Claude session in a capsule
@@ -103,17 +112,24 @@ row wakes instead via `comm-wake.sh <handle> --deliver ping` — the same
 `codex-watch.sh` mechanism generalized, but it types ONE fixed notice line
 (never the message text) and lets the session read the real backlog with
 `comm-poll.sh` on the turn the ping wakes it. A whole batch of new directed
-frames still costs one wake, not one per frame (coalescing: an unread ping
-suppresses a further one until the recipient's poll cursor moves, capped at
-10 minutes). It only types when the row's current screen shows a free prompt
-— typing into an open dialog or menu could answer it — so a busy screen
-delays the wake, never drops it. `comm-session-start.sh` starts this
-automatically for a capsule row; outside one, the harness Monitor is
-unchanged.
+frames costs one wake, not one per frame; a batch the read cursor already covers
+costs none. There is no other suppression — an earlier unread ping does NOT
+withhold a later one, because one stalled session would then go deaf to
+everything queued behind the message it never read. It only types when the row's
+current screen shows a free prompt — typing into an open dialog or menu could
+answer it — so a busy screen delays the poke, never drops a frame: the frame is
+in the inbox and the turn boundary reads it regardless. The watcher is OWNED: it
+discovers the claude/codex process it belongs to, refuses to start without one
+or against a live watcher for the same handle, and exits when its owner does.
+`comm-session-start.sh` starts it automatically for a capsule row; outside one,
+the harness Monitor is unchanged.
 
-If live delivery isn't possible (no row for the recipient on this host, no
-daemon, a row that is not ready) the send reports `queued to inbox (…)` — the
-fallback is **stated, never silent**. The recipient sees it on the next `poll`.
+If the poke isn't possible (no row for the recipient on this host, no daemon, a
+row that is not at a free prompt) the send says so — `filed -> @name — not
+woken: <reason>` — because the reason is **stated, never silent**. The frame is
+filed either way, and the recipient reads it at its next turn boundary or on its
+next `poll`. A send that could file NOWHERE is the one failure: `no such handle`
+(or `ERROR: unreachable, nothing filed`) with a non-zero exit.
 
 **Cross-machine receive** is the relay bridge `comm-listen.sh` starts: a
 reconnect loop (`comm-relay.sh bridge --name <name>`) run as a background
@@ -130,7 +146,7 @@ frontend files inbound frames itself.
 |-------------|------------------|-------|
 | join        | `comm-join.sh`   | `--name <n>` `--expertise "a, b"`; writes registry + self file |
 | send        | `comm-send.sh`   | `@name "msg"` or `--broadcast "msg"`; recipient is only the first positional `@arg`, so the message may itself begin with `@` |
-| poll        | `comm-poll.sh`   | shows inbox entries newer than the read cursor |
+| poll        | `comm-poll.sh`   | shows the inbox lines past the read cursor, then advances it |
 | list        | `comm-list.sh`   | all agents + live/stale + (me) marker |
 | leave       | `comm-leave.sh`  | removes self from registry; `--name <handle>` removes an orphan row (registry only — `comm-despawn.sh` is full teardown) |
 

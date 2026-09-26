@@ -230,32 +230,62 @@ fi
 #
 # What counts as mail: `to` non-empty (a BROADCAST, to == "", never fires this —
 # the same demotion rule the sender and the ping watcher apply), `from` neither
-# this handle (self-echo) nor `__selftest__` (a wake proof comm-poll.sh skips,
-# so polling could never advance the cursor past one and the block would repeat
-# every turn), and `ts` newer than the cursor's CONTENT, which comm-poll.sh
-# writes as the newest-read ts. This hook NEVER advances the cursor: only a real
-# comm-poll.sh does, which is what keeps "read" an honest word. Any jq failure
-# yields no mail and no block — same fail-open discipline as the rest of the
-# hook, which must never be able to wedge a turn.
+# this handle (self-echo) nor `__selftest__` (a wake proof comm-poll.sh does not
+# show, so it must not hold a turn open either), and the line sitting PAST the
+# read cursor. The cursor is a LINE OFFSET (comm-lib.sh's sot_cursor_offset owns
+# the format; this hook is standalone by design, so the read is inlined,
+# including the one-shot conversion of a legacy ts cursor which is NEVER written
+# back from here). Timestamps could not do this job: they are second-resolution
+# and every comparison was strictly-greater, so a frame filed in the same second
+# as one already read would be announced to nobody while its sender was told it
+# had landed. This hook never advances the cursor — only a real comm-poll.sh
+# does, which is what keeps "read" an honest word. Any jq failure yields no mail
+# and no block: the same fail-open discipline as the rest of the hook, which
+# must never be able to wedge a turn.
 MAIL_INBOX="$HOME_DIR/inbox/$NAME.jsonl"
 if [ -r "$MAIL_INBOX" ]; then
+    mail_total="$(wc -l < "$MAIL_INBOX" 2>/dev/null | tr -d ' ')"
+    case "$mail_total" in ''|*[!0-9]*) mail_total=0 ;; esac
     mail_cursor="$(cat "$HOME_DIR/read/$NAME.cursor" 2>/dev/null || true)"
-    mail_newest="$(jq -rs --arg me "$NAME" --arg cur "$mail_cursor" '
-        [ .[]
-          | select(((.to // "") != "") and (.from // "") != $me and (.from // "") != "__selftest__")
-          | (.ts // "")
-          | select(. != "" and ($cur == "" or . > $cur)) ] | max // ""
-    ' "$MAIL_INBOX" 2>/dev/null || true)"
-    if [ -n "$mail_newest" ]; then
-        mail_tick="$HOME_DIR/state/mail-$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-$PPID}}" | tr -c 'A-Za-z0-9._-' '_').tick"
-        if [ "$(cat "$mail_tick" 2>/dev/null || true)" != "$mail_newest" ]; then
+    case "${mail_cursor:-0}" in
+        ''|*[!0-9]*)
+            mail_pos="$(jq -rs --arg cur "$mail_cursor" \
+                '[ .[] | select((.ts // "") != "" and (.ts <= $cur)) ] | length' \
+                "$MAIL_INBOX" 2>/dev/null || echo 0)" ;;
+        *) mail_pos="$mail_cursor" ;;
+    esac
+    case "$mail_pos" in ''|*[!0-9]*) mail_pos=0 ;; esac
+    mail_pending=0
+    if [ "$mail_total" -gt "$mail_pos" ]; then
+        mail_pending="$(sed -n "$((mail_pos + 1)),${mail_total}p" "$MAIL_INBOX" 2>/dev/null \
+            | jq -rs --arg me "$NAME" '[ .[]
+                | select(((.to // "") != "") and (.from // "") != $me and (.from // "") != "__selftest__")
+              ] | length' 2>/dev/null || echo 0)"
+        case "$mail_pending" in ''|*[!0-9]*) mail_pending=0 ;; esac
+    fi
+    if [ "$mail_pending" -gt 0 ]; then
+        # ONE block per pending batch, bounded by a tick file whose key must be
+        # STABLE for the session: $PPID is not (every hook run is its own
+        # process), so the transcript path — already read above, one file per
+        # session — is the fallback before it.
+        mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
+        [ -n "$mail_key" ] && [ "$mail_key" != "nopane" ] || mail_key="${tp##*/}"
+        [ -n "$mail_key" ] || mail_key="$PPID"
+        mail_tick="$HOME_DIR/state/mail-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
+        if [ "$(cat "$mail_tick" 2>/dev/null || true)" != "$mail_total" ]; then
             mkdir -p "$HOME_DIR/state" 2>/dev/null || true
-            printf '%s' "$mail_newest" > "$mail_tick" 2>/dev/null || true
-            jq -nc --arg n "$NAME" '{
-              decision: "block",
-              reason: ("New sot-comm mail for @" + $n + " — run comm-poll.sh now, act on it, then end the turn.")
-            }'
-            exit 0
+            # FAIL OPEN when the tick cannot be recorded. With no tick there is
+            # no bound, and a filesystem that refuses this write refuses
+            # comm-poll.sh's cursor write too — so the block would return at
+            # every turn end with no way for the session to clear it. A missed
+            # announcement is acceptable; an inescapable block is not.
+            if printf '%s' "$mail_total" 2>/dev/null > "$mail_tick"; then
+                jq -nc --arg n "$NAME" '{
+                  decision: "block",
+                  reason: ("New sot-comm mail for @" + $n + " — run comm-poll.sh now, act on it, then end the turn.")
+                }'
+                exit 0
+            fi
         fi
     fi
 fi

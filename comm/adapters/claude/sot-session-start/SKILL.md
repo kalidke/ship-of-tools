@@ -30,8 +30,8 @@ BOOTSTRAP-ARM handle=<h> listener=up|down|n/a identity=ok|MISMATCH|FAIL MONITOR:
   someone else's project. Pin `SOT_COMM_NAME` (and, for a subagent/lane, a
   private `SOT_COMM_SELF_FILE`) and re-run; never work around this by hand.
 - `WAKE:` — this is a capsule row: the script already started
-  `comm-wake.sh --deliver ping` for you, detached and owned by this session
-  (`--owner`), so it ends when the session does and a second one cannot start.
+  `comm-wake.sh --deliver ping` for you, detached and owned by this session, so
+  it ends when the session does and a second one cannot start.
   There is nothing to arm; the proof it works is the ping turn itself, arriving
   after phase 2's selftest (`[sot-comm] wake selftest OK …`) — not the inline
   selftest text.

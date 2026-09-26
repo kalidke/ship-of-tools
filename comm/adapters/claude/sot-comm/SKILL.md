@@ -71,10 +71,11 @@ think, and answer (seconds to minutes). Silence is think-time, not failure:
 don't re-send or block-wait — set `comm-status.sh waiting "..."` and end the
 turn; your armed Monitor wakes you when the reply lands. Re-send only with
 positive evidence the message was lost (peer was deaf or restarted).
-A handle on ANOTHER box is reached by `comm-relay.sh` only: each box keeps
-its own registry, so `comm-send.sh` reports such a handle as not registered
-— that is a local lookup, not a delivery verdict. The daemon's
-`relayed -> <handle>` line is the send's proof of acceptance.
+Use `comm-relay.sh send @handle "msg"` for anyone: it files locally for a handle
+this box's registry names (`filed -> @handle` — the file IS the ack, read at
+that session's next turn boundary) and goes over the wire only for a handle this
+box cannot name. A send nothing can file for fails loudly: `no such handle`,
+non-zero exit. There is no "only a reply proves it" rule any more.
 
 ## Naming — from the repo, never the task
 

@@ -58,13 +58,16 @@ fi
 # read and cleared here too. sot_bridge_stop is the bridge half (loop, its
 # relay child, any stray, then the pidfile).
 _reap_markers() {
-    local who="$1" marker pid
-    marker="$COMM_HOME/state/$who.watch"
-    pid="$(sed -n '1p' "$marker" 2>/dev/null)"
-    if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null; then
+    local who="$1" pid
+    # sot_watcher_pid_for, never the bare pid on the marker's first line: these
+    # markers sit on a shared home and survive reboots, so a REUSED pid would
+    # make this kill an unrelated process of the same user. It must still BE a
+    # watcher for this handle; anything else means the marker is stale and only
+    # the file is removed.
+    if pid="$(sot_watcher_pid_for "$who")"; then
         kill "$pid" 2>/dev/null && echo "Stopped watcher pid $pid for @$who"
     fi
-    rm -f "$marker" 2>/dev/null || true
+    rm -f "$COMM_HOME/state/$who.watch" 2>/dev/null || true
     sot_bridge_stop "$who" 2>/dev/null || true
 }
 
