@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# comm-status-idle.sh — Claude Code `Stop` hook for comm agents. Three jobs:
+# comm-status-idle.sh — Claude Code `Stop` hook for comm agents. Four jobs:
 #
 #   (0) CLOSING MARKER (2026-09-09). A turn whose last reply opens a line with
 #       `SITREP:` / `SITREP-QUESTION:` / `SITREP-WAITING:` has DECLARED its
@@ -45,7 +45,13 @@
 #       signal (only the AskUserQuestion tool does), so without this the row looks
 #       idle while the agent is actually waiting.
 #
-#   (2) TURN END. Otherwise send `stop`: comm-status.sh sets `done` only when
+#   (2) NEW MAIL. A turn does not end while directed sot-comm mail sits unread:
+#       the hook reads this handle's own inbox and, when a line newer than the
+#       read cursor is addressed to it, blocks with "run comm-poll.sh". That is
+#       how a BUSY session is reached — no watcher, no keystrokes, no human (the
+#       messaging ruling, 2026-09-26). See the branch below for the exact rule.
+#
+#   (3) TURN END. Otherwise send `stop`: comm-status.sh sets `done` only when
 #       `floor` was `user` and neither `question` nor `waiting` is set, then
 #       clears `floor` — the row is a set of facts, and the reduction (not
 #       this hook) decides blue/gray/red/purple from whatever facts remain
@@ -211,6 +217,47 @@ if [ -n "$marker_state" ]; then
         fi
     fi
     exit 0
+fi
+
+# (3) NEW MAIL — delivery to a BUSY session, at the turn boundary (messaging
+# ruling §2, 2026-09-26). The inbox is a file this session can read, so nothing
+# has to reach into it: a turn does not END while directed mail sits unread. The
+# block's reason is fed back to the model, which polls, acts, then ends the
+# turn — and polling is what advances the cursor, so this terminates by
+# construction. It runs BEFORE every nudge below (mail outranks a reminder) and
+# is bounded to one block per pending batch by a tick file keyed like the
+# heartbeat's, so a model that refuses to poll is nudged once, not in a loop.
+#
+# What counts as mail: `to` non-empty (a BROADCAST, to == "", never fires this —
+# the same demotion rule the sender and the ping watcher apply), `from` neither
+# this handle (self-echo) nor `__selftest__` (a wake proof comm-poll.sh skips,
+# so polling could never advance the cursor past one and the block would repeat
+# every turn), and `ts` newer than the cursor's CONTENT, which comm-poll.sh
+# writes as the newest-read ts. This hook NEVER advances the cursor: only a real
+# comm-poll.sh does, which is what keeps "read" an honest word. Any jq failure
+# yields no mail and no block — same fail-open discipline as the rest of the
+# hook, which must never be able to wedge a turn.
+MAIL_INBOX="$HOME_DIR/inbox/$NAME.jsonl"
+if [ -r "$MAIL_INBOX" ]; then
+    mail_cursor="$(cat "$HOME_DIR/read/$NAME.cursor" 2>/dev/null || true)"
+    mail_newest="$(jq -rs --arg me "$NAME" --arg cur "$mail_cursor" '
+        [ .[]
+          | select(((.to // "") != "") and (.from // "") != $me and (.from // "") != "__selftest__")
+          | (.ts // "")
+          | select(. != "" and ($cur == "" or . > $cur)) ] | max // ""
+    ' "$MAIL_INBOX" 2>/dev/null || true)"
+    if [ -n "$mail_newest" ]; then
+        mail_tick="$HOME_DIR/state/mail-$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-$PPID}}" | tr -c 'A-Za-z0-9._-' '_').tick"
+        if [ "$(cat "$mail_tick" 2>/dev/null || true)" != "$mail_newest" ]; then
+            mkdir -p "$HOME_DIR/state" 2>/dev/null || true
+            printf '%s' "$mail_newest" > "$mail_tick" 2>/dev/null || true
+            jq -nc --arg n "$NAME" '{
+              decision: "block",
+              reason: ("New sot-comm mail for @" + $n + " — run comm-poll.sh now, act on it, then end the turn.")
+            }'
+            exit 0
+        fi
+    fi
 fi
 
 # Loop guard: if we are ALREADY in a stop-hook continuation, never re-nudge —

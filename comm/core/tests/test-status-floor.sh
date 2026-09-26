@@ -336,6 +336,53 @@ case_short_exchange_on_waiting_row_never_nudged() {
     expect waiting/-/-/w/- end
 }
 
+# ---- new mail at the turn boundary (messaging ruling, 2026-09-26) ----
+# The inbox IS the delivery path, so a turn must not end while directed mail
+# sits unread: the hook reads this handle's own inbox and blocks with "run
+# comm-poll.sh". Three facts make that safe to do on every Stop -- it fires,
+# it fires once per pending batch, and a broadcast never fires it.
+_mail_reset() {
+    mkdir -p "$SOT_COMM_HOME/inbox" "$SOT_COMM_HOME/read" "$SOT_COMM_HOME/state"
+    : > "$SOT_COMM_HOME/inbox/$NAME.jsonl"
+    rm -f "$SOT_COMM_HOME/read/$NAME.cursor" "$SOT_COMM_HOME"/state/mail-*.tick
+}
+_mail_line() {  # TO [FROM] -> one inbox line, stamped now
+    jq -nc --arg to "$1" --arg from "${2:-peer}" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{from:$from,to:$to,repo:"r",msg:"look at this",ts:$ts}' >> "$SOT_COMM_HOME/inbox/$NAME.jsonl"
+}
+case_pending_mail_blocks_naming_comm_poll() {
+    seed idle; _mail_reset; _mail_line "$NAME"
+    local out; out="$(IT 'all done.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("comm-poll"))' >/dev/null \
+        || { echo "    no mail block: '$out'"; return 1; }
+}
+case_second_stop_in_the_same_turn_does_not_block_again() {
+    seed idle; _mail_reset; _mail_line "$NAME"
+    local first second
+    first="$(IT 'all done.')"
+    [ -n "$first" ] || { echo "    the first stop did not block at all"; return 1; }
+    second="$(IT 'all done.')"
+    [ -z "$second" ] || { echo "    blocked twice for the same pending mail: '$second'"; return 1; }
+}
+case_broadcast_only_inbox_never_blocks() {
+    seed idle; _mail_reset; _mail_line ""
+    local out; out="$(IT 'all done.')"
+    [ -z "$out" ] || { echo "    a broadcast blocked the stop: '$out'"; return 1; }
+}
+case_self_echo_and_selftest_never_block() {
+    seed idle; _mail_reset; _mail_line "$NAME" "$NAME"; _mail_line "$NAME" "__selftest__"
+    local out; out="$(IT 'all done.')"
+    [ -z "$out" ] || { echo "    a self-echo or selftest frame blocked the stop: '$out'"; return 1; }
+}
+case_mail_older_than_the_cursor_never_blocks() {
+    seed idle; _mail_reset
+    jq -nc '{from:"peer",to:"'"$NAME"'",repo:"r",msg:"old",ts:"2020-01-01T00:00:00Z"}' \
+        >> "$SOT_COMM_HOME/inbox/$NAME.jsonl"
+    printf '%s' "2026-01-01T00:00:00Z" > "$SOT_COMM_HOME/read/$NAME.cursor"
+    local out; out="$(IT 'all done.')"
+    [ -z "$out" ] || { echo "    mail the cursor already covers blocked the stop: '$out'"; return 1; }
+}
+
 # ---- closing markers (2026-09-09): the marker line stamps the row ----
 case_marker_done_stamps_blue_with_headline() {
     seed idle; W "$GENUINE"
@@ -685,6 +732,16 @@ check "SITREP-WAITING: alone takes the next line and sets purple" case_marker_wa
 check "a marker in a stop-hook continuation still stamps, no nudge" case_marker_in_continuation_still_stamps
 check "a marker split across two assistant records still stamps, no nudge" case_marker_split_across_assistant_records_still_stamps
 check "a marker present only in the Stop payload still stamps, no nudge" case_marker_only_in_stop_payload_still_stamps
+
+# A stable tick key for the mail cases: the block is bounded per SESSION, and
+# each IT call is its own short-lived process, so $PPID would differ per call.
+export CLAUDE_CODE_SESSION_ID=mail-turn
+check "pending directed mail blocks the stop, naming comm-poll" case_pending_mail_blocks_naming_comm_poll
+check "a second stop for the same pending mail does not block again" case_second_stop_in_the_same_turn_does_not_block_again
+check "a broadcast-only inbox never blocks the stop" case_broadcast_only_inbox_never_blocks
+check "a self-echo or a selftest frame never blocks the stop" case_self_echo_and_selftest_never_block
+check "mail the read cursor already covers never blocks the stop" case_mail_older_than_the_cursor_never_blocks
+unset CLAUDE_CODE_SESSION_ID
 check "a human turn parked blocked without a marker is nudged once, row untouched" case_parked_user_turn_blocked_without_marker_is_nudged_once
 check "a human turn parked done without a marker is nudged once, row untouched" case_parked_user_turn_done_without_marker_is_nudged_once
 check "a machine turn ending parked without a marker is not nudged" case_parked_machine_turn_without_marker_is_not_nudged

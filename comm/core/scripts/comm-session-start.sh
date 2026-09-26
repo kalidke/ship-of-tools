@@ -152,13 +152,11 @@ _survived() {
         fi
         return 0
     fi
-    [ "$IS_WINDOWS" = 1 ] && return 1
-    # No marker: a watcher from before the marker existed on this platform.
-    local h_re
-    h_re="$(printf '%s' "$h" | sed 's/\./\\./g')"
-    pgrep -u "$(id -un)" -f "comm-watch\\.sh ${h_re}\$" >/dev/null 2>&1 \
-        || pgrep -u "$(id -un)" -f "codex-watch\\.sh ${h_re} " >/dev/null 2>&1 \
-        || pgrep -u "$(id -un)" -f "comm-wake\\.sh ${h_re} " >/dev/null 2>&1
+    # NO MARKER, no watcher. The `pgrep` scan that used to answer this from
+    # the outside is gone (messaging ruling §3-4): comm-wake.sh refuses to
+    # start against a live marker itself, so the marker is the one answer, and
+    # a process match was never one — it could not tell whose session armed it.
+    return 1
 }
 
 # The OTHER half of receiving (2026-09-20, a peer session's field report).
@@ -189,7 +187,7 @@ _ensure_bridge() {
     local h="$1" state
     state="$(_bridge_state "$h")"
     [ "$state" = "down" ] || { echo "$state"; return 0; }
-    sot_bridge_start "$h" "$COMM_HOME/bin/comm-relay.sh" 2>/dev/null || true
+    sot_bridge_start "$h" "$COMM_HOME/bin/comm-relay.sh" "$(_wake_owner_pid || true)" 2>/dev/null || true
     if sot_bridge_running_for "$h"; then echo "restarted"; else echo "down"; fi
 }
 
@@ -275,7 +273,7 @@ if [ "$MODE" = "catchup" ]; then
     # BOOTSTRAP-ARM and the skill armed it before running this phase — Codex
     # review finding 5): its own wake-proof frame now has a live watcher to
     # catch it, instead of racing a Monitor that doesn't exist yet.
-    SELFTEST_OUT="$("$SCRIPT_DIR/comm-listen.sh" --selftest 2>&1)"; rc=$?
+    SELFTEST_OUT="$("$SCRIPT_DIR/comm-listen.sh" --owner "$(_wake_owner_pid || true)" --selftest 2>&1)"; rc=$?
     printf '%s\n' "$SELFTEST_OUT"
     case "$rc" in
         0) SELFTEST="ok" ;;
@@ -420,7 +418,7 @@ if [ -z "$HANDLE" ]; then
     exit 0
 fi
 
-LISTEN_OUT="$("$SCRIPT_DIR/comm-listen.sh" 2>&1)"; listen_rc=$?
+LISTEN_OUT="$("$SCRIPT_DIR/comm-listen.sh" --owner "$(_wake_owner_pid || true)" 2>&1)"; listen_rc=$?
 # LISTEN_OUT is read ONLY for listen_rc's sake, never echoed: comm-listen.sh's
 # own start banner (its "NEXT (required...) ... Monitor command: ..." block,
 # ~comm-listen.sh:195) is a free-form multi-line explainer meant for a human
@@ -473,15 +471,19 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
             # call working every cycle. A daemon that can't answer it gets no
             # watcher spawned at all; the MONITOR: line below is the honest
             # fallback.
+            # No owner, no watcher (messaging ruling §3): an untethered ping
+            # watcher IS the immortal watcher — it outlives the session, types
+            # into a row that has moved on, and leaves a marker that makes the
+            # next bootstrap report SURVIVED. comm-wake.sh refuses one anyway;
+            # this keeps the fallback honest instead of spawning a doomed child.
             WAKE_OWNER="$(_wake_owner_pid || true)"
             if [ -n "$WAKE_OWNER" ]; then
                 SOT_WORKSPACE_ID="$CAPSULE_WS_ID" nohup "$SCRIPT_DIR/comm-wake.sh" "$HANDLE" --deliver ping --owner "$WAKE_OWNER" \
                     </dev/null >/dev/null 2>&1 &
+                WAKE_ACTIVE=1
             else
-                SOT_WORKSPACE_ID="$CAPSULE_WS_ID" nohup "$SCRIPT_DIR/comm-wake.sh" "$HANDLE" --deliver ping \
-                    </dev/null >/dev/null 2>&1 &
+                echo "wake: no owning claude/codex ancestor found; falling back to the Monitor" >&2
             fi
-            WAKE_ACTIVE=1
         else
             echo "wake: pty.screen did not answer on this daemon; falling back to the Monitor" >&2
         fi

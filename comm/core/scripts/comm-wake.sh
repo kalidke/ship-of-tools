@@ -119,9 +119,7 @@ _comm_wake_ping_inject() {
     b64="$(printf '%s' "$text" | base64 | tr -d '\n')"
     resp="$(_comm_wake_pty_input "$SOT_WORKSPACE_ID" "$b64")"
     _comm_wake_pty_verdict "$resp" "ping: ${text:0:60}"
-    rc=$?
-    [ "$rc" -eq 0 ] && pinged_at="$(date +%s)"
-    return "$rc"
+    return $?
 }
 
 # _comm_wake_prompt_free -> 0 free (some line of the row's CURRENT screen,
@@ -134,23 +132,8 @@ _comm_wake_prompt_free() {
     local resp
     resp="$(_comm_wake_pty_screen "$SOT_WORKSPACE_ID" 2>/dev/null)"
     [ -n "$resp" ] || return 2
-    printf '%s' "$resp" | jq -e '
-        (.payload.lines // []) | any(gsub("^[ \t]+|[ \t]+$";"") == "❯")
-    ' >/dev/null 2>&1 && return 0
+    sot_prompt_free "$resp" && return 0
     return 1
-}
-
-# _comm_wake_ping_outstanding -> 0 iff a ping was accepted and the session's
-# own poll cursor has not moved since (still unread) -- new lines wait for
-# it rather than piling on a second ping. A 10-minute cap forces a retry if
-# the session never polls (a dropped ping must not wedge delivery forever).
-_comm_wake_ping_outstanding() {
-    [ "${pinged_at:-0}" -gt 0 ] || return 1
-    local now; now=$(date +%s)
-    [ $((now - pinged_at)) -lt 600 ] || return 1
-    local mtime
-    mtime="$(stat -c %Y "$CURSOR_FILE" 2>/dev/null || stat -f %m "$CURSOR_FILE" 2>/dev/null || echo 0)"
-    [ "$mtime" -lt "$pinged_at" ]
 }
 
 # ---- lifetime: end with the agent that spawned this, never orphan --------
@@ -216,13 +199,20 @@ _comm_wake_deliver_ping() {
         return
     fi
 
-    # Coalescing (S2): the poll cursor's CONTENT is the newest-read message's
+    # ALREADY-READ check: the poll cursor's CONTENT is the newest-read message's
     # ts (comm-poll.sh writes it, not just a touch), so compare it against
     # the newest pending line's ts instead of only asking "did the cursor
     # move". A moved cursor that already covers this batch means the session
     # read it through some other real poll -- advance past it with no second
     # ping. A mtime-only check pinged again the instant the cursor moved at
     # all, even when it had already covered everything pending.
+    #
+    # This is the ONLY suppression left (messaging ruling §4): the old
+    # `_comm_wake_ping_outstanding` also withheld a ping while an earlier one
+    # sat unread, which turned one stalled session into permanent deafness for
+    # every message behind it. A genuinely NEW line now always pings again, and
+    # a missed ping is harmless — the recipient's own Stop hook reads the inbox
+    # at its next turn boundary.
     if [ -n "$newest_ts" ]; then
         local read_ts
         read_ts="$(cat "$CURSOR_FILE" 2>/dev/null || true)"
@@ -231,8 +221,6 @@ _comm_wake_deliver_ping() {
             return
         fi
     fi
-    _comm_wake_ping_outstanding && return    # already awake for these; wait for the read
-
     _comm_wake_prompt_free
     local pf_rc=$?
     if [ "$pf_rc" -eq 2 ]; then
@@ -260,7 +248,6 @@ _comm_wake_deliver_ping() {
 
 _comm_wake_run() {
     pos=$(wc -l < "$INBOX" 2>/dev/null || echo 0)
-    pinged_at=0
     no_reply_count=0
 
     # No pane-liveness check beyond the agent-owner one above: a capsule
@@ -313,6 +300,18 @@ _comm_wake_main() {
         *) echo "comm-wake: --deliver must be full or ping" >&2; exit 2 ;;
     esac
 
+    # A watcher with no owner cannot end with the agent it wakes: it outlives
+    # the session, keeps typing into a row that has moved on, and its marker
+    # makes the next bootstrap report SURVIVED (the immortal watcher, defects
+    # 3-4). `--deliver ping` therefore REFUSES to start without one. The
+    # `--deliver full` leg (codex-watch.sh, deleted in 0.6.7 with this script)
+    # keeps the optional tie: its documented start line passes no pid, and
+    # where Codex's owner pid comes from is not settled here.
+    if [ "$DELIVER" = ping ] && ! [[ "$OWNER_PID" =~ ^[0-9]+$ ]]; then
+        echo "comm-wake: --owner <agent-pid> is required for --deliver ping (a watcher must end with the agent it wakes)" >&2
+        exit 2
+    fi
+
     # Checked ONCE here, not inside a command substitution (silent
     # forever-advance on an empty reply) -- same discipline as $SOT_WORKSPACE_ID.
     if ! SOT_WORKSPACE_ID="$(sot_capsule_workspace_id)"; then
@@ -342,6 +341,19 @@ _comm_wake_main() {
 
     AGENT_PID=""
     [[ "$OWNER_PID" =~ ^[0-9]+$ ]] && AGENT_PID="$OWNER_PID"
+
+    # START-TIME MUTEX (messaging ruling §3). The marker is the one thing that
+    # says a watcher for this handle is alive, so it is also what refuses a
+    # second one: two watchers would double every ping and the one that lost
+    # the marker could never be reaped by it. This replaces the `pgrep` dedupe
+    # comm-session-start.sh used to do from the outside.
+    if [ -f "$MARKER" ]; then
+        _live="$(sed -n '1p' "$MARKER" 2>/dev/null)"
+        if [[ "$_live" =~ ^[0-9]+$ ]] && kill -0 "$_live" 2>/dev/null; then
+            echo "comm-wake: a watcher for @$HANDLE is already live (pid $_live in $MARKER) — refusing to start a second" >&2
+            exit 4
+        fi
+    fi
 
     # Same marker comm-watch.sh writes: line 1 this process's own pid
     # (liveness), line 2 the session that armed it (identity).

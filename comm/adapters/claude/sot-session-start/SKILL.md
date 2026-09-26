@@ -30,10 +30,16 @@ BOOTSTRAP-ARM handle=<h> listener=up|down|n/a identity=ok|MISMATCH|FAIL MONITOR:
   someone else's project. Pin `SOT_COMM_NAME` (and, for a subagent/lane, a
   private `SOT_COMM_SELF_FILE`) and re-run; never work around this by hand.
 - `WAKE:` — this is a capsule row: the script already started
-  `comm-wake.sh --deliver ping` for you, detached. There is nothing to arm;
-  the proof it works is the ping turn itself, arriving after phase 2's
-  selftest (`[sot-comm] wake selftest OK …`) — not the inline selftest
-  text. No re-arming, ever: it ends itself when this session does.
+  `comm-wake.sh --deliver ping` for you, detached and owned by this session
+  (`--owner`), so it ends when the session does and a second one cannot start.
+  There is nothing to arm; the proof it works is the ping turn itself, arriving
+  after phase 2's selftest (`[sot-comm] wake selftest OK …`) — not the inline
+  selftest text.
+- **You do not depend on the ping to receive.** Delivery is the inbox append,
+  and your own end-of-turn hook reads that inbox: a turn will not end while
+  directed mail sits unread, it blocks with "run comm-poll.sh" instead. Run it,
+  act on the message, then end the turn. The ping only shortens the wait for a
+  row already sitting idle at its prompt.
 - Otherwise (no capsule row), **arm a persistent harness Monitor** running
   exactly the printed `MONITOR:` command — the one act this script can't do
   for you — then run phase 2. Re-arm on expiry **only while the row is

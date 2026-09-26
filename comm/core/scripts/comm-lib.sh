@@ -415,7 +415,24 @@ sot_write_self_file() {
 # sot-bridge <comm-relay.sh> <handle>` — so identification is an exact
 # argv comparison, not a regex over a command line.
 BRIDGE_ARGV0="sot-bridge"
-BRIDGE_LOOP='while :; do "$1" bridge --name "$2"; sleep 2; done'
+# $1 relay, $2 handle, $3 the OWNING agent's pid (empty = untethered), $4 the
+# pidfile. The relay child blocks for as long as the connection holds, so the
+# owner check cannot live at the top of the loop only: it polls alongside the
+# child, and when the owner is gone it kills the child, drops the pidfile and
+# exits — an ownerless bridge must not survive as a named receiver the daemon
+# still counts (the false-receiver defect). argv indices 3 and 5 are unchanged
+# by the two extra arguments, so sot_bridge_pid_for still identifies the loop.
+BRIDGE_LOOP='while :; do
+    "$1" bridge --name "$2" & _c=$!
+    while kill -0 "$_c" 2>/dev/null; do
+        if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then
+            kill "$_c" 2>/dev/null; rm -f "${4:-}" 2>/dev/null; exit 0
+        fi
+        sleep 2
+    done
+    if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then rm -f "${4:-}" 2>/dev/null; exit 0; fi
+    sleep 2
+done'
 
 sot_bridge_pidfile() { printf '%s/state/bridge-%s.pid\n' "$COMM_HOME" "$1"; }
 
@@ -443,7 +460,7 @@ sot_bridge_running_for() { sot_bridge_pid_for "$1" >/dev/null; }
 # its own alternative. Every non-alphanumeric character of NAME is escaped.
 _sot_bridge_pattern() {
     local escaped; escaped="$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/\\&/g')"
-    printf "(comm-relay\\\\.sh'? bridge --name '?%s'?(;|\$)|%s [^ ]+ %s\$)" \
+    printf "(comm-relay\\\\.sh'? bridge --name '?%s'?(;|\$)|%s [^ ]+ %s( |\$))" \
         "$escaped" "$BRIDGE_ARGV0" "$escaped"
 }
 
@@ -468,12 +485,12 @@ sot_bridge_stop() {
     rm -f "$(sot_bridge_pidfile "$name")"
 }
 
-# sot_bridge_start NAME RELAY_SH — stop any stray first, then start the
+# sot_bridge_start NAME RELAY_SH [OWNER_PID] — stop any stray first, then start the
 # loop detached from this shell's stdio (a caller's pipe must never be held
 # open by it) and record its pid. Output goes to state/bridge-NAME.log,
 # truncated at each start.
 sot_bridge_start() {
-    local name="$1" relay="$2" log lockdir held=0 spins=0
+    local name="$1" relay="$2" owner="${3:-}" log lockdir held=0 spins=0
     mkdir -p "$COMM_HOME/state"
     # Codex review (PR 254): stop-then-start is a read-modify-write over
     # one pidfile, and two bootstraps racing it (a session's own and a
@@ -497,7 +514,8 @@ sot_bridge_start() {
     sot_bridge_stop "$name"
     log="$COMM_HOME/state/bridge-$name.log"
     : > "$log"
-    bash -c "$BRIDGE_LOOP" "$BRIDGE_ARGV0" "$relay" "$name" </dev/null >>"$log" 2>&1 &
+    bash -c "$BRIDGE_LOOP" "$BRIDGE_ARGV0" "$relay" "$name" "$owner" \
+        "$(sot_bridge_pidfile "$name")" </dev/null >>"$log" 2>&1 &
     printf '%s\n' "$!" > "$(sot_bridge_pidfile "$name")"
     [ "$held" = 1 ] && rmdir "$lockdir" 2>/dev/null
     return 0
@@ -539,6 +557,37 @@ sot_pty_screen() {
     # SEND_TIMEOUT), so the flag was silently ignored. Let the callee's own
     # fallback apply unmangled.
     sot_oneshot_request "$frame" "pty.screen"
+}
+
+# sot_pty_input_gated WORKSPACE_ID DATA_B64 — sot_pty_input, but only into a
+# row that is sitting at a FREE prompt. Typing plus Enter submits a turn, so a
+# row with a dialog, a menu or a half-typed draft on screen must never be
+# typed into: the keystrokes would land in whatever is open. The glyph test is
+# comm-wake.sh's own prompt-free gate, moved here verbatim so the sender's
+# poke (comm-send.sh) and the ping watcher share ONE implementation instead of
+# two that drift. Returns 0 typed, 1 screen read but NOT free (also an
+# accepted-but-not-ok row — nothing was typed either way), 2 no reply at all
+# (transport error/empty response, kept distinct so a caller can tell a busy
+# row from a dead daemon).
+# sot_prompt_free SCREEN_JSON — 0 when some whitespace-trimmed line of a
+# pty.screen reply is exactly the prompt glyph. THE glyph test: both the
+# sender's poke (sot_pty_input_gated) and comm-wake.sh's ping gate read it, so
+# "free prompt" cannot come to mean two different things.
+sot_prompt_free() {
+    printf '%s' "$1" | jq -e '
+        (.payload.lines // []) | any(gsub("^[ \t]+|[ \t]+$";"") == "❯")
+    ' >/dev/null 2>&1
+}
+
+sot_pty_input_gated() {
+    local wsid="$1" data="$2" screen resp
+    screen="$(sot_pty_screen "$wsid" 2>/dev/null)"
+    [ -n "$screen" ] || return 2
+    sot_prompt_free "$screen" || return 1
+    resp="$(sot_pty_input "$wsid" "$data" 2>/dev/null || true)"
+    [ -n "$resp" ] || return 2
+    printf '%s' "$resp" | jq -e '.payload.ok == true' >/dev/null 2>&1 || return 1
+    return 0
 }
 
 # sot_capsule_workspace_id — print the calling shell's capsule row id, or
