@@ -1262,7 +1262,7 @@ case_listen_start_reaps_a_stray_bridge_and_records_a_pidfile() {
     [ -n "$(sot_bridge_pids_for "$handle")" ] || { pkill -P "$stray_pid"; kill "$stray_pid"; echo "  sot_bridge_pids_for did not find the stray"; return 1; }
     if COMM_HOME="$home" sot_bridge_running_for "$handle"; then pkill -P "$stray_pid"; kill "$stray_pid"; echo "  a stray with no pidfile counted as running"; return 1; fi
 
-    out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" 2>&1)"
+    out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" --owner $$ 2>&1)"
     contains "$out" "started relay listener for @$handle" || { pkill -P "$stray_pid" 2>/dev/null; kill "$stray_pid" 2>/dev/null; echo "  start did not report a started listener: $out"; return 1; }
     tries=0
     while [ "$tries" -lt 50 ] && kill -0 "$stray_pid" 2>/dev/null; do sleep 0.1; tries=$((tries + 1)); done
@@ -1272,7 +1272,7 @@ case_listen_start_reaps_a_stray_bridge_and_records_a_pidfile() {
     COMM_HOME="$home" sot_bridge_running_for "$handle" || { echo "  the recorded loop is not reported running"; return 1; }
     out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" --status 2>&1)"
     contains "$out" "RUNNING (pid $(cat "$home/state/bridge-$handle.pid"))" || { echo "  --status: $out"; return 1; }
-    out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" 2>&1)"
+    out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" --owner $$ 2>&1)"
     contains "$out" "already running" || { echo "  a second start did not see the recorded loop: $out"; return 1; }
 
     out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" --stop 2>&1)"

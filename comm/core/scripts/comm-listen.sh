@@ -31,8 +31,11 @@
 # with no owner outlives its session, and while it holds a connection the daemon
 # counts it as a live receiver for that handle, an honest-looking ack for
 # somebody who is gone. The owner is DISCOVERED (the nearest claude/codex
-# ancestor), so no caller has to pass anything; `--owner <pid>` overrides that
-# where the caller knows better. With no owner discoverable, a start REFUSES.
+# ancestor), so no caller has to pass anything. Three tiers, in order:
+# `--owner <pid>` for a caller with the better vantage; else the nearest
+# claude/codex ancestor; else the invoking shell ($PPID). A start REFUSES only
+# when it is already orphaned (PPID 1) -- an agentless start is legitimate,
+# because the bridge only FILES and a human at a prompt is a reader.
 #
 # Usage: comm-listen.sh [--name NAME]   # start (default: your joined handle)
 #        comm-listen.sh --status
@@ -184,8 +187,26 @@ case "$MODE" in
         # `--owner <pid>` is an override for a caller with the better vantage;
         # otherwise the owner is DISCOVERED from this process's own ancestry.
         [[ "$OWNER_PID" =~ ^[0-9]+$ ]] || OWNER_PID="$(sot_owner_pid || true)"
-        [[ "$OWNER_PID" =~ ^[0-9]+$ ]] || {
-            echo "ERROR: no owning claude/codex ancestor found (and no --owner given) — refusing to start an ownerless bridge: while it holds a connection the daemon counts it as a live receiver for a session that is gone" >&2
+        # Third tier: the invoking shell. An agentless start IS legitimate --
+        # the bridge only FILES, and a human at a prompt is a reader -- so the
+        # absence of an agent must not refuse (CI's hermetic leg proved that
+        # refusing here breaks a real case, 2026-09-26). $PPID is a bash
+        # builtin, so it is portable to the macOS and git-bash legs, unlike a
+        # session id, which is a pid on Linux and a kernel address on BSD; and
+        # it fails SHORT, never immortal -- a caller that exits early leaves a
+        # bridge that dies within one poll and a `--status` that says so out
+        # loud, which is the property this ownership rule exists to protect.
+        # The agent tier stays FIRST: reverse them and every session's bridge
+        # silently shortens to the life of whatever launched it. One edge this
+        # does NOT guard, deliberately: a parent that outlives everything (a
+        # systemd unit starting a bridge directly) would own it forever, which
+        # is the harm this rule exists to prevent. Nothing starts a bridge that
+        # way today -- every caller is a session script, a hook or a test, all
+        # under an agent or a human shell -- so it is documented rather than
+        # special-cased. Add a guard the day a unit starts one.
+        [[ "$OWNER_PID" =~ ^[0-9]+$ ]] || OWNER_PID="$PPID"
+        [[ "$OWNER_PID" =~ ^[0-9]+$ && "$OWNER_PID" != 1 ]] || {
+            echo "ERROR: started with no live parent (PPID 1) — refusing an ownerless bridge; pass --owner <pid>" >&2
             exit 2
         } ;;
 esac
