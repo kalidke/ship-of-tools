@@ -131,6 +131,31 @@ filed either way, and the recipient reads it at its next turn boundary or on its
 next `poll`. A send that could file NOWHERE is the one failure: `no such handle`
 (or `ERROR: unreachable, nothing filed`) with a non-zero exit.
 
+**The recipient annotation (messaging ruling, 2026-09-26):** a filed frame is
+not a reply, and a sender with no reply yet cannot tell working from
+waiting-on-its-human from gone — so `filed -> @name` gains one short factual
+parenthetical about the RECIPIENT, read off the same registry entry that
+resolved the handle (never a second file, never the daemon):
+
+```
+filed -> @X (working, stamped 12s ago — reply expected at its turn boundary)
+filed -> @X (needs its own user, stamped 6m ago: "<question, truncated to 60 chars>")
+filed -> @X (idle, stamped 32m ago)                # or any other state — its own word
+filed -> @X (no heartbeat for 8h — may be gone)    # overrides every other clause
+```
+
+A stale heartbeat (`last_seen` older than `SOT_COMM_STALE_SECS`, default 600s)
+always wins, because a stamp from a dead session is the misleading one.
+Otherwise a `blocked` state (a `question` open with no `floor`) means the
+recipient is stopped waiting on its OWN human, not the sender — `floor` being
+`"user"` means the opposite (the session is *actively running* a
+human-started turn: `floor` present always reduces to `state: working`, ADR
+0044's amendment table). A missing or malformed entry — or any field it
+needs — prints NOTHING extra: the clause is a courtesy, never a guess, and
+never turns a successful file into a failure. This never delays, blocks or
+refuses a send; it only informs. An `ask` that times out with no reply
+carries the same facts in its own `TIMEOUT:` line, for the same reason.
+
 **Cross-machine receive** is the relay bridge `comm-listen.sh` starts: a
 reconnect loop (`comm-relay.sh bridge --name <name>`) run as a background
 child of the session's own process tree, pid recorded in

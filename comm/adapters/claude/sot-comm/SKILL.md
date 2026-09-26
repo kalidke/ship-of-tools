@@ -77,6 +77,14 @@ that session's next turn boundary) and goes over the wire only for a handle this
 box cannot name. A send nothing can file for fails loudly: `no such handle`,
 non-zero exit. There is no "only a reply proves it" rule any more.
 
+`filed -> @handle` carries one more factual clause when the registry can
+support it — `(working, stamped 12s ago — reply expected at its turn
+boundary)`, `(needs its own user, stamped 6m ago: "...")`, `(idle, stamped
+32m ago)`, or `(no heartbeat for 8h — may be gone)`, this last overriding
+the others. Read it before assuming silence means ignored; a missing clause
+means the registry had nothing to say, not that the peer is fine. `ask`'s
+timeout line carries the same facts.
+
 ## Naming — from the repo, never the task
 
 Durable BE peers `<repo-lowercase>-<host>`; a spawned agent on a repo

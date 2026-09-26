@@ -107,7 +107,15 @@ deliver() {  # $1 = target name
             *) woke=" — not woken: row $tws did not answer" ;;
         esac
     fi
-    echo "  filed -> @$t$woke"
+    # 3) the recipient annotation (messaging ruling, 2026-09-26): one factual
+    # clause read off the same registry entry `deliver` already has open --
+    # never a second file, never the daemon. Empty (missing/malformed entry
+    # or fields) means no clause, never a guess (sot_recipient_note's own
+    # contract) -- the send's success is unaffected either way.
+    local note=""
+    note="$(sot_recipient_note "$t" 2>/dev/null)" || note=""
+    [ -n "$note" ] && note=" ($note)"
+    echo "  filed -> @$t$woke$note"
     return 0
 }
 

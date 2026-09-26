@@ -369,12 +369,34 @@ case "$SUB" in
         # The frame is filed; the wait is for a convenience reply, so running
         # out of seconds is not a failure and was never one to report.
         echo "listening ${SECS}s for replies (a timeout is not an error — the frame is filed)..."
+        # Replies still stream live as they arrive (unchanged) -- the marker
+        # file is only how the caller, after nc_hold's pipeline returns,
+        # learns whether it saw NONE of them, so the TIMEOUT annotation below
+        # (messaging ruling, 2026-09-26) fires only on a genuine timeout.
+        _seen="$(mktemp "${TMPDIR:-/tmp}/sot-comm-ask-seen.XXXXXX")" || _seen=""
         nc_hold "$SECS" | filter_inbound | while IFS= read -r m; do
+            [ -n "$_seen" ] && printf '1' > "$_seen"
             printf '[%s] [%s] %s\n' \
                 "$(printf '%s' "$m" | jq -r '.payload.ts')" \
                 "$(printf '%s' "$m" | jq -r '.payload.from')" \
                 "$(printf '%s' "$m" | jq -r '.payload.text')"
         done
+        if [ -n "$_seen" ] && [ ! -s "$_seen" ]; then
+            note="$(sot_recipient_note "$TO" 2>/dev/null)" || note=""
+            case "$note" in
+                working*)
+                    echo "TIMEOUT: no reply from @$TO in ${SECS}s, but it has not ignored you -- it was $note (not an error — the frame is filed)." ;;
+                "needs its own user"*)
+                    echo "TIMEOUT: no reply from @$TO in ${SECS}s -- it is stopped on its own user and $note; a reply needs that human first (not an error — the frame is filed)." ;;
+                "no heartbeat"*)
+                    echo "TIMEOUT: no reply from @$TO in ${SECS}s -- $note (not an error — the frame is filed)." ;;
+                "")
+                    echo "TIMEOUT: no reply from @$TO in ${SECS}s (not an error — the frame is filed)." ;;
+                *)
+                    echo "TIMEOUT: no reply from @$TO in ${SECS}s -- it is $note (not an error — the frame is filed)." ;;
+            esac
+        fi
+        rm -f "$_seen"
         ;;
     listen)
         SECS="${1:-}"
