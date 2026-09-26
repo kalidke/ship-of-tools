@@ -669,6 +669,14 @@ mkmarker() {  # PID [SESSION_ID] -- write a watcher marker in comm-watch.sh's ow
     printf '%s\n%s\n' "$1" "${2:-}" > "$WATCH_MARKER"
 }
 rmmarker() { rm -f "$WATCH_MARKER" "$WARN_STAMP"; }
+# A live process that the marker verifier will RECOGNISE as this handle's
+# watcher: liveness is now identity-checked (comm-lib.sh's sot_watcher_pid_for),
+# so a bare `sleep` proves nothing — on a shared home that is exactly what a
+# reused pid looks like.
+mkdir -p "$WORK/fakebin"
+FAKE_WATCHER="$WORK/fakebin/comm-watch.sh"
+printf '#!/bin/sh\nsleep 30\n' > "$FAKE_WATCHER"; chmod +x "$FAKE_WATCHER"
+fake_watcher() { "$FAKE_WATCHER" "$NAME" >/dev/null 2>&1 & echo $!; }
 dead_pid() {  # a pid guaranteed not to be running: backgrounded, then reaped
     ( exit 0 ) & local p=$!
     wait "$p" 2>/dev/null
@@ -694,11 +702,23 @@ case_deaf_warns_on_missing_marker() {
 }
 case_deaf_silent_while_watcher_alive() {
     seed idle; rmmarker
-    sleep 30 & local p=$!
+    local p; p="$(fake_watcher)"
     mkmarker "$p" "sess-a"
     HBW
     kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
     [ -z "$HBW_ERR" ] || { echo "    got '$HBW_ERR'"; return 1; }
+}
+case_deaf_warns_on_a_live_pid_that_is_not_a_watcher() {
+    # What pid REUSE looks like: the marker names a pid that is alive and is not
+    # a watcher at all. `kill -0` read that as a live watcher and told a
+    # genuinely deaf session it was fine — the exact shape this ruling exists to
+    # remove: broken, and reporting healthy.
+    seed idle; rmmarker
+    sleep 30 & local p=$!
+    mkmarker "$p" "sess-a"
+    HBW
+    kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+    [[ "$HBW_ERR" == *"no live inbox watcher for @$NAME"* ]] || { echo "    got '$HBW_ERR'"; return 1; }
 }
 case_deaf_silent_with_no_registry_row() {
     printf '{"agents":{}}\n' > "$REGISTRY"; rmmarker
@@ -725,7 +745,7 @@ case_deaf_silent_for_subagent_sharing_parents_watcher() {
     # handle isn't deaf (see the hook's header comment for why there is
     # deliberately no session-id comparison here).
     seed idle; rmmarker
-    sleep 30 & local p=$!
+    local p; p="$(fake_watcher)"
     mkmarker "$p" "sess-parent"
     HBW "sess-lane"
     kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
@@ -800,6 +820,7 @@ check "a failed prompt-event write exits non-zero and leaves the row untouched" 
 check "deaf warning fires when the watcher marker's pid is dead" case_deaf_warns_on_dead_pid
 check "deaf warning fires when the watcher marker is missing" case_deaf_warns_on_missing_marker
 check "deaf warning stays silent while the watcher pid is alive" case_deaf_silent_while_watcher_alive
+check "deaf warning fires when the marker's live pid is not a watcher" case_deaf_warns_on_a_live_pid_that_is_not_a_watcher
 check "deaf warning stays silent with no registry row" case_deaf_silent_with_no_registry_row
 check "deaf warning stays silent without CLAUDE_CODE_SESSION_ID" case_deaf_silent_without_session_id
 check "deaf warning is throttled to once per window" case_deaf_warning_is_throttled
