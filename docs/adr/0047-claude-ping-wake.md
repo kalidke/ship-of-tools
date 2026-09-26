@@ -30,9 +30,10 @@ to `--deliver full` (Codex's behaviour, unchanged). Claude sessions get
   of N messages costs one wake, not N.
 - **Prompt-free gate.** Before typing, it reads the row's current screen
   (`pty.screen`, lifted into `comm-lib.sh`'s `sot_pty_screen` so `sot-fe`
-  shares the same request) and only types when a line is exactly the prompt
-  glyph. Typing into an open permission dialog or menu can answer it, so an
-  unclear screen delays the wake rather than risk that.
+  shares the same request) and only types when the CURSOR is sitting at the
+  start of an empty input line. Typing into an open permission dialog or menu
+  can answer it, so an unclear screen delays the wake rather than risk that.
+  The rule itself is stated once, below, under the prompt-free gate.
 - **Coalescing.** An already-typed, not-yet-read ping (the session's poll
   cursor hasn't moved past it) suppresses a second one; new lines simply
   wait for the outstanding wake, capped at 10 minutes in case the ping is
@@ -100,7 +101,12 @@ what a missed ping costs and therefore what this watcher is allowed to do.
   `sot_cursor_offset` converts a legacy stamp once, on read.
 - **The prompt-free gate is one implementation**, `comm-lib.sh`'s
   `sot_prompt_free`, shared with the sender's poke (`sot_pty_input_gated`), so
-  "free prompt" cannot come to mean two different things.
+  "free prompt" cannot come to mean two different things. It tests the
+  CURSOR sitting at the input's start, not the prompt line's text, because a
+  grey prompt suggestion is byte-identical to a typed draft once `pty.screen`
+  strips every attribute — the text alone cannot tell them apart. This
+  replaced a glyph-only test that held every wake for a day on a row showing
+  a suggestion (2026-09-25).
 
 The consequence above — "a message can sit typed-but-unread for up to 10
 minutes" — no longer holds: an unread ping delays nothing past the recipient's

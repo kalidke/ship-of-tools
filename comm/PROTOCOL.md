@@ -98,8 +98,11 @@ which is why an unstamped `--broadcast` once woke the whole network at once.
    registry row names a workspace row on the sender's host is ALSO typed into
    that row through the daemon's `pty.input` (Enter appended), so a session
    sitting idle at its prompt does not wait for its next turn. It is typed only
-   when the row's current screen shows a free prompt — keystrokes would
-   otherwise land in an open dialog, menu or half-written draft. The send
+   when the row's current screen shows a free prompt (the cursor sitting at
+   the start of the input line marked by the prompt glyph, so a grey
+   suggestion or any other decoration does not count as a draft but a real
+   draft still does) — keystrokes would otherwise land in an open dialog,
+   menu or half-written draft. The send
    reports `+woken` or `not woken: <reason>` as a DIAGNOSTIC; the verdict is the
    filing either way. The message text is `[<from>:<repo>] <msg>`.
    **Broadcasts are never typed** — text+Enter is a full interrupt (it submits

@@ -24,10 +24,12 @@
 #   - Filter mirrors `full`: own echoes never wake; broadcasts (to:"") wait
 #     for comm-poll.sh on the next natural turn; directed frames wake.
 #   - Prompt-free gate: before typing, this reads the row's current screen
-#     (comm-lib.sh's sot_pty_screen) and only types when some line,
-#     whitespace-trimmed, is exactly the prompt glyph `❯` -- typing into an
-#     open permission dialog or menu can ANSWER it, so an unclear screen is
-#     treated as "not free" and retried next cycle, cursor untouched.
+#     (comm-lib.sh's sot_pty_screen) and only types when the CURSOR sits at
+#     the start of an input line marked by `❯` -- a grey prompt suggestion
+#     is byte-identical to a typed draft in the text, and only the cursor
+#     separates them; typing into an open permission dialog or menu can
+#     ANSWER it, so an unclear screen is treated as "not free" and retried
+#     next cycle, cursor untouched.
 #   - Coalescing: a ping already typed and not yet read (the poll cursor's
 #     mtime is older than the ping) suppresses a second one -- new lines
 #     just wait, since the outstanding ping already wakes the session onto
@@ -122,12 +124,12 @@ _comm_wake_ping_inject() {
     return $?
 }
 
-# _comm_wake_prompt_free -> 0 free (some line of the row's CURRENT screen,
-# whitespace-trimmed, is exactly the prompt glyph), 1 screen read but NOT
-# free (dialog/menu/draft on screen -- today's fail-closed retry, cursor
-# untouched), 2 NO REPLY at all (transport error, empty response -- distinct
-# from 1 so the caller can count these separately and give up on a daemon
-# that never answers instead of retrying it forever).
+# _comm_wake_prompt_free -> 0 free (the cursor sits at the start of the row's
+# input line), 1 screen read but NOT free (dialog/menu/draft on screen --
+# today's fail-closed retry, cursor untouched), 2 NO REPLY at all (transport
+# error, empty response -- distinct from 1 so the caller can count these
+# separately and give up on a daemon that never answers instead of retrying
+# it forever).
 _comm_wake_prompt_free() {
     local resp
     resp="$(_comm_wake_pty_screen "$SOT_WORKSPACE_ID" 2>/dev/null)"
@@ -229,7 +231,24 @@ _comm_wake_deliver_ping() {
         return   # no reply this cycle; retry, cursor untouched
     fi
     no_reply_count=0
-    [ "$pf_rc" -eq 0 ] || return   # dialog/menu/draft on screen; retry next cycle
+    if [ "$pf_rc" -ne 0 ]; then
+        # Honesty of the record: a gate that can suppress delivery
+        # indefinitely must leave a trace of having done so. One line per
+        # TRANSITION, never per cycle — this loop runs every 2s.
+        if [ -z "$blocked_since" ]; then
+            blocked_since="$(now_iso)"
+            echo "comm-wake: prompt not free; ping held since $blocked_since" >&2
+        fi
+        return   # dialog/menu/draft on screen; retry next cycle
+    fi
+    if [ -n "$blocked_since" ]; then
+        # The fact is the GATE's transition, not a delivery: the inject below
+        # can still fail, and saying "sent" before attempting it records a
+        # delivery that never happened — with blocked_since already cleared, no
+        # later cycle says otherwise. The inject reports its own outcome.
+        echo "comm-wake: prompt free again after being held since $blocked_since" >&2
+        blocked_since=""
+    fi
 
     if [ "$all_selftest" -eq 1 ]; then
         text_to_type="$SELFTEST_TEXT"
@@ -245,6 +264,7 @@ _comm_wake_deliver_ping() {
 _comm_wake_run() {
     pos=$(wc -l < "$INBOX" 2>/dev/null || echo 0)
     no_reply_count=0
+    blocked_since=""
 
     # No pane-liveness check beyond the agent-owner one above: a capsule
     # leg's own process group reaps this when the row itself goes away.

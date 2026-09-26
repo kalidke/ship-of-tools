@@ -794,20 +794,76 @@ sot_pty_screen() {
 # sot_pty_input_gated WORKSPACE_ID DATA_B64 — sot_pty_input, but only into a
 # row that is sitting at a FREE prompt. Typing plus Enter submits a turn, so a
 # row with a dialog, a menu or a half-typed draft on screen must never be
-# typed into: the keystrokes would land in whatever is open. The glyph test is
-# comm-wake.sh's own prompt-free gate, moved here verbatim so the sender's
-# poke (comm-send.sh) and the ping watcher share ONE implementation instead of
-# two that drift. Returns 0 typed, 1 screen read but NOT free (also an
+# typed into: the keystrokes would land in whatever is open. The test is
+# `sot_prompt_free` above — the CURSOR's position, not the line's text — so the
+# sender's poke (comm-send.sh) and the ping watcher share ONE implementation
+# instead of two that drift. Returns 0 typed, 1 screen read but NOT free (also an
 # accepted-but-not-ok row — nothing was typed either way), 2 no reply at all
 # (transport error/empty response, kept distinct so a caller can tell a busy
 # row from a dead daemon).
-# sot_prompt_free SCREEN_JSON — 0 when some whitespace-trimmed line of a
-# pty.screen reply is exactly the prompt glyph. THE glyph test: both the
-# sender's poke (sot_pty_input_gated) and comm-wake.sh's ping gate read it, so
-# "free prompt" cannot come to mean two different things.
+# sot_prompt_free SCREEN_JSON — 0 when the row is sitting at an EMPTY input
+# line with the cursor at its start. THE prompt test: both the sender's poke
+# (sot_pty_input_gated) and the ping watcher's gate read it, so "free prompt"
+# cannot come to mean two different things.
+#
+# It is the CURSOR that decides, not the text. pty.screen returns plain text
+# with every attribute stripped (capsule_workspace.rs maps the vt100 rows
+# through trim_end), so a grey PROMPT SUGGESTION — ghost text Claude Code
+# draws after the insertion point on an empty input — is byte-identical to a
+# half-typed human draft. Matching the text alone therefore held every wake
+# for as long as a suggestion sat on screen: a row went deaf for a day with a
+# live watcher and no signal (2026-09-25). The cursor separates them with no
+# new protocol: ghost text leaves the cursor AT the input start, typed text
+# pushes it past what was typed. Anchoring on the cursor's own line also
+# closes the opposite hole — a bare `❯` anywhere on screen (in output, or
+# behind a permission dialog) used to open the gate.
+#
+# FREE means all of: a cursor is present; its row indexes a real line; that
+# line carries `❯` with nothing but spaces before it; and the cursor column
+# is at the insertion point. That last part does NOT guess which convention
+# the renderer uses, because guessing is unsound in both directions. A renderer
+# that draws a separator (`❯ text` — the measured one: a live row showed the
+# glyph at column 0 and the cursor at column 2, with a NON-BREAKING space
+# between) puts an empty input's cursor at glyph+2; one that draws none
+# (`❯text`) puts it at glyph+1, and puts a ONE-CHARACTER DRAFT at glyph+2.
+# So glyph+2 alone is not "empty" and neither is the pair: accept both columns
+# blindly and a one-character draft on a no-separator prompt reads FREE and
+# gets submitted, which is the exact harm this gate exists to prevent.
+# The screen already carries the answer, so READ it instead: glyph+1 is always
+# the insertion point, and glyph+2 is the insertion point only when the cell
+# between glyph and cursor is a separator — a space, a non-breaking space, a
+# tab, or ABSENT (the backend trims trailing whitespace, so an empty prompt
+# under the separator convention arrives as a bare `❯` with nothing at
+# glyph+1). A typed character there is not a separator, and the gate holds.
+# The all-spaces prefix test above is what makes the byte offset `index`
+# returns safe to reuse as a codepoint index here: an all-ASCII prefix has
+# both the same. Everything else is NOT free: no
+# cursor (never happens on a healthy capsule row — the field has existed
+# since the op was born, and the only other runtime answers with an error
+# payload and no lines at all), a row out of range, an error payload, a
+# malformed reply, or an empty string. The glyph is written `❯` so the
+# jq PROGRAM stays pure ASCII across the git-bash leg's native jq.
 sot_prompt_free() {
+    # jq exits 0 on EMPTY stdin, which would read as "free" — a screen we
+    # never saw is never a free prompt.
+    [ -n "$1" ] || return 1
     printf '%s' "$1" | jq -e '
-        (.payload.lines // []) | any(gsub("^[ \t]+|[ \t]+$";"") == "❯")
+        (.payload // {}) as $p
+        | ($p.lines // []) as $L
+        | ($p.cursor // {}) as $k
+        | ($k.row // -1) as $r
+        | ($k.col // -1) as $c
+        | if ($r|type) != "number" or ($c|type) != "number"
+             or $r < 0 or $r >= ($L|length) then false
+          else ($L[$r]) as $line
+             | ($line | index("\u276f")) as $g
+             | ($g != null)
+               and (($line[0:$g] | test("[^ ]")) | not)
+               and ( $c == $g + 1
+                     or ( $c == $g + 2
+                          and ( $line[$g+1:$g+2]
+                                | . == "" or . == " " or . == "\u00a0" or . == "\t" ) ) )
+          end
     ' >/dev/null 2>&1
 }
 
