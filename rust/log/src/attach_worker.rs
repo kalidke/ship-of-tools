@@ -174,16 +174,19 @@ pub(crate) enum LaneError {
 /// episode's status emit. Deliberately does not quote the capsule's
 /// subscriber cap as a number: that bound lives in `attach_proto` (and is
 /// scheduled to change), while the user's move does not depend on its
-/// value. The `SubscriberCap` recovery is safe as written: restarting the
-/// daemon frees the held slots without ending any session, because each
-/// capsule supervisor runs in its own transient systemd scope rather than
-/// the daemon's kill domain (ADR 0043 decision 32 —
-/// `capsule_workspace`'s Linux `spawn_detached`).
+/// value, and deliberately promises nothing about what a restart costs:
+/// restarting the daemon frees the held slots without ending a session
+/// whose supervisor got its own transient systemd scope (ADR 0043
+/// decision 32 — `capsule_workspace`'s Linux `spawn_detached`), but a
+/// supervisor launched after `user_scope_available()` was DENIED runs
+/// degraded in the daemon's own kill domain and dies with it. One pane
+/// status line cannot carry that fork, so the reassurance and its
+/// exception both live in the troubleshooting page instead.
 pub(crate) fn attach_refused_text(reason: wire::AttachRefusedReason) -> &'static str {
     match reason {
         wire::AttachRefusedReason::GroundTimeout => "capsule busy grounding a checkpoint \u{2014} retrying\u{2026}",
         wire::AttachRefusedReason::SubscriberCap => {
-            "capsule watcher slots all taken \u{2014} restart the backend daemon to free them (sessions survive it)"
+            "capsule watcher slots all taken \u{2014} restart the backend daemon to free them"
         }
     }
 }
@@ -3031,12 +3034,21 @@ mod tests {
         }
 
         // The wording is the whole point of carrying the reason: only the
-        // permanent refusal names a recovery, and it must name the one
-        // that does not cost the user their sessions.
+        // permanent refusal names a recovery, and it names the ACTION and
+        // nothing more. It must NOT promise what the restart costs: a
+        // supervisor launched after `user_scope_available()` was denied runs
+        // in the daemon's own kill domain and dies with it, so an
+        // unconditional "sessions survive" would be false exactly for the
+        // user worst placed to know it. The reassurance and that exception
+        // both belong to the troubleshooting page, which states both.
         let capped = attach_refused_text(wire::AttachRefusedReason::SubscriberCap);
         assert!(
-            capped.contains("restart the backend daemon") && capped.contains("sessions survive"),
+            capped.contains("restart the backend daemon"),
             "the permanent refusal must name its recovery in the pane line, got {capped:?}"
+        );
+        assert!(
+            !capped.contains("survive") && !capped.contains("keep running"),
+            "the pane line must not promise what a restart costs — the degraded-scope supervisor breaks that promise, got {capped:?}"
         );
     }
 }
