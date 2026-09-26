@@ -25,6 +25,19 @@ Press **`F5`** to reconnect. The daemon replays what you missed or sends a
 fresh snapshot; agent sessions and the REPL keep running on the backend while
 you are away. See [Going remote](../start/remote.md#Reconnecting).
 
+## A pane stays at `connecting…`
+
+The status line under the pane names the reason the capsule gave. `capsule busy
+grounding a checkpoint` clears itself within seconds. `capsule watcher slots all
+taken` does not: a capsule accepts a bounded number of watchers, and connections
+left behind by a frontend that went away without closing them keep their slots.
+Restart the backend daemon (`systemctl --user restart sotd`) — that closes the
+connections it was holding and frees the slots, and the sessions themselves keep
+running, because each capsule supervisor lives in its own transient systemd
+scope rather than the daemon's. The exception is a supervisor the daemon log
+marked `no transient user scope available`: that one does share the daemon's
+kill domain.
+
 ## A browser page says `127.0.0.1 refused to connect`
 
 `Shift+W` (built docs), `o` (video playback, Pluto) and `wglshow` pages are

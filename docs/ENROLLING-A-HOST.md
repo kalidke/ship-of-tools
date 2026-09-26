@@ -82,6 +82,26 @@ Each step's check must pass before the next one is worth doing.
    connection serving several bridge instances, not one connection each
    (`journalctl --user -u 'sot-host-relay-<host>@*'`).
 
+   **Some hosts need it off.** At least one host in the field will not bring its
+   bridge up at all with multiplexing on: the step-3 hello by hand succeeds,
+   but every `sot-host-relay-<host>@*` instance fails or hangs with nothing
+   reaching the far daemon. Where re-running the unit's own command without the
+   three `Control*` options is the difference, strip them with a drop-in of your
+   own naming beside the generated unit:
+
+   ```ini
+   # ~/.config/systemd/user/sot-host-relay-<host>@.service.d/no-mux.conf
+   [Service]
+   ExecStart=
+   ExecStart=/usr/bin/ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 ${SOT_RELAY_TARGET} ${SOT_RELAY_SOTD} stdio-bridge --label ${SOT_RELAY_LABEL}
+   ```
+
+   `sotd topology apply` writes and removes only its own `topology.conf` in that
+   directory, so a drop-in under any other name survives every re-apply. This is
+   a known interim measure, not the intended design — why a particular host
+   rejects the multiplexed connection is not yet understood, and a fresh ssh
+   login per bridge instance is what it costs until it is.
+
 5. **Update ownership is safe to move.** Declaring `daemon = true` makes
    the box's own backend the owner of its updates instead of its
    frontend's self-update. Confirm the box's backend is healthy and at the
