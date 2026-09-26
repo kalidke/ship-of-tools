@@ -3,11 +3,14 @@
 # Usage: comm-send.sh @name "message"
 #        comm-send.sh --broadcast "message"
 #
-# Every send lands in the recipient's durable inbox. A directed send to a
-# session that owns a workspace row on THIS host is also typed live into
-# that row (the daemon's `pty.input`, Enter appended — the same path
-# codex-watch.sh uses). With no row on this host the message stays in the
-# inbox (the recipient's Monitor or bridge picks it up) and the send says so.
+# Every send lands in the recipient's durable inbox, and THAT is the
+# acknowledgement: a filed frame is read by the recipient's next turn boundary
+# (its Stop hook reads its own inbox), so `filed -> @name` is the verdict and
+# exit 0 means it. A directed send to a row on THIS host is additionally POKED
+# — one gated keystroke line (comm-lib.sh's sot_pty_input_gated) for a
+# genuinely idle row, since a stopped agent is blocked on stdin and keystrokes
+# are the only way in. The poke is diagnostic only: `+woken` / `not woken:
+# <reason>` never changes the verdict.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
@@ -64,9 +67,10 @@ deliver() {  # $1 = target name
     local t="$1" thost tws ts resp ok enter_sent code
     thost="$(jq -r --arg n "$t" '.agents[$n].host         // empty' "$REGISTRY")"
     tws="$(jq -r   --arg n "$t" '.agents[$n].workspace_id // empty' "$REGISTRY")"
-    if [ -z "$thost" ]; then echo "  @$t: not in registry — skipped" >&2; return 1; fi
+    if [ -z "$thost" ]; then echo "no such handle: $t" >&2; return 1; fi
 
-    # 1) durable inbox, always. Stamp `to` so the recipient's Monitor can rank:
+    # 1) durable inbox, always — this append IS the delivery. Stamp `to` so the
+    # recipient can rank:
     # a directed send (to == their own name) wakes the session; a broadcast
     # copy (to == "") files silently for comm-poll — the same demotion rule
     # the relay bridge applies. Lines without a `to` key (pre-stamp senders)
@@ -78,27 +82,32 @@ deliver() {  # $1 = target name
     jq -nc --arg from "$NAME" --arg to "$to_stamp" --arg repo "$REPO" --rawfile msg "$MSG_FILE" --arg ts "$ts" \
         '{from:$from, to:$to, repo:$repo, msg:$msg, ts:$ts}' >> "$INBOX_DIR/$t.jsonl"
 
-    # 2) live typing, only for a directed send to a row on this host. Typing
-    # plus Enter is a full interrupt (it submits into the recipient's input —
-    # a model turn), so it follows the same demotion rule as the Monitor:
-    # broadcasts file silently, only directed sends interrupt. The daemon
-    # refuses a row whose capsule is not ready, so the text never lands at a
-    # bare shell prompt; an unknown or gone row leaves the message queued.
-    if [ "$BROADCAST" != true ] && [ "$thost" = "$HOST" ] && [ -n "$tws" ] && _live_endpoint; then
-        resp="$(sot_pty_input "$tws" "$(printf '%s' "$FORMATTED" | base64 | tr -d '\n')" || true)"
-        IFS='|' read -r ok enter_sent code <<EOF
-$(printf '%s' "$resp" | jq -r '[.payload.ok // false, .payload.enter_sent // false, .payload.code // ""] | map(tostring) | join("|")' 2>/dev/null)
-EOF
-        if [ "$ok" = true ] && [ "$enter_sent" = true ]; then
-            echo "  @$t: delivered live (+inbox)"
-        elif [ "$ok" = true ]; then
-            echo "  @$t: typed live, Enter unconfirmed (+inbox)"
-        else
-            echo "  @$t: queued to inbox (row $tws: ${code:-no reply})"
-        fi
+    # 2) the poke. The frame is already filed, so this is no longer delivery:
+    # it only shortens the wait for a row that is sitting idle at its prompt.
+    # GATED (sot_pty_input_gated): typing plus Enter submits into whatever is on
+    # screen, so a dialog, a menu or a half-typed draft is never typed over. A
+    # busy session needs no poke at all — its Stop hook reads the inbox at the
+    # turn boundary. Broadcasts never type into anyone (a --broadcast blast once
+    # woke every session on the network, 2026-06-12).
+    local woke=""
+    if [ "$BROADCAST" = true ]; then
+        woke=""
+    elif [ "$thost" != "$HOST" ]; then
+        woke=" — not woken: row is on $thost, read at its next turn boundary"
+    elif [ -z "$tws" ]; then
+        woke=" — not woken: no workspace row"
+    elif ! _live_endpoint; then
+        woke=" — not woken: no daemon reachable from here"
     else
-        echo "  @$t: queued to inbox ($thost)"
+        local gate_rc=0
+        sot_pty_input_gated "$tws" "$(printf '%s' "$FORMATTED" | base64 | tr -d '\n')" || gate_rc=$?
+        case "$gate_rc" in
+            0) woke=" +woken" ;;
+            1) woke=" — not woken: row $tws is not at a free prompt" ;;
+            *) woke=" — not woken: row $tws did not answer" ;;
+        esac
     fi
+    echo "  filed -> @$t$woke"
     return 0
 }
 

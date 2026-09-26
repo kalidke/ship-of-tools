@@ -220,6 +220,10 @@ start_stub_daemon() {  # WSID SLUG ROOT
     list="$(jq -nc --arg id "$wsid" --arg slug "$slug" --arg root "$root" \
         '{v:1,id:1,kind:"res",op:"workspace.list",payload:{workspaces:[{workspace_id:$id,slug:$slug,label:$slug,project_root:$root,kernel_running:false,is_default:false,autostart_claude:true,agent:"claude",agent_name:"",agent_handle:"",task:"",agent_state:"",agent_summary:"",agent_status_at:"",repl_state:"idle",runtime:"capsule",phase:"ready"}]}}')"
     ptyin='{"v":1,"id":1,"kind":"res","op":"pty.input","payload":{"ok":true,"bytes":1,"runtime":"capsule","enter_sent":true}}'
+    # comm-send.sh types only into a row whose CURRENT screen shows a free
+    # prompt (comm-lib.sh's sot_pty_input_gated): without a pty.screen answer
+    # the gate returns "no reply" and nothing is typed at all.
+    ptyscreen='{"v":1,"id":1,"kind":"res","op":"pty.screen","payload":{"lines":["banner","❯"]}}'
     exec 3<>"$fifo"
     nc -klU "$STUB_SOCK" < "$fifo" >> "$STUB_REQLOG" &
     STUB_NC_PID=$!
@@ -229,6 +233,7 @@ start_stub_daemon() {  # WSID SLUG ROOT
             workspace.create) printf '%s\n' "$create" >&3 ;;
             workspace.list)   printf '%s\n' "$list" >&3 ;;
             pty.input)        printf '%s\n' "$ptyin" >&3 ;;
+            pty.screen)       printf '%s\n' "$ptyscreen" >&3 ;;
         esac
       done ) &
     STUB_WATCHER_PID=$!
@@ -986,7 +991,8 @@ case_send_types_live_into_same_host_row_else_queues() {
     local req; req="$(grep -m1 '"op":"pty.input"' "$STUB_REQLOG" 2>/dev/null || true)"
     stop_stub_daemon
     [ "$rc" -eq 0 ] || { echo "  comm-send.sh failed: rc=$rc, stderr: $err"; return 1; }
-    contains "$out" "delivered live" || { echo "  stdout: $out (want 'delivered live')"; return 1; }
+    contains "$out" "filed -> @$h_recipient" || { echo "  stdout: $out (want 'filed -> @$h_recipient')"; return 1; }
+    contains "$out" "+woken" || { echo "  stdout: $out (want '+woken' for a row typed into)"; return 1; }
     [ -n "$req" ] || { echo "  the stub daemon never saw a pty.input request"; return 1; }
     [ "$(printf '%s' "$req" | jq -r '.payload.workspace_id')" = "ws-live-31" ] \
         || { echo "  pty.input targeted the wrong row: $req"; return 1; }
@@ -999,7 +1005,10 @@ case_send_types_live_into_same_host_row_else_queues() {
         SOT_SOCKET="$WORK/no-daemon.sock" "$SEND" "@$h_recipient" "hello queued" 2>"$errfile")"
     rc=$?
     [ "$rc" -eq 0 ] || { echo "  comm-send.sh failed with no daemon: rc=$rc, stderr: $(cat "$errfile")"; return 1; }
-    contains "$out" "queued to inbox" || { echo "  stdout: $out (want 'queued to inbox' with no daemon)"; return 1; }
+    # The ack is the FILE: filed either way, and with no daemon the poke simply
+    # did not happen -- a diagnostic on the verdict, never the verdict.
+    contains "$out" "filed -> @$h_recipient" || { echo "  stdout: $out (want 'filed -> @$h_recipient' with no daemon)"; return 1; }
+    contains "$out" "not woken" || { echo "  stdout: $out (want a 'not woken' reason with no daemon)"; return 1; }
     [ "$(jq -r 'select(.msg == "hello queued") | .from' "$INBOX_DIR/$h_recipient.jsonl")" = "$h_sender" ] \
         || { echo "  recipient inbox missing the queued message"; return 1; }
     return 0
@@ -1026,7 +1035,7 @@ case_relay_send_fails_loudly_with_no_reachable_daemon() {
     err="$(cat "$errfile" 2>/dev/null || true)"
     [ "$rc" -ne 0 ] || { echo "  comm-relay.sh send succeeded with no reachable daemon: $out"; return 1; }
     contains "$out" "relayed ->" && { echo "  claimed 'relayed' despite no reachable daemon: $out"; return 1; }
-    contains "$err" "no ack from daemon" || { echo "  missing the no-ack warning: $err"; return 1; }
+    contains "$err" "unreachable, nothing filed" || { echo "  missing the nothing-filed error: $err"; return 1; }
     return 0
 }
 
@@ -1058,7 +1067,7 @@ case_send_succeeds_with_rooted_registry_row() {
     err="$(cat "$errfile" 2>/dev/null || true)"
     [ "$rc" -eq 0 ] || { echo "  comm-send.sh failed with two genuinely rooted, registered identities: rc=$rc, stderr: $err"; return 1; }
     contains "$err" "identity did not resolve" && { echo "  refused despite a valid rooted registry row: $err"; return 1; }
-    { contains "$out" "queued to inbox" || contains "$out" "delivered live"; } \
+    contains "$out" "filed -> @$h_recipient" \
         || { echo "  stdout doesn't confirm delivery: $out"; return 1; }
     jq -e --arg h "$h_sender" 'select(.from == $h)' "$INBOX_DIR/$h_recipient.jsonl" >/dev/null 2>&1 \
         || { echo "  recipient inbox missing a message from @$h_sender: $(cat "$INBOX_DIR/$h_recipient.jsonl" 2>/dev/null)"; return 1; }
@@ -1705,7 +1714,11 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     # (a prose mention of `--arg NAME`, not a real binding).
     # `o` = comm-status.sh's turn_origin (ADR 0044): the enum user|machine,
     # set from an env var the prompt hook controls, never free text.
-    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag o acc "
+    # `cur` = the read cursor's content (comm-lib.sh's sot_cursor_offset and the
+    # idle hook's own inlined copy): a line count, or a legacy ISO timestamp
+    # being converted to one. Neither can begin with "/", and the only writer of
+    # that file is comm-poll.sh.
+    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag o acc cur "
     local bad="" dir file name line match comment_lines
     dir="$(cd "$SCRIPTS_DIR/../../adapters/claude/hooks" && pwd)"
     for file in "$SCRIPTS_DIR"/*.sh "$SCRIPTS_DIR/sot-fe" "$dir"/*.sh; do

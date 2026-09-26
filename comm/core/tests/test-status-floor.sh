@@ -336,6 +336,106 @@ case_short_exchange_on_waiting_row_never_nudged() {
     expect waiting/-/-/w/- end
 }
 
+# ---- new mail at the turn boundary (messaging ruling, 2026-09-26) ----
+# The inbox IS the delivery path, so a turn must not end while directed mail
+# sits unread: the hook reads this handle's own inbox and blocks with "run
+# comm-poll.sh". Three facts make that safe to do on every Stop -- it fires,
+# it fires once per pending batch, and a broadcast never fires it.
+_mail_reset() {
+    mkdir -p "$SOT_COMM_HOME/inbox" "$SOT_COMM_HOME/read" "$SOT_COMM_HOME/state"
+    : > "$SOT_COMM_HOME/inbox/$NAME.jsonl"
+    rm -f "$SOT_COMM_HOME/read/$NAME.cursor" "$SOT_COMM_HOME"/state/mail-*.tick
+}
+_mail_line() {  # TO [FROM] -> one inbox line, stamped now
+    jq -nc --arg to "$1" --arg from "${2:-peer}" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{from:$from,to:$to,repo:"r",msg:"look at this",ts:$ts}' >> "$SOT_COMM_HOME/inbox/$NAME.jsonl"
+}
+case_pending_mail_blocks_naming_comm_poll() {
+    seed idle; _mail_reset; _mail_line "$NAME"
+    local out; out="$(IT 'all done.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("comm-poll"))' >/dev/null \
+        || { echo "    no mail block: '$out'"; return 1; }
+}
+case_second_stop_in_the_same_turn_does_not_block_again() {
+    seed idle; _mail_reset; _mail_line "$NAME"
+    local first second
+    first="$(IT 'all done.')"
+    [ -n "$first" ] || { echo "    the first stop did not block at all"; return 1; }
+    second="$(IT 'all done.')"
+    [ -z "$second" ] || { echo "    blocked twice for the same pending mail: '$second'"; return 1; }
+}
+case_broadcast_only_inbox_never_blocks() {
+    seed idle; _mail_reset; _mail_line ""
+    local out; out="$(IT 'all done.')"
+    [ -z "$out" ] || { echo "    a broadcast blocked the stop: '$out'"; return 1; }
+}
+case_self_echo_and_selftest_never_block() {
+    seed idle; _mail_reset; _mail_line "$NAME" "$NAME"; _mail_line "$NAME" "__selftest__"
+    local out; out="$(IT 'all done.')"
+    [ -z "$out" ] || { echo "    a self-echo or selftest frame blocked the stop: '$out'"; return 1; }
+}
+case_offset_cursor_covering_the_inbox_never_blocks() {
+    seed idle; _mail_reset; _mail_line "$NAME"
+    # The cursor is a LINE OFFSET: one line filed, one line read.
+    printf '%s' "1" > "$SOT_COMM_HOME/read/$NAME.cursor"
+    local out; out="$(IT 'all done.')"
+    [ -z "$out" ] || { echo "    mail the cursor already covers blocked the stop: '$out'"; return 1; }
+}
+case_same_second_frame_is_still_announced() {
+    seed idle; _mail_reset
+    # TWO frames stamped in the SAME second, one of them read. A timestamp
+    # cursor cannot tell them apart -- every comparison was strictly-greater, so
+    # the second frame was announced to nobody while its sender was told it had
+    # landed. The offset can: line 2 is pending.
+    local ts="2026-01-01T00:00:00Z" i
+    for i in 1 2; do
+        jq -nc --arg to "$NAME" --arg ts "$ts" --arg m "frame $i" \
+            '{from:"peer",to:$to,repo:"r",msg:$m,ts:$ts}' >> "$SOT_COMM_HOME/inbox/$NAME.jsonl"
+    done
+    printf '%s' "1" > "$SOT_COMM_HOME/read/$NAME.cursor"
+    local out; out="$(IT 'all done.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("comm-poll"))' >/dev/null \
+        || { echo "    the same-second frame was never announced: '$out'"; return 1; }
+}
+case_torn_line_does_not_silence_pending_mail() {
+    seed idle; _mail_reset
+    # A partial append ahead of the real message. Slurping the inbox as JSON
+    # failed outright on one of these, which read as "no mail" at every turn end
+    # from then on -- a handle permanently deaf while senders printed success.
+    printf '{"from":"peer","to":"%s","msg":"half a li\n' "$NAME" >> "$SOT_COMM_HOME/inbox/$NAME.jsonl"
+    _mail_line "$NAME"
+    local out; out="$(IT 'all done.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("comm-poll"))' >/dev/null \
+        || { echo "    a torn line silenced the announcement: '$out'"; return 1; }
+}
+case_offset_past_the_end_still_announces() {
+    seed idle; _mail_reset; _mail_line "$NAME"
+    # The inbox was cleared/truncated by hand; the cursor still names the longer
+    # file's offset. Left alone, this handle is never told about mail again.
+    printf '%s' "99" > "$SOT_COMM_HOME/read/$NAME.cursor"
+    local out; out="$(IT 'all done.')"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block"' >/dev/null \
+        || { echo "    a stale offset silenced the announcement: '$out'"; return 1; }
+}
+case_unwritable_tick_fails_open() {
+    seed idle; _mail_reset; _mail_line "$NAME"
+    # With no tick there is no bound, and a filesystem that refuses this write
+    # refuses comm-poll.sh's cursor write too -- so a block here would return at
+    # every turn end with nothing the session could do about it. Fail open.
+    chmod 000 "$SOT_COMM_HOME/state" 2>/dev/null
+    local out; out="$(IT 'all done.')"
+    chmod 755 "$SOT_COMM_HOME/state" 2>/dev/null
+    [ -z "$out" ] || { echo "    blocked with no way to record the bound: '$out'"; return 1; }
+}
+case_mail_older_than_the_cursor_never_blocks() {
+    seed idle; _mail_reset
+    jq -nc '{from:"peer",to:"'"$NAME"'",repo:"r",msg:"old",ts:"2020-01-01T00:00:00Z"}' \
+        >> "$SOT_COMM_HOME/inbox/$NAME.jsonl"
+    printf '%s' "2026-01-01T00:00:00Z" > "$SOT_COMM_HOME/read/$NAME.cursor"
+    local out; out="$(IT 'all done.')"
+    [ -z "$out" ] || { echo "    mail the cursor already covers blocked the stop: '$out'"; return 1; }
+}
+
 # ---- closing markers (2026-09-09): the marker line stamps the row ----
 case_marker_done_stamps_blue_with_headline() {
     seed idle; W "$GENUINE"
@@ -589,6 +689,14 @@ mkmarker() {  # PID [SESSION_ID] -- write a watcher marker in comm-watch.sh's ow
     printf '%s\n%s\n' "$1" "${2:-}" > "$WATCH_MARKER"
 }
 rmmarker() { rm -f "$WATCH_MARKER" "$WARN_STAMP"; }
+# A live process that the marker verifier will RECOGNISE as this handle's
+# watcher: liveness is now identity-checked (comm-lib.sh's sot_watcher_pid_for),
+# so a bare `sleep` proves nothing — on a shared home that is exactly what a
+# reused pid looks like.
+mkdir -p "$WORK/fakebin"
+FAKE_WATCHER="$WORK/fakebin/comm-watch.sh"
+printf '#!/bin/sh\nsleep 30\n' > "$FAKE_WATCHER"; chmod +x "$FAKE_WATCHER"
+fake_watcher() { "$FAKE_WATCHER" "$NAME" >/dev/null 2>&1 & echo $!; }
 dead_pid() {  # a pid guaranteed not to be running: backgrounded, then reaped
     ( exit 0 ) & local p=$!
     wait "$p" 2>/dev/null
@@ -614,11 +722,23 @@ case_deaf_warns_on_missing_marker() {
 }
 case_deaf_silent_while_watcher_alive() {
     seed idle; rmmarker
-    sleep 30 & local p=$!
+    local p; p="$(fake_watcher)"
     mkmarker "$p" "sess-a"
     HBW
     kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
     [ -z "$HBW_ERR" ] || { echo "    got '$HBW_ERR'"; return 1; }
+}
+case_deaf_warns_on_a_live_pid_that_is_not_a_watcher() {
+    # What pid REUSE looks like: the marker names a pid that is alive and is not
+    # a watcher at all. `kill -0` read that as a live watcher and told a
+    # genuinely deaf session it was fine — the exact shape this ruling exists to
+    # remove: broken, and reporting healthy.
+    seed idle; rmmarker
+    sleep 30 & local p=$!
+    mkmarker "$p" "sess-a"
+    HBW
+    kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+    [[ "$HBW_ERR" == *"no live inbox watcher for @$NAME"* ]] || { echo "    got '$HBW_ERR'"; return 1; }
 }
 case_deaf_silent_with_no_registry_row() {
     printf '{"agents":{}}\n' > "$REGISTRY"; rmmarker
@@ -645,7 +765,7 @@ case_deaf_silent_for_subagent_sharing_parents_watcher() {
     # handle isn't deaf (see the hook's header comment for why there is
     # deliberately no session-id comparison here).
     seed idle; rmmarker
-    sleep 30 & local p=$!
+    local p; p="$(fake_watcher)"
     mkmarker "$p" "sess-parent"
     HBW "sess-lane"
     kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
@@ -685,6 +805,21 @@ check "SITREP-WAITING: alone takes the next line and sets purple" case_marker_wa
 check "a marker in a stop-hook continuation still stamps, no nudge" case_marker_in_continuation_still_stamps
 check "a marker split across two assistant records still stamps, no nudge" case_marker_split_across_assistant_records_still_stamps
 check "a marker present only in the Stop payload still stamps, no nudge" case_marker_only_in_stop_payload_still_stamps
+
+# A stable tick key for the mail cases: the block is bounded per SESSION, and
+# each IT call is its own short-lived process, so $PPID would differ per call.
+export CLAUDE_CODE_SESSION_ID=mail-turn
+check "pending directed mail blocks the stop, naming comm-poll" case_pending_mail_blocks_naming_comm_poll
+check "a second stop for the same pending mail does not block again" case_second_stop_in_the_same_turn_does_not_block_again
+check "a broadcast-only inbox never blocks the stop" case_broadcast_only_inbox_never_blocks
+check "a self-echo or a selftest frame never blocks the stop" case_self_echo_and_selftest_never_block
+check "an offset cursor covering the inbox never blocks the stop" case_offset_cursor_covering_the_inbox_never_blocks
+check "a frame filed in the same second as one already read is still announced" case_same_second_frame_is_still_announced
+check "a torn inbox line does not silence pending mail" case_torn_line_does_not_silence_pending_mail
+check "an offset past the end of the inbox still announces" case_offset_past_the_end_still_announces
+check "an unwritable tick fails open instead of blocking every turn" case_unwritable_tick_fails_open
+check "a legacy timestamp cursor that covers the inbox never blocks the stop" case_mail_older_than_the_cursor_never_blocks
+unset CLAUDE_CODE_SESSION_ID
 check "a human turn parked blocked without a marker is nudged once, row untouched" case_parked_user_turn_blocked_without_marker_is_nudged_once
 check "a human turn parked done without a marker is nudged once, row untouched" case_parked_user_turn_done_without_marker_is_nudged_once
 check "a machine turn ending parked without a marker is not nudged" case_parked_machine_turn_without_marker_is_not_nudged
@@ -707,6 +842,7 @@ check "a failed prompt-event write exits non-zero and leaves the row untouched" 
 check "deaf warning fires when the watcher marker's pid is dead" case_deaf_warns_on_dead_pid
 check "deaf warning fires when the watcher marker is missing" case_deaf_warns_on_missing_marker
 check "deaf warning stays silent while the watcher pid is alive" case_deaf_silent_while_watcher_alive
+check "deaf warning fires when the marker's live pid is not a watcher" case_deaf_warns_on_a_live_pid_that_is_not_a_watcher
 check "deaf warning stays silent with no registry row" case_deaf_silent_with_no_registry_row
 check "deaf warning stays silent without CLAUDE_CODE_SESSION_ID" case_deaf_silent_without_session_id
 check "deaf warning is throttled to once per window" case_deaf_warning_is_throttled

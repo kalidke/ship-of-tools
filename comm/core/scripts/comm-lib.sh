@@ -415,7 +415,149 @@ sot_write_self_file() {
 # sot-bridge <comm-relay.sh> <handle>` — so identification is an exact
 # argv comparison, not a regex over a command line.
 BRIDGE_ARGV0="sot-bridge"
-BRIDGE_LOOP='while :; do "$1" bridge --name "$2"; sleep 2; done'
+# $1 relay, $2 handle, $3 the OWNING agent's pid (empty = untethered), $4 the
+# pidfile. The relay child blocks for as long as the connection holds, so the
+# owner check cannot live at the top of the loop only: it polls alongside the
+# child, and when the owner is gone it kills the child, drops the pidfile and
+# exits — an ownerless bridge must not survive as a named receiver the daemon
+# still counts (the false-receiver defect). argv indices 3 and 5 are unchanged
+# by the two extra arguments, so sot_bridge_pid_for still identifies the loop.
+BRIDGE_LOOP='while :; do
+    "$1" bridge --name "$2" & _c=$!
+    while kill -0 "$_c" 2>/dev/null; do
+        if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then
+            kill "$_c" 2>/dev/null; rm -f "${4:-}" 2>/dev/null; exit 0
+        fi
+        sleep 2
+    done
+    if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then rm -f "${4:-}" 2>/dev/null; exit 0; fi
+    sleep 2
+done'
+
+# --- owned lifetimes: who a watcher or a bridge belongs to -------------------
+#
+# sot_owner_pid — the pid of the nearest ancestor whose command is `claude` or
+# `codex`, walking up from $PPID. Lives HERE, not in one caller, because every
+# process that outlives a turn has to end with the agent it serves, and a flag
+# a caller can forget leaves exactly one leg ownerless (the Codex watch leg was
+# that leg). A caller still directly attached to the agent may pass the pid it
+# already knows; anything spawned without one discovers it the same way here.
+# `ps -o comm=` is tried at each hop, then /proc; if neither answers the walk
+# stops and prints nothing (rc 1) — which is a REFUSAL at the call site, never
+# an untethered process.
+sot_owner_pid() {
+    local pid="${PPID:-}" comm ppid
+    while [ -n "$pid" ] && [ "$pid" != "1" ]; do
+        comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')"
+        if [ -z "$comm" ] && [ -r "/proc/$pid/comm" ]; then
+            comm="$(tr -d ' \t\n' < "/proc/$pid/comm" 2>/dev/null)"
+        fi
+        [ -n "$comm" ] || return 1
+        case "$comm" in
+            claude|codex) printf '%s\n' "$pid"; return 0 ;;
+        esac
+        ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+        if [ -z "$ppid" ] && [ -r "/proc/$pid/status" ]; then
+            ppid="$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null)"
+        fi
+        [ -n "$ppid" ] && [ "$ppid" != "$pid" ] || break
+        pid="$ppid"
+    done
+    return 1
+}
+
+# sot_watcher_pid_for HANDLE — the live watcher pid recorded in
+# state/<handle>.watch, verified BY IDENTITY, else nothing (rc 1). `kill -0`
+# alone is not enough to act on: these markers live on a shared home and
+# survive reboots, so a REUSED pid would let a teardown kill an unrelated
+# process and let the start-time mutex refuse a legitimate watcher forever. The
+# recorded pid must still BE a watcher for this handle — its command line names
+# one of the watcher scripts and the handle itself. Anything else (gone,
+# different command, no way to read one) means the marker is STALE: rc 1, and
+# the caller proceeds as if it were absent.
+sot_watcher_pid_for() {
+    local handle="$1" pid args
+    pid="$(sed -n '1p' "$COMM_HOME/state/$handle.watch" 2>/dev/null)"
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    if [ -r "/proc/$pid/cmdline" ]; then
+        args="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    else
+        args="$(ps -o args= -p "$pid" 2>/dev/null)"
+    fi
+    [ -n "$args" ] || return 1
+    case "$args" in
+        *comm-wake.sh*|*comm-watch.sh*|*codex-watch.sh*) ;;
+        *) return 1 ;;
+    esac
+    case "$args" in *"$handle"*) ;; *) return 1 ;; esac
+    printf '%s\n' "$pid"
+}
+
+# --- the read cursor: a LINE OFFSET into inbox/<handle>.jsonl ----------------
+#
+# read/<handle>.cursor holds the NUMBER of inbox lines the recipient has been
+# shown. It used to hold the newest-shown `ts`, and those stamps are
+# second-resolution while every comparison was strictly-greater: a frame filed
+# in the same second as one already read was never shown and never announced,
+# while the sender printed a success line — a false-positive acknowledgement,
+# the one thing this design may not produce. A count cannot lose a frame that
+# way.
+#
+# sot_cursor_offset HANDLE — that offset. Three rules, each one a way this could
+# otherwise go silently deaf:
+#
+#   * A LEGACY ts cursor is converted in memory (never written here — only a real
+#     comm-poll.sh advances the cursor) by counting the lines BEFORE THE FIRST
+#     one whose ts is greater than it. Not "every line at or below it": stamps
+#     are only in order if every sender's clock agrees, and with a skewed clock
+#     across hosts (or two frames in one second) that count would step PAST an
+#     unread frame already on disk and it would never be shown. Stopping at the
+#     first greater line inherits no loss at all.
+#   * An unparseable line counts as read and never as a boundary. A torn append
+#     is realistic on a shared filesystem, and one must not be able to freeze
+#     the cursor: that makes a handle permanently deaf while its senders keep
+#     printing a success line.
+#   * An offset PAST the end of the inbox is 0. Production only appends, so this
+#     means the file was cleared, truncated or restored by hand — exactly the
+#     moment nobody suspects the cursor, and left as-is the handle never sees
+#     another message.
+#
+# Anything unreadable yields 0. On doubt this biases LOW: showing a frame twice
+# is tolerable where dropping one is not.
+sot_cursor_offset() {
+    local handle="$1" cur n
+    # $COMM_HOME, not the source-time $READ_DIR: comm-wake.sh re-derives its
+    # home inside its own main, and a helper reading a different one than its
+    # caller is a silently wrong answer.
+    cur="$(cat "$COMM_HOME/read/$handle.cursor" 2>/dev/null || true)"
+    [ -n "$cur" ] || { printf '0\n'; return 0; }
+    case "$cur" in
+        ''|*[!0-9]*) ;;
+        *) _sot_clamp_offset "$handle" "$cur"; return 0 ;;
+    esac
+    n="$(jq -Rrs --arg cur "$cur" '
+        [ split("\n")[] | select(length > 0)
+          | (((fromjson? // {}) | (.ts // "")) > $cur) ] as $past
+        | ($past | index(true)) // ($past | length)' \
+        "$COMM_HOME/inbox/$handle.jsonl" 2>/dev/null)" || n=0
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    _sot_clamp_offset "$handle" "$n"
+}
+
+# _sot_clamp_offset HANDLE N — N, or 0 when it points past the end of the inbox.
+_sot_clamp_offset() {
+    local total; total="$(sot_inbox_lines "$1")"
+    if [ "$2" -gt "$total" ]; then printf '0\n'; else printf '%s\n' "$2"; fi
+}
+
+# sot_inbox_lines HANDLE — the inbox's line count (0 when absent).
+sot_inbox_lines() {
+    local n
+    n="$(wc -l < "$COMM_HOME/inbox/$1.jsonl" 2>/dev/null | tr -d ' ')"
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    printf '%s\n' "$n"
+}
 
 sot_bridge_pidfile() { printf '%s/state/bridge-%s.pid\n' "$COMM_HOME" "$1"; }
 
@@ -443,7 +585,7 @@ sot_bridge_running_for() { sot_bridge_pid_for "$1" >/dev/null; }
 # its own alternative. Every non-alphanumeric character of NAME is escaped.
 _sot_bridge_pattern() {
     local escaped; escaped="$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/\\&/g')"
-    printf "(comm-relay\\\\.sh'? bridge --name '?%s'?(;|\$)|%s [^ ]+ %s\$)" \
+    printf "(comm-relay\\\\.sh'? bridge --name '?%s'?(;|\$)|%s [^ ]+ %s( |\$))" \
         "$escaped" "$BRIDGE_ARGV0" "$escaped"
 }
 
@@ -468,12 +610,12 @@ sot_bridge_stop() {
     rm -f "$(sot_bridge_pidfile "$name")"
 }
 
-# sot_bridge_start NAME RELAY_SH — stop any stray first, then start the
+# sot_bridge_start NAME RELAY_SH [OWNER_PID] — stop any stray first, then start the
 # loop detached from this shell's stdio (a caller's pipe must never be held
 # open by it) and record its pid. Output goes to state/bridge-NAME.log,
 # truncated at each start.
 sot_bridge_start() {
-    local name="$1" relay="$2" log lockdir held=0 spins=0
+    local name="$1" relay="$2" owner="${3:-}" log lockdir held=0 spins=0
     mkdir -p "$COMM_HOME/state"
     # Codex review (PR 254): stop-then-start is a read-modify-write over
     # one pidfile, and two bootstraps racing it (a session's own and a
@@ -497,7 +639,8 @@ sot_bridge_start() {
     sot_bridge_stop "$name"
     log="$COMM_HOME/state/bridge-$name.log"
     : > "$log"
-    bash -c "$BRIDGE_LOOP" "$BRIDGE_ARGV0" "$relay" "$name" </dev/null >>"$log" 2>&1 &
+    bash -c "$BRIDGE_LOOP" "$BRIDGE_ARGV0" "$relay" "$name" "$owner" \
+        "$(sot_bridge_pidfile "$name")" </dev/null >>"$log" 2>&1 &
     printf '%s\n' "$!" > "$(sot_bridge_pidfile "$name")"
     [ "$held" = 1 ] && rmdir "$lockdir" 2>/dev/null
     return 0
@@ -539,6 +682,37 @@ sot_pty_screen() {
     # SEND_TIMEOUT), so the flag was silently ignored. Let the callee's own
     # fallback apply unmangled.
     sot_oneshot_request "$frame" "pty.screen"
+}
+
+# sot_pty_input_gated WORKSPACE_ID DATA_B64 — sot_pty_input, but only into a
+# row that is sitting at a FREE prompt. Typing plus Enter submits a turn, so a
+# row with a dialog, a menu or a half-typed draft on screen must never be
+# typed into: the keystrokes would land in whatever is open. The glyph test is
+# comm-wake.sh's own prompt-free gate, moved here verbatim so the sender's
+# poke (comm-send.sh) and the ping watcher share ONE implementation instead of
+# two that drift. Returns 0 typed, 1 screen read but NOT free (also an
+# accepted-but-not-ok row — nothing was typed either way), 2 no reply at all
+# (transport error/empty response, kept distinct so a caller can tell a busy
+# row from a dead daemon).
+# sot_prompt_free SCREEN_JSON — 0 when some whitespace-trimmed line of a
+# pty.screen reply is exactly the prompt glyph. THE glyph test: both the
+# sender's poke (sot_pty_input_gated) and comm-wake.sh's ping gate read it, so
+# "free prompt" cannot come to mean two different things.
+sot_prompt_free() {
+    printf '%s' "$1" | jq -e '
+        (.payload.lines // []) | any(gsub("^[ \t]+|[ \t]+$";"") == "❯")
+    ' >/dev/null 2>&1
+}
+
+sot_pty_input_gated() {
+    local wsid="$1" data="$2" screen resp
+    screen="$(sot_pty_screen "$wsid" 2>/dev/null)"
+    [ -n "$screen" ] || return 2
+    sot_prompt_free "$screen" || return 1
+    resp="$(sot_pty_input "$wsid" "$data" 2>/dev/null || true)"
+    [ -n "$resp" ] || return 2
+    printf '%s' "$resp" | jq -e '.payload.ok == true' >/dev/null 2>&1 || return 1
+    return 0
 }
 
 # sot_capsule_workspace_id — print the calling shell's capsule row id, or

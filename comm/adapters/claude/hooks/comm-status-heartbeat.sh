@@ -126,12 +126,21 @@ row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.floor // "") + "|" + (.s
 # (the case statement and the throttle's `exit 0`), because those two exit
 # on exactly the busy-but-silent rows this warning exists to catch.
 #
-# Liveness check duplicated from comm-session-start.sh's `_survived()` (its
-# twin — comm/core/scripts/comm-session-start.sh, the marker read around
-# lines 97-122) because hooks are standalone by design and don't source
-# comm-lib.sh, so both copies are kept in sync by hand (same convention as
-# the machine-origin pattern lists duplicated across comm-status-idle.sh).
-# UNLIKE that twin, this check is PID-liveness ONLY — no session-id
+# Liveness is ONE implementation, comm-lib.sh's `sot_watcher_pid_for`, shared
+# with comm-session-start.sh's `_survived()` and comm-wake.sh's start-time
+# mutex: two readers of one marker that disagree is worse than either, and the
+# disagreement here was silent. `kill -0` alone is not liveness for THIS marker
+# — it lives on a shared home and survives reboots, so a reused pid read as a
+# live watcher told a genuinely deaf session it was fine. The helper verifies
+# the recorded pid IS a watcher for this handle.
+#
+# Sourced in a SUBSHELL, the one place this standalone-by-design hook touches
+# the library: comm-lib.sh owns variable names this hook also uses (SELF_DIR
+# among them), so only the exit status crosses back. One fork per throttle
+# window, and if the library cannot be sourced at all the answer is "no live
+# watcher" — for a deafness warning, a spurious warning (throttled to once per
+# 10 minutes) is the safe direction and silence is not.
+# UNLIKE `_survived`, this check makes no session-id comparison — no session-id
 # comparison: a subagent/lane inherits its parent's handle but gets its own
 # $CLAUDE_CODE_SESSION_ID, and no env signal proves subagent-ness
 # ($CLAUDE_CODE_CHILD_SESSION is set in a parent session's own hook shell
@@ -140,9 +149,14 @@ row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.floor // "") + "|" + (.s
 if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     watch_marker="$COMM_HOME/state/$NAME.watch"
     watcher_alive=0
-    if [ -f "$watch_marker" ]; then
-        wpid="$(sed -n '1p' "$watch_marker" 2>/dev/null)"
-        [[ "$wpid" =~ ^[0-9]+$ ]] && kill -0 "$wpid" 2>/dev/null && watcher_alive=1
+    # Deployed layout first (update_comm puts every script in the comm home's
+    # bin), then next to this file — the same fallback pair the hook already
+    # uses for comm-context.sh.
+    hb_lib="$COMM_HOME/bin/comm-lib.sh"
+    [ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
+    if [ -f "$watch_marker" ] && [ -r "$hb_lib" ] \
+        && ( . "$hb_lib" >/dev/null 2>&1 && sot_watcher_pid_for "$NAME" >/dev/null 2>&1 ); then
+        watcher_alive=1
     fi
     if [ "$watcher_alive" = 0 ]; then
         # Own throttle stamp (NOT the registry's status_at) so a busy row

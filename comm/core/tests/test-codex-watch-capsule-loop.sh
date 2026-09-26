@@ -46,7 +46,7 @@ case_capsule_mode_starts_at_eof_ignoring_a_stale_pos_file_and_backlog() {
         _comm_wake_pty_input() { printf "%s" "$2" | base64 -d >> "'"$attempts"'"; printf "\n" >> "'"$attempts"'"; printf "%s" "{\"op\":\"pty.input\",\"payload\":{\"ok\":true,\"enter_sent\":true}}"; }
         turns=0
         sleep() { turns=$((turns + 1)); [ "$turns" -le 1 ] || exit 0; }
-        _comm_wake_main watchee
+        _comm_wake_main watchee --owner $$
     ' 2>/dev/null
     [ ! -f "$attempts" ] || { echo "  the pre-existing backlog was delivered (want silence -- comm-poll's job); attempts:"; cat "$attempts"; return 1; }
     return 0
@@ -83,7 +83,7 @@ case_concurrent_append_is_never_delivered_twice() {
         }
         turns=0
         sleep() { turns=$((turns + 1)); [ "$turns" -le 2 ] || exit 0; }
-        _comm_wake_main watchee
+        _comm_wake_main watchee --owner $$
     ' 2>/dev/null
     local n; n="$(grep -c "peer: raced" "$attempts" 2>/dev/null || echo 0)"
     [ "$n" -eq 1 ] || { echo "  'raced' delivered $n time(s), want exactly 1"; cat "$attempts" 2>/dev/null; return 1; }
@@ -123,7 +123,7 @@ case_row_gone_ends_the_whole_watcher_not_just_the_inner_loop() {
             printf "%s" "$n" > "'"$sleeps"'"
             [ "$n" -le 20 ] || exit 1   # safety valve: never loop forever if the fix regresses
         }
-        _comm_wake_main watchee
+        _comm_wake_main watchee --owner $$
     ' 2>/dev/null
     local rc=$?
     [ "$rc" -eq 0 ] || { echo "  watcher did not exit cleanly (rc=$rc)"; return 1; }

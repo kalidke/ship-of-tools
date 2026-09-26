@@ -167,10 +167,35 @@ case_stop_kills_the_loop_even_with_a_lost_pidfile() {
 
 contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
+case_bridge_ends_with_its_owner_and_clears_its_marker() {
+    local handle="t-owner-$$" owner tries
+    # A real, killable owner stands in for the agent process. The bridge polls
+    # it alongside its relay child (the child blocks for as long as the
+    # connection holds, so a check at the top of the loop would never run).
+    sleep 300 & owner=$!
+    STARTED+=("$handle")
+    sot_bridge_start "$handle" "$FAKE_RELAY" "$owner"
+    sot_bridge_running_for "$handle" || { echo "  setup: the owned bridge did not start"; kill "$owner" 2>/dev/null; return 1; }
+    kill "$owner" 2>/dev/null
+    wait "$owner" 2>/dev/null
+    # One poll cycle is 2s; allow a few before calling it a failure.
+    tries=0
+    while [ "$tries" -lt 80 ]; do
+        if [ ! -f "$(sot_bridge_pidfile "$handle")" ] && [ -z "$(sot_bridge_pids_for "$handle")" ]; then
+            return 0
+        fi
+        sleep 0.25; tries=$((tries + 1))
+    done
+    echo "  the bridge outlived its owner: pidfile $( [ -f "$(sot_bridge_pidfile "$handle")" ] && echo present || echo gone ), processes '$(sot_bridge_pids_for "$handle")'"
+    return 1
+}
+
 check "comm-leave.sh (self) stops its own bridge, prunes its row, spares a same-prefix sibling bridge" \
     case_leave_stops_own_bridge_prunes_row_and_spares_a_sibling_bridge
 check "comm-leave.sh --name <other> removes only the row -- the other handle's bridge survives" \
     case_leave_by_name_never_stops_the_other_handles_bridge
+check "the bridge ends with its owner and clears its marker" \
+    case_bridge_ends_with_its_owner_and_clears_its_marker
 check "sot_bridge_stop kills the loop (not just the relay child) when the pidfile is lost" \
     case_stop_kills_the_loop_even_with_a_lost_pidfile
 

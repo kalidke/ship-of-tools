@@ -39,7 +39,14 @@ sot_write_self_file "$SOT_COMM_SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT" || { e
 jq -n --arg n "$NAME" --arg r "$PROJECT_ROOT" '{agents:{($n):{state:"idle", root:$r, repo:"x"}}}' > "$REGISTRY"
 MARKER="$SOT_COMM_HOME/state/$NAME.watch"
 
-sleeper() { sleep 300 >/dev/null 2>&1 & local p=$!; SLEEPERS+=("$p"); echo "$p"; }
+# A planted watcher has to be identifiable AS one: _survived now checks the
+# marker pid's command line names a watcher script and this handle, because the
+# marker outlives reboots on a shared home and a reused pid would otherwise
+# report SURVIVED for a session with no watcher at all.
+mkdir -p "$WORK/fakebin"
+FAKE_WATCHER="$WORK/fakebin/comm-watch.sh"
+printf '#!/bin/sh\nsleep 300\n' > "$FAKE_WATCHER"; chmod +x "$FAKE_WATCHER"
+sleeper() { "$FAKE_WATCHER" "$NAME" >/dev/null 2>&1 & local p=$!; SLEEPERS+=("$p"); echo "$p"; }
 ctx() { CLAUDE_CODE_SESSION_ID="$1" bash "$SCRIPTS_DIR/comm-session-start.sh" --context 2>"$WORK/err" | head -n1; }
 
 PASS=0; FAIL=0

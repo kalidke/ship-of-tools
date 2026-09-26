@@ -69,7 +69,7 @@ sleep() {
     fi
     [ "\$turns" -le 2 ] || exit 0
 }
-_comm_wake_main watchee --deliver ping
+_comm_wake_main watchee --deliver ping --owner \$\$
 EOF
     bash "$d/run.sh" 2>/dev/null
     local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
@@ -105,7 +105,7 @@ sleep() {
     fi
     [ "\$turns" -le 2 ] || exit 0
 }
-_comm_wake_main watchee --deliver ping
+_comm_wake_main watchee --deliver ping --owner \$\$
 EOF
     bash "$d/run.sh" 2>/dev/null
     local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
@@ -141,7 +141,7 @@ sleep() {
     fi
     [ "\$turns" -le 3 ] || exit 0
 }
-_comm_wake_main watchee --deliver ping
+_comm_wake_main watchee --deliver ping --owner \$\$
 EOF
     bash "$d/run.sh" 2>/dev/null
     local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
@@ -169,7 +169,7 @@ sleep() {
     fi
     [ "\$turns" -le 10 ] || { echo "the loop never gave up after 5 unanswered probes" >&2; exit 9; }
 }
-_comm_wake_main watchee --deliver ping
+_comm_wake_main watchee --deliver ping --owner \$\$
 EOF
     bash "$d/run.sh" 2>/dev/null
     local rc=$?
@@ -180,8 +180,8 @@ EOF
     return 0
 }
 
-case_a_cursor_that_already_covers_the_batch_skips_a_second_ping() {
-    local d="$WORK/coalesce"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+case_a_second_new_message_with_an_unmoved_cursor_pings_again() {
+    local d="$WORK/second-message"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls"
     : > "$calls"
@@ -197,21 +197,171 @@ sleep() {
     case "\$turns" in
         1) printf '{"from":"peer","to":"me","msg":"first","ts":"2026-01-01T00:00:00Z"}\n' >> "$d/inbox/watchee.jsonl" ;;
         2) printf '{"from":"peer","to":"me","msg":"second","ts":"2026-01-01T00:00:01Z"}\n' >> "$d/inbox/watchee.jsonl" ;;
-        3) printf '%s' "2026-01-01T00:00:01Z" > "$d/read/watchee.cursor" ;;
     esac
-    [ "\$turns" -le 4 ] || exit 0
+    [ "\$turns" -le 3 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    # THE INVERSION (messaging ruling §4, 2026-09-26). Turn 1 pings for
+    # "first"; turn 2's "second" is a genuinely NEW line and the cursor has not
+    # moved, so it MUST ping again. The old `_comm_wake_ping_outstanding` gate
+    # suppressed exactly this for 600s, which made one stalled session deaf to
+    # everything queued behind the message it never read. A missed ping is now
+    # harmless -- the recipient's own Stop hook reads its inbox at the next turn
+    # boundary -- so withholding one buys nothing and costs delivery.
+    [ "$n" -eq 2 ] || { echo "  pty.input called $n time(s), want exactly 2 (a second new message with an unmoved cursor must ping again)"; return 1; }
+    return 0
+}
+
+case_a_cursor_that_already_covers_the_batch_skips_a_second_ping() {
+    local d="$WORK/already-read"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"]}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"old news","ts":"2026-01-01T00:00:01Z"}\n' >> "$d/inbox/watchee.jsonl"
+        printf '%s' "1" > "$d/read/watchee.cursor"
+    fi
+    [ "\$turns" -le 2 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    # The ONE suppression that survives: the cursor is the NUMBER of inbox lines
+    # the session has been shown (comm-poll.sh writes it), so a batch it already
+    # reaches was read through a real poll -- advance past it with no ping. A
+    # count, not a timestamp: two frames filed in the same second are distinct
+    # lines, and a ts comparison silently dropped one of them.
+    [ "$n" -eq 0 ] || { echo "  pty.input called $n time(s), want 0 (the cursor already covers the pending line)"; return 1; }
+    return 0
+}
+
+case_no_owner_exits_two() {
+    local d="$WORK/no-owner"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+# No --owner AND no discoverable claude/codex ancestor: the refusal is about
+# the owner being unknowable, so discovery is stubbed to fail rather than
+# depending on whatever launched this suite.
+sot_owner_pid() { return 1; }
+sleep() { echo "sleep must not be called without an owner" >&2; exit 9; }
+_comm_wake_main watchee --deliver ping
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local rc=$?
+    [ "$rc" -eq 2 ] || { echo "  exited $rc, want 2 (no owner discoverable: a watcher must end with the agent it wakes)"; return 1; }
+    [ ! -f "$d/state/watchee.watch" ] || { echo "  a refused watcher still wrote its marker"; return 1; }
+    return 0
+}
+
+case_second_start_against_a_live_marker_refuses() {
+    local d="$WORK/live-marker"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local marker="$d/state/watchee.watch" planted
+    # A marker naming a live process that really IS a watcher for this handle:
+    # a stand-in script named comm-watch.sh, started with the handle as its
+    # argument, exactly what the mutex verifies before refusing.
+    mkdir -p "$d/fakebin"
+    printf '#!/bin/sh\nsleep 60\n' > "$d/fakebin/comm-watch.sh"; chmod +x "$d/fakebin/comm-watch.sh"
+    "$d/fakebin/comm-watch.sh" watchee >/dev/null 2>&1 & planted=$!
+    printf '%s\nsession-a\n' "$planted" > "$marker"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+sleep() { echo "sleep must not be called against a live marker" >&2; exit 9; }
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local rc=$?
+    kill "$planted" 2>/dev/null
+    [ "$rc" -eq 4 ] || { echo "  exited $rc, want 4 (a live marker means a watcher is already running)"; return 1; }
+    [ "$(sed -n '1p' "$marker" 2>/dev/null)" = "$planted" ] \
+        || { echo "  the refused start overwrote the live watcher's marker"; return 1; }
+    [ "$(sed -n '2p' "$marker" 2>/dev/null)" = "session-a" ] \
+        || { echo "  the refused start rewrote the marker's session line"; return 1; }
+    return 0
+}
+
+case_no_flag_but_a_discoverable_owner_starts() {
+    local d="$WORK/discovered-owner"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+# No --owner: the owner is DISCOVERED from this process's own ancestry, which is
+# what lets every leg (Codex's --deliver full included) be owned without a
+# caller having to remember a flag.
+sot_owner_pid() { printf '%s\n' "\$\$"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"]}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"hello","ts":"2026-01-01T00:00:00Z"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 2 ] || exit 0
 }
 _comm_wake_main watchee --deliver ping
 EOF
     bash "$d/run.sh" 2>/dev/null
     local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
-    # Turn 1 pings for "first" (call #1). Turn 2's "second" is suppressed by
-    # the still-outstanding ping (unread). Turn 3 writes the cursor's CONTENT
-    # as "second"'s own ts -- the session read it via a real poll, so the
-    # fix must advance past it with NO second ping, unlike the old
-    # mtime-only check that pinged again the instant the cursor file moved
-    # at all, however it moved (even an empty `touch`).
-    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s), want exactly 1 (the cursor's ts already covers 'second' once written at turn 3 -- no second ping for a message already read)"; return 1; }
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s), want 1 (a discovered owner is an owner)"; return 1; }
+    return 0
+}
+
+case_marker_pid_that_is_not_a_watcher_is_stale() {
+    local d="$WORK/reused-pid"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls" marker="$d/state/watchee.watch" planted
+    : > "$calls"
+    # A LIVE pid that is not a watcher at all -- what pid reuse looks like on a
+    # shared home, where the marker outlives the reboot. `kill -0` alone would
+    # refuse every start for this handle from here on; the identity check must
+    # read it as stale and let the watcher start.
+    sleep 60 >/dev/null 2>&1 & planted=$!
+    printf '%s\nsession-old\n' "$planted" > "$marker"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"]}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"hello","ts":"2026-01-01T00:00:00Z"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 2 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local rc=$? n
+    kill "$planted" 2>/dev/null
+    n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$rc" -ne 4 ] || { echo "  refused to start against a reused pid that is not a watcher"; return 1; }
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s), want 1 (a stale marker must not block a start)"; return 1; }
     return 0
 }
 
@@ -240,7 +390,7 @@ sleep() {
     fi
     [ "\$turns" -le 2 ] || exit 0
 }
-_comm_wake_main watchee --deliver ping
+_comm_wake_main watchee --deliver ping --owner \$\$
 EOF
     bash "$d/run.sh" 2>/dev/null
     local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
@@ -272,7 +422,12 @@ check "three new directed lines type the ping notice exactly once" case_three_ne
 check "a batch that is only __selftest__ frames types the selftest notice" case_selftest_only_batch_types_the_selftest_text
 check "a not-free prompt withholds the ping and types it once the prompt frees up" case_prompt_not_free_waits_then_types_once_free
 check "five consecutive no-reply pty.screen probes gives up and drops the marker" case_five_consecutive_no_replies_gives_up_and_drops_the_marker
+check "a second new message with an unmoved cursor pings again" case_a_second_new_message_with_an_unmoved_cursor_pings_again
 check "a cursor that already covers the pending batch skips a second ping" case_a_cursor_that_already_covers_the_batch_skips_a_second_ping
+check "no owner discoverable exits 2 and writes no marker" case_no_owner_exits_two
+check "no --owner flag but a discoverable owner starts" case_no_flag_but_a_discoverable_owner_starts
+check "a marker pid that is not a watcher is treated as stale" case_marker_pid_that_is_not_a_watcher_is_stale
+check "a second start against a live marker refuses" case_second_start_against_a_live_marker_refuses
 check "the workspace id derives from SOT_COMM_SELF_FILE's basename" case_workspace_id_derived_from_self_file_basename
 check "the owning agent gone ends the watcher and removes its marker" case_agent_pid_gone_exits_zero_and_removes_the_marker
 

@@ -2,11 +2,13 @@
 # comm-listen.sh — start a DURABLE relay listener so this machine receives
 # cross-machine sot-comm relay messages into its local inbox.
 #
-# WHY: the relay is live-only (the daemon broadcasts to connected clients; no
-# queue). A CLI session that isn't holding a connection misses broadcasts. This
+# WHY: the daemon broadcasts to connected clients and queues nothing, so a
+# session that is not holding a connection misses CROSS-MACHINE frames. This
 # starts a reconnect-loop bridge (a background child of this session, pid
 # recorded under the comm state dir) that stays connected and files inbound
-# messages into ~/.sot-comm/inbox/<name>.jsonl.
+# messages into ~/.sot-comm/inbox/<name>.jsonl. A sender on THIS box needs no
+# bridge at all: it appends to the inbox directly (comm-send.sh), and that
+# append is the delivery.
 #
 # WINDOWS: this is a no-op there (prints the receive path and exits 0) — the
 # frontend already files every inbound frame into its own fe-inbox.jsonl, and
@@ -14,13 +16,23 @@
 # comment next to the Windows check for why). --status/--selftest report the
 # same; there is nothing to --stop.
 #
-# IMPORTANT — this is only HALF of receiving. A Claude session does NOT act on a
-# silent file write. After starting this, the agent must ALSO arm a Monitor on
-# its inbox so new messages WAKE it (a harness action a script can't do). The
-# Monitor command is comm-watch.sh (poll-based — NOT tail -F, which inotify makes
-# unreliable over NFS):
+# This files inbound frames; it does not WAKE anybody. Nothing has to: a
+# session's own end-of-turn hook reads its inbox and refuses to end the turn
+# while directed mail sits unread, so a filed frame is read at the next turn
+# boundary (messaging ruling, 2026-09-26). A row sitting idle at its prompt is
+# poked by whoever filed the line, so it does not wait for its next turn. A
+# Monitor is the fallback where neither applies (no capsule row) — poll-based,
+# NOT tail -F, which inotify makes unreliable over NFS:
 #   comm-watch.sh <name>
-# See the sot-session-start SKILL for the full arm-the-Monitor step.
+# See the sot-session-start SKILL.
+#
+# The bridge is OWNED. It ends with the agent that started it: the loop polls
+# its owner and exits when it is gone, dropping its pidfile — because a bridge
+# with no owner outlives its session, and while it holds a connection the daemon
+# counts it as a live receiver for that handle, an honest-looking ack for
+# somebody who is gone. The owner is DISCOVERED (the nearest claude/codex
+# ancestor), so no caller has to pass anything; `--owner <pid>` overrides that
+# where the caller knows better. With no owner discoverable, a start REFUSES.
 #
 # Usage: comm-listen.sh [--name NAME]   # start (default: your joined handle)
 #        comm-listen.sh --status
@@ -37,10 +49,11 @@ ensure_home
 
 # Mode/name parsed FIRST so the Windows short-circuit right below can act
 # on it without a resolved handle.
-MODE="start"; WANT_NAME=""
+MODE="start"; WANT_NAME=""; OWNER_PID=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --name)     WANT_NAME="$2"; shift 2 ;;
+        --owner)    OWNER_PID="${2:-}"; shift 2 ;;
         --stop)     MODE="stop"; shift ;;
         --status)   MODE="status"; shift ;;
         --selftest) MODE="selftest"; shift ;;
@@ -162,6 +175,21 @@ fi
 
 [ -z "$NAME" ] && { echo "ERROR: no handle — run comm-join.sh first or pass --name" >&2; exit 1; }
 
+# Every mode that can START a bridge needs an owner; `--status`/`--stop` ask
+# and end, and need none. Refusing here is the root fix for the orphan bridge:
+# one that cannot exist cannot be mistaken for a receiver, and there is nothing
+# left to reap by pattern afterwards.
+case "$MODE" in
+    start|selftest)
+        # `--owner <pid>` is an override for a caller with the better vantage;
+        # otherwise the owner is DISCOVERED from this process's own ancestry.
+        [[ "$OWNER_PID" =~ ^[0-9]+$ ]] || OWNER_PID="$(sot_owner_pid || true)"
+        [[ "$OWNER_PID" =~ ^[0-9]+$ ]] || {
+            echo "ERROR: no owning claude/codex ancestor found (and no --owner given) — refusing to start an ownerless bridge: while it holds a connection the daemon counts it as a live receiver for a session that is gone" >&2
+            exit 2
+        } ;;
+esac
+
 RELAY="$COMM_HOME/bin/comm-relay.sh"
 # The bridge's liveness, start and stop are comm-lib.sh's sot_bridge_*
 # helpers (also used by comm-join.sh's stranding guard): a pidfile under
@@ -187,7 +215,7 @@ case "$MODE" in
             # A reconnect loop (the relay can drop; this re-establishes it),
             # a background child of this session. Files inbound into
             # inbox/<name>.jsonl.
-            sot_bridge_start "$NAME" "$RELAY"
+            sot_bridge_start "$NAME" "$RELAY" "$OWNER_PID"
             echo "started relay listener for @$NAME (pid $(sot_bridge_pid_for "$NAME" || echo '?'))"
         fi
         echo "NEXT (required for the session to actually react): arm a persistent harness Monitor"
@@ -279,7 +307,7 @@ case "$MODE" in
         #   0  = receive path OK / recovered
         #   1  = daemon unreachable (real outage — "check the daemon")
         #   3  = daemon reachable but bridge still connecting (cold start, benign)
-        bridge_running || sot_bridge_start "$NAME" "$RELAY"
+        bridge_running || sot_bridge_start "$NAME" "$RELAY" "$OWNER_PID"
         _probe; rc=$?
         if [ "$rc" -eq 0 ]; then echo "selftest @$NAME: receive path OK"; exit 0; fi
         if [ "$rc" -eq 1 ]; then
@@ -289,7 +317,7 @@ case "$MODE" in
         echo "selftest @$NAME: receive path not yet proven -- restarting listener..." >&2
         sot_bridge_stop "$NAME"
         sleep 1
-        sot_bridge_start "$NAME" "$RELAY"
+        sot_bridge_start "$NAME" "$RELAY" "$OWNER_PID"
         sleep 2
         _probe; rc=$?
         if [ "$rc" -eq 0 ]; then echo "selftest @$NAME: RECOVERED after restart"; exit 0; fi

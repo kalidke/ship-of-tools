@@ -62,7 +62,21 @@ resolve_endpoint() {
 # comm-pipe-request.ps1 (PowerShell) instead, since git-bash cannot open a
 # named pipe itself.
 HAVE_NC=0; command -v nc >/dev/null 2>&1 && HAVE_NC=1
-ENDPOINT="$(resolve_endpoint)" || { echo "ERROR: no sotd daemon found; set SOT_RELAY_ENDPOINT=unix:/path, tcp:HOST:PORT, or (Windows) pipe:name" >&2; exit 1; }
+# SOFT for `send`/`ask` (see the file-first rule below): a target this box's
+# registry names is reached by appending to its inbox, which needs no daemon at
+# all — so a missing daemon must not refuse the send. Every path that really
+# needs the wire calls _require_endpoint and fails there instead.
+_endpoint_missing() {
+    echo "ERROR: no sotd daemon found; set SOT_RELAY_ENDPOINT=unix:/path, tcp:HOST:PORT, or (Windows) pipe:name" >&2
+}
+_require_endpoint() { [ -n "$ENDPOINT" ] && return 0; _endpoint_missing; return 1; }
+ENDPOINT="$(resolve_endpoint || true)"
+if [ -z "$ENDPOINT" ]; then
+    case "$SUB" in
+        send|ask) ;;
+        *) _endpoint_missing; exit 1 ;;
+    esac
+fi
 EP_HOST=""; EP_PORT=""; EP_UNIX=""; EP_PIPE=""
 case "$ENDPOINT" in
     tcp:*)  hp="${ENDPOINT#tcp:}"; EP_HOST="${hp%:*}"; EP_PORT="${hp##*:}" ;;
@@ -72,6 +86,7 @@ case "$ENDPOINT" in
     # sot_daemon_endpoint prints or a bare pipe:<name> — both reduce to the
     # trailing NAME (NamedPipeClientStream never takes the \\.\pipe\ prefix).
     pipe:*) EP_PIPE="${ENDPOINT#pipe:}"; EP_PIPE="${EP_PIPE##*\\}" ;;
+    "") ;;   # no daemon and a file-first send: nothing to parse
     *) echo "ERROR: bad endpoint '$ENDPOINT'" >&2; exit 1 ;;
 esac
 
@@ -202,6 +217,7 @@ nc_hold() {
 }
 
 send_frame() {  # $1 to, $2 text
+    _require_endpoint || return 1
     # Identity is already validated (sot_require_routable_identity, called
     # above for SUB in {send,ask} before any transport setup — Codex review
     # round-2 finding 4/C) — every relay frame stamps `from:$NAME` on the
@@ -241,53 +257,42 @@ send_frame() {  # $1 to, $2 text
                 echo "relayed -> <all> (${#receivers[@]} receiver(s)) via $ENDPOINT"
                 return 0
             fi
-            # A Windows-hosted handle runs no bridge — its frontend files
-            # every frame into its own inbox instead, declared as
-            # `fe@<host>` (comm-listen.sh, comm-send.sh:62's lookup
-            # pattern) — so a target whose OWN row is that frontend still
-            # counts as reached even though its exact name never appears.
-            local want_fe="" thost
-            thost="$(jq -r --arg n "$1" '.agents[$n].host // empty' "$REGISTRY" 2>/dev/null)"
-            [ -n "$thost" ] && want_fe="fe@$thost"
-            # A handle on ANOTHER box is never in this registry (each box
-            # keeps its own), so the lookup above cannot name its frontend
-            # and a delivered send read as "no receiver" (rc.33 regression,
-            # 2026-09-17). Derived handles end in -<host>, so a frontend
-            # receiver whose host the target's name ends with is that
-            # handle's own frontend: count it.
-            local r
+            local r fe_host=""
             for r in "${receivers[@]}"; do
-                if [ "$r" = "$1" ] || { [ -n "$want_fe" ] && [ "$r" = "$want_fe" ]; } \
-                    || { [ -z "$thost" ] && [ "${r#fe@}" != "$r" ] && [ "${1%-${r#fe@}}" != "$1" ]; }; then
-                    echo "relayed -> $1 via $ENDPOINT"
+                if [ "$r" = "$1" ]; then
+                    echo "filed -> $1 (relay, $ENDPOINT)"
                     return 0
                 fi
+                # A Windows-hosted handle runs no bridge: its frontend files
+                # every inbound frame into an inbox of its own, declared as
+                # `fe@<host>`. Derived handles end in -<host>, so a frontend
+                # receiver whose host the target's name ends with is that
+                # handle's own filer. This is the LAST cross-box guess left —
+                # the registry-derived `want_fe` went with the file-first rule
+                # above (a handle this box can name never reaches the wire),
+                # and this one goes in 0.6.7 with the per-handle Windows inbox
+                # and declared filers.
+                if [ "${r#fe@}" != "$r" ] && [ "${1%-${r#fe@}}" != "$1" ]; then
+                    fe_host="${r#fe@}"
+                fi
             done
-            # Nothing in the roster names the target. That is NOT proof of
-            # absence, and it used to be reported as one. The roster belongs
-            # to the daemon THIS send reached, and a handle on another box
-            # registers on ITS OWN daemon — so for a cross-box target this
-            # branch is the normal case, not a fault, and the frame is
-            # forwarded and delivered regardless. Measured from both ends
-            # 2026-09-25: this line printed with exit 1 while the message
-            # landed in the target's inbox one second later and woke its
-            # pane. The relay is live-only and a reply is the only proof of
-            # delivery — which the docs already say — so a check that cannot
-            # prove absence warns and does not fail. The old "use durable
-            # delivery instead" advice is deleted with it: on the box where
-            # this fires, comm-send.sh cannot address that name either, so
-            # it sent obedient sessions down a route that always fails and
-            # more than one concluded the backend was dead.
-            echo "WARN: this daemon's roster does not name $1 — expected for a handle on another box. The frame was accepted; only a reply proves delivery." >&2
-            echo "relayed -> $1 via $ENDPOINT"
-            return 0
+            if [ -n "$fe_host" ]; then
+                echo "filed via the frontend on $fe_host (unconfirmed)"
+                return 0
+            fi
+            # Nothing attached to this daemon can file for the target, and this
+            # box's own registry does not name it either (checked before the
+            # wire was chosen at all). There is nowhere for the frame to land:
+            # say so with a failing exit, instead of the old `relayed` plus a
+            # WARN that reported the daemon's own success as delivery.
+            echo "no such handle: $1" >&2
+            return 1
         fi
         # `receivers` absent: an OLD daemon answered — it can't prove a
         # receiver either way, so this is NOT a success to report; fall
-        # through to the same WARN/failure branch as no-ack.
+        # through to the same failure branch as no-ack.
     fi
-    echo "WARN: no ack from daemon — the message may NOT have been delivered." >&2
-    echo "      Retry, or use durable delivery: comm-send.sh @<name> \"msg\"" >&2
+    echo "ERROR: unreachable, nothing filed — no ack from the daemon at $ENDPOINT." >&2
     echo "      (If every send does this, the daemon may predate agent.send.)" >&2
     return 1
 }
@@ -305,6 +310,16 @@ filter_inbound() {
         [ "$to" = "" ] || [ "$to" = "$NAME" ] || continue
         printf '%s\n' "$line"
     done
+}
+
+# FILE-FIRST (messaging ruling, 2026-09-26). A target with a row in THIS box's
+# registry shares this $SOT_COMM_HOME, so its inbox is a plain local append:
+# comm-send.sh files the frame, pokes the row if it is idle, and the FILE is the
+# acknowledgement. The wire is only for targets this box cannot name. `relayed`
+# was never proof of delivery — it reported the daemon's own success — and the
+# "only a reply proves the path" rule it forced on every caller is withdrawn.
+_registry_target() {
+    [ -n "$1" ] && jq -e --arg n "$1" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1
 }
 
 # SUB was already parsed (and shifted off) above, before the identity gate
@@ -326,6 +341,9 @@ case "$SUB" in
         done
         [ "$TO_SET" = true ] || { echo "usage: comm-relay.sh send @to \"msg\" | --all \"msg\"  (no recipient)" >&2; exit 1; }
         [ -z "$MSG" ] && { echo "usage: comm-relay.sh send @to \"msg\" | --all \"msg\"  (empty message)" >&2; exit 1; }
+        if _registry_target "$TO"; then
+            exec "$SCRIPT_DIR/comm-send.sh" "@$TO" "$MSG"
+        fi
         send_frame "$TO" "$MSG"
         ;;
     ask)
@@ -343,8 +361,14 @@ case "$SUB" in
         done
         [ "$TO_SET" = true ] || { echo "usage: comm-relay.sh ask @to \"msg\" [secs]  (no recipient)" >&2; exit 1; }
         [ -z "$MSG" ] && { echo "usage: comm-relay.sh ask @to \"msg\" [secs]" >&2; exit 1; }
-        send_frame "$TO" "$MSG"
-        echo "listening ${SECS}s for replies..."
+        if _registry_target "$TO"; then
+            "$SCRIPT_DIR/comm-send.sh" "@$TO" "$MSG"
+        else
+            send_frame "$TO" "$MSG"
+        fi
+        # The frame is filed; the wait is for a convenience reply, so running
+        # out of seconds is not a failure and was never one to report.
+        echo "listening ${SECS}s for replies (a timeout is not an error — the frame is filed)..."
         nc_hold "$SECS" | filter_inbound | while IFS= read -r m; do
             printf '[%s] [%s] %s\n' \
                 "$(printf '%s' "$m" | jq -r '.payload.ts')" \

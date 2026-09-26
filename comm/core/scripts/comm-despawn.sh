@@ -51,6 +51,26 @@ if jq -e --arg n "$WHO" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
     echo "Removed @$WHO from sot-comm registry"
 fi
 
+# Belt-and-braces for the owned lifetimes (messaging ruling §3): the watcher
+# and the bridge now end with their owner by themselves, so this should find
+# nothing — but a row being torn down is exactly where a survivor would look
+# like a live receiver for a handle that no longer exists, so the markers are
+# read and cleared here too. sot_bridge_stop is the bridge half (loop, its
+# relay child, any stray, then the pidfile).
+_reap_markers() {
+    local who="$1" pid
+    # sot_watcher_pid_for, never the bare pid on the marker's first line: these
+    # markers sit on a shared home and survive reboots, so a REUSED pid would
+    # make this kill an unrelated process of the same user. It must still BE a
+    # watcher for this handle; anything else means the marker is stale and only
+    # the file is removed.
+    if pid="$(sot_watcher_pid_for "$who")"; then
+        kill "$pid" 2>/dev/null && echo "Stopped watcher pid $pid for @$who"
+    fi
+    rm -f "$COMM_HOME/state/$who.watch" 2>/dev/null || true
+    sot_bridge_stop "$who" 2>/dev/null || true
+}
+
 # 2) destroy the workspace
 if ! command -v nc >/dev/null 2>&1; then echo "nc not found; cannot reach daemon to destroy workspace" >&2; exit 1; fi
 if ! ENDPOINT="$(resolve_endpoint)"; then echo "ERROR: no sotd daemon found; set --endpoint unix:/path or tcp:HOST:PORT" >&2; exit 1; fi
@@ -68,12 +88,14 @@ if [ -z "$WSID" ] && [ -n "$AGENT_WSID" ]; then
 fi
 if [ -z "$WSID" ]; then
     echo "No workspace matching '$WHO' (slug/label/id${AGENT_WSID:+, nor registry row '$AGENT_WSID'}). Nothing to destroy."
+    _reap_markers "$WHO"
     exit 0
 fi
 DESTROY="$(jq -nc --arg id "$WSID" '{v:1,id:2,kind:"req",op:"workspace.destroy",payload:{workspace_id:$id}}')"
 RESP="$(sot_send "$DESTROY" workspace.destroy || true)"
 if printf '%s' "$RESP" | jq -e '.payload.workspace_id' >/dev/null 2>&1; then
     echo "Destroyed workspace: $(printf '%s' "$RESP" | jq -c '.payload')"
+    _reap_markers "$WHO"
     echo "In the FE: refresh the session list (enter Sessions mode) to drop the row."
 else
     echo "ERROR: workspace.destroy failed: $(printf '%s' "$RESP" | jq -c '.payload' 2>/dev/null || printf '%s' "$RESP")" >&2

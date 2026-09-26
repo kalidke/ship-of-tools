@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# comm-status-idle.sh — Claude Code `Stop` hook for comm agents. Three jobs:
+# comm-status-idle.sh — Claude Code `Stop` hook for comm agents. Four jobs:
 #
 #   (0) CLOSING MARKER (2026-09-09). A turn whose last reply opens a line with
 #       `SITREP:` / `SITREP-QUESTION:` / `SITREP-WAITING:` has DECLARED its
@@ -45,7 +45,13 @@
 #       signal (only the AskUserQuestion tool does), so without this the row looks
 #       idle while the agent is actually waiting.
 #
-#   (2) TURN END. Otherwise send `stop`: comm-status.sh sets `done` only when
+#   (2) NEW MAIL. A turn does not end while directed sot-comm mail sits unread:
+#       the hook reads this handle's own inbox and, when a line newer than the
+#       read cursor is addressed to it, blocks with "run comm-poll.sh". That is
+#       how a BUSY session is reached — no watcher, no keystrokes, no human (the
+#       messaging ruling, 2026-09-26). See the branch below for the exact rule.
+#
+#   (3) TURN END. Otherwise send `stop`: comm-status.sh sets `done` only when
 #       `floor` was `user` and neither `question` nor `waiting` is set, then
 #       clears `floor` — the row is a set of facts, and the reduction (not
 #       this hook) decides blue/gray/red/purple from whatever facts remain
@@ -211,6 +217,91 @@ if [ -n "$marker_state" ]; then
         fi
     fi
     exit 0
+fi
+
+# (3) NEW MAIL — delivery to a BUSY session, at the turn boundary (messaging
+# ruling §2, 2026-09-26). The inbox is a file this session can read, so nothing
+# has to reach into it: a turn does not END while directed mail sits unread. The
+# block's reason is fed back to the model, which polls, acts, then ends the
+# turn — and polling is what advances the cursor, so this terminates by
+# construction. It runs BEFORE every nudge below (mail outranks a reminder) and
+# is bounded to one block per pending batch by a tick file keyed like the
+# heartbeat's, so a model that refuses to poll is nudged once, not in a loop.
+#
+# What counts as mail: `to` non-empty (a BROADCAST, to == "", never fires this —
+# the same demotion rule the sender and the ping watcher apply), `from` neither
+# this handle (self-echo) nor `__selftest__` (a wake proof comm-poll.sh does not
+# show, so it must not hold a turn open either), and the line sitting PAST the
+# read cursor. The cursor is a LINE OFFSET (comm-lib.sh's sot_cursor_offset owns
+# the format; this hook is standalone by design, so the read is inlined,
+# including the one-shot conversion of a legacy ts cursor which is NEVER written
+# back from here). Timestamps could not do this job: they are second-resolution
+# and every comparison was strictly-greater, so a frame filed in the same second
+# as one already read would be announced to nobody while its sender was told it
+# had landed. This hook never advances the cursor — only a real comm-poll.sh
+# does, which is what keeps "read" an honest word. Any jq failure yields no mail
+# and no block: the same fail-open discipline as the rest of the hook, which
+# must never be able to wedge a turn.
+MAIL_INBOX="$HOME_DIR/inbox/$NAME.jsonl"
+if [ -r "$MAIL_INBOX" ]; then
+    mail_total="$(wc -l < "$MAIL_INBOX" 2>/dev/null | tr -d ' ')"
+    case "$mail_total" in ''|*[!0-9]*) mail_total=0 ;; esac
+    mail_cursor="$(cat "$HOME_DIR/read/$NAME.cursor" 2>/dev/null || true)"
+    case "${mail_cursor:-0}" in
+        ''|*[!0-9]*)
+            # A legacy ts cursor, converted the same way comm-lib.sh's
+            # sot_cursor_offset does it: the lines BEFORE THE FIRST one past the
+            # cursor, never "every line at or below it" (skewed clocks and
+            # same-second frames would step over something unread). `-R` so a
+            # torn line cannot abort the count -- it maps to false, read and
+            # never a boundary; slurping the file as JSON failed outright on one,
+            # which silently meant "no mail" at every turn end from then on.
+            mail_pos="$(jq -Rrs --arg cur "$mail_cursor" '
+                [ split("\n")[] | select(length > 0)
+                  | (((fromjson? // {}) | (.ts // "")) > $cur) ] as $past
+                | ($past | index(true)) // ($past | length)' \
+                "$MAIL_INBOX" 2>/dev/null || echo 0)" ;;
+        *) mail_pos="$mail_cursor" ;;
+    esac
+    case "$mail_pos" in ''|*[!0-9]*) mail_pos=0 ;; esac
+    # An offset past the end means the inbox was cleared, truncated or restored
+    # by hand (production only appends). Left alone, this handle would never be
+    # told about another message.
+    [ "$mail_pos" -gt "$mail_total" ] && mail_pos=0
+    mail_pending=0
+    if [ "$mail_total" -gt "$mail_pos" ]; then
+        mail_pending="$(sed -n "$((mail_pos + 1)),${mail_total}p" "$MAIL_INBOX" 2>/dev/null \
+            | jq -Rrs --arg me "$NAME" '[ split("\n")[] | select(length > 0)
+                | (fromjson? // empty) | select(type == "object")
+                | select(((.to // "") != "") and (.from // "") != $me and (.from // "") != "__selftest__")
+              ] | length' 2>/dev/null || echo 0)"
+        case "$mail_pending" in ''|*[!0-9]*) mail_pending=0 ;; esac
+    fi
+    if [ "$mail_pending" -gt 0 ]; then
+        # ONE block per pending batch, bounded by a tick file whose key must be
+        # STABLE for the session: $PPID is not (every hook run is its own
+        # process), so the transcript path — already read above, one file per
+        # session — is the fallback before it.
+        mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
+        [ -n "$mail_key" ] && [ "$mail_key" != "nopane" ] || mail_key="${tp##*/}"
+        [ -n "$mail_key" ] || mail_key="$PPID"
+        mail_tick="$HOME_DIR/state/mail-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
+        if [ "$(cat "$mail_tick" 2>/dev/null || true)" != "$mail_total" ]; then
+            mkdir -p "$HOME_DIR/state" 2>/dev/null || true
+            # FAIL OPEN when the tick cannot be recorded. With no tick there is
+            # no bound, and a filesystem that refuses this write refuses
+            # comm-poll.sh's cursor write too — so the block would return at
+            # every turn end with no way for the session to clear it. A missed
+            # announcement is acceptable; an inescapable block is not.
+            if printf '%s' "$mail_total" 2>/dev/null > "$mail_tick"; then
+                jq -nc --arg n "$NAME" '{
+                  decision: "block",
+                  reason: ("New sot-comm mail for @" + $n + " — run comm-poll.sh now, act on it, then end the turn.")
+                }'
+                exit 0
+            fi
+        fi
+    fi
 fi
 
 # Loop guard: if we are ALREADY in a stop-hook continuation, never re-nudge —
