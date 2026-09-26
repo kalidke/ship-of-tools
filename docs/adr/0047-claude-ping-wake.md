@@ -100,7 +100,12 @@ what a missed ping costs and therefore what this watcher is allowed to do.
   `sot_cursor_offset` converts a legacy stamp once, on read.
 - **The prompt-free gate is one implementation**, `comm-lib.sh`'s
   `sot_prompt_free`, shared with the sender's poke (`sot_pty_input_gated`), so
-  "free prompt" cannot come to mean two different things.
+  "free prompt" cannot come to mean two different things. It tests the
+  CURSOR sitting at the input's start, not the prompt line's text, because a
+  grey prompt suggestion is byte-identical to a typed draft once `pty.screen`
+  strips every attribute — the text alone cannot tell them apart. This
+  replaced a glyph-only test that held every wake for a day on a row showing
+  a suggestion (2026-09-25).
 
 The consequence above — "a message can sit typed-but-unread for up to 10
 minutes" — no longer holds: an unread ping delays nothing past the recipient's

@@ -223,7 +223,7 @@ start_stub_daemon() {  # WSID SLUG ROOT
     # comm-send.sh types only into a row whose CURRENT screen shows a free
     # prompt (comm-lib.sh's sot_pty_input_gated): without a pty.screen answer
     # the gate returns "no reply" and nothing is typed at all.
-    ptyscreen='{"v":1,"id":1,"kind":"res","op":"pty.screen","payload":{"lines":["banner","❯"]}}'
+    ptyscreen='{"v":1,"id":1,"kind":"res","op":"pty.screen","payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'
     exec 3<>"$fifo"
     nc -klU "$STUB_SOCK" < "$fifo" >> "$STUB_REQLOG" &
     STUB_NC_PID=$!

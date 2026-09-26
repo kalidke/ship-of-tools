@@ -55,7 +55,7 @@ case_three_new_directed_lines_type_the_ping_once() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["banner","❯"]}}'; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'; }
 _comm_wake_pty_input() {
     printf x >> "$calls"
     printf '%s' "\$2" | base64 -d >> "$attempts"; printf '\n' >> "$attempts"
@@ -91,7 +91,7 @@ case_selftest_only_batch_types_the_selftest_text() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"]}}'; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
 _comm_wake_pty_input() {
     printf x >> "$calls"
     printf '%s' "\$2" | base64 -d >> "$attempts"; printf '\n' >> "$attempts"
@@ -127,7 +127,7 @@ _comm_wake_pty_screen() {
     printf x >> "$screen_calls"
     local n; n=\$(wc -c < "$screen_calls")
     if [ "\$n" -ge 2 ]; then
-        printf '%s' '{"payload":{"lines":["banner","❯"]}}'
+        printf '%s' '{"payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'
     else
         printf '%s' '{"payload":{"lines":["Allow this action? (y/n)"]}}'
     fi
@@ -189,7 +189,7 @@ case_a_second_new_message_with_an_unmoved_cursor_pings_again() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"]}}'; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
 sleep() {
@@ -224,7 +224,7 @@ case_a_cursor_that_already_covers_the_batch_skips_a_second_ping() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"]}}'; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
 sleep() {
@@ -311,7 +311,7 @@ sot_daemon_endpoint() { printf fixture; }
 # what lets every leg (Codex's --deliver full included) be owned without a
 # caller having to remember a flag.
 sot_owner_pid() { printf '%s\n' "\$\$"; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"]}}'; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
 sleep() {
@@ -344,7 +344,7 @@ case_marker_pid_that_is_not_a_watcher_is_stale() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"]}}'; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
 sleep() {
@@ -376,7 +376,7 @@ source "$WAKE"
 unset SOT_WORKSPACE_ID
 export SOT_COMM_HOME="$d" SOT_COMM_SELF_FILE="$d/self/testhost__ws-derived.txt"
 sot_daemon_endpoint() { printf fixture; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"]}}'; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
 _comm_wake_pty_input() {
     printf x >> "$calls"
     printf '%s' "\$1" > "$wsid_seen"
@@ -418,6 +418,115 @@ EOF
     return 0
 }
 
+# The regression pin: a grey prompt suggestion (ghost text drawn after the
+# cursor on an empty input) is byte-identical, in text alone, to a typed
+# draft -- only the cursor tells them apart. This fixture is the shape
+# measured on a live idle capsule row showing a `/compact` suggestion. Fails
+# against the old glyph-only helper (which sees "❯ /compact" is not exactly
+# "❯" and refuses forever); passes once the gate reads the cursor instead.
+case_a_grey_prompt_suggestion_does_not_block_the_ping() {
+    local d="$WORK/grey-suggestion"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯ /compact"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"hello"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 3 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) against a live prompt suggestion, want exactly 1 (ghost text must not block the ping)"; return 1; }
+    return 0
+}
+
+# The invariant the gate exists for, still pinned: a genuinely half-typed
+# draft pushes the cursor past the glyph by more than the suggestion offset,
+# and must never be typed into.
+case_a_typed_draft_still_blocks_the_ping() {
+    local d="$WORK/typed-draft"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯ hello"],"cursor":{"row":0,"col":8}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"hello"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 3 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 0 ] || { echo "  pty.input called $n time(s) over a half-typed draft, want exactly 0"; return 1; }
+    return 0
+}
+
+# The false positive the cursor rule also closes: a bare glyph left behind on
+# an earlier line (here, under an open permission dialog) must not open the
+# gate just because SOME line trims to "❯" -- only the cursor's OWN line
+# counts. Fails against the old glyph-only helper (any line matching was
+# enough); passes once the gate anchors on the cursor's line.
+case_a_dialog_over_a_stale_prompt_glyph_blocks_the_ping() {
+    local d="$WORK/dialog-over-stale"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯","Allow this action? (y/n)"],"cursor":{"row":1,"col":24}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"hello"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 3 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 0 ] || { echo "  pty.input called $n time(s) over a stale glyph behind a dialog, want exactly 0"; return 1; }
+    return 0
+}
+
+# jq exits 0 on empty stdin -- sot_prompt_free must not read that silence as
+# "free". A screen we never saw is never a free prompt.
+case_empty_screen_reply_is_not_a_free_prompt() {
+    local d="$WORK/empty-screen"; rm -rf "$d"; mkdir -p "$d"
+    cat > "$d/run.sh" <<EOF
+source "$SCRIPTS_DIR/comm-lib.sh"
+sot_prompt_free ""
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local rc=$?
+    [ "$rc" -ne 0 ] || { echo "  sot_prompt_free '' returned 0 (free), want non-zero -- an unseen screen is never a free prompt"; return 1; }
+    return 0
+}
+
 check "three new directed lines type the ping notice exactly once" case_three_new_directed_lines_type_the_ping_once
 check "a batch that is only __selftest__ frames types the selftest notice" case_selftest_only_batch_types_the_selftest_text
 check "a not-free prompt withholds the ping and types it once the prompt frees up" case_prompt_not_free_waits_then_types_once_free
@@ -430,6 +539,10 @@ check "a marker pid that is not a watcher is treated as stale" case_marker_pid_t
 check "a second start against a live marker refuses" case_second_start_against_a_live_marker_refuses
 check "the workspace id derives from SOT_COMM_SELF_FILE's basename" case_workspace_id_derived_from_self_file_basename
 check "the owning agent gone ends the watcher and removes its marker" case_agent_pid_gone_exits_zero_and_removes_the_marker
+check "a grey prompt suggestion does not block the ping" case_a_grey_prompt_suggestion_does_not_block_the_ping
+check "a typed draft still blocks the ping" case_a_typed_draft_still_blocks_the_ping
+check "a dialog over a stale prompt glyph blocks the ping" case_a_dialog_over_a_stale_prompt_glyph_blocks_the_ping
+check "an empty screen reply is not a free prompt" case_empty_screen_reply_is_not_a_free_prompt
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"
