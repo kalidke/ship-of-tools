@@ -99,6 +99,14 @@ fake_daemon() {  # SOCKET RECEIVERS_JSON
 }
 fake_daemon_stop() { [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null; FAKE_PID=""; }
 
+# _patch_target_row JSON -- merge JSON into TARGET's own registry row (the
+# entry a sender's `send @target` reads to resolve the handle, and now also
+# to annotate it -- messaging ruling, 2026-09-26).
+_patch_target_row() {
+    jq --arg t "$TARGET" --argjson f "$1" '.agents[$t] += $f' "$SOT_COMM_HOME/registry.json" \
+        > "$SOT_COMM_HOME/registry.json.tmp" && mv "$SOT_COMM_HOME/registry.json.tmp" "$SOT_COMM_HOME/registry.json"
+}
+
 case_registry_target_is_filed_with_the_daemon_down() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local inbox="$SOT_COMM_HOME/inbox/$TARGET.jsonl"
@@ -153,9 +161,93 @@ case_a_frontend_filer_is_reported_unconfirmed() {
     return 0
 }
 
+# ---- recipient annotation (messaging ruling, 2026-09-26): one factual
+# clause about the TARGET, read off the same registry entry that resolved
+# the handle -- comm-lib.sh's sot_recipient_note. ----
+case_annotation_working_recipient() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local now t3m
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    t3m="$(date -u -d '3 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+    _patch_target_row "$(jq -nc --arg st "$t3m" --arg ls "$now" \
+        '{state:"working", summary:"n", status_at:$st, last_seen:$ls}')"
+    relay_send "unix:$WORK/no-such-daemon.sock" send "@$TARGET" "ping"
+    [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_OUT" "working, stamped 3m ago -- reply expected at its turn boundary" \
+        || { echo "  verdict was '$RELAY_OUT'"; return 1; }
+    return 0
+}
+case_annotation_recipient_needs_its_own_user() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local now t6m longq
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    t6m="$(date -u -d '6 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+    # 87 chars -- past the 60-char truncation, so the full text must not survive.
+    longq="which port do you want, the long question that goes past sixty characters for sure?"
+    _patch_target_row "$(jq -nc --arg st "$t6m" --arg ls "$now" --arg q "$longq" \
+        '{state:"blocked", summary:$q, status_at:$st, last_seen:$ls}')"
+    relay_send "unix:$WORK/no-such-daemon.sock" send "@$TARGET" "ping"
+    [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_OUT" 'needs its own user, stamped 6m ago: "' \
+        || { echo "  verdict was '$RELAY_OUT'"; return 1; }
+    contains "$RELAY_OUT" "$(printf '%s' "$longq" | cut -c1-60)" \
+        || { echo "  the truncated question is missing: '$RELAY_OUT'"; return 1; }
+    contains "$RELAY_OUT" "$longq" \
+        && { echo "  the FULL (untruncated) question leaked: '$RELAY_OUT'"; return 1; }
+    return 0
+}
+case_annotation_stale_heartbeat_overrides_working() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local recent stale20m
+    recent="$(date -u -d '1 minute ago' +%Y-%m-%dT%H:%M:%SZ)"
+    stale20m="$(date -u -d '20 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+    # state says "working" and its own stamp is fresh -- but the HEARTBEAT
+    # (last_seen) is 20 minutes stale, past SOT_COMM_STALE_SECS (default
+    # 600s): a stamp from a dead session is the misleading one, so this
+    # overrides the working clause rather than sitting beside it.
+    _patch_target_row "$(jq -nc --arg st "$recent" --arg ls "$stale20m" \
+        '{state:"working", summary:"n", status_at:$st, last_seen:$ls}')"
+    relay_send "unix:$WORK/no-such-daemon.sock" send "@$TARGET" "ping"
+    [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_OUT" "no heartbeat for 20m -- may be gone" \
+        || { echo "  verdict was '$RELAY_OUT'"; return 1; }
+    contains "$RELAY_OUT" "working, stamped" \
+        && { echo "  the working clause survived the stale override: '$RELAY_OUT'"; return 1; }
+    return 0
+}
+case_annotation_absent_for_a_row_missing_the_fields() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    # A freshly-joined row (setup_rows itself) has no state/summary/status_at
+    # at all (comm-join.sh:117-122) -- exactly the missing-fields case, no
+    # patch needed. The send still succeeds; there is simply nothing to say.
+    relay_send "unix:$WORK/no-such-daemon.sock" send "@$TARGET" "ping"
+    [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_OUT" "filed -> @$TARGET" || { echo "  verdict was '$RELAY_OUT'"; return 1; }
+    contains "$RELAY_OUT" "stamped" && { echo "  a guessed annotation appeared: '$RELAY_OUT'"; return 1; }
+    contains "$RELAY_OUT" "no heartbeat" && { echo "  a guessed annotation appeared: '$RELAY_OUT'"; return 1; }
+    return 0
+}
+case_annotation_absent_for_a_malformed_row() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    # `state` is a number, both timestamps are unparseable -- the exact
+    # 'silence beats a confident wrong summary' case.
+    _patch_target_row '{"state":123,"summary":"n","status_at":"not-a-date","last_seen":"also-not-a-date"}'
+    relay_send "unix:$WORK/no-such-daemon.sock" send "@$TARGET" "ping"
+    [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_OUT" "filed -> @$TARGET" || { echo "  verdict was '$RELAY_OUT'"; return 1; }
+    contains "$RELAY_OUT" "stamped" && { echo "  a guessed annotation appeared: '$RELAY_OUT'"; return 1; }
+    contains "$RELAY_OUT" "no heartbeat" && { echo "  a guessed annotation appeared: '$RELAY_OUT'"; return 1; }
+    return 0
+}
+
 check "a registry target is filed with the daemon down" case_registry_target_is_filed_with_the_daemon_down
 check "an unknown handle exits 1 with 'no such handle' while an fe@ row is attached" case_unknown_handle_exits_one_while_an_fe_row_is_attached
 check "a frontend filer is reported as unconfirmed, not as delivered" case_a_frontend_filer_is_reported_unconfirmed
+check "a working recipient is annotated with its stamped age and turn-boundary wording" case_annotation_working_recipient
+check "a recipient stopped on an open question is annotated 'needs its own user', quoted and truncated" case_annotation_recipient_needs_its_own_user
+check "a stale heartbeat overrides a fresh 'working' stamp" case_annotation_stale_heartbeat_overrides_working
+check "a row missing the annotation fields entirely sends fine with no annotation" case_annotation_absent_for_a_row_missing_the_fields
+check "a malformed row (wrong types, bad timestamps) sends fine with no annotation" case_annotation_absent_for_a_malformed_row
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"

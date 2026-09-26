@@ -317,6 +317,81 @@ registry_touch() {  # name — bump last_seen if present
         "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
 }
 
+# sot_fmt_age SECONDS -> "12s"/"6m"/"32m"/"8h"/"3d" (no "ago" suffix -- every
+# caller supplies its own wording, since the same figure reads differently in
+# a success line vs a timeout message). A negative age (clock skew) floors to
+# 0 rather than printing garbage.
+sot_fmt_age() {
+    local s="$1"
+    [ "$s" -lt 0 ] 2>/dev/null && s=0
+    if   [ "$s" -lt 60 ];    then echo "${s}s"
+    elif [ "$s" -lt 3600 ];  then echo "$((s / 60))m"
+    elif [ "$s" -lt 86400 ]; then echo "$((s / 3600))h"
+    else                          echo "$((s / 86400))d"
+    fi
+}
+
+# sot_recipient_note HANDLE — one factual clause about a registry entry's
+# recipient, for a sender's ack line (messaging ruling, 2026-09-26: "a sender
+# cannot tell working from waiting-on-its-human from gone"). Reads ONLY the
+# entry the sender already has open (.agents[$1] in $REGISTRY) -- no second
+# file, no daemon call. Prints nothing and returns 1 the instant a needed
+# fact is absent or unparseable: an annotation is a courtesy, never a guess.
+#
+# A STALE heartbeat (last_seen older than SOT_COMM_STALE_SECS, default 600 --
+# the same threshold comm-list.sh already uses) overrides every other clause,
+# because a stamp from a dead session is the misleading one.
+#
+# Absent that, `state` decides (comm-status.sh's own reduction, ADR 0044
+# amendment): `working` gets the turn-boundary wording; the state that
+# actually means "stopped, waiting on its own human to answer" is `blocked`
+# (a `question` is set and `floor` is absent) -- NOT `floor == "user"`, which
+# instead co-occurs with `working` (floor present => state "working"; the
+# value only records who started the live turn -- comm-status.sh:97-112, the
+# ADR 0044 amendment table). Every other state prints its own word
+# unembellished (idle, done, waiting, or a future state this helper has never
+# heard of) -- silence beats a confident wrong summary, but a real word beats
+# no word.
+sot_recipient_note() {
+    local h="$1" row state summary status_at last_seen now
+    row="$(jq -c --arg n "$h" '.agents[$n] // empty' "$REGISTRY" 2>/dev/null)" || row=""
+    [ -n "$row" ] && [ "$row" != "null" ] || return 1
+    state="$(printf '%s' "$row" | jq -r 'if (.state|type)=="string" then .state else empty end' 2>/dev/null)" || state=""
+    [ -n "$state" ] || return 1
+    summary="$(printf '%s' "$row" | jq -r 'if (.summary|type)=="string" then .summary else empty end' 2>/dev/null)" || summary=""
+    status_at="$(printf '%s' "$row" | jq -r 'if (.status_at|type)=="string" then .status_at else empty end' 2>/dev/null)" || status_at=""
+    last_seen="$(printf '%s' "$row" | jq -r 'if (.last_seen|type)=="string" then .last_seen else empty end' 2>/dev/null)" || last_seen=""
+    now="$(date -u +%s)"
+
+    if [ -n "$last_seen" ]; then
+        local seens hb_age
+        seens="$(date -u -d "$last_seen" +%s 2>/dev/null)" || seens=""
+        if [ -n "$seens" ] && [ "$seens" -gt 0 ] 2>/dev/null; then
+            hb_age=$((now - seens))
+            if [ "$hb_age" -ge "${SOT_COMM_STALE_SECS:-600}" ]; then
+                echo "no heartbeat for $(sot_fmt_age "$hb_age") -- may be gone"
+                return 0
+            fi
+        fi
+    fi
+
+    [ -n "$status_at" ] || return 1
+    local sats sat_age
+    sats="$(date -u -d "$status_at" +%s 2>/dev/null)" || sats=""
+    [ -n "$sats" ] && [ "$sats" -gt 0 ] 2>/dev/null || return 1
+    sat_age="$(sot_fmt_age $((now - sats)))"
+
+    case "$state" in
+        working)
+            echo "working, stamped ${sat_age} ago -- reply expected at its turn boundary" ;;
+        blocked)
+            local q; q="$(printf '%s' "$summary" | jq -Rr '.[0:60]' 2>/dev/null)" || q=""
+            echo "needs its own user, stamped ${sat_age} ago: \"${q}\"" ;;
+        *)
+            echo "${state}, stamped ${sat_age} ago" ;;
+    esac
+}
+
 # registry_del_if_provisional NAME WANT_ROOT WANT_NONCE — conditionally
 # delete NAME's row, but ONLY if it's STILL provably the exact provisional
 # row identified by WANT_ROOT + WANT_NONCE (status "spawning" is implied —
