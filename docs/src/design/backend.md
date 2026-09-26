@@ -56,9 +56,10 @@ host where the kernel and GPU live. Local operation is
 the fall-through. The session must survive SSH disconnects, reconnect from a fresh
 client, and not depend on host-specific port allocation.
 
-- **Backend in tmux on the remote.** The daemon runs inside a named tmux session
-  so its lifecycle survives SSH drops and its stderr/logs surface in a pane you
-  can `tmux attach` to.
+- **Backend as a user service on the remote.** The daemon runs as the
+  `systemd --user` unit `sotd.service` (installed by the release installer),
+  so its lifecycle survives SSH drops; its log is `sotd.log` under the state
+  root.
 - **Per-session Unix socket, not a TCP port.** It listens at
   `$XDG_RUNTIME_DIR/sot/<session_id>.sock`. The frontend forwards that remote
   socket to a local one over SSH (`-L`, with `StreamLocalBindUnlink=yes` and
@@ -79,6 +80,14 @@ client, and not depend on host-specific port allocation.
 read+write, second read-only follower) is stated but deferred.
 
 ## Sessions
+
+!!! note "Superseded: tmux was the original session registry"
+    The design below — one tmux session per backend, tmux as the registry — is
+    how sessions began. Since ADR 0042 every new session on every host is a
+    **capsule** row under its own supervisor, and the daemon no longer starts tmux
+    sessions. The current model is described in
+    [Sessions and persistence](../concepts/sessions.md); this section is kept
+    as design history.
 
 A session is one project's backend, registered and supervised by tmux rather than
 by a second daemon. The insight here is that tmux already lists, supervises,

@@ -11,10 +11,11 @@ the color layer decides *how each node is tinted* based on who touched it, when,
 and whether its annotation still matches the code.
 
 !!! note "Design vs. built today"
-    This page describes the cross-cutting colour layer as designed. What renders today is the per-session **agent work-state** colour (idle · working · blocked · waiting · done, on the Sessions strip and nav rows) and the **stale-annotation** drift badge. The per-entity provenance states in the table below — user-edited, agent-edited accept/reject, immutable/external, pinned/favorited — are planned.
+    This page describes the cross-cutting colour layer as designed. What renders today is the per-session **agent work-state** colour (idle · working · blocked · waiting · done, on the Sessions strip and nav rows) and the **stale-annotation** drift badge. The per-entity provenance states in the table below — user-edited, agent-edited accept/reject, immutable/external, favorited — are planned. A pinned file already renders, as a bright cyan row in the navigation tree rather than an accented border.
 
-![Session strip and nav rows showing the five work-state colors](../assets/screenshots/state-colors.png)
-*The per-session work-state colors: working, idle, blocked, waiting, done — one session mid-flash on a state change.*
+```@raw html
+<DemoShot name="state-colors" caption="Session rows in their work-state colours, each with the reason it last reported." />
+```
 
 ## The states
 

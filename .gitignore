@@ -12,6 +12,12 @@
 /docs/src/design/requirements.md
 /docs/src/design/roadmap.md
 /docs/src/ref/comm.md
+/docs/src/guide/enrolling.md
+
+# DocumenterVitepress: the npm install tree and lockfile (docs/package.json
+# is written and removed by the build itself)
+/docs/node_modules/
+/docs/package-lock.json
 
 # Rust
 /rust/target/
@@ -85,3 +91,9 @@
 # Selfie screenshots (selfie skill — local screen grabs; never committed,
 # they can capture sensitive on-screen content)
 /selfies/
+
+# docs fixture: scripts/route.jl writes this figure
+docs/fixtures/DemoProject/data/track.png
+
+# docs-shots.sh output (display-box capture path; not published)
+docs/src/assets/screenshots/

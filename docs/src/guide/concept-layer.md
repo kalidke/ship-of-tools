@@ -6,8 +6,9 @@ of a Julia project and kept honest against the code those units describe. The
 LLM is the primary author and maintainer of this layer; the user can edit it
 too.
 
-![A stale concept annotation rendering with the drift badge](../assets/screenshots/concept-stale.png)
-*A stale annotation: its `synced_against` hash no longer matches the code, so the drift badge renders until someone refreshes the prose.*
+```@raw html
+<DemoShot name="concept-stale" caption="The annotation line marks the file's annotation STALE: the file changed after the annotation was written." />
+```
 
 It is built from two layers with very different update mechanics. Keep them
 separate in your head:

@@ -12,15 +12,19 @@ resolved to a [`FileType`](@ref) at runtime once the right packages are loaded.
 
 ## Enabling plugins: the `[sot].extensions` key
 
-!!! warning "Design, not yet shipped (v0.3.x)"
+!!! warning "Design, not yet shipped"
     The `[sot].extensions` mechanism on this page is the **committed design**
-    (ADR 0006) but is **not implemented yet**. What works today: the seven
-    standard plugins load automatically with the kernel; the HDF5 example
-    lazy-loads on first `.h5` preview (via a built-in extension table); and any
-    other plugin package already in the kernel's environment can be loaded at
-    runtime with the `plugins.load` kernel op (`using`-by-name). To enable a
-    third-party plugin today, `Pkg.develop`/`Pkg.add` it into
-    `julia/kernel`'s environment and load it with `plugins.load`.
+    (ADR 0006) but is **not implemented yet**: nothing reads the `[sot]`
+    table. What works today: the seven standard plugins load automatically
+    with the kernel, and the HDF5 example lazy-loads on the first `.h5`
+    preview through the kernel's built-in extension table
+    (`LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/ShipToolsKernel.jl`). A
+    third-party plugin loads only from a source checkout: add it to
+    `julia/kernel`'s environment, then either add it to the kernel's `using`
+    list or map its file extension in `LAZY_PLUGIN_FOR_EXT`. The kernel has a
+    `plugins.load` op, but no client sends it. On a release install the kernel
+    lives inside the pinned release checkout, and local changes there make the
+    next update refuse to run.
 
 A plugin's [`FileType`](@ref) subtype is discovered automatically *once the
 package is loaded* — but **whether** a package loads is an explicit choice, not an

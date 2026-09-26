@@ -48,12 +48,18 @@ case "$(uname -s)" in
 esac
 command -v git curl tar   # all required
 command -v node npm       # OPTIONAL — math rendering in markdown previews
+command -v pdftoppm pdfinfo  # OPTIONAL (poppler-utils) — PDF previews
+command -v ffmpeg         # OPTIONAL — video poster frames in previews
 ```
 
 - **node/npm absent** → not a blocker: the installer skips the MathJax
   sidecar deps with a warning and math in markdown previews shows raw LaTeX.
   Tell the human; if they want math, install node and re-run (or run
   `npm ci` in `<checkout>/rust/backend/sidecars/mathjax`).
+- **poppler-utils or ffmpeg absent** → not a blocker: the installer does not
+  check for them. A PDF or video preview then shows a note naming the missing
+  tool. Tell the human; install them with the system package manager on the
+  backend machine if they want those previews.
 - An upgrade to a tmux-free tag removes the old sot-tmux.service unit by
   itself.
 - **Linux x86_64, glibc ≥ 2.35** → full install works.
@@ -62,13 +68,12 @@ command -v node npm       # OPTIONAL — math rendering in markdown previews
 - **Windows** → no bash installer. Use **§2b Windows frontend → remote
   backend** (release zip + repo scripts — no Rust toolchain needed), or build
   from source.
-- **macOS (Apple Silicon)** → supported by the installer, same three
-  topologies as Linux, but still EXPERIMENTAL until it is dogfooded on real
-  Macs; say so, then proceed. `--backend <ssh-alias>` is the common
-  want: frontend on the Mac, backend on a Linux box — ONE command, the
-  installer writes a tunnel-opening launcher. No systemd on macOS: the
-  local-role launcher starts `sotd` on demand instead. Intel Macs:
-  from-source only.
+- **macOS (Apple Silicon)** → EXPERIMENTAL; say so. The tested use is
+  `--backend <ssh-alias>`: frontend on the Mac, backend on a Linux box — ONE
+  command, the installer writes a tunnel-opening launcher. The other roles
+  install (no systemd on macOS: the local-role launcher starts `sotd` on
+  demand), but agent sessions on a Mac backend are not supported yet, so
+  recommend `--backend`. Intel Macs: from-source only.
 
 ## 2. Choose the topology
 
@@ -134,6 +139,26 @@ recheck. The *remote* machine also needs a `--be-only` install (offer to do
 it over SSH after this one). **On a shared-home deployment**, always add
 `--no-service`: a `systemd --user` unit written into a shared `$HOME` applies to
 every host sharing it.
+
+### 2.2 Quote what it touches, get explicit yes
+
+Before running the installer (§3, or §2b's `install-shortcut.ps1` on Windows),
+quote these facts to the human and wait for an explicit yes:
+
+- Everything goes under their home directory, mostly `~/.local/share/sot`,
+  plus user lingering (`loginctl enable-linger`) so the user-level `sotd`
+  systemd service keeps the backend running after logout on Linux.
+- Skills and hooks go into their global `~/.claude` and `~/.codex`. Hooks are
+  merged into `~/.claude/settings.json` without removing existing ones. A
+  skill of theirs with the same name as a shipped one (`julia-repl`,
+  `show-result`, `sitrep`, `worktree`, `project-log`) is overwritten without a
+  backup.
+- Sessions start Claude Code in auto mode; Codex with approvals, the sandbox
+  and hook trust all bypassed (`--dangerously-bypass-approvals-and-sandbox
+  --dangerously-bypass-hook-trust`).
+- There is no uninstall script; removal is manual.
+- There is no isolated mode yet: install under a separate user account or in
+  a VM if that matters to them.
 
 ## 2b. Windows frontend → remote backend
 
@@ -264,19 +289,26 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
 ```
 
 `--backend` writes a `sot-launch` that opens the SSH control forward (local
-18743 to the remote socket — browser pages ride it via the daemon proxy, ADR
-0035; the legacy 1234-1241 forwards are opt-in via `SOT_LEGACY_FORWARDS=1`
-for pre-v0.5.0 backends) and starts the frontend; `--local` starts
-`sotd` on demand (no systemd on macOS; launchd wiring is roadmap). If the human prefers manual
+port to the remote socket — the port is topology-derived (per OS user), NOT
+18743: read it from the plan's `tunnel <host> <port>` line, as in §4;
+browser pages ride it via the daemon proxy, ADR 0035; the legacy 1234-1241
+forwards are opt-in via `SOT_LEGACY_FORWARDS=1` for pre-v0.5.0 backends) and
+starts the frontend; `--local` and `--be-only` are not supported for agent
+sessions on a Mac backend yet — use `--backend`. If the human prefers manual
 steps: download `sot-<ver>-macos-aarch64.tar.gz` + `SHA256SUMS`, verify
 (`shasum -a 256 -c`), `xattr -d com.apple.quarantine ./sot ./sotd`, forward
-the ports as in 2b, `./sot --tcp 127.0.0.1:18743`.
+the ports as in 2b, `./sot --tcp 127.0.0.1:<port>` (no systemd on macOS;
+launchd wiring is roadmap).
 
 ## 3. Install
 
 > **Windows: skip this section.** `install.sh` covers Linux and macOS only —
 > it exits with an error on MINGW/MSYS/Cygwin. Your install finished at the end
 > of §2b; go straight to §4 and use the **Windows** branch there.
+
+Before running the command below, confirm the human already said yes to
+§2.2's "what it touches" facts — if they have not, quote them now and get
+that yes first.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/install.sh \
@@ -305,8 +337,8 @@ juliaup if missing, installs the agent comm resources with
 `ShipTools.update_comm()` (Claude/Codex skills and `~/.sot-comm/bin`), and, for
 backend roles, instantiates the Julia environments (`julia/kernel`,
 `julia/repl`, and `julia/pluto`; Pluto is also precompiled/loaded for
-first-open latency). It writes
-`~/.config/sot/hosts.toml` + `settings.toml`
+first-open latency). It writes a `settings.toml` stub; `hosts.toml` is read,
+or fetched with `--hub`, never written by the installer
 (never clobbering user edits on same-role re-runs), and wires a `sot-launch`
 wrapper + desktop entry (frontend roles) or a systemd user unit (backend
 roles, unless `--no-service`).

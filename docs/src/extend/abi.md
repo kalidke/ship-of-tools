@@ -69,8 +69,8 @@ ConceptExplorerCore.preview(::Type{PngFile}, path) =
 end
 ```
 
-`using PngPreview` and PNGs are previewable. Nothing else changed — no
-registration step, and crucially no Rust code.
+Once the package is loaded in the kernel (see [Discovery](discovery.md)), PNGs
+are previewed through it: no registration step and no Rust code.
 
 ## The serialization seam
 
@@ -84,7 +84,7 @@ The Rust↔Julia boundary is crossed by exactly two generic structs, both with
 
 Because both carry opaque, kernel-defined payloads, **adding a new `FileType`
 requires zero Rust changes** — and a `Mode` will too, once the mode-plugin seam
-is wired (modes are kernel-hosted today; see [Writing a Mode Plugin](mode.md)).
+is wired (modes are built into the frontend and backend today; see [Writing a Mode Plugin](mode.md)).
 The frontend renders whatever the MIME says and draws the tree the kernel sends.
 
 ## Core is a plugin to itself

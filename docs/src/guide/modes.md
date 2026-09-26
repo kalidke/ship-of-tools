@@ -6,14 +6,16 @@ and a hotkey swaps which tree fills it. **Cursor position is preserved per mode*
 across switches, so jumping from Files to Modules and back lands you exactly where
 you left each one.
 
-![Modules mode: module, definitions, and methods](../assets/screenshots/modules-methods.png)
-*Modules mode over the demo project: module → definitions → methods of a two-method function.*
+```@raw html
+<DemoLoop name="modules" caption="Modules mode: the cursor moves through a module's definitions, with docstring and source in the preview." />
+```
 
 Modes are a **planned** plugin surface: the design is a [`Mode`](@ref) subtype
 with `tree_root` / `tree_children` / `preview_for` methods adding a new root, and
 the core modes shipping as methods on that same type with no privileged path.
-Today the nav roots are fixed in the frontend (Files, Modules, Sessions, Hosts)
-and the kernel hosts the modes directly; the mode-plugin seam is not yet wired.
+Today the nav roots are fixed in the frontend (Files, Modules, Sessions, Hosts):
+Files, Sessions and Hosts are built in Rust, and only the Modules tree comes
+from the Julia kernel. The mode-plugin seam is not yet wired.
 See [The Dispatch ABI](../extend/abi.md) and [Writing a Mode Plugin](../extend/mode.md).
 
 ## The same shape everywhere
@@ -26,7 +28,7 @@ is *what* the tree enumerates and what the preview pane shows for the cursored n
 |------|-----------------------|---------|
 | Project | Sections → contents → subitems | Rendered markdown / task detail |
 | Files | Parent dir → current dir → contents | File at appropriate fidelity |
-| Modules | Modules → functions → methods | Method source + concept artifact |
+| Modules | Modules → types, functions, macros, submodules → constructors | Definition source + concept artifact |
 | Types | Types → facets (fields/methods/sub) → members | Type def + meaning + data shape |
 | Math | Concept areas → concepts → derivations/impls | LaTeX + implementing functions |
 | Outputs | Recent runs → contents → artifacts | PNG / plot / JSON / MP4 |
@@ -58,7 +60,7 @@ those characters stay literal text.
 | Key | Mode | What it roots the tree at |
 |-----|------|---------------------------|
 | `f` | Files | the project filesystem |
-| `m` | Modules | modules → functions → methods (read-only, from `JuliaSyntax.jl`) |
+| `m` | Modules | modules and their definitions (types, functions, macros and submodules), read-only, from `JuliaSyntax.jl` |
 | `s` | Sessions | workspaces — the projects this backend is hosting |
 | `h` | Hosts | the remote hosts you can target |
 
@@ -69,12 +71,13 @@ which machine) rather than the concept hierarchy of a single project.
 ### Sessions mode (`s`)
 
 Sessions mode lists the workspaces the backend knows about and lets you commit a
-new one. The session picker uses two chords on the cursored directory:
+new one. The session picker uses three chords on the cursored directory:
 
 | Chord | Action |
 |-------|--------|
-| `Enter` | Create a workspace and start the comm-aware orchestrator agent in it. |
-| `Shift+Enter` | Create a **bare** workspace — no LLM agent, just a plain shell / REPL. |
+| `Enter` | Create a workspace with a Claude Code agent. |
+| `Ctrl+Enter` | Create a workspace with a Codex agent. |
+| `Shift+Enter` | Create a workspace with a plain shell and no agent. |
 
 One backend daemon hosts one Julia kernel per workspace, routed by `workspace_id`,
 so switching workspaces is fast and does not tear down the kernel — switching is
@@ -121,14 +124,16 @@ start with a letter or digit — `team`, `team-2`, and `a_b` all work,
 Claude only, this release — Codex accounts are deferred, so a codex row
 always runs the default login.
 
-### Hosts mode (`h`)
+### [Hosts mode (`h`)](@id hosts-mode)
 
-Hosts mode picks which remote the frontend targets. The choice is persisted, and
-every mechanism that re-opens the connection — launcher startup, the tunnel
-supervisor after a wake or wifi flap, and frontend transport reconnect — routes to
-the *same* persisted host rather than silently bouncing to a different one. There
-is no live in-session host swap by design; switching hosts is "pick a host, quit,
-relaunch," because a new host means cold-starting that host's daemon state.
+Hosts mode lists every daemon host the frontend is connected to. The frontend
+dials every daemon host declared in `hosts.toml` at once, so each row shows
+whether that host is connected or unreachable, tagged `[current]` for the host
+you are working on and `[default]` for the first connection. `Enter` on a host
+moves the Sessions view to that host's group; there is nothing to relaunch.
+
+The launcher's primary host is the hub unless `SOT_HOST_NAME` (or `SOT_HOST`)
+names another.
 
 ## Switching, focus, and layout keys
 

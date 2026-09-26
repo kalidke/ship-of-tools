@@ -57,7 +57,54 @@ Rust — the frontend, backend, and protocol crates live under `rust/`:
 cargo test --manifest-path rust/Cargo.toml
 ```
 
+## Developing the frontend: rebuild without dropping your session
+
+Ship of Tools can rebuild and restart its own frontend — so you can edit the frontend,
+recompile, and relaunch into the new binary without leaving the app. The moving
+parts:
+
+- **Staged-copy supervisor.** The launcher copies the built
+  `sot` into a staging directory (`%LOCALAPPDATA%\sot\bin\`) and
+  runs the app from that copy inside a respawn loop. Because the running file is
+  the staged copy, `cargo build --release` can overwrite `rust/target/release/`
+  freely — no running-exe file lock — and you see build output live.
+- **Exit-75 sentinel.** The frontend requests a relaunch by exiting with code
+  **75**; any other code is a real quit. A background watcher polls for a
+  relaunch-request sentinel file; on seeing it, the frontend exits 75 and the
+  supervisor re-stages the (freshly built) binary and respawns with
+  `--relaunched`.
+- **The drawer reopens plain.** On `--relaunched`, the frontend opens into the
+  Terminal drawer with a plain shell and runs nothing. A session that must
+  survive frontend relaunches (the dev driver above is one) is a **local
+  capsule session**, held by its own supervisor.
+
+The one-command driver is `scripts/relaunch-sot.ps1`: it runs
+`cargo build --release` and drops the relaunch sentinel **only on a green
+build** — a failed build leaves the running app untouched.
+
+### Prefer the relaunch loop over killing the frontend
+
+!!! warning "Use the relaunch loop, not a process kill"
+    The dev `claude` session that drives frontend development is a local
+    capsule session, not a passenger of the frontend process, so it survives
+    either way. Still restart through the relaunch loop —
+    `scripts/relaunch-sot.ps1` (build → sentinel → exit-75 → re-stage →
+    respawn) — rather than a process kill: it re-stages the freshly built
+    binary and keeps the supervisor's SSH tunnel alive across the swap.
+
+Note that changes to the *supervisor script itself* (`launch-sot.ps1`) are not
+picked up by the exit-75 in-place loop — those require a full restart of the
+launcher. The exit-75 path only re-stages the frontend binary.
+
 ## See also
 
 - [Requirements](design/requirements.md) — the source of truth for scope.
 - [Roadmap](design/roadmap.md) — phase plan and milestones.
+- [Design decisions](https://github.com/kalidke/ship-of-tools/tree/main/docs/adr) —
+  the ADRs in `docs/adr/`.
+
+## Releases
+
+Releases are tag-driven: `scripts/release.sh` stamps the versions and tags,
+and CI builds, smoke-tests and publishes the artifacts
+([ADR 0030](https://github.com/kalidke/ship-of-tools/blob/main/docs/adr/0030-versioning-release-and-auto-update.md)).

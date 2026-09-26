@@ -63,11 +63,11 @@ MATRIX=(
   # protocol evals are dropped by design). The REPL boots in the SHIM env with
   # cwd = the daemon's cwd (pinned to the project root above), so the staged
   # script is a plain relative include — space-free for the word-split flags —
-  # and stage_repl.jl itself activates the fixture env before `using`.
+  # and scripts/route.jl itself activates the fixture env before `using`.
   # NB --capture-delay-ms is a FRAME count at nominal 60fps and capture
   # renders unthrottled (~166fps): 300000 nominal ~= 105s wall — REPL spawn +
   # package load + first plot (precompiles absorbed by the prep step).
-  "repl-figure|fixture|--demo-repl-eval include(\"demo/stage_repl.jl\") --capture-delay-ms 300000"
+  "repl-figure|fixture|--demo-repl-eval include(\"scripts/route.jl\") --capture-delay-ms 300000"
 )
 
 # ---- sync-fixture ------------------------------------------------------------
@@ -135,7 +135,7 @@ start_daemon() { # $1 = project root; sets globals DAEMON_PID + CONN_VALUE. Call
                  # directly (start_daemon "$x"; v="$CONN_VALUE"), NEVER via $(...).
     # cwd = project root, deliberately: daemon children (the REPL shim)
     # inherit it, which is what lets --demo-repl-eval use the relative
-    # include("demo/stage_repl.jl"). Manual/PowerShell replication must
+    # include("scripts/route.jl"). Manual/PowerShell replication must
     # also start the scratch sotd FROM the project root.
     if [ "$CONN_FLAG" = "--tcp" ]; then
         TCP_PORT=$((TCP_PORT + 1))

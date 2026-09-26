@@ -1,19 +1,16 @@
 """
     DemoProject
 
-Great-circle navigation helpers. This is the Ship of Tools **documentation
-fixture**: a deliberately small, stable package the docs screenshots are
-staged against. Its shape is chosen to exercise the explorer — a struct, a
-few documented functions, one with multiple methods — not to be useful at sea.
-
-If you edit this file, re-run `scripts/docs-shots.sh sync-fixture` so the
-fresh `.concept/` annotation is re-stamped against the new content hash.
+Great-circle navigation helpers: named
+waypoints, pairwise distance and bearing,
+route length, and a route plot.
 """
 module DemoProject
 
 using CairoMakie
 
-export Waypoint, haversine, bearing, route_length, plot_route
+export Waypoint, haversine, bearing,
+       route_length, plot_route
 
 "Mean Earth radius in kilometers (IUGG)."
 const EARTH_RADIUS_KM = 6371.0
@@ -21,7 +18,8 @@ const EARTH_RADIUS_KM = 6371.0
 """
     Waypoint(name, lat, lon)
 
-A named position on the sphere, latitude and longitude in degrees.
+A named position on the sphere, latitude
+and longitude in degrees.
 """
 struct Waypoint
     name::String
@@ -30,84 +28,112 @@ struct Waypoint
 end
 
 """
-    haversine(a::Waypoint, b::Waypoint) -> Float64
+    haversine(a::Waypoint, b::Waypoint)
 
-Great-circle distance between `a` and `b` in kilometers, by the haversine
-formula:
-
-```math
-d = 2r \\arcsin\\sqrt{\\sin^2\\tfrac{\\Delta\\varphi}{2} +
-    \\cos\\varphi_1 \\cos\\varphi_2 \\sin^2\\tfrac{\\Delta\\lambda}{2}}
-```
+Great-circle distance from `a` to `b` in
+kilometers, by the haversine formula on a
+sphere of radius [`EARTH_RADIUS_KM`](@ref).
 """
 function haversine(a::Waypoint, b::Waypoint)
     φ1, φ2 = deg2rad(a.lat), deg2rad(b.lat)
     Δφ = φ2 - φ1
     Δλ = deg2rad(b.lon - a.lon)
-    s = sin(Δφ / 2)^2 + cos(φ1) * cos(φ2) * sin(Δλ / 2)^2
+    s = sin(Δφ / 2)^2 +
+        cos(φ1) * cos(φ2) * sin(Δλ / 2)^2
     return 2 * EARTH_RADIUS_KM * asin(sqrt(s))
 end
 
 """
-    bearing(a::Waypoint, b::Waypoint) -> Float64
+    bearing(a::Waypoint, b::Waypoint)
 
-Initial great-circle bearing from `a` toward `b`, in degrees clockwise from
-true north, normalized to `[0, 360)`.
+Initial great-circle bearing from `a` toward
+`b`, in degrees clockwise from true north,
+normalized to `[0, 360)`.
 """
 function bearing(a::Waypoint, b::Waypoint)
     φ1, φ2 = deg2rad(a.lat), deg2rad(b.lat)
     Δλ = deg2rad(b.lon - a.lon)
     θ = atan(sin(Δλ) * cos(φ2),
-             cos(φ1) * sin(φ2) - sin(φ1) * cos(φ2) * cos(Δλ))
+             cos(φ1) * sin(φ2) -
+             sin(φ1) * cos(φ2) * cos(Δλ))
     return mod(rad2deg(θ), 360.0)
 end
 
 """
-    route_length(waypoints::Vector{Waypoint}) -> Float64
+    route_length(wps::Vector{Waypoint})
 
-Total length of the polyline through `waypoints`, in kilometers.
+Total length of the polyline through `wps`,
+in kilometers.
 """
-function route_length(waypoints::Vector{Waypoint})
-    length(waypoints) < 2 && return 0.0
-    return sum(haversine(waypoints[i], waypoints[i+1])
-               for i in 1:length(waypoints)-1)
+function route_length(wps::Vector{Waypoint})
+    length(wps) < 2 && return 0.0
+    legs = zip(wps, wps[2:end])
+    return sum(haversine(a, b)
+               for (a, b) in legs)
 end
 
 """
-    route_length(coords::AbstractMatrix{<:Real}) -> Float64
+    plot_route(wps::Vector{Waypoint})
 
-Matrix form: each row is `(lat, lon)` in degrees. Unnamed waypoints.
-"""
-function route_length(coords::AbstractMatrix{<:Real})
-    size(coords, 1) < 2 && return 0.0
-    wps = [Waypoint("", coords[i, 1], coords[i, 2]) for i in 1:size(coords, 1)]
-    return route_length(wps)
-end
-
-"""
-    plot_route(waypoints::Vector{Waypoint}) -> Figure
-
-Plot the route on a lon/lat axis: waypoints as labeled markers, legs as lines,
-each leg annotated with its [`haversine`](@ref) distance. This is the function
-the docs' REPL screenshot dispatches — an inline figure with real content.
+Plot the route on a lon/lat axis and return
+the `Figure`: waypoints as labeled markers,
+legs as lines, each leg annotated with its
+[`haversine`](@ref) distance.
 """
 function plot_route(wps::Vector{Waypoint})
-    fig = Figure(size = (640, 420))
-    ax = Axis(fig[1, 1]; xlabel = "longitude (°)", ylabel = "latitude (°)",
-              title = "route — $(round(route_length(wps); digits = 1)) km total",
-              # generous margins so waypoint-name labels never clip at the frame
-              xautolimitmargin = (0.08, 0.18), yautolimitmargin = (0.10, 0.12))
-    lons, lats = [w.lon for w in wps], [w.lat for w in wps]
-    lines!(ax, lons, lats; color = :steelblue, linewidth = 2)
-    scatter!(ax, lons, lats; color = :orangered, markersize = 12)
-    for w in wps
-        text!(ax, w.lon, w.lat; text = " " * w.name, align = (:left, :bottom),
-              fontsize = 12)
+    km = round(route_length(wps); digits = 1)
+    fig = Figure(size = (640, 420),
+                 fontsize = 20)
+    # margins keep the names inside the frame
+    ax = Axis(fig[1, 1];
+        title = "route — $km km total",
+        xlabel = "longitude (°)",
+        ylabel = "latitude (°)",
+        xautolimitmargin = (0.22, 0.22),
+        yautolimitmargin = (0.16, 0.16))
+    lons = [w.lon for w in wps]
+    lats = [w.lat for w in wps]
+    lines!(ax, lons, lats; linewidth = 2,
+           color = :steelblue)
+    scatter!(ax, lons, lats; markersize = 14,
+             color = :orangered)
+    # a name sits beside an end's one leg, on
+    # a turn's open side, else left of it
+    function side(i)
+        nbs = [wps[j] for j in (i - 1, i + 1)
+               if checkbounds(Bool, wps, j)]
+        w = wps[i]
+        dx = [n.lon - w.lon for n in nbs]
+        if length(nbs) == 1
+            h = dx[1] > 0 ? :left : :right
+            up = nbs[1].lat < w.lat
+            return (h, up ? :bottom : :top)
+        end
+        h = all(<(0), dx) ? :left : :right
+        return (h, :center)
     end
-    for i in 1:length(wps)-1
-        mx, my = (wps[i].lon + wps[i+1].lon) / 2, (wps[i].lat + wps[i+1].lat) / 2
-        text!(ax, mx, my; text = "$(round(haversine(wps[i], wps[i+1]); digits = 1)) km",
-              align = (:center, :top), fontsize = 11, color = :gray40)
+    for i in eachindex(wps)
+        h, v = side(i)
+        ox = h == :left ? 11 : -11
+        oy = v == :center ? 0 :
+             v == :top ? -5 : 5
+        text!(ax, wps[i].lon, wps[i].lat;
+              text = wps[i].name,
+              fontsize = 18, align = (h, v),
+              offset = (ox, oy))
+    end
+    # leg lengths sit right of their line
+    for (a, b) in zip(wps, wps[2:end])
+        d = round(haversine(a, b); digits=1)
+        up = (b.lat - a.lat) *
+             (b.lon - a.lon) > 0
+        v = up ? :top : :bottom
+        text!(ax, (a.lon + b.lon) / 2,
+              (a.lat + b.lat) / 2;
+              text = "$d km", fontsize = 16,
+              align = (:left, v),
+              offset = (8, up ? -8 : 8),
+              color = :gray40)
     end
     return fig
 end
