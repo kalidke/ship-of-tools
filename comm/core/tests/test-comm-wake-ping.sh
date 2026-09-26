@@ -129,7 +129,12 @@ _comm_wake_pty_screen() {
     if [ "\$n" -ge 2 ]; then
         printf '%s' '{"payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'
     else
-        printf '%s' '{"payload":{"lines":["Allow this action? (y/n)"]}}'
+        # A dialog on screen, WITH a cursor — the blocked phase must block for
+        # the reason its name gives. A cursorless reply would also block, but
+        # for a different reason and one production cannot produce: every
+        # capsule row's screen carries a cursor, and the only runtime that
+        # answers without one returns an error payload with no lines at all.
+        printf '%s' '{"payload":{"lines":["Allow this action? (y/n)"],"cursor":{"row":0,"col":24}}}'
     fi
 }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
@@ -148,6 +153,24 @@ EOF
     [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) while gated on the prompt, want exactly 1 (once free)"; return 1; }
     local sc; sc="$(wc -c < "$screen_calls" 2>/dev/null || echo 0)"
     [ "$sc" -ge 2 ] || { echo "  the prompt was never re-checked after being not-free"; return 1; }
+    # The held/recovered pair is the only trace a gate that suppresses delivery
+    # leaves. Pin BOTH the presence and the cardinality: one line per
+    # TRANSITION, never per cycle. Without this, a timestamp helper going
+    # missing would make blocked_since empty, log every 2s into a capped log
+    # and never log recovery, and every assertion above would still pass.
+    # The watcher sends its own diagnostics to a durable, size-bounded log, not
+    # to the caller's stderr, so that is where the pair has to be.
+    local wlog="$d/state/comm-wake-watchee.log" held recovered
+    [ -s "$wlog" ] || { echo "  the watcher wrote no diagnostics log at all"; return 1; }
+    held="$(grep -c 'ping held since' "$wlog" 2>/dev/null)" || held=0
+    recovered="$(grep -c 'prompt free again' "$wlog" 2>/dev/null)" || recovered=0
+    [ "$held" -eq 1 ] || { echo "  want exactly 1 held line, got $held (one per TRANSITION, not per cycle)"; return 1; }
+    [ "$recovered" -eq 1 ] || { echo "  want exactly 1 recovery line, got $recovered"; return 1; }
+    grep -q 'prompt free again after being held since 2' "$wlog" 2>/dev/null \
+        || { echo "  the recovery line must carry the held-since stamp"; return 1; }
+    if grep -q 'now sent' "$wlog" 2>/dev/null; then
+        echo "  the recovery line announces a delivery the inject had not yet attempted"; return 1
+    fi
     return 0
 }
 
@@ -523,7 +546,32 @@ sot_prompt_free ""
 EOF
     bash "$d/run.sh" 2>/dev/null
     local rc=$?
-    [ "$rc" -ne 0 ] || { echo "  sot_prompt_free '' returned 0 (free), want non-zero -- an unseen screen is never a free prompt"; return 1; }
+    # rc 1 exactly, not merely non-zero: a sourcing failure or a jq parse error
+    # also exits non-zero, and either would let this case pass while testing
+    # nothing. The guard's own refusal is rc 1 (jq's parse codes are 4 and 5).
+    [ "$rc" -eq 1 ] || { echo "  sot_prompt_free '' exited $rc, want exactly 1 -- an unseen screen is never a free prompt"; return 1; }
+    return 0
+}
+
+# The gate must not GUESS which prompt convention the renderer uses. Under a
+# separator render (the measured one) an empty input's cursor is at glyph+2;
+# under a no-separator render it is at glyph+1, and glyph+2 is where the cursor
+# sits after ONE typed character. Accepting both columns blindly submits that
+# one-character draft; accepting only glyph+2 makes a no-separator prompt deaf
+# forever. Both halves are pinned here, so neither shortcut can come back.
+_prompt_free_says() {   # payload -> prints "free" or "held"
+    local d="$WORK/prompt-conv"; rm -rf "$d"; mkdir -p "$d"
+    printf 'source "%s/comm-lib.sh"\nsot_prompt_free %s\n' "$SCRIPTS_DIR" "$1" > "$d/run.sh"
+    if bash "$d/run.sh" 2>/dev/null; then printf free; else printf held; fi
+}
+case_the_gate_reads_the_separator_instead_of_guessing() {
+    local got
+    got="$(_prompt_free_says "'"'{"payload":{"lines":["❯h"],"cursor":{"row":0,"col":2}}}'"'")"
+    [ "$got" = held ] || { echo "  a one-character draft on a no-separator prompt read as FREE -- typing there submits it"; return 1; }
+    got="$(_prompt_free_says "'"'{"payload":{"lines":["❯"],"cursor":{"row":0,"col":1}}}'"'")"
+    [ "$got" = free ] || { echo "  an EMPTY no-separator prompt read as held -- that row would never be woken"; return 1; }
+    got="$(_prompt_free_says "'"'{"payload":{"lines":["❯ h"],"cursor":{"row":0,"col":3}}}'"'")"
+    [ "$got" = held ] || { echo "  a one-character draft on a separator prompt read as FREE"; return 1; }
     return 0
 }
 
@@ -543,6 +591,7 @@ check "a grey prompt suggestion does not block the ping" case_a_grey_prompt_sugg
 check "a typed draft still blocks the ping" case_a_typed_draft_still_blocks_the_ping
 check "a dialog over a stale prompt glyph blocks the ping" case_a_dialog_over_a_stale_prompt_glyph_blocks_the_ping
 check "an empty screen reply is not a free prompt" case_empty_screen_reply_is_not_a_free_prompt
+check "the gate reads the separator cell instead of guessing the convention" case_the_gate_reads_the_separator_instead_of_guessing
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

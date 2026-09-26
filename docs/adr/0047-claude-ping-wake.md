@@ -30,9 +30,10 @@ to `--deliver full` (Codex's behaviour, unchanged). Claude sessions get
   of N messages costs one wake, not N.
 - **Prompt-free gate.** Before typing, it reads the row's current screen
   (`pty.screen`, lifted into `comm-lib.sh`'s `sot_pty_screen` so `sot-fe`
-  shares the same request) and only types when a line is exactly the prompt
-  glyph. Typing into an open permission dialog or menu can answer it, so an
-  unclear screen delays the wake rather than risk that.
+  shares the same request) and only types when the CURSOR is sitting at the
+  start of an empty input line. Typing into an open permission dialog or menu
+  can answer it, so an unclear screen delays the wake rather than risk that.
+  The rule itself is stated once, below, under the prompt-free gate.
 - **Coalescing.** An already-typed, not-yet-read ping (the session's poll
   cursor hasn't moved past it) suppresses a second one; new lines simply
   wait for the outstanding wake, capped at 10 minutes in case the ping is

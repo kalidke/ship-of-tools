@@ -794,10 +794,10 @@ sot_pty_screen() {
 # sot_pty_input_gated WORKSPACE_ID DATA_B64 — sot_pty_input, but only into a
 # row that is sitting at a FREE prompt. Typing plus Enter submits a turn, so a
 # row with a dialog, a menu or a half-typed draft on screen must never be
-# typed into: the keystrokes would land in whatever is open. The glyph test is
-# comm-wake.sh's own prompt-free gate, moved here verbatim so the sender's
-# poke (comm-send.sh) and the ping watcher share ONE implementation instead of
-# two that drift. Returns 0 typed, 1 screen read but NOT free (also an
+# typed into: the keystrokes would land in whatever is open. The test is
+# `sot_prompt_free` above — the CURSOR's position, not the line's text — so the
+# sender's poke (comm-send.sh) and the ping watcher share ONE implementation
+# instead of two that drift. Returns 0 typed, 1 screen read but NOT free (also an
 # accepted-but-not-ok row — nothing was typed either way), 2 no reply at all
 # (transport error/empty response, kept distinct so a caller can tell a busy
 # row from a dead daemon).
@@ -820,10 +820,24 @@ sot_pty_screen() {
 #
 # FREE means all of: a cursor is present; its row indexes a real line; that
 # line carries `❯` with nothing but spaces before it; and the cursor column
-# is glyph+1 or glyph+2. Both columns count as the input start because the
-# backend trims trailing whitespace, so the screen cannot say whether the
-# renderer puts a separator after the glyph — and neither column can hold a
-# typed character under either convention. Everything else is NOT free: no
+# is at the insertion point. That last part does NOT guess which convention
+# the renderer uses, because guessing is unsound in both directions. A renderer
+# that draws a separator (`❯ text` — the measured one: a live row showed the
+# glyph at column 0 and the cursor at column 2, with a NON-BREAKING space
+# between) puts an empty input's cursor at glyph+2; one that draws none
+# (`❯text`) puts it at glyph+1, and puts a ONE-CHARACTER DRAFT at glyph+2.
+# So glyph+2 alone is not "empty" and neither is the pair: accept both columns
+# blindly and a one-character draft on a no-separator prompt reads FREE and
+# gets submitted, which is the exact harm this gate exists to prevent.
+# The screen already carries the answer, so READ it instead: glyph+1 is always
+# the insertion point, and glyph+2 is the insertion point only when the cell
+# between glyph and cursor is a separator — a space, a non-breaking space, a
+# tab, or ABSENT (the backend trims trailing whitespace, so an empty prompt
+# under the separator convention arrives as a bare `❯` with nothing at
+# glyph+1). A typed character there is not a separator, and the gate holds.
+# The all-spaces prefix test above is what makes the byte offset `index`
+# returns safe to reuse as a codepoint index here: an all-ASCII prefix has
+# both the same. Everything else is NOT free: no
 # cursor (never happens on a healthy capsule row — the field has existed
 # since the op was born, and the only other runtime answers with an error
 # payload and no lines at all), a row out of range, an error payload, a
@@ -845,7 +859,10 @@ sot_prompt_free() {
              | ($line | index("\u276f")) as $g
              | ($g != null)
                and (($line[0:$g] | test("[^ ]")) | not)
-               and ($c == $g + 1 or $c == $g + 2)
+               and ( $c == $g + 1
+                     or ( $c == $g + 2
+                          and ( $line[$g+1:$g+2]
+                                | . == "" or . == " " or . == "\u00a0" or . == "\t" ) ) )
           end
     ' >/dev/null 2>&1
 }

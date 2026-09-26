@@ -242,7 +242,11 @@ _comm_wake_deliver_ping() {
         return   # dialog/menu/draft on screen; retry next cycle
     fi
     if [ -n "$blocked_since" ]; then
-        echo "comm-wake: prompt free again; ping held since $blocked_since now sent" >&2
+        # The fact is the GATE's transition, not a delivery: the inject below
+        # can still fail, and saying "sent" before attempting it records a
+        # delivery that never happened — with blocked_since already cleared, no
+        # later cycle says otherwise. The inject reports its own outcome.
+        echo "comm-wake: prompt free again after being held since $blocked_since" >&2
         blocked_since=""
     fi
 
