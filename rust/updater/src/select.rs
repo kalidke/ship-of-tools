@@ -92,6 +92,29 @@ mod tests {
         assert_eq!(select_target("0.6.0-rc.13", &rs), None);
     }
 
+    /// The invariant stated by the owner -- an install must never move
+    /// backwards -- at the form THIS line actually ships. `no_downgrade`
+    /// above covers the dotted `rc.N` form; the live 0.6.6 line is the
+    /// undotted `rc9.N` continuation, where `rc9` sorts BELOW `rc9.1`
+    /// (same first identifier, fewer fields). That is what makes the
+    /// continuation legal, and it is also the one place an ordering slip
+    /// would read as an update and hand a box an older build.
+    #[test]
+    fn no_downgrade_on_the_undotted_rc_line() {
+        let rs = vec![
+            ("v0.6.6-rc7".to_string(), true),
+            ("v0.6.6-rc9".to_string(), true),
+            ("v0.6.6-rc9.1".to_string(), true),
+        ];
+        assert_eq!(select_target("0.6.6-rc9.2", &rs), None);
+        // The SAME list does offer an older install an update, so the
+        // `None` above is the guard talking and not an unparsable line.
+        assert_eq!(
+            select_target("0.6.6-rc9", &rs).as_deref(),
+            Some("v0.6.6-rc9.1")
+        );
+    }
+
     #[test]
     fn equal_is_none() {
         let rs = vec![("v0.6.0-rc.13".to_string(), true)];
