@@ -1465,20 +1465,12 @@ fn strip_row_tops(win_h: f32, cell_h: f32) -> (f32, f32) {
 /// claims is a row the chrome may also own; reserving it once, here, is the
 /// only place that can't disagree with itself.
 ///
-/// The band needs `STRIP_ROWS` rows plus `STRIP_BOTTOM_PAD` plus the active
-/// name's lift (`STRIP_ACTIVE_LIFT_CELLS`, which raises it clear of the rows
-/// proper), measured up from the window's bottom edge; the grid's own bottom
-/// margin `oy` already pays for part of it. With
-/// `R = (win_h - 2*oy) mod cell_h` the grid's bottom edge sits at
-/// `win_h - oy - R - k*cell_h`, so the worst case is `R = 0` and
-/// `k = ceil((need - oy) / cell_h)`, which reduces to
-/// `2 + ceil((STRIP_BOTTOM_PAD + lift - oy) / cell_h)`. That is 2 at every
-/// practical scale but NOT unconditionally: `STRIP_BOTTOM_PAD` is a
-/// scale-invariant 2 px while `oy` scales, so below about scale 0.224 — which
-/// `--scale` accepts, its floor being 0.1 — the pad no longer fits in the
-/// margin and k is 3. Which is why the pin
-/// (`strip_band_never_touches_the_grids_last_row`) is the band invariant and
-/// k's minimality, never the literal 2.
+/// The condition, at its worst case (`(win_h - 2*oy) mod cell_h == 0`):
+/// `k * cell_h + oy >= need`. Erring high is safe — one spare row is a
+/// slightly shorter pane — while erring low puts session names on the stamp,
+/// so `k` is the ceiling, and it is not a constant: the pad is scale-invariant
+/// while `oy` scales. `strip_band_never_touches_the_grids_last_row` pins both
+/// the condition and k's minimality; nothing may pin a literal.
 fn strip_reserved_rows(cell_w: f32, cell_h: f32, oy: f32) -> u16 {
     let need = STRIP_ROWS * cell_h + STRIP_BOTTOM_PAD + STRIP_ACTIVE_LIFT_CELLS * cell_w;
     (((need - oy) / cell_h.max(1.0)).ceil().max(0.0)) as u16
@@ -25243,11 +25235,20 @@ mod tests {
         // strip's names row at EVERY window height (worst at
         // `R = (h - 2*oy) mod cell_h == 8*scale`, where the two share a
         // baseline). `cell_grid_for` now reserves the band once.
-        // 0.2 is in the list because `--scale`'s floor is 0.1 and the
-        // reservation is 3 rows there, not 2 (`STRIP_BOTTOM_PAD` is
-        // scale-invariant while `oy` scales) — the invariant has to hold in
-        // that regime too.
-        for &scale in &[0.2_f32, 1.0, 1.25, 1.5, 2.0] {
+        // 0.2 is the entry that matters: `--scale`'s floor is 0.1 and the
+        // reservation is 3 rows at or below about 0.224 (`STRIP_BOTTOM_PAD` is
+        // scale-invariant while `oy` scales), so it is the only swept scale
+        // that exercises `k = 3` — 0.5 and 0.75 both compute to 2. It is legal
+        // to sweep only because the assertion below is the band invariant and
+        // not a literal row count.
+        //
+        // Two limits of this sweep, both deliberate. It starts at
+        // `240 * scale`, so it never reaches `cell_grid_for`'s `rows.max(1)`
+        // clamp (above `h = 19.2` at scale 0.2); and under that clamp the band
+        // genuinely does overlap — at scale 1.0 every window height at or
+        // below 71 px — which is benign (no pane lays out at that size at all)
+        // and is not a reason to widen the range.
+        for &scale in &[0.2_f32, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0] {
             let cell_h = BASE_CELL_H * scale;
             let cell_w = 7.7 * scale; // the measured monospace advance
             let oy = BASE_CHROME_ORIGIN_Y * scale;
