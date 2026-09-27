@@ -433,12 +433,22 @@ fi
 # (no FE attach / no session switch needed), so a background spawn comes up
 # running claude even if no frontend ever navigates to it. autostart_claude
 # stays true as the FE-attach fallback (the foreground guard de-dupes).
-# MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): REPO_PATH
-# is a filesystem path, and LABEL (a free-text --label override, not
+# MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): the project
+# root is a filesystem path, and LABEL (a free-text --label override, not
 # just the REPO_PATH-derived default) can also legitimately start with
 # "/" — neither may reach jq via --arg.
+#
+# CANON_ROOT, not REPO_PATH: the registry row already records the canonical
+# root (above), so sending the raw argv here left the two stores holding two
+# spellings of one directory. It also silently disabled that row's
+# auto-memory flag for the rest of its life — the launcher names a memory
+# directory only for a cwd that is already canonical, because a
+# tab-completed trailing slash sanitises to a different flat name than the
+# session's own `getcwd` yields, and memory would land somewhere nothing
+# else reads. `sot_canonical_path` has already vouched for this value and
+# exited loudly if it could not.
 SPAWN_LABEL_FILE="$(sot_jq_rawfile "$LABEL")" || exit 1
-SPAWN_PATH_FILE="$(sot_jq_rawfile "$REPO_PATH")" || exit 1
+SPAWN_PATH_FILE="$(sot_jq_rawfile "$CANON_ROOT")" || exit 1
 # agent: explicit kind (ADR 0031) — the daemon's capsule launcher picks ccb/ccx
 # by it; autostart_claude stays true as the legacy fallback an older daemon
 # derives the kind from.

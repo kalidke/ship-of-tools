@@ -512,7 +512,16 @@ fn auto_memory_settings(
     // while `sanitize_project_dir` maps it to a different trailing `-` --
     // the exact misroute this check exists to stop, and invisible to a
     // `PathBuf == Path` test.
-    match std::fs::canonicalize(cwd) {
+    //
+    // De-verbatimed first, the same way `paths::path_within_root` normalizes
+    // BOTH sides before comparing. On Windows `canonicalize` returns the
+    // `\\?\C:\...` extended-length form while a `project_root` off the wire --
+    // and the cwd `CreateProcess` hands the child -- is the plain drive path,
+    // so comparing the two raw declined on EVERY Windows box, silently, on the
+    // one platform where every new workspace is a capsule row. It was inverted
+    // too: `canonicalize` is idempotent on verbatim input, so a `\\?\` root
+    // PASSED while the plain spelling the child actually receives was refused.
+    match std::fs::canonicalize(cwd).map(crate::paths::simplify_verbatim) {
         Ok(resolved) if resolved.to_str() == Some(cwd) => {}
         _ => {
             tracing::debug!(
@@ -4523,12 +4532,26 @@ mod tests {
         }
     }
 
+    /// The spelling the platform itself would hand a child. Not a `#[test]`.
+    fn platform_spelling(p: &std::path::Path) -> PathBuf {
+        crate::paths::simplify_verbatim(p.canonicalize().expect("canonical tempdir"))
+    }
+
     /// The whole point of the flag: an ACCOUNT session spells its memory
     /// path through a symlink (`projects` is a `SHARED_ENTRIES` name) and
     /// every write then lands outside the allowed dirs, which auto mode
     /// has not approved since Claude Code 2.1.282. The flag must name the
     /// path it LANDS on. Fixture is explicit about `home` rather than
     /// setting `HOME`, so it cannot race the other env-guarding tests here.
+    ///
+    /// Every fixture below builds its root with [`platform_spelling`], defined
+    /// just above: canonical, because the flag names only a path the session
+    /// would derive for itself and the macOS leg's temp root sits under a
+    /// symlinked `/var`; de-verbatimed, because a bare `canonicalize` on
+    /// Windows yields the `\\?\` form no child ever receives, so a fixture
+    /// built from it would exercise the one spelling that is never real and
+    /// pass for the wrong reason — which is exactly how a Windows-dead check
+    /// reached CI green.
     #[test]
     #[cfg(unix)]
     fn auto_memory_settings_names_the_landing_path_not_the_symlinked_spelling() {
@@ -4538,7 +4561,7 @@ mod tests {
         // or that `/var` -> `/private/var` rewrites on the macOS leg, which
         // runs every `cfg(unix)` test — would decline for the wrong reason.
         let home = tempfile::tempdir().expect("tempdir");
-        let root = home.path().canonicalize().expect("canonical tempdir");
+        let root = platform_spelling(home.path());
         let shared = root.join("shared-projects");
         std::fs::create_dir_all(&shared).unwrap();
         std::fs::create_dir_all(root.join(".claude")).unwrap();
@@ -4576,7 +4599,7 @@ mod tests {
     #[cfg(unix)]
     fn auto_memory_settings_declines_when_an_account_keeps_its_own_projects() {
         let home = tempfile::tempdir().expect("tempdir");
-        let root = home.path().canonicalize().expect("canonical tempdir");
+        let root = platform_spelling(home.path());
         let store = root.join(".claude").join("projects");
         std::fs::create_dir_all(&store).unwrap();
         let proj = root.join("proj");
@@ -4616,7 +4639,7 @@ mod tests {
     #[cfg(unix)]
     fn auto_memory_settings_checks_the_childs_own_config_dir_when_known() {
         let home = tempfile::tempdir().expect("tempdir");
-        let root = home.path().canonicalize().expect("canonical tempdir");
+        let root = platform_spelling(home.path());
         std::fs::create_dir_all(root.join(".claude").join("projects")).unwrap();
         let proj = root.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
@@ -4651,7 +4674,7 @@ mod tests {
     #[test]
     fn auto_memory_settings_leaves_the_owners_own_choice_alone() {
         let home = tempfile::tempdir().expect("tempdir");
-        let root = home.path().canonicalize().expect("canonical tempdir");
+        let root = platform_spelling(home.path());
         std::fs::create_dir_all(root.join(".claude").join("projects")).unwrap();
         let proj = root.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
@@ -4672,10 +4695,17 @@ mod tests {
     /// appends a hash of the path that this crate cannot reproduce. Naming
     /// a truncated directory would point memory somewhere the session does
     /// not read, which is worse than the prompt — so it declines.
+    ///
+    /// `cfg(unix)` only, and not because the limit is platform-specific — it
+    /// is not. The fixture has to CREATE a path past the limit, and a
+    /// de-verbatimed Windows root re-gains `MAX_PATH` (see
+    /// `paths::simplify_verbatim`'s own trade-off note), so the fixture, not
+    /// the code under test, is what would fail there.
     #[test]
+    #[cfg(unix)]
     fn auto_memory_settings_declines_rather_than_name_a_truncated_directory() {
         let home = tempfile::tempdir().expect("tempdir");
-        let root = home.path().canonicalize().expect("canonical tempdir");
+        let root = platform_spelling(home.path());
         std::fs::create_dir_all(root.join(".claude").join("projects")).unwrap();
         // A REAL directory past the limit, in two components because one
         // 240-character name exceeds the per-name maximum. It must exist:
@@ -4694,6 +4724,50 @@ mod tests {
         let proj = root.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
         assert!(auto_memory_settings(&root, &proj, None).is_some());
+    }
+
+    /// The blocker a `cfg(unix)`-only suite could not see, and the reason this
+    /// test exists at all: on Windows `canonicalize` returns the `\\?\`
+    /// extended-length form while a `project_root` off the wire — and the cwd
+    /// `CreateProcess` hands the child — is the plain drive path. Comparing
+    /// those two raw declined on EVERY Windows box, silently, restoring the
+    /// permission prompt on the one platform where every new workspace is a
+    /// capsule row. And it was inverted: `canonicalize` is idempotent on
+    /// verbatim input, so a `\\?\` root PASSED while the real spelling failed.
+    ///
+    /// Both halves are asserted, because fixing only the first would leave the
+    /// unreachable spelling accepted.
+    #[test]
+    #[cfg(windows)]
+    fn auto_memory_settings_accepts_the_spelling_windows_hands_a_child() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let root = platform_spelling(home.path());
+        assert!(
+            !root.to_str().unwrap().starts_with(r"\\?\"),
+            "fixture must be the plain drive path a child actually gets: {root:?}"
+        );
+        std::fs::create_dir_all(root.join(".claude").join("projects")).unwrap();
+        let proj = root.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        assert!(
+            auto_memory_settings(&root, &proj, None).is_some(),
+            "the flag must fire for the spelling Windows hands a child"
+        );
+
+        // The verbatim spelling, which no child receives, must NOT be the one
+        // form that is accepted.
+        let verbatim = home
+            .path()
+            .canonicalize()
+            .expect("canonical tempdir")
+            .join("proj");
+        if verbatim.to_str().unwrap().starts_with(r"\\?\") {
+            assert_eq!(
+                auto_memory_settings(&root, &verbatim, None),
+                None,
+                "a verbatim cwd is not what the child gets and must not be accepted"
+            );
+        }
     }
 
     /// `agent-exec` passes `ccb`'s own `"$@"` through, so a caller that
@@ -4721,7 +4795,7 @@ mod tests {
         // `SHELL` precedent above does.
         let _guard = self_file_env_guarded();
         let home = tempfile::tempdir().expect("tempdir");
-        let root = home.path().canonicalize().expect("canonical tempdir");
+        let root = platform_spelling(home.path());
         std::fs::create_dir_all(root.join(".claude").join("projects")).unwrap();
         let proj = root.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
@@ -4778,7 +4852,7 @@ mod tests {
     #[cfg(unix)]
     fn auto_memory_settings_declines_a_cwd_that_is_not_already_canonical() {
         let home = tempfile::tempdir().expect("tempdir");
-        let root = home.path().canonicalize().expect("canonical tempdir");
+        let root = platform_spelling(home.path());
         std::fs::create_dir_all(root.join(".claude").join("projects")).unwrap();
         let proj = root.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
@@ -4821,7 +4895,7 @@ mod tests {
     #[cfg(unix)]
     fn the_memory_veto_reads_the_childs_own_settings_not_the_defaults() {
         let home = tempfile::tempdir().expect("tempdir");
-        let root = home.path().canonicalize().expect("canonical tempdir");
+        let root = platform_spelling(home.path());
         let store = root.join(".claude").join("projects");
         std::fs::create_dir_all(&store).unwrap();
         let proj = root.join("proj");
@@ -4871,7 +4945,7 @@ mod tests {
     #[cfg(unix)]
     fn auto_memory_settings_emits_the_spelled_store_not_its_resolved_form() {
         let home = tempfile::tempdir().expect("tempdir");
-        let root = home.path().canonicalize().expect("canonical tempdir");
+        let root = platform_spelling(home.path());
         let real = root.join("real-claude");
         std::fs::create_dir_all(real.join("projects")).unwrap();
         // `.claude` itself is the link; `projects` beneath it is a real
