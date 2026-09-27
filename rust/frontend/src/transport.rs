@@ -1029,6 +1029,11 @@ pub enum OutgoingReq {
     /// is the complete set, never a delta. Fire-and-forget, same idiom as
     /// `FePresence` above — no `PendingKind`, the reply is silently
     /// ignored by the unmatched-id fallthrough.
+    /// Constructed by nothing in this release: the owner ruled the send
+    /// site out of it (see the note in `IncomingEvt::Workspaces`). The wire
+    /// plumbing stays so the next release grows a caller rather than
+    /// re-deriving the op.
+    #[allow(dead_code)]
     FeFilesFor { handles: Vec<String> },
     /// Ask the kernel for its loaded-modules list. Response surfaces as
     /// `IncomingEvt::ModulesList`. Currently the only kernel.request the

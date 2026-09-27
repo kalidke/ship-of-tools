@@ -15363,14 +15363,6 @@ impl State {
                     // showing its rows, greyed, rather than vanishing),
                     // then rebuild every workspace-scoped cache from the
                     // whole union in one pass.
-                    // Computed from the rows BEFORE they move into the map:
-                    // re-reading the key we just inserted was a branch that
-                    // could not be taken.
-                    let files_for = declares_files_for(
-                        self.declared_host.get(&event_host).map(String::as_str),
-                        frontend_identity().host.as_str(),
-                    )
-                    .then(|| files_for_from_rows(&workspaces));
                     self.workspace_lists.insert(event_host.clone(), workspaces);
                     self.rebuild_workspace_caches();
                     self.prune_warm_attach(&event_host);
@@ -15385,13 +15377,17 @@ impl State {
                     // `host`, recorded in `declared_host`) — a remote
                     // daemon's rows would be a promise this process
                     // cannot keep.
-                    if let Some(handles) = files_for {
-                        if let Err(e) =
-                            self.send_to(&event_host, OutgoingReq::FeFilesFor { handles })
-                        {
-                            tracing::warn!(error = %e, %event_host, "drop fe.files_for — channel closed");
-                        }
-                    }
+                    // NO `fe.files_for` send in this release (owner ruling).
+                    // The declaration only ever reached a daemon on this
+                    // frontend's OWN box, which already knows those handles
+                    // from their `agent.join`; the remote hub that answers a
+                    // directed send never saw it. So it bought nothing while
+                    // costing a `warn` line per reply on any daemon without
+                    // the handler -- which is every daemon today, since no
+                    // backend half exists yet. The set, its predicate and
+                    // their tests stay: the next release either grows the
+                    // caller or deletes them with the session-declares
+                    // shape that supersedes this one.
                     // --capture-cycle <N>: simulate N Ctrl+PgDn presses
                     // (negative = Ctrl+PgUp) on the first workspace.list
                     // reply. Consumed once so a re-fetch from a later
@@ -19320,6 +19316,9 @@ pub(crate) fn self_comm_handle() -> String {
     frontend_identity().name.clone()
 }
 
+// Caller removed for this release (see the `fe.files_for` note in
+// `IncomingEvt::Workspaces`); its gate is kept for the next one.
+#[allow(dead_code)]
 /// The complete set of sot-comm handles declared by `rows` (item 18) —
 /// pure over rows, no `&self`, no connection, so it unit-tests without a
 /// wire. This is what `fe.files_for` sends, replace-semantics, after every
@@ -19357,6 +19356,9 @@ fn declares_files_for(declared: Option<&str>, own: &str) -> bool {
     declared == Some(own)
 }
 
+// Caller removed for this release (see the `fe.files_for` note in
+// `IncomingEvt::Workspaces`); the set builder is kept for the next one.
+#[allow(dead_code)]
 fn files_for_from_rows(rows: &[crate::transport::WorkspaceInfo]) -> Vec<String> {
     // Through a set, not a Vec: two rows on one host CAN carry the same
     // joined handle (`agent.join` enforces no per-host uniqueness, and the
