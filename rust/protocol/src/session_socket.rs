@@ -72,13 +72,9 @@ pub fn session_socket_path(label: &str) -> PathBuf {
 /// `sot-fe` both ask for by name — `sotd session-socket-path local` — rather
 /// than constructing the pipe name themselves).
 ///
-/// It exists because the label used to be spelled `"sot"` at every Rust call
-/// site that meant "this box's daemon" — a second derivation that was simply
-/// wrong on Windows: `sotd status` there reported the box's own live daemon
-/// UNREACHABLE on `sot-<user>-sot` while the frontend was talking to it on
-/// `sot-<user>-local`. A caller that wants a NAMED backend still passes its
-/// own label to [`session_socket_path`]; a caller that means the local
-/// daemon asks here.
+/// A caller that wants a NAMED backend passes its own label to
+/// [`session_socket_path`]; a caller that means the local daemon asks here and
+/// never spells the label itself, because the two platforms disagree about it.
 pub fn local_daemon_label() -> &'static str {
     if cfg!(windows) {
         "local"
