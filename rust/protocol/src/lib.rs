@@ -31,6 +31,7 @@ pub use ops::{
     ConceptWriteReq, ConceptWriteRes, DaemonVersion, DirCreateReq, DirCreateRes, DirectoryEntry,
     DirectoryListReq, DirectoryListRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
     FeCommandSendRes,
+    FeFilesForReq, FeFilesForRes,
     FePresenceReq, FePresenceRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq,
     FileReadReq, FileReadRes,
     FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, GpuSample, HelloReq, HelloRes,

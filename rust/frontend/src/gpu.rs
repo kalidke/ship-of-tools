@@ -15366,6 +15366,29 @@ impl State {
                     self.workspace_lists.insert(event_host.clone(), workspaces);
                     self.rebuild_workspace_caches();
                     self.prune_warm_attach(&event_host);
+                    // item 18 (variant-independent half): declare the
+                    // handles this connection's rows name, after every
+                    // OWN-HOST workspace.list reply — no new trigger, no
+                    // timer, this path already fires on connect and on
+                    // every workspace.changed. Own-host only: a frontend
+                    // files inbound frames into ONE inbox on the machine
+                    // it itself runs on, so it declares only for a daemon
+                    // that has declared the SAME host back (`Connected`'s
+                    // `host`, recorded in `declared_host`) — a remote
+                    // daemon's rows would be a promise this process
+                    // cannot keep.
+                    if self.declared_host.get(&event_host).map(String::as_str)
+                        == Some(frontend_identity().host.as_str())
+                    {
+                        if let Some(rows) = self.workspace_lists.get(&event_host) {
+                            let handles = files_for_from_rows(rows);
+                            if let Err(e) =
+                                self.send_to(&event_host, OutgoingReq::FeFilesFor { handles })
+                            {
+                                tracing::warn!(error = %e, %event_host, "drop fe.files_for — channel closed");
+                            }
+                        }
+                    }
                     // --capture-cycle <N>: simulate N Ctrl+PgDn presses
                     // (negative = Ctrl+PgUp) on the first workspace.list
                     // reply. Consumed once so a re-fetch from a later
@@ -19292,6 +19315,34 @@ fn parse_nav_envelope(text: &str) -> Option<NavEnvelope> {
 /// daemon can name this connection without a second derivation.
 pub(crate) fn self_comm_handle() -> String {
     frontend_identity().name.clone()
+}
+
+/// The complete set of sot-comm handles declared by `rows` (item 18) —
+/// pure over rows, no `&self`, no connection, so it unit-tests without a
+/// wire. This is what `fe.files_for` sends, replace-semantics, after every
+/// own-host `workspace.list` reply.
+///
+/// Keeps a row's `agent_handle` when it is non-empty — the filter is
+/// **only** that, kept on its own line rather than left for a test to
+/// discover: the hidden home-rooted anchor row exists on every host with
+/// `agent == "none"` and an empty handle, and an empty string in the
+/// declared set is junk that can only ever match junk.
+///
+/// Deliberately does **not** filter on liveness — not `phase`, not
+/// `repl_state`, not `agent_state`. A stopped row's handle IS declared.
+/// Delivery is durable: a `fe.files_for` frame is an inbox append, read
+/// whenever that handle next starts, not a promise the handle is up right
+/// now. The contract puts liveness in the `+woken` / `not woken` note,
+/// never in `filed` — and the local path already files for a handle whose
+/// session is down. Declaring only ready rows here would make the wire
+/// path stricter than the local path for the same handle, with no
+/// invariant behind the difference. Do not add a liveness filter thinking
+/// it a tightening.
+fn files_for_from_rows(rows: &[crate::transport::WorkspaceInfo]) -> Vec<String> {
+    rows.iter()
+        .filter(|w| !w.agent_handle.is_empty())
+        .map(|w| w.agent_handle.clone())
+        .collect()
 }
 
 /// ADR 0045 decision 1 (Codex review, lane B5 discharge): pure core of
@@ -26369,6 +26420,50 @@ mod tests {
         assert_eq!(frontend_address("host-a"), "fe@host-a");
     }
 
+    // item 18 (variant-independent half): `files_for_from_rows`.
+
+    #[test]
+    fn files_for_from_rows_returns_the_joined_handle_never_agent_name() {
+        // The assertion that would have caught the whole class: a row
+        // where the asked-for handle and the joined handle DIFFER.
+        let w = crate::transport::WorkspaceInfo {
+            agent_name: "asked-for".to_string(),
+            agent_handle: "joined-handle".to_string(),
+            ..ws_info("proj", "sot-be-proj")
+        };
+        let handles = files_for_from_rows(&[w]);
+        assert_eq!(handles, vec!["joined-handle".to_string()]);
+        assert!(!handles.contains(&"asked-for".to_string()), "got {handles:?}");
+    }
+
+    #[test]
+    fn files_for_from_rows_drops_the_anchor_row() {
+        // The hidden home-rooted anchor row: `agent == "none"`, no handle
+        // ever joined. It must yield nothing — not by an is_inert_anchor
+        // special case, just because its handle is empty.
+        let w = crate::transport::WorkspaceInfo {
+            is_default: true,
+            agent: "none".to_string(),
+            agent_handle: String::new(),
+            ..ws_info("proj", "sot-be-proj")
+        };
+        assert!(files_for_from_rows(&[w]).is_empty());
+    }
+
+    #[test]
+    fn files_for_from_rows_includes_a_stopped_row() {
+        // No liveness filter: a row whose REPL is dead and whose capsule
+        // lane is stopped still has its handle declared — delivery is
+        // durable, and liveness belongs in the wake note, never in `filed`.
+        let w = crate::transport::WorkspaceInfo {
+            agent_handle: "stopped-handle".to_string(),
+            repl_state: "dead".to_string(),
+            phase: Some("stopped".to_string()),
+            ..ws_info("proj", "sot-be-proj")
+        };
+        assert_eq!(files_for_from_rows(&[w]), vec!["stopped-handle".to_string()]);
+    }
+
     #[test]
     fn strip_pending_badges_name_with_sigil_and_accent() {
         // Badge floor (ADR 0025 §1): a workspace flagged pending gets a leading
@@ -27631,6 +27726,7 @@ mod tests {
             agent: String::new(),
             autostart_claude: false,
             agent_name: String::new(),
+            agent_handle: String::new(),
             task: String::new(),
             agent_state: String::new(),
             agent_summary: String::new(),
