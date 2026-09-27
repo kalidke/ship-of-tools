@@ -228,6 +228,10 @@ impl Cli {
                     println!("{}", sot_protocol::version_line("sot"));
                     std::process::exit(0);
                 }
+                // A frontend-only box's own self-update state is readable
+                // nowhere else: `update.check` answers for the daemon's box,
+                // which is a different machine. See `selfupdate::print_status`.
+                "--update-status" => crate::selfupdate::print_status(),
                 // Issue #23: `sot --help` used to LAUNCH THE GUI in offline
                 // sample mode — the flags were only discoverable from the
                 // startup log. Print usage like a CLI and exit.
@@ -246,6 +250,11 @@ Connection:
   --token <token>       app-level auth token (must match the backend)
   (--tcp/--socket override the "local" connection; no connection flag at
    all is offline sample mode with demo data)
+
+Status:
+  --update-status       how far this box's own self-update has got
+                        (staged/prepared/armed) and what to do next; prints
+                        and exits without touching the pipeline
 
 Display:
   --scale <f>           UI scale factor

@@ -161,6 +161,33 @@ pub async fn is_staged(updates_root: &Path, id: &ReleaseIdentity) -> bool {
     ReadyManifest::matches(&stage_dir(updates_root, id), id).await
 }
 
+/// Where an IN-PROGRESS stage of one release lives until it is committed.
+///
+/// Keyed by tag and target, not by pid: a staging task dies with its process
+/// (a frontend's does on every converge restart), and the next attempt must
+/// find the bytes the last one downloaded. Two identities can share this name
+/// only by sharing tag and target — a re-cut release — and the reuse gate is
+/// the content hash of the identity being staged, never the dir name, so that
+/// case is discriminated by digest rather than by path.
+fn partial_dir(updates_root: &Path, id: &ReleaseIdentity) -> PathBuf {
+    updates_root.join(format!("tmp-{}-{}", id.tag, id.target))
+}
+
+/// Bytes of `id`'s asset sitting in an interrupted stage — what [`stage`]
+/// would resume from. `None` when there is nothing to resume.
+///
+/// A progress reading, not a promise: these bytes are unverified here by
+/// construction (the hash gate lives in `stage`, which is where trusting them
+/// would matter). Two readings a minute apart tell an operator whether a box
+/// is downloading or wedged — the question repeated converges were being used
+/// to guess at.
+pub async fn partial_asset_bytes(updates_root: &Path, id: &ReleaseIdentity) -> Option<u64> {
+    tokio::fs::metadata(partial_dir(updates_root, id).join(&id.asset))
+        .await
+        .ok()
+        .map(|m| m.len())
+}
+
 /// Download → verify → validate → extract → commit one release for this
 /// machine. Idempotent (a matching completed stage short-circuits) and
 /// serialized across processes via the filesystem lock. Returns `Ok(true)`
@@ -191,35 +218,48 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
             .await
             .with_context(|| format!("removing stale stage dir {}", dest.display()))?;
     }
-    sweep_stale_tmp(&cfg.updates_root).await;
+    // Resumable from here on. The partial dir is keyed to the release, so an
+    // attempt killed mid-download (every converge kills the frontend's) hands
+    // its bytes to the next one instead of leaving them behind a dead pid;
+    // `sweep_stale_tmp` must not reap the one we are about to resume.
+    let tmp = partial_dir(&cfg.updates_root, id);
+    sweep_stale_tmp(&cfg.updates_root, Some(tmp.as_path())).await;
 
-    let tmp = cfg.updates_root.join(format!(
-        "tmp-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
     tokio::fs::create_dir_all(&tmp)
         .await
         .with_context(|| format!("creating staging temp dir {}", tmp.display()))?;
 
     let result = async {
         let archive_path = tmp.join(&id.asset);
-        cfg.fetcher
-            .download(&id.repo, &id.tag, &id.asset, &archive_path)
-            .await
-            .context("downloading release asset")?;
-        let got = hash::sha256_file(&archive_path).await?;
-        if got != id.asset_sha256.to_ascii_lowercase() {
-            bail!(
-                "sha256 mismatch for {}: expected {}, got {got}",
-                id.asset,
-                id.asset_sha256
-            );
+        let want = id.asset_sha256.to_ascii_lowercase();
+        // Resume, not trust. An asset left by a killed attempt counts only
+        // when its WHOLE content hashes to the release's published digest, so
+        // a truncated download can never be mistaken for a complete one —
+        // this is the same gate the fresh-download path goes through, asked
+        // first so it can skip the download instead of only confirming it.
+        if hash::sha256_file(&archive_path).await.ok().as_deref() == Some(want.as_str()) {
+            tracing::info!(tag = %id.tag, asset = %id.asset, "reusing the verified asset from an interrupted stage");
+        } else {
+            let _ = tokio::fs::remove_file(&archive_path).await;
+            cfg.fetcher
+                .download(&id.repo, &id.tag, &id.asset, &archive_path)
+                .await
+                .context("downloading release asset")?;
+            let got = hash::sha256_file(&archive_path).await?;
+            if got != want {
+                bail!(
+                    "sha256 mismatch for {}: expected {}, got {got}",
+                    id.asset,
+                    id.asset_sha256
+                );
+            }
         }
         let top = release_top_dir(&id.asset)?;
+        // The asset is the only thing a partial dir may contribute. A tree a
+        // previous extract left half-written is rebuilt, never resumed: it
+        // carries no digest of its own, so nothing could tell it apart from a
+        // complete one.
+        let _ = tokio::fs::remove_dir_all(tmp.join(&top)).await;
         archive::extract_validated(&archive_path, &tmp, &top)
             .await
             .context("extracting release archive")?;
@@ -251,7 +291,13 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
     .await;
 
     if let Err(e) = result {
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        // Kept on purpose. A timed-out download used to be thrown away whole,
+        // so a box on a slow link re-downloaded from zero every cycle and
+        // never got further; the next attempt now re-verifies the asset by
+        // hash and rebuilds everything derived from it, so a failure costs one
+        // cycle rather than the whole download. `sweep_stale_tmp` reaps it
+        // once the release stops being the one we chase.
+        tracing::warn!(dir = %tmp.display(), "stage failed — keeping the partial dir so the next attempt resumes");
         return Err(e);
     }
     tokio::fs::rename(&tmp, &dest)
@@ -318,8 +364,13 @@ fn release_top_dir(asset: &str) -> Result<String> {
     bail!("asset {asset:?} has no recognized archive extension");
 }
 
-/// Best-effort cleanup of abandoned `tmp-*` staging dirs older than a day.
-async fn sweep_stale_tmp(root: &Path) {
+/// Best-effort cleanup of abandoned `tmp-*` staging dirs older than a day,
+/// except `keep` — the one this attempt is resuming, whose age says how long
+/// ago the download started, not that it was abandoned.
+///
+/// These are now one per release-target rather than one per crashed run, so
+/// what this reaps is a release we have stopped chasing.
+async fn sweep_stale_tmp(root: &Path, keep: Option<&Path>) {
     const MAX_AGE: Duration = Duration::from_secs(24 * 3600);
     let Ok(mut rd) = tokio::fs::read_dir(root).await else {
         return;
@@ -328,6 +379,9 @@ async fn sweep_stale_tmp(root: &Path) {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
         if !name.starts_with("tmp-") {
+            continue;
+        }
+        if keep == Some(entry.path().as_path()) {
             continue;
         }
         let stale = entry
@@ -432,6 +486,36 @@ mod tests {
         let out2 = check(&cfg_current).await;
         assert_eq!(out2.status, "ok");
         assert!(!out2.update_available);
+
+        // A converge restart kills the frontend's staging task mid-download.
+        // What the next attempt may pick up is bounded by one rule: only the
+        // asset, and only on a full-content digest match.
+        let partial = updates.join(format!("tmp-{}-{}", id.tag, id.target));
+        let asset_len = tokio::fs::metadata(&archive).await.unwrap().len();
+
+        // Bytes that are NOT this release's are discarded, not trusted — the
+        // truncated-download case, which a size or existence test would pass.
+        tokio::fs::remove_dir_all(stage_dir(&updates, &id)).await.unwrap();
+        tokio::fs::create_dir_all(&partial).await.unwrap();
+        tokio::fs::write(partial.join(&asset), b"half a download").await.unwrap();
+        assert!(stage(&cfg, &id).await.unwrap());
+        assert!(is_staged(&updates, &id).await);
+        assert_eq!(tokio::fs::read(&staged_bin).await.unwrap(), b"fe-binary");
+
+        // The verified asset IS reused. Proven by making a download
+        // impossible: the asset is removed from the source the fetcher pulls
+        // from, so an attempt that started again instead of continuing fails.
+        tokio::fs::remove_dir_all(stage_dir(&updates, &id)).await.unwrap();
+        tokio::fs::create_dir_all(&partial).await.unwrap();
+        tokio::fs::copy(&archive, partial.join(&asset)).await.unwrap();
+        tokio::fs::remove_file(&archive).await.unwrap();
+        assert_eq!(partial_asset_bytes(&updates, &id).await, Some(asset_len));
+        assert!(stage(&cfg, &id).await.unwrap());
+        assert!(is_staged(&updates, &id).await);
+        assert_eq!(tokio::fs::read(&staged_bin).await.unwrap(), b"fe-binary");
+        // Committing consumes the partial dir: nothing is left claiming to be
+        // resumable once the stage it fed is complete.
+        assert_eq!(partial_asset_bytes(&updates, &id).await, None);
 
         tokio::fs::remove_dir_all(&base).await.unwrap();
     }
