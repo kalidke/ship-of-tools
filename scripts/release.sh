@@ -53,6 +53,43 @@ if [[ $ALLOW_DIRTY -eq 0 && -n "$(git status --porcelain)" ]]; then
     echo "preflight: working tree not clean (see git status; --allow-dirty to override)" >&2; exit 1
 fi
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && { echo "preflight: tag $TAG already exists" >&2; exit 1; }
+# The line's ceiling, enforced by the tool rather than written down. Semver §11
+# compares two pre-release identifiers numerically only when BOTH parse as
+# integers, and `rc9`/`rc10` are each ONE alphanumeric identifier — so they
+# compare as text and `v0.6.6-rc10` sorts BELOW `v0.6.6-rc9`. Two sessions have
+# already restated that as prose ("the line stops at rcN") and drawn the wrong
+# conclusion from it, so the rule lives here: a tag must sort strictly above
+# every tag already on its line, computed with the updater's own
+# `compare_versions` (rust/updater/src/semver.rs) — the comparison every
+# installed box uses to decide what "newer" means. Never a second semver
+# implementation in shell; a second one is what hid this inversion.
+# This runs before the stamp, because a mid-run failure leaves 14 files stamped.
+core="${VERSION%%-*}"
+# Literal globs, not a parse: the line is its final tag plus its pre-releases.
+# Local tags AND origin's, because another box may have cut one minutes ago.
+remote_tags=$(git ls-remote --tags origin "v$core" "v$core-*") \
+    || { echo "preflight: cannot read origin's tags — the highest tag on the $core line is unknown" >&2; exit 1; }
+line_tags=()
+while read -r t; do [[ -n "$t" ]] && line_tags+=("$t"); done < <(
+    { git tag --list "v$core" "v$core-*"
+      # `[^^]*` drops the `refs/tags/<tag>^{}` peel lines; a tag name can't hold `^`.
+      printf '%s\n' "$remote_tags" | sed -n 's|^.*refs/tags/\([^^]*\)$|\1|p'
+    } | sort -u
+)
+order_rc=0
+highest=$( (cd rust && cargo run -q -p sot-updater --example vercmp -- \
+    "$TAG" ${line_tags[@]+"${line_tags[@]}"}) ) || order_rc=$?
+case $order_rc in
+    0) ;;
+    1) echo "preflight: $TAG does not sort above $highest, the highest tag on the $core line" >&2
+       if [[ "$highest" == *-* ]]; then
+           echo "preflight: more is not later — identifiers compare as text unless both parse as integers; appending one always sorts above: $highest.1" >&2
+       else
+           echo "preflight: $highest is a final release, so the $core line is closed — cut the next line" >&2
+       fi
+       exit 1 ;;
+    *) echo "preflight: the version-order check did not run (cargo output above) — a release is never cut blind" >&2; exit 1 ;;
+esac
 # Explicit refspec: `git fetch origin <branch>` only updates the tracking ref
 # opportunistically, and the comparison below has to read a ref that is
 # certainly fresh. A branch that isn't on origin yet fails here by design —
