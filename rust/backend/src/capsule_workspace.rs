@@ -326,6 +326,23 @@ fn caller_brought_settings(extra: &[String]) -> bool {
         .any(|a| a == "--settings" || a.starts_with("--settings="))
 }
 
+/// Whether the user's own settings file already names an auto-memory
+/// directory. An unreadable or unparsable file counts as NOT naming one:
+/// a choice that cannot be read is not a choice this code is overriding.
+fn user_settings_name_a_memory_dir(home: &Path) -> bool {
+    let path = crate::accounts::claude_config_dir(home, "").join("settings.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| {
+            v.get("autoMemoryDirectory")
+                .map(|d| !d.is_null())
+        })
+        .unwrap_or(false)
+}
+
 /// The ONE directory every claude account on this box reaches its
 /// transcripts and memories through, or `None` when that cannot be proven.
 ///
@@ -346,7 +363,7 @@ fn caller_brought_settings(extra: &[String]) -> bool {
 /// permission prompt, today's behaviour, never a wrong path. The narrower
 /// per-account fix (resolve the child's OWN config dir, which needs the
 /// account threaded to the argv builder) is the next release's.
-fn shared_projects_root(home: &Path) -> Option<PathBuf> {
+fn shared_projects_root(home: &Path, child_config_dir: Option<&Path>) -> Option<PathBuf> {
     let spelled = crate::accounts::claude_config_dir(home, "").join("projects");
     let kind = std::fs::symlink_metadata(&spelled).ok()?;
     // Canonical form for COMPARING; the emitted path stays the spelled one
@@ -359,6 +376,22 @@ fn shared_projects_root(home: &Path) -> Option<PathBuf> {
     } else {
         spelled.clone()
     };
+    // When the child's OWN config dir is known, check THAT rather than a
+    // proxy. `agent-exec` execs in place, so its child inherits the
+    // invoking shell's `CLAUDE_CONFIG_DIR`, which need not be one of the
+    // daemon-assigned account dirs at all -- an operator export, or a
+    // nested capsule env, lands outside the set the loop below walks, and
+    // naming the shared store for it would misroute its memory exactly
+    // the way an overriding account's would. The daemon's own env carries
+    // no `CLAUDE_CONFIG_DIR`, so its spawn legs pass `None` and fall
+    // through to the loop unchanged.
+    if let Some(dir) = child_config_dir {
+        let theirs = dir.join("projects");
+        return match std::fs::canonicalize(&theirs) {
+            Ok(resolved) if resolved == canonical => Some(emit),
+            _ => None,
+        };
+    }
     for account in crate::accounts::discover_accounts(home) {
         // The default account IS the shared store -- it is what the others
         // link INTO, and `claude_config_dir` maps it back to the same
@@ -429,12 +462,24 @@ const AUTO_MEMORY_NAME_LIMIT: usize = 200;
 /// regex could disagree on how many `-` a character becomes; the sanitised
 /// name would exceed the limit, where the real one gains a hash suffix
 /// this crate cannot compute; or the projects dir does not resolve.
-fn auto_memory_settings(home: &Path, cwd: &Path) -> Option<String> {
+fn auto_memory_settings(
+    home: &Path,
+    cwd: &Path,
+    child_config_dir: Option<&Path>,
+) -> Option<String> {
     let cwd = cwd.to_str()?;
     if !cwd.is_ascii() {
         return None;
     }
-    let projects = shared_projects_root(home)?;
+    // The owner's own choice outranks ours. A `--settings` value lands in
+    // `flagSettings`, which beats `userSettings` in the first-non-null
+    // chain, so passing ours would SILENTLY override a deliberate
+    // `autoMemoryDirectory` in the user's own settings file. Changing
+    // where a person's memory goes is not this launcher's call.
+    if user_settings_name_a_memory_dir(home) {
+        return None;
+    }
+    let projects = shared_projects_root(home, child_config_dir)?;
     let name = sanitize_project_dir(cwd);
     if name.len() > AUTO_MEMORY_NAME_LIMIT {
         return None;
@@ -462,9 +507,17 @@ fn claude_recipe(resume: bool, extra: &[String], memory_cwd: Option<&Path>) -> V
         // at all, so reading it made the flag appear or vanish with the
         // daemon's ancestry -- absent on exactly the platform where every
         // new workspace is a capsule row.
+        // The ONE `std::env` read for this flag, here rather than inside
+        // `auto_memory_settings`, which stays pure over its arguments and
+        // so is exercised against temp dirs instead of the real config.
+        let child_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
         if let Some(json) = memory_cwd
             .zip(crate::accounts::account_home())
-            .and_then(|(cwd, home)| auto_memory_settings(&home, cwd))
+            .and_then(|(cwd, home)| {
+                auto_memory_settings(&home, cwd, child_config_dir.as_deref())
+            })
         {
             argv.push("--settings".to_string());
             argv.push(json);
@@ -4402,7 +4455,7 @@ mod tests {
         // account's own `projects` link produces once resolved.
         std::os::unix::fs::symlink(&shared, home.path().join(".claude").join("projects")).unwrap();
 
-        let json = auto_memory_settings(home.path(), std::path::Path::new("/tmp/a b/proj"))
+        let json = auto_memory_settings(home.path(), std::path::Path::new("/tmp/a b/proj"), None)
             .expect("a resolvable projects dir yields a flag");
         let want = shared
             .canonicalize()
@@ -4440,7 +4493,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            auto_memory_settings(home.path(), std::path::Path::new("/tmp/p")).is_some(),
+            auto_memory_settings(home.path(), std::path::Path::new("/tmp/p"), None).is_some(),
             "an account linked into the shared store must not block the flag"
         );
 
@@ -4448,9 +4501,77 @@ mod tests {
         let own = home.path().join(".claude-auth").join("acct-own");
         std::fs::create_dir_all(own.join("projects")).unwrap();
         assert_eq!(
-            auto_memory_settings(home.path(), std::path::Path::new("/tmp/p")),
+            auto_memory_settings(home.path(), std::path::Path::new("/tmp/p"), None),
             None,
             "a second store on the box must make this name no path at all"
+        );
+    }
+
+    /// `agent-exec` EXECS in place, so its child inherits the invoking
+    /// shell's `CLAUDE_CONFIG_DIR` -- which need not be a daemon-assigned
+    /// account dir at all. Walking `.claude-auth` would come back clean
+    /// for it and the flag would name the shared store while that
+    /// session's own store is elsewhere. When the child's config dir is
+    /// known it is checked directly, and a dir that does not reach the
+    /// shared store names no path.
+    #[test]
+    #[cfg(unix)]
+    fn auto_memory_settings_checks_the_childs_own_config_dir_when_known() {
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(home.path().join(".claude").join("projects")).unwrap();
+
+        // An operator export pointing at a store of its own.
+        let elsewhere = home.path().join(".claude-work");
+        std::fs::create_dir_all(elsewhere.join("projects")).unwrap();
+        assert_eq!(
+            auto_memory_settings(
+                home.path(),
+                std::path::Path::new("/tmp/p"),
+                Some(&elsewhere)
+            ),
+            None,
+            "a child whose own config dir has a separate store must get no path"
+        );
+
+        // One that does reach the shared store.
+        let linked = home.path().join(".claude-linked");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(
+            home.path().join(".claude").join("projects"),
+            linked.join("projects"),
+        )
+        .unwrap();
+        assert!(
+            auto_memory_settings(
+                home.path(),
+                std::path::Path::new("/tmp/p"),
+                Some(&linked)
+            )
+            .is_some(),
+            "a child linked into the shared store must still be served"
+        );
+    }
+
+    /// A `--settings` value lands in `flagSettings`, which outranks
+    /// `userSettings` in Claude Code's first-non-null chain. So passing
+    /// ours would silently override the owner's own deliberate choice.
+    /// Where a person's memory goes is not this launcher's call.
+    #[test]
+    fn auto_memory_settings_leaves_the_owners_own_choice_alone() {
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(home.path().join(".claude").join("projects")).unwrap();
+        let settings = home.path().join(".claude").join("settings.json");
+        std::fs::write(&settings, r#"{"autoMemoryDirectory": "/somewhere/of/my/own"}"#).unwrap();
+        assert_eq!(
+            auto_memory_settings(home.path(), std::path::Path::new("/tmp/p"), None),
+            None,
+            "the owner named a directory; we must not override it"
+        );
+        // A settings file that does NOT name one is no obstacle, so the
+        // decline above is the key talking and not the file's presence.
+        std::fs::write(&settings, r#"{"defaultMode": "auto"}"#).unwrap();
+        assert!(
+            auto_memory_settings(home.path(), std::path::Path::new("/tmp/p"), None).is_some()
         );
     }
 
@@ -4465,13 +4586,13 @@ mod tests {
         let long = format!("/{}", "x".repeat(210));
         assert!(long.len() > AUTO_MEMORY_NAME_LIMIT);
         assert_eq!(
-            auto_memory_settings(home.path(), std::path::Path::new(&long)),
+            auto_memory_settings(home.path(), std::path::Path::new(&long), None),
             None,
             "a name past the limit gains a hash suffix we cannot compute"
         );
         // The same fixture DOES produce a flag for a short cwd, so the
         // decline above is the limit talking and not a broken fixture.
-        assert!(auto_memory_settings(home.path(), std::path::Path::new("/tmp/p")).is_some());
+        assert!(auto_memory_settings(home.path(), std::path::Path::new("/tmp/p"), None).is_some());
     }
 
     /// `agent-exec` passes `ccb`'s own `"$@"` through, so a caller that
