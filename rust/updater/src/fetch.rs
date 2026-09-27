@@ -318,31 +318,54 @@ mod tests {
         }
     }
 
-    /// `tempdir`'s contract: two calls are two directories, AND the name comes
-    /// from [`crate::unique::suffix`] rather than being hand-rolled here.
+    /// Pins that `tempdir` takes its uniqueness from [`crate::unique::suffix`]
+    /// and not from the clock.
     ///
-    /// The second half is what the assertion has to carry, and the `assert_ne!`
-    /// alone does not — review caught the doc overclaiming it. Two names differ
-    /// on a nanosecond clock whether or not the helper is used, so a bare
-    /// inequality would pass over a re-hand-rolled `<pid>-<nanos>` name, which
-    /// is precisely the defect. The field count is the cheap structural check:
-    /// `sot-updater-<label>-<pid>-<nanos>-<seq>` is six dash-separated fields
-    /// for a dash-free label, and drops to five the moment the counter goes.
+    /// A bare "two names differ" assertion is worthless here — they differ on a
+    /// nanosecond clock whether or not the helper is used, so it would pass over
+    /// a re-hand-rolled `<label>-<pid>-<nanos>` name, the regression that
+    /// reddened a macOS leg. The expected field count is therefore DERIVED from
+    /// a live `suffix()` call rather than hardcoded: hardcoding it would
+    /// re-encode the helper's internal shape in a second file, so a legitimate
+    /// change to `suffix()` would break a test in `fetch.rs` that has no
+    /// business knowing that shape. Derived, this test follows such a change and
+    /// still fails a hand-rolled name, which is the only thing it exists to
+    /// catch. (Shape chosen by the reviewer over my hardcoded variant.)
+    ///
+    /// Two assumptions, both deliberate: the clock is `suffix()`'s
+    /// second-from-last field, which is unavoidable if clock-independence is to
+    /// be observed from outside the helper, and the `want` assertion above fails
+    /// loudly if the shape ever changes in a way that invalidates it; and the
+    /// label must stay dash-free, which `"uniq"` is.
     #[tokio::test]
-    async fn tempdir_names_come_from_the_shared_helper() {
-        let a = tempdir("uniq").await.expect("scratch dir");
-        let b = tempdir("uniq").await.expect("scratch dir");
-        assert_ne!(a, b, "two callers were handed one directory");
-        for dir in [&a, &b] {
-            let name = dir.file_name().unwrap().to_str().unwrap();
-            assert_eq!(
-                name.split('-').count(),
-                6,
-                "not the shared helper's shape; the counter is the last field: {name}"
-            );
+    async fn tempdir_takes_its_uniqueness_from_the_helper_not_the_clock() {
+        let want =
+            "sot-updater-uniq".split('-').count() + crate::unique::suffix().split('-').count();
+        let mut made = Vec::new();
+        for _ in 0..16 {
+            made.push(tempdir("uniq").await.expect("scratch dir"));
         }
-        let _ = tokio::fs::remove_dir_all(a).await;
-        let _ = tokio::fs::remove_dir_all(b).await;
+        let mut without_clock: Vec<String> = made
+            .iter()
+            .map(|p| {
+                let name = p.file_name().unwrap().to_str().unwrap();
+                let mut parts: Vec<&str> = name.split('-').collect();
+                assert_eq!(parts.len(), want, "scratch dir name lost a field: {name}");
+                parts.remove(parts.len() - 2); // the clock
+                parts.join("-")
+            })
+            .collect();
+        let total = without_clock.len();
+        without_clock.sort();
+        without_clock.dedup();
+        assert_eq!(
+            without_clock.len(),
+            total,
+            "scratch dir names collide once the clock is discounted: {made:?}"
+        );
+        for d in made {
+            let _ = tokio::fs::remove_dir_all(d).await;
+        }
     }
 
     #[tokio::test]
