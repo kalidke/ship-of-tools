@@ -326,6 +326,64 @@ fn caller_brought_settings(extra: &[String]) -> bool {
         .any(|a| a == "--settings" || a.starts_with("--settings="))
 }
 
+/// The ONE directory every claude account on this box reaches its
+/// transcripts and memories through, or `None` when that cannot be proven.
+///
+/// The flag names a single literal path, so it is only ever correct if
+/// every account really does land in one store. That is the COMMON CASE,
+/// not an invariant: [`crate::accounts::ensure_account_links`] leaves an
+/// account's own `projects` alone when one is already there in any form
+/// ("it deliberately overrides the shared one, and is NEVER replaced"),
+/// and it links nothing at all while the default folder has no `projects`
+/// yet. So an account can hold a REAL `projects` directory of its own --
+/// and handing that child the default's path would silently write its
+/// memories into another account's store and leave it unable to read its
+/// own. That is worse than the prompt this whole change exists to remove.
+///
+/// Hence: prove it, or name nothing. Any account whose `projects` is a
+/// real directory, or a link pointing somewhere other than the shared
+/// store, makes this return `None` for EVERY child on the box -- the
+/// permission prompt, today's behaviour, never a wrong path. The narrower
+/// per-account fix (resolve the child's OWN config dir, which needs the
+/// account threaded to the argv builder) is the next release's.
+fn shared_projects_root(home: &Path) -> Option<PathBuf> {
+    let spelled = crate::accounts::claude_config_dir(home, "").join("projects");
+    let kind = std::fs::symlink_metadata(&spelled).ok()?;
+    // Canonical form for COMPARING; the emitted path stays the spelled one
+    // unless the default itself is a link, so a box with no indirection is
+    // handed the plain path it already derives rather than an
+    // extended-length Windows spelling it would not recognise.
+    let canonical = std::fs::canonicalize(&spelled).ok()?;
+    let emit = if kind.file_type().is_symlink() {
+        canonical.clone()
+    } else {
+        spelled.clone()
+    };
+    for account in crate::accounts::discover_accounts(home) {
+        // The default account IS the shared store -- it is what the others
+        // link INTO, and `claude_config_dir` maps it back to the same
+        // directory, so treating it as a rival store would make this
+        // decline on every box that has one.
+        if account.name.is_empty() || account.name == "default" {
+            continue;
+        }
+        let theirs = crate::accounts::claude_config_dir(home, &account.name).join("projects");
+        match std::fs::symlink_metadata(&theirs) {
+            // Nothing there yet: the next spawn links it into the shared
+            // store, so it cannot be a second store.
+            Err(_) => continue,
+            Ok(md) if md.file_type().is_symlink() => {
+                if std::fs::canonicalize(&theirs).ok()? != canonical {
+                    return None;
+                }
+            }
+            // A real directory of its own -- a second store.
+            Ok(_) => return None,
+        }
+    }
+    Some(emit)
+}
+
 /// Claude Code's own project-directory sanitiser, reproduced: every
 /// character outside `[A-Za-z0-9]` becomes `-`. Past
 /// [`AUTO_MEMORY_NAME_LIMIT`] it truncates and appends a hash of the path
@@ -351,12 +409,17 @@ const AUTO_MEMORY_NAME_LIMIT: usize = 200;
 /// landing through a symlink outside the working directories — so every
 /// auto-memory write stops for a human, on every account session.
 ///
-/// The fix names the landing path instead of the spelled one. That path is
-/// the same for every account BY CONSTRUCTION: `projects` is on the shared
-/// allowlist, so each account's copy links back into the default config
-/// dir's one real directory. For a session already running on the default
-/// config dir the flag therefore names exactly what it would have derived
-/// itself and changes nothing; only an account session's spelling changes.
+/// The fix names the landing path instead of the spelled one. `projects`
+/// is on the shared allowlist, so in the ordinary layout each account's
+/// copy links back into the default config dir's one real directory, and
+/// the flag names that. This is NOT an invariant, and an earlier version
+/// of this comment wrongly claimed it was: an account may hold a real
+/// `projects` of its own, which the sharing design deliberately permits.
+/// [`shared_projects_root`] is therefore required to PROVE one shared
+/// store before any path is named, and declines for every child on the
+/// box when it cannot. For a session already running on the default config
+/// dir the flag names exactly what it would have derived itself and
+/// changes nothing; only an account session's spelling changes.
 /// Per-project separation is preserved because the sanitised cwd is part
 /// of the path — the reason this cannot be one global setting, which would
 /// collapse every project's memory into a single directory.
@@ -371,19 +434,7 @@ fn auto_memory_settings(home: &Path, cwd: &Path) -> Option<String> {
     if !cwd.is_ascii() {
         return None;
     }
-    let spelled = crate::accounts::claude_default_config_dir(home).join("projects");
-    // Resolve ONLY a real symlink. Canonicalising unconditionally would
-    // hand Windows an extended-length `\\?\C:\...` spelling that is not
-    // the path the session derives for itself.
-    let projects = if std::fs::symlink_metadata(&spelled)
-        .ok()?
-        .file_type()
-        .is_symlink()
-    {
-        std::fs::canonicalize(&spelled).ok()?
-    } else {
-        spelled
-    };
+    let projects = shared_projects_root(home)?;
     let name = sanitize_project_dir(cwd);
     if name.len() > AUTO_MEMORY_NAME_LIMIT {
         return None;
@@ -4367,6 +4418,40 @@ mod tests {
         // And the cwd must still separate projects: a global setting with
         // no cwd component would collapse every project into one directory.
         assert!(json.contains("-tmp-a-b-proj"), "lost the per-project component: {json}");
+    }
+
+    /// The hole the review found: an account may hold a REAL `projects`
+    /// directory, which the sharing design permits and
+    /// `ensure_account_links` deliberately never replaces. Handing that
+    /// child the default's path would write its memories into another
+    /// account's store and leave it unable to read its own, silently. So
+    /// one such account makes the flag decline for EVERY child on the box.
+    #[test]
+    #[cfg(unix)]
+    fn auto_memory_settings_declines_when_an_account_keeps_its_own_projects() {
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(home.path().join(".claude").join("projects")).unwrap();
+        // An account that shares: a link into the default store.
+        let shared = home.path().join(".claude-auth").join("acct-shared");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::os::unix::fs::symlink(
+            home.path().join(".claude").join("projects"),
+            shared.join("projects"),
+        )
+        .unwrap();
+        assert!(
+            auto_memory_settings(home.path(), std::path::Path::new("/tmp/p")).is_some(),
+            "an account linked into the shared store must not block the flag"
+        );
+
+        // Now one that overrides with a real directory of its own.
+        let own = home.path().join(".claude-auth").join("acct-own");
+        std::fs::create_dir_all(own.join("projects")).unwrap();
+        assert_eq!(
+            auto_memory_settings(home.path(), std::path::Path::new("/tmp/p")),
+            None,
+            "a second store on the box must make this name no path at all"
+        );
     }
 
     /// Past 200 characters Claude Code truncates the sanitised name and
