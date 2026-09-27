@@ -252,6 +252,16 @@ pub mod op {
     /// presence from ordinary navigation/typing ops, which turned out to
     /// have automated producers for every one of them.
     pub const FE_PRESENCE: &str = "fe.presence";
+    /// Client→daemon request: a frontend connection declares which
+    /// sot-comm handles it files inbound frames for, so the daemon can
+    /// answer whether a receiver actually names a target instead of
+    /// guessing from this connection's single hello `name`. A frontend
+    /// files every inbound frame into ONE inbox of its own regardless of
+    /// which workspace/session addressed it — the set of handles it
+    /// files FOR cannot be inferred from that single `name`, which is why
+    /// this is a separate declaration. Payload `FeFilesForReq { handles
+    /// }`; answered with `FeFilesForRes { ok }`.
+    pub const FE_FILES_FOR: &str = "fe.files_for";
     /// Open a `.jl` Pluto-flavored notebook in the backend-supervised
     /// Pluto server. The backend lazy-spawns one shared server per
     /// daemon (listening on 127.0.0.1:1234), keeps it across calls,
@@ -1730,6 +1740,23 @@ pub struct FePresenceReq {}
 /// `fe.presence` response — a bare ack; the frontend doesn't act on it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FePresenceRes {
+    pub ok: bool,
+}
+
+/// `fe.files_for` request — **replace semantics, never append**: every
+/// send carries the complete current set of sot-comm handles this
+/// connection files inbound frames for. An append reading would silently
+/// keep a dead handle declared forever (a session that quit, a workspace
+/// that never joined) — the daemon has no way to learn "no longer" except
+/// by being told the new whole set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeFilesForReq {
+    pub handles: Vec<String>,
+}
+
+/// `fe.files_for` response — a bare ack, mirroring `FePresenceRes`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeFilesForRes {
     pub ok: bool,
 }
 
