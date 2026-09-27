@@ -12,7 +12,7 @@ separate julia bundle). Read
 `docs/adr/0030-versioning-release-and-auto-update.md` §1–3 before your first
 release from a fresh context.
 
-## Preflight (do all four, report anything amiss instead of proceeding)
+## Preflight (do all five, report anything amiss instead of proceeding)
 
 1. **main is green**: latest `Rust` workflow run on main succeeded
    (`gh run list --workflow Rust --limit 1`); check the Julia `CI` workflow
@@ -45,6 +45,20 @@ release from a fresh context.
      stays that way. 0.6.7 opens at `-rc.1`.
 4. **Private ops handoff current** — `<ops>/STATUS.md` and `<ops>/TODO.md`
    should not be stale when cutting the release.
+5. **A candidate needs a named consumer** (decision 0013 as amended, after the
+   owner asked why we were cutting tags nobody used). Cut a candidate only when
+   **a named box or person installs it the same day and a named test runs on
+   it** — write both down before you cut, not after. A candidate nobody has
+   installed is not a milestone; it is a tag that cost CI minutes and told us
+   nothing.
+   - A defect found **before the current candidate has been used** rides into
+     **that same candidate on the branch**, not into a new tag. Amend the
+     branch and cut once.
+   - The one exception is a test that genuinely needs a **newer published
+     version** — an updater/downgrade check, say — named as such when you cut.
+   - This bounds the "everything we know is wrong goes in the next rc" rule in
+     *Hard rules* below; it never licenses parking a defect. Same candidate,
+     later cut — never a later line.
 
 ## Cut it
 
@@ -74,6 +88,10 @@ git-cliff is installed (optional — CI generates the release notes), runs
    ref.
 3. Announce: `/bus-note` + a sot-comm broadcast so fleet sessions know a
    release landed (they stay on dev builds; this is for awareness).
+4. **Close the loop on the named consumer**: the publish report says **who
+   installed the tag and what the test showed**. A candidate that was cut and
+   never installed is reported as exactly that, on the same day — an unclosed
+   loop is the finding, not an omission to leave quiet.
 
 ## Pipeline validation without a tag
 
