@@ -4,10 +4,11 @@
 //! fixture-only unit tests (`report`/`render_text`/`render_json`, which
 //! never touch a daemon at all). `mod support;` reuses `Env` for the tmp
 //! dirs and bounded teardown; the daemon itself is spawned BY HAND here
-//! (not `Env::spawn_sotd`) because it must listen on the DEFAULT
-//! `--label sot` socket — the exact endpoint `sotd status`'s own
-//! `topology::local_endpoint("sot")` dials — rather than `spawn_sotd`'s
-//! arbitrary per-test `--socket` path.
+//! (not `Env::spawn_sotd`) because it must listen on the socket the box's
+//! OWN daemon label derives — the exact endpoint `sotd status`'s own
+//! `topology::local_endpoint()` dials, and the reason both spell that label
+//! `local_daemon_label()` rather than a literal — rather than
+//! `spawn_sotd`'s arbitrary per-test `--socket` path.
 
 mod support;
 
@@ -37,7 +38,7 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
 
     let child = std::process::Command::new(sotd_exe())
         .arg("--label")
-        .arg("sot")
+        .arg(sot_protocol::local_daemon_label())
         .arg("--project-root")
         .arg(&env.daemon_project_root)
         .env("LOCALAPPDATA", &env.state_root)
@@ -54,11 +55,11 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
     env.daemon.borrow_mut().replace(child);
 
     // `SOT_RUNTIME_DIR` is already set process-wide by `Env::new`, so this
-    // process derives the identical `--label sot` path the daemon above
-    // just bound — the same one `sotd status`'s own `local_endpoint("sot")`
-    // will dial below.
-    let socket_path = sot_protocol::session_socket_path("sot");
-    let stream = poll_until(|| async { try_connect(&socket_path).await }, BOUND, "sotd's default-label socket to accept a connection").await;
+    // process derives the identical path the daemon above just bound from
+    // the same label — the one `sotd status`'s own `local_endpoint()` will
+    // dial below.
+    let socket_path = sot_protocol::session_socket_path(sot_protocol::local_daemon_label());
+    let stream = poll_until(|| async { try_connect(&socket_path).await }, BOUND, "sotd's own-label socket to accept a connection").await;
     let mut conn = tokio::io::BufReader::new(stream);
     let hello = HelloReq {
         client_id: "status-it-fe".to_string(),

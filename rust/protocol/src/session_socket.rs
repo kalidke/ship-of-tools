@@ -65,6 +65,28 @@ pub fn session_socket_path(label: &str) -> PathBuf {
     }
 }
 
+/// The label THIS box's own persistent daemon runs under, and the one place
+/// that says so. `sot` on Unix (`deploy/sotd.service`, `scripts/install.sh`:
+/// `sotd --project-root $HOME --label sot`); `local` on Windows
+/// (`scripts/sot-local-daemon.ps1`'s `--label local`, which the launcher and
+/// `sot-fe` both ask for by name — `sotd session-socket-path local` — rather
+/// than constructing the pipe name themselves).
+///
+/// It exists because the label used to be spelled `"sot"` at every Rust call
+/// site that meant "this box's daemon" — a second derivation that was simply
+/// wrong on Windows: `sotd status` there reported the box's own live daemon
+/// UNREACHABLE on `sot-<user>-sot` while the frontend was talking to it on
+/// `sot-<user>-local`. A caller that wants a NAMED backend still passes its
+/// own label to [`session_socket_path`]; a caller that means the local
+/// daemon asks here.
+pub fn local_daemon_label() -> &'static str {
+    if cfg!(windows) {
+        "local"
+    } else {
+        "sot"
+    }
+}
+
 /// Filesystem/pipe-name-safe slug: lowercased, `.` folded to `_` (tmux
 /// silently substitutes `.` in session names, so the substituted form is
 /// produced up front rather than round-tripping through a mismatch), every
@@ -142,6 +164,25 @@ mod tests {
         assert_eq!(slug(""), "default");
         assert_eq!(slug("   "), "default");
         assert_eq!(slug("///"), "default");
+    }
+
+    /// [`local_daemon_label`]'s Windows arm is a claim about a file no Rust
+    /// caller can ask: `scripts/sot-local-daemon.ps1` starts the box's own
+    /// daemon with `--label local`. Pin the two sides together here, because
+    /// no Unix CI leg can execute that arm — and the two drifting apart IS
+    /// the bug this resolver closed (`sotd status` dialing
+    /// `sot-<user>-sot` while the daemon listened on `sot-<user>-local`).
+    #[test]
+    fn the_windows_launcher_uses_the_label_this_module_derives() {
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/sot-local-daemon.ps1");
+        let text =
+            std::fs::read_to_string(&script).expect("the local-daemon launcher is in the tree");
+        assert!(
+            text.contains("--label local"),
+            "{} no longer starts the daemon with `--label local`; local_daemon_label()'s Windows arm must follow it",
+            script.display()
+        );
     }
 
     #[test]

@@ -288,7 +288,7 @@ mod path_tests {
 /// `secure_socket_dir` below that still need the shared helpers, keep
 /// working unchanged. See that module for the Windows named-pipe branch and
 /// the moved doc comments/tests.
-pub use sot_protocol::{current_uid, runtime_sot_dir, session_socket_path, slug};
+pub use sot_protocol::{current_uid, local_daemon_label, runtime_sot_dir, session_socket_path, slug};
 
 /// A row's session name for the given label, `sot-be-<slug>` — the
 /// token `pty.open` / `lane.connect` `target` address the row by (see
