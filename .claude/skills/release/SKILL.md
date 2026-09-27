@@ -25,6 +25,19 @@ release from a fresh context.
    Check `git tag -l` for the last tag; if no public-track tags exist, use the
    current product version as the baseline. Prereleases use `-rc.N`
    (auto-marked prerelease on the GitHub Release by the workflow).
+   **The dot is load-bearing, and the form is fixed for a whole X.Y.Z line.**
+   The updater compares semver, so a dotted `rc.N` sorts numerically and has
+   no ceiling, while an undotted `rcN` is one alphanumeric identifier compared
+   as text: `rc10` sorts BELOW `rc7`, and the updater would silently stop
+   offering it. Two rules follow, and the second is the one that bites:
+   - A new line starts at `-rc.1`. Never `-rc1`.
+   - Never switch form mid-line. On a line already tagged `rcN`, a `rc.N+1` is
+     LOWER than every `rcN` before it (`rc` alone sorts below `rc7`), so the
+     switch would publish a release nobody can update to. Such a line stops at
+     `rc9`; if it needs a tenth candidate, cut the stable or open the next
+     line at `-rc.1` instead.
+   - The 0.6.6 line is undotted (`rc1`…`rc7`) and stays that way. 0.6.7 opens
+     at `-rc.1`.
 4. **Private ops handoff current** — `<ops>/STATUS.md` and `<ops>/TODO.md`
    should not be stale when cutting the release.
 
