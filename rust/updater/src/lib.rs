@@ -254,9 +254,16 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
         let _ = tokio::fs::remove_dir_all(&tmp).await;
         return Err(e);
     }
-    tokio::fs::rename(&tmp, &dest)
+    // A failed commit must not leave the staged tree behind: each attempt is
+    // ~66 MB, and a rename that fails every cycle accumulated 132 MB on one box
+    // before anyone noticed.
+    if let Err(e) = tokio::fs::rename(&tmp, &dest)
         .await
-        .with_context(|| format!("committing stage into {}", dest.display()))?;
+        .with_context(|| format!("committing stage into {}", dest.display()))
+    {
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        return Err(e);
+    }
     tracing::info!(tag = %id.tag, asset = %id.asset, dir = %dest.display(), "update staged");
     Ok(true)
 }
