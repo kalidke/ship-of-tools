@@ -1057,6 +1057,19 @@ const LOGO_WORDMARK_PNG: &[u8] = include_bytes!("../../../logo-wordmark-dark.png
 const STRIP_MAX_LABEL: usize = 24;
 /// Gap between adjacent session labels in the strip, in cell-widths.
 const STRIP_GAP_CELLS: f32 = 3.0;
+/// Cells of clear water between one ship's stern and the next ship's rake —
+/// the FLEET's word space, against the three cells between session names. A
+/// host boundary equal to one word space did no grouping work at all (22–23 px
+/// of it against a 24 px word gap), so a ship reads as a ship only when the
+/// water around it is wider than the space inside it. `strip_gap_before` spends
+/// it, and it is what keeps a rake from ever touching the stern ahead of it.
+const STRIP_SHIP_GAP_CELLS: f32 = 5.0;
+/// Cells between a ship's LAST session name and its stern riser, so the riser
+/// never crowds the name it closes behind — 5 px of clearance against a
+/// 20–24 px word rhythm read as a collision. `ship_marks` places the stern
+/// here; no item width reserves it, so `strip_gap_before` is where it is paid
+/// for across a ship boundary.
+const STRIP_STERN_CLEAR_CELLS: f32 = 2.0;
 /// Easing time-constant (seconds) for the strip slide — ~50 ms → an
 /// exponential ease-out that settles in ~150 ms, frame-rate independent.
 const STRIP_TAU: f32 = 0.05;
@@ -1064,12 +1077,21 @@ const STRIP_TAU: f32 = 0.05;
 /// bottom strip so it's distinguishable by POSITION, not just colour — it sits
 /// raised above its peers like a selected tab. Subtle; tune to taste.
 const STRIP_ACTIVE_LIFT_CELLS: f32 = 0.4;
-/// Size of a bow wheel (`StripItem::Bow`) relative to the bookend logos
-/// flanking the whole strip — smaller so a mid-strip wheel reads as a group
-/// mark, not a second pair of bookends. Applied to both width and height so
-/// the PNG's aspect ratio stays unchanged. The one ship you are steering
-/// drops the factor (full bookend height); it is the only exception.
-const DIVIDER_SIZE_FACTOR: f32 = 0.8;
+/// Cells of waterline between a bow's wheel and its box name — the `_` in
+/// `\ 0_-name-`. `ship_marks` alone spends it: the box name runs BENEATH the
+/// session names on its own row, so no item width reserves the name or its air
+/// (`strip_item_widths`), and the only thing that has to agree about where the
+/// name starts is the line drawn around it.
+const BOW_AIR_CELLS: f32 = 1.0;
+/// Box-name ink — water blue `#58A6C4`, a tier of its own: 7.25:1 on the
+/// strip's navy and 24–33° of hue off Julia blue `#4063D8`, which `AgentTone`
+/// already spends on `Done`. The STEERED box takes the lighter tint of the same
+/// water, `#8FD4EA`, so "which box do my keystrokes reach" is one step along
+/// one hue rather than a sixth colour. Deliberately NOT the cream a session
+/// name takes (`(250, 250, 215)`): pixel-identical ink made a host read as one
+/// more session.
+const BOX_NAME_RGB: (u8, u8, u8) = (88, 166, 196);
+const BOX_NAME_STEERED_RGB: (u8, u8, u8) = (143, 212, 234);
 /// Varnished-oak brown for a ship's hull — `#8B5A2B`, 3.4:1 against the
 /// strip's midnight-navy background (above the 3:1 floor for a non-text
 /// element) and 1.6× darker than the DIM fall-through ink, so a hull can
@@ -1081,16 +1103,61 @@ const HULL_RGB: (u8, u8, u8) = (139, 90, 43);
 const STRIP_ROWS: f32 = 2.0;
 /// Gap (physical px) between the window's bottom edge and the bottom of the
 /// strip's lower (hull) row — the strip hugs the bottom edge, so this anchors
-/// the whole band.
-const STRIP_BOTTOM_PAD: f32 = 2.0;
+/// the whole band — as a fraction of `BASE_CELL_H`, 2 px at scale 1.
+///
+/// It MUST scale, and that is not cosmetic. As a scale-invariant `2.0` it
+/// was the ONLY length in `strip_reserved_rows` that did not scale while
+/// `cell_h`, `cell_w` and `oy` all did, so a ratio that is scale-free in
+/// every other term came out scale-DEPENDENT: the reservation needed a
+/// third row at and below ~0.224, costing a pane row there, and no clamp
+/// could fix it without putting the lifted name on the version stamp
+/// (`2*cell_h + oy >= 2*cell_h + 2` simply fails once `oy < 2`). Scaling
+/// the pad deletes the regime instead of trading one defect for a worse
+/// one.
+const STRIP_BOTTOM_PAD_ROWS: f32 = 2.0 / BASE_CELL_H;
 /// Hull thickness and waterline drop, as fractions of `BASE_CELL_H` — the row
 /// height the mock was drawn against, named rather than a bare 18 in a
-/// denominator so a change there can't silently detune the hull.
+/// denominator so a change there can't silently detune the hull. The drop is
+/// 11 — the locked rasteriser's own number. The wheel no longer shares this row
+/// (it sits inline with the session names, `ship_vertical`), so the drop is set
+/// by this row's typography alone: at 11 the line runs under the box name's
+/// feet, which is what makes the name read as set INTO the water rather than
+/// resting on it.
 const HULL_THICKNESS_ROWS: f32 = 3.0 / BASE_CELL_H;
-const HULL_DROP_ROWS: f32 = 14.0 / BASE_CELL_H;
+const HULL_DROP_ROWS: f32 = 11.0 / BASE_CELL_H;
+/// Glyph-top drop of the box name inside the hull row, as a fraction of
+/// `BASE_CELL_H` — 1 px at scale 1. At +0 the waterline rode high across the
+/// letters instead of running along their feet.
+const HULL_NAME_DROP_ROWS: f32 = 1.0 / BASE_CELL_H;
+/// Where the bow rake's apex lands, as a fraction of `BASE_CELL_H` below the
+/// BAND's top — 2 px at scale 1. The rake rises out of the waterline all the
+/// way into the session-name row, so the `\` reads as one vessel's bow instead
+/// of a notch in the line; 2 px of air keeps its top pixel inside the band.
+const HULL_RAKE_TOP_ROWS: f32 = 2.0 / BASE_CELL_H;
+/// Slack on the RIGHT of the break the box name leaves in the waterline, as a
+/// fraction of ONE CELL. The break is sized to the character ADVANCE, but a
+/// trailing `k`, `y`, `j` or `f` overhangs its advance and its ink blends into
+/// the line (measured on an 8-letter host name). At 1–2 px the name still reads
+/// as set into the water, so the slack costs nothing and buys the glyph its
+/// edge back.
+///
+/// A fifth of a cell, NOT `1.0 / BASE_CELL_W`. The overhang is the font's ink
+/// against its own advance, so it scales with the REAL `cell_w` — and the
+/// shipped monospace advances ~7.7 px at scale 1, not `BASE_CELL_W`'s 9.0.
+/// Against 9.0 the slack resolves to 0.86 px, LESS than the 1 px overhang it
+/// exists to clear: a constant that looks right at the base cell and fails at
+/// the actual one. A fifth of a cell is ~1.5 px at the shipped advance and
+/// stays inside the 1–2 px that still reads as set-in.
+const HULL_NAME_SLACK_CELLS: f32 = 0.2;
+/// Horizontal run of the slanted bow rake, in cell-widths. It reaches back
+/// from the bow item's left edge — its foot lands on the wheel's own left edge
+/// — and `strip_gap_before` pays for the run ON TOP of the water a ship
+/// boundary opens, so a rake can never reach over the stern of the ship ahead
+/// of it: `STRIP_SHIP_GAP_CELLS` of navy always separate the two.
+const HULL_BOW_RUN_CELLS: f32 = 3.0;
 
 /// Wheel-spin gimmick: cycling workspaces (`Shift+←/→` → `cycle_workspace`)
-/// flicks the brand wheels that bookend the bottom session strip — forward
+/// flicks the brand wheel at every ship's bow in the bottom strip — forward
 /// spins them clockwise, backward counter-clockwise — and they spin down. Each
 /// cycle adds `WHEEL_FLICK_VEL` rad/s (signed by direction, clamped to
 /// `WHEEL_MAX_VEL` so a burst of presses doesn't blur), decaying with time
@@ -1119,15 +1186,15 @@ fn strip_truncate(label: &str) -> String {
 /// One entry in the bottom session strip's layout: a session badge (its
 /// `WsKey`, carried for symmetry with `workspace_slugs` even though today's
 /// only consumer just needs the slot), or a `Bow` — the head of one HOST
-/// GROUP, which the strip draws as a ship: the brand-wheel miniature
+/// GROUP, which the strip draws as a ship: the full-size brand wheel
 /// (mirroring how the Sessions TREE separates hosts with
 /// `HOST_DIVIDER_GLYPH`; ADR 0042 L2a, "local is just another host", so the
-/// boundary next to `local` gets no special case), one cell of air, and that
-/// group's host as `host_label` renders it — wheel then name is the tree's
-/// own `"⚙ <host>"`, laid out sideways. The wheel and the name are ONE mark
-/// because the owner's design treats them as one: they always co-occur, and
-/// a merged item's width is exactly the bow geometry the hull is measured
-/// from. A bow is never selectable or the active item — `cycle_workspace`
+/// boundary next to `local` gets no special case), and — a row below, so it
+/// costs the layout no width at all — that group's host as `host_label`
+/// renders it, `BOW_AIR_CELLS` past the wheel. The wheel and the name are ONE
+/// item because the owner's design treats them as one: they always co-occur,
+/// and the hull's whole extent is measured from this one slot. A bow is never
+/// selectable or the active item — `cycle_workspace`
 /// (Shift+←/→) keeps walking `workspace_slugs` only, never `StripItem`.
 #[derive(Debug, Clone, PartialEq)]
 enum StripItem {
@@ -1139,23 +1206,18 @@ enum StripItem {
 /// — ADR 0042 L2a union-of-hosts order) out as strip items: a `Bow` (name
 /// text from `tag_for`, the caller's `host_label` projection — the one place
 /// a host's display name is decided) at the head of EVERY host group, and a
-/// `Session` per slug. A single host gets no bow at all: with only one group
-/// there is nothing to attribute or separate, so the strip stays exactly the
-/// bare row of session names it has always been — one hull with one name is
-/// a frame, not a fleet, and the hull's mere presence then means "more than
-/// one box is in reach". A bow needs no asset check: with no decoded logo
+/// `Session` per slug. A lone host is a ship too (owner, 2026-09-27): its
+/// group gets a bow like every other, so the strip has no state in which
+/// session names float with no hull under them. A bow needs no asset check: with no decoded logo
 /// its wheel simply measures 0 (`strip_item_widths`' `wheel_w`) and the NAME
-/// still marks the group, matching the bookend logos' fail-soft contract. A
+/// still marks the group, matching the logo asset's fail-soft contract. A
 /// host with no visible rows never appears in `slugs` to begin with
 /// (`fresh_workspace_caches` already filters the inert anchor out), so it
 /// can't produce an empty group.
 fn strip_items(slugs: &[WsKey], tag_for: impl Fn(&HostKey) -> String) -> Vec<StripItem> {
-    let multi = slugs
-        .first()
-        .is_some_and(|first| slugs.iter().any(|k| k.0 != first.0));
     let mut out = Vec::with_capacity(slugs.len());
     for (i, key) in slugs.iter().enumerate() {
-        if multi && (i == 0 || slugs[i - 1].0 != key.0) {
+        if i == 0 || slugs[i - 1].0 != key.0 {
             out.push(StripItem::Bow {
                 host: key.0.clone(),
                 name: tag_for(&key.0),
@@ -1191,42 +1253,59 @@ fn ship_spans(items: &[StripItem]) -> Vec<(usize, usize)> {
 
 /// Left-edge cursor position (pixels, strip-local — before the `win_w/2 +
 /// (center - scroll)` screen-centering every strip element applies) of
-/// each entry in `widths`, laid out left→right with `gap` between
-/// neighbours. The one cursor-walk primitive `session_strip_target`,
-/// `session_strip_lines`, and `strip_divider_offsets` all build on, so
-/// inserting an item — a `Bow`, or hypothetically another session —
-/// shifts everything after it by exactly that item's own `width + gap`;
-/// there's only one place that arithmetic lives.
-fn strip_cursor_positions(widths: &[f32], gap: f32) -> Vec<f32> {
+/// each entry in `widths`, laid out left→right with `gap_before(i)` of space
+/// ahead of entry `i` (the first entry sits at 0 — the strip is centred on the
+/// active session, so its own left edge is not a coordinate anyone reads). The
+/// one cursor-walk primitive `session_strip_target`, `session_strip_lines`, and
+/// `strip_divider_offsets` all build on, so inserting an item — a `Bow`, or
+/// hypothetically another session — shifts everything after it by exactly that
+/// item's own width plus the gap it opens; there's only one place that
+/// arithmetic lives. A uniform-gap caller passes `|_| gap`.
+fn strip_cursor_positions(widths: &[f32], gap_before: impl Fn(usize) -> f32) -> Vec<f32> {
     let mut out = Vec::with_capacity(widths.len());
     let mut cursor = 0.0;
-    for &w in widths {
+    for (i, &w) in widths.iter().enumerate() {
+        if i > 0 {
+            cursor += gap_before(i);
+        }
         out.push(cursor);
-        cursor += w + gap;
+        cursor += w;
     }
     out
 }
 
-/// Pixel width of one bow: its wheel, one cell of air, then its name at the
-/// same `chars * cell_w` every strip name uses. With no decoded logo
-/// (`wheel_w == 0`) the air goes too and the bow is exactly its name. One
-/// place, because the hull's left edge is measured off this.
-fn bow_width(name: &str, wheel_w: f32, cell_w: f32) -> f32 {
-    let wheel = if wheel_w > 0.0 { wheel_w + cell_w } else { 0.0 };
-    wheel + name.chars().count() as f32 * cell_w
+/// Space the cursor walk opens BEFORE one strip item. A `Session` gets one word
+/// space (`STRIP_GAP_CELLS`). A `Bow` opens a whole new ship, so it carries the
+/// entire fleet boundary: the previous ship's stern clearance
+/// (`STRIP_STERN_CLEAR_CELLS` — drawn by `ship_marks`, reserved by no item
+/// width), then `STRIP_SHIP_GAP_CELLS` of clear water, then the
+/// `HULL_BOW_RUN_CELLS` the rake needs to the LEFT of the wheel this item
+/// measures. That sum is what puts five cells of navy between one stern and the
+/// next rake's tip, as the locked rasteriser draws it; spending the water alone
+/// would leave the rake landing on the stern ahead of it, which is what the
+/// uniform gap did.
+fn strip_gap_before(item: &StripItem, cell_w: f32) -> f32 {
+    match item {
+        StripItem::Session(_) => STRIP_GAP_CELLS * cell_w,
+        StripItem::Bow { .. } => {
+            (STRIP_STERN_CLEAR_CELLS + STRIP_SHIP_GAP_CELLS + HULL_BOW_RUN_CELLS) * cell_w
+        }
+    }
 }
 
 /// Pixel width for every entry in `items`: a `Session` gets its matching
 /// entry from `label_widths` (same order — `items`'s `Session` entries are
 /// built, via `strip_items`, from the very slug list `label_widths` is
 /// keyed off, so the i-th `Session` in `items` IS `label_widths[i]`); a
-/// `Bow` gets `bow_width`.
-fn strip_item_widths(
-    items: &[StripItem],
-    label_widths: &[f32],
-    wheel_w: f32,
-    cell_w: f32,
-) -> Vec<f32> {
+/// `Bow` reserves its WHEEL and nothing else.
+///
+/// The bow reserves no box name (owner, 2026-09-27). Reserving wheel + air +
+/// name pushed the first session of a group right by the host's own name length
+/// — 8 cells for a 4-letter host, 11.6 for an 8-letter one — so the gap after a
+/// bow grew with a fact nobody reads it for. The name runs BENEATH the session
+/// names on the hull row, a row of its own, so nothing collides and the
+/// sessions start `STRIP_GAP_CELLS` past the wheel whatever the box is called.
+fn strip_item_widths(items: &[StripItem], label_widths: &[f32], wheel_w: f32) -> Vec<f32> {
     let mut li = 0usize;
     items
         .iter()
@@ -1236,7 +1315,7 @@ fn strip_item_widths(
                 li += 1;
                 w
             }
-            StripItem::Bow { name, .. } => bow_width(name, wheel_w, cell_w),
+            StripItem::Bow { .. } => wheel_w,
         })
         .collect()
 }
@@ -1255,9 +1334,19 @@ fn strip_item_widths(
 /// `StripItem` at all. A caller with no dividers (or no divider asset to
 /// draw) can pass an empty slice; both callers already treat a short
 /// `divider_offsets` as "0.0 past the end".
-fn strip_divider_offsets(items: &[StripItem], item_widths: &[f32], label_widths: &[f32], gap: f32) -> Vec<f32> {
-    let item_positions = strip_cursor_positions(item_widths, gap);
-    let label_positions = strip_cursor_positions(label_widths, gap);
+///
+/// The item walk spends the per-item gap (`strip_gap_before` — a ship boundary
+/// is wider than a word space), the label walk the uniform `STRIP_GAP_CELLS`
+/// the two session-only walks use, and the difference is precisely the offset.
+/// So a wider ship boundary needs no change in either of those two callers.
+fn strip_divider_offsets(
+    items: &[StripItem],
+    item_widths: &[f32],
+    label_widths: &[f32],
+    cell_w: f32,
+) -> Vec<f32> {
+    let item_positions = strip_cursor_positions(item_widths, |i| strip_gap_before(&items[i], cell_w));
+    let label_positions = strip_cursor_positions(label_widths, |_| STRIP_GAP_CELLS * cell_w);
     let mut out = Vec::with_capacity(label_widths.len());
     let mut li = 0usize;
     for (item, &pos) in items.iter().zip(item_positions.iter()) {
@@ -1269,36 +1358,28 @@ fn strip_divider_offsets(items: &[StripItem], item_widths: &[f32], label_widths:
     out
 }
 
-/// Which of the strip's two rows a drawn mark sits on. The bookend logos
-/// bracket only their OWN row's marks: a bracket that mixed rows measured
-/// something it could never collide with, which is how both bookends came to
-/// be skipped on any scrolled multi-host strip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StripRow {
-    Names,
-    Hull,
-}
-
-/// What one strip mark draws. `SessionName` is already drawn (the mark exists
-/// so the bookend bracket measures the same set); `Wheel { big }` is a bow's
-/// brand wheel (`big` = the ship you are steering, at full bookend size);
-/// `BoxName` is that bow's host name, inline on the waterline; `Hull` is the
-/// waterline bar itself, running from one cell past the name to the stern.
+/// What one strip mark draws — the five pieces of one ship. `Wheel` is the
+/// bow's brand wheel, full size for every ship and INLINE WITH THE SESSION
+/// NAMES on the upper row (which one you steer is `BoxName`'s `steered`, spent
+/// in the INK, so switching ships can never reflow the strip); `BoxName` is
+/// that bow's host name, set into the waterline a row below; `Hull` is one flat
+/// waterline segment; `BowRake` is the slanted bow, stepping up-left out of the
+/// waterline as far as the wheel's own row; `Stern` is the short vertical riser
+/// that closes the `\_|`. `ship_vertical` places all of them vertically.
 #[derive(Debug, Clone, PartialEq)]
 enum StripMarkKind {
-    SessionName,
-    Wheel { big: bool },
-    BoxName(String),
+    Wheel,
+    BoxName { name: String, steered: bool },
     Hull,
+    BowRake,
+    Stern,
 }
 
-/// One rect the strip actually draws: its row, its screen-space left edge and
-/// width (physical px), and what it is. Every mark goes through ONE cull into
-/// one `Vec`, so the bookends' bracket is `min`/`max` over what was drawn and
-/// cannot disagree with it.
+/// One rect the strip actually draws: its screen-space left edge and width
+/// (physical px), and what it is. Every mark goes through ONE cull into one
+/// `Vec`, so what the draw loop paints is exactly what survived the cull.
 #[derive(Debug, Clone, PartialEq)]
 struct StripMark {
-    row: StripRow,
     left: f32,
     w: f32,
     kind: StripMarkKind,
@@ -1317,45 +1398,40 @@ fn strip_visible(left: f32, w: f32, win_w: f32) -> bool {
     left + w >= 0.0 && left <= win_w
 }
 
-/// Width and height of a bow wheel: the bookend logo's own size for the ship
-/// you are steering, `DIVIDER_SIZE_FACTOR` of it for every other. One place
-/// for that factor — the small pair used to be recomputed per draw site, and
-/// the LAYOUT is keyed to it (`strip_item_widths`' `wheel_w`) so which ship is
-/// steered can never reflow the strip: the big wheel's extra 25% spends the
-/// bow's one cell of air instead.
-fn wheel_size(logo_w: f32, logo_h: f32, big: bool) -> (f32, f32) {
-    if big {
-        (logo_w, logo_h)
-    } else {
-        (logo_w * DIVIDER_SIZE_FACTOR, logo_h * DIVIDER_SIZE_FACTOR)
-    }
-}
-
 /// Every mark the fleet's ships contribute, culled once. `items` and
 /// `item_positions`/`item_widths` are lock-step (the one cursor walk);
-/// `wheel_w` is the SMALL wheel width (0 with no decoded logo), the same value
-/// the layout reserved. `steered` is the host whose wheel goes full size —
+/// `logo_w` is the wheel's width — full size for every ship now, and the same
+/// value the layout reserved (`strip_item_widths`' `wheel_w`), 0 with no
+/// decoded logo; `bar_w` is the waterline's thickness, so a stern mark's span
+/// is exactly the bar the draw site paints there.
+///
+/// `steered` is the host whose box name takes the bright ink —
 /// `State::active_host`, the box your keystrokes actually reach, which stays
 /// right even when the active session's row has just dropped out of
 /// `workspace_slugs` (a lookup-by-index fallback would then mark the wrong
-/// ship).
+/// ship). `reachable` culls an unreachable box's ship, STRIP-LOCALLY: the
+/// mock's rule is that the ship is simply gone, and this is the only place
+/// that may act on it — filtering `workspace_slugs` was reverted in
+/// `39def8d8` because three other consumers read that list. The steered box
+/// keeps its ship whatever its link is doing, which is what makes the cull
+/// safe where the filter was not: the one ship that must stay drawn is the one
+/// whose name says where the keystrokes are going.
 fn ship_marks(
     items: &[StripItem],
     item_positions: &[f32],
     item_widths: &[f32],
     steered: &HostKey,
+    reachable: impl Fn(&HostKey) -> bool,
     logo_w: f32,
-    logo_h: f32,
-    wheel_w: f32,
     cell_w: f32,
+    bar_w: f32,
     scroll: f32,
     win_w: f32,
 ) -> Vec<StripMark> {
     let mut out = Vec::new();
-    let mut push = |row: StripRow, local: f32, w: f32, kind: StripMarkKind| {
-        let left = strip_screen_left(local, scroll, win_w);
+    let mut push = |left: f32, w: f32, kind: StripMarkKind| {
         if w > 0.0 && strip_visible(left, w, win_w) {
-            out.push(StripMark { row, left, w, kind });
+            out.push(StripMark { left, w, kind });
         }
     };
     for (bow, stern) in ship_spans(items) {
@@ -1365,76 +1441,127 @@ fn ship_marks(
         let StripItem::Bow { host, name } = &items[bow] else {
             continue;
         };
-        let big = host == steered;
-        if wheel_w > 0.0 {
-            let (w, _) = wheel_size(logo_w, logo_h, big);
-            push(StripRow::Hull, bow_x, w, StripMarkKind::Wheel { big });
+        let steering = host == steered;
+        if !steering && !reachable(host) {
+            continue;
         }
-        // The name sits past the wheel's reserved slot (wheel + one cell of
-        // air), so a big wheel never shifts it.
-        let name_x = bow_x + if wheel_w > 0.0 { wheel_w + cell_w } else { 0.0 };
-        let name_w = name.chars().count() as f32 * cell_w;
-        push(
-            StripRow::Hull,
-            name_x,
-            name_w,
-            StripMarkKind::BoxName(name.clone()),
-        );
-        // Waterline: one cell of air after the name, out to the stern's right
-        // edge — under the group's session names, which are a row up.
-        let hull_x = bow_x + bow_w + cell_w;
-        let hull_r = item_positions
+        let bow_left = strip_screen_left(bow_x, scroll, win_w);
+        // `\__|`, left to right. The rake reaches back across the inter-ship
+        // gap and puts its foot on the wheel's left edge, so the wheel sits
+        // inside the bow and the waterline starts again past it.
+        let run = HULL_BOW_RUN_CELLS * cell_w;
+        push(bow_left - run, run, StripMarkKind::BowRake);
+        if logo_w > 0.0 {
+            push(bow_left, logo_w, StripMarkKind::Wheel);
+        }
+        // The stern stands `STRIP_STERN_CLEAR_CELLS` past the group's last
+        // session name — that clearance is reserved by no item width, so it is
+        // added here and paid for on the far side by `strip_gap_before`.
+        let stern_r = item_positions
             .get(stern)
             .zip(item_widths.get(stern))
-            .map(|(&x, &w)| x + w)
-            .unwrap_or(hull_x);
-        push(StripRow::Hull, hull_x, hull_r - hull_x, StripMarkKind::Hull);
+            .map(|(&x, &w)| strip_screen_left(x, scroll, win_w) + w)
+            .unwrap_or(bow_left + bow_w)
+            + STRIP_STERN_CLEAR_CELLS * cell_w;
+        // The name sits past the wheel and its air, and CLAMPS to the window's
+        // left edge once its own bow has scrolled off it: the name wins, the
+        // waterline yields. The clamp only ever pushes the name RIGHT, and
+        // never further right than its OWN stern leaves room for — so a ship
+        // that has scrolled off ENTIRELY takes its name with it instead of
+        // leaving it pinned to the edge, while a ship whose sessions are
+        // NARROWER than its host name (the bow reserves the wheel alone now,
+        // so that is reachable) can never have the name squeezed back over its
+        // own wheel. The name is already truncated to `STRIP_MAX_LABEL` by the
+        // caller, so a clamped one can't run away with the row either.
+        let name_w = name.chars().count() as f32 * cell_w;
+        let name_x = if logo_w > 0.0 {
+            bow_left + logo_w + BOW_AIR_CELLS * cell_w
+        } else {
+            bow_left
+        };
+        let name_left = name_x + (-name_x).max(0.0).min((stern_r - name_w - name_x).max(0.0));
+        // The waterline, in the two spans the name leaves it: rake's foot →
+        // name and name → stern. Both are measured off the CLAMPED name, so the
+        // line touches it on BOTH sides (`-name-`) however far the ship has
+        // scrolled. The first run starts at the bow itself, PAST no wheel: the
+        // wheel sits a row up now (`ship_vertical`), so a run starting at its
+        // right edge left a wheel-wide hole in the line exactly where the rake
+        // lands — the locked rasteriser runs the line under the disc. With no
+        // wheel at all the name starts at the bow and this run is empty, which
+        // `push`'s own `w > 0` guard drops.
+        push(bow_left, name_left - bow_left, StripMarkKind::Hull);
+        push(
+            name_left,
+            name_w,
+            StripMarkKind::BoxName {
+                name: name.clone(),
+                steered: steering,
+            },
+        );
+        // `HULL_NAME_SLACK_CELLS` of slack on the break's RIGHT: the break is
+        // sized to the character advance, and a trailing descender overhangs it.
+        let run_x = name_left + name_w + HULL_NAME_SLACK_CELLS * cell_w;
+        push(run_x, stern_r - run_x, StripMarkKind::Hull);
+        push(stern_r - bar_w, bar_w, StripMarkKind::Stern);
     }
     out
 }
 
-/// The bookend bracket for one row: leftmost left edge and rightmost right
-/// edge among the marks ON THAT ROW. `None` when that row drew nothing, in
-/// which case there is nothing to bookend.
-fn strip_bracket(marks: &[StripMark], row: StripRow) -> Option<(f32, f32)> {
-    marks
-        .iter()
-        .filter(|m| m.row == row)
-        .fold(None, |acc: Option<(f32, f32)>, m| {
-            Some(match acc {
-                None => (m.left, m.left + m.w),
-                Some((l, r)) => (l.min(m.left), r.max(m.left + m.w)),
-            })
-        })
+/// One flat waterline segment, `left` to `right` at `y..y+h`. `None` when the
+/// name — or a scroll — left it no columns: the bow rake and the stern are
+/// their own rects, so a ship with no flat run still draws its ends.
+fn hull_bar_rect(left: f32, right: f32, y: f32, h: f32) -> Option<ScreenRect> {
+    (right > left && h > 0.0).then(|| ScreenRect {
+        x: left,
+        y,
+        w: right - left,
+        h,
+    })
 }
 
-/// Solid rects for one ship's hull: a thin waterline bar from `left` to
-/// `right` at `y..y+h`, plus a stern-only rake — a bar-width rise at the
-/// right end, `3*h` tall, bottom-aligned with the bar. No bow-side rake: the
-/// wheel already marks the bow and the name has taken its columns (owner
-/// ruling), so one rake is what makes the shape read as a vessel rather than
-/// a rule. Axis-aligned only — the quad path has no rotation, so the rake is
-/// one step, not a diagonal. A hull with no columns left (`right <= left`)
-/// draws nothing.
-fn hull_rects(left: f32, right: f32, y: f32, h: f32) -> Vec<ScreenRect> {
-    if right <= left || h <= 0.0 {
+/// The slanted bow — `\` — as axis-aligned bars stepping up-left from the
+/// waterline's top surface at `left + run`, one bar per pixel of `rise`, so the
+/// staircase is contiguous at every scale. Each bar carries the waterline's own
+/// thickness `h` in BOTH axes (`step_w + h` wide, `h` tall): a 1 px step
+/// vanished at true size, and a steep rake only reads at the line's weight if
+/// its steps are as thick as the line. The rake now rises out of the waterline
+/// into the SESSION-NAME row (`ship_vertical`'s `rake_rise`), which is inside
+/// the band's two rows, so no row reservation has to grow for it. Stepped, not
+/// rotated: the quad path is axis-aligned, and the owner chose the stepped
+/// build over a new primitive, for speed.
+fn hull_bow_rects(left: f32, run: f32, y: f32, h: f32, rise: f32) -> Vec<ScreenRect> {
+    let steps = rise.floor();
+    if run <= 0.0 || h <= 0.0 || steps < 1.0 {
         return Vec::new();
     }
-    let rake_h = h * 3.0;
-    vec![
-        ScreenRect {
-            x: left,
-            y,
-            w: right - left,
+    let step_w = run / steps;
+    (0..steps as usize)
+        .map(|i| ScreenRect {
+            x: left + run - (i as f32 + 1.0) * step_w,
+            y: y - i as f32,
+            w: step_w + h,
             h,
-        },
-        ScreenRect {
-            x: (right - h).max(left),
-            y: y + h - rake_h,
-            w: h,
-            h: rake_h,
-        },
-    ]
+        })
+        .collect()
+}
+
+/// The vertical stern — `|` — that closes the hull: one bar-width bar at the
+/// ship's `right` edge, from the waterline's bottom up to `top`. Axis-aligned
+/// already, so unlike the bow it needs no stepping. `None` with no thickness or
+/// nothing to rise through.
+///
+/// A SHORT riser, not the bow's twin: `top` is the hull row's own glyph top
+/// (`ship_vertical` places it), so the stern spans one text row's worth of the
+/// band — exactly where the `|` sits in the owner's ASCII — while the bow rakes
+/// a whole row higher. The two ends of a ship are not symmetric; a stern as tall
+/// as the bow read as a box around the session names.
+fn hull_stern_rect(right: f32, y: f32, h: f32, top: f32) -> Option<ScreenRect> {
+    (h > 0.0 && y + h > top).then(|| ScreenRect {
+        x: right - h,
+        y: top,
+        w: h,
+        h: y + h - top,
+    })
 }
 
 /// The waterline's y and thickness inside the ship row whose glyph-top is
@@ -1452,10 +1579,57 @@ fn hull_band(ship_y: f32, cell_h: f32) -> (f32, f32) {
 
 /// Glyph-top y (physical px) of the strip's two rows — `(names, hull)`. The
 /// band hugs the window's bottom edge, so both are measured back from it:
-/// `STRIP_BOTTOM_PAD` below the hull row, one `cell_h` above it for the names.
+/// `STRIP_BOTTOM_PAD_ROWS` below the hull row, one `cell_h` above it for the names.
 fn strip_row_tops(win_h: f32, cell_h: f32) -> (f32, f32) {
-    let hull = (win_h - cell_h - STRIP_BOTTOM_PAD).max(0.0);
+    let hull = (win_h - cell_h - cell_h * STRIP_BOTTOM_PAD_ROWS).max(0.0);
     ((hull - cell_h).max(0.0), hull)
+}
+
+/// Where one ship's parts sit VERTICALLY in the two-row band — the whole of the
+/// locked vertical geometry, in one place, so no draw site re-derives a second
+/// answer:
+///
+/// * `wheel_y` — the wheel's top, centred in the NAMES row. The owner's "the
+///   wheel should be inline with the session names": it is not in the hull row
+///   at all, which is what lets the hull be a LINE rather than a mass.
+/// * `name_y` — the box name's glyph top, `HULL_NAME_DROP_ROWS` into the hull
+///   row so the waterline runs along the letters' feet.
+/// * `rake_rise` — pixels from the waterline up to the rake's apex, which lands
+///   `HULL_RAKE_TOP_ROWS` below the band's top: the drop plus a whole row, less
+///   that air.
+///
+/// The stern's top is the hull row's glyph top itself (`hull_stern_rect`'s
+/// `top`), so it needs no field to name it. Every term is a fraction of
+/// `BASE_CELL_H` times `cell_h`, so the band scales as one shape.
+struct ShipVertical {
+    wheel_y: f32,
+    name_y: f32,
+    rake_rise: f32,
+}
+
+fn ship_vertical(names_top: f32, hull_top: f32, cell_h: f32, logo_h: f32) -> ShipVertical {
+    let (water_y, _) = hull_band(hull_top, cell_h);
+    ShipVertical {
+        wheel_y: names_top + (cell_h - logo_h) / 2.0,
+        name_y: hull_top + cell_h * HULL_NAME_DROP_ROWS,
+        rake_rise: water_y - (names_top + cell_h * HULL_RAKE_TOP_ROWS),
+    }
+}
+
+/// Ink for one box name: water blue, the lighter tint for the box you are
+/// steering (`BOX_NAME_RGB` / `BOX_NAME_STEERED_RGB`). The `--contrast-mode
+/// dim` lever fades the plain ones the same way a non-active session name is
+/// faded — and never the steered one, which is the one fact this row exists to
+/// carry. Always an explicit colour, so a box name never falls through to the
+/// text layer's default ink.
+fn box_name_rgb(steered: bool, contrast_dim: bool) -> (u8, u8, u8) {
+    if steered {
+        BOX_NAME_STEERED_RGB
+    } else if contrast_dim {
+        scale_rgb(BOX_NAME_RGB, CONTRAST_DIM_FACTOR)
+    } else {
+        BOX_NAME_RGB
+    }
 }
 
 /// Rows `cell_grid_for` keeps OUT of the chrome grid so the strip's band can
@@ -1468,11 +1642,15 @@ fn strip_row_tops(win_h: f32, cell_h: f32) -> (f32, f32) {
 /// The condition, at its worst case (`(win_h - 2*oy) mod cell_h == 0`):
 /// `k * cell_h + oy >= need`. Erring high is safe — one spare row is a
 /// slightly shorter pane — while erring low puts session names on the stamp,
-/// so `k` is the ceiling, and it is not a constant: the pad is scale-invariant
-/// while `oy` scales. `strip_band_never_touches_the_grids_last_row` pins both
-/// the condition and k's minimality; nothing may pin a literal.
+/// so `k` is the ceiling. Every term now scales together, so the ceiling is
+/// `STRIP_ROWS` at every scale and the band never costs a third row:
+/// `need = 41.08*s` against `2*cell_h + oy = 48*s`, while `k = 1` would give
+/// `30*s` and fail. `strip_band_never_touches_the_grids_last_row` pins the
+/// condition, k's minimality AND that constancy — the literal is pinned
+/// there because it is now an invariant, not because anyone counted rows.
 fn strip_reserved_rows(cell_w: f32, cell_h: f32, oy: f32) -> u16 {
-    let need = STRIP_ROWS * cell_h + STRIP_BOTTOM_PAD + STRIP_ACTIVE_LIFT_CELLS * cell_w;
+    let need =
+        STRIP_ROWS * cell_h + cell_h * STRIP_BOTTOM_PAD_ROWS + STRIP_ACTIVE_LIFT_CELLS * cell_w;
     (((need - oy) / cell_h.max(1.0)).ceil().max(0.0)) as u16
 }
 
@@ -1494,7 +1672,7 @@ fn session_strip_target(
         .iter()
         .map(|l| l.chars().count() as f32 * cell_w)
         .collect();
-    let positions = strip_cursor_positions(&widths, gap);
+    let positions = strip_cursor_positions(&widths, |_| gap);
     match (positions.get(active), widths.get(active)) {
         (Some(&pos), Some(&w)) => {
             pos + w / 2.0 + divider_offsets.get(active).copied().unwrap_or(0.0)
@@ -1577,14 +1755,14 @@ fn session_strip_lines(
         .collect();
     // Same dividers-oblivious cursor walk `session_strip_target` uses;
     // `divider_offsets` (see the doc above) folds the `Bow`s back in.
-    let positions = strip_cursor_positions(&widths, gap);
+    let positions = strip_cursor_positions(&widths, |_| gap);
     let mut out = Vec::new();
     for (i, lab) in padded.iter().enumerate() {
         let w = widths[i];
         let cursor = positions[i] + divider_offsets.get(i).copied().unwrap_or(0.0);
         let left = strip_screen_left(cursor, scroll_px, win_w);
         if !strip_visible(left, w, win_w) {
-            continue; // fully off-screen — and so not bookended either
+            continue; // fully off-screen
         }
         let pending = pendings.get(i).copied().unwrap_or(false);
         let is_active = i == active;
@@ -4584,7 +4762,7 @@ struct State {
     /// a fresh ease rather than seeing a stale dt).
     strip_anim_last: Option<std::time::Instant>,
     /// Brand-wheel spin gimmick (see `WHEEL_*`): current rotation of the
-    /// bottom-strip logo bookends (radians), the live angular velocity a
+    /// bottom-strip bow wheels (radians), the live angular velocity a
     /// workspace cycle flicks it with, and the last spin-frame timestamp for
     /// frame-rate-independent decay (`None` when at rest).
     wheel_angle: f32,
@@ -17349,9 +17527,9 @@ impl State {
         // slides the strip macOS-style. Drawn here, before `extras` borrow
         // self, so the ease can mutate self.* without a borrow conflict.
         //
-        // Miniature brand-logo rects flanking each badge are accumulated here
-        // (physical px) and drawn from `self.logo_quad` inside the render pass
-        // below — the per-badge layout they need only exists in this block.
+        // Each ship's bow wheel is accumulated here (physical px) and drawn
+        // from `self.logo_quad` inside the render pass below — the per-ship
+        // layout it needs only exists in this block.
         let mut strip_logo_rects: Vec<ScreenRect> = Vec::new();
         if !self.workspace_slugs.is_empty() {
             // ADR 0042 L2a: `workspace_slugs` is the UNION across every
@@ -17382,16 +17560,17 @@ impl State {
                 .min(labels.len().saturating_sub(1));
             // The fleet (owner asks 2026-09-07 + 2026-09-24 + 2026-09-27, ADR
             // 0042 L2a): each HOST GROUP is a ship — a brand wheel at the bow,
-            // that group's box name inline on the waterline beside it, and a
-            // hull running under the group's session names to the stern. The
+            // inline with the session names, and a row below it a waterline
+            // running from the bow's rake to the stern with that group's box
+            // name set into it, beneath the names it carries. The
             // name comes from `host_label`, the one display projection,
             // truncated like a session name is so a pathological host name
             // can't blow the layout ("local is just another host", so no
             // special-casing the group next to it). `logo_dims` doubles as
             // both "is there an asset to draw a wheel with" and the geometry
-            // the bookends below reuse (one source for the logo's on-screen
+            // the layout reserves for it (one source for the logo's on-screen
             // size, not two); with no decoded logo the wheels drop out and the
-            // names alone mark the groups, matching the bookends' own
+            // names alone mark the groups, matching the asset's own
             // fail-soft contract (a decode failure never breaks the layout,
             // per `LOGO_DARK_PNG`'s doc).
             let logo_dims: Option<(f32, f32)> = self.logo_quad.as_ref().map(|(_, nw, nh)| {
@@ -17402,21 +17581,22 @@ impl State {
             let items: Vec<StripItem> = strip_items(&self.workspace_slugs, |h| {
                 strip_truncate(host_label(&self.declared_host, h))
             });
-            let strip_gap = STRIP_GAP_CELLS * self.cell_w;
-            // The layout reserves the SMALL wheel; the steered ship's bigger
-            // one spends the bow's cell of air, so switching ships can't
-            // reflow the strip.
-            let wheel_w = logo_dims
-                .map(|(logo_w, logo_h)| wheel_size(logo_w, logo_h, false).0)
-                .unwrap_or(0.0);
+            // Every wheel is full size, and the layout reserves exactly that
+            // and nothing more: which ship you steer is spent in the box name's
+            // INK, not in its geometry, so switching ships still can't reflow
+            // the strip — and the name itself is reserved by nobody, because it
+            // runs a row BELOW the session names (`strip_item_widths`).
+            let wheel_w = logo_dims.map(|(logo_w, _)| logo_w).unwrap_or(0.0);
             let label_widths: Vec<f32> = labels
                 .iter()
                 .map(|l| l.chars().count() as f32 * self.cell_w)
                 .collect();
-            let item_widths = strip_item_widths(&items, &label_widths, wheel_w, self.cell_w);
-            let item_positions = strip_cursor_positions(&item_widths, strip_gap);
+            let item_widths = strip_item_widths(&items, &label_widths, wheel_w);
+            let item_positions = strip_cursor_positions(&item_widths, |i| {
+                strip_gap_before(&items[i], self.cell_w)
+            });
             let divider_offsets =
-                strip_divider_offsets(&items, &item_widths, &label_widths, strip_gap);
+                strip_divider_offsets(&items, &item_widths, &label_widths, self.cell_w);
             let target = session_strip_target(&labels, active, self.cell_w, &divider_offsets);
             let scroll = self.strip_scroll_px.unwrap_or(target);
             // Two rows, hugging the window's bottom edge: session names above,
@@ -17467,112 +17647,73 @@ impl State {
                 &pendings,
                 &divider_offsets,
             );
-            // ONE list of marks: every rect the strip draws — a session name,
-            // a bow's wheel, a bow's box name, a hull — tagged with its ROW and
-            // culled once (`ship_marks`, `strip_visible`). The session names
-            // are read straight off the `Line`s that were just built, so the
-            // list IS what was drawn; the bookend bracket below is min/max over
-            // it and cannot disagree. Seeding the bracket from an already-culled
-            // list and then extending it unconditionally per bow is what made
-            // both bookends vanish on any strip wider than the window, and a
-            // per-bow visibility test would only have put the cull predicate in
-            // a fifth place.
+            // ONE list of marks: every rect a ship draws — its wheel, its box
+            // name, the waterline segments, the bow rake, the stern — culled
+            // once, there (`ship_marks`, `strip_visible`), so what the loop
+            // below paints is exactly what survived the cull and no draw site
+            // can re-derive a second answer.
             let win_w = self.config.width as f32;
-            let (logo_w, logo_h) = logo_dims.unwrap_or((0.0, 0.0));
-            let mut marks: Vec<StripMark> = strip_lines
-                .iter()
-                .map(|ln| StripMark {
-                    row: StripRow::Names,
-                    left: ln.x,
-                    w: ln.text.chars().count() as f32 * self.cell_w,
-                    kind: StripMarkKind::SessionName,
-                })
-                .collect();
-            marks.extend(ship_marks(
+            let (_, logo_h) = logo_dims.unwrap_or((0.0, 0.0));
+            let (hull_y, hull_h) = hull_band(ship_y, self.cell_h);
+            let marks: Vec<StripMark> = ship_marks(
                 &items,
                 &item_positions,
                 &item_widths,
                 &self.active_host,
-                logo_w,
-                logo_h,
+                |h| self.host_connected.get(h).copied().unwrap_or(false),
                 wheel_w,
                 self.cell_w,
+                hull_h,
                 scroll,
                 win_w,
-            ));
-            // Same two branches a non-active idle session name takes: the "dim"
-            // contrast lever bakes an explicitly-dimmed colour (text.rs's fixed
-            // DIM can't be made stronger through the flag alone), "bright"
-            // keeps the default DIM. Never lifted, never bold, no tone, flash
-            // or badge sigil — a box name is chrome, and a host is not an agent.
-            let (tag_color, tag_dim) = if self.contrast_dim {
-                (Some(scale_rgb((204, 204, 204), CONTRAST_DIM_FACTOR)), false)
-            } else {
-                (None, true)
-            };
-            // Draw the marks.
-            let (hull_y, hull_h) = hull_band(ship_y, self.cell_h);
+            );
+            // Draw the marks. Every vertical coordinate comes from
+            // `ship_vertical` — the one place the band's locked geometry lives.
+            let vert = ship_vertical(baseline_y, ship_y, self.cell_h, logo_h);
             let mut strip_hull_rects: Vec<ScreenRect> = Vec::new();
             let mut tag_lines: Vec<crate::text::Line> = Vec::new();
             for m in &marks {
                 match &m.kind {
-                    StripMarkKind::SessionName => {}
-                    StripMarkKind::Wheel { big } => {
-                        // Vertically centred in the ship row against the
-                        // bookends' taller band, so a small wheel doesn't look
-                        // mis-aligned next to a big one.
-                        let (_, h) = wheel_size(logo_w, logo_h, *big);
+                    StripMarkKind::Wheel => {
+                        // Centred vertically in the SESSION-NAME row: the wheel
+                        // is inline with the names (owner, 2026-09-27), which is
+                        // what leaves the row below it free to be a line.
                         strip_logo_rects.push(ScreenRect {
                             x: m.left,
-                            y: ship_y + (logo_h - h) / 2.0,
+                            y: vert.wheel_y,
                             w: m.w,
-                            h,
+                            h: logo_h,
                         });
                     }
-                    StripMarkKind::BoxName(name) => tag_lines.push(crate::text::Line {
-                        text: name.clone(),
-                        x: m.left,
-                        y: ship_y,
-                        color: tag_color,
-                        bold: false,
-                        italic: false,
-                        dim: tag_dim,
-                    }),
+                    StripMarkKind::BoxName { name, steered } => {
+                        // Water blue, in its own tier — and the steered box in
+                        // the lighter water (`box_name_rgb`). Never the cream a
+                        // session name takes: identical ink made a host read as
+                        // one more session. Never lifted, never bold, no tone,
+                        // flash or badge sigil — a box name is chrome, and a
+                        // host is not an agent.
+                        tag_lines.push(crate::text::Line {
+                            text: name.clone(),
+                            x: m.left,
+                            y: vert.name_y,
+                            color: Some(box_name_rgb(*steered, self.contrast_dim)),
+                            bold: false,
+                            italic: false,
+                            dim: false,
+                        })
+                    }
                     StripMarkKind::Hull => {
-                        strip_hull_rects.extend(hull_rects(m.left, m.left + m.w, hull_y, hull_h))
+                        strip_hull_rects.extend(hull_bar_rect(m.left, m.left + m.w, hull_y, hull_h))
                     }
-                }
-            }
-            // Bookend the row of session names with the dark logo: one mini
-            // logo just left of the leftmost visible badge, one just right of
-            // the rightmost. (Per-badge flanking was too crowded — logo-dark is
-            // square ~2 cells wide and the inter-badge gap is only 3 cells, so
-            // adjacent flankers overlapped.) The bracket is `min`/`max` over the
-            // marks on the bookends' OWN row: a ship's name sits a row below, so
-            // letting it widen the bracket would move a bookend off something it
-            // could never collide with. Rects are drawn from `self.logo_quad`
-            // via render_many in the pass below. A bookend that would spill off
-            // its window edge is skipped.
-            if logo_dims.is_some() {
-                if let Some((min_left, max_right)) = strip_bracket(&marks, StripRow::Names) {
-                    let pad = 2.0 * self.cell_w; // breathing room between logo and names (2 cells)
-                    let lx = min_left - pad - logo_w;
-                    if lx >= 0.0 {
-                        strip_logo_rects.push(ScreenRect {
-                            x: lx,
-                            y: baseline_y,
-                            w: logo_w,
-                            h: logo_h,
-                        });
-                    }
-                    let rx = max_right + pad;
-                    if rx + logo_w <= win_w {
-                        strip_logo_rects.push(ScreenRect {
-                            x: rx,
-                            y: baseline_y,
-                            w: logo_w,
-                            h: logo_h,
-                        });
+                    StripMarkKind::BowRake => strip_hull_rects.extend(hull_bow_rects(
+                        m.left,
+                        m.w,
+                        hull_y,
+                        hull_h,
+                        vert.rake_rise,
+                    )),
+                    StripMarkKind::Stern => {
+                        strip_hull_rects.extend(hull_stern_rect(m.left + m.w, hull_y, hull_h, ship_y))
                     }
                 }
             }
@@ -18904,13 +19045,13 @@ impl State {
                 }
             }
 
-            // Brand chrome: dark logos bookending the bottom session strip, plus
+            // Brand chrome: the dark logo at each ship's bow in the strip, plus
             // the wordmark at the top-right of the nav pane. Drawn just before
             // the text layer so any glyphs (e.g. the nav title) stay legible on
             // top. Cosmetic — each is skipped when its quad failed to decode
             // (field is None).
             //
-            // Strip bookends via render_many, NOT a render() loop: render()
+            // Bow wheels via render_many, NOT a render() loop: render()
             // rewrites the quad's vbuf at offset 0, so a per-rect loop in one
             // pass leaves only the LAST rect on the GPU (see Quad::render_many's
             // own docstring) — that bug showed exactly one logo at the right end.
@@ -24795,18 +24936,23 @@ mod tests {
     }
 
     #[test]
-    fn strip_items_one_host_is_no_fleet_and_gets_no_ship() {
+    fn strip_items_gives_a_lone_host_its_ship_too() {
         let slugs: Vec<WsKey> = vec![
             ("alpha".to_string(), "one".to_string()),
             ("alpha".to_string(), "two".to_string()),
             ("alpha".to_string(), "three".to_string()),
         ];
         let items = strip_items(&slugs, |h| h.clone());
-        assert!(
-            items.iter().all(|it| matches!(it, StripItem::Session(_))),
-            "a single host must produce zero bows — one hull with one name is a frame, not a fleet: {items:?}"
+        assert_eq!(
+            items[0],
+            StripItem::Bow {
+                host: "alpha".to_string(),
+                name: "alpha".to_string()
+            },
+            "one host is a ship too (owner, 2026-09-27): {items:?}"
         );
-        assert_eq!(items.len(), slugs.len());
+        assert_eq!(items.len(), slugs.len() + 1);
+        assert_eq!(ship_spans(&items), vec![(0, 3)], "and it is exactly one ship");
     }
 
     #[test]
@@ -24895,38 +25041,70 @@ mod tests {
     }
 
     #[test]
-    fn strip_item_widths_measures_a_bow_as_wheel_plus_air_plus_name() {
-        let cell_w = 7.0; // not 1.0 — a dropped multiply has to fail here
+    fn strip_item_widths_measures_a_bow_as_its_wheel_alone() {
+        // The bow reserves the WHEEL and nothing else (owner, 2026-09-27): its
+        // box name runs beneath the session names on the hull row, so the
+        // layout never spends a column on it and the gap after a bow cannot
+        // grow with the host's name length.
         let items = vec![
             StripItem::Bow {
                 host: "alpha".to_string(),
-                name: "alpha".to_string(),
+                name: "a-very-long-host-name".to_string(),
             },
             StripItem::Session(("alpha".to_string(), "one".to_string())),
         ];
-        let widths = strip_item_widths(&items, &[40.0], 25.0, cell_w);
+        let widths = strip_item_widths(&items, &[40.0], 25.0);
         assert!(
-            (widths[0] - (25.0 + cell_w + 5.0 * cell_w)).abs() < 1e-3,
-            "wheel, one cell of air, then the name: {widths:?}"
+            (widths[0] - 25.0).abs() < 1e-3,
+            "the wheel alone, however long the name: {widths:?}"
         );
         assert!(
             (widths[1] - 40.0).abs() < 1e-3,
             "sessions stay in lock-step with `label_widths`"
         );
-        // No decoded logo: the wheel and its cell of air both go, and the bow
-        // is exactly its name (the bookends' fail-soft contract).
-        let bare = strip_item_widths(&items, &[40.0], 0.0, cell_w);
-        assert!((bare[0] - 5.0 * cell_w).abs() < 1e-3);
+        // No decoded logo: the wheel goes and the bow measures nothing at all
+        // (the logo asset's fail-soft contract) — its NAME still marks the
+        // group, a row below, where no width is needed for it.
+        let bare = strip_item_widths(&items, &[40.0], 0.0);
+        assert!((bare[0]).abs() < 1e-3, "{bare:?}");
+    }
+
+    #[test]
+    fn the_first_session_sits_three_cells_past_the_wheel_whatever_the_box_is_called() {
+        // The defect the wheel-only bow width fixes: reserving wheel + air +
+        // name pushed the first session of a group right by the HOST's name
+        // length — 8 cells for a 4-letter host, 11.6 for an 8-letter one. Two
+        // boxes whose names differ by four letters must start their sessions at
+        // the same distance past their own wheel.
+        let cell_w = 10.0;
+        let wheel_w = 16.0;
+        let first_session_offset = |host: &str| -> f32 {
+            let slugs: Vec<WsKey> = vec![(host.to_string(), "one".to_string())];
+            let items = strip_items(&slugs, |h| h.clone());
+            let widths = strip_item_widths(&items, &[40.0], wheel_w);
+            let pos = strip_cursor_positions(&widths, |i| strip_gap_before(&items[i], cell_w));
+            pos[1] - (pos[0] + wheel_w)
+        };
+        assert!(
+            (first_session_offset("hub") - STRIP_GAP_CELLS * cell_w).abs() < 1e-3,
+            "three cells past the wheel: {}",
+            first_session_offset("hub")
+        );
+        assert!(
+            (first_session_offset("hub") - first_session_offset("a-much-longer-box-name")).abs() < 1e-3,
+            "and the same three cells however long the box is named"
+        );
     }
 
     #[test]
     fn strip_target_active_centring_accounts_for_a_preceding_bow() {
         // The active item (item1) must be pushed over by exactly the bow's
-        // own `width + gap` — its centring relative to item0 is otherwise
-        // unaffected.
+        // own width plus the gap that bow opens (a ship boundary, wider than a
+        // word space — `strip_gap_before`), less the word space the label-only
+        // walk already spends there; its centring relative to item0 is
+        // otherwise unaffected.
         let labels = vec!["aa".to_string(), "bbbb".to_string(), "cc".to_string()];
         let cell_w = 10.0;
-        let gap = STRIP_GAP_CELLS * cell_w;
         let wheel_w = 25.0;
         let slugs: Vec<WsKey> = vec![
             ("alpha".to_string(), "aa".to_string()),
@@ -24946,19 +25124,24 @@ mod tests {
             .iter()
             .map(|l| l.chars().count() as f32 * cell_w)
             .collect();
-        let item_widths = strip_item_widths(&items, &label_widths, wheel_w, cell_w);
-        let bow_w = wheel_w + cell_w + 4.0 * cell_w;
-        let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, gap);
+        let item_widths = strip_item_widths(&items, &label_widths, wheel_w);
+        // The bow measures its wheel alone, and it opens a ship boundary.
+        let bow_w = wheel_w;
+        let shift = bow_w + strip_gap_before(&items[1], cell_w);
+        let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, cell_w);
         // No bow precedes item0.
         assert!((offsets[0]).abs() < 1e-3);
-        // One bow (width `bow_w`, plus its own `gap`) precedes item1/2.
-        assert!((offsets[1] - (bow_w + gap)).abs() < 1e-3);
-        assert!((offsets[2] - (bow_w + gap)).abs() < 1e-3);
+        // One bow — its wheel, plus the water its boundary opens — precedes
+        // item1/2. The word space before item1 itself is spent by BOTH walks,
+        // so it cancels and only the bow's own contribution is left.
+        assert!((offsets[1] - shift).abs() < 1e-3, "{offsets:?}");
+        assert!((offsets[2] - shift).abs() < 1e-3, "{offsets:?}");
         let no_bow_target = session_strip_target(&labels, 1, cell_w, &[]);
         let with_bow_target = session_strip_target(&labels, 1, cell_w, &offsets);
         assert!(
-            (with_bow_target - (no_bow_target + bow_w + gap)).abs() < 1e-3,
-            "the active session's centring must shift by exactly the bow's width + gap"
+            (with_bow_target - (no_bow_target + shift)).abs() < 1e-3,
+            "the active session's centring must shift by exactly the bow's width \
+             and the water it opens"
         );
     }
 
@@ -24977,13 +25160,16 @@ mod tests {
             .iter()
             .map(|l| l.chars().count() as f32 * cell_w)
             .collect();
-        let item_widths = strip_item_widths(&items, &label_widths, wheel_w, cell_w);
-        let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, gap);
-        let bow_a = wheel_w + cell_w + 5.0 * cell_w;
-        let bow_b = wheel_w + cell_w + 4.0 * cell_w;
-        assert!((offsets[0] - (bow_a + gap)).abs() < 1e-3);
+        let item_widths = strip_item_widths(&items, &label_widths, wheel_w);
+        let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, cell_w);
+        // Both bows measure their wheel alone, whatever their hosts are called.
+        // The FIRST bow opens no water (nothing precedes it), so session 0 is
+        // pushed by that wheel and one word space; session 1 by a second wheel
+        // and the water a mid-strip ship boundary opens.
+        let ship_gap = strip_gap_before(&items[2], cell_w);
+        assert!((offsets[0] - (wheel_w + gap)).abs() < 1e-3, "{offsets:?}");
         assert!(
-            (offsets[1] - (bow_a + gap + bow_b + gap)).abs() < 1e-3,
+            (offsets[1] - (offsets[0] + wheel_w + ship_gap)).abs() < 1e-3,
             "offsets: {offsets:?}"
         );
     }
@@ -25002,24 +25188,23 @@ mod tests {
         // sterns (from the NEXT bow) are told apart from the last group's,
         // which falls back to the final item.
         assert_eq!(ship_spans(&items), vec![(0, 2), (3, 4), (5, 7)]);
-        // One host: no bows, so no ships at all (and no `items.len()-1`
-        // underflow on an empty list).
+        // No items at all: no ships, and no `items.len()-1` underflow.
         assert!(ship_spans(&[]).is_empty());
+        // One host is one ship, running to its own last session.
         let single = strip_items(&slugs[..2], |h| h.clone());
-        assert!(ship_spans(&single).is_empty());
+        assert_eq!(ship_spans(&single), vec![(0, 2)]);
     }
 
     /// Fixture for the scrolled two-host strip: eight 8-char session names
     /// across two hosts, a window far narrower than the strip, and a scroll
     /// that puts the whole first group off the left edge while the second
-    /// group's first NAME starts 60 px inside the window — and the second
-    /// bow, a row below, hangs off that edge.
+    /// group's first NAME starts 10 px inside the window — and the second
+    /// bow, whose wheel shares that row, hangs off that edge, carrying its box
+    /// name (a row below) off it too.
     fn scrolled_fleet() -> (Vec<StripMark>, f32, f32, f32) {
         let cell_w = 10.0;
         let win_w = 400.0;
         let logo_w = 25.0;
-        let logo_h = 16.0;
-        let wheel_w = wheel_size(logo_w, logo_h, false).0;
         let slugs: Vec<WsKey> = (0..8)
             .map(|i| {
                 let host = if i < 4 { "alpha" } else { "beta" };
@@ -25032,12 +25217,14 @@ mod tests {
             .iter()
             .map(|l| l.chars().count() as f32 * cell_w)
             .collect();
-        let gap = STRIP_GAP_CELLS * cell_w;
-        let item_widths = strip_item_widths(&items, &label_widths, wheel_w, cell_w);
-        let item_positions = strip_cursor_positions(&item_widths, gap);
-        let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, gap);
-        // Place the first beta NAME (item 6) 60 px inside the window.
-        let scroll = win_w / 2.0 + item_positions[6] - 60.0;
+        let item_widths = strip_item_widths(&items, &label_widths, logo_w);
+        let item_positions = strip_cursor_positions(&item_widths, |i| strip_gap_before(&items[i], cell_w));
+        let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, cell_w);
+        // Place the first beta NAME (item 6) 10 px inside the window. The bow
+        // reserves its wheel alone now, so the wheel and the `STRIP_GAP_CELLS`
+        // after it are all that stand left of that name — 10 px is what puts
+        // the whole bow, and the unclamped box name with it, off the edge.
+        let scroll = win_w / 2.0 + item_positions[6] - 10.0;
         let strip_lines = session_strip_lines(
             &labels,
             4,
@@ -25056,211 +25243,555 @@ mod tests {
             4,
             "the whole first group must be culled for this to be the scrolled case"
         );
-        let mut marks: Vec<StripMark> = strip_lines
-            .iter()
-            .map(|ln| StripMark {
-                row: StripRow::Names,
-                left: ln.x,
-                w: ln.text.chars().count() as f32 * cell_w,
-                kind: StripMarkKind::SessionName,
-            })
-            .collect();
-        marks.extend(ship_marks(
+        let marks = ship_marks(
             &items,
             &item_positions,
             &item_widths,
             &"alpha".to_string(),
+            |_| true,
             logo_w,
-            logo_h,
-            wheel_w,
             cell_w,
+            3.0,
             scroll,
             win_w,
-        ));
+        );
         (marks, win_w, cell_w, logo_w)
     }
 
     #[test]
-    fn a_scrolled_fleet_still_gets_its_bookend() {
-        // BLOCKER 2: the bracket used to be seeded from the culled names and
-        // then extended by every bow with no visibility test, which dragged
-        // `min_left` off the left edge and skipped the bookend on any strip
-        // wider than the window — i.e. the normal multi-host case.
-        let (marks, win_w, cell_w, logo_w) = scrolled_fleet();
-        let (min_left, max_right) =
-            strip_bracket(&marks, StripRow::Names).expect("names were drawn");
-        assert!(
-            (min_left - 60.0).abs() < 1e-3,
-            "the bracket must start at the leftmost DRAWN name: {min_left}"
-        );
-        let lx = min_left - 2.0 * cell_w - logo_w;
-        assert!(
-            lx >= 0.0,
-            "the left bookend must still fit and be drawn: lx = {lx}"
-        );
-        // The second bow IS on screen (partly) and IS a mark — it simply has
-        // no vote on the names row's bracket.
-        let hull_left = strip_bracket(&marks, StripRow::Hull)
-            .expect("the visible ship drew marks")
-            .0;
-        assert!(
-            hull_left < 0.0 && hull_left < min_left,
-            "a ship hanging off the left edge is drawn, and is not in the names bracket: {hull_left}"
-        );
-        assert!(max_right > win_w, "the strip overflows to the right as well");
-    }
-
-    #[test]
-    fn a_culled_ship_draws_nothing_and_brackets_nothing() {
-        // The first group is entirely off-screen left: every one of its marks
-        // — wheel, box name, hull — must be gone, not clamped to the edge.
-        let (marks, _, _, _) = scrolled_fleet();
-        // The first ship is gone entirely; of the second, the cull is
-        // per-MARK, not per-ship — its wheel hangs off the left edge while
-        // the name one cell to its right survives.
+    fn a_ship_off_the_left_edge_draws_nothing_while_a_scrolled_bow_clamps_its_name() {
+        // Two different things, in one scrolled fixture. The first group is
+        // entirely off-screen left: every one of its marks — wheel, box name,
+        // waterline, rake, stern — is gone, not clamped to the edge. The
+        // second group's BOW has scrolled off while its stern has not, and
+        // there the name wins: it clamps to the window's left edge and the
+        // waterline yields to it on both sides.
+        let (marks, win_w, cell_w, _) = scrolled_fleet();
+        let names: Vec<(&str, f32)> = marks
+            .iter()
+            .filter_map(|m| match &m.kind {
+                StripMarkKind::BoxName { name, .. } => Some((name.as_str(), m.left)),
+                _ => None,
+            })
+            .collect();
         assert_eq!(
-            marks
-                .iter()
-                .filter(|m| matches!(m.kind, StripMarkKind::Wheel { .. }))
-                .count(),
-            0,
+            names,
+            vec![("beta", 0.0)],
+            "one name survives, clamped to the left edge: {marks:?}"
+        );
+        assert!(
+            !marks.iter().any(|m| m.kind == StripMarkKind::Wheel),
             "both wheels are off the left edge: {marks:?}"
         );
-        assert_eq!(
-            marks
-                .iter()
-                .filter(|m| matches!(m.kind, StripMarkKind::BoxName(_)))
-                .count(),
-            1,
-            "one box name survives: {marks:?}"
+        assert!(
+            !marks.iter().any(|m| m.kind == StripMarkKind::BowRake),
+            "and so are both bow rakes: {marks:?}"
         );
+        let flats: Vec<(f32, f32)> = marks
+            .iter()
+            .filter(|m| m.kind == StripMarkKind::Hull)
+            .map(|m| (m.left, m.left + m.w))
+            .collect();
         assert_eq!(
-            marks
-                .iter()
-                .filter(|m| matches!(m.kind, StripMarkKind::Hull))
-                .count(),
-            1,
-            "one hull survives — the culled ship's is not clamped to the edge: {marks:?}"
+            flats.len(),
+            2,
+            "only the visible ship's waterline is drawn — the culled one's is \
+             not clamped to the edge: {marks:?}"
+        );
+        assert!(
+            flats[0].1.abs() < 1e-3
+                && (flats[1].0 - (4.0 * cell_w + HULL_NAME_SLACK_CELLS * cell_w)).abs() < 1e-3,
+            "both runs must still touch the CLAMPED name — the right one across \
+             its 1 px of slack: {flats:?}"
+        );
+        assert!(
+            flats[1].1 > win_w,
+            "the visible ship still runs off the right edge: {flats:?}"
         );
     }
 
     #[test]
-    fn the_full_size_wheel_marks_the_box_you_are_steering() {
-        // SHOULD-FIX 3: keyed off `active_host` — the box the keystrokes
-        // reach — not off an index into `workspace_slugs`, which falls back
-        // to 0 (and so to the WRONG ship) whenever the steered session's row
-        // has just been filtered out.
+    fn every_wheel_is_full_size_and_the_steered_box_is_marked_in_its_name() {
+        // Items 3 + 5: the wheel no longer says which box you steer — every
+        // one is the full logo size, so the layout reserves exactly what is
+        // drawn and switching ships still cannot reflow the strip. The BOX
+        // NAME's ink says it instead, keyed off `active_host` — the box the
+        // keystrokes reach — not off an index into `workspace_slugs`, which
+        // falls back to 0 (and so to the WRONG ship) whenever the steered
+        // session's row has just been filtered out.
         let cell_w = 7.7; // the measured monospace advance at scale 1
         // The draw site's own asset geometry (`logo_dims`): the wheel is the
         // decoded PNG's aspect ratio taken at the row's height.
         let aspect = 1.0; // logo-dark is square
         let logo_h = (BASE_CELL_H - 2.0).max(1.0);
         let logo_w = logo_h * aspect;
-        let wheel_w = wheel_size(logo_w, logo_h, false).0;
         let slugs: Vec<WsKey> = vec![
             ("alpha".to_string(), "one".to_string()),
             ("beta".to_string(), "two".to_string()),
         ];
         let items = strip_items(&slugs, |h| h.clone());
         let label_widths = vec![30.0, 30.0];
-        let gap = STRIP_GAP_CELLS * cell_w;
-        let item_widths = strip_item_widths(&items, &label_widths, wheel_w, cell_w);
-        let item_positions = strip_cursor_positions(&item_widths, gap);
+        let item_widths = strip_item_widths(&items, &label_widths, logo_w);
+        let item_positions = strip_cursor_positions(&item_widths, |i| strip_gap_before(&items[i], cell_w));
         let marks = ship_marks(
             &items,
             &item_positions,
             &item_widths,
             &"beta".to_string(),
+            |_| true,
             logo_w,
-            logo_h,
-            wheel_w,
             cell_w,
+            3.0,
             0.0,
             4000.0,
         );
-        let wheels: Vec<(bool, f32)> = marks
+        let wheels: Vec<f32> = marks
             .iter()
-            .filter_map(|m| match m.kind {
-                StripMarkKind::Wheel { big } => Some((big, m.w)),
+            .filter(|m| m.kind == StripMarkKind::Wheel)
+            .map(|m| m.w)
+            .collect();
+        assert_eq!(
+            wheels,
+            vec![logo_w, logo_w],
+            "both bows carry the full-size wheel: {marks:?}"
+        );
+        let names: Vec<(&str, bool)> = marks
+            .iter()
+            .filter_map(|m| match &m.kind {
+                StripMarkKind::BoxName { name, steered } => Some((name.as_str(), *steered)),
                 _ => None,
             })
             .collect();
         assert_eq!(
-            wheels,
-            vec![(false, wheel_w), (true, logo_w)],
-            "the second ship is the steered one, and its wheel is the full bookend size"
+            names,
+            vec![("alpha", false), ("beta", true)],
+            "the second ship is the steered one, and its NAME is what says so"
         );
-        // The layout is keyed to the SMALL wheel, so which ship is steered can
-        // never reflow the strip — which holds only while the big wheel's
-        // overshoot fits in the bow's one cell of air. That is a fact about the
-        // ASSET, not about this fixture:
-        // `logo_h * aspect * (1 - DIVIDER_SIZE_FACTOR) <= cell_w`, with
-        // `logo_h = (cell_h - 2).max(1)` as the draw site computes it. A square
-        // asset satisfies it at every scale; the bound tightens toward an aspect
-        // of ~2.14 as the scale grows, so a much wider wheel asset would start
-        // to overlap the box name and would have to widen the air with it.
+        // The wheel fits inside ONE row at every scale — which is what lets it
+        // be centred in the session-name row (`ship_vertical`'s `wheel_y`)
+        // instead of in the hull row, where a line and a box name now live. A
+        // fact about the ASSET geometry the draw site computes, not this
+        // fixture.
         for scale in [0.5_f32, 1.0, 2.0, 4.0] {
-            let lh = (BASE_CELL_H * scale - 2.0).max(1.0);
+            let cell_h = BASE_CELL_H * scale;
+            let lh = (cell_h - 2.0).max(1.0);
+            let top = (cell_h - lh) / 2.0;
             assert!(
-                lh * aspect * (1.0 - DIVIDER_SIZE_FACTOR) <= 7.7 * scale,
-                "scale {scale}: the steered wheel's overshoot must fit the bow's cell of air"
+                top >= 0.0 && top + lh <= cell_h,
+                "scale {scale}: the full-size wheel must fit inside one text row"
             );
         }
     }
 
     #[test]
-    fn strip_bracket_only_sees_its_own_row() {
-        let marks = vec![
-            StripMark {
-                row: StripRow::Names,
-                left: 100.0,
-                w: 50.0,
-                kind: StripMarkKind::SessionName,
-            },
-            StripMark {
-                row: StripRow::Hull,
-                left: -900.0,
-                w: 50.0,
-                kind: StripMarkKind::BoxName("far-left".to_string()),
-            },
-            StripMark {
-                row: StripRow::Hull,
-                left: 900.0,
-                w: 50.0,
-                kind: StripMarkKind::Hull,
-            },
-        ];
-        assert_eq!(strip_bracket(&marks, StripRow::Names), Some((100.0, 150.0)));
-        assert_eq!(strip_bracket(&marks, StripRow::Hull), Some((-900.0, 950.0)));
-        assert_eq!(strip_bracket(&[], StripRow::Names), None);
-    }
-
-    #[test]
-    fn hull_rects_are_a_waterline_and_one_stern_rake_inside_the_row() {
-        let cell_h = 18.0;
-        let ship_y = 500.0;
+    fn the_hull_is_a_flat_bar_a_stepped_bow_and_a_vertical_stern() {
+        let cell_h = 18.0_f32;
+        let names_y = 482.0;
+        let ship_y = names_y + cell_h;
+        let logo_h = (cell_h - 2.0).max(1.0);
         let (y, h) = hull_band(ship_y, cell_h);
-        assert!((y - (ship_y + 14.0)).abs() < 1e-3, "waterline drop: {y}");
+        let vert = ship_vertical(names_y, ship_y, cell_h, logo_h);
+        // The drop is 11 — the locked rasteriser's own number, low in the row
+        // so the line runs under the box name's feet.
+        assert!((y - (ship_y + 11.0)).abs() < 1e-3, "waterline drop: {y}");
         assert!((h - 3.0).abs() < 1e-3, "hull thickness: {h}");
-        let rects = hull_rects(100.0, 300.0, y, h);
-        assert_eq!(rects.len(), 2, "a bar and one stern rake");
-        assert!((rects[0].w - 200.0).abs() < 1e-3);
-        assert!((rects[0].y + rects[0].h - (ship_y + 17.0)).abs() < 1e-3);
-        // The rake rises from the bar's own bottom and stays inside the row.
-        assert!((rects[1].y + rects[1].h - (rects[0].y + rects[0].h)).abs() < 1e-3);
+        // The flat bar, and nothing when the name ate every column.
+        let bar = hull_bar_rect(100.0, 300.0, y, h).expect("a bar with columns");
+        assert!((bar.x - 100.0).abs() < 1e-3 && (bar.w - 200.0).abs() < 1e-3);
         assert!(
-            rects[1].y >= ship_y && rects[0].y + rects[0].h <= ship_y + cell_h,
-            "bar and rake must stay inside the ship row: {rects:?}"
+            bar.y >= ship_y && bar.y + bar.h <= ship_y + cell_h,
+            "the bar stays inside the hull row: {bar:?}"
         );
-        // Nothing to draw when the name ate every column, or with no height.
-        assert!(hull_rects(300.0, 100.0, y, h).is_empty());
-        assert!(hull_rects(100.0, 300.0, y, 0.0).is_empty());
+        assert!(hull_bar_rect(300.0, 100.0, y, h).is_none());
+        assert!(hull_bar_rect(100.0, 300.0, y, 0.0).is_none());
+        // The bow `\`: one bar per pixel of rise, stepping up-LEFT, foot on the
+        // waterline at `left + run`, each bar carrying the LINE's own thickness
+        // in both axes — a 1 px rake vanished at true size.
+        let run = HULL_BOW_RUN_CELLS * 7.7;
+        let rise = vert.rake_rise;
+        let bow = hull_bow_rects(100.0, run, y, h, rise);
+        assert_eq!(
+            bow.len(),
+            rise as usize,
+            "one step per pixel of rise: {bow:?}"
+        );
+        assert!(
+            bow.iter().all(|r| (r.h - h).abs() < 1e-3),
+            "every step carries the waterline's thickness: {bow:?}"
+        );
+        assert!(
+            bow.iter().all(|r| r.w > h),
+            "and carries it horizontally too, or a steep rake thins to nothing: {bow:?}"
+        );
+        assert!(
+            (bow[0].x + bow[0].w - (100.0 + run + h)).abs() < 1e-3
+                && (bow[0].y - y).abs() < 1e-3,
+            "the foot sits on the waterline at the run's right end: {bow:?}"
+        );
+        for step in bow.windows(2) {
+            assert!(
+                step[1].x < step[0].x && step[1].y < step[0].y,
+                "every step goes up and to the left: {bow:?}"
+            );
+        }
+        let top = bow.last().expect("the rake has steps");
+        // The rake rises a whole row higher than it used to: its apex is INSIDE
+        // the session-name row, two px below the band's top, which is what makes
+        // the `\` read as a bow instead of a notch in the line. It must still
+        // never leave the band, or the reservation would have to grow for it.
+        assert!(
+            top.y >= names_y && top.y < names_y + cell_h,
+            "the apex is inside the session-name row: {top:?}"
+        );
+        assert!(
+            (top.y - (names_y + 3.0)).abs() < 1e-3,
+            "and two px below the band's top, one px of it spent by the step \
+             the staircase starts on: {top:?}"
+        );
+        assert!((top.x - 100.0).abs() < 1e-3, "and it lands on `left`: {top:?}");
+        assert!(hull_bow_rects(100.0, 0.0, y, h, rise).is_empty());
+        assert!(hull_bow_rects(100.0, run, y, h, 0.0).is_empty());
+        // The stern `|`: vertical, bar-width, waterline bottom up to the hull
+        // row's own glyph top — a SHORT riser, where the ASCII's `|` sits.
+        let stern = hull_stern_rect(300.0, y, h, ship_y).expect("a stern");
+        assert!((stern.w - h).abs() < 1e-3, "bar-width wide: {stern:?}");
+        assert!(
+            (stern.x + stern.w - 300.0).abs() < 1e-3,
+            "at the ship's right edge: {stern:?}"
+        );
+        assert!(
+            (stern.y + stern.h - (y + h)).abs() < 1e-3,
+            "it stands on the waterline's bottom: {stern:?}"
+        );
+        assert!(
+            (stern.y - ship_y).abs() < 1e-3 && stern.h <= cell_h,
+            "and rises one text row, no further: {stern:?}"
+        );
+        // The two ends of a ship are NOT symmetric any more: the bow rakes up
+        // into the names row, the stern stops at the line's own row. A stern as
+        // tall as that bow read as a box drawn round the session names.
+        let bow_h = (y + h) - top.y;
+        assert!(
+            stern.h < bow_h,
+            "the stern must be shorter than the bow: stern {stern:?} vs bow top {top:?}"
+        );
+        assert!(
+            stern.y + stern.h <= ship_y + cell_h,
+            "and stays inside the hull row: {stern:?}"
+        );
+        assert!(hull_stern_rect(300.0, y, 0.0, ship_y).is_none());
+        assert!(
+            hull_stern_rect(300.0, y, h, y + h).is_none(),
+            "nothing to rise through is no stern at all"
+        );
         // Minimum-thickness floor: a small cell can't thin the hull to a
         // sub-pixel rect (the border quads carry the same `.max(1.0)`).
         assert!((hull_band(0.0, 4.0).1 - 1.0).abs() < 1e-3);
         // Both ratios scale with the row: double the cell, double the drop.
-        assert!((hull_band(0.0, 36.0).0 - 28.0).abs() < 1e-3);
+        assert!((hull_band(0.0, 36.0).0 - 22.0).abs() < 1e-3);
         assert!((hull_band(0.0, 36.0).1 - 6.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_bands_vertical_geometry_is_the_locked_one() {
+        // The approved band, at real pixels: two text rows, the wheel INLINE
+        // WITH THE SESSION NAMES on the upper one, the hull a line low in the
+        // lower one with the box name set into it, and the rake reaching from
+        // the line up into the wheel's own row. Every number is a fraction of
+        // `BASE_CELL_H`, so the whole shape scales as one.
+        let cell_h = BASE_CELL_H;
+        let (names_y, hull_y) = strip_row_tops(600.0, cell_h);
+        assert!(
+            (hull_y - (names_y + cell_h)).abs() < 1e-3,
+            "the two rows are adjacent: {names_y} {hull_y}"
+        );
+        let logo_h = (cell_h - 2.0).max(1.0);
+        let vert = ship_vertical(names_y, hull_y, cell_h, logo_h);
+        // The wheel is centred in the NAMES row — its centre is that row's
+        // centre, and it is nowhere near the hull row.
+        assert!(
+            (vert.wheel_y + logo_h / 2.0 - (names_y + cell_h / 2.0)).abs() < 1e-3,
+            "the wheel's centre is the session-name row's centre: {}",
+            vert.wheel_y
+        );
+        assert!(
+            vert.wheel_y >= names_y && vert.wheel_y + logo_h <= hull_y,
+            "and the whole disc stays out of the hull row: {}",
+            vert.wheel_y
+        );
+        // The box name drops 1 px into the hull row: at +0 the line rode high
+        // across the letters instead of along their feet.
+        assert!(
+            (vert.name_y - (hull_y + 1.0)).abs() < 1e-3,
+            "box-name glyph top: {}",
+            vert.name_y
+        );
+        // The rake rises from the waterline to 2 px below the BAND's top — the
+        // waterline's own drop plus a whole row, less that air.
+        let (water_y, _) = hull_band(hull_y, cell_h);
+        assert!(
+            (vert.rake_rise - (water_y - hull_y + cell_h - 2.0)).abs() < 1e-3
+                && (vert.rake_rise - 27.0).abs() < 1e-3,
+            "rake rise: {}",
+            vert.rake_rise
+        );
+        assert!(
+            (water_y - vert.rake_rise - (names_y + 2.0)).abs() < 1e-3,
+            "and the apex lands inside the names row: {}",
+            water_y - vert.rake_rise
+        );
+        // One shape at every scale: double the row and every length doubles.
+        let double = ship_vertical(0.0, cell_h * 2.0, cell_h * 2.0, logo_h * 2.0);
+        let single = ship_vertical(0.0, cell_h, cell_h, logo_h);
+        assert!(
+            (double.rake_rise - 2.0 * single.rake_rise).abs() < 1e-3
+                && (double.name_y - 2.0 * single.name_y).abs() < 1e-3
+                && (double.wheel_y - 2.0 * single.wheel_y).abs() < 1e-3,
+            "the band must scale as one shape: {single:?} {double:?}",
+            single = (single.wheel_y, single.name_y, single.rake_rise),
+            double = (double.wheel_y, double.name_y, double.rake_rise),
+        );
+    }
+
+    #[test]
+    fn ships_sit_five_cells_apart_and_sessions_three() {
+        // A host boundary equal to one word space did no grouping work at all.
+        // The fleet's own space is five cells of CLEAR WATER — measured where it
+        // shows, between one ship's stern and the next ship's rake — while the
+        // names inside a ship keep their three.
+        let cell_w = 10.0;
+        let logo_w = 16.0;
+        let slugs: Vec<WsKey> = vec![
+            ("alpha".to_string(), "one".to_string()),
+            ("alpha".to_string(), "two".to_string()),
+            ("beta".to_string(), "three".to_string()),
+        ];
+        let items = strip_items(&slugs, |h| h.clone());
+        let label_widths = vec![40.0, 40.0, 40.0];
+        let item_widths = strip_item_widths(&items, &label_widths, logo_w);
+        let item_positions =
+            strip_cursor_positions(&item_widths, |i| strip_gap_before(&items[i], cell_w));
+        // Two adjacent sessions of one ship: one word space apart.
+        assert!(
+            (item_positions[2] - (item_positions[1] + item_widths[1]) - STRIP_GAP_CELLS * cell_w)
+                .abs()
+                < 1e-3,
+            "sessions inside a ship: {item_positions:?}"
+        );
+        let marks = ship_marks(
+            &items,
+            &item_positions,
+            &item_widths,
+            &"alpha".to_string(),
+            |_| true,
+            logo_w,
+            cell_w,
+            3.0,
+            0.0,
+            4000.0,
+        );
+        let stern = marks
+            .iter()
+            .find(|m| m.kind == StripMarkKind::Stern)
+            .expect("the first ship's stern");
+        let rake = marks
+            .iter()
+            .filter(|m| m.kind == StripMarkKind::BowRake)
+            .nth(1)
+            .expect("the second ship's rake");
+        assert!(
+            (rake.left - (stern.left + stern.w) - STRIP_SHIP_GAP_CELLS * cell_w).abs() < 1e-3,
+            "five cells of clear water from stern to the next rake's tip: \
+             {stern:?} {rake:?}"
+        );
+    }
+
+    #[test]
+    fn a_box_names_ink_is_water_and_never_the_active_sessions_cream() {
+        // A tier of its own. The steered box takes the lighter water, so which
+        // box your keystrokes reach is one step along one hue — and neither
+        // water is the cream a session name takes, which is what made a host
+        // read as a sixth session.
+        let plain = box_name_rgb(false, false);
+        let steered = box_name_rgb(true, false);
+        assert_ne!(plain, steered, "the steered box must be told apart");
+        assert_ne!(steered, (250, 250, 215), "never the active session's cream");
+        assert_ne!(plain, (250, 250, 215));
+        assert_eq!(steered, BOX_NAME_STEERED_RGB);
+        assert_eq!(plain, BOX_NAME_RGB);
+        // The `--contrast-mode dim` lever fades a plain box name and never the
+        // steered one — that row carries one fact, and dimming it would blur it.
+        assert_ne!(box_name_rgb(false, true), plain);
+        assert_eq!(box_name_rgb(true, true), steered);
+    }
+
+    #[test]
+    fn a_ships_waterline_touches_its_box_name_on_both_sides() {
+        // Item 4: `\ 0__-name-`. The name is inline ON the waterline, so the
+        // two runs it leaves are measured off the name itself — it is never
+        // left floating in a cell of air. One host, which is a ship too.
+        let cell_w = 10.0;
+        let logo_w = 16.0;
+        let slugs: Vec<WsKey> = vec![
+            ("alpha".to_string(), "one".to_string()),
+            ("alpha".to_string(), "two".to_string()),
+        ];
+        let items = strip_items(&slugs, |h| h.clone());
+        let label_widths = vec![40.0, 40.0];
+        let item_widths = strip_item_widths(&items, &label_widths, logo_w);
+        let item_positions = strip_cursor_positions(&item_widths, |i| strip_gap_before(&items[i], cell_w));
+        let marks = ship_marks(
+            &items,
+            &item_positions,
+            &item_widths,
+            &"alpha".to_string(),
+            |_| true,
+            logo_w,
+            cell_w,
+            3.0,
+            0.0,
+            4000.0,
+        );
+        let (name_l, name_w) = marks
+            .iter()
+            .find_map(|m| match &m.kind {
+                StripMarkKind::BoxName { .. } => Some((m.left, m.w)),
+                _ => None,
+            })
+            .expect("the lone host's ship is drawn, bow and all");
+        let flats: Vec<(f32, f32)> = marks
+            .iter()
+            .filter(|m| m.kind == StripMarkKind::Hull)
+            .map(|m| (m.left, m.left + m.w))
+            .collect();
+        assert_eq!(
+            flats.len(),
+            2,
+            "bow → name, then name → stern: {marks:?}"
+        );
+        assert!(
+            (flats[0].1 - name_l).abs() < 1e-3,
+            "the waterline must touch the name's LEFT edge: {flats:?}"
+        );
+        // The break clears the name's ADVANCE by a pixel on the right: a
+        // trailing descender overhangs its own cell and its ink blended into
+        // the line without it.
+        assert!(
+            (flats[1].0 - (name_l + name_w + HULL_NAME_SLACK_CELLS * cell_w)).abs() < 1e-3,
+            "and its RIGHT edge, across 1 px of slack: {flats:?}"
+        );
+        // The first run starts at the BOW, not past the wheel: the wheel is a
+        // row up, and the line runs under it — a run starting at its right edge
+        // left a wheel-wide hole where the rake's foot lands.
+        assert!(
+            (flats[0].0 - (name_l - logo_w - BOW_AIR_CELLS * cell_w)).abs() < 1e-3,
+            "the line runs from the rake's foot, under the wheel, to the name: {flats:?}"
+        );
+        // The rake's foot lands on the wheel's own left edge, and its run is
+        // shorter than the water a ship boundary opens, so it can never reach
+        // the ship ahead; the waterline runs on to the stern, which stands its
+        // own clearance past the group's last session.
+        let rake = marks
+            .iter()
+            .find(|m| m.kind == StripMarkKind::BowRake)
+            .expect("a bow rake");
+        let wheel = marks
+            .iter()
+            .find(|m| m.kind == StripMarkKind::Wheel)
+            .expect("a wheel");
+        assert!(
+            (rake.left + rake.w - wheel.left).abs() < 1e-3,
+            "the rake's foot is the wheel's left edge: {rake:?} {wheel:?}"
+        );
+        assert!(
+            (rake.w - HULL_BOW_RUN_CELLS * cell_w).abs() < 1e-3
+                && rake.w < STRIP_SHIP_GAP_CELLS * cell_w,
+            "and its run fits inside a ship boundary's water: {rake:?}"
+        );
+        let stern = marks
+            .iter()
+            .find(|m| m.kind == StripMarkKind::Stern)
+            .expect("a stern");
+        let last_r = strip_screen_left(item_positions[2] + item_widths[2], 0.0, 4000.0)
+            + STRIP_STERN_CLEAR_CELLS * cell_w;
+        assert!(
+            (stern.left + stern.w - last_r).abs() < 1e-3,
+            "the stern closes the hull two cells past the group's last session: {stern:?}"
+        );
+        assert!(
+            (flats[1].1 - last_r).abs() < 1e-3,
+            "and the waterline runs all the way to it: {flats:?}"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_boxs_ship_is_gone_but_never_the_steered_boxs() {
+        // Item 9: the cull is STRIP-LOCAL. `workspace_slugs` keeps every row
+        // (three other consumers read it — the revert in `39def8d8`), the
+        // layout keeps the culled bow's slot, and only its marks go. The box
+        // you are steering keeps its ship whatever its link is doing: that is
+        // the invariant which makes this cull safe where the filter was not,
+        // because the bright name is what says where the keystrokes land.
+        let cell_w = 10.0;
+        let logo_w = 16.0;
+        let slugs: Vec<WsKey> = vec![
+            ("alpha".to_string(), "one".to_string()),
+            ("beta".to_string(), "two".to_string()),
+            ("gamma".to_string(), "three".to_string()),
+        ];
+        let items = strip_items(&slugs, |h| h.clone());
+        let label_widths = vec![40.0, 40.0, 40.0];
+        let item_widths = strip_item_widths(&items, &label_widths, logo_w);
+        let item_positions = strip_cursor_positions(&item_widths, |i| strip_gap_before(&items[i], cell_w));
+        let ships = |steered: &str, down: &'static str| -> Vec<StripMark> {
+            ship_marks(
+                &items,
+                &item_positions,
+                &item_widths,
+                &steered.to_string(),
+                |h| h.as_str() != down,
+                logo_w,
+                cell_w,
+                3.0,
+                0.0,
+                4000.0,
+            )
+        };
+        let named = |marks: &[StripMark]| -> Vec<String> {
+            marks
+                .iter()
+                .filter_map(|m| match &m.kind {
+                    StripMarkKind::BoxName { name, .. } => Some(name.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            named(&ships("alpha", "beta")),
+            vec!["alpha".to_string(), "gamma".to_string()],
+            "an unreachable box's ship is simply gone"
+        );
+        assert_eq!(
+            named(&ships("beta", "beta")),
+            vec![
+                "alpha".to_string(),
+                "beta".to_string(),
+                "gamma".to_string()
+            ],
+            "but never the steered box's own, whatever its link is doing"
+        );
+        // And nothing else moves: a dropped link cannot reflow the strip.
+        let all = ships("alpha", "none");
+        let without = ships("alpha", "beta");
+        assert!(
+            without.iter().all(|m| all.contains(m)),
+            "culling one ship moved another's marks: {without:?}"
+        );
+        assert_eq!(
+            all.len() - without.len(),
+            6,
+            "one ship is six marks — rake, wheel, two waterline runs, name, stern"
+        );
     }
 
     #[test]
@@ -25316,12 +25847,13 @@ mod tests {
         // strip's names row at EVERY window height (worst at
         // `R = (h - 2*oy) mod cell_h == 8*scale`, where the two share a
         // baseline). `cell_grid_for` now reserves the band once.
-        // 0.2 is the entry that matters: `--scale`'s floor is 0.1 and the
-        // reservation is 3 rows at or below about 0.224 (`STRIP_BOTTOM_PAD` is
-        // scale-invariant while `oy` scales), so it is the only swept scale
-        // that exercises `k = 3` — 0.5 and 0.75 both compute to 2. It is legal
-        // to sweep only because the assertion below is the band invariant and
-        // not a literal row count.
+        // The sweep used to exist because the reservation was 3 rows at or
+        // below ~0.224, `STRIP_BOTTOM_PAD` being the one scale-invariant
+        // length among scaling ones. It is now `STRIP_BOTTOM_PAD_ROWS` and
+        // every term scales together, so `k` is `STRIP_ROWS` at every scale —
+        // asserted below as a literal BECAUSE it is now an invariant. The
+        // sweep stays: it is what would catch a future term that forgets to
+        // scale, which is the defect class this constant belonged to.
         //
         // Two limits of this sweep, both deliberate. It starts at
         // `240 * scale`, so it never reaches `cell_grid_for`'s `rows.max(1)`
@@ -25338,7 +25870,13 @@ mod tests {
             // at every scale is that the reservation is the SMALLEST one that
             // clears the band.
             let k = strip_reserved_rows(cell_w, cell_h, oy) as f32;
-            let need = STRIP_ROWS * cell_h + STRIP_BOTTOM_PAD + STRIP_ACTIVE_LIFT_CELLS * cell_w;
+            let need = STRIP_ROWS * cell_h
+                + cell_h * STRIP_BOTTOM_PAD_ROWS
+                + STRIP_ACTIVE_LIFT_CELLS * cell_w;
+            assert_eq!(
+                k, STRIP_ROWS,
+                "scale {scale}: the band must never cost more than {STRIP_ROWS} rows"
+            );
             assert!(
                 k * cell_h + oy >= need,
                 "scale {scale}: {k} rows do not clear the band's {need} px"
