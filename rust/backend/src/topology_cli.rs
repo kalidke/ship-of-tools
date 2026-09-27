@@ -466,7 +466,7 @@ fn set(words: &[String]) -> Result<(), String> {
 /// (the launcher's own tunnel, already up on every non-hub box).
 fn hub_endpoint(topo: &Topology, me: &str) -> String {
     if me == topo.hub {
-        topology::local_endpoint("sot")
+        topology::local_endpoint()
     } else {
         format!("tcp:127.0.0.1:{}", topology::hub_local_port())
     }
@@ -478,7 +478,7 @@ fn hub_endpoint(topo: &Topology, me: &str) -> String {
 /// no daemon at all — this is a local safety pre-check, not a source of
 /// truth the hub relies on.
 fn local_has_running_rows(me: &str) -> bool {
-    let endpoint = topology::local_endpoint("sot");
+    let endpoint = topology::local_endpoint();
     let res = match crate::topology_dial::dial_and_call(&endpoint, me, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({})) {
         Ok(v) => v,
         Err(_) => return false,
@@ -594,7 +594,7 @@ mod tests {
     #[test]
     fn hub_endpoint_is_local_on_the_hub_else_the_forwarded_port() {
         let t = topology::parse("hub = \"alpha\"\n[host.alpha]\ndaemon = true\n").unwrap();
-        assert_eq!(hub_endpoint(&t, "alpha"), topology::local_endpoint("sot"));
+        assert_eq!(hub_endpoint(&t, "alpha"), topology::local_endpoint());
         assert_eq!(hub_endpoint(&t, "beta"), format!("tcp:127.0.0.1:{}", topology::hub_local_port()));
     }
 

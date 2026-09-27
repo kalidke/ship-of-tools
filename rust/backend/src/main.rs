@@ -167,9 +167,13 @@ async fn main() -> Result<()> {
     if let Some(first) = std::env::args().nth(1) {
         match first.as_str() {
             "session-socket-path" => {
+                // No label means this box's own daemon — the only thing a
+                // caller that omits it can mean, and the one place that
+                // answers which label that is. It used to fall back to a
+                // phantom `default` label no daemon ever binds.
                 let label = std::env::args()
                     .nth(2)
-                    .unwrap_or_else(|| "default".to_string());
+                    .unwrap_or_else(|| paths::local_daemon_label().to_string());
                 println!("{}", paths::session_socket_path(&label).display());
                 return Ok(());
             }
@@ -270,6 +274,7 @@ Pure queries (no startup side effects, answered before any of the above):
   --help, -h              print this usage and exit
   session-socket-path [label]
                           print the per-session socket path and exit
+                          (no label: this box's own daemon)
   agent-exec <kind> [flags…] (Unix only)
                           resolve and exec the named agent's launch
                           recipe in place (ADR 0046 decision 4); only

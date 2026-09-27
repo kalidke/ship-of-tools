@@ -52,9 +52,9 @@ Usage: sotd status [--json]
 /// One host's raw probe outcome — the fixture type for [`report`]'s own
 /// unit tests. `Unreachable`'s `String` is the reason shown verbatim
 /// (item 1: never omit an unreachable host, never omit WHY). There is no
-/// `NotDialable` variant: a `daemon = true` host structurally excluded from
-/// this box's dial list (D8) never gets a [`Probe`] at all — `gather` only
-/// ever inserts an entry for a host it actually tried — so `report` reads
+/// `NotDialable` variant: a `daemon = true` host this box has no endpoint for
+/// never gets a [`Probe`] at all — `gather` only ever inserts an entry for a
+/// host it actually tried — so `report` reads
 /// that state straight off the declared flags (no probe for the name) via
 /// `host_row`'s own `(true, None)` match arm.
 #[derive(Debug, Clone)]
@@ -500,9 +500,11 @@ mod tests {
                 rows: vec![ws(Some("READY"), ""); 3],
             },
         );
-        // `laptop` never gets a `Probe` at all: it is `daemon=true` but
-        // `frontend=true` too, so it never appears in `dial_endpoints` —
-        // `report` must read `NotDialable` purely from the declared flags.
+        // `laptop` never gets a `Probe` at all — this fixture simply omits
+        // one, as `gather` does for a declared-daemon host it has no
+        // endpoint for (`frontend=true` is NOT such a case any more:
+        // `dialable_hosts` is `daemon` alone). `report` must read
+        // `NotDialable` purely from the declared flags plus that absence.
         let rep = report(&topo, &probes);
         let text = render_text(&rep);
 

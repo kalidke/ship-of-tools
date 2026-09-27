@@ -302,10 +302,13 @@ fn is_plain_host_name(s: &str) -> bool {
 
 // ─── What a box derives from the list ────────────────────────────────────
 
-/// This box's own control endpoint for `label`, in the `unix:`/`pipe:`
-/// spelling the comm scripts and the frontend already speak.
-pub fn local_endpoint(label: &str) -> String {
-    let p = crate::session_socket_path(label);
+/// This box's own control endpoint for its own daemon, in the `unix:`/`pipe:`
+/// spelling the comm scripts and the frontend already speak. The label is
+/// [`crate::local_daemon_label`]'s, never a caller's: every caller here means
+/// the one local daemon, and a `label` parameter they all passed `"sot"` to
+/// was how a Windows box came to dial a pipe name nothing listens on.
+pub fn local_endpoint() -> String {
+    let p = crate::session_socket_path(crate::local_daemon_label());
     if cfg!(windows) { format!("pipe:{}", p.display()) } else { format!("unix:{}", p.display()) }
 }
 
@@ -319,7 +322,7 @@ pub fn local_endpoint(label: &str) -> String {
 pub fn relay_endpoint(topo: &Topology, self_host: &str) -> Result<String, String> {
     let host = topo.host(self_host).ok_or_else(|| format!("`{self_host}` is not a listed host"))?;
     Ok(if self_host == topo.hub {
-        local_endpoint("sot")
+        local_endpoint()
     } else if host.frontend {
         format!("tcp:127.0.0.1:{}", hub_local_port())
     } else {
@@ -430,7 +433,7 @@ pub fn dial_endpoints(topo: &Topology, self_host: &str) -> Vec<(String, String)>
     dialable_hosts(topo)
         .map(|h| {
             let endpoint = if h.name == self_host {
-                local_endpoint("sot")
+                local_endpoint()
             } else if self_host == topo.hub {
                 format!("unix:{}", relay_socket_path(&h.name).display())
             } else {
@@ -1011,7 +1014,7 @@ gpu-box = "other-user@gpu-box"
         let _pin = PinnedUser::set(TEST_USER);
         let base = hub_local_port_for(TEST_USER);
         let t = parse(V2).unwrap();
-        let own = local_endpoint("sot");
+        let own = local_endpoint();
         let gamma_port = t.local_port("gamma").expect("gamma is listed");
         // gamma is daemon AND frontend: dialable all the same, and on its
         // own box that dial is the implicit local connection.
