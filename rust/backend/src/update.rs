@@ -163,7 +163,10 @@ async fn stage_prepare_arm(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
 
 async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
     if let Err(e) = sot_updater::stage(cfg, id).await {
-        tracing::warn!(tag = %id.tag, error = %e, "staging update failed");
+        // The whole chain, not just the outermost context: the OS error is the
+        // thing that names the fault, and `%e` drops it.
+        let cause = e.chain().map(|c| c.to_string()).collect::<Vec<_>>().join(": ");
+        tracing::warn!(tag = %id.tag, error = %cause, "staging update failed");
         return;
     }
     let Some(install) = InstallManifest::for_current_exe() else {
