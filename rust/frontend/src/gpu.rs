@@ -1064,12 +1064,30 @@ const STRIP_TAU: f32 = 0.05;
 /// bottom strip so it's distinguishable by POSITION, not just colour — it sits
 /// raised above its peers like a selected tab. Subtle; tune to taste.
 const STRIP_ACTIVE_LIFT_CELLS: f32 = 0.4;
-/// Size of the host-divider wheel (`StripItem::HostDivider`) relative to the
-/// bookend logos flanking the whole strip — smaller so a mid-strip divider
-/// reads as a separator between two host groups, not a second pair of
-/// bookends. Applied to both width and height so the PNG's aspect ratio
-/// (and the bookends' own spin gimmick, `wheel_angle`) stay unchanged.
+/// Size of a bow wheel (`StripItem::Bow`) relative to the bookend logos
+/// flanking the whole strip — smaller so a mid-strip wheel reads as a group
+/// mark, not a second pair of bookends. Applied to both width and height so
+/// the PNG's aspect ratio stays unchanged. The one ship you are steering
+/// drops the factor (full bookend height); it is the only exception.
 const DIVIDER_SIZE_FACTOR: f32 = 0.8;
+/// Varnished-oak brown for a ship's hull — `#8B5A2B`, 3.4:1 against the
+/// strip's midnight-navy background (above the 3:1 floor for a non-text
+/// element) and 1.6× darker than the DIM fall-through ink, so a hull can
+/// never read as a dimmed row. It paints a filled shape, never a name's ink,
+/// so it spends no state meaning — same category as the border quads' grey.
+const HULL_RGB: (u8, u8, u8) = (139, 90, 43);
+/// Text rows the bottom strip occupies: session names on the upper row, and
+/// below them each host group's hull with its box name inline at the bow.
+const STRIP_ROWS: f32 = 2.0;
+/// Gap (physical px) between the window's bottom edge and the bottom of the
+/// strip's lower (hull) row — the strip hugs the bottom edge, so this anchors
+/// the whole band.
+const STRIP_BOTTOM_PAD: f32 = 2.0;
+/// Hull thickness and waterline drop, as fractions of `BASE_CELL_H` — the row
+/// height the mock was drawn against, named rather than a bare 18 in a
+/// denominator so a change there can't silently detune the hull.
+const HULL_THICKNESS_ROWS: f32 = 3.0 / BASE_CELL_H;
+const HULL_DROP_ROWS: f32 = 14.0 / BASE_CELL_H;
 
 /// Wheel-spin gimmick: cycling workspaces (`Shift+←/→` → `cycle_workspace`)
 /// flicks the brand wheels that bookend the bottom session strip — forward
@@ -1100,59 +1118,75 @@ fn strip_truncate(label: &str) -> String {
 
 /// One entry in the bottom session strip's layout: a session badge (its
 /// `WsKey`, carried for symmetry with `workspace_slugs` even though today's
-/// only consumer just needs the slot), a `HostDivider` — the brand-wheel
-/// miniature the strip draws between two adjacent HOST GROUPS, mirroring
-/// how the Sessions TREE already separates hosts with `HOST_DIVIDER_GLYPH`
-/// (owner ask 2026-09-07, ADR 0042 L2a: "local is just another host" — the
-/// strip has no reason to treat the boundary before/after `local`
-/// differently from the boundary between two remotes) — or a `HostTag`, that
-/// group's host as `host_label` renders it, drawn dim at the group's head so
-/// a badge sitting past a wheel says WHOSE it is without being selected or
-/// the tree being opened (owner ask 2026-09-24). Wheel then name is the
-/// tree's own `"⚙ <host>"`, laid out sideways. Neither a divider nor a tag
-/// is ever selectable or the active item — `cycle_workspace` (Shift+←/→)
-/// keeps walking `workspace_slugs` only, never `StripItem`.
+/// only consumer just needs the slot), or a `Bow` — the head of one HOST
+/// GROUP, which the strip draws as a ship: the brand-wheel miniature
+/// (mirroring how the Sessions TREE separates hosts with
+/// `HOST_DIVIDER_GLYPH`; ADR 0042 L2a, "local is just another host", so the
+/// boundary next to `local` gets no special case), one cell of air, and that
+/// group's host as `host_label` renders it — wheel then name is the tree's
+/// own `"⚙ <host>"`, laid out sideways. The wheel and the name are ONE mark
+/// because the owner's design treats them as one: they always co-occur, and
+/// a merged item's width is exactly the bow geometry the hull is measured
+/// from. A bow is never selectable or the active item — `cycle_workspace`
+/// (Shift+←/→) keeps walking `workspace_slugs` only, never `StripItem`.
 #[derive(Debug, Clone, PartialEq)]
 enum StripItem {
     Session(WsKey),
-    HostDivider,
-    HostTag(String),
+    Bow { host: HostKey, name: String },
 }
 
 /// Lay `slugs` (== `State::workspace_slugs`, already in strip/display order
-/// — ADR 0042 L2a union-of-hosts order) out as strip items: a `HostTag`
-/// (text from `tag_for`, the caller's `host_label` projection — the one
-/// place a host's display name is decided) at the head of each HOST GROUP,
-/// and a `HostDivider` wherever the host changes between two consecutive
-/// entries. A single host gets neither: with only one group there is
-/// nothing to attribute or separate, so the strip stays exactly the bare
-/// row of session names it has always been. `with_dividers` is the caller's
-/// asset check (no decoded quad → no wheel to draw, matching the bookend
-/// logos' fail-soft contract); the TAGS are emitted regardless, since a
-/// name needs no PNG and with no wheel marking the boundary the name is the
-/// only thing left marking it. A host with no visible rows never appears in
-/// `slugs` to begin with (`fresh_workspace_caches` already filters the
-/// inert anchor out), so it can't produce an empty group or a spurious
-/// back-to-back divider pair either.
-fn strip_items(
-    slugs: &[WsKey],
-    tag_for: impl Fn(&HostKey) -> String,
-    with_dividers: bool,
-) -> Vec<StripItem> {
+/// — ADR 0042 L2a union-of-hosts order) out as strip items: a `Bow` (name
+/// text from `tag_for`, the caller's `host_label` projection — the one place
+/// a host's display name is decided) at the head of EVERY host group, and a
+/// `Session` per slug. A single host gets no bow at all: with only one group
+/// there is nothing to attribute or separate, so the strip stays exactly the
+/// bare row of session names it has always been — one hull with one name is
+/// a frame, not a fleet, and the hull's mere presence then means "more than
+/// one box is in reach". A bow needs no asset check: with no decoded logo
+/// its wheel simply measures 0 (`strip_item_widths`' `wheel_w`) and the NAME
+/// still marks the group, matching the bookend logos' fail-soft contract. A
+/// host with no visible rows never appears in `slugs` to begin with
+/// (`fresh_workspace_caches` filters the inert anchor and any host whose
+/// link has dropped), so it can't produce an empty group.
+fn strip_items(slugs: &[WsKey], tag_for: impl Fn(&HostKey) -> String) -> Vec<StripItem> {
     let multi = slugs
         .first()
         .is_some_and(|first| slugs.iter().any(|k| k.0 != first.0));
     let mut out = Vec::with_capacity(slugs.len());
     for (i, key) in slugs.iter().enumerate() {
         if multi && (i == 0 || slugs[i - 1].0 != key.0) {
-            if i > 0 && with_dividers {
-                out.push(StripItem::HostDivider);
-            }
-            out.push(StripItem::HostTag(tag_for(&key.0)));
+            out.push(StripItem::Bow {
+                host: key.0.clone(),
+                name: tag_for(&key.0),
+            });
         }
         out.push(StripItem::Session(key.clone()));
     }
     out
+}
+
+/// Index span of every ship in `items`: `(bow index, stern index)`, the stern
+/// being the group's LAST item — the entry before the next bow, or the last
+/// item of all. Pure so the hull's horizontal extent is testable without a
+/// draw pass; it replaces chasing `k+1` and `items.len()-1` at the draw site.
+fn ship_spans(items: &[StripItem]) -> Vec<(usize, usize)> {
+    let bows: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, it)| matches!(it, StripItem::Bow { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    bows.iter()
+        .enumerate()
+        .map(|(n, &bow)| {
+            let stern = bows
+                .get(n + 1)
+                .map(|&next| next - 1)
+                .unwrap_or(items.len() - 1);
+            (bow, stern)
+        })
+        .collect()
 }
 
 /// Left-edge cursor position (pixels, strip-local — before the `win_w/2 +
@@ -1160,7 +1194,7 @@ fn strip_items(
 /// each entry in `widths`, laid out left→right with `gap` between
 /// neighbours. The one cursor-walk primitive `session_strip_target`,
 /// `session_strip_lines`, and `strip_divider_offsets` all build on, so
-/// inserting an item — a `HostDivider`, or hypothetically another session —
+/// inserting an item — a `Bow`, or hypothetically another session —
 /// shifts everything after it by exactly that item's own `width + gap`;
 /// there's only one place that arithmetic lives.
 fn strip_cursor_positions(widths: &[f32], gap: f32) -> Vec<f32> {
@@ -1173,17 +1207,24 @@ fn strip_cursor_positions(widths: &[f32], gap: f32) -> Vec<f32> {
     out
 }
 
+/// Pixel width of one bow: its wheel, one cell of air, then its name at the
+/// same `chars * cell_w` every strip name uses. With no decoded logo
+/// (`wheel_w == 0`) the air goes too and the bow is exactly its name. One
+/// place, because the hull's left edge is measured off this.
+fn bow_width(name: &str, wheel_w: f32, cell_w: f32) -> f32 {
+    let wheel = if wheel_w > 0.0 { wheel_w + cell_w } else { 0.0 };
+    wheel + name.chars().count() as f32 * cell_w
+}
+
 /// Pixel width for every entry in `items`: a `Session` gets its matching
 /// entry from `label_widths` (same order — `items`'s `Session` entries are
 /// built, via `strip_items`, from the very slug list `label_widths` is
 /// keyed off, so the i-th `Session` in `items` IS `label_widths[i]`); a
-/// `HostDivider` gets the shared `divider_w`; a `HostTag` is plain strip
-/// text, so it gets its own `chars * cell_w` — the same width math every
-/// name in the strip uses.
+/// `Bow` gets `bow_width`.
 fn strip_item_widths(
     items: &[StripItem],
     label_widths: &[f32],
-    divider_w: f32,
+    wheel_w: f32,
     cell_w: f32,
 ) -> Vec<f32> {
     let mut li = 0usize;
@@ -1195,14 +1236,13 @@ fn strip_item_widths(
                 li += 1;
                 w
             }
-            StripItem::HostDivider => divider_w,
-            StripItem::HostTag(t) => t.chars().count() as f32 * cell_w,
+            StripItem::Bow { name, .. } => bow_width(name, wheel_w, cell_w),
         })
         .collect()
 }
 
 /// Per-SESSION cumulative pixel offset injected by every preceding
-/// NON-session item (`HostDivider`s and `HostTag`s): the difference between
+/// NON-session item (the `Bow`s): the difference between
 /// where a session sits in the FULL layout (sessions interleaved with the
 /// rest, `item_widths`) and where it would sit among sessions alone
 /// (`label_widths`). Derived from the two cursor walks rather than from any
@@ -1229,11 +1269,221 @@ fn strip_divider_offsets(items: &[StripItem], item_widths: &[f32], label_widths:
     out
 }
 
+/// Which of the strip's two rows a drawn mark sits on. The bookend logos
+/// bracket only their OWN row's marks: a bracket that mixed rows measured
+/// something it could never collide with, which is how both bookends came to
+/// be skipped on any scrolled multi-host strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StripRow {
+    Names,
+    Hull,
+}
+
+/// What one strip mark draws. `SessionName` is already drawn (the mark exists
+/// so the bookend bracket measures the same set); `Wheel { big }` is a bow's
+/// brand wheel (`big` = the ship you are steering, at full bookend size);
+/// `BoxName` is that bow's host name, inline on the waterline; `Hull` is the
+/// waterline bar itself, running from one cell past the name to the stern.
+#[derive(Debug, Clone, PartialEq)]
+enum StripMarkKind {
+    SessionName,
+    Wheel { big: bool },
+    BoxName(String),
+    Hull,
+}
+
+/// One rect the strip actually draws: its row, its screen-space left edge and
+/// width (physical px), and what it is. Every mark goes through ONE cull into
+/// one `Vec`, so the bookends' bracket is `min`/`max` over what was drawn and
+/// cannot disagree with it.
+#[derive(Debug, Clone, PartialEq)]
+struct StripMark {
+    row: StripRow,
+    left: f32,
+    w: f32,
+    kind: StripMarkKind,
+}
+
+/// Screen-space left edge of a strip element whose strip-local left edge is
+/// `local`. Every element in the band is centred on the active session the
+/// same way, so this is the one copy of that arithmetic.
+fn strip_screen_left(local: f32, scroll: f32, win_w: f32) -> f32 {
+    win_w / 2.0 + (local - scroll)
+}
+
+/// The strip's one visibility predicate: an element fully off either window
+/// edge is not drawn — and therefore not bracketed.
+fn strip_visible(left: f32, w: f32, win_w: f32) -> bool {
+    left + w >= 0.0 && left <= win_w
+}
+
+/// Width and height of a bow wheel: the bookend logo's own size for the ship
+/// you are steering, `DIVIDER_SIZE_FACTOR` of it for every other. One place
+/// for that factor — the small pair used to be recomputed per draw site, and
+/// the LAYOUT is keyed to it (`strip_item_widths`' `wheel_w`) so which ship is
+/// steered can never reflow the strip: the big wheel's extra 25% spends the
+/// bow's one cell of air instead.
+fn wheel_size(logo_w: f32, logo_h: f32, big: bool) -> (f32, f32) {
+    if big {
+        (logo_w, logo_h)
+    } else {
+        (logo_w * DIVIDER_SIZE_FACTOR, logo_h * DIVIDER_SIZE_FACTOR)
+    }
+}
+
+/// Every mark the fleet's ships contribute, culled once. `items` and
+/// `item_positions`/`item_widths` are lock-step (the one cursor walk);
+/// `wheel_w` is the SMALL wheel width (0 with no decoded logo), the same value
+/// the layout reserved. `steered` is the host whose wheel goes full size —
+/// `State::active_host`, the box your keystrokes actually reach, which stays
+/// right even when the active session's row has just dropped out of
+/// `workspace_slugs` (a lookup-by-index fallback would then mark the wrong
+/// ship).
+fn ship_marks(
+    items: &[StripItem],
+    item_positions: &[f32],
+    item_widths: &[f32],
+    steered: &HostKey,
+    logo_w: f32,
+    logo_h: f32,
+    wheel_w: f32,
+    cell_w: f32,
+    scroll: f32,
+    win_w: f32,
+) -> Vec<StripMark> {
+    let mut out = Vec::new();
+    let mut push = |row: StripRow, local: f32, w: f32, kind: StripMarkKind| {
+        let left = strip_screen_left(local, scroll, win_w);
+        if w > 0.0 && strip_visible(left, w, win_w) {
+            out.push(StripMark { row, left, w, kind });
+        }
+    };
+    for (bow, stern) in ship_spans(items) {
+        let (Some(&bow_x), Some(&bow_w)) = (item_positions.get(bow), item_widths.get(bow)) else {
+            continue;
+        };
+        let StripItem::Bow { host, name } = &items[bow] else {
+            continue;
+        };
+        let big = host == steered;
+        if wheel_w > 0.0 {
+            let (w, _) = wheel_size(logo_w, logo_h, big);
+            push(StripRow::Hull, bow_x, w, StripMarkKind::Wheel { big });
+        }
+        // The name sits past the wheel's reserved slot (wheel + one cell of
+        // air), so a big wheel never shifts it.
+        let name_x = bow_x + if wheel_w > 0.0 { wheel_w + cell_w } else { 0.0 };
+        let name_w = name.chars().count() as f32 * cell_w;
+        push(
+            StripRow::Hull,
+            name_x,
+            name_w,
+            StripMarkKind::BoxName(name.clone()),
+        );
+        // Waterline: one cell of air after the name, out to the stern's right
+        // edge — under the group's session names, which are a row up.
+        let hull_x = bow_x + bow_w + cell_w;
+        let hull_r = item_positions
+            .get(stern)
+            .zip(item_widths.get(stern))
+            .map(|(&x, &w)| x + w)
+            .unwrap_or(hull_x);
+        push(StripRow::Hull, hull_x, hull_r - hull_x, StripMarkKind::Hull);
+    }
+    out
+}
+
+/// The bookend bracket for one row: leftmost left edge and rightmost right
+/// edge among the marks ON THAT ROW. `None` when that row drew nothing, in
+/// which case there is nothing to bookend.
+fn strip_bracket(marks: &[StripMark], row: StripRow) -> Option<(f32, f32)> {
+    marks
+        .iter()
+        .filter(|m| m.row == row)
+        .fold(None, |acc: Option<(f32, f32)>, m| {
+            Some(match acc {
+                None => (m.left, m.left + m.w),
+                Some((l, r)) => (l.min(m.left), r.max(m.left + m.w)),
+            })
+        })
+}
+
+/// Solid rects for one ship's hull: a thin waterline bar from `left` to
+/// `right` at `y..y+h`, plus a stern-only rake — a bar-width rise at the
+/// right end, `3*h` tall, bottom-aligned with the bar. No bow-side rake: the
+/// wheel already marks the bow and the name has taken its columns (owner
+/// ruling), so one rake is what makes the shape read as a vessel rather than
+/// a rule. Axis-aligned only — the quad path has no rotation, so the rake is
+/// one step, not a diagonal. A hull with no columns left (`right <= left`)
+/// draws nothing.
+fn hull_rects(left: f32, right: f32, y: f32, h: f32) -> Vec<ScreenRect> {
+    if right <= left || h <= 0.0 {
+        return Vec::new();
+    }
+    let rake_h = h * 3.0;
+    vec![
+        ScreenRect {
+            x: left,
+            y,
+            w: right - left,
+            h,
+        },
+        ScreenRect {
+            x: (right - h).max(left),
+            y: y + h - rake_h,
+            w: h,
+            h: rake_h,
+        },
+    ]
+}
+
+/// The waterline's y and thickness inside the ship row whose glyph-top is
+/// `ship_y`. Both are fractions of `BASE_CELL_H` — the row height the mock was
+/// drawn against, NAMED rather than left as a bare 18 in a denominator, so a
+/// change there can't silently detune the hull — and the thickness carries the
+/// same `.max(1.0)` floor the border quads do, so it can't thin to a sub-pixel
+/// rect at small scale.
+fn hull_band(ship_y: f32, cell_h: f32) -> (f32, f32) {
+    (
+        ship_y + cell_h * HULL_DROP_ROWS,
+        (cell_h * HULL_THICKNESS_ROWS).max(1.0),
+    )
+}
+
+/// Glyph-top y (physical px) of the strip's two rows — `(names, hull)`. The
+/// band hugs the window's bottom edge, so both are measured back from it:
+/// `STRIP_BOTTOM_PAD` below the hull row, one `cell_h` above it for the names.
+fn strip_row_tops(win_h: f32, cell_h: f32) -> (f32, f32) {
+    let hull = (win_h - cell_h - STRIP_BOTTOM_PAD).max(0.0);
+    ((hull - cell_h).max(0.0), hull)
+}
+
+/// Rows `cell_grid_for` keeps OUT of the chrome grid so the strip's band can
+/// never land on the grid's last row — the bottom border line, which carries
+/// the FE/BE version stamp (`version_label`). The strip floats off
+/// `config.height` while the chrome floats off the grid, so a row the strip
+/// claims is a row the chrome may also own; reserving it once, here, is the
+/// only place that can't disagree with itself.
+///
+/// The band needs `STRIP_ROWS` rows plus `STRIP_BOTTOM_PAD` plus the active
+/// name's lift (`STRIP_ACTIVE_LIFT_CELLS`, which raises it clear of the rows
+/// proper), measured up from the window's bottom edge; the grid's own bottom
+/// margin `oy` already pays for part of it. With
+/// `R = (win_h - 2*oy) mod cell_h` the grid's bottom edge sits at
+/// `win_h - oy - R - k*cell_h`, so the worst case is `R = 0` and
+/// `k = ceil((need - oy) / cell_h)` — 2 rows at every scale (the lift and the
+/// pad together are under half a row, and one full row plus `oy` is not quite
+/// two). Pinned by `strip_band_never_touches_the_grids_last_row`.
+fn strip_reserved_rows(cell_w: f32, cell_h: f32, oy: f32) -> u16 {
+    let need = STRIP_ROWS * cell_h + STRIP_BOTTOM_PAD + STRIP_ACTIVE_LIFT_CELLS * cell_w;
+    (((need - oy) / cell_h.max(1.0)).ceil().max(0.0)) as u16
+}
+
 /// Strip-local center-x (pixels) of the active item — the value
 /// `strip_scroll_px` eases toward so the active session sits at screen
 /// center. Items lay out left→right, each `len*cell_w` wide with
 /// `STRIP_GAP_CELLS*cell_w` between them; `divider_offsets[active]` (0.0
-/// when absent — `&[]` from a caller with no `HostDivider`s to place)
+/// when absent — `&[]` from a caller with no `Bow`s to place)
 /// shifts the target over by however much strip space precedes it
 /// (`strip_divider_offsets`).
 fn session_strip_target(
@@ -1329,7 +1579,7 @@ fn session_strip_lines(
         .map(|l| l.chars().count() as f32 * cell_w)
         .collect();
     // Same dividers-oblivious cursor walk `session_strip_target` uses;
-    // `divider_offsets` (see the doc above) folds the `HostDivider`s back in.
+    // `divider_offsets` (see the doc above) folds the `Bow`s back in.
     let positions = strip_cursor_positions(&widths, gap);
     let mut out = Vec::new();
     for (i, lab) in padded.iter().enumerate() {
@@ -2703,10 +2953,21 @@ fn resplice_expanded_session_hosts(
 /// what stays and why. Without this the row was invisible in the Sessions
 /// TREE (#202) but still showed up in the bottom session STRIP, which is
 /// built from this function, not from the tree.
+/// 2026-09-27 (owner ruling, the fleet strip): a host whose link has DROPPED
+/// is excluded from `workspace_slugs` too — the strip answers "what can I
+/// switch to", and a box the frontend cannot reach has nothing to offer, so a
+/// ship for it would be an offer the strip can't honour (Hosts mode is where
+/// "exists but unreachable" is answered, and it still says so). The predicate
+/// is `!= Some(&false)`: a group disappears only once a `Disconnected` has
+/// actually been seen, so absence of evidence never hides a live host and the
+/// change stays a pure subtraction. It self-heals — `Connected` sets `true`
+/// before that host's own `workspace.list`, whose reply is the only caller of
+/// `rebuild_workspace_caches`.
 fn fresh_workspace_caches(
     ordered_hosts: &[HostKey],
     lists: &HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>>,
     active_host: &HostKey,
+    connected: &HashMap<HostKey, bool>,
 ) -> FreshWorkspaceCaches {
     let mut out = FreshWorkspaceCaches {
         workspace_slugs: Vec::new(),
@@ -2753,8 +3014,11 @@ fn fresh_workspace_caches(
             // `workspace_id_slugs` are harmless (the daemon still lists the
             // row), and `default_workspace_slug` below is the strip's own
             // active-index fallback — it must still resolve to this row
-            // when it's the connection's default.
-            if !is_inert {
+            // when it's the connection's default. A host whose link has
+            // dropped is held back the same way and for the same reason (see
+            // this function's doc): every other cache stays, and nothing
+            // looks up a slug that isn't in the list.
+            if !is_inert && connected.get(host) != Some(&false) {
                 out.workspace_slugs.push(ws_key.clone());
             }
             if w.is_default && host == active_host {
@@ -3938,8 +4202,11 @@ struct State {
     /// The union this refactor is built on (ADR 0042 L2a): host → its most
     /// recent `workspace.list` reply. A reply from host H replaces only
     /// H's entry — every other host's last-known list is untouched, so an
-    /// unreachable host keeps showing its (greyed) rows instead of
-    /// vanishing. `rebuild_workspace_caches` and the Sessions tree are
+    /// unreachable host keeps its rows here and the Sessions TREE still
+    /// shows them, greyed. The bottom STRIP is the one surface that drops
+    /// them (`fresh_workspace_caches`' connectivity filter): it answers
+    /// "what can I switch to", and an unreachable box has nothing to offer.
+    /// `rebuild_workspace_caches` and the Sessions tree are
     /// both derived from this in `conns` order (see `ordered_hosts`), not
     /// insertion order.
     workspace_lists: HashMap<crate::dial::HostKey, Vec<crate::transport::WorkspaceInfo>>,
@@ -5288,6 +5555,12 @@ fn pinned_repl_scroll(
     (scroll as i64 + delta).clamp(0, u16::MAX as i64) as u16
 }
 
+/// Chrome grid (cols, rows) for a window, with the bottom session strip's
+/// band held back: `strip_reserved_rows` comes off `rows` HERE, once, because
+/// the strip floats off `config.height` while everything the chrome draws
+/// floats off this grid — including the FE/BE version stamp on the bottom
+/// border line, which the strip's names row otherwise lands on top of. The
+/// owner pre-authorised moving the bottom pane boundary up for exactly this.
 fn cell_grid_for(
     width: u32,
     height: u32,
@@ -5298,6 +5571,7 @@ fn cell_grid_for(
 ) -> (u16, u16) {
     let cols = ((width as f32 - 2.0 * ox).max(0.0) / cell_w).floor() as u16;
     let rows = ((height as f32 - 2.0 * oy).max(0.0) / cell_h).floor() as u16;
+    let rows = rows.saturating_sub(strip_reserved_rows(cell_w, cell_h, oy));
     (cols.max(1), rows.max(1))
 }
 
@@ -8368,6 +8642,7 @@ impl State {
             &self.ordered_hosts(),
             &self.workspace_lists,
             &self.active_host,
+            &self.host_connected,
         );
         for (key, (state, _)) in &fresh.workspace_states {
             match self.prev_workspace_states.get(key) {
@@ -15106,10 +15381,11 @@ impl State {
                     // ADR 0042 L2a: this reply is ONE host's list —
                     // `event_host` names which. Replace only that host's
                     // slice of the union (every other host's last-known
-                    // list is untouched — an unreachable host keeps
-                    // showing its rows, greyed, rather than vanishing),
-                    // then rebuild every workspace-scoped cache from the
-                    // whole union in one pass.
+                    // list is untouched — an unreachable host keeps its
+                    // rows here, greyed, in the Sessions tree; only the
+                    // bottom strip drops them), then rebuild every
+                    // workspace-scoped cache from the whole union in one
+                    // pass.
                     self.workspace_lists.insert(event_host.clone(), workspaces);
                     self.rebuild_workspace_caches();
                     self.prune_warm_attach(&event_host);
@@ -17105,18 +17381,18 @@ impl State {
                 .and_then(|k| self.workspace_slugs.iter().position(|x| x == k))
                 .unwrap_or(0)
                 .min(labels.len().saturating_sub(1));
-            // Host-group layout (owner asks 2026-09-07 + 2026-09-24, ADR
-            // 0042 L2a): one brand wheel between adjacent HOST GROUPS, and
-            // each group headed by its host's name — the Sessions TREE's own
-            // `HOST_DIVIDER_GLYPH` + display name, laid out sideways ("local
-            // is just another host", so no special-casing the boundary next
-            // to it). The name comes from `host_label`, the one display
-            // projection, truncated like a session name is so a pathological
-            // host name can't blow the layout. `logo_dims` doubles as both
-            // "is there an asset to draw a divider with" and the geometry
+            // The fleet (owner asks 2026-09-07 + 2026-09-24 + 2026-09-27, ADR
+            // 0042 L2a): each HOST GROUP is a ship — a brand wheel at the bow,
+            // that group's box name inline on the waterline beside it, and a
+            // hull running under the group's session names to the stern. The
+            // name comes from `host_label`, the one display projection,
+            // truncated like a session name is so a pathological host name
+            // can't blow the layout ("local is just another host", so no
+            // special-casing the group next to it). `logo_dims` doubles as
+            // both "is there an asset to draw a wheel with" and the geometry
             // the bookends below reuse (one source for the logo's on-screen
-            // size, not two); with no decoded logo the wheels drop out and
-            // the names alone mark the groups, matching the bookends' own
+            // size, not two); with no decoded logo the wheels drop out and the
+            // names alone mark the groups, matching the bookends' own
             // fail-soft contract (a decode failure never breaks the layout,
             // per `LOGO_DARK_PNG`'s doc).
             let logo_dims: Option<(f32, f32)> = self.logo_quad.as_ref().map(|(_, nw, nh)| {
@@ -17124,27 +17400,32 @@ impl State {
                 let logo_w = logo_h * (*nw as f32 / (*nh).max(1) as f32);
                 (logo_w, logo_h)
             });
-            let items: Vec<StripItem> = strip_items(
-                &self.workspace_slugs,
-                |h| strip_truncate(host_label(&self.declared_host, h)),
-                logo_dims.is_some(),
-            );
+            let items: Vec<StripItem> = strip_items(&self.workspace_slugs, |h| {
+                strip_truncate(host_label(&self.declared_host, h))
+            });
             let strip_gap = STRIP_GAP_CELLS * self.cell_w;
-            let divider_w = logo_dims
-                .map(|(logo_w, _)| logo_w * DIVIDER_SIZE_FACTOR)
+            // The layout reserves the SMALL wheel; the steered ship's bigger
+            // one spends the bow's cell of air, so switching ships can't
+            // reflow the strip.
+            let wheel_w = logo_dims
+                .map(|(logo_w, logo_h)| wheel_size(logo_w, logo_h, false).0)
                 .unwrap_or(0.0);
             let label_widths: Vec<f32> = labels
                 .iter()
                 .map(|l| l.chars().count() as f32 * self.cell_w)
                 .collect();
-            let item_widths =
-                strip_item_widths(&items, &label_widths, divider_w, self.cell_w);
+            let item_widths = strip_item_widths(&items, &label_widths, wheel_w, self.cell_w);
             let item_positions = strip_cursor_positions(&item_widths, strip_gap);
             let divider_offsets =
                 strip_divider_offsets(&items, &item_widths, &label_widths, strip_gap);
             let target = session_strip_target(&labels, active, self.cell_w, &divider_offsets);
             let scroll = self.strip_scroll_px.unwrap_or(target);
-            let baseline_y = (self.config.height as f32 - self.cell_h - 2.0).max(0.0);
+            // Two rows, hugging the window's bottom edge: session names above,
+            // the ships below them. `cell_grid_for` has already kept both out
+            // of the chrome grid (`strip_reserved_rows`), so neither can land
+            // on the bottom border line and its version stamp.
+            let (baseline_y, ship_y) =
+                strip_row_tops(self.config.height as f32, self.cell_h);
             // Per-name work-state tone, parallel to `labels` (built from
             // `workspace_slugs` in the same order). `now` is fetched per frame
             // so the wilt re-evaluates on the existing 1 Hz idle redraw.
@@ -17187,70 +17468,95 @@ impl State {
                 &pendings,
                 &divider_offsets,
             );
-            // Host-group name tags: one dim name per `StripItem::HostTag`, at
-            // its own slot in `item_positions` (lock-step with `items`) and
-            // centred the same way session names are. Built HERE, ahead of the
-            // bookends, because the left bookend brackets the leftmost thing
-            // the strip draws — a group name included — and placing it off the
-            // session names alone would sit it on top of the first tag (the
-            // bookend's own 2-cell pad is narrower than the 3-cell gap the tag
-            // occupies). Still DRAWN outside the `logo_dims` block below: a tag
-            // is text, so it renders with or without a decoded wheel, and
-            // without one it is all that marks the group. Never lifted and
-            // never bold — a tag is chrome, can never be the active item, and
-            // carries no work-state tone, flash or badge sigil: a host is not
-            // an agent.
+            // ONE list of marks: every rect the strip draws — a session name,
+            // a bow's wheel, a bow's box name, a hull — tagged with its ROW and
+            // culled once (`ship_marks`, `strip_visible`). The session names
+            // are read straight off the `Line`s that were just built, so the
+            // list IS what was drawn; the bookend bracket below is min/max over
+            // it and cannot disagree. Seeding the bracket from an already-culled
+            // list and then extending it unconditionally per bow is what made
+            // both bookends vanish on any strip wider than the window, and a
+            // per-bow visibility test would only have put the cull predicate in
+            // a fifth place.
             let win_w = self.config.width as f32;
-            // Same two branches a non-active idle session name takes, and the
-            // same for every tag: the "dim" contrast lever bakes an
-            // explicitly-dimmed colour (text.rs's fixed DIM can't be made
-            // stronger through the flag alone), "bright" keeps the default DIM.
+            let (logo_w, logo_h) = logo_dims.unwrap_or((0.0, 0.0));
+            let mut marks: Vec<StripMark> = strip_lines
+                .iter()
+                .map(|ln| StripMark {
+                    row: StripRow::Names,
+                    left: ln.x,
+                    w: ln.text.chars().count() as f32 * self.cell_w,
+                    kind: StripMarkKind::SessionName,
+                })
+                .collect();
+            marks.extend(ship_marks(
+                &items,
+                &item_positions,
+                &item_widths,
+                &self.active_host,
+                logo_w,
+                logo_h,
+                wheel_w,
+                self.cell_w,
+                scroll,
+                win_w,
+            ));
+            // Same two branches a non-active idle session name takes: the "dim"
+            // contrast lever bakes an explicitly-dimmed colour (text.rs's fixed
+            // DIM can't be made stronger through the flag alone), "bright"
+            // keeps the default DIM. Never lifted, never bold, no tone, flash
+            // or badge sigil — a box name is chrome, and a host is not an agent.
             let (tag_color, tag_dim) = if self.contrast_dim {
                 (Some(scale_rgb((204, 204, 204), CONTRAST_DIM_FACTOR)), false)
             } else {
                 (None, true)
             };
+            // Draw the marks.
+            let (hull_y, hull_h) = hull_band(ship_y, self.cell_h);
+            let mut strip_hull_rects: Vec<ScreenRect> = Vec::new();
             let mut tag_lines: Vec<crate::text::Line> = Vec::new();
-            for (item, &pos) in items.iter().zip(item_positions.iter()) {
-                let tag = match item {
-                    StripItem::HostTag(t) => t,
-                    _ => continue,
-                };
-                let w = tag.chars().count() as f32 * self.cell_w;
-                let center = pos + w / 2.0;
-                let left = win_w / 2.0 + (center - scroll) - w / 2.0;
-                if left + w < 0.0 || left > win_w {
-                    continue; // fully off-screen
-                }
-                tag_lines.push(crate::text::Line {
-                    text: tag.clone(),
-                    x: left,
-                    y: baseline_y,
-                    color: tag_color,
-                    bold: false,
-                    italic: false,
-                    dim: tag_dim,
-                });
-            }
-            // Bookend the whole row of session names with the dark logo: one
-            // mini logo just left of the leftmost visible badge, one just right
-            // of the rightmost. (Per-badge flanking was too crowded — logo-dark
-            // is square ~2 cells wide and the inter-badge gap is only 3 cells,
-            // so adjacent flankers overlapped.) Each strip Line carries `.x`
-            // (badge left) and `.text`; badge width = chars * cell_w, matching
-            // session_strip_lines' own layout math. Rects are drawn from
-            // `self.logo_quad` via render_many in the pass below. A bookend that
-            // would spill off its window edge is skipped.
-            if let Some((logo_w, logo_h)) = logo_dims {
-                if !strip_lines.is_empty() {
-                    let pad = 2.0 * self.cell_w; // breathing room between logo and names (2 cells)
-                    let mut min_left = f32::MAX;
-                    let mut max_right = f32::MIN;
-                    for ln in strip_lines.iter().chain(tag_lines.iter()) {
-                        let w = ln.text.chars().count() as f32 * self.cell_w;
-                        min_left = min_left.min(ln.x);
-                        max_right = max_right.max(ln.x + w);
+            for m in &marks {
+                match &m.kind {
+                    StripMarkKind::SessionName => {}
+                    StripMarkKind::Wheel { big } => {
+                        // Vertically centred in the ship row against the
+                        // bookends' taller band, so a small wheel doesn't look
+                        // mis-aligned next to a big one.
+                        let (_, h) = wheel_size(logo_w, logo_h, *big);
+                        strip_logo_rects.push(ScreenRect {
+                            x: m.left,
+                            y: ship_y + (logo_h - h) / 2.0,
+                            w: m.w,
+                            h,
+                        });
                     }
+                    StripMarkKind::BoxName(name) => tag_lines.push(crate::text::Line {
+                        text: name.clone(),
+                        x: m.left,
+                        y: ship_y,
+                        color: tag_color,
+                        bold: false,
+                        italic: false,
+                        dim: tag_dim,
+                    }),
+                    StripMarkKind::Hull => {
+                        strip_hull_rects.extend(hull_rects(m.left, m.left + m.w, hull_y, hull_h))
+                    }
+                }
+            }
+            // Bookend the row of session names with the dark logo: one mini
+            // logo just left of the leftmost visible badge, one just right of
+            // the rightmost. (Per-badge flanking was too crowded — logo-dark is
+            // square ~2 cells wide and the inter-badge gap is only 3 cells, so
+            // adjacent flankers overlapped.) The bracket is `min`/`max` over the
+            // marks on the bookends' OWN row: a ship's name sits a row below, so
+            // letting it widen the bracket would move a bookend off something it
+            // could never collide with. Rects are drawn from `self.logo_quad`
+            // via render_many in the pass below. A bookend that would spill off
+            // its window edge is skipped.
+            if logo_dims.is_some() {
+                if let Some((min_left, max_right)) = strip_bracket(&marks, StripRow::Names) {
+                    let pad = 2.0 * self.cell_w; // breathing room between logo and names (2 cells)
                     let lx = min_left - pad - logo_w;
                     if lx >= 0.0 {
                         strip_logo_rects.push(ScreenRect {
@@ -17269,39 +17575,31 @@ impl State {
                             h: logo_h,
                         });
                     }
-                    // Host-divider wheels: one per `StripItem::HostDivider` in
-                    // `items`, at its own slot in `item_positions` (computed
-                    // above in lock-step with `items`), centred the same way
-                    // session names are (`win_w/2 + (center - scroll) -
-                    // w/2`) and vertically centred against the bookends'
-                    // taller logo band so a smaller wheel doesn't look
-                    // mis-aligned against the row. Culled the same way
-                    // session names are — fully hidden is simply skipped —
-                    // unlike the bookends' "must fit inside the window"
-                    // rule above, which only makes sense at the two ends of
-                    // the whole strip.
-                    let divider_h = logo_h * DIVIDER_SIZE_FACTOR;
-                    let divider_y = baseline_y + (logo_h - divider_h) / 2.0;
-                    for (item, &pos) in items.iter().zip(item_positions.iter()) {
-                        if !matches!(item, StripItem::HostDivider) {
-                            continue;
-                        }
-                        let center = pos + divider_w / 2.0;
-                        let left = win_w / 2.0 + (center - scroll) - divider_w / 2.0;
-                        if left + divider_w < 0.0 || left > win_w {
-                            continue; // fully off-screen
-                        }
-                        strip_logo_rects.push(ScreenRect {
-                            x: left,
-                            y: divider_y,
-                            w: divider_w,
-                            h: divider_h,
-                        });
-                    }
                 }
             }
             lines.extend(strip_lines);
             lines.extend(tag_lines);
+            // Hulls ride the chrome's own colour-keyed solid-quad cache, so the
+            // brown costs exactly one entry and one batched draw.
+            if !strip_hull_rects.is_empty() {
+                if !self.border_quads.contains_key(&HULL_RGB) {
+                    let (r, g, b) = HULL_RGB;
+                    let quad = Quad::from_rgba8(
+                        &self.device,
+                        &self.queue,
+                        &self.quad_pipeline,
+                        &[r, g, b, 255],
+                        1,
+                        1,
+                    )
+                    .context("failed to build hull-colour quad")?;
+                    self.border_quads.insert(HULL_RGB, quad);
+                }
+                border_rects_by_color
+                    .entry(HULL_RGB)
+                    .or_default()
+                    .extend(strip_hull_rects);
+            }
             // Ease toward `target` for the next frame; keep the frame loop
             // alive (dirty) until settled. Frame-rate-independent ease-out.
             let now = std::time::Instant::now();
@@ -24439,114 +24737,77 @@ mod tests {
     }
 
     #[test]
-    fn strip_items_one_host_has_no_dividers() {
+    fn strip_items_one_host_is_no_fleet_and_gets_no_ship() {
         let slugs: Vec<WsKey> = vec![
             ("alpha".to_string(), "one".to_string()),
             ("alpha".to_string(), "two".to_string()),
             ("alpha".to_string(), "three".to_string()),
         ];
-        let items = strip_items(&slugs, |h| h.clone(), true);
+        let items = strip_items(&slugs, |h| h.clone());
         assert!(
             items.iter().all(|it| matches!(it, StripItem::Session(_))),
-            "a single host must produce zero dividers and zero tags: {items:?}"
+            "a single host must produce zero bows — one hull with one name is a frame, not a fleet: {items:?}"
         );
         assert_eq!(items.len(), slugs.len());
     }
 
     #[test]
-    fn strip_items_two_hosts_get_exactly_one_divider_between_them() {
+    fn strip_items_puts_a_bow_at_every_group_head_including_the_first() {
         let slugs: Vec<WsKey> = vec![
             ("alpha".to_string(), "one".to_string()),
             ("alpha".to_string(), "two".to_string()),
             ("beta".to_string(), "three".to_string()),
         ];
-        let items = strip_items(&slugs, |h| h.clone(), true);
+        let items = strip_items(&slugs, |h| h.clone());
         assert_eq!(
             items,
             vec![
-                StripItem::HostTag("alpha".to_string()),
+                StripItem::Bow {
+                    host: "alpha".to_string(),
+                    name: "alpha".to_string()
+                },
                 StripItem::Session(slugs[0].clone()),
                 StripItem::Session(slugs[1].clone()),
-                StripItem::HostDivider,
-                StripItem::HostTag("beta".to_string()),
+                StripItem::Bow {
+                    host: "beta".to_string(),
+                    name: "beta".to_string()
+                },
                 StripItem::Session(slugs[2].clone()),
             ],
-            "each group headed by its host's name; one divider, exactly at              the host boundary, none at the ends"
-        );
-        assert_eq!(
-            items.iter().filter(|it| matches!(it, StripItem::HostDivider)).count(),
-            1
+            "every group is a ship: a bow at its head, the first group included"
         );
     }
 
     #[test]
     fn strip_items_three_hosts_middle_host_already_filtered_out_of_slugs() {
         // A host with zero visible rows never appears in `slugs` to begin
-        // with (`fresh_workspace_caches` already excludes it) — so from
-        // `strip_items`'s point of view this is just a two-host boundary,
-        // one divider, order preserved, no back-to-back dividers.
+        // with (`fresh_workspace_caches` excludes it) — so from
+        // `strip_items`'s point of view this is just two groups, two bows,
+        // order preserved.
         let slugs: Vec<WsKey> = vec![
             ("alpha".to_string(), "one".to_string()),
             ("gamma".to_string(), "two".to_string()),
         ];
-        let items = strip_items(&slugs, |h| h.clone(), true);
+        let items = strip_items(&slugs, |h| h.clone());
         assert_eq!(
             items,
             vec![
-                StripItem::HostTag("alpha".to_string()),
+                StripItem::Bow {
+                    host: "alpha".to_string(),
+                    name: "alpha".to_string()
+                },
                 StripItem::Session(slugs[0].clone()),
-                StripItem::HostDivider,
-                StripItem::HostTag("gamma".to_string()),
+                StripItem::Bow {
+                    host: "gamma".to_string(),
+                    name: "gamma".to_string()
+                },
                 StripItem::Session(slugs[1].clone()),
             ]
         );
     }
 
     #[test]
-    fn strip_target_active_centring_accounts_for_a_preceding_divider() {
-        // Same three labels as `strip_target_centers_active`, but with a
-        // `HostDivider` sitting between item0 and item1 — the divider's own
-        // contribution in isolation, no host tags (those compose on top, see
-        // `strip_offsets_shift_sessions_past_both_tags_and_dividers`). The
-        // active item (item1) must be pushed over by exactly the divider's
-        // own `width + gap` — its centring relative to item0 is otherwise
-        // unaffected.
-        let labels = vec!["aa".to_string(), "bbbb".to_string(), "cc".to_string()];
-        let cell_w = 10.0;
-        let gap = STRIP_GAP_CELLS * cell_w;
-        let divider_w = 25.0;
-        let slugs: Vec<WsKey> = vec![
-            ("alpha".to_string(), "aa".to_string()),
-            ("beta".to_string(), "bbbb".to_string()),
-            ("beta".to_string(), "cc".to_string()),
-        ];
-        let items = vec![
-            StripItem::Session(slugs[0].clone()),
-            StripItem::HostDivider,
-            StripItem::Session(slugs[1].clone()),
-            StripItem::Session(slugs[2].clone()),
-        ];
-        let label_widths: Vec<f32> = labels
-            .iter()
-            .map(|l| l.chars().count() as f32 * cell_w)
-            .collect();
-        let item_widths = strip_item_widths(&items, &label_widths, divider_w, cell_w);
-        let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, gap);
-        // No divider precedes item0.
-        assert!((offsets[0]).abs() < 1e-3);
-        // One divider (width `divider_w`, plus its own `gap`) precedes item1/2.
-        assert!((offsets[1] - (divider_w + gap)).abs() < 1e-3);
-        assert!((offsets[2] - (divider_w + gap)).abs() < 1e-3);
-        let no_divider_target = session_strip_target(&labels, 1, cell_w, &[]);
-        let with_divider_target = session_strip_target(&labels, 1, cell_w, &offsets);
-        assert!(
-            (with_divider_target - (no_divider_target + divider_w + gap)).abs() < 1e-3,
-            "the active session's centring must shift by exactly the divider's width + gap"
-        );
-    }
-
-    #[test]
-    fn strip_items_names_every_host_group_with_what_the_caller_resolved() {
+    fn strip_items_names_every_bow_with_what_the_caller_resolved() {
         let slugs: Vec<WsKey> = vec![
             ("alpha".to_string(), "one".to_string()),
             ("beta".to_string(), "two".to_string()),
@@ -24554,86 +24815,420 @@ mod tests {
             ("gamma".to_string(), "four".to_string()),
         ];
         // The draw site passes `host_label`; a stand-in that renames every
-        // key proves the tag text is the caller's projection, not the key.
-        let items = strip_items(&slugs, |h| format!("{h}-shown"), true);
-        let tags: Vec<&str> = items
+        // key proves the name is the caller's projection, not the key — and
+        // that the bow still carries the raw HostKey the steered-ship
+        // comparison needs.
+        let items = strip_items(&slugs, |h| format!("{h}-shown"));
+        let bows: Vec<(&str, &str)> = items
             .iter()
             .filter_map(|it| match it {
-                StripItem::HostTag(t) => Some(t.as_str()),
+                StripItem::Bow { host, name } => Some((host.as_str(), name.as_str())),
                 _ => None,
             })
             .collect();
-        assert_eq!(tags, vec!["alpha-shown", "beta-shown", "gamma-shown"]);
         assert_eq!(
-            items.iter().filter(|it| matches!(it, StripItem::HostDivider)).count(),
-            2,
-            "three groups, two boundaries between them"
-        );
-    }
-
-    #[test]
-    fn strip_items_without_a_divider_asset_still_names_the_groups() {
-        // No decoded wheel to draw (the draw site's `logo_dims` is None), so
-        // the names are the only thing left marking the boundary.
-        let slugs: Vec<WsKey> = vec![
-            ("alpha".to_string(), "one".to_string()),
-            ("beta".to_string(), "two".to_string()),
-        ];
-        let items = strip_items(&slugs, |h| h.clone(), false);
-        assert_eq!(
-            items,
+            bows,
             vec![
-                StripItem::HostTag("alpha".to_string()),
-                StripItem::Session(slugs[0].clone()),
-                StripItem::HostTag("beta".to_string()),
-                StripItem::Session(slugs[1].clone()),
+                ("alpha", "alpha-shown"),
+                ("beta", "beta-shown"),
+                ("gamma", "gamma-shown")
             ]
         );
     }
 
     #[test]
-    fn strip_item_widths_measures_a_tag_at_its_text_width() {
+    fn strip_item_widths_measures_a_bow_as_wheel_plus_air_plus_name() {
         let cell_w = 7.0; // not 1.0 — a dropped multiply has to fail here
         let items = vec![
-            StripItem::HostTag("alpha".to_string()),
+            StripItem::Bow {
+                host: "alpha".to_string(),
+                name: "alpha".to_string(),
+            },
             StripItem::Session(("alpha".to_string(), "one".to_string())),
-            StripItem::HostDivider,
         ];
         let widths = strip_item_widths(&items, &[40.0], 25.0, cell_w);
-        assert!((widths[0] - 5.0 * cell_w).abs() < 1e-3);
+        assert!(
+            (widths[0] - (25.0 + cell_w + 5.0 * cell_w)).abs() < 1e-3,
+            "wheel, one cell of air, then the name: {widths:?}"
+        );
         assert!(
             (widths[1] - 40.0).abs() < 1e-3,
             "sessions stay in lock-step with `label_widths`"
         );
-        assert!((widths[2] - 25.0).abs() < 1e-3);
+        // No decoded logo: the wheel and its cell of air both go, and the bow
+        // is exactly its name (the bookends' fail-soft contract).
+        let bare = strip_item_widths(&items, &[40.0], 0.0, cell_w);
+        assert!((bare[0] - 5.0 * cell_w).abs() < 1e-3);
     }
 
     #[test]
-    fn strip_offsets_shift_sessions_past_both_tags_and_dividers() {
-        // Group one is preceded by its own tag; group two by that tag, the
-        // divider, and its own tag — each costing its width plus one gap.
+    fn strip_target_active_centring_accounts_for_a_preceding_bow() {
+        // The active item (item1) must be pushed over by exactly the bow's
+        // own `width + gap` — its centring relative to item0 is otherwise
+        // unaffected.
+        let labels = vec!["aa".to_string(), "bbbb".to_string(), "cc".to_string()];
         let cell_w = 10.0;
         let gap = STRIP_GAP_CELLS * cell_w;
-        let divider_w = 25.0;
+        let wheel_w = 25.0;
+        let slugs: Vec<WsKey> = vec![
+            ("alpha".to_string(), "aa".to_string()),
+            ("beta".to_string(), "bbbb".to_string()),
+            ("beta".to_string(), "cc".to_string()),
+        ];
+        let items = vec![
+            StripItem::Session(slugs[0].clone()),
+            StripItem::Bow {
+                host: "beta".to_string(),
+                name: "beta".to_string(),
+            },
+            StripItem::Session(slugs[1].clone()),
+            StripItem::Session(slugs[2].clone()),
+        ];
+        let label_widths: Vec<f32> = labels
+            .iter()
+            .map(|l| l.chars().count() as f32 * cell_w)
+            .collect();
+        let item_widths = strip_item_widths(&items, &label_widths, wheel_w, cell_w);
+        let bow_w = wheel_w + cell_w + 4.0 * cell_w;
+        let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, gap);
+        // No bow precedes item0.
+        assert!((offsets[0]).abs() < 1e-3);
+        // One bow (width `bow_w`, plus its own `gap`) precedes item1/2.
+        assert!((offsets[1] - (bow_w + gap)).abs() < 1e-3);
+        assert!((offsets[2] - (bow_w + gap)).abs() < 1e-3);
+        let no_bow_target = session_strip_target(&labels, 1, cell_w, &[]);
+        let with_bow_target = session_strip_target(&labels, 1, cell_w, &offsets);
+        assert!(
+            (with_bow_target - (no_bow_target + bow_w + gap)).abs() < 1e-3,
+            "the active session's centring must shift by exactly the bow's width + gap"
+        );
+    }
+
+    #[test]
+    fn strip_offsets_shift_sessions_past_every_bow() {
+        let cell_w = 10.0;
+        let gap = STRIP_GAP_CELLS * cell_w;
+        let wheel_w = 25.0;
         let slugs: Vec<WsKey> = vec![
             ("alpha".to_string(), "one".to_string()),
             ("beta".to_string(), "two".to_string()),
         ];
-        let items = strip_items(&slugs, |h| h.clone(), true);
+        let items = strip_items(&slugs, |h| h.clone());
         let labels = vec!["aa".to_string(), "bbbb".to_string()];
         let label_widths: Vec<f32> = labels
             .iter()
             .map(|l| l.chars().count() as f32 * cell_w)
             .collect();
-        let item_widths = strip_item_widths(&items, &label_widths, divider_w, cell_w);
+        let item_widths = strip_item_widths(&items, &label_widths, wheel_w, cell_w);
         let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, gap);
-        let tag_a = "alpha".chars().count() as f32 * cell_w;
-        let tag_b = "beta".chars().count() as f32 * cell_w;
-        assert!((offsets[0] - (tag_a + gap)).abs() < 1e-3);
+        let bow_a = wheel_w + cell_w + 5.0 * cell_w;
+        let bow_b = wheel_w + cell_w + 4.0 * cell_w;
+        assert!((offsets[0] - (bow_a + gap)).abs() < 1e-3);
         assert!(
-            (offsets[1] - (tag_a + gap + divider_w + gap + tag_b + gap)).abs() < 1e-3,
+            (offsets[1] - (bow_a + gap + bow_b + gap)).abs() < 1e-3,
             "offsets: {offsets:?}"
         );
+    }
+
+    #[test]
+    fn ship_spans_run_each_bow_to_its_own_groups_last_item() {
+        let slugs: Vec<WsKey> = vec![
+            ("alpha".to_string(), "one".to_string()),
+            ("alpha".to_string(), "two".to_string()),
+            ("beta".to_string(), "three".to_string()),
+        ];
+        let items = strip_items(&slugs, |h| h.clone());
+        // [bow a, s, s, bow b, s]
+        assert_eq!(ship_spans(&items), vec![(0, 2), (3, 4)]);
+        // One host: no bows, so no ships at all (and no `items.len()-1`
+        // underflow on an empty list).
+        assert!(ship_spans(&[]).is_empty());
+        let single = strip_items(&slugs[..2], |h| h.clone());
+        assert!(ship_spans(&single).is_empty());
+    }
+
+    /// Fixture for the scrolled two-host strip: eight 8-char session names
+    /// across two hosts, a window far narrower than the strip, and a scroll
+    /// that puts the whole first group off the left edge while the second
+    /// group's first NAME starts 60 px inside the window — and the second
+    /// bow, a row below, hangs off that edge.
+    fn scrolled_fleet() -> (Vec<StripMark>, f32, f32, f32) {
+        let cell_w = 10.0;
+        let win_w = 400.0;
+        let logo_w = 25.0;
+        let logo_h = 16.0;
+        let wheel_w = wheel_size(logo_w, logo_h, false).0;
+        let slugs: Vec<WsKey> = (0..8)
+            .map(|i| {
+                let host = if i < 4 { "alpha" } else { "beta" };
+                (host.to_string(), format!("ws-{i}"))
+            })
+            .collect();
+        let labels: Vec<String> = (0..8).map(|i| format!("sess-00{i}")).collect();
+        let items = strip_items(&slugs, |h| h.clone());
+        let label_widths: Vec<f32> = labels
+            .iter()
+            .map(|l| l.chars().count() as f32 * cell_w)
+            .collect();
+        let gap = STRIP_GAP_CELLS * cell_w;
+        let item_widths = strip_item_widths(&items, &label_widths, wheel_w, cell_w);
+        let item_positions = strip_cursor_positions(&item_widths, gap);
+        let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, gap);
+        // Place the first beta NAME (item 6) 60 px inside the window.
+        let scroll = win_w / 2.0 + item_positions[6] - 60.0;
+        let strip_lines = session_strip_lines(
+            &labels,
+            4,
+            scroll,
+            win_w,
+            cell_w,
+            100.0,
+            &[],
+            false,
+            &[],
+            &[],
+            &offsets,
+        );
+        assert_eq!(
+            strip_lines.len(),
+            4,
+            "the whole first group must be culled for this to be the scrolled case"
+        );
+        let mut marks: Vec<StripMark> = strip_lines
+            .iter()
+            .map(|ln| StripMark {
+                row: StripRow::Names,
+                left: ln.x,
+                w: ln.text.chars().count() as f32 * cell_w,
+                kind: StripMarkKind::SessionName,
+            })
+            .collect();
+        marks.extend(ship_marks(
+            &items,
+            &item_positions,
+            &item_widths,
+            &"alpha".to_string(),
+            logo_w,
+            logo_h,
+            wheel_w,
+            cell_w,
+            scroll,
+            win_w,
+        ));
+        (marks, win_w, cell_w, logo_w)
+    }
+
+    #[test]
+    fn a_scrolled_fleet_still_gets_its_bookend() {
+        // BLOCKER 2: the bracket used to be seeded from the culled names and
+        // then extended by every bow with no visibility test, which dragged
+        // `min_left` off the left edge and skipped the bookend on any strip
+        // wider than the window — i.e. the normal multi-host case.
+        let (marks, win_w, cell_w, logo_w) = scrolled_fleet();
+        let (min_left, max_right) =
+            strip_bracket(&marks, StripRow::Names).expect("names were drawn");
+        assert!(
+            (min_left - 60.0).abs() < 1e-3,
+            "the bracket must start at the leftmost DRAWN name: {min_left}"
+        );
+        let lx = min_left - 2.0 * cell_w - logo_w;
+        assert!(
+            lx >= 0.0,
+            "the left bookend must still fit and be drawn: lx = {lx}"
+        );
+        // The second bow IS on screen (partly) and IS a mark — it simply has
+        // no vote on the names row's bracket.
+        let hull_left = strip_bracket(&marks, StripRow::Hull)
+            .expect("the visible ship drew marks")
+            .0;
+        assert!(
+            hull_left < 0.0 && hull_left < min_left,
+            "a ship hanging off the left edge is drawn, and is not in the names bracket: {hull_left}"
+        );
+        assert!(max_right > win_w, "the strip overflows to the right as well");
+    }
+
+    #[test]
+    fn a_culled_ship_draws_nothing_and_brackets_nothing() {
+        // The first group is entirely off-screen left: every one of its marks
+        // — wheel, box name, hull — must be gone, not clamped to the edge.
+        let (marks, _, _, _) = scrolled_fleet();
+        assert!(
+            marks.iter().all(|m| m.left + m.w >= 0.0),
+            "no mark may survive the cull fully off the left edge: {marks:?}"
+        );
+        // The first ship is gone entirely; of the second, the cull is
+        // per-MARK, not per-ship — its wheel hangs off the left edge while
+        // the name one cell to its right survives.
+        assert_eq!(
+            marks
+                .iter()
+                .filter(|m| matches!(m.kind, StripMarkKind::Wheel { .. }))
+                .count(),
+            0,
+            "both wheels are off the left edge: {marks:?}"
+        );
+        assert_eq!(
+            marks
+                .iter()
+                .filter(|m| matches!(m.kind, StripMarkKind::BoxName(_)))
+                .count(),
+            1,
+            "one box name survives: {marks:?}"
+        );
+        assert_eq!(
+            marks
+                .iter()
+                .filter(|m| matches!(m.kind, StripMarkKind::Hull))
+                .count(),
+            1,
+            "one hull survives — the culled ship's is not clamped to the edge: {marks:?}"
+        );
+    }
+
+    #[test]
+    fn the_full_size_wheel_marks_the_box_you_are_steering() {
+        // SHOULD-FIX 3: keyed off `active_host` — the box the keystrokes
+        // reach — not off an index into `workspace_slugs`, which falls back
+        // to 0 (and so to the WRONG ship) whenever the steered session's row
+        // has just been filtered out.
+        let cell_w = 10.0;
+        let logo_w = 25.0;
+        let logo_h = 16.0;
+        let wheel_w = wheel_size(logo_w, logo_h, false).0;
+        let slugs: Vec<WsKey> = vec![
+            ("alpha".to_string(), "one".to_string()),
+            ("beta".to_string(), "two".to_string()),
+        ];
+        let items = strip_items(&slugs, |h| h.clone());
+        let label_widths = vec![30.0, 30.0];
+        let gap = STRIP_GAP_CELLS * cell_w;
+        let item_widths = strip_item_widths(&items, &label_widths, wheel_w, cell_w);
+        let item_positions = strip_cursor_positions(&item_widths, gap);
+        let marks = ship_marks(
+            &items,
+            &item_positions,
+            &item_widths,
+            &"beta".to_string(),
+            logo_w,
+            logo_h,
+            wheel_w,
+            cell_w,
+            0.0,
+            4000.0,
+        );
+        let wheels: Vec<(bool, f32)> = marks
+            .iter()
+            .filter_map(|m| match m.kind {
+                StripMarkKind::Wheel { big } => Some((big, m.w)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            wheels,
+            vec![(false, wheel_w), (true, logo_w)],
+            "the second ship is the steered one, and its wheel is the full bookend size"
+        );
+        // The layout is keyed to the SMALL wheel, so which ship is steered
+        // cannot reflow the strip: the big wheel spends the bow's cell of air.
+        assert!(logo_w - wheel_w < cell_w);
+    }
+
+    #[test]
+    fn strip_bracket_only_sees_its_own_row() {
+        let marks = vec![
+            StripMark {
+                row: StripRow::Names,
+                left: 100.0,
+                w: 50.0,
+                kind: StripMarkKind::SessionName,
+            },
+            StripMark {
+                row: StripRow::Hull,
+                left: -900.0,
+                w: 50.0,
+                kind: StripMarkKind::BoxName("far-left".to_string()),
+            },
+            StripMark {
+                row: StripRow::Hull,
+                left: 900.0,
+                w: 50.0,
+                kind: StripMarkKind::Hull,
+            },
+        ];
+        assert_eq!(strip_bracket(&marks, StripRow::Names), Some((100.0, 150.0)));
+        assert_eq!(strip_bracket(&marks, StripRow::Hull), Some((-900.0, 950.0)));
+        assert_eq!(strip_bracket(&[], StripRow::Names), None);
+    }
+
+    #[test]
+    fn hull_rects_are_a_waterline_and_one_stern_rake_inside_the_row() {
+        let cell_h = 18.0;
+        let ship_y = 500.0;
+        let (y, h) = hull_band(ship_y, cell_h);
+        assert!((y - (ship_y + 14.0)).abs() < 1e-3, "waterline drop: {y}");
+        assert!((h - 3.0).abs() < 1e-3, "hull thickness: {h}");
+        let rects = hull_rects(100.0, 300.0, y, h);
+        assert_eq!(rects.len(), 2, "a bar and one stern rake");
+        assert!((rects[0].w - 200.0).abs() < 1e-3);
+        assert!((rects[0].y + rects[0].h - (ship_y + 17.0)).abs() < 1e-3);
+        // The rake rises from the bar's own bottom and stays inside the row.
+        assert!((rects[1].y + rects[1].h - (rects[0].y + rects[0].h)).abs() < 1e-3);
+        assert!(
+            rects[1].y >= ship_y && rects[0].y + rects[0].h <= ship_y + cell_h,
+            "bar and rake must stay inside the ship row: {rects:?}"
+        );
+        // Nothing to draw when the name ate every column, or with no height.
+        assert!(hull_rects(300.0, 100.0, y, h).is_empty());
+        assert!(hull_rects(100.0, 300.0, y, 0.0).is_empty());
+        // Minimum-thickness floor: a small cell can't thin the hull to a
+        // sub-pixel rect (the border quads carry the same `.max(1.0)`).
+        assert!((hull_band(0.0, 4.0).1 - 1.0).abs() < 1e-3);
+        // Both ratios scale with the row: double the cell, double the drop.
+        assert!((hull_band(0.0, 36.0).0 - 28.0).abs() < 1e-3);
+        assert!((hull_band(0.0, 36.0).1 - 6.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn strip_band_never_touches_the_grids_last_row() {
+        // BLOCKER 1: the strip floats off `config.height` while the chrome
+        // floats off the grid, so the grid's last row — the bottom border
+        // line, carrying the FE/BE version stamp — used to sit under the
+        // strip's names row at EVERY window height (worst at
+        // `R = (h - 2*oy) mod cell_h == 8*scale`, where the two share a
+        // baseline). `cell_grid_for` now reserves the band once.
+        for &scale in &[1.0_f32, 1.25, 1.5, 2.0] {
+            let cell_h = BASE_CELL_H * scale;
+            let cell_w = 7.7 * scale; // the measured monospace advance
+            let oy = BASE_CHROME_ORIGIN_Y * scale;
+            let ox = BASE_CHROME_ORIGIN_X * scale;
+            assert_eq!(
+                strip_reserved_rows(cell_w, cell_h, oy),
+                2,
+                "two rows at every scale"
+            );
+            let mut h = (240.0 * scale) as u32;
+            while h <= (2160.0 * scale) as u32 {
+                let (_, rows) = cell_grid_for(1920, h, cell_w, cell_h, ox, oy);
+                let grid_bottom = oy + rows as f32 * cell_h;
+                let (names_y, hull_y) = strip_row_tops(h as f32, cell_h);
+                let band_top = names_y - STRIP_ACTIVE_LIFT_CELLS * cell_w;
+                assert!(
+                    band_top >= grid_bottom,
+                    "scale {scale}, h {h}: the strip band (lifted top {band_top}) \
+                     overlaps the grid, which ends at {grid_bottom}"
+                );
+                assert!(
+                    hull_y + cell_h <= h as f32,
+                    "scale {scale}, h {h}: the hull row runs off the window bottom"
+                );
+                assert!(
+                    (hull_y - names_y - cell_h).abs() < 1e-3,
+                    "the two rows must be exactly one cell apart"
+                );
+                h += 1;
+            }
+        }
     }
 
     #[test]
@@ -27362,12 +27957,12 @@ mod tests {
         let got = activity_order(&slugs, &states, &nobadge(), &[], None);
         assert_eq!(got, vec![a2, a1, b2, b1]);
         assert_eq!(
-            strip_items(&got, |h| h.clone(), true)
+            strip_items(&got, |h| h.clone())
                 .iter()
-                .filter(|i| **i == StripItem::HostDivider)
+                .filter(|i| matches!(i, StripItem::Bow { .. }))
                 .count(),
-            1,
-            "still exactly one host divider"
+            2,
+            "still exactly two host groups, so two ships"
         );
     }
 
@@ -27464,7 +28059,7 @@ mod tests {
         lists.insert("alpha".to_string(), vec![alpha_ws]);
         lists.insert("beta".to_string(), vec![beta_ws]);
         let ordered = vec!["alpha".to_string(), "beta".to_string()];
-        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
+        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string(), &HashMap::new());
 
         assert_eq!(
             fresh.workspace_slugs.len(),
@@ -27503,10 +28098,10 @@ mod tests {
         lists.insert("beta".to_string(), vec![beta_default]);
         let ordered = vec!["alpha".to_string(), "beta".to_string()];
 
-        let fresh_alpha = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
+        let fresh_alpha = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string(), &HashMap::new());
         assert_eq!(fresh_alpha.default_workspace_slug.as_deref(), Some("home"));
 
-        let fresh_beta = fresh_workspace_caches(&ordered, &lists, &"beta".to_string());
+        let fresh_beta = fresh_workspace_caches(&ordered, &lists, &"beta".to_string(), &HashMap::new());
         assert_eq!(fresh_beta.default_workspace_slug.as_deref(), Some("root"));
     }
 
@@ -27521,7 +28116,7 @@ mod tests {
         let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
         lists.insert("beta".to_string(), vec![ws_info("sot", "sot-be-sot")]);
         let ordered = vec!["beta".to_string()];
-        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
+        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string(), &HashMap::new());
         assert_eq!(
             fresh
                 .workspace_id_slugs
@@ -27719,7 +28314,7 @@ mod tests {
         // rows rather than panicking on a missing map entry.
         let lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
         let ordered = vec!["alpha".to_string(), "beta".to_string()];
-        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
+        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string(), &HashMap::new());
         assert!(fresh.workspace_slugs.is_empty());
         assert!(fresh.default_workspace_slug.is_none());
     }
@@ -27741,7 +28336,7 @@ mod tests {
         let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
         lists.insert(host.clone(), list);
         let ordered = vec![host.clone()];
-        let fresh = fresh_workspace_caches(&ordered, &lists, &host);
+        let fresh = fresh_workspace_caches(&ordered, &lists, &host, &HashMap::new());
 
         let anchor_key: WsKey = (host.clone(), "sot".to_string());
         assert!(
@@ -27762,6 +28357,51 @@ mod tests {
     }
 
     #[test]
+    fn fresh_workspace_caches_hides_a_host_whose_link_dropped_from_the_strip() {
+        // Owner ruling (the fleet strip): the strip answers "what can I switch
+        // to", so a box whose daemon this frontend can't reach has no ship.
+        // Pure subtraction — every other cache keeps the host's rows, which is
+        // what the Sessions tree greys.
+        let ordered = vec!["alpha".to_string(), "beta".to_string()];
+        let mut lists = HashMap::new();
+        lists.insert("alpha".to_string(), vec![ws_info("one", "sot-be-one")]);
+        lists.insert("beta".to_string(), vec![ws_info("two", "sot-be-two")]);
+        let mut connected = HashMap::new();
+        connected.insert("alpha".to_string(), true);
+        connected.insert("beta".to_string(), false);
+        let fresh =
+            fresh_workspace_caches(&ordered, &lists, &"alpha".to_string(), &connected);
+        assert_eq!(
+            fresh.workspace_slugs,
+            vec![("alpha".to_string(), "one".to_string())],
+            "beta's link dropped, so beta has no ship: {:?}",
+            fresh.workspace_slugs
+        );
+        assert!(
+            fresh
+                .workspace_labels
+                .contains_key(&("beta".to_string(), "two".to_string())),
+            "every other cache keeps the row — the tree still shows it, greyed"
+        );
+    }
+
+    #[test]
+    fn fresh_workspace_caches_keeps_a_host_with_no_connectivity_evidence() {
+        // `!= Some(&false)`, not `== Some(&true)`: absence of evidence must
+        // never hide a host, or a workspace list that arrives without the
+        // `Connected` event shape we expect loses its ship.
+        let ordered = vec!["alpha".to_string()];
+        let mut lists = HashMap::new();
+        lists.insert("alpha".to_string(), vec![ws_info("one", "sot-be-one")]);
+        let fresh =
+            fresh_workspace_caches(&ordered, &lists, &"alpha".to_string(), &HashMap::new());
+        assert_eq!(
+            fresh.workspace_slugs,
+            vec![("alpha".to_string(), "one".to_string())]
+        );
+    }
+
+    #[test]
     fn fresh_workspace_caches_hides_a_default_tmux_row_with_no_agent_from_the_strip_too() {
         // Owner ruling (2026-09-06, symmetry): same anchor rule as the tree,
         // on every runtime -- the strip never lists the default row without
@@ -27775,7 +28415,7 @@ mod tests {
         let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
         lists.insert(host.clone(), vec![default_row]);
         let ordered = vec![host.clone()];
-        let fresh = fresh_workspace_caches(&ordered, &lists, &host);
+        let fresh = fresh_workspace_caches(&ordered, &lists, &host, &HashMap::new());
 
         let key: WsKey = (host.clone(), "sot".to_string());
         assert!(!fresh.workspace_slugs.contains(&key), "{:?}", fresh.workspace_slugs);
