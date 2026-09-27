@@ -33,11 +33,16 @@ release from a fresh context.
    - A new line starts at `-rc.1`. Never `-rc1`.
    - Never switch form mid-line. On a line already tagged `rcN`, a `rc.N+1` is
      LOWER than every `rcN` before it (`rc` alone sorts below `rc7`), so the
-     switch would publish a release nobody can update to. Such a line stops at
-     `rc9`; if it needs a tenth candidate, cut the stable or open the next
-     line at `-rc.1` instead.
-   - The 0.6.6 line is undotted (`rc1`…`rc7`) and stays that way. 0.6.7 opens
-     at `-rc.1`.
+     switch would publish a release nobody can update to.
+   - **A line on `rcN` does NOT stop at `rc9`.** What sorts above `rc9` is
+     `rc9.1`: equal prefix, and `cmp_pre` breaks a common prefix on identifier
+     count, so more identifiers wins. From there the trailing identifier is
+     numeric on both sides, so `rc9.2 > rc9.1` and `rc9.10 > rc9.9`, with no
+     ceiling. Read from `rust/updater/src/semver.rs`; do not restate this rule
+     from memory, and do not "correct" it back to a ceiling. (A dotted `rc.10`
+     does still sort BELOW `rc9` — that is the trap in the bullet above.)
+   - The 0.6.6 line is undotted (`rc1`…`rc9`, then `rc9.1`, `rc9.2`, …) and
+     stays that way. 0.6.7 opens at `-rc.1`.
 4. **Private ops handoff current** — `<ops>/STATUS.md` and `<ops>/TODO.md`
    should not be stale when cutting the release.
 
@@ -78,6 +83,19 @@ or before a first-of-its-kind release.
 
 ## Hard rules
 
+- **Everything we know is wrong goes in the next rc or release.** The owner's
+  standing rule, verbatim, 2026-09-26. A known defect is never parked in a
+  later line to keep a candidate tidy: the next candidate carries every open
+  defect, and the only legitimate reasons to hold one back are that two fixes
+  contend for the same file, or that a fix rests on an unproven root cause and
+  a cheaper diagnostic ships first. "Small", "not a blocker", and "it can wait"
+  are not reasons. Say the split out loud with its reason per item, and put
+  features — not defects — in the later candidate.
+- **Finals come from main; candidates come from the line's candidate branch.**
+  A tag starts the next line's branch, candidates are tagged from that branch,
+  and the final is cut from main after the branch merges in. The `main only`
+  wording below applies to the final. Before any final, prove main actually
+  carries what the last tested candidate carried — by content, not by ancestry.
 - Releases are cut from **main only**; the script enforces clean-tree +
   HEAD==origin/main + tag-not-exists.
 - **Never** delete/re-cut a published tag that anyone may have fetched — cut a
