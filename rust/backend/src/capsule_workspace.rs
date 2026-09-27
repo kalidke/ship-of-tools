@@ -274,10 +274,10 @@ mod macos_only {
 /// recipe, sharing ONE resume token, `--continue`, stripped from a row's
 /// first-ever leg ([`first_leg_without_continue`]). `"none"` is the bare
 /// platform shell; every other kind is refused, never substituted.
-pub fn agent_argv(agent_kind: &str) -> Result<Vec<String>, String> {
+pub fn agent_argv(agent_kind: &str, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
     match agent_kind {
         "none" => Ok(vec![none_argv()]),
-        "claude" => claude_argv(),
+        "claude" => claude_argv(memory_cwd),
         "codex" => codex_argv(),
         other => Err(format!(
             "agent {other:?} has no capsule launcher yet (only \"claude\", \"codex\", and \"none\" are supported on this host)"
@@ -317,7 +317,82 @@ fn none_argv() -> String {
 /// below, keeps the literal name); `"codex"` has its own, much smaller,
 /// recipe ([`codex_argv`]) rather than sharing this one — its flag shape
 /// (`--continue`, no skill argv) is unrelated to claude's.
-fn claude_recipe(resume: bool, extra: &[String]) -> Vec<String> {
+/// Whether a caller already passed `--settings` (either spelling), in
+/// which case [`claude_recipe`] adds none of its own: the two would
+/// contend for one key and the caller's intent is the specific one.
+fn caller_brought_settings(extra: &[String]) -> bool {
+    extra
+        .iter()
+        .any(|a| a == "--settings" || a.starts_with("--settings="))
+}
+
+/// Claude Code's own project-directory sanitiser, reproduced: every
+/// character outside `[A-Za-z0-9]` becomes `-`. Past
+/// [`AUTO_MEMORY_NAME_LIMIT`] it truncates and appends a hash of the path
+/// that this crate cannot reproduce, so [`auto_memory_settings`] declines
+/// rather than name a directory the session would not itself derive.
+fn sanitize_project_dir(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// Claude Code's own cap on a sanitised project-dir name.
+const AUTO_MEMORY_NAME_LIMIT: usize = 200;
+
+/// The `--settings` JSON that keeps a session's auto-memory writes off the
+/// permission prompt, or `None` to pass no flag at all.
+///
+/// The defect: a named account's config dir reaches the shared transcript
+/// store through a symlink (`projects` is a `SHARED_ENTRIES` name), so the
+/// memory path a session SPELLS (`<account dir>/projects/<name>/memory`)
+/// lands somewhere else. Since Claude Code 2.1.282 a write is judged by
+/// where it LANDS, and neither auto mode nor an allow rule approves one
+/// landing through a symlink outside the working directories — so every
+/// auto-memory write stops for a human, on every account session.
+///
+/// The fix names the landing path instead of the spelled one. That path is
+/// the same for every account BY CONSTRUCTION: `projects` is on the shared
+/// allowlist, so each account's copy links back into the default config
+/// dir's one real directory. For a session already running on the default
+/// config dir the flag therefore names exactly what it would have derived
+/// itself and changes nothing; only an account session's spelling changes.
+/// Per-project separation is preserved because the sanitised cwd is part
+/// of the path — the reason this cannot be one global setting, which would
+/// collapse every project's memory into a single directory.
+///
+/// Declines (no flag, today's behaviour) rather than guess when: the cwd
+/// is not UTF-8 or not ASCII, where this sanitiser and Claude Code's own
+/// regex could disagree on how many `-` a character becomes; the sanitised
+/// name would exceed the limit, where the real one gains a hash suffix
+/// this crate cannot compute; or the projects dir does not resolve.
+fn auto_memory_settings(home: &Path, cwd: &Path) -> Option<String> {
+    let cwd = cwd.to_str()?;
+    if !cwd.is_ascii() {
+        return None;
+    }
+    let spelled = crate::accounts::claude_default_config_dir(home).join("projects");
+    // Resolve ONLY a real symlink. Canonicalising unconditionally would
+    // hand Windows an extended-length `\\?\C:\...` spelling that is not
+    // the path the session derives for itself.
+    let projects = if std::fs::symlink_metadata(&spelled)
+        .ok()?
+        .file_type()
+        .is_symlink()
+    {
+        std::fs::canonicalize(&spelled).ok()?
+    } else {
+        spelled
+    };
+    let name = sanitize_project_dir(cwd);
+    if name.len() > AUTO_MEMORY_NAME_LIMIT {
+        return None;
+    }
+    let dir = projects.join(name).join("memory");
+    serde_json::to_string(&serde_json::json!({ "autoMemoryDirectory": dir })).ok()
+}
+
+fn claude_recipe(resume: bool, extra: &[String], memory_cwd: Option<&Path>) -> Vec<String> {
     let mut argv = vec![
         "claude".to_string(),
         "--permission-mode".to_string(),
@@ -325,6 +400,18 @@ fn claude_recipe(resume: bool, extra: &[String]) -> Vec<String> {
     ];
     if resume {
         argv.push("--continue".to_string());
+    }
+    // Never override a caller that brought its own `--settings`: the two
+    // would contend for one key and the caller's intent is the specific
+    // one. `ccx`-style `--flag=value` counts as passed.
+    if !caller_brought_settings(extra) {
+        if let Some(json) = memory_cwd
+            .zip(std::env::var_os("HOME").map(PathBuf::from))
+            .and_then(|(cwd, home)| auto_memory_settings(&home, cwd))
+        {
+            argv.push("--settings".to_string());
+            argv.push(json);
+        }
     }
     argv.extend(extra.iter().cloned());
     argv.push("/sot-session-start".to_string());
@@ -337,8 +424,8 @@ fn claude_recipe(resume: bool, extra: &[String]) -> Vec<String> {
 /// the daemon's own `PATH` (a detached child inherits it); that stays
 /// out of scope here, not a gap this decision closes.
 #[cfg(windows)]
-fn claude_argv() -> Result<Vec<String>, String> {
-    Ok(claude_recipe(true, &[]))
+fn claude_argv(memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
+    Ok(claude_recipe(true, &[], memory_cwd))
 }
 /// macOS lane: widened from `target_os = "linux"` to `unix`, a DELETION
 /// of the third arm that used to refuse here ("claude has no capsule
@@ -352,12 +439,12 @@ fn claude_argv() -> Result<Vec<String>, String> {
 /// runtime`'s own gate below), and a stale refusal here would only
 /// mislabel that gap.
 #[cfg(unix)]
-fn claude_argv() -> Result<Vec<String>, String> {
+fn claude_argv(memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
     let claude = resolve_claude(
         std::env::var_os("PATH").as_deref(),
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
     )?;
-    let mut argv = claude_recipe(true, &[]);
+    let mut argv = claude_recipe(true, &[], memory_cwd);
     argv[0] = claude;
     Ok(argv)
 }
@@ -375,20 +462,34 @@ fn claude_argv() -> Result<Vec<String>, String> {
 /// once this leg has taken a turn, the new account's own selector names
 /// this conversation and an ordinary [`claude_argv`] restart lands on it.
 #[cfg(unix)]
-pub fn claude_resume_argv(session_id: &str) -> Result<Vec<String>, String> {
+pub fn claude_resume_argv(
+    session_id: &str,
+    memory_cwd: Option<&Path>,
+) -> Result<Vec<String>, String> {
     let claude = resolve_claude(
         std::env::var_os("PATH").as_deref(),
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
     )?;
-    let mut argv = claude_recipe(false, &["--resume".to_string(), session_id.to_string()]);
+    let mut argv = claude_recipe(
+        false,
+        &["--resume".to_string(), session_id.to_string()],
+        memory_cwd,
+    );
     argv[0] = claude;
     Ok(argv)
 }
 /// Windows twin: the literal name from [`claude_recipe`], resolved by the
 /// daemon's own `PATH` exactly as [`claude_argv`]'s Windows arm is.
 #[cfg(windows)]
-pub fn claude_resume_argv(session_id: &str) -> Result<Vec<String>, String> {
-    Ok(claude_recipe(false, &["--resume".to_string(), session_id.to_string()]))
+pub fn claude_resume_argv(
+    session_id: &str,
+    memory_cwd: Option<&Path>,
+) -> Result<Vec<String>, String> {
+    Ok(claude_recipe(
+        false,
+        &["--resume".to_string(), session_id.to_string()],
+        memory_cwd,
+    ))
 }
 
 /// `"codex"`'s capsule recipe: `ccx --capsule --continue`. `--capsule`
@@ -444,7 +545,11 @@ pub fn agent_exec_argv(kind: &str, extra: &[String]) -> Result<Vec<String>, Stri
                 std::env::var_os("PATH").as_deref(),
                 std::env::var_os("HOME").map(PathBuf::from).as_deref(),
             )?;
-            let mut recipe = claude_recipe(false, extra);
+            // `agent-exec` EXECS this process in place (never spawns a
+            // child), so this process's own cwd is already the directory
+            // the session will run in — `ccb`'s caller chose it.
+            let cwd = std::env::current_dir().ok();
+            let mut recipe = claude_recipe(false, extra, cwd.as_deref());
             recipe[0] = claude;
             Ok(recipe)
         }
@@ -454,7 +559,7 @@ pub fn agent_exec_argv(kind: &str, extra: &[String]) -> Result<Vec<String>, Stri
             // the one kind that succeeds there but still has no recipe
             // HERE (see doc above), so it falls through to its own
             // refusal below.
-            agent_argv(other)?;
+            agent_argv(other, None)?;
             Err(format!(
                 "agent-exec has no recipe for {other:?} yet (only \"claude\" is supported)"
             ))
@@ -2304,7 +2409,7 @@ mod runtime {
         if ws.watchdog_owner().is_some() {
             return Ok(phase);
         }
-        let argv = agent_argv(agent_kind)?;
+        let argv = agent_argv(agent_kind, Some(project_root))?;
         start_supervisor(state_root, workspace_id, StartMode::Resume, &argv, project_root, agent_name, slug, workspaces)
     }
 
@@ -2506,7 +2611,7 @@ mod runtime {
         let mode = if intent == ActivationIntent::Reconnect && mode != Some(StartMode::Resume) { None } else { mode };
         let (spawned, settled_phase) = match mode {
             Some(StartMode::Start) => {
-                let argv = match agent_argv(agent_kind) {
+                let argv = match agent_argv(agent_kind, Some(project_root)) {
                     Ok(a) => a,
                     Err(e) => return LockedStep::Done(Err(e)),
                 };
@@ -2582,7 +2687,7 @@ mod runtime {
                 if let Err(e) = sot_log::supervisor_client::stop(&state_dir) {
                     return LockedStep::Done(Err(format!("capsule workspace retire (stop before reset) failed: {e}")));
                 }
-                let argv = match agent_argv(agent_kind) {
+                let argv = match agent_argv(agent_kind, Some(project_root)) {
                     Ok(a) => a,
                     Err(e) => return LockedStep::Done(Err(e)),
                 };
@@ -3084,7 +3189,7 @@ mod runtime {
         // here either, even on the rare box where a pointer already exists
         // for it (a hand-edited toml that dropped its agent after a prior
         // real run). Every OTHER `agent == "none"` capsule row still
-        // resumes: `agent_argv("none")` is a real leg (the bare platform
+        // resumes: `agent_argv("none", None)` is a real leg (the bare platform
         // shell). The predicate — and why its runtime term matters — is
         // `Workspaces::is_inert_default_anchor`.
         let capsule_rows: Vec<Arc<crate::workspaces::Workspace>> = workspaces
@@ -4081,7 +4186,7 @@ mod tests {
     #[test]
     fn claude_recipe_places_extra_flags_before_the_skill() {
         assert_eq!(
-            claude_recipe(false, &["--x".to_string()]),
+            claude_recipe(false, &["--x".to_string()], None),
             vec!["claude", "--permission-mode", "auto", "--x", "/sot-session-start"]
         );
     }
@@ -4089,7 +4194,7 @@ mod tests {
     #[test]
     fn claude_recipe_resume_keeps_continue_before_the_skill() {
         assert_eq!(
-            claude_recipe(true, &[]),
+            claude_recipe(true, &[], None),
             vec!["claude", "--permission-mode", "auto", "--continue", "/sot-session-start"]
         );
     }
@@ -4150,7 +4255,7 @@ mod tests {
     fn agent_exec_argv_unknown_kind_prints_agent_argvs_own_error() {
         assert_eq!(
             agent_exec_argv("bogus", &[]).unwrap_err(),
-            agent_argv("bogus").unwrap_err()
+            agent_argv("bogus", None).unwrap_err()
         );
     }
 
@@ -4164,7 +4269,7 @@ mod tests {
         // &[])` verbatim, no absolute-path resolution -- Windows relies
         // on the daemon's own `PATH`, `claude_argv`'s own doc).
         assert_eq!(
-            agent_argv("claude").unwrap(),
+            agent_argv("claude", None).unwrap(),
             vec!["claude", "--permission-mode", "auto", "--continue", "/sot-session-start"]
         );
     }
@@ -4186,7 +4291,7 @@ mod tests {
         let prior_home = std::env::var_os("HOME");
         std::env::remove_var("PATH");
         std::env::remove_var("HOME");
-        let result = agent_argv("claude");
+        let result = agent_argv("claude", None);
         match prior_path {
             Some(v) => std::env::set_var("PATH", v),
             None => std::env::remove_var("PATH"),
@@ -4201,7 +4306,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn agent_argv_none_is_the_bare_shell() {
-        assert_eq!(agent_argv("none").unwrap(), vec!["cmd.exe"]);
+        assert_eq!(agent_argv("none", None).unwrap(), vec!["cmd.exe"]);
     }
 
     #[test]
@@ -4214,9 +4319,9 @@ mod tests {
         let _guard = self_file_env_guarded();
         let prior_shell = std::env::var_os("SHELL");
         std::env::set_var("SHELL", "/bin/zsh");
-        assert_eq!(agent_argv("none").unwrap(), vec!["/bin/zsh"]);
+        assert_eq!(agent_argv("none", None).unwrap(), vec!["/bin/zsh"]);
         std::env::remove_var("SHELL");
-        assert_eq!(agent_argv("none").unwrap(), vec!["/bin/sh"]);
+        assert_eq!(agent_argv("none", None).unwrap(), vec!["/bin/sh"]);
         match prior_shell {
             Some(v) => std::env::set_var("SHELL", v),
             None => std::env::remove_var("SHELL"),
@@ -4224,11 +4329,82 @@ mod tests {
     }
 
     #[test]
-    fn agent_argv_rejects_unsupported_kinds() {
-        assert!(agent_argv("bogus").is_err());
+    /// The whole point of the flag: an ACCOUNT session spells its memory
+    /// path through a symlink (`projects` is a `SHARED_ENTRIES` name) and
+    /// every write then lands outside the allowed dirs, which auto mode
+    /// has not approved since Claude Code 2.1.282. The flag must name the
+    /// path it LANDS on. Fixture is explicit about `home` rather than
+    /// setting `HOME`, so it cannot race the other env-guarding tests here.
+    #[test]
+    #[cfg(unix)]
+    fn auto_memory_settings_names_the_landing_path_not_the_symlinked_spelling() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let shared = home.path().join("shared-projects");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        // `~/.claude/projects` -> `~/shared-projects`, the shape a named
+        // account's own `projects` link produces once resolved.
+        std::os::unix::fs::symlink(&shared, home.path().join(".claude").join("projects")).unwrap();
+
+        let json = auto_memory_settings(home.path(), std::path::Path::new("/tmp/a b/proj"))
+            .expect("a resolvable projects dir yields a flag");
+        let want = shared
+            .canonicalize()
+            .unwrap()
+            .join("-tmp-a-b-proj")
+            .join("memory");
+        let got: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            got["autoMemoryDirectory"].as_str().unwrap(),
+            want.to_str().unwrap(),
+            "the flag must name the resolved directory, never the symlinked spelling"
+        );
+        // And the cwd must still separate projects: a global setting with
+        // no cwd component would collapse every project into one directory.
+        assert!(json.contains("-tmp-a-b-proj"), "lost the per-project component: {json}");
     }
 
-    /// Guards PATH/HOME/SOT_COMM_HOME for one `agent_argv("codex")` call.
+    /// Past 200 characters Claude Code truncates the sanitised name and
+    /// appends a hash of the path that this crate cannot reproduce. Naming
+    /// a truncated directory would point memory somewhere the session does
+    /// not read, which is worse than the prompt — so it declines.
+    #[test]
+    fn auto_memory_settings_declines_rather_than_name_a_truncated_directory() {
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(home.path().join(".claude").join("projects")).unwrap();
+        let long = format!("/{}", "x".repeat(210));
+        assert!(long.len() > AUTO_MEMORY_NAME_LIMIT);
+        assert_eq!(
+            auto_memory_settings(home.path(), std::path::Path::new(&long)),
+            None,
+            "a name past the limit gains a hash suffix we cannot compute"
+        );
+        // The same fixture DOES produce a flag for a short cwd, so the
+        // decline above is the limit talking and not a broken fixture.
+        assert!(auto_memory_settings(home.path(), std::path::Path::new("/tmp/p")).is_some());
+    }
+
+    /// `agent-exec` passes `ccb`'s own `"$@"` through, so a caller that
+    /// brought `--settings` must keep it: two of them contend for one key.
+    #[test]
+    fn caller_brought_settings_wins_over_our_own() {
+        assert!(caller_brought_settings(&["--settings".to_string(), "{}".to_string()]));
+        assert!(caller_brought_settings(&["--settings={}".to_string()]));
+        assert!(!caller_brought_settings(&["--continue".to_string()]));
+        // And the recipe then carries exactly the caller's one.
+        let argv = claude_recipe(
+            false,
+            &["--settings".to_string(), "{\"a\":1}".to_string()],
+            None,
+        );
+        assert_eq!(argv.iter().filter(|a| *a == "--settings").count(), 1);
+    }
+
+    fn agent_argv_rejects_unsupported_kinds() {
+        assert!(agent_argv("bogus", None).is_err());
+    }
+
+    /// Guards PATH/HOME/SOT_COMM_HOME for one `agent_argv("codex", None)` call.
     #[cfg(unix)]
     fn with_codex_env<T>(path: Option<&std::path::Path>, home: Option<&std::path::Path>, comm_home: Option<&std::path::Path>, f: impl FnOnce() -> T) -> T {
         let _guard = self_file_env_guarded();
@@ -4274,7 +4450,7 @@ mod tests {
         let ccx = dir.path().join("ccx");
         write_stub_ccx(&ccx);
 
-        let result = with_codex_env(Some(dir.path()), None, None, || agent_argv("codex"));
+        let result = with_codex_env(Some(dir.path()), None, None, || agent_argv("codex", None));
         assert_eq!(
             result.unwrap(),
             vec![ccx.to_string_lossy().into_owned(), "--capsule".to_string(), "--continue".to_string()]
@@ -4284,14 +4460,14 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn agent_argv_codex_fails_closed_when_nothing_resolves() {
-        let result = with_codex_env(None, None, None, || agent_argv("codex"));
+        let result = with_codex_env(None, None, None, || agent_argv("codex", None));
         assert!(result.is_err());
     }
 
     #[test]
     #[cfg(windows)]
     fn agent_argv_codex_is_refused_on_windows() {
-        let err = agent_argv("codex").unwrap_err();
+        let err = agent_argv("codex", None).unwrap_err();
         assert!(err.contains("ccx"), "got: {err}");
     }
 
@@ -4431,7 +4607,7 @@ mod tests {
     // `resolve_claude`'s own, already tested above.
     #[test]
     fn a_reauth_leg_resumes_by_id_and_never_continues() {
-        let argv = claude_recipe(false, &["--resume".to_string(), "abc-123".to_string()]);
+        let argv = claude_recipe(false, &["--resume".to_string(), "abc-123".to_string()], None);
         assert!(!argv.iter().any(|a| a == "--continue"), "{argv:?}");
         let at = argv.iter().position(|a| a == "--resume").expect("--resume present");
         assert_eq!(argv[at + 1], "abc-123");

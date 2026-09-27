@@ -102,6 +102,14 @@ const SHARED_ENTRIES: &[&str] = &[
     "history.jsonl",
 ];
 
+/// The DEFAULT claude config dir for `home` — `~/.claude`, the dir every
+/// named account's shared entries link back into ([`SHARED_ENTRIES`]).
+/// Exists so nothing outside this module spells the `.claude` basename a
+/// second time.
+pub(crate) fn claude_default_config_dir(home: &Path) -> PathBuf {
+    home.join(CLAUDE_DIR_PREFIX)
+}
+
 /// `true` iff `name` is a valid account name: `^[a-z0-9][a-z0-9_-]*$`,
 /// the exact character class the brief pins. A subdirectory of
 /// `.claude-auth` whose name fails this is ignored outright by

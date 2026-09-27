@@ -388,7 +388,10 @@ pub async fn handle_workspace_reauth(
             (state_root, false)
         }
     };
-    let argv = match crate::capsule_workspace::claude_resume_argv(&req.resume) {
+    let argv = match crate::capsule_workspace::claude_resume_argv(
+        &req.resume,
+        Some(std::path::Path::new(&ws.project_root)),
+    ) {
         Ok(argv) => argv,
         Err(e) => return refuse("launcher_unresolved", e),
     };

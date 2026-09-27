@@ -4496,7 +4496,7 @@ pub async fn handle_workspace_create(
     // bare shell nobody asked for. Codex's check is a plain file read (no
     // spawn), so this stays a direct call, no `spawn_blocking`.
     let capsule_argv: Vec<String> = if runtime == "capsule" {
-        match crate::capsule_workspace::agent_argv(&agent_kind) {
+        match crate::capsule_workspace::agent_argv(&agent_kind, Some(project_root.as_path())) {
             Ok(argv) => argv,
             Err(detail) => {
                 let payload = json!({
