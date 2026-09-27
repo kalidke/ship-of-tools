@@ -269,6 +269,12 @@ async fn prepare_locked(spec: &PrepareSpec) -> Result<PreparedState> {
         }
     }
 
+    // AFTER instantiate and the load test (so both saw the env as the package
+    // managers left it), BEFORE anything is recorded: the worktree must still
+    // be its tag, because both appliers refuse a prepared checkout with
+    // modified tracked files and drop the armed pointer when they do.
+    restore_to_tag(&checkout, &spec.identity.tag).await?;
+
     let state = PreparedState {
         schema: 1,
         identity: spec.identity.clone(),
@@ -364,6 +370,42 @@ async fn worktree_clean(dir: &Path) -> bool {
         Ok(out) => out.iter().all(|b| b.is_ascii_whitespace()),
         Err(_) => false,
     }
+}
+
+/// Put the prepared worktree back at its tag. Instantiating an environment can
+/// rewrite a tracked project file (Pkg writes the project whenever resolving
+/// mutated it), and a checkout that disagrees with its pinned tag is refused by
+/// the appliers — correctly, but silently, one dropped pointer per cycle.
+/// `git checkout -- .` touches tracked paths only, so the untracked build
+/// products prepare just produced (julia Manifests, node_modules) survive.
+/// Anything still modified after that is a fault we cannot repair, and an
+/// unappliable pointer must never be armed: fail the prepare loudly instead.
+async fn restore_to_tag(checkout: &Path, tag: &str) -> Result<()> {
+    // Name what is about to be discarded. On a platform where instantiate
+    // rewrites a tracked file, this line is the ONLY record of which file it
+    // was — the restore below erases the evidence. Best-effort: a failed
+    // status must not fail the prepare, the restore is what matters.
+    if let Ok(out) = git_capture(checkout, &["status", "--porcelain", "-uno"], GIT_TIMEOUT).await {
+        let listed = String::from_utf8_lossy(&out);
+        let listed = listed.trim();
+        if !listed.is_empty() {
+            tracing::info!(
+                tag = %tag,
+                files = %listed.replace('\n', "; "),
+                "prepared worktree: restoring tracked files modified during prepare"
+            );
+        }
+    }
+    git(checkout, &["checkout", "--", "."], GIT_TIMEOUT)
+        .await
+        .with_context(|| format!("restoring tracked files in {}", checkout.display()))?;
+    if !worktree_clean(checkout).await {
+        bail!(
+            "prepared worktree {} still has modified tracked files — it does not match tag {tag}, so it will not be armed",
+            checkout.display()
+        );
+    }
+    Ok(())
 }
 
 async fn rev_parse(dir: &Path, what: &str) -> Result<String> {
@@ -509,5 +551,111 @@ mod tests {
         assert!(rebuilt.checkout.join("README.md").exists());
 
         tokio::fs::remove_dir_all(&base_tmp).await.unwrap();
+    }
+
+    /// The one tracked file in the julia-env fixtures below.
+    const KERNEL_PROJECT: &str = "name = \"ShipToolsKernel\"\n";
+
+    /// A tagged fixture "origin" carrying `julia/kernel`, plus a `julia`
+    /// stand-in that runs `julia_body` against the env it is pointed at (`$p`)
+    /// — `julia_bin` is only ever a path to a binary, so a shell script
+    /// reproduces "a package manager rewrote something" with no Julia here.
+    fn julia_fixture(name: &str, julia_body: &str) -> (PathBuf, PrepareSpec) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base_tmp =
+            std::env::temp_dir().join(format!("sot-updater-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base_tmp);
+        let origin = base_tmp.join("origin");
+        std::fs::create_dir_all(origin.join("julia/kernel")).unwrap();
+        std::fs::write(origin.join("julia/kernel/Project.toml"), KERNEL_PROJECT).unwrap();
+        sh(
+            &origin,
+            "git init -q -b main . && git add . && git commit -qm init && git tag v9.9.9",
+        );
+
+        let julia = base_tmp.join("julia-standin.sh");
+        std::fs::write(
+            &julia,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --project=*) p=${{a#--project=}};; esac; done\n{julia_body}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&julia, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let prefix = base_tmp.join("prefix");
+        let spec = PrepareSpec {
+            identity: ReleaseIdentity {
+                repo: "kalidke/ship-of-tools".into(),
+                tag: "v9.9.9".into(),
+                version: "9.9.9".into(),
+                target: "linux-x86_64".into(),
+                asset: "sot-9.9.9-linux-x86_64.tar.gz".into(),
+                asset_sha256: "ab".repeat(32),
+            },
+            repo_dir: prefix.join("repo"),
+            stage_dir: prefix.join("updates").join("v9.9.9"),
+            origin_url: Some(origin.to_string_lossy().into_owned()),
+            julia_bin: Some(julia.to_string_lossy().into_owned()),
+            npm: false,
+        };
+        std::fs::create_dir_all(&spec.stage_dir).unwrap();
+        (base_tmp, spec)
+    }
+
+    #[tokio::test]
+    async fn prepare_restores_a_tracked_file_the_env_step_rewrote() {
+        let (base_tmp, spec) =
+            julia_fixture("restore", "printf '# rewritten\\n' >> \"$p/Project.toml\"");
+
+        let state = prepare(&spec).await.unwrap();
+        assert!(state.julia_instantiated);
+        assert!(spec.stage_dir.join(PREPARED_MANIFEST).exists());
+        assert!(worktree_clean(&state.checkout).await);
+        assert_eq!(
+            std::fs::read_to_string(state.checkout.join("julia/kernel/Project.toml")).unwrap(),
+            KERNEL_PROJECT,
+            "the tracked project file must be back at its committed content"
+        );
+
+        std::fs::remove_dir_all(&base_tmp).unwrap();
+    }
+
+    #[tokio::test]
+    async fn prepare_keeps_untracked_build_products() {
+        let (base_tmp, spec) = julia_fixture("untracked", ": > \"$p/Manifest.toml\"");
+
+        let state = prepare(&spec).await.unwrap();
+        assert!(
+            state.checkout.join("julia/kernel/Manifest.toml").exists(),
+            "restoring tracked files must not sweep what instantiate produced"
+        );
+        assert!(worktree_clean(&state.checkout).await);
+
+        std::fs::remove_dir_all(&base_tmp).unwrap();
+    }
+
+    #[tokio::test]
+    async fn restore_refuses_dirt_it_cannot_repair() {
+        let dir = std::env::temp_dir().join(format!("sot-updater-bail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Project.toml"), KERNEL_PROJECT).unwrap();
+        sh(
+            &dir,
+            "git init -q -b main . && git add . && git commit -qm init && git tag v9.9.9",
+        );
+        // Staged but not committed: `git checkout -- .` restores the worktree
+        // FROM the index, so this divergence from the tag outlives the restore
+        // — and it is exactly what the appliers' `-uno` guard rejects.
+        std::fs::write(dir.join("Project.toml"), "name = \"Other\"\n").unwrap();
+        sh(&dir, "git add Project.toml");
+
+        let err = restore_to_tag(&dir, "v9.9.9").await.unwrap_err().to_string();
+        assert!(err.contains("v9.9.9"), "must name the tag: {err}");
+        assert!(err.contains("will not be armed"), "{err}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
