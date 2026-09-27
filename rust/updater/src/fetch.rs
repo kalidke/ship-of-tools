@@ -286,39 +286,17 @@ async fn run_cmd(bin: &str, args: &[&str], timeout: Duration) -> Result<Vec<u8>>
     Ok(out.stdout)
 }
 
-/// Hands out the in-process half of a scratch dir's name. See [`tempdir`]:
-/// the name has to be unique BY CONSTRUCTION rather than by clock resolution.
-static TEMPDIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 /// Unique scratch dir under the system temp root (fetch-internal only — real
 /// staging temp dirs live under the updates root, see `stage`).
 ///
-/// Unique BY CONSTRUCTION, which it was not before. The name was `pid` plus
-/// `SystemTime` nanos, and `latest` passes a CONSTANT label (`"sums"`), so the
-/// clock was the only thing separating two concurrent callers — on a platform
-/// whose clock ticks coarser than a nanosecond, two of them drew the SAME
-/// directory and the first to finish deleted the other's `SHA256SUMS` before
-/// it was read ("reading downloaded SHA256SUMS: No such file or directory").
-///
-/// This is a production race, not a test artifact: `lib.rs` calls `latest`,
-/// so the daemon's periodic check and an `update.check` op can overlap in one
-/// process. It surfaced as a macOS-only test failure because Linux's
-/// nanosecond clock almost never collides and two tests there call `latest`
-/// four times between them in parallel threads of one binary.
-///
-/// `pid` and the timestamp are kept: the counter guarantees uniqueness within
-/// this process, and those two keep the name clear of another process's dirs
-/// and of a stale dir left behind by an earlier process with the same pid.
+/// Uniqueness is [`crate::unique::suffix`]'s job, and that module records why
+/// it must not be the clock's: [`Fetcher::latest`] passes a CONSTANT label, so
+/// for two concurrent callers in one process the clock was the only separator,
+/// and one caller's `remove_dir_all` deleted the other's `SHA256SUMS` between
+/// its download and its read.
 async fn tempdir(label: &str) -> Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!(
-        "sot-updater-{label}-{}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-        TEMPDIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("sot-updater-{label}-{}", crate::unique::suffix()));
     tokio::fs::create_dir_all(&dir)
         .await
         .with_context(|| format!("creating {}", dir.display()))?;
@@ -340,54 +318,17 @@ mod tests {
         }
     }
 
-    /// Two scratch dirs must never be the same directory. They were, when the
-    /// name rested on `SystemTime` resolution and `latest`'s constant label:
-    /// the first caller's `remove_dir_all` deleted the second's `SHA256SUMS`
-    /// mid-flight.
-    ///
-    /// Asserted with the TIMESTAMP FIELD REMOVED, which is the whole point. A
-    /// plain "these two names differ" assertion passes on this Linux runner
-    /// whether or not the bug is fixed, because a nanosecond clock separates
-    /// them for free — it would have stayed green through the very defect it
-    /// claims to cover. Stripping the clock out of the comparison is what
-    /// makes this test decide anything: what is left must still be distinct.
+    /// `tempdir`'s own contract is that two calls are two directories. The
+    /// clock-independence of the name is [`crate::unique`]'s test; this one
+    /// pins that `tempdir` actually uses it, which a change here could quietly
+    /// undo without touching that module.
     #[tokio::test]
-    async fn tempdir_names_are_unique_without_the_clocks_help() {
-        // `sot-updater-<label>-<pid>-<nanos>-<seq>` minus the nanos field.
-        fn without_clock(p: &std::path::Path) -> String {
-            let name = p.file_name().unwrap().to_str().unwrap();
-            let mut parts: Vec<&str> = name.split('-').collect();
-            // Exactly six for a dash-free label: sot, updater, label, pid,
-            // nanos, seq. Pinned rather than `>= 5`, because if the counter
-            // were ever deleted the shape would be five and this helper would
-            // strip the PID instead of the clock — leaving the names distinct
-            // by timestamp and passing through the exact regression it exists
-            // to catch.
-            assert_eq!(
-                parts.len(),
-                6,
-                "scratch dir name lost a field; the uniqueness counter is the last: {name}"
-            );
-            parts.remove(parts.len() - 2);
-            parts.join("-")
-        }
-
-        let mut made = Vec::new();
-        for _ in 0..16 {
-            made.push(tempdir("uniq").await.expect("scratch dir"));
-        }
-        let mut distinct: Vec<String> = made.iter().map(|p| without_clock(p)).collect();
-        let total = distinct.len();
-        distinct.sort();
-        distinct.dedup();
-        assert_eq!(
-            distinct.len(),
-            total,
-            "scratch dir names collide once the clock is discounted: {made:?}"
-        );
-        for dir in made {
-            let _ = tokio::fs::remove_dir_all(dir).await;
-        }
+    async fn tempdir_gives_each_caller_its_own_directory() {
+        let a = tempdir("uniq").await.expect("scratch dir");
+        let b = tempdir("uniq").await.expect("scratch dir");
+        assert_ne!(a, b, "two callers were handed one directory");
+        let _ = tokio::fs::remove_dir_all(a).await;
+        let _ = tokio::fs::remove_dir_all(b).await;
     }
 
     #[tokio::test]

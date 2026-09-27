@@ -32,6 +32,7 @@ pub mod prepare;
 pub mod select;
 pub mod semver;
 pub mod sums;
+pub mod unique;
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};

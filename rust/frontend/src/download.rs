@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 ///
 /// Existence is checked against the filesystem; the caller writes the file.
 /// Bounded retry count so a pathological directory can't spin forever — past
-/// that we fall back to a nanosecond suffix (effectively unique).
+/// that we fall back to a suffix that is unique by construction
+/// ([`sot_updater::unique::suffix`]).
 pub fn non_clobbering_path(dir: &Path, filename: &str) -> PathBuf {
     let candidate = dir.join(filename);
     if !candidate.exists() {
@@ -29,12 +30,12 @@ pub fn non_clobbering_path(dir: &Path, filename: &str) -> PathBuf {
             return candidate;
         }
     }
-    // Pathological fallback: timestamp suffix, near-certainly unique.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    dir.join(suffixed(stem, ext, &nanos.to_string()))
+    // Pathological fallback. This used to be a bare timestamp, called
+    // "near-certainly unique" — but two downloads reaching here inside one
+    // clock tick would pick the same name and one would overwrite the other,
+    // in a function whose whole contract is "never returns a path that already
+    // exists". Unique by construction instead; see `sot_updater::unique`.
+    dir.join(suffixed(stem, ext, &sot_updater::unique::suffix()))
 }
 
 /// Build `"<stem> (<sfx>)[.<ext>]"`.
@@ -60,13 +61,13 @@ fn split_filename(filename: &str) -> (&str, Option<&str>) {
 mod tests {
     use super::*;
 
-    /// A unique throwaway dir under the OS temp dir.
+    /// A unique throwaway dir under the OS temp dir. Unique by construction,
+    /// not by clock: two tests sharing a `tag` would otherwise share a
+    /// directory whenever their timestamps landed in one tick, which is the
+    /// flake that reddened a macOS leg from `fetch::tempdir`.
     fn temp_dir(tag: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let d = std::env::temp_dir().join(format!("sot_dl_test_{tag}_{nanos}"));
+        let d = std::env::temp_dir()
+            .join(format!("sot_dl_test_{tag}_{}", sot_updater::unique::suffix()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }

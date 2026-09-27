@@ -56,7 +56,7 @@ impl StageLock {
                         "{}@{}#{}\n",
                         std::process::id(),
                         this_host(),
-                        nonce()
+                        crate::unique::nonce()
                     );
                     let _ = std::fs::write(dir.join("owner"), &owner);
                     return Ok(Self {
@@ -139,7 +139,7 @@ impl StageLock {
         let graveyard = dir.with_file_name(format!(
             ".lock-stale-{}-{}",
             std::process::id(),
-            nonce()
+            crate::unique::nonce()
         ));
         match std::fs::rename(dir, &graveyard) {
             Ok(()) => {
@@ -203,15 +203,13 @@ fn this_host() -> String {
     gethostname::gethostname().to_string_lossy().into_owned()
 }
 
-/// A cheap uniqueness nonce (monotonic-ish clock nanos + pid mix); good
-/// enough to distinguish two lock acquisitions, no crypto needed.
-fn nonce() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
-        ^ (std::process::id() as u128) << 64
-}
+// The nonce used to be built here from clock nanos XOR pid, and called "good
+// enough" — but "distinguish two lock acquisitions" is exactly what a clock
+// cannot promise, and the same false premise cost a macOS CI leg in
+// `fetch::tempdir`. It is now [`crate::unique::nonce`], which is unique by
+// construction. Two acquisitions in one clock tick differ, and so do the two
+// graveyard directory names a breaker renames a stale lock into (below) —
+// those are paths, where a collision is not merely a confusing log line.
 
 /// Liveness probe without a libc dependency: /proc on Linux, `kill -0` via sh
 /// elsewhere. Only ever called on unix for same-host pids.
