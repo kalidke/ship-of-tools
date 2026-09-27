@@ -41,7 +41,7 @@ use interprocess::local_socket::{
 use serde_json::Value;
 use sot_protocol::{
     codec, op, AgentSendReq, ConceptReadReq, ConceptReadRes, ConceptWriteReq, ConceptWriteRes,
-    DirCreateReq, DirCreateRes, DocsOpenReq, DocsOpenRes, FePresenceReq, FileChunk, FileDeleteReq, FileDeleteRes,
+    DirCreateReq, DirCreateRes, DocsOpenReq, DocsOpenRes, FeFilesForReq, FePresenceReq, FileChunk, FileDeleteReq, FileDeleteRes,
     FileDownloadReq, FileReadReq, FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq,
     FileWriteRes, Frame,
     HelloReq, HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
@@ -637,6 +637,17 @@ pub struct WorkspaceInfo {
     /// handle the bootstrap joins as (informational on the FE side).
     pub autostart_claude: bool,
     pub agent_name: String,
+    /// The sot-comm handle the session inside this workspace actually
+    /// declared via `agent.join` — the **joined** handle, mirroring the
+    /// wire's `WorkspaceListEntry.agent_handle`. Distinct from
+    /// `agent_name` above, which is only what the workspace was CREATED
+    /// to expect: the two can differ, and only this one is what a sender
+    /// actually addresses. `WorkspaceInfo` doesn't derive
+    /// Serialize/Deserialize (it's constructed by hand from the wire
+    /// type at the one parse site below), so there's no `#[serde(default)]`
+    /// to mirror here — empty string = never joined, same as the wire
+    /// field's own empty-string-means-absent convention.
+    pub agent_handle: String,
     /// Persisted spawn brief from the wire (mirrors the daemon's
     /// `WorkspaceListEntry.task`). The FE no longer delivers briefs (maintainer
     /// directive, 2026-06-16 — comm-spawn owns task delivery via a durable
@@ -1009,6 +1020,16 @@ pub enum OutgoingReq {
     /// false-negative pair the review found in the daemon-side-inference
     /// design this replaces.
     FePresence,
+    /// Declare the complete current set of sot-comm handles this
+    /// connection files inbound frames for (item 18) — sent after the FE
+    /// applies each own-host `workspace.list` reply
+    /// (`files_for_from_rows`), so the daemon can answer whether a
+    /// receiver actually names a target instead of guessing from this
+    /// connection's single hello `name`. **Replace semantics**: each send
+    /// is the complete set, never a delta. Fire-and-forget, same idiom as
+    /// `FePresence` above — no `PendingKind`, the reply is silently
+    /// ignored by the unmatched-id fallthrough.
+    FeFilesFor { handles: Vec<String> },
     /// Ask the kernel for its loaded-modules list. Response surfaces as
     /// `IncomingEvt::ModulesList`. Currently the only kernel.request the
     /// frontend issues directly; expand the enum as more land.
@@ -2373,6 +2394,18 @@ where
                         .await?;
                         // No PendingKind: fire-and-forget, same idiom as
                         // ToggleHidden/WorkspaceActivate above.
+                    }
+                    OutgoingReq::FeFilesFor { handles } => {
+                        tracing::debug!(?handles, id, "→ fe.files_for");
+                        codec::write_frame(
+                            &mut tx,
+                            &Frame::req(id, op::FE_FILES_FOR, serde_json::to_value(FeFilesForReq { handles })?),
+                            None,
+                        )
+                        .await?;
+                        // No PendingKind: an ack we never read must not
+                        // allocate a pending slot — same idiom as
+                        // FePresence above.
                     }
                     OutgoingReq::ModulesList { workspace_id } => {
                         tracing::debug!(?workspace_id, id, "→ kernel.request modules.list");
@@ -3855,6 +3888,7 @@ fn handle_response_frame(
                                 agent: w.agent,
                                 autostart_claude: w.autostart_claude,
                                 agent_name: w.agent_name,
+                                agent_handle: w.agent_handle,
                                 task: w.task,
                                 agent_state: w.agent_state,
                                 agent_summary: w.agent_summary,
