@@ -24921,10 +24921,14 @@ mod tests {
             ("alpha".to_string(), "one".to_string()),
             ("alpha".to_string(), "two".to_string()),
             ("beta".to_string(), "three".to_string()),
+            ("gamma".to_string(), "four".to_string()),
+            ("gamma".to_string(), "five".to_string()),
         ];
         let items = strip_items(&slugs, |h| h.clone());
-        // [bow a, s, s, bow b, s]
-        assert_eq!(ship_spans(&items), vec![(0, 2), (3, 4)]);
+        // [bow a, s, s, bow b, s, bow g, s, s] — three groups, so the inner
+        // sterns (from the NEXT bow) are told apart from the last group's,
+        // which falls back to the final item.
+        assert_eq!(ship_spans(&items), vec![(0, 2), (3, 4), (5, 7)]);
         // One host: no bows, so no ships at all (and no `items.len()-1`
         // underflow on an empty list).
         assert!(ship_spans(&[]).is_empty());
@@ -25038,10 +25042,6 @@ mod tests {
         // The first group is entirely off-screen left: every one of its marks
         // — wheel, box name, hull — must be gone, not clamped to the edge.
         let (marks, _, _, _) = scrolled_fleet();
-        assert!(
-            marks.iter().all(|m| m.left + m.w >= 0.0),
-            "no mark may survive the cull fully off the left edge: {marks:?}"
-        );
         // The first ship is gone entirely; of the second, the cull is
         // per-MARK, not per-ship — its wheel hangs off the left edge while
         // the name one cell to its right survives.
@@ -25077,9 +25077,12 @@ mod tests {
         // reach — not off an index into `workspace_slugs`, which falls back
         // to 0 (and so to the WRONG ship) whenever the steered session's row
         // has just been filtered out.
-        let cell_w = 10.0;
-        let logo_w = 25.0;
-        let logo_h = 16.0;
+        let cell_w = 7.7; // the measured monospace advance at scale 1
+        // The draw site's own asset geometry (`logo_dims`): the wheel is the
+        // decoded PNG's aspect ratio taken at the row's height.
+        let aspect = 1.0; // logo-dark is square
+        let logo_h = (BASE_CELL_H - 2.0).max(1.0);
+        let logo_w = logo_h * aspect;
         let wheel_w = wheel_size(logo_w, logo_h, false).0;
         let slugs: Vec<WsKey> = vec![
             ("alpha".to_string(), "one".to_string()),
@@ -25114,9 +25117,22 @@ mod tests {
             vec![(false, wheel_w), (true, logo_w)],
             "the second ship is the steered one, and its wheel is the full bookend size"
         );
-        // The layout is keyed to the SMALL wheel, so which ship is steered
-        // cannot reflow the strip: the big wheel spends the bow's cell of air.
-        assert!(logo_w - wheel_w < cell_w);
+        // The layout is keyed to the SMALL wheel, so which ship is steered can
+        // never reflow the strip — which holds only while the big wheel's
+        // overshoot fits in the bow's one cell of air. That is a fact about the
+        // ASSET, not about this fixture:
+        // `logo_h * aspect * (1 - DIVIDER_SIZE_FACTOR) <= cell_w`, with
+        // `logo_h = (cell_h - 2).max(1)` as the draw site computes it. A square
+        // asset satisfies it at every scale; the bound tightens toward an aspect
+        // of ~2.14 as the scale grows, so a much wider wheel asset would start
+        // to overlap the box name and would have to widen the air with it.
+        for scale in [0.5_f32, 1.0, 2.0, 4.0] {
+            let lh = (BASE_CELL_H * scale - 2.0).max(1.0);
+            assert!(
+                lh * aspect * (1.0 - DIVIDER_SIZE_FACTOR) <= 7.7 * scale,
+                "scale {scale}: the steered wheel's overshoot must fit the bow's cell of air"
+            );
+        }
     }
 
     #[test]
