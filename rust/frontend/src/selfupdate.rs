@@ -169,7 +169,10 @@ struct Phase {
 /// (`update::handle_update_check`): `prepared` shells out to git in the
 /// versioned checkout, and a hung NFS path must degrade to "don't know"
 /// rather than stall the caller — a startup thread or a one-shot CLI.
-async fn phase(cfg: &UpdaterConfig, id: &sot_updater::ReleaseIdentity) -> Phase {
+/// `None` on timeout: the caller decides what "don't know" means for it —
+/// silently all-`false` is safe for the background path, but a diagnostic
+/// must say it doesn't know rather than print a `false` it never measured.
+async fn phase(cfg: &UpdaterConfig, id: &sot_updater::ReleaseIdentity) -> Option<Phase> {
     let probes = async {
         Phase {
             partial_bytes: sot_updater::partial_asset_bytes(&cfg.updates_root, id).await,
@@ -183,12 +186,7 @@ async fn phase(cfg: &UpdaterConfig, id: &sot_updater::ReleaseIdentity) -> Phase 
     };
     tokio::time::timeout(std::time::Duration::from_secs(10), probes)
         .await
-        .unwrap_or(Phase {
-            partial_bytes: None,
-            staged: false,
-            prepared: false,
-            armed: false,
-        })
+        .ok()
 }
 
 async fn run(install: InstallManifest, current: String) {
@@ -209,7 +207,12 @@ async fn run(install: InstallManifest, current: String) {
     // on work a previous launch finished, so without this line a log cannot
     // distinguish a run that resumed a nearly-finished pipeline from one that
     // began again — the distinction four blind converge cycles turned on.
-    let at = phase(&cfg, &id).await;
+    let at = phase(&cfg, &id).await.unwrap_or(Phase {
+        partial_bytes: None,
+        staged: false,
+        prepared: false,
+        armed: false,
+    });
     if at.armed {
         tracing::info!(tag = %id.tag, "fe self-update: already armed — the next converge or launcher start applies it, nothing to do this run");
         return;
@@ -303,7 +306,10 @@ pub fn print_status() -> ! {
             println!("  release        none newer than {} ({})", cfg.current_version, out.status);
             return 0;
         };
-        let at = phase(&cfg, &id).await;
+        let Some(at) = phase(&cfg, &id).await else {
+            println!("  probe timed out — the filesystem or git is not answering");
+            return 1;
+        };
         for line in phase_lines(&id, &at) {
             println!("{line}");
         }

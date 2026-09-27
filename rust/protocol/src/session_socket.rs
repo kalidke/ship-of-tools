@@ -172,15 +172,32 @@ mod tests {
     /// no Unix CI leg can execute that arm — and the two drifting apart IS
     /// the bug this resolver closed (`sotd status` dialing
     /// `sot-<user>-sot` while the daemon listened on `sot-<user>-local`).
+    ///
+    /// Checked against the `$daemonArgLine` ASSIGNMENT only, not the whole
+    /// file: `--label local` also appears in a comment elsewhere in the
+    /// script, and a whole-file `contains` would stay green even if the
+    /// assignment itself lost the flag or was deleted outright.
     #[test]
     fn the_windows_launcher_uses_the_label_this_module_derives() {
         let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../scripts/sot-local-daemon.ps1");
         let text =
             std::fs::read_to_string(&script).expect("the local-daemon launcher is in the tree");
+        let assignment = text
+            .lines()
+            // The literal `$daemonArgLine =` (assignment), not merely a line
+            // mentioning the variable — `-ArgumentList $daemonArgLine` further
+            // down uses it without assigning it, and must not count.
+            .find(|line| line.contains("$daemonArgLine ="))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} no longer assigns $daemonArgLine; local_daemon_label()'s Windows arm has nothing to check against",
+                    script.display()
+                )
+            });
         assert!(
-            text.contains("--label local"),
-            "{} no longer starts the daemon with `--label local`; local_daemon_label()'s Windows arm must follow it",
+            assignment.contains("--label local"),
+            "{} no longer starts the daemon with `--label local`; local_daemon_label()'s Windows arm must follow it\n  found: {assignment}",
             script.display()
         );
     }
