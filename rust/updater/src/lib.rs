@@ -291,12 +291,14 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
     .await;
 
     if let Err(e) = result {
-        // Kept on purpose. A timed-out download used to be thrown away whole,
-        // so a box on a slow link re-downloaded from zero every cycle and
-        // never got further; the next attempt now re-verifies the asset by
-        // hash and rebuilds everything derived from it, so a failure costs one
-        // cycle rather than the whole download. `sweep_stale_tmp` reaps it
-        // once the release stops being the one we chase.
+        // Kept on purpose. When the asset itself finished downloading and a
+        // LATER step failed (extract, digests, commit binding, manifest
+        // write), the next attempt's hash check above finds a complete match
+        // and skips straight to rebuilding what's derived from it — a failure
+        // there costs one cycle, not the whole download. A download killed
+        // mid-transfer still restarts from zero: there is no byte-range
+        // resume here, only whole-file verification. `sweep_stale_tmp` reaps
+        // this dir once the release stops being the one we chase.
         tracing::warn!(dir = %tmp.display(), "stage failed — keeping the partial dir so the next attempt resumes");
         return Err(e);
     }
