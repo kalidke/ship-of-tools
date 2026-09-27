@@ -75,7 +75,12 @@ Use `comm-relay.sh send @handle "msg"` for anyone: it files locally for a handle
 this box's registry names (`filed -> @handle` — the file IS the ack, read at
 that session's next turn boundary) and goes over the wire only for a handle this
 box cannot name. A send nothing can file for fails loudly: `no such handle`,
-non-zero exit. There is no "only a reply proves it" rule any more.
+non-zero exit — and so does a send nothing can VOUCH for: a handle whose only
+plausible filer is the frontend on the host its name ends with reports `NOT
+CONFIRMED` and exits non-zero, because that match is a name-suffix guess. The
+frame is still sent; only the claim that it landed is withheld. There is no
+confirmed path to a session on another frontend yet — for that, the git bus.
+There is no "only a reply proves it" rule any more.
 
 `filed -> @handle` carries one more factual clause when the registry can
 support it — `(working, stamped 12s ago — reply expected at its turn

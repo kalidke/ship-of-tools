@@ -10,9 +10,13 @@
 #      proves the path" — a design defect pushed onto every sender.
 #   2. A handle nothing can file for is a FAILURE: `no such handle` on stderr,
 #      exit 1. It used to print `relayed` plus a warning and exit 0.
-#   3. The one cross-box exception left: a Windows-hosted handle runs no bridge,
-#      its frontend files for it as `fe@<host>`, and that is reported as
-#      unconfirmed rather than claimed as delivered.
+#   3. The one cross-box GUESS left -- a Windows-hosted handle runs no bridge, so
+#      its frontend files for it as `fe@<host>` and a target whose name ENDS in
+#      that host is probably its own -- is a FAILURE too: `NOT CONFIRMED` on
+#      stderr, exit 1. It used to print `filed via the frontend (unconfirmed)`
+#      and exit 0, which is a false success: a misspelled handle ending in the
+#      same host matched identically and reported the same delivery. An unproven
+#      send does not get to report one until the filer returns a receipt.
 #
 # No bats dependency. HERMETIC, same seams as test-leave-stops-bridge.sh: a
 # temp $SOT_COMM_HOME, a per-case $SOT_COMM_SELF_FILE, a pinned
@@ -145,19 +149,27 @@ case_unknown_handle_exits_one_while_an_fe_row_is_attached() {
     return 0
 }
 
-case_a_frontend_filer_is_reported_unconfirmed() {
+case_a_frontend_filer_exits_one_and_claims_nothing() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local sock="$WORK/fake-fe.sock"
     fake_daemon "$sock" '["fe@'"$PEER_HOST"'"]' \
         || { echo "  nc -lU unavailable; cannot stand up a fake daemon"; return 2; }
     # A handle on the frontend's own box (its name ends in -<host>) with no
-    # bridge of its own: that frontend files for it. Honest, but unproven from
-    # here — so it is reported as unconfirmed, not as a delivery.
+    # bridge of its own: that frontend PROBABLY files for it. Probably is not a
+    # delivery -- nothing here proves it landed, and `peer-$PEER_HOST` and a
+    # typo'd `peeeer-$PEER_HOST` match this branch identically -- so it FAILS.
     relay_send "unix:$sock" send "@peer-$PEER_HOST" "over the wire"
     fake_daemon_stop
-    [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC, want 0 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
-    contains "$RELAY_OUT" "filed via the frontend on $PEER_HOST (unconfirmed)" \
-        || { echo "  verdict was '$RELAY_OUT', want the unconfirmed frontend line"; return 1; }
+    [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "NOT CONFIRMED" \
+        || { echo "  stderr was '$RELAY_ERR', want a NOT CONFIRMED verdict"; return 1; }
+    contains "$RELAY_ERR" "$PEER_HOST" \
+        || { echo "  stderr does not name the frontend that might file it: '$RELAY_ERR'"; return 1; }
+    # The point of the change: no line anywhere may read as a delivery.
+    contains "$RELAY_OUT" "filed" \
+        && { echo "  an unproven send still printed a filed line: '$RELAY_OUT'"; return 1; }
+    contains "$RELAY_OUT" "relayed" \
+        && { echo "  an unproven send still printed a relayed line: '$RELAY_OUT'"; return 1; }
     return 0
 }
 
@@ -242,7 +254,7 @@ case_annotation_absent_for_a_malformed_row() {
 
 check "a registry target is filed with the daemon down" case_registry_target_is_filed_with_the_daemon_down
 check "an unknown handle exits 1 with 'no such handle' while an fe@ row is attached" case_unknown_handle_exits_one_while_an_fe_row_is_attached
-check "a frontend filer is reported as unconfirmed, not as delivered" case_a_frontend_filer_is_reported_unconfirmed
+check "a frontend filer exits 1 and claims no delivery" case_a_frontend_filer_exits_one_and_claims_nothing
 check "a working recipient is annotated with its stamped age and turn-boundary wording" case_annotation_working_recipient
 check "a recipient stopped on an open question is annotated 'needs its own user', quoted and truncated" case_annotation_recipient_needs_its_own_user
 check "a stale heartbeat overrides a fresh 'working' stamp" case_annotation_stale_heartbeat_overrides_working

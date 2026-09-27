@@ -266,19 +266,33 @@ send_frame() {  # $1 to, $2 text
                 # A Windows-hosted handle runs no bridge: its frontend files
                 # every inbound frame into an inbox of its own, declared as
                 # `fe@<host>`. Derived handles end in -<host>, so a frontend
-                # receiver whose host the target's name ends with is that
-                # handle's own filer. This is the LAST cross-box guess left —
-                # the registry-derived `want_fe` went with the file-first rule
-                # above (a handle this box can name never reaches the wire),
-                # and this one goes in 0.6.7 with the per-handle Windows inbox
-                # and declared filers.
+                # receiver whose host the target's name ends with is PROBABLY
+                # that handle's own filer. Probably is the whole problem: this
+                # is the last cross-box GUESS left — the registry-derived
+                # `want_fe` went with the file-first rule above (a handle this
+                # box can name never reaches the wire) — and a guess does not
+                # get to report success. Kept as a distinct outcome, not
+                # deleted, because "a plausible filer is attached" and "nothing
+                # anywhere can file this" are different facts for whoever reads
+                # the failure, and it is the seam the declared-filer receipt
+                # replaces.
                 if [ "${r#fe@}" != "$r" ] && [ "${1%-${r#fe@}}" != "$1" ]; then
                     fe_host="${r#fe@}"
                 fi
             done
             if [ -n "$fe_host" ]; then
-                echo "filed via the frontend on $fe_host (unconfirmed)"
-                return 0
+                # The frame WAS sent and that frontend may well have filed it.
+                # Nothing here proves it did: a misspelled handle ending in the
+                # same host matched the same way and reported the same
+                # delivery. Until the filer returns a receipt, an unproven send
+                # is a FAILED send — the frame is not withdrawn, only the claim
+                # that it landed. `ask` fails here too, before spending the
+                # caller's seconds waiting on a path it cannot vouch for; a
+                # reply that does come back is still filed in the sender's own
+                # inbox by its bridge.
+                echo "NOT CONFIRMED: sent for $1 — the frontend on $fe_host may file it, and nothing proves it did." >&2
+                echo "               No confirmed path to a session on another frontend exists yet; for a durable record use the git bus (bus.sh note)." >&2
+                return 1
             fi
             # Nothing attached to this daemon can file for the target, and this
             # box's own registry does not name it either (checked before the

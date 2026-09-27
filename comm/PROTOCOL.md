@@ -131,8 +131,16 @@ If the poke isn't possible (no row for the recipient on this host, no daemon, a
 row that is not at a free prompt) the send says so — `filed -> @name — not
 woken: <reason>` — because the reason is **stated, never silent**. The frame is
 filed either way, and the recipient reads it at its next turn boundary or on its
-next `poll`. A send that could file NOWHERE is the one failure: `no such handle`
-(or `ERROR: unreachable, nothing filed`) with a non-zero exit.
+next `poll`. A send that could file NOWHERE is a failure: `no such handle` (or
+`ERROR: unreachable, nothing filed`) with a non-zero exit. **So is a send
+nothing can vouch for.** A handle this box cannot name, whose only plausible
+filer is the frontend on the host its name ends with, reports `NOT CONFIRMED:
+sent for <handle> — the frontend on <host> may file it, and nothing proves it
+did.` and exits non-zero: the frame is still sent and may well be filed, but the
+match is a name-suffix GUESS (a misspelled handle ending in the same host
+matches identically), and a guess does not report success. Until the filer
+returns a receipt there is no confirmed path to a session on another frontend at
+all; the git bus is the durable one.
 
 **The recipient annotation (messaging ruling, 2026-09-26):** a filed frame is
 not a reply, and a sender with no reply yet cannot tell working from
