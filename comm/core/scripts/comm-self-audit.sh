@@ -40,15 +40,17 @@ esac
 
 [ -d "$SELF_DIR" ] || { echo "comm-self-audit.sh: no identity slots at '$SELF_DIR' — nothing joined on this box yet" >&2; exit 2; }
 
-# The daemon's own label→slug rule (rust/protocol/src/session_socket.rs
-# `slug`): lowercase, `.` to `_`, every other run of non-alnum/`_`/`-`
-# collapsed to a single `-`, no leading or trailing `-`. A repo basename has
-# to go through it before it can be compared with a key's slug at all
-# (`MyPackage.jl` keys a row as `mypackage_jl`).
-slugify() {
-    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr '.' '_' \
-        | sed -e 's/[^a-z0-9_-]\{1,\}/-/g' -e 's/^-\{1,\}//' -e 's/-\{1,\}$//'
-}
+# A repo basename has to go through the daemon's label→slug rule before it can
+# be compared with a key's slug at all (`MyPackage.jl` keys a row as
+# `mypackage_jl`). That rule is `sot_slug` in the comm-lib.sh sourced above — a
+# char-by-char mirror of Rust `slug()` (rust/protocol/src/session_socket.rs)
+# with its own tests. This script carried a second, sed-based copy, which agreed
+# with `sot_slug` over every real `repo=` on this box but not in general: a
+# literal repeated dash survives the daemon's keep-branch (`alpha- beta` →
+# `alpha-beta` there, `alpha--beta` in the copy) and an empty label is `default`
+# there and `''` in the copy. Either divergence makes a HEALTHY slot print
+# DIFFERS and this script exit 1 — the cry-wolf outcome the false-positive rule
+# below exists to prevent. One rule, one implementation, and it is the daemon's.
 
 # 0 when $2 is $1 plus a suffix starting at a `-`/`_` boundary. The boundary is
 # what keeps this from excusing a real disagreement: `alpha` is a bare prefix of
@@ -81,11 +83,18 @@ for slot in "$SELF_DIR"/*__*.txt; do
                  [ "$VERBOSE" = 1 ] && echo "no repo=  $key  (@${name:-?})"
                  continue ;;
     esac
-    repo_slug="$(slugify "$repo")"
+    repo_slug="$(sot_slug "$repo")"
     if [ "$slug" = "$repo_slug" ]; then
         agree=$((agree + 1))
         [ "$VERBOSE" = 1 ] && echo "agree     $key  (@${name:-?}, repo=$repo)"
-    elif suffixed_at_boundary "$repo_slug" "$slug" || suffixed_at_boundary "$slug" "$repo_slug"; then
+    # One direction only: a row's LABEL continues its repo's slug (`alpha-cx`,
+    # `alpha-<parentdir>` for a row whose repo is `alpha`), which is how the
+    # variant and path-disambiguated rows are named. The reverse — a key
+    # `ws-alpha-…` holding `repo=alpha-tools` — never occurred over this box's
+    # 161 slots, has no example in the rule above and no test, and excusing it
+    # would wave through exactly the cross-project slot this audit exists to
+    # find: `alpha` and `alpha-tools` are two different checkouts.
+    elif suffixed_at_boundary "$repo_slug" "$slug"; then
         benign=$((benign + 1))
         [ "$VERBOSE" = 1 ] && echo "benign    $key  (@${name:-?}, repo=$repo — suffixed, same project)"
     else

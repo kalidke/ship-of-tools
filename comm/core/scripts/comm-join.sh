@@ -209,7 +209,21 @@ fi
 # registry row above is already claimed, but with no local self-file this
 # shell has no record of it and every future comm call from it will read
 # as "not joined".
-if ! sot_write_self_file "$SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT" "$REPIN"; then
+# The writer's own agreement guard can also refuse HERE, past the pre-check
+# above: another join can claim the slot for a different project in the gap,
+# and a box with a newer comm-lib.sh beside an older comm-join.sh has no
+# pre-check at all, so for it EVERY refusal lands here. A refusal is not a
+# write failure — reporting it as one sends the operator after a permissions
+# problem that does not exist and hides the one way through — so the status
+# is kept (never `if ! …`, whose `$?` inside the branch is the negation's 0)
+# and exit 3 means the same thing at both call sites.
+write_rc=0
+sot_write_self_file "$SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT" "$REPIN" || write_rc=$?
+if [ "$write_rc" = 3 ]; then
+    echo "comm-join.sh: REFUSING to put a '$REPO' identity in the slot '$SELF_FILE' — it was claimed for another project while this join ran (reason above). The registry row for @$NAME is claimed but this shell has no identity record, so re-run the join: from inside the row it belongs to, or with --repin if this row really is '$REPO' now." >&2
+    exit 3
+fi
+if [ "$write_rc" != 0 ]; then
     echo "comm-join.sh: FATAL — joined as @$NAME in the registry, but could not write the local self-file at '$SELF_FILE' (see reason above). This shell has no identity record; every comm-* call from it will say 'not joined'. Fix the self-file directory's permissions and re-run comm-join.sh --name $NAME." >&2
     exit 1
 fi
