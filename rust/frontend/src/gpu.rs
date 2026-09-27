@@ -15377,9 +15377,10 @@ impl State {
                     // `host`, recorded in `declared_host`) — a remote
                     // daemon's rows would be a promise this process
                     // cannot keep.
-                    if self.declared_host.get(&event_host).map(String::as_str)
-                        == Some(frontend_identity().host.as_str())
-                    {
+                    if declares_files_for(
+                        self.declared_host.get(&event_host).map(String::as_str),
+                        frontend_identity().host.as_str(),
+                    ) {
                         if let Some(rows) = self.workspace_lists.get(&event_host) {
                             let handles = files_for_from_rows(rows);
                             if let Err(e) =
@@ -19338,6 +19339,22 @@ pub(crate) fn self_comm_handle() -> String {
 /// path stricter than the local path for the same handle, with no
 /// invariant behind the difference. Do not add a liveness filter thinking
 /// it a tightening.
+/// Whether this frontend declares [`files_for_from_rows`]'s set to the
+/// connection whose rows just arrived: only when that daemon declared the
+/// SAME host this process runs on. A frontend files every inbound frame
+/// into ONE inbox on its own machine, so declaring for a remote daemon's
+/// rows would be a promise it cannot keep.
+///
+/// Pure, and separate from the call site, because the alternative is a
+/// gate no test can reach: with the wiring inlined, deleting the whole
+/// block left every `files_for_from_rows` test green — the op would never
+/// be sent by any build and the next release's daemon half would be
+/// diagnosed as a daemon bug. `declared` is `None` for a daemon too old to
+/// send `Connected`'s `host`, which declares nothing rather than guessing.
+fn declares_files_for(declared: Option<&str>, own: &str) -> bool {
+    declared == Some(own)
+}
+
 fn files_for_from_rows(rows: &[crate::transport::WorkspaceInfo]) -> Vec<String> {
     rows.iter()
         .filter(|w| !w.agent_handle.is_empty())
@@ -26448,6 +26465,16 @@ mod tests {
             ..ws_info("proj", "sot-be-proj")
         };
         assert!(files_for_from_rows(&[w]).is_empty());
+    }
+
+    /// The wiring, which no other test reaches: own host declares, a
+    /// foreign host does not, and a daemon that declared no host at all
+    /// declares nothing rather than being guessed at.
+    #[test]
+    fn declares_files_for_only_to_a_daemon_on_this_frontends_own_host() {
+        assert!(declares_files_for(Some("boxa"), "boxa"));
+        assert!(!declares_files_for(Some("boxb"), "boxa"));
+        assert!(!declares_files_for(None, "boxa"));
     }
 
     #[test]
