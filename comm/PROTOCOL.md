@@ -172,7 +172,8 @@ frontend files inbound frames itself.
 
 | Verb        | Script           | Notes |
 |-------------|------------------|-------|
-| join        | `comm-join.sh`   | `--name <n>` `--expertise "a, b"`; writes registry + self file |
+| join        | `comm-join.sh`   | `--name <n>` `--expertise "a, b"`; writes registry + self file. Refuses (exit 3) when the self-file slot is already claimed for a DIFFERENT project — the slot is keyed by the workspace row in the environment while the identity comes from the shell's cwd, and a row that comes to name another project's session reads that session's mail. `--repin` is the deliberate override |
+| audit slots | `comm-self-audit.sh` | compares each workspace-keyed slot's key against the `repo=` it carries; reports the ones naming a different project (exit 1), passes a suffixed or path-disambiguated name |
 | send        | `comm-send.sh`   | `@name "msg"` or `--broadcast "msg"`; recipient is only the first positional `@arg`, so the message may itself begin with `@` |
 | poll        | `comm-poll.sh`   | shows the inbox lines past the read cursor, then advances it |
 | list        | `comm-list.sh`   | all agents + live/stale + (me) marker |

@@ -453,9 +453,52 @@ registry_del_if_provisional() {
 # content; nonzero (with a reason on stderr) otherwise, and the original
 # SELF_FILE is left untouched (the failed temp file is cleaned up, never
 # left as e.g. a stray `.tmp.*` sibling). Callers MUST treat a nonzero
-# return as "did not persist" — never report success on it.
+# return as "did not persist" — never report success on it. A refusal by the
+# agreement guard below is return 3 specifically, so a caller can tell "this
+# slot belongs to another project" from "the disk said no".
+#
+# sot_self_file_project_conflict SELF_FILE REPO ROOT — 0 (and one line on
+# stderr naming the incumbent) when SELF_FILE already holds an identity
+# claimed for a DIFFERENT project than (REPO, ROOT), 1 otherwise. This is the
+# WRITE side of the read-side staleness matrix in comm-context.sh: the slot
+# path is keyed by the workspace row in the ENVIRONMENT while the identity
+# written into it is derived from the shell's CWD, the two derivations are
+# never compared, and so any process whose $SOT_WORKSPACE_ID names one row
+# while its cwd sits in another row's repo used to write that repo's handle
+# into the other row's slot — after which the other session reads a handle
+# that is not its own and directed mail is filed for the wrong reader (the
+# inbox is keyed by handle, so the read-side matrix catches it only AFTER the
+# misdelivery). `root=` decides when the slot has one; `repo=` decides for a
+# legacy slot; a slot with neither (the ancient one-line format) is no
+# evidence and never a conflict. The SHARED `$HOST__nopane.txt` slot is
+# exempt: it is last-writer-wins BY DESIGN (see the note above), every
+# no-pane shell on the host writes it whatever project it sits in, and a
+# guard there would refuse ordinary use.
+sot_self_file_project_conflict() {
+    local self_file="$1" repo="$2" root="$3"
+    case "$self_file" in *__nopane.txt) return 1 ;; esac
+    [ -f "$self_file" ] || return 1
+    local -a lines; mapfile -t lines < "$self_file" 2>/dev/null || return 1
+    local name="${lines[0]:-}" repo_line="${lines[1]:-}" root_line="${lines[2]:-}" claim=""
+    [ -n "$name" ] || return 1
+    case "$root_line" in root=?*) claim="root='${root_line#root=}'"
+        [ "${root_line#root=}" = "$root" ] && return 1 ;;
+    esac
+    if [ -z "$claim" ]; then
+        case "$repo_line" in repo=?*) claim="repo='${repo_line#repo=}' (legacy slot, no root=)"
+            [ "${repo_line#repo=}" = "$repo" ] && return 1 ;;
+        esac
+    fi
+    [ -n "$claim" ] || return 1
+    echo "the identity slot '$self_file' already names @$name, claimed for $claim" >&2
+    return 0
+}
 sot_write_self_file() {
-    local self_file="$1" name="$2" repo="$3" root="$4" tmp
+    local self_file="$1" name="$2" repo="$3" root="$4" repin="${5:-0}" tmp
+    if [ "$repin" != 1 ] && sot_self_file_project_conflict "$self_file" "$repo" "$root"; then
+        echo "sot_write_self_file: REFUSING to write '$name' (repo='$repo', root='$root') over it — a slot keyed by one row must not come to name another project's session, or that row reads mail addressed to this one. If this row really is '$repo' now, re-run the join with --repin." >&2
+        return 3
+    fi
     tmp="$(mktemp "${self_file}.tmp.XXXXXX" 2>/dev/null)" || {
         echo "sot_write_self_file: could not create a temp file next to '$self_file' (directory missing or not writable?)" >&2
         return 1

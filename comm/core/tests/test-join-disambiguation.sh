@@ -2084,6 +2084,96 @@ case_windows_relay_endpoint_prefers_the_launcher_exported_env_over_the_hardcoded
     return 0
 }
 
+# ---- the identity-slot agreement guard (comm-lib.sh
+# sot_self_file_project_conflict). A slot is keyed by the workspace row in the
+# ENVIRONMENT while the identity written into it comes from the shell's CWD,
+# and the two used to be written without ever being compared: a shell in one
+# row with its cwd in another row's repo handed that row's session a handle
+# that was not its own, and directed mail was then filed for the wrong reader.
+# The read-side matrix above catches it only AFTER that misdelivery. ----
+
+# _plant_slot FILE HANDLE REPO ROOT — an incumbent identity in a slot.
+_plant_slot() { printf '%s\nrepo=%s\nroot=%s\n' "$2" "$3" "$4" > "$1"; }
+
+case_slot_guard_refuses_another_projects_slot() {
+    local self="$WORK/slot-guard-foreign.txt"
+    _plant_slot "$self" "other-repo-$HOST" "other-repo" "$ROOT4"
+    JOIN_SELF_FILE_OVERRIDE="$self"
+    join_in "$ROOT1"
+    JOIN_SELF_FILE_OVERRIDE=""
+    [ "$JOIN_RC" -eq 3 ] || { echo "  exited $JOIN_RC, want 3 (out: $JOIN_OUT err: $JOIN_ERR)"; return 1; }
+    contains "$JOIN_ERR" "REFUSING" || { echo "  stderr was: $JOIN_ERR"; return 1; }
+    contains "$JOIN_ERR" "--repin" || { echo "  the refusal must name the way out: $JOIN_ERR"; return 1; }
+    # The incumbent is untouched: the whole point is that its own session
+    # keeps reading its own handle.
+    [ "$(sed -n '1p' "$self")" = "other-repo-$HOST" ] \
+        || { echo "  the slot was overwritten anyway: $(cat "$self")"; return 1; }
+    return 0
+}
+
+case_slot_guard_repin_writes_anyway() {
+    local self="$WORK/slot-guard-repin.txt"
+    _plant_slot "$self" "other-repo-$HOST" "other-repo" "$ROOT4"
+    JOIN_SELF_FILE_OVERRIDE="$self"
+    join_in "$ROOT1" --repin
+    JOIN_SELF_FILE_OVERRIDE=""
+    [ "$JOIN_RC" -eq 0 ] || { echo "  exited $JOIN_RC, want 0 (err: $JOIN_ERR)"; return 1; }
+    [ "$(sed -n '3p' "$self")" = "root=$ROOT1" ] \
+        || { echo "  --repin did not re-pin the slot: $(cat "$self")"; return 1; }
+    return 0
+}
+
+case_slot_guard_allows_a_same_project_rewrite() {
+    local self="$WORK/slot-guard-same.txt"
+    _plant_slot "$self" "stale-name-$HOST" "instructor-materials" "$ROOT1"
+    JOIN_SELF_FILE_OVERRIDE="$self"
+    join_in "$ROOT1"
+    JOIN_SELF_FILE_OVERRIDE=""
+    [ "$JOIN_RC" -eq 0 ] || { echo "  a same-project rewrite must not be refused: $JOIN_RC / $JOIN_ERR"; return 1; }
+    return 0
+}
+
+case_slot_guard_exempts_the_shared_nopane_slot() {
+    # The one slot where two projects legitimately alternate: every no-pane
+    # shell on a host shares it and it is last-writer-wins BY DESIGN
+    # (comm-lib.sh). A guard there would refuse ordinary use.
+    local self="$WORK/slot-guard-nopane/${HOST}__nopane.txt"
+    mkdir -p "$WORK/slot-guard-nopane"
+    _plant_slot "$self" "other-repo-$HOST" "other-repo" "$ROOT4"
+    JOIN_SELF_FILE_OVERRIDE="$self"
+    join_in "$ROOT1"
+    JOIN_SELF_FILE_OVERRIDE=""
+    [ "$JOIN_RC" -eq 0 ] || { echo "  the shared nopane slot must stay writable: $JOIN_RC / $JOIN_ERR"; return 1; }
+    [ "$(sed -n '3p' "$self")" = "root=$ROOT1" ] \
+        || { echo "  the nopane slot was not rewritten: $(cat "$self")"; return 1; }
+    return 0
+}
+
+case_self_audit_flags_only_a_slot_naming_another_project() {
+    # comm-self-audit.sh over a planted slot directory: the shapes it must
+    # NOT flag are as load-bearing as the one it must — a suffixed row and a
+    # path-disambiguated name are deliberate, and a run that cries wolf over
+    # them is a run nobody reads.
+    local home="$WORK/audit-home" out rc
+    rm -rf "$home"; mkdir -p "$home/self"
+    _plant_slot "$home/self/h__ws-alpha-6a1.txt"  "alpha-h"  "alpha"        "/p/alpha"
+    _plant_slot "$home/self/h__ws-alpha_jl-6a2.txt" "Alpha-h" "Alpha.jl"    "/p/Alpha.jl"
+    _plant_slot "$home/self/h__ws-beta-cx-6a3.txt" "beta-cx-h" "beta"       "/p/beta"
+    _plant_slot "$home/self/h__nopane.txt"        "gamma-h"  "gamma"        "/p/gamma"
+    _plant_slot "$home/self/h__17.txt"            "delta-h"  "delta"        "/p/delta"
+    _plant_slot "$home/self/h__ws-epsilon-6a4.txt" "alpha-h" "alpha"        "/p/alpha"
+    out="$(SOT_COMM_HOME="$home" bash "$SCRIPTS_DIR/comm-self-audit.sh" 2>&1)"; rc=$?
+    [ "$rc" -eq 1 ] || { echo "  exited $rc, want 1 (out: $out)"; return 1; }
+    contains "$out" "DIFFERS   ws-epsilon-6a4  names @alpha-h with repo=alpha" \
+        || { echo "  the foreign slot was not named: $out"; return 1; }
+    contains "$out" "2 agree, 1 benign, 1 differ, 0 without a repo= line, 2 not workspace-keyed" \
+        || { echo "  wrong tally: $out"; return 1; }
+    rm -f "$home/self/h__ws-epsilon-6a4.txt"
+    out="$(SOT_COMM_HOME="$home" bash "$SCRIPTS_DIR/comm-self-audit.sh" 2>&1)"; rc=$?
+    [ "$rc" -eq 0 ] || { echo "  a clean directory must exit 0, got $rc (out: $out)"; return 1; }
+    return 0
+}
+
 # --- run, in order (later cases depend on earlier ones' registry state) --
 
 check "fresh claim records root"                            case_fresh_claim
@@ -2133,6 +2223,11 @@ check "a pinned SOT_COMM_NAME never adopts a name from any self-file (capsule-co
 check "sot_jq_rawfile round-trips a leading-slash value through jq --rawfile" case_jq_rawfile_helper_round_trips_leading_slash_value
 check "every jq --arg binding in the comm scripts + hooks is on the slash-safe allowlist" case_jq_arg_names_are_allowlisted_against_slash_prone_values
 check "comm-listen.sh starts no bridge on a Windows host (start/status/selftest all report the FE-inbox receive path)" case_comm_listen_windows_no_bridge_started
+check "a slot claimed for another project refuses the join (exit 3), incumbent intact" case_slot_guard_refuses_another_projects_slot
+check "--repin writes over another project's slot deliberately" case_slot_guard_repin_writes_anyway
+check "a same-project rewrite is never refused" case_slot_guard_allows_a_same_project_rewrite
+check "the shared nopane slot stays last-writer-wins" case_slot_guard_exempts_the_shared_nopane_slot
+check "comm-self-audit.sh flags a slot naming another project and no suffixed/keyless one" case_self_audit_flags_only_a_slot_naming_another_project
 check "comm-listen.sh's Windows receive-path line resolves under LOCALAPPDATA/HOME, never a bare /" case_comm_listen_windows_receive_path_never_bare_slash
 check "sot_oneshot_request over a pipe: endpoint dispatches to the stub powershell.exe and returns its matching reply (LU6e)" case_pipe_endpoint_oneshot_request_matches_reply
 check "sot_oneshot_request over a pipe: endpoint fails cleanly with no powershell.exe on PATH (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_powershell

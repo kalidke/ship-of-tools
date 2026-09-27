@@ -16,6 +16,9 @@ Usage:
                                      default handle <repo>-<host>
   comm-join.sh --name NAME           join as an explicit handle
   comm-join.sh --name=NAME           (equals form also accepted)
+  comm-join.sh --repin               this row really is this project now:
+                                     write the identity even though the slot
+                                     names a different one (refused otherwise)
   comm-join.sh --expertise "a, b"    optional comma-separated expertise tags
   comm-join.sh --expertise="a, b"    (equals form also accepted)
   comm-join.sh -h | --help           this help
@@ -40,12 +43,13 @@ identity confirmation.
 EOF
 }
 
-WANT_NAME=""; EXPERTISE=""
+WANT_NAME=""; EXPERTISE=""; REPIN=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)     usage; exit 0 ;;
         --name)        WANT_NAME="$2"; shift 2 ;;
         --name=*)      WANT_NAME="${1#--name=}"; shift ;;
+        --repin)       REPIN=1; shift ;;
         --expertise)   EXPERTISE="$2"; shift 2 ;;
         --expertise=*) EXPERTISE="${1#--expertise=}"; shift ;;
         # A handle can never start with '-'; an unknown dash-option once fell
@@ -96,6 +100,18 @@ fi
 # happen together, atomically, below (claim_derived_handle).
 NEED_DERIVE=false
 [ -z "$NAME" ] && NEED_DERIVE=true
+
+# The agreement guard (comm-lib.sh's sot_self_file_project_conflict), run
+# BEFORE anything is claimed: this slot is keyed by the workspace row in the
+# environment while the identity about to go into it is derived from this
+# shell's cwd, so a shell whose $SOT_WORKSPACE_ID names one row while it sits
+# in another row's repo would otherwise hand that row's session a handle that
+# is not its own. Checked here as well as inside the writer so a refusal costs
+# no registry row.
+if [ "$REPIN" != 1 ] && sot_self_file_project_conflict "$SELF_FILE" "$REPO" "$PROJECT_ROOT"; then
+    echo "comm-join.sh: REFUSING to put a '$REPO' identity in that slot — it is keyed by this shell's \$SOT_WORKSPACE_ID ('${WORKSPACE_ID:-unset}'), and a row that comes to name another project's session reads that session's mail. Either run this from inside the row it belongs to, or, if this row really is '$REPO' now, re-run with --repin." >&2
+    exit 3
+fi
 
 ts="$(now_iso)"
 exp_json="$(printf '%s' "$EXPERTISE" \
@@ -193,7 +209,7 @@ fi
 # registry row above is already claimed, but with no local self-file this
 # shell has no record of it and every future comm call from it will read
 # as "not joined".
-if ! sot_write_self_file "$SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT"; then
+if ! sot_write_self_file "$SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT" "$REPIN"; then
     echo "comm-join.sh: FATAL — joined as @$NAME in the registry, but could not write the local self-file at '$SELF_FILE' (see reason above). This shell has no identity record; every comm-* call from it will say 'not joined'. Fix the self-file directory's permissions and re-run comm-join.sh --name $NAME." >&2
     exit 1
 fi
