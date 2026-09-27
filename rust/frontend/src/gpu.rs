@@ -1585,10 +1585,9 @@ fn session_strip_lines(
     for (i, lab) in padded.iter().enumerate() {
         let w = widths[i];
         let cursor = positions[i] + divider_offsets.get(i).copied().unwrap_or(0.0);
-        let center = cursor + w / 2.0;
-        let left = win_w / 2.0 + (center - scroll_px) - w / 2.0;
-        if left + w < 0.0 || left > win_w {
-            continue; // fully off-screen
+        let left = strip_screen_left(cursor, scroll_px, win_w);
+        if !strip_visible(left, w, win_w) {
+            continue; // fully off-screen — and so not bookended either
         }
         let pending = pendings.get(i).copied().unwrap_or(false);
         let is_active = i == active;
