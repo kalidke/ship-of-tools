@@ -1,9 +1,8 @@
-//! Channel selection (ADR 0030 §4 amendment 2026-09-08: "the channel is
-//! implied by the installed version"). A prerelease install (a semver with a
-//! pre-release identifier, e.g. `0.6.0-rc.11`) considers prereleases too and
-//! tracks the newest release by semver, stable or not; a stable install
-//! never sees prereleases — GitHub's own `releases/latest` semantics,
-//! unchanged. Never a downgrade: a candidate only counts when it compares
+//! Release selection (ADR 0030 §4 amendment 2026-09-24: every install tracks
+//! the newest release, rc or not). Stable and prerelease installs alike
+//! consider every published release and track the newest by semver, so a
+//! stable `0.6.5` install rides onto `0.6.6-rc1` as soon as it is cut, then
+//! onto `0.6.6`. Never a downgrade: a candidate only counts when it compares
 //! strictly greater than what's installed.
 //!
 //! Pure and side-effect-free on purpose: both fetch backends list raw
@@ -15,23 +14,19 @@ use std::cmp::Ordering;
 
 use crate::semver::{compare_versions, parse_semver};
 
-/// Pick the release to move to, or `None` when nothing in the installed
-/// version's channel is a genuine update.
+/// Pick the release to move to, or `None` when nothing published is a
+/// genuine update.
 ///
-/// - The channel is derived from `installed`: any pre-release identifier
-///   opens the door to `releases` entries marked `prerelease`; a bare
-///   `X.Y.Z` install only ever considers `prerelease == false` entries.
+/// - Prereleases are candidates for every install; the `prerelease` flag is
+///   carried in the listing but no longer gates selection.
 /// - Entries with an unparsable tag are skipped, never guessed at.
-/// - The winner is the highest-semver candidate in-channel, and it is
-///   returned only when it is strictly greater than `installed` — an exact
-///   match or anything older is "nothing to do", not a target.
+/// - The winner is the highest-semver candidate, and it is returned only
+///   when it is strictly greater than `installed` — an exact match or
+///   anything older is "nothing to do", not a target.
 pub fn select_target(installed: &str, releases: &[(String, bool)]) -> Option<String> {
-    let prerelease_channel = parse_semver(installed)
-        .map(|v| !v.pre.is_empty())
-        .unwrap_or(false);
     let best = releases
         .iter()
-        .filter(|(tag, prerelease)| (prerelease_channel || !prerelease) && parse_semver(tag).is_some())
+        .filter(|(tag, _)| parse_semver(tag).is_some())
         .max_by(|(a, _), (b, _)| compare_versions(a, b))?;
     (compare_versions(&best.0, installed) == Ordering::Greater).then(|| best.0.clone())
 }
@@ -51,19 +46,32 @@ mod tests {
     }
 
     #[test]
-    fn stable_install_ignores_rcs() {
-        // The newest STABLE release (v0.5.10) is exactly what's installed —
-        // no update, and the rcs are never even candidates.
-        assert_eq!(select_target("0.5.10", &releases()), None);
+    fn stable_install_takes_the_newest_rc() {
+        // A stable install on the newest stable moves onto the rc line.
+        assert_eq!(
+            select_target("0.5.10", &releases()).as_deref(),
+            Some("v0.6.0-rc.13")
+        );
     }
 
     #[test]
-    fn stable_install_takes_a_newer_stable_ignoring_rcs() {
+    fn stable_install_takes_a_newer_stable_over_older_rcs() {
         let mut rs = releases();
         rs.push(("v0.6.1".to_string(), false));
-        // A stable install must move to the newer stable, not to either rc
-        // (even though both rcs are numerically newer than 0.5.10 too).
+        // The newest by semver wins, stable or not.
         assert_eq!(select_target("0.5.10", &rs).as_deref(), Some("v0.6.1"));
+    }
+
+    #[test]
+    fn undotted_rc_tag_is_a_candidate() {
+        // The tag shape actually cut since 0.6.5: `vX.Y.Z-rcN`.
+        let rs = vec![
+            ("v0.6.5".to_string(), false),
+            ("v0.6.6-rc1".to_string(), true),
+        ];
+        assert_eq!(select_target("0.6.4", &rs).as_deref(), Some("v0.6.6-rc1"));
+        assert_eq!(select_target("0.6.5", &rs).as_deref(), Some("v0.6.6-rc1"));
+        assert_eq!(select_target("0.6.6-rc1", &rs), None);
     }
 
     #[test]
@@ -119,10 +127,8 @@ mod tests {
     }
 
     #[test]
-    fn unparsable_installed_defaults_to_stable_channel() {
-        // A garbage installed string can't declare a channel — treat it as
-        // stable-only rather than opening the door to prereleases.
+    fn unparsable_installed_takes_the_newest() {
         let rs = vec![("v0.6.0-rc.1".to_string(), true), ("v0.5.0".to_string(), false)];
-        assert_eq!(select_target("garbage", &rs).as_deref(), Some("v0.5.0"));
+        assert_eq!(select_target("garbage", &rs).as_deref(), Some("v0.6.0-rc.1"));
     }
 }
