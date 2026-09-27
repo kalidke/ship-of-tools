@@ -4,9 +4,10 @@
 //! on an all-in-one install — a process-local mutex (the old `STAGE_LOCK`)
 //! cannot serialize that. This is the classic portable mkdir lock: `mkdir`
 //! is atomic on every filesystem we run on (including NFS, where flock is
-//! unreliable), an owner file records who holds it (pid@host plus a random
-//! nonce), and stale locks (dead pid on this host, or older than the
-//! takeover age) are broken loudly.
+//! unreliable), an owner file records who holds it (pid@host plus a nonce that
+//! is unique by construction -- `crate::unique::nonce`, never the "random"
+//! this line claimed before it was one), and stale locks (dead pid on this
+//! host, or older than the takeover age) are broken loudly.
 //!
 //! Race hardening (second Codex review): a stale break RENAMES the observed
 //! lock away only after re-verifying that the dir at the path still carries

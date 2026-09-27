@@ -360,25 +360,34 @@ fn settings_name_a_memory_dir(config_dir: &Path) -> bool {
 /// makes this return `None` for EVERY child on the box: the permission
 /// prompt, today's behaviour, never a wrong path.
 ///
-/// Every decline is logged at debug with its reason. A silent `None` here
+/// Every decline carries its reason as the `Err` value, which
+/// [`auto_memory_settings`] logs in the one place it logs. A silent decline
 /// looks exactly like the defect coming back, and the reason is not
 /// reconstructable from the outside.
-fn shared_projects_root(home: &Path, child_config_dir: Option<&Path>) -> Option<PathBuf> {
+fn shared_projects_root(
+    home: &Path,
+    child_config_dir: Option<&Path>,
+) -> Result<PathBuf, &'static str> {
     let spelled = crate::accounts::claude_config_dir(home, "").join("projects");
     let Ok(kind) = std::fs::symlink_metadata(&spelled) else {
-        tracing::debug!(path = ?spelled, "auto-memory: no flag, no projects entry to resolve");
-        return None;
+        return Err("there is no projects entry to resolve");
     };
     // Canonical form for COMPARING; the emitted path stays the spelled one
     // unless the default itself is a link, so a box with no indirection is
     // handed the plain path it already derives rather than an
     // extended-length Windows spelling it would not recognise.
     let Ok(canonical) = std::fs::canonicalize(&spelled) else {
-        tracing::debug!(path = ?spelled, "auto-memory: no flag, the projects entry does not resolve");
-        return None;
+        return Err("the projects entry does not resolve");
     };
+    // ONE rule, stated once: any path that leaves here having been through
+    // `canonicalize` goes through `simplify_verbatim` first. The emitted value
+    // reaches Claude Code as a settings path, and on Windows a raw
+    // `canonicalize` result is the `\\?\` extended-length form -- which is the
+    // very thing the spelled branch below exists to avoid, and which this
+    // branch was handing over whenever the default's `projects` was itself a
+    // link. Review caught it as the emit-side twin of the cwd-check blocker.
     let emit = if kind.file_type().is_symlink() {
-        canonical.clone()
+        crate::paths::simplify_verbatim(canonical.clone())
     } else {
         spelled.clone()
     };
@@ -394,14 +403,8 @@ fn shared_projects_root(home: &Path, child_config_dir: Option<&Path>) -> Option<
     if let Some(dir) = child_config_dir {
         let theirs = dir.join("projects");
         return match std::fs::canonicalize(&theirs) {
-            Ok(resolved) if resolved == canonical => Some(emit),
-            _ => {
-                tracing::debug!(
-                    path = ?theirs,
-                    "auto-memory: no flag, the child's own config dir does not reach the shared store"
-                );
-                None
-            }
+            Ok(resolved) if resolved == canonical => Ok(emit),
+            _ => Err("the child's own config dir does not reach the shared store"),
         };
     }
     for account in crate::accounts::discover_accounts(home) {
@@ -419,22 +422,17 @@ fn shared_projects_root(home: &Path, child_config_dir: Option<&Path>) -> Option<
             Err(_) => continue,
             Ok(md) if md.file_type().is_symlink() => {
                 let Ok(resolved) = std::fs::canonicalize(&theirs) else {
-                    tracing::debug!(path = ?theirs, "auto-memory: no flag, an account's projects link dangles");
-                    return None;
+                    return Err("an account's projects link dangles");
                 };
                 if resolved != canonical {
-                    tracing::debug!(path = ?theirs, "auto-memory: no flag, an account links to a store of its own");
-                    return None;
+                    return Err("an account links to a store of its own");
                 }
             }
             // A real directory of its own -- a second store.
-            Ok(_) => {
-                tracing::debug!(path = ?theirs, "auto-memory: no flag, an account keeps its own real projects directory");
-                return None;
-            }
+            Ok(_) => return Err("an account keeps its own real projects directory"),
         }
     }
-    Some(emit)
+    Ok(emit)
 }
 
 /// Claude Code's own project-directory sanitiser, reproduced: every
@@ -484,13 +482,33 @@ const AUTO_MEMORY_NAME_LIMIT: usize = 200;
 /// character becomes; the governing settings file already names a directory;
 /// the sanitised name would exceed the limit, where the real one gains a
 /// hash suffix this crate cannot compute; or one shared store cannot be
-/// proven. Every decline is logged at debug with its reason, because a
-/// silent one is indistinguishable from the defect returning.
-fn auto_memory_settings(
+/// proven. Every decline is logged at debug with its reason, because a silent
+/// one is indistinguishable from the defect returning.
+///
+/// That claim is STRUCTURAL rather than maintained: the reason travels back as
+/// the `Err` of [`auto_memory_reason`] and is logged in exactly one place, here.
+/// Six `debug!` calls sat next to six conditions before, which is six chances
+/// for a message to drift from the condition above it — and review found the
+/// class rather than an instance of it.
+fn auto_memory_settings(home: &Path, cwd: &Path, child_config_dir: Option<&Path>) -> Option<String> {
+    match auto_memory_reason(home, cwd, child_config_dir) {
+        Ok(json) => Some(json),
+        Err(reason) => {
+            tracing::debug!(reason, cwd = ?cwd, "auto-memory: no flag");
+            None
+        }
+    }
+}
+
+/// [`auto_memory_settings`]'s whole decision, with the reason for a decline
+/// instead of a bare `None`. Callers want "flag or no flag", which is why the
+/// `Option` is the public shape and this is separate: the reason is a
+/// diagnostic, not part of the contract.
+fn auto_memory_reason(
     home: &Path,
     cwd: &Path,
     child_config_dir: Option<&Path>,
-) -> Option<String> {
+) -> Result<String, &'static str> {
     // Name only a directory the session would derive for ITSELF. `cwd` is
     // the workspace root as it arrived over the wire, which `handlers.rs`
     // checks with `.exists()` and nothing more: a trailing slash, a relative
@@ -504,8 +522,7 @@ fn auto_memory_settings(
     // extended-length problem [`shared_projects_root`]'s spelled-emit
     // branch exists to avoid.
     let Some(cwd) = cwd.to_str() else {
-        tracing::debug!("auto-memory: no flag, the cwd is not UTF-8");
-        return None;
+        return Err("the cwd is not UTF-8");
     };
     // Compared as STRINGS, deliberately. `Path` equality compares
     // components, so a trailing slash compares EQUAL to the canonical form
@@ -523,45 +540,81 @@ fn auto_memory_settings(
     // PASSED while the plain spelling the child actually receives was refused.
     match std::fs::canonicalize(cwd).map(crate::paths::simplify_verbatim) {
         Ok(resolved) if resolved.to_str() == Some(cwd) => {}
-        _ => {
-            tracing::debug!(
-                cwd,
-                "auto-memory: no flag, the cwd is not the canonical spelling the session would derive"
-            );
-            return None;
-        }
+        _ => return Err("the cwd is not the canonical spelling the session would derive"),
     }
     if !cwd.is_ascii() {
-        tracing::debug!(cwd, "auto-memory: no flag, a non-ASCII cwd could sanitise differently");
-        return None;
+        return Err("a non-ASCII cwd could sanitise differently");
     }
     // The owner's own choice outranks ours. A `--settings` value lands in
-    // `flagSettings`, which beats `userSettings` in the first-non-null
-    // chain, so passing ours would SILENTLY override a deliberate
-    // `autoMemoryDirectory`. Changing where a person's memory goes is not
-    // this launcher's call. Read the dir that GOVERNS this child -- its own
-    // when known, the default otherwise -- never the default regardless:
-    // see [`settings_name_a_memory_dir`].
-    let default_config_dir = crate::accounts::claude_config_dir(home, "");
-    let governing = child_config_dir.unwrap_or(default_config_dir.as_path());
-    if settings_name_a_memory_dir(governing) {
-        tracing::debug!(
-            config_dir = ?governing,
-            "auto-memory: no flag, the governing settings already name a directory"
-        );
-        return None;
+    // `flagSettings`, which beats `userSettings` in the first-non-null chain,
+    // so passing ours would SILENTLY override a deliberate
+    // `autoMemoryDirectory`. Changing where a person's memory goes is not this
+    // launcher's call.
+    match child_config_dir {
+        // Known: that child's own file is the only one that governs it, which
+        // is also Claude Code's own rule -- `userSettings` resolves from
+        // `CLAUDE_CONFIG_DIR`.
+        Some(dir) => {
+            if settings_name_a_memory_dir(dir) {
+                return Err("the child's own settings already name a directory");
+            }
+        }
+        // NOT known, which is every daemon spawn leg: the daemon's own env
+        // carries no `CLAUDE_CONFIG_DIR`, and `accounts::account_env` sets it
+        // on the CHILD. So the governing file cannot be read here, and a wrong
+        // guess overrides a deliberate choice. Two conservative reads instead,
+        // either of which declines.
+        None => {
+            if settings_name_a_memory_dir(&crate::accounts::claude_config_dir(home, "")) {
+                return Err("the default account's settings already name a directory");
+            }
+            // Review SHOULD-FIX 2: reading the default's file was NOT enough.
+            // Any named account could be the one this child runs as, and
+            // `ensure_account_links` deliberately never replaces a
+            // `settings.json` already in place -- so an account keeping its own
+            // had its `autoMemoryDirectory` silently overridden, the precise
+            // harm this veto exists to prevent. Same proof-or-decline
+            // discipline [`shared_projects_root`] already applies to
+            // `projects`; this veto had simply never been extended to the
+            // sibling entry.
+            if an_account_keeps_its_own_memory_dir(home) {
+                return Err("an account keeps its own settings naming a directory, and this child could be it");
+            }
+        }
     }
     let projects = shared_projects_root(home, child_config_dir)?;
     let name = sanitize_project_dir(cwd);
     if name.len() > AUTO_MEMORY_NAME_LIMIT {
-        tracing::debug!(
-            len = name.len(),
-            "auto-memory: no flag, the sanitised name would be truncated and hashed"
-        );
-        return None;
+        return Err("the sanitised name would be truncated and hashed");
     }
     let dir = projects.join(name).join("memory");
-    serde_json::to_string(&serde_json::json!({ "autoMemoryDirectory": dir })).ok()
+    serde_json::to_string(&serde_json::json!({ "autoMemoryDirectory": dir }))
+        .map_err(|_| "the settings JSON could not be serialised")
+}
+
+/// Whether any NAMED account keeps a `settings.json` of its own that names an
+/// auto-memory directory.
+///
+/// Only asked when the child's config dir is unknown, and only a REAL file can
+/// matter: `settings.json` is a `SHARED_ENTRIES` name, so the ordinary layout
+/// is one symlink per account to the default's single file, which the caller
+/// has already read. A real file of its own is permitted — and permanent,
+/// because [`crate::accounts::ensure_account_links`] never replaces an entry
+/// that is already there — and means that account's memory directory is its own
+/// business, not this launcher's.
+fn an_account_keeps_its_own_memory_dir(home: &Path) -> bool {
+    crate::accounts::discover_accounts(home)
+        .into_iter()
+        .any(|account| {
+            if account.name.is_empty() || account.name == "default" {
+                return false;
+            }
+            let dir = crate::accounts::claude_config_dir(home, &account.name);
+            let keeps_its_own = std::fs::symlink_metadata(dir.join("settings.json"))
+                .map(|md| !md.file_type().is_symlink())
+                .unwrap_or(false);
+            keeps_its_own && settings_name_a_memory_dir(&dir)
+        })
 }
 
 /// The one shared builder for claude's launch flags (ADR 0046 decision
@@ -711,9 +764,7 @@ fn codex_argv() -> Result<Vec<String>, String> {
 }
 
 /// Windows has no `ccx`, so a `codex` row's spawn fails with this reason
-/// rather than launching something else. (This line used to claim a
-/// `check_capsule_capable` grepped for it; no such function exists anywhere
-/// in the tree, and the intra-doc link warned under `cargo doc`.)
+/// rather than launching something else.
 #[cfg(windows)]
 fn codex_argv() -> Result<Vec<String>, String> {
     Err("codex has no capsule launcher on Windows (ccx is a bash script with no .ps1 counterpart)".to_string())
@@ -4790,9 +4841,10 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn claude_recipe_emits_our_settings_unless_the_caller_brought_one() {
-        // Shares the env-serialization lock with every other env test here;
-        // HOME and CLAUDE_CONFIG_DIR are saved and restored by hand, as the
-        // `SHELL` precedent above does.
+        // The guard holds the env-serialization lock AND snapshots both vars
+        // this test moves, restoring them in `Drop` — so a failing assertion
+        // below cannot leave `HOME` pointing at a deleted tempdir for every
+        // later test in the process, which a hand-rolled restore would.
         let _guard = self_file_env_guarded();
         let home = tempfile::tempdir().expect("tempdir");
         let root = platform_spelling(home.path());
@@ -4800,8 +4852,6 @@ mod tests {
         let proj = root.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
 
-        let prior_home = std::env::var_os("HOME");
-        let prior_cfg = std::env::var_os("CLAUDE_CONFIG_DIR");
         std::env::set_var("HOME", &root);
         std::env::remove_var("CLAUDE_CONFIG_DIR");
         let ours = claude_recipe(true, &[], Some(&proj));
@@ -4810,14 +4860,6 @@ mod tests {
             &["--settings".to_string(), "{\"a\":1}".to_string()],
             Some(&proj),
         );
-        match prior_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match prior_cfg {
-            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
-            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
-        }
 
         let at = ours
             .iter()
@@ -4930,6 +4972,59 @@ mod tests {
         assert!(
             auto_memory_settings(&root, &proj, Some(&child)).is_some(),
             "another dir's key must not switch the flag off for this child"
+        );
+    }
+
+    /// Review SHOULD-FIX 2: when the child's config dir is UNKNOWN — which is
+    /// EVERY daemon spawn leg, because the daemon's own env carries no
+    /// `CLAUDE_CONFIG_DIR` and `accounts::account_env` sets it on the child —
+    /// reading the default's settings was not enough. Any named account could be
+    /// the one this child runs as, `ensure_account_links` never replaces a
+    /// `settings.json` already in place, and overriding one that names a
+    /// directory is the precise harm this veto exists to prevent. So the veto
+    /// now applies the same proof-or-decline discipline to `settings.json` that
+    /// [`shared_projects_root`] already applied to `projects`.
+    #[test]
+    #[cfg(unix)]
+    fn the_memory_veto_declines_when_any_account_keeps_its_own_memory_dir() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let root = platform_spelling(home.path());
+        let store = root.join(".claude").join("projects");
+        std::fs::create_dir_all(&store).unwrap();
+        let default_settings = root.join(".claude").join("settings.json");
+        std::fs::write(&default_settings, r#"{"defaultMode": "auto"}"#).unwrap();
+        let proj = root.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        // An account sharing BOTH entries, which is the ordinary layout.
+        let acct = root.join(".claude-auth").join("acct");
+        std::fs::create_dir_all(&acct).unwrap();
+        std::os::unix::fs::symlink(&store, acct.join("projects")).unwrap();
+        std::os::unix::fs::symlink(&default_settings, acct.join("settings.json")).unwrap();
+        assert!(
+            auto_memory_settings(&root, &proj, None).is_some(),
+            "a fully shared account is no obstacle"
+        );
+
+        // Now it keeps its OWN settings file, naming its own directory.
+        std::fs::remove_file(acct.join("settings.json")).unwrap();
+        std::fs::write(
+            acct.join("settings.json"),
+            r#"{"autoMemoryDirectory": "/its/own"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            auto_memory_settings(&root, &proj, None),
+            None,
+            "an account's own directory must not be overridden by a spawn that cannot see which account it is"
+        );
+
+        // A real file of its own that names NOTHING is no obstacle — so the
+        // decline above is the key talking, not merely the file's presence.
+        std::fs::write(acct.join("settings.json"), r#"{"defaultMode": "auto"}"#).unwrap();
+        assert!(
+            auto_memory_settings(&root, &proj, None).is_some(),
+            "a real settings file that names no directory must not veto anything"
         );
     }
 
@@ -5281,6 +5376,13 @@ mod tests {
         sot_comm_home: Option<std::ffi::OsString>,
         sot_self_host: Option<std::ffi::OsString>,
         path: Option<std::ffi::OsString>,
+        /// Added for the auto-memory tests, which need it ABSENT (the daemon's
+        /// own env carries none) or set to a fixture dir. Guarded here rather
+        /// than saved and restored by hand at the call site, because a hand-
+        /// rolled restore is skipped when an assertion fires between the set
+        /// and the restore, leaving the variable set for every later test in
+        /// the process.
+        claude_config_dir: Option<std::ffi::OsString>,
     }
 
     impl Drop for SelfFileEnvGuard {
@@ -5291,6 +5393,7 @@ mod tests {
                 ("SOT_COMM_HOME", &self.sot_comm_home),
                 ("SOT_SELF_HOST", &self.sot_self_host),
                 ("PATH", &self.path),
+                ("CLAUDE_CONFIG_DIR", &self.claude_config_dir),
             ] {
                 match val {
                     Some(v) => std::env::set_var(key, v),
@@ -5310,6 +5413,7 @@ mod tests {
             sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
             sot_self_host: std::env::var_os("SOT_SELF_HOST"),
             path: std::env::var_os("PATH"),
+            claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR"),
             _serial: serial,
         }
     }

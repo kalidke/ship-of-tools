@@ -1,4 +1,10 @@
-// unique.rs — the ONE place this workspace decides how a name is made unique.
+// unique.rs — how `sot-updater` and its consumers make a name unique.
+//
+// NOT "the one place in the workspace": `sot_log::fsutil`'s `preflight_nonce`
+// is an independent `<pid>-<seq>` generator with its own counter and the same
+// reasoning, and it cannot share this one — `sot-log` is the LOWER crate and
+// must not depend on `sot-updater`. So there are two, deliberately, and a
+// third would be one too many: anything that can reach this crate uses this.
 //
 // A clock reading is not a uniqueness source. Treating one as such was a defect
 // with five instances in this tree, and the one that bit shows why the class is
@@ -58,10 +64,14 @@ pub fn suffix() -> String {
 ///
 /// Disjoint fields rather than a mix, so no field can mask another: the clock
 /// in the low 64 bits, `pid` in the next 32, the counter in the top 32. Past
-/// 2^32 draws in one process the counter wraps *within the nonce* and the clock
-/// is again all that separates two draws — that degrades to the old behaviour
-/// rather than to a wrong answer, and 4 billion lock acquisitions in one
-/// process is not a case this code needs to buy anything for.
+/// 2^32 draws the counter field wraps *within the nonce* and the clock is again
+/// all that separates two draws — a degradation to the old behaviour, not a
+/// wrong answer.
+///
+/// That budget is 2^32 draws of `SEQ` in TOTAL, shared with [`suffix`], not 2^32
+/// lock acquisitions: every scratch dir spends from the same counter. Still not
+/// a case worth buying anything for, but the distinction is the doc's to make
+/// rather than the reader's to discover.
 ///
 /// Nothing parses the fields back out: `lock.rs` compares the owner line whole.
 /// The layout is for a person reading a stale lock file.

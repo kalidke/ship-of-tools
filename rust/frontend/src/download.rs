@@ -14,10 +14,12 @@ use std::path::{Path, PathBuf};
 /// (`circles.png` → `circles (1).png`), matching the browser/Finder
 /// convention. Non-destructive: never returns a path that already exists.
 ///
-/// Existence is checked against the filesystem; the caller writes the file.
-/// Bounded retry count so a pathological directory can't spin forever — past
-/// that we fall back to a suffix that is unique by construction
-/// ([`sot_updater::unique::suffix`]).
+/// Existence is checked against the filesystem for the plain name and every
+/// numbered candidate; the caller writes the file. Bounded retry count so a
+/// pathological directory can't spin forever — past that we fall back to a
+/// suffix that is unique by construction ([`sot_updater::unique::suffix`]) and
+/// is NOT existence-checked, because nothing this process or any other has
+/// produced can carry it.
 pub fn non_clobbering_path(dir: &Path, filename: &str) -> PathBuf {
     let candidate = dir.join(filename);
     if !candidate.exists() {

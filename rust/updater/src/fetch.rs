@@ -318,15 +318,29 @@ mod tests {
         }
     }
 
-    /// `tempdir`'s own contract is that two calls are two directories. The
-    /// clock-independence of the name is [`crate::unique`]'s test; this one
-    /// pins that `tempdir` actually uses it, which a change here could quietly
-    /// undo without touching that module.
+    /// `tempdir`'s contract: two calls are two directories, AND the name comes
+    /// from [`crate::unique::suffix`] rather than being hand-rolled here.
+    ///
+    /// The second half is what the assertion has to carry, and the `assert_ne!`
+    /// alone does not — review caught the doc overclaiming it. Two names differ
+    /// on a nanosecond clock whether or not the helper is used, so a bare
+    /// inequality would pass over a re-hand-rolled `<pid>-<nanos>` name, which
+    /// is precisely the defect. The field count is the cheap structural check:
+    /// `sot-updater-<label>-<pid>-<nanos>-<seq>` is six dash-separated fields
+    /// for a dash-free label, and drops to five the moment the counter goes.
     #[tokio::test]
-    async fn tempdir_gives_each_caller_its_own_directory() {
+    async fn tempdir_names_come_from_the_shared_helper() {
         let a = tempdir("uniq").await.expect("scratch dir");
         let b = tempdir("uniq").await.expect("scratch dir");
         assert_ne!(a, b, "two callers were handed one directory");
+        for dir in [&a, &b] {
+            let name = dir.file_name().unwrap().to_str().unwrap();
+            assert_eq!(
+                name.split('-').count(),
+                6,
+                "not the shared helper's shape; the counter is the last field: {name}"
+            );
+        }
         let _ = tokio::fs::remove_dir_all(a).await;
         let _ = tokio::fs::remove_dir_all(b).await;
     }
