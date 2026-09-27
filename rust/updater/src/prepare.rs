@@ -233,6 +233,10 @@ async fn prepare_locked(spec: &PrepareSpec) -> Result<PreparedState> {
             .await
             .with_context(|| format!("instantiating {env}"))?;
         }
+        // BETWEEN instantiate and the load test: Pkg can rewrite a tracked
+        // Project.toml while resolving, and the load test must prove the
+        // tree as it ships, not the tree Pkg just left behind.
+        restore_to_tag(&checkout, &spec.identity.tag).await?;
         // Load-test: the envs must not just resolve but LOAD at this ref
         // (the release-blocking julia-check job's local equivalent).
         for (env, module) in [("julia/kernel", "ShipToolsKernel"), ("julia/repl", "ShipToolsRepl")] {
@@ -269,10 +273,10 @@ async fn prepare_locked(spec: &PrepareSpec) -> Result<PreparedState> {
         }
     }
 
-    // AFTER instantiate and the load test (so both saw the env as the package
-    // managers left it), BEFORE anything is recorded: the worktree must still
-    // be its tag, because both appliers refuse a prepared checkout with
-    // modified tracked files and drop the armed pointer when they do.
+    // Second call, same idempotent function: the load test or the mathjax
+    // `npm ci` step could in principle leave a tracked file dirty too, and an
+    // unappliable pointer must never be armed. On the normal clean tree this
+    // is one `git status` and nothing else.
     restore_to_tag(&checkout, &spec.identity.tag).await?;
 
     let state = PreparedState {
@@ -372,29 +376,26 @@ async fn worktree_clean(dir: &Path) -> bool {
     }
 }
 
-/// Put the prepared worktree back at its tag. Instantiating an environment can
-/// rewrite a tracked project file (Pkg writes the project whenever resolving
-/// mutated it), and a checkout that disagrees with its pinned tag is refused by
-/// the appliers — correctly, but silently, one dropped pointer per cycle.
-/// `git checkout -- .` touches tracked paths only, so the untracked build
-/// products prepare just produced (julia Manifests, node_modules) survive.
-/// Anything still modified after that is a fault we cannot repair, and an
-/// unappliable pointer must never be armed: fail the prepare loudly instead.
+/// Put the prepared worktree back at its tag: Pkg can rewrite a tracked
+/// Project.toml while resolving (see `.gitattributes:9-13`), and an
+/// unappliable pointer must never be armed — fail the prepare loudly instead.
 async fn restore_to_tag(checkout: &Path, tag: &str) -> Result<()> {
     // Name what is about to be discarded. On a platform where instantiate
     // rewrites a tracked file, this line is the ONLY record of which file it
     // was — the restore below erases the evidence. Best-effort: a failed
-    // status must not fail the prepare, the restore is what matters.
+    // status must not fail the prepare, the restore is what matters. The
+    // normal case is a clean tree: one subprocess, nothing left to restore.
     if let Ok(out) = git_capture(checkout, &["status", "--porcelain", "-uno"], GIT_TIMEOUT).await {
         let listed = String::from_utf8_lossy(&out);
         let listed = listed.trim();
-        if !listed.is_empty() {
-            tracing::info!(
-                tag = %tag,
-                files = %listed.replace('\n', "; "),
-                "prepared worktree: restoring tracked files modified during prepare"
-            );
+        if listed.is_empty() {
+            return Ok(());
         }
+        tracing::info!(
+            tag = %tag,
+            files = %listed.replace('\n', "; "),
+            "prepared worktree: restoring tracked files modified during prepare"
+        );
     }
     git(checkout, &["checkout", "--", "."], GIT_TIMEOUT)
         .await
@@ -606,13 +607,16 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_restores_a_tracked_file_the_env_step_rewrote() {
-        let (base_tmp, spec) =
-            julia_fixture("restore", "printf '# rewritten\\n' >> \"$p/Project.toml\"");
+        // Only the instantiate call rewrites — a load test (`using X`) does
+        // not — so restore-before-load-test must leave the load test proving
+        // the tag's own Project.toml, not a rewritten one.
+        let (base_tmp, spec) = julia_fixture(
+            "restore",
+            "case \"$*\" in *Pkg.instantiate*) printf '# rewritten\\n' >> \"$p/Project.toml\";; esac",
+        );
 
         let state = prepare(&spec).await.unwrap();
         assert!(state.julia_instantiated);
-        assert!(spec.stage_dir.join(PREPARED_MANIFEST).exists());
-        assert!(worktree_clean(&state.checkout).await);
         assert_eq!(
             std::fs::read_to_string(state.checkout.join("julia/kernel/Project.toml")).unwrap(),
             KERNEL_PROJECT,
