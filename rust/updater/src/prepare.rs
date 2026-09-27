@@ -609,10 +609,22 @@ mod tests {
     async fn prepare_restores_a_tracked_file_the_env_step_rewrote() {
         // Only the instantiate call rewrites — a load test (`using X`) does
         // not — so restore-before-load-test must leave the load test proving
-        // the tag's own Project.toml, not a rewritten one.
+        // the tag's own Project.toml, not a rewritten one. The load-test call
+        // copies what it sees into a witness file so the test can pin the
+        // ORDERING, not just the final state: if the restore moved back after
+        // the load test, the witness would carry the rewritten content.
+        let witness =
+            std::env::temp_dir().join(format!("sot-updater-restore-{}", std::process::id()));
+        let _ = std::fs::remove_file(&witness);
         let (base_tmp, spec) = julia_fixture(
-            "restore",
-            "case \"$*\" in *Pkg.instantiate*) printf '# rewritten\\n' >> \"$p/Project.toml\";; esac",
+            "restore-order",
+            &format!(
+                "case \"$*\" in \
+                 *Pkg.instantiate*) printf '# rewritten\\n' >> \"$p/Project.toml\";; \
+                 *using*) cp \"$p/Project.toml\" \"{}\";; \
+                 esac",
+                witness.display()
+            ),
         );
 
         let state = prepare(&spec).await.unwrap();
@@ -621,6 +633,34 @@ mod tests {
             std::fs::read_to_string(state.checkout.join("julia/kernel/Project.toml")).unwrap(),
             KERNEL_PROJECT,
             "the tracked project file must be back at its committed content"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&witness).unwrap(),
+            KERNEL_PROJECT,
+            "the load test ran against a still-rewritten Project.toml — restore must happen \
+             before the load test, not after"
+        );
+
+        let _ = std::fs::remove_file(&witness);
+        std::fs::remove_dir_all(&base_tmp).unwrap();
+    }
+
+    #[tokio::test]
+    async fn prepare_restores_a_tracked_file_the_load_test_rewrote() {
+        // This time the dirt lands DURING the load test, i.e. after the
+        // between-steps restore has already run — only the closing restore
+        // (right before `PreparedState` is built) can catch it. Delete that
+        // second call and this test fails.
+        let (base_tmp, spec) = julia_fixture(
+            "restore-end",
+            "case \"$*\" in *using*) printf '# rewritten\\n' >> \"$p/Project.toml\";; esac",
+        );
+
+        let state = prepare(&spec).await.unwrap();
+        assert!(state.julia_instantiated);
+        assert!(
+            worktree_clean(&state.checkout).await,
+            "a file the load test dirtied must still be restored before the version is armed"
         );
 
         std::fs::remove_dir_all(&base_tmp).unwrap();
