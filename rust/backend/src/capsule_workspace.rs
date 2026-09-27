@@ -4807,18 +4807,27 @@ mod tests {
 
         // The verbatim spelling, which no child receives, must NOT be the one
         // form that is accepted.
+        //
+        // The premise is ASSERTED, not tested with an `if`. Review caught that:
+        // guarded by a condition, this half would pass by never executing if
+        // `canonicalize` ever stopped returning a verbatim path — and it is the
+        // only assertion pinning the inversion, where the unreachable spelling
+        // was accepted and the real one refused. A dead premise must fail loudly
+        // here rather than quietly stop checking.
         let verbatim = home
             .path()
             .canonicalize()
             .expect("canonical tempdir")
             .join("proj");
-        if verbatim.to_str().unwrap().starts_with(r"\\?\") {
-            assert_eq!(
-                auto_memory_settings(&root, &verbatim, None),
-                None,
-                "a verbatim cwd is not what the child gets and must not be accepted"
-            );
-        }
+        assert!(
+            verbatim.to_str().unwrap().starts_with(r"\\?\"),
+            "premise dead: canonicalize no longer yields a verbatim path, so nothing here pins the inversion any more: {verbatim:?}"
+        );
+        assert_eq!(
+            auto_memory_settings(&root, &verbatim, None),
+            None,
+            "a verbatim cwd is not what the child gets and must not be accepted"
+        );
     }
 
     /// `agent-exec` passes `ccb`'s own `"$@"` through, so a caller that

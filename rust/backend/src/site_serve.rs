@@ -801,13 +801,11 @@ mod prefix_serve_tests {
     /// traversal guard refusing an escape past the root.
     #[tokio::test]
     async fn serves_index_and_relative_subresources_refuses_traversal() {
-        let base = std::env::temp_dir().join(format!(
-            "sot-site-serve-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // Unique by construction, not by clock: this name carried the clock
+        // ALONE — not even a pid — so it was not separated across processes
+        // either. Same premise as the race that reddened a macOS leg.
+        let base = std::env::temp_dir()
+            .join(format!("sot-site-serve-test-{}", sot_updater::unique::suffix()));
         let root = base.join("site");
         std::fs::create_dir_all(&root).unwrap();
         write_asset(

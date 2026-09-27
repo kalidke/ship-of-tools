@@ -220,11 +220,18 @@ mod tests {
         assert_eq!(fixed.topo.unwrap().hosts.len(), 2);
     }
 
+    /// Unique per call BY CONSTRUCTION rather than by clock resolution.
+    ///
+    /// This helper takes no argument at all, so all six of its callers share one
+    /// name prefix and the clock was the only thing separating them — and the
+    /// harness runs them on parallel threads of one binary. That is
+    /// `sot_updater::fetch::tempdir`'s defect verbatim, where one caller's
+    /// cleanup deleted another's file between a write and a read and reddened a
+    /// macOS leg; only the coarser clock there made it visible first.
     fn tempdir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "sot-topology-store-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            "sot-topology-store-test-{}",
+            sot_updater::unique::suffix()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir

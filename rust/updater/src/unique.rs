@@ -1,10 +1,23 @@
 // unique.rs — how `sot-updater` and its consumers make a name unique.
 //
-// NOT "the one place in the workspace": `sot_log::fsutil`'s `preflight_nonce`
-// is an independent `<pid>-<seq>` generator with its own counter and the same
-// reasoning, and it cannot share this one — `sot-log` is the LOWER crate and
-// must not depend on `sot-updater`. So there are two, deliberately, and a
-// third would be one too many: anything that can reach this crate uses this.
+// NOT "the one place in the workspace", and the scope is worth stating exactly
+// rather than claiming more than is delivered:
+//
+//   - `sot_log::fsutil`'s `preflight_nonce` is an independent `<pid>-<seq>`
+//     generator with its own counter and the same reasoning. It CANNOT share
+//     this one: `sot-log` is the LOWER crate and must not depend on
+//     `sot-updater`. Two, deliberately.
+//   - Everything whose name was the clock ALONE, or the clock plus a constant
+//     label, now draws from here: `fetch::tempdir`, `lock`'s owner nonce and its
+//     graveyard path, the frontend download fallback and its test helper,
+//     `backend::topology_store`'s argument-less test `tempdir` (six callers on
+//     parallel threads — `fetch::tempdir`'s defect verbatim) and
+//     `backend::site_serve`'s test base (the clock with no pid at all).
+//   - Still outside: roughly fifteen helpers that put a PER-CALL TAG in the name
+//     alongside a clock reading. A collision there needs two callers with the
+//     same tag inside one tick, so the tag is doing real work and they are a
+//     different risk class — but the same false premise, and they are queued
+//     rather than claimed as done.
 //
 // A clock reading is not a uniqueness source. Treating one as such was a defect
 // with five instances in this tree, and the one that bit shows why the class is
