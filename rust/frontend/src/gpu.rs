@@ -15363,6 +15363,14 @@ impl State {
                     // showing its rows, greyed, rather than vanishing),
                     // then rebuild every workspace-scoped cache from the
                     // whole union in one pass.
+                    // Computed from the rows BEFORE they move into the map:
+                    // re-reading the key we just inserted was a branch that
+                    // could not be taken.
+                    let files_for = declares_files_for(
+                        self.declared_host.get(&event_host).map(String::as_str),
+                        frontend_identity().host.as_str(),
+                    )
+                    .then(|| files_for_from_rows(&workspaces));
                     self.workspace_lists.insert(event_host.clone(), workspaces);
                     self.rebuild_workspace_caches();
                     self.prune_warm_attach(&event_host);
@@ -15377,17 +15385,11 @@ impl State {
                     // `host`, recorded in `declared_host`) — a remote
                     // daemon's rows would be a promise this process
                     // cannot keep.
-                    if declares_files_for(
-                        self.declared_host.get(&event_host).map(String::as_str),
-                        frontend_identity().host.as_str(),
-                    ) {
-                        if let Some(rows) = self.workspace_lists.get(&event_host) {
-                            let handles = files_for_from_rows(rows);
-                            if let Err(e) =
-                                self.send_to(&event_host, OutgoingReq::FeFilesFor { handles })
-                            {
-                                tracing::warn!(error = %e, %event_host, "drop fe.files_for — channel closed");
-                            }
+                    if let Some(handles) = files_for {
+                        if let Err(e) =
+                            self.send_to(&event_host, OutgoingReq::FeFilesFor { handles })
+                        {
+                            tracing::warn!(error = %e, %event_host, "drop fe.files_for — channel closed");
                         }
                     }
                     // --capture-cycle <N>: simulate N Ctrl+PgDn presses
@@ -19356,9 +19358,18 @@ fn declares_files_for(declared: Option<&str>, own: &str) -> bool {
 }
 
 fn files_for_from_rows(rows: &[crate::transport::WorkspaceInfo]) -> Vec<String> {
+    // Through a set, not a Vec: two rows on one host CAN carry the same
+    // joined handle (`agent.join` enforces no per-host uniqueness, and the
+    // no-pane collision produces exactly that), and a consumer that fans
+    // out per naming receiver would then file one directed frame twice
+    // into one inbox. Deduping at the source also makes the order
+    // deterministic, so a daemon can compare two declarations for real
+    // change instead of re-deriving one.
     rows.iter()
         .filter(|w| !w.agent_handle.is_empty())
         .map(|w| w.agent_handle.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -26465,6 +26476,25 @@ mod tests {
             ..ws_info("proj", "sot-be-proj")
         };
         assert!(files_for_from_rows(&[w]).is_empty());
+    }
+
+    /// Two rows on one host CAN carry the same joined handle, so the
+    /// declared set must be a set. A consumer that fans out per naming
+    /// receiver would otherwise file one directed frame twice.
+    #[test]
+    fn files_for_from_rows_dedupes_two_rows_that_joined_the_same_handle() {
+        let a = crate::transport::WorkspaceInfo {
+            agent_handle: "shared-handle".to_string(),
+            ..ws_info("proj-a", "sot-be-proj-a")
+        };
+        let b = crate::transport::WorkspaceInfo {
+            agent_handle: "shared-handle".to_string(),
+            ..ws_info("proj-b", "sot-be-proj-b")
+        };
+        assert_eq!(
+            files_for_from_rows(&[a, b]),
+            vec!["shared-handle".to_string()]
+        );
     }
 
     /// The wiring, which no other test reaches: own host declares, a

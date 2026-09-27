@@ -405,8 +405,14 @@ fn claude_recipe(resume: bool, extra: &[String], memory_cwd: Option<&Path>) -> V
     // would contend for one key and the caller's intent is the specific
     // one. `ccx`-style `--flag=value` counts as passed.
     if !caller_brought_settings(extra) {
+        // `account_home`, never `HOME`: this module's own resolver is what
+        // `spawn_detached_supervisor` uses, and it reads `USERPROFILE` on
+        // Windows. A daemon started from the Windows shortcut has no `HOME`
+        // at all, so reading it made the flag appear or vanish with the
+        // daemon's ancestry -- absent on exactly the platform where every
+        // new workspace is a capsule row.
         if let Some(json) = memory_cwd
-            .zip(std::env::var_os("HOME").map(PathBuf::from))
+            .zip(crate::accounts::account_home())
             .and_then(|(cwd, home)| auto_memory_settings(&home, cwd))
         {
             argv.push("--settings".to_string());
@@ -4328,7 +4334,6 @@ mod tests {
         }
     }
 
-    #[test]
     /// The whole point of the flag: an ACCOUNT session spells its memory
     /// path through a symlink (`projects` is a `SHARED_ENTRIES` name) and
     /// every write then lands outside the allowed dirs, which auto mode
@@ -4400,6 +4405,7 @@ mod tests {
         assert_eq!(argv.iter().filter(|a| *a == "--settings").count(), 1);
     }
 
+    #[test]
     fn agent_argv_rejects_unsupported_kinds() {
         assert!(agent_argv("bogus", None).is_err());
     }
