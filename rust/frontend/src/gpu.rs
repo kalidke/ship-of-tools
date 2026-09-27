@@ -1147,8 +1147,8 @@ enum StripItem {
 /// its wheel simply measures 0 (`strip_item_widths`' `wheel_w`) and the NAME
 /// still marks the group, matching the bookend logos' fail-soft contract. A
 /// host with no visible rows never appears in `slugs` to begin with
-/// (`fresh_workspace_caches` filters the inert anchor and any host whose
-/// link has dropped), so it can't produce an empty group.
+/// (`fresh_workspace_caches` already filters the inert anchor out), so it
+/// can't produce an empty group.
 fn strip_items(slugs: &[WsKey], tag_for: impl Fn(&HostKey) -> String) -> Vec<StripItem> {
     let multi = slugs
         .first()
@@ -2952,21 +2952,10 @@ fn resplice_expanded_session_hosts(
 /// what stays and why. Without this the row was invisible in the Sessions
 /// TREE (#202) but still showed up in the bottom session STRIP, which is
 /// built from this function, not from the tree.
-/// 2026-09-27 (owner ruling, the fleet strip): a host whose link has DROPPED
-/// is excluded from `workspace_slugs` too — the strip answers "what can I
-/// switch to", and a box the frontend cannot reach has nothing to offer, so a
-/// ship for it would be an offer the strip can't honour (Hosts mode is where
-/// "exists but unreachable" is answered, and it still says so). The predicate
-/// is `!= Some(&false)`: a group disappears only once a `Disconnected` has
-/// actually been seen, so absence of evidence never hides a live host and the
-/// change stays a pure subtraction. It self-heals — `Connected` sets `true`
-/// before that host's own `workspace.list`, whose reply is the only caller of
-/// `rebuild_workspace_caches`.
 fn fresh_workspace_caches(
     ordered_hosts: &[HostKey],
     lists: &HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>>,
     active_host: &HostKey,
-    connected: &HashMap<HostKey, bool>,
 ) -> FreshWorkspaceCaches {
     let mut out = FreshWorkspaceCaches {
         workspace_slugs: Vec::new(),
@@ -3013,11 +3002,8 @@ fn fresh_workspace_caches(
             // `workspace_id_slugs` are harmless (the daemon still lists the
             // row), and `default_workspace_slug` below is the strip's own
             // active-index fallback — it must still resolve to this row
-            // when it's the connection's default. A host whose link has
-            // dropped is held back the same way and for the same reason (see
-            // this function's doc): every other cache stays, and nothing
-            // looks up a slug that isn't in the list.
-            if !is_inert && connected.get(host) != Some(&false) {
+            // when it's the connection's default.
+            if !is_inert {
                 out.workspace_slugs.push(ws_key.clone());
             }
             if w.is_default && host == active_host {
@@ -4201,11 +4187,8 @@ struct State {
     /// The union this refactor is built on (ADR 0042 L2a): host → its most
     /// recent `workspace.list` reply. A reply from host H replaces only
     /// H's entry — every other host's last-known list is untouched, so an
-    /// unreachable host keeps its rows here and the Sessions TREE still
-    /// shows them, greyed. The bottom STRIP is the one surface that drops
-    /// them (`fresh_workspace_caches`' connectivity filter): it answers
-    /// "what can I switch to", and an unreachable box has nothing to offer.
-    /// `rebuild_workspace_caches` and the Sessions tree are
+    /// unreachable host keeps showing its (greyed) rows instead of
+    /// vanishing. `rebuild_workspace_caches` and the Sessions tree are
     /// both derived from this in `conns` order (see `ordered_hosts`), not
     /// insertion order.
     workspace_lists: HashMap<crate::dial::HostKey, Vec<crate::transport::WorkspaceInfo>>,
@@ -8641,7 +8624,6 @@ impl State {
             &self.ordered_hosts(),
             &self.workspace_lists,
             &self.active_host,
-            &self.host_connected,
         );
         for (key, (state, _)) in &fresh.workspace_states {
             match self.prev_workspace_states.get(key) {
@@ -15380,11 +15362,10 @@ impl State {
                     // ADR 0042 L2a: this reply is ONE host's list —
                     // `event_host` names which. Replace only that host's
                     // slice of the union (every other host's last-known
-                    // list is untouched — an unreachable host keeps its
-                    // rows here, greyed, in the Sessions tree; only the
-                    // bottom strip drops them), then rebuild every
-                    // workspace-scoped cache from the whole union in one
-                    // pass.
+                    // list is untouched — an unreachable host keeps
+                    // showing its rows, greyed, rather than vanishing),
+                    // then rebuild every workspace-scoped cache from the
+                    // whole union in one pass.
                     self.workspace_lists.insert(event_host.clone(), workspaces);
                     self.rebuild_workspace_caches();
                     self.prune_warm_attach(&event_host);
@@ -28058,7 +28039,7 @@ mod tests {
         lists.insert("alpha".to_string(), vec![alpha_ws]);
         lists.insert("beta".to_string(), vec![beta_ws]);
         let ordered = vec!["alpha".to_string(), "beta".to_string()];
-        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string(), &HashMap::new());
+        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
 
         assert_eq!(
             fresh.workspace_slugs.len(),
@@ -28097,10 +28078,10 @@ mod tests {
         lists.insert("beta".to_string(), vec![beta_default]);
         let ordered = vec!["alpha".to_string(), "beta".to_string()];
 
-        let fresh_alpha = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string(), &HashMap::new());
+        let fresh_alpha = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
         assert_eq!(fresh_alpha.default_workspace_slug.as_deref(), Some("home"));
 
-        let fresh_beta = fresh_workspace_caches(&ordered, &lists, &"beta".to_string(), &HashMap::new());
+        let fresh_beta = fresh_workspace_caches(&ordered, &lists, &"beta".to_string());
         assert_eq!(fresh_beta.default_workspace_slug.as_deref(), Some("root"));
     }
 
@@ -28115,7 +28096,7 @@ mod tests {
         let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
         lists.insert("beta".to_string(), vec![ws_info("sot", "sot-be-sot")]);
         let ordered = vec!["beta".to_string()];
-        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string(), &HashMap::new());
+        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
         assert_eq!(
             fresh
                 .workspace_id_slugs
@@ -28313,7 +28294,7 @@ mod tests {
         // rows rather than panicking on a missing map entry.
         let lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
         let ordered = vec!["alpha".to_string(), "beta".to_string()];
-        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string(), &HashMap::new());
+        let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
         assert!(fresh.workspace_slugs.is_empty());
         assert!(fresh.default_workspace_slug.is_none());
     }
@@ -28335,7 +28316,7 @@ mod tests {
         let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
         lists.insert(host.clone(), list);
         let ordered = vec![host.clone()];
-        let fresh = fresh_workspace_caches(&ordered, &lists, &host, &HashMap::new());
+        let fresh = fresh_workspace_caches(&ordered, &lists, &host);
 
         let anchor_key: WsKey = (host.clone(), "sot".to_string());
         assert!(
@@ -28356,51 +28337,6 @@ mod tests {
     }
 
     #[test]
-    fn fresh_workspace_caches_hides_a_host_whose_link_dropped_from_the_strip() {
-        // Owner ruling (the fleet strip): the strip answers "what can I switch
-        // to", so a box whose daemon this frontend can't reach has no ship.
-        // Pure subtraction — every other cache keeps the host's rows, which is
-        // what the Sessions tree greys.
-        let ordered = vec!["alpha".to_string(), "beta".to_string()];
-        let mut lists = HashMap::new();
-        lists.insert("alpha".to_string(), vec![ws_info("one", "sot-be-one")]);
-        lists.insert("beta".to_string(), vec![ws_info("two", "sot-be-two")]);
-        let mut connected = HashMap::new();
-        connected.insert("alpha".to_string(), true);
-        connected.insert("beta".to_string(), false);
-        let fresh =
-            fresh_workspace_caches(&ordered, &lists, &"alpha".to_string(), &connected);
-        assert_eq!(
-            fresh.workspace_slugs,
-            vec![("alpha".to_string(), "one".to_string())],
-            "beta's link dropped, so beta has no ship: {:?}",
-            fresh.workspace_slugs
-        );
-        assert!(
-            fresh
-                .workspace_labels
-                .contains_key(&("beta".to_string(), "two".to_string())),
-            "every other cache keeps the row — the tree still shows it, greyed"
-        );
-    }
-
-    #[test]
-    fn fresh_workspace_caches_keeps_a_host_with_no_connectivity_evidence() {
-        // `!= Some(&false)`, not `== Some(&true)`: absence of evidence must
-        // never hide a host, or a workspace list that arrives without the
-        // `Connected` event shape we expect loses its ship.
-        let ordered = vec!["alpha".to_string()];
-        let mut lists = HashMap::new();
-        lists.insert("alpha".to_string(), vec![ws_info("one", "sot-be-one")]);
-        let fresh =
-            fresh_workspace_caches(&ordered, &lists, &"alpha".to_string(), &HashMap::new());
-        assert_eq!(
-            fresh.workspace_slugs,
-            vec![("alpha".to_string(), "one".to_string())]
-        );
-    }
-
-    #[test]
     fn fresh_workspace_caches_hides_a_default_tmux_row_with_no_agent_from_the_strip_too() {
         // Owner ruling (2026-09-06, symmetry): same anchor rule as the tree,
         // on every runtime -- the strip never lists the default row without
@@ -28414,7 +28350,7 @@ mod tests {
         let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
         lists.insert(host.clone(), vec![default_row]);
         let ordered = vec![host.clone()];
-        let fresh = fresh_workspace_caches(&ordered, &lists, &host, &HashMap::new());
+        let fresh = fresh_workspace_caches(&ordered, &lists, &host);
 
         let key: WsKey = (host.clone(), "sot".to_string());
         assert!(!fresh.workspace_slugs.contains(&key), "{:?}", fresh.workspace_slugs);
