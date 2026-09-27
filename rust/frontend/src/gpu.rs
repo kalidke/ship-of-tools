@@ -1471,9 +1471,14 @@ fn strip_row_tops(win_h: f32, cell_h: f32) -> (f32, f32) {
 /// margin `oy` already pays for part of it. With
 /// `R = (win_h - 2*oy) mod cell_h` the grid's bottom edge sits at
 /// `win_h - oy - R - k*cell_h`, so the worst case is `R = 0` and
-/// `k = ceil((need - oy) / cell_h)` — 2 rows at every scale (the lift and the
-/// pad together are under half a row, and one full row plus `oy` is not quite
-/// two). Pinned by `strip_band_never_touches_the_grids_last_row`.
+/// `k = ceil((need - oy) / cell_h)`, which reduces to
+/// `2 + ceil((STRIP_BOTTOM_PAD + lift - oy) / cell_h)`. That is 2 at every
+/// practical scale but NOT unconditionally: `STRIP_BOTTOM_PAD` is a
+/// scale-invariant 2 px while `oy` scales, so below about scale 0.224 — which
+/// `--scale` accepts, its floor being 0.1 — the pad no longer fits in the
+/// margin and k is 3. Which is why the pin
+/// (`strip_band_never_touches_the_grids_last_row`) is the band invariant and
+/// k's minimality, never the literal 2.
 fn strip_reserved_rows(cell_w: f32, cell_h: f32, oy: f32) -> u16 {
     let need = STRIP_ROWS * cell_h + STRIP_BOTTOM_PAD + STRIP_ACTIVE_LIFT_CELLS * cell_w;
     (((need - oy) / cell_h.max(1.0)).ceil().max(0.0)) as u16
@@ -25170,6 +25175,51 @@ mod tests {
     }
 
     #[test]
+    fn a_reserved_grid_still_lays_out_every_pane() {
+        // The other end of the reservation's chain: the sweep above stops at
+        // `cell_grid_for`'s output, so nothing pinned that a grid which CAME
+        // from it still lays out, nor that the pane rects stay inside it.
+        // Windows short enough to reach `compute`'s degenerate guard (and the
+        // `rows.max(1)` clamp under it) are out of scope here, as in the sweep.
+        let preset = crate::settings::LayoutPreset::default_laptop();
+        for &(h, scale) in &[
+            (768.0_f32, 1.0_f32),
+            (1058.0, 1.0),
+            (1080.0, 1.0),
+            (1440.0, 1.5),
+            (2160.0, 2.0),
+        ] {
+            let cell_h = BASE_CELL_H * scale;
+            let cell_w = 7.7 * scale;
+            let (cols, rows) = cell_grid_for(
+                1920,
+                h as u32,
+                cell_w,
+                cell_h,
+                BASE_CHROME_ORIGIN_X * scale,
+                BASE_CHROME_ORIGIN_Y * scale,
+            );
+            let area = ratatui::layout::Rect {
+                x: 0,
+                y: 0,
+                width: cols,
+                height: rows,
+            };
+            let geom = crate::layout::compute(area, &preset, true, None);
+            let llm = geom.llm.expect("the Llm column must survive the reservation");
+            let repl = geom.repl.expect("the drawer must survive the reservation");
+            assert!(
+                llm.height >= 1 && repl.height >= 3,
+                "h {h} scale {scale}: a pane collapsed: {geom:?}"
+            );
+            assert!(
+                llm.y + llm.height <= rows && repl.y + repl.height <= rows,
+                "h {h} scale {scale}: a pane rect runs past the {rows}-row grid: {geom:?}"
+            );
+        }
+    }
+
+    #[test]
     fn strip_band_never_touches_the_grids_last_row() {
         // BLOCKER 1: the strip floats off `config.height` while the chrome
         // floats off the grid, so the grid's last row — the bottom border
@@ -25177,15 +25227,27 @@ mod tests {
         // strip's names row at EVERY window height (worst at
         // `R = (h - 2*oy) mod cell_h == 8*scale`, where the two share a
         // baseline). `cell_grid_for` now reserves the band once.
-        for &scale in &[1.0_f32, 1.25, 1.5, 2.0] {
+        // 0.2 is in the list because `--scale`'s floor is 0.1 and the
+        // reservation is 3 rows there, not 2 (`STRIP_BOTTOM_PAD` is
+        // scale-invariant while `oy` scales) — the invariant has to hold in
+        // that regime too.
+        for &scale in &[0.2_f32, 1.0, 1.25, 1.5, 2.0] {
             let cell_h = BASE_CELL_H * scale;
             let cell_w = 7.7 * scale; // the measured monospace advance
             let oy = BASE_CHROME_ORIGIN_Y * scale;
             let ox = BASE_CHROME_ORIGIN_X * scale;
-            assert_eq!(
-                strip_reserved_rows(cell_w, cell_h, oy),
-                2,
-                "two rows at every scale"
+            // Not the literal 2 (see `strip_reserved_rows`' doc): what holds
+            // at every scale is that the reservation is the SMALLEST one that
+            // clears the band.
+            let k = strip_reserved_rows(cell_w, cell_h, oy) as f32;
+            let need = STRIP_ROWS * cell_h + STRIP_BOTTOM_PAD + STRIP_ACTIVE_LIFT_CELLS * cell_w;
+            assert!(
+                k * cell_h + oy >= need,
+                "scale {scale}: {k} rows do not clear the band's {need} px"
+            );
+            assert!(
+                (k - 1.0) * cell_h + oy < need,
+                "scale {scale}: {k} rows over-reserve"
             );
             let mut h = (240.0 * scale) as u32;
             while h <= (2160.0 * scale) as u32 {
