@@ -273,6 +273,12 @@ async fn prepare_locked(spec: &PrepareSpec) -> Result<PreparedState> {
         }
     }
 
+    // Second call, same idempotent function: the load test or the mathjax
+    // `npm ci` step could in principle leave a tracked file dirty too, and an
+    // unappliable pointer must never be armed. On the normal clean tree this
+    // is one `git status` and nothing else.
+    restore_to_tag(&checkout, &spec.identity.tag).await?;
+
     let state = PreparedState {
         schema: 1,
         identity: spec.identity.clone(),
