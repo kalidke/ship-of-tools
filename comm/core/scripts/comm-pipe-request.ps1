@@ -97,6 +97,27 @@ function Read-SotPipeLine {
     return [pscustomobject]@{ TimedOut = $false; Line = $task.Result }
 }
 
+# The pipe itself is read and written as UTF-8 (below), but the lines this
+# script hands BACK go to stdout, and stdout is encoded with
+# [Console]::OutputEncoding -- the console's ANSI codepage unless something
+# says otherwise. A daemon reply is JSON carrying whatever is on a pane's
+# screen, and box-drawing glyphs and the prompt's U+276F have no place in that
+# codepage: each came out a replacement byte plus one raw control character,
+# and the caller's `jq -e .` then rejected the entire line ("control
+# characters from U+0000 through U+001F must be escaped"). The reply was
+# correct and complete; only its transcoding on the way out was wrong.
+#
+# It failed that way EVERY time, because a pane screen essentially always
+# contains those glyphs -- which is why every Windows capsule row silently
+# fell back to a harness Monitor instead of the daemon ping wake, and why the
+# probe that gave up looked like an unreachable daemon rather than a client
+# bug. Diagnosed on a real Windows box by forcing this one assignment and
+# watching the same request go from 1998 invalid bytes to 2443 valid ones.
+#
+# Guarded: a host with no real console can refuse the assignment, and losing
+# the whole transport over that would be a worse failure than the one fixed.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+
 $client = New-Object System.IO.Pipes.NamedPipeClientStream(
     '.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut)
 try {
