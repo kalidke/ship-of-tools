@@ -185,21 +185,31 @@ matrix_nonce() {
     printf '%s\n' "$n"
 }
 
-# matrix_fe_inbox_copies NONCE — how many lines of THIS box's frontend inbox
-# carry NONCE. rc 1 when this platform has no frontend inbox at all, which is
-# not the same fact as "none found" and must not be reported as one.
+# matrix_fe_inbox_copies NONCE — how many copies of the ECHO frame carrying
+# NONCE are in THIS box's frontend inbox. rc 1 when this platform has no
+# frontend inbox at all, which is not the same fact as "none found" and must
+# not be reported as one.
+#
+# It counts the FRAME, not the nonce, and the key is the one the forward leg
+# already uses (`matrix_find_prefix ... "ECHO $nonce"`) — one key in both legs
+# so the two cannot disagree about what they are counting. A nonce count would
+# be wrong on every correct fleet: the responder answers `ECHO $nonce` AND then
+# sends `VERDICT $nonce ...` to the same asker (comm-probe.sh's probe_reply),
+# so a direction delivers two frames carrying the nonce and a hop line three.
+# No VERDICT line contains this substring.
 matrix_fe_inbox_copies() {
     local fe n
     fe="$(sot_fe_inbox_path)"
     [ -n "$fe" ] || return 1
     [ -r "$fe" ] || { printf '0\n'; return 0; }
-    n="$(grep -c -F -- "$1" "$fe" 2>/dev/null)" || n=0
+    n="$(grep -c -F -- "ECHO $1" "$fe" 2>/dev/null)" || n=0
     [[ "$n" =~ ^[0-9]+$ ]] || n=0
     printf '%s\n' "$n"
 }
 
 # matrix_fe_dupe_verdict NONCE FRONTENDS — the two-frontend leg (ADR 0048
-# amendment 9), as "<PASS|FAIL|SKIP> <TAB> <note>".
+# amendment 9), as "<PASS|FAIL|SKIP> <TAB> <note>". Counts the ECHO frame
+# carrying NONCE, never the nonce itself — see matrix_fe_inbox_copies.
 #
 # The daemon fans every relayed frame out to EVERY attached connection, and each
 # attached frontend appends into one inbox whose path has no per-frontend
@@ -231,15 +241,15 @@ matrix_fe_dupe_verdict() {
         return 0
     fi
     case "$count" in
-        1) printf 'PASS\tone copy in the frontend inbox, from %s frontends\n' "$frontends" ;;
+        1) printf 'PASS\tone copy of the echo in the frontend inbox, from %s frontends\n' "$frontends" ;;
         0) printf 'SKIP\tnot delivered through the frontend inbox (a local registry hit files directly)\n' ;;
-        *) printf 'FAIL\t%s copies in the frontend inbox — %s frontends each filed the same frame\n' \
+        *) printf 'FAIL\t%s copies of the echo in the frontend inbox — %s frontends each filed the same frame\n' \
                "$count" "$frontends" ;;
     esac
 }
 
 matrix_preflight() {
-    local expect="$1" boxes="$2" self="$3" out box line ver bad=0
+    local expect="$1" boxes="$2" self="${3:-}" out box line ver bad=0
     echo "== preflight: attached frontends and this hub =="
     out="$("$SCRIPTS_DIR/sot-fe" version 2>&1)" || {
         echo "FATAL: \`sot-fe version\` failed:" >&2

@@ -6874,6 +6874,31 @@ impl State {
         }
     }
 
+    /// File one frame on THIS thread and, when the frame is in the file,
+    /// claim it — the fallback for every reason the filer cannot take the
+    /// job: it has panicked, there is no filer at all, or the connection
+    /// the frame arrived on is no longer held. A degraded frontend stalls
+    /// its own UI, bounded by the same fail-open deadline, rather than
+    /// going deaf; losing the mail instead was rejected, because the
+    /// durability invariant outranks a frame of jank on a process that has
+    /// already panicked once.
+    ///
+    /// The claim is gated on the file outcome and sits in the SAME branch
+    /// as it, exactly as [`file_one`] does on the filer thread. Written
+    /// once so the two arms of the delivery match cannot drift apart.
+    fn file_inline(
+        &self,
+        host: &crate::dial::HostKey,
+        payload: &serde_json::Value,
+        claim: Option<sot_protocol::AgentFiledReq>,
+    ) {
+        if append_agent_message(payload) {
+            if let Some(req) = claim {
+                let _ = self.send_to(host, crate::transport::OutgoingReq::AgentFiled(req));
+            }
+        }
+    }
+
     /// Drop the filer's sender and join it, bounded (ADR 0048 amendment
     /// 14). Called from every exit path. A hard kill loses whatever is
     /// still queued and that is honest — no claim was sent for those
@@ -14879,36 +14904,17 @@ impl State {
                                         tx: ctx.clone(),
                                     };
                                     if let Err(e) = ftx.send(job) {
-                                        // Filer gone (it panicked): file
-                                        // inline this once rather than go
-                                        // deaf. A degraded frontend stalls
-                                        // its own UI — bounded by the same
-                                        // fail-open deadline — instead of
-                                        // losing the mail.
+                                        // The filer panicked. Recover the
+                                        // job from the error — dropping it
+                                        // here is the silent deafness this
+                                        // fallback exists to prevent.
                                         tracing::warn!(error = %e, "agent.message: filer unavailable; filing inline");
                                         let job = e.0;
-                                        if append_agent_message(&job.payload) {
-                                            if let Some(req) = job.claim {
-                                                let _ = self.send_to(
-                                                    &event_host,
-                                                    crate::transport::OutgoingReq::AgentFiled(req),
-                                                );
-                                            }
-                                        }
+                                        self.file_inline(&event_host, &job.payload, job.claim);
                                     }
                                 }
-                                _ => {
-                                    // No filer, or no connection for this
-                                    // host: same inline path.
-                                    if append_agent_message(&payload) {
-                                        if let Some(req) = claim {
-                                            let _ = self.send_to(
-                                                &event_host,
-                                                crate::transport::OutgoingReq::AgentFiled(req),
-                                            );
-                                        }
-                                    }
-                                }
+                                // No filer, or no connection for this host.
+                                _ => self.file_inline(&event_host, &payload, claim),
                             }
                         }
                     } else if op == sot_protocol::op::FE_COMMAND {
@@ -20058,6 +20064,23 @@ fn append_agent_message_at(path: &std::path::Path, payload: &serde_json::Value) 
                     if start > 0 {
                         // The window opened mid-line. That first partial
                         // line is not a record and must not be read as one.
+                        //
+                        // This arithmetic cannot be wrong in a costly
+                        // direction, and there is no third direction. Drop
+                        // too MUCH — `start` landed on a line boundary, so
+                        // this trims a complete line — and the window is
+                        // shorter, a match is missed, and the frame is
+                        // appended. Drop too LITTLE and the matcher is fed a
+                        // partial line, which fails to parse, is skipped, and
+                        // the frame is appended. These bytes feed exactly one
+                        // consumer, a pure predicate, and removing input from
+                        // it can only turn a true into a false, never a false
+                        // into a true — and false means write. Nothing on
+                        // this path deletes, truncates or rewrites, so the
+                        // only reachable cost is one extra line. The function
+                        // then returns true either way, wrote-it or found-it,
+                        // so the claim goes out regardless and the
+                        // zero-receipt door stays shut.
                         match text.find('\n') {
                             Some(i) => text = text.split_off(i + 1),
                             None => text.clear(),
@@ -20301,6 +20324,14 @@ impl ApplicationHandler for App {
     /// `event_loop.exit()` site in this file reaches here, so the filer is
     /// drained in ONE place rather than at each of them — a new exit site
     /// inherits the drain instead of having to remember it.
+    ///
+    /// **This must stay inside `impl ApplicationHandler for App`.** The
+    /// trait method has a DEFAULT body, so the identical function in a
+    /// plain `impl App` block one brace away would compile perfectly
+    /// clean as a private inherent method, never be called, and cost at
+    /// most a dead-code warning — the drain would simply never run and
+    /// nothing would say so. Sitting in the trait impl is the only reason
+    /// the compiler checks this at all.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(state) = self.state.as_mut() {
             state.drain_filer(std::time::Duration::from_secs(2));
