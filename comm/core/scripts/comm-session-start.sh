@@ -194,7 +194,9 @@ _ensure_bridge() {
 _workstate_rule() {
     cat <<EOF
 Work-state (nav row colour) — stamp it yourself with comm-status.sh <working|waiting|blocked|done|idle> "why":
-  blocked (red: needs the user) > waiting (purple: a job/subagent/peer YOU launched is still running — stamp it the moment you delegate; sticky until you stamp working/idle/done when the job lands) > working (green) > idle.
+  Priority: the white result badge above all, then red, then GREEN, then purple, then blue/gray.
+  Red and green outrank purple STRUCTURALLY. While your turn is running the row is GREEN, even if a job you launched is also running — purple is a BETWEEN-turns colour, for when nothing of yours is running but something you launched is still outstanding. Red is a question that needs the user once your turn has ENDED; a question raised mid-turn shows green until the turn stops, which is correct: you are still working.
+  Stamp waiting (purple) the moment you delegate; it is sticky across turns until you stamp working/idle/done when the job lands.
   A background job does NOT make you idle. If ANY item needs the user while jobs also run, the turn ends blocked (SITREP-QUESTION, the question first, jobs listed after); waiting only when nothing needs the user. Full mechanics: the sot-comm skill's references/work-state.md.
 Turn end: when a turn CLOSES an effort (a result landed, a fix shipped, a diagnosis reached) or ends parked, its last block opens with a marker line — SITREP: <headline> (done) / SITREP-QUESTION: <question> (blocked) / SITREP-WAITING: <what for> (waiting) — followed by the sitrep chain in plain words (the sitrep skill: no hashes, paths, names, backticks or bullets). The Stop hook stamps the row from that line. A step in a live back-and-forth owes NO block: answer and end.
 EOF
