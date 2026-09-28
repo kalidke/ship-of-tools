@@ -70,6 +70,40 @@ pwsh -File scripts\install-shortcut.ps1
 That refreshes the desktop shortcut and repoints any existing Ship of Tools
 taskbar pin to `scripts\launch-sot.ps1`.
 
+## Windows: an update stages but never applies
+
+Symptom: the update notice keeps coming back for the same version, and
+`%LOCALAPPDATA%\sot\logs\supervisor.log` shows the pair
+
+```text
+staging update failed …
+committing stage into …
+```
+
+on run after run. Staging unpacks the new version beside the install and then
+renames that directory into place; Windows refuses that rename while anything
+holds a handle on the directory. Up to 0.6.6 the local file watcher held one.
+
+Two things fix it, in this order:
+
+1. **Launch from a closed window.** Clicking the shortcut while Ship of Tools
+   is already running exits at the one-launcher lock without reaching the
+   pending-update step, so the stage is never applied. Quit, then launch from
+   the shortcut. See [Updating and rollback](updating.md).
+2. **Get onto 0.6.6 or later**, where the watcher excludes the staging root.
+   A machine already stuck below that version needs the first step to get
+   there.
+
+## Windows: a message says `NOT CONFIRMED`
+
+The frame went out and no machine said it filed it, so treat it as **not
+delivered**. The usual cause on a Windows machine is that the recipient's
+frontend is not running: that frontend is what files cross-machine mail there,
+and nothing queues it in the meantime. Start Ship of Tools on the recipient's
+machine and send again. `no such handle` is a different answer — that is a
+handle nobody can file for, so check it against `comm-list.sh`. See
+[The comm relay](../concepts/comm.md).
+
 ## A session will not start on a shared home
 
 The daemon keeps capsule session records under

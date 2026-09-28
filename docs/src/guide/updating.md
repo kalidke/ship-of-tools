@@ -32,6 +32,38 @@ next launch through `scripts\sot-apply.ps1`: the same verification and
 rollback, and a new build that crashes within 10 seconds of its first launch
 is reverted automatically.
 
+### Close the window before you launch it again
+
+The launcher allows **one launcher per user**. Clicking the shortcut while
+Ship of Tools is already running does not open a second window — the second
+launcher sees the first one's lock and exits. What it also does not do is run
+the pending-update step, because that step comes much later in the same
+launcher it just exited from.
+
+So on Windows a staged update applies at the next launch **from a closed
+window**, not at the next click. Quit Ship of Tools, then start it from the
+shortcut. Closing it loses nothing on the backend: sessions, agents and REPLs
+run under the backend's own supervisors, not under any frontend.
+
+### The file watcher no longer holds its own staging area
+
+Staging an update means unpacking it beside the install and then renaming that
+directory into place. Windows refuses to rename a directory while anything
+holds a handle on it, and the file watcher that keeps previews fresh was
+watching the staging area along with everything else — so on some machines an
+update would stage successfully, fail to commit, and stage again on the next
+check, indefinitely.
+
+The watcher now excludes the update staging root, asking the updater where
+that root is rather than guessing at it. Nothing else about watching changes:
+your project files are watched exactly as before.
+
+<!-- SCREENSHOT-SLOT: name=update-notice
+     shows: the frontend's update notice, on a build that carries the 0.6.6
+            strip spacing
+     shoot with: scripts/docs-media.sh stills update-notice
+     blocked on: owner sign-off on the 0.6.6 strip spacing and badge graphics -->
+
 On update the installer swaps binaries while keeping `.prev` copies, fetches
 tags in `$PREFIX/repo/current`, checks out the requested tag, **refuses to
 move a dirty checkout** (commit/stash/revert first — the checkout is

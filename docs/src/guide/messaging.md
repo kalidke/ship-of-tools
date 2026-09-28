@@ -40,6 +40,28 @@ and reads the messages itself with `comm-poll.sh`, so a burst of messages costs
 one wake. The wake is refused while the row shows a
 permission dialog or a menu, so it can never answer one by accident.
 
+## When a send does not land
+
+A send answers with one line, and that line is the whole verdict. `filed ->
+@handle` means the message is in that handle's inbox and will be read at its
+next turn boundary. Anything else is an honest negative, and there are three:
+
+| What you see | What it means |
+|---|---|
+| `no such handle: <name>` | Nobody on any connected host can file for that handle. Check the spelling against `comm-list.sh`. |
+| `NOT CONFIRMED: sent for @handle; nobody claimed it within 5s` | The frame went out and no host said it filed it. Treat it as **not delivered**. On Windows this is what you see when the recipient's machine has no frontend running — see [The comm relay](../concepts/comm.md). |
+| `ERROR: unreachable` | This end could not reach the daemon at all. Nothing was sent, and it says nothing about the recipient. |
+
+`+woken` and `not woken: <reason>` are about **latency, never delivery**. A
+message that is filed but not woken is still there; the recipient reads it when
+its current turn ends.
+
+<!-- SCREENSHOT-SLOT: name=sessions-message-badge
+     shows: Sessions mode with a row carrying an unread-message badge and the
+            work-state colour beside it
+     shoot with: scripts/docs-media.sh stills sessions-message-badge
+     blocked on: owner sign-off on the 0.6.6 strip spacing and badge graphics -->
+
 ## What travels with it
 
 The same registry that routes messages carries each session's work state
