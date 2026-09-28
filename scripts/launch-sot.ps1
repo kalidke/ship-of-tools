@@ -653,7 +653,10 @@ Initialize-InstallLayout
 # via sot-apply, no pull"), so nothing else in the converge path ever
 # invoked sot-apply.ps1 (2026-09-18 field report).
 function Invoke-PendingApply {
-    if (-not $NoUpdate -and (Test-Path $sotLocalDaemon)) {
+    # Gated on the same condition as the apply below: the stop exists ONLY to
+    # keep the daemon from pinning a stale binary while sot-apply swaps it, so
+    # a pass that will not run sot-apply must not bounce the daemon either.
+    if (-not $NoUpdate -and -not $script:reexecd -and (Test-Path $sotLocalDaemon)) {
         $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
         if ($updatePending) {
             Write-SupLog 'local daemon: stopping before apply so it does not pin a stale binary'
@@ -679,6 +682,18 @@ function Invoke-PendingApply {
     # flag is the one-shot signal that gets CONSUMED (see
     # Invoke-FreshnessPass) instead.
     $script:sotJustApplied = Test-Path -LiteralPath $applyMarker
+
+    # The re-exec flag describes THIS pass -- the post-apply handover that is
+    # still finishing the update the previous pass applied -- and nothing
+    # after it. Consume it here, because this supervisor outlives the pass:
+    # it stays up and re-enters Invoke-PendingApply on every converge. Left
+    # latched, a supervisor born from a handover can never converge-apply
+    # again -- it stops the daemon, relaunches, reads the marker the handover
+    # left, logs "rollback window armed" and applies nothing, reporting
+    # success the whole way. That is every box that has ever applied an update
+    # and stayed up (field report, 2026-09-28). The environment variable is
+    # already cleared by then; this is the copy that was not.
+    $script:reexecd = $false
 }
 Invoke-PendingApply
 
