@@ -1902,11 +1902,29 @@ try {
         # failure, the user closing the window quickly — could revert a healthy
         # install and ban its version.
         #
-        # So the marker has to be RECENT. That is the rule the Unix supervisor
+        # So the marker has to be RECENT, and the window has to CLOSE once the
+        # release has proven itself. That is the rule the Unix supervisor
         # already states in as many words — "Roll back ONLY inside the
         # just-applied health window — an unrelated crash weeks later must not
-        # downgrade a healthy release" (scripts/install.sh) — and thirty minutes
-        # is its number, so the two platforms now carry one rule instead of two.
+        # downgrade a healthy release" (scripts/install.sh).
+        #
+        # The bound is two hours rather than the Unix half-hour, because the
+        # Windows timeline differs in one direction: on the just-applied path
+        # this launcher runs Initialize-InstallLayout — including the Julia
+        # instantiate the updater deliberately skips — and then update_comm,
+        # BETWEEN the apply and the first frontend start. A cold instantiate can
+        # outrun a half-hour bound, which would close the window before the new
+        # release had started even once: protection removed from exactly the
+        # slow first boot where a bad update is most likely to bite. Unix has no
+        # comparable work in that gap, so the same number does not mean the same
+        # thing on the two platforms.
+        #
+        # The longer bound costs nothing because the window closes on success
+        # rather than only on the clock (see the closer after the rollback
+        # below): once any run has lasted a full minute the marker is deleted,
+        # so what remains is "a fast crash before this release has ever run
+        # healthily, within two hours of its apply" — very nearly the exact
+        # event worth rolling back on.
         #
         # The read stays INSIDE the loop on purpose: a converge can apply an
         # update mid-life, and that update deserves the same window as one
@@ -1915,7 +1933,7 @@ try {
         $appliedUpdate = $false
         if (Test-Path $applyMarker) {
             $markerAge = (Get-Date) - (Get-Item -LiteralPath $applyMarker).LastWriteTime
-            $appliedUpdate = $markerAge.TotalMinutes -lt 30
+            $appliedUpdate = $markerAge.TotalMinutes -lt 120
             if (-not $appliedUpdate) {
                 Write-SupLog ("stale just-applied marker ({0:N0} min old) - no rollback window" -f $markerAge.TotalMinutes)
             }
@@ -2134,6 +2152,20 @@ try {
             $rolledBackOnce = $true
             Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
             $relaunchNext = $true
+        }
+        # Close the window on SUCCESS, not only on the clock — the Unix
+        # supervisor's third condition and the one that makes the longer bound
+        # safe. A run that lasted a full minute is a release that works, so
+        # nothing after it may be rolled back on its account. The marker is
+        # deleted with the flag: leaving it on disk would let the NEXT launch
+        # re-arm inside the same window, which is how an unrelated fast exit
+        # could revert an install that had already proven healthy. Sixty seconds
+        # sits well clear of the ten that define a crash, so no single run can
+        # both arm and close.
+        if ($appliedUpdate -and $feUptime.TotalSeconds -ge 60) {
+            Write-SupLog "update ran $([int]$feUptime.TotalSeconds)s without crashing - rollback window closed"
+            $appliedUpdate = $false
+            Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
         }
         if ($relaunchNext) {
             # Keep the tunnel up across the respawn — the remote backend and
