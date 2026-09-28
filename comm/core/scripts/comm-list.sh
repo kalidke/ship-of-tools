@@ -55,3 +55,29 @@ done < <(sot_jq -r '.agents | to_entries[]
         | join("")' "$REGISTRY")
 
 if [ "$any" = false ]; then echo "  (none)"; fi
+
+# --- attached frontend boxes ------------------------------------------------
+# The registry above holds the handles THIS box can name. A frontend on another
+# box attaches to this daemon and files for its own sessions, but nothing
+# declares those handles here yet, so a fleet manager reading only the registry
+# sees silence where there are live sessions. This section names the BOXES the
+# daemon is already talking to, so the silence is legible.
+#
+# `sot-fe version` is that roster, published by the daemon itself. It reports no
+# idle age on purpose (deleted by the 2026-09-08 review: deriving "how idle" in
+# shell would duplicate the daemon's own expiry and tie-break policy), so
+# nothing here invents a last-seen it cannot know; `active` marks the one
+# connection an untargeted frontend command would reach right now. Bounded and
+# best-effort: this is a listing, and it must not hang or fail because a daemon
+# is slow or absent.
+echo ""
+echo "attached frontend boxes (this daemon):"
+fe_out="$(timeout 5 "$SCRIPT_DIR/sot-fe" version 2>/dev/null || true)"
+fe_rows="$(printf '%s\n' "$fe_out" | grep -E '^fe@' || true)"
+if [ -n "$fe_rows" ]; then
+    printf '%s\n' "$fe_rows" | sed 's/^/  /'
+else
+    echo "  (none attached, or no daemon answered)"
+fi
+echo "  Sessions running ON those boxes are not listed: the relay files for"
+echo "  them, but no connection declares which inboxes it files for yet."
