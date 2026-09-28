@@ -1377,6 +1377,15 @@ fn strip_gap_before(item: &StripItem, cell_w: f32) -> f32 {
 /// names on the hull row, a row of its own, so nothing collides and the
 /// sessions start `STRIP_GAP_CELLS` past the wheel whatever the box is called.
 fn strip_item_widths(items: &[StripItem], label_widths: &[f32], wheel_w: f32) -> Vec<f32> {
+    strip_item_widths_at(items, label_widths, wheel_w, 0.0)
+}
+
+fn strip_item_widths_at(
+    items: &[StripItem],
+    label_widths: &[f32],
+    wheel_w: f32,
+    cell_w: f32,
+) -> Vec<f32> {
     let mut li = 0usize;
     items
         .iter()
@@ -1386,7 +1395,16 @@ fn strip_item_widths(items: &[StripItem], label_widths: &[f32], wheel_w: f32) ->
                 li += 1;
                 w
             }
-            StripItem::Bow { .. } => wheel_w,
+            StripItem::Bow { name, .. } => {
+                if band_spec().name_inline && cell_w > 0.0 {
+                    // The name shares the session-name row, so it needs columns
+                    // of its own or the first session in the group lands on it.
+                    wheel_w
+                        + (BOW_AIR_CELLS + name.chars().count() as f32 + 1.0) * cell_w
+                } else {
+                    wheel_w
+                }
+            }
         })
         .collect()
 }
@@ -1642,10 +1660,10 @@ fn hull_stern_rect(right: f32, y: f32, h: f32, top: f32) -> Option<ScreenRect> {
 /// same `.max(1.0)` floor the border quads do, so it can't thin to a sub-pixel
 /// rect at small scale.
 fn hull_band(ship_y: f32, cell_h: f32) -> (f32, f32) {
-    (
-        ship_y + cell_h * HULL_DROP_ROWS,
-        (cell_h * HULL_THICKNESS_ROWS).max(1.0),
-    )
+    let b = band_spec();
+    let rows = cell_h / BASE_CELL_H;
+    let drop = if b.name_inline { 0.0 } else { b.drop };
+    (ship_y + rows * drop, (rows * b.thick).max(1.0))
 }
 
 /// Glyph-top y (physical px) of the strip's two rows — `(names, hull)`. Both are
@@ -1656,8 +1674,10 @@ fn hull_band(ship_y: f32, cell_h: f32) -> (f32, f32) {
 /// the window's bottom edge instead is what put that remainder in the gap.
 /// `strip_reserved_rows` is what keeps the whole extent inside the window.
 fn strip_row_tops(grid_bottom: f32, cell_h: f32) -> (f32, f32) {
-    let names = grid_bottom + cell_h * STRIP_TOP_AIR_ROWS;
-    (names, names + cell_h + cell_h * HULL_ROW_EXTRA_DROP_ROWS)
+    let b = band_spec();
+    let rows = cell_h / BASE_CELL_H;
+    let names = grid_bottom + rows * b.air;
+    (names, names + cell_h + rows * b.gap)
 }
 
 /// Where one ship's parts sit VERTICALLY in the two-row band — the whole of the
@@ -1686,7 +1706,11 @@ fn ship_vertical(names_top: f32, hull_top: f32, cell_h: f32, logo_h: f32) -> Shi
     let (water_y, _) = hull_band(hull_top, cell_h);
     ShipVertical {
         wheel_y: names_top + (cell_h - logo_h) / 2.0,
-        name_y: hull_top + cell_h * HULL_NAME_DROP_ROWS,
+        name_y: if band_spec().name_inline {
+            names_top
+        } else {
+            hull_top + cell_h * HULL_NAME_DROP_ROWS
+        },
         rake_rise: water_y - (names_top + cell_h * HULL_RAKE_TOP_ROWS),
     }
 }
@@ -1732,8 +1756,7 @@ fn box_name_rgb(steered: bool, contrast_dim: bool) -> (u8, u8, u8) {
 /// condition, k's minimality AND that constancy — the literal is pinned
 /// there because it is now an invariant, not because anyone counted rows.
 fn strip_reserved_rows(cell_h: f32, oy: f32) -> u16 {
-    let need =
-        STRIP_ROWS * cell_h + cell_h * (STRIP_TOP_AIR_ROWS + HULL_ROW_EXTRA_DROP_ROWS);
+    let need = band_need_px(cell_h);
     (((need - oy) / cell_h.max(1.0) - BAND_FIT_EPS_ROWS)
         .ceil()
         .max(0.0)) as u16
@@ -1755,6 +1778,76 @@ fn strip_reserved_rows(cell_h: f32, oy: f32) -> u16 {
 /// overrun still takes the row it needs. It is a tolerance on a comparison,
 /// not a fudge to the geometry: no length moves.
 const BAND_FIT_EPS_ROWS: f32 = 1e-3;
+
+/// EXPLORATORY, hull-ledger lane — NOT for merge. `SOT_HULL_VARIANT` picks one
+/// of the footer layouts captured for the owner's pick; unset or 0 renders the
+/// shipped geometry byte for byte. Every length here is in px at scale 1 (a
+/// fraction of `BASE_CELL_H`), so a variant scales like the shipped band does.
+fn hull_variant() -> u8 {
+    static V: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("SOT_HULL_VARIANT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    })
+}
+
+/// One footer layout, top to bottom: `air` under the panes' last row, the
+/// session-name row (always `BASE_CELL_H`), `gap`, then either the box name's
+/// own row (`drop` to the waterline) or nothing when the name rides inline with
+/// the session names, the waterline itself (`thick`), and `sea` to the window's
+/// bottom edge. `slack_to_top` moves the row-quantisation remainder above the
+/// panes instead of leaving it in the sea.
+struct BandSpec {
+    air: f32,
+    gap: f32,
+    drop: f32,
+    thick: f32,
+    sea: f32,
+    name_inline: bool,
+    slack_to_top: bool,
+}
+
+fn band_spec() -> BandSpec {
+    match hull_variant() {
+        // One text row: the box name joins the session names and the hull is a
+        // drawn band under them. 30 px — one pane row comes back.
+        1 => BandSpec { air: 4.0, gap: 2.0, drop: 0.0, thick: 3.0, sea: 3.0, name_inline: true, slack_to_top: false },
+        // Two rows, tightest the typography allows: the owner's 8 px drop
+        // between the rows deleted and the sea cut to 1. 37 px.
+        2 => BandSpec { air: 4.0, gap: 0.0, drop: 11.0, thick: 3.0, sea: 1.0, name_inline: false, slack_to_top: true },
+        // Two rows, the owner's picked spacing kept exactly; only the sea under
+        // the waterline is spent. 44 px.
+        3 => BandSpec { air: 4.0, gap: 8.0, drop: 11.0, thick: 3.0, sea: 0.0, name_inline: false, slack_to_top: true },
+        // Shipped.
+        _ => BandSpec { air: 4.0, gap: 8.0, drop: 11.0, thick: 3.0, sea: 4.0, name_inline: false, slack_to_top: false },
+    }
+}
+
+/// The band's whole height in physical px — the panes' bottom row to the
+/// window's bottom edge, which is the quantity the owner asked to shrink.
+fn band_need_px(cell_h: f32) -> f32 {
+    let b = band_spec();
+    let rows = cell_h / BASE_CELL_H;
+    let below = if b.name_inline { 0.0 } else { b.drop };
+    cell_h + rows * (b.air + b.gap + below + b.thick + b.sea)
+}
+
+/// Top margin for the chrome grid. Unchanged (`BASE_CHROME_ORIGIN_Y * s`)
+/// unless the variant relocates the row-quantisation remainder: then the grid
+/// is pushed DOWN by whatever the rows leave over, so the footer is exactly
+/// `band_need_px` at every window height instead of that plus up to a row.
+fn chrome_origin_y_for(height: f32, cell_h: f32) -> f32 {
+    let s = cell_h / BASE_CELL_H;
+    let oy = BASE_CHROME_ORIGIN_Y * s;
+    if !band_spec().slack_to_top {
+        return oy;
+    }
+    let need = band_need_px(cell_h);
+    let rows = ((height - oy - need) / cell_h.max(1.0)).floor().max(1.0);
+    (height - rows * cell_h - need).max(oy)
+}
 
 /// Strip-local center-x (pixels) of the active item — the value
 /// `strip_scroll_px` eases toward so the active session sits at screen
@@ -5845,8 +5938,12 @@ fn cell_grid_for(
     oy: f32,
 ) -> (u16, u16) {
     let cols = ((width as f32 - 2.0 * ox).max(0.0) / cell_w).floor() as u16;
-    let rows = ((height as f32 - 2.0 * oy).max(0.0) / cell_h).floor() as u16;
-    let rows = rows.saturating_sub(strip_reserved_rows(cell_h, oy));
+    let rows = if band_spec().slack_to_top {
+        (((height as f32 - oy - band_need_px(cell_h)).max(0.0)) / cell_h).floor() as u16
+    } else {
+        let rows = ((height as f32 - 2.0 * oy).max(0.0) / cell_h).floor() as u16;
+        rows.saturating_sub(strip_reserved_rows(cell_h, oy))
+    };
     (cols.max(1), rows.max(1))
 }
 
@@ -6198,6 +6295,7 @@ impl State {
             "monospace advance measured"
         );
 
+        let chrome_origin_y = chrome_origin_y_for(config.height as f32, cell_h);
         let (cols, rows) = cell_grid_for(
             config.width,
             config.height,
@@ -12346,7 +12444,7 @@ impl State {
         let s = self.scale * self.text_scale_mult;
         self.cell_h = BASE_CELL_H * s;
         self.chrome_origin_x = BASE_CHROME_ORIGIN_X * s;
-        self.chrome_origin_y = BASE_CHROME_ORIGIN_Y * s;
+        self.chrome_origin_y = chrome_origin_y_for(self.config.height as f32, self.cell_h);
         self.text
             .set_metrics(cosmic_text::Metrics::new(14.0 * s, 18.0 * s));
         // Re-measure monospace advance at the new metrics so the cell
@@ -15892,6 +15990,7 @@ impl State {
         }
         self.config.width = new_size.width;
         self.config.height = new_size.height;
+        self.chrome_origin_y = chrome_origin_y_for(self.config.height as f32, self.cell_h);
         self.surface.configure(&self.device, &self.config);
         self.text
             .resize(&self.queue, self.config.width, self.config.height);
@@ -17832,7 +17931,7 @@ impl State {
                 .iter()
                 .map(|l| l.chars().count() as f32 * self.cell_w)
                 .collect();
-            let item_widths = strip_item_widths(&items, &label_widths, wheel_w);
+            let item_widths = strip_item_widths_at(&items, &label_widths, wheel_w, self.cell_w);
             let item_positions = strip_cursor_positions(&item_widths, |i| {
                 strip_gap_before(&items[i], self.cell_w)
             });
