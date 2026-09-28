@@ -251,7 +251,7 @@ if [ "$MODE" = "context" ]; then
         echo "SURVIVED handle=$H listener=$LISTENER"
         _context_block "$H" "$LISTENER"
     else
-        echo "NOT SURVIVED handle=${H:-none} — run comm-session-start.sh (no flags) now to rebootstrap; a wipe hook alone never re-joins/re-polls/re-arms."
+        echo "NOT SURVIVED handle=${H:-none} — run comm-session-start.sh (no flags) now to rebootstrap; a Monitor does not count as a wake path, and a wipe hook alone never re-joins/re-polls/re-arms."
     fi
     exit 0
 fi
