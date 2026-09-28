@@ -202,11 +202,10 @@ CAPEOF
 
 _context_block() {
     local h="$1" listener="${2:-n/a}" inbox
-    if [ "$IS_WINDOWS" = 1 ]; then
-        inbox="${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}/sot/fe-inbox.jsonl"
-    else
-        inbox="${INBOX_DIR:-${SOT_COMM_HOME:-$HOME/.sot-comm}/inbox}/$h.jsonl"
-    fi
+    # comm-lib.sh owns the platform branch (sot_fe_inbox_path): on Windows the
+    # mail is the frontend's own file, everywhere else the per-handle one.
+    inbox="$(sot_fe_inbox_path)"
+    [ -n "$inbox" ] || inbox="${INBOX_DIR:-${SOT_COMM_HOME:-$HOME/.sot-comm}/inbox}/$h.jsonl"
     cat <<EOF
 You are @$h. Inbox: $inbox
 Verbs: comm-relay.sh send @<peer> "msg" | comm-poll.sh | comm-status.sh <working|waiting|blocked|done|idle> "why" | comm-list.sh | bus.sh sync
@@ -216,17 +215,17 @@ EOF
     case "$listener" in
         restarted)
             cat <<EOF
-Your Monitor (comm-watch.sh $h) never stopped, but your inbox listener had DIED and was restarted just now — both halves are live again. Prove it with comm-listen.sh --name $h --selftest if the next minutes matter, and run comm-poll.sh for anything that landed while it was down. Do not re-join.
+Your inbox watcher never stopped, but your inbox listener had DIED and was restarted just now — both halves are live again. Prove it with comm-listen.sh --name $h --selftest if the next minutes matter, and run comm-poll.sh for anything that landed while it was down. Do not re-join.
 EOF
             ;;
         down)
             cat <<EOF
-Your Monitor (comm-watch.sh $h) never stopped, but your inbox listener is DOWN: nothing is writing durable mail to your inbox, however healthy the nav row looks. Run comm-listen.sh --name $h now, then comm-poll.sh. Do not re-join. (The handle is spelled out because a pinned identity and this shell's own derivation can differ, and a bare comm-listen.sh would then revive the wrong one.)
+Your inbox watcher never stopped, but your inbox listener is DOWN: nothing is writing durable mail to your inbox, however healthy the nav row looks. Run comm-listen.sh --name $h now, then comm-poll.sh. Do not re-join. (The handle is spelled out because a pinned identity and this shell's own derivation can differ, and a bare comm-listen.sh would then revive the wrong one.)
 EOF
             ;;
         *)
             cat <<EOF
-Your Monitor (comm-watch.sh $h) never stopped and your inbox listener is up: it survived this wipe. Do not re-join, re-listen, or re-poll.
+Your inbox watcher never stopped and your inbox listener is up: it survived this wipe. Do not re-join, re-listen, or re-poll.
 EOF
             ;;
     esac
@@ -265,42 +264,19 @@ if [ "$MODE" = "catchup" ]; then
         *) SELFTEST="down" ;;
     esac
 
-    if [ "$IS_WINDOWS" = 1 ]; then
-        # Windows catch-up reads/cursors fe-inbox.jsonl directly — comm-poll.sh
-        # reads the Linux per-handle inbox, the wrong file here entirely
-        # (Codex review finding 7), missing every message received while
-        # this session was down. Admission is `to == this session's own
-        # handle` only — a session's handle is its row's handle everywhere,
-        # Windows included; there is no broadcast-label family to also admit.
-        # Cursor is an append-position (a line count), not a timestamp, so it
-        # can't skip or duplicate across a race.
-        FE_INBOX="${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}/sot/fe-inbox.jsonl"
-        CURSOR_DIR="${SOT_COMM_HOME:-$HOME/.sot-comm}/read"
-        mkdir -p "$CURSOR_DIR" 2>/dev/null || true
-        CURSOR_FILE="$CURSOR_DIR/$H.fe-cursor"
-        TOTAL="$(wc -l < "$FE_INBOX" 2>/dev/null || echo 0)"
-        LAST="$(cat "$CURSOR_FILE" 2>/dev/null || echo 0)"
-        [[ "$LAST" =~ ^[0-9]+$ ]] || LAST=0
-        [ "$LAST" -gt "$TOTAL" ] && LAST=0
-        POLL_COUNT=0
-        if [ "$TOTAL" -gt "$LAST" ]; then
-            NEW="$(sed -n "$((LAST + 1)),\$p" "$FE_INBOX" 2>/dev/null | while IFS= read -r l; do
-                printf '%s' "$l" | jq -rc --arg me "$H" \
-                    'select(.from != $me and (.to // "") == $me) | "[\(.ts // "?")] [\(.from)] \(.text)"' 2>/dev/null
-            done)"
-            POLL_COUNT="$(printf '%s\n' "$NEW" | grep -c '^\[' || true)"
-            [ "${POLL_COUNT:-0}" -gt 0 ] 2>/dev/null && { echo "BACKLOG:"; printf '%s\n' "$NEW"; }
-        fi
-        printf '%s' "$TOTAL" > "$CURSOR_FILE" 2>/dev/null || true
+    # ONE reader, every platform. comm-poll.sh reads AND cursors both inboxes
+    # on Windows (comm-lib.sh's sot_fe_* helpers), so the Windows branch that
+    # used to live here was a second implementation of the same read -- and it
+    # kept its own third cursor file, read/<handle>.fe-cursor, that no other
+    # reader has ever looked at: catch-up marked frontend mail read where
+    # comm-poll.sh and the turn-end hook could not see it.
+    POLL_OUT="$("$SCRIPT_DIR/comm-poll.sh" 2>&1)"; poll_rc=$?
+    if [ "$poll_rc" -ne 0 ]; then
+        POLL_COUNT="ERR"
+        printf '%s\n' "$POLL_OUT" >&2
     else
-        POLL_OUT="$("$SCRIPT_DIR/comm-poll.sh" 2>&1)"; poll_rc=$?
-        if [ "$poll_rc" -ne 0 ]; then
-            POLL_COUNT="ERR"
-            printf '%s\n' "$POLL_OUT" >&2
-        else
-            POLL_COUNT="$(printf '%s\n' "$POLL_OUT" | grep -c '^\[' || true)"
-            [ "${POLL_COUNT:-0}" -gt 0 ] 2>/dev/null && { echo "BACKLOG:"; printf '%s\n' "$POLL_OUT"; }
-        fi
+        POLL_COUNT="$(printf '%s\n' "$POLL_OUT" | grep -c '^\[' || true)"
+        [ "${POLL_COUNT:-0}" -gt 0 ] 2>/dev/null && { echo "BACKLOG:"; printf '%s\n' "$POLL_OUT"; }
     fi
 
     BUS="n/a"

@@ -112,3 +112,31 @@ The consequence above — "a message can sit typed-but-unread for up to 10
 minutes" — no longer holds: an unread ping delays nothing past the recipient's
 next turn boundary. This whole script is scheduled for deletion in 0.6.7, once
 the bridge pokes inline and the daemon files for its own rows.
+
+## Revision — 2026-09-28: the watcher reads BOTH inboxes, so Windows needs no Monitor
+
+A frontend box runs no relay bridge: its frontend files every inbound frame
+into its own `fe-inbox.jsonl` (shared by every handle on the box), while a send
+from a session on the SAME box still lands in `inbox/<handle>.jsonl`. This
+watcher read only the second file, so on such a box it could never see the mail
+that arrives from anywhere else — and a session there stayed on the harness
+Monitor, which already read both. `comm-wake.sh` now polls each source with its
+own in-memory cursor and its own admission rule (`.to` equal to our handle for
+the shared file, any directed frame for the per-handle one), exactly the pair
+`comm-watch.sh` applies. `sot_fe_inbox_path` remains the one place the platform
+branch lives, so off Windows there is a single source and nothing changes.
+
+Two smaller things fell out of the same path, both of which kept a frontend box
+on the Monitor or hid mail from it:
+
+- `sot_owner_pid` could not name an ancestor under git-bash (no `ps -o`, no
+  `<pid>/comm`), so the bootstrap reported "no owning claude/codex ancestor
+  found" and fell back. It now reads `Name:` from `<pid>/status`, the same file
+  it already read `PPid:` from, and tolerates a `.exe` suffix.
+- The bootstrap's catch-up carried its own copy of the frontend-inbox read,
+  with a THIRD cursor file that no other reader has ever opened — so catch-up
+  marked frontend mail read where `comm-poll.sh` and the turn-end hook could not
+  see it. Deleted; `comm-poll.sh` is the one reader on every platform.
+
+The Monitor itself is unchanged and still the fallback for a session in no
+capsule row, on any platform: there is no pane to type into.

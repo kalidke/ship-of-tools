@@ -594,6 +594,15 @@ done'
 # `ps -o comm=` is tried at each hop, then /proc; if neither answers the walk
 # stops and prints nothing (rc 1) — which is a REFUSAL at the call site, never
 # an untethered process.
+#
+# THREE ways to read a name, because git-bash answers only the third. MSYS2's
+# `ps` takes no `-o`, and its procfs has no `<pid>/comm` — it has `status`,
+# Linux-shaped, carrying both `Name:` and `PPid:` (the PPid half was already
+# read below). Without that last fallback the walk refused at the first hop on
+# every Windows box, which is what made `comm-session-start.sh` report "no
+# owning claude/codex ancestor found" and fall back to the harness Monitor
+# there. A `.exe` suffix is accepted for the same reason and only matters
+# there; Linux and macOS answer from `ps`/`comm` exactly as before.
 sot_owner_pid() {
     local pid="${PPID:-}" comm ppid
     while [ -n "$pid" ] && [ "$pid" != "1" ]; do
@@ -601,9 +610,13 @@ sot_owner_pid() {
         if [ -z "$comm" ] && [ -r "/proc/$pid/comm" ]; then
             comm="$(tr -d ' \t\n' < "/proc/$pid/comm" 2>/dev/null)"
         fi
+        if [ -z "$comm" ] && [ -r "/proc/$pid/status" ]; then
+            comm="$(awk '/^Name:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)"
+        fi
         [ -n "$comm" ] || return 1
+        comm="${comm##*/}"
         case "$comm" in
-            claude|codex) printf '%s\n' "$pid"; return 0 ;;
+            claude|codex|claude.exe|codex.exe) printf '%s\n' "$pid"; return 0 ;;
         esac
         ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
         if [ -z "$ppid" ] && [ -r "/proc/$pid/status" ]; then
@@ -787,12 +800,12 @@ sot_fe_inbox_lines() {
     printf '%s\n' "$n"
 }
 
-# _sot_fe_cursor_offset HANDLE — this handle's frontend read offset. 0 when
+# sot_fe_cursor_offset HANDLE — this handle's frontend read offset. 0 when
 # unset, unreadable, non-numeric, or PAST the end of the file: production only
 # appends, so an offset past the end means the file was cleared, truncated or
 # restored by hand — exactly the moment nobody suspects the cursor, and left
 # as-is this handle never sees another frontend frame.
-_sot_fe_cursor_offset() {
+sot_fe_cursor_offset() {
     local cur total
     cur="$(cat "$COMM_HOME/read/$1.fe.cursor" 2>/dev/null || true)"
     [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
@@ -815,7 +828,7 @@ sot_fe_unread_lines() {
     local handle="$1" fe pos total
     fe="$(sot_fe_inbox_path)"
     [ -n "$fe" ] && [ -r "$fe" ] || return 0
-    pos="$(_sot_fe_cursor_offset "$handle")"
+    pos="$(sot_fe_cursor_offset "$handle")"
     total="$(sot_fe_inbox_lines)"
     [ "$total" -gt "$pos" ] || return 0
     sed -n "$((pos + 1)),${total}p" "$fe" 2>/dev/null \

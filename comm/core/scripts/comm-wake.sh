@@ -20,6 +20,16 @@
 # CURSOR is IN-MEMORY ONLY, starting at the inbox's END -- a persisted one
 # would replay stale backlog across a reused handle.
 #
+# TWO INBOXES ON WINDOWS, one cursor each, exactly as comm-watch.sh already
+# reads them: there is no relay bridge on a frontend box, so the frontend
+# files every inbound frame into its own fe-inbox.jsonl, while a send from a
+# session on the SAME box still lands in inbox/<handle>.jsonl. Watching only
+# the per-handle file there woke a session on half its mail and never on the
+# half that comes from another box -- which is why a Windows session fell
+# back to the harness Monitor instead of this watcher. sot_fe_inbox_path
+# (comm-lib.sh) is the ONE place that platform branch lives: off Windows it
+# prints nothing and this watcher has a single source, exactly as before.
+#
 # PING MODE specifics:
 #   - Filter mirrors `full`: own echoes never wake; broadcasts (to:"") wait
 #     for comm-poll.sh on the next natural turn; directed frames wake.
@@ -193,6 +203,51 @@ _comm_wake_owner_alive() {
     kill -0 "$AGENT_PID" 2>/dev/null
 }
 
+# ---- one source at a time -------------------------------------------------
+#
+# $INBOX, $SRC_KIND and $pos name the source the loop below is currently
+# reading; everything downstream stays single-file and single-schema.
+
+# Line count that is robust to a missing/unreadable file WITHOUT stderr noise:
+# `wc -l < missing` makes the SHELL (doing the redirect) print "No such file"
+# before wc's own 2>/dev/null could suppress it, and this script's stderr is a
+# durable log. Same helper, same reason, as comm-watch.sh's `linecount`.
+_comm_wake_linecount() { [ -r "$1" ] && wc -l < "$1" 2>/dev/null || echo 0; }
+
+# _comm_wake_admits FROM TO -- does this line wake US?
+#
+# The per-handle inbox holds frames filed FOR this handle, so any directed
+# frame admits (a legacy line with no `.to` key reads as `__legacy__` and is
+# treated as directed, as it always was; a broadcast's empty `.to` waits for
+# comm-poll.sh on the next natural turn). The frontend inbox is ONE file per
+# box, SHARED by every handle on it -- the frontend appends every frame
+# whatever its `.to` -- so there the test is `.to` equal to our exact handle.
+# Identical to the pair of filters comm-watch.sh applies to the same two
+# files; a session's handle is its row's handle, so there is no broadcast
+# label family to also admit.
+_comm_wake_admits() {
+    local from="$1" to="$2"
+    [ "$from" = "$HANDLE" ] && return 1
+    if [ "${SRC_KIND:-handle}" = "fe" ]; then
+        [ "$to" = "$HANDLE" ] || return 1
+    else
+        [ -n "$to" ] || return 1
+    fi
+    return 0
+}
+
+# _comm_wake_read_offset -- how many lines of THIS source the session has
+# already been shown. One cursor per file, never one shared: the two inboxes
+# have unrelated line counts, so a shared cursor would silence whichever file
+# is shorter (the same rule comm-poll.sh's own pair of cursors follows).
+_comm_wake_read_offset() {
+    if [ "${SRC_KIND:-handle}" = "fe" ]; then
+        sot_fe_cursor_offset "$HANDLE"
+    else
+        sot_cursor_offset "$HANDLE"
+    fi
+}
+
 # ---- the two delivery bodies, one poll loop --------------------------------
 
 _comm_wake_deliver_full() {
@@ -206,7 +261,7 @@ _comm_wake_deliver_full() {
         from=$(printf '%s' "$line" | sot_jq -r '.from // ""' 2>/dev/null)
         to=$(printf '%s' "$line" | sot_jq -r 'if has("to") then .to else "__legacy__" end' 2>/dev/null)
         text=$(printf '%s' "$line" | jq -r '.text // .message // .msg // ""' 2>/dev/null)
-        if [ "$from" = "$HANDLE" ] || [ "$to" = "" ] || [ -z "$text" ]; then
+        if ! _comm_wake_admits "$from" "$to" || [ -z "$text" ]; then
             delivered_through=$((pos + lineno))
             continue
         fi
@@ -226,8 +281,7 @@ _comm_wake_deliver_ping() {
         from=$(printf '%s' "$line" | sot_jq -r '.from // ""' 2>/dev/null)
         to=$(printf '%s' "$line" | sot_jq -r 'if has("to") then .to else "__legacy__" end' 2>/dev/null)
         text=$(printf '%s' "$line" | jq -r '.text // .message // .msg // ""' 2>/dev/null)
-        [ "$from" = "$HANDLE" ] && continue
-        [ "$to" = "" ] && continue
+        _comm_wake_admits "$from" "$to" || continue
         [ -z "$text" ] && continue
         any_directed=1
         [ "$from" = "__selftest__" ] || all_selftest=0
@@ -252,7 +306,7 @@ _comm_wake_deliver_ping() {
     # every message behind it. A genuinely NEW line now always pings again, and
     # a missed ping is harmless -- the recipient's own Stop hook reads the inbox
     # at its next turn boundary.
-    read_pos="$(sot_cursor_offset "$HANDLE")"
+    read_pos="$(_comm_wake_read_offset)"
     if [ "$read_pos" -ge "$total" ]; then
         pos="$total"
         return
@@ -311,7 +365,9 @@ _comm_wake_deliver_ping() {
 }
 
 _comm_wake_run() {
-    pos=$(wc -l < "$INBOX" 2>/dev/null || echo 0)
+    local i
+    POS=()
+    for i in "${!SOURCES[@]}"; do POS+=("$(_comm_wake_linecount "${SOURCES[$i]}")"); done
     no_reply_count=0
     blocked_since=""
 
@@ -321,15 +377,26 @@ _comm_wake_run() {
         _comm_wake_owner_alive || exit 0
         sleep 2
         _comm_wake_bound_log
-        [ -f "$INBOX" ] || continue
-        total=$(wc -l < "$INBOX" 2>/dev/null || echo 0)
-        if [ "$total" -lt "$pos" ]; then pos=0; fi   # inbox rotated/truncated
-        [ "$total" -gt "$pos" ] || continue
-        if [ "$DELIVER" = "full" ]; then
-            _comm_wake_deliver_full
-        else
-            _comm_wake_deliver_ping
-        fi
+        for i in "${!SOURCES[@]}"; do
+            INBOX="${SOURCES[$i]}"
+            SRC_KIND="${KINDS[$i]}"
+            pos="${POS[$i]}"
+            [ -f "$INBOX" ] || continue
+            total=$(_comm_wake_linecount "$INBOX")
+            if [ "$total" -lt "$pos" ]; then pos=0; fi   # inbox rotated/truncated
+            if [ "$total" -gt "$pos" ]; then
+                if [ "$DELIVER" = "full" ]; then
+                    _comm_wake_deliver_full
+                else
+                    _comm_wake_deliver_ping
+                fi
+            fi
+            # Whatever the body consumed, never what it was handed: a body
+            # that stops early (a refused inject) leaves $pos on the last
+            # line it actually delivered, and that is what this source
+            # resumes from next cycle.
+            POS[$i]="$pos"
+        done
     done
 }
 
@@ -416,8 +483,16 @@ _comm_wake_main() {
         || { echo "ERROR: could not resolve the daemon endpoint for capsule delivery" >&2; exit 1; }
 
     COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
-    INBOX="$COMM_HOME/inbox/$HANDLE.jsonl"
-    CURSOR_FILE="$COMM_HOME/read/$HANDLE.cursor"
+    # Every inbox this handle receives into, with the kind of file each one
+    # is (see _comm_wake_admits). The frontend inbox exists on Windows only,
+    # and only where a frontend on this box files into it.
+    SOURCES=("$COMM_HOME/inbox/$HANDLE.jsonl")
+    KINDS=(handle)
+    _fe_inbox="$(sot_fe_inbox_path)"
+    if [ -n "$_fe_inbox" ]; then
+        SOURCES+=("$_fe_inbox")
+        KINDS+=(fe)
+    fi
     STATE_DIR="$COMM_HOME/state"; mkdir -p "$STATE_DIR"
     LOG_FILE="$STATE_DIR/comm-wake-$HANDLE.log"
     MARKER="$STATE_DIR/$HANDLE.watch"
