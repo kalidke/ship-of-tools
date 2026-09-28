@@ -8,10 +8,6 @@
 #   [--version vX.Y.Z] [--prefix <dir>] [--port <n>] [--no-service]
 #   [--hub <ssh-alias>]     # this box does NOT share the hub's home: fetch
 #                           # its hosts.toml (`sotd topology sync`) once staged
-#   [--trusted-root <abs-path>]  # declare every session root under this path
-#                           # already-trusted, so an agent this daemon spawns
-#                           # there never stops at its folder-trust dialog.
-#                           # No default: without it the dialog stands.
 #   [--force-role-change]  # consent to installing over another prefix's live daemon
 #                                                    # default: latest release
 #   SOT_INSTALL_TAG=<tag> ./scripts/install.sh ...   # run THIS checkout's body
@@ -29,9 +25,8 @@
 #      manual and the resource tree; blobless partial clone = full history
 #      for blame, only the tag's tree downloaded; supersedes the curated
 #      julia bundle) + juliaup + Pkg.instantiate inside the checkout
-#   5. config in ~/.config/sot: settings.toml stub if missing, plus the
-#      folder-trust declaration ([trust] root_prefix) when --trusted-root is
-#      given and this box has none;
+#   5. config in ~/.config/sot: settings.toml stub if missing, plus this
+#      box's folder-trust declaration ([trust] root_prefix) if it has none;
 #      hosts.toml is read (role) and, with --hub, fetched — never written here
 #   6. agent comm resources: ~/.sot-comm plus Claude/Codex skills
 #   7. backend roles: install+enable the systemd --user sotd unit
@@ -43,11 +38,6 @@ set -euo pipefail
 REPO="${SOT_INSTALL_REPO:-kalidke/ship-of-tools}"
 PREFIX="${SOT_PREFIX:-$HOME/.local/share/sot}"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sot"
-# Nothing is declared trusted unless this install is given a prefix --
-# `--trusted-root` below, or the same variable the daemon itself honours,
-# for a deployment that already exports it. Never a fallback of its own.
-# See the [trust] block in section 6.
-TRUSTED_ROOT="${SOT_TRUSTED_ROOT_PREFIX:-}"
 
 # Mirrors `hub_local_port_for` (rust/protocol/src/topology.rs): this runs
 # before any `sotd` binary is on disk, so it can't just ask the real thing.
@@ -378,10 +368,6 @@ while [ $# -gt 0 ]; do
         # shared home they'd apply to EVERY machine). The caller supervises
         # sotd itself (e.g. systemd-run --user transient unit, per-machine).
         --no-service) NO_SERVICE=1 ;;
-        # Declare this box's source parent trusted (section 6); wins over
-        # the environment. Checked after the loop, so both suppliers meet
-        # the same test.
-        --trusted-root) TRUSTED_ROOT="${2:?--trusted-root needs an absolute path}"; shift ;;
         # Consent to reconfiguring an installation that is already here. See
         # the role gate below for what it protects and why a role flag alone
         # is not consent.
@@ -390,14 +376,6 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-# Whichever supplied it, a relative prefix is refused here: the daemon
-# refuses one too and trusts nothing, so failing the install beats writing
-# a declaration that silently never matches a single row.
-case "${TRUSTED_ROOT:-/}" in
-    /*) ;;
-    *) die "the trusted root must be an absolute path (--trusted-root / \$SOT_TRUSTED_ROOT_PREFIX): $TRUSTED_ROOT" ;;
-esac
-
 # Canonicalize the prefix (a relative one produces a repo/current symlink
 # whose target resolves from repo/, i.e. a broken link), then reject unsafe
 # characters in both the prefix and the project root — deploy/sotd.service's
@@ -803,19 +781,17 @@ if [ "$WANT_DAEMON" = 0 ] && command -v systemctl >/dev/null 2>&1 && systemctl -
 fi
 [ -f "$CONFIG/settings.toml" ] || printf '# Ship of Tools settings — see .sot/settings.toml.example in the repo\n' > "$CONFIG/settings.toml"
 
-# Folder trust. A row the daemon spawns stops at the agent's folder-trust
-# dialog on any folder that box has not trusted before. The daemon reads ONE
-# declared absolute prefix from this file and treats every session root under
-# it as already answered; roots outside it keep the dialog.
-#
-# Nothing is declared unless this install was given --trusted-root. There is
-# no default here and no path in the repo: someone installing Ship of Tools
-# for the first time keeps the dialog, which is the safe answer for a tool
-# that starts agents in folders, and a deployment that has already decided
-# its own repos are trusted says so per box, where the real path belongs.
-# Written once — an existing [trust] table is this box's own answer, never
-# rewritten, so a reinstall never widens a prefix somebody narrowed.
-if [ -n "$TRUSTED_ROOT" ] && ! grep -q '^[[:space:]]*\[trust\]' "$CONFIG/settings.toml" 2>/dev/null; then
+# Folder trust. A row the daemon spawns must reach its task without stopping
+# at the agent's folder-trust dialog on a folder nobody has opened on this box
+# before. The daemon reads ONE declared absolute prefix from this file; the
+# repo itself ships no default and names no path, because a default there
+# would either name a directory that exists on nobody's machine or trust
+# folders nobody declared. So the declaration is made HERE, at install time,
+# on the box it applies to: everything under $HOME unless this install was
+# told otherwise. Written once — an existing [trust] table is the owner's own
+# answer, never rewritten, and commenting the key out restores the dialog.
+if ! grep -q '^[[:space:]]*\[trust\]' "$CONFIG/settings.toml" 2>/dev/null; then
+    TRUSTED_ROOT="${SOT_TRUSTED_ROOT_PREFIX:-$HOME}"
     {
         printf '\n[trust]\n'
         printf '# Every session root under this absolute prefix counts as already\n'

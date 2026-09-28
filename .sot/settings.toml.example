@@ -75,10 +75,9 @@ new_session_root = "/home/me/dev"
 # Every session root under this absolute prefix counts as already trusted, so
 # an agent the daemon spawns there never stops at its folder-trust dialog.
 # Roots outside it are left untouched — that dialog is answered by hand, once
-# per folder, exactly as before. There is no built-in default and no path in
-# the repo, so the dialog stands until somebody declares a prefix: either by
-# writing the line below, or by passing `--trusted-root <abs-path>` to
-# `install.sh`, which writes it for the box it runs on.
+# per folder, exactly as before. `install.sh` writes this line for the box it
+# runs on; there is no built-in default, because no path in this repo would be
+# true on anybody's machine.
 #
 # [trust]
 # root_prefix = "/absolute/path/your/repos/live/under"
