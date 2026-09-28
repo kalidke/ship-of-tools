@@ -18,14 +18,18 @@
 #      than letting the matrix silently measure the wrong build.
 #   2. One send per line, each with its own nonce, all before any waiting.
 #   3. One line per direction: PASS|FAIL|SKIP, the sender's rc, its literal
-#      receipt line, and the echo latency.
+#      receipt line, and the echo latency — plus, for a direction whose echo
+#      arrived, how many copies of it reached this box's frontend inbox.
 #
 # WHAT IT IS FOR. A sender's receipt and an actual delivery are different facts,
 # and every comm outage so far has been the gap between them. This instrument
 # names that gap in both directions:
 #   FALSE FAILURE — the echo arrived but the sender said NOT CONFIRMED.
 #   FALSE SUCCESS — the sender said filed but no echo ever came.
-# Either is a FAIL even though the classic one-sided check would pass.
+#   DOUBLE DELIVERY — one frame reached the frontend inbox twice, so the
+#     session is woken twice and reads the same message twice (ADR 0048
+#     amendment 9: two frontends on one box must file a frame once).
+# Any of them is a FAIL even though the classic one-sided check would pass.
 #
 # Exit: the number of FAILs (0 = the matrix is clean), or 2 from preflight.
 set -uo pipefail
@@ -181,8 +185,61 @@ matrix_nonce() {
     printf '%s\n' "$n"
 }
 
+# matrix_fe_inbox_copies NONCE — how many lines of THIS box's frontend inbox
+# carry NONCE. rc 1 when this platform has no frontend inbox at all, which is
+# not the same fact as "none found" and must not be reported as one.
+matrix_fe_inbox_copies() {
+    local fe n
+    fe="$(sot_fe_inbox_path)"
+    [ -n "$fe" ] || return 1
+    [ -r "$fe" ] || { printf '0\n'; return 0; }
+    n="$(grep -c -F -- "$1" "$fe" 2>/dev/null)" || n=0
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    printf '%s\n' "$n"
+}
+
+# matrix_fe_dupe_verdict NONCE FRONTENDS — the two-frontend leg (ADR 0048
+# amendment 9), as "<PASS|FAIL|SKIP> <TAB> <note>".
+#
+# The daemon fans every relayed frame out to EVERY attached connection, and each
+# attached frontend appends into one inbox whose path has no per-frontend
+# component. One copy is the whole rule. Two is a failure in the same way a
+# false success is, and for the same reason: this instrument exists to name the
+# gap between what was claimed and what happened, and a session woken twice by
+# one message is that gap.
+#
+# TWO SKIPS, and they are DIFFERENT. A platform whose readers never open that
+# file has nothing to count — the leg is not applicable there, and reporting it
+# as a pass would claim a proof nobody performed. A box with fewer than two
+# frontends cannot produce the defect at all. Collapsing the two would let "this
+# platform has no such file" masquerade as "this box has one frontend".
+#
+# FRONTENDS is the preflight's count of named frontend clients for this box. The
+# roster prints no instance, so two frontends on one box are two identical
+# `fe@<box>` lines and their COUNT is the only available signal; it is printed
+# on the skip so that a future roster change folding duplicates into one row
+# with a multiplier cannot make this leg skip silently.
+matrix_fe_dupe_verdict() {
+    local nonce="$1" frontends="${2:-0}" count
+    if ! count="$(matrix_fe_inbox_copies "$nonce")"; then
+        printf 'SKIP\tno frontend inbox on this platform — nothing here reads that file\n'
+        return 0
+    fi
+    if [ "$frontends" -lt 2 ]; then
+        printf 'SKIP\t%s frontend(s) counted for this box — one cannot produce the defect (copies seen: %s)\n' \
+            "$frontends" "$count"
+        return 0
+    fi
+    case "$count" in
+        1) printf 'PASS\tone copy in the frontend inbox, from %s frontends\n' "$frontends" ;;
+        0) printf 'SKIP\tnot delivered through the frontend inbox (a local registry hit files directly)\n' ;;
+        *) printf 'FAIL\t%s copies in the frontend inbox — %s frontends each filed the same frame\n' \
+               "$count" "$frontends" ;;
+    esac
+}
+
 matrix_preflight() {
-    local expect="$1" boxes="$2" out box line ver bad=0
+    local expect="$1" boxes="$2" self="$3" out box line ver bad=0
     echo "== preflight: attached frontends and this hub =="
     out="$("$SCRIPTS_DIR/sot-fe" version 2>&1)" || {
         echo "FATAL: \`sot-fe version\` failed:" >&2
@@ -190,6 +247,11 @@ matrix_preflight() {
         exit 2
     }
     printf '%s\n' "$out" | grep -E '^(fe@|unix:|tcp:|pipe:|npipe:)' || true
+    # How many named frontends this box has, for the two-frontend leg below.
+    # `local` is deliberately absent: the verdict helper reads it per line.
+    MATRIX_FE_LOCAL="$(printf '%s\n' "$out" | grep -c "^fe@$self[[:space:]]")" || MATRIX_FE_LOCAL=0
+    [[ "$MATRIX_FE_LOCAL" =~ ^[0-9]+$ ]] || MATRIX_FE_LOCAL=0
+    echo "frontends attached for $self: $MATRIX_FE_LOCAL"
     [ -n "$expect" ] || { echo; return 0; }
     for box in ${boxes//,/ }; do
         line="$(printf '%s\n' "$out" | grep -m1 "^fe@$box[[:space:]]")" || line=""
@@ -259,7 +321,8 @@ MY_ROOT="$(sed -n '3p' "$SELF_FILE_PATH" 2>/dev/null)"; MY_ROOT="${MY_ROOT#root=
 export SOT_COMM_SELF_FILE="$SELF_FILE_PATH"
 cd "$MY_ROOT" || exit 2
 
-matrix_preflight "$EXPECT" "$BOXES"
+MATRIX_FE_LOCAL=0
+matrix_preflight "$EXPECT" "$BOXES" "$SELF"
 
 # The lines. Each is: NAME | TARGET | HOP | EXPECT. A hop is how a box is made
 # to send to a THIRD row: the responder forwards the probe, and the row it
@@ -328,6 +391,15 @@ for i in "${!L_NAME[@]}"; do
         "$(matrix_receipt_line "${L_RC[$i]}" "${L_OUT[$i]}")"
     printf '       %s\n' "$note"
     [ "$state" = "FAIL" ] && FAILS=$((FAILS + 1))
+    # Once a direction's echo is found, ask the second question this box can
+    # answer alone: did the frame land in the frontend inbox exactly once?
+    if [ "${L_EXPECT[$i]}" = "echo" ] && [ -n "${L_SEEN[$i]}" ]; then
+        verdict="$(matrix_fe_dupe_verdict "${L_NONCE[$i]}" "$MATRIX_FE_LOCAL")"
+        state="${verdict%%	*}"; note="${verdict#*	}"
+        printf '%-4s %-26s\n' "$state" "${L_NAME[$i]} (fe inbox)"
+        printf '       %s\n' "$note"
+        [ "$state" = "FAIL" ] && FAILS=$((FAILS + 1))
+    fi
     if [ -n "${L_REVERSE[$i]}" ]; then
         verdict="$(matrix_reverse_verdict "$INBOX" "$ME" "${L_NONCE[$i]}")"
         state="${verdict%%	*}"; note="${verdict#*	}"
