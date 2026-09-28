@@ -1882,6 +1882,17 @@ fn strip_canonical_top_and_kernel(text: &str) -> String {
         "task",
         "runtime",
         "agent_handle",
+        // `account` was MISSING here while `save` wrote it into the canonical
+        // block below — so every save preserved the previous file's line and
+        // appended it after the new one, one more copy each time. A row on this
+        // box had reached 64 of them in 139 lines; every row file had at least
+        // two. It went unnoticed because `parse_kv` is a hand-rolled reader
+        // rather than a TOML parser, so duplicate keys never raised an error —
+        // and because it takes the LAST value before a section, a freshly
+        // written account was silently overruled by the stale copies beneath
+        // it. That is not cosmetic: it would have reverted an account switch on
+        // the next load while the running session looked correct.
+        "account",
     ];
     let mut out = String::new();
     let mut in_top = true;
@@ -2377,6 +2388,64 @@ created      = 1700000000
         std::fs::write(&toml_path, stripped).unwrap();
         let reloaded = load_toml(&toml_path, false).unwrap().unwrap();
         assert_eq!(reloaded.account(), "", "an older toml with no key defaults to the default account");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_twice_leaves_exactly_one_account_key() {
+        // The writer keeps whatever the previous file had that is not a
+        // canonical key, and appends it BELOW the fresh canonical block. So a
+        // canonical key missing from that strip list is duplicated on every
+        // single save. Saving twice is the smallest thing that can see it.
+        let _guard = env_guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-ws-test-dup-account-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        std::env::set_var("LOCALAPPDATA", &dir);
+        std::env::remove_var("USERPROFILE");
+        std::env::set_var("SOT_SELF_HOST", "dup-account-test");
+
+        let mut ws = Workspace::meta_only(
+            "ws-dup-1".to_string(),
+            "dup-account".to_string(),
+            "Dup.jl".to_string(),
+            PathBuf::from("/home/u/Dup.jl"),
+            "sot-be-dup-account".to_string(),
+            1700000000,
+            false,
+            "claude".to_string(),
+            String::new(),
+            String::new(),
+        );
+        ws.account = Mutex::new("first".to_string());
+        let toml_path = save(&ws).unwrap();
+        // The switch a reauth performs: change the account, save again.
+        ws.account = Mutex::new("second".to_string());
+        let toml_path = save(&ws).unwrap();
+
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        let keys = text
+            .lines()
+            .filter(|l| l.trim_start().starts_with("account"))
+            .count();
+        assert_eq!(
+            keys, 1,
+            "saving twice must leave ONE account key, not append another; file was:\n{text}"
+        );
+        // The value that survives must be the new one. `parse_kv` takes the
+        // LAST key before a section, so a stale copy appended below the
+        // canonical block would silently win and revert the switch.
+        let loaded = load_toml(&toml_path, false).unwrap().unwrap();
+        assert_eq!(
+            loaded.account(),
+            "second",
+            "the account read back must be the one just written"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
