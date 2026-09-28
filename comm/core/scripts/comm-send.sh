@@ -128,6 +128,7 @@ deliver() {  # $1 = target name
         case "$gate_rc" in
             0) woke=" +woken" ;;
             1) woke=" — not woken: row $tws is not at a free prompt" ;;
+            3) woke=" — not woken: row $tws is gone (the daemon has no such row)" ;;
             *) woke=" — not woken: row $tws did not answer" ;;
         esac
     fi

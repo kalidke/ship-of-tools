@@ -959,7 +959,13 @@ sot_pty_screen() {
 # instead of two that drift. Returns 0 typed, 1 screen read but NOT free (also an
 # accepted-but-not-ok row — nothing was typed either way), 2 no reply at all
 # (transport error/empty response, kept distinct so a caller can tell a busy
-# row from a dead daemon).
+# row from a dead daemon), 3 the daemon does not have this row at all. 3 is
+# separate from 1 because they are different facts about different worlds: 1 is
+# a row that IS there with something on its screen, 3 is a row that is not
+# there. Both arrive as a non-empty reply that is not a free prompt, and
+# collapsing them made a destroyed row report as a session sitting at a dialog
+# — a default dressed as a signal from a row that no longer exists. Checked on
+# BOTH replies: the row can be destroyed between the screen read and the input.
 # sot_prompt_free SCREEN_JSON — 0 when the row is sitting at an EMPTY input
 # line with the cursor at its start. THE prompt test: both the sender's poke
 # (sot_pty_input_gated) and the ping watcher's gate read it, so "free prompt"
@@ -1026,13 +1032,25 @@ sot_prompt_free() {
     ' >/dev/null 2>&1
 }
 
+# sot_row_gone RESP — 0 when RESP is the daemon's refusal for a workspace it
+# does not have (`code: "unknown_workspace"`, the pty.screen and pty.input arms
+# both answer it), 1 otherwise, including an empty RESP: a reply we never saw
+# is not evidence the row is gone. THE separator between "busy" and "gone" —
+# both are non-empty replies that are not a free prompt.
+sot_row_gone() {
+    [ -n "$1" ] || return 1
+    printf '%s' "$1" | jq -e '(.payload.code // "") == "unknown_workspace"' >/dev/null 2>&1
+}
+
 sot_pty_input_gated() {
     local wsid="$1" data="$2" screen resp
     screen="$(sot_pty_screen "$wsid" 2>/dev/null)"
     [ -n "$screen" ] || return 2
+    sot_row_gone "$screen" && return 3
     sot_prompt_free "$screen" || return 1
     resp="$(sot_pty_input "$wsid" "$data" 2>/dev/null || true)"
     [ -n "$resp" ] || return 2
+    sot_row_gone "$resp" && return 3
     printf '%s' "$resp" | jq -e '.payload.ok == true' >/dev/null 2>&1 || return 1
     return 0
 }

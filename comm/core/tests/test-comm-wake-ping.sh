@@ -6,7 +6,8 @@
 # coalescing (an unread ping suppresses a second one; a cursor whose CONTENT
 # already covers the pending batch's newest ts skips a second ping rather
 # than firing on any cursor movement at all), the no-reply give-up (pty.screen
-# unanswered 5 times in a row exits and drops the marker), workspace-id
+# unanswered 5 times in a row exits and drops the marker), the row the
+# daemon does not have (a refusal is GONE, never a busy prompt), workspace-id
 # derivation from $SOT_COMM_SELF_FILE, and the agent-liveness exit.
 #
 # Cursor starts at the inbox's END (same rule `full` mode already pins,
@@ -171,6 +172,42 @@ EOF
     if grep -q 'now sent' "$wlog" 2>/dev/null; then
         echo "  the recovery line announces a delivery the inject had not yet attempted"; return 1
     fi
+    return 0
+}
+
+case_a_row_the_daemon_does_not_have_ends_the_watcher() {
+    local d="$WORK/row-gone"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls" marker="$d/state/watchee.watch"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-old SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"error":"unknown workspace: ws-old","code":"unknown_workspace"}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"hello"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 4 ] || { echo "the watcher held the ping instead of noticing the row was gone" >&2; exit 9; }
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local rc=$?
+    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0 (there is no row left to wake)"; return 1; }
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 0 ] || { echo "  pty.input was attempted $n time(s) against a row the daemon does not have"; return 1; }
+    local wlog="$d/state/comm-wake-watchee.log"
+    grep -q 'capsule row ws-old is gone' "$wlog" 2>/dev/null \
+        || { echo "  the log never says the row is gone: '$(cat "$wlog" 2>/dev/null)'"; return 1; }
+    if grep -q 'prompt not free' "$wlog" 2>/dev/null; then
+        echo "  a destroyed row was recorded as a busy one -- the ping would be held forever"; return 1
+    fi
+    [ ! -f "$marker" ] || { echo "  the marker was left behind, so the next session start cannot re-arm"; return 1; }
     return 0
 }
 
@@ -642,6 +679,7 @@ check "three new directed lines type the ping notice exactly once" case_three_ne
 check "a batch that is only __selftest__ frames types the selftest notice" case_selftest_only_batch_types_the_selftest_text
 check "a not-free prompt withholds the ping and types it once the prompt frees up" case_prompt_not_free_waits_then_types_once_free
 check "five consecutive no-reply pty.screen probes gives up and drops the marker" case_five_consecutive_no_replies_gives_up_and_drops_the_marker
+check "a row the daemon does not have ends the watcher instead of holding the ping" case_a_row_the_daemon_does_not_have_ends_the_watcher
 check "a second new message with an unmoved cursor pings again" case_a_second_new_message_with_an_unmoved_cursor_pings_again
 check "a cursor that already covers the pending batch skips a second ping" case_a_cursor_that_already_covers_the_batch_skips_a_second_ping
 check "no owner discoverable exits 2 and writes no marker" case_no_owner_exits_two

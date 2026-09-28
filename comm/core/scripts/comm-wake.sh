@@ -129,11 +129,14 @@ _comm_wake_ping_inject() {
 # today's fail-closed retry, cursor untouched), 2 NO REPLY at all (transport
 # error, empty response -- distinct from 1 so the caller can count these
 # separately and give up on a daemon that never answers instead of retrying
-# it forever).
+# it forever), 3 the daemon does not have this row at all. 3 is not a busy
+# row: it is no row. Collapsed into 1 it read as a dialog that never cleared,
+# so the ping was held forever while this watcher kept reporting healthy.
 _comm_wake_prompt_free() {
     local resp
     resp="$(_comm_wake_pty_screen "$SOT_WORKSPACE_ID" 2>/dev/null)"
     [ -n "$resp" ] || return 2
+    sot_row_gone "$resp" && return 3
     sot_prompt_free "$resp" && return 0
     return 1
 }
@@ -221,6 +224,15 @@ _comm_wake_deliver_ping() {
 
     _comm_wake_prompt_free
     local pf_rc=$?
+    if [ "$pf_rc" -eq 3 ]; then
+        # The gate's own dead-row detection, finally reachable: the
+        # `unknown_workspace` check in _comm_wake_pty_verdict sits DOWNSTREAM
+        # of this gate, so before this arm a destroyed row could never get far
+        # enough to be recognised as destroyed -- it read as "not free" and the
+        # ping was held forever while the marker reported healthy.
+        echo "comm-wake: capsule row $SOT_WORKSPACE_ID is gone" >&2
+        exit 0
+    fi
     if [ "$pf_rc" -eq 2 ]; then
         no_reply_count=$((no_reply_count + 1))
         if [ "$no_reply_count" -ge 5 ]; then
