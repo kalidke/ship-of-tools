@@ -432,7 +432,35 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
             if [ -n "$WAKE_OWNER" ]; then
                 SOT_WORKSPACE_ID="$CAPSULE_WS_ID" nohup "$SCRIPT_DIR/comm-wake.sh" "$HANDLE" --deliver ping --owner "$WAKE_OWNER" \
                     </dev/null >/dev/null 2>&1 &
-                WAKE_ACTIVE=1
+                # SPAWNED IS NOT ARMED. This used to claim WAKE the instant
+                # nohup returned, so a watcher that died at startup -- a `set
+                # -u` slip, a box with no jq, a bad path -- was announced as
+                # "no Monitor needed" over a session with no wake path at all,
+                # in the release whose whole point is removing the Monitor.
+                # Looks healthy, is not.
+                #
+                # So: up to ONE SECOND, polled cheaply, exiting the moment a
+                # live comm-wake.sh for this handle exists. Either process
+                # passes -- the child just started, or the one already running
+                # that made it refuse -- because the question is whether the
+                # ROW has a wake path, not whose process provides it. The
+                # predicate is the guard's own narrow one, so "a live ping
+                # watcher for this handle" has a single definition.
+                _wake_tries=0
+                while [ "$_wake_tries" -lt 10 ]; do
+                    if sot_live_wake_watcher_for "$HANDLE" "$$" any >/dev/null 2>&1; then
+                        WAKE_ACTIVE=1
+                        break
+                    fi
+                    sleep 0.1
+                    _wake_tries=$((_wake_tries + 1))
+                done
+                if [ "$WAKE_ACTIVE" != 1 ]; then
+                    # Loud, and on stdout beside the BOOTSTRAP-ARM line the
+                    # session actually reads: a noisy fallback beats a quiet
+                    # lie. The Monitor line below is printed as usual.
+                    echo "WAKE FAILED: comm-wake.sh did not come up for @$HANDLE within 1s — arming the Monitor instead"
+                fi
             else
                 echo "wake: no owning claude/codex ancestor found; falling back to the Monitor" >&2
             fi

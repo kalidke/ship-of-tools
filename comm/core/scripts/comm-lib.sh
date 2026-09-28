@@ -814,6 +814,17 @@ sot_watcher_pid_for() {
     printf '%s\n' "$pid"
 }
 
+# sot_wake_watcher_pid_for HANDLE — the same marker read, narrowed to a live
+# `comm-wake.sh`. The marker is SHARED by all three watcher scripts, so a
+# guard that used the broad read above would refuse a ping start because a
+# MONITOR's marker is there — the same wrong answer by the other door.
+sot_wake_watcher_pid_for() {
+    local handle="$1" pid
+    pid="$(sed -n '1p' "$COMM_HOME/state/$handle.watch" 2>/dev/null)"
+    sot_pid_is_wake_watcher_for "$pid" "$handle" || return 1
+    printf '%s\n' "$pid"
+}
+
 # sot_pid_is_watcher_for PID HANDLE — is THIS pid a live watcher for HANDLE?
 # The test sot_watcher_pid_for always applied to the marker's pid, lifted out
 # so it can be applied to a pid found any other way. Liveness AND identity:
@@ -832,8 +843,31 @@ sot_watcher_pid_for() {
 # tooling — then counted as a live watcher and would refuse a legitimate
 # start, i.e. leave the session deaf. Measured while building this, not
 # theorised.
+# BROAD: any of the three scripts that write the shared marker. This is the
+# one the marker's own consumers use, because a Monitor's marker must read as
+# LIVE there — narrow it and `_survived` would call a healthy Monitor stale,
+# remove its marker and report the wrong thing.
 sot_pid_is_watcher_for() {
-    local pid="${1:-}" handle="${2:-}" args rest field ok=0
+    _sot_pid_is_watcher "${1:-}" "${2:-}" any
+}
+
+# NARROW: a live `comm-wake.sh` and nothing else. This is the one the START
+# GUARD uses, because the guard exists to stop two PING watchers — a Monitor
+# running beside one costs a doubled notice, while refusing to start costs a
+# deaf session, and nobody re-arms a Monitor after this release. The two are
+# deliberately different tests; folding them together reintroduces exactly
+# that (measured on a Windows box, 2026-09-28: the guard counted a live
+# comm-watch.sh as the handle's watcher).
+sot_pid_is_wake_watcher_for() {
+    _sot_pid_is_watcher "${1:-}" "${2:-}" wake
+}
+
+# _sot_pid_is_watcher PID HANDLE any|wake — liveness AND identity: the marker
+# outlives reboots on a shared home, so a reused pid would let a teardown kill
+# an unrelated process and let a start guard refuse a legitimate watcher
+# forever.
+_sot_pid_is_watcher() {
+    local pid="${1:-}" handle="${2:-}" mode="${3:-any}" args rest field ok=0
     [[ "$pid" =~ ^[0-9]+$ ]] || return 1
     sot_pid_alive "$pid" || return 1
     if [ -r "/proc/$pid/cmdline" ]; then
@@ -845,7 +879,8 @@ sot_pid_is_watcher_for() {
     rest="${args#* }"
     for field in "${args%% *}" "${rest%% *}"; do
         case "${field##*/}" in
-            comm-wake.sh|comm-watch.sh|codex-watch.sh) ok=1 ;;
+            comm-wake.sh) ok=1 ;;
+            comm-watch.sh|codex-watch.sh) [ "$mode" = any ] && ok=1 ;;
         esac
     done
     [ "$ok" = 1 ] || return 1
@@ -868,8 +903,11 @@ sot_pid_starttime() {
     printf '\n'
 }
 
-# sot_live_watcher_for HANDLE [SELF_PID] — the pid of a live watcher for
-# HANDLE in the PROCESS TABLE, or nothing (rc 1).
+# sot_live_wake_watcher_for HANDLE [SELF_PID] — the pid of a live
+# `comm-wake.sh` for HANDLE in the PROCESS TABLE, or nothing (rc 1). Narrow on
+# purpose (see sot_pid_is_wake_watcher_for): its two callers are the start
+# guard and the bootstrap's did-it-come-up check, and both ask the same
+# question — does this row have a PING watcher.
 #
 # WHY THE PROCESS TABLE and not the record we keep: the defect this exists for
 # was two watchers running side by side for seventeen hours, one of them named
@@ -882,7 +920,13 @@ sot_pid_starttime() {
 #   * SELF. This scan runs INSIDE a watcher, whose own command line carries
 #     both the script name and the handle, so a naive scan always finds itself
 #     and the watcher refuses to start every single time.
-#   * A CANDIDATE THAT STARTED AFTER US. Two starts racing for one handle can
+#   * A CANDIDATE THAT STARTED AFTER US, in `older` mode (the default, and
+#     the START GUARD's question: is one ALREADY running that I must yield
+#     to). The bootstrap asks a different question after spawning one -- does
+#     this row have a ping watcher AT ALL -- and the answer there is a process
+#     that is NEWER than the asker by definition, so it passes `any`. One
+#     scan, two questions, named at the call site rather than duplicated.
+#     Two starts racing for one handle can
 #     each see the other as a live watcher and both refuse, leaving the
 #     session with no watcher at all -- deafness, which is worse than the
 #     double wake this guard exists to prevent. Only an EARLIER process
@@ -892,12 +936,13 @@ sot_pid_starttime() {
 #     time is available (no procfs) the rule falls back to refusing on ANY
 #     live watcher: the safe direction, and never the platform this was
 #     written for.
-sot_live_watcher_for() {
-    local handle="$1" self="${2:-$$}" mine pid theirs
-    mine="$(sot_pid_starttime "$self" 2>/dev/null)"
+sot_live_wake_watcher_for() {
+    local handle="$1" self="${2:-$$}" mode="${3:-older}" mine pid theirs
+    mine=""
+    [ "$mode" = older ] && mine="$(sot_pid_starttime "$self" 2>/dev/null)"
     _sot_scan_pids | while read -r pid; do
         [ "$pid" = "$self" ] && continue
-        sot_pid_is_watcher_for "$pid" "$handle" || continue
+        sot_pid_is_wake_watcher_for "$pid" "$handle" || continue
         if [ -n "$mine" ]; then
             theirs="$(sot_pid_starttime "$pid" 2>/dev/null)"
             [ -n "$theirs" ] || { printf '%s\n' "$pid"; return 0; }

@@ -186,7 +186,38 @@ case_a_silent_daemon_still_arms_the_watcher() {
 }
 
 check "own live watcher survives, untouched" case_own_live_watcher_survives
+# SPAWNED IS NOT ARMED. The bootstrap used to claim WAKE the instant `nohup`
+# returned, so a watcher that died at startup -- a `set -u` slip, a box with
+# no jq, a bad path -- was announced as "no Monitor needed" over a session
+# with no wake path at all. It now waits up to a second for a live
+# comm-wake.sh for this handle and, failing that, says so loudly and arms the
+# Monitor. The watcher is replaced here by one that exits immediately, through
+# a scripts directory of symlinks -- the bootstrap resolves every sibling
+# script, comm-lib.sh included, from its own path.
+case_a_watcher_that_dies_at_startup_falls_back_loudly() {
+    local d="$WORK/wake-dies" out="$WORK/wake-dies.out" f
+    rm -rf "$d"; mkdir -p "$d/bin"
+    for f in "$SCRIPTS_DIR"/*; do ln -sf "$f" "$d/bin/$(basename "$f")"; done
+    rm -f "$d/bin/comm-wake.sh"
+    printf '#!/bin/sh\nexit 1\n' > "$d/bin/comm-wake.sh"; chmod +x "$d/bin/comm-wake.sh"
+    local self="$WORK/testhost__ws-dies.txt" claude="$WORK/fakebin/claude"
+    cp "$(command -v bash)" "$claude" 2>/dev/null || return 1
+    rm -f "$MARKER"
+    sot_write_self_file "$self" "$NAME" "$REPO" "$PROJECT_ROOT" || return 1
+    SOT_COMM_SELF_FILE="$self" SOT_SOCKET="$WORK/no-such-daemon.sock" \
+        CLAUDE_CODE_SESSION_ID=sess-DIES \
+        "$claude" -c 'bash "$1" >"$2" 2>&1' _ "$d/bin/comm-session-start.sh" "$out"
+    grep -q '^WAKE FAILED' "$out" || {
+        echo "    no WAKE FAILED line: $(grep -o 'BOOTSTRAP-ARM.*' "$out" | head -n1)"
+        return 1
+    }
+    grep -q 'MONITOR:' "$out" || { echo "    the Monitor was not armed after the failure"; return 1; }
+    ! grep -q 'WAKE: comm-wake.sh' "$out" || { echo "    it claimed WAKE as well as failing"; return 1; }
+    return 0
+}
+
 check "a silent daemon still arms the watcher instead of printing MONITOR" case_a_silent_daemon_still_arms_the_watcher
+check "a watcher that dies at startup falls back loudly" case_a_watcher_that_dies_at_startup_falls_back_loudly
 check "orphan armed by another session: NOT SURVIVED and reaped" case_orphan_from_another_session_is_not_survived_and_reaped
 check "legacy marker (pid only) keeps the liveness-only answer" case_legacy_marker_without_session_line_keeps_liveness_answer
 check "dead pid is not survived" case_dead_pid_is_not_survived

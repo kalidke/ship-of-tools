@@ -544,7 +544,7 @@ _comm_wake_lock() {
             return 1
         fi
         holder="$(cat "$LOCKDIR/pid" 2>/dev/null)"
-        if [ -n "$holder" ] && sot_pid_is_watcher_for "$holder" "$HANDLE"; then
+        if [ -n "$holder" ] && sot_pid_is_wake_watcher_for "$holder" "$HANDLE"; then
             return 1
         fi
         rm -rf "$LOCKDIR" 2>/dev/null || true
@@ -570,19 +570,26 @@ _comm_wake_guard() {
         echo "comm-wake: another start for @$HANDLE holds the start lock — refusing to start a second" >&2
         return 1
     fi
-    if live="$(sot_watcher_pid_for "$HANDLE")"; then
+    # BOTH DOORS ARE NARROW, and that is the whole ruling: the refusal is a
+    # live `comm-wake.sh` for this handle, nothing else. A harness Monitor
+    # (comm-watch.sh) writes this SAME marker, so a broad read here would
+    # refuse the ping start while a Monitor runs -- and nothing re-arms a
+    # Monitor after this release, so within half an hour that row is deaf with
+    # no watcher at all. Two ping watchers cost a doubled notice; refusing
+    # costs the session. In doubt, start.
+    if live="$(sot_wake_watcher_pid_for "$HANDLE")"; then
         echo "comm-wake: a watcher for @$HANDLE is already live (pid $live, named by $MARKER) — refusing to start a second" >&2
         _comm_wake_unlock
         return 1
     fi
-    if live="$(sot_live_watcher_for "$HANDLE" "$$")"; then
+    if live="$(sot_live_wake_watcher_for "$HANDLE" "$$")"; then
         echo "comm-wake: a watcher for @$HANDLE is already live (pid $live, which no marker names) — refusing to start a second" >&2
         _comm_wake_unlock
         return 1
     fi
     # Line 1 this process's own pid (liveness), line 2 the session that armed
-    # it (identity) — the same marker comm-watch.sh writes. Unconditional: we
-    # hold the lock and have just established that nothing is running.
+    # it (identity) — the same marker comm-watch.sh writes, and claiming it
+    # over a Monitor's is correct: this is the wake path now.
     printf '%s\n%s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-}" > "$MARKER" 2>/dev/null
     _comm_wake_unlock
     return 0
@@ -682,7 +689,7 @@ _comm_wake_main() {
     # lost claim was judged stale from the marker's pid ALONE, and a live
     # watcher the marker did not name could not be seen by that judgement at
     # all. So the whole check-and-claim now happens under one lock, and what
-    # it checks is the PROCESS TABLE (sot_live_watcher_for) as well as the
+    # it checks is the PROCESS TABLE (sot_live_wake_watcher_for) as well as the
     # marker. Ground truth cannot be overwritten, judged stale or deleted.
     if ! _comm_wake_guard; then exit 4; fi
     trap _comm_wake_cleanup EXIT

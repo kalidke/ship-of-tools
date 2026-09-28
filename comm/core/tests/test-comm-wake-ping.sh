@@ -500,12 +500,15 @@ case_second_start_against_a_live_marker_refuses() {
     local d="$WORK/live-marker"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local marker="$d/state/watchee.watch" planted
-    # A marker naming a live process that really IS a watcher for this handle:
-    # a stand-in script named comm-watch.sh, started with the handle as its
-    # argument, exactly what the mutex verifies before refusing.
+    # A marker naming a live process that really IS a PING watcher for this
+    # handle: a stand-in named comm-wake.sh, started with the handle as its
+    # argument, exactly what the guard verifies before refusing. It must be a
+    # comm-wake and not a comm-watch -- a Monitor's marker deliberately does
+    # NOT refuse a ping start any more (see the Monitor case above), because
+    # nothing re-arms a Monitor and refusing would leave the row deaf.
     mkdir -p "$d/fakebin"
-    printf '#!/bin/sh\nsleep 60\n' > "$d/fakebin/comm-watch.sh"; chmod +x "$d/fakebin/comm-watch.sh"
-    "$d/fakebin/comm-watch.sh" watchee >/dev/null 2>&1 & planted=$!
+    printf '#!/bin/sh\nsleep 60\n' > "$d/fakebin/comm-wake.sh"; chmod +x "$d/fakebin/comm-wake.sh"
+    "$d/fakebin/comm-wake.sh" watchee >/dev/null 2>&1 & planted=$!
     printf '%s\nsession-a\n' "$planted" > "$marker"
     cat > "$d/run.sh" <<EOF
 source "$WAKE"
@@ -1269,7 +1272,53 @@ EOF
 }
 
 check "two starts at once leave exactly one watcher and one refusal" case_two_starts_leave_exactly_one_watcher
+# A MONITOR IS NOT A SECOND PING WATCHER. The guard exists to stop two
+# comm-wake processes; a harness Monitor (comm-watch.sh) running beside one
+# costs a doubled notice, while refusing to start costs the session its wake
+# path entirely -- and nothing re-arms a Monitor after this release, so that
+# row goes deaf within the half hour the harness gives it. Measured on a
+# Windows box: the guard counted a live comm-watch.sh as the handle's watcher.
+#
+# BOTH doors are tested here, because the marker is SHARED: the Monitor is
+# running AND its pid is in the marker, which is exactly the state that made a
+# broad read refuse through the other door.
+case_a_live_monitor_does_not_refuse_a_ping_start() {
+    local d="$WORK/monitor-coexists"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
+    : > "$d/inbox/watchee.jsonl"
+    printf '#!/usr/bin/env bash\ncommand sleep 30\n' > "$d/bin/comm-watch.sh"
+    chmod +x "$d/bin/comm-watch.sh"
+    bash "$d/bin/comm-watch.sh" watchee >/dev/null 2>&1 &
+    local mon=$!
+    printf '%s\n%s\n' "$mon" sess-MONITOR > "$d/state/watchee.watch"
+    cat > "$d/bin/comm-wake.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() { printf '%s\n' "\$\$" >> "$d/started"; turns=\$((turns + 1)); [ "\$turns" -le 2 ] || exit 0; }
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    : > "$d/started"
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1
+    local rc=$?
+    pkill -P "$mon" 2>/dev/null || true
+    kill "$mon" 2>/dev/null || true
+    [ "$rc" -eq 0 ] || {
+        echo "  the ping start exited $rc beside a live Monitor, want 0"
+        sed 's/^/    /' "$d/state/comm-wake-watchee.log" 2>/dev/null | head -n 2
+        return 1
+    }
+    [ -s "$d/started" ] || { echo "  the ping watcher never reached its poll loop"; return 1; }
+    ! grep -q 'refusing to start a second' "$d/state/comm-wake-watchee.log" 2>/dev/null \
+        || { echo "  a Monitor was treated as a second ping watcher"; return 1; }
+    return 0
+}
+
 check "a live watcher no marker names still refuses a second" case_a_live_watcher_no_marker_names_still_refuses
+check "a live Monitor does not refuse a ping start" case_a_live_monitor_does_not_refuse_a_ping_start
 # THE WINDOWS TIER, on a Linux leg. Everything about it except the PowerShell
 # program itself is shell, and all of that is testable here with a sandboxed
 # PATH: a fake `ps -W` carrying the REAL column layout (PID PPID PGID WINPID
