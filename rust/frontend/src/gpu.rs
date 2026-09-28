@@ -1075,7 +1075,17 @@ const STRIP_STERN_CLEAR_CELLS: f32 = 2.0;
 const STRIP_TAU: f32 = 0.05;
 /// Vertical lift (in cell-widths) applied to the ACTIVE session's name in the
 /// bottom strip so it's distinguishable by POSITION, not just colour — it sits
-/// raised above its peers like a selected tab. Subtle; tune to taste.
+/// raised above its peers like a selected tab.
+///
+/// The `2.0 / BASE_CELL_W` term is the owner's second look at the band: with the
+/// strip tightened against the panes he asked the active name alone to rise
+/// another 2 px, its peers staying put, so the selected tab reads at a glance
+/// from the gap above it rather than from its ink. It is written in the same
+/// cell-width unit as the 0.4 it adds to — a bare `+ 2.0` here would be a length
+/// that does not scale with its neighbours, which is exactly the defect
+/// `STRIP_BOTTOM_PAD_ROWS` below was rewritten to delete. `strip_reserved_rows`
+/// spends this lift, so raising it eats the band's row budget: the invariant test
+/// is what says how far it can go.
 const STRIP_ACTIVE_LIFT_CELLS: f32 = 0.4;
 /// Cells of waterline between a bow's wheel and its box name — the `_` in
 /// `\ 0_-name-`. `ship_marks` alone spends it: the box name runs BENEATH the
@@ -1114,7 +1124,14 @@ const STRIP_ROWS: f32 = 2.0;
 /// (`2*cell_h + oy >= 2*cell_h + 2` simply fails once `oy < 2`). Scaling
 /// the pad deletes the regime instead of trading one defect for a worse
 /// one.
-const STRIP_BOTTOM_PAD_ROWS: f32 = 2.0 / BASE_CELL_H;
+///
+/// 8, not the original 2: the band hugs the window's bottom edge, so this pad is
+/// what decides how the band's spare space is SPLIT — every pixel added here
+/// lifts the whole ship and takes a pixel off the air above the session names.
+/// At 2 the owner measured 15 px of dead navy between the panes' bottom border
+/// and the names, against 6 below the waterline; at 8 it reads 9 above and 12
+/// below, which is the setting he picked from three rendered side by side.
+const STRIP_BOTTOM_PAD_ROWS: f32 = 8.0 / BASE_CELL_H;
 /// Hull thickness and waterline drop, as fractions of `BASE_CELL_H` — the row
 /// height the mock was drawn against, named rather than a bare 18 in a
 /// denominator so a change there can't silently detune the hull. The drop is
