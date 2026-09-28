@@ -108,12 +108,87 @@ setup_rows() {
     list_declares "$peer_ws"
 }
 
+RES_OUT=""; RES_RC=0
+# sot_wake_row run against the fake daemon, out of the copy's own comm-lib.sh.
+resolve() {
+    RES_OUT="$(bash -c 'source "$1/comm-lib.sh"; ENDPOINT=fixture; sot_wake_row "$2"' \
+        _ "$BIN" "$1" 2>/dev/null)"
+    RES_RC=$?
+    return 0
+}
+
 SEND_OUT=""; SEND_ERR=""; SEND_RC=0
 run_send() {
     SEND_OUT="$(cd "$WORK" && SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$HOST_PIN" \
         "$SEND" "$@" 2>"$WORK/err.txt")"
     SEND_RC=$?
     SEND_ERR="$(cat "$WORK/err.txt" 2>/dev/null)"
+    return 0
+}
+
+# S1 — exactly one live row declares the handle.
+case_one_declaring_row_resolves() {
+    setup_rows "ws-live" || { echo "  setup: could not join both rows"; return 1; }
+    resolve "$PEER"
+    [ "$RES_RC" -eq 0 ] || { echo "  rc $RES_RC, want 0 (out: '$RES_OUT')"; return 1; }
+    [ "$RES_OUT" = "ws-live" ] || { echo "  resolved to '$RES_OUT', want ws-live"; return 1; }
+    return 0
+}
+
+# S2 — the daemon answered and nobody declares it. A refusal, not a guess.
+case_no_declaring_row_refuses() {
+    setup_rows "ws-live" || { echo "  setup: could not join both rows"; return 1; }
+    printf '%s' '{"v":1,"id":1,"kind":"res","op":"workspace.list","payload":{"workspaces":[{"workspace_id":"ws-other","agent_handle":"someone-else"}]}}' \
+        > "$SOT_TEST_LIST_FIXTURE"
+    resolve "$PEER"
+    [ "$RES_RC" -eq 1 ] || { echo "  rc $RES_RC, want 1 (out: '$RES_OUT')"; return 1; }
+    [ -z "$RES_OUT" ] || { echo "  refused but still printed '$RES_OUT'"; return 1; }
+    return 0
+}
+
+# S3 — two rows declare one handle, which set_agent_handle really allows: it
+# writes one row and clears no other. Refuse; never take the first.
+case_two_declaring_rows_refuse_instead_of_taking_the_first() {
+    setup_rows "ws-live" || { echo "  setup: could not join both rows"; return 1; }
+    list_declares "ws-live" "ws-second"
+    resolve "$PEER"
+    [ "$RES_RC" -eq 3 ] || { echo "  rc $RES_RC, want 3 (out: '$RES_OUT')"; return 1; }
+    [ -z "$RES_OUT" ] || { echo "  ambiguity was resolved by guessing '$RES_OUT'"; return 1; }
+    return 0
+}
+
+# S4 — no answer at all is not evidence that no row declares it.
+case_no_answer_is_not_no_row() {
+    setup_rows "ws-live" || { echo "  setup: could not join both rows"; return 1; }
+    : > "$SOT_TEST_LIST_FIXTURE"
+    resolve "$PEER"
+    [ "$RES_RC" -eq 2 ] || { echo "  rc $RES_RC, want 2 (out: '$RES_OUT')"; return 1; }
+    return 0
+}
+
+# S5 — a malformed reply is rc 2, never rc 1: read as "no live row" it would
+# make the watcher exit on a transport hiccup.
+case_a_malformed_reply_is_not_no_row() {
+    setup_rows "ws-live" || { echo "  setup: could not join both rows"; return 1; }
+    printf '%s' '{"v":1,"id":1,"kind":"res","op":"workspace.list","payload":{"workspaces":"not-an-array"}}' \
+        > "$SOT_TEST_LIST_FIXTURE"
+    resolve "$PEER"
+    [ "$RES_RC" -eq 2 ] || { echo "  rc $RES_RC, want 2 (out: '$RES_OUT')"; return 1; }
+    return 0
+}
+
+# S6 — the defect itself: the registry still carries the id the join stamped,
+# the session has since continued in another row, and the poke must follow the
+# daemon rather than the stamp.
+case_the_poke_follows_the_daemon_not_the_stamped_field() {
+    setup_rows "ws-old" || { echo "  setup: could not join both rows"; return 1; }
+    list_declares "ws-live"
+    run_send "@$PEER" "aim at the row that exists"
+    [ "$SEND_RC" -eq 0 ] || { echo "  exited $SEND_RC (out: '$SEND_OUT' err: '$SEND_ERR')"; return 1; }
+    contains "$SEND_OUT" "+woken" || { echo "  receipt was '$SEND_OUT'"; return 1; }
+    local typed; typed="$(cat "$SOT_TEST_INPUT_LOG" 2>/dev/null)"
+    [ "$typed" = "ws-live" ] \
+        || { echo "  the poke was typed into '$typed', want ws-live (the row the daemon names)"; return 1; }
     return 0
 }
 
@@ -137,6 +212,12 @@ case_a_row_the_daemon_does_not_have_reads_as_gone() {
     return 0
 }
 
+check "one live row declaring the handle resolves to it" case_one_declaring_row_resolves
+check "no live row declaring the handle refuses instead of guessing" case_no_declaring_row_refuses
+check "two rows declaring one handle refuse, never the first" case_two_declaring_rows_refuse_instead_of_taking_the_first
+check "an unanswered workspace.list is not evidence of no row" case_no_answer_is_not_no_row
+check "a malformed workspace.list is not evidence of no row" case_a_malformed_reply_is_not_no_row
+check "the poke follows the daemon, not the workspace_id stamped at join" case_the_poke_follows_the_daemon_not_the_stamped_field
 check "the daemon's refusal for a row it does not have reads as gone, not busy" case_a_row_the_daemon_does_not_have_reads_as_gone
 
 echo "---"

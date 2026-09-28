@@ -66,7 +66,6 @@ _live_endpoint() {
 deliver() {  # $1 = target name
     local t="$1" thost tws ts resp ok enter_sent code
     thost="$(sot_jq -r --arg n "$t" '.agents[$n].host         // empty' "$REGISTRY")"
-    tws="$(sot_jq -r   --arg n "$t" '.agents[$n].workspace_id // empty' "$REGISTRY")"
     if [ -z "$thost" ]; then
         # Registry MISS on a DIRECTED send: this box cannot name the target.
         # "Miss" is exactly `.host` empty-or-absent, and comm-relay.sh's
@@ -118,18 +117,33 @@ deliver() {  # $1 = target name
         woke=""
     elif [ "$thost" != "$HOST" ]; then
         woke=" — not woken: row is on $thost, read at its next turn boundary"
-    elif [ -z "$tws" ]; then
-        woke=" — not woken: no workspace row"
     elif ! _live_endpoint; then
         woke=" — not woken: no daemon reachable from here"
     else
-        local gate_rc=0
-        sot_pty_input_gated "$tws" "$(printf '%s' "$FORMATTED" | base64 | tr -d '\n')" || gate_rc=$?
-        case "$gate_rc" in
-            0) woke=" +woken" ;;
-            1) woke=" — not woken: row $tws is not at a free prompt" ;;
-            3) woke=" — not woken: row $tws is gone (the daemon has no such row)" ;;
-            *) woke=" — not woken: row $tws did not answer" ;;
+        # THE handle->row binding, asked of the daemon HERE, not read from the
+        # registry field a join stamped once (comm-join.sh) and nothing ever
+        # refreshes (comm-status.sh's "never clobbers workspace_id"). A session
+        # that continues in another row kept waking the row it used to be in.
+        # 0 or 2+ matches REFUSE: a poke aimed by a guess types into whatever
+        # row the guess names. Every rc is captured with `|| rc=$?` because
+        # `set -e` is in force here -- a bare assignment would abort the whole
+        # send on a refusal, losing the receipt for a frame that WAS filed.
+        local row_rc=0
+        tws="$(sot_wake_row "$t")" || row_rc=$?
+        case "$row_rc" in
+            0)
+                local gate_rc=0
+                sot_pty_input_gated "$tws" "$(printf '%s' "$FORMATTED" | base64 | tr -d '\n')" || gate_rc=$?
+                case "$gate_rc" in
+                    0) woke=" +woken" ;;
+                    1) woke=" — not woken: row $tws is not at a free prompt" ;;
+                    3) woke=" — not woken: row $tws is gone (the daemon has no such row)" ;;
+                    *) woke=" — not woken: row $tws did not answer" ;;
+                esac
+                ;;
+            1) woke=" — not woken: no live row declares @$t" ;;
+            3) woke=" — not woken: two or more rows declare @$t" ;;
+            *) woke=" — not woken: the daemon did not answer" ;;
         esac
     fi
     # 3) the recipient annotation (messaging ruling, 2026-09-26): one factual

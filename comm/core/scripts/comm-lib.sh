@@ -1032,6 +1032,48 @@ sot_prompt_free() {
     ' >/dev/null 2>&1
 }
 
+# sot_wake_row HANDLE — the LIVE workspace row that declares HANDLE, asked of
+# the daemon at $ENDPOINT at the moment of asking. This is the wake path's ONE
+# authority for handle->row: the registry's own `workspace_id` and the ping
+# watcher's environment are both copies taken once at join time, and a session
+# that continues in another row keeps waking the row it used to be in
+# (2026-09-28: one ping held ~27h). The daemon owns rows and re-learns the
+# binding on every `agent.join` (ADR 0046), so ask IT.
+# Prints the id and returns 0 for exactly one match; 1 when the daemon answered
+# and no live row declares it; 2 when there was no usable answer; 3 when two or
+# more rows declare it. Two rows CAN declare one handle: `set_agent_handle`
+# writes one row and clears no other. 1 and 3 are REFUSALS -- a wake aimed by a
+# guess types into someone else's session, which is the harm the prompt gate
+# exists to prevent.
+# $ENDPOINT is the caller's, exactly as sot_pty_screen and sot_pty_input
+# already take it; this never resolves an endpoint itself.
+sot_wake_row() {
+    local h="$1" resp ids id count=0 first=""
+    [ -n "$h" ] || return 2
+    resp="$(sot_oneshot_request '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list 2>/dev/null)" || return 2
+    [ -n "$resp" ] || return 2
+    # The array check is what separates rc 2 (garbage) from rc 1 (a real empty
+    # answer). Without it a malformed reply reads as "no live row" and the
+    # watcher exits on a transport hiccup.
+    printf '%s' "$resp" | jq -e '(.payload.workspaces | type) == "array"' >/dev/null 2>&1 || return 2
+    ids="$(printf '%s' "$resp" | jq -r --arg h "$h" \
+        '.payload.workspaces[] | select((.agent_handle // "") == $h) | .workspace_id' 2>/dev/null)" || return 2
+    # Counted in this shell, not a pipeline: no `grep -c`, no `wc -l` on a
+    # possibly-empty string, and no subshell that would lose $count.
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        count=$((count + 1))
+        [ "$count" -eq 1 ] && first="$id"
+    done <<EOF
+$ids
+EOF
+    case "$count" in
+        0) return 1 ;;
+        1) printf '%s\n' "$first"; return 0 ;;
+        *) return 3 ;;
+    esac
+}
+
 # sot_row_gone RESP — 0 when RESP is the daemon's refusal for a workspace it
 # does not have (`code: "unknown_workspace"`, the pty.screen and pty.input arms
 # both answer it), 1 otherwise, including an empty RESP: a reply we never saw

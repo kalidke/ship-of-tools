@@ -209,16 +209,20 @@ spawn_in() {
 # request to STUB_REQLOG. Started per case, stopped by the case; a real
 # sotd is never reached.
 STUB_SOCK=""; STUB_REQLOG=""; STUB_NC_PID=""; STUB_WATCHER_PID=""; STUBN=0
-start_stub_daemon() {  # WSID SLUG ROOT
-    local wsid="$1" slug="$2" root="$3" fifo hello create list ptyin
+start_stub_daemon() {  # WSID SLUG ROOT [HANDLE]
+    # HANDLE is what the row DECLARES through agent.join, which is how the
+    # daemon publishes a row's sot-comm handle and how comm-send.sh now finds
+    # the row to poke (comm-lib.sh's sot_wake_row). A stub that leaves it
+    # empty models a row that never joined, and no poke is aimed at it.
+    local wsid="$1" slug="$2" root="$3" handle="${4:-}" fifo hello create list ptyin
     STUBN=$((STUBN + 1))
     STUB_SOCK="$WORK/stub-$STUBN.sock"; fifo="$WORK/stub-$STUBN.fifo"; STUB_REQLOG="$WORK/stub-$STUBN.log"
     mkfifo "$fifo"; : > "$STUB_REQLOG"
     hello='{"v":1,"id":1,"kind":"res","op":"hello","payload":{"session_id":"s1","revision":0,"snapshot_pending":false}}'
     create="$(jq -nc --arg id "$wsid" --arg slug "$slug" --arg root "$root" \
         '{v:1,id:1,kind:"res",op:"workspace.create",payload:{workspace_id:$id,slug:$slug,label:$slug,project_root:$root}}')"
-    list="$(jq -nc --arg id "$wsid" --arg slug "$slug" --arg root "$root" \
-        '{v:1,id:1,kind:"res",op:"workspace.list",payload:{workspaces:[{workspace_id:$id,slug:$slug,label:$slug,project_root:$root,kernel_running:false,is_default:false,autostart_claude:true,agent:"claude",agent_name:"",agent_handle:"",task:"",agent_state:"",agent_summary:"",agent_status_at:"",repl_state:"idle",runtime:"capsule",phase:"ready"}]}}')"
+    list="$(jq -nc --arg id "$wsid" --arg slug "$slug" --arg root "$root" --arg h "$handle" \
+        '{v:1,id:1,kind:"res",op:"workspace.list",payload:{workspaces:[{workspace_id:$id,slug:$slug,label:$slug,project_root:$root,kernel_running:false,is_default:false,autostart_claude:true,agent:"claude",agent_name:"",agent_handle:$h,task:"",agent_state:"",agent_summary:"",agent_status_at:"",repl_state:"idle",runtime:"capsule",phase:"ready"}]}}')"
     ptyin='{"v":1,"id":1,"kind":"res","op":"pty.input","payload":{"ok":true,"bytes":1,"runtime":"capsule","enter_sent":true}}'
     # comm-send.sh types only into a row whose CURRENT screen shows a free
     # prompt (comm-lib.sh's sot_pty_input_gated): without a pty.screen answer
@@ -982,7 +986,7 @@ case_send_types_live_into_same_host_row_else_queues() {
     [ "$JOIN_RC" -eq 0 ] || { echo "  sender setup join exited $JOIN_RC: $JOIN_ERR"; return 1; }
     h_sender="sender31-${HOST}"; self_sender="$NEXT_SELF_FILE"
 
-    start_stub_daemon "ws-live-31" "recipient31" "$root_recipient"
+    start_stub_daemon "ws-live-31" "recipient31" "$root_recipient" "$h_recipient"
     errfile="$WORK/send-live.err"
     out="$(cd "$root_sender" && SOT_COMM_SELF_FILE="$self_sender" SOT_COMM_TEST_HOST="$HOST" \
         SOT_SOCKET="$STUB_SOCK" "$SEND" "@$h_recipient" "hello live" 2>"$errfile")"
