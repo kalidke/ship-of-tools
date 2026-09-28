@@ -281,14 +281,18 @@ twice and wakes the session twice. Items 9–14 close that.
     **The claim is verified, not assumed.** Decision 10 says a claim means "the
     frame carrying this id is in the inbox I file into". The code equated that
     with "`write_all` returned `Ok`", and under an overlapping append the two are
-    not the same: bytes can land interleaved, and where the state dir is on a
-    network filesystem an append is not atomic at all and a record can be
-    overwritten outright. The frontend would then claim a frame no reader can
-    parse — a silent loss with a false success on top, which is the one outcome
-    this ADR exists to prevent. So the append is followed by a read-back through
-    the same bounded window, with the same predicate the dedupe uses, and the
-    claim goes out only if a well-formed record carrying this `(id, to)` is
-    there. Decision 10 is now implemented as written rather than approximated.
+    not the same: two appends can land interleaved, and the frontend would
+    then claim a frame no reader can parse — a silent loss with a false success
+    on top, which is the one outcome this ADR exists to prevent. So the append
+    is followed by a read-back through the same bounded window, with the same
+    predicate the dedupe uses, and the claim goes out only if a well-formed
+    record carrying this `(id, to)` is there. Decision 10 is now implemented as
+    written rather than approximated.
+
+    The read-back is bounded by what it can observe: it reads back through
+    the handle it wrote on, so it sees a same-host sibling's interleave and
+    not a record destroyed by a writer on another host, which decision 14
+    keeps out of scope by keeping readers off those platforms.
 
     The read-back fails CLOSED, deliberately opposite to the append it follows.
     The append fails open because a duplicate beats a drop; a claim is a statement

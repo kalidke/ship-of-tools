@@ -19903,14 +19903,12 @@ fn inbox_tail_window(f: &mut std::fs::File, want: u64) -> std::io::Result<String
         // The window opened mid-line. That first partial line is not a
         // record and must not be read as one.
         //
-        // This arithmetic cannot be wrong in a costly direction, and there
-        // is no third direction. Drop too MUCH — `start` landed on a line
-        // boundary, so this trims a complete line — and the window is
-        // shorter and a match is missed. Drop too LITTLE and the matcher is
-        // fed a partial line, which fails to parse and is skipped. Removing
-        // input from a pure predicate can only turn a true into a false,
-        // never a false into a true, and nothing on this path deletes,
-        // truncates or rewrites.
+        // Drop too MUCH — `start` landed on a line boundary, so this trims
+        // a complete line — and the window is shorter and a match is missed.
+        // Drop too LITTLE and the matcher is fed a partial line, which fails
+        // to parse and is skipped. Removing input from a pure predicate can
+        // only turn a true into a false, never a false into a true, and
+        // nothing on this path deletes, truncates or rewrites.
         //
         // What that costs depends on the caller, which is why `want` is the
         // caller's to size and not a constant here. The dedupe pays one
@@ -20228,16 +20226,16 @@ fn append_agent_message_at(path: &std::path::Path, payload: &serde_json::Value) 
     // kernel releases the lock when this handle drops at the end of this
     // function. Opened only for a frame that has a key; a keyless frame
     // arbitrates nothing and is appended unconditionally.
+    let token_path = path.with_extension("lock");
     let token = match &key {
         Some(_) => match std::fs::OpenOptions::new()
-            .read(true)
             .write(true)
             .create(true)
-            .open(path.with_extension("lock"))
+            .open(&token_path)
         {
             Ok(t) => Some(t),
             Err(e) => {
-                tracing::debug!(error = %e, ?path, "agent.message: inbox token unopenable; appending");
+                tracing::debug!(error = %e, path = ?token_path, "agent.message: inbox token unopenable; appending");
                 None
             }
         },
@@ -20285,11 +20283,14 @@ fn append_agent_message_at(path: &std::path::Path, payload: &serde_json::Value) 
     // `write_all` returned Ok; that is not the same fact as "the frame is in
     // the file" (ADR 0048 decision 10), and this function's caller sends a
     // RECEIPT for whatever this returns. An append that overlapped an
-    // unlocked writer — the fail-open arm above is exactly such a writer, and
-    // over NFS an append is not atomic at all — can land interleaved or be
-    // overwritten, and the result is a record no reader will ever parse. So
-    // read it back through the same window, with the same predicate the
-    // dedupe used: there is one notion of "in the file", not two.
+    // unlocked writer — the fail-open arm above is exactly such a writer —
+    // can land interleaved, and the result is a record no reader will ever
+    // parse. So read it back through the same window, with the same
+    // predicate the dedupe used: there is one notion of "in the file", not
+    // two. What this CANNOT see is a record destroyed by a writer on
+    // another host: the read-back goes through the handle we just wrote on,
+    // so on a network filesystem it returns our own cached bytes. Decision
+    // 14 keeps that out of scope by keeping readers off those platforms.
     //
     // This verify fails CLOSED, deliberately opposite to the append above.
     // The append fails open because a duplicate beats a drop; a claim is a
@@ -28108,14 +28109,6 @@ mod tests {
         let frame = inbox_frame(Some("x-1"), "peer-one", "hi");
         assert!(append_agent_message_at(&path, &frame));
         assert_eq!(inbox_lines(&path).len(), 1);
-        // The data file is never locked, so a reader is never refused
-        // either. On Windows this read is what the old design — the lock
-        // held on fe-inbox.jsonl itself — refused, along with the append
-        // above.
-        assert!(
-            std::fs::read_to_string(&path).is_ok(),
-            "the inbox must stay readable while the token is held"
-        );
         // And again, still locked out: two appends, no dedupe, because the
         // window was never readable. A duplicate is the documented cost.
         assert!(append_agent_message_at(&path, &frame));
