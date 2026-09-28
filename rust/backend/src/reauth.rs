@@ -495,7 +495,7 @@ pub fn restart_blocking(plan: ReauthRestart) {
     // `StartMode::Resume` — a reauth is never a row's first-ever run, and
     // the account itself is read back off the registry inside this call
     // (`spawn_and_watch`), which is why the record had to move first.
-    match crate::capsule_workspace::start_supervisor(
+    let phase = match crate::capsule_workspace::start_supervisor(
         &plan.state_root,
         &plan.row.workspace_id,
         crate::capsule_workspace::StartMode::Resume,
@@ -505,14 +505,80 @@ pub fn restart_blocking(plan: ReauthRestart) {
         &plan.row.slug,
         plan.workspaces.clone(),
     ) {
-        Ok(phase) => tracing::info!(
-            workspace_id = %plan.row.workspace_id, account = %discovery_name(&account), phase,
-            "workspace.reauth: replacement leg spawned on the new account"
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                workspace_id = %plan.row.workspace_id, error = %e,
+                "workspace.reauth: the replacement leg did not spawn; the row rests until it is opened again, on the new account"
+            );
+            return;
+        }
+    };
+    // A spawn is only two thirds of a revival, and this is the third.
+    // `StartMode::Resume` DELIBERATELY never resurrects an ended run (ADR
+    // 0041's no-resurrection rule), so the replacement settles at
+    // `ended_no_respawn` BY DESIGN: a live supervisor, holding this row's
+    // producer argv, with no voyage and nothing on the pty. `reset` mints
+    // the voyage the leg actually runs in. `ensure_started`'s `Selection`
+    // arm does all three (retire, resume, reset); this path used to do the
+    // first two and stop, which left a row that logged as spawned and had
+    // no leg at all — data-safe, and silent, which is worse.
+    //
+    // Why the reset belongs HERE and may not be left to the next attach:
+    // `plan.argv` carries `--resume <id>` from `claude_resume_argv`, built
+    // for this one call, and that id is never persisted on the row. An
+    // attach retires this supervisor and respawns from the ordinary
+    // `agent_argv`, whose `--continue` resolves against the NEW account's
+    // own selector — which names this conversation only once the
+    // replacement leg has taken a turn. A leg that never ran never moved
+    // that selector, so reviving anywhere but here lands on a different
+    // conversation, or on none.
+    let resting = crate::capsule_workspace::phase_str(sot_log::wire::SupervisorPhase::EndedNoRespawn);
+    if phase != resting {
+        tracing::warn!(
+            workspace_id = %plan.row.workspace_id, phase, expected = resting,
+            "workspace.reauth: the replacement supervisor settled somewhere other than the phase a resumed run must rest at; minting its voyage anyway"
+        );
+    }
+    let minted = sot_log::supervisor_client::reset(&state_dir);
+    let voyage = minted.as_ref().ok().map(String::as_str);
+    match replacement_is_running(phase, voyage) {
+        Ok(()) => tracing::info!(
+            workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
+            voyage = voyage.unwrap_or_default(),
+            "workspace.reauth: the replacement leg is running on the new account"
         ),
-        Err(e) => tracing::warn!(
-            workspace_id = %plan.row.workspace_id, error = %e,
-            "workspace.reauth: the replacement leg did not spawn; the row rests until it is opened again, on the new account"
+        Err(detail) => tracing::error!(
+            workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
+            detail = %detail,
+            error = %minted.as_ref().err().map(ToString::to_string).unwrap_or_default(),
+            "workspace.reauth: the replacement leg is NOT running, so this row has no leg; \
+             `sot-capsule reset <state-dir>` revives it on the resume argv that supervisor still holds"
         ),
+    }
+}
+
+/// Whether a replacement leg is actually RUNNING, from the phase its
+/// supervisor settled at and the voyage the `reset` minted (`None` when
+/// the reset failed or answered nothing). Pure and exhaustive so the
+/// decision is testable without a supervisor — the same reason
+/// [`run_ended`] is factored out above.
+///
+/// This encodes the 0.6.6 defect it was written for. `restart_blocking`
+/// used to report success on a `start_supervisor` success ALONE, with the
+/// settled phase merely printed in the same line. But `StartMode::Resume`
+/// deliberately never resurrects an ended run (ADR 0041's no-resurrection
+/// rule), so on the happy path that phase IS `ended_no_respawn`: the line
+/// announced a spawned leg for a row that had a live supervisor, no voyage
+/// and nothing on the pty. The spawn is two thirds of a revival; only a
+/// minted voyage is evidence of the third. So the voyage decides, and the
+/// phase is carried only to name what was found — never to excuse it.
+fn replacement_is_running(phase: &str, voyage: Option<&str>) -> Result<(), String> {
+    match voyage {
+        Some(v) if !v.trim().is_empty() => Ok(()),
+        _ => Err(format!(
+            "the replacement supervisor settled at {phase:?} and no voyage was minted for it"
+        )),
     }
 }
 
@@ -1031,6 +1097,40 @@ mod tests {
             "",
             "an unpersisted switch leaves the record on the account the leg spends"
         );
+    }
+
+    /// The defect: a spawn alone was reported as a running leg. A minted
+    /// voyage is the ONLY evidence the agent is on the pty, so it decides
+    /// on its own -- whatever phase the supervisor settled at.
+    #[test]
+    fn only_a_minted_voyage_means_the_replacement_is_running() {
+        assert!(super::replacement_is_running("ended_no_respawn", Some("01a0e6c5-voyage")).is_ok());
+        assert!(super::replacement_is_running("ready", Some("01a0e6c5-voyage")).is_ok());
+    }
+
+    /// The exact shape that shipped: the supervisor started and settled at
+    /// the phase a resumed run always rests at, and nothing minted a
+    /// voyage. That is a row with NO leg, and it must never read as success.
+    #[test]
+    fn a_spawn_with_no_voyage_is_a_row_with_no_leg() {
+        let verdict = super::replacement_is_running("ended_no_respawn", None);
+        let detail = verdict.expect_err("a replacement with no voyage is not running");
+        assert!(
+            detail.contains("ended_no_respawn"),
+            "the failure must name the phase it found, got {detail:?}"
+        );
+        assert!(
+            detail.contains("no voyage was minted"),
+            "the failure must say what was missing, got {detail:?}"
+        );
+    }
+
+    /// A reset that answers an empty or blank id has minted nothing; it may
+    /// not be read as a voyage just because it came back `Ok`.
+    #[test]
+    fn an_empty_voyage_id_is_not_a_voyage() {
+        assert!(super::replacement_is_running("ended_no_respawn", Some("")).is_err());
+        assert!(super::replacement_is_running("ended_no_respawn", Some("   ")).is_err());
     }
 
     // `end_run`'s outcomes partition into "the run is over" (spawn the
