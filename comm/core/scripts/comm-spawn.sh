@@ -41,7 +41,13 @@
 #                 repo-based, so status/clean/sync still group by repo — only the
 #                 displayed label + sort slug change.
 #   --endpoint    daemon address; else $SOT_SPAWN_ENDPOINT / $SOT_SOCKET /
-#                 auto-detected from the running sotd
+#                 auto-detected from the running sotd. A daemon on ANOTHER
+#                 box (its own declared host, asked over version.query —
+#                 never guessed from the endpoint's path) gets NO
+#                 provisional registry row and NO inbox file here: both are
+#                 keyed to THIS host, the child joins its own box's
+#                 registry, and the pair would stand as a false success
+#                 for every later send from here.
 #
 #
 # Rollback contract (Codex review F9, hardened in round 2 findings 1 & 2):
@@ -50,15 +56,18 @@
 # of both the derived-claim write and the explicit-name write), so there
 # is no window — not even the inbox touch, or an invalid explicit --name
 # failing there — where a row can exist unprotected. On any SYNCHRONOUS
-# failure this script itself detects — nc missing, the daemon endpoint not
-# resolving, the same-label refusal (F5), a rejected/failed
-# workspace.create — the trap CONDITIONALLY deletes
+# failure this script itself detects after that point — the same-label
+# refusal (F5), a rejected/failed workspace.create, a capsule row that
+# never reaches "ready" — the trap CONDITIONALLY deletes
 # the row: only if it still matches this exact provisional write (root +
 # nonce + status:"spawning"), never a row that has since been replaced by
 # a real join or an explicit claimant (comm-lib.sh:
 # registry_del_if_provisional). The outcome — rolled back, left alone
 # because it's no longer ours, or the delete itself failed — is reported
-# honestly in each case, not just claimed.
+# honestly in each case, not just claimed, and a spawn that wrote no row
+# at all (a daemon on another box; nc missing or an endpoint that will not
+# resolve, both of which now fail BEFORE the write) reports nothing rather
+# than a verdict on a row it never wrote.
 #
 # NOT covered, and not coverable from here: the daemon boots claude
 # ASYNCHRONOUSLY after workspace.create already returned success (a
@@ -239,8 +248,17 @@ rm -f "$PROV_ROOT_FILE"
 # "rolled back". A genuine deletion failure is reported as a failure too;
 # nothing here claims success it didn't verify.
 SPAWN_SUCCEEDED=false
+# PROV_WRITTEN (rc9.5): whether either write path below actually ran. A
+# spawn against a daemon on ANOTHER box writes no row at all, and a
+# resolution/endpoint failure now happens BEFORE the write rather than
+# after it — in both cases `registry_del_if_provisional` would find
+# nothing of ours and the reporter below would announce a verdict
+# ("no longer matches what this spawn wrote") on a row that never
+# existed. Silence is the honest report for nothing written.
+PROV_WRITTEN=false
 _spawn_rollback_report() {
     [ "$SPAWN_SUCCEEDED" = true ] && return 0
+    [ "$PROV_WRITTEN" = true ] || return 0
     # This is the ONLY rollback: the provisional sot-comm handle. A
     # workspace row, once workspace.create answers, is never destroyed —
     # another caller can win the same slug between a list and a create
@@ -257,6 +275,65 @@ _spawn_rollback_report() {
     esac
 }
 trap _spawn_rollback_report EXIT
+
+# --- resolve the daemon endpoint, and learn WHICH BOX it is on -----------
+# Both happen BEFORE either provisional write below (rc9.5), because every
+# one of those writes is keyed to THIS host: a registry row whose `host` is
+# this box, an inbox file under this box's $COMM_HOME. The endpoint used to
+# be resolved AFTER them, so at the moment it wrote the row the script did
+# not yet know which daemon — let alone which box — it was spawning into.
+resolve_endpoint() {
+    sot_daemon_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
+}
+
+# Send a frame to the daemon, return the first response line matching op $2.
+# App-level auth (ADR 0010 hardening): daemon requires a token-valid hello
+# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1).
+sot_send() {
+    local frame="$1" op="$2" hp
+    case "$ENDPOINT" in
+        tcp:*)  hp="${ENDPOINT#tcp:}"
+                { sot_hello_frame; printf '%s\n' "$frame"; } | timeout 6 nc "${hp%:*}" "${hp##*:}" 2>/dev/null | grep -m1 "\"op\":\"$op\"" ;;
+        unix:*) sot_oneshot_request "$frame" "$op" ;;
+        *)      return 1 ;;
+    esac
+}
+
+if ! command -v nc >/dev/null 2>&1; then
+    echo "ERROR: nc not found — needed to reach the daemon." >&2; exit 1
+fi
+if ! ENDPOINT="$(resolve_endpoint)"; then
+    echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT." >&2; exit 1
+fi
+
+# The daemon's OWN declared host: `version.query` -> `.payload.daemon.host`
+# (`DaemonVersion.host`, sourced from `workspaces::declared_host()` — the
+# same resolution ADR 0046 binds a hello's `host` to). NEVER parsed out of
+# the endpoint path: `sot-host-<name>.sock` is a name, not a fact, and
+# trusting a name for a host is exactly the defect class this fix removes.
+#
+# `sot_host` is the local side of that comparison — comm-lib.sh's
+# documented mirror of Rust's `state_dir::host_name()` (first `.`-label,
+# lowercased, `$SOT_SELF_HOST` override), which comm-context.sh's own raw
+# `hostname -s` `HOST` deliberately is not, so a mixed-case hostname does
+# not read as a foreign box.
+#
+# An UNDECLARED host stays LOCAL, exactly as before this fix: the field is
+# `#[serde(default)]` and only a daemon predating v0.6.0 answers without
+# it; a daemon that answers nothing at all fails the workspace.create
+# below anyway (and the trap rolls the row back); and no other signal here
+# can name a box without guessing. The one stderr line says so rather than
+# leaving a silent assumption.
+SPAWN_HOST=""
+VRESP="$(sot_send '{"v":1,"id":1,"kind":"req","op":"version.query","payload":{}}' version.query || true)"
+[ -n "$VRESP" ] && SPAWN_HOST="$(printf '%s' "$VRESP" | jq -r '.payload.daemon.host // empty' 2>/dev/null || true)"
+SELF_HOST="$(sot_host 2>/dev/null || true)"
+SPAWN_IS_LOCAL=true
+if [ -n "$SPAWN_HOST" ] && [ -n "$SELF_HOST" ] && [ "$SPAWN_HOST" != "$SELF_HOST" ]; then
+    SPAWN_IS_LOCAL=false
+elif [ -z "$SPAWN_HOST" ]; then
+    echo "comm-spawn: the daemon at $ENDPOINT did not declare a host (predates version.query's host field) — assuming it runs on this box (${SELF_HOST:-unknown})." >&2
+fi
 
 # NAME omitted -> derive it AND write the provisional row atomically, same
 # algorithm + same locked-claim path as a plain comm-join.sh (ADR 0028
@@ -279,9 +356,39 @@ trap _spawn_rollback_report EXIT
 DERIVED_CLAIM=false
 AUTO_DISPLAY_LABEL=false
 if [ -z "$NAME" ]; then
-    DERIVED_CLAIM=true
-    claim_derived_handle fresh "$CANON_ROOT" "$HOST" "$PROV_OBJ"
-    NAME="$CLAIMED_NAME"
+    if [ "$SPAWN_IS_LOCAL" = true ]; then
+        DERIVED_CLAIM=true
+        claim_derived_handle fresh "$CANON_ROOT" "$HOST" "$PROV_OBJ"
+        NAME="$CLAIMED_NAME"
+        PROV_WRITTEN=true
+    else
+        # Daemon on another box (rc9.5): derive the name, claim NOTHING —
+        # `sot_derive_handle` is the pure half of `claim_derived_handle`
+        # (the same three output lines, read the same way, no registry
+        # write). It is handed the TARGET's declared host, not $HOST: a
+        # handle for a session on another box that carried THIS host would
+        # name the wrong machine, the same guess-from-a-name defect in
+        # another coat. The tier walk still consults this box's registry,
+        # which is the right answer on a shared $HOME (a live row for the
+        # candidate is a real collision) and harmless otherwise.
+        # Captured BEFORE the reads, not read straight off the
+        # substitution: a derivation that exhausted every tier returns
+        # nonzero with no output, and the first `read` would then fail
+        # under `set -e` and kill the script before this message could
+        # say which host it was deriving for.
+        if ! DERIVED_LINES="$(sot_derive_handle fresh "$CANON_ROOT" "$SPAWN_HOST")"; then
+            echo "ERROR: could not derive a handle for a session on $SPAWN_HOST — see the reason above, or pass --name" >&2
+            exit 1
+        fi
+        { IFS= read -r NAME
+          IFS= read -r CLAIMED_QUALIFIER
+          IFS= read -r CLAIMED_TIER1
+        } <<< "$DERIVED_LINES"
+        if [ -z "$NAME" ]; then
+            echo "ERROR: derivation produced no handle for a session on $SPAWN_HOST — pass --name" >&2
+            exit 1
+        fi
+    fi
     if [ -n "$CLAIMED_QUALIFIER" ] && [ -z "$DISPLAY_LABEL" ]; then
         DISPLAY_LABEL="${REPO_BASE}-${CLAIMED_QUALIFIER}"
         AUTO_DISPLAY_LABEL=true
@@ -303,8 +410,11 @@ fi
 # A DERIVED name was already atomically claimed above (registry row + all)
 # — checking "already in registry" again here would always fire (it's
 # there because we just put it) and abort every derived spawn. The
-# duplicate check only applies to an EXPLICIT name, where the row hasn't
-# been written yet.
+# duplicate check applies to an EXPLICIT name, where the row hasn't been
+# written yet; a name derived for ANOTHER box (rc9.5) is also unclaimed
+# here, and reaches this check harmlessly — fresh-mode derivation already
+# escalated away from every candidate this registry holds, so it cannot
+# fire on one.
 if [ "$DERIVED_CLAIM" = false ] && jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
     echo "ERROR: agent '@$NAME' already in registry — pick another name or comm-leave it first" >&2; exit 1
 fi
@@ -320,24 +430,6 @@ BIN="$COMM_HOME/bin"
 # channel, read on the agent's /sot-session-start backlog poll.
 TASKMSG=""
 [ -n "$TASK" ] && TASKMSG="Task from @${SPAWNER}: ${TASK} — reply to @${SPAWNER} via ${BIN}/comm-send.sh when done or blocked (your local text is invisible to peers)."
-
-# --- resolve the daemon endpoint (workspace mode only) ---
-resolve_endpoint() {
-    sot_daemon_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
-}
-
-# Send a frame to the daemon, return the first response line matching op $2.
-# App-level auth (ADR 0010 hardening): daemon requires a token-valid hello
-# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1).
-sot_send() {
-    local frame="$1" op="$2" hp
-    case "$ENDPOINT" in
-        tcp:*)  hp="${ENDPOINT#tcp:}"
-                { sot_hello_frame; printf '%s\n' "$frame"; } | timeout 6 nc "${hp%:*}" "${hp##*:}" 2>/dev/null | grep -m1 "\"op\":\"$op\"" ;;
-        unix:*) sot_oneshot_request "$frame" "$op" ;;
-        *)      return 1 ;;
-    esac
-}
 
 # comm-spawn never destroys a workspace row itself, on any failure after
 # create answers: another caller can win the same slug between a list and
@@ -358,21 +450,33 @@ _row_left_running() {  # reason
 # never boots. For a DERIVED name, PROV_OBJ was already written atomically
 # above (claim_derived_handle) — only an EXPLICIT name still needs the
 # write here (its collision, if any, was already ruled out above).
-if [ "$DERIVED_CLAIM" = false ]; then
-    with_lock registry_put "$NAME" "$PROV_OBJ"
+#
+# ONLY when the daemon is on THIS box (rc9.5). Both stores are this box's:
+# the row records `host: $HOST` and the inbox file lives under this box's
+# $COMM_HOME, so "the real join later overwrites this row" holds only while
+# the child shares this $HOME. A child on ANOTHER box joins THAT box's
+# registry, leaving this pair to stand as a false success for the rest of
+# its life: comm-send.sh reads the row as a registry HIT (`deliver`),
+# appends to the local inbox, and prints `filed -> @<name>` with exit 0
+# while nothing on the target box ever reads that file. Writing nothing is
+# what makes the same send route over the relay instead (comm-send.sh's
+# registry-MISS branch execs comm-relay.sh), and what makes a handle that
+# is not yet reachable say so.
+if [ "$SPAWN_IS_LOCAL" = true ]; then
+    if [ "$DERIVED_CLAIM" = false ]; then
+        with_lock registry_put "$NAME" "$PROV_OBJ"
+        PROV_WRITTEN=true
+    fi
+    : >> "$INBOX_DIR/$NAME.jsonl"
 fi
-: >> "$INBOX_DIR/$NAME.jsonl"
 
 # Rollback protection is already armed (see the trap set right after
 # PROV_OBJ was built, above) — before either write path, including this
-# one and the inbox touch just above it.
+# one and the inbox touch just above it. The endpoint resolution that used
+# to sit HERE now runs before that trap is armed (it has to: its answer
+# decides whether either write happens at all), so an unresolvable daemon
+# fails with nothing written and nothing to roll back.
 
-if ! command -v nc >/dev/null 2>&1; then
-    echo "ERROR: nc not found — needed to reach the daemon." >&2; exit 1
-fi
-if ! ENDPOINT="$(resolve_endpoint)"; then
-    echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT." >&2; exit 1
-fi
 # Same-label refusal (Codex review F5, hardened in round 2 finding 3):
 # an auto-composed display label (base-qualifier) must not be able to
 # collide with an EXISTING workspace — e.g. a worktree's
@@ -511,6 +615,12 @@ SPAWN_SUCCEEDED=true
 # comm + reads its repo CLAUDE.md; nothing is pasted.
 [ -n "$SPAWNER" ] && with_lock registry_touch "$SPAWNER" 2>/dev/null || true
 echo "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (agent=${AGENT}, autostart; NO brief — agent uses its repo CLAUDE.md / AGENTS.md)."
+# Said BEFORE the --task attempt below, because it is also why that attempt
+# can fail: a handle with no row here is not addressable here yet.
+if [ "$SPAWN_IS_LOCAL" = false ]; then
+    echo "@${NAME} runs on ${SPAWN_HOST}, so this box wrote NO registry row and NO inbox for it — it is not addressable from here yet."
+    echo "It becomes reachable once it joins comm on ${SPAWN_HOST} (~1 min); sends from here then route over the relay."
+fi
 if [ -n "$SPAWNER" ]; then
     echo "The daemon/FE auto-starts $([ "$AGENT" = codex ] && echo ccx || echo ccb) on first attach; the agent joins comm (~1 min) and reports to @${SPAWNER}."
 else
@@ -533,6 +643,8 @@ if [ -n "$TASKMSG" ]; then
         exit 1
     fi
 fi
-echo "@${NAME} is addressable NOW: ${BIN}/comm-send.sh @${NAME} \"...\" queues durably in its inbox,"
-echo "and the agent reads the backlog + replies once its comm bootstrap finishes (~1 min after first attach)."
+if [ "$SPAWN_IS_LOCAL" = true ]; then
+    echo "@${NAME} is addressable NOW: ${BIN}/comm-send.sh @${NAME} \"...\" queues durably in its inbox,"
+    echo "and the agent reads the backlog + replies once its comm bootstrap finishes (~1 min after first attach)."
+fi
 echo "Watch: ${BIN}/comm-list.sh  /  ${BIN}/comm-poll.sh"
