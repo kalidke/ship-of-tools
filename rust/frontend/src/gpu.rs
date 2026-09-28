@@ -15746,8 +15746,8 @@ impl State {
                     // the claim now travels back over the link the frame
                     // arrived on, so it cannot miss the hub by
                     // construction. The set builder and its predicate stay
-                    // and are read HERE, per inbound frame, in
-                    // `receipt_from_rows`.
+                    // and are read HERE, in `receipt_from_rows`, wherever a
+                    // reader exists.
                     // --capture-cycle <N>: simulate N Ctrl+PgDn presses
                     // (negative = Ctrl+PgUp) on the first workspace.list
                     // reply. Consumed once so a re-fetch from a later
@@ -19588,12 +19588,13 @@ fn fe_state_path() -> Option<std::path::PathBuf> {
 
 /// Path of the agent-relay inbox (`<state-dir>/fe-inbox.jsonl`). The daemon
 /// pushes `agent.message` evt frames over the SSH-forwarded socket; the FE
-/// appends each as one JSON line here, on every platform and unconditionally.
-/// A READER for it exists only where [`fe_inbox_has_a_local_reader`] says so:
-/// there the in-terminal agent on this machine receives cross-machine
-/// messages instantly instead of polling the git bus, and elsewhere the line
-/// is written and no process ever opens it — which is why the CLAIM, never
-/// the append, is what this frontend gates (ADR 0048). One object per line:
+/// appends each ordinary message as one JSON line here (a nav envelope is
+/// intercepted before the append), on every platform. A READER for it exists
+/// only where [`fe_inbox_has_a_local_reader`] says so: there the in-terminal
+/// agent on this machine receives cross-machine messages instantly instead of
+/// polling the git bus, and elsewhere nothing CONSUMES the line — no process
+/// acts on the frame — which is why the CLAIM, never the append, is what this
+/// frontend gates (ADR 0048). One object per line:
 /// `{"from":..,"to":..,"text":..,"ts":..}`.
 fn fe_inbox_path() -> Option<std::path::PathBuf> {
     crate::paths::sot_state_dir().map(|d| d.join("fe-inbox.jsonl"))
@@ -19651,8 +19652,8 @@ pub(crate) fn self_comm_handle() -> String {
 /// The complete set of sot-comm handles declared by `rows` (item 18) —
 /// pure over rows, no `&self`, no connection, so it unit-tests without a
 /// wire. This is the set `receipt_from_rows` tests a relayed frame's
-/// `to` against, per inbound frame (ADR 0048) — read fresh from the
-/// own-host rows each time, so there is no declared set to go stale.
+/// `to` against (ADR 0048) — read fresh from the own-host rows wherever a
+/// reader exists, so there is no declared set to go stale.
 ///
 /// Keeps a row's `agent_handle` when it is non-empty — the filter is
 /// **only** that, kept on its own line rather than left for a test to
