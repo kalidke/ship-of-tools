@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # comm-matrix.sh — the cross-machine comm acceptance matrix: every delivery
 # direction between the named boxes, proved end to end in about a minute, so no
-# comm change merges on hermetic tests alone.
+# comm change SHIPS IN A CANDIDATE on hermetic tests alone.
+#
+# IT GATES THE CANDIDATE, NOT EACH MERGE. Nothing on the fixes branch is
+# installed anywhere, so a merge is proven by the hermetic suites and this
+# matrix runs before the rc is cut. Requiring it per merge would block every
+# comm fix on a Windows frontend being up, which is a morning-hours resource;
+# requiring it per candidate catches the same regressions before anyone runs
+# the code. A candidate carrying a comm change with no matrix run is not ready.
 #
 # Usage:
 #   comm/core/tests/comm-matrix.sh --boxes kitt,asus2024,quickbeam [--expect 0.6.6-rc9.4]

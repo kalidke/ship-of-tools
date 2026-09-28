@@ -12,7 +12,7 @@ separate julia bundle). Read
 `docs/adr/0030-versioning-release-and-auto-update.md` §1–3 before your first
 release from a fresh context.
 
-## Preflight (do all four, report anything amiss instead of proceeding)
+## Preflight (do all five, report anything amiss instead of proceeding)
 
 1. **main is green**: latest `Rust` workflow run on main succeeded
    (`gh run list --workflow Rust --limit 1`); check the Julia `CI` workflow
@@ -27,6 +27,14 @@ release from a fresh context.
    (auto-marked prerelease on the GitHub Release by the workflow).
 4. **Private ops handoff current** — `<ops>/STATUS.md` and `<ops>/TODO.md`
    should not be stale when cutting the release.
+5. **The comm matrix has run, if this candidate carries any comm change**:
+   `comm/core/tests/comm-matrix.sh --boxes <a,b,c> [--expect <version>]`. The
+   hermetic suites gate a merge; the matrix gates the CANDIDATE, because a
+   sender's receipt and an actual delivery are different facts and every comm
+   outage so far has been the gap between them. A candidate carrying a comm
+   change with no matrix run is not ready to cut. The cross-OS leg needs an
+   attached frontend on the non-Linux box, so schedule it rather than
+   discovering it at cut time.
 
 ## Cut it
 
