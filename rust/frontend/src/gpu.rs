@@ -1145,10 +1145,49 @@ const STRIP_ROWS: f32 = 2.0;
 /// `strip_band_never_touches_the_grids_last_row`. Below
 /// `STRIP_ACTIVE_LIFT_CELLS * cell_w` (3.1 px at the measured monospace advance,
 /// 3.6 px at the no-monospace fallback) the lifted active name rises back onto
-/// the grid's last row and its version stamp; above `oy` (12*scale px) the band
-/// no longer fits under the grid at `u == 0`, so `strip_reserved_rows` takes a
-/// third row and every pane gets shorter.
+/// the grid's last row and its version stamp; and its ceiling is now shared,
+/// not its own: this air plus `HULL_ROW_EXTRA_DROP_ROWS` must not exceed `oy`
+/// (12*scale px), or the band no longer fits under the grid at `u == 0` and
+/// `strip_reserved_rows` takes a third row, shortening every pane. With the
+/// drop at 7 this air has one pixel of headroom at scale 1 and that pixel is
+/// deliberately left unspent — see `HULL_ROW_EXTRA_DROP_ROWS` for why the
+/// budget cannot be filled exactly — so raising this air means lowering the
+/// drop by the same amount.
 const STRIP_TOP_AIR_ROWS: f32 = 4.0 / BASE_CELL_H;
+
+/// How much further DOWN the hull row sits below the session-name row than one
+/// plain text row, as a fraction of `BASE_CELL_H`: **7 px at scale 1**. The
+/// owner picked 8 by eye from four captures of the same screen, against the
+/// 12 px of sea the band used to leave under the hull. **8 is not available**,
+/// for the arithmetic reason below, and 7 is the nearest value that is: it
+/// leaves 5 px of sea instead of the 4 he chose, a one-pixel difference in a
+/// cosmetic gap, and it is the only part of his pick that was not honoured.
+///
+/// Measured from the GRID like every other length in the band, never from the
+/// window, so the row-quantisation remainder `u` still lands BELOW the
+/// waterline as sea rather than inside this distance. A window-anchored pad
+/// here is the defect `STRIP_TOP_AIR_ROWS` was rewritten to delete, and it
+/// would take the owner's approved name-to-panes spacing down with it.
+///
+/// **Why not 8.** `strip_reserved_rows` has `oy` (12*scale) of room under the
+/// grid's last row and `STRIP_TOP_AIR_ROWS` spends 4 of it, so 8 is what is
+/// left — and spending ALL of it puts the band exactly on its budget, where
+/// exact is not a thing floating point delivers: `(4 + 8) / 18` is not
+/// representable and rounds UP, so `need` comes out a hair above `2*cell_h +
+/// oy` and the hull row runs past the window's bottom edge.
+/// `strip_band_never_touches_the_grids_last_row` catches it at scale 0.2,
+/// height 246, which is exactly the kind of place a value picked at the
+/// default window would never have been looked at. At 9 the miss stops being
+/// a rounding hair and the band takes a third reserved row, so EVERY pane
+/// loses a line of content — not a trade a cosmetic knob gets to make.
+///
+/// So the real rule is that this constant and `STRIP_TOP_AIR_ROWS` share one
+/// budget and must leave a pixel of it unspent. Their SUM is the quantity to
+/// reason about, which is why the test pins the sum rather than either term.
+///
+/// Raising it does not move the bow and stern rakes' tops, which are placed
+/// from the band's top: the ship reads DEEPER as this grows, not merely lower.
+const HULL_ROW_EXTRA_DROP_ROWS: f32 = 7.0 / BASE_CELL_H;
 /// Hull thickness and waterline drop, as fractions of `BASE_CELL_H` — the row
 /// height the mock was drawn against, named rather than a bare 18 in a
 /// denominator so a change there can't silently detune the hull. The drop is
@@ -1620,7 +1659,7 @@ fn hull_band(ship_y: f32, cell_h: f32) -> (f32, f32) {
 /// `strip_reserved_rows` is what keeps the whole extent inside the window.
 fn strip_row_tops(grid_bottom: f32, cell_h: f32) -> (f32, f32) {
     let names = grid_bottom + cell_h * STRIP_TOP_AIR_ROWS;
-    (names, names + cell_h)
+    (names, names + cell_h + cell_h * HULL_ROW_EXTRA_DROP_ROWS)
 }
 
 /// Where one ship's parts sit VERTICALLY in the two-row band — the whole of the
@@ -1684,16 +1723,20 @@ fn box_name_rgb(steered: bool, contrast_dim: bool) -> (u8, u8, u8) {
 /// while erring low runs the hull row off the window's bottom edge, so `k` is
 /// the ceiling. Every term is a fraction of `BASE_CELL_H`, so the ceiling is
 /// `STRIP_ROWS` at every scale and the band never costs a third row:
-/// `need = 40*s` against `2*cell_h + oy = 48*s`, while `k = 1` would give
-/// `30*s` and fail. The `8*s` of slack is exactly the room
-/// `STRIP_TOP_AIR_ROWS` has left to grow before a third row is needed, and the
-/// air is the only thing that spends it: the active name's lift rises INTO that
-/// air, never below the band, so it is bounded by the air rather than by this
-/// row budget. `strip_band_never_touches_the_grids_last_row` pins the
+/// `need = 47*s` against `2*cell_h + oy = 48*s`, while `k = 1` would give
+/// `30*s` and fail. `oy` is spent 4 on `STRIP_TOP_AIR_ROWS` and 7 on
+/// `HULL_ROW_EXTRA_DROP_ROWS`, leaving ONE pixel at scale 1 unspent on
+/// purpose: filling the budget exactly puts `need` a rounding hair above it
+/// and the hull row off the bottom edge. Their SUM is the quantity to reason
+/// about, which is why the test pins the sum rather than either term. The
+/// active name's lift is not part of it: the lift rises INTO the air, never
+/// below the band, so it is bounded by the air rather than by this row
+/// budget. `strip_band_never_touches_the_grids_last_row` pins the
 /// condition, k's minimality AND that constancy — the literal is pinned
 /// there because it is now an invariant, not because anyone counted rows.
 fn strip_reserved_rows(cell_h: f32, oy: f32) -> u16 {
-    let need = STRIP_ROWS * cell_h + cell_h * STRIP_TOP_AIR_ROWS;
+    let need =
+        STRIP_ROWS * cell_h + cell_h * (STRIP_TOP_AIR_ROWS + HULL_ROW_EXTRA_DROP_ROWS);
     (((need - oy) / cell_h.max(1.0)).ceil().max(0.0)) as u16
 }
 
@@ -26409,7 +26452,8 @@ mod tests {
             // at every scale is that the reservation is the SMALLEST one that
             // clears the band.
             let k = strip_reserved_rows(cell_h, oy) as f32;
-            let need = STRIP_ROWS * cell_h + cell_h * STRIP_TOP_AIR_ROWS;
+            let need =
+                STRIP_ROWS * cell_h + cell_h * (STRIP_TOP_AIR_ROWS + HULL_ROW_EXTRA_DROP_ROWS);
             assert_eq!(
                 k, STRIP_ROWS,
                 "scale {scale}: the band must never cost more than {STRIP_ROWS} rows"
@@ -26443,9 +26487,17 @@ mod tests {
                     hull_y + cell_h <= h as f32,
                     "scale {scale}, h {h}: the hull row runs off the window bottom"
                 );
+                // The hull row sits one cell BELOW the names row plus the
+                // owner's drop. It is one distance made of two named parts,
+                // so the test names both rather than a literal: a change to
+                // either constant is meant to move the hull, and only a change
+                // to the ARITHMETIC is meant to fail here.
+                let apart = cell_h * (1.0 + HULL_ROW_EXTRA_DROP_ROWS);
                 assert!(
-                    (hull_y - names_y - cell_h).abs() < 1e-3,
-                    "the two rows must be exactly one cell apart"
+                    (hull_y - names_y - apart).abs() < 1e-3,
+                    "scale {scale}, h {h}: the rows are {} px apart, but one cell \
+                     plus the hull drop is {apart} px",
+                    hull_y - names_y
                 );
                 h += 1;
             }
