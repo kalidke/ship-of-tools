@@ -41,7 +41,7 @@ use interprocess::local_socket::{
 use serde_json::Value;
 use sot_protocol::{
     codec, op, AgentSendReq, ConceptReadReq, ConceptReadRes, ConceptWriteReq, ConceptWriteRes,
-    DirCreateReq, DirCreateRes, DocsOpenReq, DocsOpenRes, FeFilesForReq, FePresenceReq, FileChunk, FileDeleteReq, FileDeleteRes,
+    DirCreateReq, DirCreateRes, AgentFiledReq, DocsOpenReq, DocsOpenRes, FePresenceReq, FileChunk, FileDeleteReq, FileDeleteRes,
     FileDownloadReq, FileReadReq, FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq,
     FileWriteRes, Frame,
     HelloReq, HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
@@ -1020,21 +1020,17 @@ pub enum OutgoingReq {
     /// false-negative pair the review found in the daemon-side-inference
     /// design this replaces.
     FePresence,
-    /// Declare the complete current set of sot-comm handles this
-    /// connection files inbound frames for (item 18) — sent after the FE
-    /// applies each own-host `workspace.list` reply
-    /// (`files_for_from_rows`), so the daemon can answer whether a
-    /// receiver actually names a target instead of guessing from this
-    /// connection's single hello `name`. **Replace semantics**: each send
-    /// is the complete set, never a delta. Fire-and-forget, same idiom as
-    /// `FePresence` above — no `PendingKind`, the reply is silently
-    /// ignored by the unmatched-id fallthrough.
-    /// Constructed by nothing in this release: the owner ruled the send
-    /// site out of it (see the note in `IncomingEvt::Workspaces`). The wire
-    /// plumbing stays so the next release grows a caller rather than
-    /// re-deriving the op.
-    #[allow(dead_code)]
-    FeFilesFor { handles: Vec<String> },
+    /// Claim (or decline) the filing of ONE relayed frame this frontend
+    /// just appended (ADR 0048) — sent on the connection the
+    /// `agent.message` arrived on, so the claim reaches the hub that
+    /// relayed it rather than only this box's own daemon (which is what
+    /// made the declaration it replaces worthless). Built by
+    /// `gpu::receipt_for`, which claims only for a handle one of this
+    /// frontend's OWN-host rows declares. Fire-and-forget, same idiom as
+    /// `FePresence` above — no `PendingKind`, and an older daemon's
+    /// unknown-op error is silently dropped by the unmatched-id
+    /// fallthrough (no per-frame warn).
+    AgentFiled(AgentFiledReq),
     /// Ask the kernel for its loaded-modules list. Response surfaces as
     /// `IncomingEvt::ModulesList`. Currently the only kernel.request the
     /// frontend issues directly; expand the enum as more land.
@@ -2400,17 +2396,18 @@ where
                         // No PendingKind: fire-and-forget, same idiom as
                         // ToggleHidden/WorkspaceActivate above.
                     }
-                    OutgoingReq::FeFilesFor { handles } => {
-                        tracing::debug!(?handles, id, "→ fe.files_for");
+                    OutgoingReq::AgentFiled(req) => {
+                        tracing::debug!(id, handle = %req.handle, filed = req.filed, "→ agent.filed");
                         codec::write_frame(
                             &mut tx,
-                            &Frame::req(id, op::FE_FILES_FOR, serde_json::to_value(FeFilesForReq { handles })?),
+                            &Frame::req(id, op::AGENT_FILED, serde_json::to_value(req)?),
                             None,
                         )
                         .await?;
                         // No PendingKind: an ack we never read must not
                         // allocate a pending slot — same idiom as
-                        // FePresence above.
+                        // FePresence above. The verdict the SENDER reads is
+                        // the daemon's `agent.receipt` fan-out, not this ack.
                     }
                     OutgoingReq::ModulesList { workspace_id } => {
                         tracing::debug!(?workspace_id, id, "→ kernel.request modules.list");
@@ -3053,7 +3050,11 @@ where
                             &Frame::req(
                                 id,
                                 op::AGENT_SEND,
-                                serde_json::to_value(AgentSendReq { from, to, text })?,
+                                // No `id` (ADR 0048): this send is
+                                // fire-and-forget — nothing here reads a
+                                // receipt, so minting one would only ask a
+                                // filer to answer into a void.
+                                serde_json::to_value(AgentSendReq { from, to, text, id: None })?,
                             ),
                             None,
                         )

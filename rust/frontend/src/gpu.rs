@@ -14752,6 +14752,34 @@ impl State {
                             self.handle_nav_envelope(&event_host, &env);
                         } else {
                             append_agent_message(&payload);
+                            // ADR 0048: the append IS the delivery, so this
+                            // process is the only thing that can honestly
+                            // report one for a handle hosted here. Answer on
+                            // the connection the frame arrived on (the hub
+                            // that relayed it), and claim only from a set we
+                            // KNOW — our own host's rows. The append above is
+                            // never gated on the claim: a late `agent.join`
+                            // may cost a receipt, never a message.
+                            let claim = {
+                                let own = frontend_identity().host.as_str();
+                                let rows = self
+                                    .workspace_lists
+                                    .iter()
+                                    .find(|(dial, _)| {
+                                        declares_files_for(
+                                            self.declared_host.get(*dial).map(String::as_str),
+                                            own,
+                                        )
+                                    })
+                                    .map(|(_, rows)| rows.as_slice());
+                                receipt_for(&payload, rows)
+                            };
+                            if let Some(req) = claim {
+                                let _ = self.send_to(
+                                    &event_host,
+                                    crate::transport::OutgoingReq::AgentFiled(req),
+                                );
+                            }
                         }
                     } else if op == sot_protocol::op::FE_COMMAND {
                         // ADR 0025 imperative FE command. The daemon broadcasts
@@ -15572,17 +15600,17 @@ impl State {
                     // `host`, recorded in `declared_host`) — a remote
                     // daemon's rows would be a promise this process
                     // cannot keep.
-                    // NO `fe.files_for` send in this release (owner ruling).
-                    // The declaration only ever reached a daemon on this
-                    // frontend's OWN box, which already knows those handles
-                    // from their `agent.join`; the remote hub that answers a
-                    // directed send never saw it. So it bought nothing while
-                    // costing a `warn` line per reply on any daemon without
-                    // the handler -- which is every daemon today, since no
-                    // backend half exists yet. The set, its predicate and
-                    // their tests stay: the next release either grows the
-                    // caller or deletes them with the session-declares
-                    // shape that supersedes this one.
+                    // No declaration is sent from here at all (ADR 0048).
+                    // `fe.files_for` is gone from the wire: it only ever
+                    // reached a daemon on this frontend's OWN box, which
+                    // already knows those handles from their `agent.join`,
+                    // while the remote hub that answers a directed send
+                    // never saw it. Its successor is the filer receipt —
+                    // the claim now travels back over the link the frame
+                    // arrived on, so it cannot miss the hub by
+                    // construction. The set builder and its predicate stay
+                    // and are read HERE, per inbound frame, in
+                    // `receipt_for`.
                     // --capture-cycle <N>: simulate N Ctrl+PgDn presses
                     // (negative = Ctrl+PgUp) on the first workspace.list
                     // reply. Consumed once so a re-fetch from a later
@@ -19474,9 +19502,6 @@ pub(crate) fn self_comm_handle() -> String {
     frontend_identity().name.clone()
 }
 
-// Caller removed for this release (see the `fe.files_for` note in
-// `IncomingEvt::Workspaces`); its gate is kept for the next one.
-#[allow(dead_code)]
 /// The complete set of sot-comm handles declared by `rows` (item 18) —
 /// pure over rows, no `&self`, no connection, so it unit-tests without a
 /// wire. This is what `fe.files_for` sends, replace-semantics, after every
@@ -19514,9 +19539,50 @@ fn declares_files_for(declared: Option<&str>, own: &str) -> bool {
     declared == Some(own)
 }
 
-// Caller removed for this release (see the `fe.files_for` note in
-// `IncomingEvt::Workspaces`); the set builder is kept for the next one.
-#[allow(dead_code)]
+/// This frontend's claim about ONE relayed frame it just appended (ADR
+/// 0048): `None` = claim nothing, `Some(req)` = the claim it can defend.
+/// Pure over its arguments — no `&self`, no wire — because the whole value
+/// of a receipt is that it is checkable, and a gate no test can reach is
+/// how `fe.files_for` shipped a set builder with no caller.
+///
+/// Rules, in order. No `id` in the frame: the hub predates receipts and
+/// there is nothing to attribute a claim to. `to` empty: a broadcast has no
+/// addressee, so nobody is its filer. `own_host_rows` `None`: this frontend
+/// has no own-host list yet (no `workspace.list` reply, or a daemon too old
+/// to declare its host) — "the set is known and lacks @h" and "there is no
+/// set" are different facts, and only the first may be reported as an
+/// absence. Otherwise the answer is membership of
+/// [`files_for_from_rows`], with a reason when it is false: a `filed:
+/// false` that cannot say why is not actionable.
+///
+/// The frame is appended either way (see the call site). This function
+/// decides what may be CLAIMED, never what is filed.
+fn receipt_for(
+    payload: &serde_json::Value,
+    own_host_rows: Option<&[crate::transport::WorkspaceInfo]>,
+) -> Option<sot_protocol::AgentFiledReq> {
+    let id = payload
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?;
+    let to = payload.get("to").and_then(|v| v.as_str()).unwrap_or("");
+    if to.is_empty() {
+        return None;
+    }
+    let rows = own_host_rows?;
+    let filed = files_for_from_rows(rows).iter().any(|h| h == to);
+    Some(sot_protocol::AgentFiledReq {
+        id: id.to_string(),
+        handle: to.to_string(),
+        filed,
+        reason: if filed {
+            None
+        } else {
+            Some(format!("no row on this frontend declares @{to}"))
+        },
+    })
+}
+
 fn files_for_from_rows(rows: &[crate::transport::WorkspaceInfo]) -> Vec<String> {
     // Through a set, not a Vec: two rows on one host CAN carry the same
     // joined handle (`agent.join` enforces no per-host uniqueness, and the
@@ -27062,6 +27128,56 @@ mod tests {
         assert!(declares_files_for(Some("boxa"), "boxa"));
         assert!(!declares_files_for(Some("boxb"), "boxa"));
         assert!(!declares_files_for(None, "boxa"));
+    }
+
+    #[test]
+    fn receipt_for_claims_only_from_a_set_it_knows() {
+        // ADR 0048, the whole decision table of `receipt_for`, in the
+        // order the function applies it.
+        let row = crate::transport::WorkspaceInfo {
+            agent_handle: "peer-otherbox".to_string(),
+            ..ws_info("peer", "sot-be-peer")
+        };
+        let rows = vec![row];
+        let frame = |to: &str, id: Option<&str>| {
+            let mut v = serde_json::json!({"from": "a", "to": to, "text": "hi"});
+            if let Some(id) = id {
+                v["id"] = serde_json::Value::String(id.to_string());
+            }
+            v
+        };
+
+        // In the set: claim it, with no reason to give.
+        let req = receipt_for(&frame("peer-otherbox", Some("x-1")), Some(&rows))
+            .expect("a handle this frontend files for must be claimed");
+        assert_eq!(req.id, "x-1");
+        assert_eq!(req.handle, "peer-otherbox");
+        assert!(req.filed);
+        assert_eq!(req.reason, None);
+
+        // Absent from a KNOWN set: refuse, and say why (this is the
+        // fleet's only answer to "is that remote handle real").
+        let req = receipt_for(&frame("typo-otherbox", Some("x-2")), Some(&rows))
+            .expect("a known set that lacks the handle is an answer, not silence");
+        assert!(!req.filed);
+        assert!(req
+            .reason
+            .expect("a refusal must say why")
+            .contains("no row on this frontend declares @typo-otherbox"));
+
+        // No id: the hub predates receipts, so there is nothing to
+        // attribute a claim to.
+        assert!(receipt_for(&frame("peer-otherbox", None), Some(&rows)).is_none());
+        assert!(receipt_for(&frame("peer-otherbox", Some("")), Some(&rows)).is_none());
+        // Broadcast: nobody is the addressee.
+        assert!(receipt_for(&frame("", Some("x-3")), Some(&rows)).is_none());
+        // No own-host list at all: "the set lacks @h" and "there is no
+        // set" are different facts, and only the first may be reported.
+        assert!(receipt_for(&frame("peer-otherbox", Some("x-4")), None).is_none());
+        // An empty known set still answers — it is a set.
+        let req = receipt_for(&frame("peer-otherbox", Some("x-5")), Some(&[]))
+            .expect("an empty own-host list is a known set");
+        assert!(!req.filed);
     }
 
     #[test]
