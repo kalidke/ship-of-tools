@@ -709,6 +709,91 @@ sot_inbox_lines() {
     printf '%s\n' "$n"
 }
 
+# --- the WINDOWS FRONTEND inbox: a second file, a second cursor --------------
+#
+# On Windows nothing writes inbox/<handle>.jsonl — there is no listener there:
+# the frontend files every inbound relay frame into its own fe-inbox.jsonl
+# (comm-listen.sh's header, comm-watch.sh's Windows branch), so THAT file is the
+# mail. Every reader was blind to it, and a Windows session went an hour without
+# seeing two messages while comm-poll.sh printed "No new messages" from a
+# per-handle file three weeks stale (field report, 2026-09-27). Two facts make it
+# a different file rather than the same one under another name:
+#
+#   * TWO SCHEMAS. A frontend line carries `.text`; a per-handle line carries
+#     `.msg`. Rewriting at this boundary is what keeps every reader downstream
+#     single-schema instead of learning both.
+#   * ONE FILE PER BOX, SHARED BY EVERY HANDLE. The frontend appends every frame
+#     from every connection whatever its `to`, so admission is `.to == this
+#     handle` STRICTLY — unlike the per-handle inbox, where a legacy line with no
+#     `.to` at all is treated as directed, because that file is already this
+#     handle's alone.
+#
+# The cursor is a LINE OFFSET like the per-handle one but in its OWN file,
+# read/<handle>.fe.cursor: the two inboxes have unrelated line counts, so one
+# shared cursor would silence whichever file is shorter. It has no legacy `ts`
+# form to migrate — it was born a count.
+#
+# The platform test lives HERE and nowhere else (review, 2026-09-27: stop adding
+# a Windows branch to one more reader). A reader asks for the path; off Windows
+# it gets nothing and its frontend arm is simply inert.
+
+# sot_fe_inbox_path — the frontend inbox, or NOTHING on every non-Windows box.
+# Mirrors comm-watch.sh's Windows branch exactly, including the fallback chain
+# for a box with no %LOCALAPPDATA%.
+sot_fe_inbox_path() {
+    _sot_is_windows || return 0
+    printf '%s/sot/fe-inbox.jsonl\n' "${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}"
+}
+
+# sot_fe_inbox_lines — the frontend inbox's line count (0 when absent, and off
+# Windows).
+sot_fe_inbox_lines() {
+    local fe n
+    fe="$(sot_fe_inbox_path)"
+    [ -n "$fe" ] || { printf '0\n'; return 0; }
+    n="$(wc -l < "$fe" 2>/dev/null | tr -d ' ')"
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    printf '%s\n' "$n"
+}
+
+# _sot_fe_cursor_offset HANDLE — this handle's frontend read offset. 0 when
+# unset, unreadable, non-numeric, or PAST the end of the file: production only
+# appends, so an offset past the end means the file was cleared, truncated or
+# restored by hand — exactly the moment nobody suspects the cursor, and left
+# as-is this handle never sees another frontend frame.
+_sot_fe_cursor_offset() {
+    local cur total
+    cur="$(cat "$COMM_HOME/read/$1.fe.cursor" 2>/dev/null || true)"
+    [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
+    total="$(sot_fe_inbox_lines)"
+    [ "$cur" -gt "$total" ] && cur=0
+    printf '%s\n' "$cur"
+}
+
+# sot_fe_unread_lines HANDLE — the frontend lines past HANDLE's frontend cursor
+# that are addressed to HANDLE, one compact JSON object per line, rewritten into
+# the per-handle schema (`.text` -> `.msg`). Nothing off Windows.
+#
+# An unparseable line is SKIPPED, never fatal: a torn append is realistic and the
+# reader advances its cursor past it, so it counts as read exactly like a torn
+# per-handle line — one bad line must not be able to pin a cursor and leave a
+# handle permanently deaf. Provenance filters (self-echo, __selftest__) stay with
+# the readers, which already apply them to the per-handle schema this output now
+# shares.
+sot_fe_unread_lines() {
+    local handle="$1" fe pos total
+    fe="$(sot_fe_inbox_path)"
+    [ -n "$fe" ] && [ -r "$fe" ] || return 0
+    pos="$(_sot_fe_cursor_offset "$handle")"
+    total="$(sot_fe_inbox_lines)"
+    [ "$total" -gt "$pos" ] || return 0
+    sed -n "$((pos + 1)),${total}p" "$fe" 2>/dev/null \
+        | jq -Rc --arg me "$handle" '
+            (fromjson? // empty) | select(type == "object")
+            | select((.to // "") == $me)
+            | . + {msg: (.msg // .text // "")}' 2>/dev/null || true
+}
+
 sot_bridge_pidfile() { printf '%s/state/bridge-%s.pid\n' "$COMM_HOME" "$1"; }
 
 # sot_bridge_pid_for NAME — print the live loop pid for NAME (rc 0), or

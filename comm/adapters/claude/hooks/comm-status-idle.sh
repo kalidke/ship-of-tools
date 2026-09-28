@@ -46,10 +46,12 @@
 #       idle while the agent is actually waiting.
 #
 #   (2) NEW MAIL. A turn does not end while directed sot-comm mail sits unread:
-#       the hook reads this handle's own inbox and, when a line newer than the
-#       read cursor is addressed to it, blocks with "run comm-poll.sh". That is
-#       how a BUSY session is reached — no watcher, no keystrokes, no human (the
-#       messaging ruling, 2026-09-26). See the branch below for the exact rule.
+#       the hook reads this handle's inbox — BOTH of them on Windows, where the
+#       frontend's shared fe-inbox.jsonl is where cross-box mail actually lands
+#       (2026-09-27) — and, when a line newer than that file's read cursor is
+#       addressed to it, blocks with "run comm-poll.sh". That is how a BUSY
+#       session is reached — no watcher, no keystrokes, no human (the messaging
+#       ruling, 2026-09-26). See the branches below for the exact rules.
 #
 #   (3) TURN END. Otherwise send `stop`: comm-status.sh sets `done` only when
 #       `floor` was `user` and neither `question` nor `waiting` is set, then
@@ -243,6 +245,10 @@ fi
 # and no block: the same fail-open discipline as the rest of the hook, which
 # must never be able to wedge a turn.
 MAIL_INBOX="$HOME_DIR/inbox/$NAME.jsonl"
+# Both counters start at 0 OUTSIDE the gate: on Windows this file often does
+# not exist at all (no listener writes it) and the frontend arm below must
+# still run.
+mail_total=0; mail_pending=0
 if [ -r "$MAIL_INBOX" ]; then
     mail_total="$(wc -l < "$MAIL_INBOX" 2>/dev/null | tr -d ' ')"
     case "$mail_total" in ''|*[!0-9]*) mail_total=0 ;; esac
@@ -277,29 +283,72 @@ if [ -r "$MAIL_INBOX" ]; then
               ] | length' 2>/dev/null || echo 0)"
         case "$mail_pending" in ''|*[!0-9]*) mail_pending=0 ;; esac
     fi
-    if [ "$mail_pending" -gt 0 ]; then
-        # ONE block per pending batch, bounded by a tick file whose key must be
-        # STABLE for the session: $PPID is not (every hook run is its own
-        # process), so the transcript path — already read above, one file per
-        # session — is the fallback before it.
-        mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
-        [ -n "$mail_key" ] && [ "$mail_key" != "nopane" ] || mail_key="${tp##*/}"
-        [ -n "$mail_key" ] || mail_key="$PPID"
-        mail_tick="$HOME_DIR/state/mail-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
-        if [ "$(cat "$mail_tick" 2>/dev/null || true)" != "$mail_total" ]; then
-            mkdir -p "$HOME_DIR/state" 2>/dev/null || true
-            # FAIL OPEN when the tick cannot be recorded. With no tick there is
-            # no bound, and a filesystem that refuses this write refuses
-            # comm-poll.sh's cursor write too — so the block would return at
-            # every turn end with no way for the session to clear it. A missed
-            # announcement is acceptable; an inescapable block is not.
-            if printf '%s' "$mail_total" 2>/dev/null > "$mail_tick"; then
-                jq -nc --arg n "$NAME" '{
-                  decision: "block",
-                  reason: ("New sot-comm mail for @" + $n + " — run comm-poll.sh now, act on it, then end the turn.")
-                }'
-                exit 0
-            fi
+fi
+# The FRONTEND inbox — the SECOND mail file on Windows, where the frontend files
+# every inbound relay frame because no listener runs there. It is SHARED by every
+# handle on the box, so a line counts only when `to` is EXACTLY this handle (the
+# per-handle rule above admits a line with no `to` at all; that file is already
+# this handle's alone, this one is not). Its cursor is its own file — the two
+# inboxes have unrelated line counts. Without this arm the guarantee this whole
+# section exists for, that a turn does not end while directed mail sits unread,
+# was silently false on Windows for every message from another box (field report,
+# 2026-09-27: an hour of unseen mail).
+#
+# comm-lib.sh owns the one platform branch (sot_fe_inbox_path), sourced in a
+# SUBSHELL: this hook is standalone by design and must not inherit the library's
+# own variables, which spell $SELF_DIR and others differently. Everything else is
+# inlined exactly as the per-handle read above inlines it. A missing library, an
+# unreadable file or any jq failure yields NO frontend mail and no block — the
+# same fail-open discipline as the rest of the hook. Like the read above, this arm
+# never writes a cursor.
+FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
+FE_MAIL_INBOX="$( ( . "$FE_LIB" >/dev/null 2>&1 && sot_fe_inbox_path ) 2>/dev/null || true )"
+fe_total=0; fe_pending=0
+if [ -n "$FE_MAIL_INBOX" ] && [ -r "$FE_MAIL_INBOX" ]; then
+    fe_total="$(wc -l < "$FE_MAIL_INBOX" 2>/dev/null | tr -d ' ')"
+    case "$fe_total" in ''|*[!0-9]*) fe_total=0 ;; esac
+    # This cursor was born a LINE COUNT: no legacy ts form to convert, and an
+    # offset past the end means the file was cleared or restored by hand.
+    fe_pos="$(cat "$HOME_DIR/read/$NAME.fe.cursor" 2>/dev/null || true)"
+    case "$fe_pos" in ''|*[!0-9]*) fe_pos=0 ;; esac
+    [ "$fe_pos" -gt "$fe_total" ] && fe_pos=0
+    if [ "$fe_total" -gt "$fe_pos" ]; then
+        fe_pending="$(sed -n "$((fe_pos + 1)),${fe_total}p" "$FE_MAIL_INBOX" 2>/dev/null \
+            | jq -Rrs --arg me "$NAME" '[ split("\n")[] | select(length > 0)
+                | (fromjson? // empty) | select(type == "object")
+                | select((.to // "") == $me and (.from // "") != $me and (.from // "") != "__selftest__")
+              ] | length' 2>/dev/null || echo 0)"
+        case "$fe_pending" in ''|*[!0-9]*) fe_pending=0 ;; esac
+    fi
+fi
+
+if [ "$((mail_pending + fe_pending))" -gt 0 ]; then
+    # ONE block per pending batch, bounded by a tick file whose key must be
+    # STABLE for the session: $PPID is not (every hook run is its own
+    # process), so the transcript path — already read above, one file per
+    # session — is the fallback before it.
+    mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
+    [ -n "$mail_key" ] && [ "$mail_key" != "nopane" ] || mail_key="${tp##*/}"
+    [ -n "$mail_key" ] || mail_key="$PPID"
+    mail_tick="$HOME_DIR/state/mail-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
+    # The mark names BOTH totals: keyed on the per-handle count alone, frontend
+    # mail arriving while that file stood still would be suppressed as a batch
+    # already announced. Both counts only grow, so the pair changes whenever
+    # either file does.
+    mail_mark="$mail_total:$fe_total"
+    if [ "$(cat "$mail_tick" 2>/dev/null || true)" != "$mail_mark" ]; then
+        mkdir -p "$HOME_DIR/state" 2>/dev/null || true
+        # FAIL OPEN when the tick cannot be recorded. With no tick there is
+        # no bound, and a filesystem that refuses this write refuses
+        # comm-poll.sh's cursor write too — so the block would return at
+        # every turn end with no way for the session to clear it. A missed
+        # announcement is acceptable; an inescapable block is not.
+        if printf '%s' "$mail_mark" 2>/dev/null > "$mail_tick"; then
+            jq -nc --arg n "$NAME" '{
+              decision: "block",
+              reason: ("New sot-comm mail for @" + $n + " — run comm-poll.sh now, act on it, then end the turn.")
+            }'
+            exit 0
         fi
     fi
 fi
