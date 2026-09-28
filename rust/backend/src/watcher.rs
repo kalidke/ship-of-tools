@@ -498,6 +498,17 @@ fn self_owned_roots() -> Vec<PathBuf> {
     if let Some(install) = sot_updater::InstallManifest::for_current_exe() {
         roots.push(install.prefix);
     }
+    // The staging area itself, asked of the SAME function the stager calls
+    // (`sot_updater::stage` resolves its target this way). The prefix above
+    // already covers it on a release install, but a manifest-less layout
+    // resolves it from `SOT_UPDATE_ROOT` or the legacy data dir instead, and
+    // neither of those is under the prefix or the state dir. Deriving the
+    // exclusion from the function that DECIDES where we write, rather than
+    // from two proxies for it, is what keeps this one invariant instead of
+    // three places that have to agree.
+    if let Ok(updates) = sot_updater::resolve_updates_root() {
+        roots.push(updates);
+    }
     roots
 }
 
