@@ -326,7 +326,7 @@ fi
 # leaving a silent assumption.
 SPAWN_HOST=""
 VRESP="$(sot_send '{"v":1,"id":1,"kind":"req","op":"version.query","payload":{}}' version.query || true)"
-[ -n "$VRESP" ] && SPAWN_HOST="$(printf '%s' "$VRESP" | jq -r '.payload.daemon.host // empty' 2>/dev/null || true)"
+[ -n "$VRESP" ] && SPAWN_HOST="$(printf '%s' "$VRESP" | sot_jq -r '.payload.daemon.host // empty' 2>/dev/null || true)"
 SELF_HOST="$(sot_host 2>/dev/null || true)"
 SPAWN_IS_LOCAL=true
 if [ -n "$SPAWN_HOST" ] && [ -n "$SELF_HOST" ] && [ "$SPAWN_HOST" != "$SELF_HOST" ]; then
@@ -564,8 +564,8 @@ REQ="$(jq -nc --rawfile l "$SPAWN_LABEL_FILE" --rawfile p "$SPAWN_PATH_FILE" --a
 rm -f "$SPAWN_LABEL_FILE" "$SPAWN_PATH_FILE"
 RESP="$(sot_send "$REQ" workspace.create || true)"
 CREATE_ERR="$(printf '%s' "$RESP" | jq -r '.payload.error // empty' 2>/dev/null || true)"
-SLUG="$(printf '%s' "$RESP" | jq -r '.payload.slug // empty' 2>/dev/null || true)"
-WSID="$(printf '%s' "$RESP" | jq -r '.payload.workspace_id // empty' 2>/dev/null || true)"
+SLUG="$(printf '%s' "$RESP" | sot_jq -r '.payload.slug // empty' 2>/dev/null || true)"
+WSID="$(printf '%s' "$RESP" | sot_jq -r '.payload.workspace_id // empty' 2>/dev/null || true)"
 if [ -n "$CREATE_ERR" ] || [ -z "$SLUG" ] || [ -z "$WSID" ]; then
     echo "ERROR: workspace.create failed via $ENDPOINT" >&2
     [ -n "$RESP" ] && printf '  daemon said: %s\n' "$(printf '%s' "$RESP" | jq -c '.payload' 2>/dev/null || printf '%s' "$RESP")" >&2
@@ -585,7 +585,7 @@ while :; do
     if [ -n "$ENTRY" ]; then
         FOUND=true
         RUNTIME="$(printf '%s' "$ENTRY" | jq -r '.runtime // empty' 2>/dev/null || true)"
-        PHASE="$(printf '%s' "$ENTRY" | jq -r '.phase // empty' 2>/dev/null || true)"
+        PHASE="$(printf '%s' "$ENTRY" | sot_jq -r '.phase // empty' 2>/dev/null || true)"
         case "$PHASE" in
             ready) break ;;
             ended_no_respawn|terminal|foreign)

@@ -75,7 +75,7 @@ _comm_wake_pty_verdict() {
     # so `read` collapses consecutive tabs and silently drops the
     # (frequently empty) phase field.
     IFS='|' read -r ok enter_sent phase code <<EOF
-$(printf '%s' "$resp" | jq -r '[.payload.ok // false, .payload.enter_sent // false, .payload.phase // "", .payload.code // ""] | map(tostring) | join("|")' 2>/dev/null)
+$(printf '%s' "$resp" | sot_jq -r '[.payload.ok // false, .payload.enter_sent // false, .payload.phase // "", .payload.code // ""] | map(tostring) | join("|")' 2>/dev/null)
 EOF
 
     if [ "$code" = "unknown_workspace" ]; then
@@ -164,8 +164,8 @@ _comm_wake_deliver_full() {
     local lineno=0 from to text rc
     while IFS= read -r line; do
         lineno=$((lineno + 1))
-        from=$(printf '%s' "$line" | jq -r '.from // ""' 2>/dev/null)
-        to=$(printf '%s' "$line" | jq -r 'if has("to") then .to else "__legacy__" end' 2>/dev/null)
+        from=$(printf '%s' "$line" | sot_jq -r '.from // ""' 2>/dev/null)
+        to=$(printf '%s' "$line" | sot_jq -r 'if has("to") then .to else "__legacy__" end' 2>/dev/null)
         text=$(printf '%s' "$line" | jq -r '.text // .message // .msg // ""' 2>/dev/null)
         if [ "$from" = "$HANDLE" ] || [ "$to" = "" ] || [ -z "$text" ]; then
             delivered_through=$((pos + lineno))
@@ -184,8 +184,8 @@ _comm_wake_deliver_ping() {
     local any_directed=0 all_selftest=1 from to text rc text_to_type read_pos
 
     while IFS= read -r line; do
-        from=$(printf '%s' "$line" | jq -r '.from // ""' 2>/dev/null)
-        to=$(printf '%s' "$line" | jq -r 'if has("to") then .to else "__legacy__" end' 2>/dev/null)
+        from=$(printf '%s' "$line" | sot_jq -r '.from // ""' 2>/dev/null)
+        to=$(printf '%s' "$line" | sot_jq -r 'if has("to") then .to else "__legacy__" end' 2>/dev/null)
         text=$(printf '%s' "$line" | jq -r '.text // .message // .msg // ""' 2>/dev/null)
         [ "$from" = "$HANDLE" ] && continue
         [ "$to" = "" ] && continue

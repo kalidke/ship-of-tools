@@ -49,7 +49,7 @@ while IFS=$'\037' read -r name host repo seen exp state summary status_at; do
         [ "$sat" -gt 0 ] && line="$line · $(fmt_age $((nows - sat)))"
     fi
     echo "$line"
-done < <(jq -r '.agents | to_entries[]
+done < <(sot_jq -r '.agents | to_entries[]
         | [.key, .value.host, .value.repo, .value.last_seen, (.value.expertise | join("/")),
            (.value.state // ""), (.value.summary // ""), (.value.status_at // "")]
         | join("")' "$REGISTRY")

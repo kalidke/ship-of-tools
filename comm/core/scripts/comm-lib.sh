@@ -31,6 +31,36 @@ LOCKDIR="$COMM_HOME/.registry.lock"
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# sot_jq ARGS... — run jq, but normalise ITS OWN OUTPUT so a caller that
+# captures a single field (command substitution) or splits several
+# records (mapfile / `while read`) never keeps a stray carriage return
+# glued to the value. On Windows, a native (non-MSYS) `jq.exe` opens
+# stdout in text mode and rewrites every \n it writes to \r\n; bash's own
+# consumption idioms keep that \r — command substitution strips only the
+# final \n, and mapfile/`read` split on \n only — so a handle, host,
+# workspace id or registry root read back this way never compares equal
+# to the clean string it should match (field report, 2026-09-27: a
+# handle read back as "admiral-kitt\r" made every send from that box
+# report "no such handle" for a delivery that had already landed). Exit
+# status is jq's OWN, captured before the cleanup pipe runs, so this is a
+# drop-in replacement for `jq` even in a boolean `-e` test.
+#
+# Use this ONLY where the extracted value is an IDENTIFIER — a handle, a
+# host, a workspace id, a protocol version, a phase/state tag, a cursor
+# offset, a filename component, or anything else fed into a comparison.
+# A field that is free-text CONTENT (a message body, a status summary a
+# human wrote) keeps calling `jq` directly: the same text-mode rewrite can
+# add a \r before a newline the sender typed on purpose, and stripping it
+# there would silently rewrite what they wrote instead of fixing a
+# comparison.
+sot_jq() {
+    local out rc
+    out="$(command jq "$@")"
+    rc=$?
+    printf '%s' "$out" | tr -d '\r'
+    return "$rc"
+}
+
 # _sot_windows_local_pipe — the LOCAL daemon's named pipe, resolved and
 # proven live (ADR 0042 amendment, decision 5, corrected 2026-09-07): asks
 # the daemon binary itself for its pipe path — the SAME query
@@ -1279,7 +1309,7 @@ sot_sanitize_component() {
 #                         "error" as NO EVIDENCE, never as "absent".
 sot_registry_entry_status() {
     local out
-    out="$(jq -r --arg n "$1" \
+    out="$(sot_jq -r --arg n "$1" \
         'if (.agents | has($n)) then "present\t" + (.agents[$n].root // "") else "absent\t" end' \
         "$REGISTRY" 2>/dev/null)"
     if [ $? -ne 0 ] || [ -z "$out" ]; then

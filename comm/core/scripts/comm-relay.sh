@@ -257,7 +257,7 @@ send_frame() {  # $1 to, $2 text
     local -a receivers=()
     while IFS= read -r line; do
         [ -z "$line" ] && continue
-        op="$(printf '%s' "$line" | jq -r '.op // empty' 2>/dev/null || true)"
+        op="$(printf '%s' "$line" | sot_jq -r '.op // empty' 2>/dev/null || true)"
         case "$op" in
             agent.send)
                 # An EMPTY line must never pass as an ack: `jq -e` over zero
@@ -273,7 +273,7 @@ send_frame() {  # $1 to, $2 text
                 fi
                 if printf '%s' "$line" | jq -e '.payload.receivers | type == "array"' >/dev/null 2>&1; then
                     ack_array=true
-                    mapfile -t receivers < <(printf '%s' "$line" | jq -r '.payload.receivers[]')
+                    mapfile -t receivers < <(printf '%s' "$line" | sot_jq -r '.payload.receivers[]')
                 fi
                 if printf '%s' "$line" | jq -e --arg i "$MSG_ID" '.payload.id == $i' >/dev/null 2>&1; then
                     ack_has_id=true
@@ -298,7 +298,7 @@ send_frame() {  # $1 to, $2 text
                     # this frame. Two receipts would mean two filers and
                     # either is true, so the first one ends the wait.
                     rcpt_seen=true
-                    rcpt_filer="$(printf '%s' "$line" | jq -r '.payload.filer // ""' 2>/dev/null || true)"
+                    rcpt_filer="$(printf '%s' "$line" | sot_jq -r '.payload.filer // ""' 2>/dev/null || true)"
                     break
                 fi
                 ;;
@@ -353,11 +353,11 @@ send_frame() {  # $1 to, $2 text
 filter_inbound() {
     while IFS= read -r line; do
         [ -z "$line" ] && continue
-        local op to from; op="$(printf '%s' "$line" | jq -r '.op // empty' 2>/dev/null || true)"
+        local op to from; op="$(printf '%s' "$line" | sot_jq -r '.op // empty' 2>/dev/null || true)"
         [ "$op" = "agent.message" ] || continue
-        from="$(printf '%s' "$line" | jq -r '.payload.from // ""' 2>/dev/null || true)"
+        from="$(printf '%s' "$line" | sot_jq -r '.payload.from // ""' 2>/dev/null || true)"
         [ "$from" = "$NAME" ] && continue   # drop our own broadcasts (self-echo)
-        to="$(printf '%s' "$line" | jq -r '.payload.to // ""' 2>/dev/null || true)"
+        to="$(printf '%s' "$line" | sot_jq -r '.payload.to // ""' 2>/dev/null || true)"
         [ "$to" = "" ] || [ "$to" = "$NAME" ] || continue
         printf '%s\n' "$line"
     done

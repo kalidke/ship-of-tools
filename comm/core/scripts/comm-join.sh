@@ -263,12 +263,12 @@ fi
 # written in full v2 form, as above) the moment it's actually used. See
 # ADR 0028's "Self-file read-side transition" for why a legacy file is no
 # longer "already inert" the way it was pre-hotfix.
-have="$(jq -r '.protocol_version // 0' "$REGISTRY")"
+have="$(sot_jq -r '.protocol_version // 0' "$REGISTRY")"
 if [ "$have" != "$PROTOCOL_VERSION" ]; then
     echo "WARNING: registry protocol v$have != client v$PROTOCOL_VERSION — run ShipTools.update_comm() on all machines" >&2
 fi
 
-others="$(jq -r --arg me "$NAME" '.agents | keys[] | select(. != $me)' "$REGISTRY" | paste -sd ", " -)"
+others="$(sot_jq -r --arg me "$NAME" '.agents | keys[] | select(. != $me)' "$REGISTRY" | paste -sd ", " -)"
 echo "Joined sot-comm as @$NAME  ($REPO on $HOST)."
 echo "  inbox: $INBOX_DIR/$NAME.jsonl"
 echo "Others registered: ${others:-none}"
