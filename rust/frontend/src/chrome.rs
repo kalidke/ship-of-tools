@@ -193,6 +193,15 @@ impl WgpuBackend {
         }
     }
 
+    /// Rows the grid actually holds — the count `project_lines` and
+    /// `project_border_quads` walk, so `oy + rows * cell_h` is where the chrome
+    /// ends in pixels. The session strip hangs its band off exactly that edge
+    /// (`strip_row_tops`) rather than re-deriving a second answer from the
+    /// window height.
+    pub fn rows(&self) -> u16 {
+        self.rows
+    }
+
     /// Reset cell storage to a new (cols, rows). Called when the window resizes.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols.max(1);

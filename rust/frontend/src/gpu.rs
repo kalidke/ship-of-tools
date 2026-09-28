@@ -1083,9 +1083,9 @@ const STRIP_TAU: f32 = 0.05;
 /// from the gap above it rather than from its ink. It is written in the same
 /// cell-width unit as the 0.4 it adds to — a bare `+ 2.0` here would be a length
 /// that does not scale with its neighbours, which is exactly the defect
-/// `STRIP_BOTTOM_PAD_ROWS` below was rewritten to delete. `strip_reserved_rows`
-/// spends this lift, so raising it eats the band's row budget: the invariant test
-/// is what says how far it can go.
+/// `STRIP_TOP_AIR_ROWS` below was rewritten to delete. The lift rises INTO that
+/// air, so raising it eats the air above the session names rather than the
+/// band's row budget: the invariant test is what says how far it can go.
 const STRIP_ACTIVE_LIFT_CELLS: f32 = 0.4;
 /// Cells of waterline between a bow's wheel and its box name — the `_` in
 /// `\ 0_-name-`. `ship_marks` alone spends it: the box name runs BENEATH the
@@ -1111,27 +1111,44 @@ const HULL_RGB: (u8, u8, u8) = (139, 90, 43);
 /// Text rows the bottom strip occupies: session names on the upper row, and
 /// below them each host group's hull with its box name inline at the bow.
 const STRIP_ROWS: f32 = 2.0;
-/// Gap (physical px) between the window's bottom edge and the bottom of the
-/// strip's lower (hull) row — the strip hugs the bottom edge, so this anchors
-/// the whole band — as a fraction of `BASE_CELL_H`, 2 px at scale 1.
+/// Air between the chrome grid's bottom edge — the panes' bottom border line —
+/// and the session names, as a fraction of `BASE_CELL_H`: **4 px at scale 1**.
+/// The band is placed from the GRID (`strip_row_tops`), so this constant is the
+/// whole of that distance and the only knob that sets it.
 ///
-/// It MUST scale, and that is not cosmetic. As a scale-invariant `2.0` it
-/// was the ONLY length in `strip_reserved_rows` that did not scale while
-/// `cell_h`, `cell_w` and `oy` all did, so a ratio that is scale-free in
-/// every other term came out scale-DEPENDENT: the reservation needed a
-/// third row at and below ~0.224, costing a pane row there, and no clamp
-/// could fix it without putting the lifted name on the version stamp
-/// (`2*cell_h + oy >= 2*cell_h + 2` simply fails once `oy < 2`). Scaling
-/// the pad deletes the regime instead of trading one defect for a worse
-/// one.
+/// That is the point of it, and it is why the pad it replaces — the gap from
+/// the window's bottom edge up to the hull row — is gone rather than kept
+/// beside it. `cell_grid_for` floors the grid to whole rows and throws the
+/// remainder `u = (win_h - 2*oy) mod cell_h` away; with the band hung off the
+/// window instead of off the grid, `u` landed in THIS gap, which therefore
+/// ranged over a whole row (0..18*scale px) with the window height — three
+/// times the travel the pad itself bought — so a spacing approved at one window
+/// height rendered as something else at the next, and two knobs disagreed about
+/// one distance. Measured down from the grid, `u` falls below the waterline
+/// instead, where it reads as sea at the window's edge rather than as a
+/// distance between the panes and the ship: the sea below the waterline is
+/// `oy + u - air + 4*scale` px — 12 at the default window, which is what the
+/// old geometry put there too, and never under 4*scale at any air this constant
+/// is allowed to take.
 ///
-/// 8, not the original 2: the band hugs the window's bottom edge, so this pad is
-/// what decides how the band's spare space is SPLIT — every pixel added here
-/// lifts the whole ship and takes a pixel off the air above the session names.
-/// At 2 the owner measured 15 px of dead navy between the panes' bottom border
-/// and the names, against 6 below the waterline; at 8 it reads 9 above and 12
-/// below, which is the setting he picked from three rendered side by side.
-const STRIP_BOTTOM_PAD_ROWS: f32 = 8.0 / BASE_CELL_H;
+/// 4 is what the previous geometry produced at the default window (1050 logical
+/// px, where `u` is exactly 0), so no box's proportions change by surprise — and
+/// it is now that same 4 px at every OTHER height too, which no value of the old
+/// pad could buy.
+///
+/// Like every other length in the band it is a fraction of `BASE_CELL_H`, so the
+/// shape scales as one and no ratio here can come out scale-DEPENDENT — the
+/// defect a scale-invariant `2.0` had, where the reservation needed a third row
+/// below ~0.224 scale and cost a pane row there.
+///
+/// Both ends of its range are pinned by
+/// `strip_band_never_touches_the_grids_last_row`. Below
+/// `STRIP_ACTIVE_LIFT_CELLS * cell_w` (3.1 px at the measured monospace advance,
+/// 3.6 px at the no-monospace fallback) the lifted active name rises back onto
+/// the grid's last row and its version stamp; above `oy` (12*scale px) the band
+/// no longer fits under the grid at `u == 0`, so `strip_reserved_rows` takes a
+/// third row and every pane gets shorter.
+const STRIP_TOP_AIR_ROWS: f32 = 4.0 / BASE_CELL_H;
 /// Hull thickness and waterline drop, as fractions of `BASE_CELL_H` — the row
 /// height the mock was drawn against, named rather than a bare 18 in a
 /// denominator so a change there can't silently detune the hull. The drop is
@@ -1594,12 +1611,16 @@ fn hull_band(ship_y: f32, cell_h: f32) -> (f32, f32) {
     )
 }
 
-/// Glyph-top y (physical px) of the strip's two rows — `(names, hull)`. The
-/// band hugs the window's bottom edge, so both are measured back from it:
-/// `STRIP_BOTTOM_PAD_ROWS` below the hull row, one `cell_h` above it for the names.
-fn strip_row_tops(win_h: f32, cell_h: f32) -> (f32, f32) {
-    let hull = (win_h - cell_h - cell_h * STRIP_BOTTOM_PAD_ROWS).max(0.0);
-    ((hull - cell_h).max(0.0), hull)
+/// Glyph-top y (physical px) of the strip's two rows — `(names, hull)`. Both are
+/// measured DOWN from the chrome grid's bottom edge (`grid_bottom`, which is the
+/// panes' bottom border line), so the air above the session names is
+/// `STRIP_TOP_AIR_ROWS` at every window height and the row-quantisation
+/// remainder the grid discards lands below the waterline as sea. Anchoring to
+/// the window's bottom edge instead is what put that remainder in the gap.
+/// `strip_reserved_rows` is what keeps the whole extent inside the window.
+fn strip_row_tops(grid_bottom: f32, cell_h: f32) -> (f32, f32) {
+    let names = grid_bottom + cell_h * STRIP_TOP_AIR_ROWS;
+    (names, names + cell_h)
 }
 
 /// Where one ship's parts sit VERTICALLY in the two-row band — the whole of the
@@ -1649,25 +1670,30 @@ fn box_name_rgb(steered: bool, contrast_dim: bool) -> (u8, u8, u8) {
     }
 }
 
-/// Rows `cell_grid_for` keeps OUT of the chrome grid so the strip's band can
-/// never land on the grid's last row — the bottom border line, which carries
-/// the FE/BE version stamp (`version_label`). The strip floats off
-/// `config.height` while the chrome floats off the grid, so a row the strip
-/// claims is a row the chrome may also own; reserving it once, here, is the
-/// only place that can't disagree with itself.
+/// Rows `cell_grid_for` keeps OUT of the chrome grid, to make room BELOW it for
+/// the strip's band: the two text rows plus `STRIP_TOP_AIR_ROWS` of air above
+/// them. The band hangs off the grid's bottom edge (`strip_row_tops`) while the
+/// chrome fills the grid, so the rows the band lives in have to come off the
+/// grid exactly once, here — and the grid's last row is the bottom border line
+/// carrying the FE/BE version stamp (`version_label`), which is what the band
+/// would otherwise be drawn over.
 ///
-/// The condition, at its worst case (`(win_h - 2*oy) mod cell_h == 0`):
-/// `k * cell_h + oy >= need`. Erring high is safe — one spare row is a
-/// slightly shorter pane — while erring low puts session names on the stamp,
-/// so `k` is the ceiling. Every term now scales together, so the ceiling is
+/// The condition, at its worst case (`(win_h - 2*oy) mod cell_h == 0`, the
+/// window with no discarded remainder to lend the band): `k * cell_h + oy >=
+/// need`. Erring high is safe — one spare row is a slightly shorter pane —
+/// while erring low runs the hull row off the window's bottom edge, so `k` is
+/// the ceiling. Every term is a fraction of `BASE_CELL_H`, so the ceiling is
 /// `STRIP_ROWS` at every scale and the band never costs a third row:
-/// `need = 41.08*s` against `2*cell_h + oy = 48*s`, while `k = 1` would give
-/// `30*s` and fail. `strip_band_never_touches_the_grids_last_row` pins the
+/// `need = 40*s` against `2*cell_h + oy = 48*s`, while `k = 1` would give
+/// `30*s` and fail. The `8*s` of slack is exactly the room
+/// `STRIP_TOP_AIR_ROWS` has left to grow before a third row is needed, and the
+/// air is the only thing that spends it: the active name's lift rises INTO that
+/// air, never below the band, so it is bounded by the air rather than by this
+/// row budget. `strip_band_never_touches_the_grids_last_row` pins the
 /// condition, k's minimality AND that constancy — the literal is pinned
 /// there because it is now an invariant, not because anyone counted rows.
-fn strip_reserved_rows(cell_w: f32, cell_h: f32, oy: f32) -> u16 {
-    let need =
-        STRIP_ROWS * cell_h + cell_h * STRIP_BOTTOM_PAD_ROWS + STRIP_ACTIVE_LIFT_CELLS * cell_w;
+fn strip_reserved_rows(cell_h: f32, oy: f32) -> u16 {
+    let need = STRIP_ROWS * cell_h + cell_h * STRIP_TOP_AIR_ROWS;
     (((need - oy) / cell_h.max(1.0)).ceil().max(0.0)) as u16
 }
 
@@ -5745,7 +5771,7 @@ fn cell_grid_for(
 ) -> (u16, u16) {
     let cols = ((width as f32 - 2.0 * ox).max(0.0) / cell_w).floor() as u16;
     let rows = ((height as f32 - 2.0 * oy).max(0.0) / cell_h).floor() as u16;
-    let rows = rows.saturating_sub(strip_reserved_rows(cell_w, cell_h, oy));
+    let rows = rows.saturating_sub(strip_reserved_rows(cell_h, oy));
     (cols.max(1), rows.max(1))
 }
 
@@ -17638,12 +17664,17 @@ impl State {
                 strip_divider_offsets(&items, &item_widths, &label_widths, self.cell_w);
             let target = session_strip_target(&labels, active, self.cell_w, &divider_offsets);
             let scroll = self.strip_scroll_px.unwrap_or(target);
-            // Two rows, hugging the window's bottom edge: session names above,
-            // the ships below them. `cell_grid_for` has already kept both out
-            // of the chrome grid (`strip_reserved_rows`), so neither can land
-            // on the bottom border line and its version stamp.
-            let (baseline_y, ship_y) =
-                strip_row_tops(self.config.height as f32, self.cell_h);
+            // Two rows hanging off the bottom of the chrome grid: session
+            // names above, the ships below them. The grid's own bottom edge is
+            // where the chrome's last row was drawn (`project_lines` walks the
+            // same rows from the same origin), and `cell_grid_for` has already
+            // kept the band's rows out of it (`strip_reserved_rows`), so
+            // neither row can land on the bottom border line and its version
+            // stamp — and the air above the names is `STRIP_TOP_AIR_ROWS`
+            // whatever the window height quantises to.
+            let grid_bottom = self.chrome_origin_y
+                + self.terminal.backend().rows() as f32 * self.cell_h;
+            let (baseline_y, ship_y) = strip_row_tops(grid_bottom, self.cell_h);
             // Per-name work-state tone, parallel to `labels` (built from
             // `workspace_slugs` in the same order). `now` is fetched per frame
             // so the wilt re-evaluates on the existing 1 Hz idle redraw.
@@ -25595,6 +25626,8 @@ mod tests {
         // the line up into the wheel's own row. Every number is a fraction of
         // `BASE_CELL_H`, so the whole shape scales as one.
         let cell_h = BASE_CELL_H;
+        // 600.0 is a grid bottom, not a window height: the band's internal
+        // proportions are the same wherever the grid ends.
         let (names_y, hull_y) = strip_row_tops(600.0, cell_h);
         assert!(
             (hull_y - (names_y + cell_h)).abs() < 1e-3,
@@ -25936,19 +25969,23 @@ mod tests {
 
     #[test]
     fn strip_band_never_touches_the_grids_last_row() {
-        // BLOCKER 1: the strip floats off `config.height` while the chrome
-        // floats off the grid, so the grid's last row — the bottom border
-        // line, carrying the FE/BE version stamp — used to sit under the
+        // BLOCKER 1: the strip used to float off `config.height` while the
+        // chrome floats off the grid, so the grid's last row — the bottom
+        // border line, carrying the FE/BE version stamp — sat under the
         // strip's names row at EVERY window height (worst at
         // `R = (h - 2*oy) mod cell_h == 8*scale`, where the two share a
-        // baseline). `cell_grid_for` now reserves the band once.
+        // baseline). `cell_grid_for` reserves the band once, and the band is
+        // now placed off the grid it reserved from, so the two cannot drift.
         // The sweep used to exist because the reservation was 3 rows at or
-        // below ~0.224, `STRIP_BOTTOM_PAD` being the one scale-invariant
-        // length among scaling ones. It is now `STRIP_BOTTOM_PAD_ROWS` and
-        // every term scales together, so `k` is `STRIP_ROWS` at every scale —
+        // below ~0.224, a scale-invariant bottom pad (since deleted) being the
+        // one non-scaling length among scaling ones. It is now
+        // `STRIP_TOP_AIR_ROWS` and every term scales together, so `k` is
+        // `STRIP_ROWS` at every scale —
         // asserted below as a literal BECAUSE it is now an invariant. The
         // sweep stays: it is what would catch a future term that forgets to
-        // scale, which is the defect class this constant belonged to.
+        // scale, which is the defect class this constant belonged to, and it
+        // is where both ends of the air's range are pinned — the lifted active
+        // name must clear the grid, and the hull row must stay in the window.
         //
         // Two limits of this sweep, both deliberate. It starts at
         // `240 * scale`, so it never reaches `cell_grid_for`'s `rows.max(1)`
@@ -25964,10 +26001,8 @@ mod tests {
             // Not the literal 2 (see `strip_reserved_rows`' doc): what holds
             // at every scale is that the reservation is the SMALLEST one that
             // clears the band.
-            let k = strip_reserved_rows(cell_w, cell_h, oy) as f32;
-            let need = STRIP_ROWS * cell_h
-                + cell_h * STRIP_BOTTOM_PAD_ROWS
-                + STRIP_ACTIVE_LIFT_CELLS * cell_w;
+            let k = strip_reserved_rows(cell_h, oy) as f32;
+            let need = STRIP_ROWS * cell_h + cell_h * STRIP_TOP_AIR_ROWS;
             assert_eq!(
                 k, STRIP_ROWS,
                 "scale {scale}: the band must never cost more than {STRIP_ROWS} rows"
@@ -25984,13 +26019,19 @@ mod tests {
             while h <= (2160.0 * scale) as u32 {
                 let (_, rows) = cell_grid_for(1920, h, cell_w, cell_h, ox, oy);
                 let grid_bottom = oy + rows as f32 * cell_h;
-                let (names_y, hull_y) = strip_row_tops(h as f32, cell_h);
+                let (names_y, hull_y) = strip_row_tops(grid_bottom, cell_h);
+                // The air's LOWER bound: the active name rises into it, and an
+                // air smaller than that lift would put the lifted name back on
+                // the version stamp the reservation exists to keep clear.
                 let band_top = names_y - STRIP_ACTIVE_LIFT_CELLS * cell_w;
                 assert!(
                     band_top >= grid_bottom,
                     "scale {scale}, h {h}: the strip band (lifted top {band_top}) \
                      overlaps the grid, which ends at {grid_bottom}"
                 );
+                // The air's UPPER bound: it comes out of `oy` plus whatever
+                // the grid discarded, so an air above `oy` runs the band off
+                // the bottom edge at the heights that discard nothing.
                 assert!(
                     hull_y + cell_h <= h as f32,
                     "scale {scale}, h {h}: the hull row runs off the window bottom"
@@ -26001,6 +26042,53 @@ mod tests {
                 );
                 h += 1;
             }
+        }
+    }
+
+    #[test]
+    fn the_air_above_the_session_names_is_one_named_length_at_every_window_height() {
+        // The distance the owner tunes is the one between the panes' bottom
+        // border — the grid's last row — and the session names, and it must be
+        // the SAME distance at every window height, or a spacing picked from
+        // rendered samples is only reproducible at the height they were
+        // captured at. `cell_grid_for` floors the grid to whole rows; the
+        // remainder it discards, `u = (h - 2*oy) mod cell_h`, is a full row of
+        // range (18*scale px) and it used to land in exactly this gap.
+        let cell_h = BASE_CELL_H;
+        let cell_w = 7.7; // the measured monospace advance, at scale 1
+        let ox = BASE_CHROME_ORIGIN_X;
+        let oy = BASE_CHROME_ORIGIN_Y;
+        // Four heights whose discarded remainders are 6, 0, 8 and 12 px. The
+        // default window (1050 logical) is the `u == 0` case — the tightest
+        // one, and the only one the old geometry rendered as intended.
+        let mut air: Vec<(u32, f32, f32)> = Vec::new();
+        for &h in &[768_u32, 1050, 1058, 1080] {
+            let u = (h as f32 - 2.0 * oy) % cell_h;
+            let (_, rows) = cell_grid_for(1920, h, cell_w, cell_h, ox, oy);
+            let grid_bottom = oy + rows as f32 * cell_h;
+            let (names_y, _) = strip_row_tops(grid_bottom, cell_h);
+            air.push((h, u, names_y - grid_bottom));
+        }
+        // The remainders really do differ, or the sweep proves nothing.
+        assert!(
+            air.iter().any(|&(_, u, _)| (u - air[0].1).abs() > 1e-3),
+            "these heights share a remainder: {air:?}"
+        );
+        for &(h, u, a) in &air {
+            assert!(
+                (a - air[0].2).abs() < 1e-3,
+                "h {h} (remainder {u}) leaves {a} px above the session names, \
+                 while h {} leaves {}",
+                air[0].0,
+                air[0].2
+            );
+            // And it is the named length, not merely a constant one — this is
+            // the distance the owner sets, so the constant is what he moves.
+            assert!(
+                (a - cell_h * STRIP_TOP_AIR_ROWS).abs() < 1e-3,
+                "h {h}: {a} px of air, but `STRIP_TOP_AIR_ROWS` asks for {}",
+                cell_h * STRIP_TOP_AIR_ROWS
+            );
         }
     }
 
