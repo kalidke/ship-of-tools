@@ -1876,8 +1876,11 @@ $splashDismissed = $false
 $tunnelPidLabel = if ($sshTunnel) { $sshTunnel.Id } else { 'none (external control tunnel, aux retired)' }
 Write-SupLog "supervisor start (relaunched=$Relaunched, tcpPort=$tcpPort, tunnelPid=$tunnelPidLabel)"
 # A supervisor rolls back AT MOST ONCE, matching the Unix supervisor's $ROLLED
-# in scripts/install.sh. Without it, a box that rolls back and then crash-loops
-# on the older bits rolls back again, walking backwards through releases.
+# in scripts/install.sh. What it actually guards is narrow: a Remove-Item that
+# failed to clear the marker, and a converge that applies again after a
+# rollback. It is not protection against walking backwards through releases --
+# that cannot happen here, since a rollback clears the marker twice over and
+# the supervisor exits after any fast exit it does not roll back.
 $rolledBackOnce = $false
 try {
     do {
@@ -1920,8 +1923,9 @@ try {
         # thing on the two platforms.
         #
         # The longer bound costs nothing because the window closes on success
-        # rather than only on the clock (see the closer after the rollback
-        # below): once any run has lasted a full minute the marker is deleted,
+        # rather than only on the clock (the closer sits just after the exit is
+        # known, above): once any run has lasted a full minute the marker is
+        # deleted,
         # so what remains is "a fast crash before this release has ever run
         # healthily, within two hours of its apply" — very nearly the exact
         # event worth rolling back on.
@@ -1930,9 +1934,14 @@ try {
         # update mid-life, and that update deserves the same window as one
         # applied at launch. Hoisting it above the loop would close the window
         # for exactly those.
+        # ONE lookup, not Test-Path followed by Get-Item: $ErrorActionPreference
+        # is Stop for this script, so a marker that vanished between the two --
+        # the closer below removes it, and a rollback removes it twice -- would
+        # throw and drop the whole launch into the finally block.
         $appliedUpdate = $false
-        if (Test-Path $applyMarker) {
-            $markerAge = (Get-Date) - (Get-Item -LiteralPath $applyMarker).LastWriteTime
+        $markerItem = Get-Item -LiteralPath $applyMarker -ErrorAction SilentlyContinue
+        if ($markerItem) {
+            $markerAge = (Get-Date) - $markerItem.LastWriteTime
             $appliedUpdate = $markerAge.TotalMinutes -lt 120
             if (-not $appliedUpdate) {
                 Write-SupLog ("stale just-applied marker ({0:N0} min old) - no rollback window" -f $markerAge.TotalMinutes)
@@ -2176,7 +2185,6 @@ try {
                 Copy-Item -Path "$stagedExe.prev" -Destination $stagedExe -Force
                 Write-SupLog "sot-apply.ps1 missing - restored $stagedExe from .prev only"
             }
-            $appliedUpdate = $false
             $rolledBackOnce = $true
             Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
             $relaunchNext = $true
