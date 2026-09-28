@@ -1096,23 +1096,35 @@ sot_pty_input_gated() {
     return 0
 }
 
-# sot_capsule_workspace_id — print the calling shell's capsule row id, or
-# print nothing and return 1 when this isn't a capsule row. $SOT_WORKSPACE_ID
-# wins when set; otherwise it's read out of $SOT_COMM_SELF_FILE's basename
-# (comm-context.sh names it "<host>__<workspace_id>.txt" — a real capsule
-# row today has the self file pinned but not the id itself in its env, so
-# the basename is the only place it survives). "nopane" is the literal
-# placeholder comm-context.sh writes for a non-capsule shell, never a real
-# id — treated the same as absent. Shared by comm-wake.sh (its own startup
-# gate, rule: exit 3 when this fails) and comm-session-start.sh (deciding
-# whether to auto-start a ping watcher at all).
+# sot_capsule_workspace_id — print the row id THIS SHELL'S IDENTITY names,
+# or print nothing and return 1 when it names none. The identity is the
+# pinned $SOT_COMM_SELF_FILE, which comm-context.sh names
+# "<host>__<workspace_id>.txt", so the row id travels with the identity
+# instead of with the environment. $SOT_WORKSPACE_ID answers only where no
+# self file is pinned — there the slot comm-context.sh derives is keyed by
+# that same ambient id, so the two agree by construction. "nopane" is the
+# literal placeholder comm-context.sh writes for a non-capsule shell, never
+# a real id — treated the same as absent.
+#
+# The order is load-bearing and ran the other way until 2026-09-28. A test
+# or a lane pins its own scratch identity but inherits $SOT_WORKSPACE_ID
+# from the session that launched it, so the ambient id let every hermetic
+# suite declare its throwaway handle into the live row it happened to run
+# inside — ninety-two such declarations in one morning, and the last one
+# left that row naming a handle no status lookup could resolve, which the
+# owner saw as a permanently grey badge on a session that was working fine.
+# An identity that does not name a row has no row to declare into.
+#
+# Shared by comm-wake.sh (its own startup gate, rule: exit 3 when this
+# fails), comm-session-start.sh (the ping watcher, and the re-declaration
+# after a survived restart) and comm-join.sh (a fresh join's declaration).
 sot_capsule_workspace_id() {
-    if [ -n "${SOT_WORKSPACE_ID:-}" ]; then
+    local base="${SOT_COMM_SELF_FILE:-}"
+    if [ -z "$base" ]; then
+        [ -n "${SOT_WORKSPACE_ID:-}" ] || return 1
         printf '%s\n' "$SOT_WORKSPACE_ID"
         return 0
     fi
-    local base="${SOT_COMM_SELF_FILE:-}"
-    [ -n "$base" ] || return 1
     base="$(basename "$base")"
     case "$base" in
         *__*.txt) ;;

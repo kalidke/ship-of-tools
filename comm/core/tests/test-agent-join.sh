@@ -30,6 +30,14 @@ mkdir -p "$SOT_COMM_HOME"
 # comm-context.sh's own HOST resolution, and therefore this test's pin,
 # stays untouched by the declared-identity lane).
 export SOT_COMM_TEST_HOST="test-host"
+# Hermetic row binding (2026-09-28). A session that runs this suite has
+# $SOT_WORKSPACE_ID and $SOT_SOCKET pinned in its own environment, and every
+# case here inherits them. The "no SOT_WORKSPACE_ID pinned" case below was
+# therefore never running without one: it declared a handle into whichever
+# live row happened to be running the suite, and passed anyway because the
+# stub daemon it checked was not the daemon that received it. Each case pins
+# what it needs and nothing is ambient.
+unset SOT_WORKSPACE_ID SOT_SOCKET
 
 STUB_NC_PID=""
 STUB_WATCHER_PID=""
@@ -121,7 +129,17 @@ NEXTSELF=0
 join_in() {
     local root="$1"; shift
     NEXTSELF=$((NEXTSELF + 1))
+    # A real session's self file is the one comm-context.sh names for its
+    # row, "<host>__<workspace_id>.txt", and that basename is where the
+    # declaration now reads the row id from. A case that pins a row id must
+    # therefore pin an identity that names it, or it is testing the shape
+    # that leaked (see $SELF_OVERRIDE, used by exactly one case below).
     local self="$WORK/self-$NEXTSELF.txt"
+    if [ -n "${SELF_OVERRIDE:-}" ]; then
+        self="$SELF_OVERRIDE"
+    elif [ -n "${SOT_WORKSPACE_ID:-}" ]; then
+        self="$WORK/${SOT_COMM_TEST_HOST}__${SOT_WORKSPACE_ID}.txt"
+    fi
     local errfile="$WORK/stderr-$NEXTSELF.tmp"
     JOIN_OUT="$(cd "$root" && SOT_COMM_SELF_FILE="$self" "$JOIN" "$@" 2>"$errfile")"
     JOIN_RC=$?
@@ -210,6 +228,31 @@ case_daemon_rejects_agent_join_warns_but_still_joins() {
     return 0
 }
 
+case_a_scratch_identity_never_declares_into_the_ambient_row() {
+    mkdir -p "$WORK/proj-e"
+    local root; root="$(realpath "$WORK/proj-e")"
+    # The field case, 2026-09-28: a hermetic test (or a lane) pins its own
+    # identity but inherits $SOT_WORKSPACE_ID from the session that
+    # launched it. Everything here is pinned for a successful declaration
+    # -- a live row id and a reachable daemon -- and the ONE thing that
+    # makes it a scratch session is the identity, which names no row. It
+    # must join the registry and declare NOTHING: the row belongs to the
+    # session whose identity names it, and overwriting that row's handle
+    # is what left the owner looking at a grey badge.
+    start_stub_daemon
+    SELF_OVERRIDE="$WORK/scratch-self.txt" \
+        SOT_WORKSPACE_ID="ws-live-row" SOT_SOCKET="$SOCK" join_in "$root" --name proj-e-scratch
+    local req
+    req="$(grep -m1 '"op":"agent.join"' "$REQLOG" 2>/dev/null || true)"
+    stop_stub_daemon
+
+    [ "$JOIN_RC" -eq 0 ] || { echo "  comm-join.sh exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    contains "$JOIN_OUT" "Joined sot-comm as @proj-e-scratch" || { echo "  stdout: $JOIN_OUT"; return 1; }
+    registry_has_row "proj-e-scratch" || { echo "  no registry row for proj-e-scratch"; return 1; }
+    [ -z "$req" ] || { echo "  a scratch identity declared into the ambient row: $req"; return 1; }
+    return 0
+}
+
 # --- run ---------------------------------------------------------------
 
 check "comm-join.sh with SOT_WORKSPACE_ID + SOT_SOCKET pinned declares its handle via agent.join" \
@@ -220,6 +263,8 @@ check "comm-join.sh with SOT_WORKSPACE_ID but no SOT_SOCKET still joins, warning
     case_workspace_id_but_no_owner_endpoint_still_joins
 check "comm-join.sh still joins when the daemon doesn't answer agent.join, with a warning" \
     case_daemon_rejects_agent_join_warns_but_still_joins
+check "comm-join.sh with a scratch identity and an inherited SOT_WORKSPACE_ID declares nothing" \
+    case_a_scratch_identity_never_declares_into_the_ambient_row
 
 echo ""
 echo "$PASS passed, $FAIL failed"

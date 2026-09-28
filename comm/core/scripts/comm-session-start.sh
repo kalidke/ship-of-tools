@@ -367,16 +367,16 @@ if [ -n "$H" ] && _survived "$H"; then
     # works — but (manager review, round 2) the failure itself must be
     # VISIBLE, checking the acknowledgment and warning exactly like
     # comm-join.sh's own fresh join does, not discarded silently.
-    if [ -n "${SOT_WORKSPACE_ID:-}" ]; then
+    if join_ws="$(sot_capsule_workspace_id 2>/dev/null)" && [ -n "$join_ws" ]; then
         if ENDPOINT="$(sot_daemon_endpoint 2>/dev/null)" && [ -n "$ENDPOINT" ]; then
-            join_frame="$(jq -nc --arg ws "$SOT_WORKSPACE_ID" --arg h "$H" \
+            join_frame="$(jq -nc --arg ws "$join_ws" --arg h "$H" \
                 '{v:1, id:1, kind:"req", op:"agent.join", payload:{workspace_id:$ws, handle:$h}}')"
             join_res="$(sot_oneshot_request "$join_frame" "agent.join" || true)"
             if [ -z "$join_res" ] || ! printf '%s' "$join_res" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
                 echo "comm-session-start.sh: WARNING — could not declare '@$H' to the daemon (agent.join); it will retry at the next comm-session-start." >&2
             fi
         else
-            echo "comm-session-start.sh: WARNING — SOT_WORKSPACE_ID is set but no daemon endpoint could be resolved; the daemon won't learn '@$H' until the next comm-session-start." >&2
+            echo "comm-session-start.sh: WARNING — this session's identity names row '$join_ws' but no daemon endpoint could be resolved; the daemon won't learn '@$H' until the next comm-session-start." >&2
         fi
     fi
     _context_block "$H" "$LISTENER"
