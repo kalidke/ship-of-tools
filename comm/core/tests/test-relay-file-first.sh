@@ -395,6 +395,24 @@ case_annotation_absent_for_a_malformed_row() {
     return 0
 }
 
+case_an_empty_roster_is_no_such_handle() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local sock="$WORK/fake-empty.sock"
+    # Nobody at all is attached to the hub: there is nowhere for the frame to
+    # land and nothing that could ever receipt it. Decided on the ACK -- this
+    # case must not spend the five-second receipt window.
+    fake_daemon "$sock" '[]' \
+        || { echo "  nc -lU unavailable; cannot stand up a fake daemon"; return 2; }
+    relay_send "unix:$sock" send "@peer-$PEER_HOST" "into the void"
+    fake_daemon_stop
+    [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "no such handle: peer-$PEER_HOST" \
+        || { echo "  stderr was '$RELAY_ERR', want 'no such handle'"; return 1; }
+    contains "$RELAY_ERR" "NOT CONFIRMED" \
+        && { echo "  an empty roster waited for a receipt: '$RELAY_ERR'"; return 1; }
+    return 0
+}
+
 check "a registry target is filed with the daemon down" case_registry_target_is_filed_with_the_daemon_down
 check "an unknown handle exits 1 with 'no such handle' while an fe@ row is attached" case_unknown_handle_exits_one_while_an_fe_row_is_attached
 check "a filer's receipt is the delivery, and names the filer" case_a_receipt_is_the_only_delivery
@@ -403,6 +421,7 @@ check "an ack with no receipt is NOT CONFIRMED and names who was attached" case_
 check "a target whose name ends in an attached frontend's host gets no credit for it" case_the_name_suffix_means_nothing_now
 check "a receipt carrying another frame's id is not this send's verdict" case_a_receipt_for_another_frame_is_not_a_verdict
 check "a hub whose ack drops the id says it predates receipts" case_a_hub_with_no_id_says_so_instead_of_waiting
+check "an ack with an empty receivers list is 'no such handle', decided on the ack" case_an_empty_roster_is_no_such_handle
 check "a working recipient is annotated with its stamped age and turn-boundary wording" case_annotation_working_recipient
 check "a recipient stopped on an open question is annotated 'needs its own user', quoted and truncated" case_annotation_recipient_needs_its_own_user
 check "a stale heartbeat overrides a fresh 'working' stamp" case_annotation_stale_heartbeat_overrides_working
