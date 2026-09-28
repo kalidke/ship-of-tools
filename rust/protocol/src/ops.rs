@@ -210,6 +210,23 @@ pub mod op {
     /// carries `{from, to, text, ts}`; the frontend appends it as one JSON line
     /// to `<state-dir>/fe-inbox.jsonl`.
     pub const AGENT_MESSAGE: &str = "agent.message";
+    /// Client→daemon request (ADR 0048): whoever APPENDED a relayed frame
+    /// to an inbox says so. Payload `AgentFiledReq { id, handle, filed,
+    /// reason? }`, where `id` is the sender-minted id the frame carried;
+    /// the daemon stamps `filer` from THIS connection's declared hello
+    /// `name` (never from anything the request claims), fans the result
+    /// out as an `AGENT_RECEIPT` evt, and answers `AgentFiledRes { ok }`.
+    /// A connection with no declared name cannot vouch for anything and
+    /// is refused `bad_filer`. The daemon keeps no delivery state: it
+    /// relays a receipt exactly as it relays a message.
+    pub const AGENT_FILED: &str = "agent.filed";
+    /// Server→client push fired for every `AGENT_FILED` (ADR 0048), to
+    /// every connection like `AGENT_MESSAGE` — the sender recognizes its
+    /// own by `id` and ignores the rest. Payload `AgentReceiptEvt { id,
+    /// handle, filed, reason?, filer }`. This is the ONLY honest verdict
+    /// for a cross-box send: the append IS the delivery, so only the
+    /// appender can report one.
+    pub const AGENT_RECEIPT: &str = "agent.receipt";
     /// Client→daemon request: a session inside a workspace declares its
     /// sot-comm handle to the daemon that spawned/pinned its env (ADR
     /// 0046 decision 1), over the typed owner endpoint (`SOT_SOCKET`) —
@@ -252,16 +269,6 @@ pub mod op {
     /// presence from ordinary navigation/typing ops, which turned out to
     /// have automated producers for every one of them.
     pub const FE_PRESENCE: &str = "fe.presence";
-    /// Client→daemon request: a frontend connection declares which
-    /// sot-comm handles it files inbound frames for, so the daemon can
-    /// answer whether a receiver actually names a target instead of
-    /// guessing from this connection's single hello `name`. A frontend
-    /// files every inbound frame into ONE inbox of its own regardless of
-    /// which workspace/session addressed it — the set of handles it
-    /// files FOR cannot be inferred from that single `name`, which is why
-    /// this is a separate declaration. Payload `FeFilesForReq { handles
-    /// }`; answered with `FeFilesForRes { ok }`.
-    pub const FE_FILES_FOR: &str = "fe.files_for";
     /// Open a `.jl` Pluto-flavored notebook in the backend-supervised
     /// Pluto server. The backend lazy-spawns one shared server per
     /// daemon (listening on 127.0.0.1:1234), keeps it across calls,
@@ -1617,6 +1624,13 @@ pub struct AgentSendReq {
     pub from: String,
     pub to: String,
     pub text: String,
+    /// Sender-minted opaque id (ADR 0048), absent from an older sender.
+    /// Attributability is the whole invariant: a receipt must be
+    /// attributable to exactly the frame it acknowledges, or two
+    /// concurrent sends to one handle can swap verdicts and a single
+    /// success vouch for a failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// `agent.send` response. `receivers` names the connections the daemon's
@@ -1628,6 +1642,49 @@ pub struct AgentSendReq {
 pub struct AgentSendRes {
     pub ok: bool,
     pub receivers: Vec<String>,
+    /// The `id` this request carried, echoed back (ADR 0048). The ONE
+    /// thing that separates "no filer answered" from "this hub cannot
+    /// carry an answer": a hub that echoes the id supports receipts, one
+    /// that drops it predates them, and a sender can say which without
+    /// waiting out a timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// `agent.filed` request (ADR 0048) — the filer's claim about ONE frame.
+/// `handle` is who it filed for, `filed` whether it did, `reason` why not
+/// when it did not (a `filed: false` that cannot say why is not
+/// actionable). There is deliberately no `filer` field: the daemon stamps
+/// that from the answering connection's own hello `name`, so a filer
+/// cannot vouch under another's name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentFiledReq {
+    pub id: String,
+    pub handle: String,
+    pub filed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// `agent.filed` response — a bare ack, mirroring `AgentJoinRes`. The
+/// sender's verdict rides the `AGENT_RECEIPT` evt, not this.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentFiledRes {
+    pub ok: bool,
+}
+
+/// `agent.receipt` evt (ADR 0048) — one relayed filer claim, with `filer`
+/// stamped by the daemon from the answering connection's declared hello
+/// `name`. Never built from a client-supplied value: an unforgeable filer
+/// is what makes the receipt a verdict rather than a second guess.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentReceiptEvt {
+    pub id: String,
+    pub handle: String,
+    pub filed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub filer: String,
 }
 
 /// `agent.join` request (ADR 0046 decision 1) — a session declares its
@@ -1740,23 +1797,6 @@ pub struct FePresenceReq {}
 /// `fe.presence` response — a bare ack; the frontend doesn't act on it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FePresenceRes {
-    pub ok: bool,
-}
-
-/// `fe.files_for` request — **replace semantics, never append**: every
-/// send carries the complete current set of sot-comm handles this
-/// connection files inbound frames for. An append reading would silently
-/// keep a dead handle declared forever (a session that quit, a workspace
-/// that never joined) — the daemon has no way to learn "no longer" except
-/// by being told the new whole set.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FeFilesForReq {
-    pub handles: Vec<String>,
-}
-
-/// `fe.files_for` response — a bare ack, mirroring `FePresenceRes`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FeFilesForRes {
     pub ok: bool,
 }
 
@@ -2850,5 +2890,70 @@ mod pty_input_screen_tests {
         let back: PtyScreenRes = serde_json::from_str(&json).unwrap();
         let cursor = back.cursor.expect("cursor present");
         assert_eq!((cursor.row, cursor.col), (3, 7));
+    }
+}
+
+#[cfg(test)]
+mod agent_receipt_tests {
+    use super::{AgentFiledReq, AgentReceiptEvt, AgentSendReq, AgentSendRes};
+
+    #[test]
+    fn agent_send_req_parses_with_and_without_an_id() {
+        // Mixed fleet (ADR 0048): an old sender's frame carries no `id`,
+        // and must still parse — the daemon then publishes no id, no
+        // filer claims anything, and that sender behaves as it always did.
+        let old: AgentSendReq =
+            serde_json::from_str(r#"{"from":"a","to":"b","text":"hi"}"#).expect("old sender parses");
+        assert_eq!(old.id, None);
+        let new: AgentSendReq =
+            serde_json::from_str(r#"{"from":"a","to":"b","text":"hi","id":"x-1"}"#)
+                .expect("new sender parses");
+        assert_eq!(new.id.as_deref(), Some("x-1"));
+    }
+
+    #[test]
+    fn agent_send_res_omits_the_id_key_when_there_is_none() {
+        // An old client greps the ack by op and reads `receivers`; a null
+        // `id` on the wire would be a new key it has to tolerate, and an
+        // ABSENT one is also what tells a new sender "this hub predates
+        // receipts". Both readings depend on the key not being emitted.
+        let res = AgentSendRes { ok: true, receivers: vec!["fe@otherbox".into()], id: None };
+        let j = serde_json::to_string(&res).expect("serializes");
+        assert!(!j.contains("\"id\""), "id must be omitted, got {j}");
+        let with = AgentSendRes { ok: true, receivers: vec![], id: Some("x-1".into()) };
+        assert!(serde_json::to_string(&with).unwrap().contains("\"id\":\"x-1\""));
+    }
+
+    #[test]
+    fn agent_filed_req_carries_no_filer_field() {
+        // The unforgeability invariant, asserted on the type: a client
+        // cannot even express who filed. A request that tries is parsed
+        // with the extra key dropped (no `deny_unknown_fields` anywhere
+        // in this lane — the compat matrix depends on that).
+        let req: AgentFiledReq = serde_json::from_str(
+            r#"{"id":"x-1","handle":"peer","filed":true,"filer":"someone-else"}"#,
+        )
+        .expect("parses, extra key ignored");
+        assert!(req.filed);
+        assert_eq!(req.reason, None);
+        let j = serde_json::to_string(&req).expect("serializes");
+        assert!(!j.contains("filer"), "the request cannot name a filer: {j}");
+        assert!(!j.contains("reason"), "absent reason stays off the wire: {j}");
+    }
+
+    #[test]
+    fn agent_receipt_evt_round_trips_a_refusal_with_its_reason() {
+        let evt = AgentReceiptEvt {
+            id: "x-1".into(),
+            handle: "peer-otherbox".into(),
+            filed: false,
+            reason: Some("no row on this frontend declares @peer-otherbox".into()),
+            filer: "fe@otherbox".into(),
+        };
+        let back: AgentReceiptEvt =
+            serde_json::from_str(&serde_json::to_string(&evt).unwrap()).expect("round trips");
+        assert!(!back.filed);
+        assert_eq!(back.filer, "fe@otherbox");
+        assert!(back.reason.unwrap().contains("declares @peer-otherbox"));
     }
 }

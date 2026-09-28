@@ -27,11 +27,11 @@ pub mod topology;
 pub use codec::{read_frame, write_frame};
 pub use ir::{BlobDescriptor, PreviewPayload, TreeNode};
 pub use ops::{
-    op, AccountEntry, AccountsListReq, AccountsListRes, AgentJoinReq, AgentJoinRes, AgentSendReq, AgentSendRes, ClientVersion, ConceptListRes, ConceptReadReq, ConceptReadRes,
+    op, AccountEntry, AccountsListReq, AccountsListRes, AgentFiledReq, AgentFiledRes,
+    AgentJoinReq, AgentJoinRes, AgentReceiptEvt, AgentSendReq, AgentSendRes, ClientVersion, ConceptListRes, ConceptReadReq, ConceptReadRes,
     ConceptWriteReq, ConceptWriteRes, DaemonVersion, DirCreateReq, DirCreateRes, DirectoryEntry,
     DirectoryListReq, DirectoryListRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
     FeCommandSendRes,
-    FeFilesForReq, FeFilesForRes,
     FePresenceReq, FePresenceRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq,
     FileReadReq, FileReadRes,
     FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, GpuSample, HelloReq, HelloRes,

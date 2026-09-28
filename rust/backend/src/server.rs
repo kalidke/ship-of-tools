@@ -47,7 +47,7 @@ use crate::pluto::Pluto;
 use crate::repl::{Repl, ReplFrameMsg};
 use crate::session::Session;
 use crate::watcher::PreviewChanged;
-use crate::workspaces::AgentMessage;
+use crate::workspaces::{AgentMessage, AgentReceipt};
 use crate::workspaces::WorkspaceChanged;
 use crate::workspaces::{self, Workspace, Workspaces};
 use crate::Opts;
@@ -814,6 +814,15 @@ pub async fn run(opts: Opts) -> Result<()> {
     // the workspace.changed wiring, plus a client→daemon publish leg).
     let (agent_events_tx, _agent_events_rx) = broadcast::channel::<AgentMessage>(256);
 
+    // Filer-receipt bus (ADR 0048): the return leg of the agent relay.
+    // `agent.filed` publishes here; each connection writes an
+    // `agent.receipt` evt frame, so the SENDER reads its own verdict on the
+    // connection it is already holding open. A separate typed bus rather
+    // than a second meaning for `AgentMessage` — one bus per event type is
+    // this file's own idiom (workspace.changed, fe.command, repl frames,
+    // topology) and a receipt is not a message.
+    let (agent_receipt_tx, _agent_receipt_rx) = broadcast::channel::<AgentReceipt>(256);
+
     // FE-command bus (ADR 0025): parallel to the agent-relay bus, typed
     // `FeCommandEvt`. `fe.command.send` publishes here; each connection
     // subscribes and writes an `fe.command` evt frame so an imperative UI
@@ -863,6 +872,7 @@ pub async fn run(opts: Opts) -> Result<()> {
         let ws = workspaces.clone();
         let wse = ws_events_tx.clone();
         let age = agent_events_tx.clone();
+        let agr = agent_receipt_tx.clone();
         let fce = fe_command_tx.clone();
         let rfe = repl_frame_tx.clone();
         let cl = clients.clone();
@@ -870,7 +880,8 @@ pub async fn run(opts: Opts) -> Result<()> {
         let tpe = topo_changed_tx.clone();
         tasks.push(tokio::spawn(async move {
             run_local(
-                path, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl, tps, tpe,
+                path, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, agr, fce, rfe, cl, tps,
+                tpe,
             )
             .await
         }));
@@ -931,6 +942,7 @@ async fn run_local(
     workspaces: Workspaces,
     ws_events_tx: broadcast::Sender<WorkspaceChanged>,
     agent_events_tx: broadcast::Sender<AgentMessage>,
+    agent_receipt_tx: broadcast::Sender<AgentReceipt>,
     fe_command_tx: broadcast::Sender<FeCommandEvt>,
     repl_frame_tx: broadcast::Sender<ReplFrameMsg>,
     clients: Clients,
@@ -990,6 +1002,7 @@ async fn run_local(
         let ws = workspaces.clone();
         let wse = ws_events_tx.clone();
         let age = agent_events_tx.clone();
+        let agr = agent_receipt_tx.clone();
         let fce = fe_command_tx.clone();
         let rfe = repl_frame_tx.clone();
         let cl = clients.clone();
@@ -998,8 +1011,8 @@ async fn run_local(
         tokio::spawn(async move {
             let (rx, tx) = stream.split();
             if let Err(e) = handle_connection(
-                rx, tx, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, fce, rfe, cl,
-                tps, tpe, "local", None,
+                rx, tx, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, agr, fce, rfe,
+                cl, tps, tpe, "local", None,
             )
             .await
             {
@@ -1076,6 +1089,7 @@ async fn handle_connection<R, W>(
     workspaces: Workspaces,
     ws_events_tx: broadcast::Sender<WorkspaceChanged>,
     agent_events_tx: broadcast::Sender<AgentMessage>,
+    agent_receipt_tx: broadcast::Sender<AgentReceipt>,
     fe_command_tx: broadcast::Sender<FeCommandEvt>,
     repl_frame_tx: broadcast::Sender<ReplFrameMsg>,
     clients: Clients,
@@ -1162,6 +1176,13 @@ where
     // decision 1), captured at hello — `topology.set`'s "can't remove
     // yourself" refusal reads it (server.rs, `op::TOPOLOGY_SET`).
     let mut hello_host: Option<String> = None;
+    // This connection's own declared sot-comm name (`HelloReq.name`, the
+    // same value `Clients::receivers_for` reports), captured at hello:
+    // `agent.filed` stamps it as the `filer` (ADR 0048). Read from the
+    // hello, never from a request body — that is what makes a receipt
+    // unforgeable. `None` for a connection that declared no name, which
+    // therefore cannot vouch for anything.
+    let mut hello_name: Option<String> = None;
 
     // Half-open long-lived-role reaper (topology plan §F step 2). A
     // tunnelled `fe`/`bridge` connection reaches this daemon as sshd's
@@ -1260,6 +1281,12 @@ where
     // per-receiver lag detection surfaces a connection that fell behind.
     let mut agent_events_rx = agent_events_tx.subscribe();
 
+    // One receipt subscription per connection (ADR 0048), beside the agent
+    // bus and created the same unconditional way. Every connection gets
+    // every receipt; the sender recognizes its own by `id` and ignores the
+    // rest — the daemon holds no delivery state to route by.
+    let mut agent_receipt_rx = agent_receipt_tx.subscribe();
+
     // One FE-command subscription per connection (ADR 0025). Like the agent
     // bus it's always present (channel created unconditionally in `run`). Each
     // connection writes its own `fe.command` evt frame; the broadcast's
@@ -1349,6 +1376,12 @@ where
                 msg = recv_agent_msg(&mut agent_events_rx) => {
                     if authenticated {
                         write_agent_message(&mut tx, msg, transport).await?;
+                    }
+                    continue;
+                }
+                rcp = recv_agent_receipt(&mut agent_receipt_rx) => {
+                    if authenticated {
+                        write_agent_receipt(&mut tx, rcp, transport).await?;
                     }
                     continue;
                 }
@@ -1465,6 +1498,7 @@ where
                         if req.protocol == sot_protocol::PROTOCOL_VERSION {
                             is_long_lived_role = matches!(req.role.as_str(), "fe" | "bridge");
                             hello_host = req.host.clone();
+                            hello_name = req.name.clone();
                             client_guard = Some(clients.register(
                                 req.client_id,
                                 transport,
@@ -1792,6 +1826,19 @@ where
                     &agent_events_tx,
                     &clients,
                     client_guard.as_ref().map(|g| g.serial()),
+                )
+                .await
+            }
+            op::AGENT_FILED => {
+                // The filer is this connection's DECLARED hello name, read
+                // here and nowhere else — the request body cannot name one
+                // (ADR 0048). `hello_name` is the same local `hello_host`
+                // is kept as, recorded before `register` consumes the req.
+                handlers::handle_agent_filed(
+                    frame.id,
+                    frame.payload,
+                    &agent_receipt_tx,
+                    hello_name.as_deref(),
                 )
                 .await
             }
@@ -2285,12 +2332,20 @@ where
 {
     match msg {
         Ok(m) => {
-            let payload = serde_json::json!({
+            // `id` is what makes a receipt possible at all (ADR 0048):
+            // without it in THIS payload the filer has nothing to attribute
+            // its claim to, and the sender waits out its 5 s for a verdict
+            // that can never arrive. Omitted when absent — an older sender
+            // minted none.
+            let mut payload = serde_json::json!({
                 "from": m.from,
                 "to": m.to,
                 "text": m.text,
                 "ts": m.ts,
             });
+            if let Some(id) = m.id {
+                payload["id"] = serde_json::Value::String(id);
+            }
             let frame = Frame::evt(op::AGENT_MESSAGE, payload);
             write_frame_to(tx, &frame, None).await?;
             Ok(true)
@@ -2305,6 +2360,56 @@ where
         }
         Err(broadcast::error::RecvError::Closed) => {
             tracing::debug!(transport, "agent relay bus channel closed");
+            Ok(false)
+        }
+    }
+}
+
+/// Awaits the next filer receipt (ADR 0048). The channel is always present
+/// (created unconditionally in `run`), so like `recv_agent_msg` this takes a
+/// plain receiver rather than an `Option`.
+async fn recv_agent_receipt(
+    rx: &mut broadcast::Receiver<AgentReceipt>,
+) -> Result<AgentReceipt, broadcast::error::RecvError> {
+    rx.recv().await
+}
+
+/// Translates one filer receipt into an `agent.receipt` evt frame on the
+/// wire. Mirrors `write_agent_message`; `reason` is omitted when absent so
+/// the frame carries no null keys for a shell reader to special-case.
+async fn write_agent_receipt<W>(
+    tx: &mut W,
+    rcp: Result<AgentReceipt, broadcast::error::RecvError>,
+    transport: &'static str,
+) -> Result<bool>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    match rcp {
+        Ok(r) => {
+            let mut payload = serde_json::json!({
+                "id": r.id,
+                "handle": r.handle,
+                "filed": r.filed,
+                "filer": r.filer,
+            });
+            if let Some(reason) = r.reason {
+                payload["reason"] = serde_json::Value::String(reason);
+            }
+            let frame = Frame::evt(op::AGENT_RECEIPT, payload);
+            write_frame_to(tx, &frame, None).await?;
+            Ok(true)
+        }
+        Err(broadcast::error::RecvError::Lagged(n)) => {
+            tracing::warn!(
+                skipped = n,
+                transport,
+                "agent receipt bus lagged on this connection; client missed receipts"
+            );
+            Ok(false)
+        }
+        Err(broadcast::error::RecvError::Closed) => {
+            tracing::debug!(transport, "agent receipt bus channel closed");
             Ok(false)
         }
     }
@@ -2455,6 +2560,97 @@ where
             tracing::debug!(transport, "monitor bus channel closed");
             Ok(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod agent_relay_wire_tests {
+    use super::*;
+    use crate::workspaces::{AgentMessage, AgentReceipt};
+
+    fn one_frame(buf: &[u8]) -> serde_json::Value {
+        let line = String::from_utf8(buf.to_vec()).expect("utf8 frame");
+        serde_json::from_str(line.trim_end()).expect("one JSON line")
+    }
+
+    #[tokio::test]
+    async fn agent_message_carries_the_id_only_when_the_sender_minted_one() {
+        // The test that would have caught the payload being built by hand
+        // (ADR 0048): `write_agent_message` uses an explicit `json!`, so a
+        // new field on `AgentMessage` reaches the wire only if it is added
+        // HERE. Without the id on the wire no filer can attribute a claim
+        // and no receipt is ever possible.
+        let msg = AgentMessage {
+            from: "a".into(),
+            to: "peer-otherbox".into(),
+            text: "hi".into(),
+            ts: "2026-01-01T00:00:00Z".into(),
+            id: Some("x-1".into()),
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        assert!(write_agent_message(&mut buf, Ok(msg.clone()), "test")
+            .await
+            .expect("write"));
+        let f = one_frame(&buf);
+        assert_eq!(f["op"], op::AGENT_MESSAGE);
+        assert_eq!(f["payload"]["id"], "x-1");
+
+        let mut buf2: Vec<u8> = Vec::new();
+        let old = AgentMessage { id: None, ..msg };
+        assert!(write_agent_message(&mut buf2, Ok(old), "test")
+            .await
+            .expect("write"));
+        let f2 = one_frame(&buf2);
+        assert!(
+            f2["payload"].get("id").is_none(),
+            "an older sender minted no id; the key must be absent, got {}",
+            f2["payload"]
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_receipt_frame_names_the_filer_and_omits_an_absent_reason() {
+        let mut buf: Vec<u8> = Vec::new();
+        assert!(write_agent_receipt(
+            &mut buf,
+            Ok(AgentReceipt {
+                id: "x-1".into(),
+                handle: "peer-otherbox".into(),
+                filed: true,
+                reason: None,
+                filer: "fe@otherbox".into(),
+            }),
+            "test"
+        )
+        .await
+        .expect("write"));
+        let f = one_frame(&buf);
+        assert_eq!(f["op"], op::AGENT_RECEIPT);
+        assert_eq!(f["kind"], "evt");
+        assert_eq!(f["payload"]["filer"], "fe@otherbox");
+        assert_eq!(f["payload"]["filed"], true);
+        assert!(f["payload"].get("reason").is_none(), "got {}", f["payload"]);
+
+        let mut buf2: Vec<u8> = Vec::new();
+        assert!(write_agent_receipt(
+            &mut buf2,
+            Ok(AgentReceipt {
+                id: "x-2".into(),
+                handle: "typo-otherbox".into(),
+                filed: false,
+                reason: Some("no row on this frontend declares @typo-otherbox".into()),
+                filer: "fe@otherbox".into(),
+            }),
+            "test"
+        )
+        .await
+        .expect("write"));
+        let f2 = one_frame(&buf2);
+        assert_eq!(f2["payload"]["filed"], false);
+        assert!(f2["payload"]["reason"]
+            .as_str()
+            .expect("a refusal must say why")
+            .contains("declares @typo-otherbox"));
     }
 }
 

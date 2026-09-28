@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 use sot_protocol::{
-    op, AgentJoinReq, AgentJoinRes, AgentSendReq, AgentSendRes, BlobDescriptor, ConceptListRes, ConceptReadReq, ConceptReadRes,
+    op, AgentFiledReq, AgentFiledRes, AgentJoinReq, AgentJoinRes, AgentSendReq, AgentSendRes, BlobDescriptor, ConceptListRes, ConceptReadReq, ConceptReadRes,
     ConceptWriteReq, ConceptWriteRes, DirCreateReq, DirCreateRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
     FeCommandSendRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq,
     FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
@@ -5378,6 +5378,7 @@ pub async fn handle_agent_send(
         to: req.to,
         text: req.text,
         ts: iso8601_utc_now(),
+        id: req.id.clone(),
     };
     // Fire-and-forget broadcast; every connection subscribed at connection
     // start, so this never errs for "no receivers" — `receivers` above is
@@ -5387,7 +5388,63 @@ pub async fn handle_agent_send(
         Frame::res(
             req_id,
             op::AGENT_SEND,
-            serde_json::to_value(AgentSendRes { ok: true, receivers })?,
+            serde_json::to_value(AgentSendRes {
+                ok: true,
+                receivers,
+                id: req.id,
+            })?,
+        ),
+        None,
+    )])
+}
+
+/// Relay one filer receipt (`agent.filed`, ADR 0048). The mirror of
+/// `handle_agent_send` and, like it, stateless: there is no pending table
+/// to leak, expire or lie from — the daemon relays a receipt exactly as it
+/// relays a message, and the sender reading its own `id` back is the only
+/// bookkeeping anyone does.
+///
+/// `filer_name` is THIS connection's declared hello `name`, passed in by
+/// the caller and stamped onto the published receipt. Nothing from the
+/// request body can name a filer (`AgentFiledReq` has no such field), so
+/// one filer cannot vouch under another's name. A connection with no
+/// declared name has nothing to be identified as and is refused
+/// `bad_filer` — an anonymous vouch is indistinguishable from a forged
+/// one, and publishing it would make every verdict downstream a guess
+/// again.
+pub async fn handle_agent_filed(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    receipt_tx: &broadcast::Sender<crate::workspaces::AgentReceipt>,
+    filer_name: Option<&str>,
+) -> Result<HandlerOutput> {
+    let req: AgentFiledReq = serde_json::from_value(payload_json).context("agent.filed payload")?;
+    let Some(filer) = filer_name.filter(|n| !n.is_empty()) else {
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::AGENT_FILED,
+                json!({
+                    "error": "this connection declared no name; it cannot vouch for an append",
+                    "code": "bad_filer",
+                }),
+            ),
+            None,
+        )]);
+    };
+    tracing::info!(id = %req.id, handle = %req.handle, filed = req.filed, %filer, "agent.filed receipt");
+    let _ = receipt_tx.send(crate::workspaces::AgentReceipt {
+        id: req.id,
+        handle: req.handle,
+        filed: req.filed,
+        reason: req.reason,
+        filer: filer.to_string(),
+    });
+    Ok(vec![(
+        Frame::res(
+            req_id,
+            op::AGENT_FILED,
+            serde_json::to_value(AgentFiledRes { ok: true })?,
         ),
         None,
     )])
@@ -5513,6 +5570,93 @@ pub async fn handle_agent_join(
         ),
         None,
     )])
+}
+
+#[cfg(test)]
+mod agent_relay_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn agent_send_copies_the_id_into_the_published_message_and_echoes_it() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+        let clients = crate::clients::Clients::new();
+        let out = handle_agent_send(
+            7,
+            serde_json::json!({"from": "a", "to": "peer-otherbox", "text": "hi", "id": "x-1"}),
+            &tx,
+            &clients,
+            None,
+        )
+        .await
+        .expect("handler must not error");
+        let published = rx.try_recv().expect("one published message");
+        assert_eq!(published.id.as_deref(), Some("x-1"));
+        assert_eq!(out[0].0.payload["id"], "x-1", "the ack must echo the id");
+        assert_eq!(out[0].0.payload["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn agent_send_without_an_id_publishes_none_and_omits_it_from_the_ack() {
+        // The old-sender row of the compat matrix: nothing downstream may
+        // invent an id, or a filer would claim against a frame its sender
+        // cannot recognize.
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+        let clients = crate::clients::Clients::new();
+        let out = handle_agent_send(
+            8,
+            serde_json::json!({"from": "a", "to": "b", "text": "hi"}),
+            &tx,
+            &clients,
+            None,
+        )
+        .await
+        .expect("handler must not error");
+        assert_eq!(rx.try_recv().expect("one message").id, None);
+        assert!(out[0].0.payload.get("id").is_none(), "got {}", out[0].0.payload);
+    }
+
+    #[tokio::test]
+    async fn agent_filed_stamps_the_connections_own_name_never_the_clients_claim() {
+        // The unforgeability invariant (ADR 0048): the request below TRIES
+        // to name another filer, and the published receipt must name the
+        // connection instead.
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+        let out = handle_agent_filed(
+            9,
+            serde_json::json!({
+                "id": "x-1", "handle": "peer-otherbox", "filed": true,
+                "filer": "fe@someone-else"
+            }),
+            &tx,
+            Some("fe@otherbox"),
+        )
+        .await
+        .expect("handler must not error");
+        assert_eq!(out[0].0.payload["ok"], true);
+        let r = rx.try_recv().expect("one published receipt");
+        assert_eq!(r.filer, "fe@otherbox");
+        assert_eq!(r.id, "x-1");
+        assert!(r.filed);
+    }
+
+    #[tokio::test]
+    async fn agent_filed_from_an_unnamed_connection_publishes_nothing() {
+        // An anonymous vouch is indistinguishable from a forged one.
+        for name in [None, Some("")] {
+            let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+            let out = handle_agent_filed(
+                10,
+                serde_json::json!({"id": "x-1", "handle": "peer-otherbox", "filed": true}),
+                &tx,
+                name,
+            )
+            .await
+            .expect("handler must not error");
+            assert_eq!(out[0].0.payload["code"], "bad_filer", "name {name:?}");
+            assert!(out[0].0.payload.get("ok").is_none(), "name {name:?}");
+            assert!(rx.try_recv().is_err(), "nothing may be published for {name:?}");
+        }
+    }
 }
 
 #[cfg(test)]

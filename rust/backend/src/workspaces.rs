@@ -57,6 +57,25 @@ pub struct AgentMessage {
     pub to: String,
     pub text: String,
     pub ts: String,
+    /// The sender's opaque frame id (ADR 0048), when the request carried
+    /// one. Copied through untouched so the filer can attribute its
+    /// `agent.filed` claim to exactly this frame; `None` from a sender
+    /// that predates receipts, and then nobody claims anything.
+    pub id: Option<String>,
+}
+
+/// One relayed filer receipt (ADR 0048) — the daemon broadcasts one per
+/// `agent.filed`; each connection turns it into an `agent.receipt` evt.
+/// Mirrors `AgentMessage`, with one difference that is the whole point:
+/// `filer` is stamped by the daemon from the answering connection's
+/// declared hello `name`, so a client cannot vouch under another name.
+#[derive(Clone, Debug)]
+pub struct AgentReceipt {
+    pub id: String,
+    pub handle: String,
+    pub filed: bool,
+    pub reason: Option<String>,
+    pub filer: String,
 }
 
 /// `Default` is `Stopped`: no observation yet reads as "never started".
