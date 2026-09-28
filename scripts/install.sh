@@ -8,9 +8,6 @@
 #   [--version vX.Y.Z] [--prefix <dir>] [--port <n>] [--no-service]
 #   [--hub <ssh-alias>]     # this box does NOT share the hub's home: fetch
 #                           # its hosts.toml (`sotd topology sync`) once staged
-#   [--trusted-root <abs-path>]  # declare THIS path's subtree already-trusted
-#                           # instead of the home folder, so an agent spawned
-#                           # under it never stops at the folder-trust dialog
 #   [--force-role-change]  # consent to installing over another prefix's live daemon
 #                                                    # default: latest release
 #   SOT_INSTALL_TAG=<tag> ./scripts/install.sh ...   # run THIS checkout's body
@@ -29,8 +26,8 @@
 #      for blame, only the tag's tree downloaded; supersedes the curated
 #      julia bundle) + juliaup + Pkg.instantiate inside the checkout
 #   5. config in ~/.config/sot: settings.toml stub if missing, plus this
-#      box's folder-trust declaration ([trust] root_prefix = the home folder,
-#      or --trusted-root) if it has none;
+#      box's folder-trust declaration ([trust] root_prefix = the home
+#      folder) if it has none;
 #      hosts.toml is read (role) and, with --hub, fetched — never written here
 #   6. agent comm resources: ~/.sot-comm plus Claude/Codex skills
 #   7. backend roles: install+enable the systemd --user sotd unit
@@ -42,13 +39,6 @@ set -euo pipefail
 REPO="${SOT_INSTALL_REPO:-kalidke/ship-of-tools}"
 PREFIX="${SOT_PREFIX:-$HOME/.local/share/sot}"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sot"
-# Folder trust (section 6): every session root under this absolute prefix is
-# declared already-trusted for the agents the daemon spawns here. The home
-# folder is the declared scope; --trusted-root moves or narrows it.
-TRUSTED_ROOT="${SOT_TRUSTED_ROOT_PREFIX:-$HOME}"
-# Which supplier to name if that value turns out to be relative. The home
-# folder never is, so only a variable or a flag can fail the check below.
-TRUSTED_ROOT_SRC='$SOT_TRUSTED_ROOT_PREFIX'
 
 # Mirrors `hub_local_port_for` (rust/protocol/src/topology.rs): this runs
 # before any `sotd` binary is on disk, so it can't just ask the real thing.
@@ -87,14 +77,16 @@ say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # Refuse characters a shell-embedded path (systemd unit ExecStart, JSON
-# manifest, sed substitution, launcher heredocs) cannot carry safely.
+# manifest, sed substitution, launcher heredocs) cannot carry safely, plus
+# a newline, which turns one generated line into two — a second
+# `root_prefix =` in section 6, where the daemon's reader takes the last.
 # Explicit rejection over silent corruption. Shared by --prefix and the
 # project root ($HOME) — deploy/sotd.service's ExecStart now embeds both
 # inside a shell string, where a stray quote breaks the unit.
 reject_unsafe_path_chars() {  # <label> <value>
     case "$2" in
-        *[\&\|\;\"\'\\\`]*|*' '*|*'	'*)
-            die "unsupported characters in $1 '$2' — no spaces, quotes, backslashes, or shell metacharacters" ;;
+        *[\&\|\;\"\'\\\`]*|*' '*|*'	'*|*$'\n'*)
+            die "unsupported characters in $1 '$2' — no spaces, quotes, backslashes, newlines, or shell metacharacters" ;;
     esac
 }
 
@@ -379,12 +371,6 @@ while [ $# -gt 0 ]; do
         # shared home they'd apply to EVERY machine). The caller supervises
         # sotd itself (e.g. systemd-run --user transient unit, per-machine).
         --no-service) NO_SERVICE=1 ;;
-        # Declare a folder other than this box's home (section 6); wins
-        # over the environment. Checked after the loop, so every supplier
-        # meets the same test.
-        --trusted-root)
-            TRUSTED_ROOT="${2:?--trusted-root needs an absolute path}"
-            TRUSTED_ROOT_SRC="--trusted-root"; shift ;;
         # Consent to reconfiguring an installation that is already here. See
         # the role gate below for what it protects and why a role flag alone
         # is not consent.
@@ -393,14 +379,6 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-# A relative trusted root is refused here whoever supplied it: the daemon
-# refuses one too and then trusts nothing, so failing the install beats
-# writing a declaration that silently never matches a single row.
-case "$TRUSTED_ROOT" in
-    /*) ;;
-    *) die "$TRUSTED_ROOT_SRC must be an absolute path, and the trusted root is $TRUSTED_ROOT -- the daemon refuses a relative prefix and would trust nothing" ;;
-esac
-
 # Canonicalize the prefix (a relative one produces a repo/current symlink
 # whose target resolves from repo/, i.e. a broken link), then reject unsafe
 # characters in both the prefix and the project root — deploy/sotd.service's
@@ -412,6 +390,23 @@ case "$PREFIX" in
 esac
 reject_unsafe_path_chars "prefix" "$PREFIX"
 reject_unsafe_path_chars 'project root ($HOME)' "$HOME"
+
+# The home folder is also the folder-trust scope written in section 6, so it
+# has to be a prefix that can only ever match rows underneath it. The daemon
+# compares path components as written, so a relative prefix matches nothing,
+# a `..` segment matches nothing either (`/h/u/..` is not a prefix of
+# `/h/u/repo`), and a prefix of nothing but slashes is a prefix of every
+# absolute path on the box.
+case "$HOME" in
+    /*) ;;
+    *) die "the home folder is '$HOME', which is not an absolute path — the daemon refuses a relative trust prefix and would trust nothing" ;;
+esac
+case "${HOME#/}" in
+    ''|/*) die "the home folder is '$HOME', which names no folder under the root — declaring it would declare the whole filesystem trusted" ;;
+esac
+case "$HOME" in
+    */../*|*/..) die "the home folder is '$HOME', which carries a '..' segment — the daemon matches components as written, so it would trust nothing" ;;
+esac
 
 # ---- 1. preflight ------------------------------------------------------------
 OS="$(uname -s)"
@@ -811,11 +806,13 @@ fi
 # before. The daemon reads ONE declared absolute prefix from this file; the
 # repo itself ships no default and names no path, because a path committed
 # there would be true on nobody's machine. So the declaration is made HERE, at
-# install time, on the box it applies to: the home folder, or wherever
-# --trusted-root points instead. Written once — an existing [trust] table is
-# the owner's own answer, never rewritten, and commenting the key out restores
-# the dialog.
-if ! grep -q '^[[:space:]]*\[trust\]' "$CONFIG/settings.toml" 2>/dev/null; then
+# install time, on the box it applies to: the home folder. Written once — an
+# existing [trust] table is the owner's own answer, never rewritten, and
+# commenting the key out restores the dialog. The guard matches the table the
+# way the daemon's parser does (trim the line, strip the brackets, trim the
+# name), so `[ trust ]` counts as the table it is and never earns a second one
+# — two tables and the reader would take the last.
+if ! grep -q '^[[:space:]]*\[[[:space:]]*trust[[:space:]]*\][[:space:]]*$' "$CONFIG/settings.toml" 2>/dev/null; then
     {
         printf '\n[trust]\n'
         printf '# Every session root under this absolute prefix counts as already\n'
@@ -823,9 +820,9 @@ if ! grep -q '^[[:space:]]*\[trust\]' "$CONFIG/settings.toml" 2>/dev/null; then
         printf '# folder-trust dialog. Narrow it to the parent your repos live under,\n'
         printf '# or comment it out to answer that dialog by hand. Roots outside it\n'
         printf '# are left untouched.\n'
-        printf 'root_prefix = "%s"\n' "$TRUSTED_ROOT"
+        printf 'root_prefix = "%s"\n' "$HOME"
     } >> "$CONFIG/settings.toml"
-    say "folder trust declared for everything under $TRUSTED_ROOT ($CONFIG/settings.toml, [trust] root_prefix)"
+    say "folder trust declared for everything under $HOME ($CONFIG/settings.toml, [trust] root_prefix)"
 fi
 
 # ---- 7. backend service --------------------------------------------------------

@@ -374,11 +374,10 @@ const TRUST_ACCEPTED_KEY: &str = "hasTrustDialogAccepted";
 /// It lives in THIS BOX's own config -- `[trust] root_prefix` in the
 /// user-level `settings.toml` -- and the installer writes it there for the
 /// box it runs on, which is the only place a real path belongs. NOT
-/// `hosts.toml`, which is fetched from the hub (a prefix there would grant
-/// trust on every box that synced it), and NOT a repo's project-level
-/// `.sot/settings.toml`, which a checkout could use to declare itself
-/// trusted -- the user-level file only. Absent or empty means NOTHING is
-/// declared and nothing is ever written.
+/// `hosts.toml`, and NOT a repo's project-level `.sot/settings.toml`,
+/// which a checkout could use to declare itself trusted -- the user-level
+/// file only. Absent or empty means NOTHING is declared and nothing is
+/// ever written.
 const TRUSTED_ROOT_PREFIX_SECTION: &str = "trust";
 const TRUSTED_ROOT_PREFIX_KEY: &str = "root_prefix";
 /// Overrides the declaration above for a daemon running outside an install
@@ -1156,6 +1155,18 @@ mod tests {
         assert_eq!(
             parse_declared_root_prefix("[layout]\nroot_prefix = \"/somebody/elses/key\"\n"),
             None
+        );
+    }
+
+    /// `install.sh` only writes its declaration when the file has no [trust]
+    /// table yet, so its guard has to recognise every header shape THIS
+    /// parser accepts -- one it missed would earn the file a second table,
+    /// and the loop above takes the last declaration.
+    #[test]
+    fn a_spaced_trust_header_is_the_same_table() {
+        assert_eq!(
+            parse_declared_root_prefix("[ trust ]\nroot_prefix = \"/declared/here\"\n"),
+            Some(PathBuf::from("/declared/here"))
         );
     }
 
