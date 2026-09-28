@@ -41,6 +41,10 @@
 //   - symlinked dirs never followed (loop / boundary-bypass hazard);
 //   - never crossing a filesystem boundary (a dir whose st_dev differs from the
 //     root's is skipped — this is what keeps the walk out of NFS `~/shares`);
+//   - the daemon's OWN state/install trees (`self_owned_roots`) — never
+//     watched: our updater stages a release into a temp dir there and renames
+//     it into place, and on Windows an open watch handle makes that rename
+//     fail outright ("Access is denied"), so we blocked our own installs;
 //   - a watch-count budget (`watch_budget`) with graceful degrade past the cap;
 //   - newly created directories get their (possibly already-populated) subtree
 //     walked and watched, since NonRecursive doesn't auto-cover new subdirs.
@@ -135,6 +139,12 @@ impl Watcher {
         workspace_slug: Option<String>,
     ) -> Result<Self> {
 
+        // The daemon's own state/install trees, resolved ONCE here and handed
+        // to both skip sites (the notify callback below and the management
+        // thread's registration walk) — never re-derived per path.
+        let self_roots = self_owned_roots();
+        let cb_self_roots = self_roots.clone();
+
         // notify's callback is sync; bridge to async via an unbounded mpsc.
         // Unbounded is fine — bursts are short, and the dispatcher empties
         // it as fast as it can read; if it can't, the backend has bigger
@@ -154,7 +164,7 @@ impl Watcher {
                         return;
                     };
                     for path in event.paths {
-                        if should_skip(&path) {
+                        if should_skip(&path, &cb_self_roots) {
                             continue;
                         }
                         let _ = raw_tx.send((path, kind));
@@ -186,7 +196,9 @@ impl Watcher {
             let shutdown = shutdown.clone();
             std::thread::Builder::new()
                 .name("watch-manage".into())
-                .spawn(move || run_watch_manager(notify_watcher, root, ctrl_rx, shutdown))
+                .spawn(move || {
+                    run_watch_manager(notify_watcher, root, self_roots, ctrl_rx, shutdown)
+                })
                 .context("spawn watch-manage thread")?;
         }
 
@@ -257,6 +269,7 @@ impl Watcher {
 fn run_watch_manager(
     mut watcher: notify::RecommendedWatcher,
     root: PathBuf,
+    self_roots: Vec<PathBuf>,
     ctrl_rx: std::sync::mpsc::Receiver<WatchCtrl>,
     shutdown: Arc<AtomicBool>,
 ) {
@@ -270,9 +283,9 @@ fn run_watch_manager(
         .map(|m| device_of(&m))
         .unwrap_or(0);
     let mut watched: HashSet<PathBuf> = HashSet::new();
-    register_subtree(&mut watcher, &root, root_dev, &mut watched, cap);
+    register_subtree(&mut watcher, &root, root_dev, &self_roots, &mut watched, cap);
     tracing::info!(
-        root = ?root, watched = watched.len(), cap, root_dev,
+        root = ?root, watched = watched.len(), cap, root_dev, excluded = ?self_roots,
         "file watcher registered (filtered, non-recursive, filesystem-bounded)"
     );
 
@@ -285,7 +298,7 @@ fn run_watch_manager(
                 // Walk the new path's subtree — a plain mkdir adds one dir, but a
                 // `git clone` / `tar x` / atomic rename-into-place lands a whole
                 // populated tree, and NonRecursive won't cover it otherwise.
-                register_subtree(&mut watcher, &p, root_dev, &mut watched, cap);
+                register_subtree(&mut watcher, &p, root_dev, &self_roots, &mut watched, cap);
             }
             Ok(WatchCtrl::MaybeRemove(p)) => {
                 // inotify auto-frees a watch when its dir is deleted; we only keep
@@ -323,6 +336,7 @@ fn register_subtree(
     watcher: &mut notify::RecommendedWatcher,
     start: &Path,
     root_dev: u64,
+    self_roots: &[PathBuf],
     watched: &mut HashSet<PathBuf>,
     cap: usize,
 ) {
@@ -337,7 +351,7 @@ fn register_subtree(
             });
             return;
         }
-        if should_skip(&dir) {
+        if should_skip(&dir, self_roots) {
             continue;
         }
         // symlink_metadata does NOT follow the final component, so a symlinked
@@ -459,10 +473,48 @@ fn map_kind(k: &notify::EventKind) -> Option<ChangeKind> {
     }
 }
 
+/// The trees the daemon OWNS and must never watch: its per-machine state
+/// directory and, on a release install, the install prefix. Resolved once per
+/// watcher (never per path) from the same helpers the rest of the backend
+/// uses, so there is no platform branch and no hardcoded location here —
+/// `sot_state_dir` already answers per platform.
+///
+/// Why this is not a nicety: the daemon's default row is a home-rooted anchor,
+/// so on a normal install our own directories sit UNDER a watched root. The
+/// updater stages a release into a temp directory there and renames it into
+/// place; Windows refuses to rename a directory while a handle is open on it,
+/// and the handle was OURS — the watcher opened it the moment the stager
+/// created the directory, so every staging attempt failed with "Access is
+/// denied". Watching our own writes also spends watch descriptors and fires
+/// preview events for files no preview pane will ever show.
+fn self_owned_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(state) = sot_log::state_dir::sot_state_dir() {
+        roots.push(state);
+    }
+    // A release install's prefix (`<prefix>/updates` is the staging area, and
+    // `<prefix>/bin` the binaries an apply swaps). `None` for a dev build run
+    // out of `target/`, which `should_skip` already excludes by name.
+    if let Some(install) = sot_updater::InstallManifest::for_current_exe() {
+        roots.push(install.prefix);
+    }
+    roots
+}
+
 /// Directories whose contents change constantly under normal use but never
 /// belong in a preview pane. Skipping inside the notify callback is cheaper
 /// than the unbounded-channel + dedup round-trip.
-fn should_skip(path: &Path) -> bool {
+///
+/// `self_roots` are the daemon's OWN trees (`self_owned_roots`), excluded
+/// wholesale. Pure — the roots are resolved once at spawn and passed in, so
+/// this stays a testable predicate over paths.
+fn should_skip(path: &Path, self_roots: &[PathBuf]) -> bool {
+    // Component-wise (`Path::starts_with`), never a string prefix: a sibling
+    // whose NAME merely begins with ours (`sot-notes` next to `sot`) is a real
+    // user directory and must keep its watch.
+    if self_roots.iter().any(|r| path.starts_with(r)) {
+        return true;
+    }
     let mut prev: Option<&str> = None;
     for c in path.components() {
         if let std::path::Component::Normal(s) = c {
@@ -498,22 +550,22 @@ mod tests {
 
     #[test]
     fn should_skip_known_high_churn_dirs() {
-        assert!(should_skip(Path::new("/a/.git/HEAD")));
-        assert!(should_skip(Path::new("/a/target/debug/foo")));
-        assert!(should_skip(Path::new("/a/sub/node_modules/x")));
-        assert!(should_skip(Path::new("/a/.julia/registries/General.toml")));
+        assert!(should_skip(Path::new("/a/.git/HEAD"), &[]));
+        assert!(should_skip(Path::new("/a/target/debug/foo"), &[]));
+        assert!(should_skip(Path::new("/a/sub/node_modules/x"), &[]));
+        assert!(should_skip(Path::new("/a/.julia/registries/General.toml"), &[]));
     }
 
     #[test]
     fn should_skip_lets_normal_paths_through() {
-        assert!(!should_skip(Path::new("/a/src/lib.rs")));
-        assert!(!should_skip(Path::new("/a/.concept/types/Foo.md")));
-        assert!(!should_skip(Path::new("/a/docs/readme.md")));
+        assert!(!should_skip(Path::new("/a/src/lib.rs"), &[]));
+        assert!(!should_skip(Path::new("/a/.concept/types/Foo.md"), &[]));
+        assert!(!should_skip(Path::new("/a/docs/readme.md"), &[]));
         // ADR 0022: crop output is skipped, but other .sot config + an
         // unrelated captures/ are not.
-        assert!(should_skip(Path::new("/a/.sot/captures/img-roi-1.png")));
-        assert!(!should_skip(Path::new("/a/.sot/settings.toml")));
-        assert!(!should_skip(Path::new("/a/data/captures/run.csv")));
+        assert!(should_skip(Path::new("/a/.sot/captures/img-roi-1.png"), &[]));
+        assert!(!should_skip(Path::new("/a/.sot/settings.toml"), &[]));
+        assert!(!should_skip(Path::new("/a/data/captures/run.csv"), &[]));
     }
 
     // A unique scratch dir for a filesystem test, following the pattern the other
@@ -541,7 +593,7 @@ mod tests {
         let mut w = noop_watcher();
         let root_dev = fs::symlink_metadata(&base).map(|m| device_of(&m)).unwrap_or(0);
         let mut watched: HashSet<PathBuf> = HashSet::new();
-        register_subtree(&mut w, &base, root_dev, &mut watched, 10_000);
+        register_subtree(&mut w, &base, root_dev, &[], &mut watched, 10_000);
 
         // Kept: the real project dirs.
         assert!(watched.contains(&base));
@@ -571,7 +623,7 @@ mod tests {
         let mut w = noop_watcher();
         let root_dev = fs::symlink_metadata(&base).map(|m| device_of(&m)).unwrap_or(0);
         let mut watched: HashSet<PathBuf> = HashSet::new();
-        register_subtree(&mut w, &base, root_dev, &mut watched, 3);
+        register_subtree(&mut w, &base, root_dev, &[], &mut watched, 3);
         assert_eq!(watched.len(), 3, "the budget cap must bound the watch count");
 
         let _ = fs::remove_dir_all(&base);
@@ -584,5 +636,71 @@ mod tests {
         std::env::remove_var("SOT_WATCH_BUDGET");
         // Without the override it must be a sane positive cap.
         assert!(watch_budget() >= 256);
+    }
+
+    #[test]
+    fn should_skip_excludes_our_own_state_tree() {
+        let ours = vec![PathBuf::from("/h/.local/state/sot")];
+        // The root itself and everything under it: the updater creates its
+        // staging directory here and renames it into place, and a watch open
+        // on that directory is what makes the rename fail on Windows.
+        assert!(should_skip(Path::new("/h/.local/state/sot"), &ours));
+        assert!(should_skip(
+            Path::new("/h/.local/state/sot/updates/tmp-v0.6.6-target/bin"),
+            &ours
+        ));
+        // Without the exclusion it is an ordinary directory — which is exactly
+        // how the watcher came to hold a handle on the stager's temp dir.
+        assert!(!should_skip(
+            Path::new("/h/.local/state/sot/updates/tmp-v0.6.6-target/bin"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn should_skip_keeps_a_sibling_whose_name_shares_the_prefix() {
+        let ours = vec![PathBuf::from("/h/.local/state/sot")];
+        // Component-wise, never a string prefix — a user directory that merely
+        // begins with the same characters is a real project and stays watched.
+        assert!(!should_skip(
+            Path::new("/h/.local/state/sot-notes/a.md"),
+            &ours
+        ));
+        assert!(!should_skip(Path::new("/h/.local/state/sotalike"), &ours));
+    }
+
+    #[test]
+    fn should_skip_still_passes_ordinary_project_paths_when_excluding() {
+        let ours = vec![PathBuf::from("/h/.local/state/sot")];
+        // The exclusion must not silently turn file watching off.
+        assert!(!should_skip(Path::new("/h/projects/app/src/lib.rs"), &ours));
+        assert!(!should_skip(Path::new("/h/README.md"), &ours));
+    }
+
+    #[test]
+    fn register_subtree_never_watches_our_own_tree() {
+        use std::fs;
+        let base = scratch("self");
+        let _ = fs::remove_dir_all(&base);
+        // `sot` is ours; `sot-notes` merely starts with the same characters.
+        fs::create_dir_all(base.join("sot/updates/tmp-stage")).unwrap();
+        fs::create_dir_all(base.join("sot-notes/deep")).unwrap();
+        fs::create_dir_all(base.join("src")).unwrap();
+
+        let ours = vec![base.join("sot")];
+        let mut w = noop_watcher();
+        let root_dev = fs::symlink_metadata(&base).map(|m| device_of(&m)).unwrap_or(0);
+        let mut watched: HashSet<PathBuf> = HashSet::new();
+        register_subtree(&mut w, &base, root_dev, &ours, &mut watched, 10_000);
+
+        assert!(
+            !watched.iter().any(|p| p.starts_with(base.join("sot"))),
+            "no watch descriptor may be spent anywhere under our own tree"
+        );
+        assert!(watched.contains(&base.join("sot-notes")));
+        assert!(watched.contains(&base.join("sot-notes/deep")));
+        assert!(watched.contains(&base.join("src")));
+
+        let _ = fs::remove_dir_all(&base);
     }
 }
