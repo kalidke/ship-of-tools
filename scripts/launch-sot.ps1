@@ -2072,6 +2072,34 @@ try {
         $relaunchNext = ($frontend.ExitCode -eq $RelaunchExitCode) -or $convergeRequested
         Write-SupLog "frontend pid=$($frontend.Id) exited code=$($frontend.ExitCode) uptime=$([int]$feUptime.TotalSeconds)s -> relaunchNext=$relaunchNext converge=$convergeRequested"
 
+        # A healthy run closes the crash-loop health window -- the twin of
+        # scripts/install.sh's `[ "$RUNTIME" -ge 60 ] && rm -f "$MARKER"`, same
+        # number so the two platforms keep one rule. Once this release has run
+        # properly once, a later fast exit is not its fault, and nothing may be
+        # rolled back on its account.
+        #
+        # The MARKER is what goes, not the in-memory flag: the flag is
+        # re-derived from the marker at the top of every iteration, so clearing
+        # it is undone on the next pass, and it dies with the process, which
+        # does nothing for the case that spans two launches -- work for twenty
+        # minutes, quit, relaunch, fast crash. The marker is the only
+        # cross-process state, so the marker is what has to go.
+        #
+        # Placed HERE, where the fact becomes known, and BEFORE the converge
+        # block below, for a reason that is not symmetry: a converge can apply
+        # a new update mid-life, and that apply writes a fresh marker. A closer
+        # sitting lower in the loop would delete the marker the converge had
+        # just written, and the window for a converge-applied update would
+        # never arm -- breaking the case this window exists to protect. Here
+        # the order is closer, then converge apply, then a fresh marker that
+        # the next iteration reads as seconds old.
+        if ($feUptime.TotalSeconds -ge 60) {
+            if (Test-Path $applyMarker) {
+                Write-SupLog "frontend ran $([int]$feUptime.TotalSeconds)s - closing the post-update rollback window"
+            }
+            Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
+        }
+
         # Converge (exit 76, relaunch-sot.ps1 -Converge): re-run the SAME
         # self-update prelude + freshness pass the very first launch ran,
         # then re-ensure the local daemon (the freshness pass may have
@@ -2152,20 +2180,6 @@ try {
             $rolledBackOnce = $true
             Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
             $relaunchNext = $true
-        }
-        # Close the window on SUCCESS, not only on the clock — the Unix
-        # supervisor's third condition and the one that makes the longer bound
-        # safe. A run that lasted a full minute is a release that works, so
-        # nothing after it may be rolled back on its account. The marker is
-        # deleted with the flag: leaving it on disk would let the NEXT launch
-        # re-arm inside the same window, which is how an unrelated fast exit
-        # could revert an install that had already proven healthy. Sixty seconds
-        # sits well clear of the ten that define a crash, so no single run can
-        # both arm and close.
-        if ($appliedUpdate -and $feUptime.TotalSeconds -ge 60) {
-            Write-SupLog "update ran $([int]$feUptime.TotalSeconds)s without crashing - rollback window closed"
-            $appliedUpdate = $false
-            Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
         }
         if ($relaunchNext) {
             # Keep the tunnel up across the respawn — the remote backend and
