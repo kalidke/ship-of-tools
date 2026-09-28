@@ -1039,7 +1039,36 @@ EOF
     return 0
 }
 
+# The watcher's owner tether is sot_pid_alive, asked every cycle, so its three
+# answers are pinned here: a live pid, a pid that is gone, and an argument that
+# is not a pid at all (empty or not a number -- a caller that lost its owner
+# must read as "no owner", never as "alive"). The msys arm cannot run on this
+# platform; what this proves is that the portable arm is exactly `kill -0` and
+# that nothing else in the function fires before it.
+case_pid_liveness_answers_live_dead_and_nonsense() {
+    local dead
+    ( exit 0 ) & dead=$!; wait "$dead" 2>/dev/null
+    bash -c '
+        source "$1" || exit 9
+        sot_pid_alive "$2" || exit 1
+        sot_pid_alive "$3" && exit 2
+        sot_pid_alive "not-a-pid" && exit 3
+        sot_pid_alive "" && exit 4
+        exit 0' _ "$SCRIPTS_DIR/comm-lib.sh" "$$" "$dead"
+    local rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        1) echo "  a live pid read as gone" ;;
+        2) echo "  a reaped pid read as alive" ;;
+        3) echo "  a non-numeric argument read as alive" ;;
+        4) echo "  an empty argument read as alive" ;;
+        *) echo "  the probe itself failed (rc $rc)" ;;
+    esac
+    return 1
+}
+
 check "three new directed lines type the ping notice exactly once" case_three_new_directed_lines_type_the_ping_once
+check "sot_pid_alive answers live, gone and not-a-pid" case_pid_liveness_answers_live_dead_and_nonsense
 check "a frame filed before the watcher started is announced" case_a_frame_from_before_the_watcher_started_is_announced
 check "a backlog already read is silent when a watcher restarts" case_a_backlog_already_read_is_not_announced_on_restart
 check "full mode does not retype a backlog" case_full_mode_does_not_retype_a_backlog

@@ -583,15 +583,19 @@ BRIDGE_ARGV0="sot-bridge"
 # exits — an ownerless bridge must not survive as a named receiver the daemon
 # still counts (the false-receiver defect). argv indices 3 and 5 are unchanged
 # by the two extra arguments, so sot_bridge_pid_for still identifies the loop.
+# The OWNER check ($3) is sot_pid_alive, not a bare `kill -0`, for the reason
+# that function documents; its definition is carried into the loop's shell by
+# sot_bridge_start rather than copied here, so there is still one of it. The
+# child check ($_c) stays `kill -0`: that one IS an msys process we started.
 BRIDGE_LOOP='while :; do
     "$1" bridge --name "$2" & _c=$!
     while kill -0 "$_c" 2>/dev/null; do
-        if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then
+        if [ -n "${3:-}" ] && ! sot_pid_alive "$3"; then
             kill "$_c" 2>/dev/null; rm -f "${4:-}" 2>/dev/null; exit 0
         fi
         sleep 2
     done
-    if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then rm -f "${4:-}" 2>/dev/null; exit 0; fi
+    if [ -n "${3:-}" ] && ! sot_pid_alive "$3"; then rm -f "${4:-}" 2>/dev/null; exit 0; fi
     sleep 2
 done'
 
@@ -655,6 +659,32 @@ _sot_owner_pid_proc() {
         pid="$ppid"
     done
     return 1
+}
+
+# sot_pid_alive PID — is that process still there? One helper, because the
+# answer is NOT `kill -0` everywhere and the exception is invisible until it
+# bites: `sot_owner_pid`'s git-bash tier legitimately returns a SYNTHETIC
+# Cygwin pid for a process msys did not start (the claude.exe above a capsule
+# row), and msys `kill -0` answers 1 for it — so every owner tether read its
+# live agent as dead, armed, and exited on its first tick (measured on a
+# Windows box, 2026-09-28: pid 73528 maps to WINPID 7992, the real claude.exe,
+# and `kill -0 73528` fails).
+#
+# `kill -0` FIRST and always: on Linux and macOS that is the whole function
+# and nothing else runs. The `ps -W` fallback is reached only after a failure
+# and only on msys, so the hot path — a watcher asks this every two seconds —
+# is unchanged off Windows and is one cheap fork on it. Never PowerShell or
+# tasklist here, whatever the walk itself may cost once at startup.
+#
+# EITHER column matches: `ps -W` lists the msys pid in column 1 and the
+# Windows pid in column 4, and `_sot_msys_pid_of` can legitimately hand back a
+# WINPID when no msys pid exists for it.
+sot_pid_alive() {
+    local pid="${1:-}"
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null && return 0
+    _sot_is_msys || return 1
+    ps -W 2>/dev/null | awk -v p="$pid" '$1 == p || $4 == p { found = 1; exit } END { exit !found }'
 }
 
 # --- the git-bash tier: one spawn, and the pid namespaces kept straight -----
@@ -1028,7 +1058,12 @@ sot_bridge_start() {
     sot_bridge_stop "$name"
     log="$COMM_HOME/state/bridge-$name.log"
     : > "$log"
-    bash -c "$BRIDGE_LOOP" "$BRIDGE_ARGV0" "$relay" "$name" "$owner" \
+    # The loop runs in a bare `bash -c` with no library sourced, so the two
+    # functions its owner check needs travel with it as text. Prepended to the
+    # -c STRING, never to argv: the pattern that finds a running bridge is
+    # end-anchored on the trailing `sot-bridge <relay> <name>`, and an extra
+    # argument would move it.
+    bash -c "$(declare -f _sot_is_msys sot_pid_alive); $BRIDGE_LOOP" "$BRIDGE_ARGV0" "$relay" "$name" "$owner" \
         "$(sot_bridge_pidfile "$name")" </dev/null >>"$log" 2>&1 &
     printf '%s\n' "$!" > "$(sot_bridge_pidfile "$name")"
     [ "$held" = 1 ] && rmdir "$lockdir" 2>/dev/null

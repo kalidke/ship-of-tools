@@ -201,10 +201,16 @@ _comm_wake_retarget() {
 # unchanged when nothing claims it).
 
 # _comm_wake_owner_alive -> 0 when no owner is known (never trigger exit) or
-# when the known owner still answers `kill -0`.
+# when the known owner is still there.
+#
+# sot_pid_alive, never a bare `kill -0`: on git-bash the owner is a Windows
+# process this shell knows by a synthetic Cygwin pid, which `kill -0` reports
+# as gone -- the watcher would arm and then exit on its first tick, leaving
+# the session with no wake at all. comm-lib.sh's helper owns that; this stays
+# one question.
 _comm_wake_owner_alive() {
     [ -n "${AGENT_PID:-}" ] || return 0
-    kill -0 "$AGENT_PID" 2>/dev/null
+    sot_pid_alive "$AGENT_PID"
 }
 
 # ---- a daemon that does not answer ----------------------------------------
