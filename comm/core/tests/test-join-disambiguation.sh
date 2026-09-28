@@ -1718,7 +1718,12 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     # idle hook's own inlined copy): a line count, or a legacy ISO timestamp
     # being converted to one. Neither can begin with "/", and the only writer of
     # that file is comm-poll.sh.
-    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag o acc cur "
+    # `i` = the relay's own MSG_ID (ADR 0048): minted as
+    # `<epoch-ns>-<pid>-<random>` in comm-relay.sh and echoed back from the
+    # frame being receipted, so it is digits and dashes and can never begin
+    # with "/". The message BODY on those same jq calls still goes through
+    # --rawfile.
+    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag o acc cur i "
     local bad="" dir file name line match comment_lines
     dir="$(cd "$SCRIPTS_DIR/../../adapters/claude/hooks" && pwd)"
     for file in "$SCRIPTS_DIR"/*.sh "$SCRIPTS_DIR/sot-fe" "$dir"/*.sh; do

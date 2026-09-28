@@ -67,7 +67,28 @@ deliver() {  # $1 = target name
     local t="$1" thost tws ts resp ok enter_sent code
     thost="$(jq -r --arg n "$t" '.agents[$n].host         // empty' "$REGISTRY")"
     tws="$(jq -r   --arg n "$t" '.agents[$n].workspace_id // empty' "$REGISTRY")"
-    if [ -z "$thost" ]; then echo "no such handle: $t" >&2; return 1; fi
+    if [ -z "$thost" ]; then
+        # Registry MISS on a DIRECTED send: this box cannot name the target.
+        # That is the routine case for a session on a machine that shares no
+        # $HOME with this one -- it can never have a row here -- not a typo,
+        # and refusing here is what forced a session to know which verb
+        # routes. Hand it to the relay instead; comm-relay.sh's own `send`
+        # execs BACK here on a registry HIT, and the two triggers are
+        # mutually exclusive (hit -> file, miss -> wire), so no ping-pong is
+        # possible and no guard env var is needed.
+        #
+        # Directed only. A --broadcast fans out over registry KEYS, every one
+        # of which has a row, so this branch is unreachable there -- and an
+        # `exec` in the middle of that fan-out would abandon every remaining
+        # target.
+        if [ "$BROADCAST" = false ]; then
+            # The EXIT trap does not run across an `exec` (the process image
+            # is replaced), so drop the temp file by hand first.
+            rm -f "$MSG_FILE"
+            exec "$SCRIPT_DIR/comm-relay.sh" send "@$t" "$MSG"
+        fi
+        echo "no such handle: $t" >&2; return 1
+    fi
 
     # 1) durable inbox, always — this append IS the delivery. Stamp `to` so the
     # recipient can rank:

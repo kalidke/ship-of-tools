@@ -234,78 +234,116 @@ send_frame() {  # $1 to, $2 text
     # Not `local`: the EXIT trap below fires after this function has returned.
     msg_file="$(sot_jq_rawfile "$2")" || return 1
     trap 'rm -f "$msg_file"' EXIT
-    local frame; frame="$(jq -nc --arg f "$NAME" --arg t "$1" --rawfile m "$msg_file" \
-        '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:$t,text:$m}}')"
+    # ADR 0048: one opaque id per send, minted HERE and nowhere else. It is
+    # what makes a filer's receipt attributable to exactly this frame —
+    # without it two concurrent sends to one handle can swap verdicts and a
+    # single success can vouch for a failure. Drawn from digits and dashes
+    # only, so `--arg` is correct for it (the MSYS2 argv-conversion guard
+    # applies to the message BODY, which still goes through --rawfile).
+    local MSG_ID; MSG_ID="$(date +%s%N)-$$-$RANDOM"
+    local frame; frame="$(jq -nc --arg f "$NAME" --arg t "$1" --arg i "$MSG_ID" --rawfile m "$msg_file" \
+        '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:$t,text:$m,id:$i}}')"
     rm -f "$msg_file"
-    local resp; resp="$(printf '%s\n' "$frame" | nc_send 2>/dev/null | grep -m1 '"op":"agent.send"' || true)"
-    # An EMPTY $resp must never pass: `jq -e` on zero input never sees a
-    # falsy last value to react to, so it exits 0 — a missing socket used
-    # to print "relayed" and exit 0 (Codex review round-3 finding 3).
-    # Require a NONEMPTY response AND a true ack before even looking at
-    # `receivers` — `ok` stays the wire-compat gate this checks first
-    # (scheduled for deletion at the next protocol bump); anything short
-    # of that is a real failure, falling through to the WARN branch below.
-    if [ -n "$resp" ] && printf '%s' "$resp" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
-        # `receivers` (the honest-send fix) is what actually answers "did
-        # this land anywhere" — `ok` alone no longer means that: a send
-        # with nobody subscribed used to ack ok too. Gate on it here.
-        if printf '%s' "$resp" | jq -e '.payload.receivers | type == "array"' >/dev/null 2>&1; then
-            local -a receivers; mapfile -t receivers < <(printf '%s' "$resp" | jq -r '.payload.receivers[]')
-            if [ -z "$1" ]; then
-                # --all: there's no single named recipient to check for —
-                # report the count, even zero (that's the honest answer).
-                echo "relayed -> <all> (${#receivers[@]} receiver(s)) via $ENDPOINT"
-                return 0
-            fi
-            local r fe_host=""
-            for r in "${receivers[@]}"; do
-                if [ "$r" = "$1" ]; then
-                    echo "filed -> $1 (relay, $ENDPOINT)"
-                    return 0
+    # ONE connection carries both legs (ADR 0048): the `agent.send` ack, then
+    # this sender's own `agent.receipt`. Read until the receipt arrives, the
+    # daemon closes (EOF ends the loop), or nc_send's existing `timeout 5`
+    # expires — the receipt window IS that one transport bound, deliberately
+    # not a second knob. `break` closes the fd and the writer takes SIGPIPE.
+    #
+    # The loop body runs in THIS shell (process substitution, never a pipe),
+    # so the verdict variables below survive it.
+    local line op ack_ok=false ack_array=false ack_has_id=false
+    local rcpt_seen=false rcpt_filed="" rcpt_filer="" rcpt_reason=""
+    local -a receivers=()
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        op="$(printf '%s' "$line" | jq -r '.op // empty' 2>/dev/null || true)"
+        case "$op" in
+            agent.send)
+                # An EMPTY line must never pass as an ack: `jq -e` over zero
+                # input never sees a falsy last value and exits 0, which is
+                # how a missing socket once printed "relayed" (Codex review
+                # round-3 finding 3). `ok` stays the wire-compat gate,
+                # checked first; `receivers` is the roster snapshot, now a
+                # DIAGNOSTIC only (it names who was attached, never that
+                # anyone appended); and the echoed `id` is what separates "no
+                # filer answered" from "this hub predates receipts".
+                if printf '%s' "$line" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
+                    ack_ok=true
                 fi
-                # A Windows-hosted handle runs no bridge: its frontend files
-                # every inbound frame into an inbox of its own, declared as
-                # `fe@<host>`. Derived handles end in -<host>, so a frontend
-                # receiver whose host the target's name ends with is PROBABLY
-                # that handle's own filer. Probably is the whole problem: this
-                # is the last cross-box GUESS left — the registry-derived
-                # `want_fe` went with the file-first rule above (a handle this
-                # box can name never reaches the wire) — and a guess does not
-                # get to report success. Kept as a distinct outcome, not
-                # deleted, because "a plausible filer is attached" and "nothing
-                # anywhere can file this" are different facts for whoever reads
-                # the failure, and it is the seam the declared-filer receipt
-                # replaces.
-                if [ "${r#fe@}" != "$r" ] && [ "${1%-${r#fe@}}" != "$1" ]; then
-                    fe_host="${r#fe@}"
+                if printf '%s' "$line" | jq -e '.payload.receivers | type == "array"' >/dev/null 2>&1; then
+                    ack_array=true
+                    mapfile -t receivers < <(printf '%s' "$line" | jq -r '.payload.receivers[]')
                 fi
-            done
-            if [ -n "$fe_host" ]; then
-                # The frame WAS sent and that frontend may well have filed it.
-                # Nothing here proves it did: a misspelled handle ending in the
-                # same host matched the same way and reported the same
-                # delivery. Until the filer returns a receipt, an unproven send
-                # is a FAILED send — the frame is not withdrawn, only the claim
-                # that it landed. `ask` fails here too, before spending the
-                # caller's seconds waiting on a path it cannot vouch for; a
-                # reply that does come back is still filed in the sender's own
-                # inbox by its bridge.
-                echo "NOT CONFIRMED: sent for $1 — the frontend on $fe_host may file it, and nothing proves it did." >&2
-                echo "               No confirmed path to a session on another frontend exists yet; for a durable record use the git bus (bus.sh note)." >&2
-                return 1
-            fi
-            # Nothing attached to this daemon can file for the target, and this
-            # box's own registry does not name it either (checked before the
-            # wire was chosen at all). There is nowhere for the frame to land:
-            # say so with a failing exit, instead of the old `relayed` plus a
-            # WARN that reported the daemon's own success as delivery.
+                if printf '%s' "$line" | jq -e --arg i "$MSG_ID" '.payload.id == $i' >/dev/null 2>&1; then
+                    ack_has_id=true
+                fi
+                # Wait for a receipt ONLY where one can exist: a directed
+                # send, acked by a receipt-capable hub, with somebody
+                # attached. Everything else is decided on the ack and must
+                # not spend the caller's seconds — a broadcast has no single
+                # addressee to file for, and nobody attached means nobody
+                # can append.
+                if [ "$ack_ok" = false ] || [ "$ack_array" = false ] || [ -z "$1" ] \
+                   || [ "$ack_has_id" = false ] || [ "${#receivers[@]}" -eq 0 ]; then
+                    break
+                fi
+                ;;
+            agent.receipt)
+                # Somebody else's receipt on this shared fan-out is not ours:
+                # the id is the only thing that makes it ours.
+                if printf '%s' "$line" | jq -e --arg i "$MSG_ID" '.payload.id == $i' >/dev/null 2>&1; then
+                    rcpt_seen=true
+                    rcpt_filed="$(printf '%s' "$line" | jq -r '.payload.filed // false' 2>/dev/null || true)"
+                    rcpt_filer="$(printf '%s' "$line" | jq -r '.payload.filer // ""' 2>/dev/null || true)"
+                    rcpt_reason="$(printf '%s' "$line" | jq -r '.payload.reason // ""' 2>/dev/null || true)"
+                    break
+                fi
+                ;;
+        esac
+    done < <(printf '%s\n' "$frame" | nc_send 2>/dev/null)
+
+    if [ "$ack_ok" = true ] && [ "$ack_array" = true ]; then
+        if [ -z "$1" ]; then
+            # --all: there's no single named recipient to check for —
+            # report the count, even zero (that's the honest answer).
+            echo "relayed -> <all> (${#receivers[@]} receiver(s)) via $ENDPOINT"
+            return 0
+        fi
+        if [ "${#receivers[@]}" -eq 0 ]; then
+            # Nothing is attached to this daemon, and this box's own registry
+            # does not name the target either (checked before the wire was
+            # chosen at all). There is nowhere for the frame to land.
             echo "no such handle: $1" >&2
             return 1
         fi
-        # `receivers` absent: an OLD daemon answered — it can't prove a
-        # receiver either way, so this is NOT a success to report; fall
-        # through to the same failure branch as no-ack.
+        if [ "$ack_has_id" = false ]; then
+            echo "NOT CONFIRMED: this daemon predates filer receipts; nothing can vouch for @$1." >&2
+            return 1
+        fi
+        if [ "$rcpt_seen" = true ]; then
+            local who="${rcpt_filer:-an unnamed filer}"
+            if [ "$rcpt_filed" = true ]; then
+                echo "filed -> @$1 (by $who, relay)"
+                return 0
+            fi
+            # The filer KNOWS the set it files for and @$1 is not in it —
+            # the fleet's only available answer to "is that handle real".
+            echo "no such handle: $1 — $who reports: ${rcpt_reason:-no reason given}" >&2
+            return 1
+        fi
+        # The frame WAS sent and may well have been filed; nothing proves it.
+        # The roster survives HERE and nowhere else: as a diagnostic naming
+        # who was attached and did not answer, never as a verdict. A name
+        # match against a receiver is the bug class this replaced — nothing
+        # in this file may compare a target to a receiver's name again.
+        local joined; joined="$(printf '%s, ' "${receivers[@]}")"
+        echo "NOT CONFIRMED: sent for @$1; no filer answered in 5s. Attached: ${joined%, }." >&2
+        return 1
     fi
+    # `ok` false, or `receivers` absent (an OLD daemon that can't prove a
+    # receiver either way): not a success to report — same failure branch as
+    # no ack at all.
     echo "ERROR: unreachable, nothing filed — no ack from the daemon at $ENDPOINT." >&2
     echo "      (If every send does this, the daemon may predate agent.send.)" >&2
     return 1
@@ -440,7 +478,28 @@ case "$SUB" in
             # wakes the session, broadcast (to=="") files silently for
             # comm-poll. filter_inbound already dropped to-other frames.
             printf '%s' "$m" | jq -c '{from:.payload.from, to:(.payload.to // ""), repo:"daemon", msg:.payload.text, ts:.payload.ts}' \
-                >> "$INBOX_DIR/$NAME.jsonl"
+                >> "$INBOX_DIR/$NAME.jsonl" || continue
+            # ADR 0048: the append above IS the delivery, so claim it — and
+            # only now, after it returned 0. A bridge IS its handle, so
+            # `filed: true` is honest by construction; an append that fails
+            # claims nothing and the sender reports NOT CONFIRMED.
+            # Directed frames only (a broadcast has no addressee to file
+            # for), and only when the sender minted an id to attribute it to.
+            rid="$(printf '%s' "$m" | jq -r '.payload.id // ""' 2>/dev/null || true)"
+            rto="$(printf '%s' "$m" | jq -r '.payload.to // ""' 2>/dev/null || true)"
+            [ -n "$rid" ] && [ -n "$rto" ] || continue
+            # A fresh one-shot connection, with the bridge role CLEARED: the
+            # daemon's roster must not gain a phantom second bridge, and the
+            # long-lived-role read deadline must not be armed for a
+            # connection that lives for one frame. A receipt that cannot be
+            # sent is not an error for the recipient — the frame is filed
+            # either way.
+            (
+                HELLO_ROLE=""
+                printf '%s\n' "$(jq -nc --arg i "$rid" --arg h "$NAME" \
+                    '{v:1,id:1,kind:"req",op:"agent.filed",payload:{id:$i,handle:$h,filed:true}}')" \
+                    | nc_send >/dev/null 2>&1
+            ) || true
         done
         ;;
     *)

@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# test-send-routes-to-relay.sh — the two comm verbs route to each other, so a
+# session never has to know which one reaches a peer (ADR 0048).
+#
+#   1. Registry MISS on a directed `comm-send.sh @h "msg"`: this box cannot
+#      name @h, which is the ROUTINE case for a session on a machine that
+#      shares no $HOME (it can never have a row here). It execs
+#      `comm-relay.sh send @h "msg"` instead of refusing "no such handle" —
+#      the refusal that forced the caller to pick the routing verb itself.
+#   2. Registry HIT still files locally and never touches the relay. The two
+#      triggers are mutually exclusive (hit -> file, miss -> wire), which is
+#      why the pair needs no recursion guard.
+#   3. A --broadcast never execs: it fans out over registry keys, and an exec
+#      mid fan-out would abandon every remaining target.
+#
+# No bats dependency. HERMETIC, same seams as test-relay-file-first.sh: a temp
+# $SOT_COMM_HOME, a per-case $SOT_COMM_SELF_FILE, a pinned $SOT_COMM_TEST_HOST,
+# and a COPY of the scripts dir whose comm-relay.sh is a stub that records its
+# argv — never the real ~/.sot-comm, never a real daemon, never the real relay.
+#
+# Usage: comm/core/tests/test-send-routes-to-relay.sh
+# Exit: 0 if every case PASSes, 1 if any FAILs.
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-send-routes-XXXXXX")"
+[ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
+export SOT_COMM_HOME="$WORK/home"
+mkdir -p "$SOT_COMM_HOME"
+trap 'rm -rf "$WORK"' EXIT
+
+# The scripts under test, with the relay replaced by a recorder. comm-send.sh
+# resolves its siblings through its OWN dir, so a copy is enough to intercept.
+BIN="$WORK/bin"
+cp -r "$SCRIPTS_DIR" "$BIN"
+STUB_LOG="$WORK/relay-argv.txt"
+cat > "$BIN/comm-relay.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$STUB_LOG"
+echo "stub relay: \$*"
+STUB
+chmod +x "$BIN/comm-relay.sh"
+SEND="$BIN/comm-send.sh"
+JOIN="$BIN/comm-join.sh"
+
+SENDER_HOST="testhost"
+SENDER="t-sender"
+LOCAL_PEER="t-local"
+SELF_SENDER="$WORK/self-sender.txt"
+SELF_PEER="$WORK/self-peer.txt"
+
+PASS=0; FAIL=0
+check() {
+    local desc="$1" fn="$2" rc
+    "$fn"; rc=$?
+    case "$rc" in
+        0) echo "PASS: $desc"; PASS=$((PASS + 1)) ;;
+        *) echo "FAIL: $desc"; FAIL=$((FAIL + 1)) ;;
+    esac
+}
+contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
+
+# Both rows on THIS host would make comm-send.sh attempt a poke; the peer is
+# pinned to another host so the poke is skipped by host and no daemon is ever
+# dialled (this suite must not reach a real one).
+setup_rows() {
+    ( cd "$WORK" && SOT_COMM_SELF_FILE="$SELF_PEER" SOT_COMM_TEST_HOST="otherbox" \
+        "$JOIN" --name "$LOCAL_PEER" ) >/dev/null 2>&1 || return 1
+    ( cd "$WORK" && SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$SENDER_HOST" \
+        "$JOIN" --name "$SENDER" ) >/dev/null 2>&1 || return 1
+    : > "$STUB_LOG"
+}
+
+SEND_OUT=""; SEND_ERR=""; SEND_RC=0
+run_send() {
+    SEND_OUT="$(cd "$WORK" && SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$SENDER_HOST" \
+        "$SEND" "$@" 2>"$WORK/err.txt")"
+    SEND_RC=$?
+    SEND_ERR="$(cat "$WORK/err.txt" 2>/dev/null)"
+    return 0
+}
+
+case_a_registry_miss_execs_the_relay() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    run_send "@stranger-otherbox" "over the wire"
+    contains "$SEND_ERR" "no such handle" \
+        && { echo "  the dead-end refusal survived: '$SEND_ERR'"; return 1; }
+    local argv; argv="$(cat "$STUB_LOG" 2>/dev/null)"
+    [ "$argv" = 'send @stranger-otherbox over the wire' ] \
+        || { echo "  the relay was called with '$argv', want 'send @stranger-otherbox over the wire'"; return 1; }
+    contains "$SEND_OUT" "stub relay" \
+        || { echo "  the relay's own verdict did not reach the caller: '$SEND_OUT'"; return 1; }
+    return 0
+}
+
+case_a_registry_hit_files_locally_and_never_calls_the_relay() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local inbox="$SOT_COMM_HOME/inbox/$LOCAL_PEER.jsonl"
+    : > "$inbox"
+    run_send "@$LOCAL_PEER" "a local append"
+    [ "$SEND_RC" -eq 0 ] || { echo "  exited $SEND_RC (out: '$SEND_OUT' err: '$SEND_ERR')"; return 1; }
+    contains "$SEND_OUT" "filed -> @$LOCAL_PEER" \
+        || { echo "  verdict was '$SEND_OUT'"; return 1; }
+    local n; n="$(grep -c 'a local append' "$inbox" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  the inbox holds $n copies, want exactly 1"; return 1; }
+    [ -s "$STUB_LOG" ] \
+        && { echo "  a registry hit reached the relay: '$(cat "$STUB_LOG")'"; return 1; }
+    return 0
+}
+
+case_a_broadcast_never_execs_the_relay() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    run_send --broadcast "to everyone with a row"
+    [ "$SEND_RC" -eq 0 ] || { echo "  exited $SEND_RC (out: '$SEND_OUT' err: '$SEND_ERR')"; return 1; }
+    [ -s "$STUB_LOG" ] \
+        && { echo "  a broadcast reached the relay: '$(cat "$STUB_LOG")'"; return 1; }
+    grep -q 'to everyone with a row' "$SOT_COMM_HOME/inbox/$LOCAL_PEER.jsonl" \
+        || { echo "  the broadcast did not reach the peer's inbox"; return 1; }
+    return 0
+}
+
+check "a registry miss on a directed send execs the relay with the same args" case_a_registry_miss_execs_the_relay
+check "a registry hit files locally and never calls the relay" case_a_registry_hit_files_locally_and_never_calls_the_relay
+check "a broadcast never execs the relay" case_a_broadcast_never_execs_the_relay
+
+echo "---"
+echo "PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" -eq 0 ]

@@ -132,15 +132,40 @@ row that is not at a free prompt) the send says so — `filed -> @name — not
 woken: <reason>` — because the reason is **stated, never silent**. The frame is
 filed either way, and the recipient reads it at its next turn boundary or on its
 next `poll`. A send that could file NOWHERE is a failure: `no such handle` (or
-`ERROR: unreachable, nothing filed`) with a non-zero exit. **So is a send
-nothing can vouch for.** A handle this box cannot name, whose only plausible
-filer is the frontend on the host its name ends with, reports `NOT CONFIRMED:
-sent for <handle> — the frontend on <host> may file it, and nothing proves it
-did.` and exits non-zero: the frame is still sent and may well be filed, but the
-match is a name-suffix GUESS (a misspelled handle ending in the same host
-matches identically), and a guess does not report success. Until the filer
-returns a receipt there is no confirmed path to a session on another frontend at
-all; the git bus is the durable one.
+`ERROR: unreachable, nothing filed`) with a non-zero exit.
+
+**The cross-box verdict is the filer's receipt (ADR 0048).** A handle this box
+cannot name goes over the wire, and since the append IS the delivery, the only
+honest verdict is a statement by whoever appended. The sender mints an opaque
+`id` on `agent.send`; whoever files the frame answers `agent.filed {id, handle,
+filed, reason?}` on its own connection; the daemon stamps `filer` from that
+connection's declared hello `name` — never from anything the answer claims —
+and fans the result out as an `agent.receipt` evt, which the sender reads on the
+connection it is already holding. The daemon keeps no delivery state. A bridge
+IS its handle, so it claims `filed: true` after a successful append. A frontend
+appends every inbound frame into one inbox of its own, so "I appended" is not "I
+filed for @h": it claims `filed: true` only for a handle one of its OWN-host
+rows declares, `filed: false` with a reason for one absent from that set, and
+**nothing at all** when it has no own-host list — "the set is known and lacks
+@h" and "there is no set" are different facts. The append is never gated on the
+claim: a late `agent.join` may cost a receipt, never a message.
+
+| what came back | verdict | exit |
+|---|---|---|
+| receipt, `filed: true` | `filed -> @h (by <filer>, relay)` | 0 |
+| receipt, `filed: false` | `no such handle: h — <filer> reports: <reason>` | 1 |
+| ack, no receipt within the 5 s transport bound | `NOT CONFIRMED: sent for @h; no filer answered in 5s. Attached: <roster>.` | 1 |
+| ack without an `id` (a daemon older than receipts) | `NOT CONFIRMED: this daemon predates filer receipts; nothing can vouch for @h.` | 1 |
+| ack with an empty `receivers` | `no such handle: h` | 1 |
+| no ack at all | `ERROR: unreachable, nothing filed` | 1 |
+
+The roster (`receivers`) survives in exactly one place, the NOT CONFIRMED line,
+as a diagnostic naming who was attached and did not answer. It is never a
+verdict: a named connection is not proof of an append, and nothing compares a
+target's name to a receiver's name any more — that comparison (a handle whose
+name ended in an attached frontend's host was "probably" its filer) was the bug
+class the receipt replaced. `ask` inherits all of it: a send that cannot be
+vouched for never spends the caller's listen seconds.
 
 **The recipient annotation (messaging ruling, 2026-09-26):** a filed frame is
 not a reply, and a sender with no reply yet cannot tell working from
@@ -182,7 +207,7 @@ frontend files inbound frames itself.
 |-------------|------------------|-------|
 | join        | `comm-join.sh`   | `--name <n>` `--expertise "a, b"`; writes registry + self file. Refuses (exit 3) when the self-file slot is already claimed for a DIFFERENT project — the slot is keyed by the workspace row in the environment while the identity comes from the shell's cwd, and a row that comes to name another project's session reads that session's mail. `--repin` is the deliberate override |
 | audit slots | `comm-self-audit.sh` | compares each workspace-keyed slot's key against the `repo=` it carries; reports the ones naming a different project (exit 1), passes a suffixed or path-disambiguated name |
-| send        | `comm-send.sh`   | `@name "msg"` or `--broadcast "msg"`; recipient is only the first positional `@arg`, so the message may itself begin with `@` |
+| send        | `comm-send.sh`   | `@name "msg"` or `--broadcast "msg"`; recipient is only the first positional `@arg`, so the message may itself begin with `@`. **Either verb routes**: a directed target this box's registry names is filed locally (`comm-relay.sh send` execs here), and one it cannot name goes to the wire (this execs `comm-relay.sh send`). The triggers are mutually exclusive, so a session never has to know which verb reaches a peer |
 | poll        | `comm-poll.sh`   | shows the inbox lines past the read cursor, then advances it |
 | list        | `comm-list.sh`   | all agents + live/stale + (me) marker |
 | leave       | `comm-leave.sh`  | removes self from registry; `--name <handle>` removes an orphan row (registry only — `comm-despawn.sh` is full teardown) |
