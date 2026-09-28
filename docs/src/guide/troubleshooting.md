@@ -82,7 +82,7 @@ committing stage into …
 
 on run after run. Staging unpacks the new version beside the install and then
 renames that directory into place; Windows refuses that rename while anything
-holds a handle on the directory. Up to 0.6.6 the local file watcher held one.
+holds a handle on the directory. Before 0.6.6 the local file watcher held one.
 
 Two things fix it, in this order:
 
@@ -90,9 +90,10 @@ Two things fix it, in this order:
    is already running exits at the one-launcher lock without reaching the
    pending-update step, so the stage is never applied. Quit, then launch from
    the shortcut. See [Updating and rollback](updating.md).
-2. **Get onto 0.6.6 or later**, where the watcher excludes the staging root.
-   A machine already stuck below that version needs the first step to get
-   there.
+2. **Update to 0.6.6 or later**, where the watcher excludes the staging root.
+   If you are on a 0.6.6 **release candidate**, check which one: the exclusion
+   landed in `0.6.6-rc9.5`, and no earlier candidate has it. A machine stuck
+   below that needs the first step to get there at all.
 
 ## Windows: a message says `NOT CONFIRMED`
 

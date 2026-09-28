@@ -61,13 +61,14 @@ glued to it. A handle read back that way never compares equal to the clean
 handle it should match, so a machine could report `no such handle` for a
 delivery that had already landed.
 
-Every identifier the scripts read is now normalised at the point it is read.
-Free text — a message body, a status line somebody wrote — is deliberately
-left alone, because stripping characters there would silently rewrite what the
-sender typed instead of fixing a comparison.
+The scripts read identifiers through a single helper that strips that carriage
+return as the value is read. Free text — a message body, a status line
+somebody wrote — deliberately does not go through it, because stripping
+characters there would silently rewrite what the sender typed instead of
+fixing a comparison.
 
-The practical effect: a verdict produced on Windows means the same thing as
-the same verdict produced anywhere else, which is what makes the cross-machine
+The practical effect: a verdict produced on Windows can be compared with the
+same verdict produced anywhere else, which is what makes the cross-machine
 [acceptance matrix](../contributing.md) worth running at all.
 
 ## The contract
