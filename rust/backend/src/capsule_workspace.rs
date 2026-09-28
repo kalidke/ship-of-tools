@@ -1638,6 +1638,31 @@ mod runtime {
                 // account or "default", so no guard is needed here.
                 crate::accounts::ensure_account_links(&home, account)
                     .map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
+                // Trusted-folder brief: with a root under the prefix the
+                // owner declared, pre-answer claude's folder-trust dialog
+                // in the config dir THIS spawn is about to use -- here,
+                // where the config dir is prepared, so a first spawn and a
+                // leg resumed against another account share the one call.
+                // NEVER a refusal, unlike the two above it: the degraded
+                // outcome is the dialog appearing, which is what happened
+                // before this existed, and a row that will not start is
+                // worse. Claude rows only -- no other agent has this dialog.
+                if agent_kind == "claude" {
+                    if let Err(msg) = crate::accounts::ensure_folder_trusted(
+                        &home,
+                        account,
+                        cwd,
+                        crate::accounts::trusted_root_prefix().as_deref(),
+                    ) {
+                        tracing::warn!(
+                            workspace_id,
+                            cwd = ?cwd,
+                            error = %msg,
+                            "capsule spawn: folder trust not recorded; the agent starts anyway and \
+                             may stop at the folder-trust dialog"
+                        );
+                    }
+                }
                 extra
             }
             None if account.is_empty() || account == "default" => Vec::new(),
