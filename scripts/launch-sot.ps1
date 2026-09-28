@@ -652,8 +652,20 @@ Initialize-InstallLayout
 # Invoke-SelfUpdatePrelude is a no-op for a pinned install ("updates arrive
 # via sot-apply, no pull"), so nothing else in the converge path ever
 # invoked sot-apply.ps1 (2026-09-18 field report).
+# -Handover marks the ONE pass that is finishing an update a previous pass
+# already applied: it skips the apply, and with it the daemon stop that exists
+# only to serve the apply. It is a parameter and not a read of $script:reexecd
+# because "is this a handover" is a fact about a CALL, while the supervisor
+# outlives the pass and calls this again on every converge. Reading the latch
+# here made a converge inherit the first pass's answer and never apply; a
+# consumed latch instead freed the handover gate below to re-exec forever.
+# Neither failure is reachable once the caller states which kind of call it is.
 function Invoke-PendingApply {
-    if (-not $NoUpdate -and (Test-Path $sotLocalDaemon)) {
+    param([switch]$Handover)
+
+    # The stop exists ONLY to keep the daemon from pinning a stale binary while
+    # sot-apply swaps it, so a pass that will not apply must not bounce it.
+    if (-not $NoUpdate -and -not $Handover -and (Test-Path $sotLocalDaemon)) {
         $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
         if ($updatePending) {
             Write-SupLog 'local daemon: stopping before apply so it does not pin a stale binary'
@@ -666,7 +678,7 @@ function Invoke-PendingApply {
     # left and does not run sot-apply again: $script:sotJustApplied below
     # then reads true from that marker, so the comm update and the
     # crash-loop window follow the apply on the fresh-launch path too.
-    if (-not $NoUpdate -and -not $script:reexecd -and (Test-Path $sotApply)) {
+    if (-not $NoUpdate -and -not $Handover -and (Test-Path $sotApply)) {
         Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
         Set-LaunchStatus 'Applying update...'
         $applyOut = & $sotApply 6>&1 2>&1
@@ -680,7 +692,7 @@ function Invoke-PendingApply {
     # Invoke-FreshnessPass) instead.
     $script:sotJustApplied = Test-Path -LiteralPath $applyMarker
 }
-Invoke-PendingApply
+Invoke-PendingApply -Handover:$script:reexecd
 
 # ---------------------------------------------------------------------------
 # Migration + post-apply handover onto the pinned launcher (docs/adr/
@@ -1863,6 +1875,13 @@ $relaunchNext = [bool]$Relaunched
 $splashDismissed = $false
 $tunnelPidLabel = if ($sshTunnel) { $sshTunnel.Id } else { 'none (external control tunnel, aux retired)' }
 Write-SupLog "supervisor start (relaunched=$Relaunched, tcpPort=$tcpPort, tunnelPid=$tunnelPidLabel)"
+# A supervisor rolls back AT MOST ONCE, matching the Unix supervisor's $ROLLED
+# in scripts/install.sh. What it actually guards is narrow: a Remove-Item that
+# failed to clear the marker, and a converge that applies again after a
+# rollback. It is not protection against walking backwards through releases --
+# that cannot happen here, since a rollback clears the marker twice over and
+# the supervisor exits after any fast exit it does not roll back.
+$rolledBackOnce = $false
 try {
     do {
         # Stage the binary for this launch, priority order:
@@ -1872,10 +1891,62 @@ try {
         #      installed any update it applied above (public install layout)
         #
         # `$appliedUpdate` gates the crash-loop rollback below. sot-apply.ps1
-        # drops the just-applied marker only on a SUCCESSFUL apply, and the
-        # marker was cleared immediately before we invoked it — so its
-        # presence means "this launch is the first boot of new bits".
-        $appliedUpdate = Test-Path $applyMarker
+        # drops the just-applied marker only on a SUCCESSFUL apply, so its
+        # presence means an apply succeeded — but NOT, on its own, that it was
+        # this launch's. The marker is removed only just before an apply runs,
+        # so a launch that skips the apply for any other reason (a handover
+        # pass, -NoUpdate, sot-apply.ps1 absent, a converge with nothing armed)
+        # inherits whatever a PREVIOUS launch left; and this read sits inside
+        # the loop, so every exit-75 relaunch re-read it too. A marker from days
+        # ago then armed a live rollback window, and that rollback is not a log
+        # line: it reverts binaries, the repo\current junction and install.json,
+        # and writes a bad-<tag> marker that stops the stager ever re-arming
+        # that release. Any unrelated fast exit — a bad config, a driver
+        # failure, the user closing the window quickly — could revert a healthy
+        # install and ban its version.
+        #
+        # So the marker has to be RECENT, and the window has to CLOSE once the
+        # release has proven itself. That is the rule the Unix supervisor
+        # already states in as many words — "Roll back ONLY inside the
+        # just-applied health window — an unrelated crash weeks later must not
+        # downgrade a healthy release" (scripts/install.sh).
+        #
+        # The bound is two hours rather than the Unix half-hour, because the
+        # Windows timeline differs in one direction: on the just-applied path
+        # this launcher runs Initialize-InstallLayout — including the Julia
+        # instantiate the updater deliberately skips — and then update_comm,
+        # BETWEEN the apply and the first frontend start. A cold instantiate can
+        # outrun a half-hour bound, which would close the window before the new
+        # release had started even once: protection removed from exactly the
+        # slow first boot where a bad update is most likely to bite. Unix has no
+        # comparable work in that gap, so the same number does not mean the same
+        # thing on the two platforms.
+        #
+        # The longer bound costs nothing because the window closes on success
+        # rather than only on the clock (the closer sits just after the exit is
+        # known, above): once any run has lasted a full minute the marker is
+        # deleted,
+        # so what remains is "a fast crash before this release has ever run
+        # healthily, within two hours of its apply" — very nearly the exact
+        # event worth rolling back on.
+        #
+        # The read stays INSIDE the loop on purpose: a converge can apply an
+        # update mid-life, and that update deserves the same window as one
+        # applied at launch. Hoisting it above the loop would close the window
+        # for exactly those.
+        # ONE lookup, not Test-Path followed by Get-Item: $ErrorActionPreference
+        # is Stop for this script, so a marker that vanished between the two --
+        # the closer below removes it, and a rollback removes it twice -- would
+        # throw and drop the whole launch into the finally block.
+        $appliedUpdate = $false
+        $markerItem = Get-Item -LiteralPath $applyMarker -ErrorAction SilentlyContinue
+        if ($markerItem) {
+            $markerAge = (Get-Date) - $markerItem.LastWriteTime
+            $appliedUpdate = $markerAge.TotalMinutes -lt 120
+            if (-not $appliedUpdate) {
+                Write-SupLog ("stale just-applied marker ({0:N0} min old) - no rollback window" -f $markerAge.TotalMinutes)
+            }
+        }
         if ($appliedUpdate) { Write-SupLog "first boot after an applied update - rollback window armed" }
         if (Test-Path $frontendExe) {
             Copy-Item -Path $frontendExe -Destination $stagedExe -Force
@@ -2010,6 +2081,34 @@ try {
         $relaunchNext = ($frontend.ExitCode -eq $RelaunchExitCode) -or $convergeRequested
         Write-SupLog "frontend pid=$($frontend.Id) exited code=$($frontend.ExitCode) uptime=$([int]$feUptime.TotalSeconds)s -> relaunchNext=$relaunchNext converge=$convergeRequested"
 
+        # A healthy run closes the crash-loop health window -- the twin of
+        # scripts/install.sh's `[ "$RUNTIME" -ge 60 ] && rm -f "$MARKER"`, same
+        # number so the two platforms keep one rule. Once this release has run
+        # properly once, a later fast exit is not its fault, and nothing may be
+        # rolled back on its account.
+        #
+        # The MARKER is what goes, not the in-memory flag: the flag is
+        # re-derived from the marker at the top of every iteration, so clearing
+        # it is undone on the next pass, and it dies with the process, which
+        # does nothing for the case that spans two launches -- work for twenty
+        # minutes, quit, relaunch, fast crash. The marker is the only
+        # cross-process state, so the marker is what has to go.
+        #
+        # Placed HERE, where the fact becomes known, and BEFORE the converge
+        # block below, for a reason that is not symmetry: a converge can apply
+        # a new update mid-life, and that apply writes a fresh marker. A closer
+        # sitting lower in the loop would delete the marker the converge had
+        # just written, and the window for a converge-applied update would
+        # never arm -- breaking the case this window exists to protect. Here
+        # the order is closer, then converge apply, then a fresh marker that
+        # the next iteration reads as seconds old.
+        if ($feUptime.TotalSeconds -ge 60) {
+            if (Test-Path $applyMarker) {
+                Write-SupLog "frontend ran $([int]$feUptime.TotalSeconds)s - closing the post-update rollback window"
+            }
+            Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
+        }
+
         # Converge (exit 76, relaunch-sot.ps1 -Converge): re-run the SAME
         # self-update prelude + freshness pass the very first launch ran,
         # then re-ensure the local daemon (the freshness pass may have
@@ -2032,6 +2131,14 @@ try {
             # so a converge with nothing armed doesn't pay a sot-apply.ps1
             # spawn every time.
             if (Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')) {
+                # Never a handover: this supervisor is already running and the
+                # armed update is one nobody has applied yet. Before this was
+                # stated here, a supervisor born from a handover carried that
+                # pass's flag for life and skipped the apply on every converge
+                # -- it stopped the daemon, relaunched, read the marker the
+                # handover had left, logged that a rollback window was armed,
+                # and applied nothing, reporting success the whole way (field
+                # report, 2026-09-28).
                 Invoke-PendingApply
             }
             Invoke-SelfUpdatePrelude
@@ -2068,8 +2175,8 @@ try {
         # bad-<tag> marker so the stager never re-arms that release, which is
         # what makes this one-shot (the old inline .prev copy left install.json
         # claiming the broken version, and nothing stopped a re-arm).
-        if ($appliedUpdate -and -not $relaunchNext -and $frontend.ExitCode -ne 0 `
-            -and $feUptime.TotalSeconds -lt 10) {
+        if ($appliedUpdate -and -not $rolledBackOnce -and -not $relaunchNext `
+            -and $frontend.ExitCode -ne 0 -and $feUptime.TotalSeconds -lt 10) {
             Write-SupLog "UPDATE CRASH-LOOP: exit=$($frontend.ExitCode) after $([int]$feUptime.TotalSeconds)s - rolling back"
             if (Test-Path $sotApply) {
                 $rbOut = & $sotApply -Rollback 6>&1 2>&1
@@ -2078,7 +2185,7 @@ try {
                 Copy-Item -Path "$stagedExe.prev" -Destination $stagedExe -Force
                 Write-SupLog "sot-apply.ps1 missing - restored $stagedExe from .prev only"
             }
-            $appliedUpdate = $false
+            $rolledBackOnce = $true
             Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
             $relaunchNext = $true
         }
