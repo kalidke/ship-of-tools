@@ -70,6 +70,19 @@ impl Env {
         let config_root = tmp.path().join("config");
         std::fs::create_dir_all(&config_root).expect("mkdir config_root");
 
+        // The daemon polls `<comm home>/registry.json` every 1.5s and broadcasts a
+        // `workspace.changed` evt on every change (server.rs, the ADE state-nav
+        // refresh). `paths::sot_comm_home` resolves SOT_COMM_HOME, then
+        // HOME/.sot-comm, then USERPROFILE -- so unless all three are pinned here a
+        // test daemon watches the REAL registry, and any live row on the developer's
+        // box stamping its work state delivers an evt frame into a test that is
+        // waiting for EOF. That is a wrong-result defect, not flakiness: it fails
+        // exactly when the machine is busy, which is when a release is being cut.
+        let home_root = tmp.path().join("home");
+        std::fs::create_dir_all(&home_root).expect("mkdir home_root");
+        let comm_root = home_root.join(".sot-comm");
+        std::fs::create_dir_all(&comm_root).expect("mkdir comm_root");
+
         #[cfg(unix)]
         let runtime_base = PathBuf::from("/tmp");
         #[cfg(windows)]
@@ -103,6 +116,9 @@ impl Env {
             .env("LOCALAPPDATA", &state_root)
             .env("XDG_STATE_HOME", &state_root)
             .env("XDG_CONFIG_HOME", &config_root)
+            .env("HOME", &home_root)
+            .env("USERPROFILE", &home_root)
+            .env("SOT_COMM_HOME", &comm_root)
             .env("SOT_SELF_HOST", format!("pingreap-{tag}"))
             .env("SOT_RUNTIME_DIR", runtime_tmp.path())
             .stdin(Stdio::null());
@@ -288,8 +304,18 @@ async fn fe_connection_that_pings_once_then_goes_silent_is_reaped_within_the_dea
 
         // Now go silent. This one ping must have armed the deadline --
         // the connection is reaped within it, same as any stale peer.
-        let read = codec::read_frame(&mut conn).await;
-        assert!(read.is_err(), "expected the daemon to close it after the deadline following the one ping, got: {read:?}");
+        // An `fe` connection legitimately receives broadcast evt frames, so the
+        // close is the first NON-evt outcome, not the first frame. Drain evts
+        // until the daemon actually closes; the outer BOUND bounds this loop.
+        loop {
+            match codec::read_frame(&mut conn).await {
+                Err(_) => break,
+                Ok((f, _)) if f.kind == Kind::Evt => continue,
+                Ok(other) => panic!(
+                    "expected the daemon to close it after the deadline following the one ping, got: {other:?}"
+                ),
+            }
+        }
         wait_until_absent(&env.socket_path, "pingonce-fe", Duration::from_secs(5)).await;
     };
     tokio::time::timeout(BOUND, body)
