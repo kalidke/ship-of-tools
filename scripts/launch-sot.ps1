@@ -653,7 +653,23 @@ Initialize-InstallLayout
 # via sot-apply, no pull"), so nothing else in the converge path ever
 # invoked sot-apply.ps1 (2026-09-18 field report).
 function Invoke-PendingApply {
-    if (-not $NoUpdate -and (Test-Path $sotLocalDaemon)) {
+    # -Converge marks the do/while loop's pass (relaunch-sot.ps1 -Converge,
+    # exit 76). It is a distinct PASS KIND rather than a different script: the
+    # same resident process runs both, so the pass kind is the only thing that
+    # can tell them apart. Test-SotShouldApplyPending (sot-install-layout.ps1)
+    # says why the two passes need opposite answers about $script:reexecd.
+    param([switch]$Converge)
+
+    $passKind = if ($Converge) { 'converge' } else { 'launch' }
+    # ONE decision for the daemon stop, the apply and the marker clear. These
+    # were three separate conditions, and the stop's was the weakest: it
+    # stopped the local daemon whenever an update was armed, including on a
+    # pass that then declined to apply. That is how a converge came to stop
+    # the daemon and apply nothing.
+    $shouldApply = Test-SotShouldApplyPending -Pass $passKind -NoUpdate:([bool]$NoUpdate) -BornFromHandover:([bool]$script:reexecd)
+    $willApply = $shouldApply -and (Test-Path $sotApply)
+
+    if ($willApply -and (Test-Path $sotLocalDaemon)) {
         $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
         if ($updatePending) {
             Write-SupLog 'local daemon: stopping before apply so it does not pin a stale binary'
@@ -662,15 +678,15 @@ function Invoke-PendingApply {
         }
     }
 
-    # A re-exec'd pass (post-apply handover) keeps the marker the first pass
-    # left and does not run sot-apply again: $script:sotJustApplied below
-    # then reads true from that marker, so the comm update and the
-    # crash-loop window follow the apply on the fresh-launch path too.
-    if (-not $NoUpdate -and -not $script:reexecd -and (Test-Path $sotApply)) {
+    if ($willApply) {
         Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
         Set-LaunchStatus 'Applying update...'
         $applyOut = & $sotApply 6>&1 2>&1
         foreach ($l in @($applyOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
+    } else {
+        # Never silent again. The whole cost of this defect was that a skipped
+        # apply looked identical in the log to no update being armed.
+        Write-SupLog "pending apply: SKIPPED pass=$passKind noUpdate=$([bool]$NoUpdate) bornFromHandover=$([bool]$script:reexecd) applyScriptPresent=$(Test-Path $sotApply)"
     }
     # Read ONCE, right after the apply attempt above -- Invoke-FreshnessPass
     # and the migration/handover block below both need "did an update just
@@ -2032,7 +2048,7 @@ try {
             # so a converge with nothing armed doesn't pay a sot-apply.ps1
             # spawn every time.
             if (Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')) {
-                Invoke-PendingApply
+                Invoke-PendingApply -Converge
             }
             Invoke-SelfUpdatePrelude
             Invoke-FreshnessPass

@@ -67,6 +67,28 @@ try {
     $pinnedTarget = Get-SotLauncherTarget -Prefix $prefix -ClonePath $clone
     Check 'repo\current\scripts\launch-sot.ps1 present: that is the target' `
         ($pinnedTarget -eq $pinnedLauncherFile) "got '$pinnedTarget'"
+
+    Write-Host "`n=== 3. Test-SotShouldApplyPending: a converge applies what a handover-born launch must not ===" -ForegroundColor Cyan
+    # The launch arm preserves the 2026-09-19 fix: a process born from a
+    # post-apply handover must not re-run the apply or clear the marker.
+    Check 'launch pass, born from a handover: does not apply' `
+        ((Test-SotShouldApplyPending -Pass 'launch' -NoUpdate:$false -BornFromHandover:$true) -eq $false) 'expected false'
+    Check 'launch pass, fresh process: applies' `
+        ((Test-SotShouldApplyPending -Pass 'launch' -NoUpdate:$false -BornFromHandover:$false) -eq $true) 'expected true'
+    # THE DEFECT. The supervisor captures its handover flag once and never
+    # reassigns it, so before this fix every converge for the whole life of a
+    # handover-born supervisor skipped the apply -- and, because the SAME
+    # condition gated the marker removal, left the just-applied marker behind
+    # as well. One decision, so one assertion covers both symptoms.
+    Check 'converge pass, born from a handover: APPLIES (so the marker is cleared too)' `
+        ((Test-SotShouldApplyPending -Pass 'converge' -NoUpdate:$false -BornFromHandover:$true) -eq $true) 'expected true'
+    Check 'converge pass, fresh process: applies' `
+        ((Test-SotShouldApplyPending -Pass 'converge' -NoUpdate:$false -BornFromHandover:$false) -eq $true) 'expected true'
+    # -NoUpdate means this launch applies nothing, on either pass.
+    Check 'NoUpdate outranks a converge' `
+        ((Test-SotShouldApplyPending -Pass 'converge' -NoUpdate:$true -BornFromHandover:$true) -eq $false) 'expected false'
+    Check 'NoUpdate outranks a fresh launch' `
+        ((Test-SotShouldApplyPending -Pass 'launch' -NoUpdate:$true -BornFromHandover:$false) -eq $false) 'expected false'
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

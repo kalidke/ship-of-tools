@@ -42,3 +42,39 @@ function Get-SotLauncherTarget {
     if (Test-Path -LiteralPath $pinned) { return $pinned }
     return (Join-Path $ClonePath 'scripts\launch-sot.ps1')
 }
+
+# Whether THIS pass should apply an armed update -- and, with it, clear the
+# just-applied marker and stop the local daemon first. ONE decision for all
+# three, because a pass that stops the daemon and then applies nothing is
+# exactly the defect this exists to name (field report from a Windows box,
+# 2026-09-27: -Converge stopped the local daemon twice and left the armed
+# candidate unapplied).
+#
+# Two passes call it, and they need OPPOSITE answers about the same fact:
+#
+#   launch   -- a process BORN from a post-apply handover must NOT re-run the
+#               apply or clear the marker. The pending pointer that caused the
+#               handover is already consumed, so sot-apply.ps1 would exit
+#               without rewriting the marker, and this pass would lose the
+#               "an update just landed" fact: no comm update, no crash-loop
+#               rollback window (field report, 2026-09-19).
+#
+#   converge -- a NEW cycle. Whatever is armed now was armed AFTER the
+#               handover that created this process, so the birth fact says
+#               nothing about it. The supervisor is long-lived and captures
+#               that flag once, never reassigning it, so consulting it here
+#               made EVERY converge for the whole life of a handover-born
+#               supervisor skip the apply -- and silently, because the daemon
+#               stop sat outside the same guard.
+#
+# -NoUpdate outranks both: it means this launch applies nothing at all.
+function Test-SotShouldApplyPending {
+    param(
+        [Parameter(Mandatory)][ValidateSet('launch', 'converge')][string]$Pass,
+        [bool]$NoUpdate,
+        [bool]$BornFromHandover
+    )
+    if ($NoUpdate) { return $false }
+    if ($Pass -eq 'converge') { return $true }
+    return (-not $BornFromHandover)
+}
