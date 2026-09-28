@@ -263,9 +263,16 @@ _comm_wake_answered() {
 # The `+` prefix is load-bearing: it separates "jq emitted nothing" (not
 # admitted) from "admitted, and the sender is the empty string", which the pair
 # of shell tests this replaced could tell apart and this must too.
+#
+# `tostring` for the same reason: `"+" + .from` THROWS on a sender that is not
+# a string (a number, an object), and a jq program that throws prints nothing
+# and exits non-zero -- indistinguishable here from "not admitted", so one odd
+# frame would be dropped in silence with no wake. The shell tests this replaced
+# admitted it. Converting deletes the whole class rather than the one type,
+# which is why this is `tostring` and not a type check.
 _comm_wake_admit() {
     local out
-    out="$(printf '%s' "$1" | sot_jq -r --arg me "$HANDLE" "$2 | \"+\" + (.from // \"\")" 2>/dev/null)"
+    out="$(printf '%s' "$1" | sot_jq -r --arg me "$HANDLE" "$2 | \"+\" + (.from // \"\" | tostring)" 2>/dev/null)"
     [ -n "$out" ] || return 1
     printf '%s' "${out#+}"
 }

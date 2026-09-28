@@ -924,7 +924,42 @@ EOF
     return 0
 }
 
+# A frame whose `.from` is not a string still wakes. The admission rule is
+# jq now, and a jq program that THROWS prints nothing and exits non-zero --
+# which reads here exactly like "not admitted", so one odd frame would be
+# dropped in silence with no wake and no trace. Deafness is the one direction
+# this must never fail in, so the sender expression cannot be allowed to throw
+# on any input at all.
+case_a_non_string_sender_still_wakes() {
+    local d="$WORK/odd-sender"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":5,"to":"me","msg":"x"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 2 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) for a frame with a numeric .from, want 1"; return 1; }
+    return 0
+}
+
 check "three new directed lines type the ping notice exactly once" case_three_new_directed_lines_type_the_ping_once
+check "a frame whose sender is not a string still wakes" case_a_non_string_sender_still_wakes
 # Mail in BOTH inboxes inside ONE cycle is ONE wake. The ping says only that
 # mail exists, so a cross-box frame and a same-box frame arriving together cost
 # one typed line and one model turn -- the same promise this file's header
