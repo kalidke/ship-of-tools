@@ -142,6 +142,44 @@ impl Updater {
 static PIPELINE_RUNNING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// (tag, reason) of the most recent stage that exhausted its commit-rename
+/// backoff (Defect 0c), or `None` once a stage has since succeeded. A single
+/// slot, not a map: only the LATEST release being chased can be blocked in a
+/// way worth surfacing, and [`overlay_stage_block`] only applies it to a
+/// check whose identity carries the SAME tag, so a superseding release's
+/// check is never tainted by an older tag's failure.
+static LAST_STAGE_BLOCK: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+
+fn record_stage_block(tag: &str, reason: &str) {
+    if let Ok(mut guard) = LAST_STAGE_BLOCK.lock() {
+        *guard = Some((tag.to_string(), reason.to_string()));
+    }
+}
+
+fn clear_stage_block() {
+    if let Ok(mut guard) = LAST_STAGE_BLOCK.lock() {
+        *guard = None;
+    }
+}
+
+/// Overlay a recorded stage block onto a check outcome's status — the check
+/// itself succeeded ("ok"), but the release it names never manages to
+/// commit, and a bare "ok" is exactly how one box hid the fact that it
+/// never updated for two releases running. Only applies when `out`'s
+/// identity is the SAME tag that failed to commit.
+fn overlay_stage_block(mut out: CheckOutcome) -> CheckOutcome {
+    if let Some(id) = &out.identity {
+        if let Ok(guard) = LAST_STAGE_BLOCK.lock() {
+            if let Some((tag, reason)) = guard.as_ref() {
+                if *tag == id.tag {
+                    out.status = format!("update blocked: {reason}");
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Stage → prepare → arm: the full background pipeline for one discovered
 /// release (Phase C2). Prepare and arm run only on release installs (an
 /// install manifest exists) — a dev/canary box without one stops after the
@@ -167,8 +205,17 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
         // thing that names the fault, and `%e` drops it.
         let cause = e.chain().map(|c| c.to_string()).collect::<Vec<_>>().join(": ");
         tracing::warn!(tag = %id.tag, error = %cause, "staging update failed");
+        // Defect 0c: the shared crate already retried the commit rename for
+        // about a minute before giving up. Record it so the NEXT check
+        // reports the concrete reason instead of a bare "ok" that hides a
+        // release which never manages to land — the failure mode a healthy-
+        // looking, never-updating box actually exhibited.
+        record_stage_block(&id.tag, &cause);
         return;
     }
+    // The commit landed — any block recorded for a PRIOR attempt (this tag
+    // or an older one) no longer describes reality.
+    clear_stage_block();
     let Some(install) = InstallManifest::for_current_exe() else {
         tracing::info!(tag = %id.tag, "staged (no install manifest — prepare/arm skipped)");
         return;
@@ -373,6 +420,10 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
             status: "check unavailable: timed out".into(),
         },
     };
+    // Defect 0c: a healthy check keeps saying "ok" even while the release it
+    // found is stuck failing to commit — this is what the hub reports, so
+    // it's where the block has to surface.
+    let out = overlay_stage_block(out);
     let mechanism = updater.mechanism().ok();
     // The status probes hit the filesystem (and git, for prepared) — bound
     // them too, or a hung NFS checkout wedges this connection's op loop.
@@ -593,5 +644,45 @@ mod tests {
         // install.json still says "daemon: false" from an install run
         // before this host was added to the list as a daemon.
         assert!(backend_role_from_topology(Some(&t), "host-2", Some(false)));
+    }
+
+    fn fake_identity(tag: &str) -> ReleaseIdentity {
+        ReleaseIdentity {
+            repo: "kalidke/ship-of-tools".into(),
+            tag: tag.into(),
+            version: tag.trim_start_matches('v').into(),
+            target: "linux-x86_64".into(),
+            asset: format!("sot-{}-linux-x86_64.tar.gz", tag.trim_start_matches('v')),
+            asset_sha256: "0".repeat(64),
+        }
+    }
+
+    fn ok_outcome(id: ReleaseIdentity) -> CheckOutcome {
+        CheckOutcome {
+            latest: id.version.clone(),
+            identity: Some(id),
+            update_available: true,
+            status: "ok".into(),
+        }
+    }
+
+    // Defect 0c: a check that itself succeeded ("ok") must still surface a
+    // release stuck failing to commit — that silence is exactly how one box
+    // hid never having updated. Pins the tag-scoping too: a DIFFERENT
+    // release's check is not tainted by an older tag's recorded block.
+    #[test]
+    fn a_recorded_stage_block_overlays_status_for_its_own_tag_only() {
+        clear_stage_block(); // isolate from any other test's leftover state
+        record_stage_block("v9.9.9", "Access is denied. (os error 5)");
+
+        let blocked = overlay_stage_block(ok_outcome(fake_identity("v9.9.9")));
+        assert_eq!(blocked.status, "update blocked: Access is denied. (os error 5)");
+
+        let unrelated = overlay_stage_block(ok_outcome(fake_identity("v9.9.10")));
+        assert_eq!(unrelated.status, "ok");
+
+        clear_stage_block();
+        let after_clear = overlay_stage_block(ok_outcome(fake_identity("v9.9.9")));
+        assert_eq!(after_clear.status, "ok");
     }
 }

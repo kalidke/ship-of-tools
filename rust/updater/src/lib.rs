@@ -52,6 +52,21 @@ pub use select::select_target;
 /// strictly better.
 const LOCK_WAIT: Duration = Duration::from_secs(3600);
 
+/// Backoff before giving up on the final commit rename (Defect 0c): on
+/// Windows, antivirus scanning the freshly extracted `.exe`s can hold one of
+/// them open for a few seconds, and `rename` on the whole tree fails with
+/// "Access is denied" until it lets go. About one minute total. A `const`
+/// slice so a test can substitute a fast one via [`commit_stage`]'s
+/// `backoff` parameter.
+const RENAME_BACKOFF: &[Duration] = &[
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(16),
+    Duration::from_secs(30),
+];
+
 /// Everything a check/stage needs to know. Callers construct it; policy
 /// (modes, dev guards) stays theirs.
 #[derive(Debug, Clone)]
@@ -303,9 +318,16 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
         tracing::warn!(dir = %tmp.display(), "stage failed — keeping the partial dir so the next attempt resumes");
         return Err(e);
     }
-    tokio::fs::rename(&tmp, &dest)
-        .await
-        .with_context(|| format!("committing stage into {}", dest.display()))?;
+    // The rename retries on its own (Defect 0c); a failure here means the
+    // WHOLE backoff was exhausted, and `tmp` is deliberately left in place —
+    // same reasoning as the branch above, so the next stage attempt (the
+    // hash-match reuse path) picks it straight back up instead of
+    // re-downloading.
+    commit_stage(&dest, &cfg.updates_root, RENAME_BACKOFF, || async {
+        tokio::fs::rename(&tmp, &dest).await
+    })
+    .await
+    .with_context(|| format!("committing stage into {}", dest.display()))?;
     tracing::info!(tag = %id.tag, asset = %id.asset, dir = %dest.display(), "update staged");
     Ok(true)
 }
@@ -400,6 +422,77 @@ async fn sweep_stale_tmp(root: &Path, keep: Option<&Path>) {
             let _ = tokio::fs::remove_dir_all(entry.path()).await;
         }
     }
+}
+
+/// Remove every OTHER `tmp-*` dir in `root`, unconditionally — no age gate.
+/// Called only right after a stage COMMITS: the one THIS stage used already
+/// got renamed to `just_committed` and no longer carries a `tmp-` name, so
+/// any `tmp-*` still found here can only be litter from an earlier release's
+/// failed commit, never work in progress. This is what actually bounds the
+/// accumulation Defect 0c's evidence describes: `sweep_stale_tmp`'s 24h age
+/// gate never reaps the dir a box keeps re-chasing, so a release that never
+/// manages to commit piles its tmp dir up forever; a successful commit for
+/// ANY release is the first safe point to clear all of them out.
+async fn sweep_all_tmp(root: &Path, just_committed: &Path) {
+    let Ok(mut rd) = tokio::fs::read_dir(root).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("tmp-") {
+            continue;
+        }
+        if entry.path() == just_committed {
+            continue;
+        }
+        tracing::info!(dir = %entry.path().display(), "sweeping leftover staging temp dir after a successful commit");
+        let _ = tokio::fs::remove_dir_all(entry.path()).await;
+    }
+}
+
+/// Retry `attempt` until it succeeds, sleeping the next entry of `backoff`
+/// between failures and returning the LAST error once the schedule is
+/// exhausted. Generic over both the operation and the schedule so a test can
+/// substitute a synthetic seam (fails on demand) and a fast table, without
+/// touching the real filesystem or a real clock.
+async fn retry_with_backoff<T, E, F, Fut>(mut backoff: &[Duration], mut attempt: F) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    loop {
+        match attempt().await {
+            Ok(v) => return Ok(v),
+            Err(e) => match backoff.split_first() {
+                Some((&delay, rest)) => {
+                    tokio::time::sleep(delay).await;
+                    backoff = rest;
+                }
+                None => return Err(e),
+            },
+        }
+    }
+}
+
+/// Commit a completed stage: retry `rename_once` per `backoff` (Defect 0c —
+/// Windows antivirus can hold a just-extracted file open for a few seconds),
+/// and on success sweep every other abandoned `tmp-*` dir out of
+/// `updates_root`. `rename_once` is the seam: production passes the real
+/// `tokio::fs::rename`, a test passes a closure that fails on demand.
+async fn commit_stage<F, Fut>(
+    dest: &Path,
+    updates_root: &Path,
+    backoff: &[Duration],
+    rename_once: F,
+) -> std::io::Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<()>>,
+{
+    retry_with_backoff(backoff, rename_once).await?;
+    sweep_all_tmp(updates_root, dest).await;
+    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -521,5 +614,183 @@ mod tests {
         assert_eq!(partial_asset_bytes(&updates, &id).await, None);
 
         tokio::fs::remove_dir_all(&base).await.unwrap();
+    }
+}
+
+/// Deterministic — no unix gate: the rename-retry-and-sweep mechanism itself
+/// doesn't touch anything platform-specific, and Windows is exactly the
+/// platform Defect 0c is about.
+#[cfg(test)]
+mod commit_retry_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Sub-millisecond entries — this schedule is under test for retry
+    /// COUNT and eventual outcome, not real wall-clock backoff.
+    const FAST_BACKOFF: &[Duration] = &[
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+    ];
+
+    fn tmp_dir_names(root: &Path) -> Vec<String> {
+        std::fs::read_dir(root)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.starts_with("tmp-"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn scratch_root(case: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "sot-updater-retry-{case}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    /// The commit fails the first two attempts (simulating the file still
+    /// being held), succeeds on the third — and only THEN does the tree
+    /// change: through the failing attempts, `tmp` is untouched and no
+    /// second `tmp-*` appears (item 2 — one tmp, reused, never re-created).
+    /// Two abandoned `tmp-*` dirs from earlier, never-committed releases sit
+    /// alongside it; the successful commit sweeps them (item 3), unlike the
+    /// age-gated `sweep_stale_tmp` which would leave them for 24h.
+    #[tokio::test]
+    async fn commit_retries_then_succeeds_and_sweeps_stray_tmp_dirs() {
+        let root = scratch_root("success");
+        let _ = tokio::fs::remove_dir_all(&root).await;
+        tokio::fs::create_dir_all(&root).await.unwrap();
+
+        let tmp = root.join("tmp-v9.9.9-linux-x86_64");
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+        let stray_a = root.join("tmp-v9.9.7-linux-x86_64");
+        let stray_b = root.join("tmp-v9.9.8-linux-x86_64");
+        tokio::fs::create_dir_all(&stray_a).await.unwrap();
+        tokio::fs::create_dir_all(&stray_b).await.unwrap();
+        let dest = root.join("v9.9.9-linux-x86_64");
+
+        let attempts = AtomicU32::new(0);
+        let result = commit_stage(&dest, &root, FAST_BACKOFF, || {
+            let n = attempts.fetch_add(1, Ordering::SeqCst);
+            let tmp = tmp.clone();
+            let dest = dest.clone();
+            let root = root.clone();
+            async move {
+                if n < 2 {
+                    // The rename never ran — the tree, including the exactly
+                    // one live `tmp-*`, is exactly as it was.
+                    assert_eq!(tmp_dir_names(&root).len(), 3);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "Access is denied. (os error 5)",
+                    ));
+                }
+                tokio::fs::rename(&tmp, &dest).await
+            }
+        })
+        .await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert!(dest.is_dir());
+        assert!(!tmp.exists());
+        assert!(!stray_a.exists());
+        assert!(!stray_b.exists());
+        assert!(tmp_dir_names(&root).is_empty());
+
+        tokio::fs::remove_dir_all(&root).await.unwrap();
+    }
+
+    /// A commit that never succeeds exhausts the backoff and surfaces the
+    /// last (real) error — the shape `rust/backend/src/update.rs` turns into
+    /// `update blocked: <error>`.
+    #[tokio::test]
+    async fn commit_exhausts_backoff_and_surfaces_the_last_error() {
+        let root = scratch_root("exhausted");
+        let _ = tokio::fs::remove_dir_all(&root).await;
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let dest = root.join("v9.9.9-linux-x86_64");
+
+        let attempts = AtomicU32::new(0);
+        let result = commit_stage(&dest, &root, FAST_BACKOFF, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Access is denied. (os error 5)",
+                ))
+            }
+        })
+        .await;
+
+        let err = result.expect_err("every attempt failed — must not report success");
+        assert!(err.to_string().contains("Access is denied"), "{err}");
+        // One initial attempt plus one retry per backoff entry.
+        assert_eq!(attempts.load(Ordering::SeqCst), FAST_BACKOFF.len() as u32 + 1);
+        assert!(!dest.exists());
+
+        tokio::fs::remove_dir_all(&root).await.unwrap();
+    }
+}
+
+/// The captain's real-world case (Defect 0c), Windows only: a directory
+/// rename is unaffected by an open file descriptor on Unix, so this test
+/// would pass on Linux/macOS without exercising anything — and the macOS CI
+/// leg runs every unguarded `cfg(unix)` test, so it cannot be left unguarded.
+#[cfg(all(test, windows))]
+mod windows_lock_tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    /// No sharing at all — the shape an antivirus scanner's open handle
+    /// takes. Held for 10s, then released; the commit must still succeed,
+    /// via the real (non-fast) [`RENAME_BACKOFF`].
+    #[tokio::test]
+    async fn commit_survives_an_antivirus_style_open_handle() {
+        let root = std::env::temp_dir().join(format!(
+            "sot-updater-winlock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = tokio::fs::remove_dir_all(&root).await;
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let tmp = root.join("tmp-v9.9.9-windows-x86_64");
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+        let locked_file = tmp.join("sotd.exe");
+        tokio::fs::write(&locked_file, b"be-binary").await.unwrap();
+        let dest = root.join("v9.9.9-windows-x86_64");
+
+        const FILE_SHARE_NONE: u32 = 0;
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_NONE)
+            .open(&locked_file)
+            .expect("must be able to open the file exclusively to simulate a scanner's lock");
+
+        let releaser = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            drop(handle);
+        });
+
+        let result = commit_stage(&dest, &root, RENAME_BACKOFF, || async {
+            tokio::fs::rename(&tmp, &dest).await
+        })
+        .await;
+
+        releaser.await.unwrap();
+        assert!(result.is_ok(), "{result:?}");
+        assert!(dest.is_dir());
+
+        tokio::fs::remove_dir_all(&root).await.unwrap();
     }
 }
