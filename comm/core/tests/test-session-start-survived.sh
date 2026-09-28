@@ -58,47 +58,77 @@ sot_write_self_file "$SOT_COMM_SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT" || { e
 jq -n --arg n "$NAME" --arg r "$PROJECT_ROOT" '{agents:{($n):{state:"idle", root:$r, repo:"x"}}}' > "$REGISTRY"
 MARKER="$SOT_COMM_HOME/state/$NAME.watch"
 
-# A planted watcher has to be identifiable AS one: _survived now checks the
-# marker pid's command line names a watcher script and this handle, because the
-# marker outlives reboots on a shared home and a reused pid would otherwise
-# report SURVIVED for a session with no watcher at all.
+# A planted watcher has to be identifiable AS one: _survived checks the marker
+# pid's command line names a watcher script and this handle, because the marker
+# outlives reboots on a shared home and a reused pid would otherwise report
+# SURVIVED for a session with no watcher at all.
+#
+# TWO FAKES, and which one a case plants is the point rather than a detail.
+# `wake_sleeper` is a comm-wake.sh — the PING watcher, which is what survival
+# MEANS now: a Monitor is a wake path nobody re-arms, so it cannot stand for
+# one here. `sleeper` is a comm-watch.sh Monitor, kept for the cases that are
+# ABOUT a Monitor, where it must read as NOT survived and come through
+# unreaped.
+PLANTED="$WORK/planted"; : > "$PLANTED"
 mkdir -p "$WORK/fakebin"
 FAKE_WATCHER="$WORK/fakebin/comm-watch.sh"
 printf '#!/bin/sh\nsleep 300\n' > "$FAKE_WATCHER"; chmod +x "$FAKE_WATCHER"
-sleeper() { "$FAKE_WATCHER" "$NAME" >/dev/null 2>&1 & local p=$!; SLEEPERS+=("$p"); echo "$p"; }
+# The pid goes to a FILE, not the array: these are called in a command
+# substitution, so `SLEEPERS+=` would happen in a subshell and this shell's
+# array would stay empty -- the reason this suite leaked a watcher per case
+# for as long as it has existed.
+sleeper() { "$FAKE_WATCHER" "$NAME" >/dev/null 2>&1 & local p=$!; printf '%s\n' "$p" >> "$PLANTED"; echo "$p"; }
 # A PING watcher stand-in, for the cases that need survival to short-circuit
 # the bootstrap: only a live comm-wake does that now, because a Monitor is a
 # wake path nobody re-arms (see comm-session-start.sh's survived branch).
 FAKE_WAKE="$WORK/fakebin/comm-wake.sh"
 printf '#!/bin/sh\nsleep 300\n' > "$FAKE_WAKE"; chmod +x "$FAKE_WAKE"
-wake_sleeper() { "$FAKE_WAKE" "$NAME" >/dev/null 2>&1 & local p=$!; SLEEPERS+=("$p"); echo "$p"; }
+wake_sleeper() { "$FAKE_WAKE" "$NAME" >/dev/null 2>&1 & local p=$!; printf '%s\n' "$p" >> "$PLANTED"; echo "$p"; }
 ctx() { CLAUDE_CODE_SESSION_ID="$1" bash "$SCRIPTS_DIR/comm-session-start.sh" --context 2>"$WORK/err" | head -n1; }
 
 PASS=0; FAIL=0
-check() { local d="$1"; shift; if "$@"; then PASS=$((PASS+1)); echo "PASS $d"; else FAIL=$((FAIL+1)); echo "FAIL $d"; fi; }
+check() {
+    local d="$1"; shift
+    if "$@"; then PASS=$((PASS+1)); echo "PASS $d"; else FAIL=$((FAIL+1)); echo "FAIL $d"; fi
+    # EVERY CASE STARTS FROM NOTHING RUNNING. Several cases assert the
+    # ABSENCE of a ping watcher for this handle -- the bootstrap's own
+    # did-it-come-up check is exactly that question -- so a fixture or a real
+    # watcher left behind by an earlier case does not merely leak, it makes
+    # the next case pass on the wrong process. Both sweeps are scoped: the
+    # planted pids are this suite's own, and the pattern carries this suite's
+    # handle, which no real session shares.
+    local p
+    while read -r p; do
+        [ -n "$p" ] || continue
+        pkill -P "$p" 2>/dev/null || true
+        kill "$p" 2>/dev/null || true
+    done < "$PLANTED"
+    : > "$PLANTED"
+    for p in $(pgrep -f "comm-[w]ake.sh $NAME" 2>/dev/null); do kill "$p" 2>/dev/null; done
+}
 
 case_own_live_watcher_survives() {
-    local p; p="$(sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
+    local p; p="$(wake_sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
     [[ "$(ctx sess-A)" == "SURVIVED handle=$NAME listener="* ]] || { echo "    got '$(ctx sess-A)'"; return 1; }
     kill -0 "$p" 2>/dev/null || { echo "    own watcher was killed"; return 1; }
 }
 case_orphan_from_another_session_is_not_survived_and_reaped() {
-    local p; p="$(sleeper)"; printf '%s\nsess-OLD\n' "$p" > "$MARKER"
+    local p; p="$(wake_sleeper)"; printf '%s\nsess-OLD\n' "$p" > "$MARKER"
     local out; out="$(ctx sess-NEW)"
     [[ "$out" == "NOT SURVIVED handle=$NAME"* ]] || { echo "    got '$out'"; return 1; }
     grep -q "ORPHAN watcher pid=$p" "$WORK/err" || { echo "    no reap notice: $(cat "$WORK/err")"; return 1; }
     sleep 0.3; ! kill -0 "$p" 2>/dev/null || { echo "    orphan still alive"; return 1; }
 }
 case_legacy_marker_without_session_line_keeps_liveness_answer() {
-    local p; p="$(sleeper)"; printf '%s' "$p" > "$MARKER"
+    local p; p="$(wake_sleeper)"; printf '%s' "$p" > "$MARKER"
     [[ "$(ctx sess-B)" == "SURVIVED handle=$NAME listener="* ]] || { echo "    got '$(ctx sess-B)'"; return 1; }
 }
 case_dead_pid_is_not_survived() {
-    local p; p="$(sleeper)"; kill "$p"; wait "$p" 2>/dev/null; printf '%s\nsess-A\n' "$p" > "$MARKER"
+    local p; p="$(wake_sleeper)"; kill "$p"; wait "$p" 2>/dev/null; printf '%s\nsess-A\n' "$p" > "$MARKER"
     [[ "$(ctx sess-A)" == "NOT SURVIVED handle=$NAME"* ]] || { echo "    got '$(ctx sess-A)'"; return 1; }
 }
 case_no_session_id_in_env_trusts_liveness() {
-    local p; p="$(sleeper)"; printf '%s\nsess-OLD\n' "$p" > "$MARKER"
+    local p; p="$(wake_sleeper)"; printf '%s\nsess-OLD\n' "$p" > "$MARKER"
     local out; out="$(env -u CLAUDE_CODE_SESSION_ID bash "$SCRIPTS_DIR/comm-session-start.sh" --context 2>/dev/null | head -n1)"
     [[ "$out" == "SURVIVED handle=$NAME listener="* ]] || { echo "    got '$out'"; return 1; }
 }
@@ -110,7 +140,7 @@ printf '#!/usr/bin/env bash\nsleep 300\n' > "$WORK/fake-relay.sh"; chmod +x "$WO
 full() { CLAUDE_CODE_SESSION_ID="$1" bash "$SCRIPTS_DIR/comm-session-start.sh" --context 2>"$WORK/err"; }
 
 case_live_bridge_is_reported_up_and_keeps_the_do_not_relisten_line() {
-    local p; p="$(sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
+    local p; p="$(wake_sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
     sot_bridge_start "$NAME" "$WORK/fake-relay.sh"
     sot_bridge_running_for "$NAME" || { echo "    fixture bridge did not start"; return 1; }
     local out; out="$(full sess-A)"
@@ -121,7 +151,7 @@ case_live_bridge_is_reported_up_and_keeps_the_do_not_relisten_line() {
     sot_bridge_stop "$NAME"
 }
 case_dead_bridge_is_reported_down_and_never_says_do_not_relisten() {
-    local p; p="$(sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
+    local p; p="$(wake_sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
     sot_bridge_stop "$NAME" 2>/dev/null || true
     local out; out="$(full sess-A)"
     [[ "$(printf '%s' "$out" | head -n1)" == "SURVIVED handle=$NAME listener=down" ]] \
@@ -200,7 +230,30 @@ case_a_silent_daemon_still_arms_the_watcher() {
     return 0
 }
 
+# A SURVIVING MONITOR IS NOT A SURVIVING PING WATCHER. The marker is shared,
+# so a live comm-watch.sh armed by THIS session satisfied the old broad read:
+# the bootstrap reported SURVIVED and armed nothing, leaving the row's only
+# wake path a Monitor nobody re-arms -- deaf within the half hour the harness
+# gives it. The session id here is our own precisely so that identity is NOT
+# what decides this; the kind of watcher is.
+#
+# The liveness assertion is the ruling, not decoration: falling through must
+# never become reaping. A Monitor is a live wake path that may keep running
+# beside the ping watcher, and the ping start claims the marker anyway.
+case_a_live_monitor_is_not_survival_and_is_not_reaped() {
+    local p; p="$(sleeper)"; printf '%s\nsess-M\n' "$p" > "$MARKER"
+    local out; out="$(ctx sess-M)"
+    [[ "$out" == "NOT SURVIVED handle=$NAME"* ]] || { echo "    got '$out'"; return 1; }
+    sleep 0.3
+    kill -0 "$p" 2>/dev/null || { echo "    the Monitor was reaped instead of left alone"; return 1; }
+    [ "$(sed -n '1p' "$MARKER" 2>/dev/null)" = "$p" ] \
+        || { echo "    the Monitor's marker was removed or rewritten"; return 1; }
+    kill "$p" 2>/dev/null
+    return 0
+}
+
 check "own live watcher survives, untouched" case_own_live_watcher_survives
+check "a live Monitor is not survival, and is not reaped" case_a_live_monitor_is_not_survival_and_is_not_reaped
 # SPAWNED IS NOT ARMED. The bootstrap used to claim WAKE the instant `nohup`
 # returned, so a watcher that died at startup -- a `set -u` slip, a box with
 # no jq, a bad path -- was announced as "no Monitor needed" over a session
@@ -300,6 +353,10 @@ case_a_bridge_keeps_a_live_owner_and_follows_a_dead_one() {
     sot_bridge_stop "$NAME" 2>/dev/null || true
     sot_bridge_start "$NAME" "$WORK/fake-relay.sh" "$owner"
     sleep 3
+    # Check the FIXTURE before blaming the code: if the owner itself died (a
+    # sweep from another case, a slow box), the bridge following it is correct
+    # behaviour and the case has proved nothing either way.
+    kill -0 "$owner" 2>/dev/null || { echo "    the fixture's owner process died; inconclusive, not a bridge failure"; return 1; }
     sot_bridge_running_for "$NAME" || { echo "    the bridge died while its owner was alive"; return 1; }
     kill "$owner" 2>/dev/null
     while [ "$tries" -lt 50 ] && sot_bridge_running_for "$NAME"; do sleep 0.2; tries=$((tries + 1)); done

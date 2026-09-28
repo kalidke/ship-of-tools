@@ -117,11 +117,23 @@ _survived() {
         # it is reaped so it cannot fool the next check either. A marker with
         # no session line (a watcher older than this rule) keeps the old
         # liveness-only answer.
-        # sot_watcher_pid_for verifies the recorded pid IS a watcher for this
-        # handle, not merely alive: on a shared home the marker outlives
-        # reboots, so a reused pid would report SURVIVED for a session with no
-        # watcher at all — deaf, and reporting healthy.
-        pid="$(sot_watcher_pid_for "$h")" || return 1
+        # The read verifies the recorded pid IS a watcher for this handle,
+        # not merely alive: on a shared home the marker outlives reboots, so a
+        # reused pid would report SURVIVED for a session with no watcher at
+        # all — deaf, and reporting healthy.
+        #
+        # And it is the NARROW read, a live `comm-wake`, because this answer
+        # decides whether the row needs a PING watcher. The marker is shared —
+        # comm-watch.sh and codex-watch.sh write it too — so the broad read
+        # counted a surviving MONITOR as survival, the bootstrap reported
+        # SURVIVED and armed nothing, and the row's only wake path was a
+        # Monitor nobody re-arms: deaf within the half hour the harness gives
+        # it. The narrow read returns 1 HERE, before the identity branch
+        # below, so a live Monitor is neither counted nor killed and its
+        # marker is untouched; the bootstrap falls through and arms a ping
+        # watcher, whose own start claims the marker. Do not add a reap on
+        # this path: a Monitor is a live wake path, not an orphan.
+        pid="$(sot_wake_watcher_pid_for "$h")" || return 1
         sid="$(sed -n '2p' "$marker" 2>/dev/null)"
         if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -n "$sid" ] && [ "$sid" != "$CLAUDE_CODE_SESSION_ID" ]; then
             kill "$pid" 2>/dev/null || true
@@ -331,18 +343,10 @@ elif [ -n "${NAME:-}" ]; then
     H="$NAME"
 fi
 
-# THE FIRST OF THE THREE DOORS (the invariant is stated in full at the WAKE
-# decision below). A surviving MONITOR is not a surviving ping watcher: this
-# branch reports SURVIVED and exits without arming anything, so a live
-# comm-watch.sh leaves the row's only wake path a Monitor that nobody
-# re-arms -- deaf within the half hour the harness gives it. `_survived`
-# itself stays BROAD, and so does the `--context` query above, which answers
-# the wipe hook's question (did anything survive) rather than this one (does
-# this row have a PING watcher). Survival short-circuits the bootstrap only
-# when the survivor is a comm-wake; anything else runs the full bootstrap
-# below, which spawns one -- and never reaps the Monitor, which is a live
-# wake path, not an orphan.
-if [ -n "$H" ] && _survived "$H" && sot_wake_watcher_pid_for "$H" >/dev/null 2>&1; then
+# Survival short-circuits the bootstrap, so `_survived` answers the narrow
+# question (a live comm-wake for this handle) in its one place; a surviving
+# MONITOR falls through here and the bootstrap below arms a ping watcher.
+if [ -n "$H" ] && _survived "$H"; then
     LISTENER="$(_ensure_bridge "$H")"
     echo "SURVIVED handle=$H listener=$LISTENER"
     # Manager review (S5): a survived listener never re-runs comm-join.sh
@@ -430,19 +434,14 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
         # claim, the guard inside comm-wake.sh (its marker branch and its
         # process scan), and the spawn's own did-it-come-up check below.
         #
-        # SURVIVED is the door that is easiest to miss. `_survived` is BROAD
-        # by design — a harness Monitor writes the same marker and must read
-        # as live there, or the wipe hook would call a healthy Monitor stale.
-        # But a surviving MONITOR is not a surviving ping watcher: nothing
-        # re-arms a Monitor after this release, so claiming WAKE on one
-        # announces "no Monitor needed" over a row that goes deaf within the
-        # half hour the harness gives it. So survival counts here only when
-        # the marker names a live comm-wake, and anything else falls through
-        # to the spawn below. The Monitor is NOT reaped on that path: it is a
-        # live wake path, not an orphan, and it may keep running beside the
-        # ping watcher — a doubled notice is the cheap failure, a deaf row is
-        # the expensive one.
-        if _survived "$HANDLE" && sot_wake_watcher_pid_for "$HANDLE" >/dev/null 2>&1; then
+        # SURVIVED is the door that is easiest to miss, and `_survived` is
+        # where it is answered: narrowly, a live comm-wake for this handle. A
+        # surviving MONITOR is not a surviving ping watcher — nothing re-arms
+        # a Monitor after this release — so it falls through to the spawn
+        # below, unreaped, and may keep running beside the ping watcher. A
+        # doubled notice is the cheap failure; a deaf row is the expensive
+        # one.
+        if _survived "$HANDLE"; then
             WAKE_ACTIVE=1
         else
             # NO LIVE PROBE (2026-09-28). This used to resolve the endpoint and
