@@ -178,6 +178,12 @@ jobs:
           bash test-status-floor.sh
           bash test-session-start-survived.sh
           bash test-sot-fe-version.sh
+          # A session may declare its handle only into the row its own
+          # identity names. Until this suite ran here, the one thing that
+          # proves it was a suite nobody ran but by hand -- and the defect it
+          # now covers let every hermetic run rewrite the handle of whichever
+          # live row happened to be running the tests.
+          bash test-agent-join.sh
 
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
   # `ClosePseudoConsole` that returns immediately — it cannot exercise the
