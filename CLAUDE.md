@@ -1,6 +1,6 @@
 # Ship of Tools
 
-An agentic Julia development environment: AI agents drive the TUI, REPL, and navigation to read, run, and surface code — the developer steers, watches, and reviews. It preserves conventional editor and REPL mechanics and layers a **concept explorer** on top (moving fluidly between project, module, type, function, output, and math). The LLM is the primary author of code and maintainer of the concept-explorer artifacts.
+An agentic Julia development environment: AI agents drive the interface, REPL, and navigation to read, run, and surface code — the developer steers, watches, and reviews. It preserves conventional editor and REPL mechanics and layers a **concept explorer** on top (moving fluidly between project, module, type, function, output, and math). The LLM is the primary author of code and maintainer of the concept-explorer artifacts.
 
 `requirements.md` is the source of truth for **what** this system does. This document captures the design decisions for **how** it does it.
 
@@ -14,7 +14,7 @@ An agentic Julia development environment: AI agents drive the TUI, REPL, and nav
 
 Three processes, even when running locally, communicating over a socket:
 
-1. **Frontend (Rust + ratatui)** — yazi-inspired TUI. Stateless about the project. Renders what the backend sends; forwards keystrokes and commands.
+1. **Frontend (Rust + winit/wgpu)** — yazi-inspired native window that owns rendering end-to-end on the GPU (ADR 0012). **Not a terminal UI and not driven through a terminal:** `ratatui` supplies the chrome *layout* model only, via a custom `Backend` that maps cells to glyphs on the wgpu surface (ADR 0011). Stateless about the project. Renders what the backend sends; forwards keystrokes and commands.
 2. **Backend daemon (Rust)** — owns project state. Watches files, supervises Julia processes, holds the orchestrator LLM session, exposes a JSON line protocol to the frontend.
 3. **Julia kernel** — plugin host and project introspector. Owns dispatch tables, mode tree computation, file-type-aware indexing, AST hashing, and Julia-aware previews. Loads the project's `Project.toml` environment.
 
@@ -24,7 +24,7 @@ Client/server even on local because it makes remote operation almost free later 
 
 ## Why this language split
 
-- **Rust** for the frontend, backend, file watching, IPC, terminal-protocol image rendering, LLM provider client. Single-binary cross-platform distribution. `tokio` + `notify` + `ratatui` + `ratatui-image` cover the stack.
+- **Rust** for the frontend, backend, file watching, IPC, GPU rendering, LLM provider client. Single-binary cross-platform distribution. `tokio` + `notify` + `winit` + `wgpu` + `cosmic-text` + `glyphon` + `ratatui` (chrome layout model only) cover the stack. ADR 0012 rules `ratatui-image`, `crossterm` and terminal image protocols of any kind explicitly **out**.
 - **Julia** for everything plugin-extensible and Julia-aware. `JuliaSyntax.jl` for parsing — reimplementing in Rust is a non-starter. Dispatch-as-plugin-mechanism is the unique value proposition here.
 
 ## The plugin model: multiple dispatch as the extension substrate
@@ -164,7 +164,7 @@ When working in this repo:
   record) buys false elegance. A field, type, or knob must name the
   invariant it serves; if it cannot, it is a deletion candidate.
 - **Julia is the canonical language** for plugin code, ABI definitions, and Julia-aware logic. Use it expressively — leverage multiple dispatch, the type system, and idiomatic patterns.
-- **Rust is for plumbing** — TUI, IPC, file watching, process supervision. Keep it boring and predictable.
+- **Rust is for plumbing** — rendering, IPC, file watching, process supervision. Keep it boring and predictable.
 - **Plotting is CairoMakie** when generating plots in Julia.
 - **Eat dogfood**: core handlers ship as plugins to themselves. If core wants privileged access, fix the ABI instead.
 - **Boundaries are serialization seams.** `TreeNode` and `PreviewPayload` carry opaque payloads. Rust never learns about new entity kinds.
@@ -226,7 +226,7 @@ Ship of Tools/
       files-mode/         # Files Mode plugin
       
   rust/                   # Rust workspace
-    frontend/             # ratatui TUI binary
+    frontend/             # native winit/wgpu window binary
     backend/              # daemon binary
     protocol/             # shared types for the JSON line protocol
     
