@@ -575,6 +575,69 @@ case_the_gate_reads_the_separator_instead_of_guessing() {
     return 0
 }
 
+case_a_second_claim_on_a_held_marker_fails() {
+    # THE mutex invariant, tested deterministically rather than by racing.
+    #
+    # I first wrote this as twelve concurrent starts asserting one winner, and
+    # then checked whether that test could FAIL: it cannot. The pattern this
+    # fix replaces -- a liveness check, then an unconditional write -- also
+    # yields exactly one winner under a twelve-way shell race, because process
+    # startup is milliseconds while the window between the check and the write
+    # is microseconds. A green race proves nothing about exclusion.
+    #
+    # What DOES separate the two is the claim's behaviour when the marker is
+    # already held: an exclusive create fails, an unconditional `>` succeeds.
+    # So assert exactly that. Revert the claim to a plain write and this case
+    # goes red, which is the only property that makes it worth running.
+    local d="$WORK/claim-excl"; rm -rf "$d"; mkdir -p "$d/state"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+MARKER="$d/state/watchee.watch"
+_comm_wake_claim || { echo "first claim failed on a free marker" >&2; exit 1; }
+if _comm_wake_claim; then echo "SECOND-CLAIM-WON" >&2; exit 2; fi
+sed -n '1p' "\$MARKER"
+EOF
+    local out rc
+    out="$(bash "$d/run.sh" 2>"$d/err")"; rc=$?
+    [ "$rc" -eq 0 ] || {
+        echo "  exited $rc: $(cat "$d/err")"
+        grep -q SECOND-CLAIM-WON "$d/err" && echo "  a second claim took a marker that was already held — the claim is not exclusive"
+        return 1
+    }
+    [ "$out" = "$(sed -n '1p' "$d/state/watchee.watch")" ] \
+        || { echo "  the marker's owner line changed under a losing claim"; return 1; }
+    return 0
+}
+
+case_cleanup_leaves_a_marker_it_does_not_own() {
+    # The second half of the leak: a blind `rm` on exit removed whichever
+    # marker was there, so after a lost race the DEPARTING watcher deleted the
+    # WINNER's marker and left a live watcher unrecorded -- which is how one
+    # race became a permanent leak instead of a transient double.
+    local d="$WORK/own"; rm -rf "$d"; mkdir -p "$d/state"
+    local marker="$d/state/watchee.watch"
+    printf '999999\nsession-b\n' > "$marker"
+    cat > "$d/foreign.sh" <<EOF
+source "$WAKE"
+MARKER="$marker"
+_comm_wake_cleanup
+EOF
+    bash "$d/foreign.sh"
+    [ -f "$marker" ] || { echo "  cleanup deleted a marker owned by another pid"; return 1; }
+    [ "$(sed -n '1p' "$marker")" = "999999" ] \
+        || { echo "  cleanup rewrote a marker it does not own"; return 1; }
+    # ...and it still removes one it DOES own, or a watcher would leak its own.
+    cat > "$d/mine.sh" <<EOF
+source "$WAKE"
+MARKER="$marker"
+printf '%s\nsession-c\n' "\$\$" > "\$MARKER"
+_comm_wake_cleanup
+EOF
+    bash "$d/mine.sh"
+    [ ! -f "$marker" ] || { echo "  cleanup left behind a marker this process owned"; return 1; }
+    return 0
+}
+
 check "three new directed lines type the ping notice exactly once" case_three_new_directed_lines_type_the_ping_once
 check "a batch that is only __selftest__ frames types the selftest notice" case_selftest_only_batch_types_the_selftest_text
 check "a not-free prompt withholds the ping and types it once the prompt frees up" case_prompt_not_free_waits_then_types_once_free
@@ -584,6 +647,8 @@ check "a cursor that already covers the pending batch skips a second ping" case_
 check "no owner discoverable exits 2 and writes no marker" case_no_owner_exits_two
 check "no --owner flag but a discoverable owner starts" case_no_flag_but_a_discoverable_owner_starts
 check "a marker pid that is not a watcher is treated as stale" case_marker_pid_that_is_not_a_watcher_is_stale
+check "a second claim on a held marker fails" case_a_second_claim_on_a_held_marker_fails
+check "cleanup leaves a marker it does not own" case_cleanup_leaves_a_marker_it_does_not_own
 check "a second start against a live marker refuses" case_second_start_against_a_live_marker_refuses
 check "the workspace id derives from SOT_COMM_SELF_FILE's basename" case_workspace_id_derived_from_self_file_basename
 check "the owning agent gone ends the watcher and removes its marker" case_agent_pid_gone_exits_zero_and_removes_the_marker

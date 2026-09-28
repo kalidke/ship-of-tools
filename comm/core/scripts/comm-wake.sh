@@ -225,7 +225,9 @@ _comm_wake_deliver_ping() {
         no_reply_count=$((no_reply_count + 1))
         if [ "$no_reply_count" -ge 5 ]; then
             echo "comm-wake: pty.screen unanswered 5 times; exiting so session start can fall back to the Monitor" >&2
-            rm -f "$MARKER" 2>/dev/null
+            # Owner-checked, like the EXIT path — a blind rm here would drop
+            # someone else's marker just as readily.
+            _comm_wake_cleanup
             exit 0
         fi
         return   # no reply this cycle; retry, cursor untouched
@@ -297,7 +299,24 @@ _comm_wake_bound_log() {
     rm -f "$tmp"
 }
 
-_comm_wake_cleanup() { rm -f "${MARKER:-}" 2>/dev/null || true; }
+# Delete ONLY a marker this process still owns. A blind `rm` was the second
+# half of the leak the exclusive claim below fixes: after a lost race the
+# DEPARTING watcher removed the WINNER's marker, leaving a live watcher with
+# nothing recording it and a third one free to start on top. Line 1 is the
+# owning pid, so ownership is a fact this can check rather than assume.
+_comm_wake_cleanup() {
+    [ -n "${MARKER:-}" ] || return 0
+    [ "$(sed -n '1p' "$MARKER" 2>/dev/null)" = "$$" ] || return 0
+    rm -f "$MARKER" 2>/dev/null || true
+}
+
+# Claim the marker ATOMICALLY: `noclobber` makes `>` fail when the file already
+# exists, and an exclusive create is atomic on this home (NFSv4.2 — the same
+# property that let the old flock workarounds be retired). The claim IS the
+# mutual exclusion; nothing else needs to be.
+_comm_wake_claim() {
+    ( set -o noclobber; printf '%s\n%s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-}" > "$MARKER" ) 2>/dev/null
+}
 
 _comm_wake_main() {
     HANDLE="${1:?usage: comm-wake.sh <handle> --deliver full|ping [--owner <pid>]}"
@@ -373,14 +392,32 @@ _comm_wake_main() {
     # refuse a legitimate watcher forever — and codex-watch.sh writes this same
     # marker, so the wrong answer here is exactly the shape this ruling exists
     # to remove: deaf, and reporting healthy. An unverifiable marker is stale.
-    if _live="$(sot_watcher_pid_for "$HANDLE")"; then
-        echo "comm-wake: a watcher for @$HANDLE is already live (pid $_live in $MARKER) — refusing to start a second" >&2
-        exit 4
-    fi
-
+    # The claim comes FIRST and the liveness check only runs when it loses.
+    # What this replaces was a test followed by a write with nothing between
+    # them: two starts could both pass the liveness check before either wrote,
+    # and the loser was then invisible to the very marker meant to reap it —
+    # an immortal watcher, doubling every ping for the life of the box. The
+    # comment there called it a start-time mutex; a test-then-write is not one.
+    #
     # Same marker comm-watch.sh writes: line 1 this process's own pid
     # (liveness), line 2 the session that armed it (identity).
-    printf '%s\n%s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-}" > "$MARKER" 2>/dev/null || true
+    if ! _comm_wake_claim; then
+        # Something holds the marker. If it is a real watcher, refuse.
+        if _live="$(sot_watcher_pid_for "$HANDLE")"; then
+            echo "comm-wake: a watcher for @$HANDLE is already live (pid $_live in $MARKER) — refusing to start a second" >&2
+            exit 4
+        fi
+        # Unverifiable, so stale — a reboot on a shared home, or a watcher
+        # killed before its cleanup ran. Remove it and re-claim through the
+        # same atomic door: if THAT loses, a concurrent starter got there
+        # first and it is the live one, so refuse rather than overwrite. Two
+        # starters can never both come away believing they own the marker.
+        rm -f "$MARKER" 2>/dev/null || true
+        if ! _comm_wake_claim; then
+            echo "comm-wake: lost the marker race for @$HANDLE to a concurrent start — refusing to start a second" >&2
+            exit 4
+        fi
+    fi
     trap _comm_wake_cleanup EXIT
 
     _comm_wake_run
