@@ -17,8 +17,12 @@
 # sot_pty_input — the one live-delivery implementation, shared with
 # comm-send.sh and comm-bootstrap.sh).
 #
-# CURSOR is IN-MEMORY ONLY, starting at the inbox's END -- a persisted one
-# would replay stale backlog across a reused handle.
+# THE CURSOR THIS WATCHER KEEPS is in-memory only, and where it STARTS differs
+# by mode (see _comm_wake_run): `full` starts at the inbox's END, because it
+# types each message and a persisted start would retype stale backlog across a
+# reused handle; `ping` starts at the persisted READ cursor, because it types a
+# notice rather than the mail, so a backlog costs one line to announce and
+# ignoring it left sessions deaf to everything filed before they armed.
 #
 # TWO INBOXES ON WINDOWS, one cursor each, exactly as comm-watch.sh already
 # reads them: there is no relay bridge on a frontend box, so the frontend
@@ -413,8 +417,31 @@ _comm_wake_deliver_ping() {
 
 _comm_wake_run() {
     local i
+    # WHERE EACH SOURCE STARTS, and the two modes differ ON PURPOSE.
+    #
+    # `ping` starts at the persisted READ CURSOR, so mail that arrived while NO
+    # watcher was running is still announced. Starting at the file's end made
+    # the scan window "whatever is appended from now on", and a frontend-box
+    # session sat deaf for two and a half hours with four unread directed
+    # frames already in its inbox, rescued only when something else made it
+    # take a turn (field report, 2026-09-28). A notice costs ONE line whatever
+    # is behind it, so there is nothing to be gained by ignoring a backlog --
+    # and the cursor keeps it honest: a batch the session really read through
+    # comm-poll.sh already reaches the end and announces nothing, so a restart
+    # is silent rather than a ping storm.
+    #
+    # `full` starts at the file's END and must keep doing so: it TYPES each
+    # frame's own text into the pane, so an old cursor would retype the whole
+    # backlog into the row. Do not fold these into one initialisation -- the
+    # asymmetry IS the difference between a notice and a replay.
     POS=()
-    for i in "${!SOURCES[@]}"; do POS+=("$(sot_file_lines "${SOURCES[$i]}")"); done
+    for i in "${!SOURCES[@]}"; do
+        if [ "$DELIVER" = "ping" ]; then
+            POS+=("$("${CURSORS[$i]}" "$HANDLE")")
+        else
+            POS+=("$(sot_file_lines "${SOURCES[$i]}")")
+        fi
+    done
     no_reply_count=0
     POLL_SECONDS="$POLL_DEFAULT_SECONDS"
     blocked_since=""

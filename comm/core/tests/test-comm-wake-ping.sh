@@ -958,7 +958,91 @@ EOF
     return 0
 }
 
+# Mail that arrived while NO watcher was running must still be announced. The
+# in-memory cursor used to start at the file's end, so the scan window held
+# only what was appended after arming: a frontend-box session sat deaf for two
+# and a half hours with four unread directed frames already in its inbox, and
+# was rescued only when something else made it take a turn (field report,
+# 2026-09-28). A ping costs ONE line whatever is behind it, so there is nothing
+# to be gained by ignoring a backlog.
+case_a_frame_from_before_the_watcher_started_is_announced() {
+    local d="$WORK/prearm-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    printf '{"from":"peer","to":"me","msg":"filed while nothing was watching"}\n' > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() { turns=\$((turns + 1)); [ "\$turns" -le 3 ] || exit 0; }
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) for a backlog present before arming, want exactly 1"; return 1; }
+    return 0
+}
+
+# THE other half, and the regression that would get the fix above reverted: a
+# batch the session genuinely READ through comm-poll.sh must not be announced
+# again every time a watcher restarts. The read cursor is what separates the
+# two -- unread backlog pings once, read backlog is silent.
+case_a_backlog_already_read_is_not_announced_on_restart() {
+    local d="$WORK/read-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    printf '{"from":"peer","to":"me","msg":"you already read this"}\n' > "$d/inbox/watchee.jsonl"
+    printf '1' > "$d/read/watchee.cursor"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() { turns=\$((turns + 1)); [ "\$turns" -le 3 ] || exit 0; }
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 0 ] || { echo "  pty.input called $n time(s) for mail already read; a restart must be silent"; return 1; }
+    return 0
+}
+
+# `full` keeps starting at the file's END, and this is why the two modes may
+# not share one initialisation: it TYPES each frame's own text into the pane,
+# so a backlog in the scan window would be retyped into the row wholesale --
+# a replay, not a notice.
+case_full_mode_does_not_retype_a_backlog() {
+    local d="$WORK/full-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    printf '{"from":"peer","to":"me","msg":"old news"}\n{"from":"peer","to":"me","msg":"older news"}\n' > "$d/inbox/watchee.jsonl"
+    local calls="$d/injects"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_capsule_inject() { printf x >> "$calls"; return 0; }
+turns=0
+sleep() { turns=\$((turns + 1)); [ "\$turns" -le 3 ] || exit 0; }
+_comm_wake_main watchee --deliver full --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 0 ] || { echo "  full mode typed $n backlog frame(s) into the pane; it must start at the end"; return 1; }
+    return 0
+}
+
 check "three new directed lines type the ping notice exactly once" case_three_new_directed_lines_type_the_ping_once
+check "a frame filed before the watcher started is announced" case_a_frame_from_before_the_watcher_started_is_announced
+check "a backlog already read is silent when a watcher restarts" case_a_backlog_already_read_is_not_announced_on_restart
+check "full mode does not retype a backlog" case_full_mode_does_not_retype_a_backlog
 check "a frame whose sender is not a string still wakes" case_a_non_string_sender_still_wakes
 # Mail in BOTH inboxes inside ONE cycle is ONE wake. The ping says only that
 # mail exists, so a cross-box frame and a same-box frame arriving together cost
