@@ -45,7 +45,40 @@ unset SOT_COMM_SELF_FILE
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-wake-ping-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
-trap 'rm -rf "$WORK"' EXIT
+trap '_isolate; rm -rf "$WORK"' EXIT
+
+# EVERY CASE STARTS FROM NOTHING RUNNING FOR THIS HANDLE.
+#
+# Every case here plants processes that look exactly like the thing under
+# test -- a comm-wake.sh or comm-watch.sh carrying the handle `watchee` --
+# and every case shares that one handle, which is deliberate: the guard, the
+# marker and the scan are all keyed on it, so per-case handles would change
+# what these cases prove. That makes a LEFTOVER indistinguishable from a
+# fresh plant, and it does not merely leak: a stray ping watcher makes "two
+# starts leave exactly one" count the wrong survivor, makes "a live watcher
+# no marker names refuses" pass for the wrong reason, and makes both Monitor
+# cases fail by refusing a start they should allow. A suite that passes on
+# the wrong process is worse than one that fails.
+#
+# So isolation is by SWEEPING, after every case. Both sweeps are scoped to
+# this run's own temp directory, which no other process on the box can be
+# inside, so neither can touch a real watcher or another suite's fixture.
+# Children first: these fakes are shells running `sleep`, and killing the
+# shell alone orphans the sleep.
+PLANTED="$WORK/planted"; : > "$PLANTED"
+_isolate() {
+    local p
+    for p in $(pgrep -f "$WORK/.*comm-w" 2>/dev/null); do
+        pkill -P "$p" 2>/dev/null || true
+        kill "$p" 2>/dev/null || true
+    done
+    while read -r p; do
+        [ -n "$p" ] || continue
+        pkill -P "$p" 2>/dev/null || true
+        kill "$p" 2>/dev/null || true
+    done < "$PLANTED"
+    : > "$PLANTED"
+}
 
 PASS=0
 FAIL=0
@@ -56,6 +89,7 @@ check() {
     else
         echo "FAIL: $desc"; FAIL=$((FAIL + 1))
     fi
+    _isolate
 }
 
 case_three_new_directed_lines_type_the_ping_once() {
@@ -509,6 +543,7 @@ case_second_start_against_a_live_marker_refuses() {
     mkdir -p "$d/fakebin"
     printf '#!/bin/sh\nsleep 60\n' > "$d/fakebin/comm-wake.sh"; chmod +x "$d/fakebin/comm-wake.sh"
     "$d/fakebin/comm-wake.sh" watchee >/dev/null 2>&1 & planted=$!
+    printf '%s\n' "$planted" >> "$PLANTED"
     printf '%s\nsession-a\n' "$planted" > "$marker"
     cat > "$d/run.sh" <<EOF
 source "$WAKE"
@@ -571,6 +606,7 @@ case_marker_pid_that_is_not_a_watcher_is_stale() {
     # refuse every start for this handle from here on; the identity check must
     # read it as stale and let the watcher start.
     sleep 60 >/dev/null 2>&1 & planted=$!
+    printf '%s\n' "$planted" >> "$PLANTED"   # not a watcher, so the path sweep cannot see it
     printf '%s\nsession-old\n' "$planted" > "$marker"
     cat > "$d/run.sh" <<EOF
 source "$WAKE"

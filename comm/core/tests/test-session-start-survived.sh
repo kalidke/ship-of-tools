@@ -31,6 +31,20 @@ SLEEPERS=()
 # the sleep behind: children first, then the shell.
 cleanup() {
     sot_bridge_stop "${NAME:-}" 2>/dev/null || true
+    # AND the bridge fake's own processes, which sot_bridge_stop cannot reach.
+    # It reaps by `_sot_bridge_pattern`, which matches `comm-relay.sh ... bridge
+    # --name <handle>` or `sot-bridge <relay> <handle>` -- and this suite's fake
+    # is deliberately named fake-relay.sh, matching NEITHER. That is load-bearing
+    # and must stay: it is what makes a leftover here INERT, unable to be read as
+    # a live bridge by the tether case. The cost of that choice is that the
+    # suite has to reap its own, which it never did -- six per run, one per
+    # bridge start, outliving their temp directory. Never rename this fake to
+    # comm-relay.sh to "fix" it; that trades a leak for a suite that can pass
+    # on a dead bridge.
+    for p in $(pgrep -f "$WORK/fake-relay.sh" 2>/dev/null); do
+        pkill -P "$p" 2>/dev/null || true
+        kill "$p" 2>/dev/null || true
+    done
     local p
     for p in $(pgrep -f "$WORK/fakebin/comm-w" 2>/dev/null) "${SLEEPERS[@]:-}"; do
         [ -n "$p" ] || continue
