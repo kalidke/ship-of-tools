@@ -1149,19 +1149,14 @@ const STRIP_ROWS: f32 = 2.0;
 /// not its own: this air plus `HULL_ROW_EXTRA_DROP_ROWS` must not exceed `oy`
 /// (12*scale px), or the band no longer fits under the grid at `u == 0` and
 /// `strip_reserved_rows` takes a third row, shortening every pane. With the
-/// drop at 7 this air has one pixel of headroom at scale 1 and that pixel is
-/// deliberately left unspent — see `HULL_ROW_EXTRA_DROP_ROWS` for why the
-/// budget cannot be filled exactly — so raising this air means lowering the
+/// drop at 8 the budget is fully spent, so raising this air means lowering the
 /// drop by the same amount.
 const STRIP_TOP_AIR_ROWS: f32 = 4.0 / BASE_CELL_H;
 
 /// How much further DOWN the hull row sits below the session-name row than one
-/// plain text row, as a fraction of `BASE_CELL_H`: **7 px at scale 1**. The
-/// owner picked 8 by eye from four captures of the same screen, against the
-/// 12 px of sea the band used to leave under the hull. **8 is not available**,
-/// for the arithmetic reason below, and 7 is the nearest value that is: it
-/// leaves 5 px of sea instead of the 4 he chose, a one-pixel difference in a
-/// cosmetic gap, and it is the only part of his pick that was not honoured.
+/// plain text row, as a fraction of `BASE_CELL_H`: **8 px at scale 1**, picked
+/// by the owner by eye from four captures of the same screen. It leaves 4 px of
+/// sea under the hull, against the 12 px the band used to leave.
 ///
 /// Measured from the GRID like every other length in the band, never from the
 /// window, so the row-quantisation remainder `u` still lands BELOW the
@@ -1169,25 +1164,28 @@ const STRIP_TOP_AIR_ROWS: f32 = 4.0 / BASE_CELL_H;
 /// here is the defect `STRIP_TOP_AIR_ROWS` was rewritten to delete, and it
 /// would take the owner's approved name-to-panes spacing down with it.
 ///
-/// **Why not 8.** `strip_reserved_rows` has `oy` (12*scale) of room under the
-/// grid's last row and `STRIP_TOP_AIR_ROWS` spends 4 of it, so 8 is what is
-/// left — and spending ALL of it puts the band exactly on its budget, where
-/// exact is not a thing floating point delivers: `(4 + 8) / 18` is not
-/// representable and rounds UP, so `need` comes out a hair above `2*cell_h +
-/// oy` and the hull row runs past the window's bottom edge.
-/// `strip_band_never_touches_the_grids_last_row` catches it at scale 0.2,
-/// height 246, which is exactly the kind of place a value picked at the
-/// default window would never have been looked at. At 9 the miss stops being
-/// a rounding hair and the band takes a third reserved row, so EVERY pane
-/// loses a line of content — not a trade a cosmetic knob gets to make.
+/// **8 is the ceiling.** `strip_reserved_rows` has `oy` (12*scale) of room
+/// under the grid's last row, `STRIP_TOP_AIR_ROWS` spends 4 of it, and this
+/// spends the remaining 8 — the band therefore sits exactly ON its budget. At
+/// 9 it would need a third reserved row and EVERY pane would lose a line of
+/// content, which is not a trade a cosmetic knob gets to make.
 ///
-/// So the real rule is that this constant and `STRIP_TOP_AIR_ROWS` share one
-/// budget and must leave a pixel of it unspent. Their SUM is the quantity to
-/// reason about, which is why the test pins the sum rather than either term.
+/// Sitting exactly on the budget is fine, but it is not free: `(4 + 8) / 18`
+/// is not representable in f32 and rounds UP, so the reservation's `need`
+/// lands a few millionths of a pixel above a budget it exactly meets. Left
+/// alone that hair takes the third row anyway — a rounding artefact charged to
+/// the user as a lost line — and it does not show at the default window, only
+/// at small scale. `BAND_FIT_EPS_ROWS` is what absorbs it;
+/// `strip_band_never_touches_the_grids_last_row` sweeps scales and window
+/// heights and is what caught it, at scale 0.2 and height 246.
+///
+/// This constant and `STRIP_TOP_AIR_ROWS` share one budget, so their SUM is
+/// the quantity to reason about — which is why the test pins the sum rather
+/// than either term alone.
 ///
 /// Raising it does not move the bow and stern rakes' tops, which are placed
 /// from the band's top: the ship reads DEEPER as this grows, not merely lower.
-const HULL_ROW_EXTRA_DROP_ROWS: f32 = 7.0 / BASE_CELL_H;
+const HULL_ROW_EXTRA_DROP_ROWS: f32 = 8.0 / BASE_CELL_H;
 /// Hull thickness and waterline drop, as fractions of `BASE_CELL_H` — the row
 /// height the mock was drawn against, named rather than a bare 18 in a
 /// denominator so a change there can't silently detune the hull. The drop is
@@ -1723,22 +1721,40 @@ fn box_name_rgb(steered: bool, contrast_dim: bool) -> (u8, u8, u8) {
 /// while erring low runs the hull row off the window's bottom edge, so `k` is
 /// the ceiling. Every term is a fraction of `BASE_CELL_H`, so the ceiling is
 /// `STRIP_ROWS` at every scale and the band never costs a third row:
-/// `need = 47*s` against `2*cell_h + oy = 48*s`, while `k = 1` would give
-/// `30*s` and fail. `oy` is spent 4 on `STRIP_TOP_AIR_ROWS` and 7 on
-/// `HULL_ROW_EXTRA_DROP_ROWS`, leaving ONE pixel at scale 1 unspent on
-/// purpose: filling the budget exactly puts `need` a rounding hair above it
-/// and the hull row off the bottom edge. Their SUM is the quantity to reason
-/// about, which is why the test pins the sum rather than either term. The
-/// active name's lift is not part of it: the lift rises INTO the air, never
-/// below the band, so it is bounded by the air rather than by this row
-/// budget. `strip_band_never_touches_the_grids_last_row` pins the
+/// `need = 48*s` against `2*cell_h + oy = 48*s`, while `k = 1` would give
+/// `30*s` and fail. `oy` is spent 4 on `STRIP_TOP_AIR_ROWS` and 8 on
+/// `HULL_ROW_EXTRA_DROP_ROWS`, so the band sits exactly on its budget and
+/// `BAND_FIT_EPS_ROWS` is what keeps f32 rounding from reading that as a
+/// miss. Their SUM is the quantity to reason about, which is why the test
+/// pins the sum rather than either term. The active name's lift is not part
+/// of it: the lift rises INTO the air, never below the band, so it is bounded
+/// by the air rather than by this row budget. `strip_band_never_touches_the_grids_last_row` pins the
 /// condition, k's minimality AND that constancy — the literal is pinned
 /// there because it is now an invariant, not because anyone counted rows.
 fn strip_reserved_rows(cell_h: f32, oy: f32) -> u16 {
     let need =
         STRIP_ROWS * cell_h + cell_h * (STRIP_TOP_AIR_ROWS + HULL_ROW_EXTRA_DROP_ROWS);
-    (((need - oy) / cell_h.max(1.0)).ceil().max(0.0)) as u16
+    (((need - oy) / cell_h.max(1.0) - BAND_FIT_EPS_ROWS)
+        .ceil()
+        .max(0.0)) as u16
 }
+
+/// Rounding slack for the band's fit, in rows, and the reason a band that
+/// exactly meets its budget is allowed to say so.
+///
+/// `need` is a sum of ratios of `BASE_CELL_H` scaled by `cell_h`, so it carries
+/// f32 error. When `STRIP_TOP_AIR_ROWS` and `HULL_ROW_EXTRA_DROP_ROWS` together
+/// spend the whole of `oy`, `(4 + 8) / 18` rounds UP and `need` lands a few
+/// millionths of a pixel above a budget it exactly meets. Without this slack
+/// that hair takes a THIRD reserved row and every pane loses a line of content
+/// — a rounding artefact charged to the user as lost screen, and one that does
+/// not show at the default window, only at small scale.
+///
+/// A thousandth of a row is some three orders of magnitude above the error and
+/// three below one pixel, so it absorbs the artefact while a real one-pixel
+/// overrun still takes the row it needs. It is a tolerance on a comparison,
+/// not a fudge to the geometry: no length moves.
+const BAND_FIT_EPS_ROWS: f32 = 1e-3;
 
 /// Strip-local center-x (pixels) of the active item — the value
 /// `strip_scroll_px` eases toward so the active session sits at screen
@@ -26075,13 +26091,20 @@ mod tests {
         // lower one with the box name set into it, and the rake reaching from
         // the line up into the wheel's own row. Every number is a fraction of
         // `BASE_CELL_H`, so the whole shape scales as one.
+        //
+        // The two rows are NOT adjacent: the owner's `HULL_ROW_EXTRA_DROP_ROWS`
+        // sits the hull row lower to take the empty sea out of the footer. That
+        // is why the rake's rise is measured from the BAND's top rather than
+        // from the hull row — the apex stays where it was and the rake grows,
+        // so the ship reads deeper rather than merely lower.
         let cell_h = BASE_CELL_H;
         // 600.0 is a grid bottom, not a window height: the band's internal
         // proportions are the same wherever the grid ends.
         let (names_y, hull_y) = strip_row_tops(600.0, cell_h);
         assert!(
-            (hull_y - (names_y + cell_h)).abs() < 1e-3,
-            "the two rows are adjacent: {names_y} {hull_y}"
+            (hull_y - (names_y + cell_h * (1.0 + HULL_ROW_EXTRA_DROP_ROWS))).abs() < 1e-3,
+            "the hull row is one cell plus the owner's drop below the names: \
+             {names_y} {hull_y}"
         );
         let logo_h = (cell_h - 2.0).max(1.0);
         let vert = ship_vertical(names_y, hull_y, cell_h, logo_h);
@@ -26104,12 +26127,15 @@ mod tests {
             "box-name glyph top: {}",
             vert.name_y
         );
-        // The rake rises from the waterline to 2 px below the BAND's top — the
-        // waterline's own drop plus a whole row, less that air.
+        // The rake rises from the waterline to 2 px below the BAND's top. It is
+        // stated from the band's top on purpose: while the rows were adjacent
+        // that was the same arithmetic as "the waterline's drop plus a whole
+        // row", and the two forms only part company once the hull row drops,
+        // which is exactly when the distinction starts to matter.
         let (water_y, _) = hull_band(hull_y, cell_h);
         assert!(
-            (vert.rake_rise - (water_y - hull_y + cell_h - 2.0)).abs() < 1e-3
-                && (vert.rake_rise - 27.0).abs() < 1e-3,
+            (vert.rake_rise - (water_y - (names_y + 2.0))).abs() < 1e-3
+                && (vert.rake_rise - 35.0).abs() < 1e-3,
             "rake rise: {}",
             vert.rake_rise
         );
@@ -26458,8 +26484,13 @@ mod tests {
                 k, STRIP_ROWS,
                 "scale {scale}: the band must never cost more than {STRIP_ROWS} rows"
             );
+            // Same tolerance as `strip_reserved_rows` itself, and for the
+            // same reason: at 8 the band meets its budget exactly, so an
+            // exact `>=` here would fail on f32 rounding rather than on
+            // geometry. Well below a pixel, so a real overrun still fails.
+            let fit_slack = cell_h * BAND_FIT_EPS_ROWS;
             assert!(
-                k * cell_h + oy >= need,
+                k * cell_h + oy >= need - fit_slack,
                 "scale {scale}: {k} rows do not clear the band's {need} px"
             );
             assert!(
@@ -26484,7 +26515,7 @@ mod tests {
                 // the grid discarded, so an air above `oy` runs the band off
                 // the bottom edge at the heights that discard nothing.
                 assert!(
-                    hull_y + cell_h <= h as f32,
+                    hull_y + cell_h <= h as f32 + fit_slack,
                     "scale {scale}, h {h}: the hull row runs off the window bottom"
                 );
                 // The hull row sits one cell BELOW the names row plus the
