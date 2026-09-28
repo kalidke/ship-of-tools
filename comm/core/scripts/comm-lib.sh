@@ -800,22 +800,117 @@ sot_bridge_owner_pid() {
 # different command, no way to read one) means the marker is STALE: rc 1, and
 # the caller proceeds as if it were absent.
 sot_watcher_pid_for() {
-    local handle="$1" pid args
+    local handle="$1" pid
     pid="$(sed -n '1p' "$COMM_HOME/state/$handle.watch" 2>/dev/null)"
+    sot_pid_is_watcher_for "$pid" "$handle" || return 1
+    printf '%s\n' "$pid"
+}
+
+# sot_pid_is_watcher_for PID HANDLE — is THIS pid a live watcher for HANDLE?
+# The test sot_watcher_pid_for always applied to the marker's pid, lifted out
+# so it can be applied to a pid found any other way. Liveness AND identity:
+# the marker outlives reboots on a shared home, so a reused pid would let a
+# teardown kill an unrelated process and let a start-time mutex refuse a
+# legitimate watcher forever.
+#
+# The script must be what the process IS, not something its command line
+# MENTIONS — only the first two arguments are looked at, and by basename. A
+# watcher runs as `bash /path/comm-wake.sh <handle> ...` (its shebang puts the
+# script in argv[1]), so those two fields are where the answer lives. The
+# substring test this replaces was harmless while the only pid asked about
+# came from our own marker, and became unsafe the moment a SCAN asked it about
+# every pid on the box: any shell whose command line happened to carry both
+# the script name and the handle — a grep, an editor, the session's own
+# tooling — then counted as a live watcher and would refuse a legitimate
+# start, i.e. leave the session deaf. Measured while building this, not
+# theorised.
+sot_pid_is_watcher_for() {
+    local pid="${1:-}" handle="${2:-}" args rest field ok=0
     [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-    kill -0 "$pid" 2>/dev/null || return 1
+    sot_pid_alive "$pid" || return 1
     if [ -r "/proc/$pid/cmdline" ]; then
         args="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
     else
         args="$(ps -o args= -p "$pid" 2>/dev/null)"
     fi
     [ -n "$args" ] || return 1
-    case "$args" in
-        *comm-wake.sh*|*comm-watch.sh*|*codex-watch.sh*) ;;
-        *) return 1 ;;
-    esac
+    rest="${args#* }"
+    for field in "${args%% *}" "${rest%% *}"; do
+        case "${field##*/}" in
+            comm-wake.sh|comm-watch.sh|codex-watch.sh) ok=1 ;;
+        esac
+    done
+    [ "$ok" = 1 ] || return 1
     case "$args" in *"$handle"*) ;; *) return 1 ;; esac
-    printf '%s\n' "$pid"
+    return 0
+}
+
+# sot_pid_starttime PID — when the process started, in a unit comparable
+# BETWEEN TWO PIDS ON THIS BOX (field 22 of /proc/<pid>/stat, ticks since
+# boot). Prints nothing where there is no procfs; callers must treat that as
+# "unknown", never as zero. Read from the field AFTER the last ')' because a
+# process name can contain spaces and parentheses.
+sot_pid_starttime() {
+    local pid="${1:-}" stat
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    [ -r "/proc/$pid/stat" ] || return 1
+    stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 1
+    stat="${stat#*) }"
+    printf '%s\n' "$stat" | awk '{ print $20 }' | tr -dc '0-9'
+    printf '\n'
+}
+
+# sot_live_watcher_for HANDLE [SELF_PID] — the pid of a live watcher for
+# HANDLE in the PROCESS TABLE, or nothing (rc 1).
+#
+# WHY THE PROCESS TABLE and not the record we keep: the defect this exists for
+# was two watchers running side by side for seventeen hours, one of them named
+# by no file at all — and every start consulted only the pid the marker named,
+# so the unrecorded one was invisible to every future start and unreapable by
+# every cleanup. A file can be missing, overwritten or judged stale; the
+# process table cannot.
+#
+# TWO EXCLUSIONS, both load-bearing:
+#   * SELF. This scan runs INSIDE a watcher, whose own command line carries
+#     both the script name and the handle, so a naive scan always finds itself
+#     and the watcher refuses to start every single time.
+#   * A CANDIDATE THAT STARTED AFTER US. Two starts racing for one handle can
+#     each see the other as a live watcher and both refuse, leaving the
+#     session with no watcher at all -- deafness, which is worse than the
+#     double wake this guard exists to prevent. Only an EARLIER process
+#     refuses us, so of any two racing starts exactly one proceeds; the tie
+#     (two starts in the same clock tick) breaks on the lower pid, which is
+#     arbitrary but is a total order, which is all this needs. Where no start
+#     time is available (no procfs) the rule falls back to refusing on ANY
+#     live watcher: the safe direction, and never the platform this was
+#     written for.
+sot_live_watcher_for() {
+    local handle="$1" self="${2:-$$}" mine pid theirs
+    mine="$(sot_pid_starttime "$self" 2>/dev/null)"
+    _sot_scan_pids | while read -r pid; do
+        [ "$pid" = "$self" ] && continue
+        sot_pid_is_watcher_for "$pid" "$handle" || continue
+        if [ -n "$mine" ]; then
+            theirs="$(sot_pid_starttime "$pid" 2>/dev/null)"
+            [ -n "$theirs" ] || { printf '%s\n' "$pid"; return 0; }
+            if [ "$theirs" -gt "$mine" ]; then continue; fi
+            if [ "$theirs" -eq "$mine" ] && [ "$pid" -gt "$self" ]; then continue; fi
+        fi
+        printf '%s\n' "$pid"
+        return 0
+    done | { read -r pid && { printf '%s\n' "$pid"; return 0; }; return 1; }
+}
+
+# _sot_scan_pids — every pid on this box, one per line. /proc where there is
+# one (Linux AND git-bash, whose procfs lists every msys process), `ps`
+# elsewhere.
+_sot_scan_pids() {
+    local d
+    if [ -r /proc/self/cmdline ]; then
+        for d in /proc/[0-9]*; do printf '%s\n' "${d##*/}"; done
+        return 0
+    fi
+    ps -A -o pid= 2>/dev/null | tr -dc '0-9\n'
 }
 
 # --- the read cursor: a LINE OFFSET into inbox/<handle>.jsonl ----------------

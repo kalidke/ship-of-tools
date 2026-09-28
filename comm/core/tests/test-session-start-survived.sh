@@ -19,7 +19,24 @@ SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-survived-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
 SLEEPERS=()
-cleanup() { sot_bridge_stop "${NAME:-}" 2>/dev/null || true; for p in "${SLEEPERS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; rm -rf "$WORK"; }
+# This suite leaked a fake watcher per case -- twenty were found alive on the
+# hub across four of its temp directories. TWO causes, and the first is why
+# the SLEEPERS array alone could never have worked: `sleeper` is called in a
+# command substitution, so its `SLEEPERS+=` happens in a subshell and this
+# shell's array stays empty. The sweep therefore goes by this suite's OWN temp
+# path, which cannot match anything else on the box. The second cause is that
+# the fake watcher is a shell running `sleep 300`, so killing the shell leaves
+# the sleep behind: children first, then the shell.
+cleanup() {
+    sot_bridge_stop "${NAME:-}" 2>/dev/null || true
+    local p
+    for p in $(pgrep -f "$WORK/fakebin/comm-watch.sh" 2>/dev/null) "${SLEEPERS[@]:-}"; do
+        [ -n "$p" ] || continue
+        pkill -P "$p" 2>/dev/null || true
+        kill "$p" 2>/dev/null || true
+    done
+    rm -rf "$WORK"
+}
 trap cleanup EXIT
 
 export SOT_COMM_HOME="$WORK/home"

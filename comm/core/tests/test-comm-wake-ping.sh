@@ -787,37 +787,41 @@ case_the_gate_reads_the_separator_instead_of_guessing() {
     return 0
 }
 
-case_a_second_claim_on_a_held_marker_fails() {
+case_a_second_lock_on_a_held_lock_fails() {
     # THE mutex invariant, tested deterministically rather than by racing.
     #
-    # I first wrote this as twelve concurrent starts asserting one winner, and
-    # then checked whether that test could FAIL: it cannot. The pattern this
-    # fix replaces -- a liveness check, then an unconditional write -- also
-    # yields exactly one winner under a twelve-way shell race, because process
-    # startup is milliseconds while the window between the check and the write
-    # is microseconds. A green race proves nothing about exclusion.
+    # This was first written as twelve concurrent starts asserting one winner,
+    # and then checked for whether it could FAIL: it cannot. A check followed
+    # by an unconditional write also yields one winner under a twelve-way
+    # shell race, because process startup is milliseconds while the window
+    # between the check and the write is microseconds. A green race proves
+    # nothing about exclusion. (The two-start case above is still worth its
+    # cost, but for the OUTCOME -- one survivor, one refusal -- not for this.)
     #
-    # What DOES separate the two is the claim's behaviour when the marker is
-    # already held: an exclusive create fails, an unconditional `>` succeeds.
-    # So assert exactly that. Revert the claim to a plain write and this case
-    # goes red, which is the only property that makes it worth running.
-    local d="$WORK/claim-excl"; rm -rf "$d"; mkdir -p "$d/state"
-    cat > "$d/run.sh" <<EOF
+    # What does separate the shapes is the behaviour when the lock is already
+    # held by a live watcher-start: `mkdir` fails and the holder is verified
+    # alive, so the second attempt refuses instead of reclaiming. Make the
+    # reclaim unconditional and this goes red, which is the only property that
+    # makes it worth running. It runs as a script named comm-wake.sh with the
+    # handle in argv because that is what the holder check verifies.
+    local d="$WORK/lock-excl"; rm -rf "$d"; mkdir -p "$d/state" "$d/bin"
+    cat > "$d/bin/comm-wake.sh" <<EOF
 source "$WAKE"
-MARKER="$d/state/watchee.watch"
-_comm_wake_claim || { echo "first claim failed on a free marker" >&2; exit 1; }
-if _comm_wake_claim; then echo "SECOND-CLAIM-WON" >&2; exit 2; fi
-sed -n '1p' "\$MARKER"
+HANDLE=watchee
+LOCKDIR="$d/state/watchee.watch.lock.d"
+_comm_wake_lock || { echo "first lock failed on a free lock" >&2; exit 1; }
+if _comm_wake_lock; then echo "SECOND-LOCK-WON" >&2; exit 2; fi
+sed -n '1p' "\$LOCKDIR/pid"
 EOF
     local out rc
-    out="$(bash "$d/run.sh" 2>"$d/err")"; rc=$?
+    out="$(bash "$d/bin/comm-wake.sh" watchee 2>"$d/err")"; rc=$?
     [ "$rc" -eq 0 ] || {
         echo "  exited $rc: $(cat "$d/err")"
-        grep -q SECOND-CLAIM-WON "$d/err" && echo "  a second claim took a marker that was already held — the claim is not exclusive"
+        grep -q SECOND-LOCK-WON "$d/err" && echo "  a second start took a lock that was already held — the lock is not exclusive"
         return 1
     }
-    [ "$out" = "$(sed -n '1p' "$d/state/watchee.watch")" ] \
-        || { echo "  the marker's owner line changed under a losing claim"; return 1; }
+    [ "$out" = "$(sed -n '1p' "$d/state/watchee.watch.lock.d/pid" 2>/dev/null)" ] \
+        || { echo "  the lock's owner line changed under a losing attempt"; return 1; }
     return 0
 }
 
@@ -1067,7 +1071,97 @@ case_pid_liveness_answers_live_dead_and_nonsense() {
     return 1
 }
 
+# TWO STARTS AT ONCE, one survivor. Two watchers for one handle ran side by
+# side for seventeen hours on the hub, doubling every ping, with the guard's
+# own refusal never once logged -- the check-and-claim was not atomic and its
+# staleness judgement consulted only the pid the marker named, so a live
+# watcher the marker did not name was invisible to every start.
+#
+# The two fixtures are launched as a script NAMED comm-wake.sh with the handle
+# in argv, because that is what the process table must show for a scan to
+# recognise a watcher at all -- the same shape a real watcher has (`bash
+# /path/comm-wake.sh <handle> --deliver ping --owner N`).
+case_two_starts_leave_exactly_one_watcher() {
+    local d="$WORK/double-start"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
+    : > "$d/inbox/watchee.jsonl"
+    cat > "$d/bin/comm-wake.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    # The survivor has to STAY alive while the other start makes its attempt,
+    # so this stands in for the poll pause rather than removing it.
+    printf '%s\n' "\$\$" >> "$d/started"
+    turns=\$((turns + 1))
+    command sleep 0.4
+    [ "\$turns" -le 5 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    : > "$d/started"
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1 &
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1 &
+    wait
+    local survivors refusals
+    survivors="$(sort -u "$d/started" 2>/dev/null | grep -c . || true)"
+    refusals="$(grep -c 'refusing to start a second' "$d/state/comm-wake-watchee.log" 2>/dev/null || true)"
+    [ "$survivors" -eq 1 ] || { echo "  $survivors watcher(s) reached the poll loop, want exactly 1"; return 1; }
+    [ "$refusals" -eq 1 ] || { echo "  $refusals refusal(s) logged, want exactly 1"; sed 's/^/    /' "$d/state/comm-wake-watchee.log" 2>/dev/null | head -n 4; return 1; }
+    return 0
+}
+
 check "three new directed lines type the ping notice exactly once" case_three_new_directed_lines_type_the_ping_once
+# THE DEFECT ITSELF, which the two-start case above cannot reach: a watcher
+# that is ALIVE while the marker names someone else. On the hub the marker
+# named the later of two watchers and the earlier one -- forty-five minutes
+# older -- was named by nothing, so every start judged the marker's pid and
+# never saw it. Here that state is built directly: a live watcher, and a
+# marker naming a pid that is gone. The old shape judged the marker stale,
+# removed it, claimed it and started a second watcher beside the live one.
+case_a_live_watcher_no_marker_names_still_refuses() {
+    local d="$WORK/unrecorded"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
+    : > "$d/inbox/watchee.jsonl"
+    cat > "$d/bin/comm-wake.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    printf '%s\n' "\$\$" >> "$d/started"
+    turns=\$((turns + 1))
+    command sleep 0.4
+    [ "\$turns" -le 20 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    : > "$d/started"
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1 &
+    local first=$! waited=0
+    while [ ! -s "$d/started" ] && [ "$waited" -lt 40 ]; do command sleep 0.1; waited=$((waited + 1)); done
+    [ -s "$d/started" ] || { kill "$first" 2>/dev/null; echo "  the first watcher never reached its poll loop"; return 1; }
+    # The marker now names a pid that is gone -- the state the hub was in.
+    printf '%s\n%s\n' 999999 sess-OLD > "$d/state/watchee.watch"
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1
+    local rc=$? survivors
+    pkill -P "$first" 2>/dev/null || true
+    kill "$first" 2>/dev/null || true
+    survivors="$(sort -u "$d/started" 2>/dev/null | grep -c . || true)"
+    [ "$rc" -eq 4 ] || { echo "  the second start exited $rc, want 4 (a refusal)"; }
+    [ "$survivors" -eq 1 ] || { echo "  $survivors watcher(s) reached the poll loop, want exactly 1"; return 1; }
+    grep -q 'which no marker names' "$d/state/comm-wake-watchee.log" 2>/dev/null \
+        || { echo "  the refusal did not name the process-table finding"; return 1; }
+    return 0
+}
+
+check "two starts at once leave exactly one watcher and one refusal" case_two_starts_leave_exactly_one_watcher
+check "a live watcher no marker names still refuses a second" case_a_live_watcher_no_marker_names_still_refuses
 check "sot_pid_alive answers live, gone and not-a-pid" case_pid_liveness_answers_live_dead_and_nonsense
 check "a frame filed before the watcher started is announced" case_a_frame_from_before_the_watcher_started_is_announced
 check "a backlog already read is silent when a watcher restarts" case_a_backlog_already_read_is_not_announced_on_restart
@@ -1170,7 +1264,7 @@ check "a cursor that already covers the pending batch skips a second ping" case_
 check "no owner discoverable exits 2 and writes no marker" case_no_owner_exits_two
 check "no --owner flag but a discoverable owner starts" case_no_flag_but_a_discoverable_owner_starts
 check "a marker pid that is not a watcher is treated as stale" case_marker_pid_that_is_not_a_watcher_is_stale
-check "a second claim on a held marker fails" case_a_second_claim_on_a_held_marker_fails
+check "a second start on a held lock refuses" case_a_second_lock_on_a_held_lock_fails
 check "cleanup leaves a marker it does not own" case_cleanup_leaves_a_marker_it_does_not_own
 check "a second start against a live marker refuses" case_second_start_against_a_live_marker_refuses
 check "the workspace id derives from SOT_COMM_SELF_FILE's basename" case_workspace_id_derived_from_self_file_basename

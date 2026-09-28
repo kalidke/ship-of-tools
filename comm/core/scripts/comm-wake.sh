@@ -502,17 +502,75 @@ _comm_wake_bound_log() {
 # nothing recording it and a third one free to start on top. Line 1 is the
 # owning pid, so ownership is a fact this can check rather than assume.
 _comm_wake_cleanup() {
+    _comm_wake_unlock
     [ -n "${MARKER:-}" ] || return 0
     [ "$(sed -n '1p' "$MARKER" 2>/dev/null)" = "$$" ] || return 0
     rm -f "$MARKER" 2>/dev/null || true
 }
 
-# Claim the marker ATOMICALLY: `noclobber` makes `>` fail when the file already
-# exists, and an exclusive create is atomic on this home (NFSv4.2 — the same
-# property that let the old flock workarounds be retired). The claim IS the
-# mutual exclusion; nothing else needs to be.
-_comm_wake_claim() {
-    ( set -o noclobber; printf '%s\n%s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-}" > "$MARKER" ) 2>/dev/null
+# THE START LOCK. `mkdir` is the portable atomic test-and-set (it works on
+# git-bash, which matters here, and on the NFS home) and it covers the WHOLE
+# check-and-claim, which an exclusive create of the marker never could: the
+# marker says who claimed last, not whether anyone is running.
+#
+# A lock nobody owns must be reclaimable, and by identity rather than by age:
+# a holder that is still a live watcher-start for this handle keeps it, and
+# anything else is stale and is removed. After creating the directory we
+# re-read the pid we wrote, because a concurrent reclaim of a stale lock can
+# remove a directory we have just made -- the loser of that race must find out
+# rather than proceed beside the winner.
+_comm_wake_lock() {
+    local tries=0 holder
+    while [ "$tries" -lt 3 ]; do
+        tries=$((tries + 1))
+        if mkdir "$LOCKDIR" 2>/dev/null; then
+            printf '%s\n' "$$" > "$LOCKDIR/pid" 2>/dev/null
+            [ "$(cat "$LOCKDIR/pid" 2>/dev/null)" = "$$" ] && return 0
+            return 1
+        fi
+        holder="$(cat "$LOCKDIR/pid" 2>/dev/null)"
+        if [ -n "$holder" ] && sot_pid_is_watcher_for "$holder" "$HANDLE"; then
+            return 1
+        fi
+        rm -rf "$LOCKDIR" 2>/dev/null || true
+    done
+    return 1
+}
+
+# Release only a lock this process still owns -- a blind `rm -rf` would drop
+# the winner's lock after losing the race above.
+_comm_wake_unlock() {
+    [ -n "${LOCKDIR:-}" ] || return 0
+    [ "$(cat "$LOCKDIR/pid" 2>/dev/null)" = "$$" ] || return 0
+    rm -rf "$LOCKDIR" 2>/dev/null || true
+}
+
+# _comm_wake_guard -- may this process be the watcher for this handle? Under
+# the lock, and refusing on EITHER answer: a live watcher the marker names, or
+# a live watcher only the process table knows about. Every path releases the
+# lock, including both refusals.
+_comm_wake_guard() {
+    local live
+    if ! _comm_wake_lock; then
+        echo "comm-wake: another start for @$HANDLE holds the start lock — refusing to start a second" >&2
+        return 1
+    fi
+    if live="$(sot_watcher_pid_for "$HANDLE")"; then
+        echo "comm-wake: a watcher for @$HANDLE is already live (pid $live, named by $MARKER) — refusing to start a second" >&2
+        _comm_wake_unlock
+        return 1
+    fi
+    if live="$(sot_live_watcher_for "$HANDLE" "$$")"; then
+        echo "comm-wake: a watcher for @$HANDLE is already live (pid $live, which no marker names) — refusing to start a second" >&2
+        _comm_wake_unlock
+        return 1
+    fi
+    # Line 1 this process's own pid (liveness), line 2 the session that armed
+    # it (identity) — the same marker comm-watch.sh writes. Unconditional: we
+    # hold the lock and have just established that nothing is running.
+    printf '%s\n%s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-}" > "$MARKER" 2>/dev/null
+    _comm_wake_unlock
+    return 0
 }
 
 _comm_wake_main() {
@@ -588,6 +646,7 @@ _comm_wake_main() {
     STATE_DIR="$COMM_HOME/state"; mkdir -p "$STATE_DIR"
     LOG_FILE="$STATE_DIR/comm-wake-$HANDLE.log"
     MARKER="$STATE_DIR/$HANDLE.watch"
+    LOCKDIR="$STATE_DIR/$HANDLE.watch.lock.d"
     _comm_wake_bound_log
     # Own diagnostics go to a durable, size-bounded log, never /dev/null.
     exec 2>>"$LOG_FILE"
@@ -599,42 +658,18 @@ _comm_wake_main() {
     fi
     SELFTEST_TEXT="[sot-comm] wake selftest OK — nothing to read"
 
-    # START-TIME MUTEX (messaging ruling §3). The marker is the one thing that
-    # says a watcher for this handle is alive, so it is also what refuses a
-    # second one: two watchers would double every ping and the one that lost
-    # the marker could never be reaped by it. This replaces the `pgrep` dedupe
-    # comm-session-start.sh used to do from the outside.
-    # Verified by IDENTITY, not by `kill -0` alone (sot_watcher_pid_for): the
-    # marker outlives reboots on a shared home, so a reused pid would otherwise
-    # refuse a legitimate watcher forever — and codex-watch.sh writes this same
-    # marker, so the wrong answer here is exactly the shape this ruling exists
-    # to remove: deaf, and reporting healthy. An unverifiable marker is stale.
-    # The claim comes FIRST and the liveness check only runs when it loses.
-    # What this replaces was a test followed by a write with nothing between
-    # them: two starts could both pass the liveness check before either wrote,
-    # and the loser was then invisible to the very marker meant to reap it —
-    # an immortal watcher, doubling every ping for the life of the box. The
-    # comment there called it a start-time mutex; a test-then-write is not one.
+    # START-TIME MUTEX. Two watchers double every ping, and the one the marker
+    # does not name is invisible to every future start and unreapable by every
+    # cleanup -- two ran side by side for seventeen hours on the hub, with the
+    # guard's own refusal never once logged (evidence, 2026-09-28).
     #
-    # Same marker comm-watch.sh writes: line 1 this process's own pid
-    # (liveness), line 2 the session that armed it (identity).
-    if ! _comm_wake_claim; then
-        # Something holds the marker. If it is a real watcher, refuse.
-        if _live="$(sot_watcher_pid_for "$HANDLE")"; then
-            echo "comm-wake: a watcher for @$HANDLE is already live (pid $_live in $MARKER) — refusing to start a second" >&2
-            exit 4
-        fi
-        # Unverifiable, so stale — a reboot on a shared home, or a watcher
-        # killed before its cleanup ran. Remove it and re-claim through the
-        # same atomic door: if THAT loses, a concurrent starter got there
-        # first and it is the live one, so refuse rather than overwrite. Two
-        # starters can never both come away believing they own the marker.
-        rm -f "$MARKER" 2>/dev/null || true
-        if ! _comm_wake_claim; then
-            echo "comm-wake: lost the marker race for @$HANDLE to a concurrent start — refusing to start a second" >&2
-            exit 4
-        fi
-    fi
+    # The claim itself was always atomic; the COMPOUND operation was not. A
+    # lost claim was judged stale from the marker's pid ALONE, and a live
+    # watcher the marker did not name could not be seen by that judgement at
+    # all. So the whole check-and-claim now happens under one lock, and what
+    # it checks is the PROCESS TABLE (sot_live_watcher_for) as well as the
+    # marker. Ground truth cannot be overwritten, judged stale or deleted.
+    if ! _comm_wake_guard; then exit 4; fi
     trap _comm_wake_cleanup EXIT
 
     _comm_wake_run
