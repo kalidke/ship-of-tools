@@ -1077,8 +1077,7 @@ EOF
 # sot_row_gone RESP — 0 when RESP is the daemon's refusal for a workspace it
 # does not have (`code: "unknown_workspace"`, the pty.screen and pty.input arms
 # both answer it), 1 otherwise, including an empty RESP: a reply we never saw
-# is not evidence the row is gone. THE separator between "busy" and "gone" —
-# both are non-empty replies that are not a free prompt.
+# is not evidence the row is gone.
 sot_row_gone() {
     [ -n "$1" ] || return 1
     printf '%s' "$1" | jq -e '(.payload.code // "") == "unknown_workspace"' >/dev/null 2>&1

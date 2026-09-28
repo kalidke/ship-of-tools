@@ -212,6 +212,37 @@ case_a_row_the_daemon_does_not_have_reads_as_gone() {
     return 0
 }
 
+# R1-R3 — the append IS the delivery: a refusal costs the poke, never the frame.
+case_refusal_still_files() {   # LABEL LIST_FIXTURE EXPECTED_CLAUSE
+    setup_rows "ws-live" || { echo "  setup failed"; return 1; }
+    printf '%s' "$2" > "$SOT_TEST_LIST_FIXTURE"
+    run_send "@$PEER" "refused-$1"
+    [ "$SEND_RC" -eq 0 ] || { echo "  exited $SEND_RC ($SEND_ERR)"; return 1; }
+    contains "$SEND_OUT" "filed -> @$PEER" || { echo "  NOT FILED: $SEND_OUT"; return 1; }
+    contains "$SEND_OUT" "$3" || { echo "  receipt '$SEND_OUT' lacks '$3'"; return 1; }
+    [ ! -s "$SOT_TEST_INPUT_LOG" ] || { echo "  typed into a row anyway"; return 1; }
+    [ "$(jq -r 'select(.msg == "refused-'"$1"'") | .from' "$SOT_COMM_HOME/inbox/$PEER.jsonl")" = "$SENDER" ] \
+        || { echo "  inbox has no line for refused-$1"; return 1; }
+}
+
+# R1 — the resolver's own "no live row" refusal (rc 1).
+case_resolver_no_row_still_files() {
+    case_refusal_still_files "no-row" \
+        '{"v":1,"id":1,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}' \
+        "no live row declares"
+}
+
+# R2 — two rows declaring one handle refuse the poke, not the frame (rc 3).
+case_resolver_two_rows_still_files() {
+    list_declares "ws-live" "ws-second"
+    case_refusal_still_files "two-rows" "$(cat "$SOT_TEST_LIST_FIXTURE")" "two or more rows declare"
+}
+
+# R3 — no usable answer at all (rc 2).
+case_resolver_no_answer_still_files() {
+    case_refusal_still_files "no-answer" "" "the daemon did not answer"
+}
+
 check "one live row declaring the handle resolves to it" case_one_declaring_row_resolves
 check "no live row declaring the handle refuses instead of guessing" case_no_declaring_row_refuses
 check "two rows declaring one handle refuse, never the first" case_two_declaring_rows_refuse_instead_of_taking_the_first
@@ -219,6 +250,9 @@ check "an unanswered workspace.list is not evidence of no row" case_no_answer_is
 check "a malformed workspace.list is not evidence of no row" case_a_malformed_reply_is_not_no_row
 check "the poke follows the daemon, not the workspace_id stamped at join" case_the_poke_follows_the_daemon_not_the_stamped_field
 check "the daemon's refusal for a row it does not have reads as gone, not busy" case_a_row_the_daemon_does_not_have_reads_as_gone
+check "a resolver's 'no live row' refusal still files the frame" case_resolver_no_row_still_files
+check "a resolver's 'two or more rows' refusal still files the frame" case_resolver_two_rows_still_files
+check "an unanswered resolver still files the frame" case_resolver_no_answer_still_files
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

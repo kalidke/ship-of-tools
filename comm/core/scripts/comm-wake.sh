@@ -154,7 +154,7 @@ _comm_wake_prompt_free() {
 #
 # $no_reply_count is _comm_wake_run's, shared rather than duplicated so an
 # unanswerable daemon gives up on the SAME 5 strikes the screen probe uses.
-# Both exits leave the marker to the EXIT trap, which removes it only if this
+# Every exit leaves the marker to the EXIT trap, which removes it only if this
 # process owns it -- a blind extra call would drop someone else's.
 _comm_wake_retarget() {
     local row rc=0
@@ -264,9 +264,7 @@ _comm_wake_deliver_ping() {
     if [ "$pf_rc" -eq 3 ]; then
         # The gate's own dead-row detection, finally reachable: the
         # `unknown_workspace` check in _comm_wake_pty_verdict sits DOWNSTREAM
-        # of this gate, so before this arm a destroyed row could never get far
-        # enough to be recognised as destroyed -- it read as "not free" and the
-        # ping was held forever while the marker reported healthy.
+        # of this gate.
         echo "comm-wake: capsule row $SOT_WORKSPACE_ID is gone" >&2
         exit 0
     fi
