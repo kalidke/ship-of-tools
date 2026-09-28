@@ -20,6 +20,18 @@ _sot_is_windows() {
     return 1
 }
 
+# _sot_is_msys — a git-bash/Cygwin shell, which is NARROWER than
+# _sot_is_windows on purpose: $OS=Windows_NT is an environment variable (a
+# test fixture sets it, a native Windows shell inherits it), while the tier
+# gated on this one needs the msys USERLAND — /proc/<pid>/winpid, `ps -W`,
+# and a powershell.exe on PATH. Asking the wrong question here would spawn a
+# PowerShell on a box that has none.
+_sot_is_msys() {
+    case "${OSTYPE:-}" in msys*|cygwin*) return 0 ;; esac
+    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
+    return 1
+}
+
 PROTOCOL_VERSION=1
 
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
@@ -571,6 +583,15 @@ BRIDGE_ARGV0="sot-bridge"
 # exits — an ownerless bridge must not survive as a named receiver the daemon
 # still counts (the false-receiver defect). argv indices 3 and 5 are unchanged
 # by the two extra arguments, so sot_bridge_pid_for still identifies the loop.
+# BOTH checks are `kill -0`, including the OWNER one, and that is deliberate
+# rather than an oversight: there is no bridge loop on Windows at all (ADR 0042
+# amendment decision 5, stated as an invariant in comm-relay.sh, and the reason
+# the bootstrap reports bridge=n/a there — the frontend files frames itself).
+# This loop therefore runs only where the portable walk answers and `kill -0`
+# is correct, so sot_pid_alive's msys arm is unreachable from here. Routing it
+# through the helper meant carrying the helper's definition into this shell,
+# and that plumbing had a failure mode of its own: drop it and the bridge dies
+# while its owner is alive.
 BRIDGE_LOOP='while :; do
     "$1" bridge --name "$2" & _c=$!
     while kill -0 "$_c" 2>/dev/null; do
@@ -594,15 +615,44 @@ done'
 # `ps -o comm=` is tried at each hop, then /proc; if neither answers the walk
 # stops and prints nothing (rc 1) — which is a REFUSAL at the call site, never
 # an untethered process.
+#
+# Three ways to read a name, tried in turn: `ps -o comm=`, then
+# `<pid>/comm`, then `Name:` from `<pid>/status` for a procfs that has the
+# second but not the first. A leading path and a trailing `.exe` are stripped
+# before the match, so a name that matched before still matches.
+#
+# None of that reaches an agent on git-bash, and the tier below is why: msys
+# procfs does not cross the Windows process boundary, so this walk stops at
+# the first hop there whatever it reads the name from.
 sot_owner_pid() {
+    _sot_owner_pid_proc && return 0
+    # The /proc walk is the whole answer everywhere but git-bash, where it
+    # stops at the first hop: msys procfs does not cross the Windows process
+    # boundary, so a real chain of bash.exe -> bash.exe -> claude.exe reads as
+    # one line, "Name: bash", and the ancestor that IS there is invisible
+    # (measured on a Windows box, 2026-09-28). Only then is the Windows tier
+    # worth a spawn — and only where its userland exists.
+    _sot_is_msys || return 1
+    _sot_owner_pid_windows
+}
+
+# _sot_owner_pid_proc — the portable walk: `ps -o comm=`, then /proc. This is
+# the ONLY tier on Linux and macOS, unchanged, and it still answers first on
+# git-bash for a chain that never leaves msys (a claude started from the shell
+# itself).
+_sot_owner_pid_proc() {
     local pid="${PPID:-}" comm ppid
     while [ -n "$pid" ] && [ "$pid" != "1" ]; do
         comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')"
         if [ -z "$comm" ] && [ -r "/proc/$pid/comm" ]; then
             comm="$(tr -d ' \t\n' < "/proc/$pid/comm" 2>/dev/null)"
         fi
+        if [ -z "$comm" ] && [ -r "/proc/$pid/status" ]; then
+            comm="$(awk '/^Name:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)"
+        fi
         [ -n "$comm" ] || return 1
-        case "$comm" in
+        comm="${comm##*/}"
+        case "${comm%.exe}" in
             claude|codex) printf '%s\n' "$pid"; return 0 ;;
         esac
         ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
@@ -613,6 +663,107 @@ sot_owner_pid() {
         pid="$ppid"
     done
     return 1
+}
+
+# sot_pid_alive PID — is that process still there? One helper, because the
+# answer is NOT `kill -0` everywhere and the exception is invisible until it
+# bites: `sot_owner_pid`'s git-bash tier legitimately returns a SYNTHETIC
+# Cygwin pid for a process msys did not start (the claude.exe above a capsule
+# row), and msys `kill -0` answers 1 for it — so every owner tether read its
+# live agent as dead, armed, and exited on its first tick (measured on a
+# Windows box, 2026-09-28: pid 73528 maps to WINPID 7992, the real claude.exe,
+# and `kill -0 73528` fails).
+#
+# `kill -0` FIRST and always: on Linux and macOS that is the whole function
+# and nothing else runs. The `ps -W` fallback is reached only after a failure
+# and only on msys, so the hot path — a watcher asks this every two seconds —
+# is unchanged off Windows and is one cheap fork on it. Never PowerShell or
+# tasklist here, whatever the walk itself may cost once at startup.
+#
+# EITHER column matches: `ps -W` lists the msys pid in column 1 and the
+# Windows pid in column 4, and `_sot_msys_pid_of` can legitimately hand back a
+# WINPID when no msys pid exists for it.
+sot_pid_alive() {
+    local pid="${1:-}"
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null && return 0
+    _sot_is_msys || return 1
+    ps -W 2>/dev/null | awk -v p="$pid" '$1 == p || $4 == p { found = 1; exit } END { exit !found }'
+}
+
+# --- the git-bash tier: one spawn, and the pid namespaces kept straight -----
+#
+# TWO PID NAMESPACES. An msys pid is not a Windows pid, and handing one to a
+# Win32 query walks an unrelated process tree — which is WORSE than failing,
+# because it answers confidently with a pid that owns nothing here. So every
+# crossing is mapped explicitly: /proc/<pid>/winpid going out, the WINPID
+# column of `ps -W` coming back, and nothing is returned that was not mapped.
+#
+# ONE SPAWN, not one per hop: the whole ancestor chain is walked inside a
+# single PowerShell invocation over one `Get-CimInstance Win32_Process`
+# snapshot (never `wmic`, which current Windows no longer ships).
+#
+# FAIL CLOSED AND FAST: no PowerShell, a refusal, a hang, an unmappable pid —
+# every one of them returns non-zero, which lands the box exactly where it is
+# today (the bootstrap prints MONITOR). This is on the bootstrap's hot path,
+# so the call is bounded by `timeout` where one exists.
+
+# _sot_winpid_of MSYS_PID — the Windows pid for an msys pid.
+_sot_winpid_of() {
+    local pid="${1:-}" w=""
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    [ -r "/proc/$pid/winpid" ] && w="$(tr -dc '0-9' < "/proc/$pid/winpid" 2>/dev/null)"
+    [ -n "$w" ] || w="$(ps -W 2>/dev/null | awk -v p="$pid" '$1 == p { print $4; exit }')"
+    [[ "$w" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$w"
+}
+
+# _sot_msys_pid_of WIN_PID — the msys pid for a Windows pid, or the Windows pid
+# itself when `ps -W` lists it without an msys one (a pure Win32 process is
+# listed under its own winpid, which is the pid this shell's `kill` names it
+# by). The caller needs a pid `kill -0` can ask about, never a raw handle.
+_sot_msys_pid_of() {
+    local w="${1:-}" m
+    [[ "$w" =~ ^[0-9]+$ ]] || return 1
+    m="$(ps -W 2>/dev/null | awk -v w="$w" '$4 == w { print $1; exit }')"
+    [[ "$m" =~ ^[0-9]+$ ]] || m="$w"
+    printf '%s\n' "$m"
+}
+
+# _sot_owner_pid_windows — the nearest claude/codex ancestor across the Windows
+# boundary, as a pid THIS shell can signal. Prints nothing (rc 1) on any doubt.
+_sot_owner_pid_windows() {
+    local start ps_bin timeout_bin win
+    start="$(_sot_winpid_of "${PPID:-}")" || return 1
+    ps_bin="$(command -v powershell.exe 2>/dev/null || command -v pwsh.exe 2>/dev/null)" || return 1
+    # NO BOUND, NO TIER. A corrupt WMI repository leaves Get-CimInstance
+    # blocked for as long as it likes, and this runs on the session-start
+    # path, so an unbounded call is a session that never starts. Without a
+    # `timeout` binary there is nothing to bound it with, so the tier refuses
+    # and the box keeps the Monitor — the same answer every other failure here
+    # gives.
+    timeout_bin="$(command -v timeout 2>/dev/null)" || return 1
+    win="$(SOT_WALK_FROM="$start" "$timeout_bin" 10 "$ps_bin" -NoProfile -NonInteractive -Command '
+$id = [int]$env:SOT_WALK_FROM
+$map = @{}
+Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate |
+    ForEach-Object { $map[[int]$_.ProcessId] = $_ }
+for ($i = 0; $i -lt 64 -and $map.ContainsKey($id); $i++) {
+    $p = $map[$id]
+    $n = ($p.Name -replace "\.exe$","").ToLower()
+    if ($n -eq "claude" -or $n -eq "codex") { "$($p.ProcessId)"; break }
+    $next = [int]$p.ParentProcessId
+    if ($next -eq $id -or -not $map.ContainsKey($next)) { break }
+    # A Windows pid is small, recycled hard, and ParentProcessId is NOT
+    # cleared when the parent exits -- so a chain with no agent in it can
+    # climb into a STRANGER whose pid was reused, and this would return it
+    # with full confidence. A parent that started after its child is that
+    # stranger; stop rather than answer.
+    if ($map[$next].CreationDate -gt $p.CreationDate) { break }
+    $id = $next
+}' 2>/dev/null | tr -d '\r' | tr -dc '0-9')"
+    [[ "$win" =~ ^[0-9]+$ ]] || return 1
+    _sot_msys_pid_of "$win"
 }
 
 # sot_bridge_owner_pid [PID] — the pid a BRIDGE is tethered to, decided HERE
@@ -657,22 +808,162 @@ sot_bridge_owner_pid() {
 # different command, no way to read one) means the marker is STALE: rc 1, and
 # the caller proceeds as if it were absent.
 sot_watcher_pid_for() {
-    local handle="$1" pid args
+    local handle="$1" pid
     pid="$(sed -n '1p' "$COMM_HOME/state/$handle.watch" 2>/dev/null)"
+    sot_pid_is_watcher_for "$pid" "$handle" || return 1
+    printf '%s\n' "$pid"
+}
+
+# sot_wake_watcher_pid_for HANDLE — the same marker read, narrowed to a live
+# `comm-wake.sh`. The marker is SHARED by all three watcher scripts, so a
+# guard that used the broad read above would refuse a ping start because a
+# MONITOR's marker is there — the same wrong answer by the other door.
+sot_wake_watcher_pid_for() {
+    local handle="$1" pid
+    pid="$(sed -n '1p' "$COMM_HOME/state/$handle.watch" 2>/dev/null)"
+    sot_pid_is_wake_watcher_for "$pid" "$handle" || return 1
+    printf '%s\n' "$pid"
+}
+
+# sot_pid_is_watcher_for PID HANDLE — is THIS pid a live watcher for HANDLE?
+# The test sot_watcher_pid_for always applied to the marker's pid, lifted out
+# so it can be applied to a pid found any other way. Liveness AND identity:
+# the marker outlives reboots on a shared home, so a reused pid would let a
+# teardown kill an unrelated process and let a start-time mutex refuse a
+# legitimate watcher forever.
+#
+# The script must be what the process IS, not something its command line
+# MENTIONS — only the first two arguments are looked at, and by basename. A
+# watcher runs as `bash /path/comm-wake.sh <handle> ...` (its shebang puts the
+# script in argv[1]), so those two fields are where the answer lives. The
+# substring test this replaces was harmless while the only pid asked about
+# came from our own marker, and became unsafe the moment a SCAN asked it about
+# every pid on the box: any shell whose command line happened to carry both
+# the script name and the handle — a grep, an editor, the session's own
+# tooling — then counted as a live watcher and would refuse a legitimate
+# start, i.e. leave the session deaf. Measured while building this, not
+# theorised.
+# BROAD: any of the three scripts that write the shared marker. This is the
+# one the marker's own consumers use, because a Monitor's marker must read as
+# LIVE there — narrow it and `_survived` would call a healthy Monitor stale,
+# remove its marker and report the wrong thing.
+sot_pid_is_watcher_for() {
+    _sot_pid_is_watcher "${1:-}" "${2:-}" any
+}
+
+# NARROW: a live `comm-wake.sh` and nothing else. This is the one the START
+# GUARD uses, because the guard exists to stop two PING watchers — a Monitor
+# running beside one costs a doubled notice, while refusing to start costs a
+# deaf session, and nobody re-arms a Monitor after this release. The two are
+# deliberately different tests; folding them together reintroduces exactly
+# that (measured on a Windows box, 2026-09-28: the guard counted a live
+# comm-watch.sh as the handle's watcher).
+sot_pid_is_wake_watcher_for() {
+    _sot_pid_is_watcher "${1:-}" "${2:-}" wake
+}
+
+# _sot_pid_is_watcher PID HANDLE any|wake — liveness AND identity: the marker
+# outlives reboots on a shared home, so a reused pid would let a teardown kill
+# an unrelated process and let a start guard refuse a legitimate watcher
+# forever.
+_sot_pid_is_watcher() {
+    local pid="${1:-}" handle="${2:-}" mode="${3:-any}" args rest field ok=0
     [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-    kill -0 "$pid" 2>/dev/null || return 1
+    sot_pid_alive "$pid" || return 1
     if [ -r "/proc/$pid/cmdline" ]; then
         args="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
     else
         args="$(ps -o args= -p "$pid" 2>/dev/null)"
     fi
     [ -n "$args" ] || return 1
-    case "$args" in
-        *comm-wake.sh*|*comm-watch.sh*|*codex-watch.sh*) ;;
-        *) return 1 ;;
-    esac
+    rest="${args#* }"
+    for field in "${args%% *}" "${rest%% *}"; do
+        case "${field##*/}" in
+            comm-wake.sh) ok=1 ;;
+            comm-watch.sh|codex-watch.sh) [ "$mode" = any ] && ok=1 ;;
+        esac
+    done
+    [ "$ok" = 1 ] || return 1
     case "$args" in *"$handle"*) ;; *) return 1 ;; esac
-    printf '%s\n' "$pid"
+    return 0
+}
+
+# sot_pid_starttime PID — when the process started, in a unit comparable
+# BETWEEN TWO PIDS ON THIS BOX (field 22 of /proc/<pid>/stat, ticks since
+# boot). Prints nothing where there is no procfs; callers must treat that as
+# "unknown", never as zero. Read from the field AFTER the last ')' because a
+# process name can contain spaces and parentheses.
+sot_pid_starttime() {
+    local pid="${1:-}" stat
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    [ -r "/proc/$pid/stat" ] || return 1
+    stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 1
+    stat="${stat#*) }"
+    printf '%s\n' "$stat" | awk '{ print $20 }' | tr -dc '0-9'
+    printf '\n'
+}
+
+# sot_live_wake_watcher_for HANDLE [SELF_PID] — the pid of a live
+# `comm-wake.sh` for HANDLE in the PROCESS TABLE, or nothing (rc 1). Narrow on
+# purpose (see sot_pid_is_wake_watcher_for): its two callers are the start
+# guard and the bootstrap's did-it-come-up check, and both ask the same
+# question — does this row have a PING watcher.
+#
+# WHY THE PROCESS TABLE and not the record we keep: the defect this exists for
+# was two watchers running side by side for seventeen hours, one of them named
+# by no file at all — and every start consulted only the pid the marker named,
+# so the unrecorded one was invisible to every future start and unreapable by
+# every cleanup. A file can be missing, overwritten or judged stale; the
+# process table cannot.
+#
+# TWO EXCLUSIONS, both load-bearing:
+#   * SELF. This scan runs INSIDE a watcher, whose own command line carries
+#     both the script name and the handle, so a naive scan always finds itself
+#     and the watcher refuses to start every single time.
+#   * A CANDIDATE THAT STARTED AFTER US, in `older` mode (the default, and
+#     the START GUARD's question: is one ALREADY running that I must yield
+#     to). The bootstrap asks a different question after spawning one -- does
+#     this row have a ping watcher AT ALL -- and the answer there is a process
+#     that is NEWER than the asker by definition, so it passes `any`. One
+#     scan, two questions, named at the call site rather than duplicated.
+#     Two starts racing for one handle can
+#     each see the other as a live watcher and both refuse, leaving the
+#     session with no watcher at all -- deafness, which is worse than the
+#     double wake this guard exists to prevent. Only an EARLIER process
+#     refuses us, so of any two racing starts exactly one proceeds; the tie
+#     (two starts in the same clock tick) breaks on the lower pid, which is
+#     arbitrary but is a total order, which is all this needs. Where no start
+#     time is available (no procfs) the rule falls back to refusing on ANY
+#     live watcher: the safe direction, and never the platform this was
+#     written for.
+sot_live_wake_watcher_for() {
+    local handle="$1" self="${2:-$$}" mode="${3:-older}" mine pid theirs
+    mine=""
+    [ "$mode" = older ] && mine="$(sot_pid_starttime "$self" 2>/dev/null)"
+    _sot_scan_pids | while read -r pid; do
+        [ "$pid" = "$self" ] && continue
+        sot_pid_is_wake_watcher_for "$pid" "$handle" || continue
+        if [ -n "$mine" ]; then
+            theirs="$(sot_pid_starttime "$pid" 2>/dev/null)"
+            [ -n "$theirs" ] || { printf '%s\n' "$pid"; return 0; }
+            if [ "$theirs" -gt "$mine" ]; then continue; fi
+            if [ "$theirs" -eq "$mine" ] && [ "$pid" -gt "$self" ]; then continue; fi
+        fi
+        printf '%s\n' "$pid"
+        return 0
+    done | { read -r pid && { printf '%s\n' "$pid"; return 0; }; return 1; }
+}
+
+# _sot_scan_pids — every pid on this box, one per line. /proc where there is
+# one (Linux AND git-bash, whose procfs lists every msys process), `ps`
+# elsewhere.
+_sot_scan_pids() {
+    local d
+    if [ -r /proc/self/cmdline ]; then
+        for d in /proc/[0-9]*; do printf '%s\n' "${d##*/}"; done
+        return 0
+    fi
+    ps -A -o pid= 2>/dev/null | tr -dc '0-9\n'
 }
 
 # --- the read cursor: a LINE OFFSET into inbox/<handle>.jsonl ----------------
@@ -732,12 +1023,24 @@ _sot_clamp_offset() {
     if [ "$2" -gt "$total" ]; then printf '0\n'; else printf '%s\n' "$2"; fi
 }
 
-# sot_inbox_lines HANDLE — the inbox's line count (0 when absent).
-sot_inbox_lines() {
-    local n
-    n="$(wc -l < "$COMM_HOME/inbox/$1.jsonl" 2>/dev/null | tr -d ' ')"
+# sot_file_lines PATH — PATH's line count, 0 when it is absent or unreadable.
+# THE line counter: every inbox reader needs one, and each copy was a chance
+# to get the two quiet parts wrong. Readability is tested FIRST because the
+# SHELL, not wc, prints "No such file" for `< missing` — before wc's own
+# 2>/dev/null can suppress it, into whatever the caller's stderr happens to be
+# (a durable watcher log, a bootstrap's one-line-per-outcome contract). And the
+# count is stripped of the leading spaces a BSD `wc` pads it with, so callers
+# can compare it as a number without each one remembering to.
+sot_file_lines() {
+    local n=""
+    [ -r "$1" ] && n="$(wc -l < "$1" 2>/dev/null | tr -d ' ')"
     [[ "$n" =~ ^[0-9]+$ ]] || n=0
     printf '%s\n' "$n"
+}
+
+# sot_inbox_lines HANDLE — the inbox's line count (0 when absent).
+sot_inbox_lines() {
+    sot_file_lines "$COMM_HOME/inbox/$1.jsonl"
 }
 
 # --- the WINDOWS FRONTEND inbox: a second file, a second cursor --------------
@@ -779,20 +1082,18 @@ sot_fe_inbox_path() {
 # sot_fe_inbox_lines — the frontend inbox's line count (0 when absent, and off
 # Windows).
 sot_fe_inbox_lines() {
-    local fe n
+    local fe
     fe="$(sot_fe_inbox_path)"
     [ -n "$fe" ] || { printf '0\n'; return 0; }
-    n="$(wc -l < "$fe" 2>/dev/null | tr -d ' ')"
-    [[ "$n" =~ ^[0-9]+$ ]] || n=0
-    printf '%s\n' "$n"
+    sot_file_lines "$fe"
 }
 
-# _sot_fe_cursor_offset HANDLE — this handle's frontend read offset. 0 when
+# sot_fe_cursor_offset HANDLE — this handle's frontend read offset. 0 when
 # unset, unreadable, non-numeric, or PAST the end of the file: production only
 # appends, so an offset past the end means the file was cleared, truncated or
 # restored by hand — exactly the moment nobody suspects the cursor, and left
 # as-is this handle never sees another frontend frame.
-_sot_fe_cursor_offset() {
+sot_fe_cursor_offset() {
     local cur total
     cur="$(cat "$COMM_HOME/read/$1.fe.cursor" 2>/dev/null || true)"
     [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
@@ -815,7 +1116,7 @@ sot_fe_unread_lines() {
     local handle="$1" fe pos total
     fe="$(sot_fe_inbox_path)"
     [ -n "$fe" ] && [ -r "$fe" ] || return 0
-    pos="$(_sot_fe_cursor_offset "$handle")"
+    pos="$(sot_fe_cursor_offset "$handle")"
     total="$(sot_fe_inbox_lines)"
     [ "$total" -gt "$pos" ] || return 0
     sed -n "$((pos + 1)),${total}p" "$fe" 2>/dev/null \

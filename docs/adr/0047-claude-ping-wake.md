@@ -112,3 +112,143 @@ The consequence above — "a message can sit typed-but-unread for up to 10
 minutes" — no longer holds: an unread ping delays nothing past the recipient's
 next turn boundary. This whole script is scheduled for deletion in 0.6.7, once
 the bridge pokes inline and the daemon files for its own rows.
+
+## Revision — 2026-09-28: the watcher reads BOTH inboxes, so Windows needs no Monitor
+
+A frontend box runs no relay bridge: its frontend files every inbound frame
+into its own `fe-inbox.jsonl` (shared by every handle on the box), while a send
+from a session on the SAME box still lands in `inbox/<handle>.jsonl`. This
+watcher read only the second file, so on such a box it could never see the mail
+that arrives from anywhere else — and a session there stayed on the harness
+Monitor, which already read both. `comm-wake.sh` now polls each source with its
+own in-memory cursor and its own admission rule (`.to` equal to our handle for
+the shared file, any directed frame for the per-handle one), exactly the pair
+`comm-watch.sh` applies. `sot_fe_inbox_path` remains the one place the platform
+branch lives, so off Windows there is a single source and nothing changes.
+
+The DECISION stays one per cycle, not one per source: the ping says only that
+mail exists, so a frame in each inbox in the same two seconds is one typed
+notice, one row resolution and one probe of the prompt-free gate — which is
+also what keeps the run of daemon silence a count of cycles. `--deliver
+full` is unchanged and still per line: it types each message itself, so a
+second source is simply a second batch.
+
+Two smaller things fell out of the same path, both of which kept a frontend box
+on the Monitor or hid mail from it:
+
+- `sot_owner_pid` could not name an ancestor under git-bash, so the bootstrap
+  reported "no owning claude/codex ancestor found" and fell back. Its name
+  lookup now also reads `Name:` from `<pid>/status` and tolerates a `.exe`
+  suffix — but see the Windows tier below for what actually reaches the agent
+  there.
+- The bootstrap's catch-up carried its own copy of the frontend-inbox read,
+  with a THIRD cursor file that no other reader has ever opened — so catch-up
+  marked frontend mail read where `comm-poll.sh` and the turn-end hook could not
+  see it. Deleted; `comm-poll.sh` is the one reader on every platform.
+
+A SILENT DAEMON NO LONGER COSTS A BOX ITS WAKE PATH, at either end of the
+mechanism. The watcher used to exit after five unanswered `workspace.list` or
+`pty.screen` requests, and the bootstrap used to require a live `pty.screen`
+before it would spawn one at all — so a daemon quiet for one second printed
+`MONITOR:`, and since nothing re-arms a watcher, that session stayed on the
+Monitor for the rest of its life. The watcher now slows its poll to 30s after
+five silences and keeps waiting, and the bootstrap arms it without probing.
+The immortal-watcher reason for that exit is gone: `_comm_wake_owner_alive`
+ends the process with the agent it serves. A row that is GONE
+(`unknown_workspace`) still ends the watcher — that is a different fact from a
+daemon that did not answer. Nothing about delivery changes: the inbox append
+is the delivery, and the recipient's Stop hook blocks its turn end on unread
+directed mail, so an outage costs the wake and nothing else.
+
+The Monitor itself is unchanged and still the fallback for a session in no
+capsule row, on any platform: there is no pane to type into.
+
+### The two cursors are not the same cursor
+
+The watcher's in-memory cursor decides what a cycle SCANS, and the two delivery
+modes start it in different places on purpose. `full` starts at the inbox's
+END, because it types each message into the pane and an older start would
+retype the backlog. `ping` starts at the persisted READ cursor, because it
+types a notice rather than the mail: a backlog costs one line to announce, and
+starting at the end left mail that arrived while no watcher ran unannounced
+forever — a frontend-box session sat deaf for two and a half hours with four
+unread frames already filed. Folding the two into one initialisation is the
+obvious simplification and it is a bug in whichever direction it is folded.
+
+That also exposed the scan's cost. Starting at the read cursor makes a
+full-file scan reachable (a cursor past EOF clamps to 0 on a trimmed or
+restored inbox), and the scan spawned one `jq` per LINE — 1500 lines inside one
+two-second cycle. It is one `jq` over the whole range now, emitting the two
+booleans a batch decides: is any of it directed at us, and is all of it the
+selftest frame. Nothing is capped or skipped; the batch is read in full, by one
+process.
+
+### Reaching the agent on a frontend box
+
+`sot_owner_pid`'s portable walk cannot find the agent on git-bash, and no
+choice of name source changes that: msys procfs does not cross the Windows
+process boundary, so the walk sees one hop, `bash`, while the real chain runs
+`bash -> bash -> claude.exe -> sot-capsule.exe`. A capsule row there therefore
+refused the watcher and kept the Monitor — this ADR's decision was nominal on
+the one platform it most needed to hold.
+
+A second tier runs only where the msys userland exists and only after the
+portable walk has already failed, so nothing changes on Linux or macOS. It
+crosses the boundary explicitly: `/proc/<pid>/winpid` (or the `WINPID` column
+of `ps -W`) going out, the same column coming back, because the scripts live in
+the msys pid namespace and the caller needs a pid it can signal. The chain is
+walked inside ONE PowerShell over a single `Get-CimInstance Win32_Process`
+snapshot, never per hop and never `wmic`. It refuses — leaving the box exactly
+where it was — when there is no PowerShell, no `timeout` to bound the call (a
+corrupt WMI repository blocks indefinitely, and this runs on the session-start
+path), an unmappable pid, or a parent whose `CreationDate` is later than its
+child's, which is a recycled Windows pid rather than an ancestor.
+
+Liveness needed the same care: `kill -0` answers 1 for the synthetic Cygwin pid
+that names a process msys never started, so every owner tether read its live
+agent as dead. `sot_pid_alive` is `kill -0` everywhere, plus one `ps -W` match
+on msys after it fails. The bridge loop is deliberately NOT routed through it:
+there is no bridge on Windows at all (ADR 0042 amendment decision 5), so that
+loop only ever runs where `kill -0` is correct.
+
+### After the bootstrap, a row has a ping watcher or says it does not
+
+The invariant, because three separate doors were each found violating it: a
+capsule row running a Claude session ends its bootstrap with a live
+`comm-wake` ping watcher, or with a loud `WAKE FAILED` line and the `MONITOR:`
+command. Nothing in between, and no state in which the row claims a wake path
+it does not have.
+
+The doors are the survived claim, the start guard (its marker branch and its
+process scan) and the spawn's own check, and all four now ask the same narrow
+question: is there a live `comm-wake.sh` for this handle. Narrow, because the
+marker is SHARED — a harness Monitor and `codex-watch.sh` write it too. A
+surviving MONITOR used to satisfy every one of those tests, which announced
+"no Monitor needed" over a row whose only wake path was a Monitor nobody
+re-arms: deaf within half an hour. A Monitor running beside a ping watcher
+costs a doubled notice; refusing to start one costs the session, so in doubt
+the answer is to start. The Monitor is never reaped on that path — it is a
+live wake path, not an orphan.
+
+The broad test stays where the marker's other consumers need it
+(`sot_watcher_pid_for`): a Monitor's marker must read as live there, or the
+wipe hook would judge a healthy Monitor stale and remove it.
+
+Spawning is not arming, either. The bootstrap used to claim WAKE on the line
+after `nohup`, so a watcher that died at startup — a `set -u` slip, a box with
+no `jq` — was announced as armed. It now waits up to one second, exiting as
+soon as a live ping watcher for the handle exists (its own child, or the one
+that made the child refuse), and prints the loud failure otherwise.
+
+### One watcher per handle, enforced against the process table
+
+Two ping watchers for one handle ran side by side for seventeen hours, and the
+marker named only the later one. The exclusive create was always atomic; the
+COMPOUND operation was not — a lost claim was judged stale from the marker's
+pid alone, so a live watcher the marker did not name was invisible to every
+start and unreapable by every cleanup. The check-and-claim now runs under a
+`mkdir` lock and refuses on either a live watcher the marker names or one found
+in the PROCESS TABLE, which cannot be overwritten or judged stale. The scan
+excludes itself (this script's own command line carries the script name and the
+handle) and any candidate that started after it (two racing starts would
+otherwise each see the other and both refuse, which is deafness).

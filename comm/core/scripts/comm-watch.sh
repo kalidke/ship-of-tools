@@ -119,18 +119,11 @@ mkdir -p "$(dirname "$marker")" 2>/dev/null || true
 # deaf while it believed itself live — three boxes, three field reports.
 printf '%s\n%s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-}" > "$marker" 2>/dev/null || true
 
-# Line count that is robust to a missing/unreadable inbox WITHOUT noise: a freshly
-# joined handle may not have a file until its first frame lands. `wc -l < missing`
-# would make the SHELL (doing the `<` redirect) print "No such file" to stderr
-# BEFORE wc's own `2>/dev/null` could suppress it — same redirect-noise class as
-# the comm-listen _inject fix. Test readability first; treat absent as 0 lines.
-linecount() { [ -r "$1" ] && wc -l < "$1" 2>/dev/null || echo 0; }
-
 # Where each source stood when this watcher was armed: everything already on disk
 # belongs to the session's past (comm-poll.sh catches that up), so only lines
 # appended from here on wake anybody.
 counts=()
-for src in "${sources[@]}"; do counts+=("$(linecount "$src")"); done
+for src in "${sources[@]}"; do counts+=("$(sot_file_lines "$src")"); done
 while true; do
     # A Monitor whose harness expired still leaves this poll loop running
     # forever otherwise (45 orphans observed on one box) -- $PPID is fixed at
@@ -138,7 +131,7 @@ while true; do
     # correctly reads as gone after the original parent exits.
     kill -0 "$PPID" 2>/dev/null || exit 0
     for i in "${!sources[@]}"; do
-        c=$(linecount "${sources[$i]}")
+        c=$(sot_file_lines "${sources[$i]}")
         # File shrank/rotated/recreated — reset to 0 so the next compare re-reads the
         # whole (now-smaller) file from line 1. Resetting to $c instead would skip any
         # lines appended in the SAME poll cycle as the shrink (truncate + append before

@@ -45,7 +45,40 @@ unset SOT_COMM_SELF_FILE
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-wake-ping-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
-trap 'rm -rf "$WORK"' EXIT
+trap '_isolate; rm -rf "$WORK"' EXIT
+
+# EVERY CASE STARTS FROM NOTHING RUNNING FOR THIS HANDLE.
+#
+# Every case here plants processes that look exactly like the thing under
+# test -- a comm-wake.sh or comm-watch.sh carrying the handle `watchee` --
+# and every case shares that one handle, which is deliberate: the guard, the
+# marker and the scan are all keyed on it, so per-case handles would change
+# what these cases prove. That makes a LEFTOVER indistinguishable from a
+# fresh plant, and it does not merely leak: a stray ping watcher makes "two
+# starts leave exactly one" count the wrong survivor, makes "a live watcher
+# no marker names refuses" pass for the wrong reason, and makes both Monitor
+# cases fail by refusing a start they should allow. A suite that passes on
+# the wrong process is worse than one that fails.
+#
+# So isolation is by SWEEPING, after every case. Both sweeps are scoped to
+# this run's own temp directory, which no other process on the box can be
+# inside, so neither can touch a real watcher or another suite's fixture.
+# Children first: these fakes are shells running `sleep`, and killing the
+# shell alone orphans the sleep.
+PLANTED="$WORK/planted"; : > "$PLANTED"
+_isolate() {
+    local p
+    for p in $(pgrep -f "$WORK/.*comm-w" 2>/dev/null); do
+        pkill -P "$p" 2>/dev/null || true
+        kill "$p" 2>/dev/null || true
+    done
+    while read -r p; do
+        [ -n "$p" ] || continue
+        pkill -P "$p" 2>/dev/null || true
+        kill "$p" 2>/dev/null || true
+    done < "$PLANTED"
+    : > "$PLANTED"
+}
 
 PASS=0
 FAIL=0
@@ -56,6 +89,7 @@ check() {
     else
         echo "FAIL: $desc"; FAIL=$((FAIL + 1))
     fi
+    _isolate
 }
 
 case_three_new_directed_lines_type_the_ping_once() {
@@ -330,11 +364,17 @@ EOF
     return 0
 }
 
-case_five_consecutive_no_replies_gives_up_and_drops_the_marker() {
+# A daemon that stops answering slows this watcher down; it never ends it. The
+# watcher used to exit after five unanswered probes so the session could fall
+# back to the harness Monitor -- but nothing re-arms a watcher, so one silent
+# second cost a box its wake path for the whole session, and the fallback is
+# the Monitor this mechanism exists to replace. The immortal-watcher reason for
+# that exit is gone: the owner tie ends this process with its agent.
+case_five_unanswered_probes_back_off_and_keep_watching() {
     local d="$WORK/no-reply"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
-    local marker="$d/state/watchee.watch" screen_calls="$d/screen.calls"
-    : > "$screen_calls"
+    local screen_calls="$d/screen.calls" intervals="$d/intervals"
+    : > "$screen_calls"; : > "$intervals"
     cat > "$d/run.sh" <<EOF
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
@@ -343,20 +383,58 @@ _comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf x >> "$screen_calls"; printf ''; }
 turns=0
 sleep() {
+    printf '%s\n' "\$1" >> "$intervals"
     turns=\$((turns + 1))
     if [ "\$turns" -eq 1 ]; then
         printf '{"from":"peer","to":"me","msg":"hello"}\n' >> "$d/inbox/watchee.jsonl"
     fi
-    [ "\$turns" -le 10 ] || { echo "the loop never gave up after 5 unanswered probes" >&2; exit 9; }
+    [ "\$turns" -le 10 ] || exit 0
 }
 _comm_wake_main watchee --deliver ping --owner \$\$
 EOF
     bash "$d/run.sh" 2>/dev/null
     local rc=$?
-    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0 (gave up after 5 unanswered pty.screen probes)"; return 1; }
-    [ ! -f "$marker" ] || { echo "  the liveness marker was left behind after giving up"; return 1; }
+    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0"; return 1; }
     local sc; sc="$(wc -c < "$screen_calls" 2>/dev/null || echo 0)"
-    [ "$sc" -eq 5 ] || { echo "  pty.screen was probed $sc time(s), want exactly 5 before giving up"; return 1; }
+    [ "$sc" -eq 10 ] || { echo "  pty.screen was probed $sc time(s) in 10 cycles, want 10 (it gave up instead of backing off)"; return 1; }
+    [ "$(sed -n '5p' "$intervals")" = "2" ] || { echo "  the 5th poll waited '$(sed -n '5p' "$intervals")'s, want 2 (backoff started early)"; return 1; }
+    [ "$(sed -n '6p' "$intervals")" = "30" ] || { echo "  the 6th poll waited '$(sed -n '6p' "$intervals")'s, want 30 (no backoff after five silences)"; return 1; }
+    return 0
+}
+
+# The same daemon, answering again: the fast poll comes back, so an outage
+# costs latency only while it lasts.
+case_the_poll_speeds_up_again_once_the_daemon_answers() {
+    local d="$WORK/answers-again"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls" intervals="$d/intervals"
+    : > "$calls"; : > "$intervals"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+turns=0
+_comm_wake_pty_screen() {
+    [ "\$turns" -le 6 ] && { printf ''; return 0; }
+    printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'
+}
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+sleep() {
+    printf '%s\n' "\$1" >> "$intervals"
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"hello"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 9 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s), want 1 (the held ping once the daemon answered)"; return 1; }
+    [ "$(sed -n '6p' "$intervals")" = "30" ] || { echo "  the 6th poll waited '$(sed -n '6p' "$intervals")'s, want 30"; return 1; }
+    [ "$(sed -n '9p' "$intervals")" = "2" ] || { echo "  the poll stayed at '$(sed -n '9p' "$intervals")'s after the daemon answered, want 2"; return 1; }
     return 0
 }
 
@@ -456,12 +534,16 @@ case_second_start_against_a_live_marker_refuses() {
     local d="$WORK/live-marker"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local marker="$d/state/watchee.watch" planted
-    # A marker naming a live process that really IS a watcher for this handle:
-    # a stand-in script named comm-watch.sh, started with the handle as its
-    # argument, exactly what the mutex verifies before refusing.
+    # A marker naming a live process that really IS a PING watcher for this
+    # handle: a stand-in named comm-wake.sh, started with the handle as its
+    # argument, exactly what the guard verifies before refusing. It must be a
+    # comm-wake and not a comm-watch -- a Monitor's marker deliberately does
+    # NOT refuse a ping start any more (see the Monitor case above), because
+    # nothing re-arms a Monitor and refusing would leave the row deaf.
     mkdir -p "$d/fakebin"
-    printf '#!/bin/sh\nsleep 60\n' > "$d/fakebin/comm-watch.sh"; chmod +x "$d/fakebin/comm-watch.sh"
-    "$d/fakebin/comm-watch.sh" watchee >/dev/null 2>&1 & planted=$!
+    printf '#!/bin/sh\nsleep 60\n' > "$d/fakebin/comm-wake.sh"; chmod +x "$d/fakebin/comm-wake.sh"
+    "$d/fakebin/comm-wake.sh" watchee >/dev/null 2>&1 & planted=$!
+    printf '%s\n' "$planted" >> "$PLANTED"
     printf '%s\nsession-a\n' "$planted" > "$marker"
     cat > "$d/run.sh" <<EOF
 source "$WAKE"
@@ -524,6 +606,7 @@ case_marker_pid_that_is_not_a_watcher_is_stale() {
     # refuse every start for this handle from here on; the identity check must
     # read it as stale and let the watcher start.
     sleep 60 >/dev/null 2>&1 & planted=$!
+    printf '%s\n' "$planted" >> "$PLANTED"   # not a watcher, so the path sweep cannot see it
     printf '%s\nsession-old\n' "$planted" > "$marker"
     cat > "$d/run.sh" <<EOF
 source "$WAKE"
@@ -743,37 +826,41 @@ case_the_gate_reads_the_separator_instead_of_guessing() {
     return 0
 }
 
-case_a_second_claim_on_a_held_marker_fails() {
+case_a_second_lock_on_a_held_lock_fails() {
     # THE mutex invariant, tested deterministically rather than by racing.
     #
-    # I first wrote this as twelve concurrent starts asserting one winner, and
-    # then checked whether that test could FAIL: it cannot. The pattern this
-    # fix replaces -- a liveness check, then an unconditional write -- also
-    # yields exactly one winner under a twelve-way shell race, because process
-    # startup is milliseconds while the window between the check and the write
-    # is microseconds. A green race proves nothing about exclusion.
+    # This was first written as twelve concurrent starts asserting one winner,
+    # and then checked for whether it could FAIL: it cannot. A check followed
+    # by an unconditional write also yields one winner under a twelve-way
+    # shell race, because process startup is milliseconds while the window
+    # between the check and the write is microseconds. A green race proves
+    # nothing about exclusion. (The two-start case above is still worth its
+    # cost, but for the OUTCOME -- one survivor, one refusal -- not for this.)
     #
-    # What DOES separate the two is the claim's behaviour when the marker is
-    # already held: an exclusive create fails, an unconditional `>` succeeds.
-    # So assert exactly that. Revert the claim to a plain write and this case
-    # goes red, which is the only property that makes it worth running.
-    local d="$WORK/claim-excl"; rm -rf "$d"; mkdir -p "$d/state"
-    cat > "$d/run.sh" <<EOF
+    # What does separate the shapes is the behaviour when the lock is already
+    # held by a live watcher-start: `mkdir` fails and the holder is verified
+    # alive, so the second attempt refuses instead of reclaiming. Make the
+    # reclaim unconditional and this goes red, which is the only property that
+    # makes it worth running. It runs as a script named comm-wake.sh with the
+    # handle in argv because that is what the holder check verifies.
+    local d="$WORK/lock-excl"; rm -rf "$d"; mkdir -p "$d/state" "$d/bin"
+    cat > "$d/bin/comm-wake.sh" <<EOF
 source "$WAKE"
-MARKER="$d/state/watchee.watch"
-_comm_wake_claim || { echo "first claim failed on a free marker" >&2; exit 1; }
-if _comm_wake_claim; then echo "SECOND-CLAIM-WON" >&2; exit 2; fi
-sed -n '1p' "\$MARKER"
+HANDLE=watchee
+LOCKDIR="$d/state/watchee.watch.lock.d"
+_comm_wake_lock || { echo "first lock failed on a free lock" >&2; exit 1; }
+if _comm_wake_lock; then echo "SECOND-LOCK-WON" >&2; exit 2; fi
+sed -n '1p' "\$LOCKDIR/pid"
 EOF
     local out rc
-    out="$(bash "$d/run.sh" 2>"$d/err")"; rc=$?
+    out="$(bash "$d/bin/comm-wake.sh" watchee 2>"$d/err")"; rc=$?
     [ "$rc" -eq 0 ] || {
         echo "  exited $rc: $(cat "$d/err")"
-        grep -q SECOND-CLAIM-WON "$d/err" && echo "  a second claim took a marker that was already held — the claim is not exclusive"
+        grep -q SECOND-LOCK-WON "$d/err" && echo "  a second start took a lock that was already held — the lock is not exclusive"
         return 1
     }
-    [ "$out" = "$(sed -n '1p' "$d/state/watchee.watch")" ] \
-        || { echo "  the marker's owner line changed under a losing claim"; return 1; }
+    [ "$out" = "$(sed -n '1p' "$d/state/watchee.watch.lock.d/pid" 2>/dev/null)" ] \
+        || { echo "  the lock's owner line changed under a losing attempt"; return 1; }
     return 0
 }
 
@@ -806,10 +893,682 @@ EOF
     return 0
 }
 
+# A Windows box has no inbox listener: the frontend files every inbound frame
+# into ONE fe-inbox.jsonl shared by every handle on the box, while a send from
+# a session on the SAME box still lands in the per-handle file. Watching only
+# the per-handle file left a Windows session waking on half its mail and never
+# on the half that comes from another box -- the reason a session there fell
+# back to the harness Monitor. Windows is FAKED per case ($OS + $LOCALAPPDATA,
+# the same seam test-win-fe-inbox-readers.sh uses), so these run on every leg.
+case_a_frontend_inbox_frame_pings() {
+    local d="$WORK/fe-inbox-ping"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls" attempts="$d/pty-input.log"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() {
+    printf x >> "$calls"
+    printf '%s' "\$2" | base64 -d >> "$attempts"; printf '\n' >> "$attempts"
+    printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'
+}
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"watchee","text":"from another box"}\n' >> "$d/AppDataLocal/sot/fe-inbox.jsonl"
+    fi
+    [ "\$turns" -le 2 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s), want exactly 1"; cat "$attempts" 2>/dev/null; return 1; }
+    local expected="[sot-comm] new message for @watchee — run $d/bin/comm-poll.sh"
+    [ "$(cat "$attempts" 2>/dev/null)" = "$expected" ] || { echo "  typed text was '$(cat "$attempts" 2>/dev/null)', want '$expected'"; return 1; }
+    return 0
+}
+
+# The frontend inbox is shared, so `.to` is the only thing separating our mail
+# from a sibling handle's on the same box -- a wake on someone else's frame
+# spends a model turn on a message this session cannot even read.
+case_a_frontend_frame_for_another_handle_does_not_ping() {
+    local d="$WORK/fe-inbox-sibling"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"someone-else","text":"not yours"}\n' >> "$d/AppDataLocal/sot/fe-inbox.jsonl"
+    fi
+    [ "\$turns" -le 2 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 0 ] || { echo "  pty.input called $n time(s) for a sibling handle's frame, want 0"; return 1; }
+    return 0
+}
+
+# A frame whose `.from` is not a string still wakes. The admission rule is
+# jq now, and a jq program that THROWS prints nothing and exits non-zero --
+# which reads here exactly like "not admitted", so one odd frame would be
+# dropped in silence with no wake and no trace. Deafness is the one direction
+# this must never fail in, so the sender expression cannot be allowed to throw
+# on any input at all.
+case_a_non_string_sender_still_wakes() {
+    local d="$WORK/odd-sender"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":5,"to":"me","msg":"x"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 2 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) for a frame with a numeric .from, want 1"; return 1; }
+    return 0
+}
+
+# Mail that arrived while NO watcher was running must still be announced. The
+# in-memory cursor used to start at the file's end, so the scan window held
+# only what was appended after arming: a frontend-box session sat deaf for two
+# and a half hours with four unread directed frames already in its inbox, and
+# was rescued only when something else made it take a turn (field report,
+# 2026-09-28). A ping costs ONE line whatever is behind it, so there is nothing
+# to be gained by ignoring a backlog.
+case_a_frame_from_before_the_watcher_started_is_announced() {
+    local d="$WORK/prearm-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    printf '{"from":"peer","to":"me","msg":"filed while nothing was watching"}\n' > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() { turns=\$((turns + 1)); [ "\$turns" -le 3 ] || exit 0; }
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) for a backlog present before arming, want exactly 1"; return 1; }
+    return 0
+}
+
+# THE other half, and the regression that would get the fix above reverted: a
+# batch the session genuinely READ through comm-poll.sh must not be announced
+# again every time a watcher restarts. The read cursor is what separates the
+# two -- unread backlog pings once, read backlog is silent.
+case_a_backlog_already_read_is_not_announced_on_restart() {
+    local d="$WORK/read-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    printf '{"from":"peer","to":"me","msg":"you already read this"}\n' > "$d/inbox/watchee.jsonl"
+    printf '1' > "$d/read/watchee.cursor"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() { turns=\$((turns + 1)); [ "\$turns" -le 3 ] || exit 0; }
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 0 ] || { echo "  pty.input called $n time(s) for mail already read; a restart must be silent"; return 1; }
+    return 0
+}
+
+# `full` keeps starting at the file's END, and this is why the two modes may
+# not share one initialisation: it TYPES each frame's own text into the pane,
+# so a backlog in the scan window would be retyped into the row wholesale --
+# a replay, not a notice.
+case_full_mode_does_not_retype_a_backlog() {
+    local d="$WORK/full-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    printf '{"from":"peer","to":"me","msg":"old news"}\n{"from":"peer","to":"me","msg":"older news"}\n' > "$d/inbox/watchee.jsonl"
+    local calls="$d/injects"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_capsule_inject() { printf x >> "$calls"; return 0; }
+turns=0
+sleep() { turns=\$((turns + 1)); [ "\$turns" -le 3 ] || exit 0; }
+_comm_wake_main watchee --deliver full --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 0 ] || { echo "  full mode typed $n backlog frame(s) into the pane; it must start at the end"; return 1; }
+    return 0
+}
+
+# The watcher's owner tether is sot_pid_alive, asked every cycle, so its three
+# answers are pinned here: a live pid, a pid that is gone, and an argument that
+# is not a pid at all (empty or not a number -- a caller that lost its owner
+# must read as "no owner", never as "alive"). The msys arm cannot run on this
+# platform; what this proves is that the portable arm is exactly `kill -0` and
+# that nothing else in the function fires before it.
+case_pid_liveness_answers_live_dead_and_nonsense() {
+    local dead
+    ( exit 0 ) & dead=$!; wait "$dead" 2>/dev/null
+    bash -c '
+        source "$1" || exit 9
+        sot_pid_alive "$2" || exit 1
+        sot_pid_alive "$3" && exit 2
+        sot_pid_alive "not-a-pid" && exit 3
+        sot_pid_alive "" && exit 4
+        exit 0' _ "$SCRIPTS_DIR/comm-lib.sh" "$$" "$dead"
+    local rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        1) echo "  a live pid read as gone" ;;
+        2) echo "  a reaped pid read as alive" ;;
+        3) echo "  a non-numeric argument read as alive" ;;
+        4) echo "  an empty argument read as alive" ;;
+        *) echo "  the probe itself failed (rc $rc)" ;;
+    esac
+    return 1
+}
+
+# TWO STARTS AT ONCE, one survivor. Two watchers for one handle ran side by
+# side for seventeen hours on the hub, doubling every ping, with the guard's
+# own refusal never once logged -- the check-and-claim was not atomic and its
+# staleness judgement consulted only the pid the marker named, so a live
+# watcher the marker did not name was invisible to every start.
+#
+# The two fixtures are launched as a script NAMED comm-wake.sh with the handle
+# in argv, because that is what the process table must show for a scan to
+# recognise a watcher at all -- the same shape a real watcher has (`bash
+# /path/comm-wake.sh <handle> --deliver ping --owner N`).
+case_two_starts_leave_exactly_one_watcher() {
+    local d="$WORK/double-start"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
+    : > "$d/inbox/watchee.jsonl"
+    cat > "$d/bin/comm-wake.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    # The survivor has to STAY alive while the other start makes its attempt,
+    # so this stands in for the poll pause rather than removing it.
+    printf '%s\n' "\$\$" >> "$d/started"
+    turns=\$((turns + 1))
+    command sleep 0.4
+    [ "\$turns" -le 5 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    : > "$d/started"
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1 &
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1 &
+    wait
+    local survivors refusals
+    survivors="$(sort -u "$d/started" 2>/dev/null | grep -c . || true)"
+    refusals="$(grep -c 'refusing to start a second' "$d/state/comm-wake-watchee.log" 2>/dev/null || true)"
+    [ "$survivors" -eq 1 ] || { echo "  $survivors watcher(s) reached the poll loop, want exactly 1"; return 1; }
+    [ "$refusals" -eq 1 ] || { echo "  $refusals refusal(s) logged, want exactly 1"; sed 's/^/    /' "$d/state/comm-wake-watchee.log" 2>/dev/null | head -n 4; return 1; }
+    return 0
+}
+
+# WHAT ONE CYCLE COSTS over a real backlog, printed as a number so the next
+# person to touch this path can see it. 1500 lines is the live inbox on the
+# hub (1430) with headroom, and it is reachable in one cycle by design: the
+# ping scan starts at the READ CURSOR, and a cursor past EOF clamps to 0
+# whenever an inbox is trimmed, cleared or restored by hand. One jq per LINE
+# made that case cost 1500 spawns inside a two-second cycle. The ceiling here
+# is deliberately loose -- it is there to catch a return to per-line spawning
+# (tens of seconds), not to police milliseconds on a busy box.
+case_a_fifteen_hundred_line_backlog_scans_in_one_pass() {
+    local d="$WORK/big-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    local i
+    : > "$d/inbox/watchee.jsonl"
+    for i in $(seq 1 1500); do
+        printf '{"from":"peer","to":"me","msg":"line %s"}\n' "$i" >> "$d/inbox/watchee.jsonl"
+    done
+    local calls="$d/pty-input.calls" ticks="$d/ticks"
+    : > "$calls"; : > "$ticks"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    # The gap between two ticks IS one cycle's work: the scan, the gate and
+    # the inject, with no poll pause in between.
+    date +%s%N >> "$ticks"
+    turns=\$((turns + 1))
+    [ "\$turns" -le 2 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) for a 1500-line backlog, want exactly 1"; return 1; }
+    local t1 t2 ms
+    t1="$(sed -n '1p' "$ticks")"; t2="$(sed -n '2p' "$ticks")"
+    [ -n "$t1" ] && [ -n "$t2" ] || { echo "  the cycle was never timed"; return 1; }
+    ms=$(( (t2 - t1) / 1000000 ))
+    echo "  1500-line batch: one cycle took ${ms} ms"
+    [ "$ms" -lt 5000 ] || { echo "  that is a per-line cost, not a per-batch one"; return 1; }
+    return 0
+}
+
+# THE FILE THAT ACTUALLY FAILED. The field report was a frontend box, where
+# the mail is the frontend's shared fe-inbox.jsonl read through its own
+# read/<handle>.fe.cursor -- so the backlog case has to be run against THAT
+# file, not only the per-handle one, or the fix is pinned on the file that was
+# never deaf.
+case_a_frontend_backlog_from_before_the_watcher_is_announced() {
+    local d="$WORK/fe-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read" "$d/AppDataLocal/sot"
+    : > "$d/inbox/watchee.jsonl"
+    printf '{"from":"peer","to":"watchee","text":"filed while nothing was watching"}\n' \
+        > "$d/AppDataLocal/sot/fe-inbox.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() { turns=\$((turns + 1)); [ "\$turns" -le 3 ] || exit 0; }
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) for a frontend backlog present before arming, want exactly 1"; return 1; }
+    return 0
+}
+
+# Its twin, which is what proves the two cursors are not crossed: the same
+# backlog, already read through the FRONTEND cursor, announces nothing. Point
+# this at read/watchee.cursor instead and it goes red.
+case_a_frontend_backlog_already_read_is_silent() {
+    local d="$WORK/fe-backlog-read"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read" "$d/AppDataLocal/sot"
+    : > "$d/inbox/watchee.jsonl"
+    printf '{"from":"peer","to":"watchee","text":"you already read this"}\n' \
+        > "$d/AppDataLocal/sot/fe-inbox.jsonl"
+    printf '1' > "$d/read/watchee.fe.cursor"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() { turns=\$((turns + 1)); [ "\$turns" -le 3 ] || exit 0; }
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 0 ] || { echo "  pty.input called $n time(s) for frontend mail already read; a restart must be silent"; return 1; }
+    return 0
+}
+
 check "three new directed lines type the ping notice exactly once" case_three_new_directed_lines_type_the_ping_once
+check "a 1500-line backlog is one scan, not one per line" case_a_fifteen_hundred_line_backlog_scans_in_one_pass
+check "a frontend backlog filed before the watcher is announced" case_a_frontend_backlog_from_before_the_watcher_is_announced
+check "a frontend backlog already read stays silent" case_a_frontend_backlog_already_read_is_silent
+# THE DEFECT ITSELF, which the two-start case above cannot reach: a watcher
+# that is ALIVE while the marker names someone else. On the hub the marker
+# named the later of two watchers and the earlier one -- forty-five minutes
+# older -- was named by nothing, so every start judged the marker's pid and
+# never saw it. Here that state is built directly: a live watcher, and a
+# marker naming a pid that is gone. The old shape judged the marker stale,
+# removed it, claimed it and started a second watcher beside the live one.
+case_a_live_watcher_no_marker_names_still_refuses() {
+    local d="$WORK/unrecorded"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
+    : > "$d/inbox/watchee.jsonl"
+    cat > "$d/bin/comm-wake.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    printf '%s\n' "\$\$" >> "$d/started"
+    turns=\$((turns + 1))
+    command sleep 0.4
+    [ "\$turns" -le 20 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    : > "$d/started"
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1 &
+    local first=$! waited=0
+    while [ ! -s "$d/started" ] && [ "$waited" -lt 40 ]; do command sleep 0.1; waited=$((waited + 1)); done
+    [ -s "$d/started" ] || { kill "$first" 2>/dev/null; echo "  the first watcher never reached its poll loop"; return 1; }
+    # The marker now names a pid that is gone -- the state the hub was in.
+    printf '%s\n%s\n' 999999 sess-OLD > "$d/state/watchee.watch"
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1
+    local rc=$? survivors
+    pkill -P "$first" 2>/dev/null || true
+    kill "$first" 2>/dev/null || true
+    survivors="$(sort -u "$d/started" 2>/dev/null | grep -c . || true)"
+    [ "$rc" -eq 4 ] || { echo "  the second start exited $rc, want 4 (a refusal)"; }
+    [ "$survivors" -eq 1 ] || { echo "  $survivors watcher(s) reached the poll loop, want exactly 1"; return 1; }
+    grep -q 'which no marker names' "$d/state/comm-wake-watchee.log" 2>/dev/null \
+        || { echo "  the refusal did not name the process-table finding"; return 1; }
+    return 0
+}
+
+check "two starts at once leave exactly one watcher and one refusal" case_two_starts_leave_exactly_one_watcher
+# A MONITOR IS NOT A SECOND PING WATCHER, and the guard has TWO doors to it.
+# The refusal exists to stop two comm-wake processes; a harness Monitor
+# (comm-watch.sh) running beside one costs a doubled notice, while refusing
+# costs the session its wake path entirely -- nothing re-arms a Monitor after
+# this release, so that row goes deaf within the half hour the harness gives
+# it. Measured on a Windows box: the guard counted a live comm-watch.sh as the
+# handle's watcher.
+#
+# ONE CASE PER DOOR. They are different code paths that previously ended the
+# same way -- no ping watcher -- so a test through one proves nothing about
+# the other: the marker branch is consulted first and would refuse before the
+# scan ever ran.
+_monitor_fixture() {
+    local d="$1"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
+    : > "$d/inbox/watchee.jsonl"
+    printf '#!/usr/bin/env bash\ncommand sleep 30\n' > "$d/bin/comm-watch.sh"
+    chmod +x "$d/bin/comm-watch.sh"
+    cat > "$d/bin/comm-wake.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() { printf '%s\n' "\$\$" >> "$d/started"; turns=\$((turns + 1)); [ "\$turns" -le 2 ] || exit 0; }
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    : > "$d/started"
+}
+
+# DOOR 1, the process-table scan: the Monitor is running and NOTHING names it,
+# so the scan is the only thing that can see it -- and must not refuse on it.
+case_a_live_monitor_process_does_not_refuse_a_ping_start() {
+    local d="$WORK/monitor-scan" mon rc
+    _monitor_fixture "$d"
+    bash "$d/bin/comm-watch.sh" watchee >/dev/null 2>&1 & mon=$!
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1; rc=$?
+    pkill -P "$mon" 2>/dev/null || true; kill "$mon" 2>/dev/null || true
+    [ "$rc" -eq 0 ] || { echo "  the ping start exited $rc beside a live Monitor process, want 0"; return 1; }
+    [ -s "$d/started" ] || { echo "  the ping watcher never reached its poll loop"; return 1; }
+    return 0
+}
+
+# DOOR 2, the marker branch: the Monitor holds the marker, which all three
+# watcher scripts write. This is checked BEFORE the scan, so it is the door
+# that refuses first and the one narrowing the scan alone would have missed.
+case_a_monitor_holding_the_marker_does_not_refuse_a_ping_start() {
+    local d="$WORK/monitor-marker" mon rc
+    _monitor_fixture "$d"
+    bash "$d/bin/comm-watch.sh" watchee >/dev/null 2>&1 & mon=$!
+    printf '%s\n%s\n' "$mon" sess-MONITOR > "$d/state/watchee.watch"
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1; rc=$?
+    pkill -P "$mon" 2>/dev/null || true; kill "$mon" 2>/dev/null || true
+    [ "$rc" -eq 0 ] || {
+        echo "  the ping start exited $rc against a Monitor's marker, want 0"
+        sed 's/^/    /' "$d/state/comm-wake-watchee.log" 2>/dev/null | head -n 2
+        return 1
+    }
+    [ -s "$d/started" ] || { echo "  the ping watcher never reached its poll loop"; return 1; }
+    # And it takes the marker over: this is the wake path now.
+    [ "$(sed -n '1p' "$d/state/watchee.watch")" != "$mon" ] \
+        || { echo "  the ping watcher left the Monitor's marker in place"; return 1; }
+    return 0
+}
+
+check "a live watcher no marker names still refuses a second" case_a_live_watcher_no_marker_names_still_refuses
+check "a live Monitor process does not refuse a ping start" case_a_live_monitor_process_does_not_refuse_a_ping_start
+check "a Monitor holding the marker does not refuse a ping start" case_a_monitor_holding_the_marker_does_not_refuse_a_ping_start
+# THE WINDOWS TIER, on a Linux leg. Everything about it except the PowerShell
+# program itself is shell, and all of that is testable here with a sandboxed
+# PATH: a fake `ps -W` carrying the REAL column layout (PID PPID PGID WINPID
+# ...), a fake `powershell.exe` that answers only when it is handed the right
+# start winpid, and a `timeout` that is present or absent per case. What these
+# pin is the part that was wrong twice already — which column is read going
+# out and coming back, and that every failure refuses rather than guesses.
+# What they CANNOT pin is the CreationDate rule that stops the walk climbing
+# into a recycled parent: that lives inside the PowerShell these fakes stand
+# in for, and only a Windows box can exercise it.
+_win_tier_sandbox() {
+    local d="$1" with_timeout="$2" b="$1/bin" t
+    rm -rf "$d"; mkdir -p "$b"
+    # A PATH of our own, so "no timeout on this box" is a case rather than a
+    # hypothetical -- but with the tools the tier's own shell needs.
+    # `bash` and `env` are on this list because the fakes below are scripts:
+    # a sandboxed PATH without them cannot start its own fixtures.
+    for t in tr awk sed cat env bash sh; do
+        command -v "$t" >/dev/null 2>&1 && ln -sf "$(command -v "$t")" "$b/$t"
+    done
+    [ "$with_timeout" = timeout ] && ln -sf "$(command -v timeout)" "$b/timeout"
+    cat > "$b/ps" <<'PSEOF'
+#!/usr/bin/env bash
+# Only -W is answered, in msys's own column order.
+[ "${1:-}" = "-W" ] || exit 1
+printf '%8s %7s %7s %9s %-9s %6s %8s %s\n' PID PPID PGID WINPID TTY UID STIME COMMAND
+printf '%8s %7s %7s %9s %-9s %6s %8s %s\n' "$SOT_TEST_SELF_MSYS" 1 1 "$SOT_TEST_SELF_WIN" pty0 197609 10:00:00 /usr/bin/bash
+printf '%8s %7s %7s %9s %-9s %6s %8s %s\n' "$SOT_TEST_OWNER_MSYS" 1 1 "$SOT_TEST_OWNER_WIN" '?' 197609 10:00:00 'C:\Program Files\claude\claude.exe'
+PSEOF
+    chmod +x "$b/ps"
+    cat > "$b/powershell.exe" <<'PWEOF'
+#!/usr/bin/env bash
+# The walk prints the owner's WINDOWS pid alone, and only for the start pid it
+# was actually handed -- so a caller that passes an msys pid gets nothing.
+[ "${SOT_WALK_FROM:-}" = "${SOT_TEST_SELF_WIN:-}" ] || exit 0
+printf '%s\r\n' "${SOT_TEST_PS_OUT:-$SOT_TEST_OWNER_WIN}"
+PWEOF
+    chmod +x "$b/powershell.exe"
+}
+
+_win_tier_run() {
+    local d="$1" b="$1/bin" bash_bin
+    bash_bin="$(command -v bash)"
+    # A runner FILE, not a nested `bash -c` string: the stand-in below is the
+    # one thing this fixture cannot supply from outside, since the real
+    # _sot_winpid_of reads the tier shell's own $PPID, and that pid is not
+    # knowable before the shell exists.
+    cat > "$d/run.sh" <<EOF
+source "$SCRIPTS_DIR/comm-lib.sh" || exit 9
+_sot_winpid_of() { ps -W | awk -v p="\$SOT_TEST_SELF_MSYS" '\$1 == p { print \$4; exit }'; }
+_sot_owner_pid_windows
+EOF
+    PATH="$b" \
+    SOT_TEST_SELF_MSYS="${SOT_TEST_SELF_MSYS:-4242}" SOT_TEST_SELF_WIN="${SOT_TEST_SELF_WIN:-32704}" \
+    SOT_TEST_OWNER_MSYS="${SOT_TEST_OWNER_MSYS:-73528}" SOT_TEST_OWNER_WIN="${SOT_TEST_OWNER_WIN:-7992}" \
+    SOT_TEST_PS_OUT="${SOT_TEST_PS_OUT-}" \
+    "$bash_bin" "$d/run.sh"
+}
+
+case_the_windows_tier_maps_both_namespaces() {
+    local d="$WORK/win-tier-ok" out rc
+    _win_tier_sandbox "$d" timeout
+    out="$(_win_tier_run "$d" 2>/dev/null)"; rc=$?
+    [ "$rc" -eq 0 ] || { echo "  the tier refused a chain it should have walked (rc $rc)"; return 1; }
+    # 73528 is the MSYS pid for WINPID 7992 -- the mapping the probe box
+    # measured, and the one a caller can signal.
+    [ "$out" = "73528" ] || { echo "  resolved '$out', want the msys pid 73528 for winpid 7992"; return 1; }
+    return 0
+}
+
+case_the_windows_tier_refuses_without_a_timeout() {
+    local d="$WORK/win-tier-notimeout" rc
+    _win_tier_sandbox "$d" no-timeout
+    _win_tier_run "$d" >/dev/null 2>&1; rc=$?
+    [ "$rc" -ne 0 ] || { echo "  an unbounded PowerShell call was made anyway"; return 1; }
+    return 0
+}
+
+case_the_windows_tier_refuses_without_powershell() {
+    local d="$WORK/win-tier-nops" rc
+    _win_tier_sandbox "$d" timeout
+    rm -f "$d/bin/powershell.exe"
+    _win_tier_run "$d" >/dev/null 2>&1; rc=$?
+    [ "$rc" -ne 0 ] || { echo "  refused to refuse with no PowerShell on PATH"; return 1; }
+    return 0
+}
+
+case_the_windows_tier_refuses_garbled_output() {
+    local d="$WORK/win-tier-garbled" rc out
+    _win_tier_sandbox "$d" timeout
+    out="$(SOT_TEST_PS_OUT="Get-CimInstance : The RPC server is unavailable." _win_tier_run "$d" 2>/dev/null)"; rc=$?
+    [ "$rc" -ne 0 ] || { echo "  an error message was accepted as a pid: '$out'"; return 1; }
+    return 0
+}
+
+check "sot_pid_alive answers live, gone and not-a-pid" case_pid_liveness_answers_live_dead_and_nonsense
+check "the Windows tier maps msys and Windows pids both ways" case_the_windows_tier_maps_both_namespaces
+check "the Windows tier refuses when there is no timeout to bound it" case_the_windows_tier_refuses_without_a_timeout
+check "the Windows tier refuses with no PowerShell on PATH" case_the_windows_tier_refuses_without_powershell
+check "the Windows tier refuses output that is not a pid" case_the_windows_tier_refuses_garbled_output
+check "a frame filed before the watcher started is announced" case_a_frame_from_before_the_watcher_started_is_announced
+check "a backlog already read is silent when a watcher restarts" case_a_backlog_already_read_is_not_announced_on_restart
+check "full mode does not retype a backlog" case_full_mode_does_not_retype_a_backlog
+check "a frame whose sender is not a string still wakes" case_a_non_string_sender_still_wakes
+# Mail in BOTH inboxes inside ONE cycle is ONE wake. The ping says only that
+# mail exists, so a cross-box frame and a same-box frame arriving together cost
+# one typed line and one model turn -- the same promise this file's header
+# makes for a burst within one file. A body that ran per source typed the
+# notice twice for one batch.
+case_both_inboxes_in_one_cycle_ping_once() {
+    local d="$WORK/both-inboxes"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls" attempts="$d/pty-input.log"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() {
+    printf x >> "$calls"
+    printf '%s' "\$2" | base64 -d >> "$attempts"; printf '\n' >> "$attempts"
+    printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'
+}
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"watchee","text":"from another box"}\n' >> "$d/AppDataLocal/sot/fe-inbox.jsonl"
+        printf '{"from":"sibling","to":"watchee","msg":"from this box"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 3 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) for one cycle's mail, want exactly 1"; cat "$attempts" 2>/dev/null; return 1; }
+    return 0
+}
+
+# The silence budget counts CYCLES, not sources: five unanswered pty.screen
+# probes, whether the mail sits in one inbox or both. A per-source body spent
+# two probes a cycle and hit the limit on cycle three, slowing a frontend-box
+# session's wake sooner than any other box's for the same hiccup.
+case_the_silence_budget_is_five_cycles_with_both_sources_hot() {
+    local d="$WORK/no-reply-both"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
+    : > "$d/inbox/watchee.jsonl"
+    local screen_calls="$d/screen.calls" intervals="$d/intervals"
+    : > "$screen_calls"; : > "$intervals"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf x >> "$screen_calls"; printf ''; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    printf '%s\n' "\$1" >> "$intervals"
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"watchee","text":"from another box"}\n' >> "$d/AppDataLocal/sot/fe-inbox.jsonl"
+        printf '{"from":"sibling","to":"watchee","msg":"from this box"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 8 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local rc=$?
+    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0"; return 1; }
+    local sc; sc="$(wc -c < "$screen_calls" 2>/dev/null || echo 0)"
+    [ "$sc" -eq 8 ] || { echo "  pty.screen was probed $sc time(s) in 8 cycles with both inboxes hot, want 8 (one per cycle)"; return 1; }
+    # THE assertion that separates the two shapes: a body that probes once per
+    # SOURCE spends the five silences in three cycles, so it slows down on the
+    # 4th poll instead of the 6th.
+    [ "$(sed -n '5p' "$intervals")" = "2" ] || { echo "  the 5th poll waited '$(sed -n '5p' "$intervals")'s, want 2"; return 1; }
+    [ "$(sed -n '6p' "$intervals")" = "30" ] || { echo "  the 6th poll waited '$(sed -n '6p' "$intervals")'s, want 30"; return 1; }
+    return 0
+}
+
+check "a frame the frontend files on Windows pings this session" case_a_frontend_inbox_frame_pings
+check "mail in both inboxes in one cycle types the notice once" case_both_inboxes_in_one_cycle_ping_once
+check "the five-probe silence budget is per cycle, not per inbox" case_the_silence_budget_is_five_cycles_with_both_sources_hot
+check "a frontend frame for another handle on the box does not ping" case_a_frontend_frame_for_another_handle_does_not_ping
 check "a batch that is only __selftest__ frames types the selftest notice" case_selftest_only_batch_types_the_selftest_text
 check "a not-free prompt withholds the ping and types it once the prompt frees up" case_prompt_not_free_waits_then_types_once_free
-check "five consecutive no-reply pty.screen probes gives up and drops the marker" case_five_consecutive_no_replies_gives_up_and_drops_the_marker
+check "five unanswered pty.screen probes back off instead of giving up" case_five_unanswered_probes_back_off_and_keep_watching
+check "the poll speeds up again once the daemon answers" case_the_poll_speeds_up_again_once_the_daemon_answers
 check "a row the daemon does not have ends the watcher instead of holding the ping" case_a_row_the_daemon_does_not_have_ends_the_watcher
 check "the ping follows the resolver, not the id frozen at spawn" case_the_ping_follows_the_resolver_not_the_startup_id
 check "no live row declaring the handle exits without typing" case_no_live_row_declaring_the_handle_exits_without_typing
@@ -819,7 +1578,7 @@ check "a cursor that already covers the pending batch skips a second ping" case_
 check "no owner discoverable exits 2 and writes no marker" case_no_owner_exits_two
 check "no --owner flag but a discoverable owner starts" case_no_flag_but_a_discoverable_owner_starts
 check "a marker pid that is not a watcher is treated as stale" case_marker_pid_that_is_not_a_watcher_is_stale
-check "a second claim on a held marker fails" case_a_second_claim_on_a_held_marker_fails
+check "a second start on a held lock refuses" case_a_second_lock_on_a_held_lock_fails
 check "cleanup leaves a marker it does not own" case_cleanup_leaves_a_marker_it_does_not_own
 check "a second start against a live marker refuses" case_second_start_against_a_live_marker_refuses
 check "the workspace id derives from SOT_COMM_SELF_FILE's basename" case_workspace_id_derived_from_self_file_basename

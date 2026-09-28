@@ -117,11 +117,23 @@ _survived() {
         # it is reaped so it cannot fool the next check either. A marker with
         # no session line (a watcher older than this rule) keeps the old
         # liveness-only answer.
-        # sot_watcher_pid_for verifies the recorded pid IS a watcher for this
-        # handle, not merely alive: on a shared home the marker outlives
-        # reboots, so a reused pid would report SURVIVED for a session with no
-        # watcher at all — deaf, and reporting healthy.
-        pid="$(sot_watcher_pid_for "$h")" || return 1
+        # The read verifies the recorded pid IS a watcher for this handle,
+        # not merely alive: on a shared home the marker outlives reboots, so a
+        # reused pid would report SURVIVED for a session with no watcher at
+        # all — deaf, and reporting healthy.
+        #
+        # And it is the NARROW read, a live `comm-wake`, because this answer
+        # decides whether the row needs a PING watcher. The marker is shared —
+        # comm-watch.sh and codex-watch.sh write it too — so the broad read
+        # counted a surviving MONITOR as survival, the bootstrap reported
+        # SURVIVED and armed nothing, and the row's only wake path was a
+        # Monitor nobody re-arms: deaf within the half hour the harness gives
+        # it. The narrow read returns 1 HERE, before the identity branch
+        # below, so a live Monitor is neither counted nor killed and its
+        # marker is untouched; the bootstrap falls through and arms a ping
+        # watcher, whose own start claims the marker. Do not add a reap on
+        # this path: a Monitor is a live wake path, not an orphan.
+        pid="$(sot_wake_watcher_pid_for "$h")" || return 1
         sid="$(sed -n '2p' "$marker" 2>/dev/null)"
         if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -n "$sid" ] && [ "$sid" != "$CLAUDE_CODE_SESSION_ID" ]; then
             kill "$pid" 2>/dev/null || true
@@ -202,11 +214,10 @@ CAPEOF
 
 _context_block() {
     local h="$1" listener="${2:-n/a}" inbox
-    if [ "$IS_WINDOWS" = 1 ]; then
-        inbox="${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}/sot/fe-inbox.jsonl"
-    else
-        inbox="${INBOX_DIR:-${SOT_COMM_HOME:-$HOME/.sot-comm}/inbox}/$h.jsonl"
-    fi
+    # comm-lib.sh owns the platform branch (sot_fe_inbox_path): on Windows the
+    # mail is the frontend's own file, everywhere else the per-handle one.
+    inbox="$(sot_fe_inbox_path)"
+    [ -n "$inbox" ] || inbox="${INBOX_DIR:-${SOT_COMM_HOME:-$HOME/.sot-comm}/inbox}/$h.jsonl"
     cat <<EOF
 You are @$h. Inbox: $inbox
 Verbs: comm-relay.sh send @<peer> "msg" | comm-poll.sh | comm-status.sh <working|waiting|blocked|done|idle> "why" | comm-list.sh | bus.sh sync
@@ -216,17 +227,17 @@ EOF
     case "$listener" in
         restarted)
             cat <<EOF
-Your Monitor (comm-watch.sh $h) never stopped, but your inbox listener had DIED and was restarted just now — both halves are live again. Prove it with comm-listen.sh --name $h --selftest if the next minutes matter, and run comm-poll.sh for anything that landed while it was down. Do not re-join.
+Your inbox watcher never stopped, but your inbox listener had DIED and was restarted just now — both halves are live again. Prove it with comm-listen.sh --name $h --selftest if the next minutes matter, and run comm-poll.sh for anything that landed while it was down. Do not re-join.
 EOF
             ;;
         down)
             cat <<EOF
-Your Monitor (comm-watch.sh $h) never stopped, but your inbox listener is DOWN: nothing is writing durable mail to your inbox, however healthy the nav row looks. Run comm-listen.sh --name $h now, then comm-poll.sh. Do not re-join. (The handle is spelled out because a pinned identity and this shell's own derivation can differ, and a bare comm-listen.sh would then revive the wrong one.)
+Your inbox watcher never stopped, but your inbox listener is DOWN: nothing is writing durable mail to your inbox, however healthy the nav row looks. Run comm-listen.sh --name $h now, then comm-poll.sh. Do not re-join. (The handle is spelled out because a pinned identity and this shell's own derivation can differ, and a bare comm-listen.sh would then revive the wrong one.)
 EOF
             ;;
         *)
             cat <<EOF
-Your Monitor (comm-watch.sh $h) never stopped and your inbox listener is up: it survived this wipe. Do not re-join, re-listen, or re-poll.
+Your inbox watcher never stopped and your inbox listener is up: it survived this wipe. Do not re-join, re-listen, or re-poll.
 EOF
             ;;
     esac
@@ -240,7 +251,7 @@ if [ "$MODE" = "context" ]; then
         echo "SURVIVED handle=$H listener=$LISTENER"
         _context_block "$H" "$LISTENER"
     else
-        echo "NOT SURVIVED handle=${H:-none} — run comm-session-start.sh (no flags) now to rebootstrap; a wipe hook alone never re-joins/re-polls/re-arms."
+        echo "NOT SURVIVED handle=${H:-none} — run comm-session-start.sh (no flags) now to rebootstrap; a Monitor does not count as a wake path, and a wipe hook alone never re-joins/re-polls/re-arms."
     fi
     exit 0
 fi
@@ -265,42 +276,19 @@ if [ "$MODE" = "catchup" ]; then
         *) SELFTEST="down" ;;
     esac
 
-    if [ "$IS_WINDOWS" = 1 ]; then
-        # Windows catch-up reads/cursors fe-inbox.jsonl directly — comm-poll.sh
-        # reads the Linux per-handle inbox, the wrong file here entirely
-        # (Codex review finding 7), missing every message received while
-        # this session was down. Admission is `to == this session's own
-        # handle` only — a session's handle is its row's handle everywhere,
-        # Windows included; there is no broadcast-label family to also admit.
-        # Cursor is an append-position (a line count), not a timestamp, so it
-        # can't skip or duplicate across a race.
-        FE_INBOX="${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}/sot/fe-inbox.jsonl"
-        CURSOR_DIR="${SOT_COMM_HOME:-$HOME/.sot-comm}/read"
-        mkdir -p "$CURSOR_DIR" 2>/dev/null || true
-        CURSOR_FILE="$CURSOR_DIR/$H.fe-cursor"
-        TOTAL="$(wc -l < "$FE_INBOX" 2>/dev/null || echo 0)"
-        LAST="$(cat "$CURSOR_FILE" 2>/dev/null || echo 0)"
-        [[ "$LAST" =~ ^[0-9]+$ ]] || LAST=0
-        [ "$LAST" -gt "$TOTAL" ] && LAST=0
-        POLL_COUNT=0
-        if [ "$TOTAL" -gt "$LAST" ]; then
-            NEW="$(sed -n "$((LAST + 1)),\$p" "$FE_INBOX" 2>/dev/null | while IFS= read -r l; do
-                printf '%s' "$l" | jq -rc --arg me "$H" \
-                    'select(.from != $me and (.to // "") == $me) | "[\(.ts // "?")] [\(.from)] \(.text)"' 2>/dev/null
-            done)"
-            POLL_COUNT="$(printf '%s\n' "$NEW" | grep -c '^\[' || true)"
-            [ "${POLL_COUNT:-0}" -gt 0 ] 2>/dev/null && { echo "BACKLOG:"; printf '%s\n' "$NEW"; }
-        fi
-        printf '%s' "$TOTAL" > "$CURSOR_FILE" 2>/dev/null || true
+    # ONE reader, every platform. comm-poll.sh reads AND cursors both inboxes
+    # on Windows (comm-lib.sh's sot_fe_* helpers), so the Windows branch that
+    # used to live here was a second implementation of the same read -- and it
+    # kept its own third cursor file, read/<handle>.fe-cursor, that no other
+    # reader has ever looked at: catch-up marked frontend mail read where
+    # comm-poll.sh and the turn-end hook could not see it.
+    POLL_OUT="$("$SCRIPT_DIR/comm-poll.sh" 2>&1)"; poll_rc=$?
+    if [ "$poll_rc" -ne 0 ]; then
+        POLL_COUNT="ERR"
+        printf '%s\n' "$POLL_OUT" >&2
     else
-        POLL_OUT="$("$SCRIPT_DIR/comm-poll.sh" 2>&1)"; poll_rc=$?
-        if [ "$poll_rc" -ne 0 ]; then
-            POLL_COUNT="ERR"
-            printf '%s\n' "$POLL_OUT" >&2
-        else
-            POLL_COUNT="$(printf '%s\n' "$POLL_OUT" | grep -c '^\[' || true)"
-            [ "${POLL_COUNT:-0}" -gt 0 ] 2>/dev/null && { echo "BACKLOG:"; printf '%s\n' "$POLL_OUT"; }
-        fi
+        POLL_COUNT="$(printf '%s\n' "$POLL_OUT" | grep -c '^\[' || true)"
+        [ "${POLL_COUNT:-0}" -gt 0 ] 2>/dev/null && { echo "BACKLOG:"; printf '%s\n' "$POLL_OUT"; }
     fi
 
     BUS="n/a"
@@ -355,6 +343,9 @@ elif [ -n "${NAME:-}" ]; then
     H="$NAME"
 fi
 
+# Survival short-circuits the bootstrap, so `_survived` answers the narrow
+# question (a live comm-wake for this handle) in its one place; a surviving
+# MONITOR falls through here and the bootstrap below arms a ping watcher.
 if [ -n "$H" ] && _survived "$H"; then
     LISTENER="$(_ensure_bridge "$H")"
     echo "SURVIVED handle=$H listener=$LISTENER"
@@ -432,44 +423,80 @@ WAKE_ACTIVE=0
 if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     CAPSULE_WS_ID=""
     if CAPSULE_WS_ID="$(sot_capsule_workspace_id 2>/dev/null)"; then
+        # THE INVARIANT, stated once and here because this is where it is
+        # decided: after this bootstrap, a capsule row running a Claude
+        # session either HAS a live `comm-wake` ping watcher, or has printed
+        # WAKE FAILED and the MONITOR command. There is no third state in
+        # which the row claims a wake path it does not have.
+        #
+        # THREE DOORS can violate it and all three ask the same narrow
+        # question — a live `comm-wake.sh` for this handle: this survived
+        # claim, the guard inside comm-wake.sh (its marker branch and its
+        # process scan), and the spawn's own did-it-come-up check below.
+        #
+        # SURVIVED is the door that is easiest to miss, and `_survived` is
+        # where it is answered: narrowly, a live comm-wake for this handle. A
+        # surviving MONITOR is not a surviving ping watcher — nothing re-arms
+        # a Monitor after this release — so it falls through to the spawn
+        # below, unreaped, and may keep running beside the ping watcher. A
+        # doubled notice is the cheap failure; a deaf row is the expensive
+        # one.
         if _survived "$HANDLE"; then
             WAKE_ACTIVE=1
-        # sot_pty_screen -> sot_oneshot_request reads $ENDPOINT from the
-        # CALLER's scope (comm-lib.sh's own contract — see sot_oneshot_request's
-        # doc comment); every other call site in this file (the SURVIVED
-        # agent.join re-declare above) resolves it first the same way. Without
-        # this, $ENDPOINT was never set here, and under this script's own
-        # `set -u`, sot_oneshot_request's `case "$ENDPOINT" in` died with
-        # "ENDPOINT: unbound variable" — a genuine capsule row (a resolvable
-        # $CAPSULE_WS_ID) crashed this whole script silently right here, output
-        # eaten by the elif's own >/dev/null 2>&1, exit 1, no BOOTSTRAP-ARM at
-        # all (field-reproduced 2026-09-19). Resolving it first both fixes the
-        # crash and lets pty.screen actually run, which is also why a capsule
-        # row landed on the MONITOR fallback instead of WAKE: the probe below
-        # never even attempted to answer before this.
-        elif ENDPOINT="$(sot_daemon_endpoint 2>/dev/null)" && [ -n "$ENDPOINT" ] \
-             && SOT_SEND_TIMEOUT=10 sot_pty_screen "$CAPSULE_WS_ID" >/dev/null 2>&1; then
-            # Ping-wake honesty: only claim the watcher is armed once this
-            # daemon has proven, right now, that it can answer pty.screen at
-            # all — the watcher's own prompt-free gate depends on that same
-            # call working every cycle. A daemon that can't answer it gets no
-            # watcher spawned at all; the MONITOR: line below is the honest
-            # fallback.
+        else
+            # NO LIVE PROBE (2026-09-28). This used to resolve the endpoint and
+            # require the daemon to answer `pty.screen` right now before it
+            # would spawn a watcher at all, so a daemon silent for one second
+            # cost the session its wake path for the rest of its life -- and
+            # what it fell back to is the Monitor this whole mechanism exists
+            # to replace. The watcher probes and RETRIES on its own now (it
+            # backs off rather than exiting), so arming it is the honest claim
+            # even against a daemon that has not answered yet; it resolves its
+            # own endpoint and refuses on its own terms if it cannot.
+            #
             # No owner, no watcher (messaging ruling §3): an untethered ping
-            # watcher IS the immortal watcher — it outlives the session, types
+            # watcher IS the immortal watcher -- it outlives the session, types
             # into a row that has moved on, and leaves a marker that makes the
             # next bootstrap report SURVIVED. comm-wake.sh refuses one anyway;
             # this keeps the fallback honest instead of spawning a doomed child.
+            # It is also the LAST thing that can send a capsule row to the
+            # Monitor, which is why it is the only test left here.
             WAKE_OWNER="$(sot_owner_pid || true)"
             if [ -n "$WAKE_OWNER" ]; then
                 SOT_WORKSPACE_ID="$CAPSULE_WS_ID" nohup "$SCRIPT_DIR/comm-wake.sh" "$HANDLE" --deliver ping --owner "$WAKE_OWNER" \
                     </dev/null >/dev/null 2>&1 &
-                WAKE_ACTIVE=1
+                # SPAWNED IS NOT ARMED. This used to claim WAKE the instant
+                # nohup returned, so a watcher that died at startup -- a `set
+                # -u` slip, a box with no jq, a bad path -- was announced as
+                # "no Monitor needed" over a session with no wake path at all,
+                # in the release whose whole point is removing the Monitor.
+                # Looks healthy, is not.
+                #
+                # So: up to ONE SECOND, polled cheaply, exiting the moment a
+                # live comm-wake.sh for this handle exists. Either process
+                # passes -- the child just started, or the one already running
+                # that made it refuse -- because the question is whether the
+                # ROW has a wake path, not whose process provides it. The
+                # predicate is the guard's own narrow one, so "a live ping
+                # watcher for this handle" has a single definition.
+                _wake_tries=0
+                while [ "$_wake_tries" -lt 10 ]; do
+                    if sot_live_wake_watcher_for "$HANDLE" "$$" any >/dev/null 2>&1; then
+                        WAKE_ACTIVE=1
+                        break
+                    fi
+                    sleep 0.1
+                    _wake_tries=$((_wake_tries + 1))
+                done
+                if [ "$WAKE_ACTIVE" != 1 ]; then
+                    # Loud, and on stdout beside the BOOTSTRAP-ARM line the
+                    # session actually reads: a noisy fallback beats a quiet
+                    # lie. The Monitor line below is printed as usual.
+                    echo "WAKE FAILED: comm-wake.sh did not come up for @$HANDLE within 1s — arming the Monitor instead"
+                fi
             else
                 echo "wake: no owning claude/codex ancestor found; falling back to the Monitor" >&2
             fi
-        else
-            echo "wake: pty.screen did not answer on this daemon; falling back to the Monitor" >&2
         fi
     fi
 fi
@@ -490,5 +517,5 @@ _capability_lines
 # above) is success, full stop -- never let a well-behaved but non-integer-0
 # exit status trailing off the end of the script (a heredoc's `cat`, some
 # future addition here) silently turn a good bootstrap into a caller-visible
-# failure the way the missing $ENDPOINT above just did.
+# failure.
 exit 0
