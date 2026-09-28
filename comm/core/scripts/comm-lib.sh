@@ -20,6 +20,18 @@ _sot_is_windows() {
     return 1
 }
 
+# _sot_is_msys — a git-bash/Cygwin shell, which is NARROWER than
+# _sot_is_windows on purpose: $OS=Windows_NT is an environment variable (a
+# test fixture sets it, a native Windows shell inherits it), while the tier
+# gated on this one needs the msys USERLAND — /proc/<pid>/winpid, `ps -W`,
+# and a powershell.exe on PATH. Asking the wrong question here would spawn a
+# PowerShell on a box that has none.
+_sot_is_msys() {
+    case "${OSTYPE:-}" in msys*|cygwin*) return 0 ;; esac
+    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
+    return 1
+}
+
 PROTOCOL_VERSION=1
 
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
@@ -605,6 +617,22 @@ done'
 # a name that matched before still matches; Linux answers from `ps`/`comm`
 # exactly as before.
 sot_owner_pid() {
+    _sot_owner_pid_proc && return 0
+    # The /proc walk is the whole answer everywhere but git-bash, where it
+    # stops at the first hop: msys procfs does not cross the Windows process
+    # boundary, so a real chain of bash.exe -> bash.exe -> claude.exe reads as
+    # one line, "Name: bash", and the ancestor that IS there is invisible
+    # (measured on a Windows box, 2026-09-28). Only then is the Windows tier
+    # worth a spawn — and only where its userland exists.
+    _sot_is_msys || return 1
+    _sot_owner_pid_windows
+}
+
+# _sot_owner_pid_proc — the portable walk: `ps -o comm=`, then /proc. This is
+# the ONLY tier on Linux and macOS, unchanged, and it still answers first on
+# git-bash for a chain that never leaves msys (a claude started from the shell
+# itself).
+_sot_owner_pid_proc() {
     local pid="${PPID:-}" comm ppid
     while [ -n "$pid" ] && [ "$pid" != "1" ]; do
         comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')"
@@ -627,6 +655,77 @@ sot_owner_pid() {
         pid="$ppid"
     done
     return 1
+}
+
+# --- the git-bash tier: one spawn, and the pid namespaces kept straight -----
+#
+# TWO PID NAMESPACES. An msys pid is not a Windows pid, and handing one to a
+# Win32 query walks an unrelated process tree — which is WORSE than failing,
+# because it answers confidently with a pid that owns nothing here. So every
+# crossing is mapped explicitly: /proc/<pid>/winpid going out, the WINPID
+# column of `ps -W` coming back, and nothing is returned that was not mapped.
+#
+# ONE SPAWN, not one per hop: the whole ancestor chain is walked inside a
+# single PowerShell invocation over one `Get-CimInstance Win32_Process`
+# snapshot (never `wmic`, which current Windows no longer ships).
+#
+# FAIL CLOSED AND FAST: no PowerShell, a refusal, a hang, an unmappable pid —
+# every one of them returns non-zero, which lands the box exactly where it is
+# today (the bootstrap prints MONITOR). This is on the bootstrap's hot path,
+# so the call is bounded by `timeout` where one exists.
+
+# _sot_winpid_of MSYS_PID — the Windows pid for an msys pid.
+_sot_winpid_of() {
+    local pid="${1:-}" w=""
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    [ -r "/proc/$pid/winpid" ] && w="$(tr -dc '0-9' < "/proc/$pid/winpid" 2>/dev/null)"
+    [ -n "$w" ] || w="$(ps -W 2>/dev/null | awk -v p="$pid" '$1 == p { print $4; exit }')"
+    [[ "$w" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$w"
+}
+
+# _sot_msys_pid_of WIN_PID — the msys pid for a Windows pid, or the Windows pid
+# itself when `ps -W` lists it without an msys one (a pure Win32 process is
+# listed under its own winpid, which is the pid this shell's `kill` names it
+# by). The caller needs a pid `kill -0` can ask about, never a raw handle.
+_sot_msys_pid_of() {
+    local w="${1:-}" m
+    [[ "$w" =~ ^[0-9]+$ ]] || return 1
+    m="$(ps -W 2>/dev/null | awk -v w="$w" '$4 == w { print $1; exit }')"
+    [[ "$m" =~ ^[0-9]+$ ]] || m="$w"
+    printf '%s\n' "$m"
+}
+
+# _sot_owner_pid_windows — the nearest claude/codex ancestor across the Windows
+# boundary, as a pid THIS shell can signal. Prints nothing (rc 1) on any doubt.
+_sot_owner_pid_windows() {
+    local start ps_bin out win name
+    start="$(_sot_winpid_of "${PPID:-}")" || return 1
+    ps_bin="$(command -v powershell.exe 2>/dev/null || command -v pwsh.exe 2>/dev/null)" || return 1
+    [ -n "$ps_bin" ] || return 1
+    local -a runner=()
+    command -v timeout >/dev/null 2>&1 && runner=(timeout 10)
+    out="$(SOT_WALK_FROM="$start" "${runner[@]}" "$ps_bin" -NoProfile -NonInteractive -Command '
+$id = [int]$env:SOT_WALK_FROM
+$map = @{}
+Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name |
+    ForEach-Object { $map[[int]$_.ProcessId] = $_ }
+for ($i = 0; $i -lt 64 -and $map.ContainsKey($id); $i++) {
+    $p = $map[$id]
+    $n = ($p.Name -replace "\.exe$","").ToLower()
+    if ($n -eq "claude" -or $n -eq "codex") { "$($p.ProcessId) $($p.Name)"; break }
+    $next = [int]$p.ParentProcessId
+    if ($next -eq $id) { break }
+    $id = $next
+}' 2>/dev/null | tr -d '\r')"
+    win="$(printf '%s' "$out" | awk 'NF { print $1; exit }')"
+    name="$(printf '%s' "$out" | awk 'NF { print $2; exit }')"
+    [[ "$win" =~ ^[0-9]+$ ]] || return 1
+    case "${name##*/}" in
+        claude.exe|codex.exe|claude|codex) ;;
+        *) return 1 ;;
+    esac
+    _sot_msys_pid_of "$win"
 }
 
 # sot_bridge_owner_pid [PID] — the pid a BRIDGE is tethered to, decided HERE
