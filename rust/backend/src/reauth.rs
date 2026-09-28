@@ -459,6 +459,70 @@ fn run_ended(outcome: &crate::capsule_workspace::EndRunOutcome) -> Result<(), St
     }
 }
 
+/// The four effects a revival is made of, behind one name so the ORDER they
+/// happen in is pinned by a test instead of by adjacency.
+///
+/// INVARIANT THIS CARRIES: a revival is three effects — end the old leg,
+/// spawn the replacement, mint its voyage — and a path that performs two of
+/// them produces a row that LOGS as revived and has no leg. That failure is
+/// an ABSENT call, and no pure function can observe an absence:
+/// [`ready_to_mint`] can be entirely correct, fully tested, and never
+/// invoked. This is the only thing in the module that can see that, and it
+/// is the only reason it exists.
+///
+/// Every method mirrors the signature of the real function it forwards to,
+/// so [`LiveSupervisor`]'s impl is a literal forward and nothing can drift
+/// between the seam and the thing it stands for. `spawn_replacement` is the
+/// exception: its real call takes eight arguments, all read off the plan.
+pub(crate) trait RestartEffects {
+    fn query_status(&self, state_dir: &Path) -> Result<sot_log::supervisor_client::StatusReport, String>;
+    fn end_run(
+        &self,
+        state_dir: &Path,
+        reason: &str,
+        root_canonicalized: bool,
+    ) -> std::io::Result<crate::capsule_workspace::EndRunOutcome>;
+    fn spawn_replacement(&self, plan: &ReauthRestart) -> Result<&'static str, String>;
+    fn reset(&self, state_dir: &Path) -> Result<String, String>;
+}
+
+/// The production impl, and the ONLY place in this module that names the
+/// real `end_run`, `start_supervisor`, `query_status` or `reset`. A future
+/// edit that calls one of them directly from [`restart_blocking`] defeats
+/// the ordering test silently; the guard is that each of those four paths
+/// appears exactly once in this file, inside this impl. Rust cannot enforce
+/// that, so it is stated here and checked by grep in the lane's evidence.
+pub(crate) struct LiveSupervisor;
+
+impl RestartEffects for LiveSupervisor {
+    fn query_status(&self, state_dir: &Path) -> Result<sot_log::supervisor_client::StatusReport, String> {
+        sot_log::supervisor_client::query_status(state_dir).map(|(s, _)| s).map_err(|e| e.to_string())
+    }
+    fn end_run(
+        &self,
+        state_dir: &Path,
+        reason: &str,
+        root_canonicalized: bool,
+    ) -> std::io::Result<crate::capsule_workspace::EndRunOutcome> {
+        crate::capsule_workspace::end_run(state_dir, reason, root_canonicalized)
+    }
+    fn spawn_replacement(&self, plan: &ReauthRestart) -> Result<&'static str, String> {
+        crate::capsule_workspace::start_supervisor(
+            &plan.state_root,
+            &plan.row.workspace_id,
+            crate::capsule_workspace::StartMode::Resume,
+            &plan.argv,
+            &plan.row.project_root,
+            &plan.row.agent_name(),
+            &plan.row.slug,
+            plan.workspaces.clone(),
+        )
+    }
+    fn reset(&self, state_dir: &Path) -> Result<String, String> {
+        sot_log::supervisor_client::reset(state_dir).map_err(|e| e.to_string())
+    }
+}
+
 /// End the row's current leg and spawn its replacement on the new account.
 /// BLOCKING — the caller runs it via `spawn_blocking`, AFTER the accept
 /// frame is physically written. Nothing here can answer the caller (it is
@@ -467,7 +531,7 @@ fn run_ended(outcome: &crate::capsule_workspace::EndRunOutcome) -> Result<(), St
 /// too: the record may not claim a switch that did not happen. Once the leg
 /// IS ended the record stands, whatever the replacement spawn does: every
 /// later start path reads the account off the registry.
-pub fn restart_blocking(plan: ReauthRestart) {
+pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
     let state_dir = crate::capsule_workspace::state_dir_for(&plan.state_root, &plan.row.workspace_id);
     // Read off the ROW, not off a copy taken before the ack: what the
     // replacement actually spends is whatever the registry says when
@@ -480,8 +544,8 @@ pub fn restart_blocking(plan: ReauthRestart) {
     // there is nothing left to identify, and the whole point is to notice
     // afterwards if it is STILL the one answering. See
     // [`supervisor_identity`].
-    let retired = supervisor_identity(&state_dir);
-    let outcome = match crate::capsule_workspace::end_run(&state_dir, &reason, plan.root_canonicalized) {
+    let retired = supervisor_identity(fx, &state_dir);
+    let outcome = match fx.end_run(&state_dir, &reason, plan.root_canonicalized) {
         Ok(o) => o,
         Err(e) => {
             tracing::warn!(
@@ -501,16 +565,7 @@ pub fn restart_blocking(plan: ReauthRestart) {
     // `StartMode::Resume` — a reauth is never a row's first-ever run, and
     // the account itself is read back off the registry inside this call
     // (`spawn_and_watch`), which is why the record had to move first.
-    let phase = match crate::capsule_workspace::start_supervisor(
-        &plan.state_root,
-        &plan.row.workspace_id,
-        crate::capsule_workspace::StartMode::Resume,
-        &plan.argv,
-        &plan.row.project_root,
-        &plan.row.agent_name(),
-        &plan.row.slug,
-        plan.workspaces.clone(),
-    ) {
+    let phase = match fx.spawn_replacement(&plan) {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(
@@ -551,9 +606,9 @@ pub fn restart_blocking(plan: ReauthRestart) {
     // prevent — with a red log instead of a green one, which is no better
     // for the conversation. So wait for the authority to rest on its own
     // clock, and then let the phase decide.
-    let report = match wait_until_resting(&state_dir) {
-        Ok(r) => r,
-        Err(detail) => {
+    let voyage = match mint_replacement_voyage(fx, &state_dir, retired) {
+        Ok(voyage) => voyage,
+        Err(MintRefusal::NeverAnswered(detail)) => {
             tracing::error!(
                 workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
                 spawn_phase = phase, detail = %detail,
@@ -561,10 +616,7 @@ pub fn restart_blocking(plan: ReauthRestart) {
             );
             return;
         }
-    };
-    let settled = crate::capsule_workspace::phase_str(report.phase);
-    match ready_to_mint(report.phase, retired, (report.pid, report.created)) {
-        Err(detail) => {
+        Err(MintRefusal::Refused { settled, detail }) => {
             tracing::error!(
                 workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
                 phase = settled, detail = %detail,
@@ -572,27 +624,60 @@ pub fn restart_blocking(plan: ReauthRestart) {
             );
             return;
         }
-        Ok(()) => {}
+        Err(MintRefusal::MintedNothing { settled, error }) => {
+            tracing::error!(
+                workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
+                phase = settled, error = %error,
+                "workspace.reauth: the reset minted no voyage, so this row has no leg; \
+                 opening the row retires this authority and revives it on the conversation `--continue` selects"
+            );
+            return;
+        }
+    };
+    tracing::info!(
+        workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
+        voyage = %voyage,
+        // Deliberately narrower than "the leg is running": `reset`
+        // answers as soon as the pointer moves, and the leg is spawned
+        // after that, in the supervisor's own Resetting -> Spawning
+        // transition, where it can still fail into `terminal`. A
+        // minted voyage is evidence of the third step being taken, not
+        // of a process on the pty.
+        "workspace.reauth: a fresh voyage was minted for the replacement leg on the new account"
+    );
+}
+
+/// Why a revival's tail stopped short of the mint. One variant per line
+/// [`restart_blocking`] owes its log: the three failures are not
+/// interchangeable to whoever reads it — nothing answered, something
+/// answered and was refused, or the mint itself answered nothing — and two
+/// of them carry the phase the authority settled at, which only the tail
+/// has read.
+enum MintRefusal {
+    NeverAnswered(String),
+    Refused { settled: &'static str, detail: String },
+    MintedNothing { settled: &'static str, error: String },
+}
+
+/// The revival tail: wait for the replacement authority to come to rest on
+/// its own clock, judge it, and mint its voyage. ONE name for the rule, so
+/// [`restart_blocking`] above reads as exactly the three effects it is.
+fn mint_replacement_voyage(
+    fx: &dyn RestartEffects,
+    state_dir: &Path,
+    retired: Option<(u32, u64)>,
+) -> Result<String, MintRefusal> {
+    let report = wait_until_resting(fx, state_dir).map_err(MintRefusal::NeverAnswered)?;
+    let settled = crate::capsule_workspace::phase_str(report.phase);
+    if let Err(detail) = ready_to_mint(report.phase, retired, (report.pid, report.created)) {
+        return Err(MintRefusal::Refused { settled, detail });
     }
-    match sot_log::supervisor_client::reset(&state_dir) {
-        Ok(voyage) if !voyage.trim().is_empty() => tracing::info!(
-            workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
-            voyage = %voyage,
-            // Deliberately narrower than "the leg is running": `reset`
-            // answers as soon as the pointer moves, and the leg is spawned
-            // after that, in the supervisor's own Resetting -> Spawning
-            // transition, where it can still fail into `terminal`. A
-            // minted voyage is evidence of the third step being taken, not
-            // of a process on the pty.
-            "workspace.reauth: a fresh voyage was minted for the replacement leg on the new account"
-        ),
-        other => tracing::error!(
-            workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
-            phase = settled,
-            error = %other.err().map(|e| e.to_string()).unwrap_or_else(|| "the reset answered an empty voyage".into()),
-            "workspace.reauth: the reset minted no voyage, so this row has no leg; \
-             opening the row retires this authority and revives it on the conversation `--continue` selects"
-        ),
+    match fx.reset(state_dir) {
+        Ok(voyage) if !voyage.trim().is_empty() => Ok(voyage),
+        other => Err(MintRefusal::MintedNothing {
+            settled,
+            error: other.err().unwrap_or_else(|| "the reset answered an empty voyage".into()),
+        }),
     }
 }
 
@@ -616,8 +701,8 @@ const REPLACEMENT_SETTLE_POLL: std::time::Duration = std::time::Duration::from_m
 /// the leg from ITS cached argv and ITS environment, the old account
 /// included, and this path would log a success naming the new one. So
 /// remember who was there before, and require that it changed.
-fn supervisor_identity(state_dir: &std::path::Path) -> Option<(u32, u64)> {
-    sot_log::supervisor_client::query_status(state_dir).ok().map(|(s, _)| (s.pid, s.created))
+fn supervisor_identity(fx: &dyn RestartEffects, state_dir: &std::path::Path) -> Option<(u32, u64)> {
+    fx.query_status(state_dir).ok().map(|s| (s.pid, s.created))
 }
 
 /// Polls the replacement authority's own `status` until it rests, or until
@@ -625,12 +710,15 @@ fn supervisor_identity(state_dir: &std::path::Path) -> Option<(u32, u64)> {
 /// read; `Err` only when nothing ever answered, since a recovering
 /// authority legitimately refuses connections for a while and a single
 /// failed read says nothing.
-fn wait_until_resting(state_dir: &std::path::Path) -> Result<sot_log::supervisor_client::StatusReport, String> {
+fn wait_until_resting(
+    fx: &dyn RestartEffects,
+    state_dir: &std::path::Path,
+) -> Result<sot_log::supervisor_client::StatusReport, String> {
     let deadline = std::time::Instant::now() + REPLACEMENT_SETTLE_DEADLINE;
     let mut last: Option<sot_log::supervisor_client::StatusReport> = None;
     loop {
-        match sot_log::supervisor_client::query_status(state_dir) {
-            Ok((report, _)) => {
+        match fx.query_status(state_dir) {
+            Ok(report) => {
                 if phase_rests(report.phase) {
                     return Ok(report);
                 }
@@ -1085,6 +1173,244 @@ mod tests {
         ) -> std::task::Poll<std::io::Result<()>> {
             std::task::Poll::Ready(Ok(()))
         }
+    }
+
+    /// The four effects, named so the ORDER they happened in is a value a
+    /// test can compare rather than a shape a reader has to infer.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Effect {
+        Status,
+        EndRun,
+        Spawn,
+        Reset,
+    }
+
+    /// The four effects, recorded in the order `restart_blocking` performs
+    /// them, with each answer scripted. Shared state behind `Arc<Mutex<..>>`
+    /// like `Peer`'s bytes, for the same reason: the thing under test is a
+    /// call that may be ABSENT, and an absence has no return value to
+    /// assert on — only the record shows it.
+    struct FakeSupervisor {
+        record: std::sync::Arc<std::sync::Mutex<Vec<Effect>>>,
+        /// The argv the replacement was actually handed, so one test can
+        /// pin that it spends `--resume <id>` rather than `--continue`.
+        spawned_argv: std::sync::Arc<std::sync::Mutex<Option<Vec<String>>>>,
+        /// The two status answers, drained in order: the pre-retire
+        /// identity read, then the post-spawn settle read. Both are phases
+        /// `phase_rests` accepts, so the wait returns on its first poll and
+        /// no test ever sleeps on the real 30 s deadline.
+        status: std::sync::Mutex<std::collections::VecDeque<(u32, u64, sot_log::wire::SupervisorPhase)>>,
+        end_run: Result<crate::capsule_workspace::EndRunOutcome, String>,
+        spawn: Result<&'static str, String>,
+        reset: Result<String, String>,
+    }
+
+    impl FakeSupervisor {
+        /// The healthy revival: an authority at `(1111, 800)` before the
+        /// retire, a different one at `(4242, 900)` after it, both resting
+        /// where a resumed run rests, an end that verified and a reset that
+        /// minted.
+        fn healthy() -> Self {
+            use sot_log::wire::SupervisorPhase as P;
+            Self {
+                record: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                spawned_argv: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                status: std::sync::Mutex::new(
+                    [(1111, 800, P::EndedNoRespawn), (4242, 900, P::EndedNoRespawn)].into_iter().collect(),
+                ),
+                end_run: Ok(crate::capsule_workspace::EndRunOutcome::RecordVerified),
+                spawn: Ok("starting"),
+                reset: Ok("voyage-1".to_string()),
+            }
+        }
+
+        /// Re-script the two reads: the identity read, then the settle read.
+        fn status_reads(
+            &self,
+            identity: (u32, u64, sot_log::wire::SupervisorPhase),
+            settled: (u32, u64, sot_log::wire::SupervisorPhase),
+        ) {
+            *self.status.lock().unwrap() = [identity, settled].into_iter().collect();
+        }
+
+        fn record(&self) -> Vec<Effect> {
+            self.record.lock().unwrap().clone()
+        }
+
+        fn spawned_argv(&self) -> Vec<String> {
+            self.spawned_argv.lock().unwrap().clone().expect("the replacement was spawned")
+        }
+    }
+
+    impl RestartEffects for FakeSupervisor {
+        fn query_status(&self, _state_dir: &Path) -> Result<sot_log::supervisor_client::StatusReport, String> {
+            self.record.lock().unwrap().push(Effect::Status);
+            let (pid, created, phase) = self
+                .status
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| "the fake was asked for more status reads than it was scripted".to_string())?;
+            Ok(sot_log::supervisor_client::StatusReport { pid, created, voyage: None, leg: None, phase })
+        }
+        fn end_run(
+            &self,
+            _state_dir: &Path,
+            _reason: &str,
+            _root_canonicalized: bool,
+        ) -> std::io::Result<crate::capsule_workspace::EndRunOutcome> {
+            self.record.lock().unwrap().push(Effect::EndRun);
+            self.end_run.clone().map_err(std::io::Error::other)
+        }
+        fn spawn_replacement(&self, plan: &ReauthRestart) -> Result<&'static str, String> {
+            self.record.lock().unwrap().push(Effect::Spawn);
+            *self.spawned_argv.lock().unwrap() = Some(plan.argv.clone());
+            self.spawn.clone()
+        }
+        fn reset(&self, _state_dir: &Path) -> Result<String, String> {
+            self.record.lock().unwrap().push(Effect::Reset);
+            self.reset.clone()
+        }
+    }
+
+    // ORDERING 5: a revival is THREE effects and this is the one test that
+    // can see all three happen, in order, at all — the defect it exists for
+    // is a reset that is never called, and an absent call has no return
+    // value for a pure function to observe. The single sequence assertion
+    // below pins every ordering this path depends on: the identity is read
+    // BEFORE the retire (so a leaked retire is detectable at all), the
+    // spawn follows the end, and the mint follows a settle read that
+    // follows the spawn.
+    #[tokio::test]
+    async fn a_revival_is_the_identity_then_end_run_then_spawn_then_the_settle_then_the_mint() {
+        let _g = env_guarded();
+        let home = home_with(true, &[("team", true)]);
+        let scratch = tempfile::tempdir().unwrap();
+        let (reg, id, _slug) = accept_fixture(home.path(), scratch.path());
+
+        let (payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+        assert_eq!(payload["code"], ACCEPTED_CODE);
+        let fake = FakeSupervisor::healthy();
+        restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
+
+        assert_eq!(
+            fake.record(),
+            vec![Effect::Status, Effect::EndRun, Effect::Spawn, Effect::Status, Effect::Reset]
+        );
+        assert_eq!(
+            reg.resolve(Some(&id)).unwrap().account(),
+            "team",
+            "a revival that completed never rolls the record back"
+        );
+        // The one call that still holds the conversation id spends it: the
+        // id is never persisted on the row, so a later attach's `--continue`
+        // would select by recency instead.
+        let argv = fake.spawned_argv();
+        assert!(argv.iter().any(|a| a == "--resume"), "{argv:?}");
+        assert!(argv.iter().any(|a| a == "sid-7"), "{argv:?}");
+        assert!(!argv.iter().any(|a| a == "--continue"), "{argv:?}");
+    }
+
+    // An end that could not run leaves the OLD leg on the OLD login, so
+    // nothing may be spawned and the record has to go back to saying so.
+    #[tokio::test]
+    async fn an_end_run_that_cannot_run_spawns_nothing_and_rolls_the_record_back() {
+        let _g = env_guarded();
+        let home = home_with(true, &[("team", true)]);
+        let scratch = tempfile::tempdir().unwrap();
+        let (reg, id, slug) = accept_fixture(home.path(), scratch.path());
+
+        let (_payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+        let mut fake = FakeSupervisor::healthy();
+        fake.end_run = Err("the lane never answered".to_string());
+        restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
+
+        assert_eq!(fake.record(), vec![Effect::Status, Effect::EndRun]);
+        assert_eq!(
+            reg.resolve(Some(&id)).unwrap().account(),
+            "",
+            "the record is back on the login the live leg still spends"
+        );
+        let toml = std::fs::read_to_string(crate::workspaces::toml_path_for(&slug)).unwrap();
+        assert!(toml.contains("account       = \"\""), "{toml}");
+    }
+
+    // The asymmetry `restart_blocking`'s own doc states and nothing tested:
+    // once the leg IS ended the record stands, whatever the spawn does,
+    // because every later start path reads the account off the registry. A
+    // rollback here would point the next attach at the login whose leg no
+    // longer exists.
+    #[tokio::test]
+    async fn a_spawn_that_fails_leaves_the_record_on_the_new_account() {
+        let _g = env_guarded();
+        let home = home_with(true, &[("team", true)]);
+        let scratch = tempfile::tempdir().unwrap();
+        let (reg, id, slug) = accept_fixture(home.path(), scratch.path());
+
+        let (_payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+        let mut fake = FakeSupervisor::healthy();
+        fake.spawn = Err("the capsule binary is missing".to_string());
+        restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
+
+        assert_eq!(fake.record(), vec![Effect::Status, Effect::EndRun, Effect::Spawn]);
+        assert_eq!(
+            reg.resolve(Some(&id)).unwrap().account(),
+            "team",
+            "the leg is ended; the record must name the login the next start will spend"
+        );
+        let toml = std::fs::read_to_string(crate::workspaces::toml_path_for(&slug)).unwrap();
+        assert!(toml.contains("account       = \"team\""), "{toml}");
+    }
+
+    // `ready` means a leg is ALREADY live — an `end_run` whose stop ended
+    // the authority but not the leg — so the row has a leg on the OLD
+    // login. The path must consult the judgement and STOP, which is a
+    // missing `Reset` no pure test of `ready_to_mint` can observe.
+    #[tokio::test]
+    async fn a_replacement_that_rests_with_a_leg_live_is_never_minted_on() {
+        use sot_log::wire::SupervisorPhase as P;
+        let _g = env_guarded();
+        let home = home_with(true, &[("team", true)]);
+        let scratch = tempfile::tempdir().unwrap();
+        let (reg, id, _slug) = accept_fixture(home.path(), scratch.path());
+
+        let (_payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+        let fake = FakeSupervisor::healthy();
+        fake.status_reads((1111, 800, P::EndedNoRespawn), (4242, 900, P::Ready));
+        restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
+
+        assert_eq!(
+            fake.record(),
+            vec![Effect::Status, Effect::EndRun, Effect::Spawn, Effect::Status],
+            "a live leg is never minted on"
+        );
+        assert_eq!(reg.resolve(Some(&id)).unwrap().account(), "team");
+    }
+
+    // The leaked retire driven through the WHOLE path: the same process
+    // answers before and after, resting at exactly the phase a healthy
+    // replacement rests at. Only the identity tells them apart, and this is
+    // what makes the identity read's POSITION load-bearing rather than
+    // incidental — read after the retire, there would be nothing to compare.
+    #[tokio::test]
+    async fn a_leaked_retire_is_never_minted_on_end_to_end() {
+        use sot_log::wire::SupervisorPhase as P;
+        let _g = env_guarded();
+        let home = home_with(true, &[("team", true)]);
+        let scratch = tempfile::tempdir().unwrap();
+        let (reg, id, _slug) = accept_fixture(home.path(), scratch.path());
+
+        let (_payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+        let fake = FakeSupervisor::healthy();
+        fake.status_reads((1111, 800, P::EndedNoRespawn), (1111, 800, P::EndedNoRespawn));
+        restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
+
+        assert_eq!(
+            fake.record(),
+            vec![Effect::Status, Effect::EndRun, Effect::Spawn, Effect::Status],
+            "the process the switch was supposed to retire is never minted on"
+        );
+        assert_eq!(reg.resolve(Some(&id)).unwrap().account(), "team");
     }
 
     /// The accept path with a transcript the target can open and a row on

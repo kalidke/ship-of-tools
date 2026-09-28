@@ -1784,7 +1784,10 @@ where
                     // duration wherever it runs.
                     tokio::spawn(async move {
                         if let Err(e) =
-                            tokio::task::spawn_blocking(move || crate::reauth::restart_blocking(plan)).await
+                            tokio::task::spawn_blocking(move || {
+                                crate::reauth::restart_blocking(plan, &crate::reauth::LiveSupervisor)
+                            })
+                            .await
                         {
                             tracing::warn!(error = %e, "workspace.reauth: the restart task panicked");
                         }
