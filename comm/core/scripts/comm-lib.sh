@@ -601,10 +601,9 @@ done'
 # read below). Without that last fallback the walk refused at the first hop on
 # every Windows box, which is what made `comm-session-start.sh` report "no
 # owning claude/codex ancestor found" and fall back to the harness Monitor
-# there. Two shapes of answer are then accepted where one was: a trailing
-# `.exe`, and a PATH rather than a bare name (the basename is taken), so a
-# `ps` that answers `/some/dir/claude` matches the same as one that answers
-# `claude`. Nothing that matched before stops matching.
+# there. A leading path and a trailing `.exe` are stripped before the match, so
+# a name that matched before still matches; Linux answers from `ps`/`comm`
+# exactly as before.
 sot_owner_pid() {
     local pid="${PPID:-}" comm ppid
     while [ -n "$pid" ] && [ "$pid" != "1" ]; do
@@ -617,8 +616,8 @@ sot_owner_pid() {
         fi
         [ -n "$comm" ] || return 1
         comm="${comm##*/}"
-        case "$comm" in
-            claude|codex|claude.exe|codex.exe) printf '%s\n' "$pid"; return 0 ;;
+        case "${comm%.exe}" in
+            claude|codex) printf '%s\n' "$pid"; return 0 ;;
         esac
         ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
         if [ -z "$ppid" ] && [ -r "/proc/$pid/status" ]; then
@@ -747,12 +746,24 @@ _sot_clamp_offset() {
     if [ "$2" -gt "$total" ]; then printf '0\n'; else printf '%s\n' "$2"; fi
 }
 
-# sot_inbox_lines HANDLE — the inbox's line count (0 when absent).
-sot_inbox_lines() {
-    local n
-    n="$(wc -l < "$COMM_HOME/inbox/$1.jsonl" 2>/dev/null | tr -d ' ')"
+# sot_file_lines PATH — PATH's line count, 0 when it is absent or unreadable.
+# THE line counter: every inbox reader needs one, and each copy was a chance
+# to get the two quiet parts wrong. Readability is tested FIRST because the
+# SHELL, not wc, prints "No such file" for `< missing` — before wc's own
+# 2>/dev/null can suppress it, into whatever the caller's stderr happens to be
+# (a durable watcher log, a bootstrap's one-line-per-outcome contract). And the
+# count is stripped of the leading spaces a BSD `wc` pads it with, so callers
+# can compare it as a number without each one remembering to.
+sot_file_lines() {
+    local n=""
+    [ -r "$1" ] && n="$(wc -l < "$1" 2>/dev/null | tr -d ' ')"
     [[ "$n" =~ ^[0-9]+$ ]] || n=0
     printf '%s\n' "$n"
+}
+
+# sot_inbox_lines HANDLE — the inbox's line count (0 when absent).
+sot_inbox_lines() {
+    sot_file_lines "$COMM_HOME/inbox/$1.jsonl"
 }
 
 # --- the WINDOWS FRONTEND inbox: a second file, a second cursor --------------
@@ -794,12 +805,10 @@ sot_fe_inbox_path() {
 # sot_fe_inbox_lines — the frontend inbox's line count (0 when absent, and off
 # Windows).
 sot_fe_inbox_lines() {
-    local fe n
+    local fe
     fe="$(sot_fe_inbox_path)"
     [ -n "$fe" ] || { printf '0\n'; return 0; }
-    n="$(wc -l < "$fe" 2>/dev/null | tr -d ' ')"
-    [[ "$n" =~ ^[0-9]+$ ]] || n=0
-    printf '%s\n' "$n"
+    sot_file_lines "$fe"
 }
 
 # sot_fe_cursor_offset HANDLE — this handle's frontend read offset. 0 when

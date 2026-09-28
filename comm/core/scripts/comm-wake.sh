@@ -205,35 +205,24 @@ _comm_wake_owner_alive() {
 
 # ---- one source at a time -------------------------------------------------
 #
-# $INBOX, $SRC_KIND and $pos name the source the loop below is currently
-# reading; everything downstream stays single-file and single-schema.
+# $INBOX, $SELECT and $pos name the source the loop below is currently reading;
+# everything downstream stays single-file and single-schema. The ADMISSION RULE
+# travels with the source (the $SELECTS array beside $SOURCES, and $CURSORS for
+# the read cursor) exactly as comm-watch.sh carries a filter per source, so
+# there is no kind tag to keep in step with the file list and no per-file branch
+# anywhere below.
 
-# Line count that is robust to a missing/unreadable file WITHOUT stderr noise:
-# `wc -l < missing` makes the SHELL (doing the redirect) print "No such file"
-# before wc's own 2>/dev/null could suppress it, and this script's stderr is a
-# durable log. Same helper, same reason, as comm-watch.sh's `linecount`.
-_comm_wake_linecount() { [ -r "$1" ] && wc -l < "$1" 2>/dev/null || echo 0; }
-
-# _comm_wake_admits FROM TO -- does this line wake US?
+# _comm_wake_admit LINE SELECT -- print LINE's sender and return 0 when this
+# source's rule admits it; return 1 (printing nothing) when it does not.
 #
-# The per-handle inbox holds frames filed FOR this handle, so any directed
-# frame admits (a legacy line with no `.to` key reads as `__legacy__` and is
-# treated as directed, as it always was; a broadcast's empty `.to` waits for
-# comm-poll.sh on the next natural turn). The frontend inbox is ONE file per
-# box, SHARED by every handle on it -- the frontend appends every frame
-# whatever its `.to` -- so there the test is `.to` equal to our exact handle.
-# Identical to the pair of filters comm-watch.sh applies to the same two
-# files; a session's handle is its row's handle, so there is no broadcast
-# label family to also admit.
-_comm_wake_admits() {
-    local from="$1" to="$2"
-    [ "$from" = "$HANDLE" ] && return 1
-    if [ "${SRC_KIND:-handle}" = "fe" ]; then
-        [ "$to" = "$HANDLE" ] || return 1
-    else
-        [ -n "$to" ] || return 1
-    fi
-    return 0
+# The `+` prefix is load-bearing: it separates "jq emitted nothing" (not
+# admitted) from "admitted, and the sender is the empty string", which the pair
+# of shell tests this replaced could tell apart and this must too.
+_comm_wake_admit() {
+    local out
+    out="$(printf '%s' "$1" | sot_jq -r --arg me "$HANDLE" "$2 | \"+\" + (.from // \"\")" 2>/dev/null)"
+    [ -n "$out" ] || return 1
+    printf '%s' "${out#+}"
 }
 
 # _comm_wake_advance -- move every source's in-memory cursor ($POS) to the end
@@ -246,18 +235,6 @@ _comm_wake_advance() {
     for i in "${!SOURCES[@]}"; do POS[$i]="${ENDS[$i]}"; done
 }
 
-# _comm_wake_read_offset -- how many lines of THIS source the session has
-# already been shown. One cursor per file, never one shared: the two inboxes
-# have unrelated line counts, so a shared cursor would silence whichever file
-# is shorter (the same rule comm-poll.sh's own pair of cursors follows).
-_comm_wake_read_offset() {
-    if [ "${SRC_KIND:-handle}" = "fe" ]; then
-        sot_fe_cursor_offset "$HANDLE"
-    else
-        sot_cursor_offset "$HANDLE"
-    fi
-}
-
 # ---- the two delivery bodies, one poll loop --------------------------------
 
 _comm_wake_deliver_full() {
@@ -265,16 +242,14 @@ _comm_wake_deliver_full() {
     # resolving inside the loop would be one workspace.list per message.
     _comm_wake_retarget || return
     delivered_through="$pos"
-    local lineno=0 from to text rc
+    local lineno=0 from text rc
     while IFS= read -r line; do
         lineno=$((lineno + 1))
-        from=$(printf '%s' "$line" | sot_jq -r '.from // ""' 2>/dev/null)
-        to=$(printf '%s' "$line" | sot_jq -r 'if has("to") then .to else "__legacy__" end' 2>/dev/null)
-        text=$(printf '%s' "$line" | jq -r '.text // .message // .msg // ""' 2>/dev/null)
-        if ! _comm_wake_admits "$from" "$to" || [ -z "$text" ]; then
+        if ! from="$(_comm_wake_admit "$line" "$SELECT")"; then
             delivered_through=$((pos + lineno))
             continue
         fi
+        text=$(printf '%s' "$line" | jq -r '.text // .message // .msg // ""' 2>/dev/null)
         _comm_wake_capsule_inject "$from" "$text"
         rc=$?
         if [ "$rc" -eq 2 ]; then exit 0; fi
@@ -292,27 +267,28 @@ _comm_wake_deliver_full() {
 # give-up budget below (`no_reply_count` and `blocked_since` count CYCLES, and
 # a per-source body counted them twice a cycle).
 _comm_wake_deliver_ping() {
-    local any_directed=0 all_selftest=1 from to text rc text_to_type read_pos
+    local any_directed=0 all_selftest=1 from rc text_to_type read_pos
     local i total line
     ENDS=()
 
     for i in "${!SOURCES[@]}"; do
         INBOX="${SOURCES[$i]}"
-        SRC_KIND="${KINDS[$i]}"
         # Where this source's batch ENDS. Set even when nothing admissible is
         # found, so a cycle that announces nothing still advances past what it
         # read and a broadcast-only batch is not re-scanned forever.
         ENDS[$i]="${POS[$i]}"
         [ -r "$INBOX" ] || continue
-        total="$(_comm_wake_linecount "$INBOX")"
+        total="$(sot_file_lines "$INBOX")"
         # inbox rotated/truncated: re-read the (now smaller) file from line 1.
         if [ "$total" -lt "${POS[$i]}" ]; then POS[$i]=0; ENDS[$i]=0; fi
         [ "$total" -gt "${POS[$i]}" ] || continue
         ENDS[$i]="$total"
-        # ALREADY-READ check, per source (the cursor below is that source's
-        # own). The cursor is the NUMBER of lines the session has been shown
-        # (comm-lib.sh's sot_cursor_offset / sot_fe_cursor_offset, which
-        # migrate a legacy ts cursor as they read). A cursor that already
+        # ALREADY-READ check, against THIS source's own cursor -- never one
+        # shared, since the two inboxes have unrelated line counts and a shared
+        # cursor would silence whichever file is shorter. The cursor is the
+        # NUMBER of lines the session has been shown (comm-lib.sh's
+        # sot_cursor_offset / sot_fe_cursor_offset, which migrate a legacy ts
+        # cursor as they read). A cursor that already
         # reaches the end of this batch means the session read it through a
         # real poll -- advance past it with no ping. Comparing timestamps here
         # could not separate two frames filed in the same second, so a second
@@ -324,14 +300,10 @@ _comm_wake_deliver_ping() {
         # deafness for every message behind it. A genuinely NEW line now always
         # pings again, and a missed ping is harmless -- the recipient's own Stop
         # hook reads the inbox at its next turn boundary.
-        read_pos="$(_comm_wake_read_offset)"
+        read_pos="$("${CURSORS[$i]}" "$HANDLE")"
         [ "$read_pos" -ge "$total" ] && continue
         while IFS= read -r line; do
-            from=$(printf '%s' "$line" | sot_jq -r '.from // ""' 2>/dev/null)
-            to=$(printf '%s' "$line" | sot_jq -r 'if has("to") then .to else "__legacy__" end' 2>/dev/null)
-            text=$(printf '%s' "$line" | jq -r '.text // .message // .msg // ""' 2>/dev/null)
-            _comm_wake_admits "$from" "$to" || continue
-            [ -z "$text" ] && continue
+            from="$(_comm_wake_admit "$line" "${SELECTS[$i]}")" || continue
             any_directed=1
             [ "$from" = "__selftest__" ] || all_selftest=0
         done < <(sed -n "$((POS[$i] + 1)),${total}p" "$INBOX")
@@ -397,7 +369,7 @@ _comm_wake_deliver_ping() {
 _comm_wake_run() {
     local i
     POS=()
-    for i in "${!SOURCES[@]}"; do POS+=("$(_comm_wake_linecount "${SOURCES[$i]}")"); done
+    for i in "${!SOURCES[@]}"; do POS+=("$(sot_file_lines "${SOURCES[$i]}")"); done
     no_reply_count=0
     blocked_since=""
 
@@ -417,10 +389,10 @@ _comm_wake_run() {
         # and a second source is simply a second batch of lines.
         for i in "${!SOURCES[@]}"; do
             INBOX="${SOURCES[$i]}"
-            SRC_KIND="${KINDS[$i]}"
+            SELECT="${SELECTS[$i]}"
             pos="${POS[$i]}"
             [ -f "$INBOX" ] || continue
-            total=$(_comm_wake_linecount "$INBOX")
+            total=$(sot_file_lines "$INBOX")
             if [ "$total" -lt "$pos" ]; then pos=0; fi   # inbox rotated/truncated
             [ "$total" -gt "$pos" ] && _comm_wake_deliver_full
             # Whatever the body consumed, never what it was handed: a body
@@ -515,15 +487,24 @@ _comm_wake_main() {
         || { echo "ERROR: could not resolve the daemon endpoint for capsule delivery" >&2; exit 1; }
 
     COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
-    # Every inbox this handle receives into, with the kind of file each one
-    # is (see _comm_wake_admits). The frontend inbox exists on Windows only,
-    # and only where a frontend on this box files into it.
+    # Every inbox this handle receives into, each with the rule that admits a
+    # line from it and the cursor that says how much of it the session has been
+    # shown. The two selects are the two comm-watch.sh applies to the same two
+    # files: the per-handle inbox holds frames filed FOR this handle, so any
+    # DIRECTED frame admits (a line with no `.to` key predates the stamp and is
+    # treated as directed; a broadcast's empty `.to` waits for comm-poll.sh on
+    # the next natural turn), while the frontend inbox is ONE file per box
+    # shared by every handle on it, so there `.to` must be ours exactly. Both
+    # also require some text: a frame with none wakes nobody. The frontend
+    # inbox exists on Windows only, and only where a frontend files into it.
     SOURCES=("$COMM_HOME/inbox/$HANDLE.jsonl")
-    KINDS=(handle)
+    SELECTS=('select(.from != $me and ((.to // "?") != "") and ((.text // .message // .msg // "") != ""))')
+    CURSORS=(sot_cursor_offset)
     _fe_inbox="$(sot_fe_inbox_path)"
     if [ -n "$_fe_inbox" ]; then
         SOURCES+=("$_fe_inbox")
-        KINDS+=(fe)
+        SELECTS+=('select(.from != $me and ((.to // "") == $me) and ((.text // .message // .msg // "") != ""))')
+        CURSORS+=(sot_fe_cursor_offset)
     fi
     STATE_DIR="$COMM_HOME/state"; mkdir -p "$STATE_DIR"
     LOG_FILE="$STATE_DIR/comm-wake-$HANDLE.log"
