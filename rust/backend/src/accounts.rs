@@ -884,6 +884,47 @@ mod tests {
     }
 
     #[test]
+    fn a_dot_dot_spelling_that_escapes_the_prefix_writes_an_inert_key() {
+        // `Path::starts_with` is LEXICAL, so a root spelled with `..` passes
+        // the prefix test although it RESOLVES outside the declared parent.
+        // That is not an over-grant, and this test is what says so rather
+        // than leaving it as a property nobody wrote down: the key recorded
+        // is the literal spelling (`ensure_folder_trusted` keys on `root` as
+        // passed), while claude looks a project up by its RESOLVED `getcwd()`.
+        // So the escaping root's real path gets NO entry, the dialog still
+        // appears there, and the write grants nothing it should not.
+        //
+        // The inertness is a property of the KEYING, not a check -- which is
+        // exactly why it is pinned here. A future change that normalises the
+        // key before writing it would turn this same lexical gap into a real
+        // over-grant, and this test is what would go red.
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let parent = declared_parent(home);
+        let escaped = home.join("elsewhere").join("some-repo");
+        touch_dir(&escaped);
+        let spelled = parent.join("..").join("elsewhere").join("some-repo");
+
+        assert!(
+            spelled.starts_with(&parent),
+            "the lexical prefix test PASSES for this spelling -- that is the premise of the test"
+        );
+        assert_eq!(ensure_folder_trusted(home, "", &spelled, Some(&parent)), Ok(true));
+
+        let file = claude_trust_file(home, "");
+        assert_eq!(
+            recorded_trust(&file, &spelled),
+            Some(true),
+            "the literal spelling is what gets written"
+        );
+        assert_eq!(
+            recorded_trust(&file, &escaped),
+            None,
+            "the resolved path -- the one claude would look up -- gets nothing, so the write is inert"
+        );
+    }
+
+    #[test]
     fn recording_trust_preserves_every_other_key_and_other_projects() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
