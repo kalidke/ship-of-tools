@@ -475,6 +475,12 @@ pub fn restart_blocking(plan: ReauthRestart) {
     // the log and the spawn from ever disagreeing.
     let account = plan.row.account();
     let reason = format!("reauth to account {:?}", discovery_name(&account));
+    // Who holds the authority BEFORE anything is retired. Read here and
+    // nowhere later: `end_run` is about to stop this process, so after it
+    // there is nothing left to identify, and the whole point is to notice
+    // afterwards if it is STILL the one answering. See
+    // [`supervisor_identity`].
+    let retired = supervisor_identity(&state_dir);
     let outcome = match crate::capsule_workspace::end_run(&state_dir, &reason, plan.root_canonicalized) {
         Ok(o) => o,
         Err(e) => {
@@ -528,56 +534,175 @@ pub fn restart_blocking(plan: ReauthRestart) {
     // `plan.argv` carries `--resume <id>` from `claude_resume_argv`, built
     // for this one call, and that id is never persisted on the row. An
     // attach retires this supervisor and respawns from the ordinary
-    // `agent_argv`, whose `--continue` resolves against the NEW account's
-    // own selector — which names this conversation only once the
-    // replacement leg has taken a turn. A leg that never ran never moved
-    // that selector, so reviving anywhere but here lands on a different
-    // conversation, or on none.
-    let resting = crate::capsule_workspace::phase_str(sot_log::wire::SupervisorPhase::EndedNoRespawn);
-    if phase != resting {
-        tracing::warn!(
-            workspace_id = %plan.row.workspace_id, phase, expected = resting,
-            "workspace.reauth: the replacement supervisor settled somewhere other than the phase a resumed run must rest at; minting its voyage anyway"
-        );
+    // `agent_argv`, whose `--continue` selects by recency rather than by
+    // id. `--resume` names the conversation outright, so the reset belongs
+    // to the one call that still holds the id.
+    //
+    // But NOT at the instant the spawn returns. `start_supervisor`'s own
+    // settle is best effort: it waits `SPAWN_SETTLE_DEADLINE` (2s) and on
+    // timeout WARNS and hands back the transient phase anyway. A reauth's
+    // state dir is the worst case for that — `end_run` has just run, so
+    // the fresh authority has journal reconciliation to do before it can
+    // rest, and the attach path's own comment records that such a recovery
+    // "can report `starting` through its own recovery for many seconds".
+    // `Reset` is admissible ONLY from `EndedNoRespawn`, so a reset fired
+    // two seconds into a three-second recovery is REFUSED, leaving exactly
+    // the live-supervisor-no-voyage-no-leg row this change exists to
+    // prevent — with a red log instead of a green one, which is no better
+    // for the conversation. So wait for the authority to rest on its own
+    // clock, and then let the phase decide.
+    let report = match wait_until_resting(&state_dir) {
+        Ok(r) => r,
+        Err(detail) => {
+            tracing::error!(
+                workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
+                spawn_phase = phase, detail = %detail,
+                "workspace.reauth: the replacement authority never answered, so no voyage was minted and this row has no leg"
+            );
+            return;
+        }
+    };
+    let settled = crate::capsule_workspace::phase_str(report.phase);
+    match ready_to_mint(report.phase, retired, (report.pid, report.created)) {
+        Err(detail) => {
+            tracing::error!(
+                workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
+                phase = settled, detail = %detail,
+                "workspace.reauth: refusing to mint a voyage on this authority, so the switch left no new leg"
+            );
+            return;
+        }
+        Ok(()) => {}
     }
-    let minted = sot_log::supervisor_client::reset(&state_dir);
-    let voyage = minted.as_ref().ok().map(String::as_str);
-    match replacement_is_running(phase, voyage) {
-        Ok(()) => tracing::info!(
+    match sot_log::supervisor_client::reset(&state_dir) {
+        Ok(voyage) if !voyage.trim().is_empty() => tracing::info!(
             workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
-            voyage = voyage.unwrap_or_default(),
-            "workspace.reauth: the replacement leg is running on the new account"
+            voyage = %voyage,
+            // Deliberately narrower than "the leg is running": `reset`
+            // answers as soon as the pointer moves, and the leg is spawned
+            // after that, in the supervisor's own Resetting -> Spawning
+            // transition, where it can still fail into `terminal`. A
+            // minted voyage is evidence of the third step being taken, not
+            // of a process on the pty.
+            "workspace.reauth: a fresh voyage was minted for the replacement leg on the new account"
         ),
-        Err(detail) => tracing::error!(
+        other => tracing::error!(
             workspace_id = %plan.row.workspace_id, account = %discovery_name(&account),
-            detail = %detail,
-            error = %minted.as_ref().err().map(ToString::to_string).unwrap_or_default(),
-            "workspace.reauth: the replacement leg is NOT running, so this row has no leg; \
-             `sot-capsule reset <state-dir>` revives it on the resume argv that supervisor still holds"
+            phase = settled,
+            error = %other.err().map(|e| e.to_string()).unwrap_or_else(|| "the reset answered an empty voyage".into()),
+            "workspace.reauth: the reset minted no voyage, so this row has no leg; \
+             opening the row retires this authority and revives it on the conversation `--continue` selects"
         ),
     }
 }
 
-/// Whether a replacement leg is actually RUNNING, from the phase its
-/// supervisor settled at and the voyage the `reset` minted (`None` when
-/// the reset failed or answered nothing). Pure and exhaustive so the
-/// decision is testable without a supervisor — the same reason
-/// [`run_ended`] is factored out above.
+/// How long to let the replacement authority recover before giving up on
+/// it. `start_supervisor`'s own 2s settle is too short to be believed here
+/// (see the call site), and this is a background task on the reauth op, so
+/// the cost of waiting is latency nobody is watching, while the cost of
+/// not waiting is a refused reset and a row with no leg.
+const REPLACEMENT_SETTLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+const REPLACEMENT_SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The identity of whatever authority currently answers for this row, as
+/// the supervisor itself reports it. `None` when nothing answers.
 ///
-/// This encodes the 0.6.6 defect it was written for. `restart_blocking`
-/// used to report success on a `start_supervisor` success ALONE, with the
-/// settled phase merely printed in the same line. But `StartMode::Resume`
-/// deliberately never resurrects an ended run (ADR 0041's no-resurrection
-/// rule), so on the happy path that phase IS `ended_no_respawn`: the line
-/// announced a spawned leg for a row that had a live supervisor, no voyage
-/// and nothing on the pty. The spawn is two thirds of a revival; only a
-/// minted voyage is evidence of the third. So the voyage decides, and the
-/// phase is carried only to name what was found — never to excuse it.
-fn replacement_is_running(phase: &str, voyage: Option<&str>) -> Result<(), String> {
-    match voyage {
-        Some(v) if !v.trim().is_empty() => Ok(()),
-        _ => Err(format!(
-            "the replacement supervisor settled at {phase:?} and no voyage was minted for it"
+/// This exists for one failure this path cannot otherwise see. `end_run`'s
+/// own stop is BEST EFFORT: when it leaks, the old supervisor stays
+/// resident, this call's `sot-capsule` exits at the authority fence, the
+/// spawn still reports `Ok`, and every probe afterwards reads that OLD
+/// process resting at `ended_no_respawn` — indistinguishable from a
+/// healthy replacement. Minting there would have the old authority spawn
+/// the leg from ITS cached argv and ITS environment, the old account
+/// included, and this path would log a success naming the new one. So
+/// remember who was there before, and require that it changed.
+fn supervisor_identity(state_dir: &std::path::Path) -> Option<(u32, u64)> {
+    sot_log::supervisor_client::query_status(state_dir).ok().map(|(s, _)| (s.pid, s.created))
+}
+
+/// Polls the replacement authority's own `status` until it rests, or until
+/// [`REPLACEMENT_SETTLE_DEADLINE`]. Answers the last report it managed to
+/// read; `Err` only when nothing ever answered, since a recovering
+/// authority legitimately refuses connections for a while and a single
+/// failed read says nothing.
+fn wait_until_resting(state_dir: &std::path::Path) -> Result<sot_log::supervisor_client::StatusReport, String> {
+    let deadline = std::time::Instant::now() + REPLACEMENT_SETTLE_DEADLINE;
+    let mut last: Option<sot_log::supervisor_client::StatusReport> = None;
+    loop {
+        match sot_log::supervisor_client::query_status(state_dir) {
+            Ok((report, _)) => {
+                if phase_rests(report.phase) {
+                    return Ok(report);
+                }
+                last = Some(report);
+            }
+            Err(e) => {
+                if last.is_none() && std::time::Instant::now() >= deadline {
+                    return Err(format!("no status answered within {REPLACEMENT_SETTLE_DEADLINE:?}: {e}"));
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return last.ok_or_else(|| format!("no status answered within {REPLACEMENT_SETTLE_DEADLINE:?}"));
+        }
+        std::thread::sleep(REPLACEMENT_SETTLE_POLL);
+    }
+}
+
+/// Whether a phase is one the authority will stay at until somebody acts.
+/// The same partition `capsule_workspace`'s own `is_resting_phase` draws,
+/// restricted to the phases a live supervisor can report over `status` —
+/// this caller has just spawned one and is holding its reply, so the
+/// "nothing is there" phases that function also admits cannot arise here.
+fn phase_rests(phase: sot_log::wire::SupervisorPhase) -> bool {
+    use sot_log::wire::SupervisorPhase as P;
+    matches!(phase, P::Ready | P::EndedNoRespawn | P::Terminal)
+}
+
+/// Whether this call may mint the replacement's voyage — from the phase
+/// its authority settled at, and from whether that authority is actually a
+/// NEW one. Pure and exhaustive so both rules are testable without a
+/// supervisor, the same reason [`run_ended`] is factored out above.
+///
+/// This encodes the 0.6.6 defect it was written for and the two the review
+/// of that fix found. `restart_blocking` used to report success on a
+/// `start_supervisor` success ALONE, with the settled phase merely printed
+/// in the same line; the first version of the fix then minted regardless
+/// of the phase, merely warning when it was unexpected. Both are wrong in
+/// the same direction — they announce a revival they have not established:
+///
+///   * `EndedNoRespawn` is the ONLY phase `Reset` is admissible from, so
+///     it is the only one where minting can succeed at all;
+///   * `Ready` means a leg is ALREADY live — an `end_run` whose stop ended
+///     the authority but not the leg, which `--resume` then adopted — so
+///     the row has a leg, on the OLD account, and minting is refused with
+///     "a leg is currently live";
+///   * `Terminal`, or any phase still transient at the deadline, is a
+///     replacement that did not come up, and a reset would be refused.
+///
+/// The identity rule is separate and catches the leaked retire described
+/// on [`supervisor_identity`]: an authority that is the same process the
+/// switch was supposed to retire must never be minted on, whatever phase
+/// it rests at.
+fn ready_to_mint(
+    phase: sot_log::wire::SupervisorPhase,
+    retired: Option<(u32, u64)>,
+    resident: (u32, u64),
+) -> Result<(), String> {
+    use sot_log::wire::SupervisorPhase as P;
+    if retired == Some(resident) {
+        return Err(format!(
+            "the authority answering is the same process the switch was supposed to retire (pid {}), \
+             so the retire leaked and its own cached argv and account would spawn the leg",
+            resident.0
+        ));
+    }
+    match phase {
+        P::EndedNoRespawn => Ok(()),
+        P::Ready => Err("a leg is already live on this row, so the retire did not take; it runs on the login the switch moved away from".into()),
+        other => Err(format!(
+            "the replacement authority rests at {:?} rather than the phase a resumed run must rest at, and a reset is admissible only from ended_no_respawn",
+            crate::capsule_workspace::phase_str(other)
         )),
     }
 }
@@ -1099,38 +1224,85 @@ mod tests {
         );
     }
 
-    /// The defect: a spawn alone was reported as a running leg. A minted
-    /// voyage is the ONLY evidence the agent is on the pty, so it decides
-    /// on its own -- whatever phase the supervisor settled at.
+    /// The defect this whole change exists for, and the one the review of
+    /// its first version found. A spawn alone was reported as a running
+    /// leg; the first fix then minted on ANY phase, merely warning when it
+    /// was unexpected. `Reset` is admissible only from `ended_no_respawn`,
+    /// so every other phase is a mint that would be refused -- and `ready`
+    /// is worse than refused, because it means a leg is already live on the
+    /// login the switch moved away from.
     #[test]
-    fn only_a_minted_voyage_means_the_replacement_is_running() {
-        assert!(super::replacement_is_running("ended_no_respawn", Some("01a0e6c5-voyage")).is_ok());
-        assert!(super::replacement_is_running("ready", Some("01a0e6c5-voyage")).is_ok());
+    fn only_the_resting_phase_of_a_resumed_run_licenses_a_mint() {
+        use sot_log::wire::SupervisorPhase as P;
+        let fresh = (4242u32, 900u64);
+        let retired = Some((1111u32, 800u64));
+        assert!(super::ready_to_mint(P::EndedNoRespawn, retired, fresh).is_ok());
+        for refused in [P::Ready, P::Terminal, P::Starting, P::Ending] {
+            assert!(
+                super::ready_to_mint(refused, retired, fresh).is_err(),
+                "{refused:?} must never be minted on"
+            );
+        }
     }
 
-    /// The exact shape that shipped: the supervisor started and settled at
-    /// the phase a resumed run always rests at, and nothing minted a
-    /// voyage. That is a row with NO leg, and it must never read as success.
+    /// `ready` is named separately because its failure is not "nothing came
+    /// up" but "something did, on the wrong account" -- the message has to
+    /// say so, or the next reader chases a missing leg that is running.
     #[test]
-    fn a_spawn_with_no_voyage_is_a_row_with_no_leg() {
-        let verdict = super::replacement_is_running("ended_no_respawn", None);
-        let detail = verdict.expect_err("a replacement with no voyage is not running");
-        assert!(
-            detail.contains("ended_no_respawn"),
-            "the failure must name the phase it found, got {detail:?}"
-        );
-        assert!(
-            detail.contains("no voyage was minted"),
-            "the failure must say what was missing, got {detail:?}"
-        );
+    fn a_live_leg_is_reported_as_the_old_login_not_as_an_absence() {
+        use sot_log::wire::SupervisorPhase as P;
+        let detail = super::ready_to_mint(P::Ready, Some((1111, 800)), (4242, 900))
+            .expect_err("a live leg is not a licence to mint");
+        assert!(detail.contains("already live"), "got {detail:?}");
+        assert!(detail.contains("moved away from"), "got {detail:?}");
     }
 
-    /// A reset that answers an empty or blank id has minted nothing; it may
-    /// not be read as a voyage just because it came back `Ok`.
+    /// `end_run`'s stop is best effort. When it leaks, the OLD supervisor
+    /// is still resident, this call's own spawn exits at the authority
+    /// fence, and the status read comes back from that old process resting
+    /// at exactly the phase a healthy replacement rests at. Only its
+    /// identity tells the two apart, and minting on it would spawn the leg
+    /// from its own cached argv and account.
     #[test]
-    fn an_empty_voyage_id_is_not_a_voyage() {
-        assert!(super::replacement_is_running("ended_no_respawn", Some("")).is_err());
-        assert!(super::replacement_is_running("ended_no_respawn", Some("   ")).is_err());
+    fn a_leaked_retire_is_never_minted_on_however_it_rests() {
+        use sot_log::wire::SupervisorPhase as P;
+        let same = (1111u32, 800u64);
+        let detail = super::ready_to_mint(P::EndedNoRespawn, Some(same), same)
+            .expect_err("the process the switch retired is not a replacement");
+        assert!(detail.contains("retire leaked"), "the failure must name the cause, got {detail:?}");
+        assert!(detail.contains("1111"), "the failure must name the process, got {detail:?}");
+    }
+
+    /// A pid that merely REPEATS is not the same authority: the supervisor
+    /// reports its own creation stamp alongside, and the pair is what is
+    /// compared, so a recycled pid on a genuinely new process still mints.
+    #[test]
+    fn a_recycled_pid_on_a_new_authority_still_mints() {
+        use sot_log::wire::SupervisorPhase as P;
+        assert!(super::ready_to_mint(P::EndedNoRespawn, Some((1111, 800)), (1111, 901)).is_ok());
+    }
+
+    /// Nothing answering before the retire is the ordinary case for a row
+    /// whose authority had already gone; it is not evidence of a leak.
+    #[test]
+    fn an_unknown_predecessor_does_not_block_the_mint() {
+        use sot_log::wire::SupervisorPhase as P;
+        assert!(super::ready_to_mint(P::EndedNoRespawn, None, (4242, 900)).is_ok());
+    }
+
+    /// The wait's partition is the supervisor's own: these three are where
+    /// an authority stays until somebody acts, and the rest are phases it
+    /// is still moving through -- which is the whole reason the previous
+    /// version's two-second settle was not enough to believe.
+    #[test]
+    fn only_settled_phases_end_the_wait() {
+        use sot_log::wire::SupervisorPhase as P;
+        for resting in [P::Ready, P::EndedNoRespawn, P::Terminal] {
+            assert!(super::phase_rests(resting), "{resting:?} rests");
+        }
+        for moving in [P::Starting, P::Ending] {
+            assert!(!super::phase_rests(moving), "{moving:?} is still moving");
+        }
     }
 
     // `end_run`'s outcomes partition into "the run is over" (spawn the
