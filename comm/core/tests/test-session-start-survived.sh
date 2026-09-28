@@ -133,7 +133,43 @@ case_two_racing_starts_leave_one_bridge() {
     sot_bridge_stop "$NAME"
 }
 
+# A daemon that does not answer must not cost a capsule row its wake path. The
+# bootstrap used to resolve the endpoint and require a live `pty.screen` before
+# it would spawn a watcher at all, so one silent second printed MONITOR --
+# and nothing re-arms afterwards, so that session stayed on the Monitor for its
+# whole life. The watcher retries the daemon itself now, so arming it is the
+# honest claim; the ONLY test left in that branch is that an owner exists.
+#
+# The endpoint here points at a socket that does not exist, so no daemon
+# anywhere can answer and the outcome cannot depend on one being up. The script
+# is run by a copy of bash NAMED `claude`, which forks it as a child: that is
+# the claude ancestor `sot_owner_pid` walks to, without which this branch
+# legitimately refuses.
+case_a_silent_daemon_still_arms_the_watcher() {
+    local out="$WORK/wake.out" self="$WORK/testhost__ws-test.txt"
+    local claude="$WORK/fakebin/claude" bash_bin
+    bash_bin="$(command -v bash)" || return 1
+    cp "$bash_bin" "$claude" || return 1
+    # A leftover marker would answer SURVIVED before the branch under test ran.
+    rm -f "$MARKER"
+    sot_write_self_file "$self" "$NAME" "$REPO" "$PROJECT_ROOT" || return 1
+    SOT_COMM_SELF_FILE="$self" SOT_SOCKET="$WORK/no-such-daemon.sock" \
+        CLAUDE_CODE_SESSION_ID=sess-WAKE \
+        "$claude" -c 'bash "$1" >"$2" 2>&1' _ "$SCRIPTS_DIR/comm-session-start.sh" "$out"
+    # Whatever it decided, do not leave a watcher behind: it is a real one.
+    local w; w="$(sed -n '1p' "$MARKER" 2>/dev/null)"
+    [[ "$w" =~ ^[0-9]+$ ]] && { kill "$w" 2>/dev/null; SLEEPERS+=("$w"); }
+    grep -q 'WAKE: comm-wake.sh' "$out" || {
+        echo "    got: $(grep -o 'BOOTSTRAP-ARM.*' "$out" | head -n1)"
+        grep -q 'wake: ' "$out" && echo "    reason: $(grep -o 'wake: .*' "$out" | head -n1)"
+        return 1
+    }
+    ! grep -q 'MONITOR:' "$out" || { echo "    a Monitor was printed as well as a WAKE line"; return 1; }
+    return 0
+}
+
 check "own live watcher survives, untouched" case_own_live_watcher_survives
+check "a silent daemon still arms the watcher instead of printing MONITOR" case_a_silent_daemon_still_arms_the_watcher
 check "orphan armed by another session: NOT SURVIVED and reaped" case_orphan_from_another_session_is_not_survived_and_reaped
 check "legacy marker (pid only) keeps the liveness-only answer" case_legacy_marker_without_session_line_keeps_liveness_answer
 check "dead pid is not survived" case_dead_pid_is_not_survived

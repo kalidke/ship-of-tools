@@ -145,5 +145,19 @@ on the Monitor or hid mail from it:
   marked frontend mail read where `comm-poll.sh` and the turn-end hook could not
   see it. Deleted; `comm-poll.sh` is the one reader on every platform.
 
+A SILENT DAEMON NO LONGER COSTS A BOX ITS WAKE PATH, at either end of the
+mechanism. The watcher used to exit after five unanswered `workspace.list` or
+`pty.screen` requests, and the bootstrap used to require a live `pty.screen`
+before it would spawn one at all — so a daemon quiet for one second printed
+`MONITOR:`, and since nothing re-arms a watcher, that session stayed on the
+Monitor for the rest of its life. The watcher now slows its poll to 30s after
+five silences and keeps waiting, and the bootstrap arms it without probing.
+The immortal-watcher reason for that exit is gone: `_comm_wake_owner_alive`
+ends the process with the agent it serves. A row that is GONE
+(`unknown_workspace`) still ends the watcher — that is a different fact from a
+daemon that did not answer. Nothing about delivery changes: the inbox append
+is the delivery, and the recipient's Stop hook blocks its turn end on unread
+directed mail, so an outage costs the wake and nothing else.
+
 The Monitor itself is unchanged and still the fallback for a session in no
 capsule row, on any platform: there is no pane to type into.

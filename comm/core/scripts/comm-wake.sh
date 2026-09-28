@@ -52,7 +52,11 @@
 #     "cursor moved at all" as reason enough to ping again.
 #
 # LIFETIME: this process ends itself when the agent (claude/codex) that
-# spawned it is gone -- the caller passes that pid with `--owner <pid>`
+# spawned it is gone, when its row is gone, and at nothing else -- a daemon
+# that stops answering slows the poll (see the backoff below) rather than
+# ending the watcher, because nothing would re-arm one and the fallback it
+# used to leave behind is the Monitor this exists to replace.
+# The caller passes the owning pid with `--owner <pid>`
 # (found while the caller itself was still attached, a better vantage than
 # this script has once backgrounded), then `kill -0`s it every cycle. This
 # is what the old Monitor-only scheme couldn't do, and why idle watchers
@@ -174,11 +178,7 @@ _comm_wake_retarget() {
         1) echo "comm-wake: no live row declares @$HANDLE — exiting so the next session start re-arms" >&2; exit 0 ;;
         3) echo "comm-wake: two or more rows declare @$HANDLE — refusing to guess which to wake; exiting so the next session start re-arms" >&2; exit 0 ;;
         *)
-            no_reply_count=$((no_reply_count + 1))
-            if [ "$no_reply_count" -ge 5 ]; then
-                echo "comm-wake: workspace.list unanswered 5 times; exiting so session start can fall back to the Monitor" >&2
-                exit 0
-            fi
+            _comm_wake_no_reply "workspace.list"
             return 1
             ;;
     esac
@@ -201,6 +201,51 @@ _comm_wake_retarget() {
 _comm_wake_owner_alive() {
     [ -n "${AGENT_PID:-}" ] || return 0
     kill -0 "$AGENT_PID" 2>/dev/null
+}
+
+# ---- a daemon that does not answer ----------------------------------------
+#
+# A silent daemon USED TO end the watcher after five unanswered requests, so
+# the session could fall back to the harness Monitor. That trade is off: the
+# owner's requirement is that the Monitor is gone, and a box that silently
+# reverts to it on a transient hiccup has met a version of that which only
+# looks met. Nothing re-arms a watcher either -- the session would have to
+# re-run its own bootstrap by hand, which an idle session never does.
+#
+# So the watcher STAYS and slows down instead. The reason the exit existed --
+# the immortal watcher -- is already gone: `_comm_wake_owner_alive` ends this
+# process with the agent it serves, so a watcher waiting on a daemon that
+# never returns cannot outlive the session that armed it. Nothing is lost
+# meanwhile: delivery is the inbox append, and the recipient's own Stop hook
+# blocks its turn end on unread directed mail. The only casualty of an outage
+# is the WAKE, which is what the backoff is for.
+#
+# A row that is GONE still ends the watcher (the `unknown_workspace` arms):
+# "this row no longer exists" is a different fact from "the daemon did not
+# answer", and a watcher for a dead row should die.
+POLL_DEFAULT_SECONDS=2
+BACKOFF_SECONDS=30
+BACKOFF_AFTER=5
+
+# _comm_wake_no_reply WHAT -- one unanswered request; slow the poll once the
+# run of silence reaches $BACKOFF_AFTER. One line per TRANSITION, never per
+# cycle, same discipline as the prompt-free gate's hold notice.
+_comm_wake_no_reply() {
+    no_reply_count=$((no_reply_count + 1))
+    [ "$no_reply_count" -ge "$BACKOFF_AFTER" ] || return 0
+    [ "$POLL_SECONDS" = "$BACKOFF_SECONDS" ] && return 0
+    POLL_SECONDS="$BACKOFF_SECONDS"
+    echo "comm-wake: $1 unanswered $no_reply_count times; polling every ${BACKOFF_SECONDS}s until this daemon answers -- the watcher stays armed, so nothing needs re-arming and no Monitor is needed" >&2
+}
+
+# _comm_wake_answered -- the daemon spoke: full speed again, and the run of
+# silence is over.
+_comm_wake_answered() {
+    if [ "$POLL_SECONDS" != "$POLL_DEFAULT_SECONDS" ]; then
+        echo "comm-wake: the daemon answers again after $no_reply_count silent probes; back to a ${POLL_DEFAULT_SECONDS}s poll" >&2
+        POLL_SECONDS="$POLL_DEFAULT_SECONDS"
+    fi
+    no_reply_count=0
 }
 
 # ---- one source at a time -------------------------------------------------
@@ -325,17 +370,10 @@ _comm_wake_deliver_ping() {
         exit 0
     fi
     if [ "$pf_rc" -eq 2 ]; then
-        no_reply_count=$((no_reply_count + 1))
-        if [ "$no_reply_count" -ge 5 ]; then
-            echo "comm-wake: pty.screen unanswered 5 times; exiting so session start can fall back to the Monitor" >&2
-            # Owner-checked, like the EXIT path — a blind rm here would drop
-            # someone else's marker just as readily.
-            _comm_wake_cleanup
-            exit 0
-        fi
+        _comm_wake_no_reply "pty.screen"
         return   # no reply this cycle; retry, cursor untouched
     fi
-    no_reply_count=0
+    _comm_wake_answered
     if [ "$pf_rc" -ne 0 ]; then
         # Honesty of the record: a gate that can suppress delivery
         # indefinitely must leave a trace of having done so. One line per
@@ -371,13 +409,14 @@ _comm_wake_run() {
     POS=()
     for i in "${!SOURCES[@]}"; do POS+=("$(sot_file_lines "${SOURCES[$i]}")"); done
     no_reply_count=0
+    POLL_SECONDS="$POLL_DEFAULT_SECONDS"
     blocked_since=""
 
     # No pane-liveness check beyond the agent-owner one above: a capsule
     # leg's own process group reaps this when the row itself goes away.
     while :; do
         _comm_wake_owner_alive || exit 0
-        sleep 2
+        sleep "$POLL_SECONDS"
         _comm_wake_bound_log
         if [ "$DELIVER" = "ping" ]; then
             # One notice for the whole cycle, whichever inboxes it came from:

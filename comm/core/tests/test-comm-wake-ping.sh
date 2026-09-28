@@ -330,11 +330,17 @@ EOF
     return 0
 }
 
-case_five_consecutive_no_replies_gives_up_and_drops_the_marker() {
+# A daemon that stops answering slows this watcher down; it never ends it. The
+# watcher used to exit after five unanswered probes so the session could fall
+# back to the harness Monitor -- but nothing re-arms a watcher, so one silent
+# second cost a box its wake path for the whole session, and the fallback is
+# the Monitor this mechanism exists to replace. The immortal-watcher reason for
+# that exit is gone: the owner tie ends this process with its agent.
+case_five_unanswered_probes_back_off_and_keep_watching() {
     local d="$WORK/no-reply"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
-    local marker="$d/state/watchee.watch" screen_calls="$d/screen.calls"
-    : > "$screen_calls"
+    local screen_calls="$d/screen.calls" intervals="$d/intervals"
+    : > "$screen_calls"; : > "$intervals"
     cat > "$d/run.sh" <<EOF
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
@@ -343,20 +349,58 @@ _comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf x >> "$screen_calls"; printf ''; }
 turns=0
 sleep() {
+    printf '%s\n' "\$1" >> "$intervals"
     turns=\$((turns + 1))
     if [ "\$turns" -eq 1 ]; then
         printf '{"from":"peer","to":"me","msg":"hello"}\n' >> "$d/inbox/watchee.jsonl"
     fi
-    [ "\$turns" -le 10 ] || { echo "the loop never gave up after 5 unanswered probes" >&2; exit 9; }
+    [ "\$turns" -le 10 ] || exit 0
 }
 _comm_wake_main watchee --deliver ping --owner \$\$
 EOF
     bash "$d/run.sh" 2>/dev/null
     local rc=$?
-    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0 (gave up after 5 unanswered pty.screen probes)"; return 1; }
-    [ ! -f "$marker" ] || { echo "  the liveness marker was left behind after giving up"; return 1; }
+    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0"; return 1; }
     local sc; sc="$(wc -c < "$screen_calls" 2>/dev/null || echo 0)"
-    [ "$sc" -eq 5 ] || { echo "  pty.screen was probed $sc time(s), want exactly 5 before giving up"; return 1; }
+    [ "$sc" -eq 10 ] || { echo "  pty.screen was probed $sc time(s) in 10 cycles, want 10 (it gave up instead of backing off)"; return 1; }
+    [ "$(sed -n '5p' "$intervals")" = "2" ] || { echo "  the 5th poll waited '$(sed -n '5p' "$intervals")'s, want 2 (backoff started early)"; return 1; }
+    [ "$(sed -n '6p' "$intervals")" = "30" ] || { echo "  the 6th poll waited '$(sed -n '6p' "$intervals")'s, want 30 (no backoff after five silences)"; return 1; }
+    return 0
+}
+
+# The same daemon, answering again: the fast poll comes back, so an outage
+# costs latency only while it lasts.
+case_the_poll_speeds_up_again_once_the_daemon_answers() {
+    local d="$WORK/answers-again"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls" intervals="$d/intervals"
+    : > "$calls"; : > "$intervals"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+turns=0
+_comm_wake_pty_screen() {
+    [ "\$turns" -le 6 ] && { printf ''; return 0; }
+    printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'
+}
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+sleep() {
+    printf '%s\n' "\$1" >> "$intervals"
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"hello"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 9 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s), want 1 (the held ping once the daemon answered)"; return 1; }
+    [ "$(sed -n '6p' "$intervals")" = "30" ] || { echo "  the 6th poll waited '$(sed -n '6p' "$intervals")'s, want 30"; return 1; }
+    [ "$(sed -n '9p' "$intervals")" = "2" ] || { echo "  the poll stayed at '$(sed -n '9p' "$intervals")'s after the daemon answered, want 2"; return 1; }
     return 0
 }
 
@@ -920,16 +964,15 @@ EOF
     return 0
 }
 
-# The give-up budget counts CYCLES, not sources: five unanswered pty.screen
+# The silence budget counts CYCLES, not sources: five unanswered pty.screen
 # probes, whether the mail sits in one inbox or both. A per-source body spent
-# two probes a cycle and dropped the watcher after three -- returning a
-# frontend-box session to the harness Monitor sooner than any other box for a
-# transient daemon hiccup.
-case_the_give_up_budget_is_five_cycles_with_both_sources_hot() {
+# two probes a cycle and hit the limit on cycle three, slowing a frontend-box
+# session's wake sooner than any other box's for the same hiccup.
+case_the_silence_budget_is_five_cycles_with_both_sources_hot() {
     local d="$WORK/no-reply-both"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
     : > "$d/inbox/watchee.jsonl"
-    local marker="$d/state/watchee.watch" screen_calls="$d/screen.calls" ticks="$d/cycles"
-    : > "$screen_calls"; : > "$ticks"
+    local screen_calls="$d/screen.calls" intervals="$d/intervals"
+    : > "$screen_calls"; : > "$intervals"
     cat > "$d/run.sh" <<EOF
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
@@ -940,36 +983,36 @@ _comm_wake_pty_screen() { printf x >> "$screen_calls"; printf ''; }
 turns=0
 sleep() {
     turns=\$((turns + 1))
-    printf t >> "$ticks"
+    printf '%s\n' "\$1" >> "$intervals"
     if [ "\$turns" -eq 1 ]; then
         printf '{"from":"peer","to":"watchee","text":"from another box"}\n' >> "$d/AppDataLocal/sot/fe-inbox.jsonl"
         printf '{"from":"sibling","to":"watchee","msg":"from this box"}\n' >> "$d/inbox/watchee.jsonl"
     fi
-    [ "\$turns" -le 10 ] || { echo "the loop never gave up after 5 unanswered probes" >&2; exit 9; }
+    [ "\$turns" -le 8 ] || exit 0
 }
 _comm_wake_main watchee --deliver ping --owner \$\$
 EOF
     bash "$d/run.sh" 2>/dev/null
     local rc=$?
-    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0 (gave up after 5 unanswered pty.screen probes)"; return 1; }
-    [ ! -f "$marker" ] || { echo "  the liveness marker was left behind after giving up"; return 1; }
+    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0"; return 1; }
     local sc; sc="$(wc -c < "$screen_calls" 2>/dev/null || echo 0)"
-    [ "$sc" -eq 5 ] || { echo "  pty.screen was probed $sc time(s) with both inboxes hot, want exactly 5"; return 1; }
-    # THE assertion that separates the two shapes: five probes is the count
-    # either way, but a body that probes once per SOURCE burns them in three
-    # cycles instead of five.
-    local cy; cy="$(wc -c < "$ticks" 2>/dev/null || echo 0)"
-    [ "$cy" -eq 5 ] || { echo "  gave up after $cy poll cycle(s), want 5 (one probe per cycle)"; return 1; }
+    [ "$sc" -eq 8 ] || { echo "  pty.screen was probed $sc time(s) in 8 cycles with both inboxes hot, want 8 (one per cycle)"; return 1; }
+    # THE assertion that separates the two shapes: a body that probes once per
+    # SOURCE spends the five silences in three cycles, so it slows down on the
+    # 4th poll instead of the 6th.
+    [ "$(sed -n '5p' "$intervals")" = "2" ] || { echo "  the 5th poll waited '$(sed -n '5p' "$intervals")'s, want 2"; return 1; }
+    [ "$(sed -n '6p' "$intervals")" = "30" ] || { echo "  the 6th poll waited '$(sed -n '6p' "$intervals")'s, want 30"; return 1; }
     return 0
 }
 
 check "a frame the frontend files on Windows pings this session" case_a_frontend_inbox_frame_pings
 check "mail in both inboxes in one cycle types the notice once" case_both_inboxes_in_one_cycle_ping_once
-check "the five-probe give-up budget is per cycle, not per inbox" case_the_give_up_budget_is_five_cycles_with_both_sources_hot
+check "the five-probe silence budget is per cycle, not per inbox" case_the_silence_budget_is_five_cycles_with_both_sources_hot
 check "a frontend frame for another handle on the box does not ping" case_a_frontend_frame_for_another_handle_does_not_ping
 check "a batch that is only __selftest__ frames types the selftest notice" case_selftest_only_batch_types_the_selftest_text
 check "a not-free prompt withholds the ping and types it once the prompt frees up" case_prompt_not_free_waits_then_types_once_free
-check "five consecutive no-reply pty.screen probes gives up and drops the marker" case_five_consecutive_no_replies_gives_up_and_drops_the_marker
+check "five unanswered pty.screen probes back off instead of giving up" case_five_unanswered_probes_back_off_and_keep_watching
+check "the poll speeds up again once the daemon answers" case_the_poll_speeds_up_again_once_the_daemon_answers
 check "a row the daemon does not have ends the watcher instead of holding the ping" case_a_row_the_daemon_does_not_have_ends_the_watcher
 check "the ping follows the resolver, not the id frozen at spawn" case_the_ping_follows_the_resolver_not_the_startup_id
 check "no live row declaring the handle exits without typing" case_no_live_row_declaring_the_handle_exits_without_typing

@@ -410,32 +410,24 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     if CAPSULE_WS_ID="$(sot_capsule_workspace_id 2>/dev/null)"; then
         if _survived "$HANDLE"; then
             WAKE_ACTIVE=1
-        # sot_pty_screen -> sot_oneshot_request reads $ENDPOINT from the
-        # CALLER's scope (comm-lib.sh's own contract — see sot_oneshot_request's
-        # doc comment); every other call site in this file (the SURVIVED
-        # agent.join re-declare above) resolves it first the same way. Without
-        # this, $ENDPOINT was never set here, and under this script's own
-        # `set -u`, sot_oneshot_request's `case "$ENDPOINT" in` died with
-        # "ENDPOINT: unbound variable" — a genuine capsule row (a resolvable
-        # $CAPSULE_WS_ID) crashed this whole script silently right here, output
-        # eaten by the elif's own >/dev/null 2>&1, exit 1, no BOOTSTRAP-ARM at
-        # all (field-reproduced 2026-09-19). Resolving it first both fixes the
-        # crash and lets pty.screen actually run, which is also why a capsule
-        # row landed on the MONITOR fallback instead of WAKE: the probe below
-        # never even attempted to answer before this.
-        elif ENDPOINT="$(sot_daemon_endpoint 2>/dev/null)" && [ -n "$ENDPOINT" ] \
-             && SOT_SEND_TIMEOUT=10 sot_pty_screen "$CAPSULE_WS_ID" >/dev/null 2>&1; then
-            # Ping-wake honesty: only claim the watcher is armed once this
-            # daemon has proven, right now, that it can answer pty.screen at
-            # all — the watcher's own prompt-free gate depends on that same
-            # call working every cycle. A daemon that can't answer it gets no
-            # watcher spawned at all; the MONITOR: line below is the honest
-            # fallback.
+        else
+            # NO LIVE PROBE (2026-09-28). This used to resolve the endpoint and
+            # require the daemon to answer `pty.screen` right now before it
+            # would spawn a watcher at all, so a daemon silent for one second
+            # cost the session its wake path for the rest of its life -- and
+            # what it fell back to is the Monitor this whole mechanism exists
+            # to replace. The watcher probes and RETRIES on its own now (it
+            # backs off rather than exiting), so arming it is the honest claim
+            # even against a daemon that has not answered yet; it resolves its
+            # own endpoint and refuses on its own terms if it cannot.
+            #
             # No owner, no watcher (messaging ruling §3): an untethered ping
-            # watcher IS the immortal watcher — it outlives the session, types
+            # watcher IS the immortal watcher -- it outlives the session, types
             # into a row that has moved on, and leaves a marker that makes the
             # next bootstrap report SURVIVED. comm-wake.sh refuses one anyway;
             # this keeps the fallback honest instead of spawning a doomed child.
+            # It is also the LAST thing that can send a capsule row to the
+            # Monitor, which is why it is the only test left here.
             WAKE_OWNER="$(sot_owner_pid || true)"
             if [ -n "$WAKE_OWNER" ]; then
                 SOT_WORKSPACE_ID="$CAPSULE_WS_ID" nohup "$SCRIPT_DIR/comm-wake.sh" "$HANDLE" --deliver ping --owner "$WAKE_OWNER" \
@@ -444,8 +436,6 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
             else
                 echo "wake: no owning claude/codex ancestor found; falling back to the Monitor" >&2
             fi
-        else
-            echo "wake: pty.screen did not answer on this daemon; falling back to the Monitor" >&2
         fi
     fi
 fi
@@ -466,5 +456,5 @@ _capability_lines
 # above) is success, full stop -- never let a well-behaved but non-integer-0
 # exit status trailing off the end of the script (a heredoc's `cat`, some
 # future addition here) silently turn a good bootstrap into a caller-visible
-# failure the way the missing $ENDPOINT above just did.
+# failure.
 exit 0
