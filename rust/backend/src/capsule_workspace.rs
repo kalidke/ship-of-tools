@@ -3008,6 +3008,16 @@ mod runtime {
                     )));
                 }
             }
+            // The second of the two resets in this tree, and the other is
+            // `reauth::mint_replacement_voyage`. They stay separate on
+            // purpose: that path ends the RUN rather than sending a
+            // waiting stop, spends a `--resume <id>` argv the row never
+            // persists, waits in place while HOLDING this row's guard
+            // (safe only because its replacement has no leg that could
+            // crash into the watchdog's own use of that guard), and reads
+            // a repeated authority identity as a REFUSAL where this arm
+            // reads it as a licence to skip the retire. Its doc comment
+            // carries the long form.
             return LockedStep::Done(match sot_log::supervisor_client::reset(&state_dir) {
                 // Mints a fresh voyage on the SAME epoch; the observer's next round supersedes the latch.
                 Ok(_new_voyage) => Ok(Some(())),

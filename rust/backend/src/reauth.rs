@@ -647,12 +647,14 @@ pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
     );
 }
 
-/// Why a revival's tail stopped short of the mint. One variant per line
-/// [`restart_blocking`] owes its log: the three failures are not
-/// interchangeable to whoever reads it — nothing answered, something
-/// answered and was refused, or the mint itself answered nothing — and two
-/// of them carry the phase the authority settled at, which only the tail
-/// has read.
+/// Why a revival's tail stopped short of the mint. The three refusals are
+/// not interchangeable to whoever reads the log — nothing answered,
+/// something answered and was refused, or the mint itself answered nothing
+/// — so they must still be distinguishable at the call site: THE LOG
+/// RECORDS ARE THE CONTRACT, and one `String` cannot carry three of them.
+/// Each variant therefore holds exactly what its own line needs and
+/// [`restart_blocking`] cannot already see — the phase the authority
+/// settled at, which only the tail has read — and nothing else.
 enum MintRefusal {
     NeverAnswered(String),
     Refused { settled: &'static str, detail: String },
@@ -662,6 +664,31 @@ enum MintRefusal {
 /// The revival tail: wait for the replacement authority to come to rest on
 /// its own clock, judge it, and mint its voyage. ONE name for the rule, so
 /// [`restart_blocking`] above reads as exactly the three effects it is.
+///
+/// There is a SECOND reset in this tree — `ensure_started_locked`, in
+/// `capsule_workspace.rs`, reached when a selection finds the row resting
+/// at `ended_no_respawn`. The two are deliberately not shared, and the next
+/// reader who finds two of them must not have to re-derive why:
+///
+///   1. How the predecessor is ended. Attach sends a WAITING stop, with a
+///      confirmed exit; a reauth ends the RUN, which also closes the record
+///      and whose stop is best effort — which is why only this path owes
+///      the identity check [`supervisor_identity`] describes.
+///   2. What the replacement spends. Attach resolves the row's ordinary
+///      agent argv, whose `--continue` selects by recency; a reauth spends
+///      the plan's `--resume <id>`, which selects by name and is never
+///      persisted on the row, so this is the only call that can mint it.
+///   3. How the wait is performed. Attach returns a wait step that RELEASES
+///      the row guard and re-runs its whole decision from scratch, because
+///      the watchdog takes that guard while restarting a crashed leg. This
+///      path polls in place while HOLDING the guard, which is safe by
+///      construction: a resumed run is never resurrected, so its
+///      replacement rests with no leg at all, no leg can exit, and nothing
+///      contends for the guard. Merging the two waits would break one of
+///      them — that is the difference that forecloses unification.
+///   4. What identity means. Attach uses it as a fast path to SKIP the
+///      retire; this path uses it as a REFUSAL. Opposite polarity, opposite
+///      consequence.
 fn mint_replacement_voyage(
     fx: &dyn RestartEffects,
     state_dir: &Path,
