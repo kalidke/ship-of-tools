@@ -14857,19 +14857,20 @@ impl State {
                         // append. A nav command is acted on (when it targets
                         // our active workspace) and NEVER filed as chat;
                         // anything else is an ordinary message → append to
-                        // fe-inbox.jsonl so the in-terminal agent on this
-                        // machine receives it instantly (mirror the
-                        // workspace.changed push leg).
+                        // fe-inbox.jsonl unconditionally, and where a reader
+                        // for it exists the in-terminal agent on this machine
+                        // receives it instantly (mirror the workspace.changed
+                        // push leg).
                         let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
                         if let Some(env) = parse_nav_envelope(text) {
                             self.handle_nav_envelope(&event_host, &env);
                         } else {
-                            // ADR 0048: the append IS the delivery, so this
-                            // BOX is the only thing that can honestly report
-                            // one for a handle hosted here. Claim only from a
-                            // set we KNOW — our own host's rows — and answer
-                            // on the connection the frame arrived on (the hub
-                            // that relayed it).
+                            // ADR 0048: the append is unconditional; the
+                            // CLAIM is what promises a reader, so it is made
+                            // only where one exists. Claim only from a set we
+                            // KNOW — our own host's rows — and answer on the
+                            // connection the frame arrived on (the hub that
+                            // relayed it).
                             //
                             // Three rules, and the order of the code is the
                             // order of the rules (amendment 9/10/14):
@@ -15746,7 +15747,7 @@ impl State {
                     // arrived on, so it cannot miss the hub by
                     // construction. The set builder and its predicate stay
                     // and are read HERE, per inbound frame, in
-                    // `receipt_for`.
+                    // `receipt_from_rows`.
                     // --capture-cycle <N>: simulate N Ctrl+PgDn presses
                     // (negative = Ctrl+PgUp) on the first workspace.list
                     // reply. Consumed once so a re-fetch from a later
@@ -19587,9 +19588,13 @@ fn fe_state_path() -> Option<std::path::PathBuf> {
 
 /// Path of the agent-relay inbox (`<state-dir>/fe-inbox.jsonl`). The daemon
 /// pushes `agent.message` evt frames over the SSH-forwarded socket; the FE
-/// appends each as one JSON line here so the in-terminal agent on this
-/// machine receives cross-machine messages instantly instead of polling the
-/// git bus. One object per line: `{"from":..,"to":..,"text":..,"ts":..}`.
+/// appends each as one JSON line here, on every platform and unconditionally.
+/// A READER for it exists only where [`fe_inbox_has_a_local_reader`] says so:
+/// there the in-terminal agent on this machine receives cross-machine
+/// messages instantly instead of polling the git bus, and elsewhere the line
+/// is written and no process ever opens it — which is why the CLAIM, never
+/// the append, is what this frontend gates (ADR 0048). One object per line:
+/// `{"from":..,"to":..,"text":..,"ts":..}`.
 fn fe_inbox_path() -> Option<std::path::PathBuf> {
     crate::paths::sot_state_dir().map(|d| d.join("fe-inbox.jsonl"))
 }
@@ -19645,9 +19650,9 @@ pub(crate) fn self_comm_handle() -> String {
 
 /// The complete set of sot-comm handles declared by `rows` (item 18) —
 /// pure over rows, no `&self`, no connection, so it unit-tests without a
-/// wire. This is the set `receipt_for` tests a relayed frame's `to`
-/// against, per inbound frame (ADR 0048) — read fresh from the own-host
-/// rows each time, so there is no declared set to go stale.
+/// wire. This is the set `receipt_from_rows` tests a relayed frame's
+/// `to` against, per inbound frame (ADR 0048) — read fresh from the
+/// own-host rows each time, so there is no declared set to go stale.
 ///
 /// Keeps a row's `agent_handle` when it is non-empty — the filter is
 /// **only** that, kept on its own line rather than left for a test to
@@ -19776,10 +19781,9 @@ fn receipt_from_rows(
 /// frontend's own attachment keeps the roster non-empty, so the answer is
 /// never the different one, `no such handle`.
 ///
-/// Composed rather than folded into [`receipt_from_rows`] so that
-/// function's decision table stays provable on every platform: with the
-/// gate inside it, every negative case would pass off Windows for the
-/// platform's reason instead of its own.
+/// The composition is deliberate, not incidental: do not fold the gate
+/// into [`receipt_from_rows`]. ADR 0048's amendment "a receipt only where
+/// a reader exists" is where the reason is written.
 fn receipt_for(
     payload: &serde_json::Value,
     own_host_rows: Option<&[crate::transport::WorkspaceInfo]>,
@@ -19803,8 +19807,8 @@ fn receipt_for(
 /// a resend is a lost message, which is worse than the duplicate it prevents.
 ///
 /// Pure over its arguments — no `&self`, no filesystem — for the reason
-/// [`receipt_for`] gives above: a gate no test can reach is how a set builder
-/// shipped with no caller.
+/// [`receipt_from_rows`] gives above: a gate no test can reach is how a set
+/// builder shipped with no caller.
 fn inbox_window_has_frame(window: &str, id: &str, to: &str) -> bool {
     window.lines().any(|line| {
         // A torn append is realistic (the file is appended to by more than
@@ -27709,11 +27713,9 @@ mod tests {
         // — an id, a non-empty `to`, and an own-host row declaring exactly
         // that handle — so the answer can turn on nothing but the platform.
         //
-        // Against the tree before the gate this FAILS on Linux and macOS,
-        // where `receipt_for` returned `Some` and the sender printed `filed`
-        // for a frame no process on the box would ever read. On Windows it
-        // passes before and after, which is the point: the gate must not
-        // silence the platform that DOES read the file.
+        // On Windows the assertion is a positive — the gate must not
+        // silence the platform that DOES read the file; on every other leg
+        // it is the negative this gate exists to create.
         let rows = vec![crate::transport::WorkspaceInfo {
             agent_handle: "peer-otherbox".to_string(),
             ..ws_info("peer", "sot-be-peer")
@@ -27721,6 +27723,11 @@ mod tests {
         let frame = serde_json::json!({
             "from": "a", "to": "peer-otherbox", "text": "hi", "id": "x-1", "ts": 1.0
         });
+        assert!(
+            receipt_from_rows(&frame, Some(&rows)).is_some(),
+            "the payload half must say yes for this input, or the platform \
+             assertion below proves nothing off Windows"
+        );
         assert_eq!(
             receipt_for(&frame, Some(&rows)).is_some(),
             cfg!(windows),

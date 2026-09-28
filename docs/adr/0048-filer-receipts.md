@@ -251,13 +251,13 @@ itself Windows-only. A claim from such a box was therefore a false success: the
 sender was told `filed -> @h` for a message nothing would ever read.
 
 **The append is deliberately not gated; only the claim is.** An append promises
-nobody anything, a claim does, and the append remains the only per-process
-record that an inbound relayed frame reached the box at all — the message arm
-logs nothing on success. Gating it too would additionally confine the append,
-the lock and the whole first-writer-wins arbitration above to Windows, so one
-leg of the CI matrix would exercise the delivery path instead of three, and a
-lock-and-dedupe path split by `#[cfg]` is exactly where platform drift starts.
-The two costs of the ungated append — the file grows with no reader, and on a
+nobody anything, a claim does. Two reasons keep the append: it is the only
+per-process record that an inbound relayed frame reached the box at all — the
+message arm logs nothing on success — and the only place to suppress it without
+new machinery is the path-resolution failure arm, which already means "no state
+dir". Routing a deliberate policy through a failure arm would make a genuinely
+missing state dir indistinguishable from normal operation, and would log a
+dropped-message warning for every message on two platforms. The two costs of the ungated append — the file grows with no reader, and on a
 shared home several hosts' frontends append to one path under a lock — are
 arguments about whether a frontend should file at all off Windows. That is a
 delivery-architecture question, not an honesty question, and it is left open
@@ -292,6 +292,15 @@ whose `role` is `fe` as a receiver for every directed send, so the frontend's
 own attachment keeps the roster non-empty. That rule is pinned by its own test
 on every leg and is unchanged here.
 
+**The price of the honest verdict is latency, and it is user-visible.** A send
+in the gated class previously returned `filed` the moment the frontend's claim
+came back; it now waits out the full 5 s bound and exits 1. Nothing on the ack
+can shorten that — the roster is non-empty and the ack carries an id, so the
+only thing that would end the wait early is a receipt, and there is correctly
+none. A caller that treated a fast `filed` as the normal case will feel this as
+a pause before a failure where it used to see an instant success. The pause is
+the cost of not being lied to.
+
 ## Consequences
 
 Verdicts, in the order the first that applies wins:
@@ -307,9 +316,13 @@ Verdicts, in the order the first that applies wins:
 
 Everything a receipt cannot exist for is decided on the ack — a broadcast, a hub
 that dropped the id, an empty roster — so no path waits out five seconds for an
-answer nobody can give. **One path does wait: a frontend too old to send
-`agent.filed` is indistinguishable from a slow one**, so a send to a handle such
-a frontend hosts costs the full 5 s before its NOT CONFIRMED. The item-3 fix
+answer nobody can give. **Two paths do wait.** The first: a frontend too old to
+send `agent.filed` is indistinguishable from a slow one, so a send to a handle
+such a frontend hosts costs the full 5 s before its NOT CONFIRMED. The second
+(the amendment "a receipt only where a reader exists"): a handle hosted on a
+platform whose inbox has no reader, where no receipt is coming by design — that
+one also costs the full 5 s, and it is the honest answer rather than a gap to
+close. The item-3 fix
 this supersedes failed instantly there, but only because it matched the
 name-suffix guess; without that guess, and without a negative claim, nothing on
 the ack distinguishes an old frontend from a new one that is about to answer.
