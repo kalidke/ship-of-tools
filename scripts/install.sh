@@ -46,6 +46,9 @@ CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sot"
 # declared already-trusted for the agents the daemon spawns here. The home
 # folder is the declared scope; --trusted-root moves or narrows it.
 TRUSTED_ROOT="${SOT_TRUSTED_ROOT_PREFIX:-$HOME}"
+# Which supplier to name if that value turns out to be relative. The home
+# folder never is, so only a variable or a flag can fail the check below.
+TRUSTED_ROOT_SRC='$SOT_TRUSTED_ROOT_PREFIX'
 
 # Mirrors `hub_local_port_for` (rust/protocol/src/topology.rs): this runs
 # before any `sotd` binary is on disk, so it can't just ask the real thing.
@@ -379,7 +382,9 @@ while [ $# -gt 0 ]; do
         # Declare a folder other than this box's home (section 6); wins
         # over the environment. Checked after the loop, so every supplier
         # meets the same test.
-        --trusted-root) TRUSTED_ROOT="${2:?--trusted-root needs an absolute path}"; shift ;;
+        --trusted-root)
+            TRUSTED_ROOT="${2:?--trusted-root needs an absolute path}"
+            TRUSTED_ROOT_SRC="--trusted-root"; shift ;;
         # Consent to reconfiguring an installation that is already here. See
         # the role gate below for what it protects and why a role flag alone
         # is not consent.
@@ -393,7 +398,7 @@ done
 # writing a declaration that silently never matches a single row.
 case "$TRUSTED_ROOT" in
     /*) ;;
-    *) die "the trusted root must be an absolute path (--trusted-root / \$SOT_TRUSTED_ROOT_PREFIX): $TRUSTED_ROOT" ;;
+    *) die "$TRUSTED_ROOT_SRC must be an absolute path, and the trusted root is $TRUSTED_ROOT -- the daemon refuses a relative prefix and would trust nothing" ;;
 esac
 
 # Canonicalize the prefix (a relative one produces a repo/current symlink
