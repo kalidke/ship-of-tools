@@ -25,8 +25,9 @@
 #      manual and the resource tree; blobless partial clone = full history
 #      for blame, only the tag's tree downloaded; supersedes the curated
 #      julia bundle) + juliaup + Pkg.instantiate inside the checkout
-#   5. config in ~/.config/sot: settings.toml stub if missing; hosts.toml is
-#      read (role) and, with --hub, fetched — never written here
+#   5. config in ~/.config/sot: settings.toml stub if missing, plus this
+#      box's folder-trust declaration ([trust] root_prefix) if it has none;
+#      hosts.toml is read (role) and, with --hub, fetched — never written here
 #   6. agent comm resources: ~/.sot-comm plus Claude/Codex skills
 #   7. backend roles: install+enable the systemd --user sotd unit
 #   8. FE roles: ~/.local/bin/sot-launch wrapper + app/desktop entry
@@ -779,6 +780,29 @@ if [ "$WANT_DAEMON" = 0 ] && command -v systemctl >/dev/null 2>&1 && systemctl -
     say "disabled the local sotd.service from a previous all-in-one install"
 fi
 [ -f "$CONFIG/settings.toml" ] || printf '# Ship of Tools settings — see .sot/settings.toml.example in the repo\n' > "$CONFIG/settings.toml"
+
+# Folder trust. A row the daemon spawns must reach its task without stopping
+# at the agent's folder-trust dialog on a folder nobody has opened on this box
+# before. The daemon reads ONE declared absolute prefix from this file; the
+# repo itself ships no default and names no path, because a default there
+# would either name a directory that exists on nobody's machine or trust
+# folders nobody declared. So the declaration is made HERE, at install time,
+# on the box it applies to: everything under $HOME unless this install was
+# told otherwise. Written once — an existing [trust] table is the owner's own
+# answer, never rewritten, and commenting the key out restores the dialog.
+if ! grep -q '^[[:space:]]*\[trust\]' "$CONFIG/settings.toml" 2>/dev/null; then
+    TRUSTED_ROOT="${SOT_TRUSTED_ROOT_PREFIX:-$HOME}"
+    {
+        printf '\n[trust]\n'
+        printf '# Every session root under this absolute prefix counts as already\n'
+        printf '# trusted, so an agent the daemon spawns there never stops at its\n'
+        printf '# folder-trust dialog. Narrow it to the parent your repos live under,\n'
+        printf '# or comment it out to answer that dialog by hand. Roots outside it\n'
+        printf '# are left untouched.\n'
+        printf 'root_prefix = "%s"\n' "$TRUSTED_ROOT"
+    } >> "$CONFIG/settings.toml"
+    say "folder trust declared for everything under $TRUSTED_ROOT ($CONFIG/settings.toml, [trust] root_prefix)"
+fi
 
 # ---- 7. backend service --------------------------------------------------------
 if [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 1 ]; then

@@ -363,27 +363,74 @@ fn link_or_skip_if_racing(target: &Path, link: &Path, target_is_dir: bool) -> st
 /// absolute project path under `projects`, each entry carrying
 /// `hasTrustDialogAccepted` (see [`ensure_folder_trusted`]).
 const CLAUDE_TRUST_FILE: &str = ".claude.json";
+/// This box's own settings file, in the daemon's config directory --
+/// where the installed declaration lives (see below).
+const SETTINGS_FILE: &str = "settings.toml";
 /// The bool inside a `projects` entry that means "this folder's trust
 /// dialog is answered" -- claude's own key name, not ours.
 const TRUST_ACCEPTED_KEY: &str = "hasTrustDialogAccepted";
 /// Where the owner DECLARES which folders he has already trusted: one
 /// absolute path prefix, and every row root under it counts as declared.
-/// Deliberately environment, not a file: it is per box and per daemon
-/// launch, so nothing propagates a trust declaration to another machine
-/// on its own (`hosts.toml` is fetched from the hub -- a prefix there
-/// would grant trust on every box that synced it). Unset or empty means
-/// NOTHING is declared and nothing is ever written.
+/// It lives in THIS BOX's own config -- `[trust] root_prefix` in the
+/// user-level `settings.toml` -- and the installer writes it there for the
+/// box it runs on, which is the only place a real path belongs. NOT
+/// `hosts.toml`, which is fetched from the hub (a prefix there would grant
+/// trust on every box that synced it), and NOT a repo's project-level
+/// `.sot/settings.toml`, which a checkout could use to declare itself
+/// trusted -- the user-level file only. Absent or empty means NOTHING is
+/// declared and nothing is ever written.
+const TRUSTED_ROOT_PREFIX_SECTION: &str = "trust";
+const TRUSTED_ROOT_PREFIX_KEY: &str = "root_prefix";
+/// Overrides the declaration above for a daemon running outside an install
+/// (a scratch or test daemon, which has no config of its own to edit).
 const TRUSTED_ROOT_PREFIX_ENV: &str = "SOT_TRUSTED_ROOT_PREFIX";
 
-/// The declared prefix for this daemon, or `None` when the owner has
-/// declared nothing -- in which case the folder-trust dialog is answered
-/// by hand exactly as it was before this existed. There is no default:
-/// a default would either leak a path into this repo or trust folders
-/// nobody declared.
+/// The declared prefix for this daemon, or `None` when nothing is declared
+/// -- in which case the folder-trust dialog is answered by hand exactly as
+/// it was before this existed. This repo ships no default and names no
+/// path: a default here would either leak a path into a public repo or
+/// trust folders nobody declared.
 pub fn trusted_root_prefix() -> Option<PathBuf> {
-    std::env::var_os(TRUSTED_ROOT_PREFIX_ENV)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
+    if let Some(v) = std::env::var_os(TRUSTED_ROOT_PREFIX_ENV).filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(v));
+    }
+    declared_root_prefix(&crate::workspaces::app_config_dir())
+}
+
+/// Read the declaration out of `<config_dir>/settings.toml`. Read at every
+/// spawn rather than cached at boot, so an install -- or the owner editing
+/// the line -- takes effect on the next row without restarting the daemon.
+/// Unreadable or absent declares nothing, exactly as an empty value does.
+fn declared_root_prefix(config_dir: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(config_dir.join(SETTINGS_FILE)).ok()?;
+    parse_declared_root_prefix(&text)
+}
+
+/// Pick the one key out of that file by hand, the way every other `.toml`
+/// in this workspace is read (there is no toml dependency anywhere here --
+/// see the frontend's own `settings` parser). Section headers and
+/// `key = value`, quotes stripped; every other key belongs to somebody
+/// else and is ignored, and the last declaration wins as it does there.
+fn parse_declared_root_prefix(text: &str) -> Option<PathBuf> {
+    let mut section = String::new();
+    let mut declared = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            section = name.trim().to_string();
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else { continue };
+        if section != TRUSTED_ROOT_PREFIX_SECTION || key.trim() != TRUSTED_ROOT_PREFIX_KEY {
+            continue;
+        }
+        let value = value.trim().trim_matches('"').trim();
+        declared = (!value.is_empty()).then(|| PathBuf::from(value));
+    }
+    declared
 }
 
 /// Which `.claude.json` records trust for `account`. NOT
@@ -1069,16 +1116,59 @@ mod tests {
         assert_eq!(std::fs::read(&file).unwrap(), before, "byte-identical");
     }
 
+    /// A stand-in for what the installer writes into this box's own
+    /// settings file -- built in a tempdir, so no real path from any
+    /// machine appears in this repo.
+    fn declare_in_settings(config_dir: &Path, prefix: &Path) {
+        touch_dir(config_dir);
+        std::fs::write(
+            config_dir.join(SETTINGS_FILE),
+            format!("[layout]\npreset = \"auto\"\n\n[trust]\nroot_prefix = \"{}\"\n", prefix.display()),
+        )
+        .unwrap();
+    }
+
     #[test]
-    fn the_declared_prefix_comes_from_configuration_and_defaults_to_nothing() {
+    fn the_declared_prefix_is_read_from_this_boxs_own_settings_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let parent = declared_parent(tmp.path());
+        declare_in_settings(&config, &parent);
+        assert_eq!(declared_root_prefix(&config), Some(parent));
+    }
+
+    #[test]
+    fn an_absent_or_silent_settings_file_declares_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        assert_eq!(declared_root_prefix(&config), None, "no file -- nothing is trusted unless declared");
+        touch_dir(&config);
+        std::fs::write(config.join(SETTINGS_FILE), "[layout]\npreset = \"auto\"\n").unwrap();
+        assert_eq!(declared_root_prefix(&config), None, "somebody else's keys declare nothing");
+        std::fs::write(config.join(SETTINGS_FILE), "[trust]\nroot_prefix = \"\"\n").unwrap();
+        assert_eq!(declared_root_prefix(&config), None, "an empty declaration is not a blanket one");
+        std::fs::write(config.join(SETTINGS_FILE), "# root_prefix = \"/x\"\n").unwrap();
+        assert_eq!(declared_root_prefix(&config), None, "a commented line is not a declaration");
+    }
+
+    #[test]
+    fn the_same_key_outside_the_trust_table_is_not_a_declaration() {
+        assert_eq!(
+            parse_declared_root_prefix("[layout]\nroot_prefix = \"/somebody/elses/key\"\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_environment_declaration_overrides_the_installed_one() {
         let _g = TRUST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let parent = declared_parent(tmp.path());
 
-        std::env::remove_var(TRUSTED_ROOT_PREFIX_ENV);
-        assert_eq!(trusted_root_prefix(), None, "no default -- nothing is trusted unless declared");
-        std::env::set_var(TRUSTED_ROOT_PREFIX_ENV, "");
-        assert_eq!(trusted_root_prefix(), None, "an empty declaration is not a blanket one");
+        // Only the non-empty arm can assert on `trusted_root_prefix`: with
+        // the variable unset it reads THIS box's real config, whose answer
+        // is not the test's to know. `declared_root_prefix` above covers
+        // the file side.
         std::env::set_var(TRUSTED_ROOT_PREFIX_ENV, &parent);
         assert_eq!(trusted_root_prefix(), Some(parent));
         std::env::remove_var(TRUSTED_ROOT_PREFIX_ENV);
