@@ -34,9 +34,9 @@ an ack for the daemon's own success.
 
 ## On Windows the frontend is the mail carrier
 
-A Windows machine in a fleet runs no local listener, so the attached frontend
-is what files cross-machine mail there. That has one consequence worth knowing
-before you rely on it:
+On Windows the attached frontend files cross-machine mail itself, straight
+into its own inbox, so that machine runs no relay bridge at all. That has one
+consequence worth knowing before you rely on it:
 
 - **Same-machine sends always land.** A handle that machine's own registry
   names is a plain file append, frontend or no frontend.
@@ -61,15 +61,19 @@ glued to it. A handle read back that way never compares equal to the clean
 handle it should match, so a machine could report `no such handle` for a
 delivery that had already landed.
 
-The scripts read identifiers through a single helper that strips that carriage
-return as the value is read. Free text — a message body, a status line
-somebody wrote — deliberately does not go through it, because stripping
-characters there would silently rewrite what the sender typed instead of
-fixing a comparison.
+The identifier reads on the paths that produce a verdict — a handle, a host, a
+workspace id, a registry root — go through a helper that strips that carriage
+return where the value is read. The helper is applied call site by call site
+rather than enforced by the language, so a read that has not been converted
+yet can still carry one: a stray `no such handle` on Windows is worth checking
+against that before anything else.
 
-The practical effect: a verdict produced on Windows can be compared with the
-same verdict produced anywhere else, which is what makes the cross-machine
-[acceptance matrix](../contributing.md) worth running at all.
+Free text — a message body, a status line somebody wrote — is deliberately
+left alone, because stripping characters there would silently rewrite what the
+sender typed instead of fixing a comparison.
+
+The cross-machine [acceptance matrix](../contributing.md) is what checks this
+end to end.
 
 ## The contract
 

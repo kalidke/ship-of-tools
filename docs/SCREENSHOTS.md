@@ -203,7 +203,7 @@ comment.
 The open slots for 0.6.6 are blocked on the maintainer signing off the strip
 spacing and the badge, because every still in this set would otherwise be
 re-shot immediately afterwards. Shoot the whole set on one build once that
-sign-off lands, and check `sot --version` before and after the pass.
+sign-off lands.
 
 ## Conventions
 

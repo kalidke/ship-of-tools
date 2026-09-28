@@ -72,17 +72,24 @@ taskbar pin to `scripts\launch-sot.ps1`.
 
 ## Windows: an update stages but never applies
 
-Symptom: the update notice keeps coming back for the same version, and
-`%LOCALAPPDATA%\sot\logs\supervisor.log` shows the pair
+Symptom: the update notice keeps coming back for the same version.
+
+Two processes can stage an update on a Windows machine, and they log it in
+**different words to different files**, so check both:
 
 ```text
-staging update failed …
-committing stage into …
+%LOCALAPPDATA%\sot\logs\sotd-local.stderr.log   →  staging update failed
+%LOCALAPPDATA%\sot\logs\frontend.stderr.log     →  fe self-update: staging failed
 ```
 
-on run after run. Staging unpacks the new version beside the install and then
-renames that directory into place; Windows refuses that rename while anything
-holds a handle on the directory. Before 0.6.6 the local file watcher held one.
+The reason is carried in that same line, not on a line of its own. The
+frontend's file is truncated every time the frontend spawns and one previous
+generation is kept, so look in `frontend.stderr.log.prev` too if you have
+already relaunched.
+
+Staging unpacks into a temporary directory inside the staging area and renames
+it to its final name there; Windows refuses that rename while anything holds a
+handle on the directory. Before 0.6.6 the local file watcher held one.
 
 Two things fix it, in this order:
 
@@ -97,13 +104,14 @@ Two things fix it, in this order:
 
 ## Windows: a message says `NOT CONFIRMED`
 
-The frame went out and no machine said it filed it, so treat it as **not
-delivered**. The usual cause on a Windows machine is that the recipient's
-frontend is not running: that frontend is what files cross-machine mail there,
-and nothing queues it in the meantime. Start Ship of Tools on the recipient's
-machine and send again. `no such handle` is a different answer — that is a
-handle nobody can file for, so check it against `comm-list.sh`. See
-[The comm relay](../concepts/comm.md).
+The usual cause is that the recipient is a Windows machine with no frontend
+running: that frontend is what files cross-machine mail there, and nothing
+queues it in the meantime. Start Ship of Tools on the recipient's machine and
+send again.
+
+Depending on what else is attached to that daemon, the same cause can instead
+read as `no such handle`, so do not take the two as different diagnoses. What
+each answer means: [When a send does not land](messaging.md).
 
 ## A session will not start on a shared home
 

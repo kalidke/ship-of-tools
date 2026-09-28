@@ -74,9 +74,11 @@ comm/core/tests/comm-matrix.sh --boxes <a>,<b>,<c> [--expect <version>]
 
 Each machine keeps two rows that run no agent, `probe-<host>` and
 `probe2-<host>`; the second exists so that a same-machine send has a separate
-sender and receiver. The runner reads its own row's inbox file directly — it
-starts no process, advances no read cursor, and never touches a handle whose
-name does not begin `probe`, so it cannot reach a real session.
+sender and receiver. The runner reads its own row's inbox file directly: it
+advances no read cursor and starts nothing that outlives the run, and every
+handle it addresses is built `probe-<host>` or `probe2-<host>`, which the
+responder refuses to answer under any other name — so neither end can reach a
+real session.
 
 One line per direction, and it names both halves of the gap:
 
@@ -91,10 +93,9 @@ Both false verdicts are failures even though a classic one-sided check would
 call them green. The exit status is the number of failures.
 
 The decision logic has its own hermetic test,
-`comm/core/tests/test-comm-matrix-verdict.sh`, which sources the runner
-without sending anything. Run that with the rest of the comm suites under
-`comm/core/tests/`; run the live matrix before merging anything that touches
-delivery.
+`comm/core/tests/test-comm-matrix-verdict.sh`. Run it with the rest of the
+comm suites under `comm/core/tests/`, and run the live matrix before merging
+anything that touches delivery.
 
 ## Developing the frontend: rebuild without dropping your session
 
