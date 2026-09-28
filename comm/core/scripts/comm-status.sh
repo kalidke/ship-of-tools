@@ -99,12 +99,16 @@ status_txn() {
           elif $st == "stop" then
             (if .floor == "user" and .question == null and .waiting == null then .done = true else . end)
             | del(.floor)
-          else   # declarations
-            (if $h == "1" then .note = $sum else . end)
-            | if $st == "blocked" then .question = (if $h == "1" then $sum else (.note // "") end)
+          else   # declarations — blocked/waiting set ONLY their own fact and
+                  # leave .note alone: it is the last line the session itself
+                  # declared, and aliasing it to the question text left that
+                  # text as the summary fallback long after the question was
+                  # answered and gone (a row read blocked/idle while `note`
+                  # still held dead question text — field report, 2026-09-27).
+            if $st == "blocked" then .question = (if $h == "1" then $sum else (.note // "") end)
               elif $st == "waiting" then .waiting = (if $h == "1" then $sum else (.note // "") end)
-              elif $st == "done" then .done = true | del(.question, .waiting)
-              else del(.question, .waiting, .done) end   # working, idle
+              elif $st == "done" then (if $h == "1" then .note = $sum else . end) | .done = true | del(.question, .waiting)
+              else (if $h == "1" then .note = $sum else . end) | del(.question, .waiting, .done) end   # working, idle
           end
         | .state = (if .question != null and .floor == null then "blocked"
                     elif .floor != null then "working"

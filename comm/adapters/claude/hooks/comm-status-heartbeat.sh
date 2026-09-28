@@ -39,8 +39,10 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Read stdin (the hook's JSON envelope) up front, before the early-throttle
 # exit below can short-circuit: the AskUserQuestion answer check right after
-# needs it every call, throttle or no throttle.
-tool="$(jq -r '.tool_name // ""' 2>/dev/null || true)"
+# needs it every call, throttle or no throttle. Cached in a variable, not
+# re-read: stdin is a pipe, and jq would see EOF on a second read.
+_envelope="$(cat)"
+tool="$(printf '%s' "$_envelope" | jq -r '.tool_name // ""' 2>/dev/null || true)"
 
 # The AskUserQuestion ANSWER (ADR 0044 amendment): this tool's PostToolUse
 # fires once the owner has typed the answer and the harness resumes — the
@@ -54,8 +56,23 @@ tool="$(jq -r '.tool_name // ""' 2>/dev/null || true)"
 # here would let such a call swallow the owner's answer (review finding 1,
 # 2026-09-19). comm-status.sh resolves identity and self-gates on its own
 # registry row, so no NAME is needed here.
+#
+# Identity isn't the only thing that can be wrong, though: a completed
+# AskUserQuestion elsewhere — a foreign dialog this row never opened, or one
+# whose row is unrelated — must never be able to clear a DIFFERENT, still-
+# open question just because both tool calls share this branch (a badge
+# showed idle with a real question waiting because exactly this happened —
+# field report, 2026-09-27). Proof is the marker
+# comm-status-blocked.sh's PreToolUse drops, keyed by the SAME `tool_use_id`
+# this completion carries: only consuming that marker earns the `prompt`.
+# No marker (no PreToolUse ever opened this exact dialog) means no answer.
 if [ "$tool" = AskUserQuestion ]; then
-    COMM_STATUS_ORIGIN=user "$COMM_HOME/bin/comm-status.sh" prompt >/dev/null 2>&1 || true
+    _tool_use_id="$(printf '%s' "$_envelope" | jq -r '.tool_use_id // ""' 2>/dev/null || true)"
+    _askq_marker="$COMM_HOME/state/askq-$(printf '%s' "$_tool_use_id" | tr -c 'A-Za-z0-9._-' '_').marker"
+    if [ -n "$_tool_use_id" ] && [ -f "$_askq_marker" ]; then
+        rm -f "$_askq_marker" 2>/dev/null || true
+        COMM_STATUS_ORIGIN=user "$COMM_HOME/bin/comm-status.sh" prompt >/dev/null 2>&1 || true
+    fi
     exit 0
 fi
 
