@@ -443,6 +443,7 @@ mod tests {
             instance: None,
             name: Some(format!("{role}@{host}")),
             active,
+            sessions: None,
         }
     }
 

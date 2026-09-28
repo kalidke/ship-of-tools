@@ -352,6 +352,47 @@ case_comm_scripts_row_prints_unknown_when_the_stamp_is_missing() {
     return 0
 }
 
+case_declared_sessions_print_indented_under_their_fe_row_and_columns_stay_intact() {
+    # Session-listing brief decision 2: a client with a non-null
+    # `sessions` array gets one INDENTED line per entry immediately under
+    # its own three-column row -- and that row's own three columns must
+    # stay BYTE-IDENTICAL (anchored regex, nothing appended) to what an
+    # older, session-less client's row looks like — the new field must
+    # not perturb the existing wire contract this verb's own header
+    # comment pins.
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[{"client_id":"fe-a","app_version":"0.6.0-dev+abc1234","protocol":1,"host":"host-a","role":"fe","name":"fe@host-a","active":true,"sessions":[{"handle":"agent-1@host-a","state":"working","summary":"reading a brief","status_at":""},{"handle":"agent-2@host-a","state":"idle","summary":"","status_at":""}]}]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    start_stub_daemon
+    run_version
+    stop_stub_daemon
+
+    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    printf '%s\n' "$VER_OUT" | grep -qE '^fe@host-a[[:space:]]+0\.6\.0-dev\+abc1234[[:space:]]+active$' \
+        || { echo "  fe@host-a's own three columns must stay byte-identical: $VER_OUT"; return 1; }
+    printf '%s\n' "$VER_OUT" | grep -qF '  @agent-1@host-a [working] reading a brief' \
+        || { echo "  missing the first declared session's indented line: $VER_OUT"; return 1; }
+    printf '%s\n' "$VER_OUT" | grep -qF '  @agent-2@host-a [idle]' \
+        || { echo "  missing the second declared session's indented line: $VER_OUT"; return 1; }
+    return 0
+}
+
+case_absent_sessions_key_prints_the_declares_no_sessions_placeholder() {
+    # `sessions` absent entirely (an older frontend, or a frontend box
+    # running no daemon at all) must NOT read as "declared, empty" -- the
+    # never-declared/declared-empty distinction the brief exists to keep
+    # legible, surfaced here as its own indented line.
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[{"client_id":"fe-a","app_version":"0.6.0-dev+abc1234","protocol":1,"host":"host-a","role":"fe","name":"fe@host-a","active":true}]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    start_stub_daemon
+    run_version
+    stop_stub_daemon
+
+    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    contains "$VER_OUT" "declares no sessions" \
+        || { echo "  expected the never-declared placeholder line: $VER_OUT"; return 1; }
+    return 0
+}
+
 # --- run ---------------------------------------------------------------
 
 check "a matching pair prints daemon/client rows and the row's phase verbatim, no verdict" case_matching_pair_prints_the_phase_verbatim
@@ -366,6 +407,8 @@ check "a daemon that predates version.query prints 'unknown' and still exits 0" 
 check "a workspace.list failure after a successful version.query reports it and exits 2"   case_workspace_list_failure_after_successful_version_query_exits_2
 check "the comm scripts row reads the installed \$SOT_COMM_HOME/VERSION file"              case_comm_scripts_row_reads_the_installed_version_file
 check "the comm scripts row prints 'unknown' when the VERSION stamp is missing"            case_comm_scripts_row_prints_unknown_when_the_stamp_is_missing
+check "declared sessions print indented under their fe row, columns stay intact"           case_declared_sessions_print_indented_under_their_fe_row_and_columns_stay_intact
+check "an absent sessions key prints the never-declared placeholder line"                  case_absent_sessions_key_prints_the_declares_no_sessions_placeholder
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

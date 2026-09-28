@@ -352,6 +352,7 @@ pub async fn handle_version_query(
             instance: c.instance.clone(),
             name: c.name.clone(),
             active: snap.is_active_serial(c.serial),
+            sessions: c.sessions.clone(),
         })
         .collect();
     let res = sot_protocol::VersionQueryRes { daemon, clients };
@@ -6102,6 +6103,35 @@ pub async fn handle_fe_presence(req_id: u64) -> Result<HandlerOutput> {
             req_id,
             op::FE_PRESENCE,
             serde_json::to_value(sot_protocol::FePresenceRes { ok: true })?,
+        ),
+        None,
+    )])
+}
+
+/// `fe.sessions` (session-listing brief decision 2): a frontend declares
+/// the sot-comm handles its own box's daemon owns, so THIS daemon can list
+/// them. Unlike `fe.presence` (which needs no payload and stamps via
+/// `server.rs`'s dispatch loop, since the thing being stamped is the
+/// connection itself), the store happens here — the payload IS what's
+/// stored, and there is nothing to refuse: an unregistered `serial`
+/// (`None`, pre-hello) makes `declare_sessions` a harmless no-op, same as
+/// `touch_person_input`. Always acks `{ok: true}`.
+pub async fn handle_fe_sessions(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    clients: &crate::clients::Clients,
+    serial: Option<u64>,
+) -> Result<HandlerOutput> {
+    let req: sot_protocol::FeSessionsReq =
+        serde_json::from_value(payload_json).context("fe.sessions payload")?;
+    if let Some(serial) = serial {
+        clients.declare_sessions(serial, req.sessions);
+    }
+    Ok(vec![(
+        Frame::res(
+            req_id,
+            op::FE_SESSIONS,
+            serde_json::to_value(sot_protocol::FeSessionsRes { ok: true })?,
         ),
         None,
     )])

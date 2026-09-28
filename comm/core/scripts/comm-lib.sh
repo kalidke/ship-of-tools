@@ -1827,3 +1827,19 @@ sot_oneshot_request() {
     rm -f "$tmp" "$tmp.snd"
     [ -n "$line" ] && printf '%s\n' "$line"
 }
+
+# fmt_age SECONDS — compact relative age ("just now"/"2m ago"/"1h ago"/"3d
+# ago"). Moved here from comm-list.sh (session-listing brief) so the same
+# ageing rule serves every state-nav printer instead of two copies drifting:
+# comm-list.sh's own agent rows and sot-fe's `version` command, which now
+# prints the same "[state] summary · age" shape for a declared `fe.sessions`
+# row (ADR: `status_at` is the honesty valve — an hour-old stamp prints
+# "1h ago" wherever it's shown, local row or declared one alike).
+fmt_age() {
+    local s="$1"
+    if   [ "$s" -lt 60 ];    then echo "just now"
+    elif [ "$s" -lt 3600 ];  then echo "$((s / 60))m ago"
+    elif [ "$s" -lt 86400 ]; then echo "$((s / 3600))h ago"
+    else                          echo "$((s / 86400))d ago"
+    fi
+}

@@ -100,6 +100,16 @@ pub struct ClientInfo {
     /// navigation/typing ops; every one of them turned out to have an
     /// automated producer too, so it was deleted).
     pub last_person_input_at: Option<Instant>,
+    /// This connection's most recent `fe.sessions` declaration
+    /// (session-listing brief decision 2) — the box-wide row list a
+    /// frontend's own daemon owns, re-sent edge-driven whenever that list
+    /// or any row's state changes. Lives HERE, on the connection, never on
+    /// disk: drop the connection and the declaration is gone in the same
+    /// breath, no expiry logic needed. `None` until the first `fe.sessions`
+    /// arrives (or forever, for a peer that never sends one) — distinct
+    /// from `Some(vec![])`, a box that HAS declared and has nothing to
+    /// report right now. See `Clients::declare_sessions`.
+    pub sessions: Option<Vec<sot_protocol::DeclaredSession>>,
 }
 
 #[derive(Default)]
@@ -153,6 +163,7 @@ impl Clients {
             instance,
             name,
             last_person_input_at: None,
+            sessions: None,
         };
         let (count, roster) = {
             let mut g = self.inner.lock().unwrap();
@@ -214,6 +225,20 @@ impl Clients {
         let mut g = self.inner.lock().unwrap();
         if let Some(info) = g.by_conn.get_mut(&serial) {
             info.last_person_input_at = Some(Instant::now());
+        }
+    }
+
+    /// Store the connection at `serial`'s latest `fe.sessions` declaration
+    /// (session-listing brief decision 2). Lives on the connection, same
+    /// lifetime as `last_person_input_at` — dropping the connection drops
+    /// this too, which IS the "dropped connection / stale declaration"
+    /// rule: no expiry, no reconciliation, nothing to go stale. A no-op if
+    /// `serial` isn't registered (already disconnected, or `hello` hasn't
+    /// landed yet), mirroring `touch_person_input`.
+    pub fn declare_sessions(&self, serial: u64, sessions: Vec<sot_protocol::DeclaredSession>) {
+        let mut g = self.inner.lock().unwrap();
+        if let Some(info) = g.by_conn.get_mut(&serial) {
+            info.sessions = Some(sessions);
         }
     }
 
@@ -437,6 +462,85 @@ mod tests {
         assert_eq!(clients.count(), 0);
     }
 
+    fn declared_session(handle: &str, state: &str) -> sot_protocol::DeclaredSession {
+        sot_protocol::DeclaredSession {
+            handle: handle.to_string(),
+            state: state.to_string(),
+            summary: String::new(),
+            status_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn declare_sessions_lands_on_its_serial_and_dies_with_the_connection() {
+        let clients = Clients::new();
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        assert!(
+            clients.snapshot_with_active().clients[0].sessions.is_none(),
+            "never-declared reads as None before the first fe.sessions"
+        );
+
+        clients.declare_sessions(g.serial(), vec![declared_session("agent@host-a", "working")]);
+        let snap = clients.snapshot_with_active();
+        let sessions = snap.clients[0].sessions.as_ref().expect("declared once, so Some");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].handle, "agent@host-a");
+        assert_eq!(sessions[0].state, "working");
+
+        drop(g);
+        assert_eq!(clients.count(), 0, "the declaration is gone the moment the connection is");
+    }
+
+    #[test]
+    fn declare_sessions_on_a_departed_serial_is_a_harmless_noop() {
+        let clients = Clients::new();
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let serial = g.serial();
+        drop(g);
+        // Must not panic on a serial that no longer has an entry.
+        clients.declare_sessions(serial, vec![declared_session("agent@host-a", "working")]);
+        assert_eq!(clients.count(), 0);
+    }
+
+    #[test]
+    fn closing_one_session_removes_only_that_handle_others_keep_their_state() {
+        // Amendment 1: the acceptance check is closing ONE session, not
+        // dropping a connection. Declaration is edge-driven — the box
+        // re-declares its whole row list whenever it changes — so closing
+        // one row on a box with several must drop only that handle from
+        // the NEXT declaration, leaving the others' state untouched.
+        let clients = Clients::new();
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.declare_sessions(
+            g.serial(),
+            vec![
+                declared_session("agent-1@host-a", "working"),
+                declared_session("agent-2@host-a", "idle"),
+                declared_session("agent-3@host-a", "blocked"),
+            ],
+        );
+
+        // agent-2's row closes; the box re-declares its now-shorter list.
+        clients.declare_sessions(
+            g.serial(),
+            vec![
+                declared_session("agent-1@host-a", "working"),
+                declared_session("agent-3@host-a", "blocked"),
+            ],
+        );
+
+        let snap = clients.snapshot_with_active();
+        let sessions = snap.clients[0].sessions.as_ref().expect("still declared");
+        let handles: Vec<&str> = sessions.iter().map(|s| s.handle.as_str()).collect();
+        assert_eq!(
+            handles,
+            vec!["agent-1@host-a", "agent-3@host-a"],
+            "only the closed handle leaves the list"
+        );
+        assert_eq!(sessions[0].state, "working", "agent-1's state survives untouched");
+        assert_eq!(sessions[1].state, "blocked", "agent-3's state survives untouched");
+    }
+
     #[test]
     fn active_frontend_requires_both_a_handle_and_a_fresh_stamp() {
         let clients = Clients::new();
@@ -522,6 +626,7 @@ mod tests {
             instance: None,
             name: Some(handle.to_string()),
             last_person_input_at,
+            sessions: None,
         }
     }
 
