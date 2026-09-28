@@ -408,7 +408,7 @@ _comm_wake_main() {
     # environment really does answer. It is no longer a wake TARGET: every
     # batch re-resolves the row from the daemon (_comm_wake_retarget).
     if ! SOT_WORKSPACE_ID="$(sot_capsule_workspace_id)"; then
-        echo "comm-wake: not a capsule row (no \$SOT_WORKSPACE_ID and no derivable \$SOT_COMM_SELF_FILE) -- the caller falls back to a harness Monitor" >&2
+        echo "comm-wake: this shell's identity names no row (its \$SOT_COMM_SELF_FILE basename is not <host>__<row-id>.txt, and there is no \$SOT_WORKSPACE_ID to fall back on) -- the caller falls back to a harness Monitor" >&2
         exit 3
     fi
     export SOT_WORKSPACE_ID

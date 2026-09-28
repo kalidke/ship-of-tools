@@ -267,10 +267,10 @@ probe_serve() {
     probe_handle_ok "$me" || probe_die "refusing to serve as '@$me' — probe rows only"
     export SOT_COMM_NAME="$me"
     # The join happens HERE, inside the row, and never in `up`: comm-join.sh
-    # declares $SOT_WORKSPACE_ID's row to the daemon (comm-join.sh's agent.join)
-    # and keys the identity slot by it, so a join run from the CALLER's shell
-    # would re-declare the caller's own live row under a probe handle. Inside the
-    # row, that id is provably this row's own.
+    # declares to the daemon the row THIS SHELL'S IDENTITY names
+    # (sot_capsule_workspace_id) and keys the identity slot by it, so a join run
+    # from the CALLER's shell would re-declare the caller's own live row under a
+    # probe handle. Inside the row, that identity is provably this row's own.
     "$SCRIPT_DIR/comm-join.sh" --name "$me" >/dev/null 2>&1 \
         || echo "comm-probe.sh: WARNING — join as @$me failed; local sends may not name this row" >&2
     echo "serving as @$me (${PROBE_READ_TIMEOUT}s read, $PROBE_STOP_LINE to stop)"

@@ -36,8 +36,9 @@ export SOT_COMM_TEST_HOST="test-host"
 # therefore never running without one: it declared a handle into whichever
 # live row happened to be running the suite, and passed anyway because the
 # stub daemon it checked was not the daemon that received it. Each case pins
-# what it needs and nothing is ambient.
-unset SOT_WORKSPACE_ID SOT_SOCKET
+# what it needs and nothing is ambient — the self file included, since a case
+# that supplies one is supplying the identity itself.
+unset SOT_WORKSPACE_ID SOT_SOCKET SOT_COMM_SELF_FILE
 
 STUB_NC_PID=""
 STUB_WATCHER_PID=""
@@ -129,16 +130,19 @@ NEXTSELF=0
 join_in() {
     local root="$1"; shift
     NEXTSELF=$((NEXTSELF + 1))
-    # A real session's self file is the one comm-context.sh names for its
-    # row, "<host>__<workspace_id>.txt", and that basename is where the
-    # declaration now reads the row id from. A case that pins a row id must
-    # therefore pin an identity that names it, or it is testing the shape
-    # that leaked (see $SELF_OVERRIDE, used by exactly one case below).
-    local self="$WORK/self-$NEXTSELF.txt"
-    if [ -n "${SELF_OVERRIDE:-}" ]; then
-        self="$SELF_OVERRIDE"
-    elif [ -n "${SOT_WORKSPACE_ID:-}" ]; then
-        self="$WORK/${SOT_COMM_TEST_HOST}__${SOT_WORKSPACE_ID}.txt"
+    # A real session's self file is the one comm-context.sh names for its row,
+    # "<host>__<workspace_id>.txt", and that basename is where the declaration
+    # reads the row id from. So a case that pins a row id gets an identity that
+    # names it, and a case that wants some OTHER identity pins
+    # $SOT_COMM_SELF_FILE itself — the production variable, never a test-only
+    # knob beside it.
+    local self="${SOT_COMM_SELF_FILE:-}"
+    if [ -z "$self" ]; then
+        if [ -n "${SOT_WORKSPACE_ID:-}" ]; then
+            self="$WORK/${SOT_COMM_TEST_HOST}__${SOT_WORKSPACE_ID}.txt"
+        else
+            self="$WORK/self-$NEXTSELF.txt"
+        fi
     fi
     local errfile="$WORK/stderr-$NEXTSELF.tmp"
     JOIN_OUT="$(cd "$root" && SOT_COMM_SELF_FILE="$self" "$JOIN" "$@" 2>"$errfile")"
@@ -190,25 +194,14 @@ case_without_workspace_id_joins_as_today_with_no_agent_join_sent() {
     return 0
 }
 
-case_workspace_id_but_no_owner_endpoint_still_joins() {
-    mkdir -p "$WORK/proj-c"
-    local root; root="$(realpath "$WORK/proj-c")"
-    # SOT_WORKSPACE_ID pinned but SOT_SOCKET unset entirely. S4 (manager
-    # review): agent.join resolves through the EXISTING sot_daemon_endpoint,
-    # not a second typed-only resolver -- unlike the old owner-only
-    # resolver, that one never refuses outright; it falls through to its
-    # own other candidates and, finding no real daemon in this hermetic
-    # sandbox either, the agent.join attempt simply gets no reply. Either
-    # way the sot-comm registry join (comm-join.sh's real job) must still
-    # succeed, with agent.join best-effort and one warning.
-    SOT_WORKSPACE_ID="ws-proj-c" join_in "$root" --name proj-c-joiner
-
-    [ "$JOIN_RC" -eq 0 ] || { echo "  comm-join.sh exited $JOIN_RC: $JOIN_ERR"; return 1; }
-    contains "$JOIN_OUT" "Joined sot-comm as @proj-c-joiner" || { echo "  stdout: $JOIN_OUT"; return 1; }
-    registry_has_row "proj-c-joiner" || { echo "  no registry row for proj-c-joiner"; return 1; }
-    contains "$JOIN_ERR" "could not declare" || { echo "  expected an agent.join warning: $JOIN_ERR"; return 1; }
-    return 0
-}
+# Deleted 2026-09-28: a case that unset $SOT_SOCKET to mean "no endpoint".
+# The resolver keeps looking past that variable -- a `sotd` on PATH, then a
+# /proc scrape -- so on any box running a daemon it found the REAL one and
+# sent it a declaration for a workspace that does not exist, every run. It
+# failed closed there (the daemon refuses an unknown workspace) and the case
+# still passed, which is what hid it. Its assertion is "the registry join
+# survives an agent.join that gets no useful answer", and the dead-socket case
+# below makes exactly that assertion hermetically.
 
 case_daemon_rejects_agent_join_warns_but_still_joins() {
     mkdir -p "$WORK/proj-d"
@@ -240,7 +233,7 @@ case_a_scratch_identity_never_declares_into_the_ambient_row() {
     # session whose identity names it, and overwriting that row's handle
     # is what left the owner looking at a grey badge.
     start_stub_daemon
-    SELF_OVERRIDE="$WORK/scratch-self.txt" \
+    SOT_COMM_SELF_FILE="$WORK/scratch-self.txt" \
         SOT_WORKSPACE_ID="ws-live-row" SOT_SOCKET="$SOCK" join_in "$root" --name proj-e-scratch
     local req
     req="$(grep -m1 '"op":"agent.join"' "$REQLOG" 2>/dev/null || true)"
@@ -253,18 +246,39 @@ case_a_scratch_identity_never_declares_into_the_ambient_row() {
     return 0
 }
 
+case_the_identity_names_the_row_not_the_environment() {
+    mkdir -p "$WORK/proj-f"
+    local root; root="$(realpath "$WORK/proj-f")"
+    # The precedence itself, which no other case here can see: the identity
+    # names one row and the environment names another. Only the identity may
+    # be declared, because the ambient variable is inherited by every child
+    # process and is therefore no evidence of whose row this is.
+    start_stub_daemon
+    SOT_COMM_SELF_FILE="$WORK/${SOT_COMM_TEST_HOST}__ws-from-identity.txt" \
+        SOT_WORKSPACE_ID="ws-from-env" SOT_SOCKET="$SOCK" join_in "$root" --name proj-f-joiner
+    local req
+    req="$(grep -m1 '"op":"agent.join"' "$REQLOG" 2>/dev/null || true)"
+    stop_stub_daemon
+
+    [ "$JOIN_RC" -eq 0 ] || { echo "  comm-join.sh exited $JOIN_RC: $JOIN_ERR"; return 1; }
+    [ -n "$req" ] || { echo "  no agent.join request reached the stub daemon"; return 1; }
+    printf '%s' "$req" | jq -e '.payload.workspace_id == "ws-from-identity"' >/dev/null \
+        || { echo "  declared the environment's row, not the identity's: $req"; return 1; }
+    return 0
+}
+
 # --- run ---------------------------------------------------------------
 
 check "comm-join.sh with SOT_WORKSPACE_ID + SOT_SOCKET pinned declares its handle via agent.join" \
     case_with_pins_reaches_the_daemon
 check "comm-join.sh with no SOT_WORKSPACE_ID pinned joins as today and sends no agent.join" \
     case_without_workspace_id_joins_as_today_with_no_agent_join_sent
-check "comm-join.sh with SOT_WORKSPACE_ID but no SOT_SOCKET still joins, warning that agent.join could not be declared" \
-    case_workspace_id_but_no_owner_endpoint_still_joins
 check "comm-join.sh still joins when the daemon doesn't answer agent.join, with a warning" \
     case_daemon_rejects_agent_join_warns_but_still_joins
 check "comm-join.sh with a scratch identity and an inherited SOT_WORKSPACE_ID declares nothing" \
     case_a_scratch_identity_never_declares_into_the_ambient_row
+check "comm-join.sh declares the row its identity names, not the one in the environment" \
+    case_the_identity_names_the_row_not_the_environment
 
 echo ""
 echo "$PASS passed, $FAIL failed"

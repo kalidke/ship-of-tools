@@ -1114,10 +1114,6 @@ sot_pty_input_gated() {
 # left that row naming a handle no status lookup could resolve, which the
 # owner saw as a permanently grey badge on a session that was working fine.
 # An identity that does not name a row has no row to declare into.
-#
-# Shared by comm-wake.sh (its own startup gate, rule: exit 3 when this
-# fails), comm-session-start.sh (the ping watcher, and the re-declaration
-# after a survived restart) and comm-join.sh (a fresh join's declaration).
 sot_capsule_workspace_id() {
     local base="${SOT_COMM_SELF_FILE:-}"
     if [ -z "$base" ]; then

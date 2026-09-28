@@ -36,6 +36,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 export WAKE="$SCRIPTS_DIR/comm-wake.sh"
 
+# Hermetic identity (2026-09-28). Each case pins the row it means to act on
+# through $SOT_WORKSPACE_ID, and the row a shell may act on is now read from
+# its identity first -- so a session running this suite would otherwise lend
+# every case its OWN self file, and the watcher would name the runner's row
+# instead of the fixture's. Nothing here owns a row; drop the inherited one.
+unset SOT_COMM_SELF_FILE
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-wake-ping-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$WORK"' EXIT

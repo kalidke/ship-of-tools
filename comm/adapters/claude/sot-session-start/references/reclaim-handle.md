@@ -114,6 +114,15 @@ SOT_COMM_NAME=<a-distinct-handle> SOT_COMM_SELF_FILE=<a-path-only-this-lane-uses
     ~/.sot-comm/bin/comm-session-start.sh
 ```
 
+That private path is the right shape for a lane, which owns no row: the row a
+session declares its handle into is read from the self-file's BASENAME
+(`<host>__<workspace-id>.txt`), so a lane-only name declares nothing to the
+daemon and arms no ping watcher — exactly what a lane should do, and what
+stops it rewriting the parent row's handle. If you are the row's OWN session
+and still need a slot of your own, keep that basename and put it in a private
+directory instead; a different basename would leave your row naming whatever
+handle last declared into it.
+
 Do **not** "fix" a `REFUSED` by removing or hand-editing the self-file it
 named — that file may be a live session's real identity record. Pin your own
 name instead; that alone resolves the ambiguity without touching anyone

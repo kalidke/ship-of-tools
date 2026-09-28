@@ -71,6 +71,13 @@ watcher's is `[sot-comm] wake selftest OK — nothing to read`.
 always wins; otherwise a validated prior identity; otherwise fresh
 derivation — never manufactured from a lower-priority source. A
 subagent/lane that doesn't own its ambient identity slot MUST pin both.
+A private self file may live in any directory, but its BASENAME is read as
+the row this session belongs to (`<host>__<workspace-id>.txt`): a lane that
+owns no row should keep a name of any other shape, and will then declare no
+handle to the daemon and arm no ping watcher, which is what a lane wants. A
+session that DOES own its row and still needs a private slot keeps the
+canonical basename and gives it a private directory instead — rename the
+basename and the row stops recognising it.
 `identity=MISMATCH` and a `REFUSED` start are different problems with
 different fixes — see `references/reclaim-handle.md`.
 
