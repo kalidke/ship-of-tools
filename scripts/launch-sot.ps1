@@ -1875,6 +1875,10 @@ $relaunchNext = [bool]$Relaunched
 $splashDismissed = $false
 $tunnelPidLabel = if ($sshTunnel) { $sshTunnel.Id } else { 'none (external control tunnel, aux retired)' }
 Write-SupLog "supervisor start (relaunched=$Relaunched, tcpPort=$tcpPort, tunnelPid=$tunnelPidLabel)"
+# A supervisor rolls back AT MOST ONCE, matching the Unix supervisor's $ROLLED
+# in scripts/install.sh. Without it, a box that rolls back and then crash-loops
+# on the older bits rolls back again, walking backwards through releases.
+$rolledBackOnce = $false
 try {
     do {
         # Stage the binary for this launch, priority order:
@@ -1884,10 +1888,38 @@ try {
         #      installed any update it applied above (public install layout)
         #
         # `$appliedUpdate` gates the crash-loop rollback below. sot-apply.ps1
-        # drops the just-applied marker only on a SUCCESSFUL apply, and the
-        # marker was cleared immediately before we invoked it — so its
-        # presence means "this launch is the first boot of new bits".
-        $appliedUpdate = Test-Path $applyMarker
+        # drops the just-applied marker only on a SUCCESSFUL apply, so its
+        # presence means an apply succeeded — but NOT, on its own, that it was
+        # this launch's. The marker is removed only just before an apply runs,
+        # so a launch that skips the apply for any other reason (a handover
+        # pass, -NoUpdate, sot-apply.ps1 absent, a converge with nothing armed)
+        # inherits whatever a PREVIOUS launch left; and this read sits inside
+        # the loop, so every exit-75 relaunch re-read it too. A marker from days
+        # ago then armed a live rollback window, and that rollback is not a log
+        # line: it reverts binaries, the repo\current junction and install.json,
+        # and writes a bad-<tag> marker that stops the stager ever re-arming
+        # that release. Any unrelated fast exit — a bad config, a driver
+        # failure, the user closing the window quickly — could revert a healthy
+        # install and ban its version.
+        #
+        # So the marker has to be RECENT. That is the rule the Unix supervisor
+        # already states in as many words — "Roll back ONLY inside the
+        # just-applied health window — an unrelated crash weeks later must not
+        # downgrade a healthy release" (scripts/install.sh) — and thirty minutes
+        # is its number, so the two platforms now carry one rule instead of two.
+        #
+        # The read stays INSIDE the loop on purpose: a converge can apply an
+        # update mid-life, and that update deserves the same window as one
+        # applied at launch. Hoisting it above the loop would close the window
+        # for exactly those.
+        $appliedUpdate = $false
+        if (Test-Path $applyMarker) {
+            $markerAge = (Get-Date) - (Get-Item -LiteralPath $applyMarker).LastWriteTime
+            $appliedUpdate = $markerAge.TotalMinutes -lt 30
+            if (-not $appliedUpdate) {
+                Write-SupLog ("stale just-applied marker ({0:N0} min old) - no rollback window" -f $markerAge.TotalMinutes)
+            }
+        }
         if ($appliedUpdate) { Write-SupLog "first boot after an applied update - rollback window armed" }
         if (Test-Path $frontendExe) {
             Copy-Item -Path $frontendExe -Destination $stagedExe -Force
@@ -2088,8 +2120,8 @@ try {
         # bad-<tag> marker so the stager never re-arms that release, which is
         # what makes this one-shot (the old inline .prev copy left install.json
         # claiming the broken version, and nothing stopped a re-arm).
-        if ($appliedUpdate -and -not $relaunchNext -and $frontend.ExitCode -ne 0 `
-            -and $feUptime.TotalSeconds -lt 10) {
+        if ($appliedUpdate -and -not $rolledBackOnce -and -not $relaunchNext `
+            -and $frontend.ExitCode -ne 0 -and $feUptime.TotalSeconds -lt 10) {
             Write-SupLog "UPDATE CRASH-LOOP: exit=$($frontend.ExitCode) after $([int]$feUptime.TotalSeconds)s - rolling back"
             if (Test-Path $sotApply) {
                 $rbOut = & $sotApply -Rollback 6>&1 2>&1
@@ -2099,6 +2131,7 @@ try {
                 Write-SupLog "sot-apply.ps1 missing - restored $stagedExe from .prev only"
             }
             $appliedUpdate = $false
+            $rolledBackOnce = $true
             Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
             $relaunchNext = $true
         }
