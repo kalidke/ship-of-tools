@@ -29,7 +29,7 @@ pub use ir::{BlobDescriptor, PreviewPayload, TreeNode};
 pub use ops::{
     op, AccountEntry, AccountsListReq, AccountsListRes, AgentFiledReq, AgentFiledRes,
     AgentJoinReq, AgentJoinRes, AgentReceiptEvt, AgentSendReq, AgentSendRes, ClientVersion, ConceptListRes, ConceptReadReq, ConceptReadRes,
-    ConceptWriteReq, ConceptWriteRes, DaemonVersion, DeclaredSession, DirCreateReq, DirCreateRes, DirectoryEntry,
+    ConceptWriteReq, ConceptWriteRes, DaemonVersion, DeclaredSession, DisconnectedBox, DirCreateReq, DirCreateRes, DirectoryEntry,
     DirectoryListReq, DirectoryListRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
     FeCommandSendRes,
     FePresenceReq, FePresenceRes, FeSessionsReq, FeSessionsRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq,

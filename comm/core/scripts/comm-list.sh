@@ -74,8 +74,18 @@ if [ "$any" = false ]; then echo "  (none)"; fi
 # below keeps each header AND the space-indented lines immediately under
 # it, stopping at the next line that isn't indented.
 echo ""
-echo "attached frontend boxes (this daemon):"
 fe_out="$(timeout 5 "$SCRIPT_DIR/sot-fe" version 2>/dev/null || true)"
+# Session-listing brief: the header names how far back THIS daemon's
+# memory of a disconnected box reaches, so a restart's forgetting is
+# visible rather than read as "no sessions" -- pulled out of the daemon
+# row's own build column ("..., up 3h)"), never re-derived, and omitted
+# (falling back to the plain header) for a daemon predating the field.
+daemon_uptime="$(printf '%s\n' "$fe_out" | grep -oE ', up [^)]+\)' | head -1 | sed -E 's/^, up //; s/\)$//')"
+if [ -n "$daemon_uptime" ]; then
+    echo "attached frontend boxes (this daemon, up $daemon_uptime):"
+else
+    echo "attached frontend boxes (this daemon):"
+fi
 fe_rows="$(printf '%s\n' "$fe_out" | awk '
     /^fe@/ { print; keep=1; next }
     keep && /^ / { print; next }

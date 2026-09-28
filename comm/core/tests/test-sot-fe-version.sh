@@ -393,6 +393,71 @@ case_absent_sessions_key_prints_the_declares_no_sessions_placeholder() {
     return 0
 }
 
+case_daemon_uptime_prints_in_the_build_column() {
+    # Session-listing brief: `uptime_s` is what makes a daemon restart's
+    # forgetting of the disconnected-box map VISIBLE -- 10800s = 3h.
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1,"uptime_s":10800},"clients":[]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    start_stub_daemon
+    run_version
+    stop_stub_daemon
+
+    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    contains "$VER_OUT" "up 3h" || { echo "  expected the daemon's uptime in the build column: $VER_OUT"; return 1; }
+    return 0
+}
+
+case_daemon_predating_uptime_field_prints_no_up_suffix() {
+    # `#[serde(default)]` on the Rust side: an absent `uptime_s` must
+    # NOT print "up 0" (indistinguishable from a fresh boot) -- omitted
+    # entirely, still exit 0.
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    start_stub_daemon
+    run_version
+    stop_stub_daemon
+
+    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    contains "$VER_OUT" "up " && { echo "  a daemon predating uptime_s must not print an 'up ...' suffix: $VER_OUT"; return 1; }
+    return 0
+}
+
+case_a_disconnected_box_prints_its_own_fe_line_with_no_sessions_beneath_it() {
+    # Session-listing brief, amendment 2's final form: the box's SESSIONS
+    # left with its connection, but the box itself is retained as one
+    # "not connected since" line -- its own fe@<host>-prefixed row (so
+    # comm-list.sh's `^fe@` extraction still captures it), never grouped
+    # under an attached client's three columns, and no indented session
+    # lines follow it.
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[],"disconnected":[{"identity":"fe@host-b","since_s":720}]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    start_stub_daemon
+    run_version
+    stop_stub_daemon
+
+    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    printf '%s\n' "$VER_OUT" | grep -qE '^fe@host-b +\(frontend not connected since 12m ago; its sessions cannot be listed\)$' \
+        || { echo "  missing the disconnected box's own line: $VER_OUT"; return 1; }
+    return 0
+}
+
+case_a_declared_empty_state_prints_no_state_recorded_not_idle() {
+    # ADR 0043 decision 35: on a DECLARED row an empty state means the
+    # registry entry was pruned when the run ended, not that the run is
+    # quietly idle -- must never degrade to "[idle]".
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[{"client_id":"fe-a","app_version":"0.6.0-dev+abc1234","protocol":1,"host":"host-a","role":"fe","name":"fe@host-a","active":true,"sessions":[{"handle":"agent-1@host-a","state":"","summary":"","status_at":""}]}]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    start_stub_daemon
+    run_version
+    stop_stub_daemon
+
+    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    contains "$VER_OUT" "[—] no state recorded" \
+        || { echo "  expected the no-state-recorded line, not a degraded [idle]: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "[idle]" && { echo "  a declared-empty state must never print as [idle]: $VER_OUT"; return 1; }
+    return 0
+}
+
 # --- run ---------------------------------------------------------------
 
 check "a matching pair prints daemon/client rows and the row's phase verbatim, no verdict" case_matching_pair_prints_the_phase_verbatim
@@ -409,6 +474,10 @@ check "the comm scripts row reads the installed \$SOT_COMM_HOME/VERSION file"   
 check "the comm scripts row prints 'unknown' when the VERSION stamp is missing"            case_comm_scripts_row_prints_unknown_when_the_stamp_is_missing
 check "declared sessions print indented under their fe row, columns stay intact"           case_declared_sessions_print_indented_under_their_fe_row_and_columns_stay_intact
 check "an absent sessions key prints the never-declared placeholder line"                  case_absent_sessions_key_prints_the_declares_no_sessions_placeholder
+check "the daemon's uptime prints in the build column"                                     case_daemon_uptime_prints_in_the_build_column
+check "a daemon predating the uptime field prints no 'up' suffix"                          case_daemon_predating_uptime_field_prints_no_up_suffix
+check "a disconnected box prints its own fe line with no sessions beneath it"               case_a_disconnected_box_prints_its_own_fe_line_with_no_sessions_beneath_it
+check "a declared empty state prints 'no state recorded', never degraded to [idle]"        case_a_declared_empty_state_prints_no_state_recorded_not_idle
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

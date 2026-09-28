@@ -338,9 +338,10 @@ pub async fn handle_version_query(
         lane_proto: sot_log::wire::SUPERVISOR_PROTO_V1,
         host: crate::workspaces::declared_host(),
         hosts_toml_hash: refreshed.hash.unwrap_or_default(),
+        uptime_s: clients.uptime().as_secs(),
     };
     let snap = clients.snapshot_with_active();
-    let clients = snap
+    let client_rows = snap
         .clients
         .iter()
         .map(|c| sot_protocol::ClientVersion {
@@ -355,7 +356,23 @@ pub async fn handle_version_query(
             sessions: c.sessions.clone(),
         })
         .collect();
-    let res = sot_protocol::VersionQueryRes { daemon, clients };
+    // Session-listing brief decision 2 / amendment 2: every box whose
+    // connection has since closed or been reaped, read at the SAME
+    // convention `Instant::now()` — `disconnected` lives outside
+    // `by_conn`, so this needs its own read regardless of `snap` above.
+    let disconnected = clients
+        .disconnected_since(std::time::Instant::now())
+        .into_iter()
+        .map(|(identity, age)| sot_protocol::DisconnectedBox {
+            identity,
+            since_s: age.as_secs(),
+        })
+        .collect();
+    let res = sot_protocol::VersionQueryRes {
+        daemon,
+        clients: client_rows,
+        disconnected,
+    };
     Ok(vec![(
         Frame::res(req_id, op::VERSION_QUERY, serde_json::to_value(res)?),
         None,
@@ -6113,9 +6130,14 @@ pub async fn handle_fe_presence(req_id: u64) -> Result<HandlerOutput> {
 /// them. Unlike `fe.presence` (which needs no payload and stamps via
 /// `server.rs`'s dispatch loop, since the thing being stamped is the
 /// connection itself), the store happens here — the payload IS what's
-/// stored, and there is nothing to refuse: an unregistered `serial`
-/// (`None`, pre-hello) makes `declare_sessions` a harmless no-op, same as
-/// `touch_person_input`. Always acks `{ok: true}`.
+/// stored. An unregistered `serial` (`None`, pre-hello) is a harmless
+/// no-op ack, same as `touch_person_input`; a registered connection with
+/// NO declared hello `name` is refused (`unnamed_connection`) rather than
+/// stored — the `disconnected` map keys on that name, so a declaration
+/// with none could never be attributed to a box once its connection
+/// dropped. `declare_sessions` also clears that box's `disconnected`
+/// entry, if it had one — a box that just declared again is, by
+/// definition, not missing.
 pub async fn handle_fe_sessions(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -6124,17 +6146,48 @@ pub async fn handle_fe_sessions(
 ) -> Result<HandlerOutput> {
     let req: sot_protocol::FeSessionsReq =
         serde_json::from_value(payload_json).context("fe.sessions payload")?;
-    if let Some(serial) = serial {
-        clients.declare_sessions(serial, req.sessions);
+    let Some(serial) = serial else {
+        // Pre-hello (no connection registered yet): the same harmless
+        // no-op `touch_person_input` accepts, since there is nothing to
+        // store OR refuse against.
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::FE_SESSIONS,
+                serde_json::to_value(sot_protocol::FeSessionsRes { ok: true })?,
+            ),
+            None,
+        )]);
+    };
+    // An unnamed connection is refused, not stored (session-listing
+    // brief): the `disconnected` map's identity IS the declared hello
+    // `name`, so a declarer with none could never be attributed to a
+    // box if its connection later dropped — better to refuse now than
+    // store a declaration that can never resurface as anything.
+    match clients.name_for(serial) {
+        Some(name) if !name.is_empty() => {
+            clients.declare_sessions(serial, req.sessions);
+            Ok(vec![(
+                Frame::res(
+                    req_id,
+                    op::FE_SESSIONS,
+                    serde_json::to_value(sot_protocol::FeSessionsRes { ok: true })?,
+                ),
+                None,
+            )])
+        }
+        _ => Ok(vec![(
+            Frame::res(
+                req_id,
+                op::FE_SESSIONS,
+                json!({
+                    "error": "this connection declared no name at hello, so its sessions cannot be attributed to a box",
+                    "code": "unnamed_connection",
+                }),
+            ),
+            None,
+        )]),
     }
-    Ok(vec![(
-        Frame::res(
-            req_id,
-            op::FE_SESSIONS,
-            serde_json::to_value(sot_protocol::FeSessionsRes { ok: true })?,
-        ),
-        None,
-    )])
 }
 
 /// `ping` (topology plan §F step 2): a bare liveness ack, no side effect
@@ -6151,6 +6204,50 @@ pub async fn handle_ping(req_id: u64) -> Result<HandlerOutput> {
         ),
         None,
     )])
+}
+
+#[cfg(test)]
+mod fe_sessions_tests {
+    use super::handle_fe_sessions;
+    use crate::clients::Clients;
+
+    fn sessions_json() -> serde_json::Value {
+        serde_json::json!({
+            "sessions": [
+                {"handle": "agent@host-a", "state": "working", "summary": "", "status_at": ""}
+            ]
+        })
+    }
+
+    #[tokio::test]
+    async fn a_named_connection_declares_and_is_stored() {
+        let clients = Clients::new();
+        let g = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let out = handle_fe_sessions(1, sessions_json(), &clients, Some(g.serial()))
+            .await
+            .expect("handler ok");
+        assert_eq!(out[0].0.payload.get("ok").and_then(|v| v.as_bool()), Some(true));
+        let snap = clients.snapshot_with_active();
+        assert_eq!(snap.clients[0].sessions.as_ref().map(|s| s.len()), Some(1));
+    }
+
+    /// Session-listing brief: an unnamed declarer cannot be attributed
+    /// to a box (the `disconnected` map keys on the declared `name`), so
+    /// it is refused rather than stored.
+    #[tokio::test]
+    async fn an_unnamed_connection_is_refused_not_stored() {
+        let clients = Clients::new();
+        let g = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, None);
+        let out = handle_fe_sessions(1, sessions_json(), &clients, Some(g.serial()))
+            .await
+            .expect("handler ok");
+        assert_eq!(
+            out[0].0.payload.get("code").and_then(|v| v.as_str()),
+            Some("unnamed_connection")
+        );
+        let snap = clients.snapshot_with_active();
+        assert_eq!(snap.clients[0].sessions, None, "refused, not stored");
+    }
 }
 
 #[cfg(test)]

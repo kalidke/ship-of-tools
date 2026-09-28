@@ -943,7 +943,17 @@ send_version() {
         # blank cell.
         daemon_host="$(printf '%s' "$vresp" | jq -r '.payload.daemon.host // "?"')"
         [ -n "$daemon_host" ] || daemon_host="?"
-        daemon_build="${daemon_build} (lane proto ${daemon_lane_proto}, host ${daemon_host})"
+        daemon_build="${daemon_build} (lane proto ${daemon_lane_proto}, host ${daemon_host}"
+        # Session-listing brief: `uptime_s` is what makes a daemon
+        # restart's forgetting of the `disconnected` map VISIBLE rather
+        # than silently read as "no sessions" -- omitted (not "up 0")
+        # when a daemon predates the field (`// 0`, indistinguishable
+        # from a fresh boot, so print nothing rather than a misleading 0).
+        local daemon_uptime_s; daemon_uptime_s="$(printf '%s' "$vresp" | jq -r '.payload.daemon.uptime_s // 0')"
+        if [ "$daemon_uptime_s" -gt 0 ] 2>/dev/null; then
+            daemon_build="${daemon_build}, up $(fmt_age "$daemon_uptime_s" | sed 's/ ago$//')"
+        fi
+        daemon_build="${daemon_build})"
     fi
 
     printf '%-20s %-28s %s\n' "component" "version" "build"
@@ -995,6 +1005,9 @@ send_version() {
               ( $c | map(select(.name == null or .name == ""))
                 | group_by(.client_id + "\u0000" + .app_version) | .[]
                 | "row\tclient " + .[0].client_id + (if length > 1 then " ×" + (length|tostring) else "" end) + "\t" + .[0].app_version + "\t—"
+              ),
+              ( (.payload.disconnected // [])[] as $d
+                | "discon\t" + $d.identity + "\t" + ($d.since_s | tostring)
               )' \
             | while IFS=$'\t' read -r kind a b c d; do
                 case "$kind" in
@@ -1008,13 +1021,33 @@ send_version() {
                         # stamp prints "1h ago" here exactly as a local row's
                         # own strip would, via the SAME `fmt_age` comm-list.sh
                         # uses (moved to comm-lib.sh so the two never drift).
-                        local sline="  @$a [$b]"
+                        # A declared but EMPTY state prints "[—] no state
+                        # recorded", never degraded to "[idle]": on a
+                        # declared row an empty state means the registry
+                        # entry was pruned when the run ended (ADR 0043
+                        # decision 35), not that the run is quietly idle.
+                        local sline
+                        if [ -n "$b" ]; then
+                            sline="  @$a [$b]"
+                        else
+                            sline="  @$a [—] no state recorded"
+                        fi
                         [ -n "$c" ] && sline="$sline $c"
                         if [ -n "$d" ]; then
                             local sat; sat="$(date -u -d "$d" +%s 2>/dev/null || echo 0)"
                             [ "$sat" -gt 0 ] && sline="$sline · $(fmt_age $((nows - sat)))"
                         fi
                         echo "$sline"
+                        ;;
+                    discon)
+                        # a=identity (the box's declared fe@<host> name)
+                        # b=since_s. Its own `fe@` line (the `^fe@` grep/
+                        # awk extraction in comm-list.sh keys on exactly
+                        # this), never grouped under an attached row's
+                        # three columns — a disconnected box has no
+                        # `active`/`idle` to report, and no session lines
+                        # follow: they left with the connection.
+                        echo "$a  (frontend not connected since $(fmt_age "$b"); its sessions cannot be listed)"
                         ;;
                 esac
             done

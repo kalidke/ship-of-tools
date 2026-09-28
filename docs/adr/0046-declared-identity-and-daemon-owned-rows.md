@@ -21,7 +21,13 @@ declaring for its own daemon's rows — placeholder host, never a real
 one, this repo is PUBLIC). The two declarations answer different
 questions — "what is this row's identity" vs. "which identities does the
 box on the other end of THIS connection currently know about" — and
-neither substitutes for the other.
+neither substitutes for the other. Those declared handles leave WITH the
+connection — no per-handle withdrawal, no per-handle timeout, whole-list
+replacement only — but the BOX itself does not: a daemon keeps one
+in-memory line per box it has ever heard `fe.sessions` from, naming how
+long its connection has been gone, so a box the hub has heard from is
+never silently absent from the listing the way an ordinary disconnect
+would otherwise make it.
 
 ## Context
 

@@ -117,6 +117,17 @@ struct Inner {
     /// Keyed by per-connection serial (NOT client_id) so two live
     /// connections from the same machine are distinct entries.
     by_conn: HashMap<u64, ClientInfo>,
+    /// Session-listing brief decision 2, final (no-heartbeat) form: box
+    /// identity (a declared hello `name`, e.g. `fe@<host>`) → the
+    /// `Instant` its connection closed or was reaped — written ONLY for
+    /// a connection whose `sessions` was `Some(_)` (it had declared at
+    /// least once; see `ClientGuard::drop`), cleared the moment that
+    /// same identity declares again (`declare_sessions`). This is the
+    /// ONLY thing retained past a disconnect — the sessions themselves
+    /// leave with the connection, same as always. In memory only, empty
+    /// again on every daemon restart (accepted limit — see `uptime`,
+    /// which is what makes that limit visible rather than silent).
+    disconnected: HashMap<String, Instant>,
 }
 
 /// Shared, cheaply-cloneable handle to the connected-client roster.
@@ -124,6 +135,12 @@ struct Inner {
 pub struct Clients {
     inner: Arc<Mutex<Inner>>,
     next_serial: Arc<AtomicU64>,
+    /// This daemon PROCESS's own start time — session-listing brief: the
+    /// header line names how far back the `disconnected` map's memory
+    /// reaches ("this daemon, up 3h"), so a restart's forgetting is
+    /// visible rather than read as "no sessions". `Clients::new()` is
+    /// called once per daemon process, so this is set once, at boot.
+    started_at: Instant,
 }
 
 impl Clients {
@@ -131,7 +148,15 @@ impl Clients {
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
             next_serial: Arc::new(AtomicU64::new(1)),
+            started_at: Instant::now(),
         }
+    }
+
+    /// How long this daemon process has been up — the session-listing
+    /// brief's header value, and nothing else: no other decision reads
+    /// this (it is display only, same footing as `connected_at`).
+    pub fn uptime(&self) -> Duration {
+        Instant::now().saturating_duration_since(self.started_at)
     }
 
     /// Register a connection. Returns a guard that deregisters on drop —
@@ -237,9 +262,46 @@ impl Clients {
     /// landed yet), mirroring `touch_person_input`.
     pub fn declare_sessions(&self, serial: u64, sessions: Vec<sot_protocol::DeclaredSession>) {
         let mut g = self.inner.lock().unwrap();
-        if let Some(info) = g.by_conn.get_mut(&serial) {
-            info.sessions = Some(sessions);
+        let name = match g.by_conn.get_mut(&serial) {
+            Some(info) => {
+                info.sessions = Some(sessions);
+                info.name.clone()
+            }
+            None => return,
+        };
+        // A box that just declared again is, by definition, not missing
+        // — clear whatever "not connected since" entry it left behind
+        // last time it dropped (borrow of `by_conn` above must end
+        // first: `disconnected` is a sibling field, not the same one).
+        if let Some(name) = name {
+            g.disconnected.remove(&name);
         }
+    }
+
+    /// This connection's declared hello `name`, read with its own lock
+    /// acquisition — `handle_fe_sessions` checks this BEFORE calling
+    /// `declare_sessions`, because an unnamed declarer cannot be
+    /// attributed to a box (session-listing brief): refused, not
+    /// stored. `None` for an unregistered serial too, same "nothing to
+    /// report" convention as every other not-found case here.
+    pub fn name_for(&self, serial: u64) -> Option<String> {
+        self.inner.lock().unwrap().by_conn.get(&serial).and_then(|c| c.name.clone())
+    }
+
+    /// Every box identity this daemon currently has a "not connected
+    /// since" entry for for, each paired with how long ago (computed
+    /// from the SAME `now` the caller passes, so a `version.query` that
+    /// reads this alongside `snapshot_with_active` never disagrees with
+    /// itself about what "now" meant). Session-listing brief decision
+    /// 2/amendment 2 — the only state retained past a disconnect.
+    pub fn disconnected_since(&self, now: Instant) -> Vec<(String, Duration)> {
+        self.inner
+            .lock()
+            .unwrap()
+            .disconnected
+            .iter()
+            .map(|(identity, at)| (identity.clone(), now.saturating_duration_since(*at)))
+            .collect()
     }
 
     /// One consistent read of the registry: every connection (the
@@ -349,7 +411,25 @@ impl Drop for ClientGuard {
     fn drop(&mut self) {
         let (count, roster) = {
             let mut g = self.inner.lock().unwrap();
-            g.by_conn.remove(&self.serial);
+            let departed = g.by_conn.remove(&self.serial);
+            // Session-listing brief decision 2 (final, no-heartbeat
+            // form): a box goes into `disconnected` ONLY if it had
+            // declared at least once (`sessions: Some(_)`) — a
+            // connection that never sent `fe.sessions` (a bridge/cli/
+            // agent, or an old frontend) has nothing to be missed FOR,
+            // so it leaves no trace here, exactly as before this
+            // feature existed. `remove` above already ended the
+            // `by_conn` borrow, so touching `disconnected` next is a
+            // second, disjoint mutation of `g`, not a re-borrow.
+            if let Some(info) = departed {
+                if info.sessions.is_some() {
+                    if let Some(name) = info.name {
+                        if !name.is_empty() {
+                            g.disconnected.insert(name, Instant::now());
+                        }
+                    }
+                }
+            }
             (g.by_conn.len(), distinct_client_ids(&g.by_conn))
         };
         // Reap this connection's docs.open site root (ADR 0029). The map is keyed
@@ -539,6 +619,71 @@ mod tests {
         );
         assert_eq!(sessions[0].state, "working", "agent-1's state survives untouched");
         assert_eq!(sessions[1].state, "blocked", "agent-3's state survives untouched");
+    }
+
+    #[test]
+    fn a_box_that_had_declared_appears_disconnected_once_its_connection_drops() {
+        // Session-listing brief, amendment 2's final (no-heartbeat) form:
+        // the sessions leave with the connection, but the BOX is retained
+        // as one "not connected since" entry — never silently absent.
+        let clients = Clients::new();
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.declare_sessions(g.serial(), vec![declared_session("agent@host-a", "working")]);
+        drop(g);
+
+        let disconnected = clients.disconnected_since(Instant::now());
+        assert_eq!(disconnected.len(), 1);
+        assert_eq!(disconnected[0].0, "fe@host-a");
+    }
+
+    #[test]
+    fn a_connection_that_never_declared_leaves_no_disconnected_entry() {
+        // A bridge/cli/agent connection (or an old frontend) that never
+        // sent fe.sessions has nothing to be missed FOR — dropping it
+        // must not manufacture a "not connected" line for a box that
+        // never claimed to have sessions in the first place.
+        let clients = Clients::new();
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        drop(g);
+
+        assert_eq!(
+            clients.disconnected_since(Instant::now()),
+            Vec::new(),
+            "no fe.sessions was ever sent, so no box should be retained as disconnected"
+        );
+    }
+
+    #[test]
+    fn a_later_declaration_from_the_same_identity_clears_its_disconnected_entry() {
+        // A box that just declared again is, by definition, not missing:
+        // a FRESH connection under the same name clears the entry the
+        // PREVIOUS connection's drop left behind.
+        let clients = Clients::new();
+        let g1 = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.declare_sessions(g1.serial(), vec![declared_session("agent@host-a", "working")]);
+        drop(g1);
+        assert_eq!(clients.disconnected_since(Instant::now()).len(), 1, "disconnected after the first drop");
+
+        let g2 = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.declare_sessions(g2.serial(), vec![declared_session("agent@host-a", "working")]);
+        assert_eq!(
+            clients.disconnected_since(Instant::now()),
+            Vec::new(),
+            "re-declaring clears the earlier disconnected entry"
+        );
+    }
+
+    #[test]
+    fn a_second_declaration_replaces_the_first_rather_than_accumulating() {
+        let clients = Clients::new();
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.declare_sessions(g.serial(), vec![declared_session("agent-1@host-a", "working")]);
+        clients.declare_sessions(g.serial(), vec![declared_session("agent-2@host-a", "idle")]);
+
+        let snap = clients.snapshot_with_active();
+        let sessions = snap.clients[0].sessions.as_ref().expect("declared");
+        assert_eq!(sessions.len(), 1, "the second call replaces the list, it does not append to it");
+        assert_eq!(sessions[0].handle, "agent-2@host-a");
     }
 
     #[test]

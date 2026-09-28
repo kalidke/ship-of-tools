@@ -2339,6 +2339,37 @@ pub struct DaemonVersion {
     /// `""` as "matches mine" for the "cache diverged" comparison.
     #[serde(default)]
     pub hosts_toml_hash: String,
+    /// How long this daemon PROCESS has been up (`Clients::uptime`,
+    /// session-listing brief) — what a "not connected since" line's
+    /// reader needs to see how far back this daemon's memory of
+    /// disconnected boxes actually reaches: a restart forgets every one
+    /// of them, and this is what makes that forgetting visible instead
+    /// of silently read as "no sessions". `#[serde(default)]` → `0` for
+    /// a daemon that predates this field — the header degrades to
+    /// printing no uptime rather than failing to parse.
+    #[serde(default)]
+    pub uptime_s: u64,
+}
+
+/// One box this daemon has heard `fe.sessions` from whose connection has
+/// since closed or been reaped (session-listing brief decision 2,
+/// amendment 2's final no-heartbeat form) — the ONLY thing retained past
+/// a disconnect; the sessions themselves left with the connection. A
+/// SEPARATE list from `ClientVersion`, not optional fields on that type:
+/// a disconnected box has no sessions by definition, and a shape that
+/// could express one would invite printing it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DisconnectedBox {
+    /// The declared hello `name` this box's frontend connection last
+    /// carried (e.g. `fe@<host>`) — the same identity a `ClientVersion`
+    /// row would have shown while it was still attached.
+    pub identity: String,
+    /// Seconds since that connection closed or was reaped, computed by
+    /// the daemon from its own monotonic clock at THIS `version.query`
+    /// call — never a wall-clock timestamp (a box in another timezone
+    /// would mislead) and never re-derived by the caller from a stored
+    /// instant it has no way to read.
+    pub since_s: u64,
 }
 
 /// One attached frontend, as `version.query` reports it — sourced from the
@@ -2405,6 +2436,11 @@ pub struct VersionQueryRes {
     /// clients rather than failing the whole response.
     #[serde(default)]
     pub clients: Vec<ClientVersion>,
+    /// Every box this daemon has heard `fe.sessions` from that isn't
+    /// attached right now (session-listing brief) — `#[serde(default)]`,
+    /// same additive-tolerance idiom as `clients` above.
+    #[serde(default)]
+    pub disconnected: Vec<DisconnectedBox>,
 }
 
 /// `topology.set` request (plan §B "Editing the master list") — one edit,
@@ -2611,7 +2647,7 @@ mod hello_version_tests {
 
 #[cfg(test)]
 mod version_query_tests {
-    use super::{ClientVersion, DaemonVersion, VersionQueryRes};
+    use super::{ClientVersion, DaemonVersion, DisconnectedBox, VersionQueryRes};
 
     #[test]
     fn version_query_res_round_trips() {
@@ -2623,6 +2659,7 @@ mod version_query_tests {
                 lane_proto: 1,
                 host: "test-host".into(),
                 hosts_toml_hash: "deadbeefcafef00d".into(),
+                uptime_s: 10_800,
             },
             clients: vec![ClientVersion {
                 client_id: "fe-1".into(),
@@ -2635,6 +2672,10 @@ mod version_query_tests {
                 active: true,
                 sessions: None,
             }],
+            disconnected: vec![DisconnectedBox {
+                identity: "fe@host-b".into(),
+                since_s: 720,
+            }],
         };
         let json = serde_json::to_string(&res).unwrap();
         let back: VersionQueryRes = serde_json::from_str(&json).unwrap();
@@ -2642,12 +2683,34 @@ mod version_query_tests {
         assert_eq!(back.daemon.lane_proto, 1);
         assert_eq!(back.daemon.host, "test-host");
         assert_eq!(back.daemon.hosts_toml_hash, "deadbeefcafef00d");
+        assert_eq!(back.daemon.uptime_s, 10_800);
         assert_eq!(back.clients.len(), 1);
         assert_eq!(back.clients[0].client_id, "fe-1");
         assert_eq!(back.clients[0].name.as_deref(), Some("fe@host-a"));
         assert_eq!(back.clients[0].host.as_deref(), Some("test-host"));
         assert_eq!(back.clients[0].role, "fe");
         assert!(back.clients[0].active);
+        assert_eq!(back.disconnected.len(), 1);
+        assert_eq!(back.disconnected[0].identity, "fe@host-b");
+        assert_eq!(back.disconnected[0].since_s, 720);
+    }
+
+    #[test]
+    fn version_query_res_missing_disconnected_and_uptime_deserializes_to_defaults() {
+        // A daemon that predates this feature omits `uptime_s` and
+        // `disconnected` entirely — must still parse, reading 0 / empty
+        // rather than failing the whole response.
+        let json = serde_json::json!({
+            "daemon": {
+                "app_version": "0.6.0",
+                "protocol": 1,
+                "lane_build": "xyz",
+            },
+            "clients": [],
+        });
+        let back: VersionQueryRes = serde_json::from_value(json).expect("legacy peer parses");
+        assert_eq!(back.daemon.uptime_s, 0);
+        assert_eq!(back.disconnected, Vec::new());
     }
 
     #[test]
