@@ -19891,10 +19891,10 @@ fn inbox_window_has_frame(window: &str, id: &str, to: &str) -> bool {
 /// the post-append verify both use — so one open serves the whole decision.
 /// Both consumers survive a short window in the safe direction: the dedupe
 /// writes a duplicate, the verify withholds a claim.
-fn inbox_tail_window(f: &mut std::fs::File) -> std::io::Result<String> {
+fn inbox_tail_window(f: &mut std::fs::File, want: u64) -> std::io::Result<String> {
     use std::io::{Read, Seek};
     let len = f.seek(std::io::SeekFrom::End(0))?;
-    let start = len.saturating_sub(FE_INBOX_DEDUPE_BYTES);
+    let start = len.saturating_sub(want);
     f.seek(std::io::SeekFrom::Start(start))?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf)?;
@@ -19906,13 +19906,19 @@ fn inbox_tail_window(f: &mut std::fs::File) -> std::io::Result<String> {
         // This arithmetic cannot be wrong in a costly direction, and there
         // is no third direction. Drop too MUCH — `start` landed on a line
         // boundary, so this trims a complete line — and the window is
-        // shorter, a match is missed, and the frame is appended. Drop too
-        // LITTLE and the matcher is fed a partial line, which fails to
-        // parse, is skipped, and the frame is appended. These bytes feed
-        // exactly one consumer, a pure predicate, and removing input from
-        // it can only turn a true into a false, never a false into a true.
-        // Nothing on this path deletes, truncates or rewrites, so the only
-        // reachable cost is one extra line.
+        // shorter and a match is missed. Drop too LITTLE and the matcher is
+        // fed a partial line, which fails to parse and is skipped. Removing
+        // input from a pure predicate can only turn a true into a false,
+        // never a false into a true, and nothing on this path deletes,
+        // truncates or rewrites.
+        //
+        // What that costs depends on the caller, which is why `want` is the
+        // caller's to size and not a constant here. The dedupe pays one
+        // duplicate for a missed match. The verify pays a WITHHELD CLAIM for
+        // a write that landed, which is a false negative the sender answers
+        // with a resend — so its `want` must be at least the length of the
+        // record it is looking for, and then this trim can only ever drop a
+        // line that is not that record.
         match text.find('\n') {
             Some(i) => text = text.split_off(i + 1),
             None => text.clear(),
@@ -20168,6 +20174,14 @@ fn append_agent_message_at(path: &std::path::Path, payload: &serde_json::Value) 
         }
     };
     line.push('\n');
+    // The window must be able to CONTAIN the record being looked for, or both
+    // of its consumers go blind on a long frame at once: the dedupe appends a
+    // copy of a record it cannot see, and the verify withholds the claim for a
+    // write that landed — so the sender resends, and the resend is blind the
+    // same way. That is a duplicate per resend and a permanent false negative,
+    // on the one platform that has a reader. `FE_INBOX_DEDUPE_BYTES` sizes the
+    // search for a SIBLING's copy; this line is its own lower bound.
+    let want = FE_INBOX_DEDUPE_BYTES.max(line.len() as u64);
     use std::io::Write;
     // `read` as well as `append`: the dedupe below reads the tail through
     // this same handle.
@@ -20235,7 +20249,7 @@ fn append_agent_message_at(path: &std::path::Path, payload: &serde_json::Value) 
                 Ok(true) => {
                     // Bounded tail, never the whole file: the inbox grows
                     // without limit and nothing here wants it in memory.
-                    let window = inbox_tail_window(&mut f);
+                    let window = inbox_tail_window(&mut f, want);
                     match window {
                         Ok(w) if inbox_window_has_frame(&w, id, to) => {
                             tracing::debug!(
@@ -20292,7 +20306,7 @@ fn append_agent_message_at(path: &std::path::Path, payload: &serde_json::Value) 
     let Some((id, to)) = key else {
         return true;
     };
-    match inbox_tail_window(&mut f) {
+    match inbox_tail_window(&mut f, want) {
         Ok(w) if inbox_window_has_frame(&w, &id, &to) => true,
         Ok(_) => {
             tracing::warn!(
@@ -27981,6 +27995,22 @@ mod tests {
         // delivered frame, however many bytes of it are on disk.
         let torn_only = r#"{"from":"a","to":"peer-one","id":"x-1","tex"#;
         assert!(!inbox_window_has_frame(torn_only, "x-1", "peer-one"));
+    }
+
+    #[test]
+    fn a_frame_larger_than_the_window_is_still_claimed() {
+        // The window is a fixed tail, so a record longer than it used to put
+        // its own start before the window's — and the partial-first-line trim
+        // then left nothing at all. The dedupe could not see the copy it had
+        // just written, and the verify could not see the write it had just
+        // made, so the frame was appended again on every resend and never
+        // claimed once. A relayed file or a long diff is enough to reach it.
+        let path = inbox_temp_path("big");
+        let frame = inbox_frame(Some("x-1"), "peer-one", &"z".repeat(80 * 1024));
+        assert!(append_agent_message_at(&path, &frame));
+        assert!(append_agent_message_at(&path, &frame));
+        assert_eq!(inbox_lines(&path).len(), 1);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
