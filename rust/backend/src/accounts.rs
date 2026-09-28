@@ -380,19 +380,17 @@ const TRUST_ACCEPTED_KEY: &str = "hasTrustDialogAccepted";
 /// ever written.
 const TRUSTED_ROOT_PREFIX_SECTION: &str = "trust";
 const TRUSTED_ROOT_PREFIX_KEY: &str = "root_prefix";
-/// Overrides the declaration above for a daemon running outside an install
-/// (a scratch or test daemon, which has no config of its own to edit).
-const TRUSTED_ROOT_PREFIX_ENV: &str = "SOT_TRUSTED_ROOT_PREFIX";
 
 /// The declared prefix for this daemon, or `None` when nothing is declared
 /// -- in which case the folder-trust dialog is answered by hand exactly as
-/// it was before this existed. This repo ships no default and names no
-/// path: a default here would either leak a path into a public repo or
-/// trust folders nobody declared.
+/// it was before this existed. The table above is the ONLY source: no
+/// environment override, no default, no path named in this repo, because
+/// a second source is a second answer to "which tree is trusted" and the
+/// wrong one of the two is always the wider one. A daemon with no config
+/// therefore trusts nothing, which is the safe and visible direction --
+/// every session simply gets the dialog. A daemon that needs a different
+/// answer writes its own `[trust]` table in its own config directory.
 pub fn trusted_root_prefix() -> Option<PathBuf> {
-    if let Some(v) = std::env::var_os(TRUSTED_ROOT_PREFIX_ENV).filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(v));
-    }
     declared_root_prefix(&crate::workspaces::app_config_dir())
 }
 
@@ -492,7 +490,7 @@ pub fn ensure_folder_trusted(
     let Some(prefix) = prefix else { return Ok(false) };
     if !prefix.is_absolute() {
         return Err(format!(
-            "declared trusted-folder prefix {prefix:?} (${TRUSTED_ROOT_PREFIX_ENV}) is not an absolute path: nothing is trusted"
+            "declared trusted-folder prefix {prefix:?} ([trust] root_prefix) is not an absolute path: nothing is trusted"
         ));
     }
     if !root.is_absolute() {
@@ -864,10 +862,6 @@ mod tests {
 
     // ---- declared-folder trust (the prompt the daemon pre-answers) ----
 
-    /// `trusted_root_prefix` reads the process environment; serialise the
-    /// tests that mutate it (same pattern as `proxy`'s own env tests).
-    static TRUST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Stand-in for the parent directory the owner declares: made inside a
     /// tempdir, so no real path from any machine appears in this repo.
     fn declared_parent(home: &Path) -> PathBuf {
@@ -1168,20 +1162,5 @@ mod tests {
             parse_declared_root_prefix("[ trust ]\nroot_prefix = \"/declared/here\"\n"),
             Some(PathBuf::from("/declared/here"))
         );
-    }
-
-    #[test]
-    fn the_environment_declaration_overrides_the_installed_one() {
-        let _g = TRUST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = tempfile::tempdir().unwrap();
-        let parent = declared_parent(tmp.path());
-
-        // Only the non-empty arm can assert on `trusted_root_prefix`: with
-        // the variable unset it reads THIS box's real config, whose answer
-        // is not the test's to know. `declared_root_prefix` above covers
-        // the file side.
-        std::env::set_var(TRUSTED_ROOT_PREFIX_ENV, &parent);
-        assert_eq!(trusted_root_prefix(), Some(parent));
-        std::env::remove_var(TRUSTED_ROOT_PREFIX_ENV);
     }
 }
