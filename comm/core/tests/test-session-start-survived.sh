@@ -24,13 +24,15 @@ SLEEPERS=()
 # the SLEEPERS array alone could never have worked: `sleeper` is called in a
 # command substitution, so its `SLEEPERS+=` happens in a subshell and this
 # shell's array stays empty. The sweep therefore goes by this suite's OWN temp
-# path, which cannot match anything else on the box. The second cause is that
+# path, which cannot match anything else on the box -- and by a PREFIX, so it
+# covers both fakebin stand-ins (comm-watch.sh and comm-wake.sh) rather than
+# whichever one it was written for. The second cause is that
 # the fake watcher is a shell running `sleep 300`, so killing the shell leaves
 # the sleep behind: children first, then the shell.
 cleanup() {
     sot_bridge_stop "${NAME:-}" 2>/dev/null || true
     local p
-    for p in $(pgrep -f "$WORK/fakebin/comm-watch.sh" 2>/dev/null) "${SLEEPERS[@]:-}"; do
+    for p in $(pgrep -f "$WORK/fakebin/comm-w" 2>/dev/null) "${SLEEPERS[@]:-}"; do
         [ -n "$p" ] || continue
         pkill -P "$p" 2>/dev/null || true
         kill "$p" 2>/dev/null || true
