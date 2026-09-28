@@ -1676,7 +1676,7 @@ fn hull_band(ship_y: f32, cell_h: f32) -> (f32, f32) {
 fn strip_row_tops(grid_bottom: f32, cell_h: f32) -> (f32, f32) {
     let b = band_spec();
     let rows = cell_h / BASE_CELL_H;
-    let names = grid_bottom + rows * b.air;
+    let names = grid_bottom + rows * (b.pad + b.air);
     (names, names + cell_h + rows * b.gap)
 }
 
@@ -1800,6 +1800,11 @@ fn hull_variant() -> u8 {
 /// bottom edge. `slack_to_top` moves the row-quantisation remainder above the
 /// panes instead of leaving it in the sea.
 struct BandSpec {
+    /// Padding INSIDE the pane frame, between the grid's last text row and the
+    /// bottom border — the border stroke moves to the bottom of that extended
+    /// space instead of riding the middle of its own text row, so the frame
+    /// grows downward without the grid gaining or losing a row.
+    pad: f32,
     air: f32,
     gap: f32,
     drop: f32,
@@ -1813,25 +1818,38 @@ fn band_spec() -> BandSpec {
     match hull_variant() {
         // One text row: the box name joins the session names and the hull is a
         // drawn band under them. 30 px — one pane row comes back.
-        1 => BandSpec { air: 4.0, gap: 2.0, drop: 0.0, thick: 3.0, sea: 3.0, name_inline: true, slack_to_top: false },
+        1 => BandSpec { pad: 0.0, air: 4.0, gap: 2.0, drop: 0.0, thick: 3.0, sea: 3.0, name_inline: true, slack_to_top: false },
         // Two rows, tightest the typography allows: the owner's 8 px drop
         // between the rows deleted and the sea cut to 1. 37 px.
-        2 => BandSpec { air: 4.0, gap: 0.0, drop: 11.0, thick: 3.0, sea: 1.0, name_inline: false, slack_to_top: true },
+        2 => BandSpec { pad: 0.0, air: 4.0, gap: 0.0, drop: 11.0, thick: 3.0, sea: 1.0, name_inline: false, slack_to_top: true },
         // Two rows, the owner's picked spacing kept exactly; only the sea under
         // the waterline is spent. 44 px.
-        3 => BandSpec { air: 4.0, gap: 8.0, drop: 11.0, thick: 3.0, sea: 0.0, name_inline: false, slack_to_top: true },
+        3 => BandSpec { pad: 0.0, air: 4.0, gap: 8.0, drop: 11.0, thick: 3.0, sea: 0.0, name_inline: false, slack_to_top: true },
+        // B — the owner's normal thing: the panes keep their 55 rows and
+        // their top, the 8 px the hull was dropped by becomes padding inside
+        // the pane frame, and the bottom border stroke moves from the middle of
+        // its text row to the bottom of that padded space. The rc9.5 ship (names
+        // and hull adjacent) then sits 4 px under the line with the same 4 px of
+        // sea, so the ship does not move and the LINE comes down to meet it.
+        6 => BandSpec { pad: 8.0, air: 4.0, gap: 0.0, drop: 11.0, thick: 3.0, sea: 4.0, name_inline: false, slack_to_top: false },
         // Shipped.
-        _ => BandSpec { air: 4.0, gap: 8.0, drop: 11.0, thick: 3.0, sea: 4.0, name_inline: false, slack_to_top: false },
+        _ => BandSpec { pad: 0.0, air: 4.0, gap: 8.0, drop: 11.0, thick: 3.0, sea: 4.0, name_inline: false, slack_to_top: false },
     }
 }
 
 /// The band's whole height in physical px — the panes' bottom row to the
 /// window's bottom edge, which is the quantity the owner asked to shrink.
+/// The pad in physical px — what `project_lines` / `project_border_quads` push
+/// the grid's LAST row down by, so the pane frame closes below the padding.
+fn band_bottom_pad(cell_h: f32) -> f32 {
+    band_spec().pad * cell_h / BASE_CELL_H
+}
+
 fn band_need_px(cell_h: f32) -> f32 {
     let b = band_spec();
     let rows = cell_h / BASE_CELL_H;
     let below = if b.name_inline { 0.0 } else { b.drop };
-    cell_h + rows * (b.air + b.gap + below + b.thick + b.sea)
+    cell_h + rows * (b.pad + b.air + b.gap + below + b.thick + b.sea)
 }
 
 /// Top margin for the chrome grid. Unchanged (`BASE_CHROME_ORIGIN_Y * s`)
@@ -17800,11 +17818,13 @@ impl State {
             }
         }
 
+        let bottom_pad = band_bottom_pad(self.cell_h);
         let mut lines = self.terminal.backend().project_lines(
             self.chrome_origin_x,
             self.chrome_origin_y,
             self.cell_w,
             self.cell_h,
+            bottom_pad,
         );
 
         // Pane borders: render ratatui's box-drawing glyphs (│ ─ ┌ …) as
@@ -17824,6 +17844,7 @@ impl State {
             self.cell_w,
             self.cell_h,
             border_thickness,
+            bottom_pad,
         );
         // Group rects by colour (1–2 colours typical): `Quad::render_many` is
         // one colour per Quad, so the pass below does one batched draw per
