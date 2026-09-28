@@ -1370,6 +1370,33 @@ pub fn lock_writer(lock_path: &Path) -> Result<WriterLock> {
     }
 }
 
+/// Take this crate's exclusive file lock on an ALREADY-OPEN handle, with the
+/// same bounded retry [`lock_writer`] uses (`RETRY_DEADLINE_MS` /
+/// `RETRY_STEP_MS`) and the same primitive (`File::try_lock` — see
+/// [`WriterLock`]'s doc for both platform arms and why they are exact).
+/// `Ok(true)` locked, `Ok(false)` still held by someone else at the
+/// deadline, `Err` a real lock error. Takes no guard of its own: the lock
+/// is released by the kernel when the CALLER's handle drops, because the
+/// caller already owns the handle it wants fenced.
+///
+/// The reach-through exports the LOOP, never the numbers. One bounded-retry
+/// policy lives in this crate; a second set of constants drifting into
+/// existence in a consumer is what a facade like this exists to prevent.
+pub fn try_lock_bounded(file: &File) -> std::io::Result<bool> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(true),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
+    }
+}
+
 /// Bootstrap `<lock_path>` if absent: `create_new` — atomically `CREATE_NEW`
 /// on Windows, `O_CREAT|O_EXCL` on unix, both mapped by std's own
 /// `OpenOptions` — so two processes racing to become the first supervisor

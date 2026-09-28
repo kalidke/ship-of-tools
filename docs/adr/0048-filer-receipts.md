@@ -117,6 +117,126 @@ nothing. This ADR is that ruling's discharge, not its reversal.
    keys and never takes this path — an `exec` mid fan-out would abandon the
    remaining targets.
 
+### Amendment: one box, two frontends, one append
+
+The daemon fans every `agent.message` out to every open connection, and each
+attached frontend appends unconditionally into one `fe-inbox.jsonl` whose path
+has no per-frontend component. Two frontends on one box therefore file the same
+frame twice, and the reader — a line-offset cursor with no dedupe — shows it
+twice and wakes the session twice. Items 9–14 close that.
+
+9. **First-writer-wins is decided at the inbox file, before the write.** The
+   frontend takes an exclusive lock on the inbox file, reads a bounded window
+   back from its end, and appends only when no line in that window already
+   carries the same `(id, to)` pair. The lock is released immediately after.
+   This is arbitration placed where it can actually gate a write: locally,
+   synchronously, with no peer involved.
+
+   The key is `(id, to)` — decision 1's sender-minted opaque id, plus the
+   frame's addressee, which is the target row's handle. Both are already in the
+   fanned-out payload; nothing is added to the wire.
+
+   **A frame carrying no `id` is appended unconditionally, as before.** This is
+   deliberate. The id is the only field that distinguishes two sends; the rest
+   of the payload is byte-identical across frontends *and* would be
+   byte-identical for a genuine resend of the same text to the same handle in
+   the same second, because the daemon stamps `ts` once and the frontends
+   re-serialise what they were given. Deduping such a frame by content would
+   collapse a retry — a lost message, which is worse than the duplicate it
+   would prevent. A sender too old to mint an id keeps its current behaviour on
+   a path that already reports `NOT CONFIRMED`, and decision 2a's `receipt_for`
+   already declines to claim for it.
+
+   **Every failure fails open: append anyway.** Lock not granted within the
+   deadline, lock error, window read error, unparsable window — all append. A
+   duplicate is a nuisance the reader survives; a drop is a message nobody ever
+   sees. The failure direction is named here so no later refactor can quietly
+   reverse it.
+
+   The window is a heuristic and only a heuristic. Under the lock protocol the
+   bytes separating two copies of one frame are only the bytes some lock holder
+   appended during the contention window — a handful of lines in every
+   realistic case, since two frontends handed the same broadcast frame enter
+   the lock within milliseconds of each other. The broadcast's own capacity
+   bounds something different and still useful: a frontend whose subscription
+   falls far enough behind is reported lagged and those frames are skipped,
+   never written, so one frontend can never be arbitrarily far behind its
+   sibling. A separation larger than the window falls through to the append,
+   which is the pre-amendment behaviour.
+
+10. **The claim follows the FILE, not the write.** The append reports "the frame
+    carrying this id is in this box's inbox" — true when this call wrote the
+    line, and equally true when this call read the line there under the lock and
+    therefore skipped its own write. A frontend claims when that is true and
+    `receipt_for`'s own-host gate passes; it stays silent otherwise.
+
+    This widens what decision 2's claim asserts, and the widening is deliberate.
+    It read "I appended the frame carrying this id". It now reads: **"the frame
+    carrying this id is in the inbox I file into, and a row of my own host
+    declares its addressee."** The value decision 2 was protecting is unchanged
+    — the receipt is a statement about something the claimant observed, not a
+    name-suffix guess made by the sender — and "I read this frame in the file I
+    file into, holding the lock on it" is exactly as observed as "I wrote it."
+
+    The narrower "I wrote it" cannot be used, because it can produce **zero
+    receipts for a frame that was filed.** `receipt_for` depends on the
+    frontend's own-host row list, which is filled per frontend process on its
+    own `workspace.list` reply; two frontends on one box have independent dial
+    sets and reply timing, so a just-attached frontend can win the lock, write
+    the line, and have no row list to claim from, while its sibling finds the
+    duplicate and stays silent. The matrix reports that outcome as a false
+    failure. A duplicate receipt is not: decision 2a's break-on-first already
+    makes the second one free.
+
+    `filer` attribution is unaffected. Two frontends on one box declare the same
+    hello `name`, so a receipt names the box's frontend address either way —
+    which decision 2 already accepts as attribution, not authentication.
+
+11. **Decision 6 stands, restated.** "The append is never gated on the claim" is
+    unchanged: no append here waits on a verdict from any other process. What
+    gates the append is the *file's own content* — a local read of the record
+    itself. The distinction is the whole amendment. A gate that can only
+    suppress a write whose effect is already on disk cannot lose a message; a
+    gate that waits on a peer can.
+
+12. **The daemon keeps no delivery state.** Decision 4 is untouched.
+    `handle_agent_filed` stays stateless, `agent.filed` stays one field, and
+    nothing is added to any wire struct. A daemon restart cannot lose
+    arbitration state, because no daemon holds any.
+
+13. **Anything typed on delivery is emitted only by the process that put the
+    frame in the file.** The frontend types nothing on delivery today; the gated
+    poke is the sender's, on a route that never involves a frontend. When filing
+    and poking do meet — ADR 0047's closing direction, the daemon filing for its
+    own rows — the poke sits in the same branch as the file outcome, never
+    beside it, exactly as decision 5 already requires of the claim. A frontend
+    that skipped its write because the frame was already there must not type:
+    the frame's own filer already did, or will.
+
+14. **The append never runs on the frontend's UI thread.** The lock wait and the
+    window read are filesystem operations with a bounded but real wait, and the
+    delivery branch sits inside an unbounded drain on the winit main thread,
+    where a wait stalls the event loop and a burst multiplies the stall. They
+    run on one dedicated filer thread per frontend process, fed by an unbounded
+    FIFO channel, which performs the append and — once it knows the file outcome
+    — sends the claim itself. The UI thread's whole cost per frame is the pure
+    claim computation and a non-blocking push.
+
+    One thread and a FIFO channel means a frontend appends frames in the order
+    the daemon sent them, which the line-offset reader needs: a pool or a thread
+    per frame would reorder a conversation and multiply contention on a lock
+    whose entire purpose is one writer at a time. The channel is unbounded
+    because a bounded one either blocks the send — putting the wait back on the
+    UI thread — or drops, which loses a message. Every exit path drains it with
+    a bounded join; a hard kill loses whatever is still queued, and that is
+    honest, because no claim was sent for those frames.
+
+    The lock is exact where the file is read: that platform's state dir is
+    machine-local storage. On a box with a network home the lock may be weaker,
+    and there the file has no reader at all, so a missed exclusion costs nothing
+    — which is why **a reader for `fe-inbox.jsonl` may not be introduced on such
+    a platform without re-opening this question.**
+
 Nothing about the transport changes.
 
 ## Consequences
@@ -185,3 +305,15 @@ two visible receipts. With no negative claim, a handle whose session has
 simply not started yet reads as NOT CONFIRMED rather than as a refusal — the
 frame IS still appended and a later session reads it, and the wording says the
 frame was sent, not that the handle is unknown.
+
+The amendment does not make the daemon the filer. The frontend is still the
+filer because a daemon is not a standing client of another daemon: the
+topology dial is a one-shot blocking CLI call, not a subscription, and nothing
+in the backend holds an outbound connection over which an `agent.message`
+fan-out could reach it — so the target box's daemon never sees the frame at
+all. Moving the filing there is the change that would remove arbitration
+entirely rather than perform it, and ADR 0047's closing paragraph already names
+it as the next direction; it waits on that link. Nor does the amendment move
+filing into the per-handle inbox, which is the change that would delete the
+second inbox and its readers outright; its prerequisite is that the frontend
+process learn the comm home and the handle charset, which it does not know.
