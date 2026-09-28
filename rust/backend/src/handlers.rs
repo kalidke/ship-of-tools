@@ -6827,28 +6827,14 @@ pub async fn handle_workspace_list(
             // Which registry row is this workspace's — one rule, shared with
             // `clear_comm_unread` (`comm_handle_for_workspace`).
             let handle = comm_handle_for_workspace(&ws);
-            // Work-state merge: the registry `state` is what the agent *declared*
-            // (set by the work-state hooks: UserPromptSubmit → "working",
-            // Notification → "blocked", Stop → "idle"), while `pane` is the live
-            // pane-scrape. The hooks are the source of truth — instant, automatic,
-            // no model cooperation. Precedence:
-            //   reg "blocked" BUT pane "working" → "working". A Notification hook
-            //                       stamps "blocked", but resuming generation fires
-            //                       no UserPromptSubmit to clear it, so the block
-            //                       goes stale and the agent shows red while it is
-            //                       actually working. The live footer showing active
-            //                       generation is proof it is NOT waiting on you. (A
-            //                       blocked/waiting agent is not generating, so its
-            //                       pane never reads "working" — this only fires on a
-            //                       genuinely stale block.)
-            //   "working"/"blocked"/"waiting"/"done" → registry wins (an explicit hook state;
-            //                       for "blocked" with a non-working pane the pane
-            //                       cannot tell waiting-on-you from idle).
-            //   registry idle/empty → fall back to the live pane (covers agents not
-            //                       yet running the hooks, through the rollout; a
-            //                       hooked agent's pane agrees anyway).
-            let reg = agent_str(&handle, "state");
-            let agent_state = reg;
+            // The registry `state` IS the badge — no pane scrape, no merge, no
+            // precedence to arbitrate. A prior version of this comment described
+            // a registry-vs-pane precedence merge that no longer exists here; it
+            // was the only thing in the tree suggesting a pane-based idle
+            // detector could overrule a stamped fact, which it never can (only
+            // an act that could BE the answer clears a question — ADR 0044
+            // amendment, field report 2026-09-27).
+            let agent_state = agent_str(&handle, "state");
             // `phase` is read straight off the row's own cell — every row
             // is a capsule on this build (`ws.runtime` is always
             // `"capsule"`), so there is no other case left to branch on.

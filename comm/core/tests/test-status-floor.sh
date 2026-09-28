@@ -57,8 +57,11 @@ ln -s "$SCRIPTS_DIR/comm-status.sh" "$FLAT_BIN_DIR/comm-status.sh"
 
 W() { printf '%s' "$1" | bash "$HOOKS_DIR/comm-status-working.sh"; }
 I() { printf '{}' | bash "$HOOKS_DIR/comm-status-idle.sh"; }
-# B: the PreToolUse AskUserQuestion hook (sends blocked, then stop).
-B() { printf '{"tool_name":"AskUserQuestion"}' | bash "$HOOKS_DIR/comm-status-blocked.sh"; }
+# B: the PreToolUse AskUserQuestion hook (sends blocked, then stop). Carries
+# a fixed tool_use_id so a paired HBQ call in the SAME test can consume the
+# marker it drops; a bare HBQ with no preceding B for that id is exactly the
+# "foreign dialog, no marker" case (see the fix-1 cases below).
+B() { printf '{"tool_name":"AskUserQuestion","tool_use_id":"askq-test"}' | bash "$HOOKS_DIR/comm-status-blocked.sh"; }
 # HB: a heartbeat tool call (PostToolUse, tool_name=Bash). HBQ: the
 # AskUserQuestion ANSWER's PostToolUse. Both route through FLAT_BIN_DIR so
 # the hook's own NAME resolution (SELF_DIR/comm-context.sh) succeeds. HB
@@ -66,13 +69,15 @@ B() { printf '{"tool_name":"AskUserQuestion"}' | bash "$HOOKS_DIR/comm-status-bl
 # own tool call in its own right, not a repeat within one live turn. HBQ
 # does NOT clear it — the answer branch runs before that throttle check
 # (review finding 2026-09-19), so a call must prove it fires even with a
-# fresh tick left over from an earlier HB/B call in the same test.
+# fresh tick left over from an earlier HB/B call in the same test. HBQ's
+# tool_use_id matches B's default, so the two pair up when called together;
+# called alone it finds no marker and answers nothing (fix 1).
 HB() {
     rm -f "$SOT_COMM_HOME"/state/hb-*.tick 2>/dev/null
     printf '{"tool_name":"Bash"}' | bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh"
 }
 HBQ() {
-    printf '{"tool_name":"AskUserQuestion"}' | bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh"
+    printf '{"tool_name":"AskUserQuestion","tool_use_id":"askq-test"}' | bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh"
 }
 # IT TEXT [stop_hook_active]: Stop with a transcript whose last assistant message is TEXT.
 # ITL TEXT PAYLOAD_MSG — the transcript holds only an earlier text record; the
@@ -221,7 +226,13 @@ case_blue_cleared_by_next_user_prompt() {
 case_question_during_running_turn_is_green() {
     seed idle; W "$GENUINE"
     "$ST" blocked "the question?" >/dev/null
-    expect working/user/q/-/- mid-turn && [ "$(summ)" = "the question?" ] || return 1
+    # Summary is NOT the question here: mid-turn state is `working` (floor
+    # outranks it), and blocked no longer aliases .note to the question text
+    # (fix 2 — the alias was the reason a dead question used to survive as
+    # the summary long after it was answered). With no note set, summary is
+    # blank until the row actually reduces to `blocked` below, where the
+    # question comes from .question directly, not from .note.
+    expect working/user/q/-/- mid-turn && [ "$(summ)" = "" ] || return 1
     # A single marker-less Stop here is a NUDGE (a human turn owes its
     # closing block for a parked row), not a floor — floor_now runs the
     # nudge-then-continuation pair a real turn produces.
@@ -294,6 +305,18 @@ case_ask_user_question_within_throttle_window() {
     HBQ
     expect working/user/-/-/- answered || return 1
     I; expect done/-/-/-/d end
+}
+# A parked question was cleared by a PostToolUse that treated ANY completed
+# AskUserQuestion as this row's own answer (badge showed idle with a real
+# question still open — field report, 2026-09-27). The row here is parked
+# via a plain self-report `blocked`, so no PreToolUse ever ran for it and no
+# marker exists; a bare HBQ (fix 1's marker check fails to find one) must
+# answer nothing.
+case_parked_question_survives_a_foreign_askuserquestion_answer() {
+    seed idle; W "$GENUINE"; "$ST" blocked "the question?" >/dev/null; floor_now
+    expect blocked/-/q/-/- parked || return 1
+    HBQ                                   # a dialog this row never opened
+    expect blocked/-/q/-/- after-foreign-answer && [ "$(summ)" = "the question?" ]
 }
 case_tool_call_on_floorless_row_changes_nothing() {
     seed idle
@@ -794,6 +817,7 @@ check "explicit done clears an open question and wait" case_explicit_done_clears
 check "explicit done then stop stays done" case_explicit_done_then_stop_stays_done
 check "explicit idle then stop stays idle" case_explicit_idle_then_stop_stays_idle
 check "an AskUserQuestion answer inside the heartbeat throttle window still floors green" case_ask_user_question_within_throttle_window
+check "a parked question survives a foreign AskUserQuestion answer with no marker" case_parked_question_survives_a_foreign_askuserquestion_answer
 check "a tool call on a floor-less row writes nothing" case_tool_call_on_floorless_row_changes_nothing
 check "a tool call refreshes a stale stamp only, not a fresh one" case_tool_call_refreshes_old_stamp_only
 check "headless child hooks stand down on SOT_COMM_HOOKS=off" case_headless_child_hooks_stand_down
