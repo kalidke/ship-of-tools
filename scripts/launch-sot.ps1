@@ -652,11 +652,20 @@ Initialize-InstallLayout
 # Invoke-SelfUpdatePrelude is a no-op for a pinned install ("updates arrive
 # via sot-apply, no pull"), so nothing else in the converge path ever
 # invoked sot-apply.ps1 (2026-09-18 field report).
+# -Handover marks the ONE pass that is finishing an update a previous pass
+# already applied: it skips the apply, and with it the daemon stop that exists
+# only to serve the apply. It is a parameter and not a read of $script:reexecd
+# because "is this a handover" is a fact about a CALL, while the supervisor
+# outlives the pass and calls this again on every converge. Reading the latch
+# here made a converge inherit the first pass's answer and never apply; a
+# consumed latch instead freed the handover gate below to re-exec forever.
+# Neither failure is reachable once the caller states which kind of call it is.
 function Invoke-PendingApply {
-    # Gated on the same condition as the apply below: the stop exists ONLY to
-    # keep the daemon from pinning a stale binary while sot-apply swaps it, so
-    # a pass that will not run sot-apply must not bounce the daemon either.
-    if (-not $NoUpdate -and -not $script:reexecd -and (Test-Path $sotLocalDaemon)) {
+    param([switch]$Handover)
+
+    # The stop exists ONLY to keep the daemon from pinning a stale binary while
+    # sot-apply swaps it, so a pass that will not apply must not bounce it.
+    if (-not $NoUpdate -and -not $Handover -and (Test-Path $sotLocalDaemon)) {
         $updatePending = Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')
         if ($updatePending) {
             Write-SupLog 'local daemon: stopping before apply so it does not pin a stale binary'
@@ -669,7 +678,7 @@ function Invoke-PendingApply {
     # left and does not run sot-apply again: $script:sotJustApplied below
     # then reads true from that marker, so the comm update and the
     # crash-loop window follow the apply on the fresh-launch path too.
-    if (-not $NoUpdate -and -not $script:reexecd -and (Test-Path $sotApply)) {
+    if (-not $NoUpdate -and -not $Handover -and (Test-Path $sotApply)) {
         Remove-Item -Path $applyMarker -Force -ErrorAction SilentlyContinue
         Set-LaunchStatus 'Applying update...'
         $applyOut = & $sotApply 6>&1 2>&1
@@ -682,20 +691,8 @@ function Invoke-PendingApply {
     # flag is the one-shot signal that gets CONSUMED (see
     # Invoke-FreshnessPass) instead.
     $script:sotJustApplied = Test-Path -LiteralPath $applyMarker
-
-    # The re-exec flag describes THIS pass -- the post-apply handover that is
-    # still finishing the update the previous pass applied -- and nothing
-    # after it. Consume it here, because this supervisor outlives the pass:
-    # it stays up and re-enters Invoke-PendingApply on every converge. Left
-    # latched, a supervisor born from a handover can never converge-apply
-    # again -- it stops the daemon, relaunches, reads the marker the handover
-    # left, logs "rollback window armed" and applies nothing, reporting
-    # success the whole way. That is every box that has ever applied an update
-    # and stayed up (field report, 2026-09-28). The environment variable is
-    # already cleared by then; this is the copy that was not.
-    $script:reexecd = $false
 }
-Invoke-PendingApply
+Invoke-PendingApply -Handover:$script:reexecd
 
 # ---------------------------------------------------------------------------
 # Migration + post-apply handover onto the pinned launcher (docs/adr/
@@ -2047,6 +2044,14 @@ try {
             # so a converge with nothing armed doesn't pay a sot-apply.ps1
             # spawn every time.
             if (Test-Path (Join-Path $prefixDir 'updates\pending-windows-x86_64.json')) {
+                # Never a handover: this supervisor is already running and the
+                # armed update is one nobody has applied yet. Before this was
+                # stated here, a supervisor born from a handover carried that
+                # pass's flag for life and skipped the apply on every converge
+                # -- it stopped the daemon, relaunched, read the marker the
+                # handover had left, logged that a rollback window was armed,
+                # and applied nothing, reporting success the whole way (field
+                # report, 2026-09-28).
                 Invoke-PendingApply
             }
             Invoke-SelfUpdatePrelude
