@@ -45,7 +45,7 @@ sot_send() {
 #    the row+kernel+toml would otherwise leak (the worktree-clean leak).
 AGENT_WSID=""
 if jq -e --arg n "$WHO" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
-    AGENT_WSID="$(jq -r --arg n "$WHO" '.agents[$n].workspace_id // ""' "$REGISTRY" 2>/dev/null || true)"
+    AGENT_WSID="$(sot_jq -r --arg n "$WHO" '.agents[$n].workspace_id // ""' "$REGISTRY" 2>/dev/null || true)"
     with_lock registry_del "$WHO"
     rm -f "$SELF_DIR/"*"$WHO"* 2>/dev/null || true
     echo "Removed @$WHO from sot-comm registry"
@@ -76,13 +76,13 @@ if ! command -v nc >/dev/null 2>&1; then echo "nc not found; cannot reach daemon
 if ! ENDPOINT="$(resolve_endpoint)"; then echo "ERROR: no sotd daemon found; set --endpoint unix:/path or tcp:HOST:PORT" >&2; exit 1; fi
 
 LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list || true)"
-WSID="$(printf '%s' "$LIST" | jq -r --arg w "$WHO" \
+WSID="$(printf '%s' "$LIST" | sot_jq -r --arg w "$WHO" \
     '.payload.workspaces[] | select(.slug==$w or .label==$w or .workspace_id==$w) | .workspace_id' 2>/dev/null | head -1)"
 # Fallback: WHO was an agent handle that doesn't itself match a workspace
 # slug/label/id (display-prefix decoupling). Match by the workspace id its
 # registry row recorded at join.
 if [ -z "$WSID" ] && [ -n "$AGENT_WSID" ]; then
-    WSID="$(printf '%s' "$LIST" | jq -r --arg w "$AGENT_WSID" \
+    WSID="$(printf '%s' "$LIST" | sot_jq -r --arg w "$AGENT_WSID" \
         '.payload.workspaces[] | select(.workspace_id==$w) | .workspace_id' 2>/dev/null | head -1)"
     [ -n "$WSID" ] && echo "Resolved workspace via registry row '$AGENT_WSID' (handle @$WHO ≠ workspace slug)"
 fi

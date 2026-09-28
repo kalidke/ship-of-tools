@@ -13,6 +13,8 @@
 # Usage: comm-worktree-sync.sh [--message "extra note"]
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=comm-lib.sh
+source "$SCRIPT_DIR/comm-lib.sh"   # for sot_jq (comm-context.sh's own eval output carries no functions)
 
 NOTE=""
 while [ $# -gt 0 ]; do
@@ -38,7 +40,7 @@ command -v jq >/dev/null 2>&1 || { echo "comm-worktree-sync.sh: jq required" >&2
 [ -f "$REGISTRY" ] || { echo "comm-worktree-sync.sh: no registry at $REGISTRY" >&2; exit 1; }
 
 # Family = exact base OR `<base>-...` (dash-guarded so pkg != pkg-analysis).
-mapfile -t FAMILY < <(jq -r --arg b "$BASE" '
+mapfile -t FAMILY < <(sot_jq -r --arg b "$BASE" '
     .agents // {} | keys[] | select(. == $b or startswith($b + "-"))
 ' "$REGISTRY" 2>/dev/null || true)
 

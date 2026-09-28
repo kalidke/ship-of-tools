@@ -43,7 +43,7 @@ show_stream() {
         # advances to the total below), so one bad line cannot pin the cursor
         # either.
         printf '%s' "$line" | jq -e 'type == "object"' >/dev/null 2>&1 || continue
-        from="$(printf '%s' "$line" | jq -r '.from // ""' 2>/dev/null)"
+        from="$(printf '%s' "$line" | sot_jq -r '.from // ""' 2>/dev/null)"
         # Selftest frames (from:__selftest__) are wake-path proofs injected by
         # comm-listen.sh --selftest; they land in the durable inbox but are NOT
         # real peer messages, so they are not SHOWN. They are still counted as

@@ -65,8 +65,8 @@ _live_endpoint() {
 
 deliver() {  # $1 = target name
     local t="$1" thost tws ts resp ok enter_sent code
-    thost="$(jq -r --arg n "$t" '.agents[$n].host         // empty' "$REGISTRY")"
-    tws="$(jq -r   --arg n "$t" '.agents[$n].workspace_id // empty' "$REGISTRY")"
+    thost="$(sot_jq -r --arg n "$t" '.agents[$n].host         // empty' "$REGISTRY")"
+    tws="$(sot_jq -r   --arg n "$t" '.agents[$n].workspace_id // empty' "$REGISTRY")"
     if [ -z "$thost" ]; then
         # Registry MISS on a DIRECTED send: this box cannot name the target.
         # "Miss" is exactly `.host` empty-or-absent, and comm-relay.sh's
@@ -144,7 +144,7 @@ deliver() {  # $1 = target name
 }
 
 if [ "$BROADCAST" = true ]; then
-    mapfile -t TARGETS < <(jq -r --arg me "$NAME" '.agents | keys[] | select(. != $me)' "$REGISTRY")
+    mapfile -t TARGETS < <(sot_jq -r --arg me "$NAME" '.agents | keys[] | select(. != $me)' "$REGISTRY")
     n=0
     for t in "${TARGETS[@]}"; do [ -n "$t" ] && { deliver "$t" || true; n=$((n + 1)); }; done
     echo "Broadcast to $n agent(s)."
