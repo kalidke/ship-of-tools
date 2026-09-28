@@ -236,6 +236,16 @@ _comm_wake_admits() {
     return 0
 }
 
+# _comm_wake_advance -- move every source's in-memory cursor ($POS) to the end
+# of the batch this cycle just scanned ($ENDS). Called only where the cycle is
+# finished with that batch: nothing announced, or the notice typed. A cycle
+# that held the ping (a busy prompt, an unanswered daemon) advances nothing,
+# so the next cycle re-scans the same lines and announces them then.
+_comm_wake_advance() {
+    local i
+    for i in "${!SOURCES[@]}"; do POS[$i]="${ENDS[$i]}"; done
+}
+
 # _comm_wake_read_offset -- how many lines of THIS source the session has
 # already been shown. One cursor per file, never one shared: the two inboxes
 # have unrelated line counts, so a shared cursor would silence whichever file
@@ -274,41 +284,61 @@ _comm_wake_deliver_full() {
     pos="$delivered_through"
 }
 
+# ONE CYCLE, not one source. This body reads EVERY inbox, then decides once:
+# the ping is a notice that mail exists, so a cross-box frame and a same-box
+# frame arriving in the same 2s cycle are one wake, exactly as a burst within
+# one file always was. Running the body per source typed the same line twice
+# for one batch of mail, re-resolved the row once per source, and halved the
+# give-up budget below (`no_reply_count` and `blocked_since` count CYCLES, and
+# a per-source body counted them twice a cycle).
 _comm_wake_deliver_ping() {
     local any_directed=0 all_selftest=1 from to text rc text_to_type read_pos
+    local i total line
+    ENDS=()
 
-    while IFS= read -r line; do
-        from=$(printf '%s' "$line" | sot_jq -r '.from // ""' 2>/dev/null)
-        to=$(printf '%s' "$line" | sot_jq -r 'if has("to") then .to else "__legacy__" end' 2>/dev/null)
-        text=$(printf '%s' "$line" | jq -r '.text // .message // .msg // ""' 2>/dev/null)
-        _comm_wake_admits "$from" "$to" || continue
-        [ -z "$text" ] && continue
-        any_directed=1
-        [ "$from" = "__selftest__" ] || all_selftest=0
-    done < <(sed -n "$((pos + 1)),${total}p" "$INBOX")
+    for i in "${!SOURCES[@]}"; do
+        INBOX="${SOURCES[$i]}"
+        SRC_KIND="${KINDS[$i]}"
+        # Where this source's batch ENDS. Set even when nothing admissible is
+        # found, so a cycle that announces nothing still advances past what it
+        # read and a broadcast-only batch is not re-scanned forever.
+        ENDS[$i]="${POS[$i]}"
+        [ -r "$INBOX" ] || continue
+        total="$(_comm_wake_linecount "$INBOX")"
+        # inbox rotated/truncated: re-read the (now smaller) file from line 1.
+        if [ "$total" -lt "${POS[$i]}" ]; then POS[$i]=0; ENDS[$i]=0; fi
+        [ "$total" -gt "${POS[$i]}" ] || continue
+        ENDS[$i]="$total"
+        # ALREADY-READ check, per source (the cursor below is that source's
+        # own). The cursor is the NUMBER of lines the session has been shown
+        # (comm-lib.sh's sot_cursor_offset / sot_fe_cursor_offset, which
+        # migrate a legacy ts cursor as they read). A cursor that already
+        # reaches the end of this batch means the session read it through a
+        # real poll -- advance past it with no ping. Comparing timestamps here
+        # could not separate two frames filed in the same second, so a second
+        # frame could be skipped as "already read" and never announced at all.
+        #
+        # This is the ONLY suppression left (messaging ruling §4): the old
+        # `_comm_wake_ping_outstanding` also withheld a ping while an earlier
+        # one sat unread, which turned one stalled session into permanent
+        # deafness for every message behind it. A genuinely NEW line now always
+        # pings again, and a missed ping is harmless -- the recipient's own Stop
+        # hook reads the inbox at its next turn boundary.
+        read_pos="$(_comm_wake_read_offset)"
+        [ "$read_pos" -ge "$total" ] && continue
+        while IFS= read -r line; do
+            from=$(printf '%s' "$line" | sot_jq -r '.from // ""' 2>/dev/null)
+            to=$(printf '%s' "$line" | sot_jq -r 'if has("to") then .to else "__legacy__" end' 2>/dev/null)
+            text=$(printf '%s' "$line" | jq -r '.text // .message // .msg // ""' 2>/dev/null)
+            _comm_wake_admits "$from" "$to" || continue
+            [ -z "$text" ] && continue
+            any_directed=1
+            [ "$from" = "__selftest__" ] || all_selftest=0
+        done < <(sed -n "$((POS[$i] + 1)),${total}p" "$INBOX")
+    done
 
     if [ "$any_directed" -eq 0 ]; then
-        pos="$total"
-        return
-    fi
-
-    # ALREADY-READ check: the cursor is the NUMBER of inbox lines the session
-    # has been shown (comm-lib.sh's sot_cursor_offset, which migrates a legacy
-    # ts cursor as it reads). A cursor that already reaches the end of this
-    # batch means the session read it through a real poll -- advance past it
-    # with no ping. Comparing timestamps here could not separate two frames
-    # filed in the same second, so a second frame could be skipped as
-    # "already read" and never announced at all.
-    #
-    # This is the ONLY suppression left (messaging ruling §4): the old
-    # `_comm_wake_ping_outstanding` also withheld a ping while an earlier one
-    # sat unread, which turned one stalled session into permanent deafness for
-    # every message behind it. A genuinely NEW line now always pings again, and
-    # a missed ping is harmless -- the recipient's own Stop hook reads the inbox
-    # at its next turn boundary.
-    read_pos="$(_comm_wake_read_offset)"
-    if [ "$read_pos" -ge "$total" ]; then
-        pos="$total"
+        _comm_wake_advance
         return
     fi
 
@@ -361,7 +391,7 @@ _comm_wake_deliver_ping() {
     _comm_wake_ping_inject "$text_to_type"
     rc=$?
     if [ "$rc" -eq 2 ]; then exit 0; fi
-    [ "$rc" -eq 0 ] && pos="$total"
+    [ "$rc" -eq 0 ] && _comm_wake_advance
 }
 
 _comm_wake_run() {
@@ -377,6 +407,14 @@ _comm_wake_run() {
         _comm_wake_owner_alive || exit 0
         sleep 2
         _comm_wake_bound_log
+        if [ "$DELIVER" = "ping" ]; then
+            # One notice for the whole cycle, whichever inboxes it came from:
+            # this body reads every source itself.
+            _comm_wake_deliver_ping
+            continue
+        fi
+        # `full` types each frame's own text, so it is per-line by definition
+        # and a second source is simply a second batch of lines.
         for i in "${!SOURCES[@]}"; do
             INBOX="${SOURCES[$i]}"
             SRC_KIND="${KINDS[$i]}"
@@ -384,13 +422,7 @@ _comm_wake_run() {
             [ -f "$INBOX" ] || continue
             total=$(_comm_wake_linecount "$INBOX")
             if [ "$total" -lt "$pos" ]; then pos=0; fi   # inbox rotated/truncated
-            if [ "$total" -gt "$pos" ]; then
-                if [ "$DELIVER" = "full" ]; then
-                    _comm_wake_deliver_full
-                else
-                    _comm_wake_deliver_ping
-                fi
-            fi
+            [ "$total" -gt "$pos" ] && _comm_wake_deliver_full
             # Whatever the body consumed, never what it was handed: a body
             # that stops early (a refused inject) leaves $pos on the last
             # line it actually delivered, and that is what this source

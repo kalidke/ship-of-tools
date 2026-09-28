@@ -126,6 +126,13 @@ the shared file, any directed frame for the per-handle one), exactly the pair
 `comm-watch.sh` applies. `sot_fe_inbox_path` remains the one place the platform
 branch lives, so off Windows there is a single source and nothing changes.
 
+The DECISION stays one per cycle, not one per source: the ping says only that
+mail exists, so a frame in each inbox in the same two seconds is one typed
+notice, one row resolution and one probe of the prompt-free gate — which is
+also what keeps the five-probe give-up budget a count of cycles. `--deliver
+full` is unchanged and still per line: it types each message itself, so a
+second source is simply a second batch.
+
 Two smaller things fell out of the same path, both of which kept a frontend box
 on the Monitor or hid mail from it:
 

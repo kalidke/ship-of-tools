@@ -601,8 +601,10 @@ done'
 # read below). Without that last fallback the walk refused at the first hop on
 # every Windows box, which is what made `comm-session-start.sh` report "no
 # owning claude/codex ancestor found" and fall back to the harness Monitor
-# there. A `.exe` suffix is accepted for the same reason and only matters
-# there; Linux and macOS answer from `ps`/`comm` exactly as before.
+# there. Two shapes of answer are then accepted where one was: a trailing
+# `.exe`, and a PATH rather than a bare name (the basename is taken), so a
+# `ps` that answers `/some/dir/claude` matches the same as one that answers
+# `claude`. Nothing that matched before stops matching.
 sot_owner_pid() {
     local pid="${PPID:-}" comm ppid
     while [ -n "$pid" ] && [ "$pid" != "1" ]; do

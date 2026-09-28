@@ -881,7 +881,91 @@ EOF
 }
 
 check "three new directed lines type the ping notice exactly once" case_three_new_directed_lines_type_the_ping_once
+# Mail in BOTH inboxes inside ONE cycle is ONE wake. The ping says only that
+# mail exists, so a cross-box frame and a same-box frame arriving together cost
+# one typed line and one model turn -- the same promise this file's header
+# makes for a burst within one file. A body that ran per source typed the
+# notice twice for one batch.
+case_both_inboxes_in_one_cycle_ping_once() {
+    local d="$WORK/both-inboxes"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls" attempts="$d/pty-input.log"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() {
+    printf x >> "$calls"
+    printf '%s' "\$2" | base64 -d >> "$attempts"; printf '\n' >> "$attempts"
+    printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'
+}
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"watchee","text":"from another box"}\n' >> "$d/AppDataLocal/sot/fe-inbox.jsonl"
+        printf '{"from":"sibling","to":"watchee","msg":"from this box"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 3 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) for one cycle's mail, want exactly 1"; cat "$attempts" 2>/dev/null; return 1; }
+    return 0
+}
+
+# The give-up budget counts CYCLES, not sources: five unanswered pty.screen
+# probes, whether the mail sits in one inbox or both. A per-source body spent
+# two probes a cycle and dropped the watcher after three -- returning a
+# frontend-box session to the harness Monitor sooner than any other box for a
+# transient daemon hiccup.
+case_the_give_up_budget_is_five_cycles_with_both_sources_hot() {
+    local d="$WORK/no-reply-both"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
+    : > "$d/inbox/watchee.jsonl"
+    local marker="$d/state/watchee.watch" screen_calls="$d/screen.calls" ticks="$d/cycles"
+    : > "$screen_calls"; : > "$ticks"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf x >> "$screen_calls"; printf ''; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    printf t >> "$ticks"
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"watchee","text":"from another box"}\n' >> "$d/AppDataLocal/sot/fe-inbox.jsonl"
+        printf '{"from":"sibling","to":"watchee","msg":"from this box"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 10 ] || { echo "the loop never gave up after 5 unanswered probes" >&2; exit 9; }
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local rc=$?
+    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0 (gave up after 5 unanswered pty.screen probes)"; return 1; }
+    [ ! -f "$marker" ] || { echo "  the liveness marker was left behind after giving up"; return 1; }
+    local sc; sc="$(wc -c < "$screen_calls" 2>/dev/null || echo 0)"
+    [ "$sc" -eq 5 ] || { echo "  pty.screen was probed $sc time(s) with both inboxes hot, want exactly 5"; return 1; }
+    # THE assertion that separates the two shapes: five probes is the count
+    # either way, but a body that probes once per SOURCE burns them in three
+    # cycles instead of five.
+    local cy; cy="$(wc -c < "$ticks" 2>/dev/null || echo 0)"
+    [ "$cy" -eq 5 ] || { echo "  gave up after $cy poll cycle(s), want 5 (one probe per cycle)"; return 1; }
+    return 0
+}
+
 check "a frame the frontend files on Windows pings this session" case_a_frontend_inbox_frame_pings
+check "mail in both inboxes in one cycle types the notice once" case_both_inboxes_in_one_cycle_ping_once
+check "the five-probe give-up budget is per cycle, not per inbox" case_the_give_up_budget_is_five_cycles_with_both_sources_hot
 check "a frontend frame for another handle on the box does not ping" case_a_frontend_frame_for_another_handle_does_not_ping
 check "a batch that is only __selftest__ frames types the selftest notice" case_selftest_only_batch_types_the_selftest_text
 check "a not-free prompt withholds the ping and types it once the prompt frees up" case_prompt_not_free_waits_then_types_once_free
