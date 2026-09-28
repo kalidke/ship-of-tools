@@ -1135,7 +1135,8 @@ const STRIP_SEA_ROWS: f32 = 2.0 / BASE_CELL_H;
 /// Its floor is the active name's lift: the lifted name rises
 /// `STRIP_ACTIVE_LIFT_CELLS * cell_w` (3.1 px at the measured advance) INTO this
 /// air, so at 0 it rises into the border row's dead half — clearing the stroke
-/// itself by `cell_h/2 - t/2 - lift`, 5.9 px at scale 1 and positive at every
+/// itself by `cell_h/2 - t/2 - lift`, 4.9 px at scale 1 and the measured
+/// advance, and positive at every
 /// scale. `strip_band_never_touches_the_grids_last_row` is what pins it.
 const STRIP_TOP_AIR_ROWS: f32 = 0.0 / BASE_CELL_H;
 
@@ -1608,12 +1609,6 @@ fn hull_stern_rect(right: f32, y: f32, h: f32, top: f32) -> Option<ScreenRect> {
     })
 }
 
-/// The waterline's y and thickness inside the ship row whose glyph-top is
-/// `ship_y`. Both are fractions of `BASE_CELL_H` — the row height the mock was
-/// drawn against, NAMED rather than left as a bare 18 in a denominator, so a
-/// change there can't silently detune the hull — and the thickness carries the
-/// same `.max(1.0)` floor the border quads do, so it can't thin to a sub-pixel
-/// rect at small scale.
 /// The pane borders' bar width in physical px — `project_border_quads`' arms,
 /// and anything that has to know where the drawn line's own edges are. ~9% of
 /// cell height: a thin 1-2 px light-border weight that scales with DPI.
@@ -1621,6 +1616,12 @@ fn border_thickness_px(cell_h: f32) -> f32 {
     (cell_h * 0.09).round().max(1.0)
 }
 
+/// The waterline's y and thickness inside the ship row whose glyph-top is
+/// `ship_y`. Both are fractions of `BASE_CELL_H` — the row height the mock was
+/// drawn against, NAMED rather than left as a bare 18 in a denominator, so a
+/// change there can't silently detune the hull — and the thickness carries the
+/// same `.max(1.0)` floor the border quads do, so it can't thin to a sub-pixel
+/// rect at small scale.
 fn hull_band(ship_y: f32, cell_h: f32) -> (f32, f32) {
     (
         ship_y + cell_h * HULL_DROP_ROWS,
@@ -26542,9 +26543,10 @@ mod tests {
         // The sweep used to exist because the reservation was 3 rows at or
         // below ~0.224, a scale-invariant bottom pad (since deleted) being the
         // one non-scaling length among scaling ones. It is now
-        // `STRIP_TOP_AIR_ROWS` and every term scales together, so `k` is
-        // `STRIP_ROWS` at every scale —
-        // asserted below as a literal BECAUSE it is now an invariant. The
+        // `STRIP_TOP_AIR_ROWS`, asserted below as a literal BECAUSE it is
+        // now an invariant — though one non-scaling length remains, the
+        // `.max(1.0)` floor in `border_thickness_px`, which pins the stroke's
+        // half-thickness below a ~5.5 px cell. The
         // sweep stays: it is what would catch a future term that forgets to
         // scale, which is the defect class this constant belonged to, and it
         // is where both ends of the air's range are pinned — the lifted active
