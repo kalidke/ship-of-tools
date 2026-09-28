@@ -237,14 +237,11 @@ impl WgpuBackend {
         origin_y: f32,
         cell_w: f32,
         cell_h: f32,
-        bottom_pad: f32,
     ) -> Vec<Line> {
         let mut out = Vec::with_capacity(self.rows as usize);
         for row in 0..self.rows {
             let row_start = row as usize * self.cols as usize;
-            let y = origin_y
-                + row as f32 * cell_h
-                + if row + 1 == self.rows { bottom_pad } else { 0.0 };
+            let y = origin_y + row as f32 * cell_h;
             // Walk the row, emitting one Line per run of cells that share
             // (fg, bold, italic) AND are all plain ASCII. Any cell whose
             // symbol contains non-ASCII bytes (box-drawing glyphs,
@@ -353,7 +350,6 @@ impl WgpuBackend {
         cell_w: f32,
         cell_h: f32,
         thickness: f32,
-        bottom_pad: f32,
     ) -> Vec<BorderQuad> {
         let t = thickness.max(1.0);
         let mut out = Vec::new();
@@ -373,22 +369,14 @@ impl WgpuBackend {
                 let x0 = origin_x + col as f32 * cell_w;
                 let y0 = origin_y + row as f32 * cell_h;
                 let cx = x0 + cell_w * 0.5;
-                // The frame's last row owns `bottom_pad` of extra space below
-                // its text, and its border stroke closes the frame at the
-                // BOTTOM of that space rather than at the row's centre.
-                let (row_bottom, cy) = if row + 1 == self.rows {
-                    let b = y0 + cell_h + bottom_pad;
-                    (b, b - t * 0.5)
-                } else {
-                    (y0 + cell_h, y0 + cell_h * 0.5)
-                };
+                let cy = y0 + cell_h * 0.5;
                 // Default fg (204,204,204) matches project_lines'/text layer's
                 // fallback when the cell carries no explicit colour.
                 let color = ratatui_color_to_rgb(cell.style().fg).unwrap_or((204, 204, 204));
                 // Vertical bar (up and/or down arm).
                 if arms.up || arms.down {
                     let top = if arms.up { y0 } else { cy - t * 0.5 };
-                    let bottom = if arms.down { row_bottom } else { cy + t * 0.5 };
+                    let bottom = if arms.down { y0 + cell_h } else { cy + t * 0.5 };
                     out.push(BorderQuad {
                         x: cx - t * 0.5,
                         y: top,
