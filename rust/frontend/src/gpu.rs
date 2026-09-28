@@ -1108,84 +1108,57 @@ const BOX_NAME_STEERED_RGB: (u8, u8, u8) = (143, 212, 234);
 /// never read as a dimmed row. It paints a filled shape, never a name's ink,
 /// so it spends no state meaning — same category as the border quads' grey.
 const HULL_RGB: (u8, u8, u8) = (139, 90, 43);
-/// Text rows the bottom strip occupies: session names on the upper row, and
-/// below them each host group's hull with its box name inline at the bow.
-const STRIP_ROWS: f32 = 2.0;
+/// Sea between the waterline's underside and the window's bottom edge, as a
+/// fraction of `BASE_CELL_H`: **2 px at scale 1**, plus whatever the grid's row
+/// remainder `u` adds to it. It is a named length because the band is no longer
+/// measured in whole text rows — every px below the panes is now spent on
+/// purpose, and this is the one that is left rather than drawn.
+const STRIP_SEA_ROWS: f32 = 2.0 / BASE_CELL_H;
 /// Air between the chrome grid's bottom edge — the panes' bottom border line —
-/// and the session names, as a fraction of `BASE_CELL_H`: **4 px at scale 1**.
-/// The band is placed from the GRID (`strip_row_tops`), so this constant is the
-/// whole of that distance and the only knob that sets it.
+/// and the session names, as a fraction of `BASE_CELL_H`: **0 at scale 1**. The
+/// names start exactly where the grid's last row ends.
 ///
-/// That is the point of it, and it is why the pad it replaces — the gap from
-/// the window's bottom edge up to the hull row — is gone rather than kept
-/// beside it. `cell_grid_for` floors the grid to whole rows and throws the
-/// remainder `u = (win_h - 2*oy) mod cell_h` away; with the band hung off the
-/// window instead of off the grid, `u` landed in THIS gap, which therefore
-/// ranged over a whole row (0..18*scale px) with the window height — three
-/// times the travel the pad itself bought — so a spacing approved at one window
-/// height rendered as something else at the next, and two knobs disagreed about
-/// one distance. Measured down from the grid, `u` falls below the waterline
-/// instead, where it reads as sea at the window's edge rather than as a
-/// distance between the panes and the ship: the sea below the waterline is
-/// `oy + u - air + 4*scale` px — 12 at the default window, which is what the
-/// old geometry put there too, and never under 4*scale at any air this constant
-/// is allowed to take.
+/// Zero is not "no air". The grid's last row IS the bottom border, and its
+/// stroke is drawn from the cell's CENTRE (`project_border_quads` emits arms
+/// from there), so `cell_h/2 + t/2` — 10 px at scale 1 — of that row lies below
+/// the drawn line carrying nothing but the version stamp, far to the left of any
+/// ship. The names sit in that dead space. Spending it is what lets the whole
+/// band fit ONE reserved row instead of two, which is where the pane row this
+/// change gives back comes from (owner: *"lets give pane one more row and get
+/// the names below correct"*).
 ///
-/// 4 is what the previous geometry produced at the default window (1050 logical
-/// px, where `u` is exactly 0), so no box's proportions change by surprise — and
-/// it is now that same 4 px at every OTHER height too, which no value of the old
-/// pad could buy.
+/// The band is placed from the GRID (`strip_row_tops`), so the distance from the
+/// panes to the names is this constant at every window height and the
+/// row-quantisation remainder `u` lands below the waterline as sea instead of
+/// opening a gap here — the air test pins that at four different remainders.
 ///
-/// Like every other length in the band it is a fraction of `BASE_CELL_H`, so the
-/// shape scales as one and no ratio here can come out scale-DEPENDENT — the
-/// defect a scale-invariant `2.0` had, where the reservation needed a third row
-/// below ~0.224 scale and cost a pane row there.
-///
-/// Both ends of its range are pinned by
-/// `strip_band_never_touches_the_grids_last_row`. Below
-/// `STRIP_ACTIVE_LIFT_CELLS * cell_w` (3.1 px at the measured monospace advance,
-/// 3.6 px at the no-monospace fallback) the lifted active name rises back onto
-/// the grid's last row and its version stamp; and its ceiling is now shared,
-/// not its own: this air plus `HULL_ROW_EXTRA_DROP_ROWS` must not exceed `oy`
-/// (12*scale px), or the band no longer fits under the grid at `u == 0` and
-/// `strip_reserved_rows` takes a third row, shortening every pane. With the
-/// drop at 8 the budget is fully spent, so raising this air means lowering the
-/// drop by the same amount.
-const STRIP_TOP_AIR_ROWS: f32 = 4.0 / BASE_CELL_H;
+/// Its floor is the active name's lift: the lifted name rises
+/// `STRIP_ACTIVE_LIFT_CELLS * cell_w` (3.1 px at the measured advance) INTO this
+/// air, so at 0 it rises into the border row's dead half — clearing the stroke
+/// itself by `cell_h/2 - t/2 - lift`, 5.9 px at scale 1 and positive at every
+/// scale. `strip_band_never_touches_the_grids_last_row` is what pins it.
+const STRIP_TOP_AIR_ROWS: f32 = 0.0 / BASE_CELL_H;
 
-/// How much further DOWN the hull row sits below the session-name row than one
-/// plain text row, as a fraction of `BASE_CELL_H`: **8 px at scale 1**, picked
-/// by the owner by eye from four captures of the same screen. It leaves 4 px of
-/// sea under the hull, against the 12 px the band used to leave.
+/// The hull's glyph top below the session names' glyph top, as a fraction of
+/// `BASE_CELL_H`: **14 px at scale 1**.
 ///
-/// Measured from the GRID like every other length in the band, never from the
-/// window, so the row-quantisation remainder `u` still lands BELOW the
-/// waterline as sea rather than inside this distance. A window-anchored pad
-/// here is the defect `STRIP_TOP_AIR_ROWS` was rewritten to delete, and it
-/// would take the owner's approved name-to-panes spacing down with it.
+/// A PIXEL offset, not "one text row plus a drop" — the owner's *"do the session
+/// names have to be on a row?"*. The names' glyph box is 18 px tall but their ink
+/// ends 12 px into it, so the hull rides 4 px up into the box's dead descender
+/// space without touching a letter, and the waterline — the part that runs under
+/// the whole strip — still lands 25 px below the names' glyph top, clear of both
+/// the deepest descender (12) and the bow wheel (17).
 ///
-/// **8 is the ceiling.** `strip_reserved_rows` has `oy` (12*scale) of room
-/// under the grid's last row, `STRIP_TOP_AIR_ROWS` spends 4 of it, and this
-/// spends the remaining 8 — the band therefore sits exactly ON its budget. At
-/// 9 it would need a third reserved row and EVERY pane would lose a line of
-/// content, which is not a trade a cosmetic knob gets to make.
+/// 14 is what makes the band fit ONE reserved row: with the air at 0 the budget
+/// below the grid is `cell_h + oy` = 30 px at scale 1, spent 14 here, 11 on
+/// `HULL_DROP_ROWS`, 3 on `HULL_THICKNESS_ROWS` and 2 on `STRIP_SEA_ROWS`. Every
+/// px added here costs a px of sea; past 16 the reservation takes a second row
+/// back and every pane loses the line this offset bought.
 ///
-/// Sitting exactly on the budget is fine, but it is not free: `(4 + 8) / 18`
-/// is not representable in f32 and rounds UP, so the reservation's `need`
-/// lands a few millionths of a pixel above a budget it exactly meets. Left
-/// alone that hair takes the third row anyway — a rounding artefact charged to
-/// the user as a lost line — and it does not show at the default window, only
-/// at small scale. `BAND_FIT_EPS_ROWS` is what absorbs it;
-/// `strip_band_never_touches_the_grids_last_row` sweeps scales and window
-/// heights and is what caught it, at scale 0.2 and height 246.
-///
-/// This constant and `STRIP_TOP_AIR_ROWS` share one budget, so their SUM is
-/// the quantity to reason about — which is why the test pins the sum rather
-/// than either term alone.
-///
-/// Raising it does not move the bow and stern rakes' tops, which are placed
-/// from the band's top: the ship reads DEEPER as this grows, not merely lower.
-const HULL_ROW_EXTRA_DROP_ROWS: f32 = 8.0 / BASE_CELL_H;
+/// The rake's apex is placed from the BAND's top, so a shorter offset makes the
+/// bow shallower rather than moving its apex: at 14 it rises 23 px, against 35
+/// in rc9.6 and 27 in rc9.5.
+const HULL_ROW_OFFSET_ROWS: f32 = 14.0 / BASE_CELL_H;
 /// Hull thickness and waterline drop, as fractions of `BASE_CELL_H` — the row
 /// height the mock was drawn against, named rather than a bare 18 in a
 /// denominator so a change there can't silently detune the hull. The drop is
@@ -1641,6 +1614,13 @@ fn hull_stern_rect(right: f32, y: f32, h: f32, top: f32) -> Option<ScreenRect> {
 /// change there can't silently detune the hull — and the thickness carries the
 /// same `.max(1.0)` floor the border quads do, so it can't thin to a sub-pixel
 /// rect at small scale.
+/// The pane borders' bar width in physical px — `project_border_quads`' arms,
+/// and anything that has to know where the drawn line's own edges are. ~9% of
+/// cell height: a thin 1-2 px light-border weight that scales with DPI.
+fn border_thickness_px(cell_h: f32) -> f32 {
+    (cell_h * 0.09).round().max(1.0)
+}
+
 fn hull_band(ship_y: f32, cell_h: f32) -> (f32, f32) {
     (
         ship_y + cell_h * HULL_DROP_ROWS,
@@ -1657,7 +1637,7 @@ fn hull_band(ship_y: f32, cell_h: f32) -> (f32, f32) {
 /// `strip_reserved_rows` is what keeps the whole extent inside the window.
 fn strip_row_tops(grid_bottom: f32, cell_h: f32) -> (f32, f32) {
     let names = grid_bottom + cell_h * STRIP_TOP_AIR_ROWS;
-    (names, names + cell_h + cell_h * HULL_ROW_EXTRA_DROP_ROWS)
+    (names, names + cell_h * HULL_ROW_OFFSET_ROWS)
 }
 
 /// Where one ship's parts sit VERTICALLY in the two-row band — the whole of the
@@ -1708,32 +1688,31 @@ fn box_name_rgb(steered: bool, contrast_dim: bool) -> (u8, u8, u8) {
 }
 
 /// Rows `cell_grid_for` keeps OUT of the chrome grid, to make room BELOW it for
-/// the strip's band: the two text rows plus `STRIP_TOP_AIR_ROWS` of air above
-/// them. The band hangs off the grid's bottom edge (`strip_row_tops`) while the
-/// chrome fills the grid, so the rows the band lives in have to come off the
-/// grid exactly once, here — and the grid's last row is the bottom border line
-/// carrying the FE/BE version stamp (`version_label`), which is what the band
-/// would otherwise be drawn over.
+/// the band. The band hangs off the grid's bottom edge (`strip_row_tops`) while
+/// the chrome fills the grid, so the rows it lives in have to come off the grid
+/// exactly once, here.
 ///
-/// The condition, at its worst case (`(win_h - 2*oy) mod cell_h == 0`, the
-/// window with no discarded remainder to lend the band): `k * cell_h + oy >=
-/// need`. Erring high is safe — one spare row is a slightly shorter pane —
-/// while erring low runs the hull row off the window's bottom edge, so `k` is
-/// the ceiling. Every term is a fraction of `BASE_CELL_H`, so the ceiling is
-/// `STRIP_ROWS` at every scale and the band never costs a third row:
-/// `need = 48*s` against `2*cell_h + oy = 48*s`, while `k = 1` would give
-/// `30*s` and fail. `oy` is spent 4 on `STRIP_TOP_AIR_ROWS` and 8 on
-/// `HULL_ROW_EXTRA_DROP_ROWS`, so the band sits exactly on its budget and
-/// `BAND_FIT_EPS_ROWS` is what keeps f32 rounding from reading that as a
-/// miss. Their SUM is the quantity to reason about, which is why the test
-/// pins the sum rather than either term. The active name's lift is not part
-/// of it: the lift rises INTO the air, never below the band, so it is bounded
-/// by the air rather than by this row budget. `strip_band_never_touches_the_grids_last_row` pins the
-/// condition, k's minimality AND that constancy — the literal is pinned
-/// there because it is now an invariant, not because anyone counted rows.
+/// `need` is the band's own height in px — air, the hull's offset, the drop to
+/// the waterline, the line itself and the sea — and NOT a count of text rows.
+/// That is the change: the panes keep whole rows, the band does not. At scale 1
+/// it is `0 + 14 + 11 + 3 + 2 = 30`, against `1 * cell_h + oy = 30`, so ONE row
+/// clears it exactly and the pane row the second one used to cost comes back.
+/// Every term is a fraction of `BASE_CELL_H`, so that holds at every scale.
+///
+/// Erring high is safe — one spare row is a slightly shorter pane — while erring
+/// low runs the waterline off the window's bottom edge, so `k` is the ceiling.
+/// Sitting exactly ON the budget is not free: a sum of f32 ratios lands a few
+/// millionths of a px above a budget it exactly meets, and `BAND_FIT_EPS_ROWS`
+/// is what keeps that hair from taking a whole row.
+/// `strip_band_never_touches_the_grids_last_row` pins the condition, k's
+/// minimality and that constancy.
 fn strip_reserved_rows(cell_h: f32, oy: f32) -> u16 {
-    let need =
-        STRIP_ROWS * cell_h + cell_h * (STRIP_TOP_AIR_ROWS + HULL_ROW_EXTRA_DROP_ROWS);
+    let need = cell_h
+        * (STRIP_TOP_AIR_ROWS
+            + HULL_ROW_OFFSET_ROWS
+            + HULL_DROP_ROWS
+            + HULL_THICKNESS_ROWS
+            + STRIP_SEA_ROWS);
     (((need - oy) / cell_h.max(1.0) - BAND_FIT_EPS_ROWS)
         .ceil()
         .max(0.0)) as u16
@@ -1743,8 +1722,8 @@ fn strip_reserved_rows(cell_h: f32, oy: f32) -> u16 {
 /// exactly meets its budget is allowed to say so.
 ///
 /// `need` is a sum of ratios of `BASE_CELL_H` scaled by `cell_h`, so it carries
-/// f32 error. When `STRIP_TOP_AIR_ROWS` and `HULL_ROW_EXTRA_DROP_ROWS` together
-/// spend the whole of `oy`, `(4 + 8) / 18` rounds UP and `need` lands a few
+/// f32 error. When the band's five lengths together spend the whole of its
+/// budget, their sum of ratios rounds UP and `need` lands a few
 /// millionths of a pixel above a budget it exactly meets. Without this slack
 /// that hair takes a THIRD reserved row and every pane loses a line of content
 /// — a rounding artefact charged to the user as lost screen, and one that does
@@ -17718,7 +17697,7 @@ impl State {
         //
         // Thickness ≈ 9% of cell height → a thin ~1–2px light-border weight that
         // scales with DPI (cell_h is BASE_CELL_H * scale).
-        let border_thickness = (self.cell_h * 0.09).round().max(1.0);
+        let border_thickness = border_thickness_px(self.cell_h);
         let border_quads_raw = self.terminal.backend().project_border_quads(
             self.chrome_origin_x,
             self.chrome_origin_y,
@@ -26193,18 +26172,18 @@ mod tests {
         // the line up into the wheel's own row. Every number is a fraction of
         // `BASE_CELL_H`, so the whole shape scales as one.
         //
-        // The two rows are NOT adjacent: the owner's `HULL_ROW_EXTRA_DROP_ROWS`
-        // sits the hull row lower to take the empty sea out of the footer. That
-        // is why the rake's rise is measured from the BAND's top rather than
-        // from the hull row — the apex stays where it was and the rake grows,
-        // so the ship reads deeper rather than merely lower.
+        // The hull is placed by PIXEL offset, not by text row: at
+        // `HULL_ROW_OFFSET_ROWS` it rides up into the dead descender space of
+        // the names' own glyph box, which is what lets the whole band fit one
+        // reserved row. The rake's rise is measured from the BAND's top, so a
+        // shorter offset makes the bow shallower rather than moving its apex.
         let cell_h = BASE_CELL_H;
         // 600.0 is a grid bottom, not a window height: the band's internal
         // proportions are the same wherever the grid ends.
         let (names_y, hull_y) = strip_row_tops(600.0, cell_h);
         assert!(
-            (hull_y - (names_y + cell_h * (1.0 + HULL_ROW_EXTRA_DROP_ROWS))).abs() < 1e-3,
-            "the hull row is one cell plus the owner's drop below the names: \
+            (hull_y - (names_y + cell_h * HULL_ROW_OFFSET_ROWS)).abs() < 1e-3,
+            "the hull sits `HULL_ROW_OFFSET_ROWS` below the names: \
              {names_y} {hull_y}"
         );
         let logo_h = (cell_h - 2.0).max(1.0);
@@ -26216,9 +26195,14 @@ mod tests {
             "the wheel's centre is the session-name row's centre: {}",
             vert.wheel_y
         );
+        // Not "out of the hull row" — there is no hull ROW any more, the hull
+        // is a pixel offset that deliberately rides up into the names' glyph
+        // box. What the disc must clear is the drawn WATERLINE, which is the
+        // thing the eye sees pass under the bow.
+        let (disc_water_y, _) = hull_band(hull_y, cell_h);
         assert!(
-            vert.wheel_y >= names_y && vert.wheel_y + logo_h <= hull_y,
-            "and the whole disc stays out of the hull row: {}",
+            vert.wheel_y >= names_y && vert.wheel_y + logo_h <= disc_water_y,
+            "and the whole disc stays above the waterline: {}",
             vert.wheel_y
         );
         // The box name drops 1 px into the hull row: at +0 the line rode high
@@ -26232,11 +26216,13 @@ mod tests {
         // stated from the band's top on purpose: while the rows were adjacent
         // that was the same arithmetic as "the waterline's drop plus a whole
         // row", and the two forms only part company once the hull row drops,
-        // which is exactly when the distinction starts to matter.
+        // which is exactly when the distinction starts to matter. 23 px is
+        // `HULL_ROW_OFFSET_ROWS` plus `HULL_DROP_ROWS` less that 2 px of air:
+        // a shorter offset gives a shallower bow, not a lower apex.
         let (water_y, _) = hull_band(hull_y, cell_h);
         assert!(
             (vert.rake_rise - (water_y - (names_y + 2.0))).abs() < 1e-3
-                && (vert.rake_rise - 35.0).abs() < 1e-3,
+                && (vert.rake_rise - 23.0).abs() < 1e-3,
             "rake rise: {}",
             vert.rake_rise
         );
@@ -26579,14 +26565,18 @@ mod tests {
             // at every scale is that the reservation is the SMALLEST one that
             // clears the band.
             let k = strip_reserved_rows(cell_h, oy) as f32;
-            let need =
-                STRIP_ROWS * cell_h + cell_h * (STRIP_TOP_AIR_ROWS + HULL_ROW_EXTRA_DROP_ROWS);
+            let need = cell_h
+                * (STRIP_TOP_AIR_ROWS
+                    + HULL_ROW_OFFSET_ROWS
+                    + HULL_DROP_ROWS
+                    + HULL_THICKNESS_ROWS
+                    + STRIP_SEA_ROWS);
             assert_eq!(
-                k, STRIP_ROWS,
-                "scale {scale}: the band must never cost more than {STRIP_ROWS} rows"
+                k, 1.0,
+                "scale {scale}: the band must never cost more than one row"
             );
             // Same tolerance as `strip_reserved_rows` itself, and for the
-            // same reason: at 8 the band meets its budget exactly, so an
+            // same reason: the band meets its budget exactly, so an
             // exact `>=` here would fail on f32 rounding rather than on
             // geometry. Well below a pixel, so a real overrun still fails.
             let fit_slack = cell_h * BAND_FIT_EPS_ROWS;
@@ -26603,32 +26593,34 @@ mod tests {
                 let (_, rows) = cell_grid_for(1920, h, cell_w, cell_h, ox, oy);
                 let grid_bottom = oy + rows as f32 * cell_h;
                 let (names_y, hull_y) = strip_row_tops(grid_bottom, cell_h);
-                // The air's LOWER bound: the active name rises into it, and an
-                // air smaller than that lift would put the lifted name back on
-                // the version stamp the reservation exists to keep clear.
+                // The air's LOWER bound. The band's top now sits INSIDE the
+                // grid's last row, in the dead space below the border stroke —
+                // that space is exactly where the reclaimed pane row came from.
+                // What the lifted name must never touch is the drawn line
+                // itself, at every scale and every row remainder.
                 let band_top = names_y - STRIP_ACTIVE_LIFT_CELLS * cell_w;
+                let stroke_bottom =
+                    grid_bottom - cell_h * 0.5 + border_thickness_px(cell_h) * 0.5;
                 assert!(
-                    band_top >= grid_bottom,
+                    band_top >= stroke_bottom,
                     "scale {scale}, h {h}: the strip band (lifted top {band_top}) \
-                     overlaps the grid, which ends at {grid_bottom}"
+                     touches the border stroke, whose underside is at {stroke_bottom}"
                 );
                 // The air's UPPER bound: it comes out of `oy` plus whatever
                 // the grid discarded, so an air above `oy` runs the band off
                 // the bottom edge at the heights that discard nothing.
                 assert!(
-                    hull_y + cell_h <= h as f32 + fit_slack,
-                    "scale {scale}, h {h}: the hull row runs off the window bottom"
+                    hull_y + cell_h * (HULL_DROP_ROWS + HULL_THICKNESS_ROWS)
+                        <= h as f32 + fit_slack,
+                    "scale {scale}, h {h}: the waterline runs off the window bottom"
                 );
-                // The hull row sits one cell BELOW the names row plus the
-                // owner's drop. It is one distance made of two named parts,
-                // so the test names both rather than a literal: a change to
-                // either constant is meant to move the hull, and only a change
-                // to the ARITHMETIC is meant to fail here.
-                let apart = cell_h * (1.0 + HULL_ROW_EXTRA_DROP_ROWS);
+                // The hull is `HULL_ROW_OFFSET_ROWS` below the names — one
+                // named distance, so only a change to the ARITHMETIC fails here.
+                let apart = cell_h * HULL_ROW_OFFSET_ROWS;
                 assert!(
                     (hull_y - names_y - apart).abs() < 1e-3,
-                    "scale {scale}, h {h}: the rows are {} px apart, but one cell \
-                     plus the hull drop is {apart} px",
+                    "scale {scale}, h {h}: the hull is {} px below the names, but \
+                     the offset is {apart} px",
                     hull_y - names_y
                 );
                 h += 1;
