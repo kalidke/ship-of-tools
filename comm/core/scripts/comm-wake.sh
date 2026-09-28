@@ -170,8 +170,9 @@ _comm_wake_prompt_free() {
 # daemon that cannot answer workspace.list would not have answered pty.screen
 # either, so the fallback buys two seconds and re-arms the defect.
 #
-# $no_reply_count is _comm_wake_run's, shared rather than duplicated so an
-# unanswerable daemon gives up on the SAME 5 strikes the screen probe uses.
+# $no_reply_count is _comm_wake_run's, shared rather than duplicated: an
+# unanswerable daemon slows the poll once, on the same run of silence the
+# screen probe counts, instead of each arm counting its own.
 # Every exit leaves the marker to the EXIT trap, which removes it only if this
 # process owns it -- a blind extra call would drop someone else's.
 _comm_wake_retarget() {
@@ -262,7 +263,7 @@ _comm_wake_answered() {
 #
 # $INBOX, $SELECT and $pos name the source the loop below is currently reading;
 # everything downstream stays single-file and single-schema. The ADMISSION RULE
-# travels with the source (the $SELECTS array beside $SOURCES, and $CURSORS for
+# travels with the source (the $CONDS array beside $SOURCES, and $CURSORS for
 # the read cursor) exactly as comm-watch.sh carries a filter per source, so
 # there is no kind tag to keep in step with the file list and no per-file branch
 # anywhere below.
@@ -282,7 +283,8 @@ _comm_wake_answered() {
 # which is why this is `tostring` and not a type check.
 _comm_wake_admit() {
     local out
-    out="$(printf '%s' "$1" | sot_jq -r --arg me "$HANDLE" "$2 | \"+\" + (.from // \"\" | tostring)" 2>/dev/null)"
+    out="$(printf '%s' "$1" | sot_jq -r --arg me "$HANDLE" \
+        "select($2) | \"+\" + (.from // \"\" | tostring)" 2>/dev/null)"
     [ -n "$out" ] || return 1
     printf '%s' "${out#+}"
 }
@@ -325,12 +327,13 @@ _comm_wake_deliver_full() {
 # the ping is a notice that mail exists, so a cross-box frame and a same-box
 # frame arriving in the same 2s cycle are one wake, exactly as a burst within
 # one file always was. Running the body per source typed the same line twice
-# for one batch of mail, re-resolved the row once per source, and halved the
-# give-up budget below (`no_reply_count` and `blocked_since` count CYCLES, and
-# a per-source body counted them twice a cycle).
+# for one batch of mail, re-resolved the row once per source, and counted a
+# run of daemon silence twice a cycle (`no_reply_count` and `blocked_since`
+# count CYCLES), so the poll slowed down on the third cycle instead of the
+# fifth.
 _comm_wake_deliver_ping() {
-    local any_directed=0 all_selftest=1 from rc text_to_type read_pos
-    local i total line
+    local any_directed=0 all_selftest=1 rc text_to_type read_pos verdict
+    local i total prog
     ENDS=()
 
     for i in "${!SOURCES[@]}"; do
@@ -364,11 +367,23 @@ _comm_wake_deliver_ping() {
         # hook reads the inbox at its next turn boundary.
         read_pos="$("${CURSORS[$i]}" "$HANDLE")"
         [ "$read_pos" -ge "$total" ] && continue
-        while IFS= read -r line; do
-            from="$(_comm_wake_admit "$line" "${SELECTS[$i]}")" || continue
-            any_directed=1
-            [ "$from" = "__selftest__" ] || all_selftest=0
-        done < <(sed -n "$((POS[$i] + 1)),${total}p" "$INBOX")
+        # ONE jq for the whole batch. The scan used to spawn one per LINE,
+        # which was invisible while it started at the file's end and scanned
+        # nothing: starting at the read cursor, a cursor past EOF legitimately
+        # clamps to 0 (a trimmed, cleared or hand-restored inbox) and the next
+        # cycle re-read the entire file -- 1430 lines on a live box is 1430
+        # spawns inside one two-second cycle. Nothing is capped or skipped to
+        # pay for this: every line in the range is still read, by one process
+        # that answers the only two questions the batch decides -- is any of
+        # it directed at us, and is all of it the selftest frame.
+        # printf -v, not a quoted splice: the condition contains `$me` for jq
+        # and a double-quoted splice would have bash expand it away first.
+        printf -v prog 'reduce (inputs | (fromjson? // empty) | select(type == "object")) as $f ({d: 0, s: 1}; if ($f | %s) then {d: 1, s: (if ($f.from == "__selftest__") then .s else 0 end)} else . end) | "\\(.d) \\(.s)"' "${CONDS[$i]}"
+        verdict="$(sed -n "$((POS[$i] + 1)),${total}p" "$INBOX" | sot_jq -Rrn --arg me "$HANDLE" "$prog" 2>/dev/null)"
+        case "$verdict" in
+            "1 1") any_directed=1 ;;
+            "1 0") any_directed=1; all_selftest=0 ;;
+        esac
     done
 
     if [ "$any_directed" -eq 0 ]; then
@@ -468,7 +483,7 @@ _comm_wake_run() {
         # and a second source is simply a second batch of lines.
         for i in "${!SOURCES[@]}"; do
             INBOX="${SOURCES[$i]}"
-            SELECT="${SELECTS[$i]}"
+            SELECT="${CONDS[$i]}"
             pos="${POS[$i]}"
             [ -f "$INBOX" ] || continue
             total=$(sot_file_lines "$INBOX")
@@ -635,12 +650,12 @@ _comm_wake_main() {
     # also require some text: a frame with none wakes nobody. The frontend
     # inbox exists on Windows only, and only where a frontend files into it.
     SOURCES=("$COMM_HOME/inbox/$HANDLE.jsonl")
-    SELECTS=('select(.from != $me and ((.to // "?") != "") and ((.text // .message // .msg // "") != ""))')
+    CONDS=('(.from != $me) and ((.to // "?") != "") and ((.text // .message // .msg // "") != "")')
     CURSORS=(sot_cursor_offset)
     _fe_inbox="$(sot_fe_inbox_path)"
     if [ -n "$_fe_inbox" ]; then
         SOURCES+=("$_fe_inbox")
-        SELECTS+=('select(.from != $me and ((.to // "") == $me) and ((.text // .message // .msg // "") != ""))')
+        CONDS+=('(.from != $me) and ((.to // "") == $me) and ((.text // .message // .msg // "") != "")')
         CURSORS+=(sot_fe_cursor_offset)
     fi
     STATE_DIR="$COMM_HOME/state"; mkdir -p "$STATE_DIR"

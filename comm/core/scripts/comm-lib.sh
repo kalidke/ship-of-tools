@@ -583,19 +583,24 @@ BRIDGE_ARGV0="sot-bridge"
 # exits — an ownerless bridge must not survive as a named receiver the daemon
 # still counts (the false-receiver defect). argv indices 3 and 5 are unchanged
 # by the two extra arguments, so sot_bridge_pid_for still identifies the loop.
-# The OWNER check ($3) is sot_pid_alive, not a bare `kill -0`, for the reason
-# that function documents; its definition is carried into the loop's shell by
-# sot_bridge_start rather than copied here, so there is still one of it. The
-# child check ($_c) stays `kill -0`: that one IS an msys process we started.
+# BOTH checks are `kill -0`, including the OWNER one, and that is deliberate
+# rather than an oversight: there is no bridge loop on Windows at all (ADR 0042
+# amendment decision 5, stated as an invariant in comm-relay.sh, and the reason
+# the bootstrap reports bridge=n/a there — the frontend files frames itself).
+# This loop therefore runs only where the portable walk answers and `kill -0`
+# is correct, so sot_pid_alive's msys arm is unreachable from here. Routing it
+# through the helper meant carrying the helper's definition into this shell,
+# and that plumbing had a failure mode of its own: drop it and the bridge dies
+# while its owner is alive.
 BRIDGE_LOOP='while :; do
     "$1" bridge --name "$2" & _c=$!
     while kill -0 "$_c" 2>/dev/null; do
-        if [ -n "${3:-}" ] && ! sot_pid_alive "$3"; then
+        if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then
             kill "$_c" 2>/dev/null; rm -f "${4:-}" 2>/dev/null; exit 0
         fi
         sleep 2
     done
-    if [ -n "${3:-}" ] && ! sot_pid_alive "$3"; then rm -f "${4:-}" 2>/dev/null; exit 0; fi
+    if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then rm -f "${4:-}" 2>/dev/null; exit 0; fi
     sleep 2
 done'
 
@@ -611,15 +616,14 @@ done'
 # stops and prints nothing (rc 1) — which is a REFUSAL at the call site, never
 # an untethered process.
 #
-# THREE ways to read a name, because git-bash answers only the third. MSYS2's
-# `ps` takes no `-o`, and its procfs has no `<pid>/comm` — it has `status`,
-# Linux-shaped, carrying both `Name:` and `PPid:` (the PPid half was already
-# read below). Without that last fallback the walk refused at the first hop on
-# every Windows box, which is what made `comm-session-start.sh` report "no
-# owning claude/codex ancestor found" and fall back to the harness Monitor
-# there. A leading path and a trailing `.exe` are stripped before the match, so
-# a name that matched before still matches; Linux answers from `ps`/`comm`
-# exactly as before.
+# Three ways to read a name, tried in turn: `ps -o comm=`, then
+# `<pid>/comm`, then `Name:` from `<pid>/status` for a procfs that has the
+# second but not the first. A leading path and a trailing `.exe` are stripped
+# before the match, so a name that matched before still matches.
+#
+# None of that reaches an agent on git-bash, and the tier below is why: msys
+# procfs does not cross the Windows process boundary, so this walk stops at
+# the first hop there whatever it reads the name from.
 sot_owner_pid() {
     _sot_owner_pid_proc && return 0
     # The /proc walk is the whole answer everywhere but git-bash, where it
@@ -729,32 +733,36 @@ _sot_msys_pid_of() {
 # _sot_owner_pid_windows — the nearest claude/codex ancestor across the Windows
 # boundary, as a pid THIS shell can signal. Prints nothing (rc 1) on any doubt.
 _sot_owner_pid_windows() {
-    local start ps_bin out win name
+    local start ps_bin timeout_bin win
     start="$(_sot_winpid_of "${PPID:-}")" || return 1
     ps_bin="$(command -v powershell.exe 2>/dev/null || command -v pwsh.exe 2>/dev/null)" || return 1
-    [ -n "$ps_bin" ] || return 1
-    local -a runner=()
-    command -v timeout >/dev/null 2>&1 && runner=(timeout 10)
-    out="$(SOT_WALK_FROM="$start" "${runner[@]}" "$ps_bin" -NoProfile -NonInteractive -Command '
+    # NO BOUND, NO TIER. A corrupt WMI repository leaves Get-CimInstance
+    # blocked for as long as it likes, and this runs on the session-start
+    # path, so an unbounded call is a session that never starts. Without a
+    # `timeout` binary there is nothing to bound it with, so the tier refuses
+    # and the box keeps the Monitor — the same answer every other failure here
+    # gives.
+    timeout_bin="$(command -v timeout 2>/dev/null)" || return 1
+    win="$(SOT_WALK_FROM="$start" "$timeout_bin" 10 "$ps_bin" -NoProfile -NonInteractive -Command '
 $id = [int]$env:SOT_WALK_FROM
 $map = @{}
-Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name |
+Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate |
     ForEach-Object { $map[[int]$_.ProcessId] = $_ }
 for ($i = 0; $i -lt 64 -and $map.ContainsKey($id); $i++) {
     $p = $map[$id]
     $n = ($p.Name -replace "\.exe$","").ToLower()
-    if ($n -eq "claude" -or $n -eq "codex") { "$($p.ProcessId) $($p.Name)"; break }
+    if ($n -eq "claude" -or $n -eq "codex") { "$($p.ProcessId)"; break }
     $next = [int]$p.ParentProcessId
-    if ($next -eq $id) { break }
+    if ($next -eq $id -or -not $map.ContainsKey($next)) { break }
+    # A Windows pid is small, recycled hard, and ParentProcessId is NOT
+    # cleared when the parent exits -- so a chain with no agent in it can
+    # climb into a STRANGER whose pid was reused, and this would return it
+    # with full confidence. A parent that started after its child is that
+    # stranger; stop rather than answer.
+    if ($map[$next].CreationDate -gt $p.CreationDate) { break }
     $id = $next
-}' 2>/dev/null | tr -d '\r')"
-    win="$(printf '%s' "$out" | awk 'NF { print $1; exit }')"
-    name="$(printf '%s' "$out" | awk 'NF { print $2; exit }')"
+}' 2>/dev/null | tr -d '\r' | tr -dc '0-9')"
     [[ "$win" =~ ^[0-9]+$ ]] || return 1
-    case "${name##*/}" in
-        claude.exe|codex.exe|claude|codex) ;;
-        *) return 1 ;;
-    esac
     _sot_msys_pid_of "$win"
 }
 
@@ -1153,12 +1161,7 @@ sot_bridge_start() {
     sot_bridge_stop "$name"
     log="$COMM_HOME/state/bridge-$name.log"
     : > "$log"
-    # The loop runs in a bare `bash -c` with no library sourced, so the two
-    # functions its owner check needs travel with it as text. Prepended to the
-    # -c STRING, never to argv: the pattern that finds a running bridge is
-    # end-anchored on the trailing `sot-bridge <relay> <name>`, and an extra
-    # argument would move it.
-    bash -c "$(declare -f _sot_is_msys sot_pid_alive); $BRIDGE_LOOP" "$BRIDGE_ARGV0" "$relay" "$name" "$owner" \
+    bash -c "$BRIDGE_LOOP" "$BRIDGE_ARGV0" "$relay" "$name" "$owner" \
         "$(sot_bridge_pidfile "$name")" </dev/null >>"$log" 2>&1 &
     printf '%s\n' "$!" > "$(sot_bridge_pidfile "$name")"
     [ "$held" = 1 ] && rmdir "$lockdir" 2>/dev/null

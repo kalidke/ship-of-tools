@@ -129,17 +129,18 @@ branch lives, so off Windows there is a single source and nothing changes.
 The DECISION stays one per cycle, not one per source: the ping says only that
 mail exists, so a frame in each inbox in the same two seconds is one typed
 notice, one row resolution and one probe of the prompt-free gate — which is
-also what keeps the five-probe give-up budget a count of cycles. `--deliver
+also what keeps the run of daemon silence a count of cycles. `--deliver
 full` is unchanged and still per line: it types each message itself, so a
 second source is simply a second batch.
 
 Two smaller things fell out of the same path, both of which kept a frontend box
 on the Monitor or hid mail from it:
 
-- `sot_owner_pid` could not name an ancestor under git-bash (no `ps -o`, no
-  `<pid>/comm`), so the bootstrap reported "no owning claude/codex ancestor
-  found" and fell back. It now reads `Name:` from `<pid>/status`, the same file
-  it already read `PPid:` from, and tolerates a `.exe` suffix.
+- `sot_owner_pid` could not name an ancestor under git-bash, so the bootstrap
+  reported "no owning claude/codex ancestor found" and fell back. Its name
+  lookup now also reads `Name:` from `<pid>/status` and tolerates a `.exe`
+  suffix — but see the Windows tier below for what actually reaches the agent
+  there.
 - The bootstrap's catch-up carried its own copy of the frontend-inbox read,
   with a THIRD cursor file that no other reader has ever opened — so catch-up
   marked frontend mail read where `comm-poll.sh` and the turn-end hook could not
@@ -161,3 +162,64 @@ directed mail, so an outage costs the wake and nothing else.
 
 The Monitor itself is unchanged and still the fallback for a session in no
 capsule row, on any platform: there is no pane to type into.
+
+### The two cursors are not the same cursor
+
+The watcher's in-memory cursor decides what a cycle SCANS, and the two delivery
+modes start it in different places on purpose. `full` starts at the inbox's
+END, because it types each message into the pane and an older start would
+retype the backlog. `ping` starts at the persisted READ cursor, because it
+types a notice rather than the mail: a backlog costs one line to announce, and
+starting at the end left mail that arrived while no watcher ran unannounced
+forever — a frontend-box session sat deaf for two and a half hours with four
+unread frames already filed. Folding the two into one initialisation is the
+obvious simplification and it is a bug in whichever direction it is folded.
+
+That also exposed the scan's cost. Starting at the read cursor makes a
+full-file scan reachable (a cursor past EOF clamps to 0 on a trimmed or
+restored inbox), and the scan spawned one `jq` per LINE — 1500 lines inside one
+two-second cycle. It is one `jq` over the whole range now, emitting the two
+booleans a batch decides: is any of it directed at us, and is all of it the
+selftest frame. Nothing is capped or skipped; the batch is read in full, by one
+process.
+
+### Reaching the agent on a frontend box
+
+`sot_owner_pid`'s portable walk cannot find the agent on git-bash, and no
+choice of name source changes that: msys procfs does not cross the Windows
+process boundary, so the walk sees one hop, `bash`, while the real chain runs
+`bash -> bash -> claude.exe -> sot-capsule.exe`. A capsule row there therefore
+refused the watcher and kept the Monitor — this ADR's decision was nominal on
+the one platform it most needed to hold.
+
+A second tier runs only where the msys userland exists and only after the
+portable walk has already failed, so nothing changes on Linux or macOS. It
+crosses the boundary explicitly: `/proc/<pid>/winpid` (or the `WINPID` column
+of `ps -W`) going out, the same column coming back, because the scripts live in
+the msys pid namespace and the caller needs a pid it can signal. The chain is
+walked inside ONE PowerShell over a single `Get-CimInstance Win32_Process`
+snapshot, never per hop and never `wmic`. It refuses — leaving the box exactly
+where it was — when there is no PowerShell, no `timeout` to bound the call (a
+corrupt WMI repository blocks indefinitely, and this runs on the session-start
+path), an unmappable pid, or a parent whose `CreationDate` is later than its
+child's, which is a recycled Windows pid rather than an ancestor.
+
+Liveness needed the same care: `kill -0` answers 1 for the synthetic Cygwin pid
+that names a process msys never started, so every owner tether read its live
+agent as dead. `sot_pid_alive` is `kill -0` everywhere, plus one `ps -W` match
+on msys after it fails. The bridge loop is deliberately NOT routed through it:
+there is no bridge on Windows at all (ADR 0042 amendment decision 5), so that
+loop only ever runs where `kill -0` is correct.
+
+### One watcher per handle, enforced against the process table
+
+Two ping watchers for one handle ran side by side for seventeen hours, and the
+marker named only the later one. The exclusive create was always atomic; the
+COMPOUND operation was not — a lost claim was judged stale from the marker's
+pid alone, so a live watcher the marker did not name was invisible to every
+start and unreapable by every cleanup. The check-and-claim now runs under a
+`mkdir` lock and refuses on either a live watcher the marker names or one found
+in the PROCESS TABLE, which cannot be overwritten or judged stale. The scan
+excludes itself (this script's own command line carries the script name and the
+handle) and any candidate that started after it (two racing starts would
+otherwise each see the other and both refuse, which is deafness).

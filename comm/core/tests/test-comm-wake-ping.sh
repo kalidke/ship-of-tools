@@ -1114,7 +1114,115 @@ EOF
     return 0
 }
 
+# WHAT ONE CYCLE COSTS over a real backlog, printed as a number so the next
+# person to touch this path can see it. 1500 lines is the live inbox on the
+# hub (1430) with headroom, and it is reachable in one cycle by design: the
+# ping scan starts at the READ CURSOR, and a cursor past EOF clamps to 0
+# whenever an inbox is trimmed, cleared or restored by hand. One jq per LINE
+# made that case cost 1500 spawns inside a two-second cycle. The ceiling here
+# is deliberately loose -- it is there to catch a return to per-line spawning
+# (tens of seconds), not to police milliseconds on a busy box.
+case_a_fifteen_hundred_line_backlog_scans_in_one_pass() {
+    local d="$WORK/big-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    local i
+    : > "$d/inbox/watchee.jsonl"
+    for i in $(seq 1 1500); do
+        printf '{"from":"peer","to":"me","msg":"line %s"}\n' "$i" >> "$d/inbox/watchee.jsonl"
+    done
+    local calls="$d/pty-input.calls" ticks="$d/ticks"
+    : > "$calls"; : > "$ticks"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    # The gap between two ticks IS one cycle's work: the scan, the gate and
+    # the inject, with no poll pause in between.
+    date +%s%N >> "$ticks"
+    turns=\$((turns + 1))
+    [ "\$turns" -le 2 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) for a 1500-line backlog, want exactly 1"; return 1; }
+    local t1 t2 ms
+    t1="$(sed -n '1p' "$ticks")"; t2="$(sed -n '2p' "$ticks")"
+    [ -n "$t1" ] && [ -n "$t2" ] || { echo "  the cycle was never timed"; return 1; }
+    ms=$(( (t2 - t1) / 1000000 ))
+    echo "  1500-line batch: one cycle took ${ms} ms"
+    [ "$ms" -lt 5000 ] || { echo "  that is a per-line cost, not a per-batch one"; return 1; }
+    return 0
+}
+
+# THE FILE THAT ACTUALLY FAILED. The field report was a frontend box, where
+# the mail is the frontend's shared fe-inbox.jsonl read through its own
+# read/<handle>.fe.cursor -- so the backlog case has to be run against THAT
+# file, not only the per-handle one, or the fix is pinned on the file that was
+# never deaf.
+case_a_frontend_backlog_from_before_the_watcher_is_announced() {
+    local d="$WORK/fe-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read" "$d/AppDataLocal/sot"
+    : > "$d/inbox/watchee.jsonl"
+    printf '{"from":"peer","to":"watchee","text":"filed while nothing was watching"}\n' \
+        > "$d/AppDataLocal/sot/fe-inbox.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() { turns=\$((turns + 1)); [ "\$turns" -le 3 ] || exit 0; }
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) for a frontend backlog present before arming, want exactly 1"; return 1; }
+    return 0
+}
+
+# Its twin, which is what proves the two cursors are not crossed: the same
+# backlog, already read through the FRONTEND cursor, announces nothing. Point
+# this at read/watchee.cursor instead and it goes red.
+case_a_frontend_backlog_already_read_is_silent() {
+    local d="$WORK/fe-backlog-read"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read" "$d/AppDataLocal/sot"
+    : > "$d/inbox/watchee.jsonl"
+    printf '{"from":"peer","to":"watchee","text":"you already read this"}\n' \
+        > "$d/AppDataLocal/sot/fe-inbox.jsonl"
+    printf '1' > "$d/read/watchee.fe.cursor"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() { turns=\$((turns + 1)); [ "\$turns" -le 3 ] || exit 0; }
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 0 ] || { echo "  pty.input called $n time(s) for frontend mail already read; a restart must be silent"; return 1; }
+    return 0
+}
+
 check "three new directed lines type the ping notice exactly once" case_three_new_directed_lines_type_the_ping_once
+check "a 1500-line backlog is one scan, not one per line" case_a_fifteen_hundred_line_backlog_scans_in_one_pass
+check "a frontend backlog filed before the watcher is announced" case_a_frontend_backlog_from_before_the_watcher_is_announced
+check "a frontend backlog already read stays silent" case_a_frontend_backlog_already_read_is_silent
 # THE DEFECT ITSELF, which the two-start case above cannot reach: a watcher
 # that is ALIVE while the marker names someone else. On the hub the marker
 # named the later of two watchers and the earlier one -- forty-five minutes
@@ -1162,7 +1270,106 @@ EOF
 
 check "two starts at once leave exactly one watcher and one refusal" case_two_starts_leave_exactly_one_watcher
 check "a live watcher no marker names still refuses a second" case_a_live_watcher_no_marker_names_still_refuses
+# THE WINDOWS TIER, on a Linux leg. Everything about it except the PowerShell
+# program itself is shell, and all of that is testable here with a sandboxed
+# PATH: a fake `ps -W` carrying the REAL column layout (PID PPID PGID WINPID
+# ...), a fake `powershell.exe` that answers only when it is handed the right
+# start winpid, and a `timeout` that is present or absent per case. What these
+# pin is the part that was wrong twice already — which column is read going
+# out and coming back, and that every failure refuses rather than guesses.
+# What they CANNOT pin is the CreationDate rule that stops the walk climbing
+# into a recycled parent: that lives inside the PowerShell these fakes stand
+# in for, and only a Windows box can exercise it.
+_win_tier_sandbox() {
+    local d="$1" with_timeout="$2" b="$1/bin" t
+    rm -rf "$d"; mkdir -p "$b"
+    # A PATH of our own, so "no timeout on this box" is a case rather than a
+    # hypothetical -- but with the tools the tier's own shell needs.
+    # `bash` and `env` are on this list because the fakes below are scripts:
+    # a sandboxed PATH without them cannot start its own fixtures.
+    for t in tr awk sed cat env bash sh; do
+        command -v "$t" >/dev/null 2>&1 && ln -sf "$(command -v "$t")" "$b/$t"
+    done
+    [ "$with_timeout" = timeout ] && ln -sf "$(command -v timeout)" "$b/timeout"
+    cat > "$b/ps" <<'PSEOF'
+#!/usr/bin/env bash
+# Only -W is answered, in msys's own column order.
+[ "${1:-}" = "-W" ] || exit 1
+printf '%8s %7s %7s %9s %-9s %6s %8s %s\n' PID PPID PGID WINPID TTY UID STIME COMMAND
+printf '%8s %7s %7s %9s %-9s %6s %8s %s\n' "$SOT_TEST_SELF_MSYS" 1 1 "$SOT_TEST_SELF_WIN" pty0 197609 10:00:00 /usr/bin/bash
+printf '%8s %7s %7s %9s %-9s %6s %8s %s\n' "$SOT_TEST_OWNER_MSYS" 1 1 "$SOT_TEST_OWNER_WIN" '?' 197609 10:00:00 'C:\Program Files\claude\claude.exe'
+PSEOF
+    chmod +x "$b/ps"
+    cat > "$b/powershell.exe" <<'PWEOF'
+#!/usr/bin/env bash
+# The walk prints the owner's WINDOWS pid alone, and only for the start pid it
+# was actually handed -- so a caller that passes an msys pid gets nothing.
+[ "${SOT_WALK_FROM:-}" = "${SOT_TEST_SELF_WIN:-}" ] || exit 0
+printf '%s\r\n' "${SOT_TEST_PS_OUT:-$SOT_TEST_OWNER_WIN}"
+PWEOF
+    chmod +x "$b/powershell.exe"
+}
+
+_win_tier_run() {
+    local d="$1" b="$1/bin" bash_bin
+    bash_bin="$(command -v bash)"
+    # A runner FILE, not a nested `bash -c` string: the stand-in below is the
+    # one thing this fixture cannot supply from outside, since the real
+    # _sot_winpid_of reads the tier shell's own $PPID, and that pid is not
+    # knowable before the shell exists.
+    cat > "$d/run.sh" <<EOF
+source "$SCRIPTS_DIR/comm-lib.sh" || exit 9
+_sot_winpid_of() { ps -W | awk -v p="\$SOT_TEST_SELF_MSYS" '\$1 == p { print \$4; exit }'; }
+_sot_owner_pid_windows
+EOF
+    PATH="$b" \
+    SOT_TEST_SELF_MSYS="${SOT_TEST_SELF_MSYS:-4242}" SOT_TEST_SELF_WIN="${SOT_TEST_SELF_WIN:-32704}" \
+    SOT_TEST_OWNER_MSYS="${SOT_TEST_OWNER_MSYS:-73528}" SOT_TEST_OWNER_WIN="${SOT_TEST_OWNER_WIN:-7992}" \
+    SOT_TEST_PS_OUT="${SOT_TEST_PS_OUT-}" \
+    "$bash_bin" "$d/run.sh"
+}
+
+case_the_windows_tier_maps_both_namespaces() {
+    local d="$WORK/win-tier-ok" out rc
+    _win_tier_sandbox "$d" timeout
+    out="$(_win_tier_run "$d" 2>/dev/null)"; rc=$?
+    [ "$rc" -eq 0 ] || { echo "  the tier refused a chain it should have walked (rc $rc)"; return 1; }
+    # 73528 is the MSYS pid for WINPID 7992 -- the mapping the probe box
+    # measured, and the one a caller can signal.
+    [ "$out" = "73528" ] || { echo "  resolved '$out', want the msys pid 73528 for winpid 7992"; return 1; }
+    return 0
+}
+
+case_the_windows_tier_refuses_without_a_timeout() {
+    local d="$WORK/win-tier-notimeout" rc
+    _win_tier_sandbox "$d" no-timeout
+    _win_tier_run "$d" >/dev/null 2>&1; rc=$?
+    [ "$rc" -ne 0 ] || { echo "  an unbounded PowerShell call was made anyway"; return 1; }
+    return 0
+}
+
+case_the_windows_tier_refuses_without_powershell() {
+    local d="$WORK/win-tier-nops" rc
+    _win_tier_sandbox "$d" timeout
+    rm -f "$d/bin/powershell.exe"
+    _win_tier_run "$d" >/dev/null 2>&1; rc=$?
+    [ "$rc" -ne 0 ] || { echo "  refused to refuse with no PowerShell on PATH"; return 1; }
+    return 0
+}
+
+case_the_windows_tier_refuses_garbled_output() {
+    local d="$WORK/win-tier-garbled" rc out
+    _win_tier_sandbox "$d" timeout
+    out="$(SOT_TEST_PS_OUT="Get-CimInstance : The RPC server is unavailable." _win_tier_run "$d" 2>/dev/null)"; rc=$?
+    [ "$rc" -ne 0 ] || { echo "  an error message was accepted as a pid: '$out'"; return 1; }
+    return 0
+}
+
 check "sot_pid_alive answers live, gone and not-a-pid" case_pid_liveness_answers_live_dead_and_nonsense
+check "the Windows tier maps msys and Windows pids both ways" case_the_windows_tier_maps_both_namespaces
+check "the Windows tier refuses when there is no timeout to bound it" case_the_windows_tier_refuses_without_a_timeout
+check "the Windows tier refuses with no PowerShell on PATH" case_the_windows_tier_refuses_without_powershell
+check "the Windows tier refuses output that is not a pid" case_the_windows_tier_refuses_garbled_output
 check "a frame filed before the watcher started is announced" case_a_frame_from_before_the_watcher_started_is_announced
 check "a backlog already read is silent when a watcher restarts" case_a_backlog_already_read_is_not_announced_on_restart
 check "full mode does not retype a backlog" case_full_mode_does_not_retype_a_backlog
