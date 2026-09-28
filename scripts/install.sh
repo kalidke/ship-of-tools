@@ -25,8 +25,10 @@
 #      manual and the resource tree; blobless partial clone = full history
 #      for blame, only the tag's tree downloaded; supersedes the curated
 #      julia bundle) + juliaup + Pkg.instantiate inside the checkout
-#   5. config in ~/.config/sot: settings.toml stub if missing; hosts.toml is
-#      read (role) and, with --hub, fetched — never written here
+#   5. config in ~/.config/sot: settings.toml stub if missing, plus this
+#      box's folder-trust declaration ([trust] root_prefix = the home
+#      folder) if it has none;
+#      hosts.toml is read (role) and, with --hub, fetched — never written here
 #   6. agent comm resources: ~/.sot-comm plus Claude/Codex skills
 #   7. backend roles: install+enable the systemd --user sotd unit
 #   8. FE roles: ~/.local/bin/sot-launch wrapper + app/desktop entry
@@ -75,14 +77,16 @@ say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # Refuse characters a shell-embedded path (systemd unit ExecStart, JSON
-# manifest, sed substitution, launcher heredocs) cannot carry safely.
+# manifest, sed substitution, launcher heredocs) cannot carry safely, plus
+# a newline, which turns one generated line into two — a second
+# `root_prefix =` in section 6, where the daemon's reader takes the last.
 # Explicit rejection over silent corruption. Shared by --prefix and the
 # project root ($HOME) — deploy/sotd.service's ExecStart now embeds both
 # inside a shell string, where a stray quote breaks the unit.
 reject_unsafe_path_chars() {  # <label> <value>
     case "$2" in
-        *[\&\|\;\"\'\\\`]*|*' '*|*'	'*)
-            die "unsupported characters in $1 '$2' — no spaces, quotes, backslashes, or shell metacharacters" ;;
+        *[\&\|\;\"\'\\\`]*|*' '*|*'	'*|*$'\n'*)
+            die "unsupported characters in $1 '$2' — no spaces, quotes, backslashes, newlines, or shell metacharacters" ;;
     esac
 }
 
@@ -386,6 +390,23 @@ case "$PREFIX" in
 esac
 reject_unsafe_path_chars "prefix" "$PREFIX"
 reject_unsafe_path_chars 'project root ($HOME)' "$HOME"
+
+# The home folder is also the folder-trust scope written in section 6, so it
+# has to be a prefix that can only ever match rows underneath it. The daemon
+# compares path components as written, so a relative prefix matches nothing,
+# a `..` segment matches nothing either (`/h/u/..` is not a prefix of
+# `/h/u/repo`), and a prefix of nothing but slashes is a prefix of every
+# absolute path on the box.
+case "$HOME" in
+    /*) ;;
+    *) die "the home folder is '$HOME', which is not an absolute path — the daemon refuses a relative trust prefix and would trust nothing" ;;
+esac
+case "${HOME#/}" in
+    ''|/*) die "the home folder is '$HOME', which names no folder under the root — declaring it would declare the whole filesystem trusted" ;;
+esac
+case "$HOME" in
+    */../*|*/..) die "the home folder is '$HOME', which carries a '..' segment — the daemon matches components as written, so it would trust nothing" ;;
+esac
 
 # ---- 1. preflight ------------------------------------------------------------
 OS="$(uname -s)"
@@ -779,6 +800,30 @@ if [ "$WANT_DAEMON" = 0 ] && command -v systemctl >/dev/null 2>&1 && systemctl -
     say "disabled the local sotd.service from a previous all-in-one install"
 fi
 [ -f "$CONFIG/settings.toml" ] || printf '# Ship of Tools settings — see .sot/settings.toml.example in the repo\n' > "$CONFIG/settings.toml"
+
+# Folder trust. A row the daemon spawns must reach its task without stopping
+# at the agent's folder-trust dialog on a folder nobody has opened on this box
+# before. The daemon reads ONE declared absolute prefix from this file; the
+# repo itself ships no default and names no path, because a path committed
+# there would be true on nobody's machine. So the declaration is made HERE, at
+# install time, on the box it applies to: the home folder. Written once — an
+# existing [trust] table is the owner's own answer, never rewritten, and
+# commenting the key out restores the dialog. The guard matches the table the
+# way the daemon's parser does (trim the line, strip the brackets, trim the
+# name), so `[ trust ]` counts as the table it is and never earns a second one
+# — two tables and the reader would take the last.
+if ! grep -q '^[[:space:]]*\[[[:space:]]*trust[[:space:]]*\][[:space:]]*$' "$CONFIG/settings.toml" 2>/dev/null; then
+    {
+        printf '\n[trust]\n'
+        printf '# Every session root under this absolute prefix counts as already\n'
+        printf '# trusted, so an agent the daemon spawns there never stops at its\n'
+        printf '# folder-trust dialog. Narrow it to the parent your repos live under,\n'
+        printf '# or comment it out to answer that dialog by hand. Roots outside it\n'
+        printf '# are left untouched.\n'
+        printf 'root_prefix = "%s"\n' "$HOME"
+    } >> "$CONFIG/settings.toml"
+    say "folder trust declared for everything under $HOME ($CONFIG/settings.toml, [trust] root_prefix)"
+fi
 
 # ---- 7. backend service --------------------------------------------------------
 if [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 1 ]; then
