@@ -43,9 +43,11 @@ set -euo pipefail
 REPO="${SOT_INSTALL_REPO:-kalidke/ship-of-tools}"
 PREFIX="${SOT_PREFIX:-$HOME/.local/share/sot}"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sot"
-# Empty unless --trusted-root says otherwise: this installer declares no
-# folder trusted on its own. See the [trust] block in section 6.
-TRUSTED_ROOT=""
+# Nothing is declared trusted unless this install is given a prefix --
+# `--trusted-root` below, or the same variable the daemon itself honours,
+# for a deployment that already exports it. Never a fallback of its own.
+# See the [trust] block in section 6.
+TRUSTED_ROOT="${SOT_TRUSTED_ROOT_PREFIX:-}"
 
 # Mirrors `hub_local_port_for` (rust/protocol/src/topology.rs): this runs
 # before any `sotd` binary is on disk, so it can't just ask the real thing.
@@ -376,16 +378,10 @@ while [ $# -gt 0 ]; do
         # shared home they'd apply to EVERY machine). The caller supervises
         # sotd itself (e.g. systemd-run --user transient unit, per-machine).
         --no-service) NO_SERVICE=1 ;;
-        # Declare this box's source parent trusted (section 6). Absolute,
-        # because the daemon refuses a relative prefix and trusts nothing --
-        # better to say so here than to write a line that never works.
-        --trusted-root)
-            TRUSTED_ROOT="${2:?--trusted-root needs an absolute path}"; shift
-            case "$TRUSTED_ROOT" in
-                /*) ;;
-                *) echo "--trusted-root needs an absolute path: $TRUSTED_ROOT" >&2; exit 2 ;;
-            esac
-            ;;
+        # Declare this box's source parent trusted (section 6); wins over
+        # the environment. Checked after the loop, so both suppliers meet
+        # the same test.
+        --trusted-root) TRUSTED_ROOT="${2:?--trusted-root needs an absolute path}"; shift ;;
         # Consent to reconfiguring an installation that is already here. See
         # the role gate below for what it protects and why a role flag alone
         # is not consent.
@@ -394,6 +390,14 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+# Whichever supplied it, a relative prefix is refused here: the daemon
+# refuses one too and trusts nothing, so failing the install beats writing
+# a declaration that silently never matches a single row.
+case "${TRUSTED_ROOT:-/}" in
+    /*) ;;
+    *) die "the trusted root must be an absolute path (--trusted-root / \$SOT_TRUSTED_ROOT_PREFIX): $TRUSTED_ROOT" ;;
+esac
+
 # Canonicalize the prefix (a relative one produces a repo/current symlink
 # whose target resolves from repo/, i.e. a broken link), then reject unsafe
 # characters in both the prefix and the project root — deploy/sotd.service's
