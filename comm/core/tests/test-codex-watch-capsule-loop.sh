@@ -7,7 +7,9 @@
 #
 # Each case runs `_comm_wake_main` in its own `bash -c` subprocess (it
 # can call `exit` without killing this suite), overriding
-# `sleep`/`wc`/`sot_daemon_endpoint`/`_comm_wake_pty_input` as needed.
+# `sleep`/`wc`/`sot_daemon_endpoint`/`_comm_wake_pty_input`/`_comm_wake_row`
+# as needed. `_comm_wake_row` is the handle->row resolver the watcher asks
+# once per batch; stubbed to this case's own id, it pins what it always did.
 #
 # Usage: comm/core/tests/test-codex-watch-capsule-loop.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -43,6 +45,7 @@ case_capsule_mode_starts_at_eof_ignoring_a_stale_pos_file_and_backlog() {
         source "'"$WATCH"'"
         export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="'"$d"'"
         sot_daemon_endpoint() { printf fixture; }
+        _comm_wake_row() { printf "%s\n" "$SOT_WORKSPACE_ID"; }
         _comm_wake_pty_input() { printf "%s" "$2" | base64 -d >> "'"$attempts"'"; printf "\n" >> "'"$attempts"'"; printf "%s" "{\"op\":\"pty.input\",\"payload\":{\"ok\":true,\"enter_sent\":true}}"; }
         turns=0
         sleep() { turns=$((turns + 1)); [ "$turns" -le 1 ] || exit 0; }
@@ -62,6 +65,7 @@ case_concurrent_append_is_never_delivered_twice() {
         source "'"$WATCH"'"
         export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="'"$d"'"
         sot_daemon_endpoint() { printf fixture; }
+        _comm_wake_row() { printf "%s\n" "$SOT_WORKSPACE_ID"; }
         _comm_wake_pty_input() { printf "%s" "$2" | base64 -d >> "'"$attempts"'"; printf "\n" >> "'"$attempts"'"; printf "%s" "{\"op\":\"pty.input\",\"payload\":{\"ok\":true,\"enter_sent\":true}}"; }
         CALL_COUNT_FILE="'"$d"'/wc-calls"
         : > "$CALL_COUNT_FILE"
@@ -98,6 +102,7 @@ case_row_gone_ends_the_whole_watcher_not_just_the_inner_loop() {
         source "'"$WATCH"'"
         export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="'"$d"'"
         sot_daemon_endpoint() { printf fixture; }
+        _comm_wake_row() { printf "%s\n" "$SOT_WORKSPACE_ID"; }
         _comm_wake_pty_input() { printf "%s" "{\"op\":\"pty.input\",\"payload\":{\"error\":\"unknown workspace\",\"code\":\"unknown_workspace\"}}"; }
         # A message arrives after the cursor is already at EOF (same wc-race
         # trick as the dedup case above).

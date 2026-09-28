@@ -18,8 +18,12 @@
 # Each case runs `_comm_wake_main` in its own script file under a fresh
 # sandbox $SOT_COMM_HOME, invoked via `bash script.sh` (not `bash -c` string
 # splicing) so env is passed by export, not quoting -- stubs
-# `_comm_wake_pty_screen`/`_comm_wake_pty_input`/`sleep`/`kill` as needed,
-# same seams the existing codex-watch tests stub. The owning-agent pid is
+# `_comm_wake_pty_screen`/`_comm_wake_pty_input`/`_comm_wake_row`/`sleep`/
+# `kill` as needed, same seams the existing codex-watch tests stub.
+# `_comm_wake_row` is the handle->row resolver the watcher asks before every
+# batch, instead of waking the id frozen into its environment at spawn; a case
+# that says nothing about it stubs it to that same id and so pins exactly what
+# it always pinned. The owning-agent pid is
 # now an argv flag (`--owner <pid>`), not a discovered function, so a case
 # that wants no liveness tie simply omits `--owner`, and the one liveness
 # case passes it directly.
@@ -56,6 +60,7 @@ case_three_new_directed_lines_type_the_ping_once() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'; }
 _comm_wake_pty_input() {
     printf x >> "$calls"
@@ -92,6 +97,7 @@ case_selftest_only_batch_types_the_selftest_text() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
 _comm_wake_pty_input() {
     printf x >> "$calls"
@@ -124,6 +130,7 @@ case_prompt_not_free_waits_then_types_once_free() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() {
     printf x >> "$screen_calls"
     local n; n=\$(wc -c < "$screen_calls")
@@ -184,6 +191,7 @@ case_a_row_the_daemon_does_not_have_ends_the_watcher() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-old SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"error":"unknown workspace: ws-old","code":"unknown_workspace"}}'; }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
@@ -211,6 +219,110 @@ EOF
     return 0
 }
 
+# W2 — the ping goes to the row the resolver names. The id in this watcher's
+# environment was frozen at spawn, and a session that continued in another row
+# kept being woken in the row it used to be in.
+case_the_ping_follows_the_resolver_not_the_startup_id() {
+    local d="$WORK/retarget"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local targets="$d/pty-input.targets"
+    : > "$targets"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-old SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf 'ws-live\n'; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'; }
+_comm_wake_pty_input() {
+    printf '%s\n' "\$1" >> "$targets"
+    printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'
+}
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"hello"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 2 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local got; got="$(cat "$targets" 2>/dev/null)"
+    [ "$got" = "ws-live" ] \
+        || { echo "  the ping was typed into '$got', want ws-live (the row the resolver names)"; return 1; }
+    return 0
+}
+
+# W3 — nobody declares the handle: exit so the next session start re-arms.
+# Typing into the frozen id would submit a turn into whatever row now holds it.
+case_no_live_row_declaring_the_handle_exits_without_typing() {
+    local d="$WORK/no-row"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls" marker="$d/state/watchee.watch"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-old SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { return 1; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"hello"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 4 ] || { echo "the watcher never gave up on an unresolvable handle" >&2; exit 9; }
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local rc=$?
+    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0"; return 1; }
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 0 ] || { echo "  pty.input was called $n time(s) with no row to aim at"; return 1; }
+    grep -q 'no live row declares @watchee' "$d/state/comm-wake-watchee.log" 2>/dev/null \
+        || { echo "  the log does not say the handle has no row"; return 1; }
+    [ ! -f "$marker" ] || { echo "  the marker was left behind, so the next session start cannot re-arm"; return 1; }
+    return 0
+}
+
+# W4 — two rows declare one handle, which set_agent_handle really allows.
+# Refusing is the point: one of the two is a stranger's session.
+case_two_rows_declaring_the_handle_refuse_to_guess() {
+    local d="$WORK/two-rows"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-old SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { return 3; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"hello"}\n' >> "$d/inbox/watchee.jsonl"
+    fi
+    [ "\$turns" -le 4 ] || { echo "the watcher never refused an ambiguous handle" >&2; exit 9; }
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local rc=$?
+    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0"; return 1; }
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 0 ] || { echo "  pty.input was called $n time(s) on an ambiguous handle -- one of those rows is a stranger"; return 1; }
+    grep -q 'two or more rows declare @watchee' "$d/state/comm-wake-watchee.log" 2>/dev/null \
+        || { echo "  the log does not say the handle is ambiguous"; return 1; }
+    return 0
+}
+
 case_five_consecutive_no_replies_gives_up_and_drops_the_marker() {
     local d="$WORK/no-reply"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
@@ -220,6 +332,7 @@ case_five_consecutive_no_replies_gives_up_and_drops_the_marker() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf x >> "$screen_calls"; printf ''; }
 turns=0
 sleep() {
@@ -249,6 +362,7 @@ case_a_second_new_message_with_an_unmoved_cursor_pings_again() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
@@ -284,6 +398,7 @@ case_a_cursor_that_already_covers_the_batch_skips_a_second_ping() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
@@ -315,6 +430,7 @@ case_no_owner_exits_two() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 # No --owner AND no discoverable claude/codex ancestor: the refusal is about
 # the owner being unknowable, so discovery is stubbed to fail rather than
 # depending on whatever launched this suite.
@@ -344,6 +460,7 @@ case_second_start_against_a_live_marker_refuses() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 sleep() { echo "sleep must not be called against a live marker" >&2; exit 9; }
 _comm_wake_main watchee --deliver ping --owner \$\$
 EOF
@@ -367,6 +484,7 @@ case_no_flag_but_a_discoverable_owner_starts() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 # No --owner: the owner is DISCOVERED from this process's own ancestry, which is
 # what lets every leg (Codex's --deliver full included) be owned without a
 # caller having to remember a flag.
@@ -404,6 +522,7 @@ case_marker_pid_that_is_not_a_watcher_is_stale() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
@@ -436,6 +555,7 @@ source "$WAKE"
 unset SOT_WORKSPACE_ID
 export SOT_COMM_HOME="$d" SOT_COMM_SELF_FILE="$d/self/testhost__ws-derived.txt"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
 _comm_wake_pty_input() {
     printf x >> "$calls"
@@ -467,6 +587,7 @@ case_agent_pid_gone_exits_zero_and_removes_the_marker() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 kill() { [ "\$1" = "-0" ] && return 1; command kill "\$@"; }
 sleep() { echo "sleep must not be called once the owner is gone" >&2; exit 9; }
 _comm_wake_main watchee --deliver ping --owner 99999
@@ -493,6 +614,7 @@ case_a_grey_prompt_suggestion_does_not_block_the_ping() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯ /compact"],"cursor":{"row":0,"col":2}}}'; }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
@@ -523,6 +645,7 @@ case_a_typed_draft_still_blocks_the_ping() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯ hello"],"cursor":{"row":0,"col":8}}}'; }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
@@ -555,6 +678,7 @@ case_a_dialog_over_a_stale_prompt_glyph_blocks_the_ping() {
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
 _comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯","Allow this action? (y/n)"],"cursor":{"row":1,"col":24}}}'; }
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
@@ -680,6 +804,9 @@ check "a batch that is only __selftest__ frames types the selftest notice" case_
 check "a not-free prompt withholds the ping and types it once the prompt frees up" case_prompt_not_free_waits_then_types_once_free
 check "five consecutive no-reply pty.screen probes gives up and drops the marker" case_five_consecutive_no_replies_gives_up_and_drops_the_marker
 check "a row the daemon does not have ends the watcher instead of holding the ping" case_a_row_the_daemon_does_not_have_ends_the_watcher
+check "the ping follows the resolver, not the id frozen at spawn" case_the_ping_follows_the_resolver_not_the_startup_id
+check "no live row declaring the handle exits without typing" case_no_live_row_declaring_the_handle_exits_without_typing
+check "two rows declaring the handle refuse to guess which to wake" case_two_rows_declaring_the_handle_refuse_to_guess
 check "a second new message with an unmoved cursor pings again" case_a_second_new_message_with_an_unmoved_cursor_pings_again
 check "a cursor that already covers the pending batch skips a second ping" case_a_cursor_that_already_covers_the_batch_skips_a_second_ping
 check "no owner discoverable exits 2 and writes no marker" case_no_owner_exits_two

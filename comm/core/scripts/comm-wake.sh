@@ -61,6 +61,7 @@ source "$SCRIPT_DIR/comm-lib.sh"   # sot_daemon_endpoint / sot_pty_input / sot_p
 # ---- capsule delivery: one request, no local retry ------------------------
 _comm_wake_pty_input() { sot_pty_input "$@"; }    # WORKSPACE_ID DATA_B64
 _comm_wake_pty_screen() { sot_pty_screen "$@"; }  # WORKSPACE_ID
+_comm_wake_row() { sot_wake_row "$@"; }            # HANDLE
 
 # _comm_wake_pty_verdict RESP CONTEXT -> 0 advance, 1 retry (never
 # recorded), 2 row gone. Never calls exit itself. Shared by `full`'s
@@ -141,6 +142,38 @@ _comm_wake_prompt_free() {
     return 1
 }
 
+# _comm_wake_retarget -> 0 with $SOT_WORKSPACE_ID repointed at the row that
+# declares $HANDLE right now, or 1 meaning do nothing this cycle. Exits the
+# watcher outright when the handle cannot be aimed at exactly one row.
+#
+# The id this watcher started with was frozen into its environment at spawn
+# (comm-session-start.sh) and a session that continues in another row keeps
+# waking the row it used to be in. There is NO fallback to that frozen id: a
+# daemon that cannot answer workspace.list would not have answered pty.screen
+# either, so the fallback buys two seconds and re-arms the defect.
+#
+# $no_reply_count is _comm_wake_run's, shared rather than duplicated so an
+# unanswerable daemon gives up on the SAME 5 strikes the screen probe uses.
+# Both exits leave the marker to the EXIT trap, which removes it only if this
+# process owns it -- a blind extra call would drop someone else's.
+_comm_wake_retarget() {
+    local row rc=0
+    row="$(_comm_wake_row "$HANDLE")" || rc=$?
+    case "$rc" in
+        0) SOT_WORKSPACE_ID="$row"; return 0 ;;
+        1) echo "comm-wake: no live row declares @$HANDLE — exiting so the next session start re-arms" >&2; exit 0 ;;
+        3) echo "comm-wake: two or more rows declare @$HANDLE — refusing to guess which to wake; exiting so the next session start re-arms" >&2; exit 0 ;;
+        *)
+            no_reply_count=$((no_reply_count + 1))
+            if [ "$no_reply_count" -ge 5 ]; then
+                echo "comm-wake: workspace.list unanswered 5 times; exiting so session start can fall back to the Monitor" >&2
+                exit 0
+            fi
+            return 1
+            ;;
+    esac
+}
+
 # ---- lifetime: end with the agent that spawned this, never orphan --------
 
 # The owning agent's pid is no longer discovered here: the caller (typically
@@ -163,6 +196,9 @@ _comm_wake_owner_alive() {
 # ---- the two delivery bodies, one poll loop --------------------------------
 
 _comm_wake_deliver_full() {
+    # Once per BATCH, never per line: `full` injects one message at a time, so
+    # resolving inside the loop would be one workspace.list per message.
+    _comm_wake_retarget || return
     delivered_through="$pos"
     local lineno=0 from to text rc
     while IFS= read -r line; do
@@ -222,6 +258,7 @@ _comm_wake_deliver_ping() {
         return
     fi
 
+    _comm_wake_retarget || return
     _comm_wake_prompt_free
     local pf_rc=$?
     if [ "$pf_rc" -eq 3 ]; then
@@ -369,6 +406,9 @@ _comm_wake_main() {
 
     # Checked ONCE here, not inside a command substitution (silent
     # forever-advance on an empty reply) -- same discipline as $SOT_WORKSPACE_ID.
+    # What this id decides is whether this is a capsule row AT ALL, which the
+    # environment really does answer. It is no longer a wake TARGET: every
+    # batch re-resolves the row from the daemon (_comm_wake_retarget).
     if ! SOT_WORKSPACE_ID="$(sot_capsule_workspace_id)"; then
         echo "comm-wake: not a capsule row (no \$SOT_WORKSPACE_ID and no derivable \$SOT_COMM_SELF_FILE) -- the caller falls back to a harness Monitor" >&2
         exit 3
