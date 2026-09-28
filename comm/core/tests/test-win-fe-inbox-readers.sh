@@ -21,6 +21,14 @@
 # must COUNT frontend mail, while still never advancing a cursor (only a real
 # comm-poll.sh does, which is what keeps "read" an honest word).
 #
+# The Monitor has the MIRROR-IMAGE blind side and this suite covers it too: it
+# watched only ONE file per platform, so on Windows a frame from a session on the
+# SAME box — comm-send.sh:107 files it into inbox/<handle>.jsonl on every platform
+# — never woke anybody, while a cross-box frame in fe-inbox.jsonl woke but was
+# unreadable. Both readers and the watcher must see both files. The wake cases run
+# comm-watch.sh in ONE foreground process with its poll pause stubbed, so the peer's
+# append lands between two polls deterministically instead of being raced.
+#
 # No bats dependency. HERMETIC, same seams as test-comm-poll-cursor.sh: a temp
 # $SOT_COMM_HOME, a pinned $SOT_COMM_TEST_HOST, a per-suite $SOT_COMM_SELF_FILE
 # — never the real ~/.sot-comm. Windows is FAKED per invocation ($OS +
@@ -36,6 +44,7 @@ HOOKS_DIR="$(cd "$SCRIPT_DIR/../../adapters/claude/hooks" && pwd)"
 JOIN="$SCRIPTS_DIR/comm-join.sh"
 POLL="$SCRIPTS_DIR/comm-poll.sh"
 IDLE_HOOK="$HOOKS_DIR/comm-status-idle.sh"
+WATCH="$SCRIPTS_DIR/comm-watch.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-win-fe-inbox-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
@@ -81,15 +90,47 @@ reset_inboxes() {
     rm -f "$CUR" "$FE_CUR" "$SOT_COMM_HOME"/state/mail-*.tick
 }
 
-fe_line() {  # TO TEXT [FROM] — one FRONTEND line: the `.text` schema, no `.msg`
+fe_frame() {  # TO TEXT [FROM] — one FRONTEND frame: the `.text` schema, no `.msg`
     jq -nc --arg to "$1" --arg t "$2" --arg from "${3:-peer}" \
         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{from:$from,to:$to,repo:"r",text:$t,ts:$ts}' >> "$FE_INBOX"
+        '{from:$from,to:$to,repo:"r",text:$t,ts:$ts}'
 }
-ph_line() {  # MSG — one PER-HANDLE line: the `.msg` schema
-    jq -nc --arg to "$NAME" --arg m "$1" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{from:"peer",to:$to,repo:"r",msg:$m,ts:$ts}' >> "$INBOX"
+ph_frame() {  # TO MSG — one PER-HANDLE frame: the `.msg` schema
+    jq -nc --arg to "$1" --arg m "$2" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{from:"peer",to:$to,repo:"r",msg:$m,ts:$ts}'
 }
+fe_line() { fe_frame "$@" >> "$FE_INBOX"; }
+ph_line() { ph_frame "$NAME" "$1" >> "$INBOX"; }
+
+# The Monitor's poll pause, stubbed on $PATH: the FIRST pause is when the peer
+# files its frame — a genuine append by another process between two polls, merely
+# ordered instead of raced — and every later pause is real, so the loop idles
+# until `timeout` ends it. This keeps the whole wake path in ONE foreground
+# process: no background job, nothing left running after the suite.
+STUB_DIR="$WORK/stub"; mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/sleep" <<'STUBEOF'
+#!/usr/bin/env bash
+n=$(( $(cat "$SOT_WATCH_TEST_STATE" 2>/dev/null || echo 0) + 1 ))
+printf '%s' "$n" > "$SOT_WATCH_TEST_STATE"
+if [ "$n" = 1 ] && [ -n "${SOT_WATCH_TEST_LINE:-}" ]; then
+    printf '%s\n' "$SOT_WATCH_TEST_LINE" >> "$SOT_WATCH_TEST_FILE"
+    exit 0
+fi
+exec /bin/sleep "${1:-1}"
+STUBEOF
+chmod +x "$STUB_DIR/sleep"
+
+wake() {  # OS FILE FRAME -> WAKE_OUT: what the Monitor emitted for FRAME appended to FILE
+    rm -f "$WORK/stub.count"
+    WAKE_OUT="$(cd "$WORK" && OS="$1" LOCALAPPDATA="$LOCAL_APPDATA" \
+        PATH="$STUB_DIR:$PATH" \
+        SOT_WATCH_TEST_STATE="$WORK/stub.count" \
+        SOT_WATCH_TEST_FILE="$2" SOT_WATCH_TEST_LINE="$3" \
+        timeout 3 bash "$WATCH" "$NAME" 2>/dev/null || true)"
+    return 0
+}
+wake_win() { wake Windows_NT "$@"; }
+wake_nix() { wake "" "$@"; }
 
 poll_win() {  # -> POLL_OUT / POLL_RC, as a Windows box sees it
     POLL_OUT="$(cd "$WORK" && OS=Windows_NT LOCALAPPDATA="$LOCAL_APPDATA" "$POLL" 2>&1)"
@@ -223,6 +264,65 @@ case_a_torn_frontend_line_is_not_fatal() {
     return 0
 }
 
+# (f) THE WAKE PATH, frontend file: a cross-box frame appended while the Monitor
+#     runs is emitted — one stdout line is what wakes the session.
+case_a_frontend_frame_wakes_the_session() {
+    reset_inboxes
+    wake_win "$FE_INBOX" "$(fe_frame "$NAME" "wake me from another box")"
+    case "$WAKE_OUT" in *"wake me from another box"*) ;; *) echo "  the Monitor did not wake on the frontend frame: '$WAKE_OUT'"; return 1 ;; esac
+    case "$WAKE_OUT" in *"[relay] from peer"*) ;; *) echo "  the wake line lost its sender: '$WAKE_OUT'"; return 1 ;; esac
+    return 0
+}
+
+# (g) The frontend file is SHARED, so a sibling handle's frame must not wake this
+#     session — a wake costs a model turn.
+case_another_handles_frontend_frame_does_not_wake() {
+    reset_inboxes
+    wake_win "$FE_INBOX" "$(fe_frame "$OTHER" "wake the other one")"
+    [ -z "$WAKE_OUT" ] || { echo "  another handle's frame woke this session: '$WAKE_OUT'"; return 1; }
+    return 0
+}
+
+# (h) THE SAME-BOX WAKE, which is the half the Monitor was missing: comm-send.sh
+#     files a directed send into inbox/<handle>.jsonl on EVERY platform, so on
+#     Windows a frame from a session on the same box has to wake through the
+#     per-handle file — the one the Windows branch never watched.
+case_a_same_box_frame_wakes_on_windows() {
+    reset_inboxes
+    wake_win "$INBOX" "$(ph_frame "$NAME" "wake me from this very box")"
+    case "$WAKE_OUT" in *"wake me from this very box"*) ;; *) echo "  a same-box frame did not wake the session on Windows: '$WAKE_OUT'"; return 1 ;; esac
+    return 0
+}
+
+# (i) The post-arm wake-proof. comm-listen.sh --selftest injects a __selftest__
+#     frame and sot-session-start RELIES on the Monitor firing on it; comm-poll.sh
+#     deliberately does the opposite and never shows it. Both halves must hold on
+#     the frontend file too.
+case_a_frontend_selftest_frame_still_wakes() {
+    reset_inboxes
+    wake_win "$FE_INBOX" "$(fe_frame "$NAME" "receive-path self-test" "__selftest__")"
+    case "$WAKE_OUT" in *"receive-path self-test"*) ;; *) echo "  the frontend selftest frame did not wake the session: '$WAKE_OUT'"; return 1 ;; esac
+    reset_inboxes
+    fe_line "$NAME" "receive-path self-test" "__selftest__"
+    poll_win
+    case "$POLL_OUT" in *"receive-path self-test"*) echo "  poll showed a selftest frame as a message: $POLL_OUT"; return 1 ;; esac
+    [ "$(cat "$FE_CUR" 2>/dev/null)" = "1" ] \
+        || { echo "  frontend cursor is '$(cat "$FE_CUR" 2>/dev/null)', want 1 (a selftest frame still counts as read)"; return 1; }
+    return 0
+}
+
+# (j) Off Windows the Monitor watches exactly what it watched before: the
+#     per-handle inbox, and not the frontend file sitting right there.
+case_off_windows_the_monitor_watches_only_the_per_handle_inbox() {
+    reset_inboxes
+    wake_nix "$INBOX" "$(ph_frame "$NAME" "linux wake")"
+    case "$WAKE_OUT" in *"linux wake"*) ;; *) echo "  the Monitor stopped waking on per-handle mail off Windows: '$WAKE_OUT'"; return 1 ;; esac
+    reset_inboxes
+    wake_nix "$FE_INBOX" "$(fe_frame "$NAME" "frontend wake")"
+    [ -z "$WAKE_OUT" ] || { echo "  the Monitor read the frontend inbox off Windows: '$WAKE_OUT'"; return 1; }
+    return 0
+}
+
 check "a frontend frame addressed to this handle is shown by poll and counted by the turn-end hook" \
     case_frontend_frame_for_me_is_shown_and_counted
 check "a frontend frame addressed to another handle is shown and counted by neither" \
@@ -233,6 +333,16 @@ check "off Windows neither reader touches the frontend inbox or its cursor" \
     case_non_windows_reads_only_the_per_handle_inbox
 check "a torn frontend line is skipped, counted as read, and never fatal" \
     case_a_torn_frontend_line_is_not_fatal
+check "a frontend frame appended while the Monitor runs wakes the session" \
+    case_a_frontend_frame_wakes_the_session
+check "another handle's frontend frame never wakes this session" \
+    case_another_handles_frontend_frame_does_not_wake
+check "a same-box frame in the per-handle inbox wakes the session on Windows" \
+    case_a_same_box_frame_wakes_on_windows
+check "a frontend __selftest__ frame wakes the Monitor and is still never shown by poll" \
+    case_a_frontend_selftest_frame_still_wakes
+check "off Windows the Monitor watches the per-handle inbox and nothing else" \
+    case_off_windows_the_monitor_watches_only_the_per_handle_inbox
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

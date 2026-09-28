@@ -8,10 +8,11 @@
 # per-caller — a caller-side workaround dies with that process, so a later,
 # separately-invoked script (e.g. a retried `comm-listen.sh --selftest`) never
 # sees it and falls through to Linux-only logic that has no role on Windows).
-# comm-session-skill.sh and comm-watch.sh keep their own tiny copies (they
-# don't source this file, by design — comm-watch.sh in particular stays
-# dependency-free); every OTHER script that already sources comm-lib.sh should
-# call this one instead of re-deriving it.
+# comm-session-skill.sh keeps its own tiny copy (it does not source this file, by
+# design). comm-watch.sh used to as well, and mirroring is how it came to poll a
+# different file from the one comm-poll.sh read — it now sources this library like
+# everything else (2026-09-27). Every script that sources comm-lib.sh calls this
+# one instead of re-deriving it.
 _sot_is_windows() {
     case "${OS:-}" in Windows_NT) return 0 ;; esac
     case "${OSTYPE:-}" in msys*|cygwin*|win32) return 0 ;; esac

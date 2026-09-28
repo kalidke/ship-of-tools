@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # comm-watch.sh — the command a harness Monitor runs to WAKE this session on new
 # directed fast-comm. Foreground poll loop: one stdout line per new *directed*
-# relay frame in your inbox. Arg: $1 = your handle (the joined NAME).
+# relay frame in any of your inboxes. Arg: $1 = your handle (the joined NAME).
 #
 #   Monitor command:  comm-watch.sh <handle>
 #
@@ -29,17 +29,23 @@
 #     this Monitor firing on that frame. (comm-poll.sh does the opposite and
 #     FILTERS __selftest__ — wake here, ignore there; do not conflate.)
 #
-# WINDOWS SOURCE: there is no per-handle inbox there — the native frontend
-# files every inbound relay frame straight into fe-inbox.jsonl (mirrors
-# gpu.rs::sot_state_dir(): `%LOCALAPPDATA%\sot` on Windows, else
-# `${XDG_STATE_HOME:-$HOME/.local/state}/sot`), and that file is shared by
-# every session on the host — including traffic addressed to a SIBLING
-# handle (the `to` field is advisory, not enforced routing; the daemon
-# broadcasts to every connection). So the Windows wake filter checks `to`
-# against OUR exact handle only (a frontend is a client, never a comm
-# peer, so there is no FE-family label to honour). The frame carries the message
-# under `.text` (the raw `agent.message` payload), not `.msg`
-# (comm-relay.sh bridge's transformed field, Linux-only).
+# TWO SOURCES ON WINDOWS, and this used to be an EITHER/OR (2026-09-27): the
+# native frontend files every inbound relay frame straight into fe-inbox.jsonl
+# (mirrors gpu.rs::sot_state_dir(): `%LOCALAPPDATA%\sot` on Windows, else
+# `${XDG_STATE_HOME:-$HOME/.local/state}/sot`), so the Windows branch watched that
+# file INSTEAD of the per-handle inbox — and a directed send from a session on the
+# same box is filed into the per-handle inbox on every platform, Windows included
+# (comm-send.sh's durable append IS the delivery). Watching one file meant a
+# same-box frame woke nobody while a cross-box frame woke but was unreadable by
+# comm-poll.sh. Both files are watched now, each with its own line count.
+#
+# fe-inbox.jsonl is SHARED by every session on the host — including traffic
+# addressed to a SIBLING handle (the `to` field is advisory, not enforced routing;
+# the daemon broadcasts to every connection). So its wake filter checks `to`
+# against OUR exact handle only (a frontend is a client, never a comm peer, so
+# there is no FE-family label to honour), and the frame carries the message under
+# `.text` (the raw `agent.message` payload), not `.msg` (comm-relay.sh bridge's
+# transformed field, Linux-only).
 #
 # LIVENESS MARKER: comm-session-start.sh's survival check needs to tell a
 # live Monitor from a dead one. Linux does this with `pgrep` against the
@@ -63,29 +69,46 @@ if [ -z "$handle" ]; then
     exit 2
 fi
 
-_sot_comm_watch_is_windows() {
-    case "${OS:-}" in Windows_NT) return 0 ;; esac
-    case "${OSTYPE:-}" in msys*|cygwin*|win32) return 0 ;; esac
-    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
-    return 1
+# comm-lib.sh, for the platform branch and the home derivation. This script used
+# to mirror both by hand to stay dependency-free — and mirroring is exactly how it
+# came to watch a different file from the one comm-poll.sh read, for as long as
+# nobody compared the two copies. It sits beside this script both in the checkout
+# and in the flat ~/.sot-comm/bin the installer deploys, so one path resolves in
+# both. FATAL if it will not load: every other comm verb hard-sources it, and a
+# watcher that quietly polls the wrong file is the defect being fixed here.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=comm-lib.sh
+source "$SCRIPT_DIR/comm-lib.sh" 2>/dev/null || {
+    echo "comm-watch.sh: cannot load $SCRIPT_DIR/comm-lib.sh — refusing to watch, because the files to poll are derived there" >&2
+    exit 3
 }
 
-if _sot_comm_watch_is_windows; then
-    inbox="${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}/sot/fe-inbox.jsonl"
-    wake_filter='select(.from != $me and (.to // "") == $me) | "[relay] from \(.from): \(.text)"'
-else
-    # Honor $SOT_COMM_HOME (Codex review finding 8): a capsule with a
-    # non-default comm home must watch that home's inbox, not always
-    # $HOME/.sot-comm — comm-lib.sh's own COMM_HOME derives it the same way,
-    # but this script stays dependency-free (no `source comm-lib.sh`) so it
-    # mirrors just that one line rather than pulling the whole library in.
-    inbox="${SOT_COMM_HOME:-$HOME/.sot-comm}/inbox/$handle.jsonl"
-    # `.to // "?"` defaults a legacy line with NO .to key to non-empty -> wakes
-    # (those predate the to-stamp and are treated as directed).
-    wake_filter='select(.from != $me and ((.to // "?") != "")) | "[relay] from \(.from): \(.msg)"'
+# BOTH inboxes, one line count each. The per-handle file is where a directed send
+# lands on every platform ($INBOX_DIR honours $SOT_COMM_HOME — Codex review
+# finding 8 — because the library derives it, not a mirrored line). The frontend
+# inbox exists only on Windows, and sot_fe_inbox_path is the ONE place that
+# platform branch lives: off Windows it prints nothing and this watcher has a
+# single source, exactly as before.
+#
+# The filters differ because the files differ. Per-handle: `.to // "?"` defaults a
+# legacy line with NO .to key to non-empty -> wakes (those predate the to-stamp
+# and are treated as directed), and the message is under `.msg`. Frontend: `.to`
+# must equal our exact handle, and the message is under `.text`.
+#
+# Neither filter consults a read cursor, and this script must never write one: a
+# watcher wakes on frames that arrive AFTER it is armed, while the cursor means
+# "already shown to the model" — arming against the cursor would replay every
+# unread frame as a wake, and advancing it here would mark mail read that nobody
+# has seen.
+sources=("$INBOX_DIR/$handle.jsonl")
+filters=('select(.from != $me and ((.to // "?") != "")) | "[relay] from \(.from): \(.msg)"')
+fe_inbox="$(sot_fe_inbox_path)"
+if [ -n "$fe_inbox" ]; then
+    sources+=("$fe_inbox")
+    filters+=('select(.from != $me and (.to // "") == $me) | "[relay] from \(.from): \(.text)"')
 fi
 
-marker="${SOT_COMM_HOME:-$HOME/.sot-comm}/state/$handle.watch"
+marker="$COMM_HOME/state/$handle.watch"
 mkdir -p "$(dirname "$marker")" 2>/dev/null || true
 # Line 1: this watcher's pid (liveness). Line 2: the claude session that
 # armed it (identity, 2026-09-10) — a Monitor's watcher inherits the
@@ -101,27 +124,33 @@ printf '%s\n%s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-}" > "$marker" 2>/dev/null || 
 # would make the SHELL (doing the `<` redirect) print "No such file" to stderr
 # BEFORE wc's own `2>/dev/null` could suppress it — same redirect-noise class as
 # the comm-listen _inject fix. Test readability first; treat absent as 0 lines.
-linecount() { [ -r "$inbox" ] && wc -l < "$inbox" 2>/dev/null || echo 0; }
+linecount() { [ -r "$1" ] && wc -l < "$1" 2>/dev/null || echo 0; }
 
-n=$(linecount)
+# Where each source stood when this watcher was armed: everything already on disk
+# belongs to the session's past (comm-poll.sh catches that up), so only lines
+# appended from here on wake anybody.
+counts=()
+for src in "${sources[@]}"; do counts+=("$(linecount "$src")"); done
 while true; do
     # A Monitor whose harness expired still leaves this poll loop running
     # forever otherwise (45 orphans observed on one box) -- $PPID is fixed at
     # startup and is never live-updated by bash on reparenting, so this still
     # correctly reads as gone after the original parent exits.
     kill -0 "$PPID" 2>/dev/null || exit 0
-    c=$(linecount)
-    # File shrank/rotated/recreated — reset to 0 so the next compare re-reads the
-    # whole (now-smaller) file from line 1. Resetting to $c instead would skip any
-    # lines appended in the SAME poll cycle as the shrink (truncate + append before
-    # the next poll => c==n => nothing emitted). Reset-to-0 emits them.
-    [ "$c" -lt "$n" ] && n=0
-    if [ "$c" -gt "$n" ]; then
-        # --arg me passes the handle safely (no string-splice).
-        awk -v s="$n" 'NR>s' "$inbox" | while IFS= read -r l; do
-            printf '%s' "$l" | jq -rc --arg me "$handle" "$wake_filter" 2>/dev/null
-        done
-        n=$c
-    fi
+    for i in "${!sources[@]}"; do
+        c=$(linecount "${sources[$i]}")
+        # File shrank/rotated/recreated — reset to 0 so the next compare re-reads the
+        # whole (now-smaller) file from line 1. Resetting to $c instead would skip any
+        # lines appended in the SAME poll cycle as the shrink (truncate + append before
+        # the next poll => c==n => nothing emitted). Reset-to-0 emits them.
+        [ "$c" -lt "${counts[$i]}" ] && counts[$i]=0
+        if [ "$c" -gt "${counts[$i]}" ]; then
+            # --arg me passes the handle safely (no string-splice).
+            awk -v s="${counts[$i]}" 'NR>s' "${sources[$i]}" | while IFS= read -r l; do
+                printf '%s' "$l" | jq -rc --arg me "$handle" "${filters[$i]}" 2>/dev/null
+            done
+            counts[$i]=$c
+        fi
+    done
     sleep 2
 done
