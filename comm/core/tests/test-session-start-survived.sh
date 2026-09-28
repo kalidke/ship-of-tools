@@ -64,6 +64,12 @@ mkdir -p "$WORK/fakebin"
 FAKE_WATCHER="$WORK/fakebin/comm-watch.sh"
 printf '#!/bin/sh\nsleep 300\n' > "$FAKE_WATCHER"; chmod +x "$FAKE_WATCHER"
 sleeper() { "$FAKE_WATCHER" "$NAME" >/dev/null 2>&1 & local p=$!; SLEEPERS+=("$p"); echo "$p"; }
+# A PING watcher stand-in, for the cases that need survival to short-circuit
+# the bootstrap: only a live comm-wake does that now, because a Monitor is a
+# wake path nobody re-arms (see comm-session-start.sh's survived branch).
+FAKE_WAKE="$WORK/fakebin/comm-wake.sh"
+printf '#!/bin/sh\nsleep 300\n' > "$FAKE_WAKE"; chmod +x "$FAKE_WAKE"
+wake_sleeper() { "$FAKE_WAKE" "$NAME" >/dev/null 2>&1 & local p=$!; SLEEPERS+=("$p"); echo "$p"; }
 ctx() { CLAUDE_CODE_SESSION_ID="$1" bash "$SCRIPTS_DIR/comm-session-start.sh" --context 2>"$WORK/err" | head -n1; }
 
 PASS=0; FAIL=0
@@ -132,7 +138,9 @@ case_dead_bridge_is_reported_down_and_never_says_do_not_relisten() {
 boot() { CLAUDE_CODE_SESSION_ID="$1" timeout 30 bash "$SCRIPTS_DIR/comm-session-start.sh" 2>"$WORK/err" | head -n1; }
 
 case_bootstrap_restarts_a_dead_bridge() {
-    local p; p="$(sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
+    # A ping watcher, not a Monitor: this case is about the bridge on the
+    # SURVIVED path, and only a comm-wake survivor takes that path now.
+    local p; p="$(wake_sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
     sot_bridge_stop "$NAME" 2>/dev/null || true
     local out; out="$(boot sess-A)"
     [[ "$out" == "SURVIVED handle=$NAME listener=restarted" ]] || { echo "    got '$out' (err: $(head -c 300 "$WORK/err"))"; return 1; }
@@ -173,9 +181,14 @@ case_a_silent_daemon_still_arms_the_watcher() {
     SOT_COMM_SELF_FILE="$self" SOT_SOCKET="$WORK/no-such-daemon.sock" \
         CLAUDE_CODE_SESSION_ID=sess-WAKE \
         "$claude" -c 'bash "$1" >"$2" 2>&1' _ "$SCRIPTS_DIR/comm-session-start.sh" "$out"
-    # Whatever it decided, do not leave a watcher behind: it is a real one.
+    # Whatever it decided, do not leave a watcher behind: it is a REAL one,
+    # and a leaked one makes the NEXT case's did-it-come-up check pass on the
+    # wrong process. The marker names it; the sweep catches it even when the
+    # marker does not, and is scoped to this suite's handle so it can never
+    # match a watcher belonging to a real session.
     local w; w="$(sed -n '1p' "$MARKER" 2>/dev/null)"
     [[ "$w" =~ ^[0-9]+$ ]] && { kill "$w" 2>/dev/null; SLEEPERS+=("$w"); }
+    for w in $(pgrep -f "comm-[w]ake.sh $NAME" 2>/dev/null); do kill "$w" 2>/dev/null; done
     grep -q 'WAKE: comm-wake.sh' "$out" || {
         echo "    got: $(grep -o 'BOOTSTRAP-ARM.*' "$out" | head -n1)"
         grep -q 'wake: ' "$out" && echo "    reason: $(grep -o 'wake: .*' "$out" | head -n1)"
@@ -217,7 +230,54 @@ case_a_watcher_that_dies_at_startup_falls_back_loudly() {
 }
 
 check "a silent daemon still arms the watcher instead of printing MONITOR" case_a_silent_daemon_still_arms_the_watcher
+# DOOR THREE: a surviving MONITOR is not a surviving ping watcher. `_survived`
+# is broad by design -- a Monitor writes the same marker and must read as live
+# there -- so a live comm-watch.sh armed by THIS session satisfied it, the
+# bootstrap set WAKE_ACTIVE and printed "no Monitor needed", and the row's only
+# wake path was a Monitor nobody re-arms: deaf within the half hour the harness
+# gives it. This hub's own banner reports exactly that state, so a restart
+# there would have taken this path.
+#
+# The run must end with a ping watcher SPAWNED. The stand-in comm-wake.sh
+# records that it ran and stays alive long enough for the bootstrap's own
+# did-it-come-up check to find it.
+case_a_surviving_monitor_still_spawns_a_ping_watcher() {
+    local d="$WORK/survived-monitor" out="$WORK/survived-monitor.out" f mon
+    rm -rf "$d"; mkdir -p "$d/bin"
+    for f in "$SCRIPTS_DIR"/*; do ln -sf "$f" "$d/bin/$(basename "$f")"; done
+    rm -f "$d/bin/comm-wake.sh"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/spawned"\nsleep 5\n' "$d" > "$d/bin/comm-wake.sh"
+    chmod +x "$d/bin/comm-wake.sh"
+    : > "$d/spawned"
+    # A live Monitor for this handle, armed by the session we are about to be.
+    mon="$(sleeper)"
+    printf '%s\nsess-SURV\n' "$mon" > "$MARKER"
+    local self="$WORK/testhost__ws-surv.txt" claude="$WORK/fakebin/claude"
+    cp "$(command -v bash)" "$claude" 2>/dev/null || return 1
+    sot_write_self_file "$self" "$NAME" "$REPO" "$PROJECT_ROOT" || return 1
+    SOT_COMM_SELF_FILE="$self" SOT_SOCKET="$WORK/no-such-daemon.sock" \
+        CLAUDE_CODE_SESSION_ID=sess-SURV \
+        "$claude" -c 'bash "$1" >"$2" 2>&1' _ "$d/bin/comm-session-start.sh" "$out"
+    local spawned_ok=0 monitor_ok=0
+    [ -s "$d/spawned" ] && spawned_ok=1
+    # The Monitor is a live wake path, not an orphan: read its liveness BEFORE
+    # this case's own cleanup kills it.
+    kill -0 "$mon" 2>/dev/null && monitor_ok=1
+    for f in $(pgrep -f "$d/bin/comm-[w]ake.sh" 2>/dev/null); do kill "$f" 2>/dev/null; done
+    kill "$mon" 2>/dev/null || true
+    [ "$spawned_ok" = 1 ] || {
+        echo "    no ping watcher was spawned beside the surviving Monitor"
+        echo "    got: $(grep -o 'BOOTSTRAP-ARM.*' "$out" | head -n1)"
+        return 1
+    }
+    grep -q 'WAKE: comm-wake.sh' "$out" || { echo "    the bootstrap did not report WAKE"; return 1; }
+    ! grep -q 'WAKE FAILED' "$out" || { echo "    the spawned watcher was not seen by the arm check"; return 1; }
+    [ "$monitor_ok" = 1 ] || { echo "    the surviving Monitor was reaped"; return 1; }
+    return 0
+}
+
 check "a watcher that dies at startup falls back loudly" case_a_watcher_that_dies_at_startup_falls_back_loudly
+check "a surviving Monitor still spawns a ping watcher" case_a_surviving_monitor_still_spawns_a_ping_watcher
 check "orphan armed by another session: NOT SURVIVED and reaped" case_orphan_from_another_session_is_not_survived_and_reaped
 check "legacy marker (pid only) keeps the liveness-only answer" case_legacy_marker_without_session_line_keeps_liveness_answer
 check "dead pid is not survived" case_dead_pid_is_not_survived

@@ -211,6 +211,35 @@ on msys after it fails. The bridge loop is deliberately NOT routed through it:
 there is no bridge on Windows at all (ADR 0042 amendment decision 5), so that
 loop only ever runs where `kill -0` is correct.
 
+### After the bootstrap, a row has a ping watcher or says it does not
+
+The invariant, because three separate doors were each found violating it: a
+capsule row running a Claude session ends its bootstrap with a live
+`comm-wake` ping watcher, or with a loud `WAKE FAILED` line and the `MONITOR:`
+command. Nothing in between, and no state in which the row claims a wake path
+it does not have.
+
+The doors are the survived claim, the start guard (its marker branch and its
+process scan) and the spawn's own check, and all four now ask the same narrow
+question: is there a live `comm-wake.sh` for this handle. Narrow, because the
+marker is SHARED — a harness Monitor and `codex-watch.sh` write it too. A
+surviving MONITOR used to satisfy every one of those tests, which announced
+"no Monitor needed" over a row whose only wake path was a Monitor nobody
+re-arms: deaf within half an hour. A Monitor running beside a ping watcher
+costs a doubled notice; refusing to start one costs the session, so in doubt
+the answer is to start. The Monitor is never reaped on that path — it is a
+live wake path, not an orphan.
+
+The broad test stays where the marker's other consumers need it
+(`sot_watcher_pid_for`): a Monitor's marker must read as live there, or the
+wipe hook would judge a healthy Monitor stale and remove it.
+
+Spawning is not arming, either. The bootstrap used to claim WAKE on the line
+after `nohup`, so a watcher that died at startup — a `set -u` slip, a box with
+no `jq` — was announced as armed. It now waits up to one second, exiting as
+soon as a live ping watcher for the handle exists (its own child, or the one
+that made the child refuse), and prints the loud failure otherwise.
+
 ### One watcher per handle, enforced against the process table
 
 Two ping watchers for one handle ran side by side for seventeen hours, and the

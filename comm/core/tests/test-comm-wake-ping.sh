@@ -1272,24 +1272,23 @@ EOF
 }
 
 check "two starts at once leave exactly one watcher and one refusal" case_two_starts_leave_exactly_one_watcher
-# A MONITOR IS NOT A SECOND PING WATCHER. The guard exists to stop two
-# comm-wake processes; a harness Monitor (comm-watch.sh) running beside one
-# costs a doubled notice, while refusing to start costs the session its wake
-# path entirely -- and nothing re-arms a Monitor after this release, so that
-# row goes deaf within the half hour the harness gives it. Measured on a
-# Windows box: the guard counted a live comm-watch.sh as the handle's watcher.
+# A MONITOR IS NOT A SECOND PING WATCHER, and the guard has TWO doors to it.
+# The refusal exists to stop two comm-wake processes; a harness Monitor
+# (comm-watch.sh) running beside one costs a doubled notice, while refusing
+# costs the session its wake path entirely -- nothing re-arms a Monitor after
+# this release, so that row goes deaf within the half hour the harness gives
+# it. Measured on a Windows box: the guard counted a live comm-watch.sh as the
+# handle's watcher.
 #
-# BOTH doors are tested here, because the marker is SHARED: the Monitor is
-# running AND its pid is in the marker, which is exactly the state that made a
-# broad read refuse through the other door.
-case_a_live_monitor_does_not_refuse_a_ping_start() {
-    local d="$WORK/monitor-coexists"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
+# ONE CASE PER DOOR. They are different code paths that previously ended the
+# same way -- no ping watcher -- so a test through one proves nothing about
+# the other: the marker branch is consulted first and would refuse before the
+# scan ever ran.
+_monitor_fixture() {
+    local d="$1"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
     : > "$d/inbox/watchee.jsonl"
     printf '#!/usr/bin/env bash\ncommand sleep 30\n' > "$d/bin/comm-watch.sh"
     chmod +x "$d/bin/comm-watch.sh"
-    bash "$d/bin/comm-watch.sh" watchee >/dev/null 2>&1 &
-    local mon=$!
-    printf '%s\n%s\n' "$mon" sess-MONITOR > "$d/state/watchee.watch"
     cat > "$d/bin/comm-wake.sh" <<EOF
 source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
@@ -1302,23 +1301,46 @@ sleep() { printf '%s\n' "\$\$" >> "$d/started"; turns=\$((turns + 1)); [ "\$turn
 _comm_wake_main watchee --deliver ping --owner \$\$
 EOF
     : > "$d/started"
-    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1
-    local rc=$?
-    pkill -P "$mon" 2>/dev/null || true
-    kill "$mon" 2>/dev/null || true
+}
+
+# DOOR 1, the process-table scan: the Monitor is running and NOTHING names it,
+# so the scan is the only thing that can see it -- and must not refuse on it.
+case_a_live_monitor_process_does_not_refuse_a_ping_start() {
+    local d="$WORK/monitor-scan" mon rc
+    _monitor_fixture "$d"
+    bash "$d/bin/comm-watch.sh" watchee >/dev/null 2>&1 & mon=$!
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1; rc=$?
+    pkill -P "$mon" 2>/dev/null || true; kill "$mon" 2>/dev/null || true
+    [ "$rc" -eq 0 ] || { echo "  the ping start exited $rc beside a live Monitor process, want 0"; return 1; }
+    [ -s "$d/started" ] || { echo "  the ping watcher never reached its poll loop"; return 1; }
+    return 0
+}
+
+# DOOR 2, the marker branch: the Monitor holds the marker, which all three
+# watcher scripts write. This is checked BEFORE the scan, so it is the door
+# that refuses first and the one narrowing the scan alone would have missed.
+case_a_monitor_holding_the_marker_does_not_refuse_a_ping_start() {
+    local d="$WORK/monitor-marker" mon rc
+    _monitor_fixture "$d"
+    bash "$d/bin/comm-watch.sh" watchee >/dev/null 2>&1 & mon=$!
+    printf '%s\n%s\n' "$mon" sess-MONITOR > "$d/state/watchee.watch"
+    bash "$d/bin/comm-wake.sh" watchee >/dev/null 2>&1; rc=$?
+    pkill -P "$mon" 2>/dev/null || true; kill "$mon" 2>/dev/null || true
     [ "$rc" -eq 0 ] || {
-        echo "  the ping start exited $rc beside a live Monitor, want 0"
+        echo "  the ping start exited $rc against a Monitor's marker, want 0"
         sed 's/^/    /' "$d/state/comm-wake-watchee.log" 2>/dev/null | head -n 2
         return 1
     }
     [ -s "$d/started" ] || { echo "  the ping watcher never reached its poll loop"; return 1; }
-    ! grep -q 'refusing to start a second' "$d/state/comm-wake-watchee.log" 2>/dev/null \
-        || { echo "  a Monitor was treated as a second ping watcher"; return 1; }
+    # And it takes the marker over: this is the wake path now.
+    [ "$(sed -n '1p' "$d/state/watchee.watch")" != "$mon" ] \
+        || { echo "  the ping watcher left the Monitor's marker in place"; return 1; }
     return 0
 }
 
 check "a live watcher no marker names still refuses a second" case_a_live_watcher_no_marker_names_still_refuses
-check "a live Monitor does not refuse a ping start" case_a_live_monitor_does_not_refuse_a_ping_start
+check "a live Monitor process does not refuse a ping start" case_a_live_monitor_process_does_not_refuse_a_ping_start
+check "a Monitor holding the marker does not refuse a ping start" case_a_monitor_holding_the_marker_does_not_refuse_a_ping_start
 # THE WINDOWS TIER, on a Linux leg. Everything about it except the PowerShell
 # program itself is shell, and all of that is testable here with a sandboxed
 # PATH: a fake `ps -W` carrying the REAL column layout (PID PPID PGID WINPID
