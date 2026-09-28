@@ -360,9 +360,15 @@ pub async fn handle_version_query(
     // connection has since closed or been reaped, read at the SAME
     // convention `Instant::now()` — `disconnected` lives outside
     // `by_conn`, so this needs its own read regardless of `snap` above.
+    // Review blocker 1: `name` identifies a BOX, not a process (a second
+    // frontend on the same box exiting still leaves that box's `name`
+    // attached elsewhere), so an identity ALSO held by a still-connected
+    // row right now must not be reported disconnected — filtered against
+    // THIS SAME `snap`, never a second registry read.
     let disconnected = clients
         .disconnected_since(std::time::Instant::now())
         .into_iter()
+        .filter(|(identity, _)| !snap.clients.iter().any(|c| c.name.as_deref() == Some(identity.as_str())))
         .map(|(identity, age)| sot_protocol::DisconnectedBox {
             identity,
             since_s: age.as_secs(),
@@ -6208,7 +6214,7 @@ pub async fn handle_ping(req_id: u64) -> Result<HandlerOutput> {
 
 #[cfg(test)]
 mod fe_sessions_tests {
-    use super::handle_fe_sessions;
+    use super::{handle_fe_sessions, handle_version_query};
     use crate::clients::Clients;
 
     fn sessions_json() -> serde_json::Value {
@@ -6247,6 +6253,61 @@ mod fe_sessions_tests {
         );
         let snap = clients.snapshot_with_active();
         assert_eq!(snap.clients[0].sessions, None, "refused, not stored");
+    }
+
+    /// Review blocker 1 (cut for rc9.8): `name` identifies a BOX, not a
+    /// process — a SECOND frontend on the same box (same declared name,
+    /// `instance` is what tells them apart, gpu.rs) can exit and leave a
+    /// stale `disconnected` entry for an identity a still-live connection
+    /// ALSO holds right now. That identity must list as attached, never
+    /// both attached and gone.
+    #[tokio::test]
+    async fn an_attached_box_with_a_stale_disconnected_entry_lists_sessions_never_not_connected() {
+        let clients = Clients::new();
+        let g1 = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.declare_sessions(
+            g1.serial(),
+            vec![sot_protocol::DeclaredSession {
+                handle: "agent-1@host-a".into(),
+                state: "working".into(),
+                summary: String::new(),
+                status_at: String::new(),
+            }],
+        );
+
+        // A second process on the SAME box, also declared, then gone —
+        // this is what leaves the stale `disconnected` entry behind.
+        let g2 = clients.register("c-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.declare_sessions(
+            g2.serial(),
+            vec![sot_protocol::DeclaredSession {
+                handle: "agent-2@host-a".into(),
+                state: "idle".into(),
+                summary: String::new(),
+                status_at: String::new(),
+            }],
+        );
+        drop(g2);
+
+        let (topo_tx, _rx) = tokio::sync::broadcast::channel(1);
+        let topology = crate::topology_store::TopologyStore::new(
+            std::env::temp_dir().join(format!("sot-fe-sessions-blocker1-test-{}", std::process::id())),
+        );
+        let out = handle_version_query(1, &clients, &topology, &topo_tx)
+            .await
+            .expect("handler ok");
+        let payload = &out[0].0.payload;
+
+        let disconnected = payload.get("disconnected").and_then(|v| v.as_array());
+        assert!(
+            disconnected.map(|a| a.is_empty()).unwrap_or(true),
+            "fe@host-a still has a live connection (g1), so it must not be reported disconnected: {payload}"
+        );
+        let clients_arr = payload.get("clients").and_then(|v| v.as_array()).expect("clients array");
+        assert!(
+            clients_arr.iter().any(|c| c.get("sessions").is_some_and(|s| !s.is_null())),
+            "the still-attached connection must keep listing its own sessions: {payload}"
+        );
     }
 }
 

@@ -997,6 +997,8 @@ send_version() {
                       + (if $x.active then "active" else "idle" end) ),
                   ( if ($x.sessions == null) then
                       "nosess"
+                    elif ($x.sessions | length) == 0 then
+                      "emptysess"
                     else
                       ($x.sessions[] | "sess\t" + .handle + "\t" + .state + "\t" + .summary + "\t" + .status_at)
                     end
@@ -1014,6 +1016,16 @@ send_version() {
                     row) printf '%-20s %-28s %s\n' "$a" "$b" "$c" ;;
                     nosess)
                         echo "  (declares no sessions — older frontend, or no daemon on that box)"
+                        ;;
+                    emptysess)
+                        # Review blocker 2 (cut for rc9.8): `.sessions[]`
+                        # over an empty (but non-null) array yields NO
+                        # jq output at all, so a box that declared and
+                        # has nothing to report printed nothing here —
+                        # indistinguishable from before this feature
+                        # existed, and the deleted comm-list.sh footer
+                        # made that silence look intentional.
+                        echo "  (no sessions)"
                         ;;
                     sess)
                         # a=handle b=state c=summary d=status_at. `status_at`

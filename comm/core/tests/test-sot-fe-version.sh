@@ -458,6 +458,23 @@ case_a_declared_empty_state_prints_no_state_recorded_not_idle() {
     return 0
 }
 
+case_declared_empty_sessions_prints_no_sessions_not_nothing() {
+    # Review blocker 2 (cut for rc9.8): `.sessions[]` over an empty (but
+    # non-null) array yields NO jq output at all, so a box that declared
+    # and has nothing to report printed nothing -- indistinguishable from
+    # before this feature existed. The brief rules `(no sessions)`.
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[{"client_id":"fe-a","app_version":"0.6.0-dev+abc1234","protocol":1,"host":"host-a","role":"fe","name":"fe@host-a","active":true,"sessions":[]}]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    start_stub_daemon
+    run_version
+    stop_stub_daemon
+
+    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    contains "$VER_OUT" "(no sessions)" \
+        || { echo "  a declared-empty box must print '(no sessions)', not nothing: $VER_OUT"; return 1; }
+    return 0
+}
+
 # --- run ---------------------------------------------------------------
 
 check "a matching pair prints daemon/client rows and the row's phase verbatim, no verdict" case_matching_pair_prints_the_phase_verbatim
@@ -478,6 +495,7 @@ check "the daemon's uptime prints in the build column"                          
 check "a daemon predating the uptime field prints no 'up' suffix"                          case_daemon_predating_uptime_field_prints_no_up_suffix
 check "a disconnected box prints its own fe line with no sessions beneath it"               case_a_disconnected_box_prints_its_own_fe_line_with_no_sessions_beneath_it
 check "a declared empty state prints 'no state recorded', never degraded to [idle]"        case_a_declared_empty_state_prints_no_state_recorded_not_idle
+check "a declared-empty sessions list prints '(no sessions)', not nothing"                 case_declared_empty_sessions_prints_no_sessions_not_nothing
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"
