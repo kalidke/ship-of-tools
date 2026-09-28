@@ -239,6 +239,59 @@ twice and wakes the session twice. Items 9–14 close that.
 
 Nothing about the transport changes.
 
+### Amendment: a receipt only where a reader exists
+
+**A receipt must mean some reader will see the frame. A frontend must not claim
+a filing into a file no process on its operating system reads.** Off Windows no
+process on the box ever opens `fe-inbox.jsonl` — the platform test belongs to
+the readers, and `sot_fe_inbox_path` in `comm/core/scripts/comm-lib.sh` returns
+success with empty output there, so every shell reader routed through it
+resolves an empty path; the only Rust read is the `fe_down` baseline, which is
+itself Windows-only. A claim from such a box was therefore a false success: the
+sender was told `filed -> @h` for a message nothing would ever read.
+
+**The append is deliberately not gated; only the claim is.** An append promises
+nobody anything, a claim does, and the append remains the only per-process
+record that an inbound relayed frame reached the box at all — the message arm
+logs nothing on success. Gating it too would additionally confine the append,
+the lock and the whole first-writer-wins arbitration above to Windows, so one
+leg of the CI matrix would exercise the delivery path instead of three, and a
+lock-and-dedupe path split by `#[cfg]` is exactly where platform drift starts.
+The two costs of the ungated append — the file grows with no reader, and on a
+shared home several hosts' frontends append to one path under a lock — are
+arguments about whether a frontend should file at all off Windows. That is a
+delivery-architecture question, not an honesty question, and it is left open
+here.
+
+**The gate is a composition, not a branch inside the decision table.** The pure
+function that reads the payload and the frontend's own-host rows keeps its whole
+decision table and stays ungated; the caller the message arm uses applies the
+platform test first and then defers to it. Folding the gate into the pure
+function would make every negative case in its table pass off Windows for the
+platform's reason instead of its own, leaving the id rule, the broadcast rule
+and the not-in-the-set rule vacuous on the two legs that run most often. The
+platform test is `cfg!(windows)`, not `#[cfg(windows)]`, for the same reason:
+both arms compile everywhere, so one test asserts the correct answer on each leg
+of the matrix.
+
+**Exactly one route class changes verdict, from a lie to the truth:** a target
+handle that is a row on a non-Windows frontend's own host, with no live relay
+bridge, addressed from a box that cannot name it in its own registry. Its
+verdict moves from `filed` to `NOT CONFIRMED`. **No class loses delivery.**
+Cross-host claims were already impossible — a frontend resolves only rows of a
+daemon that declared its own host — and where a bridge exists the bridge both
+appends to the per-handle inbox and claims. In the gated class nothing was
+arriving anyway.
+
+**The sender's two negative answers are different branches, and this one lands
+on the later of them.** `no such handle` is the empty-roster branch;
+`NOT CONFIRMED: … nobody claimed it within 5s` is the branch where the roster
+was non-empty, the ack carried an id, and no receipt arrived. The gated class
+reaches the second because `receivers_for` in the backend counts any connection
+whose `role` is `fe` as a receiver for every directed send, so the frontend's
+own attachment keeps the roster non-empty. That rule is pinned by its own test
+on every leg and is unchanged here.
+
 ## Consequences
 
 Verdicts, in the order the first that applies wins:

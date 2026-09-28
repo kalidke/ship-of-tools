@@ -19702,8 +19702,28 @@ fn own_host_rows<'a>(
         .map(|(_, rows)| rows.as_slice())
 }
 
-/// This frontend's claim about ONE relayed frame it just appended (ADR
-/// 0048): `Some(req)` = "I appended this", `None` = say nothing at all.
+/// Whether any process on THIS operating system reads the frontend inbox.
+///
+/// Windows only, and the platform test belongs to the READERS, not here:
+/// `sot_fe_inbox_path` in `comm/core/scripts/comm-lib.sh` is
+/// `_sot_is_windows || return 0` — success with EMPTY output — so every
+/// shell reader that resolves the path through it (the Claude turn-end
+/// hook, `comm-poll.sh`, `comm-watch.sh`'s Monitor) reads nothing off
+/// Windows, and the readers that build the path by hand sit inside Windows
+/// branches. The only Rust read of [`fe_inbox_path`] is the `fe_down`
+/// baseline in `run`, which is itself `#[cfg(windows)]`.
+///
+/// `cfg!`, not `#[cfg]`, deliberately: both arms compile on every platform,
+/// so ONE test asserts the right answer on each leg of the CI matrix
+/// instead of a Windows-only test that the two fastest legs never run.
+const fn fe_inbox_has_a_local_reader() -> bool {
+    cfg!(windows)
+}
+
+/// The payload-and-rows half of this frontend's claim about ONE relayed
+/// frame it just appended (ADR 0048): `Some(req)` = "I appended this",
+/// `None` = say nothing at all. The platform half — whether any process on
+/// this operating system reads the file at all — is [`receipt_for`]'s.
 /// Pure over its arguments — no `&self`, no wire — because the whole value
 /// of a receipt is that it is checkable, and a gate no test can reach is
 /// how `fe.files_for` shipped a set builder with no caller.
@@ -19723,7 +19743,7 @@ fn own_host_rows<'a>(
 ///
 /// The frame is appended either way (see the call site). This function
 /// decides what may be CLAIMED, never what is filed.
-fn receipt_for(
+fn receipt_from_rows(
     payload: &serde_json::Value,
     own_host_rows: Option<&[crate::transport::WorkspaceInfo]>,
 ) -> Option<sot_protocol::AgentFiledReq> {
@@ -19740,6 +19760,34 @@ fn receipt_for(
         return None;
     }
     Some(sot_protocol::AgentFiledReq { id: id.to_string() })
+}
+
+/// What this frontend may claim for one inbound frame: the platform
+/// decision AND the payload decision, in that order. The `agent.message`
+/// arm of `drain_events` calls this, and both delivery arms — the filer's
+/// [`file_one`] and [`State::file_inline`] — carry whatever it returns.
+///
+/// **A receipt must mean some reader will see the frame.** Off Windows the
+/// append still happens (it promises nobody anything), but no process on
+/// the box opens that file — see [`fe_inbox_has_a_local_reader`] — so a
+/// claim here would be a false success: the sender prints `filed -> @h`
+/// for a message nothing will ever read. Saying nothing instead makes the
+/// sender's own verdict `NOT CONFIRMED`, which is the true one; the
+/// frontend's own attachment keeps the roster non-empty, so the answer is
+/// never the different one, `no such handle`.
+///
+/// Composed rather than folded into [`receipt_from_rows`] so that
+/// function's decision table stays provable on every platform: with the
+/// gate inside it, every negative case would pass off Windows for the
+/// platform's reason instead of its own.
+fn receipt_for(
+    payload: &serde_json::Value,
+    own_host_rows: Option<&[crate::transport::WorkspaceInfo]>,
+) -> Option<sot_protocol::AgentFiledReq> {
+    if !fe_inbox_has_a_local_reader() {
+        return None;
+    }
+    receipt_from_rows(payload, own_host_rows)
 }
 
 /// Whether `window` — a tail of the inbox file — already carries the frame
@@ -27616,9 +27664,10 @@ mod tests {
     }
 
     #[test]
-    fn receipt_for_claims_only_from_a_set_it_knows() {
-        // ADR 0048, the whole decision table of `receipt_for`, in the
-        // order the function applies it.
+    fn receipt_from_rows_claims_only_from_a_set_it_knows() {
+        // ADR 0048, the whole decision table of `receipt_from_rows`, in
+        // the order the function applies it. The platform half of the claim
+        // is `receipt_for_says_nothing_where_no_process_reads_the_inbox`.
         let row = crate::transport::WorkspaceInfo {
             agent_handle: "peer-otherbox".to_string(),
             ..ws_info("peer", "sot-be-peer")
@@ -27633,24 +27682,51 @@ mod tests {
         };
 
         // In the set: claim it, and the claim is one field.
-        let req = receipt_for(&frame("peer-otherbox", Some("x-1")), Some(&rows))
+        let req = receipt_from_rows(&frame("peer-otherbox", Some("x-1")), Some(&rows))
             .expect("a handle this frontend files for must be claimed");
         assert_eq!(req.id, "x-1");
 
         // Absent from a known set: say NOTHING. A denial would be a global
         // claim from local knowledge, and every other attached frontend
         // would make the same one about a handle it does not host.
-        assert!(receipt_for(&frame("typo-otherbox", Some("x-2")), Some(&rows)).is_none());
+        assert!(receipt_from_rows(&frame("typo-otherbox", Some("x-2")), Some(&rows)).is_none());
 
         // No id: the hub predates receipts, so there is nothing to
         // attribute a claim to.
-        assert!(receipt_for(&frame("peer-otherbox", None), Some(&rows)).is_none());
-        assert!(receipt_for(&frame("peer-otherbox", Some("")), Some(&rows)).is_none());
+        assert!(receipt_from_rows(&frame("peer-otherbox", None), Some(&rows)).is_none());
+        assert!(receipt_from_rows(&frame("peer-otherbox", Some("")), Some(&rows)).is_none());
         // Broadcast: nobody is the addressee.
-        assert!(receipt_for(&frame("", Some("x-3")), Some(&rows)).is_none());
+        assert!(receipt_from_rows(&frame("", Some("x-3")), Some(&rows)).is_none());
         // No own-host list at all, and an empty one: no basis either way.
-        assert!(receipt_for(&frame("peer-otherbox", Some("x-4")), None).is_none());
-        assert!(receipt_for(&frame("peer-otherbox", Some("x-5")), Some(&[])).is_none());
+        assert!(receipt_from_rows(&frame("peer-otherbox", Some("x-4")), None).is_none());
+        assert!(receipt_from_rows(&frame("peer-otherbox", Some("x-5")), Some(&[])).is_none());
+    }
+
+    #[test]
+    fn receipt_for_says_nothing_where_no_process_reads_the_inbox() {
+        // The platform half of the claim decision, and ONLY it: every
+        // payload-level condition `receipt_from_rows` tests is satisfied here
+        // — an id, a non-empty `to`, and an own-host row declaring exactly
+        // that handle — so the answer can turn on nothing but the platform.
+        //
+        // Against the tree before the gate this FAILS on Linux and macOS,
+        // where `receipt_for` returned `Some` and the sender printed `filed`
+        // for a frame no process on the box would ever read. On Windows it
+        // passes before and after, which is the point: the gate must not
+        // silence the platform that DOES read the file.
+        let rows = vec![crate::transport::WorkspaceInfo {
+            agent_handle: "peer-otherbox".to_string(),
+            ..ws_info("peer", "sot-be-peer")
+        }];
+        let frame = serde_json::json!({
+            "from": "a", "to": "peer-otherbox", "text": "hi", "id": "x-1", "ts": 1.0
+        });
+        assert_eq!(
+            receipt_for(&frame, Some(&rows)).is_some(),
+            cfg!(windows),
+            "a frontend may claim a filing exactly where a process on this OS \
+             reads fe-inbox.jsonl; a claim anywhere else is a false success"
+        );
     }
 
     /// A throwaway inbox path under the OS temp dir, unique per test by
