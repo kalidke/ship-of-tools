@@ -6,6 +6,15 @@ function Fmt([int64]$n){ if($n -ge 1000){ "$([math]::Floor($n/1000))k" } else { 
 $j = $null; try { $j = [Console]::In.ReadToEnd() | ConvertFrom-Json } catch {}
 $model = if ($j.model.display_name) { [string]$j.model.display_name } else { 'model?' }
 $sid = [string]$j.session_id; $sess = if ($sid.Length -ge 8) { $sid.Substring(0,8) } else { $sid }
+# Which Claude account this session runs under - the config dir's basename
+# (one per Claude account). Sessions for different accounts can share one home
+# and nothing else on screen tells them apart. The transcript path carries the
+# same name, so it covers a launcher that does not export the variable.
+$acct = ''
+if ($env:CLAUDE_CONFIG_DIR) { $acct = Split-Path $env:CLAUDE_CONFIG_DIR -Leaf }
+if (-not $acct -and $j.transcript_path) {
+    if ([string]$j.transcript_path -match '[\\/]\.claude-auth[\\/]([^\\/]+)[\\/]') { $acct = $Matches[1] }
+}
 $effort = $j.effort.level
 $think = if ($j.thinking.enabled -ne $true) { 'off' } elseif ($effort) { [string]$effort } else { 'on' }
 $thinkSeg = if ($think -eq 'off') { Col '90' "think:$think" } else { Col '35' "think:$think" }
@@ -17,7 +26,8 @@ if ($branch) { $repo = "$(Split-Path $cur -Leaf):$branch"; $unc = @(git status -
 else { $repo = 'no-git'; $unc = 0 }
 Pop-Location 2>$null
 $uncCol = if ($unc -eq 0) { '32' } else { '31' }
-$l1 = @((Col '34' $model) + ' ' + (Col '90' "[$sess]"), $thinkSeg)
+$acctSeg = if ($acct) { ' ' + (Col '36' $acct) } else { '' }
+$l1 = @((Col '34' $model) + ' ' + (Col '90' "[$sess]") + $acctSeg, $thinkSeg)
 if ($ver) { $l1 += $ver }
 $l1 += (Col '38;5;208' $repo); $l1 += (Col $uncCol "$unc uncommitted")
 $inT = [int64]$j.context_window.total_input_tokens; $outT = [int64]$j.context_window.total_output_tokens

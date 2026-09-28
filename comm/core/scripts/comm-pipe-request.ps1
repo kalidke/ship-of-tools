@@ -97,6 +97,37 @@ function Read-SotPipeLine {
     return [pscustomobject]@{ TimedOut = $false; Line = $task.Result }
 }
 
+# The pipe itself is read and written as UTF-8 (below), but the lines this
+# script hands BACK go to stdout, and stdout is encoded with
+# [Console]::OutputEncoding -- the console's codepage unless something says
+# otherwise. A daemon reply is JSON carrying whatever is on a pane's screen,
+# and a character with NO mapping in that codepage becomes 0x1A, a raw
+# control character that makes the line invalid JSON. The caller's `jq -e .`
+# then rejects the whole line ("control characters from U+0000 through U+001F
+# must be escaped") and drops it. No reply ever matches on op, the request
+# times out, and the caller reports -- honestly -- that the daemon did not
+# answer. The daemon answered correctly every time.
+#
+# It fails INTERMITTENTLY, gated on what the pane happens to be showing. On a
+# cp437 console the box-drawing runs map to 0xC4/0xB3 and the middot to 0xFA,
+# so those survive and a broken client can look healthy for a long stretch;
+# the capture that finally exposed this was spoiled by one right arrow
+# (U+2192) in the pane's own text. Measured with stdout redirected to a file,
+# no console attached: 2149 invalid bytes against 2610 valid ones, five runs
+# out of five.
+#
+# The quieter half is worse than the parse failure. cp437 maps the prompt
+# glyph U+276F to 0x3F, a plain question mark -- valid JSON, silently wrong
+# content. Any wake gate that compares a pane line to that glyph for EQUALITY
+# can therefore never match on this platform, so a watcher sits correctly
+# armed, behind a probe that passed, and never types. Fixing the encoding is a
+# PREREQUISITE for such a gate, not a repair of it, and the two currently live
+# on different branches.
+#
+# Guarded: a host with no real console can refuse the assignment, and losing
+# the whole transport over that would be worse than the bug.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+
 $client = New-Object System.IO.Pipes.NamedPipeClientStream(
     '.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut)
 try {
