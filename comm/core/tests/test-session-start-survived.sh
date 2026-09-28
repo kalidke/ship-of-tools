@@ -176,6 +176,32 @@ check "dead pid is not survived" case_dead_pid_is_not_survived
 check "no session id in the environment: liveness alone decides" case_no_session_id_in_env_trusts_liveness
 check "a live bridge reads listener=up and keeps the do-not-re-listen line" case_live_bridge_is_reported_up_and_keeps_the_do_not_relisten_line
 check "a dead bridge reads listener=down and is never told not to re-listen" case_dead_bridge_is_reported_down_and_never_says_do_not_relisten
+# THE BRIDGE TETHER, both directions, because the owner check is the one that
+# can take a box's comms down. The loop runs in a bare `bash -c` with no
+# library sourced, so an owner check that calls a function which does not
+# exist there takes the failure branch every time: the loop would kill its
+# relay child, drop the pidfile and exit within about two seconds of starting,
+# and the named receiver the daemon counts for that box would be gone. That is
+# a worse outcome than the deafness this lane is fixing, so it is measured,
+# not argued -- a live owner must keep its bridge, and a dead one must not.
+case_a_bridge_keeps_a_live_owner_and_follows_a_dead_one() {
+    local owner tries=0
+    owner="$(sleeper)"
+    sot_bridge_stop "$NAME" 2>/dev/null || true
+    sot_bridge_start "$NAME" "$WORK/fake-relay.sh" "$owner"
+    sleep 3
+    sot_bridge_running_for "$NAME" || { echo "    the bridge died while its owner was alive"; return 1; }
+    kill "$owner" 2>/dev/null
+    while [ "$tries" -lt 50 ] && sot_bridge_running_for "$NAME"; do sleep 0.2; tries=$((tries + 1)); done
+    if sot_bridge_running_for "$NAME"; then
+        echo "    the bridge outlived its owner"
+        sot_bridge_stop "$NAME"
+        return 1
+    fi
+    return 0
+}
+
 check "the bootstrap path restarts a dead bridge" case_bootstrap_restarts_a_dead_bridge
+check "a bridge keeps a live owner and follows a dead one" case_a_bridge_keeps_a_live_owner_and_follows_a_dead_one
 check "two racing starts leave at most one bridge" case_two_racing_starts_leave_one_bridge
 echo; echo "$PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
