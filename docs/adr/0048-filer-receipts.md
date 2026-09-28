@@ -126,11 +126,11 @@ frame twice, and the reader — a line-offset cursor with no dedupe — shows it
 twice and wakes the session twice. Items 9–14 close that.
 
 9. **First-writer-wins is decided at the inbox file, before the write.** The
-   frontend takes an exclusive lock on the inbox file, reads a bounded window
-   back from its end, and appends only when no line in that window already
-   carries the same `(id, to)` pair. The lock is released immediately after.
-   This is arbitration placed where it can actually gate a write: locally,
-   synchronously, with no peer involved.
+   frontend takes an exclusive lock on the inbox's sidecar token file
+   (decision 15), reads a bounded window back from its end, and appends only
+   when no line in that window already carries the same `(id, to)` pair. The
+   lock is released immediately after. This is arbitration placed where it can
+   actually gate a write: locally, synchronously, with no peer involved.
 
    The key is `(id, to)` — decision 1's sender-minted opaque id, plus the
    frame's addressee, which is the target row's handle. Both are already in the
@@ -236,6 +236,81 @@ twice and wakes the session twice. Items 9–14 close that.
     and there the file has no reader at all, so a missed exclusion costs nothing
     — which is why **a reader for `fe-inbox.jsonl` may not be introduced on such
     a platform without re-opening this question.**
+
+15. **The lock is a token file, never the data file.** The arbitration of
+    decision 9 is taken on `fe-inbox.lock`, a zero-length sidecar beside
+    `fe-inbox.jsonl` in the same state dir. The inbox itself is never locked by
+    anything.
+
+    This is not a refinement; decision 9's stated failure direction was
+    unreachable without it. `File::try_lock` is `flock` on unix and `LockFileEx`
+    on Windows. The unix arm is advisory, so a writer that cannot take the lock
+    can still append — "fail open" as written. The Windows arm is mandatory over
+    the locked range, so the same writer's append is REFUSED and the frame is
+    lost, on the only platform where a process reads this file at all. The bug
+    was visible as a CI failure on the Windows leg alone, in the one test that
+    asserts the fail-open rule directly.
+
+    Moving the lock to a token restores one rule for both platforms rather than
+    adding a second one for Windows: the arbitrated writer excludes exactly what
+    it excluded before, while the data file stays writable by the fail-open
+    append and readable by the shell readers and the `fe_down` baseline read —
+    both of which a mandatory lock on the data file also refuses. The
+    bounded-retry deadline is unchanged and no new constant is introduced: with
+    the append no longer refusable, a longer wait could only trade latency
+    against the sender's verdict window for a duplicate that decision 9 already
+    accepts.
+
+    **No durable spool is introduced.** A spool exists to survive a refused
+    write; this removes the refusal, and it does so without a second file for
+    four readers to learn, a second cursor per handle, or a cross-file ordering
+    and dedupe rule. What remains is an append that can fail only for a real IO
+    reason, on which no claim is sent and the sender correctly reads
+    `NOT CONFIRMED`.
+
+    **The file's other writer takes no token, and that is the rule rather than
+    an exception to it.** The `fe_down` marker appends a line and reads nothing,
+    so it has nothing to arbitrate; a token there would serve symmetry rather
+    than an invariant, and would put a bounded lock wait back on the UI thread
+    that decision 14 exists to keep clear. Its exclusion before this decision
+    was an accident of the same bug: a mandatory lock on the data file did not
+    serialise that write, it refused it, and the marker was dropped with a
+    visible drawer error that reported this defect instead of a real one. It now
+    lands, and the loud path remains for every real failure the marker names.
+
+    **The claim is verified, not assumed.** Decision 10 says a claim means "the
+    frame carrying this id is in the inbox I file into". The code equated that
+    with "`write_all` returned `Ok`", and under an overlapping append the two are
+    not the same: bytes can land interleaved, and where the state dir is on a
+    network filesystem an append is not atomic at all and a record can be
+    overwritten outright. The frontend would then claim a frame no reader can
+    parse — a silent loss with a false success on top, which is the one outcome
+    this ADR exists to prevent. So the append is followed by a read-back through
+    the same bounded window, with the same predicate the dedupe uses, and the
+    claim goes out only if a well-formed record carrying this `(id, to)` is
+    there. Decision 10 is now implemented as written rather than approximated.
+
+    The read-back fails CLOSED, deliberately opposite to the append it follows.
+    The append fails open because a duplicate beats a drop; a claim is a statement
+    about something observed, so an unreadable window or a missing record yields
+    no claim. Nothing resends automatically — `comm-relay.sh`'s verdict ladder
+    ends at `filed ->` or `NOT CONFIRMED`, and decision 4 keeps the daemon
+    stateless — so the withheld claim IS the recovery: the sender reads the
+    negative it already has and resends, and the `(id, to)` dedupe makes that
+    resend idempotent against a record that did land. There is no retry inside
+    the frontend: a second append cannot promise what the first could not.
+
+    **Decision 14's constraint on where a reader may exist is unchanged and is
+    restated here on purpose.** Off Windows the state dir can be a shared network
+    home, where two hosts' frontends append to one file and the filesystem does
+    not make an append atomic; nothing reads that file there, and a reader may
+    not be introduced on such a platform without re-opening the question.
+
+    The cost, named: on Windows a writer that times out now appends while another
+    may be mid-write, which is the interleaved-append window unix has had since
+    decision 9. A torn line is skipped by the readers by design, the loser only
+    reaches its write after the full deadline, and each write is a single
+    one-line `write_all` on an append handle.
 
 Nothing about the transport changes.
 

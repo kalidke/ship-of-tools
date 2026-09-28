@@ -19886,6 +19886,41 @@ fn inbox_window_has_frame(window: &str, id: &str, to: &str) -> bool {
     })
 }
 
+/// The bounded tail of the inbox as text, with any partial first line
+/// dropped. Read through the CALLER's handle — the same one the dedupe and
+/// the post-append verify both use — so one open serves the whole decision.
+/// Both consumers survive a short window in the safe direction: the dedupe
+/// writes a duplicate, the verify withholds a claim.
+fn inbox_tail_window(f: &mut std::fs::File) -> std::io::Result<String> {
+    use std::io::{Read, Seek};
+    let len = f.seek(std::io::SeekFrom::End(0))?;
+    let start = len.saturating_sub(FE_INBOX_DEDUPE_BYTES);
+    f.seek(std::io::SeekFrom::Start(start))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)?;
+    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    if start > 0 {
+        // The window opened mid-line. That first partial line is not a
+        // record and must not be read as one.
+        //
+        // This arithmetic cannot be wrong in a costly direction, and there
+        // is no third direction. Drop too MUCH — `start` landed on a line
+        // boundary, so this trims a complete line — and the window is
+        // shorter, a match is missed, and the frame is appended. Drop too
+        // LITTLE and the matcher is fed a partial line, which fails to
+        // parse, is skipped, and the frame is appended. These bytes feed
+        // exactly one consumer, a pure predicate, and removing input from
+        // it can only turn a true into a false, never a false into a true.
+        // Nothing on this path deletes, truncates or rewrites, so the only
+        // reachable cost is one extra line.
+        match text.find('\n') {
+            Some(i) => text = text.split_off(i + 1),
+            None => text.clear(),
+        }
+    }
+    Ok(text)
+}
+
 fn files_for_from_rows(rows: &[crate::transport::WorkspaceInfo]) -> Vec<String> {
     // Through a set, not a Vec: two rows on one host CAN carry the same
     // joined handle (`agent.join` enforces no per-host uniqueness, and the
@@ -20100,18 +20135,20 @@ const FE_INBOX_DEDUPE_BYTES: u64 = 64 * 1024;
 
 /// Put `payload` in the inbox at `path` unless it is already there
 /// (ADR 0048 amendment 9). Returns whether THE FRAME IS IN THE FILE when
-/// this call returns — true when this call wrote it, and equally true when
-/// this call found it there under the lock and therefore skipped its own
-/// write. That is what amendment 10 lets a caller claim, and the narrower
-/// "I wrote it" cannot be used: two frontends on one box fill
-/// `workspace_lists` independently, so a just-attached one can win the lock,
-/// write the line, and have no row list to claim from — zero receipts for a
-/// frame that WAS filed, which the matrix reports as a false failure.
+/// this call returns — true when this call wrote it **and read it back
+/// intact**, and equally true when this call found it there under the lock
+/// and therefore skipped its own write. That is what amendment 10 lets a
+/// caller claim, and the narrower "I wrote it" cannot be used: two frontends
+/// on one box fill `workspace_lists` independently, so a just-attached one
+/// can win the lock, write the line, and have no row list to claim from —
+/// zero receipts for a frame that WAS filed, which the matrix reports as a
+/// false failure.
 ///
-/// **Every failure fails open: append anyway.** Lock not granted within the
-/// deadline, lock error, window read error, unparsable window — all append.
-/// A duplicate is a nuisance the reader survives; a drop is a message nobody
-/// ever sees. The direction is named here so no later refactor reverses it.
+/// **Every failure fails open: append anyway.** Token unopenable, lock not
+/// granted within the deadline, lock error, window read error, unparsable
+/// window — all append. A duplicate is a nuisance the reader survives; a
+/// drop is a message nobody ever sees. The direction is named here so no
+/// later refactor reverses it.
 ///
 /// A frame carrying no `id` (or no `to`) is appended unconditionally, as
 /// before the amendment — see [`inbox_window_has_frame`] for why content
@@ -20131,11 +20168,9 @@ fn append_agent_message_at(path: &std::path::Path, payload: &serde_json::Value) 
         }
     };
     line.push('\n');
-    use std::io::{Read, Seek, Write};
+    use std::io::Write;
     // `read` as well as `append`: the dedupe below reads the tail through
-    // this same handle, which is also the handle the lock is taken on, so
-    // one open serves the whole decision and the kernel releases the lock
-    // when it drops at the end of this function.
+    // this same handle.
     let mut f = match std::fs::OpenOptions::new()
         .read(true)
         .create(true)
@@ -20161,69 +20196,71 @@ fn append_agent_message_at(path: &std::path::Path, payload: &serde_json::Value) 
         (Some(id), Some(to)) => Some((id.to_string(), to.to_string())),
         _ => None,
     };
-    if let Some((id, to)) = key {
-        match sot_log::try_lock_bounded(&f) {
-            Ok(true) => {
-                // Bounded tail, never the whole file: the inbox grows
-                // without limit and nothing here wants it in memory.
-                let window = (|| -> std::io::Result<String> {
-                    let len = f.seek(std::io::SeekFrom::End(0))?;
-                    let start = len.saturating_sub(FE_INBOX_DEDUPE_BYTES);
-                    f.seek(std::io::SeekFrom::Start(start))?;
-                    let mut buf = Vec::new();
-                    f.read_to_end(&mut buf)?;
-                    let mut text = String::from_utf8_lossy(&buf).into_owned();
-                    if start > 0 {
-                        // The window opened mid-line. That first partial
-                        // line is not a record and must not be read as one.
-                        //
-                        // This arithmetic cannot be wrong in a costly
-                        // direction, and there is no third direction. Drop
-                        // too MUCH — `start` landed on a line boundary, so
-                        // this trims a complete line — and the window is
-                        // shorter, a match is missed, and the frame is
-                        // appended. Drop too LITTLE and the matcher is fed a
-                        // partial line, which fails to parse, is skipped, and
-                        // the frame is appended. These bytes feed exactly one
-                        // consumer, a pure predicate, and removing input from
-                        // it can only turn a true into a false, never a false
-                        // into a true — and false means write. Nothing on
-                        // this path deletes, truncates or rewrites, so the
-                        // only reachable cost is one extra line. The function
-                        // then returns true either way, wrote-it or found-it,
-                        // so the claim goes out regardless and the
-                        // zero-receipt door stays shut.
-                        match text.find('\n') {
-                            Some(i) => text = text.split_off(i + 1),
-                            None => text.clear(),
-                        }
-                    }
-                    Ok(text)
-                })();
-                match window {
-                    Ok(w) if inbox_window_has_frame(&w, &id, &to) => {
-                        tracing::debug!(
-                            frame_id = %id,
-                            %to,
-                            ?path,
-                            "agent.message: already in the inbox; not appending again"
-                        );
-                        return true;
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::debug!(
-                        error = %e,
-                        ?path,
-                        "agent.message: inbox window unreadable; appending"
-                    ),
-                }
-            }
-            Ok(false) => tracing::debug!(
-                ?path,
-                "agent.message: inbox lock held past the deadline; appending"
-            ),
+    // The lock lives on a SIDECAR file, never on the inbox itself. Both arms
+    // of `File::try_lock` are exclusive, and the Windows arm (`LockFileEx`)
+    // is mandatory: a lock held on the inbox does not merely fail to exclude
+    // the fail-open writer above, it REFUSES that writer's append — and the
+    // frame is lost on the one platform that has a reader. A lock on
+    // `fe-inbox.lock` excludes exactly the writers it excludes today — this
+    // is the only function here that reads then writes, and the `fe_down`
+    // marker below takes no token by design — while leaving the data file
+    // open to the unlocked append the fail-open rule promises, to the shell
+    // readers, and to the `fe_down` baseline read in `run`. The repo's other
+    // fences work this way already: `supervisor.lock`, `.registry.lock`.
+    //
+    // Bound HERE and not inside the `if let` below: the lock must cover the
+    // write it authorises, not merely the read that decides it, and
+    // `try_lock_bounded` deliberately returns no guard of its own — the
+    // kernel releases the lock when this handle drops at the end of this
+    // function. Opened only for a frame that has a key; a keyless frame
+    // arbitrates nothing and is appended unconditionally.
+    let token = match &key {
+        Some(_) => match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path.with_extension("lock"))
+        {
+            Ok(t) => Some(t),
             Err(e) => {
-                tracing::debug!(error = %e, ?path, "agent.message: inbox lock failed; appending")
+                tracing::debug!(error = %e, ?path, "agent.message: inbox token unopenable; appending");
+                None
+            }
+        },
+        None => None,
+    };
+    if let Some((id, to)) = key.as_ref() {
+        if let Some(t) = token.as_ref() {
+            match sot_log::try_lock_bounded(t) {
+                Ok(true) => {
+                    // Bounded tail, never the whole file: the inbox grows
+                    // without limit and nothing here wants it in memory.
+                    let window = inbox_tail_window(&mut f);
+                    match window {
+                        Ok(w) if inbox_window_has_frame(&w, id, to) => {
+                            tracing::debug!(
+                                frame_id = %id,
+                                %to,
+                                ?path,
+                                "agent.message: already in the inbox; not appending again"
+                            );
+                            return true;
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::debug!(
+                            error = %e,
+                            ?path,
+                            "agent.message: inbox window unreadable; appending"
+                        ),
+                    }
+                }
+                Ok(false) => tracing::debug!(
+                    ?path,
+                    "agent.message: inbox lock held past the deadline; appending"
+                ),
+                Err(e) => {
+                    tracing::debug!(error = %e, ?path, "agent.message: inbox lock failed; appending")
+                }
             }
         }
     }
@@ -20231,7 +20268,47 @@ fn append_agent_message_at(path: &std::path::Path, payload: &serde_json::Value) 
         tracing::warn!(error = %e, ?path, "agent.message: append failed");
         return false;
     }
-    true
+    // `write_all` returned Ok; that is not the same fact as "the frame is in
+    // the file" (ADR 0048 decision 10), and this function's caller sends a
+    // RECEIPT for whatever this returns. An append that overlapped an
+    // unlocked writer — the fail-open arm above is exactly such a writer, and
+    // over NFS an append is not atomic at all — can land interleaved or be
+    // overwritten, and the result is a record no reader will ever parse. So
+    // read it back through the same window, with the same predicate the
+    // dedupe used: there is one notion of "in the file", not two.
+    //
+    // This verify fails CLOSED, deliberately opposite to the append above.
+    // The append fails open because a duplicate beats a drop; a claim is a
+    // statement about something observed, so an unreadable window or a
+    // missing line yields no claim, the sender reads its existing
+    // NOT CONFIRMED, and a resend is safe because the (id, to) dedupe
+    // suppresses a duplicate of a record that DID land. There is no retry:
+    // a second append cannot promise what the first could not, and it can
+    // leave a second damaged record behind.
+    //
+    // A keyless frame is unverifiable by construction — nothing identifies
+    // it (see this function's doc) — and its sender already reads
+    // NOT CONFIRMED for want of an id, so it returns true exactly as before.
+    let Some((id, to)) = key else {
+        return true;
+    };
+    match inbox_tail_window(&mut f) {
+        Ok(w) if inbox_window_has_frame(&w, &id, &to) => true,
+        Ok(_) => {
+            tracing::warn!(
+                frame_id = %id, %to, ?path,
+                "agent.message: appended frame is not readable back; not claiming"
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e, frame_id = %id, %to, ?path,
+                "agent.message: inbox unreadable after append; not claiming"
+            );
+            false
+        }
+    }
 }
 
 /// One inbound frame handed to the filer thread (ADR 0048 amendment 14).
@@ -20301,6 +20378,15 @@ fn run_filer(rx: std::sync::mpsc::Receiver<FileJob>) {
 /// must stay exactly what they were before this feature existed.
 /// Windows-only: `pump_attach_term`, its only caller, is itself
 /// `#[cfg(windows)]`.
+///
+/// Takes NO token (ADR 0048 decision 15), deliberately: the token arbitrates
+/// the agent path's read-modify-write, and this function only appends, so a
+/// token here would serve symmetry rather than an invariant while adding a
+/// bounded lock wait to the UI thread this runs on. Before decision 15 it was
+/// excluded from the inbox by accident on Windows — the agent path's lock on
+/// the data file did not serialise this write, it REFUSED it, and the marker
+/// was dropped with a visible error that reported that bug rather than a real
+/// one.
 #[cfg(windows)]
 fn append_fe_down_marker(payload: &serde_json::Value) -> std::io::Result<()> {
     let Some(path) = fe_inbox_path() else {
@@ -27826,6 +27912,7 @@ mod tests {
     fn inbox_temp_path(tag: &str) -> std::path::PathBuf {
         let p = std::env::temp_dir().join(format!("sot-fe-inbox-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(p.with_extension("lock"));
         p
     }
 
@@ -27889,6 +27976,11 @@ mod tests {
             "\n",
         );
         assert!(inbox_window_has_frame(window, "x-1", "peer-one"));
+        // And a torn copy is NOT the frame being present: the post-append
+        // verify rests on this — a record no reader can parse is not a
+        // delivered frame, however many bytes of it are on disk.
+        let torn_only = r#"{"from":"a","to":"peer-one","id":"x-1","tex"#;
+        assert!(!inbox_window_has_frame(torn_only, "x-1", "peer-one"));
     }
 
     #[test]
@@ -27966,14 +28058,18 @@ mod tests {
     fn a_lock_it_cannot_take_fails_open_to_the_append() {
         // The only direct test of the fail-open rule, available because
         // the crate's lock is cross-THREAD as well as cross-process
-        // (sot-log's `WriterLock` doc). A lock held past the bounded
-        // deadline must cost a duplicate, never a message.
+        // (sot-log's `WriterLock` doc). The lock under test is the TOKEN
+        // beside the inbox — `fe-inbox.lock`, ADR 0048 decision 15 — never
+        // the inbox itself: a lock held on the data file would not merely
+        // fail to exclude the append below, on Windows it would REFUSE it.
+        // A lock held past the bounded deadline must cost a duplicate,
+        // never a message.
         let path = inbox_temp_path("fail-open");
         let held = std::fs::OpenOptions::new()
             .read(true)
+            .write(true)
             .create(true)
-            .append(true)
-            .open(&path)
+            .open(path.with_extension("lock"))
             .unwrap();
         assert!(
             sot_log::try_lock_bounded(&held).unwrap(),
@@ -27982,6 +28078,14 @@ mod tests {
         let frame = inbox_frame(Some("x-1"), "peer-one", "hi");
         assert!(append_agent_message_at(&path, &frame));
         assert_eq!(inbox_lines(&path).len(), 1);
+        // The data file is never locked, so a reader is never refused
+        // either. On Windows this read is what the old design — the lock
+        // held on fe-inbox.jsonl itself — refused, along with the append
+        // above.
+        assert!(
+            std::fs::read_to_string(&path).is_ok(),
+            "the inbox must stay readable while the token is held"
+        );
         // And again, still locked out: two appends, no dedupe, because the
         // window was never readable. A duplicate is the documented cost.
         assert!(append_agent_message_at(&path, &frame));
