@@ -211,21 +211,35 @@ pub mod op {
     /// to `<state-dir>/fe-inbox.jsonl`.
     pub const AGENT_MESSAGE: &str = "agent.message";
     /// Client→daemon request (ADR 0048): whoever APPENDED a relayed frame
-    /// to an inbox says so. Payload `AgentFiledReq { id, handle, filed,
-    /// reason? }`, where `id` is the sender-minted id the frame carried;
-    /// the daemon stamps `filer` from THIS connection's declared hello
-    /// `name` (never from anything the request claims), fans the result
-    /// out as an `AGENT_RECEIPT` evt, and answers `AgentFiledRes { ok }`.
-    /// A connection with no declared name cannot vouch for anything and
-    /// is refused `bad_filer`. The daemon keeps no delivery state: it
-    /// relays a receipt exactly as it relays a message.
+    /// to an inbox says so. Payload `AgentFiledReq { id }` — the
+    /// sender-minted id the frame carried, and nothing else. The daemon
+    /// stamps `filer` from THIS connection's declared hello `name`, fans
+    /// the result out as an `AGENT_RECEIPT` evt, and answers
+    /// `AgentFiledRes { ok }`. A connection with no declared name has
+    /// nothing to be named as and is refused `bad_filer`. The daemon keeps
+    /// no delivery state: it relays a receipt exactly as it relays a
+    /// message.
+    ///
+    /// **Only a POSITIVE claim exists.** A filer knows it appended; it
+    /// cannot know that no OTHER filer did, and `agent.message` reaches
+    /// every connection, so a "did not file" answer would be a global
+    /// assertion made from local knowledge — every attached frontend would
+    /// deny a handle it does not host, and whichever denial arrived first
+    /// would overrule the truth. Absence of a receipt is the only negative,
+    /// and it is the sender's own conclusion, not anyone's claim.
     pub const AGENT_FILED: &str = "agent.filed";
     /// Server→client push fired for every `AGENT_FILED` (ADR 0048), to
     /// every connection like `AGENT_MESSAGE` — the sender recognizes its
     /// own by `id` and ignores the rest. Payload `AgentReceiptEvt { id,
-    /// handle, filed, reason?, filer }`. This is the ONLY honest verdict
-    /// for a cross-box send: the append IS the delivery, so only the
-    /// appender can report one.
+    /// filer }`. This is the only honest verdict for a cross-box send: the
+    /// append IS the delivery, so only the appender can report one.
+    ///
+    /// `filer` is ATTRIBUTION, not authentication: nothing validates a
+    /// hello `name`, and the frame id reaches every client, so any
+    /// authenticated client could vouch under any name. It replaces a
+    /// name-suffix guess with a claim from something that says it did the
+    /// work, checkable against the roster — not a proof against a hostile
+    /// client, which is not the threat model here.
     pub const AGENT_RECEIPT: &str = "agent.receipt";
     /// Client→daemon request: a session inside a workspace declares its
     /// sot-comm handle to the daemon that spawned/pinned its env (ADR
@@ -1651,19 +1665,15 @@ pub struct AgentSendRes {
     pub id: Option<String>,
 }
 
-/// `agent.filed` request (ADR 0048) — the filer's claim about ONE frame.
-/// `handle` is who it filed for, `filed` whether it did, `reason` why not
-/// when it did not (a `filed: false` that cannot say why is not
-/// actionable). There is deliberately no `filer` field: the daemon stamps
-/// that from the answering connection's own hello `name`, so a filer
-/// cannot vouch under another's name.
+/// `agent.filed` request (ADR 0048) — "I appended the frame carrying this
+/// id". One field, because one field is the whole claim: the handle is the
+/// sender's own `to` (it knows what it addressed), and there is no
+/// negative form to express (see `AGENT_FILED`). No `filer` field either —
+/// the daemon stamps that from the answering connection's own hello
+/// `name`, so a filer at least names itself rather than being guessed at.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentFiledReq {
     pub id: String,
-    pub handle: String,
-    pub filed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
 }
 
 /// `agent.filed` response — a bare ack, mirroring `AgentJoinRes`. The
@@ -1675,15 +1685,11 @@ pub struct AgentFiledRes {
 
 /// `agent.receipt` evt (ADR 0048) — one relayed filer claim, with `filer`
 /// stamped by the daemon from the answering connection's declared hello
-/// `name`. Never built from a client-supplied value: an unforgeable filer
-/// is what makes the receipt a verdict rather than a second guess.
+/// `name` rather than from anything the request said. The frame's arrival
+/// IS the positive verdict; there is no field to say otherwise.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentReceiptEvt {
     pub id: String,
-    pub handle: String,
-    pub filed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
     pub filer: String,
 }
 
@@ -2925,35 +2931,30 @@ mod agent_receipt_tests {
     }
 
     #[test]
-    fn agent_filed_req_carries_no_filer_field() {
-        // The unforgeability invariant, asserted on the type: a client
-        // cannot even express who filed. A request that tries is parsed
-        // with the extra key dropped (no `deny_unknown_fields` anywhere
-        // in this lane — the compat matrix depends on that).
+    fn agent_filed_req_is_one_field_and_expresses_no_negative() {
+        // The claim a filer can defend is "I appended this", and that is
+        // all the type can say. A sender that tries to express a denial
+        // (or to name a filer) is parsed with those keys dropped — no
+        // `deny_unknown_fields` anywhere in this lane, which the compat
+        // matrix depends on.
         let req: AgentFiledReq = serde_json::from_str(
-            r#"{"id":"x-1","handle":"peer","filed":true,"filer":"someone-else"}"#,
+            r#"{"id":"x-1","handle":"peer","filed":false,"filer":"someone-else"}"#,
         )
-        .expect("parses, extra key ignored");
-        assert!(req.filed);
-        assert_eq!(req.reason, None);
+        .expect("parses, extra keys ignored");
+        assert_eq!(req.id, "x-1");
         let j = serde_json::to_string(&req).expect("serializes");
-        assert!(!j.contains("filer"), "the request cannot name a filer: {j}");
-        assert!(!j.contains("reason"), "absent reason stays off the wire: {j}");
+        assert_eq!(j, r#"{"id":"x-1"}"#, "the claim is one field: {j}");
     }
 
     #[test]
-    fn agent_receipt_evt_round_trips_a_refusal_with_its_reason() {
-        let evt = AgentReceiptEvt {
-            id: "x-1".into(),
-            handle: "peer-otherbox".into(),
-            filed: false,
-            reason: Some("no row on this frontend declares @peer-otherbox".into()),
-            filer: "fe@otherbox".into(),
-        };
+    fn agent_receipt_evt_round_trips_its_two_fields() {
+        let evt = AgentReceiptEvt { id: "x-1".into(), filer: "fe@otherbox".into() };
         let back: AgentReceiptEvt =
             serde_json::from_str(&serde_json::to_string(&evt).unwrap()).expect("round trips");
-        assert!(!back.filed);
+        assert_eq!(back.id, "x-1");
         assert_eq!(back.filer, "fe@otherbox");
-        assert!(back.reason.unwrap().contains("declares @peer-otherbox"));
+        let j = serde_json::to_string(&evt).unwrap();
+        assert!(!j.contains("filed"), "no positive/negative flag on the wire: {j}");
+        assert!(!j.contains("reason"), "nothing to give a reason for: {j}");
     }
 }

@@ -137,27 +137,36 @@ next `poll`. A send that could file NOWHERE is a failure: `no such handle` (or
 **The cross-box verdict is the filer's receipt (ADR 0048).** A handle this box
 cannot name goes over the wire, and since the append IS the delivery, the only
 honest verdict is a statement by whoever appended. The sender mints an opaque
-`id` on `agent.send`; whoever files the frame answers `agent.filed {id, handle,
-filed, reason?}` on its own connection; the daemon stamps `filer` from that
-connection's declared hello `name` — never from anything the answer claims —
-and fans the result out as an `agent.receipt` evt, which the sender reads on the
-connection it is already holding. The daemon keeps no delivery state. A bridge
-IS its handle, so it claims `filed: true` after a successful append. A frontend
-appends every inbound frame into one inbox of its own, so "I appended" is not "I
-filed for @h": it claims `filed: true` only for a handle one of its OWN-host
-rows declares, `filed: false` with a reason for one absent from that set, and
-**nothing at all** when it has no own-host list — "the set is known and lacks
-@h" and "there is no set" are different facts. The append is never gated on the
-claim: a late `agent.join` may cost a receipt, never a message.
+`id` on `agent.send`; whoever files the frame answers `agent.filed {id}` on its
+own connection; the daemon stamps `filer` from that connection's declared hello
+`name` — never from anything the answer claims — and fans the result out as an
+`agent.receipt {id, filer}` evt, which the sender reads on the connection it is
+already holding. The daemon keeps no delivery state.
+
+**A receipt is only ever positive.** A filer knows it appended; it cannot know
+that no other filer did, and the daemon fans every `agent.message` out to every
+connection — so a "not me" answer would be a global assertion made from local
+knowledge, and with several frontends attached the first denial to arrive would
+overrule a real delivery. Silence is the only negative, and it is the sender's
+own conclusion. So a bridge (which IS its handle) claims after an append that
+returned 0, and a frontend claims only for a handle one of its OWN-host rows
+declares — and says nothing at all otherwise. The append is never gated on the
+claim: a late `agent.join` may cost a receipt, never a message. `filer` is
+attribution, not authentication: nothing validates a hello `name`, so it names
+something checkable against the roster, not a proof against a hostile client.
 
 | what came back | verdict | exit |
 |---|---|---|
-| receipt, `filed: true` | `filed -> @h (by <filer>, relay)` | 0 |
-| receipt, `filed: false` | `no such handle: h — <filer> reports: <reason>` | 1 |
-| ack, no receipt within the 5 s transport bound | `NOT CONFIRMED: sent for @h; no filer answered in 5s. Attached: <roster>.` | 1 |
+| a receipt carrying this send's `id` | `filed -> @h (by <filer>, relay)` | 0 |
+| ack, no receipt within the 5 s transport bound | `NOT CONFIRMED: sent for @h; nobody claimed it within 5s. Attached: <roster>.` | 1 |
 | ack without an `id` (a daemon older than receipts) | `NOT CONFIRMED: this daemon predates filer receipts; nothing can vouch for @h.` | 1 |
 | ack with an empty `receivers` | `no such handle: h` | 1 |
 | no ack at all | `ERROR: unreachable, nothing filed` | 1 |
+
+Everything a receipt cannot exist for is decided on the ack — a broadcast, a hub
+that dropped the id, an empty roster — so those never wait. A frontend too old
+to send `agent.filed` is NOT distinguishable from a slow one, so a send to a
+handle it hosts costs the full 5 s before failing.
 
 The roster (`receivers`) survives in exactly one place, the NOT CONFIRMED line,
 as a diagnostic naming who was attached and did not answer. It is never a

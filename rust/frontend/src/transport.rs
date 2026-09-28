@@ -1020,8 +1020,8 @@ pub enum OutgoingReq {
     /// false-negative pair the review found in the daemon-side-inference
     /// design this replaces.
     FePresence,
-    /// Claim (or decline) the filing of ONE relayed frame this frontend
-    /// just appended (ADR 0048) — sent on the connection the
+    /// Claim the filing of ONE relayed frame this frontend just appended
+    /// (ADR 0048; there is no declining form — see `gpu::receipt_for`) — sent on the connection the
     /// `agent.message` arrived on, so the claim reaches the hub that
     /// relayed it rather than only this box's own daemon (which is what
     /// made the declaration it replaces worthless). Built by
@@ -2397,7 +2397,7 @@ where
                         // ToggleHidden/WorkspaceActivate above.
                     }
                     OutgoingReq::AgentFiled(req) => {
-                        tracing::debug!(id, handle = %req.handle, filed = req.filed, "→ agent.filed");
+                        tracing::debug!(id, frame_id = %req.id, "→ agent.filed");
                         codec::write_frame(
                             &mut tx,
                             &Frame::req(id, op::AGENT_FILED, serde_json::to_value(req)?),

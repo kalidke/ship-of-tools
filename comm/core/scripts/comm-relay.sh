@@ -253,7 +253,7 @@ send_frame() {  # $1 to, $2 text
     # The loop body runs in THIS shell (process substitution, never a pipe),
     # so the verdict variables below survive it.
     local line op ack_ok=false ack_array=false ack_has_id=false
-    local rcpt_seen=false rcpt_filed="" rcpt_filer="" rcpt_reason=""
+    local rcpt_seen=false rcpt_filer=""
     local -a receivers=()
     while IFS= read -r line; do
         [ -z "$line" ] && continue
@@ -293,10 +293,12 @@ send_frame() {  # $1 to, $2 text
                 # Somebody else's receipt on this shared fan-out is not ours:
                 # the id is the only thing that makes it ours.
                 if printf '%s' "$line" | jq -e --arg i "$MSG_ID" '.payload.id == $i' >/dev/null 2>&1; then
+                    # A receipt EXISTS only as a positive claim, so its
+                    # arrival is the whole verdict: whoever sent it appended
+                    # this frame. Two receipts would mean two filers and
+                    # either is true, so the first one ends the wait.
                     rcpt_seen=true
-                    rcpt_filed="$(printf '%s' "$line" | jq -r '.payload.filed // false' 2>/dev/null || true)"
                     rcpt_filer="$(printf '%s' "$line" | jq -r '.payload.filer // ""' 2>/dev/null || true)"
-                    rcpt_reason="$(printf '%s' "$line" | jq -r '.payload.reason // ""' 2>/dev/null || true)"
                     break
                 fi
                 ;;
@@ -322,23 +324,20 @@ send_frame() {  # $1 to, $2 text
             return 1
         fi
         if [ "$rcpt_seen" = true ]; then
-            local who="${rcpt_filer:-an unnamed filer}"
-            if [ "$rcpt_filed" = true ]; then
-                echo "filed -> @$1 (by $who, relay)"
-                return 0
-            fi
-            # The filer KNOWS the set it files for and @$1 is not in it —
-            # the fleet's only available answer to "is that handle real".
-            echo "no such handle: $1 — $who reports: ${rcpt_reason:-no reason given}" >&2
-            return 1
+            echo "filed -> @$1 (by ${rcpt_filer:-an unnamed filer}, relay)"
+            return 0
         fi
-        # The frame WAS sent and may well have been filed; nothing proves it.
+        # The frame WAS sent and may well have been filed; nothing claimed
+        # it. This is the ONLY negative: no filer can honestly report "not
+        # me" (it cannot know about the others, and every attached frontend
+        # would say it about a handle it does not host), so silence is the
+        # negative and it is the sender's own conclusion.
         # The roster survives HERE and nowhere else: as a diagnostic naming
         # who was attached and did not answer, never as a verdict. A name
         # match against a receiver is the bug class this replaced — nothing
         # in this file may compare a target to a receiver's name again.
         local joined; joined="$(printf '%s, ' "${receivers[@]}")"
-        echo "NOT CONFIRMED: sent for @$1; no filer answered in 5s. Attached: ${joined%, }." >&2
+        echo "NOT CONFIRMED: sent for @$1; nobody claimed it within 5s. Attached: ${joined%, }." >&2
         return 1
     fi
     # `ok` false, or `receivers` absent (an OLD daemon that can't prove a
@@ -370,8 +369,16 @@ filter_inbound() {
 # acknowledgement. The wire is only for targets this box cannot name. `relayed`
 # was never proof of delivery — it reported the daemon's own success — and the
 # "only a reply proves the path" rule it forced on every caller is withdrawn.
+# The question BOTH doors must ask (ADR 0048): does this box's registry give
+# the target a HOST? That is the field comm-send.sh needs to file and poke,
+# and it is what `deliver()` refuses on. Asking a different question here —
+# "does a row exist at all" — made the two execs non-exclusive: a row that
+# existed with an empty or absent `host` was a hit for the relay and a miss
+# for send, so each handed the send to the other, forever, leaking a temp
+# file per lap. The predicates agreeing is what deletes that loop; a
+# recursion guard would only survive it.
 _registry_target() {
-    [ -n "$1" ] && jq -e --arg n "$1" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1
+    [ -n "$1" ] && jq -e --arg n "$1" '(.agents[$n].host // "") != ""' "$REGISTRY" >/dev/null 2>&1
 }
 
 # SUB was already parsed (and shifted off) above, before the identity gate
@@ -494,11 +501,17 @@ case "$SUB" in
             # connection that lives for one frame. A receipt that cannot be
             # sent is not an error for the recipient — the frame is filed
             # either way.
+            # `grep -qm1` is load-bearing, not tidiness: nc_send is
+            # `timeout 5 nc` and the daemon never closes a one-shot
+            # connection, so without an early exit every filed frame would
+            # cost five seconds inside this loop — a burst would file at one
+            # message per five seconds and each receipt would miss its
+            # sender's window. The SIGPIPE on the ack is what returns here.
             (
                 HELLO_ROLE=""
-                printf '%s\n' "$(jq -nc --arg i "$rid" --arg h "$NAME" \
-                    '{v:1,id:1,kind:"req",op:"agent.filed",payload:{id:$i,handle:$h,filed:true}}')" \
-                    | nc_send >/dev/null 2>&1
+                printf '%s\n' "$(jq -nc --arg i "$rid" \
+                    '{v:1,id:1,kind:"req",op:"agent.filed",payload:{id:$i}}')" \
+                    | nc_send 2>/dev/null | grep -qm1 '"op":"agent.filed"'
             ) || true
         done
         ;;

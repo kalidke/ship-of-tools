@@ -79,12 +79,14 @@ over the wire, and there the verdict is the FILER'S RECEIPT: `filed -> @handle
 (by <filer>, relay)` means that named filer appended your frame. Failures are
 loud and specific, all non-zero:
 
-- `no such handle: h` — nothing anywhere can file for it, or the filer that
-  files for that box reports no row of its own declares it (it names itself and
-  says so). Check the spelling first.
-- `NOT CONFIRMED: sent for @h; no filer answered in 5s. Attached: …` — the
-  frame was sent and may well have been filed; nobody vouched for it. The
-  `Attached:` list is a diagnostic, not a delivery.
+- `no such handle: h` — nothing is attached to the hub at all, so there is
+  nowhere for the frame to land. Check the spelling first.
+- `NOT CONFIRMED: sent for @h; nobody claimed it within 5s. Attached: …` — the
+  frame was sent and may well have been filed; nobody claimed it. A receipt is
+  only ever positive (nobody can honestly say "not me" about a handle they do
+  not host), so this one line covers a misspelled handle, a frontend too old to
+  claim, and a filer that was simply slow. The `Attached:` list is a
+  diagnostic, not a delivery.
 - `NOT CONFIRMED: this daemon predates filer receipts` — the hub is older than
   the mechanism; nothing on that path can vouch for anything.
 

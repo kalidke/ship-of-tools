@@ -5372,7 +5372,10 @@ pub async fn handle_agent_send(
 ) -> Result<HandlerOutput> {
     let req: AgentSendReq = serde_json::from_value(payload_json).context("agent.send payload")?;
     let receivers = clients.receivers_for(&req.to, self_serial.unwrap_or(0));
-    tracing::info!(from = %req.from, to = %req.to, ?receivers, "agent.send relay");
+    // `id` in the log line is what correlates this send with the
+    // `agent.filed` receipt below it in the journal (ADR 0048) — the
+    // receipt carries no handle of its own to correlate by.
+    tracing::info!(from = %req.from, to = %req.to, id = ?req.id, ?receivers, "agent.send relay");
     let msg = AgentMessage {
         from: req.from,
         to: req.to,
@@ -5405,13 +5408,14 @@ pub async fn handle_agent_send(
 /// bookkeeping anyone does.
 ///
 /// `filer_name` is THIS connection's declared hello `name`, passed in by
-/// the caller and stamped onto the published receipt. Nothing from the
-/// request body can name a filer (`AgentFiledReq` has no such field), so
-/// one filer cannot vouch under another's name. A connection with no
-/// declared name has nothing to be identified as and is refused
-/// `bad_filer` — an anonymous vouch is indistinguishable from a forged
-/// one, and publishing it would make every verdict downstream a guess
-/// again.
+/// the caller and stamped onto the published receipt. Nothing in the
+/// request body can name a filer (`AgentFiledReq` is one field), so a
+/// receipt always names something the roster can be checked against —
+/// attribution, not authentication: nothing validates a hello `name`, and
+/// every client sees the frame id, so this is not a boundary against a
+/// hostile client (not the threat model). A connection with no declared
+/// name has nothing to be named as and is refused `bad_filer`: a receipt
+/// naming nobody would put the verdict back where the guess was.
 pub async fn handle_agent_filed(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -5432,12 +5436,9 @@ pub async fn handle_agent_filed(
             None,
         )]);
     };
-    tracing::info!(id = %req.id, handle = %req.handle, filed = req.filed, %filer, "agent.filed receipt");
+    tracing::info!(id = %req.id, %filer, "agent.filed receipt");
     let _ = receipt_tx.send(crate::workspaces::AgentReceipt {
         id: req.id,
-        handle: req.handle,
-        filed: req.filed,
-        reason: req.reason,
         filer: filer.to_string(),
     });
     Ok(vec![(
@@ -5616,17 +5617,14 @@ mod agent_relay_tests {
     }
 
     #[tokio::test]
-    async fn agent_filed_stamps_the_connections_own_name_never_the_clients_claim() {
-        // The unforgeability invariant (ADR 0048): the request below TRIES
-        // to name another filer, and the published receipt must name the
-        // connection instead.
+    async fn agent_filed_names_the_connection_not_whatever_the_request_said() {
+        // The request below TRIES to name another filer; the published
+        // receipt must name the connection the claim arrived on. (That is
+        // attribution, not authentication — see the handler's own doc.)
         let (tx, mut rx) = tokio::sync::broadcast::channel(4);
         let out = handle_agent_filed(
             9,
-            serde_json::json!({
-                "id": "x-1", "handle": "peer-otherbox", "filed": true,
-                "filer": "fe@someone-else"
-            }),
+            serde_json::json!({"id": "x-1", "filer": "fe@someone-else"}),
             &tx,
             Some("fe@otherbox"),
         )
@@ -5636,7 +5634,6 @@ mod agent_relay_tests {
         let r = rx.try_recv().expect("one published receipt");
         assert_eq!(r.filer, "fe@otherbox");
         assert_eq!(r.id, "x-1");
-        assert!(r.filed);
     }
 
     #[tokio::test]
@@ -5646,7 +5643,7 @@ mod agent_relay_tests {
             let (tx, mut rx) = tokio::sync::broadcast::channel(4);
             let out = handle_agent_filed(
                 10,
-                serde_json::json!({"id": "x-1", "handle": "peer-otherbox", "filed": true}),
+                serde_json::json!({"id": "x-1"}),
                 &tx,
                 name,
             )

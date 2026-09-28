@@ -14760,20 +14760,14 @@ impl State {
                             // KNOW — our own host's rows. The append above is
                             // never gated on the claim: a late `agent.join`
                             // may cost a receipt, never a message.
-                            let claim = {
-                                let own = frontend_identity().host.as_str();
-                                let rows = self
-                                    .workspace_lists
-                                    .iter()
-                                    .find(|(dial, _)| {
-                                        declares_files_for(
-                                            self.declared_host.get(*dial).map(String::as_str),
-                                            own,
-                                        )
-                                    })
-                                    .map(|(_, rows)| rows.as_slice());
-                                receipt_for(&payload, rows)
-                            };
+                            let claim = receipt_for(
+                                &payload,
+                                own_host_rows(
+                                    &self.workspace_lists,
+                                    &self.declared_host,
+                                    frontend_identity().host.as_str(),
+                                ),
+                            );
                             if let Some(req) = claim {
                                 let _ = self.send_to(
                                     &event_host,
@@ -19504,8 +19498,9 @@ pub(crate) fn self_comm_handle() -> String {
 
 /// The complete set of sot-comm handles declared by `rows` (item 18) —
 /// pure over rows, no `&self`, no connection, so it unit-tests without a
-/// wire. This is what `fe.files_for` sends, replace-semantics, after every
-/// own-host `workspace.list` reply.
+/// wire. This is the set `receipt_for` tests a relayed frame's `to`
+/// against, per inbound frame (ADR 0048) — read fresh from the own-host
+/// rows each time, so there is no declared set to go stale.
 ///
 /// Keeps a row's `agent_handle` when it is non-empty — the filter is
 /// **only** that, kept on its own line rather than left for a test to
@@ -19515,9 +19510,8 @@ pub(crate) fn self_comm_handle() -> String {
 ///
 /// Deliberately does **not** filter on liveness — not `phase`, not
 /// `repl_state`, not `agent_state`. A stopped row's handle IS declared.
-/// Delivery is durable: a `fe.files_for` frame is an inbox append, read
-/// whenever that handle next starts, not a promise the handle is up right
-/// now. The contract puts liveness in the `+woken` / `not woken` note,
+/// Delivery is durable: the append is read whenever that handle next
+/// starts, not a promise the handle is up right now. The contract puts liveness in the `+woken` / `not woken` note,
 /// never in `filed` — and the local path already files for a handle whose
 /// session is down. Declaring only ready rows here would make the wire
 /// path stricter than the local path for the same handle, with no
@@ -19539,21 +19533,46 @@ fn declares_files_for(declared: Option<&str>, own: &str) -> bool {
     declared == Some(own)
 }
 
+/// The rows of the daemon running on THIS frontend's own host — the only
+/// basis on which it may claim to have filed for a handle.
+///
+/// `workspace_lists` is keyed by the DIAL key (the label a host is reached
+/// under), never by the declared host: `host_label` exists precisely
+/// because the two differ. A lookup by hostname therefore finds nothing on
+/// any box whose local daemon is dialed under some other label, and this
+/// frontend would claim nothing, ever — a silent failure indistinguishable
+/// from an older frontend. Resolve through `declared_host` instead, with
+/// the same [`declares_files_for`] predicate that decides whether a
+/// connection's rows are this machine's at all.
+fn own_host_rows<'a>(
+    workspace_lists: &'a HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>>,
+    declared_host: &HashMap<HostKey, String>,
+    own: &str,
+) -> Option<&'a [crate::transport::WorkspaceInfo]> {
+    workspace_lists
+        .iter()
+        .find(|(dial, _)| declares_files_for(declared_host.get(*dial).map(String::as_str), own))
+        .map(|(_, rows)| rows.as_slice())
+}
+
 /// This frontend's claim about ONE relayed frame it just appended (ADR
-/// 0048): `None` = claim nothing, `Some(req)` = the claim it can defend.
+/// 0048): `Some(req)` = "I appended this", `None` = say nothing at all.
 /// Pure over its arguments — no `&self`, no wire — because the whole value
 /// of a receipt is that it is checkable, and a gate no test can reach is
 /// how `fe.files_for` shipped a set builder with no caller.
 ///
-/// Rules, in order. No `id` in the frame: the hub predates receipts and
-/// there is nothing to attribute a claim to. `to` empty: a broadcast has no
-/// addressee, so nobody is its filer. `own_host_rows` `None`: this frontend
-/// has no own-host list yet (no `workspace.list` reply, or a daemon too old
-/// to declare its host) — "the set is known and lacks @h" and "there is no
-/// set" are different facts, and only the first may be reported as an
-/// absence. Otherwise the answer is membership of
-/// [`files_for_from_rows`], with a reason when it is false: a `filed:
-/// false` that cannot say why is not actionable.
+/// **There is no negative claim, by construction.** A frontend knows it
+/// appended; it cannot know that no OTHER filer did, and the daemon fans
+/// every `agent.message` out to every connection — so "no row of mine
+/// declares @h" would be a global answer from local knowledge, and with
+/// several frontends attached the first denial to arrive would overrule a
+/// real delivery. Silence is the only honest negative, and the sender draws
+/// that conclusion itself when no receipt arrives.
+///
+/// Claim nothing when: the frame carries no `id` (an older hub — nothing to
+/// attribute a claim to), `to` is empty (a broadcast has no addressee), this
+/// frontend has no own-host row list (no basis), or the handle is absent
+/// from that list (not ours to vouch for).
 ///
 /// The frame is appended either way (see the call site). This function
 /// decides what may be CLAIMED, never what is filed.
@@ -19570,17 +19589,10 @@ fn receipt_for(
         return None;
     }
     let rows = own_host_rows?;
-    let filed = files_for_from_rows(rows).iter().any(|h| h == to);
-    Some(sot_protocol::AgentFiledReq {
-        id: id.to_string(),
-        handle: to.to_string(),
-        filed,
-        reason: if filed {
-            None
-        } else {
-            Some(format!("no row on this frontend declares @{to}"))
-        },
-    })
+    if !files_for_from_rows(rows).iter().any(|h| h == to) {
+        return None;
+    }
+    Some(sot_protocol::AgentFiledReq { id: id.to_string() })
 }
 
 fn files_for_from_rows(rows: &[crate::transport::WorkspaceInfo]) -> Vec<String> {
@@ -27131,6 +27143,37 @@ mod tests {
     }
 
     #[test]
+    fn own_host_rows_resolves_through_the_declared_host_not_the_dial_key() {
+        // The bug this function exists to prevent: `workspace_lists` is
+        // keyed by the DIAL key, so a lookup by hostname returns None on
+        // every box whose own daemon is dialed under any other label, and
+        // the frontend then claims nothing for anyone, silently.
+        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        lists.insert("local-tunnel".to_string(), vec![crate::transport::WorkspaceInfo {
+            agent_handle: "peer-boxa".to_string(),
+            ..ws_info("peer", "sot-be-peer")
+        }]);
+        lists.insert("boxb".to_string(), vec![crate::transport::WorkspaceInfo {
+            agent_handle: "elsewhere-boxb".to_string(),
+            ..ws_info("elsewhere", "sot-be-elsewhere")
+        }]);
+        let declared: HashMap<HostKey, String> = [
+            ("local-tunnel".to_string(), "boxa".to_string()),
+            ("boxb".to_string(), "boxb".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let rows = own_host_rows(&lists, &declared, "boxa").expect("the own-host rows resolve");
+        assert_eq!(files_for_from_rows(rows), vec!["peer-boxa".to_string()]);
+        // A dial key that happens to equal our hostname but declares
+        // another host is NOT ours.
+        assert!(own_host_rows(&lists, &declared, "boxc").is_none());
+        // A daemon too old to declare a host declares nothing for anyone.
+        assert!(own_host_rows(&lists, &HashMap::new(), "boxa").is_none());
+    }
+
+    #[test]
     fn receipt_for_claims_only_from_a_set_it_knows() {
         // ADR 0048, the whole decision table of `receipt_for`, in the
         // order the function applies it.
@@ -27147,23 +27190,15 @@ mod tests {
             v
         };
 
-        // In the set: claim it, with no reason to give.
+        // In the set: claim it, and the claim is one field.
         let req = receipt_for(&frame("peer-otherbox", Some("x-1")), Some(&rows))
             .expect("a handle this frontend files for must be claimed");
         assert_eq!(req.id, "x-1");
-        assert_eq!(req.handle, "peer-otherbox");
-        assert!(req.filed);
-        assert_eq!(req.reason, None);
 
-        // Absent from a KNOWN set: refuse, and say why (this is the
-        // fleet's only answer to "is that remote handle real").
-        let req = receipt_for(&frame("typo-otherbox", Some("x-2")), Some(&rows))
-            .expect("a known set that lacks the handle is an answer, not silence");
-        assert!(!req.filed);
-        assert!(req
-            .reason
-            .expect("a refusal must say why")
-            .contains("no row on this frontend declares @typo-otherbox"));
+        // Absent from a known set: say NOTHING. A denial would be a global
+        // claim from local knowledge, and every other attached frontend
+        // would make the same one about a handle it does not host.
+        assert!(receipt_for(&frame("typo-otherbox", Some("x-2")), Some(&rows)).is_none());
 
         // No id: the hub predates receipts, so there is nothing to
         // attribute a claim to.
@@ -27171,13 +27206,9 @@ mod tests {
         assert!(receipt_for(&frame("peer-otherbox", Some("")), Some(&rows)).is_none());
         // Broadcast: nobody is the addressee.
         assert!(receipt_for(&frame("", Some("x-3")), Some(&rows)).is_none());
-        // No own-host list at all: "the set lacks @h" and "there is no
-        // set" are different facts, and only the first may be reported.
+        // No own-host list at all, and an empty one: no basis either way.
         assert!(receipt_for(&frame("peer-otherbox", Some("x-4")), None).is_none());
-        // An empty known set still answers — it is a set.
-        let req = receipt_for(&frame("peer-otherbox", Some("x-5")), Some(&[]))
-            .expect("an empty own-host list is a known set");
-        assert!(!req.filed);
+        assert!(receipt_for(&frame("peer-otherbox", Some("x-5")), Some(&[])).is_none());
     }
 
     #[test]
@@ -29319,6 +29350,32 @@ mod tests {
         route_send_to(&conns, &"local".to_string(), OutgoingReq::WorkspaceList).unwrap();
         assert!(rxs.get_mut("local").unwrap().try_recv().is_ok());
         assert!(rxs.get_mut("alpha").unwrap().try_recv().is_err());
+    }
+
+    #[test]
+    fn a_receipt_is_routed_to_the_host_the_message_arrived_on() {
+        // ADR 0048: the claim must go back to the hub that RELAYED the
+        // frame (`event_host`), never to the active host. A receipt sent to
+        // the wrong daemon reaches nobody who is waiting for it, and the
+        // sender's verdict is silence — indistinguishable from a frontend
+        // that never claimed at all. This pins the routing rule; the call
+        // site's own choice of `event_host` is pinned by a real run.
+        let (conns, mut rxs) = fake_conns();
+        let event_host = "local".to_string(); // active_host is "alpha"
+        route_send_to(
+            &conns,
+            &event_host,
+            OutgoingReq::AgentFiled(sot_protocol::AgentFiledReq { id: "x-1".into() }),
+        )
+        .expect("routes");
+        match rxs.get_mut("local").unwrap().try_recv() {
+            Ok(OutgoingReq::AgentFiled(req)) => assert_eq!(req.id, "x-1"),
+            other => panic!("expected the receipt on the arrival host, got {other:?}"),
+        }
+        assert!(
+            rxs.get_mut("alpha").unwrap().try_recv().is_err(),
+            "no receipt may go to the active host"
+        );
     }
 
     #[test]

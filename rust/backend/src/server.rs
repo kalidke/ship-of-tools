@@ -2375,8 +2375,8 @@ async fn recv_agent_receipt(
 }
 
 /// Translates one filer receipt into an `agent.receipt` evt frame on the
-/// wire. Mirrors `write_agent_message`; `reason` is omitted when absent so
-/// the frame carries no null keys for a shell reader to special-case.
+/// wire. Mirrors `write_agent_message`. Two fields, both always present:
+/// the frame's arrival is the claim, so there is nothing optional to omit.
 async fn write_agent_receipt<W>(
     tx: &mut W,
     rcp: Result<AgentReceipt, broadcast::error::RecvError>,
@@ -2387,16 +2387,10 @@ where
 {
     match rcp {
         Ok(r) => {
-            let mut payload = serde_json::json!({
-                "id": r.id,
-                "handle": r.handle,
-                "filed": r.filed,
-                "filer": r.filer,
-            });
-            if let Some(reason) = r.reason {
-                payload["reason"] = serde_json::Value::String(reason);
-            }
-            let frame = Frame::evt(op::AGENT_RECEIPT, payload);
+            let frame = Frame::evt(
+                op::AGENT_RECEIPT,
+                serde_json::json!({ "id": r.id, "filer": r.filer }),
+            );
             write_frame_to(tx, &frame, None).await?;
             Ok(true)
         }
@@ -2609,17 +2603,11 @@ mod agent_relay_wire_tests {
     }
 
     #[tokio::test]
-    async fn agent_receipt_frame_names_the_filer_and_omits_an_absent_reason() {
+    async fn agent_receipt_frame_is_the_id_and_the_filer_and_nothing_else() {
         let mut buf: Vec<u8> = Vec::new();
         assert!(write_agent_receipt(
             &mut buf,
-            Ok(AgentReceipt {
-                id: "x-1".into(),
-                handle: "peer-otherbox".into(),
-                filed: true,
-                reason: None,
-                filer: "fe@otherbox".into(),
-            }),
+            Ok(AgentReceipt { id: "x-1".into(), filer: "fe@otherbox".into() }),
             "test"
         )
         .await
@@ -2627,30 +2615,12 @@ mod agent_relay_wire_tests {
         let f = one_frame(&buf);
         assert_eq!(f["op"], op::AGENT_RECEIPT);
         assert_eq!(f["kind"], "evt");
+        assert_eq!(f["payload"]["id"], "x-1");
         assert_eq!(f["payload"]["filer"], "fe@otherbox");
-        assert_eq!(f["payload"]["filed"], true);
+        // No negative form on the wire: a frame that never arrives is the
+        // only "not filed", and it is the sender's own conclusion.
+        assert!(f["payload"].get("filed").is_none(), "got {}", f["payload"]);
         assert!(f["payload"].get("reason").is_none(), "got {}", f["payload"]);
-
-        let mut buf2: Vec<u8> = Vec::new();
-        assert!(write_agent_receipt(
-            &mut buf2,
-            Ok(AgentReceipt {
-                id: "x-2".into(),
-                handle: "typo-otherbox".into(),
-                filed: false,
-                reason: Some("no row on this frontend declares @typo-otherbox".into()),
-                filer: "fe@otherbox".into(),
-            }),
-            "test"
-        )
-        .await
-        .expect("write"));
-        let f2 = one_frame(&buf2);
-        assert_eq!(f2["payload"]["filed"], false);
-        assert!(f2["payload"]["reason"]
-            .as_str()
-            .expect("a refusal must say why")
-            .contains("declares @typo-otherbox"));
     }
 }
 

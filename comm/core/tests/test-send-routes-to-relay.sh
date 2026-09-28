@@ -12,6 +12,10 @@
 #      why the pair needs no recursion guard.
 #   3. A --broadcast never execs: it fans out over registry keys, and an exec
 #      mid fan-out would abandon every remaining target.
+#   4. The two doors ask the SAME question (`.host` empty-or-absent), so a row
+#      that exists with no host cannot ping-pong between them. That case runs
+#      the REAL relay under `timeout` -- with divergent predicates it never
+#      returns, so the hang IS the assertion.
 #
 # No bats dependency. HERMETIC, same seams as test-relay-file-first.sh: a temp
 # $SOT_COMM_HOME, a per-case $SOT_COMM_SELF_FILE, a pinned $SOT_COMM_TEST_HOST,
@@ -44,6 +48,12 @@ STUB
 chmod +x "$BIN/comm-relay.sh"
 SEND="$BIN/comm-send.sh"
 JOIN="$BIN/comm-join.sh"
+
+# A second copy with the REAL relay in place, for the ping-pong case: a stub
+# that records argv can never execute the loop it is meant to rule out.
+BIN_REAL="$WORK/bin-real"
+cp -r "$SCRIPTS_DIR" "$BIN_REAL"
+SEND_REAL="$BIN_REAL/comm-send.sh"
 
 SENDER_HOST="testhost"
 SENDER="t-sender"
@@ -121,9 +131,33 @@ case_a_broadcast_never_execs_the_relay() {
     return 0
 }
 
+case_a_hostless_row_terminates_instead_of_ping_ponging() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    # A row that EXISTS with no `host`: a hit for "does a row exist", a miss
+    # for "can this box file and poke it". While those two questions were
+    # asked by different doors, comm-send.sh handed this to the relay, the
+    # relay handed it straight back, and the pair span forever (leaking one
+    # temp file per lap). The endpoint below is a socket nothing listens on,
+    # so the ONE honest lap ends in the relay's unreachable refusal.
+    jq --arg t "$LOCAL_PEER" '.agents[$t] = {}' "$SOT_COMM_HOME/registry.json" \
+        > "$SOT_COMM_HOME/registry.json.tmp" \
+        && mv "$SOT_COMM_HOME/registry.json.tmp" "$SOT_COMM_HOME/registry.json"
+    local out rc
+    out="$(cd "$WORK" && SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$SENDER_HOST" \
+        SOT_RELAY_ENDPOINT="unix:$WORK/no-such-daemon.sock" \
+        timeout 5 "$SEND_REAL" "@$LOCAL_PEER" "round and round" 2>&1)"
+    rc=$?
+    [ "$rc" -ne 124 ] || { echo "  the two verbs ping-ponged until the timeout killed them"; return 1; }
+    [ "$rc" -eq 1 ] || { echo "  exited $rc, want 1 (out: '$out')"; return 1; }
+    local n; n="$(printf '%s\n' "$out" | grep -c 'nothing filed' || true)"
+    [ "$n" -eq 1 ] || { echo "  $n unreachable refusals, want exactly 1 (out: '$out')"; return 1; }
+    return 0
+}
+
 check "a registry miss on a directed send execs the relay with the same args" case_a_registry_miss_execs_the_relay
 check "a registry hit files locally and never calls the relay" case_a_registry_hit_files_locally_and_never_calls_the_relay
 check "a broadcast never execs the relay" case_a_broadcast_never_execs_the_relay
+check "a row that exists with no host terminates in one refusal, never a ping-pong" case_a_hostless_row_terminates_instead_of_ping_ponging
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

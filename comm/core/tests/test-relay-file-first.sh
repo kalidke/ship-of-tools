@@ -11,14 +11,16 @@
 #   2. A handle nothing can file for is a FAILURE: `no such handle` on stderr,
 #      exit 1. It used to print `relayed` plus a warning and exit 0.
 #   3. A cross-box verdict is the FILER'S RECEIPT and nothing else (ADR 0048):
-#      `filed -> @h (by <filer>, relay)` exit 0 only when whoever appended the
-#      frame says so, carrying this sender's own frame id; a `filed:false`
-#      receipt names the filer and its reason; an ack with no receipt is NOT
-#      CONFIRMED with the attached roster as a diagnostic; an ack with no `id`
-#      says the hub predates receipts. The name-suffix GUESS this replaces
-#      (a target whose name ends in an attached `fe@<host>`) is gone from the
-#      script: its old test case is below as a regression guard that the
-#      suffix now means nothing at all.
+#      `filed -> @h (by <filer>, relay)` exit 0 when a receipt carrying this
+#      sender's own frame id arrives. A receipt is ONLY ever positive -- no
+#      filer can honestly say "not me", since it cannot know about the others
+#      and every attached frontend would say it about a handle it does not
+#      host -- so silence is the negative: NOT CONFIRMED, with the attached
+#      roster as a diagnostic. An ack with no `id` says the hub predates
+#      receipts, and an empty roster is `no such handle`, both decided on the
+#      ack. The name-suffix GUESS this replaces (a target whose name ends in
+#      an attached `fe@<host>`) is gone from the script; a case below is the
+#      regression guard that the suffix now means nothing at all.
 #
 # No bats dependency. HERMETIC, same seams as test-leave-stops-bridge.sh: a
 # temp $SOT_COMM_HOME, a per-case $SOT_COMM_SELF_FILE, a pinned
@@ -98,6 +100,7 @@ relay_send() {
 #
 # ACK_ID_MODE: echo (a receipt-capable hub), drop (a hub that predates them),
 # or wrong (a receipt for somebody else's frame -- the attributability guard).
+# A receipt is positive-only, so the only parameter left is WHO filed.
 FAKE_PID=""; HANDLER_PID=""
 fake_daemon() {  # SOCKET RECEIVERS_JSON [RECEIPT_JSON_TEMPLATE] [ACK_ID_MODE]
     command -v nc >/dev/null 2>&1 || return 1
@@ -105,7 +108,11 @@ fake_daemon() {  # SOCKET RECEIVERS_JSON [RECEIPT_JSON_TEMPLATE] [ACK_ID_MODE]
     local fifo="$WORK/reply.fifo" req="$WORK/req.txt"
     rm -f "$fifo" "$req"; mkfifo "$fifo" || return 1
     : > "$req"
-    ( nc -lU "$sock" < "$fifo" > "$req" 2>/dev/null ) &
+    # `-N` (shutdown the socket on stdin EOF) is what makes the no-receipt
+    # case end on EOF instead of sitting out the sender's whole window: this
+    # netcat flavor does NOT close on EOF without it. A flavor that lacks the
+    # flag fails to bind, and the case SKIPs rather than hanging.
+    ( nc -N -lU "$sock" < "$fifo" > "$req" 2>/dev/null ) &
     FAKE_PID=$!
     (
         exec > "$fifo"
@@ -149,12 +156,11 @@ fake_daemon_stop() {
     return 0
 }
 
-# One `agent.receipt` evt line, id filled in by the handler above.
-receipt_evt() {  # FILED HANDLE FILER [REASON]
-    jq -nc --argjson f "$1" --arg h "$2" --arg who "$3" --arg r "${4:-}" \
-        '{v:1,id:1,kind:"evt",op:"agent.receipt",
-          payload:({id:"", handle:$h, filed:$f, filer:$who}
-                   + (if $r == "" then {} else {reason:$r} end))}'
+# One `agent.receipt` evt line -- id filled in by the handler above, filer
+# stamped by the daemon in production. Two fields, no negative form.
+receipt_evt() {  # FILER
+    jq -nc --arg who "$1" \
+        '{v:1,id:1,kind:"evt",op:"agent.receipt",payload:{id:"", filer:$who}}'
 }
 
 # _patch_target_row JSON -- merge JSON into TARGET's own registry row (the
@@ -186,56 +192,17 @@ case_registry_target_is_filed_with_the_daemon_down() {
     return 0
 }
 
-case_unknown_handle_exits_one_while_an_fe_row_is_attached() {
-    setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    local sock="$WORK/fake-unknown.sock"
-    fake_daemon "$sock" '["fe@'"$PEER_HOST"'"]' \
-        "$(receipt_evt false "stranger" "fe@$PEER_HOST" "no row on this frontend declares @stranger")" \
-        || { echo "  nc -lU unavailable; cannot stand up a fake daemon"; return 2; }
-    # `stranger` is in no registry, and the attached frontend answers that no
-    # row of its own declares it: a KNOWN set that lacks the handle is the
-    # fleet's only answer to "is that remote handle real".
-    relay_send "unix:$sock" send "@stranger" "into the void"
-    fake_daemon_stop
-    [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
-    contains "$RELAY_ERR" "no such handle: stranger" \
-        || { echo "  stderr was '$RELAY_ERR', want 'no such handle: stranger'"; return 1; }
-    contains "$RELAY_ERR" "fe@$PEER_HOST" \
-        || { echo "  the refusal does not name the filer that reported it: '$RELAY_ERR'"; return 1; }
-    contains "$RELAY_ERR" "no row on this frontend declares" \
-        || { echo "  the refusal gives no reason: '$RELAY_ERR'"; return 1; }
-    contains "$RELAY_OUT" "relayed" \
-        && { echo "  a failed send still printed a relayed line: '$RELAY_OUT'"; return 1; }
-    return 0
-}
-
 case_a_receipt_is_the_only_delivery() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local sock="$WORK/fake-receipt.sock"
     fake_daemon "$sock" '["fe@'"$PEER_HOST"'"]' \
-        "$(receipt_evt true "peer-$PEER_HOST" "fe@$PEER_HOST")" \
+        "$(receipt_evt "fe@$PEER_HOST")" \
         || { echo "  nc -lU unavailable; cannot stand up a fake daemon"; return 2; }
     relay_send "unix:$sock" send "@peer-$PEER_HOST" "over the wire"
     fake_daemon_stop
     [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC, want 0 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
     contains "$RELAY_OUT" "filed -> @peer-$PEER_HOST (by fe@$PEER_HOST" \
         || { echo "  verdict was '$RELAY_OUT', want a filed line naming the filer"; return 1; }
-    return 0
-}
-
-case_a_refusing_filer_names_itself_and_its_reason() {
-    setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    local sock="$WORK/fake-refuse.sock"
-    fake_daemon "$sock" '["fe@'"$PEER_HOST"'"]' \
-        "$(receipt_evt false "typo-$PEER_HOST" "fe@$PEER_HOST" "no row on this frontend declares @typo-$PEER_HOST")" \
-        || { echo "  nc -lU unavailable; cannot stand up a fake daemon"; return 2; }
-    relay_send "unix:$sock" send "@typo-$PEER_HOST" "over the wire"
-    fake_daemon_stop
-    [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
-    contains "$RELAY_ERR" "fe@$PEER_HOST reports:" \
-        || { echo "  stderr was '$RELAY_ERR', want the filer and its reason"; return 1; }
-    contains "$RELAY_OUT" "filed" \
-        && { echo "  a refused send still printed a filed line: '$RELAY_OUT'"; return 1; }
     return 0
 }
 
@@ -254,6 +221,12 @@ case_an_unanswered_send_is_not_confirmed_and_names_who_was_attached() {
         || { echo "  stderr was '$RELAY_ERR', want NOT CONFIRMED"; return 1; }
     contains "$RELAY_ERR" "Attached: fe@$PEER_HOST" \
         || { echo "  the diagnostic does not name who was attached: '$RELAY_ERR'"; return 1; }
+    # The exact strings the guess printed, swept where they were printed
+    # FROM (a grep for text that only ever lived in a comment can only pass).
+    contains "$RELAY_ERR" "may file it" \
+        && { echo "  the old guess text survived: '$RELAY_ERR'"; return 1; }
+    contains "$RELAY_ERR" "No confirmed path to a session on another frontend" \
+        && { echo "  the old dead-end text survived: '$RELAY_ERR'"; return 1; }
     contains "$RELAY_OUT" "filed" \
         && { echo "  an unproven send still printed a filed line: '$RELAY_OUT'"; return 1; }
     contains "$RELAY_OUT" "relayed" \
@@ -288,7 +261,7 @@ case_a_receipt_for_another_frame_is_not_a_verdict() {
     # must not be read as its verdict, or two concurrent sends to one handle
     # can swap them and one success vouches for a failure.
     fake_daemon "$sock" '["fe@'"$PEER_HOST"'"]' \
-        "$(receipt_evt true "peer-$PEER_HOST" "fe@$PEER_HOST")" wrong \
+        "$(receipt_evt "fe@$PEER_HOST")" wrong \
         || { echo "  nc -lU unavailable; cannot stand up a fake daemon"; return 2; }
     relay_send "unix:$sock" send "@peer-$PEER_HOST" "over the wire"
     fake_daemon_stop
@@ -414,9 +387,7 @@ case_an_empty_roster_is_no_such_handle() {
 }
 
 check "a registry target is filed with the daemon down" case_registry_target_is_filed_with_the_daemon_down
-check "an unknown handle exits 1 with 'no such handle' while an fe@ row is attached" case_unknown_handle_exits_one_while_an_fe_row_is_attached
 check "a filer's receipt is the delivery, and names the filer" case_a_receipt_is_the_only_delivery
-check "a refusing filer names itself and its reason" case_a_refusing_filer_names_itself_and_its_reason
 check "an ack with no receipt is NOT CONFIRMED and names who was attached" case_an_unanswered_send_is_not_confirmed_and_names_who_was_attached
 check "a target whose name ends in an attached frontend's host gets no credit for it" case_the_name_suffix_means_nothing_now
 check "a receipt carrying another frame's id is not this send's verdict" case_a_receipt_for_another_frame_is_not_a_verdict

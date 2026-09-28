@@ -66,15 +66,12 @@ pub struct AgentMessage {
 
 /// One relayed filer receipt (ADR 0048) — the daemon broadcasts one per
 /// `agent.filed`; each connection turns it into an `agent.receipt` evt.
-/// Mirrors `AgentMessage`, with one difference that is the whole point:
-/// `filer` is stamped by the daemon from the answering connection's
-/// declared hello `name`, so a client cannot vouch under another name.
+/// Mirrors `AgentMessage`. `filer` is stamped by the daemon from the
+/// answering connection's declared hello `name`, so a filer names itself
+/// rather than being guessed at; it is attribution, not authentication.
 #[derive(Clone, Debug)]
 pub struct AgentReceipt {
     pub id: String,
-    pub handle: String,
-    pub filed: bool,
-    pub reason: Option<String>,
     pub filer: String,
 }
 

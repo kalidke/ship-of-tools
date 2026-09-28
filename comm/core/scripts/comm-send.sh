@@ -69,6 +69,9 @@ deliver() {  # $1 = target name
     tws="$(jq -r   --arg n "$t" '.agents[$n].workspace_id // empty' "$REGISTRY")"
     if [ -z "$thost" ]; then
         # Registry MISS on a DIRECTED send: this box cannot name the target.
+        # "Miss" is exactly `.host` empty-or-absent, and comm-relay.sh's
+        # `_registry_target` asks that SAME question (see its comment) — if
+        # the two ever diverge again the pair ping-pongs forever.
         # That is the routine case for a session on a machine that shares no
         # $HOME with this one -- it can never have a row here -- not a typo,
         # and refusing here is what forced a session to know which verb

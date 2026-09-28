@@ -39,12 +39,31 @@ nothing. This ADR is that ruling's discharge, not its reversal.
    without it, two concurrent sends to one handle can swap verdicts and a single
    success can vouch for a failure.
 
-2. **The filer answers `agent.filed {id, handle, filed, reason?}`** on its own
-   connection. The daemon stamps `filer` **from that connection's declared hello
-   `name`** and fans the result out as an `agent.receipt` evt. The request has no
-   `filer` field at all, so one filer cannot vouch under another's name; a
-   connection that declared no name is refused `bad_filer`, because an anonymous
-   vouch is indistinguishable from a forged one.
+2. **The filer answers `agent.filed {id}`** on its own connection — "I appended
+   the frame carrying this id", which is the whole claim. The daemon stamps
+   `filer` **from that connection's declared hello `name`** and fans the result
+   out as an `agent.receipt {id, filer}` evt. The request has no `filer` field,
+   so a receipt always names something checkable against the roster; a
+   connection that declared no name is refused `bad_filer`, since a receipt
+   naming nobody puts the verdict back where the guess was.
+
+   **`filer` is attribution, not authentication.** Nothing validates a hello
+   `name`, and the frame id reaches every client in the `agent.message` fan-out,
+   so any authenticated client could vouch under any name. That is accepted:
+   every client in this fleet is ours, a hostile client is not the threat model,
+   and validation machinery for one would be complexity bought for nothing. What
+   the receipt buys is a claim from something that says it did the work, in
+   place of a name-suffix guess made by the sender.
+
+2a. **There is no negative claim, and this is load-bearing.** `agent.message` is
+   fanned out to EVERY connection with no `to` filter, so a "did not file"
+   answer would be a global assertion made from local knowledge: every attached
+   frontend would deny a handle it does not host, the sender's read loop breaks
+   on the first receipt carrying its id, and a frame that WAS filed would report
+   `no such handle` — the defect this ADR exists to remove, with the sign
+   flipped, on the common path. Absence of a receipt is the only negative, and
+   it is the sender's own conclusion. It also makes break-on-first-receipt
+   sound: the only multi-receipt case left is two positives, and either is true.
 
 3. **The sender reads its own receipt** on the connection it is already holding,
    bounded by the existing 5 s transport bound — no new timeout knob. The
@@ -54,15 +73,19 @@ nothing. This ADR is that ruling's discharge, not its reversal.
 4. **The daemon keeps no delivery state.** It relays a receipt exactly as it
    relays a message: no pending table to leak, expire or lie from.
 
-5. **Who claims what.** A relay bridge IS its handle, so it claims `filed: true`
-   after an append that returned 0, and claims nothing when the append failed. A
-   frontend appends every inbound frame into one inbox of its own regardless of
-   `to`, so "I appended" is not "I filed for @h": it claims `filed: true` only
-   for a handle one of its OWN-host rows declares, `filed: false` with a reason
-   for a handle absent from that set (the fleet's only answer to "is that remote
-   handle real"), and **nothing at all** when it has no own-host list — "the set
-   is known and lacks @h" and "there is no set" are different facts, and only the
-   first may be reported as an absence.
+5. **Who claims what.** A relay bridge IS its handle, so it claims after an
+   append that returned 0, and claims nothing when the append failed. A frontend
+   appends every inbound frame into one inbox of its own regardless of `to`, so
+   "I appended" is not "I filed for @h": it claims only for a handle one of its
+   OWN-host rows declares, and stays silent otherwise. Those rows are resolved
+   through the connection's DECLARED host, never by looking up the frontend's
+   hostname in the workspace-list map — that map is keyed by the dial key, and a
+   box whose own daemon is dialed under any other label would claim nothing,
+   ever, in a way no pure unit test over injected rows can see.
+
+   A nav-envelope message (`sot_ui`) is acted on and never appended, so it is
+   never claimed either: the claim sits in the same branch as the append, not
+   beside it.
 
 6. **The append is never gated on the claim.** The frontend keeps appending
    unconditionally. Gating the append on the declared set would make a box deaf
@@ -76,14 +99,23 @@ nothing. This ADR is that ruling's discharge, not its reversal.
    (`declares_files_for`) survive with their tests, read per inbound frame as
    this frontend's local decision about what it may claim.
 
-8. **Both comm verbs route.** `comm-relay.sh send` already execs `comm-send.sh`
-   on a registry hit; `comm-send.sh` now execs `comm-relay.sh send` on a
-   directed-send registry MISS instead of refusing `no such handle`. The two
-   triggers are mutually exclusive (hit → file, miss → wire), so no recursion
-   guard is needed, and a session on a machine that shares no `$HOME` can never
-   again be told "no such handle" about a peer it is structurally incapable of
-   naming. A `--broadcast` fans out over registry keys and never takes this path
-   — an `exec` mid fan-out would abandon the remaining targets.
+8. **Both comm verbs route, and both doors ask the same question.**
+   `comm-relay.sh send` already execs `comm-send.sh` on a registry hit;
+   `comm-send.sh` now execs `comm-relay.sh send` on a directed-send registry
+   MISS instead of refusing `no such handle`. A session on a machine that shares
+   no `$HOME` can never again be told "no such handle" about a peer it is
+   structurally incapable of naming.
+
+   The exclusivity that makes this safe is not free: the relay used to ask "does
+   a row exist" while send asked "does the row name a host", so a row that
+   existed with an empty or absent `host` was a hit for one and a miss for the
+   other, and the pair span forever, leaking a temp file per lap (the `exec`
+   discards the `EXIT` trap, so that file is also dropped by hand before it).
+   Both now ask the one question that decides whether a local append and poke
+   are possible: `.host` non-empty. A recursion guard would have survived the
+   loop; agreeing predicates delete it. A `--broadcast` fans out over registry
+   keys and never takes this path — an `exec` mid fan-out would abandon the
+   remaining targets.
 
 Nothing about the transport changes.
 
@@ -97,23 +129,44 @@ Verdicts, in the order the first that applies wins:
 | `--all` | `relayed -> <all> (N receiver(s))` | 0 |
 | `receivers` empty | `no such handle: h` | 1 |
 | ack without an `id` | `NOT CONFIRMED: this daemon predates filer receipts` | 1 |
-| receipt, `filed: true` | `filed -> @h (by <filer>, relay)` | 0 |
-| receipt, `filed: false` | `no such handle: h — <filer> reports: <reason>` | 1 |
-| no receipt before EOF or the 5 s bound | `NOT CONFIRMED: sent for @h; no filer answered in 5s. Attached: …` | 1 |
+| a receipt carrying this send's `id` | `filed -> @h (by <filer>, relay)` | 0 |
+| no receipt before EOF or the 5 s bound | `NOT CONFIRMED: sent for @h; nobody claimed it within 5s. Attached: …` | 1 |
 
 Everything a receipt cannot exist for is decided on the ack — a broadcast, a hub
 that dropped the id, an empty roster — so no path waits out five seconds for an
-answer nobody can give.
+answer nobody can give. **One path does wait: a frontend too old to send
+`agent.filed` is indistinguishable from a slow one**, so a send to a handle such
+a frontend hosts costs the full 5 s before its NOT CONFIRMED. The item-3 fix
+this supersedes failed instantly there, but only because it matched the
+name-suffix guess; without that guess, and without a negative claim, nothing on
+the ack distinguishes an old frontend from a new one that is about to answer.
+Closing it needs a capability signal the daemon can report — new wire surface,
+and a separate decision.
+
+The bridge sends its receipt over a fresh one-shot connection with the bridge
+role cleared (no phantom second bridge in the roster, no long-lived-role read
+deadline on a one-frame connection) and reads the ack with `grep -qm1`: the
+daemon never closes a one-shot connection, so without that early exit every
+filed frame would cost the full 5 s inside the bridge's filing loop, and a burst
+would file at one message per five seconds.
 
 **Mixed fleet.** No struct here uses `deny_unknown_fields`, and both new fields
 are omitted when absent, so: a new sender against an old hub gets `predates
 filer receipts` on the ack (no false success, no stall); an old sender against a
 new hub publishes no id, nothing claims, and it behaves exactly as its own
 version always did; a new hub with an older frontend as the filer appends the
-frame as today and the sender reports NOT CONFIRMED naming it; a new frontend
-against an old daemon has its `agent.filed` answered as an unknown op, which the
-unmatched-id fallthrough drops silently (no per-frame warn). Cross-Linux sends on
-a shared `$HOME` are registry hits and never touch the wire at all.
+frame as today and the sender reports NOT CONFIRMED naming it, after the 5 s
+above; a new frontend against an old daemon has its `agent.filed` answered as an
+unknown op, which the unmatched-id fallthrough drops silently (no per-frame
+warn). Cross-Linux sends on a shared `$HOME` are registry hits and never touch
+the wire at all.
+
+**The return leg depends on the netcat flavor, not on the protocol.** The daemon
+closes on read EOF, and only OpenBSD `nc` holds the write half open long enough
+to carry a receipt back; a flavor that closes both halves would report NOT
+CONFIRMED for every filed frame. Nothing hermetic can cover that — the smoke
+test is a real send printing a real `filed -> … (by …)` line, and a receipt that
+never arrives is the first thing to suspect.
 
 **What this deletes.** The name-suffix guess and its "probably its filer"
 reasoning; the roster-name success branch; `fe.files_for` on the wire; the "no
@@ -121,13 +174,14 @@ such handle" dead end for a target this box cannot name, and with it the
 requirement that a caller know which verb routes; and the instruction that only
 a reply proves the path.
 
-**What it deliberately does not do.** A `(handle, host)` address on every frame
+**What it deliberately does not do.** It does not answer "is that remote handle
+real". The earlier draft had a frontend answer `filed: false` for a handle no row
+of its own declared, which would have closed remote liveness; decision 2a is why
+it cannot. Liveness stays open. A `(handle, host)` address on every frame
 would answer a question the receipt already answers better, and would let a
 sender silently pick one of two boxes claiming a handle instead of reporting who
 actually filed; if duplicate handles become real, the fix is the naming rule plus
-two visible receipts. A frontend that answers `filed: false` for a handle whose
-session has simply not started yet is harsher than the truth — the frame IS
-still appended and a later session reads it — and that is accepted for now
-because "check the spelling" is right far more often; it is revisited when the
-frontend files per handle rather than into one shared inbox, where "not started
-yet" becomes provable.
+two visible receipts. With no negative claim, a handle whose session has
+simply not started yet reads as NOT CONFIRMED rather than as a refusal — the
+frame IS still appended and a later session reads it, and the wording says the
+frame was sent, not that the handle is unknown.
