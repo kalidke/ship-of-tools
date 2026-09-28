@@ -647,14 +647,13 @@ pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
     );
 }
 
-/// Why a revival's tail stopped short of the mint. The three refusals are
-/// not interchangeable to whoever reads the log — nothing answered,
-/// something answered and was refused, or the mint itself answered nothing
-/// — so they must still be distinguishable at the call site: THE LOG
-/// RECORDS ARE THE CONTRACT, and one `String` cannot carry three of them.
-/// Each variant therefore holds exactly what its own line needs and
-/// [`restart_blocking`] cannot already see — the phase the authority
-/// settled at, which only the tail has read — and nothing else.
+/// Why a revival's tail stopped short of the mint. One variant per line
+/// [`restart_blocking`] owes its log: the three failures are not
+/// interchangeable to whoever reads it — nothing answered, something
+/// answered and was refused, or the mint itself answered nothing — and two
+/// of them carry the phase the authority settled at, which only the tail
+/// has read. THE LOG RECORDS ARE THE CONTRACT, and one `String` cannot
+/// carry three of them.
 enum MintRefusal {
     NeverAnswered(String),
     Refused { settled: &'static str, detail: String },
@@ -683,9 +682,9 @@ enum MintRefusal {
 ///      the watchdog takes that guard while restarting a crashed leg. This
 ///      path polls in place while HOLDING the guard, which is safe by
 ///      construction: a resumed run is never resurrected, so its
-///      replacement rests with no leg at all, no leg can exit, and nothing
-///      contends for the guard. Merging the two waits would break one of
-///      them — that is the difference that forecloses unification.
+///      replacement rests with no leg at all and no leg can exit. Merging
+///      the two waits would break one of them — that is the difference
+///      that forecloses unification.
 ///   4. What identity means. Attach uses it as a fast path to SKIP the
 ///      retire; this path uses it as a REFUSAL. Opposite polarity, opposite
 ///      consequence.
@@ -1277,7 +1276,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .pop_front()
-                .ok_or_else(|| "the fake was asked for more status reads than it was scripted".to_string())?;
+                .expect("the fake was asked for more status reads than it was scripted");
             Ok(sot_log::supervisor_client::StatusReport { pid, created, voyage: None, leg: None, phase })
         }
         fn end_run(
@@ -1353,6 +1352,38 @@ mod tests {
         restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
 
         assert_eq!(fake.record(), vec![Effect::Status, Effect::EndRun]);
+        assert_eq!(
+            reg.resolve(Some(&id)).unwrap().account(),
+            "",
+            "the record is back on the login the live leg still spends"
+        );
+        let toml = std::fs::read_to_string(crate::workspaces::toml_path_for(&slug)).unwrap();
+        assert!(toml.contains("account       = \"\""), "{toml}");
+    }
+
+    // `end_run` can SUCCEED and still leave the run unended: `Starting` means
+    // the authority had not reached the lifecycle where an end takes. Nothing
+    // else pins that `restart_blocking` consults that judgement — the fake's
+    // only scripted outcome is the healthy one, so without this the guard at
+    // `run_ended` could be deleted with every other test still green. An
+    // absent call is exactly what no pure test of `run_ended` can observe.
+    #[tokio::test]
+    async fn an_end_run_that_did_not_end_the_run_spawns_nothing_and_rolls_the_record_back() {
+        let _g = env_guarded();
+        let home = home_with(true, &[("team", true)]);
+        let scratch = tempfile::tempdir().unwrap();
+        let (reg, id, slug) = accept_fixture(home.path(), scratch.path());
+
+        let (_payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+        let mut fake = FakeSupervisor::healthy();
+        fake.end_run = Ok(crate::capsule_workspace::EndRunOutcome::Starting);
+        restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
+
+        assert_eq!(
+            fake.record(),
+            vec![Effect::Status, Effect::EndRun],
+            "the run did not end, so nothing may be spawned or minted"
+        );
         assert_eq!(
             reg.resolve(Some(&id)).unwrap().account(),
             "",
