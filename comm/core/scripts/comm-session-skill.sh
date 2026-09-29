@@ -16,7 +16,7 @@
 # a retired launcher, which is gone too — every session now runs the same
 # skill. The repo-identity check didn't go away with it: comm-session-start.sh
 # still needs it, via `--is-sot-repo`, to decide whether a session gets the
-# Ship-of-Tools layer (FE ping, bus sync).
+# Ship-of-Tools layer (FE ping).
 #
 # A session's identity is its row's handle everywhere, including on a Windows
 # box (a frontend is a client, addressed by its own label for directed
@@ -54,9 +54,8 @@ _repo_dir() {
 # `.git` and the owner/host), which is stable across worktrees, renames, forks,
 # and both URL syntaxes. Exact-match, not substring: `ship-of-tools-ops` CONTAINS
 # `ship-of-tools`, and the two are different repos that must be told apart. The
-# ops sidecar is deliberately in the accepted set — it's the same project (the
-# `/bus-sync` git bus lives there), so a session in it wants the sot-flavored
-# backend bootstrap too.
+# ops sidecar is deliberately in the accepted set — it's the same project, so
+# a session in it wants the sot-flavored backend bootstrap too.
 # Fallbacks, in order: marker files (a remote-less or vendored checkout still
 # has them), then the old dirname test (so nothing that used to be detected
 # stops being detected).

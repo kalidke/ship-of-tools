@@ -62,8 +62,8 @@ git-cliff is installed (optional — CI generates the release notes), runs
    `SHA256SUMS`. No julia bundle — installs clone the repo at the tag; the
    release-blocking `julia-check` job proves the envs resolve + load at this
    ref.
-3. Announce: `/bus-note` + a sot-comm broadcast so fleet sessions know a
-   release landed (they stay on dev builds; this is for awareness).
+3. Announce: a sot-comm broadcast so fleet sessions know a release landed
+   (they stay on dev builds; this is for awareness).
 
 ## Pipeline validation without a tag
 

@@ -222,7 +222,7 @@ _context_block() {
     [ -n "$inbox" ] || inbox="${INBOX_DIR:-${SOT_COMM_HOME:-$HOME/.sot-comm}/inbox}/$h.jsonl"
     cat <<EOF
 You are @$h. Inbox: $inbox
-Verbs: comm-relay.sh send @<peer> "msg" | comm-poll.sh | comm-status.sh <working|waiting|blocked|done|idle> "why" | comm-list.sh | bus.sh sync
+Verbs: comm-relay.sh send @<peer> "msg" | comm-poll.sh | comm-status.sh <working|waiting|blocked|done|idle> "why" | comm-list.sh
 EOF
     _workstate_rule
     _capability_lines
@@ -262,7 +262,7 @@ if [ "$MODE" = "catchup" ]; then
     eval "$("$SCRIPT_DIR/comm-context.sh")"
     H="${SOT_COMM_NAME:-${NAME:-}}"
     if [ -z "$H" ]; then
-        echo "BOOTSTRAP handle=none poll=n/a selftest=down bus=n/a identity=FAIL"
+        echo "BOOTSTRAP handle=none poll=n/a selftest=down identity=FAIL"
         exit 0
     fi
 
@@ -293,17 +293,7 @@ if [ "$MODE" = "catchup" ]; then
         [ "${POLL_COUNT:-0}" -gt 0 ] 2>/dev/null && { echo "BACKLOG:"; printf '%s\n' "$POLL_OUT"; }
     fi
 
-    BUS="n/a"
-    if [ "$IS_SOT" = 1 ]; then
-        # Peek only: `bus.sh sync --count` NEVER advances the bus cursor
-        # (Codex review finding 9 — the old version did, permanently hiding
-        # entries this verdict line never actually showed anyone). A nonzero
-        # count here is a durable prompt to run `bus.sh sync` (or
-        # /bus-sync) for real, never a silent acknowledgement.
-        BUS="$("$SCRIPT_DIR/bus.sh" sync --count 2>/dev/null || echo "n/a")"
-    fi
-
-    echo "BOOTSTRAP handle=$H poll=${POLL_COUNT:-0} selftest=$SELFTEST bus=$BUS identity=ok"
+    echo "BOOTSTRAP handle=$H poll=${POLL_COUNT:-0} selftest=$SELFTEST identity=ok"
     _workstate_rule
     _capability_lines
     exit 0
