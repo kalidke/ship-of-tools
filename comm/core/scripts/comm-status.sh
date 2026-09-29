@@ -107,6 +107,19 @@ PROMPT_ID="${COMM_STATUS_PROMPT_ID:-}"
 # silent-exit watcher reads it back to scan for a kill marker.
 TRANSCRIPT="${COMM_STATUS_TRANSCRIPT:-}"
 
+# The id is the WHOLE authority of `interrupted`: with none it must do
+# nothing. An empty id compares EQUAL to a field that was never stamped --
+# `floor_prompt` after a machine `prompt` from an adapter that passes no id,
+# or `question_prompt` after a self-reported `blocked` -- so a call with no id
+# would clear a live floor, or a question nobody proved was dead, which is the
+# blind clear the id exists to prevent. comm-wake.sh's watcher already skips
+# an empty id; this is the same refusal in the script that OWNS the fields, so
+# a second caller can never reintroduce it. Silent rc 0, like every other
+# EVENT no-op.
+if [ "$VERB" = interrupted ] && [ -z "$PROMPT_ID" ]; then
+    exit 0
+fi
+
 # The whole read-decide-write, run under the registry lock.
 status_txn() {
     jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || return 0   # row gone: no-op

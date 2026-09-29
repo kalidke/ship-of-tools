@@ -1055,6 +1055,31 @@ case_silent_exit_stop_clears_floor_prompt_too() {
     [ "$(jq -r --arg n "$NAME" '.agents[$n].floor_prompt // "gone"' "$REGISTRY")" = "gone" ] || { echo "    floor_prompt survived stop"; return 1; }
     expect done/-/-/-/d normal-close
 }
+# An `interrupted` carrying NO id must change nothing at all: an empty id
+# compares equal to a field that was never stamped, so without the guard a
+# stray call would clear a live floor, or a self-reported question that
+# nothing proved was dead. Asserted on the fields themselves rather than the
+# reduced state, because the fields are what the identity comparison reads.
+case_interrupted_with_no_prompt_id_leaves_an_unstamped_floor_alone() {
+    seed idle
+    # A floor with NO id of its own -- what an adapter that passes no
+    # prompt_id leaves behind. This is the case the guard exists for: a
+    # floor stamped with an id is safe either way, because a real id never
+    # compares equal to an empty one, so a test built on `tr_start` would
+    # pass with the guard removed and prove nothing.
+    COMM_STATUS_ORIGIN=machine "$ST" prompt >/dev/null
+    [ "$(jq -r --arg n "$NAME" '.agents[$n].floor // "gone"' "$REGISTRY")" = "machine" ] || { echo "    setup: no floor to defend"; return 1; }
+    [ "$(jq -r --arg n "$NAME" '.agents[$n].floor_prompt // "gone"' "$REGISTRY")" = "" ] || { echo "    setup: floor_prompt was stamped after all"; return 1; }
+    COMM_STATUS_PROMPT_ID="" "$ST" interrupted >/dev/null
+    [ "$(jq -r --arg n "$NAME" '.agents[$n].floor // "gone"' "$REGISTRY")" = "machine" ] || { echo "    an id-less interrupt cleared an unstamped floor"; return 1; }
+}
+case_interrupted_with_no_prompt_id_leaves_a_self_reported_question_alone() {
+    seed idle
+    tr_start SXE
+    "$ST" blocked "the owner must answer" >/dev/null
+    COMM_STATUS_PROMPT_ID="" "$ST" interrupted >/dev/null
+    [ "$(jq -r --arg n "$NAME" '.agents[$n].question // "gone"' "$REGISTRY")" = "the owner must answer" ] || { echo "    an id-less interrupt cleared a self-reported question"; return 1; }
+}
 # comm-status-working.sh's own passthrough (not just comm-status.sh's side
 # of the contract): a real hook envelope's prompt_id and transcript_path
 # reach the registry and the persisted path file unmodified.
@@ -1082,6 +1107,8 @@ check "the bare interrupt marker text clears" case_silent_exit_bare_interrupt_te
 check "a CRLF-terminated marker line clears too" case_silent_exit_crlf_terminated_marker_clears
 check "stop clears floor_prompt too, a normal turn still ends done" case_silent_exit_stop_clears_floor_prompt_too
 check "comm-status-working.sh passes prompt_id and transcript_path through" case_working_hook_passes_prompt_id_and_transcript_through
+check "an id-less interrupt leaves an unstamped floor alone" case_interrupted_with_no_prompt_id_leaves_an_unstamped_floor_alone
+check "an id-less interrupt leaves a self-reported question alone" case_interrupted_with_no_prompt_id_leaves_a_self_reported_question_alone
 
 echo ""
 echo "$PASS passed, $FAIL failed"
