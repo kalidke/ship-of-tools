@@ -159,6 +159,7 @@ The smallest useful working slice:
 - Send with `comm-send.sh @handle "text"` and read its one result, `filed` or `FAILED` — nothing is queued and there is no second route.
 - When `[sot-comm] you have mail` appears, or your end-of-turn check says so, run `comm-poll.sh`.
 - To wait for a reply, end your turn.
+- Run the session-start step once, when a session first starts — not again on every resume.
 
 ## Conventions for Claude
 

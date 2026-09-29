@@ -1,7 +1,7 @@
 # sot-comm protocol — v1
 
 Session-to-session messaging for Ship of Tools. A fork of the `agent-comm` user skill
-with the single-session jail removed and a durable inbox fallback added, so
+with the single-session jail removed and a durable inbox added, so
 sessions can address each other across capsule rows and across machines.
 
 This file is the **contract**. Every client — the Claude skill today, a Codex or
@@ -49,7 +49,7 @@ deployment, one `~/.sot-comm` serves every host sharing that home.
 **Liveness** is heartbeat-based, not pane-based: an agent is *live* if
 `now - last_seen <= SOT_COMM_STALE_SECS` (default 600). This is what lets a
 session on one machine consider a session on another reachable. `host` +
-`workspace_id` are what a same-host live delivery types into.
+`workspace_id` are the address a same-host daemon resolves.
 
 **Work-state** (`state` + `summary`, stamped by `status_at`) powers the ADE
 *state-nav* at-a-glance view, and is distinct from the lifecycle `status` above.
@@ -140,9 +140,10 @@ draft still does, and a working session is not free either and is never
 typed into — the daemon types one fixed line, `[sot-comm] you have mail: run
 comm-poll.sh`, and Enter; keystrokes would otherwise land in an open dialog,
 menu or half-written draft. The daemon does this, not the frontend or the
-sender — several frontends can show one row and each would type, a closed
-window would leave the row deaf, and a pasted message is never marked read
-so it would show again. One line per new batch of mail; one more if it is
+sender — several frontends can show one row and each would type, and a
+closed window would leave the row deaf. It types a fixed notice, never the
+message itself: a pasted message is never marked read, so it would show
+again. One line per new batch of mail; one more if it is
 still unread ten minutes later at a free prompt. A busy session needs no
 typing: its end-of-turn check will not let a turn finish while unread mail
 waits. This is the only wake — no per-session watcher, listener, bridge or

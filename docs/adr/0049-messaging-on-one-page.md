@@ -23,7 +23,7 @@ The owner asked for the fix as "agree on the one page comm system and then clean
   (`~/.sot-comm`, or `SOT_COMM_HOME`). The read cursor is a line count; unread mail is
   any line past it addressed to this handle by someone else.
 - **Sending** — two routes, by whether the sender's own comm folder lists the receiver:
-  file it itself, or hand it to the hub (the one daemon every box can reach), which
+  files it itself, or hands it to the hub (the one daemon every box can reach), which
   offers it to every linked daemon, and the one holding that inbox files it and says so.
   A daemon on a box with its own disk keeps its own link to the hub, opened when it
   starts and reopened if it drops, so the box is reachable whenever its rows run,
@@ -48,11 +48,10 @@ The owner asked for the fix as "agree on the one page comm system and then clean
 
 - The daemon types, not the frontend, because several frontends can show one row and
   each would type, and a closed window would leave the row deaf — put to the owner and
-  approved; the first shape had the frontend check.
+  approved.
 - The session reads the message through `comm-poll.sh` rather than having it pasted,
   because a pasted message is never marked read, so it would show again, hold the next
-  turn open, and read as the owner's own words — put to the owner and approved; the
-  first shape pasted the message.
+  turn open, and read as the owner's own words — put to the owner and approved.
 - The check repeats every two seconds rather than once at filing time, because one try
   misses a row that is busy, compacting or restarting at that moment.
 
@@ -62,4 +61,4 @@ A session is told all of this at start: `comm-context.sh` prints its handle; sen
 `comm-send.sh @handle "text"` and read the one result; when `[sot-comm] you have mail`
 appears, or the end-of-turn check says so, run `comm-poll.sh`; to wait for a reply, end
 the turn. A frontend plays no part in messaging, and a session on a box with no daemon
-is not woken while idle. ADRs 0047 and 0048 are superseded.
+is not woken while idle.
