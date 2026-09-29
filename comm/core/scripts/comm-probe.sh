@@ -79,7 +79,7 @@ probe_root() {
 probe_row_id() {
     local handle="$1" list
     list="$(probe_request '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)" || return 1
-    printf '%s' "$list" | jq -r --arg h "$handle" \
+    printf '%s' "$list" | sot_jq -r --arg h "$handle" \
         '[(.payload.workspaces // [])[]? | select(.agent_handle == $h) | .workspace_id][0] // empty' 2>/dev/null
 }
 
@@ -103,7 +103,7 @@ probe_create() {
         '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:$p,autostart_claude:false,agent:"none",agent_name:$an,task:"",boot:true}}')"
     rm -f "$rootfile"
     resp="$(probe_request "$req" workspace.create)" || return 1
-    wsid="$(printf '%s' "$resp" | jq -r '.payload.workspace_id // empty' 2>/dev/null)"
+    wsid="$(printf '%s' "$resp" | sot_jq -r '.payload.workspace_id // empty' 2>/dev/null)"
     [ -n "$wsid" ] || {
         echo "comm-probe.sh: workspace.create for @$handle failed: $(printf '%s' "$resp" | jq -c '.payload' 2>/dev/null || echo 'no reply')" >&2
         return 1
@@ -200,7 +200,7 @@ probe_self_handle() {
     local wsid list
     wsid="$(sot_capsule_workspace_id)" || return 1
     list="$(probe_request '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)" || return 1
-    printf '%s' "$list" | jq -r --arg w "$wsid" \
+    printf '%s' "$list" | sot_jq -r --arg w "$wsid" \
         '[(.payload.workspaces // [])[]? | select(.workspace_id == $w) | .agent_handle][0] // empty' 2>/dev/null
 }
 

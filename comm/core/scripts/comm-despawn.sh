@@ -77,13 +77,13 @@ if ! ENDPOINT="$(resolve_endpoint)"; then echo "ERROR: no sotd daemon found; set
 
 LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list || true)"
 WSID="$(printf '%s' "$LIST" | sot_jq -r --arg w "$WHO" \
-    '.payload.workspaces[] | select(.slug==$w or .label==$w or .workspace_id==$w) | .workspace_id' 2>/dev/null | head -1)"
+    '[.payload.workspaces[]? | select(.slug==$w or .label==$w or .workspace_id==$w) | .workspace_id][0] // empty' 2>/dev/null)"
 # Fallback: WHO was an agent handle that doesn't itself match a workspace
 # slug/label/id (display-prefix decoupling). Match by the workspace id its
 # registry row recorded at join.
 if [ -z "$WSID" ] && [ -n "$AGENT_WSID" ]; then
     WSID="$(printf '%s' "$LIST" | sot_jq -r --arg w "$AGENT_WSID" \
-        '.payload.workspaces[] | select(.workspace_id==$w) | .workspace_id' 2>/dev/null | head -1)"
+        '[.payload.workspaces[]? | select(.workspace_id==$w) | .workspace_id][0] // empty' 2>/dev/null)"
     [ -n "$WSID" ] && echo "Resolved workspace via registry row '$AGENT_WSID' (handle @$WHO ≠ workspace slug)"
 fi
 if [ -z "$WSID" ]; then

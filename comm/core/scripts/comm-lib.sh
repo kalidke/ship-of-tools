@@ -66,11 +66,14 @@ now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # there would silently rewrite what they wrote instead of fixing a
 # comparison.
 sot_jq() {
-    local out rc
-    out="$(command jq "$@")"
-    rc=$?
-    printf '%s' "$out" | tr -d '\r'
-    return "$rc"
+    # STREAMED, not captured: an earlier body took jq's output through a
+    # command substitution, which strips every trailing newline, so a
+    # `while read` consumer silently lost its LAST record on every platform --
+    # comm-list.sh printed 14 of 15 registered agents. Streaming also means jq
+    # can now see a downstream close, so no caller of this ends its pipeline in
+    # `head`: the filter picks the one value it wants instead.
+    command jq "$@" | tr -d '\r'
+    return "${PIPESTATUS[0]}"
 }
 
 # _sot_windows_local_pipe — the LOCAL daemon's named pipe, resolved and
@@ -455,9 +458,9 @@ registry_del_if_provisional() {
     local name="$1" want_root="$2" want_nonce="$3"
     local cur_status cur_root cur_nonce
     [ -n "$name" ] && [ -n "$want_nonce" ] || return 2
-    cur_status="$(jq -r --arg n "$name" '.agents[$n].status // ""' "$REGISTRY" 2>/dev/null)"
-    cur_root="$(jq -r --arg n "$name" '.agents[$n].root // ""' "$REGISTRY" 2>/dev/null)"
-    cur_nonce="$(jq -r --arg n "$name" '.agents[$n].nonce // ""' "$REGISTRY" 2>/dev/null)"
+    cur_status="$(sot_jq -r --arg n "$name" '.agents[$n].status // ""' "$REGISTRY" 2>/dev/null)"
+    cur_root="$(sot_jq -r --arg n "$name" '.agents[$n].root // ""' "$REGISTRY" 2>/dev/null)"
+    cur_nonce="$(sot_jq -r --arg n "$name" '.agents[$n].nonce // ""' "$REGISTRY" 2>/dev/null)"
     if [ "$cur_status" != "spawning" ] || [ "$cur_root" != "$want_root" ] || [ "$cur_nonce" != "$want_nonce" ]; then
         return 2
     fi
@@ -1008,7 +1011,7 @@ sot_cursor_offset() {
         ''|*[!0-9]*) ;;
         *) _sot_clamp_offset "$handle" "$cur"; return 0 ;;
     esac
-    n="$(jq -Rrs --arg cur "$cur" '
+    n="$(sot_jq -Rrs --arg cur "$cur" '
         [ split("\n")[] | select(length > 0)
           | (((fromjson? // {}) | (.ts // "")) > $cur) ] as $past
         | ($past | index(true)) // ($past | length)' \
