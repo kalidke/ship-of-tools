@@ -65,6 +65,12 @@ now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # add a \r before a newline the sender typed on purpose, and stripping it
 # there would silently rewrite what they wrote instead of fixing a
 # comparison.
+#
+# One caller is neither: `sot_json_escape` runs jq's own JSON writer to turn
+# a value into a string LITERAL for a hand-built frame, and text mode puts
+# its \r AFTER the closing quote, outside the literal. Stripping is safe
+# there for exactly that reason -- a carriage return the caller really typed
+# comes back escaped as the two characters \r, which `tr -d` cannot touch.
 sot_jq() {
     local out rc
     out="$(command jq "$@")"
@@ -455,9 +461,9 @@ registry_del_if_provisional() {
     local name="$1" want_root="$2" want_nonce="$3"
     local cur_status cur_root cur_nonce
     [ -n "$name" ] && [ -n "$want_nonce" ] || return 2
-    cur_status="$(jq -r --arg n "$name" '.agents[$n].status // ""' "$REGISTRY" 2>/dev/null)"
-    cur_root="$(jq -r --arg n "$name" '.agents[$n].root // ""' "$REGISTRY" 2>/dev/null)"
-    cur_nonce="$(jq -r --arg n "$name" '.agents[$n].nonce // ""' "$REGISTRY" 2>/dev/null)"
+    cur_status="$(sot_jq -r --arg n "$name" '.agents[$n].status // ""' "$REGISTRY" 2>/dev/null)"
+    cur_root="$(sot_jq -r --arg n "$name" '.agents[$n].root // ""' "$REGISTRY" 2>/dev/null)"
+    cur_nonce="$(sot_jq -r --arg n "$name" '.agents[$n].nonce // ""' "$REGISTRY" 2>/dev/null)"
     if [ "$cur_status" != "spawning" ] || [ "$cur_root" != "$want_root" ] || [ "$cur_nonce" != "$want_nonce" ]; then
         return 2
     fi
@@ -1008,7 +1014,7 @@ sot_cursor_offset() {
         ''|*[!0-9]*) ;;
         *) _sot_clamp_offset "$handle" "$cur"; return 0 ;;
     esac
-    n="$(jq -Rrs --arg cur "$cur" '
+    n="$(sot_jq -Rrs --arg cur "$cur" '
         [ split("\n")[] | select(length > 0)
           | (((fromjson? // {}) | (.ts // "")) > $cur) ] as $past
         | ($past | index(true)) // ($past | length)' \
@@ -1885,7 +1891,7 @@ claim_derived_handle() {  # MODE ROOT HOST OBJ_JSON
 # single JSON string literal — the general escaping jq's own JSON writer
 # already gets right, never a hand-rolled sed/printf substitution.
 sot_json_escape() {
-    printf '%s' "$1" | jq -Rs .
+    printf '%s' "$1" | sot_jq -Rs .
 }
 
 # sot_host — this shell's DECLARED host name for the wire only (ADR 0046

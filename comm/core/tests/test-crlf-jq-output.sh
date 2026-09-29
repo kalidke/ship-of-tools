@@ -124,6 +124,93 @@ case_broadcast_survives_a_crlf_jq() {
 
 check "a broadcast reaches a registered peer even when jq emits CRLF" case_broadcast_survives_a_crlf_jq
 
+# --- the three sites in code decision 0031 KEEPS ---------------------------
+# The broadcast case above covers the two readers the 2026-09-27 field report
+# tripped, both of them already on sot_jq. These three are the same class in
+# code that survives 0031's delete list, each called DIRECTLY so a failure
+# names the site instead of a symptom three layers up. Each one gets its own
+# $SOT_COMM_HOME so no case depends on another having run first.
+
+CURSOR_HOME="$WORK/cursor-home"
+CURSOR_HANDLE="t-crlf-cursor"
+seed_cursor_rows() {
+    mkdir -p "$CURSOR_HOME/inbox" "$CURSOR_HOME/read" || return 1
+    {
+        printf '{"from":"a","to":"%s","msg":"one","ts":"2026-09-29T10:00:00Z"}\n'   "$CURSOR_HANDLE"
+        printf '{"from":"a","to":"%s","msg":"two","ts":"2026-09-29T10:01:00Z"}\n'   "$CURSOR_HANDLE"
+        printf '{"from":"a","to":"%s","msg":"three","ts":"2026-09-29T10:02:00Z"}\n' "$CURSOR_HANDLE"
+    } > "$CURSOR_HOME/inbox/$CURSOR_HANDLE.jsonl" || return 1
+    printf '2026-09-29T10:00:00Z\n' > "$CURSOR_HOME/read/$CURSOR_HANDLE.cursor"
+}
+
+# A cursor still holding a TIMESTAMP (the pre-count form comm-poll.sh
+# converts once) is the one read path that asks jq for the offset. A \r glued
+# to its answer fails the numeric test, the offset silently reads 0, and the
+# session re-reads its whole inbox as unread.
+case_cursor_offset_survives_a_crlf_jq() {
+    seed_cursor_rows || { echo "  setup: could not seed the inbox and cursor"; return 1; }
+    local got
+    got="$(SOT_COMM_HOME="$CURSOR_HOME" PATH="$STUBBIN:$PATH" \
+        bash -c 'source "$1/comm-lib.sh"; sot_cursor_offset "$2"' \
+        _ "$SCRIPTS_DIR" "$CURSOR_HANDLE" 2>/dev/null)"
+    [ "$got" = "1" ] \
+        || { echo "  offset was '$got', want 1 (0 means the whole inbox reads as unread)"; return 1; }
+    return 0
+}
+
+PROV_HOME="$WORK/prov-home"
+PROV_ROW="t-crlf-prov"
+PROV_ROOT="$WORK/prov-root"
+PROV_NONCE="n-crlf-1"
+seed_provisional_row() {
+    mkdir -p "$PROV_HOME" || return 1
+    "$REAL_JQ" -n --arg n "$PROV_ROW" --arg r "$PROV_ROOT" --arg o "$PROV_NONCE" \
+        '{agents: {($n): {host:"crlfbox", root:$r, status:"spawning", nonce:$o}}}' \
+        > "$PROV_HOME/registry.json" || return 1
+}
+
+# A spawn that fails rolls its provisional row back, and the rollback is
+# CONDITIONAL on reading that row's own status, root and nonce back
+# unchanged. A \r on any of the three reads as "this is somebody else's row
+# now", the rollback declines, and a dead `spawning` row stays in the
+# registry holding the handle.
+case_provisional_rollback_survives_a_crlf_jq() {
+    seed_provisional_row || { echo "  setup: could not write the provisional row"; return 1; }
+    local rc=0
+    SOT_COMM_HOME="$PROV_HOME" PATH="$STUBBIN:$PATH" \
+        bash -c 'source "$1/comm-lib.sh"; registry_del_if_provisional "$2" "$3" "$4"' \
+        _ "$SCRIPTS_DIR" "$PROV_ROW" "$PROV_ROOT" "$PROV_NONCE" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 0 ] \
+        || { echo "  registry_del_if_provisional returned $rc, want 0 (2 = it declined its own row)"; return 1; }
+    "$REAL_JQ" -e --arg n "$PROV_ROW" '.agents | has($n) | not' "$PROV_HOME/registry.json" >/dev/null \
+        || { echo "  the provisional row is still in the registry"; return 1; }
+    return 0
+}
+
+# sot_json_escape's contract is ONE JSON string literal, interpolated into a
+# hand-built frame. Text mode puts its \r AFTER the closing quote, outside
+# the literal — which is also why stripping is safe HERE and never rewrites
+# what a sender wrote: a carriage return the caller really typed comes back
+# from jq as the two characters \r, which the strip cannot touch. The second
+# assertion is that half, and it is the one that would catch a strip applied
+# to free-text content by mistake.
+case_json_escape_emits_no_carriage_return() {
+    local got
+    got="$(PATH="$STUBBIN:$PATH" bash -c 'source "$1/comm-lib.sh"; sot_json_escape "$2"' \
+        _ "$SCRIPTS_DIR" "a-value" 2>/dev/null)"
+    [ "$got" = '"a-value"' ] \
+        || { echo "  escape produced '$got', want the literal \"a-value\""; return 1; }
+    got="$(PATH="$STUBBIN:$PATH" bash -c 'source "$1/comm-lib.sh"; sot_json_escape "$2"' \
+        _ "$SCRIPTS_DIR" "$(printf 'a\rb')" 2>/dev/null)"
+    [ "$got" = '"a\rb"' ] \
+        || { echo "  a carriage return the caller typed was not kept as \\r: '$got'"; return 1; }
+    return 0
+}
+
+check "the timestamp cursor offset survives a CRLF jq" case_cursor_offset_survives_a_crlf_jq
+check "a provisional row's rollback survives a CRLF jq" case_provisional_rollback_survives_a_crlf_jq
+check "sot_json_escape emits one literal, with a real CR still escaped" case_json_escape_emits_no_carriage_return
+
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
