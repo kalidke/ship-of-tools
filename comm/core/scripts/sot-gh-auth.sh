@@ -85,7 +85,7 @@ guard_env() {
 }
 
 request() {
-    need gh; need curl; need jq
+    need gh; need curl; need jq; need tr
     local resp err device_code user_code verify interval expires
     resp=$(curl -fsS -X POST "https://${HOST}/login/device/code" \
         -H "Accept: application/json" \
@@ -125,8 +125,9 @@ finish() {
     local access="$1" who
     # STDIN, never argv. --insecure-storage forces hosts.yml (shared-HOME cluster
     # coverage) instead of an OS keyring.
-    # Stripped again on the way out, for the same reason as the device code:
-    # a CR stored in hosts.yml is sent on every later request.
+    # Stripped again on the way out, against the same route as the device
+    # code -- a later read that bypasses `jqr`. Here the cost of missing it is
+    # highest: a CR stored in hosts.yml is sent on every request afterwards.
     printf '%s' "$access" | tr -d '\r' | gh auth login --hostname "$HOST" --git-protocol https \
         --with-token --insecure-storage \
         || { echo "sot-gh-auth: gh rejected the token" >&2; exit 8; }
@@ -141,7 +142,7 @@ finish() {
 }
 
 poll() {
-    need gh; need curl; need jq
+    need gh; need curl; need jq; need tr
     [ -f "$STATE" ] || { echo "sot-gh-auth: no pending request — run 'sot-gh-auth.sh request' first" >&2; exit 6; }
     # dcfile is not `local`: the EXIT trap below fires after poll() has returned.
     local device_code interval expires waited=0 tok access err
@@ -153,8 +154,10 @@ poll() {
     # and the state file on ANY exit (success, error, or abort) — poll owns them.
     dcfile=$(mktemp "${TMPDIR:-/tmp}/sot-gh-dc.XXXXXX")
     chmod 600 "$dcfile"
-    # Stripped again on the way out: a CR that reached $device_code by any
-    # route other than jq still must not reach curl, which would send it.
+    # Stripped again on the way out. The route this defends is a read added
+    # later that calls `jq -r` directly instead of `jqr`: the value would be
+    # dirty and curl would SEND the CR, which is the failure GitHub rejects.
+    # This line is what makes that a no-op rather than a broken exchange.
     printf '%s' "$device_code" | tr -d '\r' > "$dcfile"
     trap 'rm -f "$STATE" "$dcfile"' EXIT INT TERM
     echo "sot-gh-auth: waiting for you to authorize… (polling every ${interval}s, code TTL ~$((expires / 60))min)"

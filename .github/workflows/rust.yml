@@ -184,6 +184,13 @@ jobs:
           # now covers let every hermetic run rewrite the handle of whichever
           # live row happened to be running the tests.
           bash test-agent-join.sh
+          # The carriage-return suites. A native jq on Windows rewrites every
+          # \n to \r\n and command substitution keeps the \r on the value;
+          # until these ran here, the only thing standing between that and a
+          # false "no such handle" -- or a token GitHub rejects -- was a human
+          # remembering to run them. Both are hermetic and take under a second.
+          bash test-crlf-jq-output.sh
+          bash test-crlf-gh-auth.sh
 
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
   # `ClosePseudoConsole` that returns immediately — it cannot exercise the
