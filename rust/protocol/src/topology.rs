@@ -721,18 +721,20 @@ Description=Ship of Tools relay bridge to {host} (connection %i)
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal
-# A drop-in overrides any of these three without regenerating the unit: a box
-# whose `sotd` is not on a non-interactive ssh PATH (give the full path), a
-# second daemon label, or an ssh alias that differs from the declared name.
+# A drop-in overrides either of these without regenerating the unit: a box
+# whose `sotd` is not on a non-interactive ssh PATH (give the full path), or
+# an ssh alias that differs from the declared name. No daemon-label override:
+# `stdio-bridge` with no argument resolves THIS box's own label, never one
+# carried over the wire, so on every Unix box in the fleet it is the same
+# socket this unit used to name explicitly.
 Environment=SOT_RELAY_TARGET={host}
 Environment=SOT_RELAY_SOTD=sotd
-Environment=SOT_RELAY_LABEL=sot
 # -T: no pty, so nothing rewrites the byte stream. BatchMode: never prompt —
 # an unreachable box must fail at once rather than hang. The ServerAlive pair
 # closes a wedged network in ~45s. ControlMaster/ControlPersist are what make
 # the second and later connections a channel on one ssh instead of a fresh
 # login each; ControlPath's `%%C` is ssh's own per-target hash.
-ExecStart=/usr/bin/ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ControlMaster=auto -o ControlPath={control} -o ControlPersist=600 ${{SOT_RELAY_TARGET}} ${{SOT_RELAY_SOTD}} stdio-bridge --label ${{SOT_RELAY_LABEL}}
+ExecStart=/usr/bin/ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ControlMaster=auto -o ControlPath={control} -o ControlPersist=600 ${{SOT_RELAY_TARGET}} ${{SOT_RELAY_SOTD}} stdio-bridge
 # The multiplexed master ssh OUTLIVES the instance that started it — that is
 # what ControlPersist is for — so stopping this instance must not sweep its
 # cgroup, or every connection would pay a fresh login after all.
@@ -1153,7 +1155,8 @@ frontend = true
 
         let svc = relay_service_unit("remote-a");
         assert!(svc.contains("Environment=SOT_RELAY_TARGET=remote-a\n"), "{svc}");
-        assert!(svc.contains("stdio-bridge --label ${SOT_RELAY_LABEL}\n"), "{svc}");
+        assert!(!svc.contains("SOT_RELAY_LABEL"), "{svc}");
+        assert!(svc.contains("stdio-bridge\n"), "{svc}");
         assert!(svc.contains("-o ControlPath=") && svc.contains("-ssh-%%C "), "{svc}");
         assert!(svc.contains("\nStandardInput=socket\n") && svc.contains("\nStandardOutput=socket\n"), "{svc}");
     }
