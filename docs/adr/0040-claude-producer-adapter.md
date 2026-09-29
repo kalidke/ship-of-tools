@@ -1,6 +1,6 @@
 # ADR 0040: The Claude producer adapter (Ship's Log P2)
 
-**Status:** Accepted (2026-08-24). The contract for recording Claude agent
+**Status:** current — Accepted (2026-08-24). The contract for recording Claude agent
 sessions as ADR 0039 voyages. Implemented by the `adapters/claude-sdk-helper`
 Node package plus a `claude` producer adapter in the capsule; gated by the
 conformance rig in §8 before anything consumes these voyages.

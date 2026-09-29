@@ -1,6 +1,6 @@
 # ADR 0021: PDF preview — poppler rasterization behind a paged `preview.get`
 
-**Status:** Accepted
+**Status:** current — accepted.
 **Date:** 2026-06-10
 
 ## Context

@@ -1,6 +1,6 @@
 # ADR 0003: Rendering surface (revised)
 
-**Status:** Accepted — supersedes the original ADR 0003 ("Terminal image protocol")
+**Status:** current — Accepted — supersedes the original ADR 0003 ("Terminal image protocol")
 **Date:** 2026-05-07 (revised same day after pivot)
 
 ## Context

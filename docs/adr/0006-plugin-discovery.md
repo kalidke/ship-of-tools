@@ -1,6 +1,6 @@
 # ADR 0006: Plugin discovery
 
-**Status:** Accepted — **not yet implemented** (as of v0.3.2, 2026-07-09)
+**Status:** current — Accepted — **not yet implemented** (as of v0.3.2, 2026-07-09)
 **Date:** 2026-05-07
 
 > **Implementation status.** The `[sot].extensions` / `Base.require` mechanism

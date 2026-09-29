@@ -1,6 +1,6 @@
 # ADR 0046: Declared identity, daemon-owned rows, and the resident attach
 
-**Status:** Accepted — owner-approved plan (2026-09-13); decision text through three Codex rounds (scope cut after round 2: the work-state reducer port and the launch-recipe file deferred to sprint 2); lanes in progress. Families A, B, D and the now-part of E of the merged elegance audit (ops sidecar, `audits/2026-09-13-elegance-audit-merged.md`); the switch-latency paper's option A. Families C, F, G, H and the tmux deletion are a second sprint.
+**Status:** current — Accepted — owner-approved plan (2026-09-13); decision text through three Codex rounds (scope cut after round 2: the work-state reducer port and the launch-recipe file deferred to sprint 2); lanes in progress. Families A, B, D and the now-part of E of the merged elegance audit (ops sidecar, `audits/2026-09-13-elegance-audit-merged.md`); the switch-latency paper's option A. Families C, F, G, H and the tmux deletion are a second sprint.
 **Date:** 2026-09-13
 
 Amends ADR 0010, 0023, 0025 (§2, §4, the caption update, `fe_handle`),

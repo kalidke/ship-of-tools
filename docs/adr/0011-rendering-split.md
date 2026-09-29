@@ -1,6 +1,6 @@
 # ADR 0011: Rendering split — chrome via ratatui, previews via parallel surface
 
-**Status:** Accepted
+**Status:** current — accepted.
 **Date:** 2026-05-07
 
 ## Context

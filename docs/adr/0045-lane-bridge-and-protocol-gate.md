@@ -1,6 +1,6 @@
 # ADR 0045: The lane bridge, and the protocol-versioned lane gate
 
-**Status:** B1 (the gate) merged — e6c025c4 lands the proto-only gate,
+**Status:** current — B1 (the gate) merged — e6c025c4 lands the proto-only gate,
 f181d039 the same-day follow-up discharging a Codex review round as
 shape fixes. B3 (`lane.connect`, PR #234), B4a (`DaemonLaneEndpoint`, PR
 #235) and B4b (eight cross-process proofs) merged; B5 (the frontend, PR

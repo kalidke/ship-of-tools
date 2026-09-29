@@ -1,6 +1,6 @@
 # ADR 0022: Capture an image-preview ROI to the LLM pane
 
-**Status:** Accepted
+**Status:** current — accepted.
 **Date:** 2026-06-12
 
 ## Context

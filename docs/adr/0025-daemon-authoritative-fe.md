@@ -1,6 +1,6 @@
 # ADR 0025: Daemon-authoritative FE — imperative commands + FE-as-viewport
 
-**Status:** Accepted (co-design converged 2026-06-22; building on `feat/op-fe-command`)
+**Status:** partly superseded by ADR 0046 — 0046 amends §2, §4, the caption update and `fe_handle`. Originally: Accepted (co-design converged 2026-06-22; building on `feat/op-fe-command`)
 **Date:** 2026-06-22
 
 > **Update — 2026-09-08: v1.1 landed — "the active frontend," presence from the

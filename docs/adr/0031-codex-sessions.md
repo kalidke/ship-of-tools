@@ -1,6 +1,6 @@
 # ADR 0031 — Codex sessions (proposed)
 
-**Status: ACCEPTED + P1 IMPLEMENTED** (2026-07-04). The maintainer's decisions:
+**Status:** partly superseded by ADR 0046 — Codex sessions stand; "folder-only = tmux+shell" went with the tmux runtime in v0.6.0. Originally: ACCEPTED + P1 IMPLEMENTED (2026-07-04). The maintainer's decisions:
 ChatGPT-login auth (no API-key plumbing) · `-cx-` handles · AGENTS.md authored
 by the installer lane · folder-only = tmux+shell at the workspace root.
 

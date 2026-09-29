@@ -1,6 +1,6 @@
 # ADR 0013: Backend sessions — tmux registry, lifecycle, resume
 
-**Status:** Accepted
+**Status:** superseded by ADR 0046 — the tmux session registry, lifecycle and resume this ADR decides went with the tmux runtime in v0.6.0; a session is now a capsule row the daemon supervises. Originally: Accepted
 **Date:** 2026-05-15
 
 ## Context

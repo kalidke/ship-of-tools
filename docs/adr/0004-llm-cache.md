@@ -1,6 +1,6 @@
 # ADR 0004: LLM provider and prompt-cache layout
 
-**Status:** Accepted
+**Status:** current — accepted.
 **Date:** 2026-05-07
 
 ## Context

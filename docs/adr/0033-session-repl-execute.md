@@ -1,6 +1,6 @@
 # ADR 0033: session-driven REPL execute + output collect (`repl.execute`)
 
-Status: accepted. Phase 1 (run + collect) implemented + verified end-to-end.
+**Status:** current — accepted. Phase 1 (run + collect) implemented + verified end-to-end.
 Phase 2 (session runs visible in the user's drawer) implemented + wire-verified;
 live-window rendering pending an FE rebuild + ADR-0017 relaunch.
 

@@ -1,6 +1,6 @@
 # ADR 0018: Video — poster in the pane, playback in the browser
 
-**Status:** Accepted (revised 2026-05-27; supersedes the original in-pane-playback design recorded earlier the same day)
+**Status:** current — Accepted (revised 2026-05-27; supersedes the original in-pane-playback design recorded earlier the same day)
 **Date:** 2026-05-27
 
 ## Context

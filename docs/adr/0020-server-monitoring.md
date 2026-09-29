@@ -1,6 +1,6 @@
 # ADR 0020: Server monitoring — SSH-poll data plane, native drawer view
 
-**Status:** Accepted (2026-06-06). Data plane revised the same day from Netdata to a roll-our-own SSH poll once the target hosts had no passwordless sudo — see §1. Netdata remains the documented upgrade path (Out of scope).
+**Status:** current — Accepted (2026-06-06). Data plane revised the same day from Netdata to a roll-our-own SSH poll once the target hosts had no passwordless sudo — see §1. Netdata remains the documented upgrade path (Out of scope).
 **Date:** 2026-06-06
 
 ## Context

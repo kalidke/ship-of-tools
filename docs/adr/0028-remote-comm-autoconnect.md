@@ -1,6 +1,6 @@
 # ADR 0028: Remote comm auto-connect — myhost-anchored reverse SSH tunnels under systemd --user
 
-**Status:** Accepted (implemented + verified end-to-end; codex + win-fe reviewed the plan and converged, 2026-06-27)
+**Status:** partly superseded by ADR 0046 — the tunnels stand; the pane-keyed self-file machinery this ADR describes went with the comm scripts' tmux modes in v0.6.0. Originally: Accepted (implemented + verified end-to-end; codex + win-fe reviewed the plan and converged, 2026-06-27)
 **Date:** 2026-06-27
 
 ## Context

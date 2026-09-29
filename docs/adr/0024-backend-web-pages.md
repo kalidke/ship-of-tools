@@ -1,6 +1,6 @@
 # ADR 0024: Open backend web pages in the local browser (dynamic port-forward)
 
-**Status:** Accepted (2026-06-20; built + merged same day)
+**Status:** partly superseded by ADR 0035 (2026-06-20; built + merged same day)
 **Date:** 2026-06-20
 
 > **Transport note (2026-08-10):** the static `-L` helper forwards described

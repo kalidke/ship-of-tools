@@ -1,6 +1,6 @@
 # ADR 0034: dynamic scalebar for the preview pane
 
-Status: **accepted** (2026-07-18), building Phase 1. Design converged with the
+**Status:** current — **accepted** (2026-07-18), building Phase 1. Design converged with the
 frontend (render side) and SMLMAnalysis (scale source). Pins the `extras` schema,
 the `preview.set_scale` op, the hybrid resolution order, the two-bar render, and
 the live-entry→sidecar flow. One correction during build: the sidecar/`.concept`

@@ -1,6 +1,6 @@
 # ADR 0041: FE-local capsules on Windows (Ship's Log P3)
 
-**Status:** Accepted (2026-08-25). The contract for running voyage-recording
+**Status:** partly superseded by ADR 0045 — the Windows capsule contract stands; its "Build boundary" and "Upgrade and version skew" build-id equality gate is replaced by the protocol integer (0045 decisions 7 and 10). Originally: Accepted (2026-08-25). The contract for running voyage-recording
 capsules on the Windows frontend machines, so the frontend's Terminal-drawer
 session survives frontend restarts. Implements the ADR 0037 ladder's P3.
 **Date:** 2026-08-25

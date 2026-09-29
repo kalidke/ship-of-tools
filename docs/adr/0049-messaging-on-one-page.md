@@ -1,6 +1,6 @@
 # ADR 0049: messaging on one page
 
-**Status:** accepted as the design of record; supersedes ADR 0047 (ping wake) and ADR
+**Status:** current — accepted as the design of record; supersedes ADR 0047 (ping wake) and ADR
 0048 (filer receipts). Most of what follows is unbuilt: it lands in stages, and the
 per-session watcher, listener and bridge machinery it replaces stays in place until
 each stage does.
