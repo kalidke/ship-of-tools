@@ -1,8 +1,10 @@
 # ADR 0048: the filer's receipt is the cross-box delivery verdict
 
-**Status:** accepted; implemented in the comm scripts, the daemon and the
-frontend (the scripts deploy via `update_comm`; the daemon and frontend halves
-ride a release).
+**Status:** **Superseded by ADR 0049** (2026-09-29) — the filer's receipt
+survives as the hub route's single `filed` answer, while the rest of the
+two-mode delivery goes. Originally: accepted; implemented in the comm
+scripts, the daemon and the frontend (the scripts deploy via `update_comm`;
+the daemon and frontend halves ride a release).
 
 ## Context
 

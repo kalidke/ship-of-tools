@@ -23,9 +23,6 @@ all clients are mutually addressable through the same registry and inboxes.
 The registry and inboxes are **data at rest** — discovery and catch-up need a
 shared place to publish, not a live broker. In an optional shared-home
 deployment, one `~/.sot-comm` serves every host sharing that home.
-For cross-machine with no shared FS, point `SOT_COMM_HOME` at a
-git-synced directory; the same files then ride the existing bus. (Not auto-wired
-in v1 — the `.claude-bus` git loop can still cover separate filesystems.)
 
 ## registry.json
 
@@ -80,145 +77,65 @@ landed. A count cannot lose a frame that way. `comm-poll.sh` is the only writer;
 a legacy timestamp cursor is converted on first read (the count of lines at or
 before it).
 
-`to` ranks the line for the recipient's inbox Monitor: their own name = directed,
-wakes the session; `""` = broadcast copy (relay cc traffic or
-`comm-send --broadcast`), files silently for the next `comm-poll`. A line with
-NO `to` key is legacy (pre-stamp, before 2026-06-12) and reads as directed —
-which is why an unstamped `--broadcast` once woke the whole network at once.
+`to` equal to the handle is directed mail and counts as unread; `""` is a
+broadcast copy, filed and read at the next poll, never counted as unread. A
+line with no `to` key is legacy (pre-stamp, before 2026-06-12) and reads as
+directed.
 
-## Delivery — two modes, chosen by reachability, always visible
+## Delivery
 
-1. **The append IS the delivery:** every send appends the frame to
-   `inbox/<target>.jsonl`, and that is the acknowledgement — `filed -> @name`,
-   exit 0. A filed frame is read by the recipient's next turn boundary, because
-   its own end-of-turn hook reads the inbox and will not let a turn end while
-   directed mail sits past the cursor. That is how a BUSY session is reached: no
-   process, no keystrokes, no human.
-2. **The poke — directed sends only:** a directed send to a recipient whose
-   registry row names a workspace row on the sender's host is ALSO typed into
-   that row through the daemon's `pty.input` (Enter appended), so a session
-   sitting idle at its prompt does not wait for its next turn. It is typed only
-   when the row's current screen shows a free prompt (the cursor sitting at
-   the start of the input line marked by the prompt glyph, so a grey
-   suggestion or any other decoration does not count as a draft but a real
-   draft still does) — keystrokes would otherwise land in an open dialog,
-   menu or half-written draft. The send
-   reports `+woken` or `not woken: <reason>` as a DIAGNOSTIC; the verdict is the
-   filing either way. The message text is `[<from>:<repo>] <msg>`.
-   **Broadcasts are never typed** — text+Enter is a full interrupt (it submits
-   into the recipient's claude, costing a model turn), so broadcast copies are
-   durable-only and surface on the next `comm-poll`.
+This section is ADR 0049's design of record. The mechanism below lands in
+stages; until each stage does, the two-mode delivery, ping watcher and relay
+bridge this replaces stay in place.
 
-**Ping delivery (Claude, capsule rows, ADR 0047):** a harness Monitor costs a
-model turn every ~30 minutes just to re-arm, so a Claude session in a capsule
-row wakes instead via `comm-wake.sh <handle> --deliver ping` — the same
-`codex-watch.sh` mechanism generalized, but it types ONE fixed notice line
-(never the message text) and lets the session read the real backlog with
-`comm-poll.sh` on the turn the ping wakes it. A whole batch of new directed
-frames costs one wake, not one per frame; a batch the read cursor already covers
-costs none. There is no other suppression — an earlier unread ping does NOT
-withhold a later one, because one stalled session would then go deaf to
-everything queued behind the message it never read. It only types when the row's
-current screen shows a free prompt — typing into an open dialog or menu could
-answer it — so a busy screen delays the poke, never drops a frame: the frame is
-in the inbox and the turn boundary reads it regardless. The watcher is OWNED: it
-discovers the claude/codex process it belongs to, refuses to start without one
-or against a live watcher for the same handle, and exits when its owner does.
-`comm-session-start.sh` starts it automatically for a capsule row; outside one,
-the harness Monitor is unchanged.
+**Sending** picks one of two routes, by whether the sender's own comm folder
+lists the receiver:
 
-If the poke isn't possible (no row for the recipient on this host, no daemon, a
-row that is not at a free prompt) the send says so — `filed -> @name — not
-woken: <reason>` — because the reason is **stated, never silent**. The frame is
-filed either way, and the recipient reads it at its next turn boundary or on its
-next `poll`. A send that could file NOWHERE is a failure: `no such handle` (or
-`ERROR: unreachable, nothing filed`) with a non-zero exit.
+1. It can reach the inbox (same box, or a box sharing the home): it adds the
+   line itself.
+2. It cannot: it hands the message to the hub, which offers it to every
+   daemon linked to it. The daemon whose comm folder holds that inbox adds
+   the line and says "filed" (the hub itself, for its own home). The hub
+   passes that back.
 
-**The cross-box verdict is the filer's receipt (ADR 0048).** A handle this box
-cannot name goes over the wire, and since the append IS the delivery, the only
-honest verdict is a statement by whoever appended. The sender mints an opaque
-`id` on `agent.send`; whoever files the frame answers `agent.filed {id}` on its
-own connection; the daemon stamps `filer` from that connection's declared hello
-`name` — never from anything the answer claims — and fans the result out as an
-`agent.receipt {id, filer}` evt, which the sender reads on the connection it is
-already holding. The daemon keeps no delivery state.
+A liveness check runs first: a row still runs a session with that handle, or
+the session was active in the last ten minutes.
 
-**A receipt is only ever positive.** A filer knows it appended; it cannot know
-that no other filer did, and the daemon fans every `agent.message` out to every
-connection — so a "not me" answer would be a global assertion made from local
-knowledge, and with several frontends attached the first denial to arrive would
-overrule a real delivery. Silence is the only negative, and it is the sender's
-own conclusion. So a bridge (which IS its handle) claims after an append that
-returned 0, and a frontend claims only for a handle one of its OWN-host rows
-declares AND that its own OS actually reads — and says nothing at all
-otherwise. The append is never gated on the
-claim: a late `agent.join` may cost a receipt, never a message. `filer` is
-attribution, not authentication: nothing validates a hello `name`, so it names
-something checkable against the roster, not a proof against a hostile client.
+**The one result**, nothing else:
 
-| what came back | verdict | exit |
-|---|---|---|
-| a receipt carrying this send's `id` | `filed -> @h (by <filer>, relay)` | 0 |
-| ack, no receipt within the 5 s transport bound | `NOT CONFIRMED: sent for @h; nobody claimed it within 5s. Attached: <roster>.` | 1 |
-| ack without an `id` (a daemon older than receipts) | `NOT CONFIRMED: this daemon predates filer receipts; nothing can vouch for @h.` | 1 |
-| ack with an empty `receivers` | `no such handle: h` | 1 |
-| no ack at all | `ERROR: unreachable, nothing filed` | 1 |
+- `filed -> @h` (exit 0).
+- `FAILED -> @h: <reason>` (exit 1): no box knows that handle; no live
+  session holds it; the hub cannot be reached; or no daemon said "filed"
+  within 5 seconds. Nothing was added. Retrying or reporting is the sender's
+  call.
 
-Everything a receipt cannot exist for is decided on the ack — a broadcast, a hub
-that dropped the id, an empty roster — so those never wait. A frontend too old
-to send `agent.filed` is NOT distinguishable from a slow one, so a send to a
-handle it hosts costs the full 5 s before failing.
+Nothing is queued anywhere and there is no second route. To get an answer,
+send, end the turn, and be woken.
 
-That same cost is now permanent for a whole class of send. A frontend claims
-only where some process on its own OS reads the inbox file it appends to,
-which today means Windows alone; everywhere else it appends and stays
-silent. So a send whose only would-be filer is a frontend off Windows waits
-out the full 5 s and exits 1, where before it returned `filed` instantly.
-The message is filed either way — the append was never gated, only the
-claim — and the trade is deliberate: an instant verdict that was sometimes
-false, for a slow one that is always true.
+**Waking.** Every two seconds each daemon looks at every row it runs. If the
+row's handle has unread mail and the row sits at a free prompt, the daemon
+types one fixed line, `[sot-comm] you have mail: run comm-poll.sh`, and
+Enter. The daemon does this, not the frontend or the sender — several
+frontends can show one row and each would type, a closed window would leave
+the row deaf, and a pasted message is never marked read so it would show
+again. One line per new batch of mail; one more if it is still unread ten
+minutes later at a free prompt. A busy session needs no typing: its
+end-of-turn check will not let a turn finish while unread mail waits. This
+is the only wake — no per-session watcher, listener, bridge or Monitor
+exists.
 
-The roster (`receivers`) survives in exactly one place, the NOT CONFIRMED line,
-as a diagnostic naming who was attached and did not answer. It is never a
-verdict: a named connection is not proof of an append, and nothing compares a
-target's name to a receiver's name any more — that comparison (a handle whose
-name ended in an attached frontend's host was "probably" its filer) was the bug
-class the receipt replaced. `ask` inherits all of it: a send that cannot be
-vouched for never spends the caller's listen seconds.
+**Cases.**
 
-**The recipient annotation (messaging ruling, 2026-09-26):** a filed frame is
-not a reply, and a sender with no reply yet cannot tell working from
-waiting-on-its-human from gone — so `filed -> @name` gains one short factual
-parenthetical about the RECIPIENT, read off the same registry entry that
-resolved the handle (never a second file, never the daemon):
-
-```
-filed -> @X (working, stamped 12s ago — reply expected at its turn boundary)
-filed -> @X (needs its own user, stamped 6m ago: "<question, truncated to 60 chars>")
-filed -> @X (idle, stamped 32m ago)                # or any other state — its own word
-filed -> @X (no heartbeat for 8h — may be gone)    # overrides every other clause
-```
-
-A stale heartbeat (`last_seen` older than `SOT_COMM_STALE_SECS`, default 600s)
-always wins, because a stamp from a dead session is the misleading one.
-Otherwise a `blocked` state (a `question` open with no `floor`) means the
-recipient is stopped waiting on its OWN human, not the sender — `floor` being
-`"user"` means the opposite (the session is *actively running* a
-human-started turn: `floor` present always reduces to `state: working`, ADR
-0044's amendment table). A missing or malformed entry — or any field it
-needs — prints NOTHING extra: the clause is a courtesy, never a guess, and
-never turns a successful file into a failure. This never delays, blocks or
-refuses a send; it only informs. An `ask` that times out with no reply
-carries the same facts in its own `TIMEOUT:` line, for the same reason.
-
-**Cross-machine receive** is the relay bridge `comm-listen.sh` starts: a
-reconnect loop (`comm-relay.sh bridge --name <name>`) run as a background
-child of the session's own process tree, pid recorded in
-`state/bridge-<name>.pid`. It lives in the session's capsule leg and dies
-with it; `--status`/`--stop` and `comm-leave.sh` follow the pidfile, and a
-start reaps any stray bridge for the handle (one without a pidfile) first,
-so one frame is never filed twice. A Windows frontend has no bridge — the
-frontend files inbound frames itself.
+- A Claude or Codex row gets the same line and check; the free-prompt test
+  knows each tool's prompt.
+- A row that just restarted, compacted or cleared re-arms nothing: the
+  handle stays with the row and the count is a file.
+- A session outside any row (a bare terminal, or one on a box with no
+  daemon) has a handle and an inbox, and its end-of-turn check reads new
+  mail before a turn ends. While idle it sees mail only at its next turn,
+  and after ten idle minutes sends to it fail as "no live session".
+- A subagent is part of its parent session: it may send under the parent's
+  handle and never reads the inbox.
 
 ## Verbs (reference client = `bin/*.sh`)
 
