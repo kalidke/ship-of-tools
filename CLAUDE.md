@@ -160,8 +160,8 @@ The smallest useful working slice:
 - When `[sot-comm] you have mail` appears, or your end-of-turn check says so, run `comm-poll.sh`.
 - To wait for a reply, end your turn.
 - Run the session-start step once, when a session first starts. Today a
-  resumed session must still re-run it — until the daemon holds the handle
-  and the wake, which is why the launcher's `--continue` does exactly that.
+  resumed session must still re-run it — until the daemon does the waking,
+  which is why the launcher's `--continue` does exactly that.
 
 ## Conventions for Claude
 
