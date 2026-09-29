@@ -76,8 +76,8 @@ Every ADR's line 3 begins with one of three status tokens:
 Every file's line 3 must match the status-token pattern. Check it with:
 
 ```sh
-ls docs/adr/*.md | wc -l
-for f in docs/adr/*.md; do sed -n '3p' "$f" \
+ls docs/adr/0*.md | wc -l
+for f in docs/adr/0*.md; do sed -n '3p' "$f" \
   | grep -qE '^\*\*Status:\*\* (current|(partly )?superseded by ADR [0-9]{4})' \
   || echo "BAD $f"; done
 ```
