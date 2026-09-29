@@ -338,7 +338,7 @@ box; the relay still bridges sessions across machines over the tunnel.
 `%LOCALAPPDATA%\sot\fe-inbox.jsonl`; the in-drawer session watches that file
 via a Monitor. `/sot-session-start` only prints the command to arm one on
 each relaunch — nothing arms it unless the session runs that command, and
-this lane's own skill text now says not to. Until ADR 0049's daemon wake
+the start skill now says not to act on that line. Until ADR 0049's daemon wake
 reaches Windows, a drawer session that follows it has no wake here at all.)
 Installing new skills requires a Claude Code **restart** to load them.
 

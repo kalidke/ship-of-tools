@@ -54,7 +54,7 @@ conversation behind a login prompt.
   replaces it — every armed Monitor. Run this from a quiet turn — never
   while a job you launched is still running.
 - **The first turn of the resumed session is `/sot-session-start`** (the
-  launch recipe appends it), so comm comes back armed on its own.
+  launch recipe appends it), so comm comes back on its own.
 - **The prior turns were paid on the old login, and the new account has no
   server-side cache for this conversation** — its first turn re-reads the
   whole transcript as fresh input. A reauth is cheap in wall time and NOT
