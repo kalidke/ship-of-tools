@@ -86,7 +86,8 @@ directed.
 
 This section is ADR 0049's design of record. The mechanism below lands in
 stages; until each stage does, the two-mode delivery, ping watcher and relay
-bridge this replaces stay in place.
+bridge this replaces stay in place — except on a Windows host, which starts no
+bridge: its frontend files inbound frames into its own `fe-inbox.jsonl`.
 
 **Words.** A *row* is a session running inside Ship of Tools. The *daemon*
 is the background program on each box that runs that box's rows; it keeps
@@ -138,8 +139,7 @@ sitting at the start of the input line marked by the prompt glyph, so a grey
 suggestion or any other decoration does not count as a draft but a real
 draft still does, and a working session is not free either and is never
 typed into — the daemon types one fixed line, `[sot-comm] you have mail: run
-comm-poll.sh`, and Enter; keystrokes would otherwise land in an open dialog,
-menu or half-written draft. The daemon does this, not the frontend or the
+comm-poll.sh`, and Enter. The daemon does this, not the frontend or the
 sender — several frontends can show one row and each would type, and a
 closed window would leave the row deaf. It types a fixed notice, never the
 message itself: a pasted message is never marked read, so it would show
