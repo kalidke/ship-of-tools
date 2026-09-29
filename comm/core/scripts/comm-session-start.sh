@@ -54,14 +54,6 @@ esac
 IS_WINDOWS=0
 _sot_is_windows && IS_WINDOWS=1
 
-# comm-session-skill.sh is the single source of truth for "is this session
-# in a Ship of Tools checkout" (repo detection, not a role judgment — a
-# session's identity is its row's handle everywhere, Windows included; see
-# comm-join.sh). `--is-sot-repo` answers by exit code — the printed skill
-# name is now the same for every session, so it's no longer a valid signal.
-IS_SOT=0
-"$SCRIPT_DIR/comm-session-skill.sh" --is-sot-repo 2>/dev/null && IS_SOT=1
-
 _watch_marker() { printf '%s/state/%s.watch\n' "${SOT_COMM_HOME:-$HOME/.sot-comm}" "$1"; }
 
 # The owner-pid walk lives in comm-lib.sh (`sot_owner_pid`) now: comm-wake.sh
@@ -222,7 +214,7 @@ _context_block() {
     [ -n "$inbox" ] || inbox="${INBOX_DIR:-${SOT_COMM_HOME:-$HOME/.sot-comm}/inbox}/$h.jsonl"
     cat <<EOF
 You are @$h. Inbox: $inbox
-Verbs: comm-relay.sh send @<peer> "msg" | comm-poll.sh | comm-status.sh <working|waiting|blocked|done|idle> "why" | comm-list.sh | bus.sh sync
+Verbs: comm-send.sh @<peer> "msg" | comm-poll.sh | comm-status.sh <working|waiting|blocked|done|idle> "why" | comm-list.sh
 EOF
     _workstate_rule
     _capability_lines
@@ -262,7 +254,7 @@ if [ "$MODE" = "catchup" ]; then
     eval "$("$SCRIPT_DIR/comm-context.sh")"
     H="${SOT_COMM_NAME:-${NAME:-}}"
     if [ -z "$H" ]; then
-        echo "BOOTSTRAP handle=none poll=n/a selftest=down bus=n/a identity=FAIL"
+        echo "BOOTSTRAP handle=none poll=n/a selftest=down identity=FAIL"
         exit 0
     fi
 
@@ -293,17 +285,7 @@ if [ "$MODE" = "catchup" ]; then
         [ "${POLL_COUNT:-0}" -gt 0 ] 2>/dev/null && { echo "BACKLOG:"; printf '%s\n' "$POLL_OUT"; }
     fi
 
-    BUS="n/a"
-    if [ "$IS_SOT" = 1 ]; then
-        # Peek only: `bus.sh sync --count` NEVER advances the bus cursor
-        # (Codex review finding 9 — the old version did, permanently hiding
-        # entries this verdict line never actually showed anyone). A nonzero
-        # count here is a durable prompt to run `bus.sh sync` (or
-        # /bus-sync) for real, never a silent acknowledgement.
-        BUS="$("$SCRIPT_DIR/bus.sh" sync --count 2>/dev/null || echo "n/a")"
-    fi
-
-    echo "BOOTSTRAP handle=$H poll=${POLL_COUNT:-0} selftest=$SELFTEST bus=$BUS identity=ok"
+    echo "BOOTSTRAP handle=$H poll=${POLL_COUNT:-0} selftest=$SELFTEST identity=ok"
     _workstate_rule
     _capability_lines
     exit 0

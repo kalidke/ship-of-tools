@@ -5,13 +5,19 @@ problems — read which one you actually have before picking a recipe.
 
 - **`identity=MISMATCH`** — it joined you anyway, but under an ESCALATED
   handle (e.g. `<repo>-<parentdir>-<host>` instead of the bare
-  `<repo>-<host>`) because a relay listener bridge for your CANONICAL handle
+  `<repo>-<host>`) because a live listener bridge for your CANONICAL handle
   was already running under your uid at join time. Recipe below.
 - **`identity=FAIL` with a `REFUSED:` line** — it did NOT join at all: the
   self-file at this identity slot already names a different, validated
   project, and no `$SOT_COMM_NAME`/`$SOT_COMM_SELF_FILE` pin was given to
   say what to do about it. See "Unblocking a REFUSED start" below — this is
   a DIFFERENT situation, not a smaller version of the same one.
+
+This is ADR 0049's design of record, landing in stages: the listener bridge
+and Monitor named below are what this tree still runs today. ADR 0049
+replaces them with one daemon-side wake and nothing to arm, but that
+replacement has not landed yet, so the recipe below still has to account for
+what is actually running.
 
 ## MISMATCH recipe
 
@@ -24,16 +30,11 @@ escalates away from it again — which is how you got here. Reclaim
 explicitly instead.
 
 1. **Prove sole ownership of the canonical handle before reclaiming it.**
-   Confirm exactly one live session has this repo as its cwd, and that
-   the bridge for the canonical handle (its pid is in
-   `~/.sot-comm/state/bridge-<canonical-handle>.pid`) started when *this*
-   session actually started:
-   ```bash
-   ~/.sot-comm/bin/comm-listen.sh --name <canonical-handle> --status   # RUNNING (pid N) or not running
-   ps -o lstart= -p N
-   ```
-   If you can't confirm sole ownership, stop and ask a human — reclaiming
-   someone else's live handle strands *them* instead of fixing you.
+   Confirm exactly one live session has this repo as its cwd — `comm-list.sh`
+   shows which handle is live and how long ago it last stamped its own
+   status. If you can't confirm sole ownership, stop and ask a human —
+   reclaiming someone else's live handle strands *them* instead of fixing
+   you.
 
 2. Drop the escalated handle:
    ```bash
@@ -46,32 +47,12 @@ explicitly instead.
    ~/.sot-comm/bin/comm-join.sh --name <canonical-handle>
    ```
 
-4. Your listener bridge almost certainly never needed to move — it was
-   bridging the *correct* (canonical) handle's inbox the whole time, just
-   unaddressed while your registered identity pointed elsewhere. Confirm
-   it's up rather than starting a redundant one:
-   ```bash
-   ~/.sot-comm/bin/comm-listen.sh --status
-   ```
-
-5. **Arm a Monitor for the RECLAIMED handle.** Reclaiming does not itself
-   start or move a harness Monitor — if the escalated handle had one armed,
-   it is still watching the WRONG inbox. Arm a fresh one on the canonical
-   name before selftesting:
-   ```
-   ~/.sot-comm/bin/comm-watch.sh <canonical-handle>
-   ```
-
-6. **Selftest is required, not optional** — prove the wake path actually
-   reaches you under the reclaimed name, now that its Monitor exists to
-   catch the proof:
-   ```bash
-   ~/.sot-comm/bin/comm-listen.sh --selftest
-   ```
-   Require the **Monitor notification** (`[relay] from __selftest__: …`),
-   not just the inline `receive path OK` — the notification is what proves a
-   peer's *next* message actually reaches this session, not just that a file
-   got written.
+This is the same two-command recipe `comm-join.sh`'s own warning prints when
+`identity=MISMATCH` fires. It does not move your listener bridge or any
+armed Monitor — this tree still runs both, and they keep serving whichever
+handle they were started against, exactly as that warning says. There is no
+separate step here to move them; the design of record (ADR 0049) removes
+them instead, in a later lane.
 
 ### Why MISMATCH is rare
 
@@ -117,8 +98,8 @@ SOT_COMM_NAME=<a-distinct-handle> SOT_COMM_SELF_FILE=<a-path-only-this-lane-uses
 That private path is the right shape for a lane, which owns no row: the row a
 session declares its handle into is read from the self-file's BASENAME
 (`<host>__<workspace-id>.txt`), so a lane-only name declares nothing to the
-daemon and arms no ping watcher — exactly what a lane should do, and what
-stops it rewriting the parent row's handle. If you are the row's OWN session
+daemon — exactly what a lane should do, and what stops it rewriting the
+parent row's handle. If you are the row's OWN session
 and still need a slot of your own, keep that basename and put it in a private
 directory instead; a different basename would leave your row naming whatever
 handle last declared into it.

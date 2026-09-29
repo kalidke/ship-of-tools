@@ -7,14 +7,16 @@
 # this script only resolves `sotd` and execs THROUGH it via `sotd agent-exec`.
 # `sotd agent-exec claude` bakes in `--permission-mode auto` and appends the
 # /sot-session-start bootstrap skill last, so the session comes up already
-# RECEIVING fast-comm (durable relay listener + the inbox Monitor that wakes
-# it). Project-agnostic: use it for any backend session that should receive
-# cross-session messages.
+# RECEIVING fast-comm. ADR 0049 is the design of record: the daemon that runs
+# the row wakes it, and there is nothing to arm; until that lands, the
+# receive path is the listener the bootstrap starts. Project-agnostic: use it
+# for any backend session that should receive cross-session messages.
 #
 # Usage:
 #   ccb               # fresh comm-aware session
-#   ccb --continue    # resume the last session AND re-arm comm (harness Monitors
-#                     # do NOT survive `claude --continue`, so the bootstrap re-runs)
+#   ccb --continue    # resume the last session AND re-run the comm bootstrap
+#                     # (a resumed session doesn't otherwise re-declare its
+#                     # handle or catch up on mail)
 #   ccb <flags...>    # any extra flags are forwarded to claude, before the skill
 #
 # `sotd agent-exec` places the skill LAST (after every flag given here), so

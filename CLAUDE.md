@@ -8,7 +8,7 @@ An agentic Julia development environment: AI agents drive the interface, REPL, a
 
 - `<ops>/STATUS.md` — what's *done* (current at the last working session); `<ops>/TODO.md` — what's *next*. **Read TODO on session start if the user asks "what should we do" or pulls into a fresh machine** — find the first unchecked item and either do it or confirm with the user before proceeding.
 - `<ops>/claude-memory/` — durable cross-OS Claude context (project memories). See "Cross-OS Claude memory" below.
-- `<ops>/claude-bus/` — durable cross-machine notes, not a messaging route (see "Messaging between sessions" below for that); `/bus-note` + `/bus-sync` operate on it (they resolve the ops checkout themselves). See its README.
+- `<ops>/claude-bus/` — durable cross-machine notes; no longer a messaging route (see "Messaging between sessions" below for that). See its README.
 
 ## Architecture at a glance
 
@@ -159,7 +159,9 @@ The smallest useful working slice:
 - Send with `comm-send.sh @handle "text"` and read its one result, `filed` or `FAILED` — nothing is queued and there is no second route.
 - When `[sot-comm] you have mail` appears, or your end-of-turn check says so, run `comm-poll.sh`.
 - To wait for a reply, end your turn.
-- Run the session-start step once, when a session first starts — not again on every resume.
+- Run the session-start step once, when a session first starts. Today a
+  resumed session must still re-run it — until the daemon does the waking,
+  which is why the launcher's `--continue` does exactly that.
 
 ## Conventions for Claude
 
