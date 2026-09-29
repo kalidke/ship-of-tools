@@ -20,8 +20,8 @@
 # search location.
 #
 # Read once at daemon start for the [monitor] list; at every launch for the
-# tunnel plan. Editing it means a relaunch (tunnels are the launcher's) and
-# a daemon restart (samplers are spawned from the list).
+# dial plan. Editing it means a relaunch and a daemon restart (samplers are
+# spawned from the list).
 #
 # The grammar is exactly what you see: `[section]` headers, `key = "string"`,
 # `key = true|false`, `#` comments (whole-line or trailing). Anything else
@@ -29,8 +29,8 @@
 #
 # hub = "<host>"
 #   Exactly one, and it must be a listed host. The hub runs the relay daemon
-#   every comm session joins — ONE handle namespace. Its forward-tunnel port
-#   on a frontend box is always 18743.
+#   every comm session joins — ONE handle namespace. A frontend box reaches
+#   it by spawning its own `ssh` child (C3) — no port, no forward.
 #
 # [host.<name>]
 #   A Ship of Tools host. The section key is the host's own `host_name()`
@@ -38,9 +38,8 @@
 #   box that dials it — one name, three uses, so it must be plain:
 #   [a-z0-9][a-z0-9._-]*. Reachability (User, ProxyJump, HostName) is ssh's
 #   business, in ~/.ssh/config, never here.
-#   daemon   = true   runs sotd: frontends dial it (a tunnel per launch,
-#                     port 18743 for the hub, then 18744.. in file order
-#                     skipping the hub) and it owns session rows. Default false.
+#   daemon   = true   runs sotd: frontends dial it (each spawning its own
+#                     `ssh` child, C3) and it owns session rows. Default false.
 #   frontend = true   runs a frontend + launcher: it dials the hub and the
 #                     hub never dials it (no reverse tunnel). Default false.
 #   Neither flag: a shell host — it gets the hub's reverse relay tunnel
@@ -62,9 +61,9 @@
 # The example below is a real shape: a hub, two shell-only hosts, a frontend
 # box, and a GPU box that runs no Ship of Tools. The hub reverse-tunnels to
 # shell-a and shell-b; on `frontend-box` the launcher runs `sotd topology
-# sync --hub hub` then `sotd topology plan` (tunnel hub 18743, dial hub
-# tcp:127.0.0.1:18743, relay-endpoint tcp:127.0.0.1:18743); on any box
-# `export SOT_RELAY_ENDPOINT="$(sotd topology relay-endpoint)"`.
+# sync --hub hub` then `sotd topology plan` (dial hub ssh:hub,
+# relay-endpoint ssh:hub) -- the resolver asks `sotd topology relay-endpoint`
+# at call time on every box, so there is nothing to export ahead of time.
 
 hub = "hub"
 

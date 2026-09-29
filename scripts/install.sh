@@ -5,7 +5,7 @@
 #   ./scripts/install.sh --local                     # all-in-one on this box
 #   ./scripts/install.sh --backend <ssh-alias>       # FE here → remote BE
 #   ./scripts/install.sh --be-only                   # headless backend/canary
-#   [--version vX.Y.Z] [--prefix <dir>] [--port <n>] [--no-service]
+#   [--version vX.Y.Z] [--prefix <dir>] [--no-service]
 #   [--hub <ssh-alias>]     # this box does NOT share the hub's home: fetch
 #                           # its hosts.toml (`sotd topology sync`) once staged
 #   [--force-role-change]  # consent to installing over another prefix's live daemon
@@ -40,37 +40,8 @@ REPO="${SOT_INSTALL_REPO:-kalidke/ship-of-tools}"
 PREFIX="${SOT_PREFIX:-$HOME/.local/share/sot}"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sot"
 
-# Mirrors `hub_local_port_for` (rust/protocol/src/topology.rs): this runs
-# before any `sotd` binary is on disk, so it can't just ask the real thing.
-# Two OS users sharing one box must not default to the same tunnel port
-# (the bug this whole per-user scheme fixes), so the default offered here
-# has to already be per-user, not a shared constant. FNV-1a 32-bit over
-# $USER/$USERNAME/$LOGNAME, folded to a two-digit offset above 18743; no
-# name found keeps the old fixed 18743.
-sot_hub_local_port() {
-    local user="${USER:-${USERNAME:-${LOGNAME:-}}}"
-    if [ -z "$user" ]; then
-        printf '18743\n'
-        return 0
-    fi
-    # LC_ALL=C for the WHOLE function, not just the printf below: bash's own
-    # ${#user} and ${user:i:1} are locale-aware, so under a UTF-8 locale a
-    # non-ASCII username was walked one CHARACTER at a time (and each printf
-    # saw only that character's first byte) while the Rust
-    # hub_local_port_for hashes user.as_bytes() one byte at a time -- two
-    # different hashes, two different ports, for the same username. Under
-    # C, a "character" IS a byte, which is what matches Rust here.
-    local LC_ALL=C
-    local hash=2166136261 i c  # 0x811c9dc5
-    for (( i = 0; i < ${#user}; i++ )); do
-        c=$(printf '%d' "'${user:$i:1}")
-        hash=$(( (hash ^ c) & 0xffffffff ))
-        hash=$(( (hash * 16777619) & 0xffffffff ))  # 0x01000193
-    done
-    printf '%d\n' $(( 18743 + hash % 100 ))
-}
 
-ROLE="" VERSION="" BE_ALIAS="" HUB_ALIAS="" PORT="$(sot_hub_local_port)" NO_SERVICE=0 FORCE_ROLE_CHANGE=0
+ROLE="" VERSION="" BE_ALIAS="" HUB_ALIAS="" NO_SERVICE=0 FORCE_ROLE_CHANGE=0
 GLIBC_FLOOR_FE="2.35"
 
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
@@ -365,7 +336,6 @@ while [ $# -gt 0 ]; do
         --hub) HUB_ALIAS="${2:?--hub needs an ssh alias}"; shift ;;
         --version) VERSION="${2:?}"; shift ;;
         --prefix) PREFIX="${2:?}"; shift ;;
-        --port) PORT="${2:?}"; shift ;;
         # Skip the systemd unit install/enable — for shared-home deployments
         # (a user-level unit file + its enable symlink live in $HOME, so on an
         # shared home they'd apply to EVERY machine). The caller supervises
@@ -584,9 +554,6 @@ else
                 3) ROLE=be-only ;;
                 *) die "no such choice: '$choice'" ;;
             esac
-            printf "Local tunnel port [%s]: " "$PORT" > /dev/tty
-            read -r p < /dev/tty
-            [ -n "$p" ] && PORT="$p"
         else
             echo "pick a role: --local | --backend <alias> | --be-only (no TTY for interactive setup)" >&2
             exit 2
@@ -976,20 +943,14 @@ EOF
 # wrapper now matches every other Unix launch path instead of being the
 # one with more supervision than the rest.
 #
-# SOT_REMOTE_SOCKET and SOT_LEGACY_FORWARDS, if a caller sets them in its
-# own environment before running sot-launch, pass through unchanged --
-# launch-sot.sh reads both itself, so no explicit forwarding is needed
-# here. SOT_REMOTE_REPO is deliberately left UNSET: this install has no
-# local knowledge of the remote's checkout (never had one -- the old
-# heredoc only ever queried the remote's installed sotd directly), and
-# sot_ensure_remote_host's repo-optional path (scripts/launch-sot.sh) is
-# exactly that behavior.
+# SOT_REMOTE_REPO is deliberately left UNSET: this install has no local
+# knowledge of the remote's checkout (never had one -- the old heredoc
+# only ever queried the remote's installed sotd directly).
 if [ -x "$PREFIX/bin/sot-apply" ]; then
     APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
     [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
 fi
 export SOT_HOST="$BE_ALIAS"
-export SOT_TCP_PORT="$PORT"
 export SOT_FRONTEND_BIN="$PREFIX/bin/sot"
 export SOT_NO_UPDATE=1
 exec "$PREFIX/repo/current/scripts/launch-sot.sh" "\$@"
@@ -1100,23 +1061,6 @@ installer_manifest_json "$PREFIX" "$CONFIG" "$SERVICE" "${VERSION#v}" "$VERSION"
     > "$PREFIX/install.json.new"
 mv "$PREFIX/install.json.new" "$PREFIX/install.json"
 say "wrote $PREFIX/install.json (schema 1, daemon=$WANT_DAEMON frontend=$WANT_FRONTEND, service=$SERVICE)"
-
-# A shared-home Linux cluster used to set SOT_RELAY_ENDPOINT with a
-# per-host `case` in the shell profile (ADR 0028); `sotd topology
-# relay-endpoint` now derives the right value on every box (hub's own
-# socket, a frontend's forward tunnel, or the reverse-tunnel socket) from
-# hosts.toml, so that block becomes this one-liner. The profile is the
-# maintainer's own file outside this repo — paste it by hand, this script
-# never edits it. The fallback keeps a box working if the command fails or
-# sotd isn't on PATH yet; it runs on every non-interactive ssh, so it stays
-# quiet either way. It is THIS install's own $PORT (per OS user, see
-# sot_hub_local_port above), not a fixed number — two OS users sharing a
-# box must not fall back to the same port either.
-if [ "$OS" = Linux ]; then
-    say "shell profile: replace any per-host SOT_RELAY_ENDPOINT case block with:"
-    say '  export SOT_RELAY_ENDPOINT="$(sotd topology relay-endpoint 2>/dev/null)"'
-    say "  : \"\${SOT_RELAY_ENDPOINT:=tcp:127.0.0.1:$PORT}\""
-fi
 
 say "DONE — Ship of Tools $VERSION installed (daemon=$WANT_DAEMON frontend=$WANT_FRONTEND)."
 [ -n "$BE_ALIAS" ] && say "reminder: key-based ssh to '$BE_ALIAS' is required (ssh $BE_ALIAS true)"

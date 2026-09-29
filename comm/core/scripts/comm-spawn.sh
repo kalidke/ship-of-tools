@@ -6,7 +6,7 @@
 #
 # Usage:
 #   comm-spawn.sh <repo-path> [--name NAME] [--expertise "a, b"] [--task "do X"]
-#                 [--label LABEL] [--endpoint tcp:H:P|unix:PATH]
+#                 [--label LABEL] [--endpoint ssh:target[/host]|unix:PATH]
 #   comm-spawn.sh <name> <repo-path> [...]      (legacy explicit-name form)
 #
 #   <repo-path>   package the agent works in (workspace project root)
@@ -288,23 +288,30 @@ resolve_endpoint() {
 
 # Send a frame to the daemon, return the first response line matching op $2.
 # App-level auth (ADR 0010 hardening): daemon requires a token-valid hello
-# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1).
+# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1). Both
+# schemes delegate to sot_oneshot_request (comm-lib.sh), which already
+# carries a tested arm for each — a second, hand-rolled `nc`/`ssh` here
+# would be a second implementation of the identical one-shot round trip.
 sot_send() {
-    local frame="$1" op="$2" hp
+    local frame="$1" op="$2"
     case "$ENDPOINT" in
-        tcp:*)  hp="${ENDPOINT#tcp:}"
-                { sot_hello_frame; printf '%s\n' "$frame"; } | timeout 6 nc "${hp%:*}" "${hp##*:}" 2>/dev/null | grep -m1 "\"op\":\"$op\"" ;;
-        unix:*) sot_oneshot_request "$frame" "$op" ;;
-        *)      return 1 ;;
+        ssh:*|unix:*) sot_oneshot_request "$frame" "$op" ;;
+        *)            return 1 ;;
     esac
 }
 
-if ! command -v nc >/dev/null 2>&1; then
-    echo "ERROR: nc not found — needed to reach the daemon." >&2; exit 1
-fi
 if ! ENDPOINT="$(resolve_endpoint)"; then
-    echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT." >&2; exit 1
+    echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or ssh:target[/host]." >&2; exit 1
 fi
+# `nc` is needed only for a unix: daemon (sot_oneshot_request's unix: arm) —
+# an ssh: endpoint needs nothing but ssh itself (C10), so a pure frontend
+# box with no local daemon and no nc installed can still reach a remote
+# hub this way.
+case "$ENDPOINT" in
+    unix:*)
+        command -v nc >/dev/null 2>&1 || { echo "ERROR: nc not found — needed to reach a unix: daemon." >&2; exit 1; }
+        ;;
+esac
 
 # The daemon's OWN declared host: `version.query` -> `.payload.daemon.host`
 # (`DaemonVersion.host`, sourced from `workspaces::declared_host()` — the

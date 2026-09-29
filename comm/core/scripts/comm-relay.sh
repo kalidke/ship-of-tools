@@ -11,7 +11,7 @@
 # Requires a daemon built with agent.send/agent.message support (workspace push +
 # this relay land together).
 #
-# ENDPOINT (SOT_RELAY_ENDPOINT, or auto-detected): unix:/path, tcp:HOST:PORT,
+# ENDPOINT (SOT_RELAY_ENDPOINT, or auto-detected): unix:/path, ssh:target[/host],
 # or — Windows only, ADR 0042 amendment decision 5 — pipe:\\.\pipe\name /
 # pipe:name, reaching that box's OWN local daemon over its named pipe via
 # comm-pipe-request.ps1 (PowerShell; git-bash cannot open a named pipe
@@ -67,7 +67,7 @@ HAVE_NC=0; command -v nc >/dev/null 2>&1 && HAVE_NC=1
 # all — so a missing daemon must not refuse the send. Every path that really
 # needs the wire calls _require_endpoint and fails there instead.
 _endpoint_missing() {
-    echo "ERROR: no sotd daemon found; set SOT_RELAY_ENDPOINT=unix:/path, tcp:HOST:PORT, or (Windows) pipe:name" >&2
+    echo "ERROR: no sotd daemon found; set SOT_RELAY_ENDPOINT=unix:/path, ssh:target[/host], or (Windows) pipe:name" >&2
 }
 _require_endpoint() { [ -n "$ENDPOINT" ] && return 0; _endpoint_missing; return 1; }
 ENDPOINT="$(resolve_endpoint || true)"
@@ -77,9 +77,15 @@ if [ -z "$ENDPOINT" ]; then
         *) _endpoint_missing; exit 1 ;;
     esac
 fi
-EP_HOST=""; EP_PORT=""; EP_UNIX=""; EP_PIPE=""
+EP_SSH_TARGET=""; EP_SSH_HOST=""; EP_UNIX=""; EP_PIPE=""
 case "$ENDPOINT" in
-    tcp:*)  hp="${ENDPOINT#tcp:}"; EP_HOST="${hp%:*}"; EP_PORT="${hp##*:}" ;;
+    ssh:*)
+        ep_rest="${ENDPOINT#ssh:}"
+        case "$ep_rest" in
+            */*) EP_SSH_TARGET="${ep_rest%%/*}"; EP_SSH_HOST="${ep_rest#*/}" ;;
+            *)   EP_SSH_TARGET="$ep_rest" ;;
+        esac
+        ;;
     unix:*) EP_UNIX="${ENDPOINT#unix:}" ;;
     # ADR 0042 amendment (2026-09-07): a Windows box's LOCAL daemon only
     # listens on a named pipe. Accepts either the full \\.\pipe\<name> form
@@ -111,23 +117,12 @@ nc_send() {
             -File "$ps1" -PipeName "$EP_PIPE" -Mode Oneshot -Op agent.send -TimeoutSec 5
         return
     fi
-    if [ "$HAVE_NC" = 1 ]; then
-        if [ -n "$EP_UNIX" ]; then { sot_hello_frame "$HELLO_ROLE"; cat; } | timeout 5 nc -U "$EP_UNIX"; else { sot_hello_frame "$HELLO_ROLE"; cat; } | timeout 5 nc "$EP_HOST" "$EP_PORT"; fi
-    elif [ -n "$EP_HOST" ]; then
-        # nc-free fallback: bash /dev/tcp. Forward the frame on stdin to the
-        # socket, then read the reply for up to 5s. fd 9 stays RW so the daemon
-        # doesn't see EOF mid-exchange. The exec MUST live in a subshell: a
-        # redirections-only exec whose redirect fails EXITS a non-interactive
-        # shell outright — the || error path here was unreachable and a
-        # transient connect failure killed the whole send silently (same
-        # class as the comm-listen _inject death, fixed 2026-06-11).
-        (
-            exec 9<>"/dev/tcp/$EP_HOST/$EP_PORT" 2>/dev/null \
-                || { echo "ERROR: /dev/tcp connect to $EP_HOST:$EP_PORT failed" >&2; exit 1; }
-            { sot_hello_frame "$HELLO_ROLE"; cat; } >&9
-            timeout 5 cat <&9
-            exec 9<&- 9>&- 2>/dev/null || true
-        ) || return 1
+    if [ -n "$EP_SSH_TARGET" ]; then
+        { sot_hello_frame "$HELLO_ROLE"; cat; } | timeout 5 sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST"
+        return
+    fi
+    if [ "$HAVE_NC" = 1 ] && [ -n "$EP_UNIX" ]; then
+        { sot_hello_frame "$HELLO_ROLE"; cat; } | timeout 5 nc -U "$EP_UNIX"
     else
         echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2; return 1
     fi
@@ -135,15 +130,14 @@ nc_send() {
 # nc_hold: keep the connection open (write half stays open so the daemon doesn't
 # EOF us) and stream inbound frames to stdout. $1 = seconds (empty = forever).
 #
-# SELF-HEAL: for TCP we use bash /dev/tcp, NOT nc. `cat <&9` returns the instant
-# the daemon closes its end (FIN/EOF), so `bridge` exits and comm-listen.sh's
-# reconnect loop re-establishes the connection within ~2s. The old
-# `tail -f /dev/null | nc` form never exits on a graceful daemon close — nc keeps
-# running because its stdin (tail -f) never EOFs — so the socket sits in
-# CLOSE-WAIT and the bridge stops delivering FOREVER (this froze an inbox for
-# ~2 days until a manual restart). /dev/tcp fixes that. fd 9 is opened RW so the
-# write half stays open (daemon doesn't EOF us) while the read EOF still fires.
-# Unix-socket endpoints can't use /dev/tcp (AF_UNIX) so they keep nc -U.
+# SELF-HEAL: an ssh: endpoint's read side is `sot_ssh_bridge`'s own child
+# process (C10), which EOFs the instant the daemon closes the far end
+# (ssh itself exiting is what surfaces as EOF here) — same property the
+# old `tail -f /dev/null | nc` form lacked: that form never exited on a
+# graceful daemon close (nc's stdin, tail -f, never EOFs), so the socket
+# sat in CLOSE-WAIT and the bridge stopped delivering FOREVER (this froze
+# an inbox for ~2 days until a manual restart). Unix-socket endpoints
+# keep nc -U, which has no child-process EOF to lean on.
 #
 # sot_hold_stdin: the write side of every branch below -- hello once, then
 # hold the pipe open forever without exiting. For `$HELLO_ROLE = bridge`
@@ -183,29 +177,16 @@ nc_hold() {
             -File "$ps1" -PipeName "$EP_PIPE" -Mode Hold -TimeoutSec "$secs"
         return
     fi
-    if [ -n "$EP_HOST" ]; then
-        if exec 9<>"/dev/tcp/$EP_HOST/$EP_PORT" 2>/dev/null; then
-            # Write side backgrounded (hello, then -- for bridge -- a `ping`
-            # every sot_ping_interval_s) so it can keep feeding fd 9 while
-            # this same process foreground-reads <&9 below; killed the
-            # instant that read returns (self-heal is unaffected -- it's
-            # `cat <&9`'s own EOF-on-daemon-close that still drives it).
-            ( sot_hold_stdin >&9 ) &
-            local writer_pid=$!
-            if [ -n "$secs" ]; then timeout "$secs" cat <&9; else cat <&9; fi
-            kill "$writer_pid" 2>/dev/null || true
-            wait "$writer_pid" 2>/dev/null || true
-            exec 9<&- 9>&- 2>/dev/null || true
-            return 0
-        fi
-        # bash built without /dev/tcp: fall back to nc. NOTE: this form does NOT
-        # self-heal on a graceful close — prefer a /dev/tcp-capable bash for bridges.
-        if [ "$HAVE_NC" = 1 ]; then
-            if [ -n "$secs" ]; then sot_hold_stdin | timeout "$secs" nc "$EP_HOST" "$EP_PORT"
-            else sot_hold_stdin | nc "$EP_HOST" "$EP_PORT"; fi
-            return 0
-        fi
-        echo "ERROR: cannot open /dev/tcp/$EP_HOST/$EP_PORT and nc not found" >&2; return 1
+    if [ -n "$EP_SSH_TARGET" ]; then
+        # The self-heal /dev/tcp was written for (this function's own doc
+        # above) comes free from a child process (C10; C3's own Rust
+        # spawn is the same shape): `sot_ssh_bridge`'s stdout is the
+        # child's own stdout, so `cat` reading it sees EOF the instant
+        # the daemon closes -- no fd-9 dance, no nc-vs-/dev/tcp split
+        # needed the way a single bidirectional socket fd required.
+        if [ -n "$secs" ]; then sot_hold_stdin | timeout "$secs" sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST"
+        else sot_hold_stdin | sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST"; fi
+        return 0
     fi
     # Unix-socket endpoint: requires nc -U (/dev/tcp can't speak AF_UNIX).
     if [ -n "$EP_UNIX" ] && [ "$HAVE_NC" = 1 ]; then

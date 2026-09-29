@@ -175,6 +175,11 @@ jobs:
         working-directory: comm/core/tests
         run: |
           bash test-join-disambiguation.sh
+          # C10 (isolation-plan.md §3): the one gate every endpoint value
+          # leaves comm-lib.sh through, plus the ssh: resolvers and the
+          # sot_ssh_bridge wire round trip -- a suite that runs nowhere is
+          # not a test.
+          bash test-endpoint-gate.sh
           bash test-status-floor.sh
           bash test-session-start-survived.sh
           bash test-sot-fe-version.sh

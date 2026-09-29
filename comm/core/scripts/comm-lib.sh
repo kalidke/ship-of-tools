@@ -125,70 +125,230 @@ _sot_windows_local_pipe() {
     printf '%s\n' "$raw"
 }
 
+# _sot_is_plain_host_name — the shell twin of `sot_protocol`'s Rust grammar
+# (`topology::is_plain_host_name` / `ssh_bridge::SshRecipe::new`): first
+# character an ASCII lowercase letter or digit, the rest lowercase
+# letters, digits, `.`, `_`, `-`. Two implementations of one grammar, not
+# one shared: a value from THIS shell's own environment never passed
+# through the Rust one. A value that DID come from `hosts.toml` always
+# passes here too — C2's producer checks it at parse and at apply.
+_sot_is_plain_host_name() {
+    case "$1" in
+        [a-z0-9]*) case "$1" in *[!a-z0-9._-]*) return 1 ;; esac ;;
+        *) return 1 ;;
+    esac
+}
+
+# _sot_emit_endpoint VALUE — main's ruling, 2026-09-29: every endpoint value
+# leaves this file through this ONE gate. Prints VALUE and returns 0 only
+# when its scheme is one THIS version can dial -- `unix:`, `pipe:`, `ssh:`
+# -- and, for `ssh:`, only when both halves of `ssh:<target>[/<host>]` are
+# plain host names (`<target>` is an argv element a bare `ssh` reads --
+# a leading `-` would be read as an OPTION; `<host>` is interpolated into
+# the remote command STRING a shell on the far end parses). For anything
+# else -- an empty value, an unknown scheme, a value this version used to
+# speak (`tcp:`) but no longer does, a malformed `ssh:` target/host -- it
+# prints NOTHING, writes one line naming the discarded value to stderr,
+# and returns nonzero. An empty value is a silent nonzero: that is
+# ordinary control flow (no source had an answer), not a fault, so it
+# gets no stderr line.
+#
+# A WHITELIST of what this version dials, not a `tcp:` blacklist -- that
+# is what closes the whole class of stale-endpoint bugs rather than one
+# member: it also discards a scheme a newer `sotd` invents, a `tunnel`
+# line pasted into a variable, and a truncated value. Because this is the
+# only `printf` that leaves either resolver below, no source can hand a
+# caller an undialable value, and no caller's own scheme switch ever sees
+# one.
+_sot_emit_endpoint() {
+    local value="$1"
+    [ -n "$value" ] || return 1
+    case "$value" in
+        unix:*|pipe:*)
+            printf '%s\n' "$value"
+            return 0
+            ;;
+        ssh:*)
+            local rest="${value#ssh:}" target host
+            case "$rest" in
+                */*) target="${rest%%/*}"; host="${rest#*/}" ;;
+                *) target="$rest"; host="" ;;
+            esac
+            if _sot_is_plain_host_name "$target" && { [ -z "$host" ] || _sot_is_plain_host_name "$host"; }; then
+                printf '%s\n' "$value"
+                return 0
+            fi
+            ;;
+    esac
+    printf 'comm-lib: discarding an endpoint this version cannot dial: %s\n' "$value" >&2
+    return 1
+}
+
+# _sot_sotd_bin — the one binary-finding ladder for a caller that only
+# needs `sotd`'s PATH, no live socket: `SOTD_BIN`, `command -v sotd`,
+# `~/.local/share/sot/bin/sotd`, `~/.local/bin/sotd` -- a bare `sotd`
+# fails silently in a daemon-spawned capsule, whose PATH lacks
+# `~/.local/bin`. `sot_daemon_endpoint`'s own `_try_sotd_socket_bin`
+# cannot reuse this: its four calls also require `[ -S "$sock" ]` on a
+# LIVE socket, a question this ladder's own caller
+# (`_sot_planned_relay_endpoint`) does not ask.
+_sot_sotd_bin() {
+    local candidate
+    for candidate in "${SOTD_BIN:-}" "$(command -v sotd 2>/dev/null || true)" \
+                      "$HOME/.local/share/sot/bin/sotd" "$HOME/.local/bin/sotd"; do
+        [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+    done
+    return 1
+}
+
+# _sot_planned_relay_endpoint — `<sotd> topology relay-endpoint` on BOTH
+# platforms, naming its binary the way the rest of this file does:
+# `_sot_windows_sotd_exe` on Windows, `_sot_sotd_bin`'s ladder elsewhere.
+# Drops the old `2>/dev/null`: `sotd`'s own failure line already names the
+# fix ("no hosts.toml at ... run `sotd topology sync --hub <alias>`"), so
+# the honest thing is to let it through rather than re-explain it. Exit
+# status is `sotd`'s OWN (`${PIPESTATUS[0]}`, `sot_jq`'s own idiom above),
+# not `tr`'s, so a caller can tell "no answer" from "answered empty".
+_sot_planned_relay_endpoint() {
+    local bin
+    if _sot_is_windows; then
+        bin="$(_sot_windows_sotd_exe)" || return 1
+    else
+        bin="$(_sot_sotd_bin)" || return 1
+    fi
+    "$bin" topology relay-endpoint | head -n1 | tr -d '\r'
+    return "${PIPESTATUS[0]}"
+}
+
+# _sot_ssh_control — this process's own ControlPath, when the
+# connection-sharing trio is even worth trying (main's ruling,
+# isolation-plan.md §3 C10): `$XDG_RUNTIME_DIR/sot-comm-ssh-%C` and
+# NOTHING else, where `%C` is ssh's own per-target hash. That directory is
+# per-uid, private, and on local disk. Prints nothing when
+# `XDG_RUNTIME_DIR` is unset -- a fallback under `$HOME` (an earlier draft
+# of this helper) is wrong twice over on a shared-home fleet: the home is
+# shared across boxes while `%C` hashes only user and target (two boxes
+# collide on one path), and a unix socket on a network home is unusable
+# for multiplexing anyway. Declining to share beats sharing the wrong
+# socket.
+_sot_ssh_control() {
+    [ -n "${XDG_RUNTIME_DIR:-}" ] && printf '%s/sot-comm-ssh-%%C\n' "$XDG_RUNTIME_DIR"
+}
+
+# _sot_ssh_sharing_ok — once per process (cached in $_SOT_SSH_SHARING),
+# decides whether this box's ssh build accepts the ControlMaster trio
+# WITHOUT a network round trip: `ssh -G` parses the options and prints
+# the effective configuration without connecting. On Windows, git-bash's
+# MSYS ssh multiplexes but Win32-OpenSSH's support is unverified -- and
+# an ssh that REJECTS an unsupported ControlMaster (rather than ignoring
+# it) would be a Windows box that cannot mail at all, exactly the outcome
+# C10 exists to prevent. So this decides it locally instead of trusting
+# either platform's reputation: nonzero here ("Bad configuration option"
+# from a build that refuses them) drops the trio for the rest of this
+# process; zero passes it. One probe, no network, no guess.
+_SOT_SSH_SHARING=""
+_sot_ssh_sharing_ok() {
+    local control
+    control="$(_sot_ssh_control)" || return 1
+    [ -n "$control" ] || return 1
+    if [ -z "$_SOT_SSH_SHARING" ]; then
+        if ssh -G -o ControlMaster=auto -o ControlPath="$control" -o ControlPersist=600 \
+               localhost >/dev/null 2>&1; then
+            _SOT_SSH_SHARING=1
+        else
+            _SOT_SSH_SHARING=0
+        fi
+    fi
+    [ "$_SOT_SSH_SHARING" = 1 ]
+}
+
+# sot_ssh_bridge TARGET [HOST] — stdin → that daemon; its replies → stdout.
+# The one child every `ssh:` scheme switch spawns (six call sites, C10):
+# `ssh <target> '<PATH prelude>; sotd stdio-bridge [--host <host>]'`, the
+# option set and prelude literally the ones the hub's own relay unit runs
+# (`rust/protocol/src/topology.rs`) and C3 spawns identically from Rust
+# (`rust/protocol/src/ssh_bridge.rs`) -- kept as this file's own
+# implementation, not shared code, because shell cannot call into that
+# crate. The connection-sharing trio is part of THIS helper, not an
+# optional extra: without it "one authentication per host" (isolation-
+# plan.md §10) is false as specified, since each send would be a full
+# login on every platform rather than only on Windows -- applied through
+# this one place so it is written once, not at each of the six call sites.
+sot_ssh_bridge() {
+    local target="$1" host="${2:-}"
+    local remote='export PATH="$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"; sotd stdio-bridge'
+    [ -n "$host" ] && remote="$remote --host $host"
+    local opts=(-T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
+    if _sot_ssh_sharing_ok; then
+        opts+=(-o ControlMaster=auto -o ControlPath="$(_sot_ssh_control)" -o ControlPersist=600)
+    fi
+    ssh "${opts[@]}" "$target" "$remote"
+}
+
 # sot_relay_endpoint [EXPLICIT] — the endpoint for comm RELAY traffic (send,
 # ask, listen, selftest): where the HANDLES live. A handle is registered live
 # on the BACKEND daemon by its listener connection, so on a Windows box this
-# is the SSH tunnel to the backend — never the local daemon's pipe, which has
-# no route to a handle on another host and drops the frame without a word
-# (2026-09-08: every cross-host send from a Windows session went dark the
-# day discovery became pipe-first). Workspace ops, spawn and sot-fe keep
-# sot_daemon_endpoint's pipe-first order: those really do target the local
-# daemon. An explicit endpoint always wins, as everywhere else.
+# is the box's own ssh child to the hub — never the local daemon's pipe,
+# which has no route to a handle on another host and drops the frame
+# without a word (2026-09-08: every cross-host send from a Windows session
+# went dark the day discovery became pipe-first). Workspace ops, spawn and
+# sot-fe keep sot_daemon_endpoint's pipe-first order: those really do
+# target the local daemon. An explicit endpoint always wins, as everywhere
+# else -- but a refusal here is a MISS, not a death: this resolver
+# continues to its next source (main's ruling; contrast
+# sot_daemon_endpoint's explicit arm below, which is fatal).
 #
-# Topology plan (lane D): the launcher derives this box's relay endpoint
-# from `sotd topology plan --self <host>` (the hub's own socket on the
-# hub, its forward tunnel elsewhere — see relay_endpoint in
-# rust/protocol/src/topology.rs) and exports/persists it as
-# SOT_RELAY_ENDPOINT (launch-sot.ps1). Take that when a launcher has set
-# it — no more hardcoded `tcp:127.0.0.1:18743` guess, which was wrong on
-# any box not literally tunneling the hub on the default port (the laptop
-# fix: those sessions' sends went nowhere). A session spawned by an OLDER
-# launcher has no SOT_RELAY_ENDPOINT in its env, so before guessing, ask
-# the daemon itself (`sotd topology relay-endpoint`, one exec, always the
-# plan's answer -- 2026-09-18, a box whose sends went to 18743 while its
-# tunnel sat on another port). The hardcoded guess remains the last
-# fallback for a box with no plan yet (no launcher run, or a sotd too old
-# to have one).
+# Two lines, both through the one gate: an explicit value, else whatever
+# `sotd topology relay-endpoint` answers for THIS box (`sotd` always has
+# an answer once it exists -- its own endpoint on a box that never
+# declared a topology, the plan's endpoint on one that did, its own error
+# line and nothing else on a file that names a hub without this box).
+# NEVER falls through to `sot_daemon_endpoint`: that would silently
+# resolve THIS box's own daemon for a question about the hub's, which is
+# the 2026-09-08 cross-host regression pinned at
+# `comm/core/tests/test-join-disambiguation.sh:2023-2053` -- a failed
+# resolution is no endpoint, never the local daemon, on either platform.
 sot_relay_endpoint() {
-    local explicit="${1:-}"
-    [ -n "$explicit" ] && { printf '%s\n' "$explicit"; return 0; }
-    if _sot_is_windows; then
-        [ -n "${SOT_RELAY_ENDPOINT:-}" ] && { printf '%s\n' "$SOT_RELAY_ENDPOINT"; return 0; }
-        local exe planned
-        if exe="$(_sot_windows_sotd_exe)"; then
-            planned="$("$exe" topology relay-endpoint 2>/dev/null | head -n1 | tr -d '\r')"
-            [ -n "$planned" ] && { printf '%s\n' "$planned"; return 0; }
-        fi
-        printf 'tcp:127.0.0.1:%s\n' "${SOT_PORT:-18743}"
-        return 0
-    fi
-    sot_daemon_endpoint
+    _sot_emit_endpoint "${1:-}" && return 0
+    _sot_emit_endpoint "$(_sot_planned_relay_endpoint)" && return 0
+    return 1
 }
 
 # sot_daemon_endpoint [EXPLICIT] — resolve the control socket endpoint used by
-# comm relay/spawn/FE commands. Explicit endpoints keep their old behavior; the
-# socket-only default is discovered by asking sotd for the label-derived socket.
+# comm relay/spawn/FE commands: the daemon on THIS box, or the one the
+# caller named. Explicit endpoints keep their old behavior EXCEPT one
+# change main ruled on 2026-09-29: a refused explicit value is FATAL here
+# (`return`, not `exit` -- every one of the eight callers reads this
+# inside a command substitution, where `exit` would end only the subshell
+# and hand the caller an empty string with a status it might not test; all
+# eight DO test it and exit 1 with their own message, read line by line,
+# not assumed). A session holding a stale `SOT_FE_ENDPOINT`/
+# `SOT_SPAWN_ENDPOINT=tcp:...` now fails loudly where it used to succeed
+# by accident, reaching this box's own daemon nobody named -- the ruling:
+# on the control plane a wrong box is worse than a stopped command.
 sot_daemon_endpoint() {
     local explicit="${1:-}"
-    [ -n "$explicit" ] && { printf '%s\n' "$explicit"; return 0; }
-    [ -n "${SOT_SOCKET:-}" ] && { printf 'unix:%s\n' "$SOT_SOCKET"; return 0; }
+    if [ -n "$explicit" ]; then
+        _sot_emit_endpoint "$explicit" && return 0
+        printf 'comm-lib: refusing to substitute a local daemon for the endpoint you named: %s\n' "$explicit" >&2
+        return 1
+    fi
+    if [ -n "${SOT_SOCKET:-}" ]; then
+        _sot_emit_endpoint "unix:$SOT_SOCKET" && return 0
+    fi
 
     # ADR 0042 amendment (2026-09-07): on a Windows box the LOCAL daemon
-    # only ever listens on its named pipe — the box's loopback port is the
-    # SSH tunnel OUT to the backend, never a second local listener — so
-    # discovery asks for the pipe FIRST. On a probe miss (no local daemon
-    # running) the tunnel to the backend is the default (Codex review
-    # finding 6 on the session-start rewrite), decided HERE before the
-    # pgrep-based sotd scrape below, which has no role on Windows.
-    # SOT_PORT keeps its EXISTING default (18743) — never a new fixed port.
+    # only ever listens on its named pipe -- discovery asks for it FIRST.
+    # A probe miss (no local daemon running) is simply no endpoint (C10):
+    # there is no tunnel left to fall back to, and guessing this box's own
+    # pipe for what might be a remote question is exactly the 2026-09-08
+    # regression `sot_relay_endpoint`'s own doc names.
     if _sot_is_windows; then
         local pipe_path
         if pipe_path="$(_sot_windows_local_pipe)"; then
-            printf 'pipe:%s\n' "$pipe_path"
-            return 0
+            _sot_emit_endpoint "pipe:$pipe_path" && return 0
         fi
-        printf 'tcp:127.0.0.1:%s\n' "${SOT_PORT:-18743}"
-        return 0
+        return 1
     fi
 
     # Normal socket-only mode: the daemon may have only --label on argv, so
@@ -203,8 +363,7 @@ sot_daemon_endpoint() {
         [ -x "$candidate" ] || return 1
         sock="$("$candidate" session-socket-path "$label" 2>/dev/null || true)"
         [ -n "$sock" ] && [ -S "$sock" ] || return 1
-        printf 'unix:%s\n' "$sock"
-        return 0
+        _sot_emit_endpoint "unix:$sock"
     }
 
     _try_sotd_socket_bin "${SOTD_BIN:-}" && return 0
@@ -223,14 +382,16 @@ sot_daemon_endpoint() {
         done < <(pgrep -af 'sotd' 2>/dev/null || true)
     fi
 
-    # LAST resort — development daemons launched with explicit transport
-    # flags. Below the canonical session socket on purpose (2026-09-08): a
-    # lane's test daemon (`--socket /tmp/sotrt-*/...`) scraped from argv
-    # hijacked every comm script's discovery while the real daemon sat on
-    # its label-derived socket, so despawn "found no workspace" and the
-    # row survived. A scratch daemon is targeted explicitly (SOT_RELAY_ENDPOINT
-    # / --endpoint), never by luck of process order. pgrep is not on a stock
-    # git-bash PATH and must never be reached for on Windows.
+    # LAST resort — a development daemon launched with an explicit --socket.
+    # Below the canonical session socket on purpose (2026-09-08): a lane's
+    # test daemon (`--socket /tmp/sotrt-*/...`) scraped from argv hijacked
+    # every comm script's discovery while the real daemon sat on its
+    # label-derived socket, so despawn "found no workspace" and the row
+    # survived. A scratch daemon is targeted explicitly (SOT_RELAY_ENDPOINT
+    # / --endpoint), never by luck of process order. `--tcp` scraping is
+    # GONE (dead since 0.4.0 -- `sotd` rejects `--tcp` outright,
+    # `rust/backend/src/main.rs:446-450`). pgrep is not on a stock git-bash
+    # PATH and must never be reached for on Windows.
     if ! _sot_is_windows; then
         local line
         while IFS= read -r line; do
@@ -239,13 +400,8 @@ sot_daemon_endpoint() {
                     continue
                     ;;
             esac
-            if [[ "$line" =~ --tcp[[:space:]]+([^[:space:]]+) ]]; then
-                printf 'tcp:%s\n' "${BASH_REMATCH[1]}"
-                return 0
-            fi
             if [[ "$line" =~ --socket[[:space:]]+([^[:space:]]+) ]]; then
-                printf 'unix:%s\n' "${BASH_REMATCH[1]}"
-                return 0
+                _sot_emit_endpoint "unix:${BASH_REMATCH[1]}" && return 0
             fi
         done < <(pgrep -af 'sotd' 2>/dev/null || true)
     fi
@@ -2017,8 +2173,9 @@ sot_ping_interval_s() {
 #     nothing, holds nothing.
 # Read window: SOT_SEND_TIMEOUT, else the caller's SEND_TIMEOUT (sot-fe's
 # repl paths set --timeout up to minutes — the window MUST honor it), else
-# 10s. Uses ENDPOINT (unix:/path, tcp:host:port, or pipe:name — the last one
-# a Windows-only named-pipe transport, see the pipe: arm below) from the
+# 10s. Uses ENDPOINT (unix:/path, ssh:target[/host] via sot_ssh_bridge, or
+# pipe:name — the last one a Windows-only named-pipe transport, see the
+# pipe: arm below) from the
 # caller's scope.
 # _sot_oneshot_sender HELLO FRAME TIMEOUT_S PIDFILE — the write side of a
 # one-shot request: hello, the frame, then `exec sleep` so the subshell's pid
@@ -2056,24 +2213,15 @@ sot_oneshot_request() {
                 | timeout "$timeout_s" nc -U "${ENDPOINT#unix:}" > "$tmp" 2>/dev/null &
             ncpid=$!
             ;;
-        tcp:*)
-            local hp="${ENDPOINT#tcp:}" host port
-            host="${hp%:*}"; port="${hp##*:}"
-            if command -v nc >/dev/null 2>&1; then
-                _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
-                    | timeout "$timeout_s" nc "$host" "$port" > "$tmp" 2>/dev/null &
-                ncpid=$!
-            else
-                # /dev/tcp fallback: the fd stays open for the whole window,
-                # so the EOF race does not exist here — plain bounded read.
-                (
-                    exec 9<>"/dev/tcp/$host/$port" || exit 1
-                    printf '%s\n%s\n' "$hello" "$frame" >&9
-                    timeout "$timeout_s" cat <&9
-                    exec 9<&- 9>&- 2>/dev/null || true
-                ) > "$tmp" 2>/dev/null &
-                ncpid=$!
-            fi
+        ssh:*)
+            local rest="${ENDPOINT#ssh:}" target sshhost
+            case "$rest" in
+                */*) target="${rest%%/*}"; sshhost="${rest#*/}" ;;
+                *) target="$rest"; sshhost="" ;;
+            esac
+            _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
+                | timeout "$timeout_s" sot_ssh_bridge "$target" "$sshhost" > "$tmp" 2>/dev/null &
+            ncpid=$!
             ;;
         pipe:*)
             # ADR 0042 amendment (2026-09-07): a Windows box's LOCAL daemon

@@ -867,14 +867,13 @@ function Update-SotTopologyPlan {
         Write-SupLog $msg
         Set-LaunchStatus $msg
     }
-    # The laptop fix (comm-lib.sh no longer hardcodes a relay port): every
-    # session this box spawns needs SOT_RELAY_ENDPOINT in its environment,
-    # not just this launcher's own process -- persist it at User scope
-    # too, same pattern as SOT_TOKEN's fallback below.
-    if ($script:plan.RelayEndpoint) {
-        $env:SOT_RELAY_ENDPOINT = $script:plan.RelayEndpoint
-        [Environment]::SetEnvironmentVariable('SOT_RELAY_ENDPOINT', $script:plan.RelayEndpoint, 'User')
-    }
+    # C10 (isolation-plan.md §3): the resolver now asks `sotd topology
+    # relay-endpoint` at call time, on every platform -- there is no
+    # value left for this launcher to compute and hand down. Clear the
+    # User-scope value ONCE (a no-op once it is already gone) so no later
+    # session inherits a stale one this launcher itself set before this
+    # change.
+    [Environment]::SetEnvironmentVariable('SOT_RELAY_ENDPOINT', $null, 'User')
 }
 Update-SotTopologyPlan
 # Token resolution with registry-scope fallback (a Windows FE box finding, 2026-07-11):

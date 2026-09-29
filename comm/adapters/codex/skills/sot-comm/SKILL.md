@@ -27,27 +27,25 @@ assistant text.
 
 ## Socket-Only Backend
 
-The normal backend listens on a private Unix socket, not remote TCP
-`127.0.0.1:18743`.
+The normal backend listens on a private Unix socket. It has had no remote TCP
+listener since 0.4.0.
 
 Endpoint resolution for `comm-relay.sh`, `comm-spawn.sh`, `comm-despawn.sh`, and
-`sot-fe` is:
-
-1. explicit endpoint env or `--endpoint`
-2. `$SOT_SOCKET`
-3. old dev daemon args `--tcp` / `--socket`
-4. `sotd session-socket-path ${SOT_BACKEND_LABEL:-sot}`
+`sot-fe` is one gate at the point a value is returned: an explicit endpoint,
+else `$SOT_SOCKET`, else what `sotd` answers (its own endpoint, or the
+declared plan's), else an old dev daemon's `--socket` arg — every one of
+them through that gate, which dials only `unix:`, `pipe:` and `ssh:`.
 
 Override only when needed:
 
 ```bash
-export SOT_RELAY_ENDPOINT=unix:/path/to/sot.sock        # backend host
-export SOT_RELAY_ENDPOINT=tcp:127.0.0.1:<local-port>    # frontend host tunnel
+export SOT_RELAY_ENDPOINT=unix:/path/to/sot.sock   # backend host
+export SOT_RELAY_ENDPOINT=ssh:<hub>                # frontend host reaching the hub
 ```
 
-On Windows or another frontend-local host, `127.0.0.1:<local-port>` is local to
-that host and must SSH-forward to the remote Unix socket. It is not a remote
-backend listener.
+On Windows or another frontend-local host, `ssh:<hub>` spawns its own `ssh`
+child to the hub and speaks the protocol over its stdio (C3) — never a
+forwarded port, and never this box's own local daemon substituted silently.
 
 ## Work-State
 

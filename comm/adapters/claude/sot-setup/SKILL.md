@@ -398,14 +398,14 @@ its `sotd --tcp` boot is rejected by current builds):
 SOT_HOST=myhost scripts/launch-sot.sh
 ```
 
-It self-updates on launch (pull → re-exec, `SOT_NO_UPDATE=1` skips), opens the
-SSH control forward (local TCP → the remote user's per-user `sotd` socket;
-browser pages ride it via the daemon proxy, ADR 0035 — the legacy `1234`-`1241`
-forwards are opt-in via `SOT_LEGACY_FORWARDS=1` for pre-v0.5.0 backends),
-ensures the remote `sotd` is running, and starts the FE under the ADR-0017
-supervisor. Overridable env: `SOT_HOST`, `SOT_TCP_PORT`, `SOT_REMOTE_REPO`,
+It self-updates on launch (pull → re-exec, `SOT_NO_UPDATE=1` skips), reaches
+the remote daemon by spawning its own `ssh` child (C3 — no forward, no
+port; browser pages ride that same child through the daemon proxy, ADR
+0035), ensures the remote `sotd` is running, and starts the FE under the
+ADR-0017 supervisor. Overridable env: `SOT_HOST`, `SOT_REMOTE_REPO`,
 `SOT_REMOTE_SOCKET` (default: queried remotely via `sotd session-socket-path
-sot`), `SOT_RESTART_BE=1`. Idempotent across re-runs (reuses a live tunnel).
+sot`), `SOT_RESTART_BE=1`. Idempotent across re-runs (the frontend
+reconnects its own ssh child on its own backoff).
 The remote BE must already be **built** on the host — if it's a fresh host,
 provision it over this same SSH first (§6b), or run §1–6 on the box directly.
 

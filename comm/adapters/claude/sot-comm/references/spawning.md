@@ -4,10 +4,10 @@
 
 ## Endpoint + tuning
 
-`comm-spawn.sh` auto-detects the daemon endpoint from explicit env, old dev
-`--tcp`/`--socket` daemon flags, or `sotd session-socket-path
+`comm-spawn.sh` auto-detects the daemon endpoint from explicit env, an old dev
+`--socket` daemon flag, or `sotd session-socket-path
 ${SOT_BACKEND_LABEL:-sot}`. Override with `--endpoint unix:/path/to/sot.sock`
-or `--endpoint tcp:HOST:PORT`. Tune boot wait with `SOT_COMM_SPAWN_WAIT`
+or `--endpoint ssh:target[/host]`. Tune boot wait with `SOT_COMM_SPAWN_WAIT`
 (default 6s).
 
 ## A durable peer instead of a task agent

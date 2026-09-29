@@ -7,10 +7,10 @@ frontend PROCESS's address, not this session's handle) and has neither of the th
 auto-discovery relies on, and fails in a way that reads like a dead daemon:
 
 ```
-ERROR: could not find the sotd daemon. Set --endpoint unix:/path or tcp:HOST:PORT (or $SOT_FE_ENDPOINT).
+ERROR: could not find the sotd daemon. Set --endpoint unix:/path, ssh:target[/host], or (Windows) pipe:name (or $SOT_FE_ENDPOINT).
 ```
 
-That message appears **even with the tunnel plainly working**. Two
+That message appears **even with the frontend's own connection plainly working**. Two
 similarly-named variables carry the same value to different tools, and only
 one of them is set for you:
 
@@ -21,11 +21,13 @@ one of them is set for you:
 
 Two fixes:
 
-1. **Export `SOT_FE_ENDPOINT` yourself** — same value, the FE's local
-   forwarded port:
+1. **Export `SOT_FE_ENDPOINT` yourself** — only `unix:`, `ssh:target[/host]`
+   (Linux/macOS) or `pipe:name` (Windows) are dialable; an endpoint you
+   name in any other form is refused, never silently replaced by this
+   box's own daemon. On a remote box:
 
    ```bash
-   export SOT_FE_ENDPOINT="tcp:127.0.0.1:${SOT_PORT:-18743}"
+   export SOT_FE_ENDPOINT="ssh:<hub>"
    ```
 
 2. **Pass the workspace slug explicitly** — `$SOT_WORKSPACE` is unset on the
