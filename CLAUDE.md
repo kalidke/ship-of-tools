@@ -1,6 +1,6 @@
 # Ship of Tools
 
-An agentic Julia development environment: AI agents drive the TUI, REPL, and navigation to read, run, and surface code — the developer steers, watches, and reviews. It preserves conventional editor and REPL mechanics and layers a **concept explorer** on top (moving fluidly between project, module, type, function, output, and math). The LLM is the primary author of code and maintainer of the concept-explorer artifacts.
+An agentic Julia development environment: AI agents drive the interface, REPL, and navigation to read, run, and surface code — the developer steers, watches, and reviews. It preserves conventional editor and REPL mechanics and layers a **concept explorer** on top (moving fluidly between project, module, type, function, output, and math). The LLM is the primary author of code and maintainer of the concept-explorer artifacts.
 
 `requirements.md` is the source of truth for **what** this system does. This document captures the design decisions for **how** it does it.
 
@@ -14,7 +14,7 @@ An agentic Julia development environment: AI agents drive the TUI, REPL, and nav
 
 Three processes, even when running locally, communicating over a socket:
 
-1. **Frontend (Rust + ratatui)** — yazi-inspired TUI. Stateless about the project. Renders what the backend sends; forwards keystrokes and commands.
+1. **Frontend (Rust + winit/wgpu)** — yazi-inspired native window that owns rendering end-to-end on the GPU (ADR 0012). **Not a terminal UI and not driven through a terminal:** `ratatui` supplies the chrome *layout* model only, via a custom `Backend` that maps cells to glyphs on the wgpu surface (ADR 0011). Stateless about the project. Renders what the backend sends; forwards keystrokes and commands.
 2. **Backend daemon (Rust)** — owns project state. Watches files, supervises Julia processes, holds the orchestrator LLM session, exposes a JSON line protocol to the frontend.
 3. **Julia kernel** — plugin host and project introspector. Owns dispatch tables, mode tree computation, file-type-aware indexing, AST hashing, and Julia-aware previews. Loads the project's `Project.toml` environment.
 
@@ -24,7 +24,7 @@ Client/server even on local because it makes remote operation almost free later 
 
 ## Why this language split
 
-- **Rust** for the frontend, backend, file watching, IPC, terminal-protocol image rendering, LLM provider client. Single-binary cross-platform distribution. `tokio` + `notify` + `ratatui` + `ratatui-image` cover the stack.
+- **Rust** for the frontend, backend, file watching, IPC, GPU rendering, LLM provider client. Single-binary cross-platform distribution. `tokio` + `notify` + `winit` + `wgpu` + `cosmic-text` + `glyphon` + `ratatui` (chrome layout model only) cover the stack. ADR 0012 rules `ratatui-image`, `crossterm` and terminal image protocols of any kind explicitly **out**.
 - **Julia** for everything plugin-extensible and Julia-aware. `JuliaSyntax.jl` for parsing — reimplementing in Rust is a non-starter. Dispatch-as-plugin-mechanism is the unique value proposition here.
 
 ## The plugin model: multiple dispatch as the extension substrate
@@ -148,6 +148,28 @@ The smallest useful working slice:
 - Automatic plot capture from REPL — phase 1, user saves to `.concept/outputs/` or calls a small helper
 - Windows polish — get Linux working first; Rust + a modern terminal mostly handles it but expect edge cases
 
+## Messaging between sessions
+
+- This is ADR 0049's design of record, and on this branch almost none of it is
+  built: the comm scripts here predate even the 0.6.6 fixes line. Today a send
+  from this tree prints `  @<handle>: delivered live (+inbox)` or
+  `  @<handle>: queued to inbox (<host>)` rather than one `filed`/`FAILED`
+  verdict; the wake is a per-session watcher (`comm-wake.sh`) typing
+  `[sot-comm] new message for @<handle> — run …/comm-poll.sh` rather than
+  `[sot-comm] you have mail`; cross-machine receive is the relay bridge
+  `comm-listen.sh` starts; and the git bus (`bus.sh`, `/bus-note`,
+  `/bus-sync`) and the session-start `MONITOR:` line are still here. The 0.6.6
+  line deletes all of it. **Where any of that disagrees with ADR 0049, 0049
+  wins.**
+- A session that can receive has one handle: its folder name plus its box name.
+- `comm-context.sh` prints yours.
+- Send with `comm-send.sh @handle "text"` and read its one result, `filed` or `FAILED` — nothing is queued and there is no second route.
+- When `[sot-comm] you have mail` appears, or your end-of-turn check says so, run `comm-poll.sh`.
+- To wait for a reply, end your turn.
+- Run the session-start step once, when a session first starts. Today a
+  resumed session must still re-run it — until the daemon does the waking,
+  which is why the launcher's `--continue` does exactly that.
+
 ## Conventions for Claude
 
 When working in this repo:
@@ -164,7 +186,7 @@ When working in this repo:
   record) buys false elegance. A field, type, or knob must name the
   invariant it serves; if it cannot, it is a deletion candidate.
 - **Julia is the canonical language** for plugin code, ABI definitions, and Julia-aware logic. Use it expressively — leverage multiple dispatch, the type system, and idiomatic patterns.
-- **Rust is for plumbing** — TUI, IPC, file watching, process supervision. Keep it boring and predictable.
+- **Rust is for plumbing** — rendering, IPC, file watching, process supervision. Keep it boring and predictable.
 - **Plotting is CairoMakie** when generating plots in Julia.
 - **Eat dogfood**: core handlers ship as plugins to themselves. If core wants privileged access, fix the ABI instead.
 - **Boundaries are serialization seams.** `TreeNode` and `PreviewPayload` carry opaque payloads. Rust never learns about new entity kinds.
@@ -227,7 +249,7 @@ Ship of Tools/
       files-mode/         # Files Mode plugin
       
   rust/                   # Rust workspace
-    frontend/             # ratatui TUI binary
+    frontend/             # native winit/wgpu window binary
     backend/              # daemon binary
     protocol/             # shared types for the JSON line protocol
     

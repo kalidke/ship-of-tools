@@ -15,9 +15,9 @@ all clients are mutually addressable through the same registry and inboxes.
   bin/                     # installed scripts (the reference client)
   registry.json            # who is reachable + liveness  (source of truth for discovery)
   .registry.lock/          # mkdir-based spinlock for registry writes
-  inbox/<name>.jsonl       # durable per-recipient queue (append-only)
+  inbox/<name>.jsonl       # durable per-recipient inbox (append-only)
   read/<name>.cursor       # per-recipient read cursor (ISO ts of last-shown msg)
-  self/<host>__<pane>.txt  # this pane's chosen agent name (identity recovery)
+  self/<host>__<pane>.txt  # this pane's declared agent name (identity recovery)
 ```
 
 The registry and inboxes are **data at rest** — discovery and catch-up need a
@@ -26,6 +26,8 @@ deployment, one `~/.sot-comm` serves every host sharing that home.
 For cross-machine with no shared FS, point `SOT_COMM_HOME` at a
 git-synced directory; the same files then ride the existing bus. (Not auto-wired
 in v1 — the `.claude-bus` git loop can still cover separate filesystems.)
+**Superseded by ADR 0049, deleted in the 0.6.6 line:** there is one delivery
+route, the append to the inbox, and no git bus behind it.
 
 ## registry.json
 
@@ -75,60 +77,105 @@ renders `summary` as the per-session glance, colored by `state` and aged off
 ISO-8601 UTC timestamps sort lexically — the read cursor is just the `ts` of the
 last message shown.
 
-`to` ranks the line for the recipient's inbox Monitor: their own name = directed,
-wakes the session; `""` = broadcast copy (relay cc traffic or
-`comm-send --broadcast`), files silently for the next `comm-poll`. A line with
-NO `to` key is legacy (pre-stamp, before 2026-06-12) and reads as directed —
-which is why an unstamped `--broadcast` once woke the whole network at once.
+`to` ranks the line for the recipient: their own name = directed mail, which
+counts as unread and is what a wake is for; `""` = broadcast copy (relay cc
+traffic or `comm-send --broadcast`), filed and read at the next `comm-poll`,
+never counted as unread. A line with NO `to` key is legacy (pre-stamp, before
+2026-06-12) and reads as directed — which is why an unstamped `--broadcast` once
+woke the whole network at once.
 
-## Delivery — two modes, chosen by reachability, always visible
+## Delivery
 
-1. **Durable always:** every send appends the frame to `inbox/<target>.jsonl`.
-2. **Live wake — directed sends only:** a directed send to a recipient whose
-   registry row names a workspace row on the sender's host is typed into
-   that row through the daemon's `pty.input` (Enter appended; the send
-   reports `delivered live` only when the daemon confirms `enter_sent`).
-   Otherwise the recipient's own inbox Monitor (`/sot-session-start`) polls
-   `inbox/<name>.jsonl` and wakes the session; a codex row is woken by
-   `codex-watch.sh`, which injects each directed frame through the same
-   `pty.input`. The message text is `[<from>:<repo>] <msg>`. **Broadcasts are
-   never typed** — text+Enter is a full interrupt (it submits into the
-   recipient's claude, costing a model turn), so broadcast copies are
-   durable-only and surface on the next `comm-poll`, matching the Monitor's
-   demotion rule.
+This section is ADR 0049's design of record. **Almost none of it is built on
+this branch**, whose comm scripts predate even the 0.6.6 fixes line, so read it
+as the design and the rest of this file as today's mechanism. Today a send here
+prints `  @<handle>: delivered live (+inbox)` or
+`  @<handle>: queued to inbox (<host>)`, never one `filed`/`FAILED` verdict; the
+wake is the per-session watcher `comm-wake.sh` typing `[sot-comm] new message
+for @<handle> — run …/comm-poll.sh`; cross-machine receive is the relay bridge
+`comm-listen.sh` starts; the read cursor is the timestamp described above, not a
+line count; and the git bus is still present. The 0.6.6 line deletes all of it.
+Where anything disagrees with ADR 0049, 0049 wins.
 
-**Ping delivery (Claude, capsule rows, ADR 0047):** a harness Monitor costs a
-model turn every ~30 minutes just to re-arm, so a Claude session in a capsule
-row wakes instead via `comm-wake.sh <handle> --deliver ping` — the same
-`codex-watch.sh` mechanism generalized, but it types ONE fixed notice line
-(never the message text) and lets the session read the real backlog with
-`comm-poll.sh` on the turn the ping wakes it. A whole batch of new directed
-frames still costs one wake, not one per frame (coalescing: an unread ping
-suppresses a further one until the recipient's poll cursor moves, capped at
-10 minutes). It only types when the row's current screen shows a free prompt
-— typing into an open dialog or menu could answer it — so a busy screen
-delays the wake, never drops it. `comm-session-start.sh` starts this
-automatically for a capsule row; outside one, the harness Monitor is
-unchanged.
+**Words.** A *row* is a session running inside Ship of Tools. The *daemon*
+is the background program on each box that runs that box's rows; it keeps
+running when the window closes. The *hub* is the one daemon every box can
+reach.
 
-If live delivery isn't possible (no row for the recipient on this host, no
-daemon, a row that is not ready) the send reports `queued to inbox (…)` — the
-fallback is **stated, never silent**. The recipient sees it on the next `poll`.
+**Address.** A handle is a session's repository or worktree folder name plus
+its box name; two boxes never share one. A row's session declares its
+handle to its daemon when it first starts; the daemon keeps it through
+restarts, compactions and clears, gives each handle to one row only, and a
+newer declaration moves it. A box whose daemon runs no rows holds no
+addresses.
 
-**Cross-machine receive** is the relay bridge `comm-listen.sh` starts: a
-reconnect loop (`comm-relay.sh bridge --name <name>`) run as a background
-child of the session's own process tree, pid recorded in
-`state/bridge-<name>.pid`. It lives in the session's capsule leg and dies
-with it; `--status`/`--stop` and `comm-leave.sh` follow the pidfile, and a
-start reaps any stray bridge for the handle (one without a pidfile) first,
-so one frame is never filed twice. A Windows frontend has no bridge — the
-frontend files inbound frames itself.
+**Inbox.** One file per handle, `inbox/<handle>.jsonl`, in the box's comm
+folder. The read cursor is a line count, kept in `read/<handle>.cursor`.
+Unread mail is any line past it addressed to this handle by someone else.
+
+**Sending** picks one of two routes, by whether the sender's own comm folder
+lists the receiver:
+
+1. It can reach the inbox (same box, or a box sharing the home): it adds the
+   line itself.
+2. It cannot: it hands the message to the hub, which offers it to every
+   daemon linked to it. The daemon whose comm folder holds that inbox adds
+   the line and says "filed" (the hub itself, for its own home). The hub
+   passes that back.
+
+A daemon on a box with its own disk keeps its own link to the hub, opened
+when it starts and reopened if it drops, so the box is reachable whenever
+its rows run, window open or not; its sessions send through that same link.
+
+A liveness check runs first: a row still runs a session with that handle, or
+the session was active in the last ten minutes.
+
+**The one result**, nothing else:
+
+- `filed -> @h` (exit 0).
+- `FAILED -> @h: <reason>` (exit 1): no box knows that handle; no live
+  session holds it; the hub cannot be reached; or no daemon said "filed"
+  within 5 seconds. Nothing was added. Retrying or reporting is the sender's
+  call.
+
+Nothing is queued anywhere and there is no second route. To get an answer,
+send, end the turn, and be woken.
+
+**Waking.** Every two seconds each daemon looks at every row it runs. If the
+row's handle has unread mail and the row sits at a free prompt — the cursor
+sitting at the start of the input line marked by the prompt glyph, so a grey
+suggestion or any other decoration does not count as a draft but a real
+draft still does, and a working session is not free either and is never
+typed into — the daemon types one fixed line, `[sot-comm] you have mail: run
+comm-poll.sh`, and Enter; keystrokes would otherwise land in an open dialog,
+menu or half-written draft. The daemon does this, not the frontend or the
+sender — several frontends can show one row and each would type, and a
+closed window would leave the row deaf. It types a fixed notice, never the
+message itself: a pasted message is never marked read, so it would show
+again. One line per new batch of mail; one more if it is
+still unread ten minutes later at a free prompt. A busy session needs no
+typing: its end-of-turn check will not let a turn finish while unread mail
+waits. This is the only wake — no per-session watcher, listener, bridge or
+Monitor exists.
+
+**Cases.**
+
+- A Claude or Codex row gets the same line and check; the free-prompt test
+  knows each tool's prompt.
+- A row that just restarted, compacted or cleared re-arms nothing: the
+  handle stays with the row and the count is a file.
+- A session outside any row (a bare terminal, or one on a box with no
+  daemon) has a handle and an inbox, and its end-of-turn check reads new
+  mail before a turn ends. While idle it sees mail only at its next turn,
+  and after ten idle minutes sends to it fail as "no live session".
+- A subagent is part of its parent session: it may send under the parent's
+  handle and never reads the inbox.
 
 ## Verbs (reference client = `bin/*.sh`)
 
 | Verb        | Script           | Notes |
 |-------------|------------------|-------|
-| join        | `comm-join.sh`   | `--name <n>` `--expertise "a, b"`; writes registry + self file |
+| join        | `comm-join.sh`   | **Superseded by ADR 0049, removed in B6** — the handle is derived (folder plus box name), not chosen by flag. `--name <n>` `--expertise "a, b"`; writes registry + self file |
 | send        | `comm-send.sh`   | `@name "msg"` or `--broadcast "msg"`; recipient is only the first positional `@arg`, so the message may itself begin with `@` |
 | poll        | `comm-poll.sh`   | shows inbox entries newer than the read cursor |
 | list        | `comm-list.sh`   | all agents + live/stale + (me) marker |
@@ -143,8 +190,8 @@ task**. A task-named anything is unfindable next to its repo-named siblings
 | Thing | Convention | Example |
 |-------|-----------|---------|
 | Durable BE peer handle | `<repo-lowercase>-<host>` | `myrepo-myhost` (Ship of Tools on the backend host), `lldevtools-myhost` |
-| Spawned agent — repo checkout | `<repo-lowercase>` (bare, **no** descriptor) | `myrepo` |
-| Spawned agent — git **worktree** | `<repo>-wt-<shortname>` (the `-wt-` infix is reserved for worktrees and groups them next to the parent; `<shortname>` names the WORKTREE, never the task). Created via the `/worktree` skill. | `MyAnalysis-wt-rotation` (worktree `rotation`) |
+| Spawned agent — repo checkout | `<repo-lowercase>` (bare, **no** descriptor) — **superseded by ADR 0049, removed in B6:** the handle also carries the box name | `myrepo` |
+| Spawned agent — git **worktree** | `<repo>-wt-<shortname>` (the `-wt-` infix is reserved for worktrees and groups them next to the parent; `<shortname>` names the WORKTREE, never the task). Created via the `/worktree` skill — **superseded by ADR 0049, removed in B6:** the handle also carries the box name | `MyAnalysis-wt-rotation` (worktree `rotation`) |
 | Frontend address | `fe@<host>` — the frontend PROCESS's declared hello `name`, the target `sot-fe --fe <host>` scopes a directed `fe.command`/`open-url` to (two frontends on one box differ by `instance`); the frontend is a client, never a comm peer, and no session derives or joins as this name | `fe@laptop` |
 | Workspace label | repo basename (comm-spawn default; task-named labels are **rejected**) | `MyPackage` |
 | Workspace slug (the row's name) | derived from the label by the daemon | `mypackage` |
