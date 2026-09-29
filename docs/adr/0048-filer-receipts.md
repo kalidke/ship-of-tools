@@ -6,7 +6,7 @@ two-mode delivery goes. Originally: accepted, and implemented on the 0.6.6
 fixes line — in the comm scripts (they deploy via `update_comm`), the daemon
 and the frontend (those halves ride a release). **A checkout without those
 commits has none of it**, and the test is a grep: no `agent.receipt` under
-`rust/src`, no `filed ->` under `comm/core/scripts/`.
+`rust/`, no `filed ->` under `comm/core/scripts/`.
 
 ## Context
 

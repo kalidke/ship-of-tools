@@ -89,16 +89,15 @@ woke the whole network at once.
 This section is ADR 0049's design of record. **Almost none of it is built on
 this branch**, whose comm scripts predate even the 0.6.6 fixes line, so read it
 as the design and the rest of this file as today's mechanism. Today a send here
-prints `  @<handle>: delivered live (+inbox)`,
-`  @<handle>: queued to inbox (<host>)` or `  @<handle>: queued to inbox (row …)`,
-never one `filed`/`FAILED` verdict, and `queued to inbox` is a SUCCESS here — the
-frame is in the inbox; the wake is the per-session watcher `comm-wake.sh` typing
+prints a `delivered live (+inbox)` or `queued to inbox (…)` form, never one
+`filed`/`FAILED` verdict — **every `(+inbox)` line means the frame is filed, so
+it is success; the only failure is `not in registry — skipped`** — the wake is
+the per-session watcher `comm-wake.sh` typing
 `[sot-comm] new message for @<handle> — run …/comm-poll.sh`; cross-machine
 receive is the relay bridge `comm-listen.sh` starts, **except on a Windows host,
 where it starts none and the frontend files inbound frames into its own
 `fe-inbox.jsonl`**; the read cursor is the timestamp described above, not a
 line count; and the git bus is still present. The 0.6.6 line deletes all of it.
-Where anything disagrees with ADR 0049, 0049 wins.
 
 **Words.** A *row* is a session running inside Ship of Tools. The *daemon*
 is the background program on each box that runs that box's rows; it keeps
@@ -150,8 +149,7 @@ sitting at the start of the input line marked by the prompt glyph, so a grey
 suggestion or any other decoration does not count as a draft but a real
 draft still does, and a working session is not free either and is never
 typed into — the daemon types one fixed line, `[sot-comm] you have mail: run
-comm-poll.sh`, and Enter; keystrokes would otherwise land in an open dialog,
-menu or half-written draft. The daemon does this, not the frontend or the
+comm-poll.sh`, and Enter. The daemon does this, not the frontend or the
 sender — several frontends can show one row and each would type, and a
 closed window would leave the row deaf. It types a fixed notice, never the
 message itself: a pasted message is never marked read, so it would show

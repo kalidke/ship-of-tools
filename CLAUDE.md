@@ -152,9 +152,10 @@ The smallest useful working slice:
 
 - This is ADR 0049's design of record, and on this branch almost none of it is
   built: the comm scripts here predate even the 0.6.6 fixes line. Today a send
-  from this tree prints `  @<handle>: delivered live (+inbox)`,
-  `  @<handle>: queued to inbox (<host>)` or `  @<handle>: queued to inbox (row
-  …)` rather than one `filed`/`FAILED` verdict; the wake is a per-session
+  from this tree prints a `delivered live (+inbox)` or `queued to inbox (…)`
+  form rather than one `filed`/`FAILED` verdict — **every `(+inbox)` line means
+  the frame is filed, so it is success; the only failure is `not in registry —
+  skipped`** — and the wake is a per-session
   watcher (`comm-wake.sh`) typing
   `[sot-comm] new message for @<handle> — run …/comm-poll.sh` rather than
   `[sot-comm] you have mail`; cross-machine receive is the relay bridge
@@ -166,7 +167,7 @@ The smallest useful working slice:
   wins.**
 - A session that can receive has one handle: its folder name plus its box name.
 - `comm-context.sh` prints yours.
-- Send with `comm-send.sh @handle "text"` and read its one result, `filed` or `FAILED` — nothing is queued and there is no second route. On this branch that result is still `delivered live (+inbox)` or `queued to inbox (…)`, and **`queued to inbox` here means the frame IS filed: success, not failure.**
+- Send with `comm-send.sh @handle "text"` and read its one result, `filed` or `FAILED` — nothing is queued and there is no second route. On this branch the result is still one of the `(+inbox)` forms, **every one of which means the frame is filed — success, not failure.**
 - When `[sot-comm] you have mail` appears — here the line reads `[sot-comm] new message for @<handle>` — or your end-of-turn check says so, run `comm-poll.sh`.
 - To wait for a reply, end your turn.
 - Run the session-start step once, when a session first starts. Today a
