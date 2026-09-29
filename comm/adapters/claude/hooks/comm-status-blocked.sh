@@ -32,6 +32,22 @@
 # while a real question was open, root cause a PostToolUse that cleared the
 # question unconditionally on ANY completed AskUserQuestion).
 #
+# DENY: a permission denial fires no hook of its own (true of Escape and of
+# an explicit "No" alike), so nothing else clears `question` when the tool
+# never runs. A bare "No" (the turn dies) writes the same transcript marker a
+# user interrupt does; comm-wake.sh's silent-exit watcher reads it, and
+# comm-status.sh's `interrupted` event clears `question` because it matches
+# `question_prompt`, stamped above from THIS call's own `prompt_id` — never
+# from a guess. KNOWN GAP: "No" WITH feedback writes no marker (the turn
+# keeps running instead), so this row sits red for the rest of that turn —
+# comm-status-idle.sh's own end-of-turn nudge treats the still-open
+# `question` as parked and asks the model to restate it, which will read as
+# stale here since the denial already answered it. It self-heals at the
+# NEXT genuine user prompt (that event already clears `question`), never
+# earlier. Fixing the "green while it continues" half needs a signal this
+# hook does not have: no hook fires between a feedback-deny and whatever
+# tool call the model tries next.
+#
 # Safety rests on comm-status.sh's self-gating: a non-comm session is a silent
 # no-op (rc 0). Output swallowed, always exit 0 so the hook can never block.
 #
@@ -45,18 +61,25 @@
 [ "${SOT_COMM_HOOKS:-}" = off ] && exit 0
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$COMM_HOME/bin/comm-status.sh"
+# One read of stdin (the hook envelope): the tool_use_id below for the
+# answer marker, and prompt_id for the silent-exit detector (comm-wake.sh) —
+# stamped into `question_prompt` so a turn that dies with this dialog still
+# open (Escape, or a bare "No") can clear its own question, and only its own
+# (comm-status.sh's `interrupted` event compares this id, never guesses).
+_envelope="$(cat)"
+tool_use_id="$(printf '%s' "$_envelope" | jq -r '.tool_use_id // ""' 2>/dev/null || true)"
+prompt_id="$(printf '%s' "$_envelope" | jq -r '.prompt_id // ""' 2>/dev/null || true)"
 # Drop the answer marker before stamping `blocked`, keyed by this dialog's
 # own tool_use_id (sanitized: an id is free-text as far as we know, and this
 # becomes a filename). No id, no marker — the PostToolUse side then finds
 # nothing to consume and this dialog's answer is simply never fast-tracked
 # (comm-status.sh's own self-gating still applies to everything else).
-tool_use_id="$(jq -r '.tool_use_id // ""' 2>/dev/null || true)"
 if [ -n "$tool_use_id" ]; then
     mkdir -p "$COMM_HOME/state" 2>/dev/null || true
     : > "$COMM_HOME/state/askq-$(printf '%s' "$tool_use_id" | tr -c 'A-Za-z0-9._-' '_').marker" 2>/dev/null || true
 fi
 if [ -x "$STATUS" ]; then
-    "$STATUS" blocked >/dev/null 2>&1 || true
+    COMM_STATUS_PROMPT_ID="$prompt_id" "$STATUS" blocked >/dev/null 2>&1 || true
     "$STATUS" stop >/dev/null 2>&1 || true
 fi
 exit 0

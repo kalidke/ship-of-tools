@@ -914,7 +914,7 @@ function _install_claude_hooks(srchooks::AbstractString, claude_dir::AbstractStr
 end
 
 # The comm lifecycle hooks: (Claude Code event, script in ~/.sot-comm/bin, tool
-# matcher | nothing). The first four are the instant + automatic WORK-STATE
+# matcher | nothing). The first five are the instant + automatic WORK-STATE
 # source that replaces pane-scraping — Claude fires these on its own lifecycle,
 # with zero model help. A row is a set of FACTS reduced to one display state
 # by comm-status.sh (ADR 0044 amendment, 2026-09-19): `blocked` keys off the
@@ -928,6 +928,12 @@ end
 const _COMM_STATE_HOOKS = [
     ("UserPromptSubmit", "comm-status-working.sh", nothing),     # turn starts    → prompt (sets floor)
     ("PreToolUse", "comm-status-blocked.sh", "AskUserQuestion"), # opens question → blocked, then stop (a real turn end)
+    # A permission prompt (row-colour fix): unlike AskUserQuestion this can
+    # gate ANY tool, so no matcher — it fires on its own event, not as a
+    # PreToolUse variant. Same blocked-then-stop shape and the same reason:
+    # without the stop the row would sit `working` (floor still set) and
+    # mask the question underneath it in the reduction.
+    ("PermissionRequest", "comm-status-permission.sh", nothing),
     ("Stop", "comm-status-idle.sh", nothing),                    # turn ends      → stop (done iff floor=user, nothing pending)
     # Long-turn heartbeat: re-stamps a WORKING row's status_at on tool
     # activity (throttled to 60s) so the nav's 10-min wilt marks real stalls,
