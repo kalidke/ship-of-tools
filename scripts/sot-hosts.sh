@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # sot-hosts.sh -- shared `sotd topology plan` reader (topology plan, lane
-# D). Sourced by launch-sot.sh (which SSH-ensures and opens the tunnels a
-# plan names) and scripts/tests/test-tunnel-plan.sh.
+# D). Sourced by launch-sot.sh (which spawns the ssh child a plan's `dial`
+# line names) and scripts/tests/test-tunnel-plan.sh.
 #
 # The old hosts.toml TOML parsing (sot_hosts_default_host / sot_hosts_table
 # / sot_tunnel_plan) is DELETED -- `sot_protocol::topology` (Rust) is the
@@ -20,7 +20,7 @@
 # there before changing this; a reviewer may still adjust the format, so
 # this parses it in ONE function and nowhere else): one fact per line,
 # first word a keyword, then either one value (self/hub/relay-endpoint) or
-# a host name followed by a value (dial/tunnel). The value can itself
+# a host name followed by a value (dial). The value can itself
 # contain a space (a Windows pipe path carries the username verbatim), so
 # every split below is a TWO-WAY split on the FIRST remaining space only
 # (awk's `index()` + `substr()`, never a fixed-field split) -- the
@@ -31,9 +31,10 @@
 #   self <host>
 #   hub <host>
 #   relay-endpoint <endpoint>
-#   dial <host> <endpoint>      # one per dialable host (daemon, not frontend --
-#                                # D8: a frontend box's daemon is never dialled)
-#   tunnel <host> <port>        # one per dialable host except self
+#   dial <host> <endpoint>      # one per dialable host: unix:/pipe: for this box's
+#                                # own daemon, and (on the hub) for another host it
+#                                # serves a relay socket for; ssh:<hub> or
+#                                # ssh:<hub>/<host> everywhere else
 #
 # sot_topology_plan <sotd-bin> [self-host]
 # Runs `<sotd-bin> topology plan [--self <self-host>]` and re-emits its
@@ -45,7 +46,6 @@
 #   HUB|<host>
 #   RELAY|<endpoint>
 #   DIAL|<host>|<endpoint>
-#   TUNNEL|<host>|<port>
 # Prints nothing and returns nonzero when <sotd-bin> is empty, not
 # executable, or the command itself fails (no plan yet -- e.g. a fresh
 # checkout with no sotd built) -- the caller's job is to treat that as
@@ -76,10 +76,6 @@ sot_topology_plan() {
             else if (kw == "dial") {
                 sp2 = index(rest, " ")
                 if (sp2 > 0) print "DIAL|" substr(rest, 1, sp2 - 1) "|" substr(rest, sp2 + 1)
-            }
-            else if (kw == "tunnel") {
-                sp2 = index(rest, " ")
-                if (sp2 > 0) print "TUNNEL|" substr(rest, 1, sp2 - 1) "|" substr(rest, sp2 + 1)
             }
             # else: unknown first word -- ignored, not an error (forward-compat).
         }

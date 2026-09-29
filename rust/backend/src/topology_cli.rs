@@ -12,10 +12,9 @@ Usage: sotd topology <subcommand>
 
   plan [--self <host>]  this box's derived facts, one per line: self, hub,
                         relay-endpoint, dial <host> <endpoint> (every daemon
-                        host), tunnel <host> <port> (every daemon host but
-                        self; the hub is this box's OS-user tunnel port
-                        (topology::hub_local_port, per-user, not fixed),
-                        others ordinal from it in file order)
+                        host — unix:/pipe: for itself and, on the hub, for
+                        any other host; ssh:<hub> or ssh:<hub>/<host>
+                        everywhere else)
   status                the declared table (HOST DECLARED), plus a
                         \"cache diverged\" line when this box's file hash
                         disagrees with the hub's (skipped ON the hub, and
@@ -73,9 +72,13 @@ pub fn run(args: &[String]) -> i32 {
             report_cache_divergence(t);
             Ok(())
         }),
-        "relay-endpoint" => with_topology(|t| {
-            self_host().and_then(|me| topology::relay_endpoint(t, &me)).map(|e| println!("{e}"))
-        }),
+        // NOT `with_topology`: main's ruling (isolation-plan.md §3 C10's
+        // Rust half) is that this one subcommand answers even with no
+        // `hosts.toml` at all — a box that has never declared a topology
+        // has no hub and no declared peers, so its own daemon is the only
+        // daemon it could mean. The other five keep the wrapper and its
+        // `no hosts.toml` error verbatim.
+        "relay-endpoint" => report(relay_endpoint_cmd()),
         "relay-sockets" => with_topology(|t| {
             topology::require_hub(t, &self_host()?, "relay-sockets")?;
             for h in topology::relay_hosts(t) {
@@ -107,6 +110,23 @@ fn with_topology(f: impl FnOnce(&Topology) -> Result<(), String>) -> i32 {
         Err(e) => return report(Err(e)),
     };
     report(f(&loaded.1))
+}
+
+/// `relay-endpoint`'s own load, deliberately not [`with_topology`]: a file
+/// that lists other hosts but not this one is still `relay_endpoint`'s own
+/// `` `<host>` is not a listed host `` error (a different case — other
+/// boxes provably exist, so answering "myself" there would be the silent
+/// wrong-box failure this whole design deletes); no file at all is this
+/// box's own endpoint, because nothing has ever told it of another box.
+fn relay_endpoint_cmd() -> Result<(), String> {
+    let me = self_host()?;
+    match topology::load()? {
+        Some((_, t)) => topology::relay_endpoint(&t, &me).map(|e| println!("{e}")),
+        None => {
+            println!("{}", topology::local_endpoint());
+            Ok(())
+        }
+    }
 }
 
 fn report(r: Result<(), String>) -> i32 {
@@ -422,13 +442,11 @@ fn remove_dropin(unit: &str) -> Result<(), String> {
 }
 
 /// `sotd topology set <edit>`. Sends one edit to the hub over this box's
-/// own control dial — the SAME endpoint the launcher's own tunnel plan
-/// already establishes for the hub (`hub_endpoint`, below: this box's own
-/// socket when it IS the hub, else the forwarded
-/// `tcp:127.0.0.1:<hub_local_port>` (per OS user) every non-hub box
-/// already dials for everything else). No separate
-/// "find the hub" step: authorisation is the dial itself (`op::
-/// TOPOLOGY_SET`'s own doc).
+/// own control dial — the SAME endpoint `plan`'s `dial <hub>` line already
+/// gives out (`hub_endpoint`, below: this box's own socket when it IS the
+/// hub, else `ssh:<hub>`, the ssh child every non-hub box already spawns
+/// for everything else). No separate "find the hub" step: authorisation is
+/// the dial itself (`op::TOPOLOGY_SET`'s own doc).
 fn set(words: &[String]) -> Result<(), String> {
     let edit = parse_edit(words)?;
     let (_, topo) = topology::load()?.ok_or_else(|| "no hosts.toml yet (run `sotd topology sync --hub <alias>`)".to_string())?;
@@ -462,13 +480,14 @@ fn set(words: &[String]) -> Result<(), String> {
 }
 
 /// This box's own dial to the hub: its own socket when it IS the hub, else
-/// the SAME forwarded local port `plan`'s `dial <hub>` line already uses
-/// (the launcher's own tunnel, already up on every non-hub box).
+/// the SAME `ssh:<hub>` endpoint `plan`'s `dial <hub>` line already uses —
+/// an ssh child into the hub, running `sotd stdio-bridge` there with no
+/// argument (its own daemon, which IS the hub's).
 fn hub_endpoint(topo: &Topology, me: &str) -> String {
     if me == topo.hub {
         topology::local_endpoint()
     } else {
-        format!("tcp:127.0.0.1:{}", topology::hub_local_port())
+        format!("ssh:{}", topo.hub)
     }
 }
 
@@ -592,10 +611,10 @@ mod tests {
     }
 
     #[test]
-    fn hub_endpoint_is_local_on_the_hub_else_the_forwarded_port() {
+    fn hub_endpoint_is_local_on_the_hub_else_an_ssh_child_into_it() {
         let t = topology::parse("hub = \"alpha\"\n[host.alpha]\ndaemon = true\n").unwrap();
         assert_eq!(hub_endpoint(&t, "alpha"), topology::local_endpoint());
-        assert_eq!(hub_endpoint(&t, "beta"), format!("tcp:127.0.0.1:{}", topology::hub_local_port()));
+        assert_eq!(hub_endpoint(&t, "beta"), "ssh:alpha");
     }
 
     #[test]

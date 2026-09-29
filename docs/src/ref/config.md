@@ -137,8 +137,9 @@ file — the daemon's `sotd topology plan|status|sync|relay-endpoint` CLI is
 the one way anything reads it. Neither the frontend nor the PowerShell
 launcher parses `hosts.toml` itself any more: the launcher runs
 `sotd topology plan --self <host>` and renders its plain-line output into
-SSH tunnels, `--dial <host>=<endpoint>` flags for the frontend, and
-`SOT_RELAY_ENDPOINT`; the frontend reads no config file for hosts at all
+`--dial <host>=<endpoint>` flags for the frontend (each an ssh child the
+frontend spawns itself, or a local socket/pipe) and `SOT_RELAY_ENDPOINT`;
+the frontend reads no config file for hosts at all
 (see `--dial` under [CLI flags](../start/setup.md), and
 `rust/protocol/src/topology.rs`'s `plan` doc comment for the exact
 line-oriented contract).
@@ -170,13 +171,13 @@ is canonical, and every other box's copy is a `sotd topology sync --hub
 
 One section per host. `<name>` is the plain host name (`[a-z0-9][a-z0-9._-]*`)
 that box's own `host_name()` resolves to — it doubles as its SSH alias.
-Every other box reaches a daemon host through SSH forwards to the hub, so only
+Every other box reaches a daemon host through an ssh child into the hub, so only
 the hub needs an `~/.ssh/config` entry for each daemon host, and every other
 box needs one for the hub.
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
-| `daemon` | bool | `false` | This host runs `sotd` and can be dialled. `sotd topology plan` emits a `dial` line for every daemon host, and on every box but the hub a `tunnel` line for each daemon host other than itself. |
+| `daemon` | bool | `false` | This host runs `sotd` and can be dialled. `sotd topology plan` emits a `dial` line for every daemon host: this box's own socket for itself, the hub's own relay socket for a remote host (on the hub only), and `ssh:<hub>` / `ssh:<hub>/<host>` everywhere else. |
 | `frontend` | bool | `false` | This host runs a frontend and its launcher. |
 
 A host can be `daemon = true`, `frontend = true`, neither (the section is
@@ -240,18 +241,17 @@ host-c = "host-c"
 ```text
 self laptop
 hub myserver
-relay-endpoint tcp:127.0.0.1:<base>
-dial myserver tcp:127.0.0.1:<base>
-dial otherbox tcp:127.0.0.1:<base+1>
-tunnel myserver <base>
-tunnel otherbox <base+1>
+relay-endpoint ssh:myserver
+dial myserver ssh:myserver
+dial otherbox ssh:myserver/otherbox
 ```
 
-— which the launcher turns into two SSH forwards to the hub and
-`--dial myserver=tcp:127.0.0.1:<base> --dial otherbox=tcp:127.0.0.1:<base+1>`
-for the frontend. `<base>` is per OS user (`18743` plus a hash of the user
-name modulo 100), so two users on one box do not collide; read the actual
-ports from `sotd topology plan`, never hardcode them.
+— which the launcher turns into
+`--dial myserver=ssh:myserver --dial otherbox=ssh:myserver/otherbox` for
+the frontend: an ssh child into the hub, no argument for the hub's own
+daemon and `--host otherbox` to reach the hub's relay socket for the
+other one. No port, no forward — read the actual endpoints from
+`sotd topology plan`, never hardcode one.
 
 ## See also
 

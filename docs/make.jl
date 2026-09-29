@@ -69,6 +69,7 @@ makedocs(;
             "Sessions and persistence" => "concepts/sessions.md",
             "Work-state colours" => "concepts/work-state.md",
             "The comm relay" => "concepts/comm.md",
+            "Transport" => "concepts/transport.md",
             "The interface" => "guide/interface.md",
             "Modes" => "guide/modes.md",
         ],

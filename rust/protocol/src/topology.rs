@@ -41,41 +41,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// The relay's forward port on a frontend box, and the base of the ordinal
-/// port series `topology plan` hands the launcher — **per OS user**, not a
-/// single constant: two OS users sharing one Windows box each run their own
-/// launcher and tunnel, and a fixed port let the second user's launcher find
-/// the first user's tunnel already open and dial that user's backend as its
-/// own (field report, 2026-09-17). `18743 + (h % 100)`, `h` an FNV-1a 32-bit
-/// hash of the OS user name; no user name found keeps the old fixed `18743`.
-/// [`hub_local_port_for`] is the pure half, for tests.
-pub fn hub_local_port() -> u16 {
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| {
-            std::env::var_os("LOGNAME")
-                .map(|v| v.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        });
-    hub_local_port_for(&user)
-}
-
-/// Pure half of [`hub_local_port`]: FNV-1a 32-bit over `user`'s bytes,
-/// folded to a two-digit offset above `18743`. Written inline — no new
-/// crate — and kept free of the environment so a test can predict a port
-/// without mutating process-global state.
-pub fn hub_local_port_for(user: &str) -> u16 {
-    if user.is_empty() {
-        return 18743;
-    }
-    let mut hash: u32 = 0x811c_9dc5;
-    for b in user.as_bytes() {
-        hash ^= u32::from(*b);
-        hash = hash.wrapping_mul(0x0100_0193);
-    }
-    18743 + (hash % 100) as u16
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostDecl {
     pub name: String,
@@ -101,22 +66,6 @@ pub struct Topology {
 impl Topology {
     pub fn host(&self, name: &str) -> Option<&HostDecl> {
         self.hosts.iter().find(|h| h.name == name)
-    }
-
-    /// Ordinal local port for a host: the hub gets [`hub_local_port`] (this
-    /// box's OS user, not a fixed number), every other host that plus
-    /// `1 + its position among the non-hub hosts` (file order). A property
-    /// of the position, not of the flags, so flipping `daemon` on one host
-    /// renumbers nobody; inserting a host does (plan §G).
-    pub fn local_port(&self, name: &str) -> Option<u16> {
-        if name == self.hub {
-            return Some(hub_local_port());
-        }
-        self.hosts
-            .iter()
-            .filter(|h| h.name != self.hub)
-            .position(|h| h.name == name)
-            .map(|i| hub_local_port() + 1 + i as u16)
     }
 
     /// Sampling targets, resolved: `[monitor]` labels with an empty target
@@ -304,27 +253,44 @@ fn is_plain_host_name(s: &str) -> bool {
 
 /// This box's own control endpoint for its own daemon, in the `unix:`/`pipe:`
 /// spelling the comm scripts and the frontend already speak. The label is
-/// [`crate::local_daemon_label`]'s, never a caller's: every caller here means
-/// the one local daemon, and a `label` parameter they all passed `"sot"` to
-/// was how a Windows box came to dial a pipe name nothing listens on.
+/// never a caller's: every caller here means the one local daemon, and a
+/// `label` parameter they all passed `"sot"` to was how a Windows box came
+/// to dial a pipe name nothing listens on. The daemon's own precedence
+/// (`main.rs`'s own arg parsing): `$SOT_SOCKET`, a bare path, beats a
+/// label; else `session_socket_path($SOT_BACKEND_LABEL)` when that is set
+/// (the shell-side spelling of `--label`); else
+/// `session_socket_path(`[`crate::local_daemon_label`]`())`, byte-for-byte
+/// what this returned before the overrides existed. **Never** the literal
+/// `sot` as a default — on Windows the daemon's label is `local`, and
+/// `sot` derives a pipe nothing listens on.
 pub fn local_endpoint() -> String {
-    let p = crate::session_socket_path(crate::local_daemon_label());
+    let p = std::env::var_os("SOT_SOCKET")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("SOT_BACKEND_LABEL")
+                .filter(|v| !v.is_empty())
+                .map(|label| crate::session_socket_path(&label.to_string_lossy()))
+        })
+        .unwrap_or_else(|| crate::session_socket_path(crate::local_daemon_label()));
     if cfg!(windows) { format!("pipe:{}", p.display()) } else { format!("unix:{}", p.display()) }
 }
 
 /// The relay endpoint for `self_host` (plan §C): the hub's own socket on
-/// the hub; on a `frontend` box the launcher's forward tunnel to the hub
-/// (`tcp:127.0.0.1:<`[`hub_local_port`]`>`, per OS user); everywhere else
-/// the hub's reverse tunnel, which lands on
-/// `<runtime dir>/sot-relay.sock` (`/run/user/<uid>/sot-relay.sock` — the
-/// path `sot-relay-tunnel@` has always used). Path derivations are this
-/// box's own, so ask on the box in question.
+/// the hub; on a `frontend` box an ssh child into the hub, which runs
+/// `sotd stdio-bridge` with no argument there (`ssh:<hub>` — C1's
+/// no-argument form always means THAT box's own daemon, so naming the hub
+/// as the ssh target is enough); everywhere else the hub's reverse tunnel,
+/// which lands on `<runtime dir>/sot-relay.sock`
+/// (`/run/user/<uid>/sot-relay.sock` — the path `sot-relay-tunnel@` has
+/// always used). Path derivations are this box's own, so ask on the box in
+/// question.
 pub fn relay_endpoint(topo: &Topology, self_host: &str) -> Result<String, String> {
     let host = topo.host(self_host).ok_or_else(|| format!("`{self_host}` is not a listed host"))?;
     Ok(if self_host == topo.hub {
         local_endpoint()
     } else if host.frontend {
-        format!("tcp:127.0.0.1:{}", hub_local_port())
+        format!("ssh:{}", topo.hub)
     } else {
         format!("unix:{}", runtime_relay_dir().join("sot-relay.sock").display())
     })
@@ -372,31 +338,17 @@ pub fn relay_socket_path(host: &str) -> PathBuf {
 /// dial <host> <endpoint>             # one per dialable host (every box declaring
 ///                                    # `daemon`): this box's own socket for itself;
 ///                                    # ON THE HUB, the hub's own relay socket for a
-///                                    # remote host; tcp:127.0.0.1:<port> elsewhere
-/// tunnel <host> <port>               # one per dialable host except self, and none
-///                                    # at all on the hub (whose `dial` endpoints are
-///                                    # already local): forward this port TO THE HUB'S
-///                                    # socket for that host —
-///                                    # ssh -L <port>:<the hub's socket for <host>> <hub>
-///                                    # — never an ssh into <host> itself. The hub's
-///                                    # socket for the hub is its own session socket;
-///                                    # for any other host it is `relay_socket_path`,
-///                                    # which only the hub can derive (ask it with
-///                                    # `sotd topology relay-sockets`).
+///                                    # remote host (unix:<path>, no ssh needed — it
+///                                    # is right there); ssh:<hub> for the hub itself
+///                                    # and ssh:<hub>/<host> for any other host,
+///                                    # everywhere else — an ssh child into the hub
+///                                    # runs `sotd stdio-bridge [--host <host>]` there.
 /// ```
 pub fn plan(topo: &Topology, self_host: &str) -> Result<String, String> {
     let relay = relay_endpoint(topo, self_host)?;
     let mut out = format!("self {self_host}\nhub {}\nrelay-endpoint {relay}\n", topo.hub);
     for (name, endpoint) in dial_endpoints(topo, self_host) {
         out.push_str(&format!("dial {name} {endpoint}\n"));
-    }
-    // Nothing to forward on the hub: every `dial` line it just emitted is
-    // already a local socket. A `tunnel` line there would name a forward
-    // from the hub to itself.
-    if self_host != topo.hub {
-        for h in dialable_hosts(topo).filter(|h| h.name != self_host) {
-            out.push_str(&format!("tunnel {} {}\n", h.name, topo.local_port(&h.name).expect("listed")));
-        }
     }
     Ok(out)
 }
@@ -423,12 +375,15 @@ pub fn dialable_hosts(topo: &Topology) -> impl Iterator<Item = &HostDecl> {
 /// `(host, endpoint)` for every [`dialable_hosts`] entry, resolved for
 /// `self_host`: its own local socket for itself; on the hub, the hub's own
 /// socket for a remote host ([`relay_socket_path`] — no forward needed,
-/// it is right there); `tcp:127.0.0.1:<ordinal port>` on every other box,
-/// where that port is a forward to the same hub socket. This is `plan`'s own `dial` line
-/// resolution, factored out so a caller that wants it as DATA — `sotd
-/// status` (topology plan §E), which actually dials each entry rather than
-/// printing it — shares the identical mapping instead of re-deriving it or
-/// re-parsing `plan`'s text.
+/// it is right there); everywhere else `ssh:<hub>` for the hub itself
+/// (an ssh child there runs `sotd stdio-bridge` with no argument — its own
+/// daemon, which IS the hub's) and `ssh:<hub>/<host>` for any other host
+/// (the ssh child's `--host <host>` reaches the hub's relay socket for it).
+/// This is `plan`'s own `dial` line resolution, factored out so a caller
+/// that wants it as DATA — `sotd status` (topology plan §E), which
+/// actually dials each entry rather than printing it — shares the
+/// identical mapping instead of re-deriving it or re-parsing `plan`'s
+/// text.
 pub fn dial_endpoints(topo: &Topology, self_host: &str) -> Vec<(String, String)> {
     dialable_hosts(topo)
         .map(|h| {
@@ -436,8 +391,10 @@ pub fn dial_endpoints(topo: &Topology, self_host: &str) -> Vec<(String, String)>
                 local_endpoint()
             } else if self_host == topo.hub {
                 format!("unix:{}", relay_socket_path(&h.name).display())
+            } else if h.name == topo.hub {
+                format!("ssh:{}", topo.hub)
             } else {
-                format!("tcp:127.0.0.1:{}", topo.local_port(&h.name).expect("listed host has a port"))
+                format!("ssh:{}/{}", topo.hub, h.name)
             };
             (h.name.clone(), endpoint)
         })
@@ -842,30 +799,6 @@ pub fn apply_dropin(hub: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Pins `USER` for [`hub_local_port`] so a test can predict its output
-    /// without depending on whoever's running it, restored on drop. Both
-    /// callers below pin the SAME name, so running them in parallel (the
-    /// default test-runner behaviour) never races on the value, only on
-    /// which one restores it last — harmless, since both write it back
-    /// identically before that.
-    struct PinnedUser(Option<std::ffi::OsString>);
-    impl PinnedUser {
-        fn set(name: &str) -> Self {
-            let prev = std::env::var_os("USER");
-            std::env::set_var("USER", name);
-            PinnedUser(prev)
-        }
-    }
-    impl Drop for PinnedUser {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(v) => std::env::set_var("USER", v),
-                None => std::env::remove_var("USER"),
-            }
-        }
-    }
-    const TEST_USER: &str = "sot-test-user";
-
     const V2: &str = r#"
 hub = "alpha"   # the relay daemon
 
@@ -889,8 +822,6 @@ gpu-box = "other-user@gpu-box"
 
     #[test]
     fn v2_parses() {
-        let _pin = PinnedUser::set(TEST_USER);
-        let base = hub_local_port_for(TEST_USER);
         let t = parse(V2).unwrap();
         assert_eq!(t.hub, "alpha");
         assert_eq!(t.hosts.len(), 4);
@@ -898,19 +829,6 @@ gpu-box = "other-user@gpu-box"
         assert_eq!(t.host("beta").unwrap(), &HostDecl { name: "beta".into(), daemon: false, frontend: false });
         assert_eq!(t.monitor_targets()[1], ("beta".to_string(), "beta".to_string()));
         assert_eq!(t.monitor_targets()[2].1, "other-user@gpu-box");
-        assert_eq!(t.local_port("alpha"), Some(base));
-        assert_eq!(t.local_port("beta"), Some(base + 1));
-        assert_eq!(t.local_port("delta"), Some(base + 3));
-    }
-
-    #[test]
-    fn hub_local_port_for_is_per_user() {
-        // Pure function: no env involved, so no pinning needed here.
-        assert_eq!(hub_local_port_for(""), 18743, "no user name keeps the pre-existing fixed value");
-        let a = hub_local_port_for("alice");
-        let b = hub_local_port_for("bob");
-        assert_ne!(a, b, "two different OS users must not land on the same tunnel port");
-        assert!((18743..18843).contains(&a) && (18743..18843).contains(&b));
     }
 
     #[test]
@@ -1013,19 +931,19 @@ gpu-box = "other-user@gpu-box"
 
     #[test]
     fn plan_lines_are_stable() {
-        let _pin = PinnedUser::set(TEST_USER);
-        let base = hub_local_port_for(TEST_USER);
         let t = parse(V2).unwrap();
         let own = local_endpoint();
-        let gamma_port = t.local_port("gamma").expect("gamma is listed");
         // gamma is daemon AND frontend: dialable all the same, and on its
-        // own box that dial is the implicit local connection.
+        // own box that dial is the implicit local connection. Reaching the
+        // hub (alpha) is `ssh:<hub>` with no `--host` — a no-argument
+        // `stdio-bridge` on alpha already means alpha's own daemon.
         assert_eq!(
             plan(&t, "gamma").unwrap(),
-            format!("self gamma\nhub alpha\nrelay-endpoint tcp:127.0.0.1:{base}\ndial alpha tcp:127.0.0.1:{base}\ndial gamma {own}\ntunnel alpha {base}\n")
+            format!("self gamma\nhub alpha\nrelay-endpoint ssh:alpha\ndial alpha ssh:alpha\ndial gamma {own}\n")
         );
         // On the hub every dial is already local — its own socket for
-        // itself, its own relay socket for gamma — so no tunnel lines.
+        // itself, its own relay socket for gamma — no ssh child needed
+        // for either.
         assert_eq!(
             plan(&t, "alpha").unwrap(),
             format!(
@@ -1033,11 +951,11 @@ gpu-box = "other-user@gpu-box"
                 relay_socket_path("gamma").display()
             )
         );
-        // A peer reaches gamma the same way it reaches any other host: a
-        // forward to the hub, on gamma's own ordinal port.
+        // A peer reaches gamma the same way it reaches any other
+        // non-hub host: an ssh child into the hub, `--host gamma`.
         let beta_plan = plan(&t, "beta").unwrap();
-        assert!(beta_plan.contains(&format!("dial gamma tcp:127.0.0.1:{gamma_port}\n")), "{beta_plan}");
-        assert!(beta_plan.contains(&format!("tunnel gamma {gamma_port}\n")), "{beta_plan}");
+        assert!(beta_plan.contains("dial alpha ssh:alpha\n"), "{beta_plan}");
+        assert!(beta_plan.contains("dial gamma ssh:alpha/gamma\n"), "{beta_plan}");
         let beta = beta_plan;
         assert!(beta.lines().nth(2).unwrap().starts_with("relay-endpoint unix:"), "{beta}");
         assert!(beta.lines().nth(2).unwrap().ends_with("sot-relay.sock"), "{beta}");

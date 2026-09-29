@@ -64,9 +64,7 @@ good_sotd="$(new_fake_sotd good \
     'hub hub-box' \
     'relay-endpoint tcp:127.0.0.1:18743' \
     'dial hub-box tcp:127.0.0.1:18743' \
-    'dial otherbox tcp:127.0.0.1:18744' \
-    'tunnel hub-box 18743' \
-    'tunnel otherbox 18744')"
+    'dial otherbox tcp:127.0.0.1:18744')"
 plan="$(sot_topology_plan "$good_sotd" myserver)"
 
 case_start "scalar fields"
@@ -74,15 +72,11 @@ check "self" "myserver" "$(sot_topology_field "$plan" SELF)"
 check "hub" "hub-box" "$(sot_topology_field "$plan" HUB)"
 check "relay-endpoint" "tcp:127.0.0.1:18743" "$(sot_topology_field "$plan" RELAY)"
 
-case_start "dial/tunnel records"
+case_start "dial records"
 check "two dials, in order" "hub-box,otherbox" \
     "$(printf '%s\n' "$plan" | awk -F'|' '$1=="DIAL"{printf "%s%s", sep, $2; sep=","}')"
 check "otherbox dial endpoint" "tcp:127.0.0.1:18744" \
     "$(printf '%s\n' "$plan" | awk -F'|' '$1=="DIAL" && $2=="otherbox"{print $3}')"
-check "hub-box tunnel port" "18743" \
-    "$(printf '%s\n' "$plan" | awk -F'|' '$1=="TUNNEL" && $2=="hub-box"{print $3}')"
-check "otherbox tunnel port" "18744" \
-    "$(printf '%s\n' "$plan" | awk -F'|' '$1=="TUNNEL" && $2=="otherbox"{print $3}')"
 
 echo "=== an endpoint containing a space (Windows pipe path, verbatim username) ==="
 space_sotd="$(new_fake_sotd space \

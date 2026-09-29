@@ -50,6 +50,14 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
         .env("USERPROFILE", &env.home_root)
         .env("SOT_COMM_HOME", &env.comm_root)
         .env("SOT_HOSTS", &hosts_toml)
+        // `local_endpoint()`'s new precedence (isolation-plan.md §3 C10's
+        // Rust half) reads these two before falling back to `--label`; a
+        // suite run from inside a Ship of Tools session inherits both, and
+        // without this they would point this "spawned daemon" at the live
+        // daemon's own socket instead of the temporary endpoint below —
+        // the same reason `stdio_bridge.rs`'s daemon spawn strips them.
+        .env_remove("SOT_SOCKET")
+        .env_remove("SOT_BACKEND_LABEL")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -103,6 +111,11 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
         .env("SOT_SELF_HOST", TEST_STATE_HOST)
         .env("SOT_RUNTIME_DIR", env._runtime_tmp.path())
         .env("SOT_HOSTS", &hosts_toml)
+        // `sotd status`'s own `local_endpoint()` call — see the daemon
+        // spawn's comment above; this is the OTHER of the two spawns that
+        // must not inherit either variable.
+        .env_remove("SOT_SOCKET")
+        .env_remove("SOT_BACKEND_LABEL")
         .stdin(Stdio::null());
     let out = tokio::time::timeout(BOUND, status_cmd.output()).await.expect("sotd status did not exit within BOUND").expect("spawn sotd status");
     assert!(out.status.success(), "sotd status exited {:?}: stderr {}", out.status, String::from_utf8_lossy(&out.stderr));

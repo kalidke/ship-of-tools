@@ -1,0 +1,68 @@
+# Transport
+
+How a frontend reaches a daemon that is not on its own box.
+
+## No loopback ports on the control plane
+
+Reaching another box's daemon used to mean an `ssh -L` forward binding a
+port on `127.0.0.1`, chosen from a series derived from a hash of the OS
+user name. Any account on the box could connect to that port — the
+control plane never checked who did. That whole class is gone: the
+control plane is now an ssh child's stdin/stdout, or a Unix
+socket/Windows pipe in a directory only the owning account can read.
+There is nothing left on the control plane for a second account on the
+same box to reach.
+
+## The endpoint grammar
+
+Every endpoint this version can dial has one of three schemes:
+
+- `unix:<path>` / `pipe:<name>` — a local socket or named pipe, reached
+  directly.
+- `ssh:<target>` — that box's own daemon, reached by spawning
+  `ssh <target> sotd stdio-bridge` and speaking the protocol over its
+  stdin/stdout. `<target>` is a plain host name (`hosts.toml`'s own
+  grammar): never a shell command, never anything with a leading `-`.
+- `ssh:<target>/<host>` — a daemon `<target>` (always the hub) can reach
+  on `<host>`'s behalf, through `sotd stdio-bridge --host <host>`. The
+  `--host` argument names which of the hub's own relay sockets to bridge
+  to; the box that owns that endpoint derives its path itself — an
+  endpoint's shape is never carried across the wire.
+
+`sotd stdio-bridge` takes no caller-supplied label. With no argument it
+resolves this box's own daemon, at the label this box resolves for
+itself — never one a caller names, which is exactly the mistake that let
+a Windows box dial a pipe nothing listens on.
+
+## What `sotd topology plan` gives out
+
+`sotd topology plan --self <host>` answers, one fact per line: `self`,
+`hub`, `relay-endpoint` (what this box uses to reach the relay — its own
+socket on the hub, `ssh:<hub>` on a box that reaches the hub directly,
+or the unchanged reverse-tunnel socket everywhere else), and one `dial`
+line per daemon host (its own socket for itself, the hub's own relay
+socket for a remote host when this box IS the hub, and `ssh:<hub>` /
+`ssh:<hub>/<host>` everywhere else). There is no `tunnel` line and
+nothing to forward: dialing a host now means spawning an ssh child, not
+opening a port ahead of time.
+
+**A box that has never declared a topology resolves its own daemon.** A
+single-box install needs no `hosts.toml` at all: `sotd topology
+relay-endpoint` answers this box's own endpoint the moment there is no
+file, because with no file nothing has ever told the box of another box,
+so its own daemon is the only daemon it could mean. A file that exists
+but does not list this box is a different case and stays an error — that
+file names a hub, so other boxes provably exist, and answering "myself"
+there would be exactly the silent wrong-box failure this design deletes.
+
+**An endpoint you name that this version cannot dial is refused, never
+replaced by a local one.** A stale `SOT_RELAY_ENDPOINT` or
+`SOT_FE_ENDPOINT` naming a form this version does not speak (a leftover
+`tcp:` value, most often) is discarded with a line naming it; clear the
+variable rather than expecting it to be silently reinterpreted.
+
+## What this page does not yet cover
+
+Later work in this same design (per-user isolation for the browser-facing
+ports, the pipe/socket owner checks, and the daemon-side account guard)
+lands in stages after this one and extends this page when it does.

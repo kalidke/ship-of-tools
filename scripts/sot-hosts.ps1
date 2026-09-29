@@ -1,7 +1,6 @@
 # sot-hosts.ps1 -- shared `sotd topology plan` reader (topology plan, lane
-# D). Dot-sourced by launch-sot.ps1 (which SSH-ensures and opens the
-# tunnels a plan names) and shutdown-sot.ps1 (which needs every port it
-# must kill a tunnel on).
+# D). Dot-sourced by launch-sot.ps1, which spawns the ssh child a plan's
+# `dial` line names.
 #
 # The old hosts.toml TOML parsing (Read-SotHosts / Get-TunnelPlan) is
 # DELETED -- `sot_protocol::topology` (Rust) is the one parser for that
@@ -17,7 +16,7 @@
 # there before changing this; a reviewer may still adjust the format, so
 # this parses it in ONE place and nowhere else): one fact per line, first
 # word a keyword, then either one value (self/hub/relay-endpoint) or a host
-# name followed by a value (dial/tunnel). The value can itself contain a
+# name followed by a value (dial). The value can itself contain a
 # space (a Windows pipe path carries the username verbatim), so every
 # split below keeps the remainder intact -- `-split ' ', 2` at each level,
 # never a fixed field count. A line whose first word isn't recognised is
@@ -28,9 +27,10 @@
 #   self <host>
 #   hub <host>
 #   relay-endpoint <endpoint>
-#   dial <host> <endpoint>      # one per dialable host (daemon, not frontend --
-#                                # D8: a frontend box's daemon is never dialled)
-#   tunnel <host> <port>        # one per dialable host except self
+#   dial <host> <endpoint>      # one per dialable host: unix:/pipe: for this box's
+#                                # own daemon, and (on the hub) for another host it
+#                                # serves a relay socket for; ssh:<hub> or
+#                                # ssh:<hub>/<host> everywhere else
 #
 # ASCII ONLY in string literals (see the same note in launch-sot.ps1): this
 # file has no BOM, so Windows PowerShell 5.1 decodes it as ANSI/cp1252 and a
@@ -53,7 +53,6 @@ function Get-SotTopologyPlan {
         Hub           = $null
         RelayEndpoint = $null
         Dials         = @()   # [PSCustomObject]@{ Host; Endpoint }
-        Tunnels       = @()   # [PSCustomObject]@{ Host; Port }
         Error         = $null
     }
     if (-not $SotdPath -or -not (Test-Path -LiteralPath $SotdPath)) {
@@ -86,13 +85,6 @@ function Get-SotTopologyPlan {
                 $fields = $rest -split ' ', 2
                 if ($fields.Length -eq 2 -and $fields[0]) {
                     $result.Dials += [PSCustomObject]@{ Host = $fields[0]; Endpoint = $fields[1] }
-                }
-            }
-            'tunnel' {
-                $fields = $rest -split ' ', 2
-                $port = 0
-                if ($fields.Length -eq 2 -and $fields[0] -and [int]::TryParse($fields[1], [ref]$port)) {
-                    $result.Tunnels += [PSCustomObject]@{ Host = $fields[0]; Port = $port }
                 }
             }
             default {
