@@ -1,6 +1,6 @@
 # ADR 0035: Daemon TCP proxy — any backend page through the one control tunnel
 
-**Status:** Proposed (implements ADR 0024's deferred generalization / rejected-alt #4; supersedes the per-port `-L` sprawl as the primary reachability mechanism — the launcher forwards stay as legacy fallback)
+**Status:** current — Proposed (implements ADR 0024's deferred generalization / rejected-alt #4; supersedes the per-port `-L` sprawl as the primary reachability mechanism — the launcher forwards stay as legacy fallback)
 **Date:** 2026-07-21
 
 ## Context

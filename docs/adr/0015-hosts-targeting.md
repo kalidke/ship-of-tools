@@ -1,6 +1,6 @@
 # ADR 0015: In-app host targeting via `hosts.toml` + `Mode::Hosts`
 
-**Status:** Accepted, **superseded in part by ADR 0042 slice L2a**
+**Status:** partly superseded by ADR 0042
 (2026-09-02). L2a replaces the "pick one host, persist `last_host`,
 Ctrl+Q + relaunch" flow this ADR specifies with a live connection per
 `hosts.toml` entry, open simultaneously — "no live in-session swap" is

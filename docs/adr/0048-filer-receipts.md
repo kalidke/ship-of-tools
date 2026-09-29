@@ -1,6 +1,6 @@
 # ADR 0048: the filer's receipt is the cross-box delivery verdict
 
-**Status:** **Superseded by ADR 0049** (2026-09-29) — the filer's receipt
+**Status:** superseded by ADR 0049 (2026-09-29) — the filer's receipt
 survives as the hub route's single `filed` answer, while the rest of the
 two-mode delivery goes. Originally: accepted, and implemented on the 0.6.6
 fixes line — in the comm scripts (they deploy via `update_comm`), the daemon

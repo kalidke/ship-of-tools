@@ -1,6 +1,6 @@
 # ADR 0030: Versioning, releases, and auto-update — going public
 
-**Status:** Accepted (design approved 2026-07-01: publish this repo; Windows+Linux
+**Status:** partly superseded by ADR 0046 — the release and auto-update design stands; three caveats that turn on a detached tmux workspace no longer apply. Originally: Accepted (design approved 2026-07-01: publish this repo; Windows+Linux
 x86_64 at launch with macOS experimental; update default = notify in-session + auto-apply at
 next launch; remote-BE-over-SSH is the design — all-in-one uses the same SSH path to
 localhost, SSH key auth to the BE host is a hard requirement)

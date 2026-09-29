@@ -1,6 +1,6 @@
 # ADR 0016: Frontend local terminal pane — PTY, emulator, render, and drawer-state choices
 
-**Status:** Accepted
+**Status:** current — accepted.
 **Date:** 2026-05-26
 
 ## Context

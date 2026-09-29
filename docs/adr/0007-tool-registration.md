@@ -1,6 +1,6 @@
 # ADR 0007: Tool registration timing
 
-**Status:** Accepted
+**Status:** current — accepted.
 **Date:** 2026-05-07
 
 ## Context

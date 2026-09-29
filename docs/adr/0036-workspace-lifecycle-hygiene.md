@@ -1,6 +1,6 @@
 # ADR 0036: Workspace lifecycle hygiene — refuse duplicate roots, reap orphans
 
-**Status:** Accepted (2026-07-30). Phase 1 (duplicate-root gate) built with this
+**Status:** partly superseded by ADR 0046 — the duplicate-root gate stands; the orphan reap is specified against tmux sessions that no longer exist. Originally: Accepted (2026-07-30). Phase 1 (duplicate-root gate) built with this
 ADR; Phase 2 (orphan reap) designed here, implementation deferred.
 **Date:** 2026-07-30
 

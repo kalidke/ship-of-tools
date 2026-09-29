@@ -1,6 +1,6 @@
 # ADR 0023: Daemon-brokered FE commands + daemon-boot session spawn
 
-**Status:** Accepted (FE-arch sign-off 2026-06-18)
+**Status:** partly superseded by ADR 0025 and ADR 0046 — 0025 supersedes §4's active-workspace gate; the tmux panes this ADR spawns into were deleted in v0.6.0. Originally: Accepted (FE-arch sign-off 2026-06-18)
 **Date:** 2026-06-18
 
 > **Update — 2026-06-26: spawn unified on the wait-for-attach wrapper + daemon boot-pty (commits 65338b8, 26f9dc0, 41eab5d, bdce722).**

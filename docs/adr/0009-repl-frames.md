@@ -1,6 +1,6 @@
 # ADR 0009: REPL streaming frame format
 
-**Status:** Accepted — **revised 2026-08-24** (see Update; the original Decision
+**Status:** current — Accepted — **revised 2026-08-24** (see Update; the original Decision
 below describes the design as first accepted, and shipped reality diverged on
 framing, binary payloads, and file layout)
 **Date:** 2026-05-07

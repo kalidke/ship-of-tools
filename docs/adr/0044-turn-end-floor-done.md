@@ -1,6 +1,6 @@
 # ADR 0044: Blue / gray as unread / read — the turn-end floor writes `done`
 
-**Status:** accepted (owner decision 2026-09-08, no aging); implemented in the
+**Status:** current — accepted (owner decision 2026-09-08, no aging); implemented in the
 comm scripts (deploys via `update_comm`, no release needed).
 
 **Amended 2026-09-18 (owner: "it should be green after the prompt until

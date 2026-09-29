@@ -1,6 +1,6 @@
 # ADR 0032 — Interactive browser-served figures (WGLMakie/Bonito)
 
-**Status: ACCEPTED — IMPLEMENTED + VALIDATED LIVE END-TO-END**
+**Status:** partly superseded by ADR 0035 — IMPLEMENTED + VALIDATED LIVE END-TO-END
 (2026-07-12, branch `feat/wglmakie-browser`).
 
 > **Transport note (2026-08-10):** the launcher `-L 1241` forward described

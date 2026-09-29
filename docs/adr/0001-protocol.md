@@ -1,6 +1,6 @@
 # ADR 0001: Line protocol
 
-**Status:** Accepted
+**Status:** current — accepted.
 **Date:** 2026-05-07
 
 ## Context

@@ -1,6 +1,6 @@
 # ADR 0002: Kernel launch and process supervision
 
-**Status:** Accepted
+**Status:** current — accepted.
 **Date:** 2026-05-07
 
 ## Context

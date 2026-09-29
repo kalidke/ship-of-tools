@@ -1,6 +1,6 @@
 # ADR 0029: Multi-FE-correct `docs.open` site serving — per-connection site roots + disconnect cleanup
 
-**Status:** Accepted (drafted, reviewed + signed off 2026-06-29 as faithful to all Q1-4 calls — bus `from-windows.md`/`from-linux.md`. FE launcher restart-race fix landed both OSes: `.ps1` `8980a55`, `.sh` mirror this commit)
+**Status:** partly superseded by ADR 0035 (drafted, reviewed + signed off 2026-06-29 as faithful to all Q1-4 calls — bus `from-windows.md`/`from-linux.md`. FE launcher restart-race fix landed both OSes: `.ps1` `8980a55`, `.sh` mirror this commit)
 **Date:** 2026-06-29
 
 > **Transport note (2026-08-10):** this ADR's fixed helper ports

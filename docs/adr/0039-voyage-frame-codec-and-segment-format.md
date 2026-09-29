@@ -1,6 +1,6 @@
 # ADR 0039: Voyage frame codec and segment format (Ship's Log P1, v1)
 
-**Status:** Accepted (2026-08-24). This is the permanent on-disk contract for
+**Status:** current — Accepted (2026-08-24). This is the permanent on-disk contract for
 ADR 0037's voyages — the two artifacts everything reads forever. Implemented
 by the `sot-log` crate; gated by golden fixtures (Rust writes / Julia reads)
 and a crash/fault harness before anything builds on it.

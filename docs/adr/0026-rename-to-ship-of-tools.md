@@ -1,6 +1,6 @@
 # ADR 0026: Rename DevEnv.jl → "Ship of Tools"
 
-**Status:** Accepted (2026-06-24)
+**Status:** partly superseded by ADR 0046 — the rename stands and the `sot-be-` prefix survives as the row identity; the open items for migrating live tmux sessions were retired with the tmux runtime. Originally: Accepted (2026-06-24)
 **Date:** 2026-06-24
 
 ## Context

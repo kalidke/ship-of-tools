@@ -1,6 +1,6 @@
 # ADR 0037: The Ship's Log — sessions become durable records
 
-**Status:** Accepted (2026-08-23). Built in phases: the first piece (ADR 0038) ships
+**Status:** partly superseded by ADR 0046 — the substrate stands; its transition plan, in which tmux and capsules coexist until a soak, completed when the tmux runtime was deleted. Originally: Accepted (2026-08-23). Built in phases: the first piece (ADR 0038) ships
 immediately and needs none of the new machinery; the rest lands step by step as a new
 crate in the existing Rust workspace.
 **Date:** 2026-08-23

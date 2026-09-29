@@ -1,6 +1,6 @@
 # ADR 0014: Workspaces — one daemon, direct-child kernels per workspace, routed by workspace_id
 
-**Status:** Accepted
+**Status:** partly superseded by ADR 0046 — the workspace model stands; its tmux session plumbing was deleted in v0.6.0. Originally: Accepted
 **Date:** 2026-05-15
 **Amends:** [ADR 0013](0013-backend-sessions.md)
 

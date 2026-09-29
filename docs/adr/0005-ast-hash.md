@@ -1,6 +1,6 @@
 # ADR 0005: AST hash algorithm
 
-**Status:** Accepted
+**Status:** current — accepted.
 **Date:** 2026-05-07
 
 ## Context

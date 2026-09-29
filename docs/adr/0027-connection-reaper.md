@@ -1,6 +1,6 @@
 # ADR 0027: Half-open connection reaper — TCP keepalive + bounded write-timeout
 
-**Status:** Accepted (diagnosed + implemented; FE/tunnel facts and timings confirmed, 2026-06-26)
+**Status:** current — Accepted (diagnosed + implemented; FE/tunnel facts and timings confirmed, 2026-06-26)
 **Date:** 2026-06-26
 
 ## Context

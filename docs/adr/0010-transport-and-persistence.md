@@ -1,6 +1,6 @@
 # ADR 0010: Transport, persistence, and reconnect
 
-**Status:** Accepted
+**Status:** partly superseded by ADR 0046 — the backend is no longer supervised by a named tmux session, and 0046 amends this ADR. Originally: Accepted
 **Date:** 2026-05-07
 
 ## Context

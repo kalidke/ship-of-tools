@@ -1,6 +1,6 @@
 # ADR 0042: First-class local sessions and the multi-host selector
 
-**Status:** Accepted (2026-09-02, maintainer: "yes. confirm"). Ratified with
+**Status:** current — Accepted (2026-09-02, maintainer: "yes. confirm"). Ratified with
 one rule sharpened at the maintainer's direction: the capsule is the DEFAULT
 runtime for every NEW session on EVERY host from L1 on; tmux exists only to
 keep already-running sessions alive until they end, and is then deleted

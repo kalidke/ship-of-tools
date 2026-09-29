@@ -1,6 +1,6 @@
 # ADR 0012: Frontend rendering stack
 
-**Status:** Accepted (provisional — re-validate during the M1 spike)
+**Status:** current — Accepted (provisional — re-validate during the M1 spike)
 **Date:** 2026-05-07
 
 ## Context
