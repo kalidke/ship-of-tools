@@ -1,6 +1,6 @@
 # ADR 0003: Terminal image protocol
 
-**Status:** superseded by ADR 0003 (the rendering-surface revision). Original text retained for the historical record — the autodetect-with-fallback approach inverted the project's premise; see the replacement ADR for the rationale.
+**Status:** superseded by ADR 0003 (`0003-rendering-surface.md`, the rendering-surface revision, 2026-05-07). Original text retained for the historical record — the autodetect-with-fallback approach inverted the project's premise; see the replacement ADR for the rationale.
 **Date:** 2026-05-07
 
 ## Context

@@ -2,8 +2,11 @@
 
 This directory is a decision log. Each ADR records why a decision was made,
 at the time it was made — not a description of how the system works today.
-Nothing in the load path should send a reader here for current behavior;
-read `CLAUDE.md` and `requirements.md` for that.
+`CLAUDE.md` does still send a reader here for three operational facts —
+frontend rebuild and restart (ADR 0017), and session spawn and daemon boot
+(ADR 0023 and ADR 0046). Until those facts move into per-subsystem pages,
+read the status token first: a record marked `partly superseded` can be
+right about the thing you came for and wrong about the machinery around it.
 
 Every ADR's line 3 begins with one of three status tokens:
 
@@ -40,9 +43,6 @@ Every ADR's line 3 begins with one of three status tokens:
 - [0035](0035-daemon-tcp-proxy.md) — Daemon TCP proxy — any backend page through the one control tunnel
 - [0039](0039-voyage-frame-codec-and-segment-format.md) — Voyage frame codec and segment format (Ship's Log P1, v1)
 - [0040](0040-claude-producer-adapter.md) — The Claude producer adapter (Ship's Log P2)
-- [0041](0041-fe-local-capsules-windows.md) — FE-local capsules on Windows (Ship's Log P3)
-- [0042](0042-first-class-local-sessions.md) — First-class local sessions and the multi-host selector
-- [0043](0043-l1-unix-capsule-runtime.md) — L1-unix — the capsule runtime on Unix hosts
 - [0044](0044-turn-end-floor-done.md) — Blue / gray as unread / read — the turn-end floor writes `done`
 - [0045](0045-lane-bridge-and-protocol-gate.md) — The lane bridge, and the protocol-versioned lane gate
 - [0046](0046-declared-identity-and-daemon-owned-rows.md) — Declared identity, daemon-owned rows, and the resident attach
@@ -62,12 +62,15 @@ Every ADR's line 3 begins with one of three status tokens:
 - [0026](0026-rename-to-ship-of-tools.md) — Rename DevEnv.jl → "Ship of Tools" → ADR 0046
 - [0028](0028-remote-comm-autoconnect.md) — Remote comm auto-connect — myhost-anchored reverse SSH tunnels under systemd --user → ADR 0046
 - [0029](0029-multi-fe-docs-serving.md) — Multi-FE-correct `docs.open` site serving — per-connection site roots + disconnect cleanup → ADR 0035
-- [0030](0030-versioning-release-and-auto-update.md) — Versioning, releases, and auto-update — going public → ADR 0046
+- [0030](0030-versioning-release-and-auto-update.md) — Versioning, releases, and auto-update — going public → ADR 0046 and ADR 0045
 - [0031](0031-codex-sessions.md) — Codex sessions (proposed) → ADR 0046
 - [0032](0032-interactive-browser-figures.md) — Interactive browser-served figures (WGLMakie/Bonito) → ADR 0035
 - [0036](0036-workspace-lifecycle-hygiene.md) — Workspace lifecycle hygiene — refuse duplicate roots, reap orphans → ADR 0046
 - [0037](0037-ships-log-substrate.md) — The Ship's Log — sessions become durable records → ADR 0046
 - [0038](0038-tmux-keeper-unit.md) — sot-tmux keeper — daemon restarts must stop killing sessions → ADR 0046
+- [0041](0041-fe-local-capsules-windows.md) — FE-local capsules on Windows (Ship's Log P3) → ADR 0045
+- [0042](0042-first-class-local-sessions.md) — First-class local sessions and the multi-host selector → ADR 0045
+- [0043](0043-l1-unix-capsule-runtime.md) — L1-unix — the capsule runtime on Unix hosts → ADR 0045
 - [0047](0047-claude-ping-wake.md) — Claude sessions wake on a ping, not a harness Monitor → ADR 0049
 - [0048](0048-filer-receipts.md) — the filer's receipt is the cross-box delivery verdict → ADR 0049
 
