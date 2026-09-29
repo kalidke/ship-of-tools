@@ -14,15 +14,9 @@ ensure_home
 STALE_SECS="${SOT_COMM_STALE_SECS:-600}"
 nows="$(date -u +%s)"
 
-# fmt_age SECONDS — compact relative age ("just now"/"2m ago"/"1h ago"/"3d ago").
-fmt_age() {
-    local s="$1"
-    if   [ "$s" -lt 60 ];    then echo "just now"
-    elif [ "$s" -lt 3600 ];  then echo "$((s / 60))m ago"
-    elif [ "$s" -lt 86400 ]; then echo "$((s / 3600))h ago"
-    else                          echo "$((s / 86400))d ago"
-    fi
-}
+# fmt_age (compact relative age) now lives in comm-lib.sh, sourced above —
+# shared with sot-fe's `version` command so the one ageing rule serves
+# every state-nav printer instead of two copies drifting.
 
 echo "sot-comm agents  ($REGISTRY):"
 any=false
@@ -70,14 +64,35 @@ if [ "$any" = false ]; then echo "  (none)"; fi
 # connection an untargeted frontend command would reach right now. Bounded and
 # best-effort: this is a listing, and it must not hang or fail because a daemon
 # is slow or absent.
+#
+# Session-listing brief: each `fe@<host>` row `sot-fe version` prints is now
+# followed by its own INDENTED lines — one `@<handle> [state] summary · age`
+# per session that box's frontend declared (`fe.sessions`), or one
+# "(declares no sessions — older frontend, or no daemon on that box)" line
+# when that box has never declared at all. A plain `grep -E '^fe@'` would
+# capture only the header and silently drop every one of those — the awk
+# below keeps each header AND the space-indented lines immediately under
+# it, stopping at the next line that isn't indented.
 echo ""
-echo "attached frontend boxes (this daemon):"
 fe_out="$(timeout 5 "$SCRIPT_DIR/sot-fe" version 2>/dev/null || true)"
-fe_rows="$(printf '%s\n' "$fe_out" | grep -E '^fe@' || true)"
+# Session-listing brief: the header names how far back THIS daemon's
+# memory of a disconnected box reaches, so a restart's forgetting is
+# visible rather than read as "no sessions" -- pulled out of the daemon
+# row's own build column ("..., up 3h)"), never re-derived, and omitted
+# (falling back to the plain header) for a daemon predating the field.
+daemon_uptime="$(printf '%s\n' "$fe_out" | grep -oE ', up [^)]+\)' | head -1 | sed -E 's/^, up //; s/\)$//')"
+if [ -n "$daemon_uptime" ]; then
+    echo "attached frontend boxes (this daemon, up $daemon_uptime):"
+else
+    echo "attached frontend boxes (this daemon):"
+fi
+fe_rows="$(printf '%s\n' "$fe_out" | awk '
+    /^fe@/ { print; keep=1; next }
+    keep && /^ / { print; next }
+    { keep=0 }
+')"
 if [ -n "$fe_rows" ]; then
     printf '%s\n' "$fe_rows" | sed 's/^/  /'
 else
     echo "  (none attached, or no daemon answered)"
 fi
-echo "  Sessions running ON those boxes are not listed: the relay files for"
-echo "  them, but no connection declares which inboxes it files for yet."

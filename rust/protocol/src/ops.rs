@@ -283,6 +283,15 @@ pub mod op {
     /// presence from ordinary navigation/typing ops, which turned out to
     /// have automated producers for every one of them.
     pub const FE_PRESENCE: &str = "fe.presence";
+    /// Client→daemon: a frontend declares the sot-comm handles its own
+    /// box's daemon owns, so THIS daemon (which never sees that box's
+    /// rows directly) can list them (session-listing brief). Payload
+    /// `FeSessionsReq { sessions }`; response `FeSessionsRes { ok: true }`
+    /// always — the same "never fails" shape as `fe.presence`, since there
+    /// is nothing here that can be refused. Re-sent whenever the sending
+    /// box's own row list OR any row's state changes (edge-driven, no
+    /// timer) — see `Clients::declare_sessions`.
+    pub const FE_SESSIONS: &str = "fe.sessions";
     /// Open a `.jl` Pluto-flavored notebook in the backend-supervised
     /// Pluto server. The backend lazy-spawns one shared server per
     /// daemon (listening on 127.0.0.1:1234), keeps it across calls,
@@ -1806,6 +1815,41 @@ pub struct FePresenceRes {
     pub ok: bool,
 }
 
+/// One sot-comm handle a frontend's own box files for, as `fe.sessions`
+/// declares it (session-listing brief decision 2) — the same four fields
+/// `workspace.list`'s `WorkspaceInfo` already carries per row
+/// (`agent_handle`, `agent_state`, `agent_summary`, `agent_status_at`),
+/// copied through verbatim. No second source of truth: the hub derives
+/// nothing beyond what the declaring box's own daemon already computed,
+/// so the hub can never be MORE wrong than the strip the person on that
+/// box sees. Only rows with a non-empty `agent_handle` are ever declared
+/// (a row that never joined names nobody — ADR 0046); `handle` here is
+/// therefore never empty.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeclaredSession {
+    pub handle: String,
+    pub state: String,
+    pub summary: String,
+    pub status_at: String,
+}
+
+/// `fe.sessions` request (session-listing brief decision 2): the sending
+/// box's complete row list, re-sent whenever it changes — a new/closed row
+/// or any row's state change re-declares, edge-driven, no timer, no
+/// heartbeat. Carries every declared row, not a diff, so the daemon never
+/// reconstructs a set from a series of edits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeSessionsReq {
+    pub sessions: Vec<DeclaredSession>,
+}
+
+/// `fe.sessions` response — a bare ack, mirroring `fe.presence`; the
+/// frontend doesn't act on it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeSessionsRes {
+    pub ok: bool,
+}
+
 /// `ping` request — empty, always (topology plan §F step 2). Distinct op
 /// from `fe.presence`: presence means "a person is here", ping means
 /// "this connection's read half is alive" — conflating them was the
@@ -2295,6 +2339,37 @@ pub struct DaemonVersion {
     /// `""` as "matches mine" for the "cache diverged" comparison.
     #[serde(default)]
     pub hosts_toml_hash: String,
+    /// How long this daemon PROCESS has been up (`Clients::uptime`,
+    /// session-listing brief) — what a "not connected since" line's
+    /// reader needs to see how far back this daemon's memory of
+    /// disconnected boxes actually reaches: a restart forgets every one
+    /// of them, and this is what makes that forgetting visible instead
+    /// of silently read as "no sessions". `#[serde(default)]` → `0` for
+    /// a daemon that predates this field — the header degrades to
+    /// printing no uptime rather than failing to parse.
+    #[serde(default)]
+    pub uptime_s: u64,
+}
+
+/// One box this daemon has heard `fe.sessions` from whose connection has
+/// since closed or been reaped (session-listing brief decision 2,
+/// amendment 2's final no-heartbeat form) — the ONLY thing retained past
+/// a disconnect; the sessions themselves left with the connection. A
+/// SEPARATE list from `ClientVersion`, not optional fields on that type:
+/// a disconnected box has no sessions by definition, and a shape that
+/// could express one would invite printing it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DisconnectedBox {
+    /// The declared hello `name` this box's frontend connection last
+    /// carried (e.g. `fe@<host>`) — the same identity a `ClientVersion`
+    /// row would have shown while it was still attached.
+    pub identity: String,
+    /// Seconds since that connection closed or was reaped, computed by
+    /// the daemon from its own monotonic clock at THIS `version.query`
+    /// call — never a wall-clock timestamp (a box in another timezone
+    /// would mislead) and never re-derived by the caller from a stored
+    /// instant it has no way to read.
+    pub since_s: u64,
 }
 
 /// One attached frontend, as `version.query` reports it — sourced from the
@@ -2332,6 +2407,19 @@ pub struct ClientVersion {
     /// `false` for a daemon that predates this field.
     #[serde(default)]
     pub active: bool,
+    /// This connection's most recent `fe.sessions` declaration
+    /// (session-listing brief decision 2) — `None` for a peer that has
+    /// never sent one (an old frontend, or a frontend box running no
+    /// daemon at all): "declares no sessions". Distinct from
+    /// `Some(vec![])`, a box that HAS declared and currently has no
+    /// sessions to report: "no sessions". `#[serde(default,
+    /// skip_serializing_if = "Option::is_none")]` matches `host`/`name`
+    /// above — omitted on the wire, not `null`, for a peer with nothing
+    /// to say, so the two absences (predates the field vs. never
+    /// declared) read the same on a caller that doesn't care to tell
+    /// them apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<Vec<DeclaredSession>>,
 }
 
 /// `version.query` response (ADR 0030 §8 decision 31b, ADR 0043 decision
@@ -2348,6 +2436,11 @@ pub struct VersionQueryRes {
     /// clients rather than failing the whole response.
     #[serde(default)]
     pub clients: Vec<ClientVersion>,
+    /// Every box this daemon has heard `fe.sessions` from that isn't
+    /// attached right now (session-listing brief) — `#[serde(default)]`,
+    /// same additive-tolerance idiom as `clients` above.
+    #[serde(default)]
+    pub disconnected: Vec<DisconnectedBox>,
 }
 
 /// `topology.set` request (plan §B "Editing the master list") — one edit,
@@ -2554,7 +2647,7 @@ mod hello_version_tests {
 
 #[cfg(test)]
 mod version_query_tests {
-    use super::{ClientVersion, DaemonVersion, VersionQueryRes};
+    use super::{ClientVersion, DaemonVersion, DisconnectedBox, VersionQueryRes};
 
     #[test]
     fn version_query_res_round_trips() {
@@ -2566,6 +2659,7 @@ mod version_query_tests {
                 lane_proto: 1,
                 host: "test-host".into(),
                 hosts_toml_hash: "deadbeefcafef00d".into(),
+                uptime_s: 10_800,
             },
             clients: vec![ClientVersion {
                 client_id: "fe-1".into(),
@@ -2576,6 +2670,11 @@ mod version_query_tests {
                 instance: Some("i1".into()),
                 name: Some("fe@host-a".into()),
                 active: true,
+                sessions: None,
+            }],
+            disconnected: vec![DisconnectedBox {
+                identity: "fe@host-b".into(),
+                since_s: 720,
             }],
         };
         let json = serde_json::to_string(&res).unwrap();
@@ -2584,12 +2683,34 @@ mod version_query_tests {
         assert_eq!(back.daemon.lane_proto, 1);
         assert_eq!(back.daemon.host, "test-host");
         assert_eq!(back.daemon.hosts_toml_hash, "deadbeefcafef00d");
+        assert_eq!(back.daemon.uptime_s, 10_800);
         assert_eq!(back.clients.len(), 1);
         assert_eq!(back.clients[0].client_id, "fe-1");
         assert_eq!(back.clients[0].name.as_deref(), Some("fe@host-a"));
         assert_eq!(back.clients[0].host.as_deref(), Some("test-host"));
         assert_eq!(back.clients[0].role, "fe");
         assert!(back.clients[0].active);
+        assert_eq!(back.disconnected.len(), 1);
+        assert_eq!(back.disconnected[0].identity, "fe@host-b");
+        assert_eq!(back.disconnected[0].since_s, 720);
+    }
+
+    #[test]
+    fn version_query_res_missing_disconnected_and_uptime_deserializes_to_defaults() {
+        // A daemon that predates this feature omits `uptime_s` and
+        // `disconnected` entirely — must still parse, reading 0 / empty
+        // rather than failing the whole response.
+        let json = serde_json::json!({
+            "daemon": {
+                "app_version": "0.6.0",
+                "protocol": 1,
+                "lane_build": "xyz",
+            },
+            "clients": [],
+        });
+        let back: VersionQueryRes = serde_json::from_value(json).expect("legacy peer parses");
+        assert_eq!(back.daemon.uptime_s, 0);
+        assert_eq!(back.disconnected, Vec::new());
     }
 
     #[test]
@@ -2633,7 +2754,10 @@ mod version_query_tests {
 
 #[cfg(test)]
 mod fe_presence_and_command_tests {
-    use super::{FeCommandEvt, FeCommandSendRes, FePresenceReq, FePresenceRes, PingReq, PingRes};
+    use super::{
+        ClientVersion, DeclaredSession, FeCommandEvt, FeCommandSendRes, FePresenceReq, FePresenceRes,
+        FeSessionsReq, FeSessionsRes, PingReq, PingRes,
+    };
 
     #[test]
     fn fe_presence_req_and_res_round_trip_empty() {
@@ -2708,6 +2832,68 @@ mod fe_presence_and_command_tests {
         with_stray_field["target_serial"] = serde_json::json!(99);
         let back: FeCommandEvt = serde_json::from_value(with_stray_field).unwrap();
         assert_eq!(back.target_serial, None);
+    }
+
+    #[test]
+    fn fe_sessions_req_and_res_round_trip() {
+        // Session-listing brief decision 2: the sending box's whole row
+        // list rides in one field, and the bare ack mirrors `fe.presence`.
+        let req = FeSessionsReq {
+            sessions: vec![DeclaredSession {
+                handle: "agent@host-a".into(),
+                state: "working".into(),
+                summary: "reading a brief".into(),
+                status_at: "2026-09-28T00:00:00Z".into(),
+            }],
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        let back: FeSessionsReq = serde_json::from_value(json).unwrap();
+        assert_eq!(back.sessions.len(), 1);
+        assert_eq!(back.sessions[0].handle, "agent@host-a");
+
+        let res = FeSessionsRes { ok: true };
+        let json = serde_json::to_string(&res).unwrap();
+        let back: FeSessionsRes = serde_json::from_str(&json).unwrap();
+        assert!(back.ok);
+    }
+
+    #[test]
+    fn client_version_sessions_distinguishes_never_declared_from_declared_empty() {
+        // An absent `sessions` key (a peer that predates the field, or one
+        // that has never sent `fe.sessions`) must read as `None` —
+        // "declares no sessions" — and stay distinguishable from a box
+        // that HAS declared and currently has nothing to report
+        // (`Some(vec![])`, "no sessions"). Collapsing the two into one
+        // value is the exact confident-but-wrong failure this field
+        // exists to close.
+        let legacy_json = serde_json::json!({
+            "client_id": "c1",
+            "app_version": "0.6.0",
+            "protocol": 1,
+            "role": "fe",
+        });
+        let legacy: ClientVersion = serde_json::from_value(legacy_json).expect("legacy peer parses");
+        assert_eq!(legacy.sessions, None, "no key on the wire means never-declared");
+
+        let declared_empty = ClientVersion {
+            client_id: "c2".into(),
+            app_version: "0.6.0".into(),
+            protocol: 1,
+            host: None,
+            role: "fe".into(),
+            instance: None,
+            name: Some("fe@host-a".into()),
+            active: false,
+            sessions: Some(vec![]),
+        };
+        let json = serde_json::to_value(&declared_empty).unwrap();
+        assert_eq!(
+            json.get("sessions"),
+            Some(&serde_json::json!([])),
+            "an empty declaration still serializes the key, unlike a never-declared peer"
+        );
+        let back: ClientVersion = serde_json::from_value(json).unwrap();
+        assert_eq!(back.sessions, Some(vec![]), "declared-empty round-trips as Some([]), never None");
     }
 }
 

@@ -338,9 +338,10 @@ pub async fn handle_version_query(
         lane_proto: sot_log::wire::SUPERVISOR_PROTO_V1,
         host: crate::workspaces::declared_host(),
         hosts_toml_hash: refreshed.hash.unwrap_or_default(),
+        uptime_s: clients.uptime().as_secs(),
     };
     let snap = clients.snapshot_with_active();
-    let clients = snap
+    let client_rows = snap
         .clients
         .iter()
         .map(|c| sot_protocol::ClientVersion {
@@ -352,9 +353,32 @@ pub async fn handle_version_query(
             instance: c.instance.clone(),
             name: c.name.clone(),
             active: snap.is_active_serial(c.serial),
+            sessions: c.sessions.clone(),
         })
         .collect();
-    let res = sot_protocol::VersionQueryRes { daemon, clients };
+    // Session-listing brief decision 2 / amendment 2: every box whose
+    // connection has since closed or been reaped, read at the SAME
+    // convention `Instant::now()` — `disconnected` lives outside
+    // `by_conn`, so this needs its own read regardless of `snap` above.
+    // Review blocker 1: `name` identifies a BOX, not a process (a second
+    // frontend on the same box exiting still leaves that box's `name`
+    // attached elsewhere), so an identity ALSO held by a still-connected
+    // row right now must not be reported disconnected — filtered against
+    // THIS SAME `snap`, never a second registry read.
+    let disconnected = clients
+        .disconnected_since(std::time::Instant::now())
+        .into_iter()
+        .filter(|(identity, _)| !snap.clients.iter().any(|c| c.name.as_deref() == Some(identity.as_str())))
+        .map(|(identity, age)| sot_protocol::DisconnectedBox {
+            identity,
+            since_s: age.as_secs(),
+        })
+        .collect();
+    let res = sot_protocol::VersionQueryRes {
+        daemon,
+        clients: client_rows,
+        disconnected,
+    };
     Ok(vec![(
         Frame::res(req_id, op::VERSION_QUERY, serde_json::to_value(res)?),
         None,
@@ -6107,6 +6131,71 @@ pub async fn handle_fe_presence(req_id: u64) -> Result<HandlerOutput> {
     )])
 }
 
+/// `fe.sessions` (session-listing brief decision 2): a frontend declares
+/// the sot-comm handles its own box's daemon owns, so THIS daemon can list
+/// them. Unlike `fe.presence` (which needs no payload and stamps via
+/// `server.rs`'s dispatch loop, since the thing being stamped is the
+/// connection itself), the store happens here — the payload IS what's
+/// stored. An unregistered `serial` (`None`, pre-hello) is a harmless
+/// no-op ack, same as `touch_person_input`; a registered connection with
+/// NO declared hello `name` is refused (`unnamed_connection`) rather than
+/// stored — the `disconnected` map keys on that name, so a declaration
+/// with none could never be attributed to a box once its connection
+/// dropped. `declare_sessions` also clears that box's `disconnected`
+/// entry, if it had one — a box that just declared again is, by
+/// definition, not missing.
+pub async fn handle_fe_sessions(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    clients: &crate::clients::Clients,
+    serial: Option<u64>,
+) -> Result<HandlerOutput> {
+    let req: sot_protocol::FeSessionsReq =
+        serde_json::from_value(payload_json).context("fe.sessions payload")?;
+    let Some(serial) = serial else {
+        // Pre-hello (no connection registered yet): the same harmless
+        // no-op `touch_person_input` accepts, since there is nothing to
+        // store OR refuse against.
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::FE_SESSIONS,
+                serde_json::to_value(sot_protocol::FeSessionsRes { ok: true })?,
+            ),
+            None,
+        )]);
+    };
+    // An unnamed connection is refused, not stored (session-listing
+    // brief): the `disconnected` map's identity IS the declared hello
+    // `name`, so a declarer with none could never be attributed to a
+    // box if its connection later dropped — better to refuse now than
+    // store a declaration that can never resurface as anything.
+    match clients.name_for(serial) {
+        Some(name) if !name.is_empty() => {
+            clients.declare_sessions(serial, req.sessions);
+            Ok(vec![(
+                Frame::res(
+                    req_id,
+                    op::FE_SESSIONS,
+                    serde_json::to_value(sot_protocol::FeSessionsRes { ok: true })?,
+                ),
+                None,
+            )])
+        }
+        _ => Ok(vec![(
+            Frame::res(
+                req_id,
+                op::FE_SESSIONS,
+                json!({
+                    "error": "this connection declared no name at hello, so its sessions cannot be attributed to a box",
+                    "code": "unnamed_connection",
+                }),
+            ),
+            None,
+        )]),
+    }
+}
+
 /// `ping` (topology plan §F step 2): a bare liveness ack, no side effect
 /// beyond answering. Resetting this connection's read deadline is done in
 /// `server.rs`'s dispatch loop, ON EVERY frame it reads from an `fe`/
@@ -6121,6 +6210,105 @@ pub async fn handle_ping(req_id: u64) -> Result<HandlerOutput> {
         ),
         None,
     )])
+}
+
+#[cfg(test)]
+mod fe_sessions_tests {
+    use super::{handle_fe_sessions, handle_version_query};
+    use crate::clients::Clients;
+
+    fn sessions_json() -> serde_json::Value {
+        serde_json::json!({
+            "sessions": [
+                {"handle": "agent@host-a", "state": "working", "summary": "", "status_at": ""}
+            ]
+        })
+    }
+
+    #[tokio::test]
+    async fn a_named_connection_declares_and_is_stored() {
+        let clients = Clients::new();
+        let g = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let out = handle_fe_sessions(1, sessions_json(), &clients, Some(g.serial()))
+            .await
+            .expect("handler ok");
+        assert_eq!(out[0].0.payload.get("ok").and_then(|v| v.as_bool()), Some(true));
+        let snap = clients.snapshot_with_active();
+        assert_eq!(snap.clients[0].sessions.as_ref().map(|s| s.len()), Some(1));
+    }
+
+    /// Session-listing brief: an unnamed declarer cannot be attributed
+    /// to a box (the `disconnected` map keys on the declared `name`), so
+    /// it is refused rather than stored.
+    #[tokio::test]
+    async fn an_unnamed_connection_is_refused_not_stored() {
+        let clients = Clients::new();
+        let g = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, None);
+        let out = handle_fe_sessions(1, sessions_json(), &clients, Some(g.serial()))
+            .await
+            .expect("handler ok");
+        assert_eq!(
+            out[0].0.payload.get("code").and_then(|v| v.as_str()),
+            Some("unnamed_connection")
+        );
+        let snap = clients.snapshot_with_active();
+        assert_eq!(snap.clients[0].sessions, None, "refused, not stored");
+    }
+
+    /// Review blocker 1 (cut for rc9.8): `name` identifies a BOX, not a
+    /// process — a SECOND frontend on the same box (same declared name,
+    /// `instance` is what tells them apart, gpu.rs) can exit and leave a
+    /// stale `disconnected` entry for an identity a still-live connection
+    /// ALSO holds right now. That identity must list as attached, never
+    /// both attached and gone.
+    #[tokio::test]
+    async fn an_attached_box_with_a_stale_disconnected_entry_lists_sessions_never_not_connected() {
+        let clients = Clients::new();
+        let g1 = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.declare_sessions(
+            g1.serial(),
+            vec![sot_protocol::DeclaredSession {
+                handle: "agent-1@host-a".into(),
+                state: "working".into(),
+                summary: String::new(),
+                status_at: String::new(),
+            }],
+        );
+
+        // A second process on the SAME box, also declared, then gone —
+        // this is what leaves the stale `disconnected` entry behind.
+        let g2 = clients.register("c-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.declare_sessions(
+            g2.serial(),
+            vec![sot_protocol::DeclaredSession {
+                handle: "agent-2@host-a".into(),
+                state: "idle".into(),
+                summary: String::new(),
+                status_at: String::new(),
+            }],
+        );
+        drop(g2);
+
+        let (topo_tx, _rx) = tokio::sync::broadcast::channel(1);
+        let topology = crate::topology_store::TopologyStore::new(
+            std::env::temp_dir().join(format!("sot-fe-sessions-blocker1-test-{}", std::process::id())),
+        );
+        let out = handle_version_query(1, &clients, &topology, &topo_tx)
+            .await
+            .expect("handler ok");
+        let payload = &out[0].0.payload;
+
+        let disconnected = payload.get("disconnected").and_then(|v| v.as_array());
+        assert!(
+            disconnected.map(|a| a.is_empty()).unwrap_or(true),
+            "fe@host-a still has a live connection (g1), so it must not be reported disconnected: {payload}"
+        );
+        let clients_arr = payload.get("clients").and_then(|v| v.as_array()).expect("clients array");
+        assert!(
+            clients_arr.iter().any(|c| c.get("sessions").is_some_and(|s| !s.is_null())),
+            "the still-attached connection must keep listing its own sessions: {payload}"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -3194,6 +3194,30 @@ fn resplice_expanded_session_hosts(
     }
 }
 
+/// Project one host's `WorkspaceInfo` rows into what `fe.sessions`
+/// declares (session-listing brief decision 2) — a free function, no
+/// `State` dependency, so the projection is directly unit-testable. Only
+/// rows with a non-empty `agent_handle` are declared: a row that never
+/// joined names nobody (ADR 0046), and inventing a name for it is the
+/// confident-but-wrong failure this feature exists to close. The other
+/// three fields are copied through verbatim — no derived state, so the
+/// hub can never be MORE wrong than the strip the person on this box
+/// sees.
+fn declared_sessions_from(
+    workspaces: &[crate::transport::WorkspaceInfo],
+) -> Vec<sot_protocol::DeclaredSession> {
+    workspaces
+        .iter()
+        .filter(|w| !w.agent_handle.is_empty())
+        .map(|w| sot_protocol::DeclaredSession {
+            handle: w.agent_handle.clone(),
+            state: w.agent_state.clone(),
+            summary: w.agent_summary.clone(),
+            status_at: w.agent_status_at.clone(),
+        })
+        .collect()
+}
+
 /// Pure core of the ADR 0042 L2a workspace-cache rebuild: given the union
 /// (`ordered_hosts` for display order, `lists` for each host's last-known
 /// `workspace.list`) and `active_host`, computes every workspace-scoped
@@ -4767,11 +4791,22 @@ struct State {
     /// Absent for a host that hasn't connected yet.
     host_resolved_dial: HashMap<crate::dial::HostKey, ResolvedDial>,
     /// ADR 0046 decision 1 (revised): the daemon's own declared identity
-    /// for each dial — `HostKey` stays the stable dial label; this is
-    /// purely informational, read by `host_label` (the one display
-    /// projection) for Hosts mode, Sessions labels, the status line, and
-    /// log lines. Absent for a host that hasn't completed hello yet.
+    /// for each dial — `HostKey` stays the stable dial label. Read by
+    /// `host_label` (display: Hosts mode, Sessions labels, the status
+    /// line, log lines) AND, since the session-listing brief, by the
+    /// `Workspaces`/`Connected` event arms to decide whether a dial is
+    /// the LOCAL daemon (its declared host equals `frontend_identity().host`)
+    /// — the only thing that gates `fe.sessions`. Absent for a host that
+    /// hasn't completed hello yet.
     declared_host: HashMap<crate::dial::HostKey, String>,
+    /// The last `fe.sessions` projection this frontend sent out
+    /// (session-listing brief decision 2) — `None` until the local
+    /// daemon's first `workspace.list` reply. Compared against the next
+    /// projection so a declaration is re-sent only when it actually
+    /// changed (edge-driven, no timer); also what a reconnecting hub is
+    /// resent verbatim in the `Connected` arm, since its own fresh
+    /// connection remembers nothing from before.
+    last_declared_sessions: Option<Vec<sot_protocol::DeclaredSession>>,
     /// The connection every "current view" operation targets — cursor
     /// state, the active tree, `active_workspace_id`. The pair
     /// `(active_host, active_workspace_id)` names the current workspace
@@ -6605,6 +6640,7 @@ impl State {
             host_transports: HashMap::new(),
             host_resolved_dial: HashMap::new(),
             declared_host: HashMap::new(),
+            last_declared_sessions: None,
             active_host,
             monitor_hub,
             scale,
@@ -12885,13 +12921,37 @@ impl State {
             // ADR 0046 decision 1: `HostKey` is never re-homed —
             // `event_host` (the dial label) stays the key for everything
             // below, unshadowed. The declared host is recorded for
-            // display only (`host_label`) — manager review, S8: closing a
+            // display (`host_label`) — manager review, S8: closing a
             // duplicate dial here was rejected (no transport shutdown
             // path exists to actually enforce it); the static same-port
             // skip in `dial::resolve_connections` is what prevents a
-            // same-daemon collision from ever dialing twice.
+            // same-daemon collision from ever dialing twice — AND, since
+            // the session-listing brief, for the LOCAL-daemon test the
+            // `Workspaces` arm below runs on every own-host reply.
             if let crate::transport::IncomingEvt::Connected { host: Some(declared), .. } = &evt {
                 self.record_declared_host(&event_host, declared.clone());
+                // Session-listing brief decision 2: a reconnecting hub's
+                // connection is brand new and remembers nothing from
+                // before, so re-send our last declaration to it right
+                // here rather than waiting for the next own-host
+                // `workspace.list` reply — which may not come again for a
+                // while, and wouldn't resend anyway if the projection
+                // hasn't changed. Never sent to the LOCAL daemon itself
+                // (that connection's own workspace.list reply is what
+                // computes `last_declared_sessions` in the first place).
+                if declared != &frontend_identity().host {
+                    if let Some(sessions) = self.last_declared_sessions.clone() {
+                        if let Err(e) =
+                            self.send_to(&event_host, OutgoingReq::FeSessions(sessions))
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                host = %event_host,
+                                "drop fe.sessions resend on reconnect — channel closed"
+                            );
+                        }
+                    }
+                }
             }
             // ADR 0042 L2a: every host's transport tags its own sends, so
             // per-host connection status is exactly this — no new wire
@@ -15776,17 +15836,50 @@ impl State {
                     // `host`, recorded in `declared_host`) — a remote
                     // daemon's rows would be a promise this process
                     // cannot keep.
-                    // No declaration is sent from here at all (ADR 0048).
-                    // `fe.files_for` is gone from the wire: it only ever
-                    // reached a daemon on this frontend's OWN box, which
-                    // already knows those handles from their `agent.join`,
-                    // while the remote hub that answers a directed send
-                    // never saw it. Its successor is the filer receipt —
-                    // the claim now travels back over the link the frame
-                    // arrived on, so it cannot miss the hub by
-                    // construction. The set builder and its predicate stay
-                    // and are read HERE, in `receipt_from_rows`, wherever a
-                    // reader exists.
+                    // No declaration for AGENT MESSAGE ROUTING is sent
+                    // from here (ADR 0048). `fe.files_for` is gone from
+                    // the wire: it only ever reached a daemon on this
+                    // frontend's OWN box, which already knows those
+                    // handles from their `agent.join`, while the remote
+                    // hub that answers a directed send never saw it. Its
+                    // successor is the filer receipt — the claim now
+                    // travels back over the link the frame arrived on, so
+                    // it cannot miss the hub by construction. The set
+                    // builder and its predicate stay and are read HERE, in
+                    // `receipt_from_rows`, wherever a reader exists.
+                    //
+                    // A DIFFERENT declaration — for SESSION LISTING, not
+                    // message routing (session-listing brief decision 2)
+                    // — IS sent from here: if this reply is the LOCAL
+                    // daemon's own (its declared host, recorded above in
+                    // `declared_host`, equals this frontend's own host),
+                    // project its rows and, only if the projection
+                    // changed since the last send, tell every OTHER
+                    // connection so a hub that never sees this box's rows
+                    // directly can list them.
+                    if self.declared_host.get(&event_host) == Some(&frontend_identity().host) {
+                        if let Some(rows) = self.workspace_lists.get(&event_host) {
+                            let sessions = declared_sessions_from(rows);
+                            if self.last_declared_sessions.as_ref() != Some(&sessions) {
+                                self.last_declared_sessions = Some(sessions.clone());
+                                for (host, _) in &self.conns {
+                                    if host == &event_host {
+                                        continue;
+                                    }
+                                    if let Err(e) = self.send_to(
+                                        host,
+                                        OutgoingReq::FeSessions(sessions.clone()),
+                                    ) {
+                                        tracing::warn!(
+                                            error = %e,
+                                            %host,
+                                            "drop fe.sessions — channel closed"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // --capture-cycle <N>: simulate N Ctrl+PgDn presses
                     // (negative = Ctrl+PgUp) on the first workspace.list
                     // reply. Consumed once so a re-fetch from a later
@@ -30420,6 +30513,85 @@ mod tests {
                  a person is present for all of them, not only whichever is active"
             );
         }
+    }
+
+    fn ws_info_with_agent(
+        slug: &str,
+        session_name: &str,
+        agent_handle: &str,
+        agent_state: &str,
+    ) -> crate::transport::WorkspaceInfo {
+        crate::transport::WorkspaceInfo {
+            agent_handle: agent_handle.to_string(),
+            agent_state: agent_state.to_string(),
+            ..ws_info(slug, session_name)
+        }
+    }
+
+    /// Mirrors the `Workspaces` arm's `fe.sessions` fan-out
+    /// (session-listing brief decision 2): a reply is declared only when
+    /// it is the LOCAL daemon's own (its `declared_host` entry equals
+    /// `local_host`), and even then never back to itself — only to every
+    /// OTHER connection.
+    fn route_fe_sessions(
+        conns: &[(HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)],
+        declared_host: &HashMap<HostKey, String>,
+        local_host: &str,
+        event_host: &HostKey,
+        rows: &[crate::transport::WorkspaceInfo],
+    ) {
+        if declared_host.get(event_host).map(String::as_str) != Some(local_host) {
+            return;
+        }
+        let sessions = declared_sessions_from(rows);
+        for (host, _) in conns {
+            if host == event_host {
+                continue;
+            }
+            let _ = route_send_to(conns, host, OutgoingReq::FeSessions(sessions.clone()));
+        }
+    }
+
+    #[test]
+    fn fe_sessions_declares_a_local_list_to_every_other_host_never_the_local_one() {
+        let (conns, mut rxs) = fake_conns();
+        let mut declared_host: HashMap<HostKey, String> = HashMap::new();
+        declared_host.insert("local".to_string(), "this-box".to_string());
+        declared_host.insert("alpha".to_string(), "remote-box".to_string());
+        let rows = vec![ws_info_with_agent("sot", "sot-be-sot", "agent@this-box", "working")];
+
+        route_fe_sessions(&conns, &declared_host, "this-box", &"local".to_string(), &rows);
+
+        match rxs.get_mut("alpha").unwrap().try_recv() {
+            Ok(OutgoingReq::FeSessions(sessions)) => {
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions[0].handle, "agent@this-box");
+                assert_eq!(sessions[0].state, "working");
+            }
+            other => panic!("expected fe.sessions on the other host, got {other:?}"),
+        }
+        assert!(
+            rxs.get_mut("local").unwrap().try_recv().is_err(),
+            "the local connection never declares to itself"
+        );
+    }
+
+    #[test]
+    fn fe_sessions_a_remote_hosts_own_list_declares_nothing() {
+        let (conns, mut rxs) = fake_conns();
+        let mut declared_host: HashMap<HostKey, String> = HashMap::new();
+        declared_host.insert("local".to_string(), "this-box".to_string());
+        declared_host.insert("alpha".to_string(), "remote-box".to_string());
+        let rows = vec![ws_info_with_agent("sot", "sot-be-sot", "agent@remote-box", "working")];
+
+        // "alpha" is a REMOTE daemon; its own row list must declare
+        // nothing — this frontend has no inbox on that box, so a
+        // declaration made on its behalf would be a promise this process
+        // cannot keep.
+        route_fe_sessions(&conns, &declared_host, "this-box", &"alpha".to_string(), &rows);
+
+        assert!(rxs.get_mut("local").unwrap().try_recv().is_err());
+        assert!(rxs.get_mut("alpha").unwrap().try_recv().is_err());
     }
 
     #[test]

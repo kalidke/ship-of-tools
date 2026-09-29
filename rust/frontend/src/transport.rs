@@ -1020,6 +1020,14 @@ pub enum OutgoingReq {
     /// false-negative pair the review found in the daemon-side-inference
     /// design this replaces.
     FePresence,
+    /// Declare the sot-comm handles this box's OWN daemon owns, with
+    /// their state (session-listing brief decision 2), on a connection
+    /// OTHER than that owning daemon's own — see `gpu.rs`'s
+    /// `IncomingEvt::Workspaces`/`Connected` arms for who sends this and
+    /// when. Fire-and-forget, same idiom as `FePresence` above: no
+    /// `PendingKind`, an older daemon's unknown-op error is silently
+    /// dropped by the unmatched-id fallthrough.
+    FeSessions(Vec<sot_protocol::DeclaredSession>),
     /// Claim the filing of ONE relayed frame this frontend just appended
     /// (ADR 0048; there is no declining form — see `gpu::receipt_for`) — sent on the connection the
     /// `agent.message` arrived on, so the claim reaches the hub that
@@ -2395,6 +2403,21 @@ where
                         .await?;
                         // No PendingKind: fire-and-forget, same idiom as
                         // ToggleHidden/WorkspaceActivate above.
+                    }
+                    OutgoingReq::FeSessions(sessions) => {
+                        tracing::debug!(id, count = sessions.len(), "→ fe.sessions");
+                        codec::write_frame(
+                            &mut tx,
+                            &Frame::req(
+                                id,
+                                op::FE_SESSIONS,
+                                serde_json::to_value(sot_protocol::FeSessionsReq { sessions })?,
+                            ),
+                            None,
+                        )
+                        .await?;
+                        // No PendingKind: fire-and-forget, same idiom as
+                        // FePresence above.
                     }
                     OutgoingReq::AgentFiled(req) => {
                         tracing::debug!(id, frame_id = %req.id, "→ agent.filed");

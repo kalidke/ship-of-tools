@@ -1861,6 +1861,15 @@ where
                 touch_person_input(&clients, &client_guard);
                 handlers::handle_fe_presence(frame.id).await
             }
+            op::FE_SESSIONS => {
+                handlers::handle_fe_sessions(
+                    frame.id,
+                    frame.payload,
+                    &clients,
+                    client_guard.as_ref().map(|g| g.serial()),
+                )
+                .await
+            }
             op::PING => {
                 // Opt-in arming (manager compatibility fix, post-review):
                 // this connection's FIRST `ping`, and only if hello already

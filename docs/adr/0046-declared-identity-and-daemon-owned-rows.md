@@ -8,6 +8,27 @@ Amends ADR 0010, 0023, 0025 (§2, §4, the caption update, `fe_handle`),
 0042 (FE-driver decisions 1–3), 0043 (decisions 23, 35), 0045 (decisions
 1, 2; its one-migration mechanism reused).
 
+**Update 2026-09-28 — a connection also declares what it FILES FOR,
+distinct from what a row IS (session-listing brief).** Decision 1's
+`agent.join` is a SESSION declaring the row its own identity names — one
+`Workspace.agent_handle` per row, to the daemon that owns that row. The
+session-listing brief adds a different declaration, on the CONNECTION
+rather than the row: `fe.sessions` lets a frontend's wire connection tell
+a daemon it has no local view of which handles the box on the OTHER end
+of that connection owns, with their work-state, so a hub that never sees
+those rows directly can still list them (a frontend such as `fe@<host>`
+declaring for its own daemon's rows — placeholder host, never a real
+one, this repo is PUBLIC). The two declarations answer different
+questions — "what is this row's identity" vs. "which identities does the
+box on the other end of THIS connection currently know about" — and
+neither substitutes for the other. Those declared handles leave WITH the
+connection — no per-handle withdrawal, no per-handle timeout, whole-list
+replacement only — but the BOX itself does not: a daemon keeps one
+in-memory line per box it has ever heard `fe.sessions` from, naming how
+long its connection has been gone, so a box the hub has heard from is
+never silently absent from the listing the way an ordinary disconnect
+would otherwise make it.
+
 ## Context
 
 **The exemplar.** On 2026-09-13 a backend session could not name the
