@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# comm-status-heartbeat.sh — Claude Code `PostToolUse` hook. Two jobs:
+# comm-status-heartbeat.sh — Claude Code `PostToolUse` hook. Three jobs:
 #
 #   (1) The AskUserQuestion ANSWER (ADR 0044 amendment): that tool's
 #       PostToolUse is the owner typing the answer — the session yielding to
 #       the harness pause is over. Sends `prompt` with origin `user` for that
 #       tool call, exactly as if a fresh UserPromptSubmit had fired, and
 #       exits (no heartbeat write this call).
-#   (2) The HEARTBEAT: writes NO fact. It only refreshes `status_at` on tool
+#   (2) THE PERMISSION-DIALOG ANSWER, approve arm (row-colour fix): a
+#       permission prompt can gate any tool, so this cannot key off a tool
+#       name the way (1) does — comm-status-permission.sh's PermissionRequest
+#       hook drops a marker keyed by `tool_use_id` instead, and any
+#       PostToolUse whose id matches consumes it and sends the same `prompt`
+#       origin `user`. The deny arm has no PostToolUse to answer on at all;
+#       see comm-status-blocked.sh's DENY paragraph for that path.
+#   (3) The HEARTBEAT: writes NO fact. It only refreshes `status_at` on tool
 #       activity, THROTTLED to once per 60s, so a legitimately-busy session on
 #       a long turn (heavy Julia runs) doesn't wilt white — the nav wilts a
 #       `working` row whose status_at is older than 10 min
@@ -43,6 +50,11 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # re-read: stdin is a pipe, and jq would see EOF on a second read.
 _envelope="$(cat)"
 tool="$(printf '%s' "$_envelope" | jq -r '.tool_name // ""' 2>/dev/null || true)"
+# The harness's own per-turn id, re-stamped into `floor_prompt` on either
+# restore below (AskUserQuestion or permission) so a LATER interrupt of the
+# resumed turn can still be told apart from a stale one — comm-status.sh's
+# `interrupted` event only ever compares against this id, never derives it.
+_prompt_id="$(printf '%s' "$_envelope" | jq -r '.prompt_id // ""' 2>/dev/null || true)"
 
 # The AskUserQuestion ANSWER (ADR 0044 amendment): this tool's PostToolUse
 # fires once the owner has typed the answer and the harness resumes — the
@@ -71,8 +83,25 @@ if [ "$tool" = AskUserQuestion ]; then
     _askq_marker="$COMM_HOME/state/askq-$(printf '%s' "$_tool_use_id" | tr -c 'A-Za-z0-9._-' '_').marker"
     if [ -n "$_tool_use_id" ] && [ -f "$_askq_marker" ]; then
         rm -f "$_askq_marker" 2>/dev/null || true
-        COMM_STATUS_ORIGIN=user "$COMM_HOME/bin/comm-status.sh" prompt >/dev/null 2>&1 || true
+        COMM_STATUS_ORIGIN=user COMM_STATUS_PROMPT_ID="$_prompt_id" "$COMM_HOME/bin/comm-status.sh" prompt >/dev/null 2>&1 || true
     fi
+    exit 0
+fi
+
+# THE PERMISSION-DIALOG ANSWER, approve arm (row-colour fix): a permission
+# prompt can gate ANY tool, unlike AskUserQuestion, so this is not restricted
+# by tool name. comm-status-permission.sh's PermissionRequest hook drops a
+# marker keyed by the SAME `tool_use_id` this completion carries — proof
+# this PostToolUse is the answer to THAT dialog and not some unrelated call
+# (the same identity guard as the AskUserQuestion branch above, and for the
+# same reason: a foreign or subagent tool call must never be able to clear a
+# different, still-open question). Runs before the early throttle for the
+# same reason too — review finding 2026-09-19 applies here just as much.
+_perm_tool_use_id="$(printf '%s' "$_envelope" | jq -r '.tool_use_id // ""' 2>/dev/null || true)"
+_perm_marker="$COMM_HOME/state/perm-$(printf '%s' "$_perm_tool_use_id" | tr -c 'A-Za-z0-9._-' '_').marker"
+if [ -n "$_perm_tool_use_id" ] && [ -f "$_perm_marker" ]; then
+    rm -f "$_perm_marker" 2>/dev/null || true
+    COMM_STATUS_ORIGIN=user COMM_STATUS_PROMPT_ID="$_prompt_id" "$COMM_HOME/bin/comm-status.sh" prompt >/dev/null 2>&1 || true
     exit 0
 fi
 

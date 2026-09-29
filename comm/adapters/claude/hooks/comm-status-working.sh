@@ -27,6 +27,15 @@
 # reduction (comm-status.sh) puts `floor` above `waiting`, so a purple row
 # never needs a hold: a machine wake simply paints green for the turn and the
 # closing Stop puts the row back where the still-set facts say it belongs.
+#
+# SILENT-EXIT DETECTION: the envelope also carries `prompt_id` (the harness's
+# own per-turn id) and `transcript_path`, both passed through untouched as
+# COMM_STATUS_PROMPT_ID / COMM_STATUS_TRANSCRIPT. comm-status.sh stamps the id
+# into `floor_prompt` and persists the path for comm-wake.sh's silent-exit
+# watcher — a turn that dies with no Stop (a user interrupt, or a bare "No"
+# permission denial) writes a transcript marker the watcher can only clear
+# against a floor if the id matches, which is why the id must come from here
+# rather than be derived later.
 set -uo pipefail
 # A headless claude launched BY comm tooling (the turn auditor's tier-2 call)
 # runs these same hooks under the parent's identity: its prompt hook painted
@@ -37,7 +46,13 @@ set -uo pipefail
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$COMM_HOME/bin/comm-status.sh"
 [ -x "$STATUS" ] || exit 0
-prompt="$(jq -r '.prompt // ""' 2>/dev/null || true)"   # consumes hook stdin
+# One read of stdin (the hook envelope) — every field below comes from this
+# same variable, never a second `jq` read of the pipe (a pipe has no EOF to
+# rewind to; comm-status-heartbeat.sh's `_envelope` is the same idiom).
+_envelope="$(cat)"
+prompt="$(printf '%s' "$_envelope" | jq -r '.prompt // ""' 2>/dev/null || true)"
+prompt_id="$(printf '%s' "$_envelope" | jq -r '.prompt_id // ""' 2>/dev/null || true)"
+transcript_path="$(printf '%s' "$_envelope" | jq -r '.transcript_path // ""' 2>/dev/null || true)"
 ORIGIN=user
 # Twin copy (2026-09-15): comm-status-idle.sh's turn-origin correction
 # classifies a transcript prompt record with this same pattern list, kept in
@@ -53,5 +68,6 @@ case "$prompt" in
     "Another Claude session sent a message"*|*"<teammate-message"*|*"<agent-message"*|*"<cross-session-message"*|"Stop hook feedback:"*)
         ORIGIN=machine ;;
 esac
-COMM_STATUS_ORIGIN="$ORIGIN" "$STATUS" prompt >/dev/null 2>&1 || true
+COMM_STATUS_ORIGIN="$ORIGIN" COMM_STATUS_PROMPT_ID="$prompt_id" COMM_STATUS_TRANSCRIPT="$transcript_path" \
+    "$STATUS" prompt >/dev/null 2>&1 || true
 exit 0

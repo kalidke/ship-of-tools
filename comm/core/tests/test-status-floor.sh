@@ -873,6 +873,216 @@ check "deaf warning is throttled to once per window" case_deaf_warning_is_thrott
 check "deaf warning stays silent for a subagent sharing its parent's live watcher" case_deaf_silent_for_subagent_sharing_parents_watcher
 rmmarker
 
+# ==== the row-colour fix: a permission dialog is red, and both its answers
+#      (approve, deny) leave red — plus the silent-exit detector that closes
+#      the deny arm and any other turn that dies with no Stop ==============
+
+# P TOOL_USE_ID PROMPT_ID [TOOL_NAME] — the PermissionRequest hook: a
+# dialog just opened, gating TOOL_NAME (default Bash), on the turn PROMPT_ID.
+P() {
+    local tid="${1:-perm-test}" pid="${2:-P1}" tn="${3:-Bash}"
+    jq -nc --arg t "$tn" --arg id "$tid" --arg p "$pid" '{tool_name:$t, tool_use_id:$id, prompt_id:$p}' \
+        | bash "$HOOKS_DIR/comm-status-permission.sh"
+}
+# HP TOOL_USE_ID PROMPT_ID [TOOL_NAME] — that SAME tool's PostToolUse (the
+# approve arm: the gated tool actually ran). A DIFFERENT tool_use_id than
+# the P() call it's meant to pair with is exactly a foreign/subagent call.
+HP() {
+    local tid="${1:-perm-test}" pid="${2:-P1}" tn="${3:-Bash}"
+    jq -nc --arg t "$tn" --arg id "$tid" --arg p "$pid" '{tool_name:$t, tool_use_id:$id, prompt_id:$p}' \
+        | bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh"
+}
+case_permission_request_blocks_the_row() {
+    seed idle; W "$GENUINE"
+    expect working/user/-/-/- before || return 1
+    P perm1 P1 Bash
+    expect blocked/-/q/-/- dialog-open || return 1
+    [ "$(summ)" = "permission request: Bash" ] || { echo "    summary: '$(summ)'"; return 1; }
+}
+case_permission_approve_restores_green_and_closes_normally() {
+    seed idle; W "$GENUINE"
+    P perm2 P1 Bash
+    expect blocked/-/q/-/- dialog-open || return 1
+    HP perm2 P1 Bash
+    expect working/user/-/-/- approved || return 1
+    I; expect done/-/-/-/d end
+}
+# Transition 4 (the regression a hasty fix ships): a subagent's or a
+# teammate's tool call sharing this row, while the dialog is still open,
+# must not be mistaken for the answer just because it is A PostToolUse — it
+# carries a DIFFERENT tool_use_id, so the marker P() dropped for THIS
+# dialog is not there to find.
+case_permission_foreign_posttooluse_does_not_answer_it() {
+    seed idle; W "$GENUINE"
+    P perm3 P1 Bash
+    expect blocked/-/q/-/- dialog-open || return 1
+    HP other-id P1 Bash
+    expect blocked/-/q/-/- unaffected
+}
+
+# ---- the silent-exit detector (comm-wake.sh's _comm_wake_interrupt_check) --
+# Drives it directly against a scratch transcript, exactly as the brief
+# prescribes: no real `claude`, no timing dependence. HANDLE must equal
+# NAME -- comm-status.sh persists the transcript path as
+# transcript-$NAME.path and the watcher reads it back as transcript-$HANDLE.path.
+COMM_HOME="$SOT_COMM_HOME"
+STATE_DIR="$SOT_COMM_HOME/state"
+HANDLE="$NAME"
+# shellcheck source=../scripts/comm-wake.sh
+source "$SCRIPTS_DIR/comm-wake.sh"
+IC_TR="$WORK/ic-transcript.jsonl"
+# tr_start PROMPT_ID -- a BRAND NEW transcript: floors PROMPT_ID (origin
+# user) and arms the detector's cursor at this (empty) file's end, the same
+# "first sight" a real watcher takes on a session it has not looked at
+# before -- correctness never depends on a kill that happened before the
+# watcher existed, only on catching one that happens while it watches.
+tr_start() {
+    printf '' > "$IC_TR"
+    unset _IC_PATH _IC_POS
+    COMM_STATUS_ORIGIN=user COMM_STATUS_PROMPT_ID="$1" COMM_STATUS_TRANSCRIPT="$IC_TR" "$ST" prompt >/dev/null
+    _comm_wake_interrupt_check   # arms the cursor; nothing to scan yet
+}
+# tr_next PROMPT_ID -- a FRESH turn on the SAME still-open transcript (no
+# truncation, no cursor reset): the shape a real kill-then-retype takes,
+# where an earlier turn's marker is still unread bytes when the next
+# UserPromptSubmit fires.
+tr_next() { COMM_STATUS_ORIGIN=user COMM_STATUS_PROMPT_ID="$1" COMM_STATUS_TRANSCRIPT="$IC_TR" "$ST" prompt >/dev/null; }
+tr_append() { printf '%s\n' "$1" >> "$IC_TR"; }
+# marker_line PROMPT_ID [TEXT] -- the transcript record Claude itself stamps
+# at kill time (interrupt-detector brief §1), verbatim shape.
+marker_line() { jq -nc --arg p "$1" --arg t "${2:-[Request interrupted by user]}" '{parentUuid:"x",type:"user",promptId:$p,message:{role:"user",content:[{type:"text",text:$t}]}}'; }
+
+case_silent_exit_bites_on_interrupt() {
+    seed idle
+    tr_start SX1
+    expect working/user/-/-/- floored || return 1
+    [ "$(cat "$SOT_COMM_HOME/state/transcript-$NAME.path" 2>/dev/null)" = "$IC_TR" ] || { echo "    transcript path not persisted"; return 1; }
+    tr_append "$(marker_line SX1)"
+    _comm_wake_interrupt_check
+    expect idle/-/-/-/- cleared
+}
+case_silent_exit_bites_on_deny_via_permission() {
+    seed idle
+    tr_start SX2
+    P permA SX2 Bash
+    expect blocked/-/q/-/- dialog-open || return 1
+    tr_append "$(marker_line SX2 '[Request interrupted by user for tool use]')"
+    _comm_wake_interrupt_check
+    expect idle/-/-/-/- deny-cleared
+}
+# The rowlog 70/71 shape: a second parallel tool's own rejection record (or
+# an interleaved attachment line) can push the marker to line n+2. The
+# detector must not test adjacency.
+case_silent_exit_deny_with_interleaved_line_still_bites() {
+    seed idle
+    tr_start SX3
+    P permB SX3 Bash
+    expect blocked/-/q/-/- dialog-open || return 1
+    tr_append '{"type":"attachment","promptId":"SX3"}'
+    tr_append "$(marker_line SX3 '[Request interrupted by user for tool use]')"
+    _comm_wake_interrupt_check
+    expect idle/-/-/-/- deny-cleared-with-interleave
+}
+# "No" WITH feedback: the turn keeps running (its own Stop closes it
+# normally), and Claude writes NO marker for this shape (measured 0/3) --
+# so this MUST NOT clear. Documented KNOWN GAP (see comm-status-blocked.sh):
+# the row sits red for the rest of that turn: no hook fires between a
+# feedback-deny and whatever tool call the model tries next, so nothing here
+# can turn it green early. It still self-heals at the NEXT genuine prompt.
+case_permission_deny_with_feedback_does_not_clear() {
+    seed idle
+    tr_start SX4
+    P permC SX4 Bash
+    expect blocked/-/q/-/- dialog-open || return 1
+    tr_append '{"type":"user","promptId":"SX4","message":{"role":"user","content":[{"type":"tool_result","is_error":true,"content":"The user does not want to proceed with this tool use. To tell you how to proceed, the user said: try again without sudo"}]}}'
+    _comm_wake_interrupt_check
+    expect blocked/-/q/-/- known-gap-still-red
+}
+# Silence -- the constraint that killed a timeout-based design: a long
+# quiet tool call must never look like a kill.
+case_silent_exit_silence_is_not_a_kill() {
+    seed idle
+    tr_start SX5
+    local i
+    for i in $(seq 1 50); do tr_append "{\"type\":\"user\",\"promptId\":\"SX5\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"ok $i\"}]}}"; done
+    _comm_wake_interrupt_check
+    _comm_wake_interrupt_check
+    expect working/user/-/-/- unaffected
+}
+# The exact false positive this brief's own prose creates: the phrase
+# quoted inside a tool result, not at the start of a `text` record.
+case_silent_exit_quoted_marker_in_output_does_not_fire() {
+    seed idle
+    tr_start SX6
+    tr_append '{"type":"user","promptId":"SX6","message":{"role":"user","content":[{"type":"tool_result","content":"earlier the model wrote [Request interrupted by user] in a comment"}]}}'
+    _comm_wake_interrupt_check
+    expect working/user/-/-/- survives
+}
+# A marker from an earlier kill must never clear a NEWER turn's floor --
+# identity, not ordering, is the whole guard.
+case_silent_exit_stale_marker_cannot_clear_new_floor() {
+    seed idle
+    tr_start SX7
+    tr_append "$(marker_line SX7)"
+    tr_next SX8
+    expect working/user/-/-/- floored || return 1
+    _comm_wake_interrupt_check
+    expect working/user/-/-/- survives
+}
+# Both marker texts clear, and a CRLF-terminated line clears too (a live
+# hazard elsewhere in this suite -- test-crlf-jq-output.sh).
+case_silent_exit_bare_interrupt_text_clears() {
+    seed idle
+    tr_start SX9
+    tr_append "$(marker_line SX9 '[Request interrupted by user]')"
+    _comm_wake_interrupt_check
+    expect idle/-/-/-/- cleared
+}
+case_silent_exit_crlf_terminated_marker_clears() {
+    seed idle
+    tr_start SXA
+    printf '%s\r\n' "$(marker_line SXA '[Request interrupted by user for tool use]')" >> "$IC_TR"
+    _comm_wake_interrupt_check
+    expect idle/-/-/-/- cleared
+}
+# `stop` still clears floor_prompt (not just floor), and a normal
+# prompt->stop pair still sets `done` exactly as before this lane.
+case_silent_exit_stop_clears_floor_prompt_too() {
+    seed idle
+    tr_start SXB
+    [ "$(jq -r --arg n "$NAME" '.agents[$n].floor_prompt // ""' "$REGISTRY")" = "SXB" ] || { echo "    floor_prompt not stamped"; return 1; }
+    "$ST" stop >/dev/null
+    [ "$(jq -r --arg n "$NAME" '.agents[$n].floor_prompt // "gone"' "$REGISTRY")" = "gone" ] || { echo "    floor_prompt survived stop"; return 1; }
+    expect done/-/-/-/d normal-close
+}
+# comm-status-working.sh's own passthrough (not just comm-status.sh's side
+# of the contract): a real hook envelope's prompt_id and transcript_path
+# reach the registry and the persisted path file unmodified.
+case_working_hook_passes_prompt_id_and_transcript_through() {
+    seed idle
+    local tr="$WORK/passthrough.jsonl"; printf '' > "$tr"
+    jq -nc --arg p "please do the thing" --arg pid "PT1" --arg tp "$tr" \
+        '{prompt:$p, prompt_id:$pid, transcript_path:$tp}' | bash "$HOOKS_DIR/comm-status-working.sh"
+    expect working/user/-/-/- floored || return 1
+    [ "$(jq -r --arg n "$NAME" '.agents[$n].floor_prompt // ""' "$REGISTRY")" = "PT1" ] || { echo "    floor_prompt not passed through"; return 1; }
+    [ "$(cat "$SOT_COMM_HOME/state/transcript-$NAME.path" 2>/dev/null)" = "$tr" ] || { echo "    transcript path not persisted"; return 1; }
+}
+
+check "a permission dialog blocks the row (red), naming the tool" case_permission_request_blocks_the_row
+check "approving a permission dialog restores green, then closes normally" case_permission_approve_restores_green_and_closes_normally
+check "a foreign tool call while the dialog is open does not answer it" case_permission_foreign_posttooluse_does_not_answer_it
+check "the silent-exit detector bites on a plain interrupt, does not set done" case_silent_exit_bites_on_interrupt
+check "the silent-exit detector bites on a bare-No permission deny" case_silent_exit_bites_on_deny_via_permission
+check "the deny marker still bites with an interleaved attachment line" case_silent_exit_deny_with_interleaved_line_still_bites
+check "a No-with-feedback deny writes no marker and does not clear (known gap)" case_permission_deny_with_feedback_does_not_clear
+check "fifty ordinary lines with no marker never clear the floor" case_silent_exit_silence_is_not_a_kill
+check "a marker quoted inside tool output does not fire" case_silent_exit_quoted_marker_in_output_does_not_fire
+check "a stale marker from an earlier turn cannot clear a newer floor" case_silent_exit_stale_marker_cannot_clear_new_floor
+check "the bare interrupt marker text clears" case_silent_exit_bare_interrupt_text_clears
+check "a CRLF-terminated marker line clears too" case_silent_exit_crlf_terminated_marker_clears
+check "stop clears floor_prompt too, a normal turn still ends done" case_silent_exit_stop_clears_floor_prompt_too
+check "comm-status-working.sh passes prompt_id and transcript_path through" case_working_hook_passes_prompt_id_and_transcript_through
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

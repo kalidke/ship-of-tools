@@ -473,6 +473,10 @@ _comm_wake_run() {
         _comm_wake_owner_alive || exit 0
         sleep "$POLL_SECONDS"
         _comm_wake_bound_log
+        # Runs every cycle in BOTH delivery modes -- a killed turn is not an
+        # inbox event, so it must not be gated behind the ping/full branch
+        # below.
+        _comm_wake_interrupt_check
         if [ "$DELIVER" = "ping" ]; then
             # One notice for the whole cycle, whichever inboxes it came from:
             # this body reads every source itself.
@@ -509,6 +513,58 @@ _comm_wake_bound_log() {
     tail -c "$LOG_CAP" "$LOG_FILE" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
     cat "$tmp" > "$LOG_FILE" 2>/dev/null
     rm -f "$tmp"
+}
+
+# THE SILENT-EXIT DETECTOR (row-colour + interrupt-detector fix): a turn that
+# dies with no Stop — a user interrupt, or a bare "No" permission denial,
+# the SAME transcript record either way — leaves `floor` (and, if a
+# permission dialog was open, `question`) stuck, because nothing else in the
+# hook lifecycle fires when a turn is killed. Claude stamps a marker line
+# into the transcript at the moment of the kill, carrying that dying turn's
+# own `promptId`; this scans only the bytes appended since the LAST look, so
+# steady state (no kill) costs one `wc -c` and nothing else. Never adjacency-
+# tested against a preceding rejection record (a second parallel tool's own
+# rejection, or an interleaved attachment line, can push the marker to a
+# later line) and never used to distinguish interrupt from deny — both
+# collapse to the one fact this clears: the turn ended, unreported.
+#
+# _IC_PATH / _IC_POS are plain globals, not `local` to this function: this
+# runs once per poll cycle inside `_comm_wake_run`'s own `while` loop, in the
+# SAME shell, and must remember where it left off across cycles the same way
+# POS[] does for the inbox scan above.
+_comm_wake_interrupt_check() {
+    local tr size hit
+    tr="$(cat "$STATE_DIR/transcript-$HANDLE.path" 2>/dev/null || true)"
+    [ -n "$tr" ] && [ -f "$tr" ] || return 0
+    # A changed (or first-seen) path has nothing yet scanned in THIS file —
+    # start at its current end, same as the inbox cursors above: correctness
+    # never depends on catching a kill that happened before this process
+    # existed, only on never missing one that happens while it is watching.
+    if [ "$tr" != "${_IC_PATH:-}" ]; then
+        _IC_PATH="$tr"
+        _IC_POS=$(wc -c < "$tr" 2>/dev/null || echo 0)
+        return 0
+    fi
+    size=$(wc -c < "$tr" 2>/dev/null || echo 0)
+    [ "$size" -gt "${_IC_POS:-0}" ] || return 0
+    # The fixed byte string, not the bare phrase: proven against this exact
+    # corpus to match every real marker and none of the mentions of the same
+    # words inside ordinary tool output (interrupt-detector brief, §1).
+    hit="$(tail -c "+$((_IC_POS + 1))" "$tr" 2>/dev/null \
+        | LC_ALL=C grep -a -F '{"type":"text","text":"[Request interrupted by user' || true)"
+    # Advance to the size just READ, never a fresh stat -- a fresh stat here
+    # would silently skip bytes appended between that read and this scan.
+    _IC_POS="$size"
+    [ -n "$hit" ] || return 0
+    printf '%s\n' "$hit" | jq -r '
+        select(.type == "user")
+        | select(((.message.content[0].text) // "") | startswith("[Request interrupted by user"))
+        | .promptId // empty
+    ' 2>/dev/null | while IFS= read -r pid; do
+        [ -n "$pid" ] || continue
+        COMM_STATUS_PROMPT_ID="$pid" "$COMM_HOME/bin/comm-status.sh" interrupted >/dev/null 2>&1 || true
+    done
+    return 0
 }
 
 # Delete ONLY a marker this process still owns. A blind `rm` was the second
