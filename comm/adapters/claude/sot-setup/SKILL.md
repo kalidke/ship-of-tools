@@ -336,11 +336,11 @@ box; the relay still bridges sessions across machines over the tunnel.
 
 (Windows: the FE writes inbound relay messages to
 `%LOCALAPPDATA%\sot\fe-inbox.jsonl`; the in-drawer session watches that file
-via a Monitor that `/sot-session-start` starts fresh on each relaunch — ADR
-0049 is the design of record, daemon-woken with nothing to arm, and until
-that lands on Windows this Monitor is what keeps the drawer session
-receiving.) Installing new skills requires a Claude Code **restart** to load
-them.
+via a Monitor. `/sot-session-start` only prints the command to arm one on
+each relaunch — nothing arms it unless the session runs that command, and
+this lane's own skill text now says not to. Until ADR 0049's daemon wake
+reaches Windows, a drawer session that follows it has no wake here at all.)
+Installing new skills requires a Claude Code **restart** to load them.
 
 ---
 

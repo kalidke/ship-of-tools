@@ -35,13 +35,15 @@ with `comm-send.sh @handle "text"` and read its one result. When
 once, when a session first starts — not again on every resume.
 
 This is ADR 0049's design of record, landing in stages: today the failure verdict
-reads `no such handle: <h>` or `NOT CONFIRMED:` rather than `FAILED ->`, and the
+reads `no such handle: <h>` or `NOT CONFIRMED:` rather than `FAILED ->`, the
 line typed into a row reads `[sot-comm] new message for @<handle> — run
-…/comm-poll.sh` rather than `[sot-comm] you have mail`. The call above still
-prints a `MONITOR:` or `WAKE:` line ordering a Monitor armed and re-armed on
-expiry — that line is the old mechanism, not this design, and is not to be
-acted on: there is nothing to arm, own or re-arm. Mail is read with
-`comm-poll.sh` regardless of what that line says.
+…/comm-poll.sh` rather than `[sot-comm] you have mail`, and a resumed session
+must still re-run this bootstrap — until the daemon holds the handle and the
+wake, the launcher's `--continue` re-runs it for exactly that reason. Any
+line the call above prints that orders a Monitor armed or a listener started
+is the old mechanism, not this design, and is not to be acted on: there is
+nothing to arm, own or re-arm. Mail is read with `comm-poll.sh` regardless of
+what any of those lines say.
 
 Work-state (the nav row colour) is yours to stamp: `comm-status.sh waiting
 "<what>"` (purple) the moment you launch a background job or hand work to a

@@ -19,8 +19,7 @@ reads `no such handle: <h>` or `NOT CONFIRMED:` rather than `FAILED ->`, and the
 line typed into a row reads `[sot-comm] new message for @<handle> — run
 …/comm-poll.sh` rather than `[sot-comm] you have mail`. There is nothing to arm,
 own or re-arm. A session outside any row is never woken while idle — it sees
-new mail only at its own next turn, and a send to it fails after ten idle
-minutes.
+new mail only at its own next turn.
 
 **Scripts** (installed by `ShipTools.install_comm()`): `~/.sot-comm/bin/` — always use these, never hand-roll jq/registry logic.
 
