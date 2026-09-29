@@ -1,38 +1,36 @@
 # launch-sot.ps1 — default launcher: connect to every declared host at once
-# (ADR 0042 L2b) -- the local machine's own daemon, always, plus one SSH
-# tunnel per dialable host `sotd topology plan --self <host>` names (topology
-# plan, lane D). Pass `-Local` for a debug path that skips freshness and
-# opens no tunnels at all, connecting only to the local daemon.
+# (ADR 0042 L2b) -- the local machine's own daemon, always, plus one ssh
+# child per dialable host `sotd topology plan --self <host>` names (topology
+# plan, lane D; C3, isolation-plan.md §3, opens no port). Pass `-Local` for
+# a debug path that skips freshness and dials only the local daemon.
 #
 # Idempotent on the backend side: each remote's backend is started once via
-# `nohup` and survives across launches, so the second click is fast. Every
-# SSH local-forward is started fresh each launch and torn down when the
-# frontend exits.
+# `systemctl --user` and survives across launches, so the second click is
+# fast. The frontend spawns its own ssh child per remote host and reconnects
+# it on its own backoff — this launcher opens nothing on the remote's
+# behalf.
 #
 # ADR 0042 L2b: the local sotd (a fixed per-user named pipe -- "the frontend
 # machine runs its own sotd") is ensured on EVERY launch, not just -Local,
 # right after the staged-update apply and before either mode's frontend
 # launch; see scripts/sot-local-daemon.ps1 and design D in the ADR. Design
-# E is the multi-tunnel loop below `New-RemoteEnsureCommand` — one tunnel
-# per remote, `$backendHost` (env vars can still override which host that
-# is) included: with the local connection always present, an unreachable
-# or unconfigured default remote is NONFATAL too now (codex follow-up) --
-# every remote-ensure step is skipped with a log line on failure, never a
-# hard stop, except the one dialog for "nothing at all could be reached"
-# right before the frontend launches.
+# E is `New-RemoteEnsureCommand`, run for the PRIMARY remote
+# (`$backendHost`, env vars can still override which host that is): with
+# the local connection always present, an unreachable or unconfigured
+# default remote is NONFATAL too now (codex follow-up) -- every
+# remote-ensure step is skipped with a log line on failure, never a hard
+# stop, except the one dialog for "nothing at all could be reached" right
+# before the frontend launches.
 #
 # Overrides (env vars):
 #   SOT_HOST_NAME    Which declared host is the PRIMARY (default: the plan's hub)
 #   SOT_HOST         Same, pre-topology-plan name (still honoured)
-#   SOT_TCP_PORT     Local loopback port for the primary's tunnel, but only
-#                    when no topology plan exists yet -- a plan's own port
-#                    always wins over this (see the port-priority comment
-#                    further down)
 #   SOT_TOKEN        App-level auth token for TCP fallback only
 #
-# Every OTHER dialable host `sotd topology plan` names gets its own tunnel
-# too (the "extra tunnels" loop below) -- not env-var-overridable the way
-# the primary is; its port and endpoint come straight from the plan.
+# Every OTHER dialable host `sotd topology plan` names is passed to the
+# frontend as its own `--dial` entry too (built straight from the plan,
+# same as the primary) -- the frontend's own ssh child per host is what
+# reaches it, not a per-host tunnel this launcher manages.
 #
 # Logs land at %LOCALAPPDATA%\sot\logs\ so disconnect / reconnect
 # events can be diagnosed without keeping a console window around.
@@ -162,7 +160,7 @@ if ($otherLauncher) {
         Write-SupLog "launcher pid $otherLauncher owns the running frontend - nothing to do; exiting"
         exit 0
     }
-    Write-SupLog "another launcher is still running (pid $otherLauncher, status: $(Get-LaunchStatusText)) - exiting; it owns the frontend, the tunnels and any converge in progress"
+    Write-SupLog "another launcher is still running (pid $otherLauncher, status: $(Get-LaunchStatusText)) - exiting; it owns the frontend and any converge in progress"
     try {
         Add-Type -AssemblyName System.Windows.Forms
         [System.Windows.Forms.MessageBox]::Show(
@@ -775,8 +773,8 @@ if (-not (Test-Path $frontendExe) -and -not (Test-Path $alreadyStaged)) {
 }
 
 # ---------------------------------------------------------------------------
-# Everything from here through the end of the per-remote tunnel loop below
-# is DEFAULT-MODE ONLY (2026-09-02, ONE-ensure simplification). -Local now
+# Everything from here through Update-SotRemoteDial below is DEFAULT-MODE
+# ONLY (2026-09-02, ONE-ensure simplification). -Local now
 # skips it via this explicit gate, rather than via the old "Local daemon
 # ensure" block's early exit that used to sit ABOVE this section -- that
 # block moved to run once, after the freshness rebuild below (see its own
@@ -793,15 +791,14 @@ if (-not $Local) {
 # stdout. No `.sot\hosts.toml` path, no TOML, here or anywhere else in this
 # script.
 #
-# $backendHost is this box's PRIMARY remote -- the one that gets the
-# retired-by-default aux browser-port forwards (SOT_LEGACY_FORWARDS) below
-# and the fixed-port fallback tunnel. Default the plan's declared `hub`;
+# $backendHost is this box's PRIMARY remote -- the one `New-RemoteEnsureCommand`
+# checks/starts on every launch. Default the plan's declared `hub`;
 # SOT_HOST_NAME (or the pre-existing SOT_HOST) still overrides it for a box
-# that wants a different primary. Every OTHER dialable host in the plan
-# gets its own plain tunnel further down (the "extra tunnels" loop) -- v2
-# has no more "the configured default" vs. "everyone else" distinction at
-# the topology level; that split is now purely which one gets the legacy
-# aux forwards.
+# that wants a different primary. Every OTHER dialable host in the plan is
+# just another `--dial` entry to the frontend (`$frontendArgs` below,
+# straight from `$plan.Dials`) -- v2 has no more "the configured default"
+# vs. "everyone else" distinction at the topology level, and C3 means
+# nothing here opens a port for either kind.
 #
 # remote_repo/tcp_port/remote_socket per host are GONE (topology plan
 # section D): ports are ordinal (the plan names them), a remote daemon is
@@ -819,7 +816,7 @@ if (-not $Local) {
 # below) -- an early-only read would leave $frontendArgs built from a
 # permanently empty plan on the very first launch, needing a second one to
 # pick up any host at all. Update-SotTopologyPlan is called here (for the
-# tunnel-opening code right below, which does need to run before the
+# remote-ensure code right below, which does need to run before the
 # rebuild) AND AGAIN after every Invoke-FreshnessPass call (both call
 # sites) so $plan is fresh by the time $frontendArgs is built, right
 # before the frontend actually launches -- a fresh box needs exactly one
@@ -892,17 +889,14 @@ if (-not $token) { $token = [Environment]::GetEnvironmentVariable('SOT_TOKEN', '
 # may still be empty (open-config local installs)
 
 # Check/start the remote backend on every launch without restarting a live
-# daemon by default. The backend listens on its per-user socket; `$tcpPort`
-# below is only the local side of the SSH forward for the native frontend.
+# daemon by default. The backend listens on its per-user socket; the
+# frontend reaches it by spawning its own ssh child (C3), never a forward
+# this launcher opens.
 #
-# ADR 0042 L2b design E: this ensure+resolve step is shared with every OTHER
-# configured remote's own tunnel below (New-RemoteEnsureCommand), not
-# special-cased to $backendHost -- "resolved as today" means the exact same
-# three-tier socket resolution and start-if-down/staleness/force-restart
-# logic every remote gets, not a lighter version. Kept as a function that
-# BUILDS the remote command text (not one that also runs ssh) so the same
-# text feeds an `ssh` call at every call site, default host included
-# (codex follow-up: the default host is nonfatal too now, exactly like
+# ADR 0042 L2b design E: kept as a function that BUILDS the remote command
+# text (not one that also runs ssh) so the same text could feed an `ssh`
+# call at more than one site (codex follow-up: the default host is
+# nonfatal too now, exactly like
 # every other host -- see $defaultRemoteOk below).
 #
 # ssh options (codex follow-up, item 5, trimmed): BatchMode=yes (never
@@ -964,14 +958,12 @@ done
 
 
 # Everything the default remote's dial is made of -- which host it is, its
-# port, its socket, whether it resolved at all, and the ssh argv that forwards
-# it -- in ONE function, called at first launch and again on every converge
-# (exit 76) right after the plan is re-read. It used to run once, above the
-# supervisor loop: a launch whose FIRST plan failed then kept an empty $sshArgs
-# for the life of the process, so a converge that finally saw a good plan
-# handed the frontend a --dial with no tunnel behind it. Assignments are
-# $script: because the loop, the tunnel helpers and the "nothing reachable"
-# check all read them.
+# socket, and whether it resolved at all -- in ONE function, called at
+# first launch and again on every converge (exit 76) right after the plan
+# is re-read: a launch whose FIRST plan failed and a later converge that
+# finally sees a good plan must both see the SAME resolution logic, not a
+# stale one frozen from before the plan existed. Assignments are $script:
+# because the "nothing reachable" check further down reads them.
 function Update-SotRemoteDial {
 $script:backendHost = if ($env:SOT_HOST_NAME) {
     $env:SOT_HOST_NAME
@@ -985,55 +977,18 @@ $script:backendHost = if ($env:SOT_HOST_NAME) {
 # (item 1: no more unconditional implicit local, but this launcher always
 # passes it when the local daemon is up, see $localSocket above) means the
 # frontend usually has SOMETHING to show even with no default remote
-# configured or reachable at all. No backend host configured (logged below, once $tcpPort/etc. are in scope)
-# just means the launch continues without one; $defaultRemoteOk (computed
-# further down, after the ssh attempt) gates the one error dialog that
-# remains -- see the "nothing at all can start" check right before the
-# frontend launches.
-# The plan's own ordinal port for $backendHost (the hub is always 18743)
-# wins; SOT_TCP_PORT is honoured only when NO plan exists (no sotd binary
-# yet), and 18743 is the last-resort fallback below that.
-#
-# 2026-09-18 field report: the OLD order checked $env:SOT_TCP_PORT FIRST,
-# so a session shell that had inherited a stale export from an earlier
-# launch (this same line, below, on a box that has since re-planned to a
-# different port) tunnelled on the OLD port while the frontend's --dial
-# args -- built straight from $plan.Dials, never from $tcpPort -- pointed
-# at the plan's CURRENT one: a live tunnel on 18743 beside a dial for
-# 18838. The plan is this box's own freshly-computed truth; the inherited
-# env is carried state from whenever it was last set, possibly by a
-# different process. One $script:tcpPort now feeds both the tunnel -L
-# (~1080, ~1717, ~1933) and the export below, so there is exactly one
-# source for what "the port" means in this launch.
-$planPrimaryPort = ($plan.Tunnels | Where-Object { $_.Host -eq $backendHost } | Select-Object -First 1).Port
-$script:tcpPort = if ($planPrimaryPort) {
-    $planPrimaryPort
-} elseif ($env:SOT_TCP_PORT) {
-    Write-SupLog "no topology plan: SOT_TCP_PORT=$($env:SOT_TCP_PORT) used"
-    [int]$env:SOT_TCP_PORT
-} else {
-    18743
-}
-# Propagate the RESOLVED port back into this process's own environment
-# (2026-09-17 review), not just read it: shutdown-sot.ps1/comm-relay.ps1
-# each default $env:SOT_TCP_PORT to a bare 18743 with no plan of their own
-# to fall back on, and this line runs before Invoke-LocalDaemonEnsure below
-# starts the local daemon -- so setting it here, once, lets the daemon (and
-# anything it in turn spawns, e.g. a capsule inheriting the daemon's env)
-# see the per-user-derived port instead of always the fixed default. Set
-# from $tcpPort (the plan's own value whenever a plan exists) -- never a
-# re-echo of whatever SOT_TCP_PORT happened to already be in the
-# environment, which is exactly the stale value this export used to
-# perpetuate into every child (and every child's own later shell) above.
-$env:SOT_TCP_PORT = "$tcpPort"
+# configured or reachable at all. No backend host configured just means
+# the launch continues without one; $defaultRemoteOk (computed further
+# down, after the ssh attempt) gates the one error dialog that remains --
+# see the "nothing at all can start" check right before the frontend
+# launches.
 # Always queried on the remote (New-RemoteEnsureCommand above) -- no more
 # config-file/env override; see the host-registry comment above.
 $script:remoteSocket = $null
 # ADR 0042 L2b codex follow-up (design 3): the default remote is routed
 # through the same nonfatal plan every other host uses -- log, continue,
 # let the frontend show it unreachable and reconnect. $defaultRemoteOk
-# gates: whether $sshArgs/Start-SotTunnel below is worth building at all,
-# and (combined with $localDaemonReady, computed further below, after
+# gates (combined with $localDaemonReady, computed further below, after
 # the freshness rebuild) the ONE error dialog that remains -- see
 # "nothing at all can start" further down.
 $script:defaultRemoteOk = $false
@@ -1075,269 +1030,9 @@ if ($backendHost) {
 } else {
     Write-SupLog "default remote: no hub/primary declared (sotd topology plan --self, or SOT_HOST_NAME/SOT_HOST) - continuing without one"
 }
-
-# SSH local-port-forward. Keepalive tuning so brief wifi flaps and
-# laptop-sleep-then-wake don't immediately tear the tunnel down:
-#   ServerAliveInterval=30  — probe every 30s (less probe traffic on a
-#                             stable link than the old 15s default).
-#   ServerAliveCountMax=6   — allow 6 missed probes (~3 min tolerance)
-#                             before declaring the connection dead.
-#                             Pairs with the supervisor below: a real
-#                             dead tunnel still respawns within a
-#                             second of detection, but a brief network
-#                             blip rides through without reconnecting.
-#
-# IPQoS was tried but Windows OpenSSH rejects the comma-separated
-# `lowdelay,throughput` form with "Bad IPQoS value" (different parse
-# from OpenSSH on Linux). Dropped since it was nice-to-have, not
-# load-bearing — without it the supervisor was respawning ssh in a
-# tight loop and the tunnel never came up.
-$plutoPort = if ($env:SOT_PLUTO_PORT) { [int]$env:SOT_PLUTO_PORT } else { 1234 }
-$videoPort = if ($env:SOT_VIDEO_PORT) { [int]$env:SOT_VIDEO_PORT } else { 1235 }
-$docsPort  = if ($env:SOT_DOCS_PORT)  { [int]$env:SOT_DOCS_PORT }  else { 1236 }
-$wglPort   = if ($env:SOT_WGL_PORT)   { [int]$env:SOT_WGL_PORT }   else { 1241 }
-$script:sshCommonArgs = @(
-    '-N',
-    '-o', 'ExitOnForwardFailure=yes',
-    '-o', 'ServerAliveInterval=30',
-    '-o', 'ServerAliveCountMax=6'
-)
-# RETIRED by default (ADR 0035 scheduled this once the proxy had field time).
-#
-# These fixed-port forwards are how the FE used to reach backend-served pages.
-# The daemon proxy replaced them: every backend page now rides the ONE control
-# tunnel via `proxy.connect`, and the proxy's allowlist is VERIFIED-BOUND — it
-# authorizes only ports this daemon actually bound, never a preferred port some
-# OTHER user's daemon happens to hold (rust/backend/src/proxy.rs).
-#
-# Why retiring matters rather than being mere tidy-up: on a SHARED host these
-# fixed ports are frequently owned by a different UNIX user's daemon. Forwarding
-# them means an HTTP GET succeeds against a stranger's server and renders their
-# content looking entirely normal — silent wrong-content, with no error anywhere.
-# Not forwarding them fails closed instead.
-#
-# Set SOT_LEGACY_FORWARDS=1 to restore them. The one case that needs it is a
-# NEW launcher against a PRE-v0.5.0 backend, which advertises no proxy and has
-# no other path to these pages. It is opt-in and not a silent fallback, because
-# on a shared host the safe default is to forward nothing you cannot prove is
-# yours.
-$useLegacyForwards = [bool]$env:SOT_LEGACY_FORWARDS
-$script:sshAuxArgs = @()
-if ($useLegacyForwards -and $defaultRemoteOk) {
-    Write-Host "SOT_LEGACY_FORWARDS=1 - forwarding fixed helper ports $plutoPort/$videoPort/$docsPort(+1..4)/$wglPort." -ForegroundColor Yellow
-    Write-Host "  On a shared host these may belong to ANOTHER USER's daemon; pages served over them are not verified as yours." -ForegroundColor Yellow
-    $script:sshAuxArgs += $sshCommonArgs
-    $script:sshAuxArgs += @(
-        # H1.2 — the remote Pluto.jl server.
-        '-L', "${plutoPort}:127.0.0.1:${plutoPort}",
-        # ADR 0018 — the backend's video file server.
-        '-L', "${videoPort}:127.0.0.1:${videoPort}",
-        # ADR 0024 — the backend's docs site server.
-        '-L', "${docsPort}:127.0.0.1:${docsPort}",
-        # ADR 0029 Option B — the ROOT-relative site pool, docsPort+1..+4.
-        # Keep in sync with site_serve::POOL_SIZE.
-        '-L', "$($docsPort+1):127.0.0.1:$($docsPort+1)",
-        '-L', "$($docsPort+2):127.0.0.1:$($docsPort+2)",
-        '-L', "$($docsPort+3):127.0.0.1:$($docsPort+3)",
-        '-L', "$($docsPort+4):127.0.0.1:$($docsPort+4)",
-        # ADR 0032 — the WGLMakie/Bonito interactive-figure server.
-        '-L', "${wglPort}:127.0.0.1:${wglPort}",
-        $backendHost
-    )
-}
-# ADR 0042 L2b codex follow-up: only worth building at all when the
-# default remote actually resolved -- see $defaultRemoteOk above. An empty
-# $sshArgs makes Start-SotTunnel's own callers no-ops (guarded at each
-# call site, "Connecting..." and the supervisor loop below).
-$script:sshArgs = @()
-if ($defaultRemoteOk) {
-    $script:sshArgs += $sshCommonArgs
-    $script:sshArgs += @('-L', "${tcpPort}:$remoteSocket")
-    # Fold the aux forwards into the MAIN tunnel too -- but only when they exist.
-    # With the forwards retired, $sshAuxArgs is empty and `$sshAuxArgs.Count - 1`
-    # would be -1, which PowerShell reads as "last element" and would splice
-    # garbage into the control tunnel's args.
-    if ($sshAuxArgs.Count -gt 0) {
-        $auxForwardStart = $sshCommonArgs.Count
-        # Count - 2, NOT Count - 1: the last element of $sshAuxArgs is $backendHost,
-        # and the destination is appended separately below. Slicing to Count - 1 here
-        # would put the host in twice.
-        $auxForwardEnd = $sshAuxArgs.Count - 2
-        $script:sshArgs += $sshAuxArgs[$auxForwardStart..$auxForwardEnd]
-    }
-    # The ssh DESTINATION, always last and never conditional. Before the aux
-    # forwards were retired this rode in as the final element of the $sshAuxArgs
-    # splice above; once that splice became conditional the control tunnel lost its
-    # host entirely and ssh exited instantly ("ssh -N -o ... -L 18743:<sock>" with
-    # no destination), leaving the supervisor respawning a doomed tunnel on
-    # exponential backoff and 18743 never listening. Observed on a real FE, 2026-07-30.
-    $script:sshArgs += $backendHost
-}
 }
 Update-SotRemoteDial
-function Test-LocalPortOpen {
-    param([int]$Port)
-    $client = New-Object Net.Sockets.TcpClient
-    try {
-        $client.Connect('127.0.0.1', $Port)
-        return $true
-    } catch {
-        return $false
-    } finally {
-        $client.Close()
-    }
-}
-function Start-SotTunnel {
-    # No-op when the default remote never resolved ($sshArgs empty -- see
-    # $defaultRemoteOk above): nothing to forward to, and every call site
-    # already treats a $null return as "no tunnel to supervise". $sshArgs
-    # already carries the (opt-in, legacy) aux forwards folded in above,
-    # so this one process carries everything -- see Update-SotRemoteDial.
-    if ($sshArgs.Count -eq 0) { return $null }
-    # ssh's own complaint (a bad -L spec, a refused key) is the only record of
-    # why a tunnel dies; without this the respawn loop was silent (2026-09-18).
-    Start-Process -FilePath ssh `
-        -ArgumentList $sshArgs `
-        -WindowStyle Hidden `
-        -RedirectStandardError (Join-Path $logDir 'tunnel.stderr.log') `
-        -PassThru
-}
-function Stop-StaleControlTunnel {
-    # Owner ruling (2026-09-17): never reuse a tunnel this launcher did not
-    # start. The single-instance lock above guarantees one launcher per
-    # user, and the control port is now per OS user
-    # (sot_protocol::topology::hub_local_port), so an open port here can
-    # only be OUR OWN earlier launch's zombie (ssh alive, forward dead --
-    # the 2026-09-12 field failure) or some other process entirely -- never
-    # a legitimate peer to ride. Stop only ssh.exe processes this same OS
-    # user owns whose command line forwards this port; anything else is
-    # left alone for the caller to report as "still open" and refuse.
-    param([int]$Port)
-    Get-CimInstance Win32_Process -Filter "Name = 'ssh.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match "-L\s+${Port}:" } |
-        ForEach-Object {
-            $owner = $null
-            try { $owner = (Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction Stop).User } catch { }
-            # A null owner (GetOwner failed/denied) means NOT PROVEN ours,
-            # same as a proven different owner -- do not fall through to
-            # Stop-Process on an unconfirmed process (2026-09-17 review).
-            if ((-not $owner) -or ($owner -ne $env:USERNAME)) { return }
-            try {
-                Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
-                Write-SupLog "control port $Port was held by a stale tunnel (pid $($_.ProcessId)); replaced"
-            } catch {
-                Write-SupLog "control port ${Port}: failed to stop stale tunnel pid $($_.ProcessId) -- $_"
-            }
-        }
-}
-function Start-SotControlTunnel {
-    # The one place that decides whether to (re)open the default remote's
-    # control tunnel. Replaces the old "port open -> assume it's a peer,
-    # ride it with an aux-only ssh" branch (Start-SotAuxTunnel, deleted):
-    # that could dial a DIFFERENT user's backend on a shared box before the
-    # port became per-user. Now an open port only ever gets cleared (if it's
-    # ours) or refused (if it isn't) -- never connected through blind.
-    #
-    # -HardFail is the first, pre-frontend connect: it fails exactly like
-    # the "nothing reachable" gate just below it (same Set-LaunchStatus +
-    # MessageBox + exit 1 shape) rather than start a frontend with no
-    # backend at all. Without it (the converge re-check further down),
-    # a still-blocked port logs and returns $null, non-fatal like every
-    # other step on that path.
-    param([int]$Port, [switch]$HardFail)
-    if (Test-LocalPortOpen -Port $Port) {
-        Stop-StaleControlTunnel -Port $Port
-        $deadline = (Get-Date).AddSeconds(2)
-        while ((Get-Date) -lt $deadline -and (Test-LocalPortOpen -Port $Port)) {
-            Start-Sleep -Milliseconds 100
-        }
-    }
-    if (Test-LocalPortOpen -Port $Port) {
-        Write-SupLog "control port $Port is held by another process; refusing to connect through it"
-        if ($HardFail) {
-            Set-LaunchStatus "ERROR: local port $Port is held by another process - refusing to connect through it"
-            Stop-Splash
-            [System.Windows.Forms.MessageBox]::Show(
-                "Local port $Port is already in use by another process, and Ship of Tools does not own it.`n`nClose whatever holds it (see %LOCALAPPDATA%\sot\logs\supervisor.log) and relaunch.",
-                'Ship of Tools launcher',
-                'OK', 'Error') | Out-Null
-            exit 1
-        }
-        return $null
-    }
-    Start-SotTunnel
-}
 
-# ---------------------------------------------------------------------------
-# Every OTHER dialable host in the plan is forwarded FROM THE HUB (ADR
-# 0048) -- $backendHost's tunnel is $sshArgs/Start-SotTunnel above/below;
-# this loop covers every remaining `tunnel <host> <port>` line (topology
-# plan already excludes self -- D8 -- so nothing here needs its own filter
-# beyond skipping the primary). The hub holds one socket per host it
-# serves, each connection to it carrying a `sotd stdio-bridge` on the far
-# box, so a peer forwards that host's ordinal port to the hub's socket for
-# it and opens ssh to NO box but the hub. Gone with the old shape: the
-# per-host ensure round trip (an enrolled box runs sotd as a service --
-# nobody starts someone else's daemon any more) and the remote socket-path
-# parse (that path is now the hub's own, and the hub is asked once, below).
-# Still NONFATAL per host: one log line and the launch continues, and the
-# frontend's own dial list (built from the SAME plan, independent of
-# whether the tunnel came up -- see $frontendArgs below) shows that host
-# unreachable and keeps retrying.
-# ---------------------------------------------------------------------------
-# `<host> <path>` from the hub, once per launch: the hub's own paths, so
-# the hub is the only box that can answer -- the same round trip the
-# primary's own socket already costs. An unreachable hub leaves the map
-# empty and every host below is skipped with a line.
-$relaySockets = @{}
-if ($plan.Hub) {
-    $savedEAP2 = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    $relayOut = ssh $sshRemoteOpts $plan.Hub 'export PATH="$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"; sotd topology relay-sockets' 2>&1
-    $relayExit = $LASTEXITCODE
-    $ErrorActionPreference = $savedEAP2
-    if ($relayExit -ne 0) {
-        Write-SupLog "tunnel: hub '$($plan.Hub)' did not answer 'sotd topology relay-sockets' (ssh exit $relayExit) - no cross-host forwards this launch"
-    } else {
-        # `<host> <path>`, remainder intact -- the same one-split-at-a-time
-        # rule sot-hosts.ps1 reads `topology plan` with, for the same reason
-        # (a path may contain spaces).
-        foreach ($line in $relayOut) {
-            $parts = "$line".Trim() -split ' ', 2
-            if ($parts.Length -eq 2 -and $parts[0] -and $parts[1]) { $relaySockets[$parts[0]] = $parts[1] }
-        }
-    }
-}
-$extraTunnels = @()
-foreach ($item in $plan.Tunnels) {
-    if ($item.Host -eq $backendHost) { continue }
-    Set-LaunchStatus "Forwarding $($item.Host) from the hub..."
-    $extraRemoteSocket = $relaySockets[$item.Host]
-    if (-not $extraRemoteSocket) {
-        Write-SupLog "tunnel: host '$($item.Host)' has no relay socket on hub '$($plan.Hub)' (enrol it: sotd topology apply) - skipping"
-        continue
-    }
-    $extraArgs = @()
-    $extraArgs += $sshCommonArgs
-    $extraArgs += @('-L', "$($item.Port):$extraRemoteSocket", $plan.Hub)
-    try {
-        $proc = Start-Process -FilePath ssh -ArgumentList $extraArgs -WindowStyle Hidden `
-            -RedirectStandardError (Join-Path $logDir "tunnel-$($item.Host).stderr.log") -PassThru
-        $extraTunnels += [PSCustomObject]@{
-            HostName     = $item.Host
-            SshAlias     = $plan.Hub   # the ssh target IS the hub now (ADR 0048)
-            LocalPort    = $item.Port
-            RemoteSocket = $extraRemoteSocket
-            Args         = $extraArgs
-            Proc         = $proc
-            StartedAt    = (Get-Date)
-            BackoffSec   = 0
-        }
-        Write-SupLog "tunnel: host '$($item.Host)' forwarding 127.0.0.1:$($item.Port) -> $extraRemoteSocket (pid=$($proc.Id))"
-    } catch {
-        Write-SupLog "tunnel: host '$($item.Host)' failed to start ssh - $($_.Exception.Message)"
-    }
-}
 }   # end: default-mode only (see the -not $Local gate above)
 
 # ---------------------------------------------------------------------------
@@ -1707,11 +1402,11 @@ Update-SotTopologyPlan
 # sotd.exe/sot-capsule.exe: the staged-update apply (near the top) and the
 # dev freshness rebuild (just above, with its own stop-first guard) -- so
 # this is the ONE ensure call per launch, always seeing whatever pair is
-# current. It used to run before the SSH/tunnel section too, needing a
+# current. It used to run before the SSH remote-ensure section too, needing a
 # second post-rebuild call (and a $backendPairStopped gate) to restart the
 # daemon on a fresh pair; both are deleted now that there is only one call,
 # made once everything that could invalidate an earlier one has run. The
-# SSH/tunnel section above is explicitly gated on `-not $Local` (see its
+# SSH remote-ensure section above is explicitly gated on `-not $Local` (see its
 # own header) so it still never runs for -Local, even though this ensure
 # no longer sits before it.
 #
@@ -1721,7 +1416,7 @@ Update-SotTopologyPlan
 #
 # Fail-open in the DEFAULT mode: a local daemon that won't come up just
 # means the "local" row in Hosts mode shows unreachable -- the remote
-# tunnel(s) this mode exists for are unaffected. -Local has nothing else to
+# host(s) this mode exists for are unaffected. -Local has nothing else to
 # fall back to, so it keeps today's hard error dialog.
 # ---------------------------------------------------------------------------
 # Invoke-LocalDaemonEnsure is this single call as a function so an exit-76
@@ -1741,7 +1436,7 @@ function Invoke-LocalDaemonEnsure {
 
 # The Windows box's own local daemon (label "local", sot-local-daemon.ps1)
 # is a frontend-only convenience OUTSIDE the topology plan entirely -- it
-# needs no tunnel, so it never appears in `$plan.Dials`/`$plan.Tunnels`
+# needs no dial, so it never appears in `$plan.Dials`
 # (those only ever name DAEMON hosts this box dials over ssh, topology
 # plan section C). The frontend now needs an explicit `--socket` for it
 # (no more unconditional implicit local, item 1) -- queried the same way
@@ -1829,9 +1524,6 @@ if (-not $localDaemonReady -and -not $defaultRemoteOk) {
 }
 
 Set-LaunchStatus 'Connecting...'
-$sshTunnel = Start-SotControlTunnel -Port $tcpPort -HardFail
-$sshStartedAt = Get-Date
-Start-Sleep -Milliseconds 400
 
 if ($token) {
     $env:SOT_TOKEN = $token
@@ -1869,12 +1561,12 @@ if (-not $env:SOT_FE_INSTANCE) {
     $env:SOT_FE_INSTANCE = [guid]::NewGuid().ToString('N')
 }
 $relaunchNext = [bool]$Relaunched
-# The splash covers the INITIAL launch only. Exit-75 relaunches keep the tunnel
-# and skip freshness, and happen while the user is already in the app, so they
-# get no splash — dismiss it exactly once, when the first FE window is up.
+# The splash covers the INITIAL launch only. Exit-75 relaunches keep every
+# host's ssh child alive inside the frontend process and skip freshness,
+# and happen while the user is already in the app, so they get no splash
+# — dismiss it exactly once, when the first FE window is up.
 $splashDismissed = $false
-$tunnelPidLabel = if ($sshTunnel) { $sshTunnel.Id } else { 'none (external control tunnel, aux retired)' }
-Write-SupLog "supervisor start (relaunched=$Relaunched, tcpPort=$tcpPort, tunnelPid=$tunnelPidLabel)"
+Write-SupLog "supervisor start (relaunched=$Relaunched)"
 # A supervisor rolls back AT MOST ONCE, matching the Unix supervisor's $ROLLED
 # in scripts/install.sh. What it actually guards is narrow: a Remove-Item that
 # failed to clear the marker, and a converge that applies again after a
@@ -2007,69 +1699,16 @@ try {
         # frontend...', and nothing else settles the file afterwards.
         Set-LaunchStatus 'DONE'
 
-        # Tunnel supervisor: poll every ssh process every 500ms while the
-        # frontend runs. If one exits (laptop wake, wifi flap, backend sshd
-        # restart, server kicked us idle), respawn it. Back off on rapid
-        # successive failures so a permanent issue (backend unreachable) doesn't
-        # hammer the network — 1s → 2s → 4s → ... capped at 30s, resets to
-        # 0 as soon as a tunnel stays up for >2s. The frontend's transport
-        # task is already retrying against 127.0.0.1:$tcpPort on its own
-        # exponential backoff (200ms→5s), so as soon as we restore the
-        # listener the frontend reconnects, hello-resumes with its cached
-        # (session_id, last_seen_revision), and the daemon replays missed
-        # events. No state lost as long as the backend's daemon is alive.
-        #
-        # Codex follow-up, item 6 (trimmed): respawn happens immediately: no
-        # per-tunnel Start-Sleep before it, so a backoff on one tunnel can't
-        # stack with -- or delay respawning -- another's. Any backoff a
-        # respawn needed THIS pass is only applied once, as the single sleep
-        # at the bottom of the loop (the largest one needed, if more than
-        # one tunnel flapped this pass), in place of the normal 500ms poll
-        # interval for that one iteration.
-        $tunnelBackoffSec = 0
+        # C3 (isolation-plan.md §3): there is no tunnel process left for
+        # this launcher to supervise. Each host's ssh child now lives
+        # INSIDE the frontend process, respawned there on its own
+        # exponential backoff (200ms→5s) exactly the way the old tunnel
+        # supervisor above used to respawn ssh -- laptop wake, wifi flap, a
+        # bounced sshd, all handled the same way, just one process closer
+        # to the thing that needs the reconnect. This loop is now only
+        # waiting for the frontend itself to exit.
         while (-not $frontend.HasExited) {
-            $pollSleepSec = 0.5
-            # $sshTunnel is $null when the default remote never resolved
-            # (ADR 0042 L2b codex follow-up, item 3 -- Start-SotTunnel is a
-            # no-op then), or when Start-SotControlTunnel refused to reuse a
-            # port some other process holds (owner ruling, 2026-09-17 --
-            # never ride a tunnel this launcher didn't start). Guard it
-            # explicitly rather than relying on $null.HasExited being falsy
-            # -- that only holds while no one adds Set-StrictMode.
-            if ($sshTunnel -and $sshTunnel.HasExited) {
-                $uptime = ((Get-Date) - $sshStartedAt).TotalSeconds
-                $tunnelBackoffSec = if ($uptime -lt 2) { [Math]::Min(($tunnelBackoffSec * 2 + 1), 30) } else { 0 }
-                if ($tunnelBackoffSec -gt $pollSleepSec) { $pollSleepSec = $tunnelBackoffSec }
-                # Our own tunnel just exited, so the port is ours to reclaim --
-                # a straight respawn, not the full Start-SotControlTunnel
-                # dance (which exists for "is this port even ours" at startup).
-                $sshTunnel = Start-SotTunnel
-                $sshStartedAt = Get-Date
-                Write-SupLog "tunnel respawned pid=$($sshTunnel.Id) (backoff=${tunnelBackoffSec}s)"
-            }
-            # Every OTHER configured remote's tunnel (ADR 0042 L2b design E),
-            # same respawn-then-backoff shape as $sshTunnel above, one
-            # instance of state per host (on the PSCustomObject itself) so
-            # one host's flap doesn't reset another's.
-            foreach ($et in $extraTunnels) {
-                if ($et.Proc -and $et.Proc.HasExited) {
-                    $etUptime = ((Get-Date) - $et.StartedAt).TotalSeconds
-                    $et.BackoffSec = if ($etUptime -lt 2) { [Math]::Min(($et.BackoffSec * 2 + 1), 30) } else { 0 }
-                    if ($et.BackoffSec -gt $pollSleepSec) { $pollSleepSec = $et.BackoffSec }
-                    try {
-                        $et.Proc = Start-Process -FilePath ssh -ArgumentList $et.Args -WindowStyle Hidden -PassThru
-                        $et.StartedAt = Get-Date
-                        Write-SupLog "tunnel respawned host=$($et.HostName) pid=$($et.Proc.Id) (backoff=$($et.BackoffSec)s)"
-                    } catch {
-                        Write-SupLog "tunnel respawn FAILED host=$($et.HostName) - $($_.Exception.Message)"
-                    }
-                }
-            }
-            # The one Start-Sleep for this iteration: the normal 500ms poll
-            # cadence, stretched to the largest backoff any respawn needed
-            # this pass (never more than one sleep per iteration, whether
-            # zero, one, or every tunnel flapped).
-            Start-Sleep -Milliseconds ([int]($pollSleepSec * 1000))
+            Start-Sleep -Milliseconds 500
         }
 
         # Determine whether this was a relaunch request (75), a converge
@@ -2144,24 +1783,15 @@ try {
             Invoke-SelfUpdatePrelude
             Invoke-FreshnessPass
             Update-SotTopologyPlan
-            # The re-read plan is only half of it: the dial it describes --
-            # host, port, socket, ssh argv -- has to be rebuilt from it too,
-            # or the frontend respawned below gets a --dial with no tunnel
-            # behind it. That is exactly the bootstrap case: a first plan
-            # that failed (no local topology file), then a sync, then this.
+            # The re-read plan is only half of it: the default remote's own
+            # ensure/resolve step has to be rebuilt from it too, feeding
+            # $defaultRemoteOk -- that is exactly the bootstrap case: a
+            # first plan that failed (no local topology file), then a
+            # sync, then this. There is no tunnel to (re)start here any
+            # more (C3): the frontend respawned below builds its own
+            # --dial list straight from the freshly re-read plan and
+            # spawns its own ssh child per host.
             Update-SotRemoteDial
-            # The loop's watchdog further down only ever RESPAWNS a tunnel
-            # that has exited, so a converge that has just GAINED a remote
-            # must start the first one here. Start-SotControlTunnel clears
-            # any stale tunnel of ours holding the port and refuses (no
-            # tunnel) rather than ride another process's -- see its own doc.
-            if (-not $sshTunnel -or $sshTunnel.HasExited) {
-                $sshTunnel = Start-SotControlTunnel -Port $tcpPort
-                if ($sshTunnel) {
-                    $sshStartedAt = Get-Date
-                    Write-SupLog "converge: control tunnel started pid=$($sshTunnel.Id) on port $tcpPort"
-                }
-            }
             $localDaemonReady = Invoke-LocalDaemonEnsure
             $localSocket = if ($localDaemonReady) { Get-SotLocalPipePath } else { $null }
             Set-LaunchNoticeEnv
@@ -2190,34 +1820,28 @@ try {
             $relaunchNext = $true
         }
         if ($relaunchNext) {
-            # Keep the tunnel up across the respawn — the remote backend and
-            # session survive, so we only re-stage + relaunch the frontend.
+            # Nothing to do here for a remote host's own connection (C3):
+            # the OLD frontend process owned every ssh child it spawned, so
+            # relaunching a NEW frontend process below spawns its own set
+            # from the same --dial list -- the remote backend and session
+            # survive regardless, so this is only re-stage + relaunch.
         }
     } while ($relaunchNext)
 } finally {
     Stop-Splash   # safety — normally already closed by the DONE status write
-    # Teardown ORDER is load-bearing (confirmed against the daemon code): the
-    # frontend's socket close (FIN) must reach the daemon over the STILL-OPEN
-    # tunnel so it drops the client (connections=N-1) immediately. If the tunnel
-    # dies first the FIN can't propagate and the client is stranded as a GHOST
-    # until the ADR-0027 keepalive reaper fires (~50s) — the "FE not detaching on
-    # close" bug. So: frontend down (or already exited on a real quit) -> brief
-    # wait for the FIN to drain -> THEN the tunnel. The deliberate
-    # "clean up and shutdown" path is scripts/shutdown-sot.ps1 (/sot-fe-shutdown).
-    Write-SupLog "supervisor exiting (relaunchNext=$relaunchNext) - frontend, drain FIN, then tunnel(s)"
+    # C3 (isolation-plan.md §3): there is no separate tunnel process for
+    # this launcher to order teardown around any more -- every host's ssh
+    # child is now a CHILD OF THE FRONTEND PROCESS itself, so stopping the
+    # frontend is the only step left here. This launcher's own
+    # `Stop-Process -Force` on the frontend is an abrupt kill, not the
+    # frontend's own clean shutdown path (scripts/shutdown-sot.ps1,
+    # /sot-fe-shutdown) -- it is not verified here whether Windows reaps
+    # the frontend's own ssh children when the frontend itself is killed
+    # this way (no job-object containment is set up for them, unlike the
+    # capsule containment ADR 0043 gives supervised rows).
+    Write-SupLog "supervisor exiting (relaunchNext=$relaunchNext) - stopping the frontend"
     if ($frontend -and -not $frontend.HasExited) {
         try { Stop-Process -Id $frontend.Id -Force -ErrorAction SilentlyContinue } catch {}
-    }
-    Start-Sleep -Seconds 2
-    if ($sshTunnel -and -not $sshTunnel.HasExited) {
-        try { Stop-Process -Id $sshTunnel.Id -Force -ErrorAction SilentlyContinue } catch {}
-    }
-    # Every OTHER configured remote's tunnel (ADR 0042 L2b design E) — same
-    # teardown as $sshTunnel above, one per host.
-    foreach ($et in $extraTunnels) {
-        if ($et.Proc -and -not $et.Proc.HasExited) {
-            try { Stop-Process -Id $et.Proc.Id -Force -ErrorAction SilentlyContinue } catch {}
-        }
     }
     # Release the single-instance lock only if it is still ours.
     try {

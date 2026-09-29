@@ -70,7 +70,8 @@ command -v ffmpeg         # OPTIONAL — video poster frames in previews
   from source.
 - **macOS (Apple Silicon)** → EXPERIMENTAL; say so. The tested use is
   `--backend <ssh-alias>`: frontend on the Mac, backend on a Linux box — ONE
-  command, the installer writes a tunnel-opening launcher. The other roles
+  command, the installer writes a launcher that dials it over its own ssh
+  child (C3, no forward). The other roles
   install (no systemd on macOS: the local-role launcher starts `sotd` on
   demand), but agent sessions on a Mac backend are not supported yet, so
   recommend `--backend`. Intel Macs: from-source only.
@@ -166,7 +167,7 @@ Windows is a first-class *frontend* host (the backend stays on Linux). No
 packaged installer here yet (a packaged `install.ps1` is roadmap; no tracking
 issue exists). Steps 1–4 are the minimal manual bring-up — good for proving
 the connection once. **Do not stop there**: the end state for a Windows
-machine is step 5 (the repo launcher + shortcut), which owns the tunnel,
+machine is step 5 (the repo launcher + shortcut), which builds the dial set,
 keeps the frontend fresh, and puts the proper icon on the taskbar.
 
 1. **Download + verify** from the selected release
@@ -182,33 +183,27 @@ keeps the frontend fresh, and puts the proper icon on the taskbar.
 2. **Backend**: install it on the Linux machine (`--be-only`, see the table
    above — you can drive that over SSH). It listens on that user's private
    socket, normally `/run/user/<uid>/sot/sessions/sot.sock`.
-3. **Forward the protocol port** — local-only, terminating at the remote
-   socket. This ONE forward is the whole tunnel: browser pages (Pluto, docs,
-   video, WGLMakie) ride it through the daemon proxy (ADR 0035, v0.5.0+):
+3. **No port to forward.** The daemon has had no TCP listener since 0.4.0;
+   reaching it means the frontend spawning its own `ssh` child and speaking
+   the protocol over its stdio (C3, `docs/src/concepts/transport.md`).
+   Browser pages (Pluto, docs, video, WGLMakie) ride that same ssh child
+   through the daemon proxy (ADR 0035, v0.5.0+) — nothing here opens a
+   port, and there is nothing left to retire the old fixed helper-port
+   forwards (1234-1241) from: they, and `SOT_LEGACY_FORWARDS`, are gone.
 
-   ```powershell
-   $sock = ssh <ssh-alias> '~/.local/share/sot/bin/sotd session-socket-path sot'
-   ssh -N -L "18743:$sock" <ssh-alias>      # any free local port; 18743 is only an example
-   ```
-
-   Do NOT add the old fixed helper-port forwards (1234-1241) — they are
-   retired, and on a shared host they can silently serve another user's
-   content. `SOT_LEGACY_FORWARDS=1` in the launcher (step 5) is the escape
-   hatch for a pre-v0.5.0 backend only.
-
-4. **Launch**: `sot.exe --tcp 127.0.0.1:18743` (`sot.exe --help` prints the
-   full flag set). Optionally persist the connection in
+4. **Launch**: `sot.exe --dial <name>=ssh:<ssh-alias>` (`sot.exe --help`
+   prints the full flag set). Optionally persist the connection in
    `%LOCALAPPDATA%\sot\config\hosts.toml` (config discovery, one order, no
    repo-local layer: `$SOT_HOSTS` when set, else `%LOCALAPPDATA%\sot\config\hosts.toml`
    — `~/.config/sot/hosts.toml` on Linux/macOS).
 
-   `sot.exe` does NOT open the SSH forward itself — the tunnel is yours (or
-   a launcher's).
+   `sot.exe` spawns the ssh child itself now — there is no forward for
+   anything else to own.
 
 5. **Launcher + shortcut (the actual end state).** Never hand-roll a shortcut
-   to `sot.exe --tcp ...` — that is a "naive" FE: nothing owns the tunnel or
-   refreshes the remote `sotd`, there is no ADR-0017 exit-75 self-relaunch,
-   and the taskbar shows a generic icon. The canonical Windows launcher is
+   to `sot.exe --dial ...` directly — that is a "naive" FE: nothing refreshes
+   the remote `sotd`, there is no ADR-0017 exit-75 self-relaunch, and the
+   taskbar shows a generic icon. The canonical Windows launcher is
    `scripts/launch-sot.ps1` in the repo, and the shortcut that wires it up is
    created by `scripts\install-shortcut.ps1`. They need a **clone for the
    scripts and config — NOT a Rust build**: when `rust\target\release` has no
@@ -288,17 +283,15 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
   # or: --local (everything on the Mac) / --be-only (headless Mac backend)
 ```
 
-`--backend` writes a `sot-launch` that opens the SSH control forward (local
-port to the remote socket — the port is topology-derived (per OS user), NOT
-18743: read it from the plan's `tunnel <host> <port>` line, as in §4;
-browser pages ride it via the daemon proxy, ADR 0035; the legacy 1234-1241
-forwards are opt-in via `SOT_LEGACY_FORWARDS=1` for pre-v0.5.0 backends) and
-starts the frontend; `--local` and `--be-only` are not supported for agent
+`--backend` writes a `sot-launch` that passes `--dial <host>=ssh:<host>`
+(the frontend spawns its own ssh child, C3 — no port, no forward; browser
+pages ride that same child through the daemon proxy, ADR 0035) and starts
+the frontend; `--local` and `--be-only` are not supported for agent
 sessions on a Mac backend yet — use `--backend`. If the human prefers manual
 steps: download `sot-<ver>-macos-aarch64.tar.gz` + `SHA256SUMS`, verify
-(`shasum -a 256 -c`), `xattr -d com.apple.quarantine ./sot ./sotd`, forward
-the ports as in 2b, `./sot --tcp 127.0.0.1:<port>` (no systemd on macOS;
-launchd wiring is roadmap).
+(`shasum -a 256 -c`), `xattr -d com.apple.quarantine ./sot ./sotd`,
+`./sot --dial <name>=ssh:<ssh-alias>` (no systemd on macOS; launchd wiring
+is roadmap).
 
 ## 3. Install
 
@@ -371,15 +364,15 @@ $e = $null
     (Resolve-Path .\scripts\sot-apply.ps1), [ref]$null, [ref]$e)
 $e.Count   # must be 0
 
-# 5. The tunnel is up. The port is topology-derived (per OS user), NOT 18743:
-#    read it from the plan's "tunnel <host> <port>" line.
-$port = (& "$env:LOCALAPPDATA\sot\bin\sotd.exe" topology plan |
-         Select-String '^tunnel ' | Select-Object -First 1 | ForEach-Object { ($_ -split '\s+')[2] })
-Test-NetConnection 127.0.0.1 -Port $port | Select-Object TcpTestSucceeded
+# 5. The plan resolves a dial for the hub — there is no port or tunnel to
+#    check any more (C3): reaching it is an ssh child the frontend spawns
+#    itself, once running.
+(& "$env:LOCALAPPDATA\sot\bin\sotd.exe" topology plan |
+         Select-String '^dial ') -ne $null   # must be True
 ```
 
 Then launch from the desktop shortcut (not `sot.exe` directly — that is a
-"naive" frontend with no tunnel and no self-relaunch). A native window should
+"naive" frontend with no self-relaunch). A native window should
 open and connect. Confirm the **bottom border line** shows
 `fe <version> · be <version>`: dark gray means the two halves agree, **yellow
 means the frontend and backend are on different builds** and the backend
@@ -460,7 +453,7 @@ top line of the nav pane always shows the pane-switch keys.**
 | checksum verification FAILED | truncated download → re-run; still failing = report, don't bypass |
 | `ssh ... doesn't work` during (b) | no key auth → `ssh-copy-id` then re-run |
 | dirty-checkout refusal on upgrade | the human edited `repo/current` → `git -C ... stash` (or commit), re-run |
-| local port (from the plan's `tunnel` line) already bound | another tunnel owns it → `--port <n>` |
+| ssh to `<host>` fails | read its own stderr line in the host row (C3 — the ssh child's own complaint, e.g. a refused key, is the diagnosis) |
 | `topology sync failed: no hosts.toml ... yet: pass --hub <alias>` | the box never had its first sync (fresh install without `-Hub`, or migrated off a checkout whose `.sot\hosts.toml` is no longer read) → `sotd topology sync --hub <alias>` (or re-run `install-shortcut.ps1 -Hub <alias>`), then relaunch |
 | backend socket missing | old TCP-based service unit or failed daemon start → reinstall/restart the socket-based `sotd.service` |
 | Julia instantiate fails "project and manifest are out of sync" (often naming a stdlib, e.g. `Sockets`) | stale `Manifest.toml` from a previous install left in the checkout's env dirs → re-run the installer (it drops stale manifests since 2026-08-11); manual fix: `rm ~/.local/share/sot/repo/current/julia/{kernel,repl,pluto}/Manifest.toml` and re-run |

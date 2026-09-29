@@ -1,41 +1,27 @@
 #!/usr/bin/env bash
 # launch-sot.sh — Linux/macOS frontend client → remote backend over SSH.
 #
-# Opens an SSH tunnel to $SOT_HOST (forwarding a local TCP port to the
-# remote user's per-user `sotd` socket — browser pages ride this control
-# forward via the daemon proxy, ADR 0035; the legacy fixed helper forwards
-# are opt-in via SOT_LEGACY_FORWARDS=1), ensures that remote `sotd` is
-# running, then runs the local frontend pointed at the forwarded local port.
-# The remote BE must already be BUILT on the host.
+# Reaching a daemon that is not on this box means the frontend itself
+# spawning an ssh child (C3, isolation-plan.md §3, amended by
+# dev/output/c3-second-connection-amendment.md) and speaking the protocol
+# over its stdio — never a port, on either end. This launcher's own job is
+# reduced to reading the topology plan and handing every declared host to
+# the frontend as a `--dial <host>=<endpoint>` argument; it opens nothing
+# on any remote's behalf and starts no remote daemon that is down (an
+# enrolled box runs `sotd` as a systemd service). The remote BE must
+# already be BUILT on the host.
 #
-# ADR 0042 L2b design E, topology plan (lane D): every OTHER dialable host
-# `sotd topology plan [--self <host>]` names gets its OWN tunnel too (see
-# `sot_ensure_remote_host` / scripts/sot-hosts.sh's `sot_topology_plan`
-# below). $SOT_HOST/$PORT keep their exact pre-L2b meaning by default
-# (env-var driven), falling back to the plan's declared `hub` when unset;
-# other hosts' ports come straight from the plan's `tunnel` lines. A
-# remote's `sotd` is always `systemctl --user start/restart` (never
-# started by path) and its socket always queried
-# (`sotd session-socket-path sot` on the remote) -- there is no more
-# per-host ssh_alias/remote_repo/tcp_port/remote_socket to configure.
+# ADR 0042 L2b design E, topology plan (lane D): `sotd topology plan
+# [--self <host>]` (scripts/sot-hosts.sh's `sot_topology_plan`) is read
+# once early and again right before the frontend launches, so a box whose
+# `sotd` was only just built by this same launch still gets its dial set.
+# $SOT_HOST_NAME/$SOT_HOST are read only as a hint for which hub `sotd
+# topology sync` targets when this box's own hosts.toml copy needs it —
+# they no longer name a "primary remote" with its own ensure/tunnel step.
 #
-# Codex follow-up (design 3): $SOT_HOST is NONFATAL now too, exactly like
-# every other configured remote -- with the frontend's own `--socket` for
-# its local daemon (when one is up) usually present, an unconfigured or
-# unreachable default remote is no longer a reason to refuse to launch the
-# frontend at all. $SOT_HOST being unset just skips the primary host's own
-# ensure+tunnel step; every failure past that point (unreachable, no
-# socket, etc.) logs one line and falls through to the same `exec` at the
-# bottom either way.
-#
-# Idempotent: an `ssh -fN` tunnel is backgrounded and OUTLIVES the FE window, so
-# a naive re-run would collide on the forwarded ports (Address already in use)
-# and — under `set -e` — abort before launching the FE. We therefore reuse an
-# existing tunnel instead of opening a second one, and only (re)spawn the backend
-# when it isn't already up.
-#
-# Overridable via env: SOT_HOST (or SOT_HOST_NAME), SOT_TCP_PORT,
-# SOT_RESTART_BE=1 (force a backend restart even if one is running).
+# Overridable via env: SOT_HOST (or SOT_HOST_NAME) — the sync-hub hint
+# above; SOT_RESTART_BE has no meaning left here (it named the primary
+# remote's own force-restart, now gone with the rest of that step).
 #
 # `-e` (errexit) is deliberately NOT set here (unlike some sibling scripts):
 # its behavior inside functions/conditionals is notoriously surprising, and
@@ -78,158 +64,6 @@ fi
 # Guard has served its purpose; do not leak it to the FE or an exit-75 relaunch.
 unset SOT_LAUNCH_REEXEC || true
 # --- end self-update prelude ---
-
-# Codex follow-up (design 3): no longer a hard `${VAR:?...}` requirement --
-# an unset SOT_HOST/no declared hub just means "no default remote", which
-# is now a normal, nonfatal state (see the header). HOST stays empty in
-# that case; every call site below checks for that instead of relying on
-# a startup abort.
-PLUTO_PORT="${SOT_PLUTO_PORT:-1234}"
-VIDEO_PORT="${SOT_VIDEO_PORT:-1235}"
-DOCS_PORT="${SOT_DOCS_PORT:-1236}"
-# WGLMakie/Bonito interactive figures (ADR 0032). 1237-1240 are the docs pool
-# (site_serve), so WGL sits at 1241 — the first free port above the daemon range.
-WGL_PORT="${SOT_WGL_PORT:-1241}"
-AUX_PORTS=("$PLUTO_PORT" "$VIDEO_PORT" "$DOCS_PORT" "$((DOCS_PORT+1))" "$((DOCS_PORT+2))" "$((DOCS_PORT+3))" "$((DOCS_PORT+4))" "$WGL_PORT")
-
-port_open() {
-    if (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; then exec 3>&-; return 0; fi
-    command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 "$1" >/dev/null 2>&1
-}
-
-# sot_ssh_bounded <ssh-args...>
-# The ssh options every remote step uses now (codex follow-up, item 5,
-# trimmed): BatchMode=yes (never prompt for a password/passphrase -- that
-# HANGS, not fails, on a misconfigured host) and ConnectionAttempts=1 (no
-# silent retries) join the existing ConnectTimeout=10, default host
-# included. No separate per-host deadline machinery beyond that -- a
-# wedged remote command past the handshake is accepted as today's existing
-# risk, not one this slice takes on.
-sot_ssh_bounded() {
-    ssh -o ConnectTimeout=10 -o BatchMode=yes -o ConnectionAttempts=1 "$@"
-}
-
-ensure_aux_tunnel() {
-    # Retired by default (ADR 0035) — see the SOT_LEGACY_FORWARDS note at the
-    # main tunnel. Without the opt-in there is nothing to top up: backend pages
-    # ride the control tunnel through the verified-bound daemon proxy, and
-    # forwarding a fixed port we cannot prove is ours is the failure this
-    # retirement exists to prevent.
-    if [ -z "${SOT_LEGACY_FORWARDS:-}" ]; then
-        return 0
-    fi
-    local missing=()
-    local p
-    for p in "${AUX_PORTS[@]}"; do
-        port_open "$p" || missing+=("$p")
-    done
-    if [ "${#missing[@]}" -eq 0 ]; then
-        echo "browser aux ports already forwarded (${AUX_PORTS[*]})"
-        return 0
-    fi
-    # Forward ONLY the missing ports (ADR 0032 launcher self-update gap). An old
-    # `ssh -fN` aux tunnel OUTLIVES the FE window, so after a new port is added
-    # (e.g. WGL 1241) a prior launch's tunnel covers 1234-1240 but not 1241.
-    # Opening a SUPPLEMENTARY tunnel for just the missing ports repairs that
-    # without the old hard-abort and without killing the live tunnel that also
-    # carries the control forward. (The full fix - the FE forwarding on demand -
-    # is ADR 0032's port-pool follow-up, PR #10.)
-    if [ "${#missing[@]}" -ne "${#AUX_PORTS[@]}" ]; then
-        echo "browser aux: forwarding missing ports only: ${missing[*]}"
-    fi
-    local fwd=()
-    for p in "${missing[@]}"; do
-        fwd+=(-L "$p:127.0.0.1:$p")
-    done
-    sot_ssh_bounded -fN -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
-        "${fwd[@]}" "$HOST" \
-        || { echo "ERROR: could not open browser aux SSH tunnel to $HOST (missing: ${missing[*]})" >&2; exit 1; }
-}
-
-# sot_ensure_remote_host <name> <ssh_alias> <port>
-# The ONE ensure+resolve+tunnel plan every host uses now (codex follow-up,
-# item 3; topology plan, lane D): `systemctl --user start/restart sotd` on
-# the remote (SOT_RESTART_BE=1 forces a restart; otherwise an already-up
-# backend is left alone, a down one is started and waited for), query its
-# socket path (`sotd session-socket-path sot`, always, never configured --
-# remote_repo/remote_socket are gone: this launcher never starts a remote
-# daemon by path any more), then open (or reuse) the tunnel. Every failure
-# is NONFATAL: one log line and `return 1` -- the caller decides what that
-# means for it.
-sot_ensure_remote_host() {
-    local name="$1" alias="$2" port="$3"
-    # export PATH first: a non-interactive ssh command's PATH doesn't
-    # always carry ~/.local/bin (matching launch-sot.ps1's own remote
-    # command, same reason).
-    local remote_path_prelude='export PATH="$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH";'
-    if [ "${SOT_RESTART_BE:-0}" = "1" ]; then
-        if sot_ssh_bounded "$alias" "$remote_path_prelude systemctl --user restart sotd.service"; then
-            echo "tunnel: host '$name' backend force-restarted via systemd"
-        else
-            echo "tunnel: host '$name' backend force-restart FAILED" >&2
-        fi
-    elif sot_ssh_bounded "$alias" "$remote_path_prelude systemctl --user is-active --quiet sotd.service" 2>/dev/null; then
-        : # already running -- left alone
-    else
-        sot_ssh_bounded "$alias" "$remote_path_prelude systemctl --user reset-failed sotd.service 2>/dev/null; systemctl --user start sotd.service" \
-            || echo "tunnel: host '$name' could not start sotd via systemd" >&2
-    fi
-    local remote_socket i=0
-    while [ "$i" -lt 40 ]; do
-        remote_socket="$(sot_ssh_bounded "$alias" "$remote_path_prelude sotd session-socket-path sot" 2>/dev/null)"
-        [ -n "$remote_socket" ] && sot_ssh_bounded "$alias" "[ -S '$remote_socket' ]" 2>/dev/null && break
-        sleep 0.25
-        i=$((i+1))
-    done
-    if [ -z "$remote_socket" ]; then
-        echo "tunnel: host '$name' unreachable (could not query sotd socket path)" >&2
-        return 1
-    fi
-    if ! sot_ssh_bounded "$alias" "[ -S '$remote_socket' ]" 2>/dev/null; then
-        echo "tunnel: host '$name' backend did not create socket $remote_socket" >&2
-        return 1
-    fi
-
-    sot_forward_port "$name" "$port" "$remote_socket" "$alias"
-}
-
-# sot_forward_port <name> <port> <remote_socket> <ssh_target>
-# The one place a local port is forwarded to a socket on the other side.
-# Two callers, one rule: the hub's own daemon socket (above) and, since the
-# cross-host route landed, the hub's per-host relay socket (below) -- the
-# difference between them is WHICH socket on the hub, never how it is
-# opened. Nonfatal like its callers: one line and `return 1`.
-sot_forward_port() {
-    local name="$1" port="$2" remote_socket="$3" target="$4"
-    # Reuse only a tunnel that visibly targets the same remote socket.
-    if pgrep -f "ssh .*${port}:${remote_socket}.*${target}" >/dev/null 2>&1; then
-        echo "tunnel: host '$name' port $port already forwards to $remote_socket -- reusing"
-        return 0
-    fi
-    if port_open "$port"; then
-        echo "tunnel: skipping host '$name' -- local port $port is already open but not by its tunnel" >&2
-        return 1
-    fi
-    sot_ssh_bounded -fN -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
-        -L "$port:$remote_socket" "$target" \
-        || { echo "tunnel: host '$name' could not open SSH tunnel" >&2; return 1; }
-    echo "tunnel: host '$name' forwarding 127.0.0.1:$port -> $remote_socket (via $target)"
-}
-
-# sot_hub_relay_sockets <hub>
-# `<host> <path>` for every host the hub serves a socket for, asked ONCE
-# per launch (ADR 0048): these are the hub's own paths, so the hub is the
-# only box that can answer, exactly as it already is for its own session
-# socket. Nonfatal -- an unreachable hub prints nothing here and every
-# host below is simply skipped, which the frontend already renders as
-# unreachable-and-retrying.
-sot_hub_relay_sockets() {
-    local hub="$1"
-    [ -n "$hub" ] || return 0
-    sot_ssh_bounded "$hub" \
-        'export PATH="$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"; sotd topology relay-sockets' \
-        2>/dev/null
-}
 
 # shellcheck source=sot-hosts.sh
 . "$(dirname "$0")/sot-hosts.sh"
@@ -286,62 +120,14 @@ read_topology_plan() {
 }
 read_topology_plan
 
-# $SOT_HOST_NAME/$SOT_HOST still override which declared host is the
-# PRIMARY (the one that gets the opt-in legacy aux forwards); default the
-# plan's declared hub. $PORT defaults to that host's own ordinal port from
-# the plan's `tunnel` lines, falling back to 18743 for a box with no plan
-# at all.
-HOST="${SOT_HOST_NAME:-${SOT_HOST:-$(sot_topology_field "$PLAN" HUB)}}"
-PORT="${SOT_TCP_PORT:-$(printf '%s\n' "$PLAN" | awk -F'|' -v h="$HOST" '$1=="TUNNEL" && $2==h {print $3}')}"
-PORT="${PORT:-18743}"
-
-# 1-2. Default remote: ensure it, same nonfatal plan as every other host
-# (codex follow-up, item 3). $HOST empty (no SOT_HOST/SOT_HOST_NAME and no
-# declared hub) just skips this entirely; every OTHER failure logs and
-# falls through. Guarded against inherited errexit (item 13): a bare
-# nonfatal call would abort under `-e` even though this script never sets
-# it itself.
-if [ -n "$HOST" ]; then
-    default_remote_ok=1
-    sot_ensure_remote_host "default" "$HOST" "$PORT" || default_remote_ok=0
-    # Only worth trying the (opt-in, legacy) aux forwards to a host we just
-    # confirmed we can reach -- otherwise this would hard-exit the script
-    # (ensure_aux_tunnel's own failure path is NOT nonfatal) for a host
-    # sot_ensure_remote_host already logged as unreachable, undoing the
-    # nonfatal treatment above for anyone with SOT_LEGACY_FORWARDS set.
-    if [ "$default_remote_ok" = 1 ]; then
-        ensure_aux_tunnel
-    fi
-else
-    echo "default remote: no declared hub and SOT_HOST/SOT_HOST_NAME unset - continuing without one"
-fi
-
-# 2b. Every OTHER dialable host in the plan is forwarded FROM THE HUB (ADR
-# 0048) — $HOST's own tunnel above is untouched. The hub holds one socket
-# per host it serves, and each connection to that socket carries a `sotd
-# stdio-bridge` on the far box, so this launcher forwards the host's
-# ordinal port to the hub's socket for it and opens ssh to no box but the
-# hub. Two things went away with the old per-host loop: the ensure round
-# trip (a peer no longer starts someone else's daemon — an enrolled box
-# runs sotd as a service) and the remote socket-path query (a path only
-# the owning box could answer, now the hub's own path). Still nonfatal per
-# host: one line, next host, and the frontend renders anything that didn't
-# come up as unreachable-and-retrying.
-HUB="$(sot_topology_field "$PLAN" HUB)"
-HUB="${HUB:-$HOST}"
-RELAY_SOCKETS="$(sot_hub_relay_sockets "$HUB")"
-while IFS='|' read -r t_tag t_name t_port; do
-    [ "$t_tag" = "TUNNEL" ] || continue
-    [ "$t_name" = "$HOST" ] && continue   # the primary host's tunnel is step 1-2 above
-    t_sock="$(printf '%s\n' "$RELAY_SOCKETS" | awk -v h="$t_name" '$1==h {print $2; exit}')"
-    if [ -z "$t_sock" ]; then
-        echo "tunnel: host '$t_name' has no relay socket on hub '$HUB' (enrol it: sotd topology apply) - skipping" >&2
-        continue
-    fi
-    sot_forward_port "$t_name" "$t_port" "$t_sock" "$HUB" || :
-done <<EOF
-$PLAN
-EOF
+# 1-2b. Reaching a host that is not this box's own daemon means spawning
+# an ssh child (C3, isolation-plan.md §3) -- there is nothing left for
+# THIS launcher to ensure, probe, or forward before the frontend starts.
+# Every declared host, primary or not, is just a `DIAL` line the plan
+# already carries; `dial_args` below turns each into `--dial <host>=
+# <endpoint>` unconditionally, and the frontend's own ssh child reports an
+# unreachable one the loud way (its last stderr line), never a silent
+# hang.
 
 # 3. Frontend + backend-pair rebuild (ADR 0030 dev-freshness rev 2). The
 # git pull moved to the self-update prelude at the top; here we only
@@ -360,11 +146,12 @@ read_topology_plan
 
 # 4. Frontend (blocks; GPU window). Always runs -- one --dial per plan.Dials
 # entry (this box's own local daemon, if it's ALSO a declared daemon host,
-# plus every other dialable host), passed UNCONDITIONALLY: a tunnel that
-# didn't come up just means the frontend shows that host unreachable and
-# keeps retrying, never a reason to hold an arg back. No plan at all (no
-# sotd binary anywhere) means no --dial args -- the frontend reports that
-# plainly and runs offline, same as a box with no hosts.toml always did.
+# plus every other dialable host), passed UNCONDITIONALLY: an ssh child
+# that fails to connect just means the frontend shows that host
+# unreachable and keeps retrying, never a reason to hold an arg back. No
+# plan at all (no sotd binary anywhere) means no --dial args -- the
+# frontend reports that plainly and runs offline, same as a box with no
+# hosts.toml always did.
 #
 # SOT_FRONTEND_BIN (item 2 follow-up): the dev-checkout path is the
 # default, unchanged; install.sh's generated launcher sets this to its own
