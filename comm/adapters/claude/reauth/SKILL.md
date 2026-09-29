@@ -50,8 +50,9 @@ conversation behind a login prompt.
 ## What the switch costs
 
 - **Everything in flight dies with the leg**: the current turn, every
-  subagent, every background job, every armed Monitor. Run this from a quiet
-  turn — never while a job you launched is still running.
+  subagent, every background job, and — until ADR 0049's daemon wake
+  replaces it — every armed Monitor. Run this from a quiet turn — never
+  while a job you launched is still running.
 - **The first turn of the resumed session is `/sot-session-start`** (the
   launch recipe appends it), so comm comes back armed on its own.
 - **The prior turns were paid on the old login, and the new account has no
