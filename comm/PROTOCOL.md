@@ -15,9 +15,9 @@ all clients are mutually addressable through the same registry and inboxes.
   bin/                     # installed scripts (the reference client)
   registry.json            # who is reachable + liveness  (source of truth for discovery)
   .registry.lock/          # mkdir-based spinlock for registry writes
-  inbox/<name>.jsonl       # durable per-recipient queue (append-only)
+  inbox/<name>.jsonl       # durable per-recipient inbox (append-only)
   read/<name>.cursor       # per-recipient read cursor (COUNT of inbox lines shown)
-  self/<host>__<pane>.txt  # this pane's chosen agent name (identity recovery)
+  self/<host>__<pane>.txt  # this pane's declared agent name (identity recovery)
 ```
 
 The registry and inboxes are **data at rest** — discovery and catch-up need a
@@ -183,7 +183,7 @@ task**. A task-named anything is unfindable next to its repo-named siblings
 |-------|-----------|---------|
 | Durable BE peer handle | `<repo-lowercase>-<host>` | `myrepo-myhost` (Ship of Tools on the backend host), `lldevtools-myhost` |
 | Spawned agent — repo checkout | `<repo-lowercase>` (bare, **no** descriptor) — **superseded by ADR 0049, removed in B6:** the handle also carries the box name | `myrepo` |
-| Spawned agent — git **worktree** | `<repo>-wt-<shortname>` (the `-wt-` infix is reserved for worktrees and groups them next to the parent; `<shortname>` names the WORKTREE, never the task). Created via the `/worktree` skill. | `MyAnalysis-wt-rotation` (worktree `rotation`) |
+| Spawned agent — git **worktree** | `<repo>-wt-<shortname>` (the `-wt-` infix is reserved for worktrees and groups them next to the parent; `<shortname>` names the WORKTREE, never the task). Created via the `/worktree` skill — **superseded by ADR 0049, removed in B6:** the handle also carries the box name | `MyAnalysis-wt-rotation` (worktree `rotation`) |
 | Frontend address | `fe@<host>` — the frontend PROCESS's declared hello `name`, the target `sot-fe --fe <host>` scopes a directed `fe.command`/`open-url` to (two frontends on one box differ by `instance`); the frontend is a client, never a comm peer, and no session derives or joins as this name | `fe@laptop` |
 | Workspace label | repo basename (comm-spawn default; task-named labels are **rejected**) | `MyPackage` |
 | Workspace slug (the row's name) | derived from the label by the daemon | `mypackage` |
@@ -196,8 +196,9 @@ groups them next to the parent in the sessions list), and `<shortname>` names th
 worktree, never the task. Don't hand-roll it: the **`/worktree`** skill
 (`comm-worktree-new.sh`) creates the worktree at
 `<repo-parent>/worktrees/<repo>-wt-<shortname>` on branch `wt/<shortname>` and
-spawns the session with that handle+label, so the slug groups it correctly. (No
-host in the worktree handle — the parent is found by repo family, not host.) A deliberate second
+spawns the session with that handle+label, so the slug groups it correctly. (Today the
+worktree handle carries no box name and the parent is found by repo family —
+**superseded by ADR 0049, removed in B6:** every handle carries the box name.) A deliberate second
 workspace is `<repo>-2`. Never a suffix on a plain repo open, and never a task
 name (`repo-fix` for a direct checkout was wrong on both counts: a
 task-ish descriptor AND a shortened base; the right handle was
