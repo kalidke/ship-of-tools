@@ -7,9 +7,9 @@
 # compared equal to "admiral-kitt", so `comm-relay.sh`/`comm-send.sh`
 # reported "no such handle" for a send that had already landed.
 #
-# This test does not assume jq is native-Windows; it makes ANY jq behave
-# like one, by putting a wrapper jq first on PATH that captures the real
-# jq's output and its exit status, then re-emits the output with \r before
+# Most of this test does not assume jq is native-Windows; it makes ANY jq
+# behave like one, by putting a wrapper jq first on PATH that re-emits the
+# real jq's output with \r before
 # every \n — exactly the rewrite a Windows jq.exe performs, nothing else.
 # The exit status is preserved so a boolean `jq -e` elsewhere in the setup
 # path is not disturbed by this stub; only the bug under test is exercised.
@@ -192,10 +192,14 @@ case_provisional_rollback_survives_a_crlf_jq() {
 # on every platform, carriage returns or not. Proved live on 2026-09-29:
 # comm-list.sh printed 14 of the registry's 15 agents, and the missing one was
 # always whichever entry stood last in registry.json. This case therefore runs
-# on the REAL jq, with TWO rows so "last" means last and not "only", and it
-# checks both consumers that matter: the roster a person reads, and the
-# membership the send path decides a route with -- a dropped last handle is
-# another road to a false "no such handle".
+# on the REAL jq, with TWO rows so "last" means last and not "only".
+#
+# The roster assertion is the one that fails without the fix. The send that
+# follows it passes at the base commit too, because the directed path reads
+# `.agents[$n].host` through a command substitution and never through a
+# stream -- it is here as the guard that membership must never MOVE onto a
+# stream read, which is the road to a false "no such handle" the captain
+# asked to close, not as proof of this fix.
 LIST_HOME="$WORK/list-home"
 LIST_FIRST="t-crlf-first-row"
 LIST_LAST="t-crlf-last-row"

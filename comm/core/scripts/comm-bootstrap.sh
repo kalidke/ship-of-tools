@@ -29,7 +29,7 @@ ENDPOINT="$(sot_daemon_endpoint "${SOT_SPAWN_ENDPOINT:-}")" \
     || { echo "ERROR: no sotd daemon found; set SOT_SPAWN_ENDPOINT=unix:/path or tcp:HOST:PORT" >&2; exit 1; }
 LIST="$(sot_oneshot_request '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list || true)"
 WSID="$(printf '%s' "$LIST" | sot_jq -r --arg w "$TGT" \
-    '.payload.workspaces[] | select(.slug==$w or .label==$w or .workspace_id==$w) | .workspace_id' 2>/dev/null | head -1)"
+    '[.payload.workspaces[]? | select(.slug==$w or .label==$w or .workspace_id==$w) | .workspace_id][0] // empty' 2>/dev/null)"
 [ -n "$WSID" ] || { echo "ERROR: no workspace row matching '$TGT' (slug/label/id) on this daemon" >&2; exit 1; }
 
 BIN="$COMM_HOME/bin"

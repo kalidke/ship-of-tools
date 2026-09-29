@@ -68,9 +68,10 @@ now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 sot_jq() {
     # STREAMED, not captured: an earlier body took jq's output through a
     # command substitution, which strips every trailing newline, so a
-    # `while read` consumer silently lost its LAST record on every platform
-    # -- comm-list.sh printed 14 of 15 registered agents, and "(none)" for a
-    # registry holding one (found by this file's own review, 2026-09-29).
+    # `while read` consumer silently lost its LAST record on every platform --
+    # comm-list.sh printed 14 of 15 registered agents. Streaming also means jq
+    # can now see a downstream close, so no caller of this ends its pipeline in
+    # `head`: the filter picks the one value it wants instead.
     command jq "$@" | tr -d '\r'
     return "${PIPESTATUS[0]}"
 }
