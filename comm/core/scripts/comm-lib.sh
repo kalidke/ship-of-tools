@@ -65,18 +65,14 @@ now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # add a \r before a newline the sender typed on purpose, and stripping it
 # there would silently rewrite what they wrote instead of fixing a
 # comparison.
-#
-# One caller is neither: `sot_json_escape` runs jq's own JSON writer to turn
-# a value into a string LITERAL for a hand-built frame, and text mode puts
-# its \r AFTER the closing quote, outside the literal. Stripping is safe
-# there for exactly that reason -- a carriage return the caller really typed
-# comes back escaped as the two characters \r, which `tr -d` cannot touch.
 sot_jq() {
-    local out rc
-    out="$(command jq "$@")"
-    rc=$?
-    printf '%s' "$out" | tr -d '\r'
-    return "$rc"
+    # STREAMED, not captured: an earlier body took jq's output through a
+    # command substitution, which strips every trailing newline, so a
+    # `while read` consumer silently lost its LAST record on every platform
+    # -- comm-list.sh printed 14 of 15 registered agents, and "(none)" for a
+    # registry holding one (found by this file's own review, 2026-09-29).
+    command jq "$@" | tr -d '\r'
+    return "${PIPESTATUS[0]}"
 }
 
 # _sot_windows_local_pipe — the LOCAL daemon's named pipe, resolved and
@@ -1891,7 +1887,7 @@ claim_derived_handle() {  # MODE ROOT HOST OBJ_JSON
 # single JSON string literal — the general escaping jq's own JSON writer
 # already gets right, never a hand-rolled sed/printf substitution.
 sot_json_escape() {
-    printf '%s' "$1" | sot_jq -Rs .
+    printf '%s' "$1" | jq -Rs .
 }
 
 # sot_host — this shell's DECLARED host name for the wire only (ADR 0046

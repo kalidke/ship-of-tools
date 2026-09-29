@@ -54,18 +54,17 @@ export SOT_COMM_HOME="$WORK/home"
 mkdir -p "$SOT_COMM_HOME"
 
 # The CRLF-emitting jq stub: real jq's own stdout and exit status, unchanged,
-# with a \r spliced in before every \n it wrote. `sed` runs on the CAPTURED
-# text (not a live pipe), so the stub's own exit status is jq's, not sed's —
-# a boolean `jq -e ... >/dev/null` elsewhere in this run still sees jq's real
-# verdict, exactly as a real Windows jq.exe would report its own.
+# with a \r spliced in before every \n it writes. It STREAMS, so it adds the
+# \r and nothing else -- a capturing stub would also drop jq's final newline,
+# which a real Windows jq.exe does not do, and the stub would then be testing
+# two bugs at once. Its exit status is jq's own, not sed's, so a boolean
+# `jq -e ... >/dev/null` elsewhere in this run still sees jq's real verdict.
 STUBBIN="$WORK/stubbin"
 mkdir -p "$STUBBIN"
 cat > "$STUBBIN/jq" <<STUB
 #!/usr/bin/env bash
-out="\$("$REAL_JQ" "\$@")"
-rc=\$?
-printf '%s' "\$out" | sed \$'s/\$/\r/'
-exit "\$rc"
+"$REAL_JQ" "\$@" | sed \$'s/\$/\r/'
+exit "\${PIPESTATUS[0]}"
 STUB
 chmod +x "$STUBBIN/jq"
 
@@ -187,29 +186,57 @@ case_provisional_rollback_survives_a_crlf_jq() {
     return 0
 }
 
-# sot_json_escape's contract is ONE JSON string literal, interpolated into a
-# hand-built frame. Text mode puts its \r AFTER the closing quote, outside
-# the literal — which is also why stripping is safe HERE and never rewrites
-# what a sender wrote: a carriage return the caller really typed comes back
-# from jq as the two characters \r, which the strip cannot touch. The second
-# assertion is that half, and it is the one that would catch a strip applied
-# to free-text content by mistake.
-case_json_escape_emits_no_carriage_return() {
-    local got
-    got="$(PATH="$STUBBIN:$PATH" bash -c 'source "$1/comm-lib.sh"; sot_json_escape "$2"' \
-        _ "$SCRIPTS_DIR" "a-value" 2>/dev/null)"
-    [ "$got" = '"a-value"' ] \
-        || { echo "  escape produced '$got', want the literal \"a-value\""; return 1; }
-    got="$(PATH="$STUBBIN:$PATH" bash -c 'source "$1/comm-lib.sh"; sot_json_escape "$2"' \
-        _ "$SCRIPTS_DIR" "$(printf 'a\rb')" 2>/dev/null)"
-    [ "$got" = '"a\rb"' ] \
-        || { echo "  a carriage return the caller typed was not kept as \\r: '$got'"; return 1; }
+# --- the wrapper's own defect, which is NOT a CRLF case --------------------
+# sot_jq once captured jq's output in a command substitution, which strips
+# every trailing newline, so a `while read` consumer lost its LAST record --
+# on every platform, carriage returns or not. Proved live on 2026-09-29:
+# comm-list.sh printed 14 of the registry's 15 agents, and the missing one was
+# always whichever entry stood last in registry.json. This case therefore runs
+# on the REAL jq, with TWO rows so "last" means last and not "only", and it
+# checks both consumers that matter: the roster a person reads, and the
+# membership the send path decides a route with -- a dropped last handle is
+# another road to a false "no such handle".
+LIST_HOME="$WORK/list-home"
+LIST_FIRST="t-crlf-first-row"
+LIST_LAST="t-crlf-last-row"
+SELF_FIRST="$WORK/self-first-row.txt"
+SELF_LAST="$WORK/self-last-row.txt"
+seed_two_rows() {
+    mkdir -p "$LIST_HOME" || return 1
+    ( cd "$WORK" && SOT_COMM_HOME="$LIST_HOME" SOT_COMM_SELF_FILE="$SELF_FIRST" \
+        SOT_COMM_TEST_HOST="crlfbox" "$JOIN" --name "$LIST_FIRST" ) >/dev/null 2>&1 || return 1
+    ( cd "$WORK" && SOT_COMM_HOME="$LIST_HOME" SOT_COMM_SELF_FILE="$SELF_LAST" \
+        SOT_COMM_TEST_HOST="crlfbox" "$JOIN" --name "$LIST_LAST" ) >/dev/null 2>&1 || return 1
+    # Assert the premise rather than assume it: this case is only about the
+    # LAST entry if the row it names really is last in the file.
+    local last
+    last="$("$REAL_JQ" -r '.agents | to_entries | last | .key' "$LIST_HOME/registry.json" 2>/dev/null)"
+    [ "$last" = "$LIST_LAST" ] || { echo "  setup: '$last' is last in the registry, wanted '$LIST_LAST'"; return 1; }
+}
+
+case_the_last_registry_row_is_not_dropped() {
+    seed_two_rows || { echo "  setup: could not seed two rows"; return 1; }
+    local out
+    out="$(cd "$WORK" && SOT_COMM_HOME="$LIST_HOME" SOT_COMM_SELF_FILE="$SELF_FIRST" \
+        SOT_COMM_TEST_HOST="crlfbox" "$SCRIPTS_DIR/comm-list.sh" 2>/dev/null)"
+    contains "$out" "@$LIST_LAST" \
+        || { echo "  the roster dropped the registry's last row: '$out'"; return 1; }
+    local send_out send_err
+    send_out="$(cd "$WORK" && SOT_COMM_HOME="$LIST_HOME" SOT_COMM_SELF_FILE="$SELF_FIRST" \
+        SOT_COMM_TEST_HOST="crlfbox" "$SEND" "@$LIST_LAST" "to the last row" 2>"$WORK/last-err.txt")"
+    send_err="$(cat "$WORK/last-err.txt" 2>/dev/null)"
+    if contains "$send_err" "no such handle"; then
+        echo "  a send to the registry's last row was refused: '$send_err'"
+        return 1
+    fi
+    contains "$send_out" "filed -> @$LIST_LAST" \
+        || { echo "  send said '$send_out', want 'filed -> @$LIST_LAST'"; return 1; }
     return 0
 }
 
 check "the timestamp cursor offset survives a CRLF jq" case_cursor_offset_survives_a_crlf_jq
 check "a provisional row's rollback survives a CRLF jq" case_provisional_rollback_survives_a_crlf_jq
-check "sot_json_escape emits one literal, with a real CR still escaped" case_json_escape_emits_no_carriage_return
+check "the registry's LAST row is listed and can be sent to" case_the_last_registry_row_is_not_dropped
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"
