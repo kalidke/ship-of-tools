@@ -243,7 +243,12 @@ fn strip_comment(raw: &str) -> &str {
     raw
 }
 
-fn is_plain_host_name(s: &str) -> bool {
+// `pub(crate)`, not private: `ssh_bridge::SshRecipe::new` (same crate)
+// checks an ssh target/host against this exact grammar too, and a second
+// Rust copy of one grammar is exactly what a `pub(crate)` bump avoids —
+// `dial.rs`'s own copy stays separate only because it is a DIFFERENT
+// crate (the frontend), which cannot reach this one at all.
+pub(crate) fn is_plain_host_name(s: &str) -> bool {
     let mut chars = s.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))

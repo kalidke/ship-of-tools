@@ -61,6 +61,25 @@ replaced by a local one.** A stale `SOT_RELAY_ENDPOINT` or
 `tcp:` value, most often) is discarded with a line naming it; clear the
 variable rather than expecting it to be silently reinterpreted.
 
+## The second and third connections
+
+A remote host's control connection is not the only one this frontend ever
+opens to it: attaching a capsule pane and proxying one browser connection to
+a backend-served page each spawn their OWN ssh child, through the exact
+recipe the control connection already resolved for that host — never a
+second, independent guess at how to reach it. Nothing about the wire
+changes: the daemon accepts `lane.connect` and `proxy.connect` on any
+connection, so these frames are byte-identical to what they always were.
+The cost is one ssh login per attached pane and one per proxied browser
+connection — an accepted cost, not a bug, so a page with several
+subresources served by the same remote daemon pays once per resource, not
+once per page.
+
+A failed login or a dead `sotd` on the far end is the child exiting before
+speaking the protocol; its last stderr line is the diagnosis, surfaced in
+the pane's own status text or, for a proxied page, a log line — no
+per-cause exit codes to learn.
+
 ## What this page does not yet cover
 
 Later work in this same design (per-user isolation for the browser-facing

@@ -1,48 +1,49 @@
-//! Frontend half of the daemon TCP proxy (ADR 0035).
+//! Frontend half of the daemon TCP proxy (ADR 0035), C3 as amended §3.
 //!
 //! A REMOTE frontend reaches any backend-served loopback page (Pluto, video,
-//! docs + pool, WGLMakie/Bonito) through the control tunnel it already holds
-//! for that page's OWNING daemon — no per-port ssh `-L` forward, no launcher
-//! edits when a new backend port appears. A multi-host FE holds one such
-//! tunnel per remote daemon, so each listener carries its OWN target address
-//! (never one baked-in default-host address for every port — that was the
-//! cross-host figure defect: a page served by a non-default host's daemon
-//! had nowhere to proxy through). The browser still opens a plain
-//! `http://127.0.0.1:<port>/…` URL; this module makes that loopback port
-//! resolve by binding a local listener that pipes each browser connection to
-//! the right daemon, which dials the real service (the daemon half validates
-//! the port + does the dialing — `backend/src/proxy.rs`).
+//! docs + pool, WGLMakie/Bonito) through an ssh child to that page's OWNING
+//! daemon — no per-port ssh `-L` forward, no launcher edits when a new
+//! backend port appears. A multi-host FE spawns one such child per browser
+//! connection (W2, the accepted cost — isolation-plan.md §10), so each
+//! listener carries its OWN target recipe (never one baked-in default-host
+//! address for every port — that was the cross-host figure defect: a page
+//! served by a non-default host's daemon had nowhere to proxy through). The
+//! browser still opens a plain `http://127.0.0.1:<port>/…` URL; this module
+//! makes that loopback port resolve by binding a local listener that pipes
+//! each browser connection to the right daemon, which dials the real service
+//! (the daemon half validates the port + does the dialing —
+//! `backend/src/proxy.rs`).
 //!
 //! Ownership split that keeps the "bind before the browser launches" ordering
 //! honest without blocking the render thread: the GPU thread binds a
 //! `std::net::TcpListener` SYNCHRONOUSLY (a bind is sub-millisecond, no
 //! `block_on`, so the port is already listening the instant
 //! `open_url_in_browser` runs) and hands the bound listener — tagged with the
-//! target daemon address and token it resolved for that page's host — to the
-//! transport runtime here, which owns the async accept loop + the
-//! per-connection pipe.
+//! ssh recipe and token it resolved for that page's host — to the transport
+//! runtime here, which owns the async accept loop + the per-connection pipe.
 
 use std::net::TcpListener as StdTcpListener;
 
+use anyhow::Context;
+use sot_protocol::ssh_bridge::SshRecipe;
 use sot_protocol::{codec, op, Frame, ProxyConnectReq};
-use tokio::io::{AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 /// Spawn the proxy manager on the transport runtime. It receives bound
 /// listeners from the GPU thread (`State::ensure_proxy_for_url`), each
-/// tagged with `(daemon_tcp, token)` — the exact `127.0.0.1:<fwd>` address
-/// and token resolved for the page's OWNING host, not a single manager-wide
-/// default. Per listener it runs an accept loop that pipes each accepted
-/// browser connection to a FRESH connection to that listener's own
-/// `daemon_tcp`; `token` is forwarded in the handshake when that daemon has
-/// one configured (Unix-socket transports carry none).
+/// tagged with `(recipe, token)` — the exact ssh recipe and token resolved
+/// for the page's OWNING host, not a single manager-wide default. Per
+/// listener it runs an accept loop that pipes each accepted browser
+/// connection to a FRESH ssh child spawned from that listener's own
+/// `recipe`; `token` is forwarded in the handshake when that daemon has one
+/// configured (Unix-socket transports carry none).
 pub fn spawn_proxy_manager(
     rt: &tokio::runtime::Runtime,
-    mut listener_rx: UnboundedReceiver<(StdTcpListener, String, Option<String>)>,
+    mut listener_rx: UnboundedReceiver<(StdTcpListener, SshRecipe, Option<String>)>,
 ) {
     rt.spawn(async move {
-        while let Some((std_listener, daemon_tcp, token)) = listener_rx.recv().await {
+        while let Some((std_listener, recipe, token)) = listener_rx.recv().await {
             let port = match std_listener.local_addr() {
                 Ok(a) => a.port(),
                 Err(e) => {
@@ -59,17 +60,19 @@ pub fn spawn_proxy_manager(
                 }
             };
             tokio::spawn(async move {
-                tracing::info!(port, %daemon_tcp, "proxy: accepting browser connections for backend port");
+                tracing::info!(port, %recipe, "proxy: accepting browser connections for backend port");
                 loop {
                     match listener.accept().await {
                         Ok((browser, _peer)) => {
-                            let daemon_tcp = daemon_tcp.clone();
+                            let recipe = recipe.clone();
                             let token = token.clone();
                             tokio::spawn(async move {
-                                if let Err(e) =
-                                    pipe_one(browser, &daemon_tcp, port, token.as_deref()).await
-                                {
-                                    tracing::debug!(port, error = %e, "proxy: connection ended");
+                                // A dead child here is a blank page with no
+                                // other carrier — `debug!` → `warn!` (C3 as
+                                // amended §6): a reason at `debug` is
+                                // invisible in a normal run.
+                                if let Err(e) = pipe_one(browser, &recipe, port, token.as_deref()).await {
+                                    tracing::warn!(port, error = %e, "proxy: connection ended");
                                 }
                             });
                         }
@@ -87,35 +90,74 @@ pub fn spawn_proxy_manager(
     });
 }
 
-/// Pipe one browser connection to `daemon_tcp` for `port`: open a fresh daemon
-/// connection, do the `proxy.connect` handshake, then splice bytes both ways
-/// until either side closes (carrying a WebSocket upgrade verbatim).
+/// Pipe one browser connection through an ssh child spawned from `recipe`
+/// for `port` (C3 as amended §3): spawn, do the `proxy.connect` handshake
+/// as the child's first bytes — the daemon peeks that op on ANY accepted
+/// connection (`server.rs`), so the frames are byte-identical to the old
+/// tcp-forwarded leg — then splice bytes both ways until either side closes
+/// (carrying a WebSocket upgrade verbatim).
 async fn pipe_one(
-    browser: TcpStream,
-    daemon_tcp: &str,
+    browser: tokio::net::TcpStream,
+    recipe: &SshRecipe,
     port: u16,
     token: Option<&str>,
 ) -> anyhow::Result<()> {
-    let daemon = TcpStream::connect(daemon_tcp).await?;
-    let _ = daemon.set_nodelay(true);
+    let mut child = sot_protocol::ssh_bridge::spawn_async(recipe)
+        .with_context(|| format!("spawn ssh {recipe}"))?;
+    let d_wr = child.stdin.take().expect("spawned with a piped stdin");
+    let d_rd = child.stdout.take().expect("spawned with a piped stdout");
+    let stderr = child.stderr.take().expect("spawned with a piped stderr");
+    let last_stderr = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    {
+        let last_stderr = std::sync::Arc::clone(&last_stderr);
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    if let Ok(mut guard) = last_stderr.lock() {
+                        *guard = Some(line);
+                    }
+                }
+            }
+        });
+    }
+    let mut d_wr = d_wr;
     let _ = browser.set_nodelay(true);
 
-    let (d_rd, mut d_wr) = daemon.into_split();
     // Handshake read goes through a BufReader; the pipe below copies FROM that
     // same BufReader so any bytes it buffered past the response envelope (the
     // daemon may start streaming upstream data immediately after `{ok}`) are
     // not lost — the throwaway-reader trap.
     let mut d_buf = BufReader::new(d_rd);
+    let result = pipe_one_over(&mut d_wr, &mut d_buf, browser, port, token).await;
+    // `child` drops here (`kill_on_drop`), ending this connection's ssh
+    // login. The child's last stderr line is the diagnosis when it died
+    // before or during the splice — beats a generic broken-pipe message.
+    if result.is_err() {
+        if let Some(line) = sot_protocol::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
+            return Err(anyhow::anyhow!(line));
+        }
+    }
+    result
+}
+
+async fn pipe_one_over(
+    d_wr: &mut tokio::process::ChildStdin,
+    d_buf: &mut BufReader<tokio::process::ChildStdout>,
+    browser: tokio::net::TcpStream,
+    port: u16,
+    token: Option<&str>,
+) -> anyhow::Result<()> {
 
     let req = ProxyConnectReq {
         port,
         token: token.map(|s| s.to_string()),
     };
     let frame = Frame::req(1, op::PROXY_CONNECT, serde_json::to_value(&req)?);
-    codec::write_frame(&mut d_wr, &frame, None).await?;
+    codec::write_frame(d_wr, &frame, None).await?;
     d_wr.flush().await?;
 
-    let (res, _blob) = codec::read_frame(&mut d_buf).await?;
+    let (res, _blob) = codec::read_frame(d_buf).await?;
     if res.payload.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         let code = res
             .payload
@@ -127,12 +169,12 @@ async fn pipe_one(
 
     let (mut b_rd, mut b_wr) = browser.into_split();
     let browser_to_daemon = async {
-        let r = tokio::io::copy(&mut b_rd, &mut d_wr).await;
+        let r = tokio::io::copy(&mut b_rd, d_wr).await;
         let _ = d_wr.shutdown().await; // half-close so the daemon sees EOF
         r
     };
     let daemon_to_browser = async {
-        let r = tokio::io::copy(&mut d_buf, &mut b_wr).await;
+        let r = tokio::io::copy(d_buf, &mut b_wr).await;
         let _ = b_wr.shutdown().await;
         r
     };

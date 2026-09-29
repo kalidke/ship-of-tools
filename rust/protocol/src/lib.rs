@@ -20,6 +20,12 @@ pub mod ir;
 pub mod lane_client;
 pub mod ops;
 pub mod session_socket;
+// C3 (isolation-plan.md §3, as amended by dev/output/c3-second-connection-
+// amendment.md): the ssh child every non-local dial spawns -- one recipe
+// type and one argv builder, shared by the control connection
+// (`rust/frontend/src/transport.rs`), the lane attach (`lane_client.rs`
+// above) and the page-proxy leg (`rust/frontend/src/proxy_listen.rs`).
+pub mod ssh_bridge;
 // The declared topology (`hosts.toml`, grammar v2): the ONE parser and the
 // ONE search rule for the daemon, `sotd topology`, and the frontend.
 pub mod topology;

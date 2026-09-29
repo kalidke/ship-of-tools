@@ -1,30 +1,24 @@
 // transport.rs — local frontend ↔ remote backend over a local socket (Unix
-// socket / Windows named pipe) or TCP.
+// socket / Windows named pipe) or an ssh child's stdio.
 //
-// Per ADR 0010:
+// Per ADR 0010, as replaced by isolation-plan.md §3 C3 (amended by
+// dev/output/c3-second-connection-amendment.md):
 //   - Backend listens on a per-session Unix socket on the remote
 //     ($XDG_RUNTIME_DIR/sot/<session_id>.sock), inside a tmux session.
-//   - Frontend spawns/attaches an SSH connection that forwards that socket to
-//     a local Unix socket via:
-//         ssh -o ExitOnForwardFailure=yes
-//             -o ServerAliveInterval=15
-//             -o StreamLocalBindUnlink=yes
-//             -L "$LOCAL_SOCK:$REMOTE_SOCK"
-//             <remote>
-//   - Where a native frontend wants a local TCP endpoint (notably Windows),
-//     the launcher forwards that local TCP port to the remote Unix socket:
-//         ssh -L "<local-port>:$REMOTE_SOCK" <remote>
-//     The frontend still connects with `--tcp 127.0.0.1:<local-port>`, but
-//     the remote endpoint is scoped by the SSH user and socket permissions.
-//     A direct backend `--tcp` listener remains an explicit fallback and is
-//     token-gated.
+//   - Reaching a daemon that is not on this box means spawning
+//     `ssh <target> '<PATH prelude>; sotd stdio-bridge [--host <host>]'`
+//     (`sot_protocol::ssh_bridge`) and speaking the protocol over its piped
+//     stdin/stdout — never a port, on either box: the daemon has had no TCP
+//     listener since 0.4.0. A dead login or a dead `sotd` on the far end is
+//     the child exiting before the first frame; its last stderr line IS the
+//     diagnosis (no per-cause exit codes to invent).
 //   - Connect handshake carries (session_id, client_id, last_seen_revision);
 //     backend either replays missed events or sends a snapshot on reconnect.
 //
-// Transport selection: `spawn` takes both pipe and tcp options. If both are
-// set, the pipe is tried first; on connect failure we log a warn and fall
-// back to TCP. The protocol code is generic over `AsyncRead` / `AsyncWrite`
-// so it runs identically on either transport.
+// Transport selection: `spawn` takes a pipe or an ssh recipe. The protocol
+// code is generic over `AsyncRead` / `AsyncWrite` so it runs identically on
+// either transport — an ssh child is a third `AsyncRead`/`AsyncWrite` pair,
+// not a protocol change (the amendment's own §0).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -57,13 +51,33 @@ use tokio::sync::mpsc::{self as tmpsc, UnboundedReceiver, UnboundedSender};
 
 use winit::window::Window;
 
-/// What the transport task should dial. At least one of `pipe`/`tcp` must be
-/// set or `spawn` is a no-op (caller checks).
+/// What the transport task should dial. At least one of `pipe`/`ssh` must
+/// be set or `spawn` is a no-op (caller checks).
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
     pub pipe: Option<PathBuf>,
-    pub tcp: Option<String>,
+    pub ssh: Option<sot_protocol::ssh_bridge::SshRecipe>,
     pub token: Option<String>,
+}
+
+/// ADR 0045 decision 1 (Codex review, lane B5 discharge); reshaped by C3 as
+/// amended: which transport a host's CONTROL connection actually resolved
+/// to — `Local` (the pipe/socket connected) or `Ssh` (the ssh child
+/// connected, carrying the exact recipe it spawned). Recorded from every
+/// `Connected` evt (`State::host_resolved_dial`) so `spawn_pane_attach_term`
+/// dials the SAME endpoint the control connection is already talking to,
+/// rather than an independent preference guess that could reach a
+/// DIFFERENT daemon than the one actually running this host.
+///
+/// Lives here, beside `TransportConfig`, because `IncomingEvt::Connected`
+/// carries it — moved out of `gpu.rs`, which names it
+/// `crate::transport::ResolvedDial`. No longer `Copy` (`SshRecipe` isn't):
+/// every former `.copied()` reader became `.cloned()` (the amendment's own
+/// site list, C3's commit).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedDial {
+    Local,
+    Ssh(sot_protocol::ssh_bridge::SshRecipe),
 }
 
 /// Messages the transport task pushes back to the GPU thread.
@@ -88,23 +102,21 @@ pub enum IncomingEvt {
         /// is true; `false` for older daemons (falls back to the launcher's
         /// per-port ssh forwards exactly as before).
         proxy: bool,
-        /// This connection is the TCP control tunnel (a REMOTE FE), not the
-        /// local pipe — the actual transport that connected. The proxy arms
-        /// on `proxy && remote`; keyed here (not on CLI flags) so the
-        /// `--socket <local> --tcp <addr>` remote config, which falls back to
-        /// tcp, is correctly detected as remote.
-        remote: bool,
-        /// ADR 0045 decision 1 (Codex review, lane B5 discharge): the
-        /// resolved peer address of THIS tcp connection (`TcpStream::
-        /// peer_addr()`, captured before the stream is split) — `Some`
-        /// exactly when `remote` is `true`. The capsule lane bridge dials
-        /// through the SAME resolved endpoint the control transport
-        /// actually chose (never a second guess at `config.tcp`'s own
-        /// hostname string, which `SocketAddr`'s own parser cannot resolve
-        /// anyway — `localhost:PORT` and friends need real resolution,
-        /// which `TcpStream::connect`'s own successful connect already
-        /// did here).
-        tcp_peer: Option<std::net::SocketAddr>,
+        /// C3 as amended §5: which transport actually connected —
+        /// `ResolvedDial::Local` for the pipe, `ResolvedDial::Ssh(recipe)`
+        /// for the ssh child, carrying the exact recipe it spawned. The
+        /// proxy arms on `proxy && !matches!(resolved, ResolvedDial::Local)`
+        /// (`gpu.rs`) — keyed on the transport that CONNECTED, not the CLI
+        /// shape, so the documented `--socket <local>` remote config with a
+        /// `--dial local=ssh:…` override is correctly detected as remote.
+        /// Replaces the former separate `remote: bool` / `tcp_peer:
+        /// Option<SocketAddr>` pair: `remote` was literally `via_tcp`, and
+        /// the two values that gate proxying and that a second connection
+        /// dials must be ONE value so they cannot disagree (the amendment's
+        /// own blocker: as two fields, an ssh control connection is remote
+        /// and not tcp, so the old `None if !remote => Local` arm recorded
+        /// `Local` for every ssh host and disarmed its proxy).
+        resolved: ResolvedDial,
         /// The backend's product version (`HelloRes::app_version`), e.g.
         /// `0.5.8` or `0.5.8-dev+a1b2c3d`. Painted next to the FE's own
         /// version on the bottom chrome edge so a running FE/BE skew is
@@ -1684,10 +1696,11 @@ pub fn spawn(
     });
 }
 
-/// Try pipe first (if set), fall back to TCP on connect failure (if set).
-/// Once a connection is established we hand off to `run_protocol`; any error
-/// from there is *not* retried via the other transport — that's a runtime
-/// disconnect, not a startup-time choose-your-transport decision.
+/// Try pipe first (if set), fall back to an ssh child on connect failure
+/// (if set). Once a connection is established we hand off to
+/// `run_protocol`; any error from there is *not* retried via the other
+/// transport — that's a runtime disconnect, not a startup-time
+/// choose-your-transport decision.
 async fn connect_and_run(
     host: HostKey,
     config: TransportConfig,
@@ -1716,65 +1729,73 @@ async fn connect_and_run(
                     out_rx,
                     &window,
                     backoff_ms,
-                    false, // via_tcp: this is the local pipe
-                    None,  // tcp_peer: no resolved tcp endpoint on the pipe path
+                    ResolvedDial::Local,
                 )
                 .await;
             }
-            Err(e) if config.tcp.is_some() => {
+            Err(e) if config.ssh.is_some() => {
                 tracing::warn!(
                     pipe = ?pipe_path,
                     error = %e,
-                    "local-socket connect failed; falling back to TCP"
+                    "local-socket connect failed; falling back to ssh"
                 );
-                // fall through to TCP block below
+                // fall through to the ssh block below
             }
             Err(e) => return Err(e),
         }
     }
-    if let Some(tcp_addr) = config.tcp.as_ref() {
-        let stream = tokio::net::TcpStream::connect(tcp_addr)
-            .await
-            .with_context(|| format!("connect tcp {tcp_addr}"))?;
-        // Disable Nagle so single-keystroke writes (typing into the LLM
-        // pty pane) and the PTY-echo packets coming back don't get
-        // coalesced up to the OS Nagle window. Without this, LAN-local
-        // typing showed ~100ms latency on a <1ms RTT path. Backend
-        // needs the same set_nodelay on its accept side to fully
-        // disable Nagle in both directions.
-        if let Err(e) = stream.set_nodelay(true) {
-            tracing::warn!(error = %e, "set_nodelay failed on tcp stream");
+    if let Some(recipe) = config.ssh.as_ref() {
+        let mut child = sot_protocol::ssh_bridge::spawn_async(recipe)
+            .with_context(|| format!("spawn ssh {recipe}"))?;
+        let stdin = child.stdin.take().expect("spawned with a piped stdin");
+        let stdout = child.stdout.take().expect("spawned with a piped stdout");
+        let stderr = child.stderr.take().expect("spawned with a piped stderr");
+        // The child's last non-empty stderr line, drained on its own task
+        // for as long as `child` lives — ssh's own complaint ("Permission
+        // denied", or `unrecognised argument: --host` from a hub whose
+        // `sotd` predates C1) is the diagnosis a dead child leaves behind,
+        // the same rule `stdio_bridge.rs` already sets for the far end.
+        let last_stderr = Arc::new(std::sync::Mutex::new(None::<String>));
+        {
+            let last_stderr = Arc::clone(&last_stderr);
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if !line.trim().is_empty() {
+                        if let Ok(mut guard) = last_stderr.lock() {
+                            *guard = Some(line);
+                        }
+                    }
+                }
+            });
         }
-        // ADR 0045 decision 1 (Codex review): the RESOLVED peer address
-        // this connect actually used — `tcp_addr` itself may be a
-        // hostname:port a lane dial cannot re-derive with a bare
-        // `SocketAddr` parse, so this is captured here, once, from the
-        // connect that already did the real resolution, and carried
-        // through to `IncomingEvt::Connected` rather than re-resolved
-        // anywhere downstream.
-        let tcp_peer = stream.peer_addr().ok();
-        // Same as the local-socket branch above: pre-hello, `host` is only
-        // this connection's DIAL key (ADR 0046 decision 1), not yet the
-        // declared identity — labeled explicitly, not left as an
-        // ambiguous bare `host` field.
-        tracing::info!(dial = %host, %tcp_addr, ?tcp_peer, "connected via tcp");
-        let (rx, tx) = stream.into_split();
-        let rx = codec::buffered(rx);
-        return run_protocol(
+        // Pre-hello, same labeling rule as the pipe branch above.
+        tracing::info!(dial = %host, %recipe, "connected via ssh child");
+        let rx = codec::buffered(stdout);
+        let result = run_protocol(
             host,
             rx,
-            tx,
+            stdin,
             config.token.as_deref(),
             &evt_tx,
             out_rx,
             &window,
             backoff_ms,
-            true, // via_tcp: this is the remote TCP control tunnel
-            tcp_peer,
+            ResolvedDial::Ssh(recipe.clone()),
         )
         .await;
+        // `child` is dropped here (`kill_on_drop`), ending the ssh login
+        // this attempt owns before the reconnect loop's next attempt spawns
+        // a fresh one.
+        if result.is_err() {
+            if let Some(line) = sot_protocol::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
+                return Err(anyhow::anyhow!(line));
+            }
+        }
+        return result;
     }
-    anyhow::bail!("no transport configured (set --socket or --tcp)")
+    anyhow::bail!("no transport configured (set --socket or a --dial ssh: endpoint)")
 }
 
 /// Connect to the local socket / named pipe at `path`.
@@ -1957,7 +1978,9 @@ fn ping_interval_duration() -> std::time::Duration {
 
 /// Drive the wire protocol over an already-connected stream's halves. Generic
 /// over the read/write types so the same code path serves the local-socket
-/// transport and the TCP transport.
+/// transport and an ssh child's stdio — C3 as amended §0: adding this
+/// transport inside the protocol CRATE is not a wire-protocol change; the
+/// frames this function reads/writes are untouched.
 async fn run_protocol<R, W>(
     host: HostKey,
     mut rx: tokio::io::BufReader<R>,
@@ -1967,17 +1990,13 @@ async fn run_protocol<R, W>(
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
     window: &Arc<Window>,
     backoff_ms: &mut u64,
-    // ADR 0035: whether this connection is the TCP control tunnel (a REMOTE
-    // FE) vs the local pipe. The proxy arms only when actually on tcp — keyed
-    // on the transport that CONNECTED, not the CLI shape (the documented
-    // `--socket <local> --tcp <addr>` remote config has BOTH set and falls
-    // back to tcp, so a CLI-shape guess would wrongly read as local).
-    via_tcp: bool,
-    // ADR 0045 decision 1: the resolved peer address `connect_and_run`'s
-    // own tcp branch captured from the live `TcpStream` — `Some` exactly
-    // when `via_tcp` is true, carried straight through to `Connected`
-    // rather than re-derived here or downstream.
-    tcp_peer: Option<std::net::SocketAddr>,
+    // C3 as amended §5: which transport `connect_and_run` actually
+    // connected — `ResolvedDial::Local` for the pipe, `ResolvedDial::Ssh`
+    // for the ssh child, carrying the exact recipe it spawned. The proxy
+    // arms only when NOT `Local` — keyed on the transport that CONNECTED,
+    // not the CLI shape (a `--socket <local>` config overridden by a
+    // `--dial local=ssh:…` entry is correctly detected as remote this way).
+    resolved: ResolvedDial,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -2127,8 +2146,7 @@ where
         host: hello_res.host.clone(),
         project_root: hello_res.project_root.clone(),
         proxy: hello_res.proxy,
-        remote: via_tcp,
-        tcp_peer,
+        resolved,
         backend_version: hello_res.app_version.clone(),
     });
     window.request_redraw();

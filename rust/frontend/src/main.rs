@@ -85,7 +85,6 @@ fn main() -> Result<()> {
     tracing::info!("sot-frontend starting");
     tracing::info!(
         socket = ?cli.socket,
-        tcp = ?cli.tcp,
         token_set = cli.token.is_some(),
         capture = ?cli.capture,
         scale = cli.scale,
@@ -105,13 +104,15 @@ fn main() -> Result<()> {
 
     // Topology plan (lane D): the connection set comes ONLY from repeated
     // `--dial <host>=<endpoint>` flags — the launcher's own rendering of
-    // `sotd topology plan --self <host>` — plus the CLI --socket/--tcp/
-    // --token flags, which override the implicit "local" connection. Those
-    // CLI flags are the ad hoc/manual path (dev, tests, a box with no
-    // launcher or topology plan at all); the launcher itself never needs
-    // them, since the plan hands this box's own endpoint over as an
-    // ordinary `--dial` entry. The frontend reads no config file for hosts
-    // (see `dial.rs`; no hosts.toml, here or anywhere else).
+    // `sotd topology plan --self <host>` — plus the CLI --socket/--token
+    // flags, which override the implicit "local" connection. Those CLI
+    // flags are the ad hoc/manual path (dev, tests, a box with no launcher
+    // or topology plan at all); the launcher itself never needs them,
+    // since the plan hands this box's own endpoint over as an ordinary
+    // `--dial` entry. There is no `--tcp` twin (C3): a remote box in the
+    // ad hoc path is `--dial local=ssh:<target>`. The frontend reads no
+    // config file for hosts (see `dial.rs`; no hosts.toml, here or
+    // anywhere else).
     let mut dials: Vec<(dial::HostKey, transport::TransportConfig)> = Vec::new();
     for arg in &cli.dial {
         match dial::parse_dial_arg(arg) {
@@ -121,7 +122,6 @@ fn main() -> Result<()> {
     }
     let cli_override = dial::CliOverride {
         socket: cli.socket.clone(),
-        tcp: cli.tcp.clone(),
         token: cli.token.clone(),
     };
     let connections = dial::resolve_connections(&dials, &cli_override);
@@ -155,7 +155,7 @@ fn main() -> Result<()> {
         )
     } else {
         tracing::info!(
-            "no reachable host (no --dial / --socket / --tcp / $SOT_SOCKET / $SOT_TCP); running offline against bundled samples"
+            "no reachable host (no --dial / --socket / $SOT_SOCKET); running offline against bundled samples"
         );
         None
     };

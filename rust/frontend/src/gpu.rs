@@ -3464,14 +3464,14 @@ impl TreeStore {
 /// Test SVG used as a placeholder until kernel-driven previews land. Mimics
 /// Offline-mode markdown placeholder. The real preview content comes from
 /// the backend via `preview.get` once transport connects; this string is
-/// only what the pane shows when `--socket` / `--tcp` aren't set.
+/// only what the pane shows when no connection resolved.
 const SAMPLE_MARKDOWN: &str = r##"## Offline
 
 `sot` is running without a backend.
 
 Pass `--socket <path>` (Unix socket / Windows named pipe) or
-`--tcp <host:port>` to connect, or set `$SOT_SOCKET` /
-`$SOT_TCP`. Use a planned split-launch setup for two-terminal runs.
+`--dial <host>=<endpoint>` to connect, or set `$SOT_SOCKET`. Use a planned
+split-launch setup for two-terminal runs.
 "##;
 use crate::text::TextLayer;
 
@@ -3902,39 +3902,31 @@ fn pending_input_room(buffered_len: usize, incoming_len: usize, cap: usize) -> u
     incoming_len.min(room)
 }
 
-/// ADR 0045 decision 1 (Codex review, lane B5 discharge): which transport
-/// a host's CONTROL connection actually resolved to — `Local` (the pipe/
-/// socket connected) or `Tcp(addr)` (the tcp tunnel connected, `addr` its
-/// real resolved peer address, captured once from `TcpStream::peer_addr()`
-/// at connect time). Recorded from every `Connected` evt
-/// (`State::host_resolved_dial`) so `spawn_pane_attach_term` dials the
-/// SAME endpoint the control connection is already talking to, rather
-/// than an independent preference guess that could reach a DIFFERENT
-/// daemon than the one actually running this host (`connect_and_run`
-/// tries the pipe first, falling back to tcp only on a pipe connect
-/// FAILURE — a static "tcp wins when both are configured" guess picks
-/// the wrong one whenever the pipe is healthy).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResolvedDial {
-    Local,
-    Tcp(std::net::SocketAddr),
-}
+// ADR 0045 decision 1 (Codex review, lane B5 discharge); reshaped by C3 as
+// amended (isolation-plan.md §3, dev/output/c3-second-connection-
+// amendment.md §1): `ResolvedDial` — which transport a host's CONTROL
+// connection actually resolved to — moved to `crate::transport`, beside
+// `TransportConfig`, because `IncomingEvt::Connected` now carries it. See
+// its doc there. No longer `Copy` (`SshRecipe` isn't); every former
+// `.copied()` reader below is `.cloned()`.
+use crate::transport::ResolvedDial;
 
 /// Outcome of `State::resolve_proxy_target` — see its doc for the three
-/// cases.
+/// cases. `Dial` carries the recipe to spawn for the remote leg
+/// (`pipe_one`, `proxy_listen.rs`) — no longer a resolved `SocketAddr`:
+/// the daemon has no TCP listener to resolve one for (C3 as amended §3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ProxyTarget {
     NotNeeded,
     Refused(String),
-    Dial(std::net::SocketAddr, Option<String>),
+    Dial(sot_protocol::ssh_bridge::SshRecipe, Option<String>),
 }
 
 /// Which `LaneDial` `spawn_pane_attach_term` should use for a host, given
 /// its own `TransportConfig` (for `pipe`/`token`) and the CONTROL
-/// transport's own resolved selection for it (never re-derived: `Tcp`
-/// carries the exact `SocketAddr` the control connection already
-/// resolved and dialed, so this never re-parses `config.tcp`'s hostname
-/// string, which a bare `SocketAddr` parse cannot resolve anyway).
+/// transport's own resolved selection for it (never re-derived: `Ssh`
+/// carries the exact recipe the control connection already resolved and
+/// dialed, so this never re-parses `config.ssh` a second time).
 /// Pulled out so the choice is unit-tested without a live `State`/window.
 /// `None` when `resolved` says `Local` but no pipe path is configured —
 /// shouldn't happen (the control connection could not have resolved
@@ -3949,8 +3941,8 @@ fn lane_dial(
             let path = config.pipe.clone()?;
             Some((sot_protocol::lane_client::LaneDial::Local(path), config.token.clone()))
         }
-        ResolvedDial::Tcp(addr) => {
-            Some((sot_protocol::lane_client::LaneDial::Tcp(addr), config.token.clone()))
+        ResolvedDial::Ssh(recipe) => {
+            Some((sot_protocol::lane_client::LaneDial::Ssh(recipe), config.token.clone()))
         }
     }
 }
@@ -5327,9 +5319,10 @@ struct State {
     /// ADR 0035 daemon TCP proxy — frontend half.
     /// `proxy_capable_hosts`: every host whose loopback pages this FE will
     /// proxy — inserted/removed per host from ITS OWN `Connected`/next
-    /// `Connected` evt (`remote && proxy`), never FE-global: a box that also
-    /// runs a local (pipe) daemon (ADR 0042) gets a `Connected{remote:false}`
-    /// from that one too, and a global flag let it silently switch proxying
+    /// `Connected` evt (`!matches!(resolved, ResolvedDial::Local) && proxy`),
+    /// never FE-global: a box that also runs a local (pipe) daemon (ADR 0042)
+    /// gets a `Connected{resolved: ResolvedDial::Local, ..}` from that one
+    /// too, and a global flag let it silently switch proxying
     /// off for every OTHER host's pages (2026-09-10 field incident: every
     /// backend page "can't be reached" on a FE box with a local sotd, with
     /// nothing logged — the gate returned before the first log line). A later
@@ -5342,13 +5335,20 @@ struct State {
     /// one host — so `ensure_proxy_for_url` opens the proxy against the SAME
     /// daemon connection that owns the row, whichever host that is.
     /// `proxy_listener_tx`: hands GPU-thread-bound `std` listeners to the
-    /// runtime accept loop, each tagged with the daemon address + token to
-    /// dial for that one port (`None` when no host has a runtime at all).
+    /// runtime accept loop, each tagged with the ssh recipe + token to
+    /// spawn a child through for that one port (`None` when no host has a
+    /// runtime at all).
     /// `proxy_ensured`: ports we've already bound OR found already-forwarded
-    /// (`AddrInUse` — a legacy launcher `-L` holds it; the two coexist).
+    /// (`AddrInUse` — a pre-upgrade `ssh -L` may still hold it; the two
+    /// coexist until it is reaped).
     proxy_capable_hosts: std::collections::HashSet<HostKey>,
-    proxy_listener_tx:
-        Option<tokio::sync::mpsc::UnboundedSender<(std::net::TcpListener, String, Option<String>)>>,
+    proxy_listener_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<(
+            std::net::TcpListener,
+            sot_protocol::ssh_bridge::SshRecipe,
+            Option<String>,
+        )>,
+    >,
     proxy_ensured: std::collections::HashSet<u16>,
     /// REPL prompt mode. `false` = `julia>` (default), `true` = `pkg>`.
     /// User toggles via `]` at start of empty input (enter) /
@@ -8108,15 +8108,16 @@ impl State {
     /// `resolve_default_host` elsewhere in this file.
     ///
     /// `NotNeeded`: `host` isn't a proxy-capable remote (a local daemon, or
-    /// one that never advertised `proxy`/never connected over tcp) — its
+    /// one that never advertised `proxy`/never connected remotely) — its
     /// pages resolve directly, silently, same as always.
-    /// `Refused`: `host` IS proxy-capable but this FE holds no resolved tcp
-    /// dial for it right now (`host_resolved_dial` — ADR 0045 decision 1 —
-    /// has no entry, or the entry is `Local`, which cannot coexist with a
-    /// proxy-capable remote and means state has desynced). Visible, not a
-    /// silent drop: the page would otherwise fail with no explanation.
-    /// `Dial`: the exact daemon address (and its token, from
-    /// `host_transports`) to pipe this host's browser connections through —
+    /// `Refused`: `host` IS proxy-capable but this FE holds no resolved
+    /// remote dial for it right now (`host_resolved_dial` — ADR 0045
+    /// decision 1 — has no entry, or the entry is `Local`, which cannot
+    /// coexist with a proxy-capable remote and means state has desynced).
+    /// Visible, not a silent drop: the page would otherwise fail with no
+    /// explanation.
+    /// `Dial`: the exact recipe (and its token, from `host_transports`) to
+    /// spawn an ssh child through for this host's browser connections —
     /// the SAME connection the control transport already resolved for this
     /// host, never a second independent guess.
     fn resolve_proxy_target(
@@ -8129,9 +8130,9 @@ impl State {
             return ProxyTarget::NotNeeded;
         }
         match host_resolved_dial.get(host) {
-            Some(ResolvedDial::Tcp(addr)) => {
+            Some(ResolvedDial::Ssh(recipe)) => {
                 let token = host_transports.get(host).and_then(|c| c.token.clone());
-                ProxyTarget::Dial(*addr, token)
+                ProxyTarget::Dial(recipe.clone(), token)
             }
             _ => ProxyTarget::Refused(format!(
                 "'{host}' has no resolved connection to proxy its pages through"
@@ -8198,7 +8199,7 @@ impl State {
             &self.host_resolved_dial,
             &self.host_transports,
         );
-        let (addr, token) = match &target {
+        let (recipe, token) = match &target {
             ProxyTarget::NotNeeded => return true,
             ProxyTarget::Refused(reason) => {
                 tracing::warn!(%host, %reason, "proxy: refusing — no dial to proxy through");
@@ -8206,7 +8207,7 @@ impl State {
                 self.window.request_redraw();
                 return false;
             }
-            ProxyTarget::Dial(addr, token) => (*addr, token.clone()),
+            ProxyTarget::Dial(recipe, token) => (recipe.clone(), token.clone()),
         };
         let Some(tx) = self.proxy_listener_tx.as_ref() else {
             return false; // past NotNeeded a proxy IS needed, and there's no manager to arm one
@@ -8226,12 +8227,12 @@ impl State {
                     self.proxy_ensured.remove(&port);
                     return false;
                 }
-                if tx.send((listener, addr.to_string(), token)).is_err() {
+                if tx.send((listener, recipe.clone(), token)).is_err() {
                     tracing::warn!(port, "proxy: manager gone; not arming");
                     self.proxy_ensured.remove(&port);
                     return false;
                 }
-                tracing::info!(port, %addr, "proxy: bound local listener for backend page");
+                tracing::info!(port, %recipe, "proxy: bound local listener for backend page");
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 // Something already holds the port. Do NOT cache this: un-mark
@@ -10387,7 +10388,7 @@ impl State {
             self.pane_hold = None;
             return false;
         };
-        let Some(resolved) = self.host_resolved_dial.get(host).copied() else {
+        let Some(resolved) = self.host_resolved_dial.get(host).cloned() else {
             self.status = format!("'{host}' not yet connected — capsule attach waiting");
             self.pane_hold = None;
             return false;
@@ -12999,48 +13000,38 @@ impl State {
                     host: _,
                     project_root,
                     proxy,
-                    remote,
-                    tcp_peer,
+                    resolved,
                     backend_version,
                 } => {
-                    // ADR 0045 decision 1 (Codex review, lane B5 discharge):
-                    // record exactly which transport THIS host's control
-                    // connection resolved to, so `spawn_pane_attach_term`'s
-                    // capsule lane dials the SAME one the control connection
-                    // is already talking to -- never a second, independent
-                    // guess at pipe-vs-tcp preference order.
-                    match tcp_peer {
-                        Some(addr) => {
-                            self.host_resolved_dial.insert(event_host.clone(), ResolvedDial::Tcp(addr));
-                        }
-                        None if !remote => {
-                            self.host_resolved_dial.insert(event_host.clone(), ResolvedDial::Local);
-                        }
-                        None => {
-                            // `remote` was true but the peer address capture
-                            // failed (`TcpStream::peer_addr()` on an already
-                            // -handshaked stream is not expected to) -- leave
-                            // whatever this host's dial resolution already
-                            // was rather than record something unknown.
-                            tracing::warn!(%event_host, "connected via tcp but its resolved peer address was unavailable");
-                        }
-                    }
+                    // ADR 0045 decision 1 (Codex review, lane B5 discharge),
+                    // reshaped by C3 as amended §5: record exactly which
+                    // transport THIS host's control connection actually
+                    // resolved to, so `spawn_pane_attach_term`'s capsule
+                    // lane dials the SAME one -- never a second, independent
+                    // guess. One unconditional insert: the amendment's own
+                    // fix for the bug the old `Connected.remote`/`tcp_peer`
+                    // pair let through (`remote` was literally `via_tcp`, so
+                    // an ssh control connection -- remote and NOT tcp --
+                    // recorded `Local` and disarmed its proxy). There is no
+                    // "peer address unavailable" arm to port: a recipe
+                    // cannot fail to be observed the way `peer_addr()` could.
+                    self.host_resolved_dial.insert(event_host.clone(), resolved.clone());
                     // ADR 0035: arm the proxy for THIS host only when its own
                     // daemon can proxy (capability) AND this FE actually
-                    // connected to it over the tcp control tunnel (remote).
-                    // Keyed on the transport that CONNECTED, not the CLI
-                    // shape — the documented `--socket <local> --tcp <addr>`
-                    // remote config has both set and falls back to tcp. A
-                    // local (pipe) connection to a host reaches that host's
-                    // loopback ports directly and never proxies. Per-host
-                    // insert/remove, never a single FE-wide flag: every
-                    // host's own Connected evt only ever touches its own
-                    // entry, so a local pipe daemon on this box (remote:
-                    // false) cannot clobber a DIFFERENT host's proxy arming
-                    // (the 2026-09-10 incident), and — the fix here — a
-                    // non-default host's Connected now arms its own entry
-                    // too, instead of being silently ignored.
-                    if proxy && remote {
+                    // connected to it remotely (not the local pipe). Keyed
+                    // on the transport that CONNECTED, not the CLI shape --
+                    // the documented `--socket <local>` config overridden by
+                    // a `--dial local=ssh:…` entry is correctly detected as
+                    // remote this way. A local (pipe) connection to a host
+                    // reaches that host's loopback ports directly and never
+                    // proxies. Per-host insert/remove, never a single
+                    // FE-wide flag: every host's own Connected evt only ever
+                    // touches its own entry, so a local pipe daemon on this
+                    // box cannot clobber a DIFFERENT host's proxy arming
+                    // (the 2026-09-10 incident), and a non-default host's
+                    // Connected arms its own entry too, instead of being
+                    // silently ignored.
+                    if proxy && !matches!(resolved, ResolvedDial::Local) {
                         self.proxy_capable_hosts.insert(event_host.clone());
                     } else {
                         self.proxy_capable_hosts.remove(&event_host);
@@ -20671,7 +20662,7 @@ impl ApplicationHandler for App {
                     // runtime at all (i.e. at least one host connection is
                     // configured) — the manager just waits for listeners and
                     // costs nothing idle. It arms per port only when THAT
-                    // port's owning host actually connects over tcp and
+                    // port's owning host actually connects remotely and
                     // advertises the proxy, gated at ensure-time by
                     // `proxy_capable_hosts` (per host, set from each host's
                     // own Connected evt), NOT the CLI shape. Each listener now
@@ -30963,18 +30954,16 @@ mod capsule_pane_tests {
     /// BLOCKER (Codex review, lane B5 discharge): `lane_dial` must dial
     /// the SAME endpoint the control transport actually resolved for a
     /// host — never a second, independent preference guess. Both a
-    /// pipe-configured AND tcp-configured host must still dial the PIPE
+    /// pipe-configured AND ssh-configured host must still dial the PIPE
     /// when `ResolvedDial::Local` says that's what the control
-    /// connection is using (the old "tcp always wins when both are
-    /// configured" behavior would reach a DIFFERENT daemon, or fail
-    /// outright, whenever the pipe is the one actually healthy); a
-    /// `ResolvedDial::Tcp(addr)` carries the exact resolved `SocketAddr`
-    /// through untouched, proving no re-parse of `config.tcp`'s own
-    /// hostname string ever happens (a bare `SocketAddr` parse rejects
-    /// `localhost:PORT`, which `TcpStream::connect`'s own resolution
-    /// handles fine). `LaneDial` has no `Debug`/`PartialEq` (its own
-    /// doc: an endpoint value names one dial, nothing to compare
-    /// structurally), so each case matches the variant directly.
+    /// connection is using (the old "the other transport always wins
+    /// when both are configured" behavior would reach a DIFFERENT
+    /// daemon, or fail outright, whenever the pipe is the one actually
+    /// healthy); a `ResolvedDial::Ssh(recipe)` carries the exact resolved
+    /// recipe through untouched, proving no second, independent read of
+    /// `config.ssh` ever happens. `LaneDial` has no `Debug`/`PartialEq`
+    /// (its own doc: an endpoint value names one dial, nothing to
+    /// compare structurally), so each case matches the variant directly.
     #[test]
     fn a_switch_back_to_a_warm_row_takes_the_parked_client_without_a_new_dial() {
         let host = || "h".to_string();
@@ -31002,49 +30991,55 @@ mod capsule_pane_tests {
 
     #[test]
     fn lane_dial_matches_the_resolved_control_transport_selection() {
+        let recipe = sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap();
         let both = crate::transport::TransportConfig {
             pipe: Some(std::path::PathBuf::from("/tmp/sock")),
-            tcp: Some("127.0.0.1:9999".to_string()),
+            ssh: Some(recipe.clone()),
             token: Some("tok".to_string()),
         };
         // The control connection resolved LOCAL (the pipe is healthy) —
-        // the lane dial must follow, even though `tcp` is ALSO
-        // configured and names a real address.
+        // the lane dial must follow, even though `ssh` is ALSO
+        // configured and names a real target.
         match lane_dial(&both, ResolvedDial::Local) {
             Some((sot_protocol::lane_client::LaneDial::Local(path), token)) => {
                 assert_eq!(path, std::path::PathBuf::from("/tmp/sock"));
                 assert_eq!(token.as_deref(), Some("tok"));
             }
+            Some((sot_protocol::lane_client::LaneDial::Ssh(_), _)) => {
+                panic!("must follow the resolved Local selection, not guess ssh")
+            }
             Some((sot_protocol::lane_client::LaneDial::Tcp(_), _)) => {
-                panic!("must follow the resolved Local selection, not guess tcp")
+                panic!("lane_dial never produces Tcp (C3 as amended)")
             }
             None => panic!("a resolved+configured pipe must dial, got None"),
         }
-        // The SAME config, but the control connection resolved TCP (the
+        // The SAME config, but the control connection resolved SSH (the
         // pipe attempt failed and it fell back) — the lane dial follows
-        // that instead, carrying the resolved address verbatim.
-        let resolved_addr: std::net::SocketAddr = "203.0.113.5:9999".parse().unwrap();
-        match lane_dial(&both, ResolvedDial::Tcp(resolved_addr)) {
-            Some((sot_protocol::lane_client::LaneDial::Tcp(addr), token)) => {
-                assert_eq!(addr, resolved_addr);
+        // that instead, carrying the resolved recipe verbatim.
+        match lane_dial(&both, ResolvedDial::Ssh(recipe.clone())) {
+            Some((sot_protocol::lane_client::LaneDial::Ssh(got), token)) => {
+                assert_eq!(got, recipe);
                 assert_eq!(token.as_deref(), Some("tok"));
             }
             Some((sot_protocol::lane_client::LaneDial::Local(_), _)) => {
-                panic!("must follow the resolved Tcp selection, not guess local")
+                panic!("must follow the resolved Ssh selection, not guess local")
             }
-            None => panic!("a resolved tcp connection must dial, got None"),
+            Some((sot_protocol::lane_client::LaneDial::Tcp(_), _)) => {
+                panic!("lane_dial never produces Tcp (C3 as amended)")
+            }
+            None => panic!("a resolved ssh connection must dial, got None"),
         }
         // Resolved Local but no pipe configured (shouldn't happen — the
         // control connection could not have resolved Local without one)
         // degrades to no dial rather than panicking.
-        let tcp_only = crate::transport::TransportConfig { pipe: None, tcp: Some("x:1".to_string()), token: None };
-        assert!(lane_dial(&tcp_only, ResolvedDial::Local).is_none());
+        let ssh_only = crate::transport::TransportConfig { pipe: None, ssh: Some(recipe), token: None };
+        assert!(lane_dial(&ssh_only, ResolvedDial::Local).is_none());
     }
 
     /// Cross-host figure defect (topology plan step 7): `resolve_proxy_target`
     /// must open the proxy against the daemon that OWNS the announcing row,
     /// not only a single default host. A row on a non-default host with a
-    /// resolved tcp dial must proxy through ITS OWN address — this fails
+    /// resolved ssh dial must proxy through ITS OWN recipe — this fails
     /// against the old `proxy_host == Some(default_host)`-only gate, which
     /// left every non-default host's `Dial` case unreachable.
     #[test]
@@ -31052,25 +31047,25 @@ mod capsule_pane_tests {
         let host = "gpu-box".to_string();
         let mut proxy_capable_hosts = std::collections::HashSet::new();
         proxy_capable_hosts.insert(host.clone());
-        let resolved_addr: std::net::SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        let recipe = sot_protocol::ssh_bridge::SshRecipe::new("hub", Some(&host)).unwrap();
         let mut host_resolved_dial = HashMap::new();
-        host_resolved_dial.insert(host.clone(), ResolvedDial::Tcp(resolved_addr));
+        host_resolved_dial.insert(host.clone(), ResolvedDial::Ssh(recipe.clone()));
         let mut host_transports = HashMap::new();
         host_transports.insert(
             host.clone(),
             crate::transport::TransportConfig {
                 pipe: None,
-                tcp: Some("ignored — resolved wins".to_string()),
+                ssh: Some(sot_protocol::ssh_bridge::SshRecipe::new("ignored", None).unwrap()),
                 token: Some("tok-gpu".to_string()),
             },
         );
         match State::resolve_proxy_target(&host, &proxy_capable_hosts, &host_resolved_dial, &host_transports)
         {
-            ProxyTarget::Dial(addr, token) => {
-                assert_eq!(addr, resolved_addr);
+            ProxyTarget::Dial(got, token) => {
+                assert_eq!(got, recipe);
                 assert_eq!(token.as_deref(), Some("tok-gpu"));
             }
-            other => panic!("expected Dial for a proxy-capable host with a resolved tcp address, got {other:?}"),
+            other => panic!("expected Dial for a proxy-capable host with a resolved ssh recipe, got {other:?}"),
         }
     }
 
@@ -31081,22 +31076,23 @@ mod capsule_pane_tests {
         let host = "hub".to_string();
         let mut proxy_capable_hosts = std::collections::HashSet::new();
         proxy_capable_hosts.insert(host.clone());
-        let resolved_addr: std::net::SocketAddr = "127.0.0.1:18743".parse().unwrap();
+        let recipe = sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap();
         let mut host_resolved_dial = HashMap::new();
-        host_resolved_dial.insert(host.clone(), ResolvedDial::Tcp(resolved_addr));
+        host_resolved_dial.insert(host.clone(), ResolvedDial::Ssh(recipe.clone()));
         let host_transports = HashMap::new();
         match State::resolve_proxy_target(&host, &proxy_capable_hosts, &host_resolved_dial, &host_transports)
         {
-            ProxyTarget::Dial(addr, token) => {
-                assert_eq!(addr, resolved_addr);
+            ProxyTarget::Dial(got, token) => {
+                assert_eq!(got, recipe);
                 assert_eq!(token, None);
             }
             other => panic!("expected Dial for the default host, got {other:?}"),
         }
     }
 
-    /// A proxy-capable host with no resolved dial (connected but the tcp
-    /// peer address capture failed, or state otherwise desynced) is a
+    /// A proxy-capable host with no resolved dial (state otherwise
+    /// desynced — a recipe cannot fail to be observed the way a tcp peer
+    /// address once could) is a
     /// visible refusal, never a silent drop — the caller surfaces
     /// `Refused`'s reason to the status line.
     #[test]
@@ -31104,7 +31100,7 @@ mod capsule_pane_tests {
         let host = "orphan".to_string();
         let mut proxy_capable_hosts = std::collections::HashSet::new();
         proxy_capable_hosts.insert(host.clone());
-        let host_resolved_dial = HashMap::new(); // never got a tcp_peer
+        let host_resolved_dial = HashMap::new(); // never resolved a dial
         let host_transports = HashMap::new();
         match State::resolve_proxy_target(&host, &proxy_capable_hosts, &host_resolved_dial, &host_transports)
         {
@@ -31114,7 +31110,7 @@ mod capsule_pane_tests {
     }
 
     /// A host that never advertised proxy capability (a local daemon, or
-    /// one that hasn't connected over tcp) needs no proxying at all — its
+    /// one that hasn't connected remotely) needs no proxying at all — its
     /// pages resolve directly, so this stays silent (`NotNeeded`), not a
     /// refusal.
     #[test]
@@ -31143,7 +31139,7 @@ mod capsule_pane_tests {
             bind.as_ref().err().map(std::io::Error::kind),
             Some(std::io::ErrorKind::AddrInUse)
         ));
-        let target = ProxyTarget::Dial("127.0.0.1:1".parse().unwrap(), None);
+        let target = ProxyTarget::Dial(sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap(), None);
         assert!(!State::proxy_open_permitted(&target, Some(&bind)));
     }
 
@@ -31153,7 +31149,7 @@ mod capsule_pane_tests {
     fn proxy_open_permitted_allows_a_successful_dial_bind() {
         let bind = std::net::TcpListener::bind(("127.0.0.1", 0));
         assert!(bind.is_ok());
-        let target = ProxyTarget::Dial("127.0.0.1:1".parse().unwrap(), None);
+        let target = ProxyTarget::Dial(sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap(), None);
         assert!(State::proxy_open_permitted(&target, Some(&bind)));
     }
 

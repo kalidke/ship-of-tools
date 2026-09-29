@@ -68,15 +68,22 @@ use sot_log::transport::{TransportError, CONNECT_BOUND};
 
 use crate::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
 
-/// How to reach a row's daemon — the loopback tunnel (`Tcp`, matching
-/// `proxy.connect`'s own transport for a remote host) or a local Unix
-/// socket / Windows named pipe (`Local`, matching the platform
-/// endpoints' own transport for this host's daemon). Carries no row: the
-/// row rides `Endpoint`'s own `lane` argument, named exactly once —
-/// never duplicated onto the dial value itself.
+/// How to reach a row's daemon — a local Unix socket / Windows named
+/// pipe (`Local`, matching the platform endpoints' own transport for
+/// this host's daemon), an ssh child (`Ssh`, C3 as amended — the
+/// transport for every OTHER host now that the daemon has no TCP
+/// listener), or the loopback tunnel (`Tcp`, **kept** only as the dial
+/// of `rust/backend/tests/lane_bridge.rs`'s hermetic harness — it opens
+/// no port, since nothing listens on TCP anywhere in the daemon, so a
+/// client-side address shape guards nothing; `lane_dial()`
+/// (`rust/frontend/src/gpu.rs`) stops producing it, and it is a 0.6.7
+/// deletion candidate once that harness is ported to `Local`). Carries
+/// no row: the row rides `Endpoint`'s own `lane` argument, named exactly
+/// once — never duplicated onto the dial value itself.
 pub enum LaneDial {
     Tcp(SocketAddr),
     Local(PathBuf),
+    Ssh(crate::ssh_bridge::SshRecipe),
 }
 
 /// An `Endpoint` value naming one daemon connection, never a row. `token`
@@ -210,19 +217,176 @@ impl Client for TcpClient {
     }
 }
 
+/// The `Ssh` twin of `TcpClient`: a spawned `ssh … sotd stdio-bridge`
+/// child whose stdin/stdout carry the lane bridge's own frames.
+/// `ChildStdout`/`ChildStdin` are converted to `File` through `OwnedFd`
+/// (unix) / `OwnedHandle` (windows) at construction, so `read`/
+/// `write_all` go through `&self` exactly as `(&self.stream)` does for
+/// `TcpClient` above.
+///
+/// One named difference from `TcpClient`: a pipe has no
+/// `set_read_timeout`, so `READ_POLL_INTERVAL` has no analogue here.
+/// `cancel()` sets the flag and **kills the child**; the kill closes the
+/// child's stdout, which EOFs a parked read on both platforms — the
+/// Winsock objection in `TcpClient`'s own doc ("closing here would race
+/// that thread's own borrowed `&TcpStream`") does not apply, because the
+/// handle closed is the CHILD's, not the stream the reader borrows.
+/// `Drop` kills and waits, so no ssh child outlives its client.
+///
+/// No new trust claim: `DaemonLaneEndpoint`'s own doc already states
+/// that it holds no kernel handle on the peer and that every identity
+/// claim traces to the daemon's own observation. An ssh child is neither
+/// better nor worse placed than a tcp socket on that point.
+struct BridgedClient {
+    child: std::sync::Mutex<std::process::Child>,
+    out: std::fs::File,
+    inp: std::fs::File,
+    cancelled: AtomicBool,
+    /// The child's last non-empty stderr line, kept by a drainer thread
+    /// spawned at construction — ssh's own complaint ("Permission
+    /// denied", or `unrecognised argument: --host` from a hub whose
+    /// `sotd` predates C1) is the diagnosis a caller surfaces on
+    /// failure, the same rule `stdio_bridge.rs` already sets for the far
+    /// end.
+    last_stderr: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl BridgedClient {
+    fn spawn(recipe: &crate::ssh_bridge::SshRecipe) -> std::io::Result<Self> {
+        Self::wrap(crate::ssh_bridge::spawn_sync(recipe)?)
+    }
+
+    /// The shared construction path — real `ssh` child ([`spawn`] above)
+    /// or, in tests, any other piped-stdio child that stands in for one
+    /// (so `cancel()`'s kill→EOF property is exercised without a real
+    /// `ssh` on `PATH`).
+    fn wrap(mut child: std::process::Child) -> std::io::Result<Self> {
+        let stdin = child.stdin.take().expect("spawned with a piped stdin");
+        let stdout = child.stdout.take().expect("spawned with a piped stdout");
+        let stderr = child.stderr.take().expect("spawned with a piped stderr");
+
+        let last_stderr = std::sync::Arc::new(std::sync::Mutex::new(None));
+        {
+            let last_stderr = std::sync::Arc::clone(&last_stderr);
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                let reader = std::io::BufReader::new(stderr);
+                for line in reader.lines().map_while(Result::ok) {
+                    if !line.trim().is_empty() {
+                        if let Ok(mut guard) = last_stderr.lock() {
+                            *guard = Some(line);
+                        }
+                    }
+                }
+            });
+        }
+
+        #[cfg(unix)]
+        let (inp, out) = {
+            use std::os::fd::OwnedFd;
+            (std::fs::File::from(OwnedFd::from(stdin)), std::fs::File::from(OwnedFd::from(stdout)))
+        };
+        #[cfg(windows)]
+        let (inp, out) = {
+            use std::os::windows::io::OwnedHandle;
+            (std::fs::File::from(OwnedHandle::from(stdin)), std::fs::File::from(OwnedHandle::from(stdout)))
+        };
+
+        Ok(Self { child: std::sync::Mutex::new(child), out, inp, cancelled: AtomicBool::new(false), last_stderr })
+    }
+
+    /// A short bounded poll for the child's last stderr line (this is the
+    /// error path only, never the hot path). Stdout and stderr are
+    /// separate pipes with no ordering guarantee between them, so a
+    /// child that writes a diagnosis to stderr and closes stdout in the
+    /// same instant can otherwise be observed here before its line
+    /// lands.
+    fn poll_last_stderr(&self) -> Option<String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        loop {
+            if let Some(line) = self.last_stderr.lock().ok().and_then(|g| g.clone()) {
+                return Some(line);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Wraps a raw io error with the child's last stderr line when one
+    /// was captured — that line IS the diagnosis (a dead child's own
+    /// "Permission denied" beats the generic "broken pipe" its closed
+    /// pipe leaves behind).
+    fn diagnose(&self, source: std::io::Error) -> std::io::Error {
+        match self.poll_last_stderr() {
+            Some(line) => std::io::Error::other(line),
+            None => source,
+        }
+    }
+}
+
+impl Client for BridgedClient {
+    fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(TransportError::Cancelled);
+        }
+        use std::io::Write;
+        (&self.inp).write_all(bytes).map_err(|source| {
+            if self.cancelled.load(Ordering::SeqCst) {
+                TransportError::Cancelled
+            } else {
+                TransportError::Io { op: "lane write", source: self.diagnose(source) }
+            }
+        })
+    }
+
+    fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
+        use std::io::Read;
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(TransportError::Cancelled);
+        }
+        (&self.out).read(buf).map_err(|source| {
+            if self.cancelled.load(Ordering::SeqCst) {
+                TransportError::Cancelled
+            } else {
+                TransportError::Io { op: "lane read", source: self.diagnose(source) }
+            }
+        })
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+        }
+    }
+}
+
+impl Drop for BridgedClient {
+    fn drop(&mut self) {
+        self.cancel();
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.wait();
+        }
+    }
+}
+
 /// The ONE stream adapter every transport this endpoint dials goes
 /// through — `Unix`/`Pipe` reuse `sot-log`'s own hardened clients
 /// verbatim (real bounded connectors, real `cancel()`s) rather than
-/// reimplementing either; only `Tcp` needed a wrapper of its own
-/// (`sot-log` has no loopback-TCP client). `DaemonLaneClient` below is
-/// nothing more than `{stream: LaneStream, peer}` — every `Client` call
-/// delegates straight through.
+/// reimplementing either; `Tcp`/`Bridged` each needed a wrapper of their
+/// own (`sot-log` has no loopback-TCP client, and no ssh-child client at
+/// all). `DaemonLaneClient` below is nothing more than
+/// `{stream: LaneStream, peer}` — every `Client` call delegates straight
+/// through.
 enum LaneStream {
     Tcp(TcpClient),
     #[cfg(unix)]
     Unix(sot_log::socket_unix::SocketClient),
     #[cfg(windows)]
     Pipe(sot_log::pipe_win::PipeClient),
+    Bridged(BridgedClient),
 }
 
 impl Client for LaneStream {
@@ -233,6 +397,7 @@ impl Client for LaneStream {
             LaneStream::Unix(c) => c.write_all(bytes),
             #[cfg(windows)]
             LaneStream::Pipe(c) => c.write_all(bytes),
+            LaneStream::Bridged(c) => c.write_all(bytes),
         }
     }
     fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
@@ -242,6 +407,7 @@ impl Client for LaneStream {
             LaneStream::Unix(c) => c.read(buf),
             #[cfg(windows)]
             LaneStream::Pipe(c) => c.read(buf),
+            LaneStream::Bridged(c) => c.read(buf),
         }
     }
     fn cancel(&self) {
@@ -251,6 +417,7 @@ impl Client for LaneStream {
             LaneStream::Unix(c) => c.cancel(),
             #[cfg(windows)]
             LaneStream::Pipe(c) => c.cancel(),
+            LaneStream::Bridged(c) => c.cancel(),
         }
     }
 }
@@ -507,10 +674,32 @@ impl DaemonLaneEndpoint {
                 let client = sot_log::pipe_win::connect_pipe_path_unchallenged(path_str, &dial_cancel).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
                 LaneStream::Pipe(client)
             }
+            LaneDial::Ssh(recipe) => {
+                let client = BridgedClient::spawn(recipe).map_err(TransportError::Unreachable)?;
+                LaneStream::Bridged(client)
+            }
         };
 
         let handshake_deadline = Instant::now() + CONNECT_BOUND;
-        let (pid, created) = run_handshake(&stream, &frame, handshake_deadline)?;
+        let outcome = run_handshake(&stream, &frame, handshake_deadline);
+        // A dying ssh child's stdout closes as a clean `Ok(0)` EOF, not
+        // an `io::Error` `BridgedClient::read` has anything to wrap — the
+        // codec layer above it turns that EOF into its own generic
+        // parse-failure text before `Client::read`'s error path (the
+        // `diagnose` this same struct otherwise gives `write_all`/`read`)
+        // ever gets a look. This is the one place both paths funnel
+        // through, so it is where the substitution has to happen for the
+        // EOF case: on ANY handshake failure over a `Bridged` stream,
+        // prefer the child's last stderr line over whatever codec text
+        // resulted, matching `write_all`/`read`'s existing rule.
+        if outcome.is_err() {
+            if let LaneStream::Bridged(bridged) = &stream {
+                if let Some(line) = bridged.poll_last_stderr() {
+                    return Err(TransportError::Unreachable(std::io::Error::other(line)));
+                }
+            }
+        }
+        let (pid, created) = outcome?;
         Ok(DaemonLaneClient { stream, peer: PeerAuthenticated { pid, created } })
     }
 }
@@ -793,5 +982,60 @@ mod tests {
         let outcome = endpoint.challenge(&client, &mut exchange, Instant::now() + std::time::Duration::from_secs(1));
         handle.join().unwrap();
         assert!(matches!(outcome, ChallengeOutcome::Foreign), "a mismatched pid must never be Proven");
+    }
+
+    /// A portable stand-in for the real `ssh` child: `cat` echoes stdin
+    /// back on stdout and outlives its parent until killed, exactly the
+    /// two properties `BridgedClient::cancel()`'s kill→EOF mechanism
+    /// needs (C3 as amended §2; §7's test table, "Linux + Windows").
+    #[cfg(unix)]
+    fn spawn_stub_child() -> std::process::Child {
+        std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("`cat` must be on PATH for this test")
+    }
+
+    #[cfg(windows)]
+    fn spawn_stub_child() -> std::process::Child {
+        // `more` with no filename argument reads stdin and copies it to
+        // stdout, the same echo shape `cat` gives on Unix — no unix-only
+        // tool required.
+        std::process::Command::new("more")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("`more` must be on PATH for this test")
+    }
+
+    /// `BridgedClient::cancel()`'s own contract: the kill it issues must
+    /// be what unblocks a read already parked on the child's stdout, not
+    /// an eventual natural exit racing ahead of it — same property
+    /// `cancel_unblocks_a_pending_read` proves for `TcpClient` above, one
+    /// mechanism for both.
+    #[test]
+    fn bridged_cancel_unblocks_a_parked_read_via_kill() {
+        let client = std::sync::Arc::new(BridgedClient::wrap(spawn_stub_child()).expect("wrap"));
+        let reader = std::sync::Arc::clone(&client);
+        let read_thread = std::thread::spawn(move || {
+            let mut buf = [0u8; 16];
+            let started = Instant::now();
+            let result = reader.read(&mut buf);
+            (result, started.elapsed())
+        });
+        // Give the read a moment to actually park before cancelling —
+        // `cat`/`more` never write anything unprompted, so the read has
+        // nothing to return until either bytes arrive or the child dies.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        client.cancel();
+        let (result, elapsed) = read_thread.join().unwrap();
+        assert!(elapsed < std::time::Duration::from_secs(2), "cancel() must unblock the read promptly, took {elapsed:?}");
+        match result {
+            Ok(0) | Err(TransportError::Cancelled) | Err(TransportError::Io { .. }) => {}
+            other => panic!("expected cancel to unblock the read as EOF or an error, got {other:?}"),
+        }
     }
 }
