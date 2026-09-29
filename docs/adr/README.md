@@ -22,7 +22,7 @@ Every ADR's line 3 begins with one of three status tokens:
 
 - [0001](0001-protocol.md) — Line protocol
 - [0002](0002-kernel-launch.md) — Kernel launch and process supervision
-- [0003](0003-rendering-surface.md) — Rendering surface (revised, the one in force)
+- [0003](0003-rendering-surface.md) — Rendering surface (revised)
 - [0004](0004-llm-cache.md) — LLM provider and prompt-cache layout
 - [0005](0005-ast-hash.md) — AST hash algorithm
 - [0006](0006-plugin-discovery.md) — Plugin discovery
@@ -50,54 +50,63 @@ Every ADR's line 3 begins with one of three status tokens:
 
 ## Superseded records
 
-- [0003 original](0003-terminal-images-superseded.md) — Terminal image protocol → ADR 0003 (`0003-rendering-surface.md`)
-- [0010](0010-transport-and-persistence.md) — Transport, persistence, and reconnect → ADR 0046
-- [0013](0013-backend-sessions.md) — Backend sessions — tmux registry, lifecycle, resume → ADR 0046
-- [0014](0014-workspaces.md) — Workspaces — one daemon, direct-child kernels per workspace, routed by workspace_id → ADR 0046
-- [0015](0015-hosts-targeting.md) — In-app host targeting via `hosts.toml` + `Mode::Hosts` → ADR 0042
-- [0017](0017-frontend-self-relaunch.md) — Frontend self-relaunch — staged-copy supervisor, sentinel trigger, terminal resume → ADR 0041
-- [0023](0023-daemon-fe-commands-and-spawn.md) — Daemon-brokered FE commands + daemon-boot session spawn → ADR 0025 and ADR 0046
-- [0024](0024-backend-web-pages.md) — Open backend web pages in the local browser (dynamic port-forward) → ADR 0035
-- [0025](0025-daemon-authoritative-fe.md) — Daemon-authoritative FE — imperative commands + FE-as-viewport → ADR 0046
-- [0026](0026-rename-to-ship-of-tools.md) — Rename DevEnv.jl to "Ship of Tools" → ADR 0046
-- [0028](0028-remote-comm-autoconnect.md) — Remote comm auto-connect — myhost-anchored reverse SSH tunnels under systemd --user → ADR 0046
-- [0029](0029-multi-fe-docs-serving.md) — Multi-FE-correct `docs.open` site serving — per-connection site roots + disconnect cleanup → ADR 0035
-- [0030](0030-versioning-release-and-auto-update.md) — Versioning, releases, and auto-update — going public → ADR 0046 and ADR 0045
-- [0031](0031-codex-sessions.md) — Codex sessions (proposed) → ADR 0046
-- [0032](0032-interactive-browser-figures.md) — Interactive browser-served figures (WGLMakie/Bonito) → ADR 0035
-- [0036](0036-workspace-lifecycle-hygiene.md) — Workspace lifecycle hygiene — refuse duplicate roots, reap orphans → ADR 0046
-- [0037](0037-ships-log-substrate.md) — The Ship's Log — sessions become durable records → ADR 0046
-- [0038](0038-tmux-keeper-unit.md) — sot-tmux keeper — daemon restarts must stop killing sessions → ADR 0046
-- [0041](0041-fe-local-capsules-windows.md) — FE-local capsules on Windows (Ship's Log P3) → ADR 0045
-- [0042](0042-first-class-local-sessions.md) — First-class local sessions and the multi-host selector → ADR 0045
-- [0043](0043-l1-unix-capsule-runtime.md) — L1-unix — the capsule runtime on Unix hosts → ADR 0045
-- [0047](0047-claude-ping-wake.md) — Claude sessions wake on a ping, not a harness Monitor → ADR 0049
-- [0048](0048-filer-receipts.md) — the filer's receipt is the cross-box delivery verdict → ADR 0049
+- [0003](0003-terminal-images-superseded.md) — Terminal image protocol (superseded by ADR 0003 `0003-rendering-surface.md`)
+- [0010](0010-transport-and-persistence.md) — Transport, persistence, and reconnect (partly superseded by ADR 0046)
+- [0013](0013-backend-sessions.md) — Backend sessions — tmux registry, lifecycle, resume (superseded by ADR 0046)
+- [0014](0014-workspaces.md) — Workspaces — one daemon, direct-child kernels per workspace, routed by workspace_id (partly superseded by ADR 0046)
+- [0015](0015-hosts-targeting.md) — In-app host targeting via `hosts.toml` + `Mode::Hosts` (partly superseded by ADR 0042)
+- [0017](0017-frontend-self-relaunch.md) — Frontend self-relaunch — staged-copy supervisor, sentinel trigger, terminal resume (partly superseded by ADR 0041)
+- [0023](0023-daemon-fe-commands-and-spawn.md) — Daemon-brokered FE commands + daemon-boot session spawn (partly superseded by ADR 0025 and ADR 0046)
+- [0024](0024-backend-web-pages.md) — Open backend web pages in the local browser (dynamic port-forward) (partly superseded by ADR 0035)
+- [0025](0025-daemon-authoritative-fe.md) — Daemon-authoritative FE — imperative commands + FE-as-viewport (partly superseded by ADR 0046)
+- [0026](0026-rename-to-ship-of-tools.md) — Rename DevEnv.jl → "Ship of Tools" (partly superseded by ADR 0046)
+- [0028](0028-remote-comm-autoconnect.md) — Remote comm auto-connect — myhost-anchored reverse SSH tunnels under systemd --user (partly superseded by ADR 0046)
+- [0029](0029-multi-fe-docs-serving.md) — Multi-FE-correct `docs.open` site serving — per-connection site roots + disconnect cleanup (partly superseded by ADR 0035)
+- [0030](0030-versioning-release-and-auto-update.md) — Versioning, releases, and auto-update — going public (partly superseded by ADR 0045 and ADR 0046)
+- [0031](0031-codex-sessions.md) — Codex sessions (proposed) (partly superseded by ADR 0046)
+- [0032](0032-interactive-browser-figures.md) — Interactive browser-served figures (WGLMakie/Bonito) (partly superseded by ADR 0035)
+- [0036](0036-workspace-lifecycle-hygiene.md) — Workspace lifecycle hygiene — refuse duplicate roots, reap orphans (partly superseded by ADR 0046)
+- [0037](0037-ships-log-substrate.md) — The Ship's Log — sessions become durable records (partly superseded by ADR 0046)
+- [0038](0038-tmux-keeper-unit.md) — sot-tmux keeper — daemon restarts must stop killing sessions (superseded by ADR 0046)
+- [0041](0041-fe-local-capsules-windows.md) — FE-local capsules on Windows (Ship's Log P3) (partly superseded by ADR 0045)
+- [0042](0042-first-class-local-sessions.md) — First-class local sessions and the multi-host selector (partly superseded by ADR 0045)
+- [0043](0043-l1-unix-capsule-runtime.md) — L1-unix — the capsule runtime on Unix hosts (partly superseded by ADR 0045)
+- [0047](0047-claude-ping-wake.md) — Claude sessions wake on a ping, not a harness Monitor (superseded by ADR 0049)
+- [0048](0048-filer-receipts.md) — the filer's receipt is the cross-box delivery verdict (superseded by ADR 0049)
 
 ## Maintaining this invariant
 
-The two lists above are not hand-maintained prose: they are a view of the
-records' own status tokens, and both checks below must pass. The first says
-every record carries a token; the second says the lists agree with those
-tokens, which is what stops a token flip from leaving a file under the wrong
-heading. Neither prints anything when the directory is sound.
+**The two lists above are generated, not written.** They are a view of the
+records' own status tokens and titles, so the way to change a list is to change
+the record and regenerate. Both checks must pass; neither prints anything when
+the directory is sound.
 
 ```sh
-# 1. every record's line 3 is one of the three tokens
+# 1. every record's line 3 carries one of the three tokens
 for f in docs/adr/[0-9][0-9][0-9][0-9]-*.md; do sed -n '3p' "$f" \
   | grep -qE '^\*\*Status:\*\* (current|(partly )?superseded by ADR [0-9]{4})' \
   || echo "NO TOKEN $f"; done
 
-# 2. this file lists each record exactly once, under the heading its token says
-sup=$(grep -n '^## Superseded' docs/adr/README.md | cut -d: -f1)
-for f in docs/adr/[0-9][0-9][0-9][0-9]-*.md; do
-  b=${f##*/}
-  tok=$(sed -n '3p' "$f" | grep -oE 'current|(partly )?superseded by ADR [0-9]{4}' | head -1)
-  n=$(grep -c "($b)" docs/adr/README.md)
-  [ "$n" = 1 ] || { echo "LISTED ${n}x $b"; continue; }
-  ln=$(grep -n "($b)" docs/adr/README.md | cut -d: -f1)
-  here=$([ "$ln" -lt "$sup" ] && echo current || echo superseded)
-  case "$tok" in current) want=current;; *) want=superseded;; esac
-  [ "$here" = "$want" ] || echo "WRONG SECTION $b ($tok, listed under $here)"
-done
+# 2. the lists are exactly what the records say — regenerate and diff.
+#    This is one comparison rather than several checks: it catches a record
+#    missing from a list, a line for a record that no longer exists, a title
+#    that has drifted from its heading, a pointer that disagrees with the
+#    token, a duplicate, and a file under the wrong heading.
+adr_lists() {
+  for f in docs/adr/[0-9][0-9][0-9][0-9]-*.md; do
+    b=${f##*/}; s3=$(sed -n '3p' "$f")
+    tok=$(printf '%s' "$s3" | grep -oE '^\*\*Status:\*\* ((partly )?superseded by ADR [0-9]{4}( and ADR [0-9]{4})?|current)' | sed 's/^\*\*Status:\*\* //')
+    named=$(printf '%s' "$s3" | grep -oE 'superseded by ADR [0-9]{4} \(`[^`]+`' | grep -oE '`[^`]+`')
+    title=$(sed -n '1s/^# ADR [0-9]*[[:space:]]*[:—-][[:space:]]*//p' "$f")
+    case "$tok" in
+      current) printf 'C\t- [%s](%s) — %s\n' "${b%%-*}" "$b" "$title" ;;
+      *)       printf 'S\t- [%s](%s) — %s (%s%s)\n' "${b%%-*}" "$b" "$title" "$tok" "${named:+ $named}" ;;
+    esac
+  done
+}
+adr_listed() {
+  awk '/^## Current ADRs/{t="C";next} /^## Superseded records/{t="S";next} \
+       /^## Maintaining/{t=""} /^- \[/&&t{print t"\t"$0}' docs/adr/README.md
+}
+diff <(adr_lists | sort) <(adr_listed | sort)
 ```
