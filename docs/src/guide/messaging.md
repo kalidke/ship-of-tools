@@ -40,6 +40,35 @@ and reads the messages itself with `comm-poll.sh`, so a burst of messages costs
 one wake. The wake is refused while the row shows a
 permission dialog or a menu, so it can never answer one by accident.
 
+## When a send does not land
+
+A send answers with one line, and that line is the whole verdict. `filed ->
+@handle` means the message is in that handle's inbox and will be read at its
+next turn boundary. Every other answer is an honest negative:
+
+| What you see | What it means |
+|---|---|
+| `no such handle: <name>` | Nowhere for the frame to land — this machine's registry does not name that handle and nothing is attached to the daemon either. Check the spelling against `comm-list.sh`. |
+| `NOT CONFIRMED: sent for @handle; nobody claimed it within 5s` | The frame went out, something was attached, and none of them said it filed it. Treat it as **not delivered**. The line names who was attached and did not answer. |
+| `NOT CONFIRMED: this daemon predates filer receipts` | The daemon is too old to prove a filer either way. Not a delivery verdict — update it. |
+| `ERROR: unreachable, nothing filed` | This end could not reach the daemon at all. Nothing was sent, and it says nothing about the recipient. |
+
+On a Windows machine whose frontend is not running, which answer you get
+depends on what else is attached to that daemon: with other clients attached
+you get `NOT CONFIRMED`, and with nothing attached the same cause reads as `no
+such handle`. Either way the message did not land — see
+[The comm relay](../concepts/comm.md).
+
+`+woken` and `not woken: <reason>` are about **latency, never delivery**. A
+message that is filed but not woken is still there; the recipient reads it when
+its current turn ends.
+
+<!-- SCREENSHOT-SLOT: name=sessions-message-badge
+     shows: Sessions mode with a row carrying an unread-message badge and the
+            work-state colour beside it
+     shoot with: scripts/docs-media.sh stills sessions-message-badge
+     blocked on: owner sign-off on the 0.6.6 strip spacing and badge graphics -->
+
 ## What travels with it
 
 The same registry that routes messages carries each session's work state

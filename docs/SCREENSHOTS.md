@@ -186,6 +186,25 @@ page uses; treat its output as scratch. `scripts/docs-shots.sh list` prints each
 shot's exact `sotd` and `sot` invocations. It needs the MathJax sidecar
 (`npm ci` in `rust/backend/sidecars/mathjax`) and poppler on PATH.
 
+## Pending slots
+
+Pages carry a `SCREENSHOT-SLOT` HTML comment where an image is wanted but has
+not been shot yet. They are invisible in the built site and greppable:
+
+```bash
+grep -rn 'SCREENSHOT-SLOT' docs/src
+```
+
+Each slot names the file it wants, what it should show, the `docs-media.sh`
+command that makes it, and what it is blocked on. A slot is closed by shooting
+the still and replacing the comment with the image — never by deleting the
+comment.
+
+The open slots for 0.6.6 are blocked on the maintainer signing off the strip
+spacing and the badge, because every still in this set would otherwise be
+re-shot immediately afterwards. Shoot the whole set on one build once that
+sign-off lands.
+
 ## Conventions
 
 Use the committed fixture `docs/fixtures/DemoProject/` plus `examples/preview/`;

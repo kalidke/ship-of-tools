@@ -70,6 +70,49 @@ pwsh -File scripts\install-shortcut.ps1
 That refreshes the desktop shortcut and repoints any existing Ship of Tools
 taskbar pin to `scripts\launch-sot.ps1`.
 
+## Windows: an update stages but never applies
+
+Symptom: the update notice keeps coming back for the same version.
+
+Two processes can stage an update on a Windows machine, and they log it in
+**different words to different files**, so check both:
+
+```text
+%LOCALAPPDATA%\sot\logs\sotd-local.stderr.log   →  staging update failed
+%LOCALAPPDATA%\sot\logs\frontend.stderr.log     →  fe self-update: staging failed
+```
+
+The reason is carried in that same line, not on a line of its own. The
+frontend's file is truncated every time the frontend spawns and one previous
+generation is kept, so look in `frontend.stderr.log.prev` too if you have
+already relaunched.
+
+Staging unpacks into a temporary directory inside the staging area and renames
+it to its final name there; Windows refuses that rename while anything holds a
+handle on the directory. Before 0.6.6 the local file watcher held one.
+
+Two things fix it, in this order:
+
+1. **Launch from a closed window.** Clicking the shortcut while Ship of Tools
+   is already running exits at the one-launcher lock without reaching the
+   pending-update step, so the stage is never applied. Quit, then launch from
+   the shortcut. See [Updating and rollback](updating.md).
+2. **Update to 0.6.6 or later**, where the watcher excludes the staging root.
+   If you are on a 0.6.6 **release candidate**, check which one: the exclusion
+   landed in `0.6.6-rc9.5`, and no earlier candidate has it. A machine stuck
+   below that needs the first step to get there at all.
+
+## Windows: a message says `NOT CONFIRMED`
+
+The usual cause is that the recipient is a Windows machine with no frontend
+running: that frontend is what files cross-machine mail there, and nothing
+queues it in the meantime. Start Ship of Tools on the recipient's machine and
+send again.
+
+Depending on what else is attached to that daemon, the same cause can instead
+read as `no such handle`, so do not take the two as different diagnoses. What
+each answer means: [When a send does not land](messaging.md).
+
 ## A session will not start on a shared home
 
 The daemon keeps capsule session records under
