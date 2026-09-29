@@ -18,7 +18,9 @@ This is ADR 0049's design of record, landing in stages: today the failure verdic
 reads `no such handle: <h>` or `NOT CONFIRMED:` rather than `FAILED ->`, and the
 line typed into a row reads `[sot-comm] new message for @<handle> — run
 …/comm-poll.sh` rather than `[sot-comm] you have mail`. There is nothing to arm,
-own or re-arm.
+own or re-arm. A session outside any row is never woken while idle — it sees
+new mail only at its own next turn, and a send to it fails after ten idle
+minutes.
 
 **Scripts** (installed by `ShipTools.install_comm()`): `~/.sot-comm/bin/` — always use these, never hand-roll jq/registry logic.
 
@@ -34,7 +36,6 @@ own or re-arm.
 | Leave (removes the row) | `comm-leave.sh` |
 | Spawn a new agent for a task | `comm-spawn.sh <name> <repo-path> --expertise "..." --task "..."` |
 | Tear down a spawned agent | `comm-despawn.sh <name\|slug>` |
-| Instant cross-machine message | `comm-relay.sh send @<name> "msg"` |
 | Show a result in the FE | `sot-fe preview <ws> <path>` (badge-floor — never force-switches the user's view) |
 
 (All paths are `~/.sot-comm/bin/<script>`.)
@@ -80,9 +81,10 @@ don't re-send or block-wait — set `comm-status.sh waiting "..."` and end the
 turn; you'll see the reply at your next turn boundary, or be typed into if
 you're sitting at a free prompt when it lands. Re-send only with positive
 evidence the message was lost (peer was deaf or restarted).
-Either verb reaches anyone — `comm-send.sh @handle "msg"` and `comm-relay.sh
-send @handle "msg"` route to each other, so you never have to pick. A handle
-this box's registry names is filed locally (`filed -> @handle` — the file IS
+`comm-send.sh @handle "msg"` reaches anyone, same box or across machines —
+it picks the route itself (`comm-relay.sh` is the plumbing underneath, not a
+verb you call). A handle this box's registry names is filed locally (`filed
+-> @handle` — the file IS
 the ack, read at that session's next turn boundary); one it cannot name goes
 over the wire, and there the verdict is the FILER'S RECEIPT: `filed -> @handle
 (by <filer>, relay)` means that named filer appended your frame. Failures are
@@ -176,7 +178,6 @@ spawning: `references/spawning.md`.
 - Delivery is durable (queued to the recipient's inbox, picked up on
   `comm-poll.sh`); liveness is heartbeat-based (`comm-list.sh` shows
   live/stale) — `poll`/`send`/`join` all refresh yours.
-- To poll on a schedule: `/loop 5m comm-poll`.
 
 ## Which frontend am I on
 

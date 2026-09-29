@@ -5,28 +5,34 @@ problems — read which one you actually have before picking a recipe.
 
 - **`identity=MISMATCH`** — it joined you anyway, but under an ESCALATED
   handle (e.g. `<repo>-<parentdir>-<host>` instead of the bare
-  `<repo>-<host>`) because your CANONICAL handle was already held by another
-  row at join time. Recipe below.
+  `<repo>-<host>`) because a live listener bridge for your CANONICAL handle
+  was already running under your uid at join time. Recipe below.
 - **`identity=FAIL` with a `REFUSED:` line** — it did NOT join at all: the
   self-file at this identity slot already names a different, validated
   project, and no `$SOT_COMM_NAME`/`$SOT_COMM_SELF_FILE` pin was given to
   say what to do about it. See "Unblocking a REFUSED start" below — this is
   a DIFFERENT situation, not a smaller version of the same one.
 
+This is ADR 0049's design of record, landing in stages: the listener bridge
+and Monitor named below are what this tree still runs today. ADR 0049
+replaces them with one daemon-side wake and nothing to arm, but that
+replacement has not landed yet, so the recipe below still has to account for
+what is actually running.
+
 ## MISMATCH recipe
 
-Another row already holding YOUR canonical handle is almost always your own
-earlier identity — a real collision with a different project looks identical
-from the outside, so verify before reclaiming. **The no-arg `comm-join.sh` is
-the WRONG move here.** No-args derives a handle from scratch; derivation sees
+A live bridge under YOUR canonical handle is almost always your own earlier
+identity — a real collision with a different project looks identical from
+the outside, so verify before reclaiming. **The no-arg `comm-join.sh` is the
+WRONG move here.** No-args derives a handle from scratch; derivation sees
 your own canonical handle's row as "held by an unknown project" and
 escalates away from it again — which is how you got here. Reclaim
 explicitly instead.
 
 1. **Prove sole ownership of the canonical handle before reclaiming it.**
    Confirm exactly one live session has this repo as its cwd — `comm-list.sh`
-   shows which handle is live and when the row holding it last heard from
-   the daemon. If you can't confirm sole ownership, stop and ask a human —
+   shows which handle is live and how long ago it last stamped its own
+   status. If you can't confirm sole ownership, stop and ask a human —
    reclaiming someone else's live handle strands *them* instead of fixing
    you.
 
@@ -41,8 +47,12 @@ explicitly instead.
    ~/.sot-comm/bin/comm-join.sh --name <canonical-handle>
    ```
 
-That's it — the daemon now has your canonical handle attached to this row.
-There is nothing else to move, arm or re-arm.
+This is the same two-command recipe `comm-join.sh`'s own warning prints when
+`identity=MISMATCH` fires. It does not move your listener bridge or any
+armed Monitor — this tree still runs both, and they keep serving whichever
+handle they were started against, exactly as that warning says. There is no
+separate step here to move them; the design of record (ADR 0049) removes
+them instead, in a later lane.
 
 ### Why MISMATCH is rare
 
@@ -88,8 +98,8 @@ SOT_COMM_NAME=<a-distinct-handle> SOT_COMM_SELF_FILE=<a-path-only-this-lane-uses
 That private path is the right shape for a lane, which owns no row: the row a
 session declares its handle into is read from the self-file's BASENAME
 (`<host>__<workspace-id>.txt`), so a lane-only name declares nothing to the
-daemon and arms no ping watcher — exactly what a lane should do, and what
-stops it rewriting the parent row's handle. If you are the row's OWN session
+daemon — exactly what a lane should do, and what stops it rewriting the
+parent row's handle. If you are the row's OWN session
 and still need a slot of your own, keep that basename and put it in a private
 directory instead; a different basename would leave your row naming whatever
 handle last declared into it.

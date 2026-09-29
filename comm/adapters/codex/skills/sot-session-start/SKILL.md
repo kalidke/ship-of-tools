@@ -23,10 +23,10 @@ fi
 ~/.sot-comm/bin/comm-session-start.sh
 ```
 
-It declares this session's handle to the daemon and prints its unread count.
-`identity=FAIL` with a `REFUSED:` line means the identity slot already names
-a different project — re-run with a more specific `$SOT_COMM_NAME` (you
-already set one above; this only fires if that name itself collides).
+It declares this session's handle to the daemon. `identity=FAIL` with a
+`REFUSED:` line means the identity slot already names a different project —
+re-run with a more specific `$SOT_COMM_NAME` (you already set one above; this
+only fires if that name itself collides).
 
 **What a session is told at start.** `comm-context.sh` prints your handle. Send
 with `comm-send.sh @handle "text"` and read its one result. When
@@ -37,8 +37,11 @@ once, when a session first starts — not again on every resume.
 This is ADR 0049's design of record, landing in stages: today the failure verdict
 reads `no such handle: <h>` or `NOT CONFIRMED:` rather than `FAILED ->`, and the
 line typed into a row reads `[sot-comm] new message for @<handle> — run
-…/comm-poll.sh` rather than `[sot-comm] you have mail`. There is nothing to arm,
-own or re-arm.
+…/comm-poll.sh` rather than `[sot-comm] you have mail`. The call above still
+prints a `MONITOR:` or `WAKE:` line ordering a Monitor armed and re-armed on
+expiry — that line is the old mechanism, not this design, and is not to be
+acted on: there is nothing to arm, own or re-arm. Mail is read with
+`comm-poll.sh` regardless of what that line says.
 
 Work-state (the nav row colour) is yours to stamp: `comm-status.sh waiting
 "<what>"` (purple) the moment you launch a background job or hand work to a
