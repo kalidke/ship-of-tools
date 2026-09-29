@@ -97,7 +97,7 @@ adr_lists() {
     b=${f##*/}; s3=$(sed -n '3p' "$f")
     tok=$(printf '%s' "$s3" | grep -oE '^\*\*Status:\*\* ((partly )?superseded by ADR [0-9]{4}( and ADR [0-9]{4})?|current)' | sed 's/^\*\*Status:\*\* //')
     named=$(printf '%s' "$s3" | grep -oE 'superseded by ADR [0-9]{4} \(`[^`]+`' | grep -oE '`[^`]+`')
-    title=$(sed -n '1s/^# ADR [0-9]*[[:space:]]*[:—-][[:space:]]*//p' "$f")
+    title=$(sed -nE '1s/^# ADR [0-9]+ *(:|—|-) *//p' "$f")
     case "$tok" in
       current) printf 'C\t- [%s](%s) — %s\n' "${b%%-*}" "$b" "$title" ;;
       *)       printf 'S\t- [%s](%s) — %s (%s%s)\n' "${b%%-*}" "$b" "$title" "$tok" "${named:+ $named}" ;;
