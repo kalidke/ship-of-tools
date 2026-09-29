@@ -25,11 +25,13 @@ this** — same house rules, your dialect.
   bootstrap — one skill for every session, Ship of Tools repo or not.
 - Socket-only mode is the default: the backend normally listens on the private
   Unix socket from `sotd session-socket-path ${SOT_BACKEND_LABEL:-sot}`. Do not
-  expect a remote TCP listener, and never hardcode a port. A TCP endpoint exists
-  only on a frontend machine, as the SSH tunnel a launcher opens to that remote
-  Unix socket, and its port is per OS user — read it from the connection plan
-  (`sotd topology plan`) rather than assuming a number, because two OS users on
-  one box each get their own.
+  expect a remote control TCP listener, and never hardcode a port. The control
+  TCP endpoint exists only on a frontend machine, as the SSH tunnel a launcher
+  opens to that remote Unix socket, and its port is per OS user — read it from
+  the connection plan (`sotd topology plan`) rather than assuming a number,
+  because two OS users on one box each get their own. The backend does bind
+  loopback TCP of its own for the pages it serves; those are not the control
+  endpoint and are reached through the daemon's proxy.
 
 ## Work-state (your row's color) — the hierarchy is law
 

@@ -22,7 +22,7 @@ Every ADR's line 3 begins with one of three status tokens:
 
 - [0001](0001-protocol.md) — Line protocol
 - [0002](0002-kernel-launch.md) — Kernel launch and process supervision
-- [0003](0003-rendering-surface.md) — Rendering surface (revised)
+- [0003](0003-rendering-surface.md) — Rendering surface (revised, the one in force)
 - [0004](0004-llm-cache.md) — LLM provider and prompt-cache layout
 - [0005](0005-ast-hash.md) — AST hash algorithm
 - [0006](0006-plugin-discovery.md) — Plugin discovery
@@ -50,7 +50,7 @@ Every ADR's line 3 begins with one of three status tokens:
 
 ## Superseded records
 
-- [0003](0003-terminal-images-superseded.md) — Terminal image protocol → ADR 0003 (`0003-rendering-surface.md`)
+- [0003 original](0003-terminal-images-superseded.md) — Terminal image protocol → ADR 0003 (`0003-rendering-surface.md`)
 - [0010](0010-transport-and-persistence.md) — Transport, persistence, and reconnect → ADR 0046
 - [0013](0013-backend-sessions.md) — Backend sessions — tmux registry, lifecycle, resume → ADR 0046
 - [0014](0014-workspaces.md) — Workspaces — one daemon, direct-child kernels per workspace, routed by workspace_id → ADR 0046
@@ -59,7 +59,7 @@ Every ADR's line 3 begins with one of three status tokens:
 - [0023](0023-daemon-fe-commands-and-spawn.md) — Daemon-brokered FE commands + daemon-boot session spawn → ADR 0025 and ADR 0046
 - [0024](0024-backend-web-pages.md) — Open backend web pages in the local browser (dynamic port-forward) → ADR 0035
 - [0025](0025-daemon-authoritative-fe.md) — Daemon-authoritative FE — imperative commands + FE-as-viewport → ADR 0046
-- [0026](0026-rename-to-ship-of-tools.md) — Rename DevEnv.jl → "Ship of Tools" → ADR 0046
+- [0026](0026-rename-to-ship-of-tools.md) — Rename DevEnv.jl to "Ship of Tools" → ADR 0046
 - [0028](0028-remote-comm-autoconnect.md) — Remote comm auto-connect — myhost-anchored reverse SSH tunnels under systemd --user → ADR 0046
 - [0029](0029-multi-fe-docs-serving.md) — Multi-FE-correct `docs.open` site serving — per-connection site roots + disconnect cleanup → ADR 0035
 - [0030](0030-versioning-release-and-auto-update.md) — Versioning, releases, and auto-update — going public → ADR 0046 and ADR 0045
@@ -76,11 +76,28 @@ Every ADR's line 3 begins with one of three status tokens:
 
 ## Maintaining this invariant
 
-Every file's line 3 must match the status-token pattern. Check it with:
+The two lists above are not hand-maintained prose: they are a view of the
+records' own status tokens, and both checks below must pass. The first says
+every record carries a token; the second says the lists agree with those
+tokens, which is what stops a token flip from leaving a file under the wrong
+heading. Neither prints anything when the directory is sound.
 
 ```sh
-ls docs/adr/0*.md | wc -l
-for f in docs/adr/0*.md; do sed -n '3p' "$f" \
+# 1. every record's line 3 is one of the three tokens
+for f in docs/adr/[0-9][0-9][0-9][0-9]-*.md; do sed -n '3p' "$f" \
   | grep -qE '^\*\*Status:\*\* (current|(partly )?superseded by ADR [0-9]{4})' \
-  || echo "BAD $f"; done
+  || echo "NO TOKEN $f"; done
+
+# 2. this file lists each record exactly once, under the heading its token says
+sup=$(grep -n '^## Superseded' docs/adr/README.md | cut -d: -f1)
+for f in docs/adr/[0-9][0-9][0-9][0-9]-*.md; do
+  b=${f##*/}
+  tok=$(sed -n '3p' "$f" | grep -oE 'current|(partly )?superseded by ADR [0-9]{4}' | head -1)
+  n=$(grep -c "($b)" docs/adr/README.md)
+  [ "$n" = 1 ] || { echo "LISTED ${n}x $b"; continue; }
+  ln=$(grep -n "($b)" docs/adr/README.md | cut -d: -f1)
+  here=$([ "$ln" -lt "$sup" ] && echo current || echo superseded)
+  case "$tok" in current) want=current;; *) want=superseded;; esac
+  [ "$here" = "$want" ] || echo "WRONG SECTION $b ($tok, listed under $here)"
+done
 ```
