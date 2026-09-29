@@ -14,9 +14,8 @@
 #
 # 2026-09-15: collapsed further. The old backend-repo alias skill named only
 # a retired launcher, which is gone too — every session now runs the same
-# skill. The repo-identity check didn't go away with it: comm-session-start.sh
-# still needs it, via `--is-sot-repo`, to decide whether a session gets the
-# Ship-of-Tools layer (FE ping).
+# skill. The repo-identity check itself stays: this script uses `--is-sot-repo`
+# internally, and its own selftest exercises it.
 #
 # A session's identity is its row's handle everywhere, including on a Windows
 # box (a frontend is a client, addressed by its own label for directed

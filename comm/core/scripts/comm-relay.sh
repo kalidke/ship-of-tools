@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # comm-relay.sh — INSTANT cross-machine agent messaging via the Ship of Tools daemon.
 #
-# The git bus is async (commit/push/poll). The only live link between machines
-# (Linux ⇄ Windows) is the SSH-forwarded backend socket, so cross-machine
-# agent messages ride it: `agent.send` -> daemon -> `agent.message` evt broadcast
+# The only live link between machines (Linux ⇄ Windows) is the SSH-forwarded
+# backend socket, so cross-machine agent messages ride it: `agent.send` ->
+# daemon -> `agent.message` evt broadcast
 # to every connected client. On the Linux side the `bridge` subcommand holds a connection
 # and drops received messages into the local sot-comm inbox so comm-poll.sh
 # sees them; on Windows the frontend writes them to <state-dir>/fe-inbox.jsonl.

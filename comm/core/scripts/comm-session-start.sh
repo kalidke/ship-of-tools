@@ -54,14 +54,6 @@ esac
 IS_WINDOWS=0
 _sot_is_windows && IS_WINDOWS=1
 
-# comm-session-skill.sh is the single source of truth for "is this session
-# in a Ship of Tools checkout" (repo detection, not a role judgment — a
-# session's identity is its row's handle everywhere, Windows included; see
-# comm-join.sh). `--is-sot-repo` answers by exit code — the printed skill
-# name is now the same for every session, so it's no longer a valid signal.
-IS_SOT=0
-"$SCRIPT_DIR/comm-session-skill.sh" --is-sot-repo 2>/dev/null && IS_SOT=1
-
 _watch_marker() { printf '%s/state/%s.watch\n' "${SOT_COMM_HOME:-$HOME/.sot-comm}" "$1"; }
 
 # The owner-pid walk lives in comm-lib.sh (`sot_owner_pid`) now: comm-wake.sh
@@ -222,7 +214,7 @@ _context_block() {
     [ -n "$inbox" ] || inbox="${INBOX_DIR:-${SOT_COMM_HOME:-$HOME/.sot-comm}/inbox}/$h.jsonl"
     cat <<EOF
 You are @$h. Inbox: $inbox
-Verbs: comm-relay.sh send @<peer> "msg" | comm-poll.sh | comm-status.sh <working|waiting|blocked|done|idle> "why" | comm-list.sh
+Verbs: comm-send.sh @<peer> "msg" | comm-poll.sh | comm-status.sh <working|waiting|blocked|done|idle> "why" | comm-list.sh
 EOF
     _workstate_rule
     _capability_lines

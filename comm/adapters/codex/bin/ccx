@@ -2,7 +2,8 @@
 # ccx — start a comm-aware CODEX session for any project (ADR 0031).
 #
 # Codex counterpart of ccb. Unlike ccb (whose claude session bootstraps its
-# own receive path via the /sot-session-start skill + a harness Monitor),
+# own receive path via the /sot-session-start skill — ADR 0049 is the design
+# of record there too, daemon-woken with nothing to arm, until that lands),
 # codex has NO background-wake primitive — so ccx does the comm bootstrap
 # DETERMINISTICALLY in the launcher before exec'ing codex:
 #   1. join sot-comm as $SOT_COMM_NAME (default: <repo>-cx-<host> — the -cx-
