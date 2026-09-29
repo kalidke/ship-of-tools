@@ -15,8 +15,8 @@ mod support;
 use std::process::Stdio;
 use std::time::Duration;
 
-use sot_protocol::{codec, op, Frame, HelloReq};
-use support::{poll_until, sotd_exe, try_connect, Env, TEST_STATE_HOST};
+use sot_protocol::{op, HelloReq};
+use support::{call, poll_until, sotd_exe, try_connect, Env, TEST_STATE_HOST};
 
 const BOUND: Duration = Duration::from_secs(20);
 
@@ -46,6 +46,9 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
         .env("XDG_CONFIG_HOME", &env.config_root)
         .env("SOT_SELF_HOST", TEST_STATE_HOST)
         .env("SOT_RUNTIME_DIR", env._runtime_tmp.path())
+        .env("HOME", &env.home_root)
+        .env("USERPROFILE", &env.home_root)
+        .env("SOT_COMM_HOME", &env.comm_root)
         .env("SOT_HOSTS", &hosts_toml)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -73,15 +76,18 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
         instance: None,
         name: Some(format!("fe@{TEST_STATE_HOST}")),
     };
-    codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None).await.expect("write hello");
-    let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read hello reply");
+    // `call` writes the request then skips any evt broadcast (a
+    // comm-registry poll included) that legitimately arrives before the
+    // matching `res` — a bare next-frame read here would treat such a
+    // broadcast as the reply, either failing the "no error" assert
+    // wrongly or, worse, passing it vacuously.
+    let frame = call(&mut conn, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
     assert!(frame.payload.get("error").is_none(), "hello refused: {:?}", frame.payload);
 
     // A real turn of input, so this connection is also the daemon's
     // resolved active frontend (`clients.rs::resolve_active`) — proves the
     // ACTIVE marker in `sotd status`'s output, not just bare presence.
-    codec::write_frame(&mut conn, &Frame::req(2, op::FE_PRESENCE, serde_json::json!({})), None).await.expect("write fe.presence");
-    let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read fe.presence reply");
+    let frame = call(&mut conn, 2, op::FE_PRESENCE, serde_json::json!({})).await;
     assert!(frame.payload.get("error").is_none(), "fe.presence refused: {:?}", frame.payload);
 
     // `sotd status --json` — a SEPARATE, real one-shot process (the same

@@ -242,6 +242,9 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
         .env("XDG_CONFIG_HOME", &env.config_root)
         .env("SOT_SELF_HOST", TEST_STATE_HOST)
         .env("SOT_RUNTIME_DIR", env._runtime_tmp.path())
+        .env("HOME", &env.home_root)
+        .env("USERPROFILE", &env.home_root)
+        .env("SOT_COMM_HOME", &env.comm_root)
         .env("XDG_RUNTIME_DIR", runtime_root())
         .env("SOT_HOSTS", &hosts_toml)
         // `SOT_SOCKET` outranks `--label` in the daemon's own arg parsing,

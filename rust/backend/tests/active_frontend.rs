@@ -17,6 +17,12 @@
 //! 2. Two connections sharing a declared `name` (a stale reconnect, or a
 //!    genuine hostname collision) never both receive an untargeted
 //!    `fe.command.send` — exactly one does, by connection identity.
+//!
+//! `mod support;` is used for exactly one helper, `comm_isolation_dirs` —
+//! this file's own `Env` stays local (a separate, lighter fixture than
+//! `support::Env`'s heavier capsule-process one).
+
+mod support;
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -58,6 +64,7 @@ impl Env {
         std::fs::create_dir_all(&state_root).expect("mkdir state_root");
         let config_root = tmp.path().join("config");
         std::fs::create_dir_all(&config_root).expect("mkdir config_root");
+        let (home_root, comm_root) = support::comm_isolation_dirs(tmp.path());
 
         #[cfg(unix)]
         let runtime_base = PathBuf::from("/tmp");
@@ -94,6 +101,9 @@ impl Env {
             .env("XDG_CONFIG_HOME", &config_root)
             .env("SOT_SELF_HOST", format!("activefe-{tag}"))
             .env("SOT_RUNTIME_DIR", runtime_tmp.path())
+            .env("HOME", &home_root)
+            .env("USERPROFILE", &home_root)
+            .env("SOT_COMM_HOME", &comm_root)
             .stdin(Stdio::null())
             .spawn()
             .expect("spawn sotd");
@@ -163,8 +173,20 @@ async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, name:
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await
         .expect("write hello");
-    let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read hello reply");
-    assert_eq!(frame.id, 1);
+    // The single next frame is not necessarily the hello reply — a broadcast
+    // evt can legitimately land first (`call`'s own doc, just below) — so
+    // skip anything that is not hello's own `res`, same as `call` does.
+    let body = async {
+        loop {
+            let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read hello reply");
+            if frame.kind == Kind::Res && frame.id == 1 {
+                return frame;
+            }
+        }
+    };
+    let frame = tokio::time::timeout(BOUND, body)
+        .await
+        .unwrap_or_else(|_| panic!("no reply to hello within {BOUND:?}"));
     assert!(frame.payload.get("error").is_none(), "hello refused: {:?}", frame.payload);
     (conn, 2)
 }
@@ -368,8 +390,14 @@ async fn hello_from_the_previous_protocol_is_refused_naming_both_versions() {
         codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
             .await
             .expect("write hello");
-        let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read hello reply");
-        assert_eq!(frame.id, 1);
+        // Same reasoning as `connect_and_hello`: skip any evt broadcast
+        // that legitimately arrives before hello's own `res`.
+        let frame = loop {
+            let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read hello reply");
+            if frame.kind == Kind::Res && frame.id == 1 {
+                break frame;
+            }
+        };
         let p = &frame.payload;
         assert_eq!(p.get("code").and_then(|v| v.as_str()), Some("protocol_mismatch"), "{p}");
         assert_eq!(p.get("backend_protocol").and_then(|v| v.as_u64()), Some(u64::from(sot_protocol::PROTOCOL_VERSION)), "{p}");

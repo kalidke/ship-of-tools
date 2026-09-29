@@ -13,6 +13,11 @@
 //! dispatches `topology.set`, writes tmp+rename to the real file on disk,
 //! and broadcasts `topology.changed` to a SEPARATE connection, over the
 //! real socket, not just in-process.
+//!
+//! `mod support;` is used for exactly one helper, `comm_isolation_dirs` —
+//! this file's own `Env` stays local, same reasoning as `ping_reaper.rs`.
+
+mod support;
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -49,6 +54,7 @@ impl Env {
         std::fs::create_dir_all(&config_root).expect("mkdir config_root");
         let hosts_toml = tmp.path().join("hosts.toml");
         std::fs::write(&hosts_toml, hosts_toml_text).expect("write hosts.toml");
+        let (home_root, comm_root) = support::comm_isolation_dirs(tmp.path());
 
         #[cfg(unix)]
         let runtime_base = PathBuf::from("/tmp");
@@ -81,6 +87,9 @@ impl Env {
             .env("XDG_CONFIG_HOME", &config_root)
             .env("SOT_SELF_HOST", self_host)
             .env("SOT_RUNTIME_DIR", runtime_tmp.path())
+            .env("HOME", &home_root)
+            .env("USERPROFILE", &home_root)
+            .env("SOT_COMM_HOME", &comm_root)
             .env("SOT_HOSTS", &hosts_toml)
             .stdin(Stdio::null())
             .spawn()
@@ -132,7 +141,15 @@ async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, host:
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await
         .expect("write hello");
-    let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read hello reply");
+    // The single next frame is not necessarily the hello reply — a
+    // broadcast evt can legitimately land first — so skip anything that
+    // is not hello's own `res`, same as `call` below.
+    let frame = loop {
+        let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read hello reply");
+        if frame.kind == Kind::Res && frame.id == 1 {
+            break frame;
+        }
+    };
     assert!(frame.payload.get("error").is_none(), "hello refused: {:?}", frame.payload);
     (conn, 2)
 }
