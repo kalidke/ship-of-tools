@@ -23,17 +23,22 @@ The owner asked for the fix as "agree on the one page comm system and then clean
   (`~/.sot-comm`, or `SOT_COMM_HOME`). The read cursor is a line count; unread mail is
   any line past it addressed to this handle by someone else.
 - **Sending** — two routes, by whether the sender's own comm folder lists the receiver:
-  file it itself, or hand it to the hub, which offers it to every linked daemon, and the
-  one holding that inbox files it and says so. A liveness check runs first — a row
-  still running that handle, or active in the last ten minutes.
+  file it itself, or hand it to the hub (the one daemon every box can reach), which
+  offers it to every linked daemon, and the one holding that inbox files it and says so.
+  A daemon on a box with its own disk keeps its own link to the hub, opened when it
+  starts and reopened if it drops, so the box is reachable whenever its rows run,
+  window open or not; its sessions send through that same link. A liveness check runs
+  first — a row still running that handle, or active in the last ten minutes.
 - **The one result** — `filed -> @h` (exit 0), or `FAILED -> @h: <reason>` (exit 1): no
   box knows the handle, no live session holds it, the hub is unreachable, or no daemon
   says "filed" within 5 seconds. Nothing is queued; there is no second route.
 - **Waking** — every two seconds each daemon looks at every row it runs, and types one
-  fixed line into a row with unread mail sitting at a free prompt. One line per batch,
-  one more after ten minutes unread. A busy session needs no typing — its end-of-turn
-  check will not let a turn finish with unread mail waiting. This is the only wake: no
-  per-session watcher, listener, bridge or Monitor exists.
+  fixed line into a row with unread mail sitting at a free prompt — the cursor at the
+  start of an empty input line; a dialog, menu, draft or working session is not free
+  and is never typed into. One line per batch, one more after ten minutes unread. A
+  busy session needs no typing — its end-of-turn check will not let a turn finish with
+  unread mail waiting. This is the only wake: no per-session watcher, listener, bridge
+  or Monitor exists.
 - **Cases** — a restarted or compacted row re-arms nothing, since the handle stays with
   the row and the count is a file. A session outside any row sees mail only at its own
   next turn end while idle, and after ten idle minutes a send to it fails. A subagent

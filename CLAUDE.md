@@ -150,12 +150,15 @@ The smallest useful working slice:
 
 ## Messaging between sessions
 
+- This is ADR 0049's design of record, landing in stages: today's failure
+  verdict reads `no such handle: <h>` or `NOT CONFIRMED:` rather than
+  `FAILED ->`, and the typed wake line reads `[sot-comm] new message for
+  @<handle> — run …/comm-poll.sh` rather than `[sot-comm] you have mail`.
 - A session that can receive has one handle: its folder name plus its box name.
 - `comm-context.sh` prints yours.
 - Send with `comm-send.sh @handle "text"` and read its one result, `filed` or `FAILED` — nothing is queued and there is no second route.
 - When `[sot-comm] you have mail` appears, or your end-of-turn check says so, run `comm-poll.sh`.
 - To wait for a reply, end your turn.
-- The design of record is ADR 0049, landing in stages.
 
 ## Conventions for Claude
 

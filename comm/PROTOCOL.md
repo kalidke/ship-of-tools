@@ -88,6 +88,22 @@ This section is ADR 0049's design of record. The mechanism below lands in
 stages; until each stage does, the two-mode delivery, ping watcher and relay
 bridge this replaces stay in place.
 
+**Words.** A *row* is a session running inside Ship of Tools. The *daemon*
+is the background program on each box that runs that box's rows; it keeps
+running when the window closes. The *hub* is the one daemon every box can
+reach.
+
+**Address.** A handle is a session's repository or worktree folder name plus
+its box name; two boxes never share one. A row's session declares its
+handle to its daemon when it first starts; the daemon keeps it through
+restarts, compactions and clears, gives each handle to one row only, and a
+newer declaration moves it. A box whose daemon runs no rows holds no
+addresses.
+
+**Inbox.** One file per handle, `inbox/<handle>.jsonl`, in the box's comm
+folder. The read cursor is a line count, kept in `read/<handle>.cursor`.
+Unread mail is any line past it addressed to this handle by someone else.
+
 **Sending** picks one of two routes, by whether the sender's own comm folder
 lists the receiver:
 
@@ -97,6 +113,10 @@ lists the receiver:
    daemon linked to it. The daemon whose comm folder holds that inbox adds
    the line and says "filed" (the hub itself, for its own home). The hub
    passes that back.
+
+A daemon on a box with its own disk keeps its own link to the hub, opened
+when it starts and reopened if it drops, so the box is reachable whenever
+its rows run, window open or not; its sessions send through that same link.
 
 A liveness check runs first: a row still runs a session with that handle, or
 the session was active in the last ten minutes.
@@ -113,16 +133,20 @@ Nothing is queued anywhere and there is no second route. To get an answer,
 send, end the turn, and be woken.
 
 **Waking.** Every two seconds each daemon looks at every row it runs. If the
-row's handle has unread mail and the row sits at a free prompt, the daemon
-types one fixed line, `[sot-comm] you have mail: run comm-poll.sh`, and
-Enter. The daemon does this, not the frontend or the sender — several
-frontends can show one row and each would type, a closed window would leave
-the row deaf, and a pasted message is never marked read so it would show
-again. One line per new batch of mail; one more if it is still unread ten
-minutes later at a free prompt. A busy session needs no typing: its
-end-of-turn check will not let a turn finish while unread mail waits. This
-is the only wake — no per-session watcher, listener, bridge or Monitor
-exists.
+row's handle has unread mail and the row sits at a free prompt — the cursor
+sitting at the start of the input line marked by the prompt glyph, so a grey
+suggestion or any other decoration does not count as a draft but a real
+draft still does, and a working session is not free either and is never
+typed into — the daemon types one fixed line, `[sot-comm] you have mail: run
+comm-poll.sh`, and Enter; keystrokes would otherwise land in an open dialog,
+menu or half-written draft. The daemon does this, not the frontend or the
+sender — several frontends can show one row and each would type, a closed
+window would leave the row deaf, and a pasted message is never marked read
+so it would show again. One line per new batch of mail; one more if it is
+still unread ten minutes later at a free prompt. A busy session needs no
+typing: its end-of-turn check will not let a turn finish while unread mail
+waits. This is the only wake — no per-session watcher, listener, bridge or
+Monitor exists.
 
 **Cases.**
 
@@ -141,7 +165,7 @@ exists.
 
 | Verb        | Script           | Notes |
 |-------------|------------------|-------|
-| join        | `comm-join.sh`   | `--name <n>` `--expertise "a, b"`; writes registry + self file. Refuses (exit 3) when the self-file slot is already claimed for a DIFFERENT project — the slot is keyed by the workspace row in the environment while the identity comes from the shell's cwd, and a row that comes to name another project's session reads that session's mail. `--repin` is the deliberate override |
+| join        | `comm-join.sh`   | **Superseded by ADR 0049, removed in B6** — the handle is derived (folder plus box name), not chosen by flag. `--name <n>` `--expertise "a, b"`; writes registry + self file. Refuses (exit 3) when the self-file slot is already claimed for a DIFFERENT project — the slot is keyed by the workspace row in the environment while the identity comes from the shell's cwd, and a row that comes to name another project's session reads that session's mail. `--repin` is the deliberate override |
 | audit slots | `comm-self-audit.sh` | compares each workspace-keyed slot's key against the `repo=` it carries; reports the ones naming a different project (exit 1), passes a suffixed or path-disambiguated name |
 | send        | `comm-send.sh`   | `@name "msg"` or `--broadcast "msg"`; recipient is only the first positional `@arg`, so the message may itself begin with `@`. **Either verb routes**: a directed target this box's registry names is filed locally (`comm-relay.sh send` execs here), and one it cannot name goes to the wire (this execs `comm-relay.sh send`). The triggers are mutually exclusive, so a session never has to know which verb reaches a peer |
 | poll        | `comm-poll.sh`   | shows the inbox lines past the read cursor, then advances it |
@@ -157,7 +181,7 @@ task**. A task-named anything is unfindable next to its repo-named siblings
 | Thing | Convention | Example |
 |-------|-----------|---------|
 | Durable BE peer handle | `<repo-lowercase>-<host>` | `myrepo-myhost` (Ship of Tools on the backend host), `lldevtools-myhost` |
-| Spawned agent — repo checkout | `<repo-lowercase>` (bare, **no** descriptor) | `myrepo` |
+| Spawned agent — repo checkout | `<repo-lowercase>` (bare, **no** descriptor) — **superseded by ADR 0049, removed in B6:** the handle also carries the box name | `myrepo` |
 | Spawned agent — git **worktree** | `<repo>-wt-<shortname>` (the `-wt-` infix is reserved for worktrees and groups them next to the parent; `<shortname>` names the WORKTREE, never the task). Created via the `/worktree` skill. | `MyAnalysis-wt-rotation` (worktree `rotation`) |
 | Frontend address | `fe@<host>` — the frontend PROCESS's declared hello `name`, the target `sot-fe --fe <host>` scopes a directed `fe.command`/`open-url` to (two frontends on one box differ by `instance`); the frontend is a client, never a comm peer, and no session derives or joins as this name | `fe@laptop` |
 | Workspace label | repo basename (comm-spawn default; task-named labels are **rejected**) | `MyPackage` |
