@@ -152,19 +152,22 @@ The smallest useful working slice:
 
 - This is ADR 0049's design of record, and on this branch almost none of it is
   built: the comm scripts here predate even the 0.6.6 fixes line. Today a send
-  from this tree prints `  @<handle>: delivered live (+inbox)` or
-  `  @<handle>: queued to inbox (<host>)` rather than one `filed`/`FAILED`
-  verdict; the wake is a per-session watcher (`comm-wake.sh`) typing
+  from this tree prints `  @<handle>: delivered live (+inbox)`,
+  `  @<handle>: queued to inbox (<host>)` or `  @<handle>: queued to inbox (row
+  …)` rather than one `filed`/`FAILED` verdict; the wake is a per-session
+  watcher (`comm-wake.sh`) typing
   `[sot-comm] new message for @<handle> — run …/comm-poll.sh` rather than
   `[sot-comm] you have mail`; cross-machine receive is the relay bridge
-  `comm-listen.sh` starts; and the git bus (`bus.sh`, `/bus-note`,
+  `comm-listen.sh` starts, **except on a Windows host, where it starts none and
+  the frontend files inbound frames into its own `fe-inbox.jsonl`**; and the git
+  bus (`bus.sh`, `/bus-note`,
   `/bus-sync`) and the session-start `MONITOR:` line are still here. The 0.6.6
   line deletes all of it. **Where any of that disagrees with ADR 0049, 0049
   wins.**
 - A session that can receive has one handle: its folder name plus its box name.
 - `comm-context.sh` prints yours.
-- Send with `comm-send.sh @handle "text"` and read its one result, `filed` or `FAILED` — nothing is queued and there is no second route.
-- When `[sot-comm] you have mail` appears, or your end-of-turn check says so, run `comm-poll.sh`.
+- Send with `comm-send.sh @handle "text"` and read its one result, `filed` or `FAILED` — nothing is queued and there is no second route. On this branch that result is still `delivered live (+inbox)` or `queued to inbox (…)`, and **`queued to inbox` here means the frame IS filed: success, not failure.**
+- When `[sot-comm] you have mail` appears — here the line reads `[sot-comm] new message for @<handle>` — or your end-of-turn check says so, run `comm-poll.sh`.
 - To wait for a reply, end your turn.
 - Run the session-start step once, when a session first starts. Today a
   resumed session must still re-run it — until the daemon does the waking,

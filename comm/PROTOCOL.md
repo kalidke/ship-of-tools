@@ -89,11 +89,14 @@ woke the whole network at once.
 This section is ADR 0049's design of record. **Almost none of it is built on
 this branch**, whose comm scripts predate even the 0.6.6 fixes line, so read it
 as the design and the rest of this file as today's mechanism. Today a send here
-prints `  @<handle>: delivered live (+inbox)` or
-`  @<handle>: queued to inbox (<host>)`, never one `filed`/`FAILED` verdict; the
-wake is the per-session watcher `comm-wake.sh` typing `[sot-comm] new message
-for @<handle> — run …/comm-poll.sh`; cross-machine receive is the relay bridge
-`comm-listen.sh` starts; the read cursor is the timestamp described above, not a
+prints `  @<handle>: delivered live (+inbox)`,
+`  @<handle>: queued to inbox (<host>)` or `  @<handle>: queued to inbox (row …)`,
+never one `filed`/`FAILED` verdict, and `queued to inbox` is a SUCCESS here — the
+frame is in the inbox; the wake is the per-session watcher `comm-wake.sh` typing
+`[sot-comm] new message for @<handle> — run …/comm-poll.sh`; cross-machine
+receive is the relay bridge `comm-listen.sh` starts, **except on a Windows host,
+where it starts none and the frontend files inbound frames into its own
+`fe-inbox.jsonl`**; the read cursor is the timestamp described above, not a
 line count; and the git bus is still present. The 0.6.6 line deletes all of it.
 Where anything disagrees with ADR 0049, 0049 wins.
 

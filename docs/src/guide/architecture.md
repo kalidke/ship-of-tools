@@ -40,8 +40,8 @@ protocol avoids that split entirely.
 The boundary between Rust and Julia is not arbitrary — each language does what it
 is best at.
 
-**Rust is for plumbing.** The TUI, IPC, file watching, process supervision, and
-terminal-protocol image rendering all want a single statically-linked,
+**Rust is for plumbing.** Rendering, IPC, file watching and process supervision
+all want a single statically-linked,
 cross-platform binary with predictable performance. `tokio`, `notify`, `winit`,
 and `wgpu` cover that stack. Keep this layer boring and predictable; it should
 rarely need to change when the feature set grows.

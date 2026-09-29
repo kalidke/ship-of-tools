@@ -11,7 +11,7 @@ scope. This page and the design pages define structure.
 - **Julia is the canonical language** for plugin code, the ABI, and any
   Julia-aware logic. Use it expressively — lean on multiple dispatch and the type
   system. See [The Dispatch ABI](extend/abi.md).
-- **Rust is for plumbing** — the TUI, IPC, file watching, process supervision.
+- **Rust is for plumbing** — rendering, IPC, file watching, process supervision.
   Keep it boring and predictable.
 - **Plotting is CairoMakie** when generating plots in Julia.
 - **Eat dogfood.** Core handlers ship as plugins to themselves; the core modes and
