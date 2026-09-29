@@ -1,7 +1,10 @@
 # ADR 0047: Claude sessions wake on a ping, not a harness Monitor
 
-**Status:** accepted; implemented in the comm scripts (deploys via
-`update_comm`, no release needed).
+**Status:** **Superseded by ADR 0049 in design** (2026-09-29) — the daemon's
+own wake check is meant to replace the per-session ping watcher; the ping
+watcher is what runs until that check lands. Originally: accepted;
+implemented in the comm scripts (deploys via `update_comm`, no release
+needed).
 
 ## Context
 

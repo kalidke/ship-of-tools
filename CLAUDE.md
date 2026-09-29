@@ -8,7 +8,7 @@ An agentic Julia development environment: AI agents drive the interface, REPL, a
 
 - `<ops>/STATUS.md` — what's *done* (current at the last working session); `<ops>/TODO.md` — what's *next*. **Read TODO on session start if the user asks "what should we do" or pulls into a fresh machine** — find the first unchecked item and either do it or confirm with the user before proceeding.
 - `<ops>/claude-memory/` — durable cross-OS Claude context (project memories). See "Cross-OS Claude memory" below.
-- `<ops>/claude-bus/` — ephemeral cross-machine Claude-to-Claude messages; `/bus-note` + `/bus-sync` operate on it (they resolve the ops checkout themselves). See its README.
+- `<ops>/claude-bus/` — durable cross-machine notes, not a messaging route (see "Messaging between sessions" below for that); `/bus-note` + `/bus-sync` operate on it (they resolve the ops checkout themselves). See its README.
 
 ## Architecture at a glance
 
@@ -147,6 +147,19 @@ The smallest useful working slice:
 - Background staleness sweep — reactive only
 - Automatic plot capture from REPL — phase 1, user saves to `.concept/outputs/` or calls a small helper
 - Windows polish — get Linux working first; Rust + a modern terminal mostly handles it but expect edge cases
+
+## Messaging between sessions
+
+- This is ADR 0049's design of record, landing in stages: today's failure
+  verdict reads `no such handle: <h>` or `NOT CONFIRMED:` rather than
+  `FAILED ->`, and the typed wake line reads `[sot-comm] new message for
+  @<handle> — run …/comm-poll.sh` rather than `[sot-comm] you have mail`.
+- A session that can receive has one handle: its folder name plus its box name.
+- `comm-context.sh` prints yours.
+- Send with `comm-send.sh @handle "text"` and read its one result, `filed` or `FAILED` — nothing is queued and there is no second route.
+- When `[sot-comm] you have mail` appears, or your end-of-turn check says so, run `comm-poll.sh`.
+- To wait for a reply, end your turn.
+- Run the session-start step once, when a session first starts — not again on every resume.
 
 ## Conventions for Claude
 
