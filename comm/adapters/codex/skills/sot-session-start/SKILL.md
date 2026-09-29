@@ -1,15 +1,13 @@
 ---
 name: sot-session-start
-description: Bootstrap or repair a backend Codex session via comm-session-start.sh's two-phase flow (arm, then catch-up) so codex-watch.sh exists before the selftest proves it. Use after a restart or comm repair.
+description: Declare a backend Codex session's sot-comm handle and check its unread mail. Use after a restart or when Codex was not started via ccx.
 ---
 
 # sot-session-start
 
 `ccx` normally runs this bootstrap before Codex starts. Run it manually only
-when the session was started without `ccx`, was resumed in an existing pane,
-or comms need repair.
-
-## Phase 1 — arm
+when the session was started without `ccx`, or was resumed in an existing
+pane.
 
 Set a Codex-specific handle first (kept distinct from a Claude backend's
 `<repo>-<host>` on the same box, via `-cx-`), if the launcher did not — this
@@ -25,40 +23,22 @@ fi
 ~/.sot-comm/bin/comm-session-start.sh
 ```
 
-Either `SURVIVED handle=<h>` (nothing to do — your own `codex-watch.sh` is
-recognized as a live watcher, ownership-checked against the registry; stop
-here) or:
-
-```
-BOOTSTRAP-ARM handle=<h> listener=up|down|n/a identity=ok|MISMATCH|FAIL MONITOR: <cmd>
-```
-
+It declares this session's handle to the daemon and prints its unread count.
 `identity=FAIL` with a `REFUSED:` line means the identity slot already names
 a different project — re-run with a more specific `$SOT_COMM_NAME` (you
 already set one above; this only fires if that name itself collides).
-Otherwise, start the Codex wake helper for the printed handle NOW, before
-anything else — the selftest in phase 2 needs it alive to prove the wake:
 
-```bash
-[ -n "${SOT_WORKSPACE_ID:-}" ] && nohup ~/.sot-comm/bin/codex-watch.sh "$SOT_COMM_NAME" >/dev/null 2>&1 &
-```
+**What a session is told at start.** `comm-context.sh` prints your handle. Send
+with `comm-send.sh @handle "text"` and read its one result. When
+`[sot-comm] you have mail` appears, or your end-of-turn check says so, run
+`comm-poll.sh`. To wait for a reply, end your turn. Run the session-start step
+once, when a session first starts — not again on every resume.
 
-## Phase 2 — catch up
-
-```bash
-~/.sot-comm/bin/comm-session-start.sh --catch-up
-```
-
-```
-BOOTSTRAP handle=<h> poll=<n>|ERR selftest=ok|retry|down bus=<n>|n/a identity=ok
-```
-
-`selftest=retry` means the bridge is still connecting on a cold start — wait
-a few seconds and re-run `~/.sot-comm/bin/comm-listen.sh --selftest` once.
-The real wake proof is a typed `[relay] from __selftest__:` line from
-`codex-watch.sh`, not the inline selftest text. `bus=<n>` is a peek, not an
-acknowledgement — run `bus.sh sync` for real to see and consume those
-entries.
+This is ADR 0049's design of record, landing in stages: today the failure verdict
+reads `no such handle: <h>` or `NOT CONFIRMED:` rather than `FAILED ->`, and the
+line typed into a row reads `[sot-comm] new message for @<handle> — run
+…/comm-poll.sh` rather than `[sot-comm] you have mail`. There is nothing to arm,
+own or re-arm.
 
 Work-state (the nav row colour) is yours to stamp: `comm-status.sh waiting
 "<what>"` (purple) the moment you launch a background job or hand work to a

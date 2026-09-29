@@ -1,85 +1,36 @@
 ---
 name: sot-session-start
-description: Bootstrap a (re)started Claude session onto sot-comm fast-comm in two phases: join+listen, arm the Monitor, then catch up+selftest. Generic; manual or on --continue. Activates for "comm session start", "comm bootstrap", "rearm comm".
+description: Declare a session's sot-comm handle and check its unread mail. Run once, when a session first starts. Activates for "comm session start", "comm bootstrap".
 ---
 
 # sot-session-start
 
-A (re)started session is deaf: `--continue` kills your harness Monitor, and
-the cross-machine relay has no server-side queue. Two calls to one script,
-so no message can land before your Monitor exists to catch it.
-
-**Phase 1 — arm:**
+Run once, when a session first starts:
 
 ```bash
 ~/.sot-comm/bin/comm-session-start.sh
 ```
 
-Either nothing to do (`SURVIVED handle=<h>` + a context block — stop here),
-or:
+It declares this session's handle to the daemon and prints its unread count.
 
-```
-BOOTSTRAP-ARM handle=<h> listener=up|down|n/a identity=ok|MISMATCH|FAIL WAKE: comm-wake.sh (ping; no Monitor needed)
-```
-or, outside a capsule row:
-```
-BOOTSTRAP-ARM handle=<h> listener=up|down|n/a identity=ok|MISMATCH|FAIL MONITOR: <cmd>
-```
+**What a session is told at start.** `comm-context.sh` prints your handle. Send
+with `comm-send.sh @handle "text"` and read its one result. When
+`[sot-comm] you have mail` appears, or your end-of-turn check says so, run
+`comm-poll.sh`. To wait for a reply, end your turn. Run the session-start step
+once, when a session first starts — not again on every resume.
 
-- `identity=FAIL` with a `REFUSED:` line — the identity slot already names
-  someone else's project. Pin `SOT_COMM_NAME` (and, for a subagent/lane, a
-  private `SOT_COMM_SELF_FILE`) and re-run; never work around this by hand.
-- `WAKE:` — this is a capsule row: the script already started
-  `comm-wake.sh --deliver ping` for you, detached and owned by this session, so
-  it ends when the session does and a second one cannot start.
-  There is nothing to arm; the proof it works is the ping turn itself, arriving
-  after phase 2's selftest (`[sot-comm] wake selftest OK …`) — not the inline
-  selftest text.
-- **You do not depend on the ping to receive.** Delivery is the inbox append,
-  and your own end-of-turn hook reads that inbox: a turn will not end while
-  directed mail sits unread, it blocks with "run comm-poll.sh" instead. Run it,
-  act on the message, then end the turn. The ping only shortens the wait for a
-  row already sitting idle at its prompt.
-- Otherwise (no capsule row), **arm a persistent harness Monitor** running
-  exactly the printed `MONITOR:` command — the one act this script can't do
-  for you — then run phase 2. Re-arm on expiry **only while the row is
-  working or waiting** on something; once it goes idle, let the Monitor
-  lapse and read the inbox with `comm-poll.sh` on your next natural turn
-  instead of paying a turn just to re-arm. `comm-status-heartbeat.sh` warns
-  you if a still-active row misses a re-arm.
-
-**Phase 2 — catch up** (only once phase 1's `WAKE:`/`MONITOR:` outcome is in place):
-
-```bash
-~/.sot-comm/bin/comm-session-start.sh --catch-up
-```
-
-```
-BOOTSTRAP handle=<h> poll=<n>|ERR selftest=ok|retry|down bus=<n>|n/a identity=ok
-```
-
-- `selftest=retry` — cold-start, still connecting; re-run
-  `~/.sot-comm/bin/comm-listen.sh --selftest` once, a few seconds later.
-- `bus=<n>` is a PEEK, not an acknowledgement — run `bus.sh sync` (or
-  `/bus-sync`) to actually see and consume those entries.
-
-The real proof the wake path works is its own notification, not the inline
-selftest text: a Monitor's is `[relay] from __selftest__: …`; a ping
-watcher's is `[sot-comm] wake selftest OK — nothing to read`.
+This is ADR 0049's design of record, landing in stages: today the failure verdict
+reads `no such handle: <h>` or `NOT CONFIRMED:` rather than `FAILED ->`, and the
+line typed into a row reads `[sot-comm] new message for @<handle> — run
+…/comm-poll.sh` rather than `[sot-comm] you have mail`. There is nothing to arm,
+own or re-arm.
 
 **Identity**: a pin (`SOT_COMM_NAME`, or a private `SOT_COMM_SELF_FILE`)
 always wins; otherwise a validated prior identity; otherwise fresh
 derivation — never manufactured from a lower-priority source. A
 subagent/lane that doesn't own its ambient identity slot MUST pin both.
-A private self file may live in any directory, but its BASENAME is read as
-the row this session belongs to (`<host>__<workspace-id>.txt`): a lane that
-owns no row should keep a name of any other shape, and will then declare no
-handle to the daemon and arm no ping watcher, which is what a lane wants. A
-session that DOES own its row and still needs a private slot keeps the
-canonical basename and gives it a private directory instead — rename the
-basename and the row stops recognising it.
-`identity=MISMATCH` and a `REFUSED` start are different problems with
-different fixes — see `references/reclaim-handle.md`.
+`identity=MISMATCH` and a `REFUSED` start (`identity=FAIL`) are different
+problems with different fixes — see `references/reclaim-handle.md`.
 
 **Work-state (the nav row colour) is yours to stamp** — the script prints the
 rule after every outcome. `comm-status.sh waiting "<what>"` (purple) the moment
@@ -92,5 +43,4 @@ question first, running jobs listed after it; `waiting` is only for a turn
 where nothing needs the user. Mechanics: the sot-comm skill's
 `references/work-state.md`.
 
-A Ship of Tools checkout gets the sot-specific layer (FE ping, bus count)
-folded into phase 2 for free — no separate skill. `ccb` launches this skill.
+`ccb` launches this skill.

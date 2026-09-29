@@ -6,11 +6,19 @@ description: Session-to-session messaging for Ship of Tools (cross-session, cros
 # sot-comm
 
 Send messages between Ship of Tools/Claude sessions. Discovery + durable
-inboxes live under `~/.sot-comm/`; live wake is the recipient's inbox Monitor
-on the same host or the daemon relay across machines. Full contract:
-`comm/PROTOCOL.md`. **Receive setup (`comm-listen.sh` + a Monitor) belongs to
-`/sot-session-start`** — run that once per session; this skill assumes it's
-already done.
+inboxes live under `~/.sot-comm/`. Full contract: `comm/PROTOCOL.md`.
+
+**What a session is told at start.** `comm-context.sh` prints your handle. Send
+with `comm-send.sh @handle "text"` and read its one result. When
+`[sot-comm] you have mail` appears, or your end-of-turn check says so, run
+`comm-poll.sh`. To wait for a reply, end your turn. Run the session-start step
+once, when a session first starts — not again on every resume.
+
+This is ADR 0049's design of record, landing in stages: today the failure verdict
+reads `no such handle: <h>` or `NOT CONFIRMED:` rather than `FAILED ->`, and the
+line typed into a row reads `[sot-comm] new message for @<handle> — run
+…/comm-poll.sh` rather than `[sot-comm] you have mail`. There is nothing to arm,
+own or re-arm.
 
 **Scripts** (installed by `ShipTools.install_comm()`): `~/.sot-comm/bin/` — always use these, never hand-roll jq/registry logic.
 
@@ -23,10 +31,10 @@ already done.
 | Direct message | `comm-send.sh @<name> "message"` |
 | Broadcast | `comm-send.sh --broadcast "message"` |
 | Check inbox | `comm-poll.sh` |
-| Leave (removes the row and stops this handle's relay bridge) | `comm-leave.sh` |
+| Leave (removes the row) | `comm-leave.sh` |
 | Spawn a new agent for a task | `comm-spawn.sh <name> <repo-path> --expertise "..." --task "..."` |
 | Tear down a spawned agent | `comm-despawn.sh <name\|slug>` |
-| Instant cross-machine message | `comm-relay.sh send @<name> "msg"` / `ask @<name> "msg" <timeout-s>` |
+| Instant cross-machine message | `comm-relay.sh send @<name> "msg"` |
 | Show a result in the FE | `sot-fe preview <ws> <path>` (badge-floor — never force-switches the user's view) |
 
 (All paths are `~/.sot-comm/bin/<script>`.)
@@ -64,13 +72,14 @@ is no time-based self-heal, the same as blue. Blue clears on the user's next
 genuine prompt, or on viewing the row — never by age. Mechanics + fixture-
 testing rule + turn-end auditor: `references/work-state.md`.
 
-## After you send — trust your Monitor
+## After you send — end your turn
 
 `send` is one-shot and instant; the *reply* is not — the peer has to wake,
 think, and answer (seconds to minutes). Silence is think-time, not failure:
 don't re-send or block-wait — set `comm-status.sh waiting "..."` and end the
-turn; your armed Monitor wakes you when the reply lands. Re-send only with
-positive evidence the message was lost (peer was deaf or restarted).
+turn; you'll see the reply at your next turn boundary, or be typed into if
+you're sitting at a free prompt when it lands. Re-send only with positive
+evidence the message was lost (peer was deaf or restarted).
 Either verb reaches anyone — `comm-send.sh @handle "msg"` and `comm-relay.sh
 send @handle "msg"` route to each other, so you never have to pick. A handle
 this box's registry names is filed locally (`filed -> @handle` — the file IS
@@ -98,8 +107,7 @@ support it — `(working, stamped 12s ago — reply expected at its turn
 boundary)`, `(needs its own user, stamped 6m ago: "...")`, `(idle, stamped
 32m ago)`, or `(no heartbeat for 8h — may be gone)`, this last overriding
 the others. Read it before assuming silence means ignored; a missing clause
-means the registry had nothing to say, not that the peer is fine. `ask`'s
-timeout line carries the same facts.
+means the registry had nothing to say, not that the peer is fine.
 
 ## Naming — from the repo, never the task
 

@@ -5,8 +5,8 @@ problems — read which one you actually have before picking a recipe.
 
 - **`identity=MISMATCH`** — it joined you anyway, but under an ESCALATED
   handle (e.g. `<repo>-<parentdir>-<host>` instead of the bare
-  `<repo>-<host>`) because a relay listener bridge for your CANONICAL handle
-  was already running under your uid at join time. Recipe below.
+  `<repo>-<host>`) because your CANONICAL handle was already held by another
+  row at join time. Recipe below.
 - **`identity=FAIL` with a `REFUSED:` line** — it did NOT join at all: the
   self-file at this identity slot already names a different, validated
   project, and no `$SOT_COMM_NAME`/`$SOT_COMM_SELF_FILE` pin was given to
@@ -15,25 +15,20 @@ problems — read which one you actually have before picking a recipe.
 
 ## MISMATCH recipe
 
-A live bridge under YOUR canonical handle is almost always your own earlier
-identity — a real collision with a different project looks identical from
-the outside, so verify before reclaiming. **The no-arg `comm-join.sh` is the
-WRONG move here.** No-args derives a handle from scratch; derivation sees
+Another row already holding YOUR canonical handle is almost always your own
+earlier identity — a real collision with a different project looks identical
+from the outside, so verify before reclaiming. **The no-arg `comm-join.sh` is
+the WRONG move here.** No-args derives a handle from scratch; derivation sees
 your own canonical handle's row as "held by an unknown project" and
 escalates away from it again — which is how you got here. Reclaim
 explicitly instead.
 
 1. **Prove sole ownership of the canonical handle before reclaiming it.**
-   Confirm exactly one live session has this repo as its cwd, and that
-   the bridge for the canonical handle (its pid is in
-   `~/.sot-comm/state/bridge-<canonical-handle>.pid`) started when *this*
-   session actually started:
-   ```bash
-   ~/.sot-comm/bin/comm-listen.sh --name <canonical-handle> --status   # RUNNING (pid N) or not running
-   ps -o lstart= -p N
-   ```
-   If you can't confirm sole ownership, stop and ask a human — reclaiming
-   someone else's live handle strands *them* instead of fixing you.
+   Confirm exactly one live session has this repo as its cwd — `comm-list.sh`
+   shows which handle is live and when the row holding it last heard from
+   the daemon. If you can't confirm sole ownership, stop and ask a human —
+   reclaiming someone else's live handle strands *them* instead of fixing
+   you.
 
 2. Drop the escalated handle:
    ```bash
@@ -46,32 +41,8 @@ explicitly instead.
    ~/.sot-comm/bin/comm-join.sh --name <canonical-handle>
    ```
 
-4. Your listener bridge almost certainly never needed to move — it was
-   bridging the *correct* (canonical) handle's inbox the whole time, just
-   unaddressed while your registered identity pointed elsewhere. Confirm
-   it's up rather than starting a redundant one:
-   ```bash
-   ~/.sot-comm/bin/comm-listen.sh --status
-   ```
-
-5. **Arm a Monitor for the RECLAIMED handle.** Reclaiming does not itself
-   start or move a harness Monitor — if the escalated handle had one armed,
-   it is still watching the WRONG inbox. Arm a fresh one on the canonical
-   name before selftesting:
-   ```
-   ~/.sot-comm/bin/comm-watch.sh <canonical-handle>
-   ```
-
-6. **Selftest is required, not optional** — prove the wake path actually
-   reaches you under the reclaimed name, now that its Monitor exists to
-   catch the proof:
-   ```bash
-   ~/.sot-comm/bin/comm-listen.sh --selftest
-   ```
-   Require the **Monitor notification** (`[relay] from __selftest__: …`),
-   not just the inline `receive path OK` — the notification is what proves a
-   peer's *next* message actually reaches this session, not just that a file
-   got written.
+That's it — the daemon now has your canonical handle attached to this row.
+There is nothing else to move, arm or re-arm.
 
 ### Why MISMATCH is rare
 
