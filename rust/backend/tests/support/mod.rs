@@ -26,6 +26,26 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
 use interprocess::local_socket::GenericFilePath;
 use sot_protocol::{codec, op, Frame, HelloReq, Kind};
+/// The daemon's comm-registry poller (server.rs, the ADE state-nav live
+/// refresh) reads `<comm home>/registry.json` every 1.5s and broadcasts a
+/// `workspace.changed` evt on any change; `paths::sot_comm_home` resolves
+/// SOT_COMM_HOME, then HOME/.sot-comm, then USERPROFILE in that order. A
+/// test daemon that leaves all three inherited therefore polls the
+/// developer's REAL comm registry, and any live session on the box
+/// stamping its work state delivers an unexpected evt into a test that
+/// assumed a quiet connection — a wrong-result defect (it fails exactly
+/// when the machine is busy), not flakiness. Every real-`sotd`-spawning
+/// fixture in this crate creates its own home/comm dirs under its own
+/// tempdir and pins all three vars on the child, one implementation
+/// shared here rather than a copy per file.
+pub fn comm_isolation_dirs(tmp: &Path) -> (PathBuf, PathBuf) {
+    let home_root = tmp.join("home");
+    std::fs::create_dir_all(&home_root).expect("mkdir home_root");
+    let comm_root = home_root.join(".sot-comm");
+    std::fs::create_dir_all(&comm_root).expect("mkdir comm_root");
+    (home_root, comm_root)
+}
+
 /// Every bounded wait in this file shares one figure — generous over any
 /// single supervisor-lane round trip (connect 2s + hello 2s + status 5s
 /// ~= 9s worst case) but still a real bound, never "forever."
@@ -155,6 +175,11 @@ pub struct Env {
     pub workspace_project_root: PathBuf,
     pub state_root: PathBuf,
     pub config_root: PathBuf,
+    /// [`comm_isolation_dirs`]'s own pair — every spawned daemon's `HOME`/
+    /// `USERPROFILE`/`SOT_COMM_HOME` point here, never at the developer's
+    /// real comm registry.
+    pub home_root: PathBuf,
+    pub comm_root: PathBuf,
     pub socket_path: PathBuf,
     /// LU4 review round 2, F4: the currently-live `sotd` child, owned by
     /// `Env` itself (not a separate `KillGuard` local) so `Env`'s own
@@ -285,6 +310,7 @@ impl Env {
         };
         let config_root = tmp.path().join("config");
         std::fs::create_dir_all(&config_root).expect("mkdir config_root");
+        let (home_root, comm_root) = comm_isolation_dirs(tmp.path());
         let socket_path = test_socket_path(runtime_tmp.path(), tag);
         Self {
             _tmp: tmp,
@@ -294,6 +320,8 @@ impl Env {
             workspace_project_root,
             state_root,
             config_root,
+            home_root,
+            comm_root,
             socket_path,
             daemon: RefCell::new(None),
             user_service_unit: RefCell::new(None),
@@ -353,6 +381,9 @@ impl Env {
             .env("XDG_CONFIG_HOME", &self.config_root)
             .env("SOT_SELF_HOST", TEST_STATE_HOST)
             .env("SOT_RUNTIME_DIR", self._runtime_tmp.path())
+            .env("HOME", &self.home_root)
+            .env("USERPROFILE", &self.home_root)
+            .env("SOT_COMM_HOME", &self.comm_root)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -504,6 +535,9 @@ impl Env {
             .env("XDG_CONFIG_HOME", &self.config_root)
             .env("SOT_SELF_HOST", TEST_STATE_HOST)
             .env("SOT_RUNTIME_DIR", self._runtime_tmp.path())
+            .env("HOME", &self.home_root)
+            .env("USERPROFILE", &self.home_root)
+            .env("SOT_COMM_HOME", &self.comm_root)
             .env("PATH", path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -529,6 +563,9 @@ impl Env {
             .env("XDG_CONFIG_HOME", &self.config_root)
             .env("SOT_SELF_HOST", TEST_STATE_HOST)
             .env("SOT_RUNTIME_DIR", self._runtime_tmp.path())
+            .env("HOME", &self.home_root)
+            .env("USERPROFILE", &self.home_root)
+            .env("SOT_COMM_HOME", &self.comm_root)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());

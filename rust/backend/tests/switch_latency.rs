@@ -124,6 +124,7 @@ impl Env {
         std::fs::create_dir_all(&config_root).expect("mkdir config_root");
         let spawn_marker_dir = tmp.path().join("spawn-markers");
         std::fs::create_dir_all(&spawn_marker_dir).expect("mkdir spawn_marker_dir");
+        let (home_root, comm_root) = crate::support::comm_isolation_dirs(tmp.path());
 
         // Short-prefixed, directly under `/tmp` on Unix (never under `_tmp`,
         // whose own prefix isn't length-bounded) — `sun_path` is 108 bytes
@@ -166,6 +167,9 @@ impl Env {
             .env("XDG_CONFIG_HOME", &config_root)
             .env("SOT_SELF_HOST", format!("switchlat-{tag}"))
             .env("SOT_RUNTIME_DIR", runtime_tmp.path())
+            .env("HOME", &home_root)
+            .env("USERPROFILE", &home_root)
+            .env("SOT_COMM_HOME", &comm_root)
             .env("SOT_TEST_SLOW_CONCEPT_READ_MS", SLOW_MS.to_string())
             .env("SOT_LANE_FAKE_JULIA_COUNTER_DIR", &spawn_marker_dir)
             .stdin(Stdio::null());

@@ -174,7 +174,21 @@ if [[ $SKIP_TESTS -eq 0 ]]; then
     # (capsule_supervisor_survives_a_real_user_service_stop) must actually
     # RUN here, panicking rather than silently SKIPPED:-ing forever the
     # way a bare hosted CI runner (no user manager) is allowed to.
-    (cd rust && SOT_TEST_REQUIRE_USER_MANAGER=1 cargo test --workspace --locked)
+    #
+    # This box's own SOT_ env (a live session's SOT_SOCKET, SOT_COMM_HOME,
+    # SOT_RELAY_ENDPOINT, ...) must never reach a test daemon -- the
+    # harness-isolation lane's whole point is a daemon that only ever
+    # discovers a registry/socket a test itself minted. Unset every
+    # ambient SOT_-prefixed var first (SOT_TEST_REQUIRE_USER_MANAGER=1
+    # below is a test knob, not host state, so it's set fresh after);
+    # DBUS_SESSION_BUS_ADDRESS/XDG_RUNTIME_DIR are left alone -- the real
+    # user-manager survival test needs a reachable `systemd --user` -- and
+    # so are HOME/PATH, both still needed by git and gh.
+    (
+        cd rust
+        for v in $(compgen -v SOT_); do unset "$v"; done
+        SOT_TEST_REQUIRE_USER_MANAGER=1 cargo test --workspace --locked
+    )
 fi
 
 # ---- commit, tag, push -----------------------------------------------------
