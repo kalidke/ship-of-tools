@@ -496,6 +496,50 @@ t19() {
 }
 check "19: a lock released since the last read is FAILED as was held, never as is held" t19
 
+# A live record the step cannot read (a permission or I/O error, or a holder
+# gone before a live writer linked the lock) is released, never by hand, in
+# the FAILED line and in the clear's refusal; what was read whole, or a
+# directory, still is by hand.
+own_record() { lib "_sot_lock_start $$ && echo \"$SELF:$$:\$_SOT_LOCK_START\""; }
+step_text() { lib "_sot_lock_self_id; _SOT_REG_LOCK='$P'; _sot_lock_step; echo \"[\$_SOT_LOCK_BYHAND][\$_SOT_LOCK_GONE]\"; _sot_lock_fail_text"; }
+t20() {
+    reset; local out
+    own_record > "$P"; chmod 000 "$P"
+    out="$(step_text)"
+    chmod 644 "$P"
+    contains "$out" "[][1]" && contains "$out" "could not be read" && hasnt_by_hand "$out" && [[ "$out" == *Retry. ]] \
+        || { echo "$out"; return 1; }
+}
+check "20: a live record that cannot be read is released, never FAILED as one to remove by hand" t20
+
+t21() {
+    reset; local out rc rec
+    rec="$(own_record)"; printf '%s\n' "$rec" > "$P"; chmod 000 "$P"
+    out="$(bash "$BIN/comm-registry-lock-clear.sh" 2>&1 >/dev/null)"; rc=$?
+    chmod 644 "$P"
+    [ "$(cat "$P")" = "$rec" ] || { echo "the live lock changed: $out"; return 1; }
+    [ "$rc" = 1 ] && hasnt_by_hand "$out" && ! contains "$out" "comm-registry-lock-clear" || { echo "rc=$rc: $out"; return 1; }
+}
+check "21: a clear whose lock cannot be read says neither to remove it by hand nor to clear it again" t21
+
+t22() {
+    reset; local out
+    : > "$P"
+    out="$(step_text)"
+    contains "$out" "[1][]" && contains "$out" "its record names no holder (empty). If its holder is dead, remove $P by hand" \
+        || { echo "$out"; return 1; }
+}
+check "22: an empty record read whole is still one to remove by hand" t22
+
+t23() {
+    reset; local out
+    mkdir "$P"
+    out="$(step_text)"
+    contains "$out" "[1][]" && contains "$out" "held by an older version that records no holder. If its holder is dead" \
+        || { echo "$out"; return 1; }
+}
+check "23: an older version's directory is still one to remove by hand" t23
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

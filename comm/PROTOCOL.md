@@ -173,14 +173,14 @@ a stream; the record keeps its colons.
 - **FAILED** names the holder and the recovery, in the scripts and in the
   daemon's log alike: `registry lock <path> is held by <host> pid <pid> start
   <tick> (<age> old): <why>. If it is dead, run any comm command on <host>, or
-  run comm-registry-lock-clear.sh.` A lock found released since the last read
-  says instead `registry lock <path> was held by <host> pid <pid> start <tick>
+  run comm-registry-lock-clear.sh.` A lock found released since the last read,
+  or whose record could not be read, says instead `registry lock <path> was held by <host> pid <pid> start <tick>
   when last read (<why>); it may have been released since. Retry.` With no clock the scripts say `registry
   lock <path> is held, and there is no clock to wait by: <which>`; a daemon
   thread that never got its turn says `registry lock <path> was not tried:
   another thread of this daemon held its turn past the bound`. A lock no
-  reclaim can clear (no readable holder, an older version's, or a marker
-  naming a record its walk already passed) says `registry lock <path> still
+  reclaim can clear (a record read whole that does not parse, an older
+  version's directory, or a marker naming a record its walk already passed) says `registry lock <path> still
   held (<age> old): <why>. If its holder is dead, remove <path> by hand and
   retry.` A wait that ends with no holder read, the lock released or taken
   again just then, says `registry lock <path> was not taken by the deadline:
@@ -217,7 +217,10 @@ a stream; the record keeps its colons.
   a person by hand, removes it. A removal of `reclaim.<S>` that failed for a
   live S but reaches the server later (NFS) can remove a later walker's
   `reclaim.<S>` after S has died, so two walkers each act for one dead holder,
-  and one can remove the lock the other retook; this is very improbable.
+  and one can remove the lock the other retook; this is very improbable. A lock
+  whose record stays unreadable (a permission or I/O error) is never reclaimed,
+  and its FAILED line says only that its record could not be read; it is
+  removed by hand.
 
 ## Message frame (inbox JSONL, one object per line)
 

@@ -233,15 +233,17 @@ fn nlink(_m: &fs::Metadata) -> u64 {
 /// `path`'s record, read fresh: opening the folder first forces its GETATTR
 /// (close-to-open), so a changed folder drops every cached lookup beneath it
 /// and the record's own open goes to the server. The folder open is required
-/// only where a death can be proved. `Err` carries what was read.
-fn fresh(path: &Path, proves: bool) -> Result<String, String> {
+/// only where a death can be proved. `Err(Some)` carries what was read whole
+/// when it is not a record, empty included; `Err(None)` = not read (the folder
+/// open required and failed, or the file's read failed).
+fn fresh(path: &Path, proves: bool) -> Result<String, Option<String>> {
     let dir_ok = path.parent().is_some_and(|d| fs::File::open(d).is_ok());
     if proves && !dir_ok {
-        return Err(String::new());
+        return Err(None);
     }
-    let raw = fs::read(path).unwrap_or_default();
+    let raw = fs::read(path).map_err(|_| None)?;
     let line = String::from_utf8_lossy(&raw).lines().next().unwrap_or("").to_string();
-    if parse(&line).is_some() { Ok(line) } else { Err(line) }
+    if parse(&line).is_some() { Ok(line) } else { Err(Some(line)) }
 }
 
 enum Verdict {
@@ -322,23 +324,29 @@ fn vouch(_lock: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Why a step did not free the lock: the ID the lock names (`None` for no
-/// readable holder), the ID that blocks, the reason, and whether no reclaim
-/// can clear it, so only a person can, by hand.
+/// Why a step did not free the lock: the ID the lock names (`None` for none),
+/// the ID that blocks, the reason, and whether no reclaim can clear it, so only
+/// a person can, by hand: a directory, or a record read whole that does not parse.
 struct Blocked {
     holder: Option<String>,
     who: Option<String>,
     why: String,
     by_hand: bool,
-    /// The lock was gone at the last step: the holder is one last read, not one now.
+    /// The lock was gone, or its record not read, at the last step: the holder
+    /// is one last read, not one now.
     gone: bool,
 }
 
 impl Blocked {
-    /// The lock was gone at the step: the by-hand flag goes, the holder stays named.
+    /// The lock was gone at the step, or its record could not be read: the
+    /// by-hand flag goes, the holder stays named, and with none the reason says
+    /// the record was not read.
     fn released(&mut self) {
         self.by_hand = false;
         self.gone = true;
+        if self.holder.is_none() {
+            self.why = "its record could not be read, so it may have been released since".into();
+        }
     }
 
     fn fail_text(&self, lock: &Path) -> String {
@@ -382,25 +390,33 @@ impl Blocked {
 
 /// One reclaim attempt against the lock as it stands (`_sot_lock_step`):
 /// `Ok` = this step saw the lock go, retake at once; `Err(None)` = released
-/// since the take, a try that keeps the last holder named, clears the
-/// by-hand flag and makes the text say "was held". Every step past a marker needs
-/// its creator proved dead, so the live process holding the chain's last
-/// marker is the only one with authority over "the lock names a member of the
-/// chain". A marker naming a record the chain already holds, not mine, ends
-/// the walk: no reclaim can pass it (this daemon's own marker, left naming it
-/// when it died during its reclaim; review B1), so the lock is removed by
-/// hand. Past its first marker the walk stops at `deadline`.
+/// since the take, or its record could not be read, a try that keeps the last
+/// holder named, clears the by-hand flag and makes the text say "was held".
+/// By hand: a directory, or a record read whole that does not parse. Every
+/// step past a marker needs its creator proved dead, so the live process
+/// holding the chain's last marker is the only one with authority over "the
+/// lock names a member of the chain". A marker naming a record the chain
+/// already holds, not mine, ends the walk: no reclaim can pass it (this
+/// daemon's own marker, left naming it when it died during its reclaim; review
+/// B1), so the lock is removed by hand. Past its first marker the walk stops
+/// at `deadline`.
 fn step(lock: &Path, me: &Me, settle: Duration, deadline: Instant) -> Result<(), Option<Blocked>> {
     let proves = me.mine.is_some();
     let blocked = |holder: Option<&String>, who: Option<&String>, why: String| {
         Err(Some(Blocked { holder: holder.cloned(), who: who.cloned(), why, by_hand: false, gone: false }))
     };
     let only_by_hand = |why: String| Err(Some(Blocked { holder: None, who: None, why, by_hand: true, gone: false }));
-    let d = match fresh(lock, proves) {
+    let d = fresh(lock, proves);
+    #[cfg(all(test, target_os = "linux"))]
+    let d = if tests::FAIL_FIRST_READ.swap(false, std::sync::atomic::Ordering::SeqCst) { Err(None) } else { d };
+    let d = match d {
         Ok(d) => d,
-        Err(_) if fs::symlink_metadata(lock).is_err() => return Err(None),
+        // First, as a directory's read fails too.
         Err(_) if lock.is_dir() => return only_by_hand("held by an older version that records no holder".into()),
-        Err(read) => {
+        // Not read: released, whether or not the lock exists now, as a live
+        // writer can link it between the failed read and any existence test.
+        Err(None) => return Err(None),
+        Err(Some(read)) => {
             let read = if read.is_empty() { "empty".to_string() } else { read };
             return only_by_hand(format!("its record names no holder ({read})"));
         }
@@ -463,7 +479,7 @@ fn step(lock: &Path, me: &Me, settle: Duration, deadline: Instant) -> Result<(),
     let _ = tests::GONE_IN_SETTLE.swap(false, std::sync::atomic::Ordering::SeqCst).then(|| fs::remove_file(lock));
     let reread = fresh(lock, proves);
     #[cfg(all(test, target_os = "linux"))]
-    let reread = if tests::FAIL_REREAD.swap(false, std::sync::atomic::Ordering::SeqCst) { Err(String::new()) } else { reread };
+    let reread = if tests::FAIL_REREAD.swap(false, std::sync::atomic::Ordering::SeqCst) { Err(None) } else { reread };
     let result = match reread {
         Ok(now) if chain.contains(&now) => {
             let _ = fs::remove_file(lock);
@@ -497,6 +513,10 @@ mod tests {
 
     /// Set, the next post-settle re-read fails once (the review's EMFILE/EIO).
     pub(super) static FAIL_REREAD: AtomicBool = AtomicBool::new(false);
+
+    /// Set, the next step's first read of the lock fails once (its holder
+    /// released, and a live writer linked it before any existence test).
+    pub(super) static FAIL_FIRST_READ: AtomicBool = AtomicBool::new(false);
 
     /// Set, the record written into the lock just after the next step removes it.
     pub(super) static AFTER_STEP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -789,6 +809,70 @@ mod tests {
             "{err}"
         );
         assert!(!err.contains("is held") && !err.contains("comm-registry-lock-clear") && !err.contains("by hand"), "{err}");
+    }
+
+    /// A live holder's record the step cannot read (a permission or I/O
+    /// error) is released, never by hand, and its text says it was not read.
+    #[test]
+    fn an_unreadable_live_record_is_released_not_by_hand() {
+        use std::os::unix::fs::PermissionsExt;
+        let _env = env_lock();
+        let home = scratch("unread");
+        let (mut child, _) = shell(&home, "with_lock bash -c 'echo held; exec sleep 30'");
+        let lock = home.join(".registry.lock");
+        let before = fs::read(&lock).unwrap();
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o000)).unwrap();
+        let r = step(&lock, &Me::now(), Duration::from_millis(50), Instant::now() + Duration::from_secs(2));
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(r, Err(None)), "a record not read is released");
+        assert_eq!(fs::read(&lock).unwrap(), before, "the live holder's lock is untouched");
+        let mut b = Blocked { holder: None, who: None, why: "it was released just now".into(), by_hand: true, gone: false };
+        b.released();
+        let err = b.fail_text(&lock);
+        assert!(!err.contains("by hand") && err.ends_with("Retry.") && err.contains("could not be read"), "{err}");
+        child.end();
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// The review's interleaving: the first read fails (its holder released)
+    /// and a live writer links the lock before any existence test.
+    #[test]
+    fn a_failed_first_read_with_a_live_writer_in_the_lock_is_released() {
+        let _env = env_lock();
+        let home = scratch("first");
+        let (mut child, _) = shell(&home, "with_lock bash -c 'echo held; exec sleep 30'");
+        let lock = home.join(".registry.lock");
+        let before = fs::read(&lock).unwrap();
+        FAIL_FIRST_READ.store(true, Ordering::SeqCst);
+        let r = step(&lock, &Me::now(), Duration::from_millis(50), Instant::now() + Duration::from_secs(2));
+        assert!(matches!(r, Err(None)), "a failed first read is released, never by hand");
+        assert_eq!(fs::read(&lock).unwrap(), before, "the live writer's lock is untouched");
+        child.end();
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// What was read whole still decides by hand: `why` of a by-hand step.
+    fn by_hand_why(tag: &str, make: impl FnOnce(&Path)) -> String {
+        let _env = env_lock();
+        let home = scratch(tag);
+        let lock = home.join(".registry.lock");
+        make(&lock);
+        let r = step(&lock, &Me::now(), Duration::from_millis(50), Instant::now() + Duration::from_secs(2));
+        let _ = fs::remove_dir_all(&home);
+        match r {
+            Err(Some(b)) if b.by_hand => b.why,
+            _ => panic!("{tag}: not by hand"),
+        }
+    }
+
+    #[test]
+    fn an_empty_record_read_whole_is_by_hand() {
+        assert_eq!(by_hand_why("empty", |l| fs::write(l, "").unwrap()), "its record names no holder (empty)");
+    }
+
+    #[test]
+    fn an_older_versions_directory_is_by_hand() {
+        assert_eq!(by_hand_why("olddir", |l| fs::create_dir(l).unwrap()), "held by an older version that records no holder");
     }
 
     #[test]

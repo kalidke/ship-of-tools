@@ -762,11 +762,15 @@ _sot_lock_take() {
 # changed folder drops every cached lookup beneath it, so the record's own
 # open looks it up on the wire; a plain stat or readlink was seen to stay
 # stale on the shared home. The folder open is required only where a death
-# can be proved. 0 = a record of six fields with a numeric pid; else 1.
+# can be proved. 0 = a record of six fields with a numeric pid; 1 = read
+# whole, not a record; 2 = not read (the folder open required and failed, or
+# the file's open or read failed). cat, not the builtin read, because only
+# cat's exit tells a read error from the end of the file.
 _sot_lock_fresh() {
     _SOT_LOCK_READ=""
-    { : <"${1%/*}"; } 2>/dev/null || [ -z "${_SOT_LOCK_SELF:-}" ] || return 1
-    { IFS= read -r _SOT_LOCK_READ <"$1"; } 2>/dev/null || true
+    { : <"${1%/*}"; } 2>/dev/null || [ -z "${_SOT_LOCK_SELF:-}" ] || return 2
+    _SOT_LOCK_READ="$(cat -- "$1" 2>/dev/null)" || { _SOT_LOCK_READ=""; return 2; }
+    _SOT_LOCK_READ="${_SOT_LOCK_READ%%$'\n'*}"
     [[ "$_SOT_LOCK_READ" =~ ^[^:]*:[^:]*:[^:]*:[^:]*:[0-9]+:[^:]*$ ]]
 }
 
@@ -821,12 +825,14 @@ _sot_lock_vouch() {
 
 # _sot_lock_step [--forced | DEADLINE] — one reclaim attempt against the lock
 # as it stands. 0 = this step saw the lock go, retake at once; 1 = not (a lock
-# released since the take is a try, keeps the last holder named, clears
-# _SOT_LOCK_BYHAND and sets _SOT_LOCK_GONE so the text says "was held"), with
-# _SOT_LOCK_HOLDER (the ID the lock names, "" for none), _SOT_LOCK_WHO (the
-# ID that blocks), _SOT_LOCK_BYHAND (1 when no reclaim can clear it, so only
-# a person can, by hand) and _SOT_LOCK_WHY set for the FAILED line. The chain
-# runs D, then the creator of reclaim.<D> if that one is dead too, and so on;
+# released since the take, or one whose record could not be read, is a try,
+# keeps the last holder named, clears _SOT_LOCK_BYHAND and sets _SOT_LOCK_GONE
+# so the text says "was held"), with _SOT_LOCK_HOLDER (the ID the lock names,
+# "" for none), _SOT_LOCK_WHO (the ID that blocks), _SOT_LOCK_BYHAND (1 when
+# no reclaim can clear it, so only a person can, by hand: a directory, or a
+# record read whole that does not parse) and _SOT_LOCK_WHY set for the FAILED
+# line. The chain runs D, then the creator of reclaim.<D> if that one is dead
+# too, and so on;
 # every step past a marker needs its creator proved dead, so the live process
 # holding the chain's last marker is the only one with authority over "the
 # lock names a member of the chain". A marker naming me is one I took earlier
@@ -840,16 +846,25 @@ _sot_lock_vouch() {
 # here may be pending on its own machine, and would remove the next holder's
 # lock (review B1).
 _sot_lock_step() {
-    local x chain=() m c y deadline=""
+    local x chain=() m c y r deadline=""
     [ "${1:-}" = --forced ] || deadline="${1:-}"
-    if ! _sot_lock_fresh "$_SOT_REG_LOCK"; then
-        [ -e "$_SOT_REG_LOCK" ] || { _SOT_LOCK_BYHAND=""; _SOT_LOCK_GONE=1; return 1; }
-        _SOT_LOCK_HOLDER=""; _SOT_LOCK_WHO=""; _SOT_LOCK_BYHAND=1; _SOT_LOCK_GONE=""
+    _sot_lock_fresh "$_SOT_REG_LOCK"; r=$?
+    if [ "$r" != 0 ]; then
+        # First, as cat on a directory fails, so a directory arrives as 2.
         if [ -d "$_SOT_REG_LOCK" ]; then
+            _SOT_LOCK_HOLDER=""; _SOT_LOCK_WHO=""; _SOT_LOCK_BYHAND=1; _SOT_LOCK_GONE=""
             _SOT_LOCK_WHY="held by an older version that records no holder"
-        else
-            _SOT_LOCK_WHY="its record names no holder (${_SOT_LOCK_READ:-empty})"
+            return 1
         fi
+        # Not read: released, whether or not the lock exists now, as a live
+        # writer can link it between the failed read and any existence test.
+        if [ "$r" = 2 ]; then
+            _SOT_LOCK_BYHAND=""; _SOT_LOCK_GONE=1
+            [ -n "${_SOT_LOCK_HOLDER:-}" ] || _SOT_LOCK_WHY="its record could not be read, so it may have been released since"
+            return 1
+        fi
+        _SOT_LOCK_HOLDER=""; _SOT_LOCK_WHO=""; _SOT_LOCK_BYHAND=1; _SOT_LOCK_GONE=""
+        _SOT_LOCK_WHY="its record names no holder (${_SOT_LOCK_READ:-empty})"
         return 1
     fi
     _SOT_LOCK_HOLDER="$_SOT_LOCK_READ"; _SOT_LOCK_WHO=""; _SOT_LOCK_BYHAND=""; _SOT_LOCK_GONE=""; x="$_SOT_LOCK_READ"

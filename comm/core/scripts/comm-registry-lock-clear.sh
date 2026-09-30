@@ -14,8 +14,9 @@
 # next holder's lock. The exceptions, where the refusal says to remove the
 # lock by hand: a blocking record with no proof fields (a clear killed on
 # macOS or git-bash leaves one in its marker), which no box can ever prove
-# dead, and a lock no reclaim can clear (no readable holder, an older
-# version's, or a marker naming a record its chain already holds).
+# dead, and a lock no reclaim can clear (a record read whole that does not
+# parse, an older version's directory, or a marker naming a record its chain
+# already holds).
 #
 # Usage: comm-registry-lock-clear.sh
 # Exit: 0 cleared, or already free; 1 not cleared, with the reason on stderr.
