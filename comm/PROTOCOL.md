@@ -75,13 +75,14 @@ renamed over `registry.json` only if it is one JSON document with an object
 `.agents` and its data has been flushed to the server; otherwise nothing is
 written and the writer prints `FAILED: the registry could not be read or
 updated, so nothing was written` (or `FAILED: the registry update could not be
-flushed (…), so nothing was written`). The standalone heartbeat hook carries
-the same check inline and stays silent; the daemon flushes its tmp before its
-rename too. **perl is required for registry writes**: the flush is perl's
+flushed (…), so nothing was written`, or `… could not be renamed into place
+(…) …`). The heartbeat hook calls the same `registry_replace` and stays
+silent; the daemon flushes its tmp before its rename too. **perl is required for registry writes**: the flush is perl's
 `sync`, and a host without perl fails closed with the "could not be flushed"
-line. `ensure_home` creates the registry only when there is no file (noclobber),
-and never truncates or repairs one. Every read goes through
-`sot_registry_read` (the standalone hooks inline its check), which has three
+line. `ensure_home` creates the registry only when there is no file: it flushes a
+skeleton tmp and publishes it by a hard link, which fails on an existing name,
+so it never replaces, truncates or repairs a registry. Every read goes through
+`sot_registry_read` (the hooks source the library in a subshell for it), which has three
 answers: present, absent (it parsed; no such row) and unreadable (missing,
 empty, not JSON, not exactly one document, or no object `.agents`).
 Unreadable is never absent. Every read, and every writer's read under the

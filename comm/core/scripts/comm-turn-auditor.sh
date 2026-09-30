@@ -80,10 +80,10 @@ tools="$(printf '%s\n' "$tail_lines" \
                                 | map(select(. != null)) | join(" | ")) | tostring | .[0:200])' 2>/dev/null \
     | tail -n 40)"
 
-# The bytes are comm-lib.sh's sot_registry_bytes (a failed or empty read is retried),
-# sourced in a subshell.
-row_state="$( ( . "$(dirname "${BASH_SOURCE[0]}")/comm-lib.sh" >/dev/null 2>&1 && sot_registry_bytes "$REGISTRY" ) | jq -r -s --arg n "$NAME" 'if length != 1 or (.[0].agents | type) != "object" then empty
-    else .[0].agents[$n] | (.state // "?") + " waiting=" + (.waiting // "-") end' 2>/dev/null)"
+# comm-lib.sh's sot_registry_read, sourced in a subshell: 0 my row, 1 no row
+# (read here as null, "? waiting=-"), 2 unreadable (a lib that cannot be
+# sourced is 2 too), which prints nothing.
+row_state="$( ( . "$(dirname "${BASH_SOURCE[0]}")/comm-lib.sh" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" || { [ $? -eq 1 ] && echo null; } ) | jq -r '(.state // "?") + " waiting=" + (.waiting // "-")' 2>/dev/null)"
 [ -n "$row_state" ] || row_state="unreadable"
 
 # ---- tier 1: candidate filters ----------------------------------------------

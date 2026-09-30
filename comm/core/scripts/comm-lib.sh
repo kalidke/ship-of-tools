@@ -463,9 +463,18 @@ ensure_home() {
     mkdir -p "$COMM_HOME" "$INBOX_DIR" "$SELF_DIR" "$READ_DIR"
     # Create only, never truncate: `test -f` is false on any stat error (an
     # ESTALE during another host's rename), and a plain `>` then wiped a live
-    # registry. noclobber opens with O_EXCL and without O_TRUNC, so a wrong
-    # stat fails here instead. An empty registry is never repaired here.
-    [ -f "$REGISTRY" ] || ( set -C; printf '{"protocol_version": %s, "agents": {}}\n' "$PROTOCOL_VERSION" > "$REGISTRY" ) 2>/dev/null || true
+    # registry. So the skeleton is written to its own tmp (noclobber: O_EXCL, so
+    # two writers never share one), fsynced, and published by link(2), which
+    # fails on any existing name and never replaces a file: a wrong stat fails
+    # at the link. perl's link, not ln, which links INTO a directory at the path.
+    # An empty registry is never repaired here.
+    [ -f "$REGISTRY" ] && return 0
+    local tmp="$REGISTRY.new.$$.$RANDOM"
+    ( set -C; printf '{"protocol_version": %s, "agents": {}}\n' "$PROTOCOL_VERSION" > "$tmp" ) 2>/dev/null \
+        && _sot_fsync "$tmp" >/dev/null 2>&1 \
+        && perl -e 'link($ARGV[0], $ARGV[1]) or exit 1' "$tmp" "$REGISTRY" 2>/dev/null
+    rm -f "${tmp:?}"
+    return 0
 }
 
 # with_lock CMD [ARGS...] — run CMD holding the registry lock (mkdir
@@ -576,8 +585,10 @@ registry_replace() {
     local filter="$1" why; shift
     if sot_registry_bytes | jq "$@" "$filter" > "$REGISTRY.tmp" 2>/dev/null \
        && jq -e -s 'length == 1 and (.[0].agents | type == "object")' "$REGISTRY.tmp" >/dev/null 2>&1; then
-        if why="$(_sot_fsync "$REGISTRY.tmp" 2>&1)" && mv "$REGISTRY.tmp" "$REGISTRY"; then return 0; fi
-        rm -f "${REGISTRY:?}.tmp"; echo "FAILED: the registry update could not be flushed ($why), so nothing was written" >&2; return 1
+        if ! why="$(_sot_fsync "$REGISTRY.tmp" 2>&1)"; then why="could not be flushed ($why)"
+        elif why="$(mv "$REGISTRY.tmp" "$REGISTRY" 2>&1)"; then return 0
+        else why="could not be renamed into place ($why)"; fi
+        rm -f "${REGISTRY:?}.tmp"; echo "FAILED: the registry update $why, so nothing was written" >&2; return 1
     fi
     rm -f "${REGISTRY:?}.tmp"; echo "FAILED: the registry could not be read or updated, so nothing was written" >&2; return 1
 }
@@ -597,7 +608,8 @@ _sot_fsync() { perl -MIO::Handle -e 'my $f; open($f, "+<", $ARGV[0]) && $f->sync
 # Absent is told at the open, never by a stat: the first try's open said "No such file or directory"
 # (LC_ALL=C, so the C library's text). A later try's is a file that vanished mid-retry: a failed try.
 # Zero bytes stays in the rule because an empty file is never a registry (every writer fsyncs a checked
-# tmp before its rename), but no zero-byte read has ever been observed. Non-empty bytes read whole are
+# tmp before its rename, and ensure_home its skeleton before its link), but no zero-byte read has ever
+# been observed. Non-empty bytes read whole are
 # never retried, parseable or not. The open is a redirection and the read is cat, whose exit says a
 # read failed; bash 3.2 and git-bash have both.
 # SOT_COMM_TEST_RETRY_LOG (tests only): a file that gets "retry N" per retry and "resolved" per read a
@@ -613,7 +625,7 @@ sot_registry_bytes() {
         esac
         [ "$try" -lt 3 ] || return 2
         try=$((try + 1)); _sot_retry_note "retry $try"
-        { [ "$try" -eq 1 ] || sleep 0.1; : < "${f%/*}"; } 2>/dev/null
+        { [ "$try" -eq 1 ] || sleep 0.1; : < "${f%/*}"; } 2>/dev/null || :
     done
 }
 _sot_retry_note() { [ -z "${SOT_COMM_TEST_RETRY_LOG:-}" ] || echo "$1" >> "$SOT_COMM_TEST_RETRY_LOG" 2>/dev/null || :; }

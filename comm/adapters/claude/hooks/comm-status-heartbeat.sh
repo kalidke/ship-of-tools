@@ -132,15 +132,15 @@ if [ -x "$SELF_DIR/comm-context.sh" ]; then
 fi
 [ -n "${NAME:-}" ] || exit 0
 
-# The registry's bytes come from comm-lib.sh's sot_registry_bytes, which
-# retries a failed or empty read; it is sourced in a subshell (see below), deployed
-# layout first (update_comm puts every script in the comm home's bin), then
-# next to this file, the same fallback pair the hook uses for comm-context.sh.
-# -s: an empty or many-document registry is unreadable (""), never a row.
+# The row and the write below are comm-lib.sh's sot_registry_read and
+# registry_replace, sourced in a subshell: deployed layout first (update_comm
+# puts every script in the comm home's bin), then next to this file, the same
+# fallback pair the hook uses for comm-context.sh.
+# sot_registry_read: 0 my row on stdout, 1 no row, 2 unreadable (a lib that
+# cannot be sourced is 2 too, never "no row"); only a row prints anything.
 hb_lib="$COMM_HOME/bin/comm-lib.sh"
 [ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
-row="$( ( . "$hb_lib" >/dev/null 2>&1 && sot_registry_bytes "$REGISTRY" ) | jq -r -s --arg n "$NAME" 'if length != 1 or (.[0].agents | type) != "object" then ""
-    else .[0].agents[$n] | if . then (.floor // "") + "|" + (.status_at // "") else "" end end' 2>/dev/null || true)"
+row="$( ( . "$hb_lib" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" ) | jq -r '(.floor // "") + "|" + (.status_at // "")' 2>/dev/null || true)"
 [ -n "$row" ] || exit 0
 
 # DEAF-SESSION WARNING (2026-09-15): a session whose harness inbox Monitor
@@ -216,21 +216,12 @@ ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 LOCKDIR="$COMM_HOME/.registry.lock"
 if mkdir "$LOCKDIR" 2>/dev/null; then
     trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
-    # comm-lib.sh's registry_replace, inline (this hook is standalone): the
-    # bytes are sot_registry_bytes's, and the tmp is renamed only if it is one
-    # document with an .agents object and its data is on the server;
-    # otherwise nothing is written.
-    if ( . "$hb_lib" >/dev/null 2>&1 && sot_registry_bytes "$REGISTRY" ) \
-       | jq --arg n "$NAME" --arg t "$ts" \
+    # comm-lib.sh's registry_replace, the one registry write: on any failure
+    # nothing is written, and its FAILED line is dropped (this hook is silent).
+    ( . "$hb_lib" >/dev/null 2>&1 && registry_replace \
           'if .agents[$n] and .agents[$n].floor
            then .agents[$n] += {status_at:$t, last_seen:$t} else . end' \
-          > "$REGISTRY.hb.tmp" 2>/dev/null \
-       && jq -e -s 'length == 1 and (.[0].agents | type == "object")' "$REGISTRY.hb.tmp" >/dev/null 2>&1 \
-       && perl -MIO::Handle -e 'my $f; open($f, "+<", $ARGV[0]) && $f->sync && close($f) or exit 1' "$REGISTRY.hb.tmp" 2>/dev/null; then
-        mv "$REGISTRY.hb.tmp" "$REGISTRY"
-    else
-        rm -f "${REGISTRY:?}.hb.tmp"
-    fi
+          --arg n "$NAME" --arg t "$ts" ) >/dev/null 2>&1
     rmdir "$LOCKDIR" 2>/dev/null
     trap - EXIT
 fi

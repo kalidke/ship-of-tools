@@ -133,12 +133,11 @@ NAME=""
 # fallback. In the repo checkout the hooks dir holds only hooks.
 CTX="$HOME_DIR/bin/comm-context.sh"; [ -x "$CTX" ] || CTX="$SELF_DIR/comm-context.sh"
 [ -x "$CTX" ] && eval "$("$CTX" 2>/dev/null)" 2>/dev/null || true
-# jq -e: 0 a row, 1 no row, anything else an unreadable registry. Only "no
-# row" ends here; unreadable goes on to the mail gate, which reads the inbox
-# files, not the registry. -s and the length check: jq 1.6's -e exits 0 on an
-# empty file.
+# sot_registry_read: 0 a row, 1 no row, 2 unreadable (a lib that cannot be
+# sourced is 2 too, never "no row"). Only "no row" ends here; unreadable goes
+# on to the mail gate, which reads the inbox files, not the registry.
 _reg_rc=0
-[ -n "${NAME:-}" ] && { ( . "$FE_LIB" >/dev/null 2>&1 && sot_registry_bytes "$REGISTRY" ) | jq -e -s --arg n "$NAME" 'if length == 1 and (.[0].agents | type == "object") then .[0].agents[$n] else error("unreadable") end' >/dev/null 2>&1 || _reg_rc=$?; }
+[ -n "${NAME:-}" ] && { ( . "$FE_LIB" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" >/dev/null ) || _reg_rc=$?; }
 if [ -z "${NAME:-}" ] || [ "$_reg_rc" -eq 1 ]; then
     turn_floor; exit 0
 fi
@@ -448,10 +447,9 @@ fi
 # otherwise nudge every short exchange on the row (ADR 0044 amendment, a
 # deleted arm); a turn that IS newly waiting still declares SITREP-WAITING:
 # and the marker path above sets it.
-row_facts="$( ( . "$FE_LIB" >/dev/null 2>&1 && sot_registry_bytes "$REGISTRY" ) | jq -r -s --arg n "$NAME" 'if length != 1 or (.[0].agents | type) != "object" then "|"
-    else .[0].agents[$n] | (.floor // "") + "|" + (if .question != null then "blocked" elif .done == true then "done" else "" end) end' 2>/dev/null)"
-# Not `|| echo`: under pipefail a bytes read that found nothing fails the
-# pipeline AFTER jq has printed its "|".
+# sot_registry_read as above (0 a row, 1 no row, 2 unreadable); only a row
+# prints anything, so no row and unreadable are both "|".
+row_facts="$( ( . "$FE_LIB" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" ) | jq -r '(.floor // "") + "|" + (if .question != null then "blocked" elif .done == true then "done" else "" end)' 2>/dev/null)"
 [ -n "$row_facts" ] || row_facts="|"
 origin="${row_facts%%|*}"; parked="${row_facts#*|}"
 stored_origin="$origin"

@@ -18,13 +18,16 @@
 #   5. registry_replace refuses a result that is not one registry: nothing,
 #      a non-registry, or two registries.
 #   6. The fsync gates the rename: a perl that fails leaves the file as it was
-#      and says "could not be flushed".
+#      and says "could not be flushed"; an mv that fails says "could not be
+#      renamed into place".
 #   7. ensure_home never truncates (an existing registry, an existing 0-byte
-#      one) and creates the skeleton only when there is no file.
+#      one) and creates the skeleton only when there is no file. A failing
+#      fsync publishes nothing, a directory at the path gets nothing linked
+#      into it, and no tmp is left behind.
 #   8. The heartbeat hook on an empty or two-document registry exits 0 and
 #      writes nothing; on a valid one with a stale stamp it does write.
-#   9. The post-clear and post-compact hooks on an empty or two-document
-#      registry still remind; on a registry without my row they do not.
+#   9. The post-clear and post-compact hooks on an empty, two-document or
+#      missing registry still remind; on a registry without my row they do not.
 #  10. The Stop hook with unread mail: on an empty or two-document registry it
 #      goes on to the mail gate and blocks; on a registry without my row it
 #      ends the turn with no block.
@@ -44,6 +47,10 @@
 #      bytes and the inode as they were. One that vanishes while it is retried
 #      is unreadable (sot_registry_bytes answers 2), never absent. Skipped,
 #      with the reason printed, where mode 000 does not stop the open (root).
+#  14. The same for a registry whose open succeeds and whose read fails (a
+#      directory at its path here, the shape ESTALE takes across boxes): for
+#      ~50 ms the retry resolves; for 1 s the read is 2 after 3 retries and the
+#      put FAILs, leaving the registry that comes back as it was.
 #
 # No bats dependency. HERMETIC: a temp $SOT_COMM_HOME, a v2 self file, a
 # pinned $SOT_COMM_TEST_HOST, and a COPY of the scripts dir with the hooks
@@ -201,6 +208,13 @@ case_the_fsync_gates_the_rename() {
     [ "$rc" -ne 0 ] || { echo "  registry_put returned 0 with a failing fsync"; return 1; }
     case "$err" in *"could not be flushed"*) ;; *) echo "  missing 'could not be flushed': $err"; return 1 ;; esac
     same "a failing fsync" || return 1
+    mkdir -p "$WORK/nomv"
+    printf '#!/bin/sh\nexit 1\n' > "$WORK/nomv/mv"; chmod +x "$WORK/nomv/mv"
+    rc=0; PATH="$WORK/nomv:$PATH" registry_put x '{"host":"testhost"}' 2>"$WORK/err" || rc=$?
+    err="$(cat "$WORK/err")"
+    [ "$rc" -ne 0 ] || { echo "  registry_put returned 0 with a failing mv"; return 1; }
+    case "$err" in *"could not be renamed into place"*) ;; *) echo "  missing 'could not be renamed into place': $err"; return 1 ;; esac
+    same "a failing mv" || return 1
     # And with the real perl the same put lands.
     registry_put x '{"host":"testhost"}' || { echo "  registry_put failed with a working perl"; return 1; }
     jq -e '.agents.x.host == "testhost"' "$REG" >/dev/null || { echo "  the put did not land"; return 1; }
@@ -217,6 +231,17 @@ case_ensure_home_never_truncates() {
     ensure_home
     jq -e --argjson v "$PROTOCOL_VERSION" '.protocol_version == $v and .agents == {}' "$REG" >/dev/null \
         || { echo "  ensure_home on no file wrote '$(cat "$REG" 2>/dev/null)'"; return 1; }
+    set -- "$REG".new.*; [ ! -e "$1" ] || { echo "  ensure_home left its tmp: $1"; return 1; }
+    mkdir -p "$WORK/noperl"
+    printf '#!/bin/sh\nexit 1\n' > "$WORK/noperl/perl"; chmod +x "$WORK/noperl/perl"
+    put_reg MISSING
+    PATH="$WORK/noperl:$PATH" ensure_home
+    [ ! -e "$REG" ] || { echo "  ensure_home published a skeleton it could not fsync"; return 1; }
+    set -- "$REG".new.*; [ ! -e "$1" ] || { echo "  ensure_home left its tmp: $1"; return 1; }
+    put_reg MISSING; mkdir "$REG"
+    ensure_home
+    set -- "$REG"/* "$REG".new.*; rmdir "$REG" || { echo "  ensure_home linked into a directory at the path"; return 1; }
+    [ ! -e "$2" ] || { echo "  ensure_home left its tmp: $2"; return 1; }
 }
 
 heartbeat() {  # KEY — one heartbeat past its throttle (a fresh tick key)
@@ -230,7 +255,6 @@ case_the_heartbeat_on_an_unreadable_registry_writes_nothing() {
         rc=0; heartbeat "hb-unreadable-$n" || rc=$?
         [ "$rc" -eq 0 ] || { echo "  [${body:0:20}] the heartbeat exited $rc"; return 1; }
         same "the heartbeat [${body:0:20}]" || return 1
-        [ ! -e "$REG.hb.tmp" ] || { echo "  registry.json.hb.tmp was left behind"; return 1; }
     done
     # The control: the same call on a valid registry with a stale stamp writes.
     put_reg "$VALID"
@@ -242,7 +266,7 @@ case_the_heartbeat_on_an_unreadable_registry_writes_nothing() {
 case_the_reminders_on_an_unreadable_registry_remind() {
     local out hook body
     for hook in postclear postcompact; do
-        for body in "" "$TWO_ME_FIRST"; do
+        for body in "" "$TWO_ME_FIRST" MISSING; do
             put_reg "$body"
             out="$(printf '{"source":"%s"}' "${hook#post}" | in_root bash "$BIN/comm-$hook-reminder.sh" 2>/dev/null)"
             case "$out" in *REMINDER-FROM-STUB*) ;; *) echo "  $hook [${body:0:20}]: no reminder on an unreadable registry: '$out'"; return 1 ;; esac
@@ -353,6 +377,29 @@ case_a_failed_read_is_retried_and_a_lasting_one_is_unreadable() {
     [ "$rc" -eq 2 ] && [ ! -s "$WORK/out" ] || { echo "  vanishing mid-retry: rc $rc, want 2 (unreadable), never 1"; return 1; }
 }
 
+# dir_for SECS — a directory at the registry's path (the open succeeds, the
+# read fails) now, and after SECS $VALID again; by a helper ($SWAP) the caller reaps.
+dir_for() {
+    put_reg "$VALID"; mv "$REG" "$WORK/valid"; mkdir "$REG"
+    ( sleep "$1"; rmdir "$REG"; mv "$WORK/valid" "$REG" ) & SWAP=$!
+}
+
+case_a_registry_that_opens_but_will_not_read_is_retried_and_a_lasting_one_is_unreadable() {
+    local rc out
+    dir_for 0.05; : > "$SOT_COMM_TEST_RETRY_LOG"
+    rc=0; out="$(sot_registry_read me)" || rc=$?; wait "$SWAP"
+    [ "$rc" -eq 0 ] && [ "$(printf '%s' "$out" | jq -r .root)" = "$ROOT" ] && [ "$(retries resolved)" -eq 1 ] \
+        || { echo "  reader, a directory for 50 ms: rc $rc out '$out', log: $(tr '\n' ' ' < "$SOT_COMM_TEST_RETRY_LOG"), want my row, resolved"; return 1; }
+    dir_for 1; : > "$SOT_COMM_TEST_RETRY_LOG"
+    rc=0; out="$(sot_registry_read me)" || rc=$?; wait "$SWAP"
+    [ "$rc" -eq 2 ] && [ -z "$out" ] && [ "$(retries retry)" -eq 3 ] && [ "$(retries resolved)" -eq 0 ] \
+        || { echo "  reader, a directory for 1 s: rc $rc out '$out', log: $(tr '\n' ' ' < "$SOT_COMM_TEST_RETRY_LOG"), want 2, 3 retries, none resolved"; return 1; }
+    dir_for 1; cp "$WORK/valid" "$WORK/snap"
+    rc=0; with_lock registry_put x '{"host":"testhost"}' 2>"$WORK/err" || rc=$?; wait "$SWAP"
+    [ "$rc" -ne 0 ] && grep -q FAILED "$WORK/err" && cmp -s "$REG" "$WORK/snap" && [ ! -e "$REG.tmp" ] \
+        || { echo "  writer, a directory for 1 s: rc $rc: $(cat "$WORK/err")"; return 1; }
+}
+
 PASS=0; FAIL=0
 for c in case_reader_table \
          case_send_on_a_lasting_empty_registry_is_unreadable \
@@ -366,7 +413,8 @@ for c in case_reader_table \
          case_the_stop_hook_on_an_unreadable_registry_reaches_the_mail_gate \
          case_a_zero_byte_read_is_re_read_and_a_lasting_one_is_unreadable \
          case_a_missing_registry_is_absent_and_unparseable_bytes_are_not_retried \
-         case_a_failed_read_is_retried_and_a_lasting_one_is_unreadable; do
+         case_a_failed_read_is_retried_and_a_lasting_one_is_unreadable \
+         case_a_registry_that_opens_but_will_not_read_is_retried_and_a_lasting_one_is_unreadable; do
     # Each case runs in a subshell with the cleanup trap cleared: with_lock
     # saves and restores the EXIT trap it sees, and a subshell sees this one.
     if out="$(trap - EXIT; "$c" 2>&1)"; then
