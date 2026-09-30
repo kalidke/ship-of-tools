@@ -732,6 +732,9 @@ PM
     cat > "$WORK/reader.sh" <<RD
 #!/usr/bin/env bash
 [ -z "\${READER_UNLOCKED:-}" ] || export FAKE_MNT=
+# The stub is the append's alone: the poll's own registry write fsyncs through
+# perl too, and must not start a second reader over this one's output.
+unset PERL5LIB PERL5OPT STUB_READER STUB_OUT
 cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_INBOX_READ_WAIT_SECS=5 \
     PATH="\${READER_PATH:-\$PATH}" "$BIN/comm-poll.sh"
 echo "rc=\$?"

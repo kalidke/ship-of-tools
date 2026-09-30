@@ -129,7 +129,7 @@ if [ -n "$TASK" ]; then
     # below for the CHILD and is still "" at this point in the script, so
     # this borrows it briefly rather than adding a parallel helper.
     NAME="$SPAWNER"
-    sot_require_routable_identity || exit 1
+    why="$(sot_require_routable_identity)" || { echo "FAILED: $why" >&2; exit 1; }
     NAME=""
 fi
 
@@ -422,8 +422,13 @@ fi
 # here, and reaches this check harmlessly — fresh-mode derivation already
 # escalated away from every candidate this registry holds, so it cannot
 # fire on one.
-if [ "$DERIVED_CLAIM" = false ] && jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
-    echo "ERROR: agent '@$NAME' already in registry — pick another name or comm-leave it first" >&2; exit 1
+if [ "$DERIVED_CLAIM" = false ]; then
+    rc=0; sot_registry_read "$NAME" >/dev/null || rc=$?
+    case "$rc" in
+        0) echo "ERROR: agent '@$NAME' already in registry — pick another name or comm-leave it first" >&2; exit 1 ;;
+        1) ;;
+        *) echo "FAILED: the registry could not be read; nothing was spawned" >&2; exit 1 ;;
+    esac
 fi
 BIN="$COMM_HOME/bin"
 

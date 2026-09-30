@@ -67,6 +67,46 @@ turn-end to `idle`. The daemon joins these fields onto `workspace.list` (as
 renders `summary` as the per-session glance, colored by `state` and aged off
 `status_at`.
 
+**One writer, one reader.** Every script write goes through `registry_replace`
+(`comm-lib.sh`), under the registry lock. jq writes a tmp, and the tmp is
+renamed over `registry.json` only if it is one JSON document with an object
+`.agents` and its data has been flushed to the server; otherwise nothing is
+written and the writer prints `FAILED: the registry could not be read or
+updated, so nothing was written` (or `FAILED: the registry update could not be
+flushed (…), so nothing was written`, or `… could not be renamed into place
+(…) …`). The heartbeat hook calls the same `registry_replace` and stays
+silent; the daemon flushes its tmp before its rename too. **perl is required for registry writes**: the flush is perl's
+`sync`, and a host without perl fails closed with the "could not be flushed"
+line. `ensure_home` creates the registry only when there is no file: it flushes a
+skeleton tmp and publishes it by a hard link, which fails on an existing name,
+so it never replaces, truncates or repairs a registry. Every read goes through
+`sot_registry_read` (the hooks source the library in a subshell for it), which has three
+answers: present, absent (it parsed; no such row) and unreadable (missing,
+empty, not JSON, not exactly one document, or no object `.agents`).
+Unreadable is never absent. Every read, and every writer's read under the
+lock, takes its bytes from `sot_registry_bytes` (the daemon's `comm.file` from
+its Rust twin), because an NFSv4 client can get ESTALE (stale file handle) on a
+read after its open succeeded, when another host renames a new registry over
+the file. Before the retry, the two-host test measured 16 such reads in about
+2,000 on the first host, and 0 in about 9,000 on the peer. So a read that failed
+(any error but a missing file, even after some bytes, which are discarded) or
+that returned zero bytes revalidates the folder and opens the file by path
+again, up to 3 times in about 200 ms; no good read by then is unreadable. A
+missing file is told at the open, never by a stat. Zero bytes stays in the rule
+because an empty file is never a valid registry, but no zero-byte read has ever
+been observed. Non-empty bytes that do not parse are never retried. A send on
+an unreadable registry prints
+`FAILED -> @<to>: the registry could not be read, so identity @<me> is
+unverified; nothing was sent`. leave, list, spawn and despawn print
+`FAILED: the registry could not be read; nothing was <removed|listed|spawned|despawned>`,
+status and worktree-sync end the same line with `stamp discarded` and `nobody
+was reminded`, and a join prints the writer's FAILED line or `the registry
+could not be read, so no handle was derived; nothing was written`. Each exits
+1. **A registry that stays unreadable is not repaired
+automatically**, because rewriting an unreadable file is the wipe. The fix is
+by hand: move `registry.json` aside; the next script creates an empty one, and
+each session's next send says `reclaim it with comm-join.sh --name <handle>`.
+
 ## Message frame (inbox JSONL, one object per line)
 
 ```json

@@ -1658,7 +1658,9 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     # frame being receipted, so it is digits and dashes and can never begin
     # with "/". The message BODY on those same jq calls still goes through
     # --rawfile.
-    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag o acc cur i "
+    # `one` = sot_registry_read's "a row was asked for" flag, `${1+1}`: "1"
+    # or "", never "/".
+    local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag o acc cur i one "
     local bad="" dir file name line match comment_lines
     dir="$(cd "$SCRIPTS_DIR/../../adapters/claude/hooks" && pwd)"
     for file in "$SCRIPTS_DIR"/*.sh "$SCRIPTS_DIR/sot-fe" "$dir"/*.sh; do

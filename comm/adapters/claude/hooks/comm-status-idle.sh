@@ -87,6 +87,10 @@ HOME_DIR="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$HOME_DIR/bin/comm-status.sh"
 REGISTRY="$HOME_DIR/registry.json"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# comm-lib.sh, deployed layout first, then next to this file. It is only ever
+# sourced in a subshell: for the registry's bytes (sot_registry_bytes, which
+# retries a failed or empty read) and for the mail gate below.
+FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
 
 # Every Stop ends with `stop`, whatever else this hook did first (the marker
 # stamp, the nudge continuation): it sets `done` only when `floor` was `user`
@@ -151,12 +155,19 @@ if [ -n "$tool_miss" ]; then
         sot_require_tools "check mail at turn end" $tool_miss 2>&1 | tr '\n' ' ')"
     tool_warn="${tool_warn% }"
 fi
-if command -v jq >/dev/null 2>&1; then
-    registered() { jq -e --arg n "${NAME:-}" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; }
+# sot_registry_read: 0 a row, 1 no row, 2 unreadable (a lib that cannot be
+# sourced is 2 too, never "no row"). Only "no row" ends here; unreadable goes
+# on to the mail gate, which reads the inbox files, not the registry. Without
+# jq (which sot_registry_read needs), grep: 1 no match, 2 an unreadable file.
+_reg_rc=0
+if [ -z "${NAME:-}" ]; then
+    :
+elif command -v jq >/dev/null 2>&1; then
+    ( . "$FE_LIB" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" >/dev/null ) || _reg_rc=$?
 else
-    registered() { grep -q "\"${NAME:-}\"[[:space:]]*:" "$REGISTRY" 2>/dev/null; }
+    grep -q "\"${NAME}\"[[:space:]]*:" "$REGISTRY" 2>/dev/null || _reg_rc=$?
 fi
-if [ -z "${NAME:-}" ] || ! registered; then
+if [ -z "${NAME:-}" ] || [ "$_reg_rc" -eq 1 ]; then
     turn_floor; exit 0
 fi
 
@@ -339,7 +350,6 @@ mail_total=0; mail_pending=0
 # handle and session so a session relaunched under the handle is told too, and
 # the next clean check removes it so a new fault blocks again.
 # A missing library or any failure yields no mail (fail open).
-FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
 lock_warn=""
 fault_tick="$HOME_DIR/state/lock-fault-$(printf '%s' "$NAME.$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
 if [ -r "$MAIL_INBOX" ]; then
@@ -488,7 +498,10 @@ fi
 # otherwise nudge every short exchange on the row (ADR 0044 amendment, a
 # deleted arm); a turn that IS newly waiting still declares SITREP-WAITING:
 # and the marker path above sets it.
-row_facts="$(jq -r --arg n "$NAME" '.agents[$n] | (.floor // "") + "|" + (if .question != null then "blocked" elif .done == true then "done" else "" end)' "$REGISTRY" 2>/dev/null || echo "|")"
+# sot_registry_read as above (0 a row, 1 no row, 2 unreadable); only a row
+# prints anything, so no row and unreadable are both "|".
+row_facts="$( ( . "$FE_LIB" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" ) | jq -r '(.floor // "") + "|" + (if .question != null then "blocked" elif .done == true then "done" else "" end)' 2>/dev/null)"
+[ -n "$row_facts" ] || row_facts="|"
 origin="${row_facts%%|*}"; parked="${row_facts#*|}"
 stored_origin="$origin"
 

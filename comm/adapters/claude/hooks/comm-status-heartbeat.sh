@@ -132,7 +132,15 @@ if [ -x "$SELF_DIR/comm-context.sh" ]; then
 fi
 [ -n "${NAME:-}" ] || exit 0
 
-row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.floor // "") + "|" + (.status_at // "") else "" end' "$REGISTRY" 2>/dev/null || true)"
+# The row and the write below are comm-lib.sh's sot_registry_read and
+# registry_replace, sourced in a subshell: deployed layout first (update_comm
+# puts every script in the comm home's bin), then next to this file, the same
+# fallback pair the hook uses for comm-context.sh.
+# sot_registry_read: 0 my row on stdout, 1 no row, 2 unreadable (a lib that
+# cannot be sourced is 2 too, never "no row"); only a row prints anything.
+hb_lib="$COMM_HOME/bin/comm-lib.sh"
+[ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
+row="$( ( . "$hb_lib" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" ) | jq -r '(.floor // "") + "|" + (.status_at // "")' 2>/dev/null || true)"
 [ -n "$row" ] || exit 0
 
 # DEAF-SESSION WARNING (2026-09-15): a session whose harness inbox Monitor
@@ -151,8 +159,8 @@ row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.floor // "") + "|" + (.s
 # live watcher told a genuinely deaf session it was fine. The helper verifies
 # the recorded pid IS a watcher for this handle.
 #
-# Sourced in a SUBSHELL, the one place this standalone-by-design hook touches
-# the library: comm-lib.sh owns variable names this hook also uses (SELF_DIR
+# Sourced in a SUBSHELL, as for the registry reads, the only way this
+# standalone-by-design hook touches the library: comm-lib.sh owns variable names this hook also uses (SELF_DIR
 # among them), so only the exit status crosses back. One fork per throttle
 # window, and if the library cannot be sourced at all the answer is "no live
 # watcher" — for a deafness warning, a spurious warning (throttled to once per
@@ -166,11 +174,6 @@ row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.floor // "") + "|" + (.s
 if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     watch_marker="$COMM_HOME/state/$NAME.watch"
     watcher_alive=0
-    # Deployed layout first (update_comm puts every script in the comm home's
-    # bin), then next to this file — the same fallback pair the hook already
-    # uses for comm-context.sh.
-    hb_lib="$COMM_HOME/bin/comm-lib.sh"
-    [ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
     if [ -f "$watch_marker" ] && [ -r "$hb_lib" ] \
         && ( . "$hb_lib" >/dev/null 2>&1 && sot_watcher_pid_for "$NAME" >/dev/null 2>&1 ); then
         watcher_alive=1
@@ -213,10 +216,12 @@ ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 LOCKDIR="$COMM_HOME/.registry.lock"
 if mkdir "$LOCKDIR" 2>/dev/null; then
     trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
-    jq --arg n "$NAME" --arg t "$ts" \
-       'if .agents[$n] and .agents[$n].floor
-        then .agents[$n] += {status_at:$t, last_seen:$t} else . end' \
-       "$REGISTRY" > "$REGISTRY.hb.tmp" 2>/dev/null && mv "$REGISTRY.hb.tmp" "$REGISTRY"
+    # comm-lib.sh's registry_replace, the one registry write: on any failure
+    # nothing is written, and its FAILED line is dropped (this hook is silent).
+    ( . "$hb_lib" >/dev/null 2>&1 && registry_replace \
+          'if .agents[$n] and .agents[$n].floor
+           then .agents[$n] += {status_at:$t, last_seen:$t} else . end' \
+          --arg n "$NAME" --arg t "$ts" ) >/dev/null 2>&1
     rmdir "$LOCKDIR" 2>/dev/null
     trap - EXIT
 fi

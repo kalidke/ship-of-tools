@@ -80,7 +80,11 @@ tools="$(printf '%s\n' "$tail_lines" \
                                 | map(select(. != null)) | join(" | ")) | tostring | .[0:200])' 2>/dev/null \
     | tail -n 40)"
 
-row_state="$(jq -r --arg n "$NAME" '.agents[$n] | (.state // "?") + " waiting=" + (.waiting // "-")' "$REGISTRY" 2>/dev/null)"
+# comm-lib.sh's sot_registry_read, sourced in a subshell: 0 my row, 1 no row
+# (read here as null, "? waiting=-"), 2 unreadable (a lib that cannot be
+# sourced is 2 too), which prints nothing.
+row_state="$( ( . "$(dirname "${BASH_SOURCE[0]}")/comm-lib.sh" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" || { [ $? -eq 1 ] && echo null; } ) | jq -r '(.state // "?") + " waiting=" + (.waiting // "-")' 2>/dev/null)"
+[ -n "$row_state" ] || row_state="unreadable"
 
 # ---- tier 1: candidate filters ----------------------------------------------
 # .md is common in tool args that are plain reads (CLAUDE.md, README.md,

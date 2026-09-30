@@ -22,15 +22,18 @@ case "$src" in
 esac
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
-REGISTRY="$COMM_HOME/registry.json"
 
 # Self-gate: only a comm-participating session gets a reminder (a registry
 # membership check, shared with comm-postclear-reminder.sh).
 NAME=""
 [ -x "$SELF_DIR/comm-context.sh" ] && eval "$(SOT_COMM_READONLY=1 "$SELF_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
 [ -n "${NAME:-}" ] || exit 0
-[ -f "$REGISTRY" ] || exit 0
-jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || exit 0
+# comm-lib.sh's sot_registry_read, sourced in a subshell: 0 a row, 1 no row,
+# 2 unreadable, a missing file included (a lib that cannot be sourced is 2
+# too, never "no row"). Only no row ends here: an unreadable registry still
+# reminds — a spurious reminder costs a line, a missed one the identity. No
+# `test -f` first: a stat can fail during another host's rename.
+_reg_rc=0; ( . "$SELF_DIR/comm-lib.sh" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" >/dev/null ) || _reg_rc=$?
+[ "$_reg_rc" -eq 1 ] && exit 0
 
 "$SELF_DIR/comm-session-start.sh" --context

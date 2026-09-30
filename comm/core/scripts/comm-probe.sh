@@ -181,11 +181,16 @@ probe_down() {
 }
 
 probe_status() {
-    local handle wsid
+    local handle wsid row rc host
     while IFS= read -r handle; do
         wsid="$(probe_row_id "$handle")" || probe_die "cannot reach this box's daemon"
-        printf '%-24s row=%-28s registry=%s\n' "@$handle" "${wsid:-<none>}" \
-            "$(jq -r --arg n "$handle" '(.agents[$n].host // "-")' "$REGISTRY" 2>/dev/null || echo '-')"
+        rc=0; row="$(sot_registry_read "$handle")" || rc=$?
+        case "$rc" in
+            0) host="$(printf '%s' "$row" | jq -r '.host // "-"' 2>/dev/null)" || host="-" ;;
+            1) host="-" ;;
+            *) host="unreadable" ;;
+        esac
+        printf '%-24s row=%-28s registry=%s\n' "@$handle" "${wsid:-<none>}" "$host"
     done < <(probe_handles)
 }
 

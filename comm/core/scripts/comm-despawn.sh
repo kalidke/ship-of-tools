@@ -44,8 +44,11 @@ sot_send() {
 #    but its own slug, so a direct slug/label/id==handle match finds nothing and
 #    the row+kernel+toml would otherwise leak (the worktree-clean leak).
 AGENT_WSID=""
-if jq -e --arg n "$WHO" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
-    AGENT_WSID="$(sot_jq -r --arg n "$WHO" '.agents[$n].workspace_id // ""' "$REGISTRY" 2>/dev/null || true)"
+# Unreadable is not "no row": tearing down on it would lose the workspace id.
+reg_rc=0; ROW="$(sot_registry_read "$WHO")" || reg_rc=$?
+[ "$reg_rc" -le 1 ] || { echo "FAILED: the registry could not be read; nothing was despawned" >&2; exit 1; }
+if [ "$reg_rc" -eq 0 ]; then
+    AGENT_WSID="$(printf '%s' "$ROW" | sot_jq -r '.workspace_id // ""' 2>/dev/null || true)"
     with_lock registry_del "$WHO"
     rm -f "${SELF_DIR:?}/"*"$WHO"* 2>/dev/null || true
     echo "Removed @$WHO from sot-comm registry"

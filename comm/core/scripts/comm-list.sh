@@ -18,6 +18,7 @@ nows="$(date -u +%s)"
 # shared with sot-fe's `version` command so the one ageing rule serves
 # every state-nav printer instead of two copies drifting.
 
+REG="$(sot_registry_read)" || { echo "FAILED: the registry could not be read; nothing was listed" >&2; exit 1; }
 echo "sot-comm agents  ($REGISTRY):"
 any=false
 # Fields are joined with US (0x1f), not tab: tab is IFS-whitespace, so an empty
@@ -43,10 +44,10 @@ while IFS=$'\037' read -r name host repo seen exp state summary status_at; do
         [ "$sat" -gt 0 ] && line="$line · $(fmt_age $((nows - sat)))"
     fi
     echo "$line"
-done < <(sot_jq -r '.agents | to_entries[]
+done < <(printf '%s' "$REG" | sot_jq -r '.agents | to_entries[]
         | [.key, .value.host, .value.repo, .value.last_seen, (.value.expertise | join("/")),
            (.value.state // ""), (.value.summary // ""), (.value.status_at // "")]
-        | join("")' "$REGISTRY")
+        | join("")')
 
 if [ "$any" = false ]; then echo "  (none)"; fi
 

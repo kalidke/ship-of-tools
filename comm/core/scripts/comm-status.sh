@@ -73,8 +73,11 @@ _no_row() {
     echo "comm-status.sh: no registry row for '${NAME:-<no identity>}' from cwd $PWD -- stamp discarded; run it from the session's project root" >&2
     exit 1
 }
+# An unreadable registry is no evidence either way: every verb FAILs.
+UNREADABLE="FAILED: the registry could not be read; stamp discarded"
 [ -n "${NAME:-}" ] || _no_row
-jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || _no_row
+rc=0; sot_registry_read "$NAME" >/dev/null || rc=$?
+case "$rc" in 0) ;; 1) _no_row ;; *) echo "$UNREADABLE" >&2; exit 1 ;; esac
 
 # ${2+set}: distinguish an omitted text (keep the prior note) from an
 # explicit "" (clear it).
@@ -84,14 +87,15 @@ ORIGIN="${COMM_STATUS_ORIGIN:-machine}"
 
 # The whole read-decide-write, run under the registry lock.
 status_txn() {
-    jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || return 0   # row gone: no-op
+    local row_rc=0
+    sot_registry_read "$NAME" >/dev/null || row_rc=$?
+    case "$row_rc" in 0) ;; 1) return 0 ;; *) echo "$UNREADABLE" >&2; return 1 ;; esac   # row gone: no-op
     # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): SUM is
     # free-text and must never reach jq via --arg.
     local sum_file; sum_file="$(sot_jq_rawfile "$SUM")" || return 1
     local ts rc=0
     ts="$(now_iso)"
-    jq --arg n "$NAME" --arg st "$VERB" --arg o "$ORIGIN" --arg t "$ts" --arg h "$HAVE" \
-       --rawfile sum "$sum_file" '
+    registry_replace '
       .agents[$n] |= (
         del(.turn_origin, .sticky, .sticky_at)
         | if $st == "prompt" then .floor = $o
@@ -117,7 +121,8 @@ status_txn() {
         | .summary = (if .state == "blocked" then .question
                       elif .state == "waiting" then .waiting else (.note // "") end)
         | .status_at = $t | .last_seen = $t)
-    ' "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY" || rc=$?
+    ' --arg n "$NAME" --arg st "$VERB" --arg o "$ORIGIN" --arg t "$ts" --arg h "$HAVE" \
+      --rawfile sum "$sum_file" || rc=$?
     rm -f "${sum_file:?}"
     return $rc
 }

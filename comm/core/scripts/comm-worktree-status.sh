@@ -15,6 +15,8 @@
 # Usage: comm-worktree-status.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=comm-lib.sh
+source "$SCRIPT_DIR/comm-lib.sh"   # for sot_registry_read
 eval "$("$SCRIPT_DIR/comm-context.sh")"   # REPO, NAME, HOST, REGISTRY
 
 git rev-parse --show-toplevel >/dev/null 2>&1 || { echo "comm-worktree-status.sh: not in a git repo" >&2; exit 1; }
@@ -29,10 +31,15 @@ done
 HAVE_JQ=0; command -v jq >/dev/null 2>&1 && HAVE_JQ=1
 reg_state() {  # handle -> "state · summary" (or "-")
     { [ "$HAVE_JQ" = 1 ] && [ -f "$REGISTRY" ]; } || { printf -- '-'; return; }
-    jq -r --arg h "$1" '
-        .agents[$h] // empty
-        | ((.state // "-") + (if (.summary // "") != "" then " · " + .summary else "" end))
-    ' "$REGISTRY" 2>/dev/null | head -1 | grep . || printf 'not-joined'
+    local row rc=0
+    row="$(sot_registry_read "$1")" || rc=$?
+    case "$rc" in
+        0) printf '%s' "$row" | jq -r '
+               (.state // "-") + (if (.summary // "") != "" then " · " + .summary else "" end)' 2>/dev/null \
+               | grep . || printf 'not-joined' ;;
+        1) printf 'not-joined' ;;
+        *) printf 'unreadable' ;;
+    esac
 }
 
 printf "worktree family for '%s'  (base branch: %s)\n" "$BASE" "${BASEBR:-none}"
