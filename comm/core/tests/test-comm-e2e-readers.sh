@@ -76,9 +76,9 @@ cleanup() {
         for p in pollstop strictpoll stop; do : > "$E/$p-$t" 2>/dev/null; done
     done
     : > "$E/go" 2>/dev/null
-    # Let the helpers reap their own children (wake and watch), bounded.
+    # Let the helpers reap their own children (wake and watch), for at most 10 s.
     for n in $(seq 1 100); do
-        for p in "${BG[@]}"; do kill -0 "$p" 2>/dev/null && continue 2; done
+        for p in "${BG[@]}"; do kill -0 "$p" 2>/dev/null && { sleep 0.1; continue 2; }; done
         break
     done
     for p in "${BG[@]}"; do kill "$p" 2>/dev/null; done
