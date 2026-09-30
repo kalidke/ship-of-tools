@@ -508,14 +508,28 @@ case "$SUB" in
         # learns whether it saw NONE of them, so the TIMEOUT annotation below
         # (messaging ruling, 2026-09-26) fires only on a genuine timeout.
         _seen="$(mktemp "${TMPDIR:-/tmp}/sot-comm-ask-seen.XXXXXX")" || _seen=""
-        nc_hold "$SECS" | filter_inbound | while IFS= read -r m; do
+        # The verdict was printed BEFORE this window opened, so nothing the
+        # window does may change it -- the same rule the verdict block in
+        # send_frame states, one call frame out. `nc_hold`'s `pipe:` branch
+        # returns a real refusal's status (a named pipe that denies the
+        # connection is not a timeout), and under this script's `set -euo
+        # pipefail` an uncaught pipeline failure aborted `ask` HERE: after
+        # `filed -> @h` had been printed, before the TIMEOUT annotation, and
+        # with a non-zero exit that PROTOCOL.md pairs with `FAILED`. So the
+        # CALLER owns the status: the window's failure is reported as what it
+        # is -- no reply window -- and `ask` still exits 0, because the frame
+        # is filed either way.
+        _hold_rc=0
+        { nc_hold "$SECS" | filter_inbound | while IFS= read -r m; do
             [ -n "$_seen" ] && printf '1' > "$_seen"
             printf '[%s] [%s] %s\n' \
                 "$(printf '%s' "$m" | jq -r '.payload.ts')" \
                 "$(printf '%s' "$m" | jq -r '.payload.from')" \
                 "$(printf '%s' "$m" | jq -r '.payload.text')"
-        done
-        if [ -n "$_seen" ] && [ ! -s "$_seen" ]; then
+        done; } || _hold_rc=$?
+        if [ "$_hold_rc" -ne 0 ]; then
+            echo "no reply window: the hold over this endpoint exited $_hold_rc -- @$TO's frame is already filed, so this is not a delivery failure (the hold's own reason is above)."
+        elif [ -n "$_seen" ] && [ ! -s "$_seen" ]; then
             note="$(sot_recipient_note "$TO" 2>/dev/null)" || note=""
             case "$note" in
                 working*)

@@ -134,6 +134,18 @@ the session was active in the last ten minutes.
 status or stderr say** — the transport's status and stderr only ever supply
 the `<reason>` in a `FAILED` line the record could not explain.
 
+**Landing in stages: today `comm-relay.sh` prints more negatives than the one
+above, in the verdict's own precedence.** A receipt gives `filed -> @h`
+(exit 0). Without one: an ack naming nobody, or a daemon too old to prove a
+receiver either way, gives `NOT CONFIRMED: …` with the attached roster as a
+diagnostic and never as a verdict; a handle no box knows gives `no such
+handle: <h>`; a transport that failed with something to say gives
+`FAILED -> @h: <reason>`; and nothing at all gives `ERROR: unreachable,
+nothing filed …`. **Every one of those exits 1**, and B6 collapses them to the
+single `FAILED` line above. A reply window that cannot open is not in this
+list at all: the frame is already filed, so `ask` reports `no reply window: …`
+and still exits 0.
+
 Nothing is queued anywhere and there is no second route. To get an answer,
 send, end the turn, and be woken.
 
