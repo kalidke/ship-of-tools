@@ -75,7 +75,7 @@ cleanup() {
     local p
     for p in "${PEER_PIDS[@]}"; do rpeer "kill -9 $p" 2>/dev/null; done
     for p in "${LOCAL_PIDS[@]}"; do kill -9 "$p" 2>/dev/null; done
-    rm -rf "$DIR" "$LOCAL"
+    rm -rf "${DIR:?}" "${LOCAL:?}"
 }
 trap cleanup EXIT
 mkdir -p "$DIR/lib" "$DIR/inbox"

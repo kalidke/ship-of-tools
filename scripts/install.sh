@@ -282,7 +282,7 @@ installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
     unit="$1/sot-tmux.service"
     [ -f "$unit" ] || return 0
     systemctl --user disable --now sot-tmux.service 2>/dev/null || true
-    rm -f "$unit"
+    rm -f "${unit:?}"
 }
 
 # scripts/tests/installer-state.sh sources this file to exercise the
@@ -307,7 +307,7 @@ if [ -z "${SOT_INSTALL_TAG:-}" ]; then
         tag="${loc##*/}"
     fi
     case "$tag" in v[0-9]*) ;; *) die "could not resolve a release tag (got '$tag')" ;; esac
-    tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
+    tmp="$(mktemp)"; trap 'rm -f "${tmp:?}"' EXIT
     url="https://raw.githubusercontent.com/$REPO/$tag/scripts/install.sh"
     curl -fsSL -o "$tmp" "$url" || die "could not fetch $url"
     SOT_INSTALL_TAG="$tag" bash "$tmp" "$@"
@@ -322,7 +322,7 @@ fi
 # local-service path that used to own this cleanup — so a remote or
 # --no-service reinstall heals too. Reload only when the file existed.
 if [ -f "$HOME/.config/systemd/user/sotd.service.d/depot.conf" ]; then
-    rm -f "$HOME/.config/systemd/user/sotd.service.d/depot.conf"
+    rm -f "${HOME:?}/.config/systemd/user/sotd.service.d/depot.conf"
     command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload 2>/dev/null
 fi
 
@@ -439,7 +439,7 @@ for t in curl tar; do command -v "$t" >/dev/null || die "$t is required"; done
 
 # Downloader: the repo is public, so unauthenticated curl against the fixed
 # release-download URL works — no API call, no auth.
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-install.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-install.XXXXXX")"; trap 'rm -rf "${WORK:?}"' EXIT
 
 # VERSION is always known here: the prelude resolves and re-execs first.
 VERSION="${VERSION:-${SOT_INSTALL_TAG:-}}"
@@ -481,7 +481,7 @@ done
 # A manual installer run is a NEW transaction: stale rollback state from a
 # previous auto-apply must not pair old last-good pointers with these fresh
 # .prev binaries (a later crash-loop rollback would mix versions).
-rm -f "$PREFIX"/updates/last-good-*.json "$PREFIX"/updates/just-applied-* 2>/dev/null || true
+rm -f "${PREFIX:?}"/updates/last-good-*.json "${PREFIX:?}"/updates/just-applied-* 2>/dev/null || true
 say "binaries: $("$PREFIX/bin/sotd" --version)"
 DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 
@@ -669,7 +669,7 @@ elif [ -d "$CURRENT" ]; then
     # Preserve, don't delete: the old clone is moved aside recoverably; a
     # later successful run can clean it up manually.
     say "migrating pre-versioned layout (old clone preserved at repo/current.pre-versioned)"
-    rm -rf "$REPO_DIR/current.pre-versioned"
+    rm -rf "${REPO_DIR:?}/current.pre-versioned"
     mv "$CURRENT" "$REPO_DIR/current.pre-versioned"
 fi
 ln -sfn "$CHECKOUT" "$CURRENT"
@@ -690,7 +690,7 @@ for v in "$REPO_DIR/versions"/*; do
         "$PREV_VERSION") ;;
         *)
             say "pruning old version dir $(basename "$v")"
-            git -C "$BASE" worktree remove --force "$v" 2>/dev/null || rm -rf "$v"
+            git -C "$BASE" worktree remove --force "$v" 2>/dev/null || rm -rf "${v:?}"
             ;;
     esac
 done
@@ -734,7 +734,7 @@ if [ "$WANT_DAEMON" = 1 ]; then
         if [ -f "$CHECKOUT/$env/Manifest.toml" ] \
            && ! git -C "$CHECKOUT" ls-files --error-unmatch "$env/Manifest.toml" >/dev/null 2>&1; then
             say "dropping stale $env/Manifest.toml (fresh resolve at this tag)"
-            rm -f "$CHECKOUT/$env/Manifest.toml"
+            rm -f "${CHECKOUT:?}/$env/Manifest.toml"
         fi
     done
     say "instantiating julia envs (first run takes a few minutes)"
@@ -879,7 +879,7 @@ socket_open() {
 }
 start_daemon_if_needed() {
     if ! socket_open; then
-        rm -f "\$SOCKET" 2>/dev/null || true
+        [ -z "\${SOCKET:-}" ] || rm -f -- "\${SOCKET:?}" 2>/dev/null || true
         nohup "$PREFIX/bin/sotd" --project-root "\$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
         i=0; while [ \$i -lt 40 ]; do socket_open && break; sleep 0.25; i=\$((i+1)); done
         socket_open || { echo "ERROR: backend did not open \$SOCKET; see /tmp/sotd.log" >&2; exit 1; }
@@ -894,7 +894,7 @@ while :; do
     NOW="\$(date +%s)"
     RUNTIME=\$((NOW - START))
     # A healthy run closes the crash-loop health window.
-    [ "\$RUNTIME" -ge 60 ] && rm -f "\$MARKER" 2>/dev/null
+    [ "\$RUNTIME" -ge 60 ] && rm -f "\${MARKER:?}" 2>/dev/null
     if [ "\$RC" -eq 75 ]; then
         # ADR-0017 self-relaunch: pick up any staged update, then respawn.
         apply_pending

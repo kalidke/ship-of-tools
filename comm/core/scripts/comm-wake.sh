@@ -525,9 +525,9 @@ _comm_wake_bound_log() {
     size=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
     [ "$size" -gt "$LOG_CAP" ] || return 0
     tmp="$LOG_FILE.bound.$$"
-    tail -c "$LOG_CAP" "$LOG_FILE" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    tail -c "$LOG_CAP" "$LOG_FILE" > "$tmp" 2>/dev/null || { rm -f "${tmp:?}"; return 0; }
     cat "$tmp" > "$LOG_FILE" 2>/dev/null
-    rm -f "$tmp"
+    rm -f "${tmp:?}"
 }
 
 # Delete ONLY a marker this process still owns. A blind `rm` was the second
@@ -539,7 +539,7 @@ _comm_wake_cleanup() {
     _comm_wake_unlock
     [ -n "${MARKER:-}" ] || return 0
     [ "$(sed -n '1p' "$MARKER" 2>/dev/null)" = "$$" ] || return 0
-    rm -f "$MARKER" 2>/dev/null || true
+    rm -f "${MARKER:?}" 2>/dev/null || true
 }
 
 # THE START LOCK. `mkdir` is the portable atomic test-and-set (it works on
@@ -566,7 +566,7 @@ _comm_wake_lock() {
         if [ -n "$holder" ] && sot_pid_is_wake_watcher_for "$holder" "$HANDLE"; then
             return 1
         fi
-        rm -rf "$LOCKDIR" 2>/dev/null || true
+        rm -rf "${LOCKDIR:?}" 2>/dev/null || true
     done
     return 1
 }
@@ -576,7 +576,7 @@ _comm_wake_lock() {
 _comm_wake_unlock() {
     [ -n "${LOCKDIR:-}" ] || return 0
     [ "$(cat "$LOCKDIR/pid" 2>/dev/null)" = "$$" ] || return 0
-    rm -rf "$LOCKDIR" 2>/dev/null || true
+    rm -rf "${LOCKDIR:?}" 2>/dev/null || true
 }
 
 # _comm_wake_guard -- may this process be the watcher for this handle? Under

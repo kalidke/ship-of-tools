@@ -70,7 +70,7 @@ if [ "$tool" = AskUserQuestion ]; then
     _tool_use_id="$(printf '%s' "$_envelope" | jq -r '.tool_use_id // ""' 2>/dev/null || true)"
     _askq_marker="$COMM_HOME/state/askq-$(printf '%s' "$_tool_use_id" | tr -c 'A-Za-z0-9._-' '_').marker"
     if [ -n "$_tool_use_id" ] && [ -f "$_askq_marker" ]; then
-        rm -f "$_askq_marker" 2>/dev/null || true
+        rm -f "${_askq_marker:?}" 2>/dev/null || true
         COMM_STATUS_ORIGIN=user "$COMM_HOME/bin/comm-status.sh" prompt >/dev/null 2>&1 || true
     fi
     exit 0
@@ -127,7 +127,7 @@ if [ -x "$SELF_DIR/comm-context.sh" ]; then
         _ctx="$(cat "$_ctx_out" 2>/dev/null)"
     fi
     wait "$_ctx_pid" 2>/dev/null
-    rm -f "$_ctx_out" 2>/dev/null
+    rm -f "${_ctx_out:?}" 2>/dev/null
     [ -n "${_ctx:-}" ] && eval "$_ctx" 2>/dev/null || true
 fi
 [ -n "${NAME:-}" ] || exit 0

@@ -43,7 +43,7 @@ RESP_GONE='{"v":1,"id":1,"kind":"res","op":"pty.input","payload":{"error":"unkno
 # not survive the command-substitution subshell) proves "never retypes".
 export SOT_WORKSPACE_ID="ws-test"
 COUNT_FILE="$(mktemp)"
-trap 'rm -f "$COUNT_FILE"' EXIT
+trap 'rm -f "${COUNT_FILE:?}"' EXIT
 _comm_wake_pty_input() { printf 'x' >> "$COUNT_FILE"; printf '%s' "$STUB_RESP"; }
 reset_call_count() { : > "$COUNT_FILE"; }
 call_count() { wc -c < "$COUNT_FILE" 2>/dev/null | tr -d ' '; }

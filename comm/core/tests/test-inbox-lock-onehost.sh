@@ -56,7 +56,7 @@ RUST_DIR="$(cd "$SCRIPT_DIR/../../../rust" && pwd)"
 
 DIR="$(mktemp -d "$HOME/.sot-inbox-lock-1h-XXXXXX")" || { echo "FATAL: mktemp under \$HOME failed" >&2; exit 1; }
 LOCAL="$(mktemp -d "${TMPDIR:-/tmp}/sot-inbox-lock-1h-XXXXXX")" || exit 1
-trap 'rhost "pkill -9 -f $(printf %q "$DIR")" 2>/dev/null; rm -rf "$DIR" "$LOCAL"' EXIT
+trap 'rhost "pkill -9 -f $(printf %q "$DIR")" 2>/dev/null; rm -rf "${DIR:?}" "${LOCAL:?}"' EXIT
 mkdir -p "$DIR/lib" "$DIR/bin" "$DIR/inbox"
 cp "$SCRIPTS_DIR/comm-lib.sh" "$DIR/lib/comm-lib.sh"
 cp -r "$SCRIPTS_DIR" "$DIR/scripts"

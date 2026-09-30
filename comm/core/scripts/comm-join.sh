@@ -130,7 +130,7 @@ exp_json="$(printf '%s' "$EXPERTISE" \
 # under `set -e` exits the script immediately, skipping a bare `rm -f`
 # placed after it.
 root_file="$(sot_jq_rawfile "$PROJECT_ROOT")" || exit 1
-trap 'rm -f "$root_file"' EXIT
+trap 'rm -f "${root_file:?}"' EXIT
 obj="$(jq -n \
     --arg host "$HOST" --arg ws "$WORKSPACE_ID" \
     --arg repo "$REPO" --rawfile root "$root_file" --argjson exp "$exp_json" --arg ts "$ts" \

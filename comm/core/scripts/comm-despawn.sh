@@ -47,7 +47,7 @@ AGENT_WSID=""
 if jq -e --arg n "$WHO" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
     AGENT_WSID="$(sot_jq -r --arg n "$WHO" '.agents[$n].workspace_id // ""' "$REGISTRY" 2>/dev/null || true)"
     with_lock registry_del "$WHO"
-    rm -f "$SELF_DIR/"*"$WHO"* 2>/dev/null || true
+    rm -f "${SELF_DIR:?}/"*"$WHO"* 2>/dev/null || true
     echo "Removed @$WHO from sot-comm registry"
 fi
 
@@ -67,7 +67,7 @@ _reap_markers() {
     if pid="$(sot_watcher_pid_for "$who")"; then
         kill "$pid" 2>/dev/null && echo "Stopped watcher pid $pid for @$who"
     fi
-    rm -f "$COMM_HOME/state/$who.watch" 2>/dev/null || true
+    rm -f "${COMM_HOME:?}/state/$who.watch" 2>/dev/null || true
     sot_bridge_stop "$who" 2>/dev/null || true
 }
 

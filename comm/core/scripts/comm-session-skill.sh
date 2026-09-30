@@ -124,7 +124,7 @@ if [ "${1:-}" = "--selftest" ]; then
         exit 2
     fi
     tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
+    trap 'rm -rf "${tmp:?}"' EXIT
     mkdir -p "$tmp/empty-state" "$tmp/renamed" "$tmp/decoy"
     git -C "$tmp/renamed" init -q 2>/dev/null
     git -C "$tmp/renamed" remote add origin https://example.invalid/any-owner/ship-of-tools.git 2>/dev/null

@@ -91,7 +91,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     exit 0
 fi
 printf '%s@%s#sh\n' "$$" "$(hostname 2>/dev/null || echo unknown)" > "$LOCK/owner" 2>/dev/null || true
-cleanup() { rm -f "$LOCK/owner" 2>/dev/null; rmdir "$LOCK" 2>/dev/null; }
+cleanup() { rm -f "${LOCK:?}/owner" 2>/dev/null; rmdir "$LOCK" 2>/dev/null; }
 trap cleanup EXIT INT TERM
 
 # ---- rollback mode -----------------------------------------------------------
@@ -125,7 +125,7 @@ if [ "${1:-}" = "--rollback" ]; then
             "$PREFIX/install.json" > "$PREFIX/install.json.tmp" \
             && mv -f "$PREFIX/install.json.tmp" "$PREFIX/install.json"
     fi
-    rm -f "$PENDING" "$MARKER"
+    rm -f "${PENDING:?}" "${MARKER:?}"
     log "rollback complete — running $LG_TAG"
     exit 0
 fi
@@ -141,7 +141,7 @@ COMMIT="$(field commit)"
 ASSET="$(field asset)"
 ASSET_SHA="$(field asset_sha256)"
 
-drop_pending() { rm -f "$PENDING"; }
+drop_pending() { rm -f "${PENDING:?}"; }
 
 case "$TAG" in
     v[0-9]*) ;;
@@ -174,7 +174,7 @@ fi
 drop_damaged() {
     log "$1 — dropping pointer and damaged stage so the updater re-stages"
     drop_pending
-    rm -rf "$READY"
+    rm -rf "${READY:?}"
     exit 0
 }
 
@@ -272,7 +272,7 @@ for v in "$PREFIX/repo/versions"/*; do
     case "$(basename "$v")" in
         "$TAG"|"$PREV_KEEP") ;;
         *)
-            git -C "$PREFIX/repo/base" worktree remove --force "$v" 2>/dev/null || rm -rf "$v"
+            git -C "$PREFIX/repo/base" worktree remove --force "$v" 2>/dev/null || rm -rf "${v:?}"
             ;;
     esac
 done
@@ -282,7 +282,7 @@ git -C "$PREFIX/repo/base" worktree prune 2>/dev/null
 # re-verification; other targets' stages belong to other machines).
 for d in "$UPDATES"/v[0-9]*-"$TARGET"; do
     [ -d "$d" ] || continue
-    [ "$(basename "$d")" = "$TAG-$TARGET" ] || rm -rf "$d"
+    [ "$(basename "$d")" = "$TAG-$TARGET" ] || rm -rf "${d:?}"
 done
 
 log "APPLIED $TAG (previous: ${CUR_TAG:-unknown}; rollback state in $(basename "$LASTGOOD"))"

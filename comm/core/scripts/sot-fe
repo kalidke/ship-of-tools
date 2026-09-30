@@ -428,7 +428,7 @@ send_repl_execute() {
     if [ -n "$ORIGIN" ]; then
         _origin_file="$(sot_jq_rawfile "$ORIGIN")" || exit 1
         payload="$(printf '%s' "$payload" | jq -c --rawfile o "$_origin_file" '. + {origin:$o}')"
-        rm -f "$_origin_file"
+        rm -f "${_origin_file:?}"
     fi
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.execute", payload:$p}')"
     resp="$(sot_send "$req" repl.execute || true)"
@@ -485,7 +485,7 @@ send_repl_run_file() {
     local _run_file_path_file; _run_file_path_file="$(sot_jq_rawfile "$file")" || exit 1
     payload="$(jq -nc --rawfile p "$_run_file_path_file" --arg w "$ws" \
         '{eval_id:1, path:$p, fresh:true, workspace_id:$w}')"
-    rm -f "$_run_file_path_file"
+    rm -f "${_run_file_path_file:?}"
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"repl.run_file", payload:$p}')"
     resp="$(sot_send "$req" repl.run_file || true)"
     if [ -z "$resp" ]; then
@@ -795,7 +795,7 @@ send_pty_input() {
     # jq via --arg.
     local _origin_file; _origin_file="$(sot_jq_rawfile "$origin_for_use")" || exit 1
     payload="$(printf '%s' "$payload" | jq -c --rawfile o "$_origin_file" '. + {origin:$o}')"
-    rm -f "$_origin_file"
+    rm -f "${_origin_file:?}"
     req="$(jq -nc --argjson p "$payload" '{v:1, id:2, kind:"req", op:"pty.input", payload:$p}')"
     resp="$(sot_send "$req" pty.input || true)"
     if [ -z "$resp" ]; then
@@ -1180,7 +1180,7 @@ case "$CMD" in
                 # a caption is free text and must never reach jq via --arg.
                 _cap_file="$(sot_jq_rawfile "$_cap_trimmed")" || exit 1
                 ARGS="$(printf '%s' "$ARGS" | jq -c --rawfile c "$_cap_file" '. + {caption:$c}')"
-                rm -f "$_cap_file"
+                rm -f "${_cap_file:?}"
             fi
         fi
         send_fe_command "$CMD" "$ARGS"
@@ -1220,7 +1220,7 @@ case "$CMD" in
         # it) and must never reach jq via --arg.
         _docs_path_file="$(sot_jq_rawfile "$PATH_ARG")" || exit 1
         ARGS="$(jq -nc --arg w "$WS" --rawfile p "$_docs_path_file" '{workspace:$w, path:$p}')"
-        rm -f "$_docs_path_file"
+        rm -f "${_docs_path_file:?}"
         send_fe_command docs "$ARGS"
         ;;
     goto)
@@ -1249,7 +1249,7 @@ case "$CMD" in
         # --arg.
         _notify_text_file="$(sot_jq_rawfile "$TEXT")" || exit 1
         ARGS="$(jq -nc --rawfile t "$_notify_text_file" '{text:$t}')"
-        rm -f "$_notify_text_file"
+        rm -f "${_notify_text_file:?}"
         [ -n "$LEVEL" ]     && ARGS="$(printf '%s' "$ARGS" | jq -c --arg l "$LEVEL" '. + {level:$l}')"
         [ -n "$NOTIFY_WS" ] && ARGS="$(printf '%s' "$ARGS" | jq -c --arg w "$NOTIFY_WS" '. + {workspace:$w}')"
         send_fe_command notify "$ARGS"
@@ -1287,7 +1287,7 @@ case "$CMD" in
                     # never reach jq via --arg.
                     _run_file_input_file="$(sot_jq_rawfile "$FILE")" || exit 1
                     INPUT="$(jq -nc --rawfile p "$_run_file_input_file" '{kind:"run_file", path:$p}')"
-                    rm -f "$_run_file_input_file"
+                    rm -f "${_run_file_input_file:?}"
                     send_repl_execute "$INPUT" "$WS"
                 fi
                 ;;
@@ -1307,7 +1307,7 @@ case "$CMD" in
                 # must never reach jq via --arg.
                 _eval_code_file="$(sot_jq_rawfile "$EVAL_CODE")" || exit 1
                 INPUT="$(jq -nc --rawfile c "$_eval_code_file" '{kind:"eval", code:$c}')"
-                rm -f "$_eval_code_file"
+                rm -f "${_eval_code_file:?}"
                 send_repl_execute "$INPUT" "$WS"
                 ;;
             interrupt)

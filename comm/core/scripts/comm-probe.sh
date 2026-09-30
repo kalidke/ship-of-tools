@@ -101,7 +101,7 @@ probe_create() {
     local rootfile; rootfile="$(sot_jq_rawfile "$root")" || return 1
     req="$(jq -nc --arg l "$handle" --rawfile p "$rootfile" --arg an "$handle" \
         '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:$p,autostart_claude:false,agent:"none",agent_name:$an,task:"",boot:true}}')"
-    rm -f "$rootfile"
+    rm -f "${rootfile:?}"
     resp="$(probe_request "$req" workspace.create)" || return 1
     wsid="$(printf '%s' "$resp" | sot_jq -r '.payload.workspace_id // empty' 2>/dev/null)"
     [ -n "$wsid" ] || {

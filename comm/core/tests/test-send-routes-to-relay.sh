@@ -44,7 +44,7 @@ chmod +x "$WORK/findmnt-bin/findmnt"
 export PATH="$WORK/findmnt-bin:$PATH"
 bash -c 'source "$1"; sot_inbox_lock_identity "$INBOX_DIR"' _ "$SCRIPTS_DIR/comm-lib.sh" > "$SOT_COMM_HOME/inbox-lock-manager"
 mkdir -p "$SOT_COMM_HOME"
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "${WORK:?}"' EXIT
 
 # The scripts under test, with the relay replaced by a recorder. comm-send.sh
 # resolves its siblings through its OWN dir, so a copy is enough to intercept.
@@ -149,7 +149,7 @@ case_a_broadcast_with_a_failed_copy_is_not_success() {
     ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-broken.txt" SOT_COMM_TEST_HOST="otherbox" \
         "$JOIN" --name t-broken-peer ) >/dev/null 2>&1 || { echo "  setup: could not join a third row"; return 1; }
     local broken="$SOT_COMM_HOME/inbox/t-broken-peer.jsonl"
-    rm -f "$broken"; mkdir -p "$broken"   # a directory: that copy cannot be appended
+    rm -f "${broken:?}"; mkdir -p "$broken"   # a directory: that copy cannot be appended
     run_send --broadcast "to everyone, one copy fails"
     rmdir "$broken"
     [ "$SEND_RC" -eq 1 ] || { echo "  exited $SEND_RC, want 1 (out: '$SEND_OUT' err: '$SEND_ERR')"; return 1; }

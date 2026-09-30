@@ -49,7 +49,7 @@ REAL_JQ="$(command -v jq)" || { echo "FATAL: jq not found on PATH" >&2; exit 1; 
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-crlf-jq-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "${WORK:?}"' EXIT
 export SOT_COMM_HOME="$WORK/home"
 # 0031 B1: the record a daemon writes at startup. Without it no script
 # appends locally, and every filing here would go to a daemon instead.

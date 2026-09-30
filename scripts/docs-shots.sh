@@ -117,7 +117,7 @@ stop_daemon() {
     fi
     DAEMON_PID=""
 }
-trap 'stop_daemon; rm -rf "$RUNDIR"' EXIT
+trap 'stop_daemon; rm -rf "${RUNDIR:?}"' EXIT
 
 CONN_VALUE=""    # set by start_daemon (NOT echoed): a $(...) capture would run
                  # start_daemon in a SUBSHELL and lose the DAEMON_PID it records,
@@ -130,7 +130,7 @@ start_daemon() { # $1 = project root; sets globals DAEMON_PID + CONN_VALUE. Call
     # include("scripts/route.jl"). Manual/PowerShell replication must
     # also start the scratch sotd FROM the project root.
     local sock="$RUNDIR/sotd.sock"
-    rm -f "$sock"
+    rm -f "${sock:?}"
     (cd "$1" && exec "$SOTD" --socket "$sock" --project-root "$1") >"$RUNDIR/sotd.log" 2>&1 &
     DAEMON_PID=$!
     for _ in $(seq 1 50); do [ -S "$sock" ] && break; sleep 0.2; done

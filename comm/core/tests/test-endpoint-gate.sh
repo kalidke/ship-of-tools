@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-endpoint-gate-XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "${WORK:?}"' EXIT
 
 export SOT_COMM_HOME="$WORK/home"
 # shellcheck source=../scripts/comm-lib.sh

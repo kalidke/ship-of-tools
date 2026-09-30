@@ -46,7 +46,7 @@ STARTED=()
 cleanup() {
     local h
     for h in "${STARTED[@]}"; do sot_bridge_stop "$h" 2>/dev/null; done
-    rm -rf "$WORK"
+    rm -rf "${WORK:?}"
 }
 trap cleanup EXIT
 

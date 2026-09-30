@@ -45,7 +45,7 @@ unset SOT_COMM_SELF_FILE
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-wake-ping-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
-trap '_isolate; rm -rf "$WORK"' EXIT
+trap '_isolate; rm -rf "${WORK:?}"' EXIT
 
 # EVERY CASE STARTS FROM NOTHING RUNNING FOR THIS HANDLE.
 #
@@ -93,7 +93,7 @@ check() {
 }
 
 case_three_new_directed_lines_type_the_ping_once() {
-    local d="$WORK/three-lines"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/three-lines"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls" attempts="$d/pty-input.log"
     : > "$calls"
@@ -130,7 +130,7 @@ EOF
 }
 
 case_selftest_only_batch_types_the_selftest_text() {
-    local d="$WORK/selftest-only"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/selftest-only"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls" attempts="$d/pty-input.log"
     : > "$calls"
@@ -163,7 +163,7 @@ EOF
 }
 
 case_prompt_not_free_waits_then_types_once_free() {
-    local d="$WORK/prompt-gate"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/prompt-gate"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls" screen_calls="$d/screen.calls"
     : > "$calls"; : > "$screen_calls"
@@ -224,7 +224,7 @@ EOF
 }
 
 case_a_row_the_daemon_does_not_have_ends_the_watcher() {
-    local d="$WORK/row-gone"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/row-gone"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls" marker="$d/state/watchee.watch"
     : > "$calls"
@@ -264,7 +264,7 @@ EOF
 # environment was frozen at spawn, and a session that continued in another row
 # kept being woken in the row it used to be in.
 case_the_ping_follows_the_resolver_not_the_startup_id() {
-    local d="$WORK/retarget"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/retarget"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local targets="$d/pty-input.targets"
     : > "$targets"
@@ -298,7 +298,7 @@ EOF
 # W3 — nobody declares the handle: exit so the next session start re-arms.
 # Typing into the frozen id would submit a turn into whatever row now holds it.
 case_no_live_row_declaring_the_handle_exits_without_typing() {
-    local d="$WORK/no-row"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/no-row"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls" marker="$d/state/watchee.watch"
     : > "$calls"
@@ -333,7 +333,7 @@ EOF
 # W4 — two rows declare one handle, which set_agent_handle really allows.
 # Refusing is the point: one of the two is a stranger's session.
 case_two_rows_declaring_the_handle_refuse_to_guess() {
-    local d="$WORK/two-rows"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/two-rows"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls"
     : > "$calls"
@@ -371,7 +371,7 @@ EOF
 # the Monitor this mechanism exists to replace. The immortal-watcher reason for
 # that exit is gone: the owner tie ends this process with its agent.
 case_five_unanswered_probes_back_off_and_keep_watching() {
-    local d="$WORK/no-reply"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/no-reply"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local screen_calls="$d/screen.calls" intervals="$d/intervals"
     : > "$screen_calls"; : > "$intervals"
@@ -405,7 +405,7 @@ EOF
 # The same daemon, answering again: the fast poll comes back, so an outage
 # costs latency only while it lasts.
 case_the_poll_speeds_up_again_once_the_daemon_answers() {
-    local d="$WORK/answers-again"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/answers-again"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls" intervals="$d/intervals"
     : > "$calls"; : > "$intervals"
@@ -439,7 +439,7 @@ EOF
 }
 
 case_a_second_new_message_with_an_unmoved_cursor_pings_again() {
-    local d="$WORK/second-message"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    local d="$WORK/second-message"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/read"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls"
     : > "$calls"
@@ -475,7 +475,7 @@ EOF
 }
 
 case_a_cursor_that_already_covers_the_batch_skips_a_second_ping() {
-    local d="$WORK/already-read"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    local d="$WORK/already-read"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/read"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls"
     : > "$calls"
@@ -509,7 +509,7 @@ EOF
 }
 
 case_no_owner_exits_two() {
-    local d="$WORK/no-owner"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/no-owner"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     cat > "$d/run.sh" <<EOF
 source "$WAKE"
@@ -531,7 +531,7 @@ EOF
 }
 
 case_second_start_against_a_live_marker_refuses() {
-    local d="$WORK/live-marker"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/live-marker"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local marker="$d/state/watchee.watch" planted
     # A marker naming a live process that really IS a PING watcher for this
@@ -565,7 +565,7 @@ EOF
 }
 
 case_no_flag_but_a_discoverable_owner_starts() {
-    local d="$WORK/discovered-owner"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/discovered-owner"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls"
     : > "$calls"
@@ -597,7 +597,7 @@ EOF
 }
 
 case_marker_pid_that_is_not_a_watcher_is_stale() {
-    local d="$WORK/reused-pid"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/reused-pid"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls" marker="$d/state/watchee.watch" planted
     : > "$calls"
@@ -635,7 +635,7 @@ EOF
 }
 
 case_workspace_id_derived_from_self_file_basename() {
-    local d="$WORK/derived-ws"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/self"
+    local d="$WORK/derived-ws"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/self"
     : > "$d/inbox/watchee.jsonl"
     : > "$d/self/testhost__ws-derived.txt"
     local calls="$d/pty-input.calls" wsid_seen="$d/wsid.seen"
@@ -670,7 +670,7 @@ EOF
 }
 
 case_agent_pid_gone_exits_zero_and_removes_the_marker() {
-    local d="$WORK/agent-gone"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/agent-gone"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local marker="$d/state/watchee.watch"
     cat > "$d/run.sh" <<EOF
@@ -696,7 +696,7 @@ EOF
 # against the old glyph-only helper (which sees "❯ /compact" is not exactly
 # "❯" and refuses forever); passes once the gate reads the cursor instead.
 case_a_grey_prompt_suggestion_does_not_block_the_ping() {
-    local d="$WORK/grey-suggestion"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/grey-suggestion"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls"
     : > "$calls"
@@ -727,7 +727,7 @@ EOF
 # draft pushes the cursor past the glyph by more than the suggestion offset,
 # and must never be typed into.
 case_a_typed_draft_still_blocks_the_ping() {
-    local d="$WORK/typed-draft"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/typed-draft"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls"
     : > "$calls"
@@ -760,7 +760,7 @@ EOF
 # counts. Fails against the old glyph-only helper (any line matching was
 # enough); passes once the gate anchors on the cursor's line.
 case_a_dialog_over_a_stale_prompt_glyph_blocks_the_ping() {
-    local d="$WORK/dialog-over-stale"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/dialog-over-stale"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls"
     : > "$calls"
@@ -790,7 +790,7 @@ EOF
 # jq exits 0 on empty stdin -- sot_prompt_free must not read that silence as
 # "free". A screen we never saw is never a free prompt.
 case_empty_screen_reply_is_not_a_free_prompt() {
-    local d="$WORK/empty-screen"; rm -rf "$d"; mkdir -p "$d"
+    local d="$WORK/empty-screen"; rm -rf "${d:?}"; mkdir -p "$d"
     cat > "$d/run.sh" <<EOF
 source "$SCRIPTS_DIR/comm-lib.sh"
 sot_prompt_free ""
@@ -811,7 +811,7 @@ EOF
 # one-character draft; accepting only glyph+2 makes a no-separator prompt deaf
 # forever. Both halves are pinned here, so neither shortcut can come back.
 _prompt_free_says() {   # payload -> prints "free" or "held"
-    local d="$WORK/prompt-conv"; rm -rf "$d"; mkdir -p "$d"
+    local d="$WORK/prompt-conv"; rm -rf "${d:?}"; mkdir -p "$d"
     printf 'source "%s/comm-lib.sh"\nsot_prompt_free %s\n' "$SCRIPTS_DIR" "$1" > "$d/run.sh"
     if bash "$d/run.sh" 2>/dev/null; then printf free; else printf held; fi
 }
@@ -843,7 +843,7 @@ case_a_second_lock_on_a_held_lock_fails() {
     # reclaim unconditional and this goes red, which is the only property that
     # makes it worth running. It runs as a script named comm-wake.sh with the
     # handle in argv because that is what the holder check verifies.
-    local d="$WORK/lock-excl"; rm -rf "$d"; mkdir -p "$d/state" "$d/bin"
+    local d="$WORK/lock-excl"; rm -rf "${d:?}"; mkdir -p "$d/state" "$d/bin"
     cat > "$d/bin/comm-wake.sh" <<EOF
 source "$WAKE"
 HANDLE=watchee
@@ -869,7 +869,7 @@ case_cleanup_leaves_a_marker_it_does_not_own() {
     # marker was there, so after a lost race the DEPARTING watcher deleted the
     # WINNER's marker and left a live watcher unrecorded -- which is how one
     # race became a permanent leak instead of a transient double.
-    local d="$WORK/own"; rm -rf "$d"; mkdir -p "$d/state"
+    local d="$WORK/own"; rm -rf "${d:?}"; mkdir -p "$d/state"
     local marker="$d/state/watchee.watch"
     printf '999999\nsession-b\n' > "$marker"
     cat > "$d/foreign.sh" <<EOF
@@ -901,7 +901,7 @@ EOF
 # back to the harness Monitor. Windows is FAKED per case ($OS + $LOCALAPPDATA,
 # the same seam test-win-fe-inbox-readers.sh uses), so these run on every leg.
 case_a_frontend_inbox_frame_pings() {
-    local d="$WORK/fe-inbox-ping"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
+    local d="$WORK/fe-inbox-ping"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls" attempts="$d/pty-input.log"
     : > "$calls"
@@ -939,7 +939,7 @@ EOF
 # from a sibling handle's on the same box -- a wake on someone else's frame
 # spends a model turn on a message this session cannot even read.
 case_a_frontend_frame_for_another_handle_does_not_ping() {
-    local d="$WORK/fe-inbox-sibling"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
+    local d="$WORK/fe-inbox-sibling"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls"
     : > "$calls"
@@ -974,7 +974,7 @@ EOF
 # this must never fail in, so the sender expression cannot be allowed to throw
 # on any input at all.
 case_a_non_string_sender_still_wakes() {
-    local d="$WORK/odd-sender"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/odd-sender"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls"
     : > "$calls"
@@ -1009,7 +1009,7 @@ EOF
 # 2026-09-28). A ping costs ONE line whatever is behind it, so there is nothing
 # to be gained by ignoring a backlog.
 case_a_frame_from_before_the_watcher_started_is_announced() {
-    local d="$WORK/prearm-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    local d="$WORK/prearm-backlog"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/read"
     printf '{"from":"peer","to":"me","msg":"filed while nothing was watching"}\n' > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls"
     : > "$calls"
@@ -1035,7 +1035,7 @@ EOF
 # again every time a watcher restarts. The read cursor is what separates the
 # two -- unread backlog pings once, read backlog is silent.
 case_a_backlog_already_read_is_not_announced_on_restart() {
-    local d="$WORK/read-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    local d="$WORK/read-backlog"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/read"
     printf '{"from":"peer","to":"me","msg":"you already read this"}\n' > "$d/inbox/watchee.jsonl"
     printf '1' > "$d/read/watchee.cursor"
     local calls="$d/pty-input.calls"
@@ -1062,7 +1062,7 @@ EOF
 # so a backlog in the scan window would be retyped into the row wholesale --
 # a replay, not a notice.
 case_full_mode_does_not_retype_a_backlog() {
-    local d="$WORK/full-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    local d="$WORK/full-backlog"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/read"
     printf '{"from":"peer","to":"me","msg":"old news"}\n{"from":"peer","to":"me","msg":"older news"}\n' > "$d/inbox/watchee.jsonl"
     local calls="$d/injects"
     : > "$calls"
@@ -1121,7 +1121,7 @@ case_pid_liveness_answers_live_dead_and_nonsense() {
 # recognise a watcher at all -- the same shape a real watcher has (`bash
 # /path/comm-wake.sh <handle> --deliver ping --owner N`).
 case_two_starts_leave_exactly_one_watcher() {
-    local d="$WORK/double-start"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
+    local d="$WORK/double-start"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
     : > "$d/inbox/watchee.jsonl"
     cat > "$d/bin/comm-wake.sh" <<EOF
 source "$WAKE"
@@ -1162,7 +1162,7 @@ EOF
 # is deliberately loose -- it is there to catch a return to per-line spawning
 # (tens of seconds), not to police milliseconds on a busy box.
 case_a_fifteen_hundred_line_backlog_scans_in_one_pass() {
-    local d="$WORK/big-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read"
+    local d="$WORK/big-backlog"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/read"
     local i
     : > "$d/inbox/watchee.jsonl"
     for i in $(seq 1 1500); do
@@ -1205,7 +1205,7 @@ EOF
 # file, not only the per-handle one, or the fix is pinned on the file that was
 # never deaf.
 case_a_frontend_backlog_from_before_the_watcher_is_announced() {
-    local d="$WORK/fe-backlog"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read" "$d/AppDataLocal/sot"
+    local d="$WORK/fe-backlog"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/read" "$d/AppDataLocal/sot"
     : > "$d/inbox/watchee.jsonl"
     printf '{"from":"peer","to":"watchee","text":"filed while nothing was watching"}\n' \
         > "$d/AppDataLocal/sot/fe-inbox.jsonl"
@@ -1233,7 +1233,7 @@ EOF
 # backlog, already read through the FRONTEND cursor, announces nothing. Point
 # this at read/watchee.cursor instead and it goes red.
 case_a_frontend_backlog_already_read_is_silent() {
-    local d="$WORK/fe-backlog-read"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/read" "$d/AppDataLocal/sot"
+    local d="$WORK/fe-backlog-read"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/read" "$d/AppDataLocal/sot"
     : > "$d/inbox/watchee.jsonl"
     printf '{"from":"peer","to":"watchee","text":"you already read this"}\n' \
         > "$d/AppDataLocal/sot/fe-inbox.jsonl"
@@ -1270,7 +1270,7 @@ check "a frontend backlog already read stays silent" case_a_frontend_backlog_alr
 # marker naming a pid that is gone. The old shape judged the marker stale,
 # removed it, claimed it and started a second watcher beside the live one.
 case_a_live_watcher_no_marker_names_still_refuses() {
-    local d="$WORK/unrecorded"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
+    local d="$WORK/unrecorded"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
     : > "$d/inbox/watchee.jsonl"
     cat > "$d/bin/comm-wake.sh" <<EOF
 source "$WAKE"
@@ -1321,7 +1321,7 @@ check "two starts at once leave exactly one watcher and one refusal" case_two_st
 # the other: the marker branch is consulted first and would refuse before the
 # scan ever ran.
 _monitor_fixture() {
-    local d="$1"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
+    local d="$1"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/bin"
     : > "$d/inbox/watchee.jsonl"
     printf '#!/usr/bin/env bash\ncommand sleep 30\n' > "$d/bin/comm-watch.sh"
     chmod +x "$d/bin/comm-watch.sh"
@@ -1389,7 +1389,7 @@ check "a Monitor holding the marker does not refuse a ping start" case_a_monitor
 # in for, and only a Windows box can exercise it.
 _win_tier_sandbox() {
     local d="$1" with_timeout="$2" b="$1/bin" t
-    rm -rf "$d"; mkdir -p "$b"
+    rm -rf "${d:?}"; mkdir -p "$b"
     # A PATH of our own, so "no timeout on this box" is a case rather than a
     # hypothetical -- but with the tools the tier's own shell needs.
     # `bash` and `env` are on this list because the fakes below are scripts:
@@ -1458,7 +1458,7 @@ case_the_windows_tier_refuses_without_a_timeout() {
 case_the_windows_tier_refuses_without_powershell() {
     local d="$WORK/win-tier-nops" rc
     _win_tier_sandbox "$d" timeout
-    rm -f "$d/bin/powershell.exe"
+    rm -f "${d:?}/bin/powershell.exe"
     _win_tier_run "$d" >/dev/null 2>&1; rc=$?
     [ "$rc" -ne 0 ] || { echo "  refused to refuse with no PowerShell on PATH"; return 1; }
     return 0
@@ -1487,7 +1487,7 @@ check "a frame whose sender is not a string still wakes" case_a_non_string_sende
 # makes for a burst within one file. A body that ran per source typed the
 # notice twice for one batch.
 case_both_inboxes_in_one_cycle_ping_once() {
-    local d="$WORK/both-inboxes"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
+    local d="$WORK/both-inboxes"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
     : > "$d/inbox/watchee.jsonl"
     local calls="$d/pty-input.calls" attempts="$d/pty-input.log"
     : > "$calls"
@@ -1525,7 +1525,7 @@ EOF
 # two probes a cycle and hit the limit on cycle three, slowing a frontend-box
 # session's wake sooner than any other box's for the same hiccup.
 case_the_silence_budget_is_five_cycles_with_both_sources_hot() {
-    local d="$WORK/no-reply-both"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
+    local d="$WORK/no-reply-both"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
     : > "$d/inbox/watchee.jsonl"
     local screen_calls="$d/screen.calls" intervals="$d/intervals"
     : > "$screen_calls"; : > "$intervals"

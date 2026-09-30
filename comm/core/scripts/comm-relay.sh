@@ -155,7 +155,7 @@ nc_send() {
             [ -n "$detail" ] && printf ': %s' "$detail" >> "$_SOT_BRIDGE_FAIL_FILE"
             printf '\n' >> "$_SOT_BRIDGE_FAIL_FILE"
         fi
-        [ -n "$raw_file" ] && rm -f "$raw_file"
+        [ -n "$raw_file" ] && rm -f "${raw_file:?}"
         return "$rc"
     fi
     if [ "$HAVE_NC" = 1 ] && [ -n "$EP_UNIX" ]; then
@@ -262,7 +262,7 @@ send_frame() {  # $1 to, $2 text
     # bare `rm -f` placed after it.
     # Not `local`: the EXIT trap below fires after this function has returned.
     msg_file="$(sot_jq_rawfile "$2")" || return 1
-    trap 'rm -f "$msg_file"' EXIT
+    trap 'rm -f "${msg_file:?}"' EXIT
     # A directed send is ONE `comm.file` request and ONE verdict (0031 B1): the
     # daemon that appends answers, so the answer is the whole record.
     local filing=""
@@ -276,7 +276,7 @@ send_frame() {  # $1 to, $2 text
     local MSG_ID; MSG_ID="$(date +%s%N)-$$-$RANDOM"
     local frame; frame="$(jq -nc --arg f "$NAME" --arg t "$1" --arg i "$MSG_ID" --rawfile m "$msg_file" \
         '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:$t,text:$m,id:$i}}')"
-    rm -f "$msg_file"
+    rm -f "${msg_file:?}"
     if [ -n "$1" ]; then
         local reason rc=0
         reason="$(sot_comm_file "$1" "$filing")" || rc=$?
@@ -377,7 +377,7 @@ send_frame() {  # $1 to, $2 text
     if [ -n "$_SOT_BRIDGE_FAIL_FILE" ] && [ -s "$_SOT_BRIDGE_FAIL_FILE" ]; then
         bridge_reason="$(cat "$_SOT_BRIDGE_FAIL_FILE")"
     fi
-    rm -f "$_SOT_BRIDGE_FAIL_FILE"
+    [ -z "${_SOT_BRIDGE_FAIL_FILE:-}" ] || rm -f -- "${_SOT_BRIDGE_FAIL_FILE:?}"
 
     # 1. A receipt carrying this sender's own frame id (the loop above
     # accepts no other) is the whole verdict, and nothing outranks it.
@@ -558,7 +558,7 @@ case "$SUB" in
                     echo "TIMEOUT: no reply from @$TO in ${SECS}s -- it is $note (not an error — the frame is filed)." ;;
             esac
         fi
-        rm -f "$_seen"
+        [ -z "${_seen:-}" ] || rm -f -- "${_seen:?}"
         ;;
     listen)
         SECS="${1:-}"

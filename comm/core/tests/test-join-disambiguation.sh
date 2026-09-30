@@ -99,7 +99,7 @@ LOCKDIR="$SOT_COMM_HOME/.registry.lock"
 export SOT_SPAWN_ENDPOINT="unix:$WORK/no-daemon.sock"
 export SOT_TOKEN="dummy-test-token"
 unset SOT_SOCKET SOT_WORKSPACE_ID
-trap 'stop_stub_daemon; sot_bridge_stop "$FAKE_BRIDGE_HANDLE" 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'stop_stub_daemon; sot_bridge_stop "$FAKE_BRIDGE_HANDLE" 2>/dev/null; rm -rf "${WORK:?}"' EXIT
 
 # Pinned, hermetic HOST — see the file header. Deliberately short and
 # already within the allowed charset so it is NEVER transformed by
@@ -1442,7 +1442,7 @@ case_lock_closes_derive_write_gap() {
     next_self_file; self="$NEXT_SELF_FILE"
     out="$WORK/lockrace.out"; errfile="$WORK/lockrace.err"
     barrier="$WORK/lockrace.barrier"
-    rm -f "$barrier"
+    rm -f "${barrier:?}"
     ( cd "$rootB" && SOT_COMM_SELF_FILE="$self" SOT_COMM_NAME="" \
         SOT_COMM_TEST_LOCK_BARRIER="$barrier" "$JOIN" >"$out" 2>"$errfile" ) &
     pid=$!
@@ -1548,7 +1548,7 @@ case_with_lock_restores_prior_trap_on_failure() {
     # its own `set -e` and its own prior trap — this test script itself
     # doesn't run under `set -e`, so the bug can't reproduce inline.
     local marker="$WORK/trap-marker.txt" script="$WORK/trap-restore-check.sh"
-    rm -f "$marker"
+    rm -f "${marker:?}"
     cat > "$script" <<SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1692,7 +1692,7 @@ case_jq_rawfile_helper_round_trips_leading_slash_value() {
     f="$(sot_jq_rawfile "$val")" || { echo "  sot_jq_rawfile failed"; return 1; }
     [ -f "$f" ] || { echo "  sot_jq_rawfile did not create a file at the path it printed"; return 1; }
     out="$(jq -nr --rawfile v "$f" '$v')"
-    rm -f "$f"
+    rm -f "${f:?}"
     [ "$out" = "$val" ] || { echo "  round-trip mismatch: got '$out', want '$val'"; return 1; }
     return 0
 }
@@ -1838,7 +1838,7 @@ FAKEUNAME
     [ -z "$(sot_bridge_pids_for "winnoop-handle")" ] \
         || { echo "  a bridge process for winnoop-handle is running after --selftest (must never start one on a Windows host)"; return 1; }
 
-    rm -rf "$WORK/winnoop-home" "$WORK/winnoop.err"
+    rm -rf "${WORK:?}/winnoop-home" "${WORK:?}/winnoop.err"
     return 0
 }
 
@@ -1875,7 +1875,7 @@ FAKEUNAME
     contains "$out" "(/sot/fe-inbox.jsonl)" \
         && { echo "  receive path collapsed to a bare /-rooted guess: $out"; return 1; }
 
-    rm -rf "$WORK/winnoop-home2"
+    rm -rf "${WORK:?}/winnoop-home2"
     return 0
 }
 
@@ -1897,7 +1897,7 @@ case_pipe_endpoint_oneshot_request_matches_reply() {
     # with, and logs its own argv so the test can assert the invocation
     # shape sot_oneshot_request's pipe: arm produces.
     argvlog="$WORK/fake-powershell-oneshot-argv.log"
-    rm -f "$argvlog"
+    rm -f "${argvlog:?}"
     cat > "$fakebin/powershell.exe" <<FAKEPS
 #!/bin/sh
 op=""
@@ -1928,7 +1928,7 @@ FAKEPS
         || { echo "  argv didn't carry the normalised bare pipe name + op: $(cat "$argvlog" 2>/dev/null)"; return 1; }
 
     # Bare pipe:<name> form must normalise identically (a no-op strip).
-    rm -f "$argvlog"
+    rm -f "${argvlog:?}"
     out="$(PATH="$fakebin:$PATH" SCRIPT_DIR="$SCRIPTS_DIR" \
         ENDPOINT='pipe:sot-testuser-local' SOT_SEND_TIMEOUT=5 \
         sot_oneshot_request "$frame" workspace.list)"
@@ -2007,7 +2007,7 @@ FAKEUNAME
 exit 0
 FAKEPS3
     pgreplog="$WORK/win-discovery-pgrep.log"
-    rm -f "$pgreplog"
+    rm -f "${pgreplog:?}"
     cat > "$fakebin/pgrep" <<FAKEPGREP
 #!/bin/sh
 echo "pgrep called: \$*" >> "$pgreplog"
@@ -2162,7 +2162,7 @@ case_slot_guard_refusal_in_the_write_gap_exits_three() {
     local self out errfile pid rc barrier deadline err
     next_self_file; self="$NEXT_SELF_FILE"
     out="$WORK/writegap.out"; errfile="$WORK/writegap.err"
-    barrier="$WORK/writegap.barrier"; rm -f "$barrier"
+    barrier="$WORK/writegap.barrier"; rm -f "${barrier:?}"
 
     mkdir "$LOCKDIR" || { echo "  could not seize the test lock (already held?)"; return 1; }
     ( cd "$ROOT1" && SOT_COMM_SELF_FILE="$self" SOT_COMM_NAME="" \
@@ -2218,7 +2218,7 @@ case_self_audit_uses_the_daemons_own_slug_rule() {
     # slot printed DIFFERS and the run exited 1. Cry-wolf is the failure this
     # audit can least afford; the case fails if that copy ever returns.
     local home="$WORK/audit-slug-rule" out rc
-    rm -rf "$home"; mkdir -p "$home/self"
+    rm -rf "${home:?}"; mkdir -p "$home/self"
     _plant_slot "$home/self/h__ws-alpha-beta-7b1.txt" "alpha-beta-h" "alpha- beta" "/p/alpha- beta"
     out="$(SOT_COMM_HOME="$home" bash "$SCRIPTS_DIR/comm-self-audit.sh" -v 2>&1)"; rc=$?
     [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0 (out: $out)"; return 1; }
@@ -2234,7 +2234,7 @@ case_self_audit_does_not_excuse_a_repo_suffixing_the_label() {
     # and no test. `alpha` and `alpha-tools` are two checkouts, which is
     # precisely what this audit exists to report.
     local home="$WORK/audit-reverse-suffix" out rc
-    rm -rf "$home"; mkdir -p "$home/self"
+    rm -rf "${home:?}"; mkdir -p "$home/self"
     _plant_slot "$home/self/h__ws-alpha-7b2.txt" "alpha-tools-h" "alpha-tools" "/p/alpha-tools"
     out="$(SOT_COMM_HOME="$home" bash "$SCRIPTS_DIR/comm-self-audit.sh" 2>&1)"; rc=$?
     [ "$rc" -eq 1 ] || { echo "  exited $rc, want 1 (out: $out)"; return 1; }
@@ -2249,7 +2249,7 @@ case_self_audit_flags_only_a_slot_naming_another_project() {
     # path-disambiguated name are deliberate, and a run that cries wolf over
     # them is a run nobody reads.
     local home="$WORK/audit-home" out rc
-    rm -rf "$home"; mkdir -p "$home/self"
+    rm -rf "${home:?}"; mkdir -p "$home/self"
     _plant_slot "$home/self/h__ws-alpha-6a1.txt"  "alpha-h"  "alpha"        "/p/alpha"
     _plant_slot "$home/self/h__ws-alpha_jl-6a2.txt" "Alpha-h" "Alpha.jl"    "/p/Alpha.jl"
     _plant_slot "$home/self/h__ws-beta-cx-6a3.txt" "beta-cx-h" "beta"       "/p/beta"
@@ -2262,7 +2262,7 @@ case_self_audit_flags_only_a_slot_naming_another_project() {
         || { echo "  the foreign slot was not named: $out"; return 1; }
     contains "$out" "2 agree, 1 benign, 1 differ, 0 without a repo= line, 2 not workspace-keyed" \
         || { echo "  wrong tally: $out"; return 1; }
-    rm -f "$home/self/h__ws-epsilon-6a4.txt"
+    rm -f "${home:?}/self/h__ws-epsilon-6a4.txt"
     out="$(SOT_COMM_HOME="$home" bash "$SCRIPTS_DIR/comm-self-audit.sh" 2>&1)"; rc=$?
     [ "$rc" -eq 0 ] || { echo "  a clean directory must exit 0, got $rc (out: $out)"; return 1; }
     return 0

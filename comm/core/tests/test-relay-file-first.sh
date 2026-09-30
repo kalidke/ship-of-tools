@@ -56,7 +56,7 @@ chmod +x "$WORK/findmnt-bin/findmnt"
 export PATH="$WORK/findmnt-bin:$PATH"
 bash -c 'source "$1"; sot_inbox_lock_identity "$INBOX_DIR"' _ "$SCRIPTS_DIR/comm-lib.sh" > "$SOT_COMM_HOME/inbox-lock-manager"
 mkdir -p "$SOT_COMM_HOME"
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "${WORK:?}"' EXIT
 
 SENDER_HOST="testhost"
 PEER_HOST="otherbox"

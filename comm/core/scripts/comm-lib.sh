@@ -797,7 +797,7 @@ sot_comm_file() {  # HANDLE LINE
     err="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/sot-comm-file-XXXXXX")" || err=""
     resp="$(SOT_SEND_TIMEOUT="$window" sot_oneshot_request "$frame" comm.file 2>"${err:-/dev/null}")" || resp=""
     diag=""
-    if [ -n "$err" ]; then diag="$(tr '\n' ' ' < "$err")"; rm -f "$err"; fi
+    if [ -n "$err" ]; then diag="$(tr '\n' ' ' < "$err")"; rm -f "${err:?}"; fi
     reason="$(printf '%s' "$resp" | sot_jq -r '.payload.error // empty' 2>/dev/null)" || reason=""
     if [ -n "$reason" ]; then
         printf '%s\n' "$reason"
@@ -1002,12 +1002,12 @@ sot_write_self_file() {
     }
     if ! printf '%s\nrepo=%s\nroot=%s\n' "$name" "$repo" "$root" > "$tmp" 2>/dev/null; then
         echo "sot_write_self_file: write to temp file '$tmp' failed (disk full? permissions?)" >&2
-        rm -f "$tmp" 2>/dev/null
+        rm -f "${tmp:?}" 2>/dev/null
         return 1
     fi
     if ! mv -f "$tmp" "$self_file" 2>/dev/null; then
         echo "sot_write_self_file: could not move '$tmp' into place at '$self_file'" >&2
-        rm -f "$tmp" 2>/dev/null
+        rm -f "${tmp:?}" 2>/dev/null
         return 1
     fi
     return 0
@@ -1050,11 +1050,11 @@ BRIDGE_LOOP='while :; do
     "$1" bridge --name "$2" & _c=$!
     while kill -0 "$_c" 2>/dev/null; do
         if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then
-            kill "$_c" 2>/dev/null; rm -f "${4:-}" 2>/dev/null; exit 0
+            kill "$_c" 2>/dev/null; [ -z "${4:-}" ] || rm -f -- "${4:?}" 2>/dev/null; exit 0
         fi
         sleep 2
     done
-    if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then rm -f "${4:-}" 2>/dev/null; exit 0; fi
+    if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then [ -z "${4:-}" ] || rm -f -- "${4:?}" 2>/dev/null; exit 0; fi
     sleep 2
 done'
 
@@ -1734,7 +1734,7 @@ sot_pty_input() {
     frame="$(jq -nc --arg w "$wsid" --rawfile d "$_data_file" \
         '{v:1,id:1,kind:"req",op:"pty.input",payload:{workspace_id:$w,data_b64:$d,enter:true}}')"
     local rc=$?
-    rm -f "$_data_file"
+    rm -f "${_data_file:?}"
     [ "$rc" -eq 0 ] || return 1
     # ~18s is the daemon's own worst case for one enter=true write.
     SOT_SEND_TIMEOUT="${SOT_SEND_TIMEOUT:-20}" sot_oneshot_request "$frame" "pty.input"
@@ -1977,7 +1977,7 @@ sot_jq_rawfile() {
     }
     if ! printf '%s' "$1" > "$f" 2>/dev/null; then
         echo "sot_jq_rawfile: write to temp file '$f' failed" >&2
-        rm -f "$f" 2>/dev/null
+        rm -f "${f:?}" 2>/dev/null
         return 1
     fi
     printf '%s' "$f"
@@ -2548,7 +2548,7 @@ sot_oneshot_request() {
         unix:*)
             command -v nc >/dev/null 2>&1 || {
                 echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2
-                rm -f "$tmp"; return 1; }
+                rm -f "${tmp:?}"; return 1; }
             # The sender holds the write side open with a sleep (a half-close
             # via `nc -q` made stub listeners hang up early). It is `exec`'d so
             # the recorded pid IS the sleep, killed the moment the reply
@@ -2589,18 +2589,18 @@ sot_oneshot_request() {
             pipename="${pipename##*\\}"
             command -v powershell.exe >/dev/null 2>&1 || {
                 echo "ERROR: powershell.exe not found and endpoint is a named pipe (pipe: needs PowerShell)" >&2
-                rm -f "$tmp"; return 1; }
+                rm -f "${tmp:?}"; return 1; }
             local ps1="${SCRIPT_DIR:-.}/comm-pipe-request.ps1"
             [ -f "$ps1" ] || {
                 echo "ERROR: comm-pipe-request.ps1 not found next to the comm scripts (looked in ${SCRIPT_DIR:-.})" >&2
-                rm -f "$tmp"; return 1; }
+                rm -f "${tmp:?}"; return 1; }
             _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
                 | timeout "$timeout_s" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
                     -File "$ps1" -PipeName "$pipename" -Mode Oneshot -Op "$op" -TimeoutSec "$timeout_s" \
                     > "$tmp" 2>/dev/null &
             ncpid=$!
             ;;
-        *) rm -f "$tmp"; return 1 ;;
+        *) rm -f "${tmp:?}"; return 1 ;;
     esac
     # Accept only a COMPLETE res line: op precedes payload on the wire, so a
     # grep hit can be a line nc is still appending. jq gates acceptance when
@@ -2635,7 +2635,7 @@ sot_oneshot_request() {
     if [ -z "$line" ] && [ -s "$tmp.err" ]; then
         printf 'sot_oneshot_request: %s: %s\n' "${target:-ssh bridge}" "$(tr '\n' ' ' < "$tmp.err")" >&2
     fi
-    rm -f "$tmp" "$tmp.snd" "$tmp.err"
+    rm -f "${tmp:?}" "${tmp:?}.snd" "${tmp:?}.err"
     [ -n "$line" ] && printf '%s\n' "$line"
 }
 

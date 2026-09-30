@@ -161,7 +161,7 @@ git diff --stat -- "${STAMPED[@]}"
 
 if [[ $DRY_RUN -eq 1 ]]; then
     git restore -- "${STAMPED[@]}"
-    [[ ${#NEW_FILES[@]} -gt 0 ]] && rm -f -- "${NEW_FILES[@]}"
+    [[ ${#NEW_FILES[@]} -gt 0 ]] && rm -f -- "${NEW_FILES[@]:?}"
     echo "== dry run: restored, nothing committed"
     exit 0
 fi

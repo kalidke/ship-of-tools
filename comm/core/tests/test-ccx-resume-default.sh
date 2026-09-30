@@ -12,7 +12,7 @@ CCX="$(cd "$SCRIPT_DIR/../../adapters/codex/bin" && pwd)/ccx"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-ccx-resume-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "${WORK:?}"' EXIT
 
 PASS=0
 FAIL=0
@@ -94,7 +94,7 @@ started_fresh() {  # -> 0 iff argv.log's 1st line is NOT "resume"
 }
 
 case_row_env_resumes_by_default() {
-    rm -f "$ARGV_LOG"
+    rm -f "${ARGV_LOG:?}"
     (
         cd "$PROJECT_DIR" || exit 1
         ARGV_LOG_PATH="$ARGV_LOG" \
@@ -110,7 +110,7 @@ case_row_env_resumes_by_default() {
 }
 
 case_hand_run_ccx_with_no_env_resumes_by_default() {
-    rm -f "$ARGV_LOG"
+    rm -f "${ARGV_LOG:?}"
     run_ccx
     resumed_this_id
 }
@@ -118,7 +118,7 @@ case_hand_run_ccx_with_no_env_resumes_by_default() {
 # A real capsule leg's full inherited env, minus --capsule -- plus a
 # stale SOT_RUNTIME=capsule, which must have ZERO effect (ccx no longer reads it).
 case_hand_run_ccx_inside_a_capsule_row_keeps_resume_default() {
-    rm -f "$ARGV_LOG"
+    rm -f "${ARGV_LOG:?}"
     (
         cd "$PROJECT_DIR" || exit 1
         ARGV_LOG_PATH="$ARGV_LOG" \
@@ -136,25 +136,25 @@ case_hand_run_ccx_inside_a_capsule_row_keeps_resume_default() {
 }
 
 case_capsule_flag_bare_ccx_starts_fresh() {
-    rm -f "$ARGV_LOG"
+    rm -f "${ARGV_LOG:?}"
     run_ccx --capsule
     started_fresh
 }
 
 case_capsule_flag_with_continue_resumes() {
-    rm -f "$ARGV_LOG"
+    rm -f "${ARGV_LOG:?}"
     run_ccx --capsule --continue
     resumed_this_id
 }
 
 case_capsule_flag_with_fresh_flag_stays_fresh_even_with_continue() {
-    rm -f "$ARGV_LOG"
+    rm -f "${ARGV_LOG:?}"
     run_ccx --capsule --continue --fresh
     started_fresh
 }
 
 case_capsule_flag_starts_the_capsule_watcher() {
-    rm -f "$WATCH_ARGV_LOG"
+    rm -f "${WATCH_ARGV_LOG:?}"
     (
         cd "$PROJECT_DIR" || exit 1
         ARGV_LOG_PATH="$ARGV_LOG" \
@@ -183,7 +183,7 @@ case_capsule_flag_starts_the_capsule_watcher() {
 }
 
 case_capsule_flag_starts_the_capsule_watcher_even_with_a_leaked_pane_var() {
-    rm -f "$WATCH_ARGV_LOG"
+    rm -f "${WATCH_ARGV_LOG:?}"
     (
         cd "$PROJECT_DIR" || exit 1
         ARGV_LOG_PATH="$ARGV_LOG" \

@@ -47,7 +47,7 @@ done
 # recipient inside deliver()) since a --broadcast fans this same MSG out
 # to every target; cleaned up on exit however this script leaves.
 MSG_FILE="$(sot_jq_rawfile "$MSG")" || exit 1
-trap 'rm -f "$MSG_FILE"' EXIT
+trap 'rm -f "${MSG_FILE:?}"' EXIT
 
 # Identity refusal, via the ONE shared helper (comm-lib.sh) also used by
 # comm-relay.sh and comm-bootstrap.sh: requires more than a merely nonempty
@@ -89,7 +89,7 @@ deliver() {  # $1 = target name
         if [ "$BROADCAST" = false ]; then
             # The EXIT trap does not run across an `exec` (the process image
             # is replaced), so drop the temp file by hand first.
-            rm -f "$MSG_FILE"
+            rm -f "${MSG_FILE:?}"
             exec "$SCRIPT_DIR/comm-relay.sh" send "@$t" "$MSG"
         fi
         echo "no such handle: $t" >&2; return 1

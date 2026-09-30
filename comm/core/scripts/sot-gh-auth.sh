@@ -159,7 +159,7 @@ poll() {
     # dirty and curl would SEND the CR, which is the failure GitHub rejects.
     # This line is what makes that a no-op rather than a broken exchange.
     printf '%s' "$device_code" | tr -d '\r' > "$dcfile"
-    trap 'rm -f "$STATE" "$dcfile"' EXIT INT TERM
+    trap 'rm -f "${STATE:?}" "${dcfile:?}"' EXIT INT TERM
     echo "sot-gh-auth: waiting for you to authorize… (polling every ${interval}s, code TTL ~$((expires / 60))min)"
     while :; do
         sleep "$interval"

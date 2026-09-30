@@ -21,7 +21,7 @@ WATCH="$SCRIPTS_DIR/comm-wake.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-codex-watch-loop-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "${WORK:?}"' EXIT
 
 PASS=0
 FAIL=0
@@ -37,7 +37,7 @@ check() {
 line() { printf '{"from":"peer","to":"me","msg":"%s"}\n' "$1"; }
 
 case_capsule_mode_starts_at_eof_ignoring_a_stale_pos_file_and_backlog() {
-    local d="$WORK/eof-capsule"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/eof-capsule"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     { line "one"; line "two"; line "three"; } > "$d/inbox/watchee.jsonl"
     printf '0\n' > "$d/state/comm-wake-watchee.pos"
     local attempts="$d/attempts.log"
@@ -56,7 +56,7 @@ case_capsule_mode_starts_at_eof_ignoring_a_stale_pos_file_and_backlog() {
 }
 
 case_concurrent_append_is_never_delivered_twice() {
-    local d="$WORK/dedup"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/dedup"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     { line "one"; line "two"; } > "$d/inbox/watchee.jsonl"
     local attempts="$d/attempts.log"
     # `wc -l` appends a THIRD line right after counting -- the race window.
@@ -74,7 +74,7 @@ case_concurrent_append_is_never_delivered_twice() {
                 local tmp n callnum
                 tmp="$(mktemp)"; cat > "$tmp"
                 n=$(command wc -l < "$tmp")
-                rm -f "$tmp"
+                rm -f "${tmp:?}"
                 printf x >> "$CALL_COUNT_FILE"
                 callnum=$(command wc -c < "$CALL_COUNT_FILE")
                 if [ "$callnum" -eq 2 ]; then
@@ -95,7 +95,7 @@ case_concurrent_append_is_never_delivered_twice() {
 }
 
 case_row_gone_ends_the_whole_watcher_not_just_the_inner_loop() {
-    local d="$WORK/gone"; rm -rf "$d"; mkdir -p "$d/inbox" "$d/state"
+    local d="$WORK/gone"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"   # starts empty: the watcher begins at EOF (0)
     local sleeps="$d/sleeps.count"
     bash -c '
@@ -112,7 +112,7 @@ case_row_gone_ends_the_whole_watcher_not_just_the_inner_loop() {
                 local tmp n
                 tmp="$(mktemp)"; cat > "$tmp"
                 n=$(command wc -l < "$tmp")
-                rm -f "$tmp"
+                rm -f "${tmp:?}"
                 if [ ! -f "$RACED_MARKER" ]; then
                     : > "$RACED_MARKER"
                     printf "%s\n" "{\"from\":\"peer\",\"to\":\"me\",\"msg\":\"after-start\"}" >> "'"$d"'/inbox/watchee.jsonl"
@@ -138,7 +138,7 @@ case_row_gone_ends_the_whole_watcher_not_just_the_inner_loop() {
 }
 
 case_log_file_is_bounded_to_roughly_256kb() {
-    local d="$WORK/logbound"; rm -rf "$d"; mkdir -p "$d/state"
+    local d="$WORK/logbound"; rm -rf "${d:?}"; mkdir -p "$d/state"
     local log="$d/state/comm-wake-watchee.log"
     # 400 KiB seed, ending in a marker -- the bound must keep the TAIL.
     head -c 409600 /dev/zero | tr '\0' 'x' > "$log"
@@ -155,7 +155,7 @@ case_log_file_is_bounded_to_roughly_256kb() {
 }
 
 case_log_file_under_the_cap_is_left_alone() {
-    local d="$WORK/logbound-small"; rm -rf "$d"; mkdir -p "$d/state"
+    local d="$WORK/logbound-small"; rm -rf "${d:?}"; mkdir -p "$d/state"
     local log="$d/state/comm-wake-watchee.log"
     printf 'small log\n' > "$log"
     bash -c '
@@ -171,7 +171,7 @@ case_log_bound_keeps_appending_correctly_after_truncation() {
     # fd 2 opens (exec 2>>) BEFORE the file grows past the cap and BEFORE
     # the bound runs -- an mv-based bound would swap in a new inode the
     # already-open fd never sees, losing later writes.
-    local d="$WORK/logbound-append"; rm -rf "$d"; mkdir -p "$d/state"
+    local d="$WORK/logbound-append"; rm -rf "${d:?}"; mkdir -p "$d/state"
     local log="$d/state/comm-wake-watchee.log"
     bash -c '
         source "'"$WATCH"'"

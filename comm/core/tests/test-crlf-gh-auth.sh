@@ -179,6 +179,6 @@ else
     ok "the script never printed the token"
 fi
 
-rm -rf "$TMP"
+rm -rf "${TMP:?}"
 printf 'PASS=%s FAIL=%s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

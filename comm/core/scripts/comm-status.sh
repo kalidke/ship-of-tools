@@ -118,7 +118,7 @@ status_txn() {
                       elif .state == "waiting" then .waiting else (.note // "") end)
         | .status_at = $t | .last_seen = $t)
     ' "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY" || rc=$?
-    rm -f "$sum_file"
+    rm -f "${sum_file:?}"
     return $rc
 }
 with_lock status_txn

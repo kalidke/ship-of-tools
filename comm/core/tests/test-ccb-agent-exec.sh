@@ -18,7 +18,7 @@ BIN_DIR="$(cd "$SCRIPT_DIR/../../adapters/claude/bin" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-ccb-agent-exec-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "${WORK:?}"' EXIT
 
 PASS=0
 FAIL=0
@@ -68,14 +68,14 @@ assert_argv_is() {  # <expected words...>  (reads $ARGV_LOG)
 }
 
 case_ccb_forwards_flags_in_order_to_agent_exec() {
-    rm -f "$ARGV_LOG"
+    rm -f "${ARGV_LOG:?}"
     ARGV_LOG_PATH="$ARGV_LOG" SOTD_BIN="" PATH="$STUB_DIR:$PATH" \
         "$BIN_DIR/ccb" --continue --x >/dev/null 2>"$WORK/stderr.log"
     assert_argv_is agent-exec claude --continue --x
 }
 
 case_a_bare_ccb_forwards_no_flags() {
-    rm -f "$ARGV_LOG"
+    rm -f "${ARGV_LOG:?}"
     ARGV_LOG_PATH="$ARGV_LOG" SOTD_BIN="" PATH="$STUB_DIR:$PATH" \
         "$BIN_DIR/ccb" >/dev/null 2>"$WORK/stderr.log"
     assert_argv_is agent-exec claude

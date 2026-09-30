@@ -31,7 +31,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-session-exit-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
 cleanup() {
     "$SCRIPTS_DIR/comm-listen.sh" --stop >/dev/null 2>&1 || true
-    rm -rf "$WORK"
+    rm -rf "${WORK:?}"
 }
 trap cleanup EXIT
 

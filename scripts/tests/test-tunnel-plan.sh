@@ -19,7 +19,7 @@ set -euo pipefail
 . "$(dirname "$0")/../sot-hosts.sh"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "${WORK:?}"' EXIT
 fails=0
 
 check() {  # <description> <expected> <actual>

@@ -37,7 +37,7 @@ cleanup() {
     [ -n "$STUB_WATCHER_PID" ] && kill "$STUB_WATCHER_PID" >/dev/null 2>&1
     [ -n "$STUB_NC_PID" ] && kill "$STUB_NC_PID" >/dev/null 2>&1
     exec 3>&- 2>/dev/null || true
-    rm -rf "$WORK"
+    rm -rf "${WORK:?}"
 }
 trap cleanup EXIT
 
@@ -341,7 +341,7 @@ case_comm_scripts_row_reads_the_installed_version_file() {
 case_comm_scripts_row_prints_unknown_when_the_stamp_is_missing() {
     stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0","protocol":1,"lane_build":"xyz","lane_proto":1},"clients":[]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
-    rm -f "$SOT_COMM_HOME/VERSION"
+    rm -f "${SOT_COMM_HOME:?}/VERSION"
     start_stub_daemon
     run_version
     stop_stub_daemon

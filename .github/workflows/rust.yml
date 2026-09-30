@@ -196,6 +196,10 @@ jobs:
           # the one wait constant. The poke guard pins that comm-send.sh
           # still files, pokes and prints its line with the append behind it.
           bash test-hub-files.sh
+          # A delete rooted in a variable is written ${VAR:?} in every
+          # tracked shell file, so an empty one aborts instead of deleting
+          # from /.
+          bash test-rm-guard.sh
           bash test-send-poke-row.sh
           # 0031 B1's caller: a registry miss goes to the wire and one lap ends
           # in one verdict; the acceptance matrix's classifier keys on that

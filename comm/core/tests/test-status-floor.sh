@@ -20,7 +20,7 @@ SCRIPT_DIR="$SCRIPTS_DIR"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-status-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "${WORK:?}"' EXIT
 
 export SOT_COMM_HOME="$WORK/home"
 export SOT_COMM_SELF_FILE="$WORK/self.txt"
@@ -73,7 +73,7 @@ B() { printf '{"tool_name":"AskUserQuestion","tool_use_id":"askq-test"}' | bash 
 # tool_use_id matches B's default, so the two pair up when called together;
 # called alone it finds no marker and answers nothing (fix 1).
 HB() {
-    rm -f "$SOT_COMM_HOME"/state/hb-*.tick 2>/dev/null
+    rm -f "${SOT_COMM_HOME:?}"/state/hb-*.tick 2>/dev/null
     printf '{"tool_name":"Bash"}' | bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh"
 }
 HBQ() {
@@ -367,7 +367,7 @@ case_short_exchange_on_waiting_row_never_nudged() {
 _mail_reset() {
     mkdir -p "$SOT_COMM_HOME/inbox" "$SOT_COMM_HOME/read" "$SOT_COMM_HOME/state"
     : > "$SOT_COMM_HOME/inbox/$NAME.jsonl"
-    rm -f "$SOT_COMM_HOME/read/$NAME.cursor" "$SOT_COMM_HOME"/state/mail-*.tick
+    rm -f "${SOT_COMM_HOME:?}/read/$NAME.cursor" "${SOT_COMM_HOME:?}"/state/mail-*.tick
 }
 _mail_line() {  # TO [FROM] -> one inbox line, stamped now
     jq -nc --arg to "$1" --arg from "${2:-peer}" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -662,7 +662,7 @@ case_marker_artifact_audit_skipped_in_continuation() {
 # idea of it.
 race() {  # SEED_FACTS_JSON COMPETING_JQ WANT
     seed_facts "$1"
-    local barrier="$WORK/barrier.$$"; rm -f "$barrier"
+    local barrier="$WORK/barrier.$$"; rm -f "${barrier:?}"
     mkdir "$LOCKDIR" || return 1
     ( SOT_COMM_TEST_LOCK_BARRIER="$barrier" "$ST" stop ) &
     local pid=$! i=0
@@ -711,7 +711,7 @@ mkmarker() {  # PID [SESSION_ID] -- write a watcher marker in comm-watch.sh's ow
     mkdir -p "$(dirname "$WATCH_MARKER")"
     printf '%s\n%s\n' "$1" "${2:-}" > "$WATCH_MARKER"
 }
-rmmarker() { rm -f "$WATCH_MARKER" "$WARN_STAMP"; }
+rmmarker() { rm -f "${WATCH_MARKER:?}" "${WARN_STAMP:?}"; }
 # A live process that the marker verifier will RECOGNISE as this handle's
 # watcher: liveness is now identity-checked (comm-lib.sh's sot_watcher_pid_for),
 # so a bare `sleep` proves nothing — on a shared home that is exactly what a
@@ -729,7 +729,7 @@ dead_pid() {  # a pid guaranteed not to be running: backgrounded, then reaped
 # real Claude Code hook shell always has it), and leaves whatever the hook
 # wrote to stderr in $HBW_ERR (stdout discarded, same as HB).
 HBW() {
-    rm -f "$SOT_COMM_HOME"/state/hb-*.tick 2>/dev/null
+    rm -f "${SOT_COMM_HOME:?}"/state/hb-*.tick 2>/dev/null
     HBW_ERR="$(printf '{"tool_name":"Bash"}' \
         | CLAUDE_CODE_SESSION_ID="${1:-sess-a}" bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh" 2>&1 1>/dev/null)"
 }
@@ -770,7 +770,7 @@ case_deaf_silent_with_no_registry_row() {
 }
 case_deaf_silent_without_session_id() {
     seed idle; rmmarker
-    rm -f "$SOT_COMM_HOME"/state/hb-*.tick 2>/dev/null
+    rm -f "${SOT_COMM_HOME:?}"/state/hb-*.tick 2>/dev/null
     HBW_ERR="$(printf '{"tool_name":"Bash"}' | bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh" 2>&1 1>/dev/null)"
     [ -z "$HBW_ERR" ] || { echo "    got '$HBW_ERR'"; return 1; }
 }

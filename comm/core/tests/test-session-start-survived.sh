@@ -51,7 +51,7 @@ cleanup() {
         pkill -P "$p" 2>/dev/null || true
         kill "$p" 2>/dev/null || true
     done
-    rm -rf "$WORK"
+    rm -rf "${WORK:?}"
 }
 trap cleanup EXIT
 
@@ -222,7 +222,7 @@ case_a_silent_daemon_still_arms_the_watcher() {
     bash_bin="$(command -v bash)" || return 1
     cp "$bash_bin" "$claude" || return 1
     # A leftover marker would answer SURVIVED before the branch under test ran.
-    rm -f "$MARKER"
+    rm -f "${MARKER:?}"
     sot_write_self_file "$self" "$NAME" "$REPO" "$PROJECT_ROOT" || return 1
     SOT_COMM_SELF_FILE="$self" SOT_SOCKET="$WORK/no-such-daemon.sock" \
         CLAUDE_CODE_SESSION_ID=sess-WAKE \
@@ -278,13 +278,13 @@ check "a live Monitor is not survival, and is not reaped" case_a_live_monitor_is
 # script, comm-lib.sh included, from its own path.
 case_a_watcher_that_dies_at_startup_falls_back_loudly() {
     local d="$WORK/wake-dies" out="$WORK/wake-dies.out" f
-    rm -rf "$d"; mkdir -p "$d/bin"
+    rm -rf "${d:?}"; mkdir -p "$d/bin"
     for f in "$SCRIPTS_DIR"/*; do ln -sf "$f" "$d/bin/$(basename "$f")"; done
-    rm -f "$d/bin/comm-wake.sh"
+    rm -f "${d:?}/bin/comm-wake.sh"
     printf '#!/bin/sh\nexit 1\n' > "$d/bin/comm-wake.sh"; chmod +x "$d/bin/comm-wake.sh"
     local self="$WORK/testhost__ws-dies.txt" claude="$WORK/fakebin/claude"
     cp "$(command -v bash)" "$claude" 2>/dev/null || return 1
-    rm -f "$MARKER"
+    rm -f "${MARKER:?}"
     sot_write_self_file "$self" "$NAME" "$REPO" "$PROJECT_ROOT" || return 1
     SOT_COMM_SELF_FILE="$self" SOT_SOCKET="$WORK/no-such-daemon.sock" \
         CLAUDE_CODE_SESSION_ID=sess-DIES \
@@ -312,9 +312,9 @@ check "a silent daemon still arms the watcher instead of printing MONITOR" case_
 # did-it-come-up check to find it.
 case_a_surviving_monitor_still_spawns_a_ping_watcher() {
     local d="$WORK/survived-monitor" out="$WORK/survived-monitor.out" f mon
-    rm -rf "$d"; mkdir -p "$d/bin"
+    rm -rf "${d:?}"; mkdir -p "$d/bin"
     for f in "$SCRIPTS_DIR"/*; do ln -sf "$f" "$d/bin/$(basename "$f")"; done
-    rm -f "$d/bin/comm-wake.sh"
+    rm -f "${d:?}/bin/comm-wake.sh"
     printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/spawned"\nsleep 5\n' "$d" > "$d/bin/comm-wake.sh"
     chmod +x "$d/bin/comm-wake.sh"
     : > "$d/spawned"

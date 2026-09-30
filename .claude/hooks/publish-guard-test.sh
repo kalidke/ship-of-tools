@@ -70,7 +70,7 @@ env_check() { # env_check <want-exit> <label> <env-assignments...>
 
 echo "unconfigured (exit 0 — a public clone is never blocked or nagged):"
 bare="$(mktemp -d)"; mkdir -p "$bare/proj"     # no sibling ops sidecar
-trap 'rm -f "$pf"; rm -rf "$bare" "$stale"' EXIT
+trap 'rm -f "${pf:?}"; rm -rf "${bare:?}"; [ -z "${stale:-}" ] || rm -rf -- "${stale:?}"' EXIT
 env_check 0 "no markers at all"                  CLAUDE_PROJECT_DIR="$bare/proj"
 env_check 0 "no project dir either"              DUMMY=1
 
@@ -87,7 +87,7 @@ win="$(mktemp -d)"; mkdir -p "$win/proj" "$win/ship-of-tools-ops"
 cp "$pf" "$win/ship-of-tools-ops/scrub-patterns.txt"
 env_check 2 "backslash project dir still resolves sidecar" \
     CLAUDE_PROJECT_DIR="$(printf '%s' "$win/proj" | tr '/' '\\')"
-rm -rf "$win"
+rm -rf "${win:?}"
 
 echo "readiness check (--check):"
 out="$( ( unset SOT_SCRUB_PATTERNS SOT_OPS_DIR

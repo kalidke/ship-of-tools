@@ -61,7 +61,7 @@ chmod +x "$WORK/findmnt-bin/findmnt"
 export PATH="$WORK/findmnt-bin:$PATH"
 bash -c 'source "$1"; sot_inbox_lock_identity "$INBOX_DIR"' _ "$SCRIPTS_DIR/comm-lib.sh" > "$SOT_COMM_HOME/inbox-lock-manager"
 mkdir -p "$SOT_COMM_HOME"
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "${WORK:?}"' EXIT
 
 # The hook resolves comm-context.sh, comm-status.sh and comm-lib.sh out of the
 # comm home's bin/ — the flat layout update_comm deploys, where this checkout
@@ -98,7 +98,7 @@ check() {
 reset_inboxes() {
     mkdir -p "$(dirname "$INBOX")" "$(dirname "$CUR")" "$(dirname "$FE_INBOX")"
     : > "$INBOX"; : > "$FE_INBOX"
-    rm -f "$CUR" "$FE_CUR" "$SOT_COMM_HOME"/state/mail-*.tick
+    rm -f "${CUR:?}" "${FE_CUR:?}" "${SOT_COMM_HOME:?}"/state/mail-*.tick
 }
 
 fe_frame() {  # TO TEXT [FROM] — one FRONTEND frame: the `.text` schema, no `.msg`
@@ -132,7 +132,7 @@ STUBEOF
 chmod +x "$STUB_DIR/sleep"
 
 wake() {  # OS FILE FRAME -> WAKE_OUT: what the Monitor emitted for FRAME appended to FILE
-    rm -f "$WORK/stub.count"
+    rm -f "${WORK:?}/stub.count"
     WAKE_OUT="$(cd "$WORK" && OS="$1" LOCALAPPDATA="$LOCAL_APPDATA" \
         PATH="$STUB_DIR:$PATH" \
         SOT_WATCH_TEST_STATE="$WORK/stub.count" \

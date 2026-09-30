@@ -31,7 +31,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-matrix-XXXXXX")"
 export SOT_COMM_HOME="$WORK/home"
 export SOT_COMM_SELF_FILE="$WORK/self.txt"
 mkdir -p "$SOT_COMM_HOME/inbox"
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "${WORK:?}"' EXIT
 
 # The runner, sourced for its decision helpers: it sends nothing when sourced.
 # shellcheck source=comm-matrix.sh

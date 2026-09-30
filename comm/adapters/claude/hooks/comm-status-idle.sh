@@ -108,7 +108,7 @@ fi
 # the tail of THIS turn can't gate the early-throttle exit on the NEXT
 # turn's first tool call, which would otherwise skip the promote-to-working
 # flip and leave the row purple/idle through real work.
-rm -f "$HOME_DIR/state/hb-$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-$PPID}}" | tr -c 'A-Za-z0-9._-' '_').tick" 2>/dev/null
+rm -f "${HOME_DIR:?}/state/hb-$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-$PPID}}" | tr -c 'A-Za-z0-9._-' '_').tick" 2>/dev/null
 
 tp="$(jqget '.transcript_path // empty')"
 
@@ -212,10 +212,10 @@ if [ -n "$marker_state" ]; then
                   decision: "block",
                   reason: ("Your closing block names a result that was never surfaced: " + $f + " -- badge it now via the show-result skill (show-result <path>), then end the turn. Your row is already stamped from the marker -- do not write a second sitrep block.")
                 }'
-                rm -f "$_findings_file"
+                rm -f "${_findings_file:?}"
                 exit 0
             fi
-            rm -f "$_findings_file" 2>/dev/null
+            [ -z "${_findings_file:-}" ] || rm -f -- "${_findings_file:?}" 2>/dev/null
         fi
     fi
     exit 0
@@ -444,11 +444,11 @@ if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
                   decision: "block",
                   reason: ("Turn-end audit: " + $f + " -- IF a finding is real, act on it now AND clearly RESTATE it for the user: blocked -> restate the exact question you are awaiting (one standalone sentence, as BOTH the comm-status summary and the final line of your reply); waiting -> state plainly what is being monitored and what completion looks like (same two places); artifact -> badge it via the show-result skill. IF a finding is wrong (rhetorical question, artifact already shown, job already done), just end the turn normally. This audit will not re-fire for the same situation.")
                 }'
-                rm -f "$_findings_file"
+                rm -f "${_findings_file:?}"
             else
                 # Temp file failed -- degrade rather than risk a corrupted
                 # --arg on Windows; the legacy grep fallback below still runs.
-                rm -f "$_findings_file" 2>/dev/null
+                [ -z "${_findings_file:-}" ] || rm -f -- "${_findings_file:?}" 2>/dev/null
                 turn_floor
             fi
             exit 0

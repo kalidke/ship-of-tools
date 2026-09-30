@@ -135,13 +135,13 @@ cleanup() {
     pkill -KILL -f "$WORK" 2>/dev/null || true
     # The agent take's transcript (the operator's Claude Code writes it until
     # its process is gone): only the demo project's own directory.
-    case "${AGENT_TRANSCRIPT:-}" in */.claude/projects/-home-demo-DemoProject) sleep 1; rm -rf "$AGENT_TRANSCRIPT" ;; esac
+    case "${AGENT_TRANSCRIPT:-}" in */.claude/projects/-home-demo-DemoProject) sleep 1; rm -rf "${AGENT_TRANSCRIPT:?}" ;; esac
     # The real home is read-only inside the namespace; this is the audit.
     if [ -f "$REAL_REGISTRY" ] && jq -e --argjson h "$(printf '%s\n' "${SESSION_ROWS[@],,}" | jq -R . | jq -s .)" \
             '.agents // {} | keys | any(. as $k | $h | index($k))' "$REAL_REGISTRY" >/dev/null 2>&1; then
         echo "WARNING: a demo handle appears in $REAL_REGISTRY" >&2
     fi
-    if [ -n "${SOT_MEDIA_KEEP:-}" ]; then echo "kept $WORK" >&2; else rm -rf "$WORK"; fi
+    if [ -n "${SOT_MEDIA_KEEP:-}" ]; then echo "kept $WORK" >&2; else rm -rf "${WORK:?}"; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
@@ -478,7 +478,7 @@ rows_state() {
 # One daemon for the whole run: the rows are live processes, not files.
 DAEMON_PID=""; FE_PID=""
 start_daemon() {
-    local sock="$WORK/runtime/sotd.sock"; rm -f "$sock"
+    local sock="$WORK/runtime/sotd.sock"; rm -f "${sock:?}"
     # cwd = project root: the REPL child inherits it (relative includes).
     HOSTWRAP_RW="${DAEMON_RW:-}" HOSTWRAP_CWD="$DEMO" spawn "$WORK/sotd.log" "${DEMO_ENV[@]}" \
         "$BIN/sotd" --socket "$sock" --project-root "$DHOME"
@@ -806,7 +806,7 @@ clip_agent() {     # -> $AGENT_RAW/{hero,navigate,repl,crop,copy}.mkv, layout.pn
     local fig="$HOSTHOME/DemoProject/data/legs.png" t0 i T_PROMPT T_FIG=""
     dbg="$REPO/dev/output/agent-debug"   # gitignored: pane snapshots for a failed take
     AGENT_TRANSCRIPT="$(agent_transcript_dir)"
-    rm -f "$fig"; rm -rf "$dbg" "$AGENT_RAW"; mkdir -p "$dbg" "$AGENT_RAW"
+    rm -f "${fig:?}"; rm -rf "${dbg:?}" "${AGENT_RAW:?}"; mkdir -p "$dbg" "$AGENT_RAW"
     # The operator's own instructions (their user CLAUDE.md, auto-memory)
     # stay out of the demo session: only the product's installed skills apply.
     jq -c --arg md "$HOME/.claude/CLAUDE.md" '. + {claudeMdExcludes: [$md], autoMemoryEnabled: false}' \

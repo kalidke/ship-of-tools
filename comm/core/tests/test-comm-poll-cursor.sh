@@ -31,7 +31,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-poll-cursor-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
 export SOT_COMM_HOME="$WORK/home"
 mkdir -p "$SOT_COMM_HOME"
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "${WORK:?}"' EXIT
 
 HOST="testhost"
 NAME="t-poll"
@@ -49,7 +49,7 @@ check() {
     if "$fn"; then echo "PASS: $desc"; PASS=$((PASS + 1)); else echo "FAIL: $desc"; FAIL=$((FAIL + 1)); fi
 }
 
-reset_inbox() { mkdir -p "$(dirname "$INBOX")" "$(dirname "$CURSOR")"; : > "$INBOX"; rm -f "$CURSOR"; }
+reset_inbox() { mkdir -p "$(dirname "$INBOX")" "$(dirname "$CURSOR")"; : > "$INBOX"; rm -f "${CURSOR:?}"; }
 line() {  # TS MSG — one well-formed inbox line
     jq -nc --arg to "$NAME" --arg ts "$1" --arg m "$2" \
         '{from:"peer",to:$to,repo:"r",msg:$m,ts:$ts}' >> "$INBOX"
