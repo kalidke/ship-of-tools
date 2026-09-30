@@ -16,7 +16,7 @@ all clients are mutually addressable through the same registry and inboxes.
   registry.json            # who is reachable + liveness  (source of truth for discovery)
   .registry.lock           # the registry-write lock: a file naming its holder (below)
   .registry.lock.reclaim.<id>  # one marker per dead holder reclaimed; kept forever
-  .registry.lock.tmp.<id>.<n>  # a take's temp file, removed by the take
+  .registry.lock.tmp.<id>      # a take's temp file, removed by the take
   inbox/<name>.jsonl       # durable per-recipient inbox (append-only)
   read/<name>.cursor       # per-recipient read cursor (`<count> <crc>-<len>`: lines shown, and a hash of the last)
   self/<host>__<pane>.txt  # this pane's declared agent name (identity recovery)
@@ -83,9 +83,11 @@ a stream; the record keeps its colons.
 - **Take.** Write the record to a temp file and `link(2)` it to the lock (the
   command `link`, never `ln`, which links INTO an older peer's lock directory
   and "succeeds"). The lock never exists without its holder, and a link never
-  replaces anything. A failed link whose own temp file now has two links was
-  taken (a retransmitted NFSv3 LINK answers "exists" for the caller's own link).
-  **Release** removes the file.
+  replaces anything. A failed link after which the caller's fresh temp file is
+  the lock was taken (a retransmitted NFSv3 LINK answers "exists" for the
+  caller's own link). **Release** removes the file. The comm home must support
+  hard links: every filesystem listed under Reclaim does, and so does NTFS; on
+  FAT or SMB every ruled write FAILs, naming "hard links unsupported on <path>".
 - **Proof of death** (Linux only, and only from the holder's own machine): the
   same boot and pid namespace, with the pid gone or its start tick changed; or
   the same machine-id AND the same host name with a different boot. This
@@ -93,25 +95,32 @@ a stream; the record keeps its colons.
   would read a live clone as rebooted. No timeout proves anything, so a frozen
   holder, one on another machine, or any unprovable one, is never forced.
 - **Reclaim.** It runs on the FIRST failed take, before any sleep. A waiter that
-  proves the holder D dead reads the mount (a local filesystem, or NFS without
-  `nocto`), takes the marker `.registry.lock.reclaim.<D>` by the same link step,
+  proves the holder D dead reads the mount, the one on top where mounts are
+  stacked: it must be ext2, ext3, ext4, xfs, btrfs, zfs, f2fs or tmpfs, or nfs
+  or nfs4 without `nocto`, and any other (overlayfs, say) proves nothing. It
+  takes the marker `.registry.lock.reclaim.<D>` by the same link step,
   settles 1 s, reads the lock again fresh (open its folder, then open the
   record), and removes it only if it still names D. Only the marker's creator
   acts; if the creator died too, the next waiter proves that and takes
   `reclaim.<creator>`, which carries the same authority. Markers are kept
-  forever. The settle is not counted as a try, and a removed lock is retaken at
-  once.
-- **Bounds.** 50 ms polls: 10 s for join, leave, spawn, despawn, status and the
-  daemon; about 1 s for the best-effort `last_seen` touches of send, poll and
-  spawn; 0 tries for the heartbeat, which still reclaims a dead holder.
+  forever. A removed lock is retaken at once, as part of the try that removed
+  it, even past the deadline below.
+- **Bounds** are deadlines, polled every 50 ms (`SOT_LOCK_WAIT_SECS` in the
+  scripts): 10 s for join, leave, spawn, despawn, status and the daemon's
+  workspace destroy; about 1 s for the best-effort `last_seen` touches of send,
+  poll and spawn, and for the daemon's unread clear; 0 for the heartbeat, which
+  still makes its one try and reclaims a dead holder. There is always one try,
+  and no try starts after the deadline. One daemon thread at a time is inside
+  the lock, and its wait for that turn counts inside the same deadline.
 - **FAILED** names the holder and the recovery, in the scripts and in the
   daemon's log alike: `registry lock <path> is held by <host> pid <pid> start
   <tick> (<age> old): <why>. If it is dead, run any comm command on <host>, or
   run comm-registry-lock-clear.sh.` `comm-registry-lock-clear.sh` takes the
-  reclaim path above with a person's word in place of the liveness proof, and
-  nothing else: it never clears a holder this box proves alive, and it is
-  never a bare `rm`, which would let a pending reclaimer remove the next
-  holder's lock.
+  reclaim path above with a person's word in place of the holder's liveness
+  proof, and nothing else: it never clears a holder this box proves alive, it
+  never passes a marker whose creator this box cannot prove dead, and it is
+  never a bare `rm`; either would let a pending reclaimer remove the next
+  holder's lock. With no lock it says the lock is free and exits 0.
 - **Older peers.** An older version's lock is a holderless directory: it is
   never reclaimed, and FAILED says "held by an older version that records no
   holder". An older waiter's `mkdir` fails on the file and waits as before.

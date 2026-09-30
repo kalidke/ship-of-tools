@@ -207,7 +207,7 @@ at_s=$(date -u -d "$at" +%s 2>/dev/null || echo 0)
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # Best-effort merge under the registry lock (comm-lib.sh's with_lock, a file
-# naming its holder). Zero tries: a held lock is skipped — the next tool call
+# naming its holder). One try: a held lock is skipped — the next tool call
 # retries within a minute anyway — but a dead holder on this machine is still
 # reclaimed, because the reclaim runs on the first failed take. Silent: the
 # subshell's stderr is dropped, and no readable comm-lib.sh means skip.
@@ -220,5 +220,5 @@ hb_merge() {
 hb_lib="$COMM_HOME/bin/comm-lib.sh"
 [ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
 [ -r "$hb_lib" ] || exit 0
-( . "$hb_lib" && SOT_LOCK_MAX_TRIES=0 with_lock hb_merge ) >/dev/null 2>&1
+( . "$hb_lib" && SOT_LOCK_WAIT_SECS=0 with_lock hb_merge ) >/dev/null 2>&1
 exit 0

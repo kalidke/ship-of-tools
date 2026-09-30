@@ -16,8 +16,8 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(50);
 
@@ -25,13 +25,17 @@ const POLL: Duration = Duration::from_millis(50);
 /// dead holder's in-flight calls, land within it.
 const SETTLE: Duration = Duration::from_secs(1);
 
-/// Keeps concurrent takes by this process's threads on distinct temp files.
-static ATTEMPT: AtomicU64 = AtomicU64::new(0);
+/// One thread of this process at a time is inside the lock protocol, from
+/// `acquire` until its `Held` drops (review S1): its threads share one ID, so
+/// without this a marker one thread abandoned would read as live to them all.
+static TURN: Mutex<()> = Mutex::new(());
 
-/// The lock, held; dropping it (a panic unwind included) removes the file, so
-/// a panicking critical section never leaves the lock behind.
+/// The lock, held; dropping it (a panic unwind included) removes the file and
+/// then gives up the turn, so a panicking critical section leaves neither
+/// behind.
 pub struct Held {
     path: PathBuf,
+    _turn: MutexGuard<'static, ()>,
 }
 
 impl Drop for Held {
@@ -42,19 +46,36 @@ impl Drop for Held {
 
 /// Take `lock`, waiting up to `bound`. `Err` is the one FAILED line naming the
 /// holder and the recovery. The reclaim runs on the first failed take, before
-/// any sleep; a removed lock is retaken at once and the settle is not a try.
+/// any sleep; a removed lock is retaken at once, as part of the try that
+/// removed it, even past the deadline.
 pub fn acquire(lock: &Path, bound: Duration) -> Result<Held, String> {
     acquire_with(lock, bound, SETTLE)
 }
 
+/// `bound` is a deadline over the wait for the turn and the lock together:
+/// there is always one try, and no try starts after it.
 fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, String> {
+    let deadline = Instant::now() + bound;
+    let turn = loop {
+        match TURN.try_lock() {
+            Ok(turn) => break turn,
+            Err(TryLockError::Poisoned(p)) => break p.into_inner(),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "registry lock {} was not tried: another thread of this daemon held its turn past the bound",
+                lock.display()
+            ));
+        }
+        std::thread::sleep(POLL.min(deadline - now));
+    };
     let me = Me::now();
-    let max_tries = (bound.as_millis() / POLL.as_millis()) as u64;
-    let mut tries = 0;
     let mut last = Blocked { holder: None, who: None, why: "it was released just now".into() };
     loop {
         match take(lock, lock, &me.id) {
-            Ok(true) => return Ok(Held { path: lock.to_path_buf() }),
+            Ok(true) => return Ok(Held { path: lock.to_path_buf(), _turn: turn }),
             Ok(false) => {}
             Err(e) => return Err(format!("registry lock {} cannot be taken: {e}", lock.display())),
         }
@@ -63,11 +84,11 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
             Err(Some(b)) => last = b,
             Err(None) => {}
         }
-        tries += 1;
-        if tries > max_tries {
+        let now = Instant::now();
+        if now >= deadline {
             return Err(last.fail_text(lock));
         }
-        std::thread::sleep(POLL);
+        std::thread::sleep(POLL.min(deadline - now));
     }
 }
 
@@ -122,14 +143,15 @@ fn proc_is_mine(_pid: u32) -> bool {
 
 #[cfg(target_os = "linux")]
 fn proof_fields(pid: u32) -> [String; 4] {
-    let first_line = |p: &str| {
-        fs::read_to_string(p).ok().and_then(|s| s.lines().next().map(str::to_string)).filter(|s| !s.is_empty())
-    };
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .ok()
+        .and_then(|s| s.lines().next().map(str::to_string))
+        .filter(|s| !s.is_empty());
     let pidns = fs::read_link(format!("/proc/{pid}/ns/pid")).ok().and_then(|l| {
         Some(l.to_str()?.strip_prefix("pid:[")?.strip_suffix(']')?.to_string())
     });
     let start = sot_log::challenge_unix::process_start_ticks(pid).ok().map(|t| t.to_string());
-    [first_line("/etc/machine-id"), first_line("/proc/sys/kernel/random/boot_id"), pidns, start]
+    [crate::comm_inbox::machine_id(), boot, pidns, start]
         .map(|f| f.unwrap_or_else(|| "-".into()))
 }
 
@@ -147,21 +169,25 @@ fn parse(line: &str) -> Option<Vec<&str>> {
 /// One attempt to create `target` holding `id`: `Ok(true)` taken, `Ok(false)`
 /// held, `Err` anything else. `lock` names the folder and the temp file.
 fn take(lock: &Path, target: &Path, id: &str) -> Result<bool, String> {
-    let n = ATTEMPT.fetch_add(1, Ordering::Relaxed);
-    let tmp = PathBuf::from(format!("{}.tmp.{}.{n}", lock.display(), id.replace(':', ".")));
-    fs::File::create(&tmp)
+    let tmp = PathBuf::from(format!("{}.tmp.{}", lock.display(), id.replace(':', ".")));
+    // An earlier temp is removed first: one a take could not remove may still
+    // be a link to that take's marker, and `create_new` refuses one that stays.
+    let _ = fs::remove_file(&tmp);
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
         .and_then(|mut f| f.write_all(format!("{id}\n").as_bytes()))
         .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
     let linked = fs::hard_link(&tmp, target);
     // A retransmitted LINK on NFSv3 answers "exists" for this call's own link,
-    // so my temp file's link count, read through an open, decides; never "the
-    // target names my ID", which this process's threads share.
+    // so my temp file's link count, read through an open, decides.
     let taken = linked.is_ok() || fs::File::open(&tmp).and_then(|f| f.metadata()).map(|m| nlink(&m) == 2).unwrap_or(false);
     let _ = fs::remove_file(&tmp);
     match linked {
         _ if taken => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(format!("hard links unsupported on {}: {e}", target.parent().unwrap_or(target).display())),
         Ok(()) => unreachable!("a made link is taken"),
     }
 }
@@ -309,7 +335,7 @@ impl Blocked {
 /// since the take, a try that keeps the last holder named. Every step past a marker needs
 /// its creator proved dead, so the live process holding the chain's last
 /// marker is the only one with authority over "the lock names a member of the
-/// chain". A marker naming this process is another thread's, still at work.
+/// chain".
 fn step(lock: &Path, me: &Me, settle: Duration) -> Result<(), Option<Blocked>> {
     let proves = me.mine.is_some();
     let blocked = |holder: Option<&String>, who: Option<&String>, why: String| {
@@ -327,6 +353,14 @@ fn step(lock: &Path, me: &Me, settle: Duration) -> Result<(), Option<Blocked>> {
     let mut chain = vec![d.clone()];
     loop {
         let x = chain.last().unwrap().clone();
+        // A marker naming this process, seen by the thread holding the turn,
+        // can only be one a thread of it abandoned (its re-read after the
+        // settle failed), so it is adopted, as the shell adopts its own. One
+        // naming this process while another of its threads is inside would be
+        // live, and with the turn no thread inside the protocol sees that.
+        if chain.len() > 1 && x == me.id {
+            break;
+        }
         let (verdict, why) = judge(&x, me);
         if !matches!(verdict, Verdict::Dead) {
             let why = if x == d {
@@ -354,7 +388,10 @@ fn step(lock: &Path, me: &Me, settle: Duration) -> Result<(), Option<Blocked>> {
         }
     }
     std::thread::sleep(settle);
-    match fresh(lock, proves) {
+    let reread = fresh(lock, proves);
+    #[cfg(all(test, target_os = "linux"))]
+    let reread = if tests::FAIL_REREAD.swap(false, std::sync::atomic::Ordering::SeqCst) { Err(String::new()) } else { reread };
+    match reread {
         Ok(now) if chain.contains(&now) => {
             let _ = fs::remove_file(lock);
             Ok(())
@@ -368,8 +405,13 @@ fn step(lock: &Path, me: &Me, settle: Duration) -> Result<(), Option<Blocked>> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
     use std::io::{BufRead, BufReader};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Set, the next post-settle re-read fails once (the review's EMFILE/EIO).
+    pub(super) static FAIL_REREAD: AtomicBool = AtomicBool::new(false);
 
     const LIB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../comm/core/scripts/comm-lib.sh");
 
@@ -389,19 +431,46 @@ mod tests {
         d
     }
 
+    /// A shell child leading its own process group. `end`, or a drop on any
+    /// path (a failed assertion's unwind included), kills the whole group, a
+    /// `sleep` grandchild too, and reaps the child.
+    struct Group(Option<Child>);
+
+    impl Group {
+        fn id(&self) -> u32 {
+            self.0.as_ref().map_or(0, Child::id)
+        }
+
+        fn end(&mut self) {
+            if let Some(mut c) = self.0.take() {
+                unsafe { libc::kill(-(c.id() as libc::pid_t), libc::SIGKILL) };
+                let _ = c.wait();
+            }
+        }
+    }
+
+    impl Drop for Group {
+        fn drop(&mut self) {
+            self.end();
+        }
+    }
+
     /// `bash -c` with comm-lib.sh sourced on `home`; the body's first line of
     /// stdout is returned once printed, and the child is left running.
-    fn shell(home: &Path, body: &str) -> (Child, String) {
-        let mut c = Command::new("bash")
-            .arg("-c")
-            .arg(format!(". '{LIB}'; {body}"))
-            .env("SOT_COMM_HOME", home)
-            .env("SOT_COMM_TEST_LOCK_SETTLE", "0.05")
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+    fn shell(home: &Path, body: &str) -> (Group, String) {
+        let mut c = Group(Some(
+            Command::new("bash")
+                .arg("-c")
+                .arg(format!(". '{LIB}'; {body}"))
+                .env("SOT_COMM_HOME", home)
+                .env("SOT_COMM_TEST_LOCK_SETTLE", "0.05")
+                .stdout(Stdio::piped())
+                .process_group(0)
+                .spawn()
+                .unwrap(),
+        ));
         let mut line = String::new();
-        BufReader::new(c.stdout.as_mut().unwrap()).read_line(&mut line).unwrap();
+        BufReader::new(c.0.as_mut().unwrap().stdout.as_mut().unwrap()).read_line(&mut line).unwrap();
         (c, line.trim().to_string())
     }
 
@@ -438,8 +507,7 @@ mod tests {
         assert!(matches!(judge(&shell_id, &me).0, Verdict::Alive));
         let q = format!("_sot_lock_self_id; _sot_lock_judge '{shell_id}'; echo $_SOT_LOCK_VERDICT");
         assert_eq!(run(&home, &q), "ALIVE");
-        child.kill().unwrap();
-        child.wait().unwrap();
+        child.end();
         assert!(matches!(judge(&shell_id, &me).0, Verdict::Dead));
         assert_eq!(run(&home, &q), "DEAD");
         let _ = fs::remove_dir_all(&home);
@@ -477,8 +545,76 @@ mod tests {
             f[0]
         )), "{err}");
         assert_eq!(fs::read(&lock).unwrap(), before, "the lock is untouched");
-        child.kill().unwrap();
-        child.wait().unwrap();
+        child.end();
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_panic_inside_the_lock_gives_up_the_file_and_the_turn() {
+        let _env = env_lock();
+        let home = scratch("panic");
+        let lock = home.join(".registry.lock");
+        let l = lock.clone();
+        let r = std::thread::spawn(move || {
+            let _held = acquire_with(&l, Duration::from_secs(1), Duration::from_millis(50)).expect("took it");
+            panic!("inside the lock");
+        })
+        .join();
+        assert!(r.is_err(), "the holder panicked");
+        assert!(!lock.exists(), "the file went with the unwind");
+        let t0 = Instant::now();
+        drop(acquire_with(&lock, Duration::ZERO, Duration::from_millis(50)).expect("the turn went with the unwind"));
+        assert!(t0.elapsed() < Duration::from_millis(500), "{:?}", t0.elapsed());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn waiting_for_another_threads_turn_counts_inside_the_bound() {
+        let _env = env_lock();
+        let home = scratch("turn");
+        let lock = home.join(".registry.lock");
+        let held = acquire_with(&lock, Duration::from_secs(1), Duration::from_millis(50)).expect("took it");
+        let l = lock.clone();
+        let t0 = Instant::now();
+        let err = std::thread::spawn(move || acquire_with(&l, Duration::from_millis(200), Duration::from_millis(50)).err())
+            .join()
+            .unwrap()
+            .expect("FAILED while another thread holds the turn");
+        let waited = t0.elapsed();
+        assert!(waited >= Duration::from_millis(200) && waited < Duration::from_secs(1), "{waited:?}");
+        assert!(err.contains("another thread of this daemon held its turn past the bound"), "{err}");
+        drop(held);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_marker_this_process_abandoned_is_adopted_by_its_next_writer() {
+        let _env = env_lock();
+        let home = scratch("adopt");
+        dead_shell_holder(&home);
+        let lock = home.join(".registry.lock");
+        let dead = fs::read_to_string(&lock).unwrap();
+        let marker = PathBuf::from(format!("{}.reclaim.{}", lock.display(), dead.trim().replace(':', ".")));
+        FAIL_REREAD.store(true, Ordering::SeqCst);
+        let l = lock.clone();
+        let first = std::thread::spawn(move || acquire_with(&l, Duration::ZERO, Duration::from_millis(50)).map(drop))
+            .join()
+            .unwrap();
+        assert!(first.is_err(), "the writer whose re-read failed gave up");
+        assert_eq!(fs::read_to_string(&lock).unwrap(), dead, "the dead holder's lock stayed");
+        assert_eq!(fs::read_to_string(&marker).unwrap(), format!("{}\n", Me::now().id), "the marker names this process");
+        let l = lock.clone();
+        let second = std::thread::spawn(move || acquire_with(&l, Duration::from_secs(2), Duration::from_millis(50)).map(drop))
+            .join()
+            .unwrap();
+        assert!(second.is_ok(), "the next writer adopted the marker: {second:?}");
+        assert!(!lock.exists(), "released");
+        assert_eq!(run(&home, "with_lock true && echo held"), "held", "a shell writer is not wedged");
+        assert!(acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50)).is_ok(), "nor a later sotd writer");
+        let markers = fs::read_dir(&home).unwrap().filter(|e| {
+            e.as_ref().unwrap().file_name().to_string_lossy().starts_with(".registry.lock.reclaim.")
+        });
+        assert_eq!(markers.count(), 1, "the one marker was adopted, not passed");
         let _ = fs::remove_dir_all(&home);
     }
 

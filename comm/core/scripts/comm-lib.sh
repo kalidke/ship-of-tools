@@ -39,11 +39,8 @@ REGISTRY="$COMM_HOME/registry.json"
 INBOX_DIR="$COMM_HOME/inbox"
 SELF_DIR="$COMM_HOME/self"
 READ_DIR="$COMM_HOME/read"
-# The registry lock (see with_lock): a FILE naming its holder. `_SOT_REG_LOCK`
-# is the name every lock function uses; LOCKDIR is kept for the suites that
-# seize the lock, and comm-wake.sh reassigns it for its own lock.
+# The registry lock (see with_lock): a FILE naming its holder.
 _SOT_REG_LOCK="$COMM_HOME/.registry.lock"
-LOCKDIR="$_SOT_REG_LOCK"
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -506,14 +503,19 @@ ensure_home() {
 # FAILS CLOSED at the bound, naming the holder and the one-line recovery.
 #
 # The reclaim (`_sot_lock_step`) runs on the FIRST failed take, before any
-# sleep, so a zero-try heartbeat and a ~1 s touch reach it too: prove the
+# sleep, so a zero-wait heartbeat and a ~1 s touch reach it too: prove the
 # holder D dead, take the marker `.registry.lock.reclaim.<D>` (only its
 # creator acts; markers are kept forever), settle 1 s for D's orphaned
 # children and in-flight calls, re-read the lock fresh, and remove it only if
-# it still names D. A removed lock is retaken at once, and the settle is not
-# counted as a try. The bound is SOT_LOCK_MAX_TRIES polls of 50 ms: 10 s for
-# every ruled write, about 1 s (20) for the best-effort `last_seen` touches of
-# send, poll and spawn, and 0 for the heartbeat.
+# it still names D. A removed lock is retaken at once, as part of the try that
+# removed it, even past the deadline.
+#
+# The bound is a deadline, SOT_LOCK_WAIT_SECS, polled every 50 ms: 10 s for
+# every ruled write, about 1 s for the best-effort `last_seen` touches of send,
+# poll and spawn, and 0 for the heartbeat. Its clock is perl's Time::HiRes
+# (bash 3.2 has nothing finer than SECONDS) and starts at the first failed
+# take, so an uncontended take reads no clock. There is always one try, and no
+# try starts after the deadline; with no clock, the one try is all.
 #
 # Release is TRAP-based, not a plain post-command `rm` (Codex review F2
 # second half / F7): a caller's `set -e` aborts the WHOLE SCRIPT the moment
@@ -537,9 +539,9 @@ ensure_home() {
 # callee's status via `if "$@"; then :; else rc=$?; fi` — the standard
 # idiom for "run this and don't let -e kill us on failure" — means release
 # and restore always execute before this function returns, on every path.
-SOT_LOCK_MAX_TRIES=200   # ~10s at the 0.05s poll below
+SOT_LOCK_WAIT_SECS=10
 with_lock() {
-    local tries=0 took
+    local deadline="" now r took
     # Test seam (F10): let a test PROVE a background waiter has reached its
     # first lock attempt, instead of racing it with a sleep. Touched once,
     # right before that attempt; unset (the default) this is a no-op.
@@ -560,13 +562,18 @@ with_lock() {
             echo "ERROR: registry lock $_SOT_REG_LOCK cannot be taken: $_SOT_LOCK_WHY" >&2
             return 1
         fi
+        [ -n "$deadline" ] || deadline="$(_sot_lock_ms "$SOT_LOCK_WAIT_SECS")"
+        # Test seam: a slow try, so a test can show the bound is time.
+        [ -z "${SOT_COMM_TEST_LOCK_TRY_DELAY:-}" ] || sleep "$SOT_COMM_TEST_LOCK_TRY_DELAY"
         _sot_lock_step && continue
-        tries=$((tries + 1))
-        if [ "$tries" -gt "$SOT_LOCK_MAX_TRIES" ]; then
+        now="$(_sot_lock_ms 0)"
+        if [ -z "$now" ] || [ -z "$deadline" ] || [ "$now" -ge "$deadline" ]; then
             _sot_lock_fail_text >&2
             return 1
         fi
-        sleep 0.05
+        r=$((deadline - now)); [ "$r" -lt 50 ] || r=50
+        printf -v r '0.%03d' "$r"
+        sleep "$r"
     done
     # Lock acquired — guarantee release via EXIT trap (see header comment),
     # preserving whatever EXIT trap the caller already had.
@@ -587,12 +594,18 @@ with_lock() {
     return $rc
 }
 
+# _sot_lock_ms SECS — the clock in milliseconds, SECS from now.
+_sot_lock_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", (time + $ARGV[0]) * 1000' "$1" 2>/dev/null; }
+
 # _sot_lock_self_id — set _SOT_LOCK_ID to THIS process's holder record, and
 # _SOT_LOCK_SELF to `name:machine:boot:pidns` where this shell can prove a
 # death (Linux, with a /proc that is its own), else to "". Call it in the
 # process that will hold the lock, never as `id=$(_sot_lock_self_id)`: a
 # command substitution is a subshell, and its pid dies at once, so every
-# waiter on this machine would reclaim a live holder (review S5).
+# waiter on this machine would reclaim a live holder (review S5). bash 3.2
+# has no BASHPID, so there the recorded pid is `$$`, which /proc/self then
+# contradicts: nothing is proved from that record, and only the FAILED text is
+# affected.
 _sot_lock_self_id() {
     local name machine=- boot=- pidns=- pid="${BASHPID:-$$}" start=- self_pid="" ns=""
     name="$(sot_host 2>/dev/null)" || name=""
@@ -603,7 +616,7 @@ _sot_lock_self_id() {
         read -r self_pid _ 2>/dev/null </proc/self/stat || true
     fi
     if [ "$self_pid" = "$pid" ]; then
-        IFS= read -r machine 2>/dev/null </etc/machine-id || true
+        machine="$(_sot_machine_id)"
         IFS= read -r boot 2>/dev/null </proc/sys/kernel/random/boot_id || true
         ns="$(readlink "/proc/$pid/ns/pid" 2>/dev/null)" || ns=""
         case "$ns" in 'pid:['*']') pidns="${ns#pid:[}"; pidns="${pidns%]}" ;; esac
@@ -632,7 +645,13 @@ _sot_lock_start() {
 # names map ':' to '.', because Windows reads a ':' in a name as a stream
 # (review B2); the record itself keeps its colons.
 _sot_lock_take() {
-    local tmp="$_SOT_REG_LOCK.tmp.${_SOT_LOCK_ID//:/.}.0" err n
+    local tmp="$_SOT_REG_LOCK.tmp.${_SOT_LOCK_ID//:/.}" err
+    # An earlier temp is removed before this one is written: one a take could
+    # not remove may still be a link to that take's marker.
+    if [ -e "$tmp" ] && ! rm -f "${tmp:?}" 2>/dev/null; then
+        _SOT_LOCK_WHY="cannot remove an earlier $tmp"
+        return 2
+    fi
     if ! { printf '%s\n' "$_SOT_LOCK_ID" >|"$tmp"; } 2>/dev/null; then
         _SOT_LOCK_WHY="cannot write $tmp"
         return 2
@@ -642,15 +661,19 @@ _sot_lock_take() {
         return 0
     fi
     # A retransmitted LINK on NFSv3 answers "exists" for this call's own
-    # link, so my temp file's link count, read after an open, decides
-    # (review S4) — never "the target names my ID", which Rust threads share.
-    n="$({ : <"$tmp"; } 2>/dev/null; stat -c %h "$tmp" 2>/dev/null)" || n=""
+    # link, so whether TARGET is now my temp file, both opened first so their
+    # attributes are fresh, decides (review S4); `-ef` is a builtin, and BSD
+    # stat has no `-c %h`.
+    if { : <"$tmp" && : <"$1"; } 2>/dev/null && [ "$tmp" -ef "$1" ]; then
+        rm -f "${tmp:?}"
+        return 0
+    fi
     rm -f "${tmp:?}"
-    [ "$n" = 2 ] && return 0
     # Held is the link's own EEXIST, never "the target exists now": a holder
     # can release between the two, which would read as an error.
     case "$err" in *"File exists"*) return 1 ;; esac
-    _SOT_LOCK_WHY="${err:-link failed}"
+    err="${err##*: }"
+    _SOT_LOCK_WHY="hard links unsupported on ${1%/*}: ${err:-link failed}"
     return 2
 }
 
@@ -699,12 +722,14 @@ _sot_lock_judge() {
 }
 
 # _sot_lock_vouch — 0 when the comm home's mount makes the fresh read fresh:
-# a local filesystem, or NFS without `nocto`. Reached only on Linux, except
-# by comm-registry-lock-clear.sh, whose person vouches elsewhere.
+# ext2/3/4, xfs, btrfs, zfs, f2fs or tmpfs, or nfs/nfs4 without `nocto`; the
+# mount on top, the last line of `findmnt -T`, when one is stacked. Reached
+# only on Linux, except by comm-registry-lock-clear.sh, whose person vouches
+# elsewhere.
 _sot_lock_vouch() {
     local fs="" opts=""
     [ -n "${_SOT_LOCK_SELF:-}" ] || return 0
-    read -r fs opts <<<"$(findmnt -n -o FSTYPE,OPTIONS -T "${_SOT_REG_LOCK%/*}" 2>/dev/null)" || true
+    read -r fs opts < <(_sot_findmnt -n -o FSTYPE,OPTIONS -T "${_SOT_REG_LOCK%/*}" 2>/dev/null | tail -n 1) || true
     case "$fs" in
         ext2|ext3|ext4|xfs|btrfs|zfs|f2fs|tmpfs|nfs|nfs4) ;;
         *) _SOT_LOCK_WHY="the comm home's filesystem (${fs:-unknown}) does not prove a fresh read"; return 1 ;;
@@ -723,8 +748,11 @@ _sot_lock_vouch() {
 # every step past a marker needs its creator proved dead, so the live process
 # holding the chain's last marker is the only one with authority over "the
 # lock names a member of the chain". A marker naming me is one I took earlier
-# in this wait. --forced (the clear command) takes a person's word for an
-# unprovable holder, never against a proof that it is alive.
+# in this wait. --forced (the clear command) takes a person's word for the
+# unprovable holder the lock names, never against a proof that it is alive,
+# and never for a marker's creator: a reclaimer that cannot be proved dead
+# here may be pending on its own machine, and would remove the next holder's
+# lock (review B1).
 _sot_lock_step() {
     local x chain=() m c
     if ! _sot_lock_fresh "$_SOT_REG_LOCK"; then
@@ -742,7 +770,7 @@ _sot_lock_step() {
         chain+=("$x")
         [ "${#chain[@]}" -gt 1 ] && [ "$x" = "$_SOT_LOCK_ID" ] && break
         _sot_lock_judge "$x"
-        [ "${1:-}" = --forced ] && [ "$_SOT_LOCK_VERDICT" = UNPROVABLE ] && _SOT_LOCK_VERDICT=DEAD
+        [ "${1:-}" = --forced ] && [ "${#chain[@]}" = 1 ] && [ "$_SOT_LOCK_VERDICT" = UNPROVABLE ] && _SOT_LOCK_VERDICT=DEAD
         if [ "$_SOT_LOCK_VERDICT" != DEAD ]; then
             _SOT_LOCK_WHO="$x"
             [ "$x" = "$_SOT_LOCK_HOLDER" ] \
