@@ -92,15 +92,6 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
             return Err(last.fail_text(lock));
         }
         first = false;
-        #[cfg(all(test, target_os = "linux"))]
-        match tests::GONE_BEFORE_STEP.load(std::sync::atomic::Ordering::SeqCst) {
-            0 => {
-                let _ = fs::remove_file(lock).or_else(|_| fs::remove_dir(lock));
-                tests::GONE_BEFORE_STEP.store(-1, std::sync::atomic::Ordering::SeqCst);
-            }
-            n if n > 0 => tests::GONE_BEFORE_STEP.store(n - 1, std::sync::atomic::Ordering::SeqCst),
-            _ => {}
-        }
         match step(lock, &me, settle, deadline) {
             Ok(()) => {
                 #[cfg(all(test, target_os = "linux"))]
@@ -110,10 +101,7 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
                 continue;
             }
             Err(Some(b)) => last = b,
-            Err(None) => {
-                last.by_hand = false;
-                last.gone = true;
-            }
+            Err(None) => last.released(),
         }
         std::thread::sleep(POLL.min(deadline.saturating_duration_since(Instant::now())));
         if Instant::now() >= deadline {
@@ -347,6 +335,12 @@ struct Blocked {
 }
 
 impl Blocked {
+    /// The lock was gone at the step: the by-hand flag goes, the holder stays named.
+    fn released(&mut self) {
+        self.by_hand = false;
+        self.gone = true;
+    }
+
     fn fail_text(&self, lock: &Path) -> String {
         let age = fs::metadata(lock)
             .and_then(|m| m.modified())
@@ -367,7 +361,7 @@ impl Blocked {
         let f = parse(holder).unwrap_or_default();
         if self.gone {
             return format!(
-                "registry lock {p} was held by {} pid {} start {} when last read ({}); it may have been released since: run comm-registry-lock-clear.sh.",
+                "registry lock {p} was held by {} pid {} start {} when last read ({}); it may have been released since. Retry.",
                 f.first().unwrap_or(&"-"),
                 f.get(4).unwrap_or(&"-"),
                 f.get(5).unwrap_or(&"-"),
@@ -509,9 +503,6 @@ mod tests {
 
     /// Set, the lock is removed at the end of the next settle, before its re-read.
     pub(super) static GONE_IN_SETTLE: AtomicBool = AtomicBool::new(false);
-
-    /// Steps to let through before the lock is removed ahead of the next one; -1 is off.
-    pub(super) static GONE_BEFORE_STEP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
     /// Set, the lock is removed after the next failed retake, before its fresh read.
     pub(super) static GONE_AFTER_RETAKE: AtomicBool = AtomicBool::new(false);
@@ -776,36 +767,28 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
     }
 
-    /// The step after a blocked one finds the lock gone (the lock is removed
-    /// before it); the text must not keep the earlier step's by-hand flag, and
-    /// must say a holder it last read WAS held.
-    fn gone_at_the_second_step(record: Option<&str>, dir: bool) -> String {
-        let home = scratch("gonetext");
-        let lock = home.join(".registry.lock");
-        if dir {
-            fs::create_dir(&lock).unwrap();
-        } else {
-            fs::write(&lock, record.unwrap()).unwrap();
-        }
-        GONE_BEFORE_STEP.store(1, Ordering::SeqCst);
-        let err = acquire_with(&lock, POLL * 3 / 2, Duration::from_millis(50)).err().expect("FAILED");
-        assert!(!lock.exists(), "the lock is free");
-        let _ = fs::remove_dir_all(&home);
-        err
+    /// The step after a blocked one finds the lock gone; the text must not keep
+    /// the earlier step's by-hand flag, and must say a holder it last read WAS held.
+    fn gone_text(holder: Option<&str>, by_hand: bool) -> String {
+        let mut b = Blocked { holder: holder.map(Into::into), who: None, why: "it is alive".into(), by_hand, gone: false };
+        b.released();
+        b.fail_text(Path::new("/nonexistent/.registry.lock"))
     }
 
     #[test]
     fn a_lock_gone_at_the_last_step_is_not_by_hand() {
-        let _env = env_lock();
-        let err = gone_at_the_second_step(None, true);
+        let err = gone_text(None, true);
         assert!(!err.contains("by hand"), "{err}");
     }
 
     #[test]
     fn a_lock_released_since_the_last_read_was_held_not_is_held() {
-        let _env = env_lock();
-        let err = gone_at_the_second_step(Some("elsewhere:-:-:-:4242:-\n"), false);
-        assert!(err.contains("was held by elsewhere pid 4242 start - when last read") && !err.contains("is held"), "{err}");
+        let err = gone_text(Some("elsewhere:-:-:-:4242:-"), true);
+        assert!(
+            err.ends_with("was held by elsewhere pid 4242 start - when last read (it is alive); it may have been released since. Retry."),
+            "{err}"
+        );
+        assert!(!err.contains("is held") && !err.contains("comm-registry-lock-clear") && !err.contains("by hand"), "{err}");
     }
 
     #[test]

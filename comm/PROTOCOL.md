@@ -175,8 +175,7 @@ a stream; the record keeps its colons.
   <tick> (<age> old): <why>. If it is dead, run any comm command on <host>, or
   run comm-registry-lock-clear.sh.` A lock found released since the last read
   says instead `registry lock <path> was held by <host> pid <pid> start <tick>
-  when last read (<why>); it may have been released since: run
-  comm-registry-lock-clear.sh.` With no clock the scripts say `registry
+  when last read (<why>); it may have been released since. Retry.` With no clock the scripts say `registry
   lock <path> is held, and there is no clock to wait by: <which>`; a daemon
   thread that never got its turn says `registry lock <path> was not tried:
   another thread of this daemon held its turn past the bound`. A lock no
