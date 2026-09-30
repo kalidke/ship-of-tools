@@ -36,9 +36,10 @@
 #
 # The reader (B-1's proof). During a3 this tree's real comm-poll.sh polls the
 # case's inbox HERE in a loop, under the nfs4 record that matches, and once
-# more after the writers finish: every poll must exit 0 or 75 (the NFS client
-# refusing a shared lock is 65), and across all polls every line is shown
-# exactly once, none skipped, none twice.
+# more after the writers finish: every poll must exit 0 or 75 and print no
+# lock WARNING (a refused shared lock is not an exit status: the poll names
+# flock's code in a WARNING line, exits 0 and reads unlocked), and across all
+# polls every line is shown exactly once, none skipped, none twice.
 #
 # Pass is zero torn or lost lines, each line one JSON object, and every
 # `filed` matching exactly one line. The peer runs a COPY of this tree's
@@ -188,18 +189,20 @@ reader_loop() {  # $1 = case folder, $2 = stop file: poll until it exists, then 
         echo "$rc" >> "$LOCAL/reader.rc"
     done
 }
-# Every poll exited 0 or 75 (65 is the NFS client refusing the shared lock),
-# and every line of the inbox was shown exactly once. $1 = inbox file; prints
-# "" or a reason.
+# Every poll exited 0 or 75 and printed no lock WARNING (the NFS client
+# refusing the shared lock shows as that WARNING, exit 0), and every line of
+# the inbox was shown exactly once. $1 = inbox file; prints "" or a reason.
 check_reader() {
-    local bad skip twice extra
+    local bad skip twice extra warned
     bad="$(grep -v -x -E '0|75' "$LOCAL/reader.rc" | sort | uniq -c | awk '{printf "%s x exit %s ", $1, $2}')"
+    warned="$(grep -c -F 'WARNING: the inbox lock' "$LOCAL/reader.out")"
     sed -n 's/^\[[^]]*\] \[[^]]*\] //p' "$LOCAL/reader.out" | sort > "$LOCAL/reader.shown"
     jq -r .msg "$1" | sort > "$LOCAL/reader.want"
     twice="$(uniq -d "$LOCAL/reader.shown" | wc -l)"
     skip="$(comm -13 <(uniq "$LOCAL/reader.shown") "$LOCAL/reader.want" | wc -l)"
     extra="$(comm -23 <(uniq "$LOCAL/reader.shown") "$LOCAL/reader.want" | wc -l)"
     [ -z "$bad" ] || echo "polls exited $bad"
+    [ "$warned" -eq 0 ] || echo "$warned polls warned the lock failed: $(grep -m1 -F 'WARNING: the inbox lock' "$LOCAL/reader.out")"
     [ $((skip + twice + extra)) -eq 0 ] || echo "skipped $skip, shown twice $twice, shown but not in the inbox $extra"
 }
 
@@ -218,8 +221,8 @@ echo "expect: $PEER appends $([ "$EXPECT" = local ] && echo locally || echo 'ove
 
 # ---- the route each side takes against the record --------------------------
 c="$(new_case route)"
-here_route="$(local_sh "$c" '_sot_inbox_lock_is_ours "$(sot_inbox_lock_identity "$INBOX_DIR")" && echo local || echo wire')"
-there_route="$(peer_sh "$c" '_sot_inbox_lock_is_ours "$(sot_inbox_lock_identity "$INBOX_DIR")" && echo local || echo wire')"
+here_route="$(local_sh "$c" '[ -n "$(_sot_inbox_lock_ours "$INBOX_DIR")" ] && echo local || echo wire')"
+there_route="$(peer_sh "$c" '[ -n "$(_sot_inbox_lock_ours "$INBOX_DIR")" ] && echo local || echo wire')"
 verdict "the route: here $here_route, $PEER $there_route" \
     "$([ "$here_route" = local ] || echo "this box does not append locally")$([ "$there_route" = "$EXPECT" ] || echo "$PEER's route is $there_route, expected $EXPECT")"
 

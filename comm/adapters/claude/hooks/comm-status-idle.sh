@@ -255,8 +255,15 @@ mail_total=0; mail_pending=0
 # never counted and then cut back. Only newline-terminated lines are counted.
 # A busy inbox does NOT block the turn: behind a frozen writer that would loop
 # forever. The hook says so on stderr and checks again at the next turn end.
+# Any other lock error is not busy: the count comes from an unlocked read, so
+# mail is never hidden behind the fault, and the warning ($lock_warn) is
+# prepended to every mail block while it lasts; with no mail block to carry it,
+# the hook blocks once per fault (handle and code) through its own tick file,
+# which the next clean check removes so a new fault blocks again.
 # A missing library or any failure yields no mail (fail open).
 FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
+lock_warn=""
+fault_tick="$HOME_DIR/state/lock-fault-$(printf '%s' "$NAME" | tr -c 'A-Za-z0-9._-' '_').tick"
 if [ -r "$MAIL_INBOX" ]; then
     mail_out="$( ( . "$FE_LIB" >/dev/null 2>&1 || exit 0
         sot_inbox_read_lock "$NAME" || { echo busy; exit 0; }
@@ -270,10 +277,12 @@ if [ -r "$MAIL_INBOX" ]; then
                     | select(((.to // "") != "") and (.from // "") != $me and (.from // "") != "__selftest__")
                   ] | length' 2>/dev/null || echo 0)"
         fi
-        echo "$mail_total $mail_pending" ) 2>/dev/null || true )"
+        echo "$mail_total $mail_pending"
+        printf '%s\n' "${SOT_INBOX_READ_WARNING:-}" ) 2>/dev/null || true )"
     case "$mail_out" in
         busy) echo "comm-status-idle: the inbox for @$NAME is being written; it will be checked again at the next turn end" >&2 ;;
-        *)  read -r mail_total mail_pending <<< "$mail_out" || true
+        *)  { read -r mail_total mail_pending; IFS= read -r lock_warn; } <<< "$mail_out" || true
+            [ -n "$lock_warn" ] || [ -z "$mail_out" ] || rm -f "${fault_tick:?}"
             case "$mail_total" in ''|*[!0-9]*) mail_total=0 ;; esac
             case "$mail_pending" in ''|*[!0-9]*) mail_pending=0 ;; esac ;;
     esac
@@ -337,12 +346,22 @@ if [ "$((mail_pending + fe_pending))" -gt 0 ]; then
         # every turn end with no way for the session to clear it. A missed
         # announcement is acceptable; an inescapable block is not.
         if printf '%s' "$mail_mark" 2>/dev/null > "$mail_tick"; then
-            jq -nc --arg n "$NAME" '{
+            [ -z "$lock_warn" ] || printf '%s' "$lock_warn" 2>/dev/null > "$fault_tick" || true
+            jq -nc --arg n "$NAME" --arg w "$lock_warn" '{
               decision: "block",
-              reason: ("New sot-comm mail for @" + $n + " — run comm-poll.sh now, act on it, then end the turn.")
+              reason: ((if $w == "" then "" else $w + " " end) + "New sot-comm mail for @" + $n + " — run comm-poll.sh now, act on it, then end the turn.")
             }'
             exit 0
         fi
+    fi
+fi
+# A lock fault with no mail block to carry it: ONE block per fault, failing
+# open like the mail tick when the tick cannot be recorded.
+if [ -n "$lock_warn" ] && [ "$(cat "$fault_tick" 2>/dev/null || true)" != "$lock_warn" ]; then
+    mkdir -p "$HOME_DIR/state" 2>/dev/null || true
+    if printf '%s' "$lock_warn" 2>/dev/null > "$fault_tick"; then
+        jq -nc --arg w "$lock_warn" '{decision: "block", reason: $w}'
+        exit 0
     fi
 fi
 

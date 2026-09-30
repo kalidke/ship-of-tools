@@ -76,8 +76,10 @@ as one already read was shown to nobody while its sender was told it had
 landed. A count cannot lose a frame that way. `comm-poll.sh` is the only writer;
 a legacy timestamp cursor is converted on first read (the count of lines at or
 before it). The cursor is `<count> <crc>-<len>`: the count, then the `cksum` of
-line `<count>`. If that line no longer hashes so, a cut-back removed it, and the
-reader steps back one line and says so. A count-only cursor still works. Only
+line `<count>` without its newline and NUL bytes — one hash, taken alike of the
+file's line and of the reader's copy. If that line no longer hashes so, a
+cut-back removed it, and the reader steps back one line and says so. A
+count-only cursor still works. Only
 newline-terminated lines are ever counted.
 
 `to` equal to the handle is directed mail and counts as unread; `""` is a
@@ -203,8 +205,11 @@ the file again, so a slow display never holds off a writer. A timeout means
 try again, never a skip: `comm-poll.sh` says the inbox is being written,
 leaves the cursor and exits 75, the end-of-turn hook prints that the inbox was
 busy and does not block the turn, and a wake reader checks again on its next
-tick. On every host the hashed cursor steps back one line when a cut-back
-removed the last line read. The accepted residual: a reader on a
+tick. Only a held lock is "try again": any other lock error is named with
+flock's code where the session sees it (comm-poll's output, the end-of-turn
+hook's block) and the read runs unlocked, covered by the hashed cursor. On
+every host the hashed cursor steps back one line when a cut-back removed the
+last line read. The accepted residual: a reader on a
 mismatched host may deliver a line whose sender was told `FAILED`, so a retry
 can duplicate it; it can never lose one.
 

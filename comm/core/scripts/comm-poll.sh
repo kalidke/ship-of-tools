@@ -73,13 +73,16 @@ show_stream() {
 # then is it shown (about 67 ms of jq per line would otherwise hold off every
 # writer). The cursor is written from the bytes of the batch's last line, never
 # from the file again. A busy inbox is "try again": nothing was read, the
-# cursor is untouched, exit 75. Only newline-terminated lines are counted
+# cursor is untouched, exit 75. Any other lock error is not busy: its warning
+# is the first line of this poll's output, every poll while it lasts, and the
+# batch is read without the lock. Only newline-terminated lines are counted
 # (sot_file_lines), so a dead writer's partial line is never shown.
 if [ -f "$INBOX" ]; then
     if ! sot_inbox_read_lock "$NAME"; then
         echo "the inbox for @$NAME is being written — nothing was read; run comm-poll.sh again"
         exit 75
     fi
+    [ -z "$SOT_INBOX_READ_WARNING" ] || printf '%s\n' "$SOT_INBOX_READ_WARNING"
     pos="$(sot_cursor_offset "$NAME")"
     total="$(sot_inbox_lines "$NAME")"
     batch=""

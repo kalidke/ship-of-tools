@@ -22,11 +22,14 @@
 #     guarantees a next writer); every FAILED line is absent;
 #   - and from THIS machine, a script send against the same folder goes to
 #     the wire, never local.
-#   - the reader (B-1's proof): this tree's real comm-poll.sh, joined as t1h,
-#     polls ON --host in a loop while the writers run, under the `none@`
-#     record, and once more after the final send; every poll exits 0 or 75
-#     (the lock refused is 65), and every line is shown exactly once, none
-#     skipped, none twice, the killed helper's partial never.
+#   - the reader: this tree's real comm-poll.sh, joined as t1h, polls ON
+#     --host in a loop while the writers run, under the `none@` record, and
+#     once more after the final send; every poll exits 0 or 75 and prints no
+#     lock WARNING (a lock error is a WARNING line and exit 0, never an exit
+#     status), and every line is shown exactly once, none skipped, none twice,
+#     the killed helper's partial never. It is NOT B-1's proof: under `none@`
+#     the flock is the host's own kernel lock, so the open mode cannot matter.
+#     The a3 reader in test-inbox-lock-twohost.sh, on the shared mount, is.
 #
 # The wire is a stub that records each frame and never answers, so no daemon
 # is ever dialled; the folder is removed on exit and ~/.sot-comm is never
@@ -111,7 +114,7 @@ echo "record (Rust, on $HOST): $REC1 / $REC2"
     echo "FATAL: the record is not none@<$HOST's machine id>, so this is not a one-host case:"; cat "$LOCAL/record.out"; exit 1; }
 verdict "the record names $HOST's own machine: none@<its machine id>, then that id" ""
 
-r="$(host_sh "$DIR" 'id="$(sot_inbox_lock_identity "$INBOX_DIR")"; echo "$id"; _sot_inbox_lock_is_ours "$id" && echo local || echo wire')"
+r="$(host_sh "$DIR" 'sot_inbox_lock_identity "$INBOX_DIR"; [ -n "$(_sot_inbox_lock_ours "$INBOX_DIR")" ] && echo local || echo wire')"
 verdict "a script on $HOST computes the record's identity and routes local" \
     "$([ "$r" = "none@$HOST_MID"$'\n'"local" ] || echo "got: $r")"
 
@@ -221,15 +224,16 @@ verdict "the filer threads routed local on $HOST" "$(grep -q '^route .*: Local$'
 sed -n 's/^\[[^]]*\] \[[^]]*\] //p' "$C/reader/out" | awk '{print $1}' | sort > "$LOCAL/shown"
 N_POLLS=$(wc -l < "$C/reader/rc"); N_75=$(grep -c -x 75 "$C/reader/rc")
 BAD_RC="$(grep -v -x -E '0|75' "$C/reader/rc" | sort | uniq -c | awk '{printf "%s x exit %s ", $1, $2}')"
+N_WARN=$(grep -c -F 'WARNING: the inbox lock' "$C/reader/out")
 N_TWICE=$(uniq -d "$LOCAL/shown" | wc -l)
 N_SKIP=$(comm -13 <(uniq "$LOCAL/shown") "$LOCAL/keys" | wc -l)
 N_EXTRA=$(comm -23 <(uniq "$LOCAL/shown") "$LOCAL/keys" | wc -l)
 verdict "the reader on $HOST, the real comm-poll.sh: $N_POLLS polls, $N_75 exited 75; every line shown exactly once" \
-    "${BAD_RC:+polls exited $BAD_RC}$([ $((N_SKIP + N_TWICE + N_EXTRA)) -eq 0 ] || echo "skipped $N_SKIP, shown twice $N_TWICE, shown but not in the inbox $N_EXTRA")"
+    "${BAD_RC:+polls exited $BAD_RC}$([ "$N_WARN" -eq 0 ] || echo "$N_WARN polls warned the lock failed; ")$([ $((N_SKIP + N_TWICE + N_EXTRA)) -eq 0 ] || echo "skipped $N_SKIP, shown twice $N_TWICE, shown but not in the inbox $N_EXTRA")"
 
 # ---- another machine against the same folder -------------------------------
 before="$(wc -l < "$F")"
-r="$(local_sh "$C" '_sot_inbox_lock_is_ours "$(sot_inbox_lock_identity "$INBOX_DIR")" && echo local || echo wire
+r="$(local_sh "$C" '[ -n "$(_sot_inbox_lock_ours "$INBOX_DIR")" ] && echo local || echo wire
     printf "{\"from\":\"away\",\"to\":\"t1h\",\"repo\":\"r\",\"msg\":\"away-0\",\"ts\":\"t\"}\n" | sot_inbox_append t1h >/dev/null && echo filed || echo FAILED')"
 verdict "a script send from this machine goes to the wire, never local" \
     "$([ "$r" = "wire"$'\n'"FAILED" ] && [ "$(wc -l < "$C/wire.log" 2>/dev/null)" = 1 ] && [ "$(wc -l < "$F")" = "$before" ] \

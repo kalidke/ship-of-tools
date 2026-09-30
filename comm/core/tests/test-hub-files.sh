@@ -930,6 +930,100 @@ case_the_lock_wait_is_chosen_by_lock_kind() {
     return 0
 }
 
+# ---- a lock error is never "busy"; one line hash (B1 fix-up 7) ------------
+
+POLL_ERR=""
+# comm-poll with its stdout and stderr apart: POLL_OUT is stdout alone.
+poll_stdout() {
+    POLL_OUT="$(cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" \
+        "$BIN/comm-poll.sh" 2>"$WORK/poll.err")"
+    POLL_RC=$?
+    POLL_ERR="$(cat "$WORK/poll.err" 2>/dev/null)"
+}
+
+# S-A: only a held lock is "try again". A `flock` wrapper makes every shared
+# lock fail with CODE while the writers' exclusive lock stays real. comm-poll
+# names the fault on stdout before the messages, exits 0 and reads unlocked:
+# every line exactly once across two polls with a send between. The
+# end-of-turn hook carries the warning on its mail block and blocks once for
+# the fault alone, never again for the same one; a clean check clears the
+# tick, so the fault blocks again. Nothing says busy.
+lock_fault_case() {  # CODE MEANING
+    local code="$1" warn real ff="$WORK/ff$1" tick="$SOT_COMM_HOME/state/lock-fault-$PEER.tick" h shown="" said="" m
+    warn="WARNING: the inbox lock for @$PEER failed ($code: $2) — reading without it; a line may show twice, none is lost"
+    real="$(command -v flock)"
+    mkdir -p "$ff"
+    printf '#!/bin/sh\ncase " $* " in *" -s "*) exit %s ;; esac\nexec %s "$@"\n' "$code" "$real" > "$ff/flock"
+    chmod +x "$ff/flock"
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    rm -f "${SOT_COMM_HOME:?}"/state/mail-*.tick
+    ln -sfn "$BIN" "$SOT_COMM_HOME/bin"
+    run_send "@$PEER" "f$code-one"; run_send "@$PEER" "f$code-two"
+    h="$(PATH="$ff:$PATH" idle_hook 2>&1)"; said+="$h"$'\n'
+    contains "$h" '"decision":"block"' && contains "$h" "$warn New sot-comm mail for @$PEER" \
+        || { echo "  [$code] the mail block did not carry the warning: $h"; return 1; }
+    h="$(PATH="$ff:$PATH" idle_hook 2>&1)"; said+="$h"$'\n'
+    ! contains "$h" '"decision"' || { echo "  [$code] blocked again for the same fault: $h"; return 1; }
+    for m in poll1 poll2; do
+        [ "$m" = poll1 ] || run_send "@$PEER" "f$code-three"
+        PATH="$ff:$PATH" poll_stdout
+        said+="$POLL_OUT"$'\n'"$POLL_ERR"$'\n'; shown+="$POLL_OUT"$'\n'
+        [ "$POLL_RC" -eq 0 ] && [ "${POLL_OUT%%$'\n'*}" = "$warn" ] \
+            || { echo "  [$code] $m rc $POLL_RC, stdout: $POLL_OUT"; return 1; }
+    done
+    for m in one two three; do
+        [ "$(count_of "$shown" "f$code-$m")" -eq 1 ] || { echo "  [$code] f$code-$m not shown exactly once: $shown"; return 1; }
+    done
+    h="$(PATH="$ff:$PATH" idle_hook 2>&1)"; said+="$h"$'\n'
+    ! contains "$h" '"decision"' || { echo "  [$code] blocked again after the polls: $h"; return 1; }
+    h="$(idle_hook 2>&1)"
+    ! contains "$h" '"decision"' && [ ! -e "$tick" ] || { echo "  [$code] a clean check left the tick: $h"; return 1; }
+    h="$(PATH="$ff:$PATH" idle_hook 2>&1)"; said+="$h"$'\n'
+    contains "$h" "{\"decision\":\"block\",\"reason\":\"$warn\"}" || { echo "  [$code] the fault alone did not block once: $h"; return 1; }
+    h="$(PATH="$ff:$PATH" idle_hook 2>&1)"; said+="$h"$'\n'
+    ! contains "$h" '"decision"' || { echo "  [$code] the fault alone blocked twice: $h"; return 1; }
+    ! contains "$said" busy && ! contains "$said" "being written" || { echo "  [$code] said busy: $said"; return 1; }
+    echo "  [$code] poll stdout: $warn"
+    return 0
+}
+case_a_lock_error_71_is_named_and_the_inbox_read_unlocked() { lock_fault_case 71 "no locks available"; }
+case_a_lock_error_65_is_named_and_the_inbox_read_unlocked() { lock_fault_case 65 "bad file descriptor"; }
+
+# ...and a real held lock is still exit 75 and "being written", no warning.
+case_a_held_lock_is_still_try_again() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    run_send "@$PEER" "held-one"
+    start_holder 'exec sleep 60' || { echo "  holder never took the lock"; return 1; }
+    SOT_INBOX_READ_WAIT_SECS=1 poll_stdout
+    kill -9 "$HOLDER"; wait "$HOLDER" 2>/dev/null
+    [ "$POLL_RC" -eq 75 ] && contains "$POLL_OUT" "the inbox for @$PEER is being written" && ! contains "$POLL_OUT$POLL_ERR" WARNING \
+        || { echo "  rc $POLL_RC: $POLL_OUT $POLL_ERR"; return 1; }
+    return 0
+}
+
+# S-B: the file's line and the reader's copy hash alike. A newline-terminated
+# line holding a NUL (bash drops it from the copy), one ending in CR and an
+# empty one, each the last line of a batch: shown once, and a second poll
+# shows nothing and says nothing was cut back.
+case_a_nul_a_cr_or_an_empty_last_line_is_shown_once() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local f="$INBOX/$PEER.jsonl" kind
+    for kind in nul cr empty; do
+        rm -f "${SOT_COMM_HOME:?}/read/$PEER.cursor"
+        case "$kind" in
+            nul)   printf '{"from":"a","to":"t-peer","msg":"nul-x\000y","ts":"1"}\n' > "$f" ;;
+            cr)    printf '{"from":"a","to":"t-peer","msg":"cr-line","ts":"1"}\r\n' > "$f" ;;
+            empty) printf '{"from":"a","to":"t-peer","msg":"empty-before","ts":"1"}\n\n' > "$f" ;;
+        esac
+        poll_stdout
+        [ "$(count_of "$POLL_OUT" "$kind-")" -eq 1 ] || { echo "  [$kind] poll 1 did not show it once: $POLL_OUT"; return 1; }
+        poll_stdout
+        [ "$POLL_OUT" = "No new messages." ] && ! contains "$POLL_ERR" "was cut back" \
+            || { echo "  [$kind] poll 2: $POLL_OUT $POLL_ERR"; return 1; }
+    done
+    return 0
+}
+
 check "two writers through the lock give 400 whole lines" case_two_writers_give_400_whole_lines
 check "a holder killed with -9 frees the lock at once and the send files" case_a_killed_holder_frees_the_lock_at_once
 check "a frozen holder makes the send wait its bound and report FAILED, never filed" case_a_frozen_holder_makes_the_send_wait_then_fail
@@ -964,6 +1058,11 @@ check "S-1: a hashed cursor one past the end steps back one; further past, or a 
 check "S-2: a slow display does not hold off a writer" case_a_slow_display_does_not_hold_off_a_writer
 
 check "the lock wait is chosen by lock kind: nfs4 polls, local and none@ block, both follow a release" case_the_lock_wait_is_chosen_by_lock_kind
+
+check "S-A: a shared lock failing 71 is named on the poll's stdout, read unlocked, every line once; the hook blocks once" case_a_lock_error_71_is_named_and_the_inbox_read_unlocked
+check "S-A: a shared lock failing 65 is named on the poll's stdout, read unlocked, every line once; the hook blocks once" case_a_lock_error_65_is_named_and_the_inbox_read_unlocked
+check "S-A: a real held lock is still exit 75 and being written, never a warning" case_a_held_lock_is_still_try_again
+check "S-B: a last line holding a NUL, ending in CR, or empty is shown once and never stepped back over" case_a_nul_a_cr_or_an_empty_last_line_is_shown_once
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

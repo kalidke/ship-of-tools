@@ -606,8 +606,10 @@ registry_touch() {  # name — bump last_seen if present
 # newline-terminated lines only, so a cut never moves a cursor, and two guards
 # cover a line a failed append then cuts back: where a writer would append
 # locally the reader's count-and-read takes a shared lock bounded by
-# SOT_INBOX_READ_WAIT_SECS (a timeout means try again, exit 75) and lets go
-# before it shows anything, and on every host the cursor keeps
+# SOT_INBOX_READ_WAIT_SECS (a lock held past it means try again, exit 75; any
+# other lock error is named and the read runs unlocked) — comm-poll and
+# comm-wake let go before they show anything, while comm-watch holds the lock
+# as it prints (B3 replaces it) — and on every host the cursor keeps
 # `<count> <crc>-<len>` of the last line the reader READ (hashed from the bytes
 # it holds, never re-read from the file), so a reader steps back one line when
 # a cut-back removed it.
@@ -639,23 +641,28 @@ sot_inbox_lock_identity() {  # DIR
     [ -z "$mid" ] || { printf 'none@%s\n' "$mid"; return 0; }
     printf 'none\n'
 }
-# 0 when ID, this script's sot_inbox_lock_identity for the inbox, is the
-# lock manager every other writer of the inbox takes (the record's line 1); a
-# missing, empty or bare `none` record never matches.
-_sot_inbox_lock_is_ours() {  # ID
-    local rec=""
-    _sot_have_flock && command -v perl >/dev/null 2>&1 && [ "$(uname -s 2>/dev/null)" = Linux ] || return 1
+# _sot_inbox_lock_ours DIR — prints this script's sot_inbox_lock_identity for
+# DIR when it is the lock manager every other writer of the inbox takes (the
+# record's line 1), and nothing otherwise: no flock(1), no perl, not Linux, or
+# a missing, empty or bare `none` record. The cheap tests come first, so a box
+# that can never take the lock runs no findmnt.
+_sot_inbox_lock_ours() {  # DIR
+    local rec="" id
+    _sot_have_flock && command -v perl >/dev/null 2>&1 && [ "$(uname -s 2>/dev/null)" = Linux ] || return 0
     { IFS= read -r rec < "$COMM_HOME/inbox-lock-manager"; } 2>/dev/null
-    [ -n "$1" ] && [ "$1" != none ] && [ "$1" = "$rec" ]
+    [ -n "$rec" ] && [ "$rec" != none ] || return 0
+    id="$(sot_inbox_lock_identity "$1")"
+    [ "$id" != "$rec" ] || printf '%s\n' "$id"
 }
 # _sot_flock_wait MODE SECS ID — the lock on fd 9 (MODE -x or -s) within SECS,
-# chosen by ID, the identity the caller checked with _sot_inbox_lock_is_ours.
+# chosen by ID, the identity _sot_inbox_lock_ours printed.
 # The Linux NFSv4 client retries a blocked lock with a backoff that doubles
 # from 100 ms, so a local writer re-takes the lock before a remote waiter's
 # next retry and a blocking waiter can sleep past a free lock: under `nfs4 ` a
 # non-blocking try is repeated every 15-25 ms until the bound. NLM (v3) and one machine's own
 # kernel lock (`local …`, `none@…`) wake a blocked waiter on release, so those
-# block, bounded. 75 = the bound passed with the lock held elsewhere.
+# block, bounded. 75 = the bound passed with the lock held elsewhere; any
+# other non-zero is flock's own error (65, 71, …), never a held lock.
 _sot_flock_wait() {  # MODE SECS ID
     local rc end
     case "$3" in
@@ -721,26 +728,38 @@ _sot_append_whole() {  # FILE LINE
 # (`9<>`): the Linux NFS client refuses a shared lock on one without read
 # access. sot_inbox_read_lock takes it on fd 9 of the calling
 # shell (never a subshell: the reader's counters must survive) and returns 0
-# when held or when no lock applies, 75 on a timeout — which means try again,
-# never a skip. Everywhere else the reader is unlocked and the cursor's line
-# hash (sot_cursor_write) covers it. comm-poll reads its batch under the lock,
-# lets go, then shows it: a slow display never holds off a writer.
+# when held or when no lock applies, 75 when the bound passed with the lock
+# held elsewhere — which means try again, never a skip. Any other lock error
+# is not "try again": it returns 0 unheld, with SOT_INBOX_READ_WARNING naming
+# flock's code for the caller to show where its session sees it. An unheld
+# reader, like every reader elsewhere, is covered by the cursor's line hash
+# (sot_cursor_write): a line may show twice, none is lost. comm-poll reads its
+# batch under the lock, lets go, then shows it: a slow display never holds off
+# a writer.
 SOT_INBOX_READ_WAIT_SECS="${SOT_INBOX_READ_WAIT_SECS:-3}"
 sot_inbox_read_lock() {  # HANDLE
-    local rc=0 id
-    id="$(sot_inbox_lock_identity "$COMM_HOME/inbox")"
-    _sot_inbox_lock_is_ours "$id" || return 0
+    local rc=0 id why
+    SOT_INBOX_READ_WARNING=""
+    id="$(_sot_inbox_lock_ours "$COMM_HOME/inbox")"
+    [ -n "$id" ] || return 0
     { exec 9<> "$COMM_HOME/inbox/$1.lock"; } 2>/dev/null || return 0
     _sot_flock_wait -s "$SOT_INBOX_READ_WAIT_SECS" "$id" || rc=$?
-    [ "$rc" -eq 0 ] || exec 9>&-
-    return "$rc"
+    [ "$rc" -ne 0 ] || return 0
+    exec 9>&-
+    [ "$rc" -ne 75 ] || return 75
+    case "$rc" in
+        65) why="65: bad file descriptor" ;;
+        71) why="71: no locks available" ;;
+        *)  why="code $rc" ;;
+    esac
+    SOT_INBOX_READ_WARNING="WARNING: the inbox lock for @$1 failed ($why) — reading without it; a line may show twice, none is lost"
 }
 sot_inbox_read_unlock() { exec 9>&-; }
 sot_inbox_append() {  # HANDLE
     local h="$1" line err rc=0 id
     line="$(cat)"
-    id="$(sot_inbox_lock_identity "$INBOX_DIR")"
-    if ! _sot_inbox_lock_is_ours "$id"; then
+    id="$(_sot_inbox_lock_ours "$INBOX_DIR")"
+    if [ -z "$id" ]; then
         _sot_inbox_append_via_daemon "$h" "$line"
         return
     fi
@@ -1497,21 +1516,26 @@ sot_cursor_offset() {
     _sot_clamp_offset "$handle" "$n"
 }
 
-# sot_line_hash FILE N — `<crc>-<len>` (cksum, POSIX, in git-bash too) of line
-# N's bytes without its newline; empty when there is no such line.
+# _sot_hash_stdin — THE line hash: `<crc>-<len>` (cksum, POSIX, in git-bash
+# too) of stdin without its newlines and NULs. A NUL is dropped because bash
+# drops it from a reader's copy, so the file's bytes and the copy hash alike.
+_sot_hash_stdin() { tr -d '\n\000' | cksum | awk '{print $1 "-" $2}'; }
+
+# sot_line_hash FILE N — the line hash of line N of FILE.
 sot_line_hash() {
-    sed -n "${2}p" "$1" 2>/dev/null | tr -d '\n' | cksum | awk '{print $1 "-" $2}'
+    sed -n "${2}p" "$1" 2>/dev/null | _sot_hash_stdin
 }
 
 # sot_cursor_write HANDLE COUNT LINE — the read cursor: `<count> <hash of
 # LINE>`, or just `0`. LINE is the bytes of line COUNT as the caller read them
 # (no newline), never re-read from the file: a line shown and then cut back
 # must not have its hash taken from the line filed in its place. The hash is
-# what sot_line_hash computes for the same line.
+# _sot_hash_stdin's, the one sot_line_hash takes of the file, so a line holding
+# a NUL (bash has already dropped it from LINE) hashes the same on both sides.
 sot_cursor_write() {
     local h="$1" n="$2"
     if [ "$n" -gt 0 ]; then
-        printf '%s %s' "$n" "$(printf '%s' "$3" | cksum | awk '{print $1 "-" $2}')" > "$COMM_HOME/read/$h.cursor"
+        printf '%s %s' "$n" "$(printf '%s' "$3" | _sot_hash_stdin)" > "$COMM_HOME/read/$h.cursor"
     else
         printf '0' > "$COMM_HOME/read/$h.cursor"
     fi

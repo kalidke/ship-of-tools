@@ -103,11 +103,7 @@ fn file_frame_with(
     .map_err(|e| format!("the append failed: {e}"))?;
     line.push('\n');
 
-    let lock = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(inbox_dir.join(format!("{to}.lock")))
-        .map_err(failed)?;
+    let lock = open_lock(inbox_dir, to).map_err(failed)?;
     let lock = take_lock(lock, own, wait).map_err(|e| match e {
         LockWait::Timeout => format!("the inbox lock for @{to} was held for {}s — nothing was appended", wait.as_secs()),
         LockWait::Io(e) => failed(e),
@@ -116,6 +112,17 @@ fn file_frame_with(
     // The inbox is closed inside `append_line`; only now does the lock go.
     drop(lock);
     written.map_err(failed)
+}
+
+/// The inbox's `.lock` file, opened read-write like every lock descriptor the
+/// shell opens: the Linux NFS client refuses a shared lock on one without read
+/// access, so the rule has no exception here either.
+fn open_lock(inbox_dir: &Path, to: &str) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .create(true)
+        .append(true)
+        .open(inbox_dir.join(format!("{to}.lock")))
 }
 
 enum LockWait {
@@ -863,6 +870,16 @@ mod tests {
     }
 
     // A waiter that gave up never keeps the lock.
+    // The daemon's lock descriptor is read-write too: a zero-length read on a
+    // write-only one is EBADF.
+    #[test]
+    fn the_lock_file_is_opened_read_write() {
+        use std::io::Read;
+        let d = tempfile::tempdir().unwrap();
+        let mut lock = open_lock(d.path(), "h").unwrap();
+        assert_eq!(lock.read(&mut []).unwrap(), 0);
+    }
+
     #[test]
     fn a_waiter_that_gave_up_never_keeps_the_lock() {
         let d = tempfile::tempdir().unwrap();

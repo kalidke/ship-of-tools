@@ -7,11 +7,14 @@
 # point is skipped before the delete (`[ -z "${VAR:-}" ] || rm -f -- "${VAR:?}"`).
 #
 # The check reads each rm's arguments up to the end of its command (a `;`,
-# `&`, `|`, `)`, a redirect or the end of the line), steps over `$(...)`, and
-# names every argument that starts — after any quotes, escaped or not — with
-# `$VAR`, `${VAR}` or `${VAR<any other modifier>}`. Commands inside strings
-# (`bash -c '…'`, ssh command lines, `trap '…'`, heredocs written to a stub)
-# are read the same way. Comment lines are skipped.
+# `&`, `|`, `)`, a redirect or the end of the line), steps over the inside of
+# `$(...)`, and names every argument that starts — after any quotes, escaped
+# or not — with `$VAR`, `${VAR}`, `${VAR<any other modifier>}`, or a `$(...)`
+# followed by `/` (its output may be empty too, and `"$(f)"/*` is then `/*`).
+# Commands inside strings (`bash -c '…'`, ssh command lines, `trap '…'`,
+# heredocs written to a stub) are read the same way. Comment lines are
+# skipped. A file with a dot in its NAME is read only as `*.sh`; a dot in a
+# directory never hides an extensionless script.
 #
 # Usage: comm/core/tests/test-rm-guard.sh
 # Exit: 0 if no unguarded site, 1 naming each one.
@@ -22,9 +25,9 @@ REPO="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)" || { echo "FATAL: not i
 
 files=()
 while IFS= read -r f; do
-    case "$f" in
+    case "${f##*/}" in
         *.sh) files+=("$REPO/$f") ;;
-        */*.*|*.*) ;;
+        *.*) ;;
         *) [ -f "$REPO/$f" ] && head -n 1 "$REPO/$f" 2>/dev/null | grep -q -E '^#!.*[/ ](ba|da|k|z)?sh([[:space:]]|$)' \
                && files+=("$REPO/$f") ;;
     esac
@@ -33,7 +36,7 @@ done < <(git -C "$REPO" ls-files)
 
 sites="$(perl -e '
 my $V = q{(?:[A-Za-z_]\w*+|\d++)};
-my $TOK = qr/(?:^|\s)(?:\\*["\x27])*\\*\$(?:\{$V(?:\[[@*]\])?+\}|$V|\{$V(?:\[[@*]\])?+(?:[^}:]|:[^?])[^}]*\})/;
+my $TOK = qr/(?:^|\s)(?:\\*["\x27])*\\*\$(?:\(X*(?:\\*["\x27])*\/|\{$V(?:\[[@*]\])?+\}|$V|\{$V(?:\[[@*]\])?+(?:[^}:]|:[^?])[^}]*\})/;
 for my $f (@ARGV) {
     open my $fh, "<", $f or next;
     while (my $line = <$fh>) {
@@ -42,7 +45,7 @@ for my $f (@ARGV) {
             my ($i, $depth, $mask) = (pos($line), 0, "");
             while ($i < length $line) {
                 my $c = substr($line, $i, 1);
-                if (substr($line, $i, 2) eq q{$(}) { $depth++; $mask .= "XX"; $i += 2; next; }
+                if (substr($line, $i, 2) eq q{$(}) { $mask .= $depth ? "XX" : q{$(}; $depth++; $i += 2; next; }
                 if ($depth) { $depth-- if $c eq ")"; $depth++ if $c eq "("; $mask .= "X"; $i++; next; }
                 last if $c =~ /[;&|>)\n]/;
                 $mask .= $c; $i++;

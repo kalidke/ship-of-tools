@@ -345,12 +345,14 @@ _comm_wake_deliver_ping() {
         [ -r "$INBOX" ] || continue
         # The per-handle inbox is counted, validated and scanned under the
         # shared read lock (comm-lib.sh, sot_inbox_read_lock); a busy inbox
-        # keeps this source's cursor and is checked again next cycle. Taking
-        # the next source's lock closes this one's descriptor, and the lock
-        # is let go after the loop.
+        # keeps this source's cursor and is checked again next cycle, and any
+        # other lock error goes to the log and the source is read unlocked.
+        # Taking the next source's lock closes this one's descriptor, and the
+        # lock is let go after the loop.
         sot_inbox_read_unlock
         case "$INBOX" in
-            "$COMM_HOME/inbox/"*) sot_inbox_read_lock "$HANDLE" || continue ;;
+            "$COMM_HOME/inbox/"*) sot_inbox_read_lock "$HANDLE" || continue
+                [ -z "$SOT_INBOX_READ_WARNING" ] || printf '%s\n' "$SOT_INBOX_READ_WARNING" >&2 ;;
         esac
         total="$(sot_file_lines "$INBOX")"
         # inbox rotated/truncated: re-read the (now smaller) file from line 1.
@@ -498,9 +500,11 @@ _comm_wake_run() {
             [ -f "$INBOX" ] || continue
             # Counted and read under the shared read lock, into BATCH, and
             # the lock is let go BEFORE anything is injected: an inject can
-            # take seconds and must not hold writers off.
+            # take seconds and must not hold writers off. Any lock error but a
+            # held lock goes to the log, and the batch is read unlocked.
             case "$INBOX" in
-                "$COMM_HOME/inbox/"*) sot_inbox_read_lock "$HANDLE" || continue ;;
+                "$COMM_HOME/inbox/"*) sot_inbox_read_lock "$HANDLE" || continue
+                    [ -z "$SOT_INBOX_READ_WARNING" ] || printf '%s\n' "$SOT_INBOX_READ_WARNING" >&2 ;;
             esac
             total=$(sot_file_lines "$INBOX")
             if [ "$total" -lt "$pos" ]; then pos=0; fi   # inbox rotated/truncated
