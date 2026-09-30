@@ -21,9 +21,7 @@ all clients are mutually addressable through the same registry and inboxes.
   state/                   # per-session scratch; the end-of-turn check keeps mail-<key>.tick,
                            # lock-fault-<handle>.<key>.tick and stop-feedback-<key>.jsonl here.
                            # Nothing removes a mail tick, so every session ever held on mail
-                           # leaves one; a fault tick or a feedback record is left only by a
-                           # session that ends mid-block. Bounded per-session litter, and
-                           # nothing sweeps it.
+                           # leaves one. Bounded per-session litter, and nothing sweeps it.
 ```
 
 The registry and inboxes are **data at rest** — discovery and catch-up need a

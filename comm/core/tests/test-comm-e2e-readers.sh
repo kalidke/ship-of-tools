@@ -67,21 +67,24 @@ E="$D/e2e"; L="$D/log"
 export SOT_COMM_HOME="$D"
 BG=()
 cleanup() {
-    local rc=$? p t n
+    local rc=$? p h
     # Removing $D used to stop every reader, because each wait loop also ends when
-    # $E is gone. A kept $D must stop them with files: reader.sh waits on
-    # pollstop-<t> (poller, then the phase-1 wait), strictpoll-<t> (before the
-    # strict poll) and stop-<t> (hook loop, final wait); sender.sh waits on go.
-    for t in here peer v3; do
-        for p in pollstop strictpoll stop; do : > "$E/$p-$t" 2>/dev/null; done
-    done
-    : > "$E/go" 2>/dev/null
+    # $E is gone. A kept $D is stopped by one file, $E/abort: every wait loop in
+    # reader.sh and sender.sh ends on it, and the sender then exits without sending
+    # and the reader without its final polls or hook. Not `go`, which would start
+    # both senders into the kept dir.
+    : > "$E/abort" 2>/dev/null
     # Let the helpers reap their own children (wake and watch), for at most 10 s.
-    for n in $(seq 1 100); do
+    for _ in $(seq 1 100); do
         for p in "${BG[@]}"; do kill -0 "$p" 2>/dev/null && { sleep 0.1; continue 2; }; done
         break
     done
     for p in "${BG[@]}"; do kill "$p" 2>/dev/null; done
+    # A reader killed mid-hook must not leave its wake or watch running.
+    pkill -f -- "$D/" 2>/dev/null
+    for h in "$PEER" "$V3"; do
+        ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" "pkill -f -- '$D/'" >/dev/null 2>&1
+    done
     wait 2>/dev/null
     if [ "$rc" -eq 0 ]; then
         rm -rf -- "${D:?}"
@@ -190,18 +193,29 @@ run bash "$D/bin/comm-watch.sh" "$H" >> "$L/watch-$TAG.out" 2>&1 &
 WATCH=$!
 run bash "$E/wake.sh" "$D" "$H" "$TAG" >> "$L/wake-$TAG.err" 2>&1 &
 WAKE=$!
-( while [ ! -e "$E/pollstop-$TAG" ] && [ -d "$E" ]; do poll_once loop; jitter 500 1001; done ) &
+( while [ ! -e "$E/pollstop-$TAG" ] && [ ! -e "$E/abort" ] && [ -d "$E" ]; do poll_once loop; jitter 500 1001; done ) &
 POLLER=$!
-( while [ ! -e "$E/stop-$TAG" ] && [ -d "$E" ]; do hook_once loop; jitter 2000 1001; done ) &
+( while [ ! -e "$E/stop-$TAG" ] && [ ! -e "$E/abort" ] && [ -d "$E" ]; do hook_once loop; jitter 2000 1001; done ) &
 HOOKER=$!
+# Every wait loop below ends on $E/abort (the kept-dir stop file) as well as its own.
+bail() {
+    [ -e "$E/abort" ] || [ ! -d "$E" ] || return 0
+    kill "$HOOKER" "$POLLER" 2>/dev/null
+    for p in "$WAKE" "$WATCH"; do pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done
+    exit 0
+}
 sleep 3; : > "$E/ready-$TAG"
-while [ ! -e "$E/pollstop-$TAG" ] && [ -d "$E" ]; do sleep 0.2; done
+while [ ! -e "$E/pollstop-$TAG" ] && [ ! -e "$E/abort" ] && [ -d "$E" ]; do sleep 0.2; done
+bail
 wait "$POLLER"
+bail
 poll_once final1; : > "$E/finaldone1-$TAG"
-while [ ! -e "$E/strictpoll-$TAG" ] && [ -d "$E" ]; do sleep 0.2; done
+while [ ! -e "$E/strictpoll-$TAG" ] && [ ! -e "$E/abort" ] && [ -d "$E" ]; do sleep 0.2; done
+bail
 poll_once final2; now > "$L/final-$TAG"; hook_once final
 wc -l < "$L/watch-$TAG.out" > "$L/watch-count-final-$TAG"; : > "$E/finaldone-$TAG"
-while [ ! -e "$E/stop-$TAG" ] && [ -d "$E" ]; do sleep 0.2; done
+while [ ! -e "$E/stop-$TAG" ] && [ ! -e "$E/abort" ] && [ -d "$E" ]; do sleep 0.2; done
+bail
 wc -l < "$L/watch-$TAG.out" > "$L/watch-count-end-$TAG"
 kill "$HOOKER" 2>/dev/null
 for p in "$WAKE" "$WATCH"; do pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done
@@ -223,7 +237,9 @@ send_round() {  # PREFIX ROUND
         printf '%s %s %s %s %s\n' "$(date +%s%3N)" "$h" "$id" "$st" "$(printf '%s' "$out" | tr '\n' ' ')" >> "$D/log/send-$S.log"
     done
 }
-while [ ! -e "$E/go" ]; do sleep 0.05; done
+# Ends on go, or on $E/abort (the kept-dir stop file), in which case nothing is sent.
+while [ ! -e "$E/go" ] && [ ! -e "$E/abort" ]; do sleep 0.05; done
+[ ! -e "$E/abort" ] || exit 0
 for i in $(seq 1 "$PACED"); do send_round p "$i"; sleep 0.2; done
 for i in $(seq 1 "$BURST"); do send_round b "$i"; done
 : > "$E/senderdone-$S"
