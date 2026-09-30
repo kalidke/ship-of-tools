@@ -379,6 +379,13 @@ mod tests {
             waited < std::time::Duration::from_secs(3),
             "the error path waited {waited:?}: it must not read a pipe other processes still hold open (err: {err})"
         );
+        // Promptly is only half of it: the verdict has to be the right one,
+        // naming the endpoint and the step that failed rather than some
+        // artefact of giving up on the pipe.
+        assert!(
+            err.contains("ssh:hub") && err.contains("hello"),
+            "the error must name the endpoint and the step that failed, got: {err}"
+        );
     }
 
     #[test]

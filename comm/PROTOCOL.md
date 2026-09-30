@@ -130,6 +130,10 @@ the session was active in the last ten minutes.
   within 5 seconds. Nothing was added. Retrying or reporting is the sender's
   call.
 
+**A send with a receipt reports delivered, whatever the ssh child's exit
+status or stderr say** — the transport's status and stderr only ever supply
+the `<reason>` in a `FAILED` line the record could not explain.
+
 Nothing is queued anywhere and there is no second route. To get an answer,
 send, end the turn, and be woken.
 

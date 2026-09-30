@@ -410,16 +410,13 @@ case_an_empty_roster_is_no_such_handle() {
 # via nc_send. A stub `ssh` on PATH stands in for the far end -- never a
 # real ssh, never a real daemon.
 #
-# write_receipting_ssh_stub DIR EXIT_STATUS: a stub that answers the
-# protocol properly (a hello reply, then an ack and a receipt carrying the
-# sender's own frame id), writes the noise a real `ssh` writes on a first
-# connection, and exits with EXIT_STATUS the moment the receipt is out --
-# the shape of a child that dies on the way out of a DELIVERED send.
-#
-# Its exit status is the ONE variable across the three cases below, because
-# in every one of them the frame is filed and receipted before the child
-# goes anywhere: a verdict that changes with the status is the transport
-# overruling the record.
+# The stub `ssh` these cases drive is `write_row_ssh_stub` below, shared with
+# the verdict table (it is the same seam parameterised further: receipt, ack,
+# exit status and stderr content). Here receipt and ack are both yes and the
+# stderr is the noise a real `ssh` writes on a first connection, so the ONE
+# variable across the three cases is the exit status -- and the frame is
+# filed and receipted before the child goes anywhere, so a verdict that
+# changes with that status is the transport overruling the record.
 #
 #   0   -- ROUND 2's OWN BLOCKER: the child's stderr was redirected into
 #          the same file `send_frame` read as "a real failure happened", so
@@ -436,34 +433,12 @@ case_an_empty_roster_is_no_such_handle() {
 # `case_ssh_endpoint_bridge_failure_says_failed_with_reason` below is the
 # other half: the same stderr line, a non-zero exit, and NO receipt -- so
 # the reason is all there is and it must still be reported loudly.
-write_receipting_ssh_stub() {  # DIR EXIT_STATUS
-    local dir="$1" status="$2"
-    cat > "$dir/ssh" <<EOF
-#!/bin/sh
-echo "Warning: Permanently added 'testtarget' (ED25519) to the list of known hosts." >&2
-while IFS= read -r line; do
-    case "\$line" in
-        *'"op":"hello"'*)
-            printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"ok":true}}\n' ;;
-        *'"op":"agent.send"'*)
-            id=\$(printf '%s' "\$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-            printf '{"v":1,"id":1,"kind":"res","op":"agent.send","payload":{"ok":true,"receivers":["peer-$PEER_HOST"],"id":"%s"}}\n' "\$id"
-            printf '{"v":1,"id":1,"kind":"evt","op":"agent.receipt","payload":{"id":"%s","filer":"peer-$PEER_HOST"}}\n' "\$id"
-            exit $status
-            ;;
-    esac
-done
-exit $status
-EOF
-    chmod +x "$dir/ssh"
-}
-
 # The three cases are one body: a receipted send over an ssh child that then
 # exits with $1. The verdict must be the receipt's in all three.
 _filed_despite_ssh_exit() {  # EXIT_STATUS
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local sshdir; sshdir="$(mktemp -d "$WORK/ssh-exit$1-XXXXXX")"
-    write_receipting_ssh_stub "$sshdir" "$1"
+    write_row_ssh_stub "$sshdir" yes yes "$1" noise
     relay_send_with_path "$sshdir" "ssh:testtarget" send "@peer-$PEER_HOST" "over ssh"
     [ "$RELAY_RC" -eq 0 ] \
         || { echo "  exited $RELAY_RC, want 0 (the ssh child exited $1 AFTER the receipt; out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
@@ -528,6 +503,179 @@ case_an_ask_window_ending_does_not_unsay_the_filed_frame() {
     return 0
 }
 
+# ---- THE TABLE (round-3 addendum). Every combination of the four things a
+# send's verdict could be read from, walked through the ONE verdict block in
+# send_frame over the real transport, and asserted.
+#
+# THE RULE, from comm/PROTOCOL.md's delivery section, and every expectation
+# below is derived from IT and not from the code: a send with a receipt
+# reports delivered, whatever the ssh child's exit status or stderr say. With
+# no receipt the ack decides; with neither, the bridge's reason decides and
+# its text is shown; with none of the three, the generic "unreachable,
+# nothing filed". Stderr content never changes a verdict -- it only lengthens
+# the text of a FAILED reason.
+#
+# Axes: receipt yes/no x ack yes/no x exit 0/255/141 x stderr
+# none/complaint/noise = 36 rows. 141 is where this defect came from:
+# send_frame breaks out of its read loop the instant a receipt lands and
+# closes the pipe the child is still writing to, so SIGPIPE is the ORDINARY
+# end of a successful send. Two rows follow the 36 for the timeout wording,
+# where the child outlives the bridge's 5s bound (added, not substituted).
+#
+# Driven end to end rather than by calling an extracted verdict function:
+# that also proves what the verdict SEES -- most of all that an exit of 0
+# leaves no bridge reason at all no matter what the child wrote to stderr,
+# which is round 2's fix and cannot be expressed by handing a function a
+# reason string.
+_stderr_text() {  # KIND
+    case "$1" in
+        complaint) printf 'Permission denied (publickey).' ;;
+        noise)     printf "Warning: Permanently added 'testtarget' (ED25519) to the list of known hosts." ;;
+        *)         printf '' ;;
+    esac
+}
+
+# write_row_ssh_stub DIR RECEIPT ACK EXIT STDERR_KIND -- a stub `ssh` that
+# says exactly what one row asks for. The row is baked into the script's own
+# header (and its stderr text into a file beside it, which keeps every quote
+# in that text out of the generated script), so the body below is one static
+# template for all 38 rows.
+write_row_ssh_stub() {
+    local dir="$1" receipt="$2" ack="$3" status="$4" errkind="$5"
+    local hang=no
+    if [ "$status" = hang ]; then hang=yes; status=0; fi
+    _stderr_text "$errkind" > "$dir/stderr.txt"
+    {
+        printf '#!/bin/sh\n'
+        printf "d='%s'\n" "$dir"
+        printf 'receipt=%s\nack=%s\nhang=%s\nstatus=%s\nreceiver=%s\n' \
+            "$receipt" "$ack" "$hang" "$status" "peer-$PEER_HOST"
+        cat <<'STUB'
+[ -s "$d/stderr.txt" ] && cat "$d/stderr.txt" >&2
+while IFS= read -r line; do
+    case "$line" in
+        *'"op":"hello"'*)
+            printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"ok":true}}\n' ;;
+        *'"op":"agent.send"'*)
+            id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+            if [ "$ack" = yes ]; then
+                printf '{"v":1,"id":1,"kind":"res","op":"agent.send","payload":{"ok":true,"receivers":["%s"],"id":"%s"}}\n' "$receiver" "$id"
+            fi
+            if [ "$receipt" = yes ]; then
+                printf '{"v":1,"id":1,"kind":"evt","op":"agent.receipt","payload":{"id":"%s","filer":"%s"}}\n' "$id" "$receiver"
+            fi
+            # A child that outlives the bridge's bound, with `exec` so
+            # `timeout`'s signal reaches it rather than leaving it holding
+            # the pipes the sender reads.
+            if [ "$hang" = yes ]; then exec sleep 10; fi
+            exit "$status"
+            ;;
+    esac
+done
+exit "$status"
+STUB
+    } > "$dir/ssh"
+    chmod +x "$dir/ssh"
+}
+
+# RECEIPT ACK EXIT STDERR EXPECT -- EXPECT is what the rule requires:
+#   filed        the receipt is the verdict, nothing outranks it
+#   notconfirmed no receipt, but the ack is the record and it decides
+#   failed       neither: the bridge's reason speaks, and names the exit
+#   timeout      the same, for a child killed at the 5s bound
+#   generic      nothing answered and the transport has no complaint
+_VERDICT_TABLE=(
+    "yes yes 0    none      filed"
+    "yes yes 0    complaint filed"
+    "yes yes 0    noise     filed"
+    "yes yes 255  none      filed"
+    "yes yes 255  complaint filed"
+    "yes yes 255  noise     filed"
+    "yes yes 141  none      filed"
+    "yes yes 141  complaint filed"
+    "yes yes 141  noise     filed"
+    "yes no  0    none      filed"
+    "yes no  0    complaint filed"
+    "yes no  0    noise     filed"
+    "yes no  255  none      filed"
+    "yes no  255  complaint filed"
+    "yes no  255  noise     filed"
+    "yes no  141  none      filed"
+    "yes no  141  complaint filed"
+    "yes no  141  noise     filed"
+    "no  yes 0    none      notconfirmed"
+    "no  yes 0    complaint notconfirmed"
+    "no  yes 0    noise     notconfirmed"
+    "no  yes 255  none      notconfirmed"
+    "no  yes 255  complaint notconfirmed"
+    "no  yes 255  noise     notconfirmed"
+    "no  yes 141  none      notconfirmed"
+    "no  yes 141  complaint notconfirmed"
+    "no  yes 141  noise     notconfirmed"
+    "no  no  0    none      generic"
+    "no  no  0    complaint generic"
+    "no  no  0    noise     generic"
+    "no  no  255  none      failed"
+    "no  no  255  complaint failed"
+    "no  no  255  noise     failed"
+    "no  no  141  none      failed"
+    "no  no  141  complaint failed"
+    "no  no  141  noise     failed"
+    "no  yes hang noise     notconfirmed"
+    "no  no  hang noise     timeout"
+)
+
+# One row: build its stub, send through it, and hold the result against the
+# rule. Prints the row and what it got on a disagreement, nothing otherwise.
+_check_verdict_row() {  # RECEIPT ACK EXIT STDERR_KIND EXPECT
+    local receipt="$1" ack="$2" status="$3" errkind="$4" expect="$5"
+    local dir; dir="$(mktemp -d "$WORK/row-XXXXXX")"
+    write_row_ssh_stub "$dir" "$receipt" "$ack" "$status" "$errkind"
+    relay_send_with_path "$dir" "ssh:testtarget" send "@peer-$PEER_HOST" "table row"
+    local want_rc=1 got="$RELAY_OUT$RELAY_ERR" want=""
+    case "$expect" in
+        filed)
+            want_rc=0; want="filed -> @peer-$PEER_HOST (by peer-$PEER_HOST, relay)" ;;
+        notconfirmed)
+            want="NOT CONFIRMED: sent for @peer-$PEER_HOST" ;;
+        failed)
+            want="FAILED -> @peer-$PEER_HOST: ssh to testtarget exited $status" ;;
+        timeout)
+            want="FAILED -> @peer-$PEER_HOST: timed out after 5s reaching testtarget" ;;
+        generic)
+            want="unreachable, nothing filed" ;;
+    esac
+    local bad=""
+    [ "$RELAY_RC" -eq "$want_rc" ] || bad="exit $RELAY_RC, want $want_rc"
+    contains "$got" "$want" || bad="${bad:+$bad; }missing '$want'"
+    # A verdict the transport decided: a filed frame must carry no FAILED
+    # line, and a FAILED reason must carry the child's stderr when it wrote
+    # any -- the text of a reason is the ONLY thing stderr may change.
+    if [ "$expect" = filed ]; then
+        ! contains "$RELAY_ERR" "FAILED" || bad="${bad:+$bad; }a filed frame also printed FAILED"
+    fi
+    if [ "$errkind" != none ] && { [ "$expect" = failed ] || [ "$expect" = timeout ]; }; then
+        contains "$got" "$(_stderr_text "$errkind")" || bad="${bad:+$bad; }the reason dropped the child's stderr"
+    fi
+    [ -z "$bad" ] && return 0
+    echo "  row [$receipt $ack $status $errkind -> $expect]: $bad (out: '$RELAY_OUT' err: '$RELAY_ERR')"
+    return 1
+}
+
+case_every_combination_gets_the_verdict_the_rule_requires() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local row rows=0 bad=0
+    for row in "${_VERDICT_TABLE[@]}"; do
+        rows=$((rows + 1))
+        # Word-split on purpose: the row IS five fields.
+        # shellcheck disable=SC2086
+        _check_verdict_row $row || bad=$((bad + 1))
+    done
+    [ "$rows" -eq 38 ] || { echo "  the table holds $rows rows, want 36 plus the 2 timeout rows"; return 1; }
+    [ "$bad" -eq 0 ] || { echo "  $bad of $rows rows disagreed with the rule"; return 1; }
+    return 0
+}
+
 check "a registry target is filed with the daemon down" case_registry_target_is_filed_with_the_daemon_down
 check "a filer's receipt is the delivery, and names the filer" case_a_receipt_is_the_only_delivery
 check "an ack with no receipt is NOT CONFIRMED and names who was attached" case_an_unanswered_send_is_not_confirmed_and_names_who_was_attached
@@ -545,6 +693,7 @@ check "a receipt outranks the SIGPIPE (141) the child takes when the send succee
 check "a receipt outranks an abrupt ssh teardown (255) after the frame was filed" case_a_receipt_outranks_an_abrupt_teardown_exit
 check "a dying ssh child says FAILED and names the target, its exit status and its stderr" case_ssh_endpoint_bridge_failure_says_failed_with_reason
 check "an ask window running out still reports the filed frame, not the transport's timeout" case_an_ask_window_ending_does_not_unsay_the_filed_frame
+check "all 36 receipt/ack/exit/stderr combinations (plus 2 timeout rows) get the verdict the rule requires" case_every_combination_gets_the_verdict_the_rule_requires
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
