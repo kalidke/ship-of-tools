@@ -17,7 +17,8 @@
 #
 # It passes only if every send is `filed`; each handle's ids shown by
 # comm-poll.sh are exactly the ids filed to it, once each; no poll exits
-# anything but 0; every Stop-hook call returns within 5 s, blocks while mail
+# anything but 0 and no reader names a lock failure in a WARNING; every
+# Stop-hook call returns within 5 s, blocks while mail
 # is unread, and is silent after the final poll; in a strict phase (poll loops
 # stopped, 60 sends 3 s apart, one at a time) each send gets its own wake ping
 # before the next send to that handle, and the last poll shows exactly those
@@ -150,6 +151,7 @@ hook_once() {  # LABEL
     blk=0; busy=0
     case "$out" in *'"decision":"block"'*) blk=1 ;; esac
     case "$out" in *"is being written"*) busy=1 ;; esac
+    case "$out" in *"WARNING: the inbox lock"*) printf '%s %s\n' "$e" "$out" >> "$L/hookwarn-$TAG.log" ;; esac
     printf '%s rc=%s ms=%s block=%s busy=%s %s\n' "$e" "$rc" "$((e - s))" "$blk" "$busy" "$1" >> "$L/hook-$TAG.log"
 }
 poll_once() {  # LABEL
@@ -295,6 +297,12 @@ for h in "${HANDLES[@]}"; do
     verdict "2b. $h: the last poll showed exactly the strict-phase messages ($(printf '%s' "$sh2" | grep -c .) of $(printf '%s' "$ws" | grep -c .))" \
         "$([ "$sh2" = "$ws" ] || echo "the last poll's ids differ from the strict-phase ids")"
 done
+
+# A lock the client refused is no longer an exit status: every reader names it
+# in a WARNING line and reads unlocked, so a refusal is caught here or nowhere.
+warned="$(grep -l -F 'WARNING: the inbox lock' "$L"/pollout-*.log "$L"/watch-*.out "$L"/wake-*.err "$L"/hookwarn-*.log 2>/dev/null)"
+verdict "3a. no reader named a lock failure (poll, Stop hook, wake, watch)" \
+    "$([ -z "$warned" ] || { echo "warned in: $(printf '%s ' $warned)"; grep -h -m1 -F 'WARNING: the inbox lock' $warned | awk 'NR<=3'; })"
 
 allrc="$L/pollrc-all.log"; cat "$L"/pollrc-*.log > "$allrc"
 npoll="$(wc -l < "$allrc")"; n75="$(grep -c ' rc=75 ' "$allrc")"; nnz="$(grep -c -v ' rc=0 ' "$allrc")"
