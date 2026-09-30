@@ -157,15 +157,64 @@ pub enum Role {
 }
 
 /// The folder's hub when `topology_hub` (no topology file loads, or it names
-/// this host as hub) or the folder is on this box's own disk: not Linux, or
-/// `own` is `local <machine-id>` — a Windows or rig daemon files for its own
-/// comm folder, which no hub shares.
-pub fn role(topology_hub: bool, own: &str) -> Role {
-    if topology_hub || !cfg!(target_os = "linux") || own.starts_with("local ") {
+/// this host as hub) or `own_disk` (see [`own_disk`]) — a daemon on its own
+/// disk files for its own comm folder, which no hub shares.
+pub fn role(topology_hub: bool, own_disk: bool) -> Role {
+    if topology_hub || own_disk {
         Role::Hub
     } else {
         Role::Guest
     }
+}
+
+/// Whether `dir` is on this box's own disk, asked of the folder on every OS
+/// (a macOS home or a Windows drive can be a network share). Linux: `own_identity`,
+/// the folder's lock identity, is `local <machine-id>`. macOS: its mount carries
+/// `MNT_LOCAL`. Windows: a fixed drive whose canonical path is not UNC. Any other
+/// OS, or any error: not own disk.
+#[allow(unused_variables)]
+pub fn own_disk(dir: &Path, own_identity: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    return own_identity.starts_with("local ");
+    #[cfg(target_os = "macos")]
+    return matches!(crate::capsule_workspace::macos_only::mounted_locally(dir), Ok(true));
+    #[cfg(windows)]
+    return windows_volume_fixed(dir).is_some_and(|(fixed, canonical)| windows_own_disk(fixed, &canonical));
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    return false;
+}
+
+/// The Windows decision, pure: a fixed drive whose canonical path is not UNC.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn windows_own_disk(fixed: bool, canonical: &str) -> bool {
+    fixed && !is_unc(canonical)
+}
+
+/// `\\?\UNC\…`, or `\\…` that is not the `\\?\` or `\\.\` device prefix.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn is_unc(canonical: &str) -> bool {
+    canonical.starts_with(r"\\?\UNC\")
+        || (canonical.starts_with(r"\\") && !canonical.starts_with(r"\\?\") && !canonical.starts_with(r"\\.\"))
+}
+
+/// `(is a fixed drive, canonical path)` for `dir`, `None` on any error.
+#[cfg(windows)]
+fn windows_volume_fixed(dir: &Path) -> Option<(bool, String)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    // `DRIVE_FIXED` (winbase.h); windows-sys keeps it in a feature this crate does not otherwise use.
+    const DRIVE_FIXED: u32 = 3;
+    let canonical = std::fs::canonicalize(dir).ok()?.to_string_lossy().into_owned();
+    // The drive root is `X:\`; a UNC path has none and is refused by the caller.
+    let plain = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
+    let mut root: Vec<u16> = std::ffi::OsStr::new(plain).encode_wide().take(3).collect();
+    if root.len() < 3 || root[1] != u16::from(b':') {
+        return Some((false, canonical));
+    }
+    root.push(0);
+    // SAFETY: `root` is a nul-terminated UTF-16 string.
+    let kind = unsafe { GetDriveTypeW(root.as_ptr()) };
+    Some((kind == DRIVE_FIXED, canonical))
 }
 
 /// The record's two lines: the lock manager, and the host that wrote it —
@@ -270,7 +319,7 @@ pub mod refusal {
 pub fn record_at_start(comm_home: &Path, topology_hub: bool, self_host: &str) -> std::io::Result<(Role, String, AtStart)> {
     std::fs::create_dir_all(comm_home.join("inbox"))?;
     let own = lock_identity(&comm_home.join("inbox"));
-    let role = role(topology_hub, &own);
+    let role = role(topology_hub, own_disk(&comm_home.join("inbox"), &own));
     let path = comm_home.join(LOCK_RECORD);
     let record = std::fs::read_to_string(&path).ok();
     let decision = at_start(role, &own, record.as_deref(), self_host, &path);
@@ -443,12 +492,28 @@ mod tests {
     // B1 — the role: the topology's hub, or a folder on this box's own disk.
     #[test]
     fn the_role_is_hub_by_topology_or_by_own_disk() {
-        assert_eq!(role(true, "nfs4 A:/x"), Role::Hub);
-        assert_eq!(role(true, "none"), Role::Hub);
-        assert_eq!(role(false, "local m"), Role::Hub);
-        let guest = if cfg!(target_os = "linux") { Role::Guest } else { Role::Hub };
-        assert_eq!(role(false, "nfs4 A:/x"), guest);
-        assert_eq!(role(false, "none"), guest);
+        assert_eq!(role(true, true), Role::Hub);
+        assert_eq!(role(true, false), Role::Hub);
+        assert_eq!(role(false, true), Role::Hub);
+        assert_eq!(role(false, false), Role::Guest);
+    }
+
+    #[test]
+    fn a_windows_folder_is_own_disk_only_on_a_fixed_non_unc_drive() {
+        assert!(windows_own_disk(true, r"\\?\C:\x"));
+        assert!(windows_own_disk(true, r"C:\x"));
+        assert!(!windows_own_disk(false, r"\\?\C:\x"));
+        assert!(!windows_own_disk(true, r"\\?\UNC\srv\share\x"));
+        assert!(!windows_own_disk(true, r"\\srv\share\x"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn on_linux_the_folders_lock_identity_says_own_disk() {
+        let d = Path::new("/x");
+        assert!(own_disk(d, "local m"));
+        assert!(!own_disk(d, "nfs4 A:/x"));
+        assert!(!own_disk(d, "none"));
     }
 
     // B1 — the start-time decision, every row.

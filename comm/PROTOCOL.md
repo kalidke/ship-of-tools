@@ -121,7 +121,9 @@ lists the receiver:
    mount with `local_lock=none`), `local <machine-id>` or `none`; line 2 is
    the host that wrote it, and every comparison reads line 1 only. The hub is
    the daemon with no topology, the topology's hub, or a daemon whose comm
-   folder is on its own disk (not Linux, or `local <machine-id>`); every
+   folder is on its own disk, asked of the folder on each OS (Linux: `local
+   <machine-id>`; macOS: its mount is `MNT_LOCAL`; Windows: a fixed drive, not a
+   UNC path; anything else, or an error: not own disk); every
    other daemon is a guest on the hub's folder and never writes or deletes
    the record. The hub writes it when it is absent, when line 1 already
    names the hub's own manager, or when line 2 names the hub (a remount);

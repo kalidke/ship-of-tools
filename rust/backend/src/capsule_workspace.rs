@@ -232,13 +232,13 @@ mod linux_only {
 /// why it is worth having as this daemon's own second gate rather than
 /// leaving the whole question to `preflight_volume`.
 #[cfg(target_os = "macos")]
-mod macos_only {
+pub(crate) mod macos_only {
     use std::path::Path;
 
     /// `true` iff `dir`'s mount carries `MNT_LOCAL`. Mirrors
     /// `sot_log::fsutil`'s own macOS `statfs` call shape rather than
     /// adding a second one with different error handling.
-    pub(super) fn mounted_locally(dir: &Path) -> std::io::Result<bool> {
+    pub(crate) fn mounted_locally(dir: &Path) -> std::io::Result<bool> {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
         let c_dir = CString::new(dir.as_os_str().as_bytes())

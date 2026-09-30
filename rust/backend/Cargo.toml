@@ -55,7 +55,7 @@ uuid = { workspace = true }
 # under `[target.'cfg(windows)'.dev-dependencies]` below, promoted to a
 # real (non-dev) dependency since production code now names the type too.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [[bin]]
 name = "sotd"

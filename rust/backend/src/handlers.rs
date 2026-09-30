@@ -5627,8 +5627,9 @@ pub async fn handle_comm_file(
         let own = home
             .as_deref()
             .map_or_else(|| "none".to_string(), |h| crate::comm_inbox::lock_identity(&h.join("inbox")));
+        let own_disk = home.as_deref().is_some_and(|h| crate::comm_inbox::own_disk(&h.join("inbox"), &own));
         let filer = Filer {
-            role: crate::comm_inbox::role(comm_topology_hub(&topology, &self_host), &own),
+            role: crate::comm_inbox::role(comm_topology_hub(&topology, &self_host), own_disk),
             own,
             self_host: self_host.clone(),
         };
