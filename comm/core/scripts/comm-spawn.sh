@@ -620,7 +620,7 @@ SPAWN_SUCCEEDED=true
 # and, on first attach, launches ccb with SOT_COMM_NAME=<agent_name> (it
 # owns the terminal; a detached session can't init claude). The agent joins
 # comm + reads its repo CLAUDE.md; nothing is pasted.
-[ -n "$SPAWNER" ] && with_lock registry_touch "$SPAWNER" 2>/dev/null || true
+[ -n "$SPAWNER" ] && SOT_LOCK_MAX_TRIES=20 with_lock registry_touch "$SPAWNER" 2>/dev/null || true
 echo "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (agent=${AGENT}, autostart; NO brief — agent uses its repo CLAUDE.md / AGENTS.md)."
 # Said BEFORE the --task attempt below, because it is also why that attempt
 # can fail: a handle with no row here is not addressable here yet.

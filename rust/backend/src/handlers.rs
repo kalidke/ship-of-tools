@@ -7087,20 +7087,21 @@ fn comm_handle_for_workspace(ws: &Workspace) -> String {
     }
 }
 
-/// Take the sot-comm registry's mkdir-spinlock (`<comm_home>/.registry.lock`,
-/// matching `comm-lib.sh`'s own `with_lock`), run `f` with the registry and
-/// tmp-file paths, and release the lock on every exit path. THE ONE lock
-/// helper — `remove_comm_agents_for_workspace` and `clear_comm_unread` both
-/// call this rather than each spinning its own mkdir loop, so there is one
-/// lock protocol, not two with quietly different rules.
+/// Take the sot-comm registry lock (`<comm_home>/.registry.lock`, a file
+/// naming its holder: `comm_registry_lock`, the same lock as `comm-lib.sh`'s
+/// `with_lock`), run `f` with the registry and tmp-file paths, and release
+/// the lock on every exit path. THE ONE lock helper —
+/// `remove_comm_agents_for_workspace` and `clear_comm_unread` both call this,
+/// so there is one lock protocol, not two with quietly different rules.
 ///
-/// Bounded at `bound` (polled every 50ms) and FAILS CLOSED: when the lock
-/// can't be taken within it, this gives up and returns `None` rather than
-/// force-breaking it — `with_lock`'s own rule since PR #148 finding F2. A
-/// caller that skips its write this once is cosmetic (the next writer, or
-/// the next attempt, retries against a byte-identical row); a forced
-/// takeover can corrupt a concurrent shell writer's in-flight
-/// `registry.json.tmp`, which is not recoverable the same way.
+/// Bounded at `bound` (polled every 50ms) and FAILS CLOSED: a holder proved
+/// dead on this machine is reclaimed, and any other is never force-broken —
+/// `with_lock`'s own rule since PR #148 finding F2. The FAILED line, naming the
+/// holder and the recovery, goes to `tracing::warn` and this returns `None`. A
+/// caller that skips its write this once is cosmetic (the next writer, or the
+/// next attempt, retries against a byte-identical row); a forced takeover can
+/// corrupt a concurrent shell writer's in-flight `registry.json.tmp`, which is
+/// not recoverable the same way.
 ///
 /// `None` also on anything that keeps this from even starting: no
 /// `comm_registry_path()` (no `SOT_COMM_HOME`/`HOME`/`USERPROFILE`), or a
@@ -7109,65 +7110,22 @@ fn with_comm_registry_lock<T>(
     bound: std::time::Duration,
     f: impl FnOnce(&std::path::Path, &std::path::Path) -> T,
 ) -> Option<T> {
-    const POLL: std::time::Duration = std::time::Duration::from_millis(50);
     let reg_path = comm_registry_path()?;
     let dir = reg_path.parent()?.to_path_buf();
-    let lock_dir = dir.join(".registry.lock");
     let tmp_path = dir.join("registry.json.tmp");
 
-    let tries = (bound.as_millis() / POLL.as_millis()).max(1) as u32;
-    let mut acquired = false;
-    for _ in 0..tries {
-        match std::fs::create_dir(&lock_dir) {
-            Ok(()) => {
-                acquired = true;
-                break;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                std::thread::sleep(POLL);
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, lock = ?lock_dir, "comm registry lock error");
-                return None;
-            }
-        }
-    }
-    if !acquired {
-        tracing::warn!(
-            lock = ?lock_dir, ?bound,
-            "comm registry lock contended for the full bound — giving up \
-             (fail-closed: never force-broken, matching comm-lib.sh's \
-             with_lock since PR #148 F2)"
-        );
-        return None;
-    }
-
     // RAII release: `f` runs under the caller's `spawn_blocking`, which
-    // contains a panic (the awaiting task just sees a `JoinError`), but a
-    // plain "release after the call" would only run on the NORMAL return
-    // path — a panic mid-critical-section would leave `.registry.lock`
-    // behind forever, and since nothing force-breaks it any more (the
-    // fail-closed fix above), every subsequent writer — this daemon's own
-    // callers and every `comm-status.sh` hook on the shared home — would
-    // wedge closed permanently. The guard's `Drop` runs on unwind too, so
-    // the lock is released either way.
-    let _guard = CommRegistryLockGuard {
-        lock_dir: &lock_dir,
+    // contains a panic, but a plain "release after the call" would leave the
+    // lock behind on unwind, and every later writer would wedge closed. The
+    // held lock's `Drop` runs on unwind too.
+    let _held = match crate::comm_registry_lock::acquire(&dir.join(".registry.lock"), bound) {
+        Ok(held) => held,
+        Err(e) => {
+            tracing::warn!("comm registry lock: {e}");
+            return None;
+        }
     };
     Some(f(&reg_path, &tmp_path))
-}
-
-/// Releases `lock_dir` on drop — including during a panic unwind — so
-/// `with_comm_registry_lock` above always releases the mkdir-spinlock it
-/// took, whatever `f` does.
-struct CommRegistryLockGuard<'a> {
-    lock_dir: &'a std::path::Path,
-}
-
-impl Drop for CommRegistryLockGuard<'_> {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir(self.lock_dir);
-    }
 }
 
 /// `remove_comm_agents_for_workspace`'s lock bound: a `workspace.destroy`
@@ -8504,7 +8462,7 @@ mod with_comm_registry_lock_panic_tests {
     // the fail-closed fix means nothing force-breaks it any more, every
     // subsequent writer — this daemon's own callers AND every
     // `comm-status.sh` hook on the shared home — would then wedge closed
-    // permanently. `CommRegistryLockGuard`'s `Drop` must release on unwind
+    // permanently. The held lock's `Drop` must release on unwind
     // too.
     use super::with_comm_registry_lock;
 

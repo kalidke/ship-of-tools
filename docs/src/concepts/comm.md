@@ -9,6 +9,14 @@ work-state facts) and one append-only `inbox/<handle>.jsonl` per session.
 Discovery, catch-up after a sleep, and the work-state colours all read these
 files; nothing about them needs a live broker.
 
+**One lock guards the registry.** Every registry write holds
+`~/.sot-comm/.registry.lock`, a file naming its holder's host, pid and start. A
+holder that died on this machine is reclaimed by the next comm command here,
+through one marker file per dead holder, so exactly one waiter removes it; a
+holder that is alive, frozen, or on another machine is never forced, and the
+failure names it along with the recovery: run any comm command on its host, or
+run `comm-registry-lock-clear.sh`. The rules are in `comm/PROTOCOL.md`.
+
 **Delivery is a file.** A send to a handle this host's registry names is
 appended to that handle's inbox directly only when this host provably shares
 the hub's lock on `~/.sot-comm/`. Otherwise the frame goes to a daemon as

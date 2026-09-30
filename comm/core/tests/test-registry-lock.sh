@@ -1,0 +1,270 @@
+#!/usr/bin/env bash
+# test-registry-lock.sh — the registry lock (B1b): a file naming its holder,
+# made by link(2), and reclaimed only when its holder is proved dead on this
+# machine. One Linux box, hermetic.
+#
+#   1 a SIGKILLed holder is reclaimed: the waiter holds in under 3 s, the
+#     marker reclaim.<D> holds the waiter's ID, registry.json still parses;
+#   2 a live holder is never reclaimed: FAILED names it and "it is running",
+#     the lock is byte-identical, there is no marker, and the record's pid is
+#     the process that holds (the ID is computed there, never in a subshell);
+#   3 a frozen holder gives FAILED and later releases; a foreign machine, and
+#     the same machine-id under another host name, give FAILED "another
+#     machine"; the same machine and name with another boot is reclaimed;
+#   4 the race: 100 rounds, 3 waiters on one dead holder, one holder at a time,
+#     reclaim.<D> made each round (a waiter that judges the reclaimer after it
+#     exited may add reclaim.<reclaimer>, then declines to act);
+#   5 a marker held by a frozen reclaimer gives FAILED naming both, a marker
+#     held by a dead one is reclaimed through reclaim.<R>, both markers kept;
+#   6 the mixed rollout: an older peer's mkdir lock gives FAILED "older
+#     version" and is left as it was, with nothing linked into it; the older
+#     mkdir waiter waits on a file lock and proceeds after its release;
+#   7 zero tries (the heartbeat) still reclaims a dead holder, and gives up at
+#     once on a live one;
+#   8 the touches: a send against a killed holder reclaims and files; against
+#     a live holder it returns in about 1 s, exit 0, filed; comm-status
+#     against the same live holder waits its full 10 s and FAILs;
+#   9 the clear command removes an unprovable holder's lock through its
+#     marker, and refuses a holder this box proves alive.
+set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-registry-lock-XXXXXX")"
+[ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
+export SOT_COMM_HOME="$WORK/home"
+guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
+mkdir -p "$SOT_COMM_HOME/inbox"
+PIDS=()
+trap 'touch "$WORK/go" 2>/dev/null; for p in "${PIDS[@]}"; do kill -CONT "$p" 2>/dev/null; kill -9 "$p" 2>/dev/null; done; rm -rf "${WORK:?}"' EXIT
+
+BIN="$WORK/bin"
+cp -r "$SCRIPTS_DIR" "$BIN"
+cat >> "$BIN/comm-lib.sh" <<'STUB'
+
+# ---- no daemon, a fixture inbox mount (test only) ----------------------------
+sot_daemon_endpoint() { return 1; }
+sot_relay_endpoint() { [ -n "${1:-}" ] || return 1; printf '%s\n' "$1"; }
+_sot_findmnt() { printf '%s\n' "nfs4 rw,vers=4.2,local_lock=none filer.example:/export/home"; }
+_sot_machine_id() { printf '0123456789abcdef0123456789abcdef'; }
+STUB
+printf '%s\n' "nfs4 filer.example:/export/home" > "$SOT_COMM_HOME/inbox-lock-manager"
+LIB="$BIN/comm-lib.sh"
+P="$SOT_COMM_HOME/.registry.lock"
+export SOT_COMM_TEST_LOCK_SETTLE=0.05
+
+PASS=0; FAIL=0
+check() {  # run in this shell, not a subshell, so PIDS reaches the EXIT trap
+    local desc="$1" fn="$2"
+    if "$fn" > "$WORK/why" 2>&1; then
+        echo "PASS: $desc"; PASS=$((PASS + 1))
+    else
+        echo "FAIL: $desc — $(tail -n 3 "$WORK/why")"; FAIL=$((FAIL + 1))
+    fi
+}
+contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
+lib() { bash -c ". '$LIB'; $1"; }
+field() { cut -d: -f"$2" <<<"$1"; }
+marker() { printf '%s.reclaim.%s' "$P" "${1//:/.}"; }
+markers() { find "$SOT_COMM_HOME" -maxdepth 1 -name '.registry.lock.reclaim.*' | wc -l; }
+reset() {
+    rm -f "${SOT_COMM_HOME:?}"/.registry.lock*
+    rmdir "${P:?}" 2>/dev/null
+    rm -f "${WORK:?}/go" "$WORK/ready"
+    printf '{"protocol_version": 1, "agents": {"x": {"last_seen": "t"}}}\n' > "$SOT_COMM_HOME/registry.json"
+    return 0
+}
+SELF="$(lib '_sot_lock_self_id; echo "$_SOT_LOCK_SELF"')"   # name:machine:boot:pidns
+
+# A holder SIGKILLed in its critical section; prints the record it left.
+dead_holder() { lib 'with_lock kill -9 $BASHPID' 2>/dev/null; cat "$P"; }
+# A holder that holds until $WORK/go exists; $1 = STOP freezes it in-lock.
+live_holder() {
+    local i
+    bash -c ". '$LIB'; hold() { : > '$WORK/ready'; ${1:+kill -STOP \$BASHPID;} while [ ! -e '$WORK/go' ]; do sleep 0.05; done; }; with_lock hold" &
+    HOLDER=$!; PIDS+=("$HOLDER")
+    for i in $(seq 100); do [ -e "$WORK/ready" ] && return 0; sleep 0.05; done
+    echo "the holder never took the lock"; return 1
+}
+end_holder() { touch "$WORK/go"; kill -CONT "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; return 0; }
+# A process that prints its own record to $WORK/r and then freezes (STOP) or dies (KILL).
+record_then() {
+    rm -f "${WORK:?}/r"
+    bash -c ". '$LIB'; _sot_lock_self_id; echo \"\$_SOT_LOCK_ID\" > '$WORK/r.tmp'; mv '$WORK/r.tmp' '$WORK/r'; kill -$1 \$BASHPID" &
+    R=$!; PIDS+=("$R")
+    local i; for i in $(seq 100); do [ -s "$WORK/r" ] && break; sleep 0.05; done
+    [ "$1" = KILL ] && wait "$R" 2>/dev/null
+    return 0
+}
+
+t1() {
+    reset; local d t0 ms me
+    d="$(dead_holder)"
+    t0=$(date +%s%N)
+    lib '_sot_lock_self_id; echo "$_SOT_LOCK_ID" > "'"$WORK"'/me"; with_lock registry_touch x' || { echo "waiter failed"; return 1; }
+    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+    [ "$ms" -lt 3000 ] || { echo "took ${ms}ms"; return 1; }
+    me="$(cat "$WORK/me")"
+    [ "$(cat "$(marker "$d")")" = "$me" ] || { echo "marker does not hold the waiter's ID"; return 1; }
+    [ ! -e "$P" ] || { echo "lock not released"; return 1; }
+    jq -e '.agents.x.last_seen != "t"' "$SOT_COMM_HOME/registry.json" >/dev/null || { echo "registry.json not written"; return 1; }
+}
+check "1: a SIGKILLed holder is reclaimed, its marker holds the waiter, registry.json parses" t1
+
+t2() {
+    reset; local before err
+    live_holder || return 1
+    before="$(cat "$P")"
+    [ "$(field "$before" 5)" = "$HOLDER" ] || { echo "record pid $(field "$before" 5) is not the holder $HOLDER"; end_holder; return 1; }
+    err="$(lib 'SOT_LOCK_MAX_TRIES=4 with_lock true' 2>&1)" && { echo "waiter took a live lock"; end_holder; return 1; }
+    [ "$(cat "$P")" = "$before" ] || { echo "the lock changed"; end_holder; return 1; }
+    [ "$(markers)" = 0 ] || { echo "a marker was made"; end_holder; return 1; }
+    contains "$err" "is held by $(field "$before" 1) pid $HOLDER start $(field "$before" 6) (" || { echo "$err"; end_holder; return 1; }
+    contains "$err" "): it is running. If it is dead, run any comm command on $(field "$before" 1), or run comm-registry-lock-clear.sh." || { echo "$err"; end_holder; return 1; }
+    end_holder
+    [ ! -e "$P" ] || { echo "not released"; return 1; }
+}
+check "2: a live holder is named and never reclaimed; its record names the holding process" t2
+
+t3() {
+    reset; local err before name machine boot
+    live_holder STOP || return 1
+    before="$(cat "$P")"
+    err="$(lib 'SOT_LOCK_MAX_TRIES=4 with_lock true' 2>&1)" && { echo "took a frozen lock"; end_holder; return 1; }
+    contains "$err" "pid $HOLDER start" && contains "$err" "it is running" || { echo "$err"; end_holder; return 1; }
+    [ "$(cat "$P")" = "$before" ] || { echo "the lock changed"; end_holder; return 1; }
+    end_holder
+    [ ! -e "$P" ] || { echo "the thawed holder did not release"; return 1; }
+    IFS=: read -r name machine boot _ <<<"$SELF"
+    printf 'elsewhere:%s:%s:1:4242:1\n' "ffffffffffffffffffffffffffffffff" "00000000-0000-0000-0000-000000000000" > "$P"
+    err="$(lib 'SOT_LOCK_MAX_TRIES=2 with_lock true' 2>&1)" && { echo "took a foreign lock"; return 1; }
+    contains "$err" "held by elsewhere pid 4242 start 1 (" && contains "$err" "it is on another machine" || { echo "$err"; return 1; }
+    printf 'elsewhere:%s:%s:1:4242:1\n' "$machine" "00000000-0000-0000-0000-000000000000" > "$P"
+    err="$(lib 'SOT_LOCK_MAX_TRIES=2 with_lock true' 2>&1)" && { echo "a shared machine-id under another name was taken as a reboot"; return 1; }
+    contains "$err" "it is on another machine" || { echo "$err"; return 1; }
+    printf '%s:%s:%s:1:4242:1\n' "$name" "$machine" "00000000-0000-0000-0000-000000000000" > "$P"
+    lib 'with_lock true' || { echo "the reboot proof did not reclaim"; return 1; }
+    [ "$(markers)" = 1 ] || { echo "no marker for the rebooted holder"; return 1; }
+}
+check "3: frozen -> FAILED then released; another machine -> FAILED; same machine, other boot -> reclaimed" t3
+
+t4() {
+    reset; local round d outs w
+    for round in $(seq 100); do
+        d="$(dead_holder)"
+        outs=()
+        for w in 1 2 3; do
+            lib "crit() { mkdir '$WORK/cs' || echo OVERLAP; sleep 0.01; rmdir '${WORK:?}/cs'; echo held; }; with_lock crit" > "$WORK/w$w" 2>&1 &
+            outs+=($!)
+        done
+        wait "${outs[@]}"
+        for w in 1 2 3; do
+            [ "$(cat "$WORK/w$w")" = held ] || { echo "round $round waiter $w: $(cat "$WORK/w$w")"; return 1; }
+        done
+        [ "$(markers)" -ge "$round" ] || { echo "round $round: $(markers) markers"; return 1; }
+        [ -e "$(marker "$d")" ] || { echo "round $round: no marker for the dead holder"; return 1; }
+    done
+}
+check "4: 100 rounds of 3 waiters on a dead holder: one holder at a time, reclaim.<D> made" t4
+
+t5() {
+    reset; local d r err
+    d="$(dead_holder)"
+    record_then STOP; r="$(cat "$WORK/r")"
+    printf '%s\n' "$r" > "$(marker "$d")"
+    err="$(lib 'SOT_LOCK_MAX_TRIES=4 with_lock true' 2>&1)" && { echo "took past a frozen reclaimer"; return 1; }
+    contains "$err" "is held by $(field "$d" 1) pid $(field "$d" 5) " || { echo "$err"; return 1; }
+    contains "$err" "it is dead, but its reclaim by $(field "$r" 1) pid $(field "$r" 5) did not finish: it is running" || { echo "$err"; return 1; }
+    [ "$(cat "$P")" = "$d" ] || { echo "the lock changed"; return 1; }
+    kill -9 "$R"; wait "$R" 2>/dev/null
+    lib 'with_lock true' || { echo "the nested reclaim failed"; return 1; }
+    [ -e "$(marker "$d")" ] && [ -e "$(marker "$r")" ] || { echo "a marker is gone"; return 1; }
+}
+check "5: a frozen reclaimer is named with the holder; a dead one is reclaimed through reclaim.<R>" t5
+
+t6() {
+    reset; local err
+    mkdir "$P"
+    err="$(lib 'SOT_LOCK_MAX_TRIES=4 with_lock true' 2>&1)" && { echo "took an older peer's lock"; return 1; }
+    contains "$err" "held by an older version that records no holder" || { echo "$err"; return 1; }
+    [ -d "$P" ] && [ -z "$(ls -A "$P")" ] || { echo "the older lock was changed or linked into"; return 1; }
+    rmdir "${P:?}"
+    live_holder || return 1
+    # f8a6a107's with_lock loop, verbatim but for the callee.
+    bash -c 'LOCKDIR="'"$P"'"; tries=0
+        while ! mkdir "$LOCKDIR" 2>/dev/null; do tries=$((tries + 1)); [ "$tries" -gt 200 ] && exit 1; sleep 0.05; done
+        echo got; rmdir "$LOCKDIR"' > "$WORK/old" &
+    local old=$!
+    sleep 0.5
+    [ ! -s "$WORK/old" ] || { echo "the older waiter entered a held lock"; end_holder; return 1; }
+    end_holder
+    wait "$old" || { echo "the older waiter never entered"; return 1; }
+    [ "$(cat "$WORK/old")" = got ] && [ ! -e "$P" ] || { echo "older waiter: $(cat "$WORK/old")"; return 1; }
+}
+check "6: an older peer's mkdir lock is FAILED and untouched; an older waiter waits on a file lock" t6
+
+t7() {
+    reset; local t0 ms
+    dead_holder >/dev/null
+    lib 'SOT_LOCK_MAX_TRIES=0 with_lock registry_touch x' || { echo "zero tries did not reclaim"; return 1; }
+    live_holder || return 1
+    t0=$(date +%s%N)
+    lib 'SOT_LOCK_MAX_TRIES=0 with_lock true' 2>/dev/null && { echo "took a live lock"; end_holder; return 1; }
+    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+    end_holder
+    [ "$ms" -lt 1000 ] || { echo "zero tries waited ${ms}ms"; return 1; }
+}
+check "7: zero tries reclaims a dead holder and gives up at once on a live one" t7
+
+join_rows() {
+    ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST=testhost "$BIN/comm-join.sh" --name t-peer ) >/dev/null 2>&1 &&
+    ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-sender.txt" SOT_COMM_TEST_HOST=testhost "$BIN/comm-join.sh" --name t-sender ) >/dev/null 2>&1 &&
+    : > "$SOT_COMM_HOME/inbox/t-peer.jsonl"
+}
+send() {  # MSG — the send's stdout; SEND_RC, SEND_MS
+    local t0; t0=$(date +%s%N)
+    SEND_OUT="$(cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-sender.txt" SOT_COMM_TEST_HOST=testhost \
+        "$BIN/comm-send.sh" @t-peer "$1" 2>"$WORK/send.err")"
+    SEND_RC=$?; SEND_MS=$(( ($(date +%s%N) - t0) / 1000000 ))
+}
+filed() { jq -e --arg m "$1" 'select(.msg == $m)' "$SOT_COMM_HOME/inbox/t-peer.jsonl" >/dev/null 2>&1; }
+
+t8() {
+    reset; rm -f "${SOT_COMM_HOME:?}/registry.json"; join_rows || { echo "join failed"; return 1; }
+    local d err t0 ms
+    d="$(dead_holder)"
+    send "after a killed holder"
+    [ "$SEND_RC" = 0 ] && filed "after a killed holder" || { echo "send rc=$SEND_RC: $SEND_OUT $(cat "$WORK/send.err")"; return 1; }
+    [ -e "$(marker "$d")" ] && [ ! -e "$P" ] || { echo "the send did not reclaim"; return 1; }
+    live_holder || return 1
+    send "beside a live holder"
+    [ "$SEND_RC" = 0 ] && filed "beside a live holder" || { echo "send rc=$SEND_RC: $SEND_OUT"; end_holder; return 1; }
+    [ "$SEND_MS" -ge 900 ] && [ "$SEND_MS" -lt 4000 ] || { echo "the send took ${SEND_MS}ms"; end_holder; return 1; }
+    t0=$(date +%s%N)
+    err="$(cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST=testhost "$BIN/comm-status.sh" working 2>&1)" \
+        && { echo "comm-status wrote under a live holder"; end_holder; return 1; }
+    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+    end_holder
+    [ "$ms" -ge 10000 ] || { echo "comm-status gave up after ${ms}ms"; return 1; }
+    contains "$err" "is held by" && contains "$err" "it is running" || { echo "$err"; return 1; }
+}
+check "8: send reclaims a killed holder and files; beside a live one ~1 s, exit 0, filed; comm-status waits 10 s and FAILs" t8
+
+t9() {
+    reset; local out
+    printf 'elsewhere:ffffffffffffffffffffffffffffffff:00000000-0000-0000-0000-000000000000:1:4242:1\n' > "$P"
+    out="$(SOT_COMM_TEST_LOCK_SETTLE=0.05 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" || { echo "$out"; return 1; }
+    [ ! -e "$P" ] && [ -e "$(marker 'elsewhere:ffffffffffffffffffffffffffffffff:00000000-0000-0000-0000-000000000000:1:4242:1')" ] \
+        || { echo "not cleared through its marker: $out"; return 1; }
+    live_holder || return 1
+    out="$(bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" && { echo "cleared a live holder"; end_holder; return 1; }
+    [ -e "$P" ] || { echo "a live holder's lock is gone"; end_holder; return 1; }
+    end_holder
+    contains "$out" "NOT cleared" && contains "$out" "it is running" || { echo "$out"; return 1; }
+}
+check "9: the clear command clears an unprovable holder through its marker and refuses a live one" t9
+
+echo "---"
+echo "$PASS passed, $FAIL failed"
+[ "$FAIL" = 0 ]

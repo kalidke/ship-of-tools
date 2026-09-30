@@ -233,6 +233,11 @@ jobs:
           # A missing jq, flock or perl is named to the session by poll, session
           # start and the Stop hook, never passed silently.
           bash test-comm-deps.sh
+          # B1b: the registry lock names its holder, a holder proved dead on
+          # this machine is reclaimed through one marker, and any other is
+          # named in the FAILED line; the race, the mixed rollout, the touch
+          # bound and the clear command.
+          bash test-registry-lock.sh
 
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
   # `ClosePseudoConsole` that returns immediately — it cannot exercise the

@@ -14,7 +14,9 @@ all clients are mutually addressable through the same registry and inboxes.
 ~/.sot-comm/
   bin/                     # installed scripts (the reference client)
   registry.json            # who is reachable + liveness  (source of truth for discovery)
-  .registry.lock/          # mkdir-based spinlock for registry writes
+  .registry.lock           # the registry-write lock: a file naming its holder (below)
+  .registry.lock.reclaim.<id>  # one marker per dead holder reclaimed; kept forever
+  .registry.lock.tmp.<id>.<n>  # a take's temp file, removed by the take
   inbox/<name>.jsonl       # durable per-recipient inbox (append-only)
   read/<name>.cursor       # per-recipient read cursor (`<count> <crc>-<len>`: lines shown, and a hash of the last)
   self/<host>__<pane>.txt  # this pane's declared agent name (identity recovery)
@@ -66,6 +68,59 @@ turn-end to `idle`. The daemon joins these fields onto `workspace.list` (as
 `agent_name`) so the frontend — which cannot read this registry directly —
 renders `summary` as the per-session glance, colored by `state` and aged off
 `status_at`.
+
+## The registry lock
+
+Every write to `registry.json` (the scripts' `with_lock`, the daemon's
+`with_comm_registry_lock`) holds `.registry.lock`, a regular file whose one line
+names its holder: `name:machine:boot:pidns:pid:start` — the host name, Linux
+`/etc/machine-id`, the kernel's `boot_id`, the pid namespace, the pid, and that
+pid's start tick (field 22 of `/proc/<pid>/stat`). A field that cannot be read
+is `-`, which never equals anything; off Linux the last four proof fields are
+`-`. In file names ':' is written '.', because Windows reads a ':' in a name as
+a stream; the record keeps its colons.
+
+- **Take.** Write the record to a temp file and `link(2)` it to the lock (the
+  command `link`, never `ln`, which links INTO an older peer's lock directory
+  and "succeeds"). The lock never exists without its holder, and a link never
+  replaces anything. A failed link whose own temp file now has two links was
+  taken (a retransmitted NFSv3 LINK answers "exists" for the caller's own link).
+  **Release** removes the file.
+- **Proof of death** (Linux only, and only from the holder's own machine): the
+  same boot and pid namespace, with the pid gone or its start tick changed; or
+  the same machine-id AND the same host name with a different boot. This
+  assumes a machine-id is unique to one machine: a cloned image that shares one
+  would read a live clone as rebooted. No timeout proves anything, so a frozen
+  holder, one on another machine, or any unprovable one, is never forced.
+- **Reclaim.** It runs on the FIRST failed take, before any sleep. A waiter that
+  proves the holder D dead reads the mount (a local filesystem, or NFS without
+  `nocto`), takes the marker `.registry.lock.reclaim.<D>` by the same link step,
+  settles 1 s, reads the lock again fresh (open its folder, then open the
+  record), and removes it only if it still names D. Only the marker's creator
+  acts; if the creator died too, the next waiter proves that and takes
+  `reclaim.<creator>`, which carries the same authority. Markers are kept
+  forever. The settle is not counted as a try, and a removed lock is retaken at
+  once.
+- **Bounds.** 50 ms polls: 10 s for join, leave, spawn, despawn, status and the
+  daemon; about 1 s for the best-effort `last_seen` touches of send, poll and
+  spawn; 0 tries for the heartbeat, which still reclaims a dead holder.
+- **FAILED** names the holder and the recovery, in the scripts and in the
+  daemon's log alike: `registry lock <path> is held by <host> pid <pid> start
+  <tick> (<age> old): <why>. If it is dead, run any comm command on <host>, or
+  run comm-registry-lock-clear.sh.` `comm-registry-lock-clear.sh` takes the
+  reclaim path above with a person's word in place of the liveness proof, and
+  nothing else: it never clears a holder this box proves alive, and it is
+  never a bare `rm`, which would let a pending reclaimer remove the next
+  holder's lock.
+- **Older peers.** An older version's lock is a holderless directory: it is
+  never reclaimed, and FAILED says "held by an older version that records no
+  holder". An older waiter's `mkdir` fails on the file and waits as before.
+- **Residual.** A dead holder on a server where nothing comm-related runs again
+  wedges registry writes fleet-wide until someone runs the clear command: every
+  other box FAILs each ruled lock after 10 s, and every send or poll waits out
+  the ~1 s touch bound. The 1 s settle is the only guard against a dead holder's
+  late operations, its orphaned release `rm` and its in-flight calls; one that
+  lands later than that is not covered.
 
 ## Message frame (inbox JSONL, one object per line)
 

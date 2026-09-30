@@ -183,5 +183,5 @@ else
     deliver "$TARGET"
 fi
 
-with_lock registry_touch "$NAME" 2>/dev/null || true
+SOT_LOCK_MAX_TRIES=20 with_lock registry_touch "$NAME" 2>/dev/null || true
 if [ "$BROADCAST" = true ] && [ "$n" -ne "$of" ]; then exit 1; fi

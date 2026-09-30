@@ -206,18 +206,19 @@ at_s=$(date -u -d "$at" +%s 2>/dev/null || echo 0)
 [ $((now_s - at_s)) -ge 60 ] || exit 0
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-# Best-effort merge under the registry's mkdir-spinlock convention
-# (comm-lib.sh's with_lock uses LOCKDIR="$COMM_HOME/.registry.lock" — a
-# DIRECTORY). No spinning here: if the lock is held, just skip — the next
-# tool call retries within a minute anyway.
-LOCKDIR="$COMM_HOME/.registry.lock"
-if mkdir "$LOCKDIR" 2>/dev/null; then
-    trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
+# Best-effort merge under the registry lock (comm-lib.sh's with_lock, a file
+# naming its holder). Zero tries: a held lock is skipped — the next tool call
+# retries within a minute anyway — but a dead holder on this machine is still
+# reclaimed, because the reclaim runs on the first failed take. Silent: the
+# subshell's stderr is dropped, and no readable comm-lib.sh means skip.
+hb_merge() {
     jq --arg n "$NAME" --arg t "$ts" \
        'if .agents[$n] and .agents[$n].floor
         then .agents[$n] += {status_at:$t, last_seen:$t} else . end' \
        "$REGISTRY" > "$REGISTRY.hb.tmp" 2>/dev/null && mv "$REGISTRY.hb.tmp" "$REGISTRY"
-    rmdir "$LOCKDIR" 2>/dev/null
-    trap - EXIT
-fi
+}
+hb_lib="$COMM_HOME/bin/comm-lib.sh"
+[ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
+[ -r "$hb_lib" ] || exit 0
+( . "$hb_lib" && SOT_LOCK_MAX_TRIES=0 with_lock hb_merge ) >/dev/null 2>&1
 exit 0
