@@ -82,7 +82,7 @@ for tool in jq flock perl; do
         out="$(STOP "$P")"
         has "a later block is prefixed by the $tool warning" "$out" "$tool is missing"
         has "a later block still carries the mail notice" "$out" "New sot-comm mail"
-        rm -f "$INBOX_DIR/$NAME.jsonl" "$READ_DIR/$NAME.cursor" "$SOT_COMM_HOME"/state/mail-*.tick
+        rm -f "${INBOX_DIR:?}/$NAME.jsonl" "${READ_DIR:?}/$NAME.cursor" "${SOT_COMM_HOME:?}"/state/mail-*.tick
     fi
     out="$(STOP "$PATH")"
     hasnt "the warning clears when $tool is back" "$out" "is missing"
