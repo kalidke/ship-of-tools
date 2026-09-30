@@ -208,9 +208,19 @@ nc_hold() {
         local ps1="$SCRIPT_DIR/comm-pipe-request.ps1"
         [ -f "$ps1" ] || {
             echo "ERROR: comm-pipe-request.ps1 not found next to comm-relay.sh ($SCRIPT_DIR)" >&2; return 1; }
+        # A bounded hold that runs out is its BOUND, not a failure: 124 is
+        # how `timeout` reports the ordinary end of every `ask` window, and
+        # under this script's `set -e` that status aborted `ask` before it
+        # could print its own "not an error -- the frame is filed" verdict.
+        # Same class as the verdict block in send_frame below: a transport's
+        # exit status overruling a record that had already decided. The two
+        # branches after this one say it by returning 0 outright; this one
+        # keeps a REAL failure (a pipe that refuses the connection) visible.
+        local rc=0
         sot_hello_frame "$HELLO_ROLE" | timeout "$secs" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-            -File "$ps1" -PipeName "$EP_PIPE" -Mode Hold -TimeoutSec "$secs"
-        return
+            -File "$ps1" -PipeName "$EP_PIPE" -Mode Hold -TimeoutSec "$secs" || rc=$?
+        if [ "$rc" -eq 124 ]; then rc=0; fi
+        return "$rc"
     fi
     if [ -n "$EP_SSH_TARGET" ]; then
         # The self-heal /dev/tcp was written for (this function's own doc
@@ -326,22 +336,43 @@ send_frame() {  # $1 to, $2 text
         esac
     done < <(printf '%s\n' "$frame" | nc_send 2>/dev/null)
 
-    # BLOCKER 1's loud-failure requirement: a bridge that died or timed out
-    # left no ack to read, and the branch below would have reported the
-    # generic "unreachable, nothing filed" -- true, but silent about WHY.
-    # This is more specific and takes priority over it.
+    # THE VERDICT, decided in ONE place with ONE stated precedence:
+    #
+    #   1. this sender's own receipt -- the frame was appended;
+    #   2. the daemon's own ack -- what it said about the send;
+    #   3. the bridge's reason -- consulted ONLY where 1 and 2 said nothing;
+    #   4. the generic "unreachable, nothing filed".
+    #
+    # The RECORD decides; the transport only EXPLAINS. An exit status, a
+    # signal or a line of stderr cannot turn an appended frame into a
+    # failure -- it exists to explain a verdict the record could not
+    # supply. Every earlier shape here assembled the verdict from
+    # independent checks whose ORDER was the behaviour, and each fix added
+    # one more in front of the others: that is how a filed AND receipted
+    # frame came to be reported FAILED because the ssh child took SIGPIPE
+    # (141) or an abrupt teardown (255) on the way out -- the loop above
+    # `break`s the instant the receipt lands, closing the pipe the child is
+    # still writing to -- and how a plainly unanswered ssh send reported
+    # the bridge's own 5s timeout, the very bound the receipt window IS,
+    # instead of NOT CONFIRMED and the roster that diagnoses it.
+    #
+    # Reading the reason is not consulting it: it is gathered here (and the
+    # file removed either way) so the branches below stay one decision.
+    local bridge_reason=""
     if [ -n "$_SOT_BRIDGE_FAIL_FILE" ] && [ -s "$_SOT_BRIDGE_FAIL_FILE" ]; then
-        local bridge_reason; bridge_reason="$(cat "$_SOT_BRIDGE_FAIL_FILE")"
-        rm -f "$_SOT_BRIDGE_FAIL_FILE"
-        if [ -z "$1" ]; then
-            echo "FAILED -> <all>: $bridge_reason" >&2
-        else
-            echo "FAILED -> @$1: $bridge_reason" >&2
-        fi
-        return 1
+        bridge_reason="$(cat "$_SOT_BRIDGE_FAIL_FILE")"
     fi
     rm -f "$_SOT_BRIDGE_FAIL_FILE"
 
+    # 1. A receipt carrying this sender's own frame id (the loop above
+    # accepts no other) is the whole verdict, and nothing outranks it.
+    if [ "$rcpt_seen" = true ] && [ -n "$1" ]; then
+        echo "filed -> @$1 (by ${rcpt_filer:-an unnamed filer}, relay)"
+        return 0
+    fi
+    # 2. No receipt: the ack is the rest of the record, and it decides on
+    # its own -- a transport that died on the way out explains nothing a
+    # daemon's own answer has not already settled.
     if [ "$ack_ok" = true ] && [ "$ack_array" = true ]; then
         if [ -z "$1" ]; then
             # --all: there's no single named recipient to check for —
@@ -360,10 +391,6 @@ send_frame() {  # $1 to, $2 text
             echo "NOT CONFIRMED: this daemon predates filer receipts; nothing can vouch for @$1." >&2
             return 1
         fi
-        if [ "$rcpt_seen" = true ]; then
-            echo "filed -> @$1 (by ${rcpt_filer:-an unnamed filer}, relay)"
-            return 0
-        fi
         # The frame WAS sent and may well have been filed; nothing claimed
         # it. This is the ONLY negative: no filer can honestly report "not
         # me" (it cannot know about the others, and every attached frontend
@@ -377,9 +404,20 @@ send_frame() {  # $1 to, $2 text
         echo "NOT CONFIRMED: sent for @$1; nobody claimed it within 5s. Attached: ${joined%, }." >&2
         return 1
     fi
-    # `ok` false, or `receivers` absent (an OLD daemon that can't prove a
-    # receiver either way): not a success to report — same failure branch as
-    # no ack at all.
+    # 3. `ok` false, or `receivers` absent (an OLD daemon that can't prove a
+    # receiver either way), or no ack at all: the record supplied no verdict,
+    # so NOW the bridge's own reason gets to speak. BLOCKER 1's loud-failure
+    # requirement lives exactly here -- a bridge that died or timed out with
+    # nothing to show for it must say WHY, never the generic line below.
+    if [ -n "$bridge_reason" ]; then
+        if [ -z "$1" ]; then
+            echo "FAILED -> <all>: $bridge_reason" >&2
+        else
+            echo "FAILED -> @$1: $bridge_reason" >&2
+        fi
+        return 1
+    fi
+    # 4. Nothing answered and the transport has no complaint of its own.
     echo "ERROR: unreachable, nothing filed — no ack from the daemon at $ENDPOINT." >&2
     echo "      (If every send does this, the daemon may predate agent.send.)" >&2
     return 1

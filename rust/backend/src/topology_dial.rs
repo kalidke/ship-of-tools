@@ -31,31 +31,31 @@ enum Conn {
 /// the connection is open, so any early return (a bad hello, a reply that
 /// never comes) cannot leak the process the way a bare `Child` dropped on
 /// the floor would (the default `Drop` for `std::process::Child` neither
-/// kills nor waits). Also holds the child's `stderr` (round-2 item 3): a
-/// refused login used to reach the operator as the generic "no reply to
-/// topology.set within 8 frames" -- ssh's own line ("Permission denied",
-/// "Could not resolve hostname") is what `last_stderr_line` below folds
-/// into the caller's error instead.
+/// kills nor waits). Also carries the last line the child wrote to its
+/// `stderr` (round-2 item 3): a refused login used to reach the operator
+/// as the generic "no reply to topology.set within 8 frames" -- ssh's own
+/// line ("Permission denied", "Could not resolve hostname") is what
+/// `stderr_hint` below folds into the caller's error instead. That line arrives through the drain thread
+/// `split()` spawns and is only ever READ here, never waited for: a
+/// `read_to_string` on the child's stderr returns when EVERY write end of
+/// that pipe is closed, and killing this child closes none of the ends its
+/// own children inherited -- an operator's `ControlMaster`/`ControlPersist`
+/// or `ProxyCommand` entry applies even though the argv here sets none of
+/// them, and the mux master or proxy child then holds the pipe open. So the
+/// error path used to hang where it now reports (round-3 blocker), and a
+/// hang is strictly worse than a poor message.
 struct ChildGuard {
     child: std::process::Child,
-    stderr: Option<std::process::ChildStderr>,
+    last_stderr: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl ChildGuard {
-    /// Only ever called on an error path, after the caller has already
-    /// decided to fail: kills the child (a no-op if it is already dead),
-    /// then reads whatever is left on its stderr pipe to the end. Reading
-    /// BEFORE that kill would block on a healthy, still-running child's
-    /// open pipe -- the one thing this must never do to a connection that
-    /// might otherwise still succeed.
-    fn last_stderr_line(&mut self) -> Option<String> {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let mut stderr = self.stderr.take()?;
-        use std::io::Read;
-        let mut buf = String::new();
-        let _ = stderr.read_to_string(&mut buf);
-        buf.lines().map(str::trim).rev().find(|l| !l.is_empty()).map(str::to_string)
+    /// The child's own complaint, as far as its drain thread has read one:
+    /// a clause that EXPLAINS an error the record could not, never a
+    /// verdict of its own, and so never worth blocking for. A line the
+    /// thread has not reached yet is simply absent.
+    fn stderr_hint(&self) -> Option<String> {
+        self.last_stderr.lock().ok().and_then(|line| line.clone())
     }
 }
 
@@ -93,8 +93,29 @@ impl Conn {
             Conn::Bridged(mut child) => {
                 let stdin = child.stdin.take().expect("spawn_sync pipes stdin");
                 let stdout = child.stdout.take().expect("spawn_sync pipes stdout");
-                let stderr = child.stderr.take();
-                Ok((Box::new(stdin), Box::new(stdout), Some(ChildGuard { child, stderr })))
+                // The child's last non-empty stderr line, drained on its own
+                // thread for as long as the child lives -- the pattern
+                // `rust/frontend/src/transport.rs` already uses for its own
+                // ssh child (a task there, a thread here, since this path is
+                // blocking). The thread outlives the call and is never joined:
+                // it holds one pipe and ends at EOF, whereas waiting for that
+                // EOF is precisely the hang `ChildGuard`'s doc describes.
+                let last_stderr = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+                if let Some(stderr) = child.stderr.take() {
+                    let sink = std::sync::Arc::clone(&last_stderr);
+                    std::thread::spawn(move || {
+                        use std::io::BufRead;
+                        for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+                            let line = line.trim();
+                            if !line.is_empty() {
+                                if let Ok(mut slot) = sink.lock() {
+                                    *slot = Some(line.to_string());
+                                }
+                            }
+                        }
+                    });
+                }
+                Ok((Box::new(stdin), Box::new(stdout), Some(ChildGuard { child, last_stderr })))
             }
         }
     }
@@ -152,7 +173,7 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
 /// short-lived, but the wire protocol allows it) are skipped rather than
 /// treated as a protocol violation.
 pub fn dial_and_call(endpoint: &str, self_host: &str, req_op: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
-    let (mut w, r, mut guard) = connect(endpoint)?.split().map_err(|e| format!("{endpoint}: {e}"))?;
+    let (mut w, r, guard) = connect(endpoint)?.split().map_err(|e| format!("{endpoint}: {e}"))?;
     let mut br = std::io::BufReader::new(r);
 
     // Folds the ssh child's last non-empty stderr line into `msg` on any
@@ -161,10 +182,12 @@ pub fn dial_and_call(endpoint: &str, self_host: &str, req_op: &str, payload: ser
     // within 8 frames" -- the daemon looking mute when `ssh` was the
     // thing that failed. A no-op for unix:/tcp:/pipe: (`guard` is `None`
     // there, nothing to fold) and safe to call after every kind of
-    // failure: `last_stderr_line` kills the child FIRST, so nothing here
-    // can block on a healthy child's still-open pipe.
-    let fold = |guard: &mut Option<ChildGuard>, msg: String| -> String {
-        match guard.as_mut().and_then(ChildGuard::last_stderr_line) {
+    // failure: it reads a value the drain thread parked, so no error path
+    // can block on a pipe whose other writers this process does not
+    // control (round-3 blocker). The child itself is killed and reaped by
+    // `ChildGuard`'s `Drop`, on this path and every other.
+    let fold = |guard: &Option<ChildGuard>, msg: String| -> String {
+        match guard.as_ref().and_then(ChildGuard::stderr_hint) {
             Some(line) => format!("{msg}: {line}"),
             None => msg,
         }
@@ -184,19 +207,19 @@ pub fn dial_and_call(endpoint: &str, self_host: &str, req_op: &str, payload: ser
     };
     let hello_payload = serde_json::to_value(hello).map_err(|e| e.to_string())?;
     codec::write_frame_blocking(&mut w, &Frame::req(0, sot_protocol::op::HELLO, hello_payload))
-        .map_err(|e| fold(&mut guard, format!("{endpoint}: hello: {e}")))?;
-    codec::read_frame_blocking(&mut br).map_err(|e| fold(&mut guard, format!("{endpoint}: hello reply: {e}")))?;
+        .map_err(|e| fold(&guard, format!("{endpoint}: hello: {e}")))?;
+    codec::read_frame_blocking(&mut br).map_err(|e| fold(&guard, format!("{endpoint}: hello reply: {e}")))?;
 
     const REQ_ID: u64 = 1;
     codec::write_frame_blocking(&mut w, &Frame::req(REQ_ID, req_op, payload))
-        .map_err(|e| fold(&mut guard, format!("{endpoint}: {req_op}: {e}")))?;
+        .map_err(|e| fold(&guard, format!("{endpoint}: {req_op}: {e}")))?;
     for _ in 0..8 {
-        let frame = codec::read_frame_blocking(&mut br).map_err(|e| fold(&mut guard, format!("{endpoint}: {req_op} reply: {e}")))?;
+        let frame = codec::read_frame_blocking(&mut br).map_err(|e| fold(&guard, format!("{endpoint}: {req_op} reply: {e}")))?;
         if frame.kind == Kind::Res && frame.id == REQ_ID {
             return Ok(frame.payload);
         }
     }
-    Err(fold(&mut guard, format!("{endpoint}: no reply to {req_op} within 8 frames")))
+    Err(fold(&guard, format!("{endpoint}: no reply to {req_op} within 8 frames")))
 }
 
 #[cfg(test)]
@@ -227,11 +250,26 @@ mod tests {
     /// outlive the test process if that kill were somehow skipped.
     #[cfg(unix)]
     fn write_stub_ssh(dir: &std::path::Path, marker: &std::path::Path) {
+        write_ssh_script(dir, &format!("touch '{}'\nsleep 5\n", marker.display()));
+    }
+
+    /// Writes `body` as an executable `ssh` in `dir`, for a test that puts
+    /// `dir` first on `PATH`.
+    #[cfg(unix)]
+    fn write_ssh_script(dir: &std::path::Path, body: &str) {
         let script = dir.join("ssh");
-        std::fs::write(&script, format!("#!/bin/sh\ntouch '{}'\nsleep 5\n", marker.display())).expect("write stub ssh");
+        std::fs::write(&script, format!("#!/bin/sh\n{body}")).expect("write stub ssh");
         let mut perms = std::fs::metadata(&script).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&script, perms).expect("chmod stub ssh");
+    }
+
+    /// PREPENDS `dir` to `PATH` rather than replacing it -- see the first
+    /// test below for why the rest of `PATH` has to survive.
+    #[cfg(unix)]
+    fn prepend_to_path(dir: &std::path::Path) {
+        let real = std::env::var_os("PATH").unwrap_or_default();
+        std::env::set_var("PATH", std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&real))).expect("join PATH"));
     }
 
     /// `Command::spawn()` (inside `connect`) returns as soon as the child
@@ -272,15 +310,11 @@ mod tests {
     fn ssh_endpoint_dispatches_to_a_stub_on_path_never_the_network() {
         let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _path_guard = EnvGuard::capture("PATH");
-        let real_path = std::env::var_os("PATH").unwrap_or_default();
-        let prepend = |dir: &std::path::Path| {
-            std::env::set_var("PATH", std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&real_path))).expect("join PATH"));
-        };
 
         let dir1 = tempfile::tempdir().expect("tempdir");
         let marker1 = dir1.path().join("invoked");
         write_stub_ssh(dir1.path(), &marker1);
-        prepend(dir1.path());
+        prepend_to_path(dir1.path());
         let conn = connect("ssh:hub").expect("ssh: must dispatch to the stub on PATH, not fail as unrecognised");
         let (_w, _r, guard) = conn.split().expect("split must hand back the stub's own stdin/stdout");
         assert!(guard.is_some(), "an ssh: connection must carry a ChildGuard, or dial_and_call returning early leaks the process");
@@ -290,7 +324,7 @@ mod tests {
         let dir2 = tempfile::tempdir().expect("tempdir");
         let marker2 = dir2.path().join("invoked");
         write_stub_ssh(dir2.path(), &marker2);
-        prepend(dir2.path());
+        prepend_to_path(dir2.path());
         let conn = connect("ssh:hub/gamma").expect("ssh:<target>/<host> must parse the same way dial.rs does");
         let (_w, _r, guard) = conn.split().unwrap();
         assert!(wait_for_marker(&marker2), "the ssh:hub/gamma arm must have exec'd OUR stub too");
@@ -304,6 +338,47 @@ mod tests {
         // above are irrelevant to these two.
         assert!(connect("ssh:-oProxyCommand=x").is_err(), "a leading-dash target must be refused");
         assert!(connect("ssh:Hub").is_err(), "an uppercase target must be refused (not a plain host name)");
+    }
+
+    /// ROUND-3 BLOCKER: no error path may WAIT on the ssh child's stderr.
+    /// The stub below leaves a background `sleep` holding that pipe after
+    /// exiting itself -- the shape a `ControlMaster` mux or a
+    /// `ProxyCommand` child has on a real box, and the shape
+    /// `write_stub_ssh` above already produces -- so a `read_to_string`
+    /// there returns only when the `sleep` does. Against the pre-fix
+    /// `ChildGuard::last_stderr_line` this call took the full five seconds
+    /// (measured 5.0s, with the assertion below reported as a FAIL); the
+    /// bound asserted is 3s, well under the sleep, so the failure mode is
+    /// a failed assertion rather than a suite that hangs. The folded line
+    /// itself is deliberately NOT asserted: it is a hint the drain thread
+    /// may or may not have parked by the time the read half EOFs, and a
+    /// test of a race is worth less than the bound this one proves.
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_child_whose_grandchild_holds_stderr_still_returns_promptly() {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_guard = EnvGuard::capture("PATH");
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Writes what a refused login writes, hands the inherited stderr to
+        // a `sleep` that outlives it, and dies. Nothing answers the hello,
+        // so `dial_and_call` takes an error path with a guard in hand.
+        // The `sleep` keeps STDERR and drops stdout, which is what a
+        // backgrounded `ControlPersist` master does (it redirects its own
+        // stdout and keeps writing to the inherited stderr) -- and it is
+        // also what makes this case specific: holding stdout too would
+        // stall the reply read instead, a different wait with a different
+        // cause, and the assertion below could no longer tell them apart.
+        write_ssh_script(dir.path(), "echo 'Permission denied (publickey).' >&2\nsleep 5 >/dev/null &\nexit 255\n");
+        prepend_to_path(dir.path());
+
+        let started = std::time::Instant::now();
+        let err = dial_and_call("ssh:hub", "selfbox", "topology.set", serde_json::json!({}))
+            .expect_err("a child that answers nothing must be an error, not a hang");
+        let waited = started.elapsed();
+        assert!(
+            waited < std::time::Duration::from_secs(3),
+            "the error path waited {waited:?}: it must not read a pipe other processes still hold open (err: {err})"
+        );
     }
 
     #[test]

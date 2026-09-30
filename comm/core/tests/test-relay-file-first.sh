@@ -410,24 +410,35 @@ case_an_empty_roster_is_no_such_handle() {
 # via nc_send. A stub `ssh` on PATH stands in for the far end -- never a
 # real ssh, never a real daemon.
 #
-# ROUND 2's OWN BLOCKER, and why this stub now writes to stderr before
-# doing anything else: the fix above redirected the child's stderr
-# unconditionally into the same file `send_frame` reads as "a real failure
-# happened", so anything a real `ssh` writes there on a CLEAN exit --
-# the `Warning: Permanently added ... to the list of known hosts.` line on
-# a first connection, a server `Banner`, any remote shell noise -- turned
-# a delivered frame into a reported FAILED with a nonzero exit. The stub
-# below is the noisy-success half of that pair: it writes exactly that
-# kind of line, then answers the protocol normally and exits 0. Held
-# constant against `case_ssh_endpoint_bridge_failure_says_failed_with_reason`
-# below (which already writes to stderr before it dies): the ONE thing
-# that differs between the two stubs is the exit status, which is what
-# makes this pair prove the verdict is decided on THAT, not on whether
-# stderr is empty.
-case_ssh_endpoint_reaches_a_stub_daemon_and_files() {
-    setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    local sshdir; sshdir="$(mktemp -d "$WORK/ssh-ok-XXXXXX")"
-    cat > "$sshdir/ssh" <<EOF
+# write_receipting_ssh_stub DIR EXIT_STATUS: a stub that answers the
+# protocol properly (a hello reply, then an ack and a receipt carrying the
+# sender's own frame id), writes the noise a real `ssh` writes on a first
+# connection, and exits with EXIT_STATUS the moment the receipt is out --
+# the shape of a child that dies on the way out of a DELIVERED send.
+#
+# Its exit status is the ONE variable across the three cases below, because
+# in every one of them the frame is filed and receipted before the child
+# goes anywhere: a verdict that changes with the status is the transport
+# overruling the record.
+#
+#   0   -- ROUND 2's OWN BLOCKER: the child's stderr was redirected into
+#          the same file `send_frame` read as "a real failure happened", so
+#          the `Warning: Permanently added ...` line on a first connection,
+#          a server `Banner` or any remote shell noise turned a delivered
+#          frame into a FAILED. Hence the stderr line every stub here
+#          writes before anything else.
+#   141 -- ROUND 3's: `send_frame` breaks out of its read loop the instant
+#          the receipt lands and closes the pipe the child is still writing
+#          to, so SIGPIPE is the child's ORDINARY way to end a successful
+#          send.
+#   255 -- the same thing for an abrupt ssh teardown.
+#
+# `case_ssh_endpoint_bridge_failure_says_failed_with_reason` below is the
+# other half: the same stderr line, a non-zero exit, and NO receipt -- so
+# the reason is all there is and it must still be reported loudly.
+write_receipting_ssh_stub() {  # DIR EXIT_STATUS
+    local dir="$1" status="$2"
+    cat > "$dir/ssh" <<EOF
 #!/bin/sh
 echo "Warning: Permanently added 'testtarget' (ED25519) to the list of known hosts." >&2
 while IFS= read -r line; do
@@ -438,17 +449,33 @@ while IFS= read -r line; do
             id=\$(printf '%s' "\$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
             printf '{"v":1,"id":1,"kind":"res","op":"agent.send","payload":{"ok":true,"receivers":["peer-$PEER_HOST"],"id":"%s"}}\n' "\$id"
             printf '{"v":1,"id":1,"kind":"evt","op":"agent.receipt","payload":{"id":"%s","filer":"peer-$PEER_HOST"}}\n' "\$id"
+            exit $status
             ;;
     esac
 done
+exit $status
 EOF
-    chmod +x "$sshdir/ssh"
+    chmod +x "$dir/ssh"
+}
+
+# The three cases are one body: a receipted send over an ssh child that then
+# exits with $1. The verdict must be the receipt's in all three.
+_filed_despite_ssh_exit() {  # EXIT_STATUS
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local sshdir; sshdir="$(mktemp -d "$WORK/ssh-exit$1-XXXXXX")"
+    write_receipting_ssh_stub "$sshdir" "$1"
     relay_send_with_path "$sshdir" "ssh:testtarget" send "@peer-$PEER_HOST" "over ssh"
-    [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    [ "$RELAY_RC" -eq 0 ] \
+        || { echo "  exited $RELAY_RC, want 0 (the ssh child exited $1 AFTER the receipt; out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
     contains "$RELAY_OUT" "filed -> @peer-$PEER_HOST (by peer-$PEER_HOST, relay)" \
-        || { echo "  verdict was '$RELAY_OUT' -- the bridge never reached the stub ssh"; return 1; }
+        || { echo "  verdict was '$RELAY_OUT', want the filed line (err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "FAILED" \
+        && { echo "  a filed and receipted frame still printed a FAILED line: '$RELAY_ERR'"; return 1; }
     return 0
 }
+case_ssh_endpoint_reaches_a_stub_daemon_and_files() { _filed_despite_ssh_exit 0; }
+case_a_receipt_outranks_a_sigpipe_exit() { _filed_despite_ssh_exit 141; }
+case_a_receipt_outranks_an_abrupt_teardown_exit() { _filed_despite_ssh_exit 255; }
 
 case_ssh_endpoint_bridge_failure_says_failed_with_reason() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
@@ -475,6 +502,32 @@ EOF
     return 0
 }
 
+# The same class a THIRD time, on the Windows receive path: `ask` files the
+# frame and then holds the pipe for a reply, and `timeout`'s 124 for the
+# ordinary end of that window aborted the script (`set -euo pipefail`) before
+# the "not an error -- the frame is filed" line it promises could print. A
+# stub `powershell.exe` stands in for the pipe driver -- never a real pipe,
+# never a real daemon; the target is a registry row, so the send itself needs
+# no wire at all and the ONLY thing under test is what the window's end does
+# to a verdict already reached.
+case_an_ask_window_ending_does_not_unsay_the_filed_frame() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local bindir; bindir="$(mktemp -d "$WORK/ps-hold-XXXXXX")"
+    # `exec`, so `timeout`'s signal reaches the sleep itself: a shell that
+    # left a `sleep` holding the hold's stdout would stall the reply filter
+    # reading it, which is a different wait with a different cause.
+    printf '#!/bin/sh\nexec sleep 30\n' > "$bindir/powershell.exe"
+    chmod +x "$bindir/powershell.exe"
+    relay_send_with_path "$bindir" "pipe:sot-test-hold" ask "@$TARGET" "anyone there" 1
+    [ "$RELAY_RC" -eq 0 ] \
+        || { echo "  exited $RELAY_RC, want 0 -- the window's own timeout was read as a failure (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_OUT" "filed -> @$TARGET" \
+        || { echo "  the send's own verdict is missing: '$RELAY_OUT'"; return 1; }
+    contains "$RELAY_OUT" "TIMEOUT: no reply from @$TARGET in 1s" \
+        || { echo "  the timeout line this file promises never printed: '$RELAY_OUT' (err: '$RELAY_ERR')"; return 1; }
+    return 0
+}
+
 check "a registry target is filed with the daemon down" case_registry_target_is_filed_with_the_daemon_down
 check "a filer's receipt is the delivery, and names the filer" case_a_receipt_is_the_only_delivery
 check "an ack with no receipt is NOT CONFIRMED and names who was attached" case_an_unanswered_send_is_not_confirmed_and_names_who_was_attached
@@ -488,7 +541,10 @@ check "a stale heartbeat overrides a fresh 'working' stamp" case_annotation_stal
 check "a row missing the annotation fields entirely sends fine with no annotation" case_annotation_absent_for_a_row_missing_the_fields
 check "a malformed row (wrong types, bad timestamps) sends fine with no annotation" case_annotation_absent_for_a_malformed_row
 check "a noisy but clean ssh: exit still files -- stderr output alone is not a failure" case_ssh_endpoint_reaches_a_stub_daemon_and_files
+check "a receipt outranks the SIGPIPE (141) the child takes when the send succeeds" case_a_receipt_outranks_a_sigpipe_exit
+check "a receipt outranks an abrupt ssh teardown (255) after the frame was filed" case_a_receipt_outranks_an_abrupt_teardown_exit
 check "a dying ssh child says FAILED and names the target, its exit status and its stderr" case_ssh_endpoint_bridge_failure_says_failed_with_reason
+check "an ask window running out still reports the filed frame, not the transport's timeout" case_an_ask_window_ending_does_not_unsay_the_filed_frame
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
