@@ -20,6 +20,13 @@
 #      keeps it deleted.
 #   5. The lock identity: the same fixture set comm_inbox.rs's unit test reads
 #      gives the same strings here; a broadcast copy says so on the wire.
+#   6. A wire send (comm-relay.sh's send_frame) is one `comm.file` frame with
+#      no id, and prints the hub's answer: `filed -> @h`, or `FAILED -> @h:`
+#      and the daemon's own sentence, code or no code, or the no-answer
+#      sentence; `not_here` alone falls back to `agent.send`. The read window
+#      outlasts the hub's lock wait, so a line filed after it is not FAILED.
+#   7. A hub-filed line and a locally-filed line read the same through
+#      comm-poll.sh, and both advance the one cursor.
 #
 # No bats dependency. HERMETIC: a temp $SOT_COMM_HOME, per-case self files, a
 # pinned $SOT_COMM_TEST_HOST, and a COPY of the scripts dir whose comm-lib.sh
@@ -47,7 +54,7 @@ cat >> "$BIN/comm-lib.sh" <<'STUB'
 
 # ---- no daemon, a fixture mount (test only) ---------------------------------
 sot_daemon_endpoint() { return 1; }
-sot_relay_endpoint() { return 1; }
+sot_relay_endpoint() { [ -n "${1:-}" ] || return 1; printf '%s\n' "$1"; }  # an explicit one is used as given
 _sot_findmnt() { printf '%s\n' "${FAKE_MNT-nfs4 rw,vers=4.2,local_lock=none filer.example:/export/home}"; }
 _sot_machine_id() { printf '0123456789abcdef0123456789abcdef'; }
 STUB
@@ -319,6 +326,106 @@ case_the_wait_is_one_number_and_no_lease_survives() {
     return 0
 }
 
+# T5 — a stub `nc` stands in for the hub on a unix: endpoint: each connection
+# is one run of it. Its `comm.file` answer is the payload in $HUB/answer
+# ("" = silence), given after $HUB/wait seconds; an `agent.send` is acked and
+# receipted by fe@far. Every frame it reads is logged by op.
+HUB="$WORK/hub"
+write_hub_stub() {  # PAYLOAD [WAIT]
+    rm -rf "$HUB"; mkdir -p "$HUB"
+    printf '%s' "$1" > "$HUB/answer"; printf '%s' "${2:-0}" > "$HUB/wait"
+    { printf '#!/bin/sh\nd=%s\n' "$HUB"; cat <<'STUB'
+while IFS= read -r line; do
+    case "$line" in
+        *'"op":"comm.file"'*)
+            printf '%s\n' "$line" >> "$d/comm-file.log"; sleep "$(cat "$d/wait")"
+            [ -s "$d/answer" ] && printf '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":%s}\n' "$(cat "$d/answer")"
+            exit 0 ;;
+        *'"op":"agent.send"'*)
+            printf '%s\n' "$line" >> "$d/agent-send.log"
+            id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+            printf '{"v":1,"id":1,"kind":"res","op":"agent.send","payload":{"ok":true,"receivers":["fe@far"],"id":"%s"}}\n' "$id"
+            printf '{"v":1,"id":1,"kind":"evt","op":"agent.receipt","payload":{"id":"%s","filer":"fe@far"}}\n' "$id"
+            exit 0 ;;
+    esac
+done
+STUB
+    } > "$HUB/nc"; chmod +x "$HUB/nc"
+}
+# wire_send [VAR=VALUE...] — `comm-relay.sh send @t-far`, a handle this box's
+# registry does not name, so the send goes to the wire.
+wire_send() {
+    SEND_OUT="$(cd "$WORK" && PATH="$HUB:$PATH" SOT_COMM_SELF_FILE="$WORK/self-sender.txt" \
+        SOT_COMM_TEST_HOST="$HOST_PIN" SOT_RELAY_ENDPOINT="unix:$WORK/hub.sock" \
+        env "$@" "$BIN/comm-relay.sh" send @t-far "/to the far box" 2>"$WORK/err.txt")"
+    SEND_RC=$?
+    SEND_ERR="$(cat "$WORK/err.txt" 2>/dev/null)"
+    return 0
+}
+
+case_a_wire_send_prints_the_hubs_answer() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local answer rc want got
+    while IFS='|' read -r answer rc want; do
+        write_hub_stub "$answer"; wire_send
+        got="$SEND_OUT$SEND_ERR"
+        [ "$SEND_RC" -eq "$rc" ] && [ "$got" = "$want" ] \
+            || { echo "  [$answer] rc $SEND_RC, got '$got', want $rc '$want'"; return 1; }
+        [ ! -e "$HUB/agent-send.log" ] || { echo "  [$answer] fell back to agent.send"; return 1; }
+        jq -e '.op == "comm.file" and .payload == {from:"t-sender",to:"t-far",text:"/to the far box",broadcast:false}' \
+            "$HUB/comm-file.log" >/dev/null && [ "$(wc -l < "$HUB/comm-file.log")" -eq 1 ] \
+            || { echo "  [$answer] frame: $(cat "$HUB/comm-file.log")"; return 1; }
+    done <<CASES
+{"ok":true}|0|filed -> @t-far
+{"error":"not a handle: t-far","code":"bad_handle"}|1|FAILED -> @t-far: not a handle: t-far
+{"error":"no live session holds @t-far","code":"no_live_session"}|1|FAILED -> @t-far: no live session holds @t-far
+{"error":"the append failed: disk full","code":"file_failed"}|1|FAILED -> @t-far: the append failed: disk full
+{"error":"unknown op: comm.file"}|1|FAILED -> @t-far: unknown op: comm.file
+|1|FAILED -> @t-far: the daemon did not answer at unix:$WORK/hub.sock
+CASES
+    # not_here, and only it, falls back to the not-mine leg (deleted in B2).
+    write_hub_stub '{"error":"no box knows that handle: t-far","code":"not_here"}'; wire_send
+    [ "$SEND_RC" -eq 0 ] && [ "$SEND_OUT" = "filed -> @t-far (by fe@far, relay)" ] \
+        || { echo "  not_here: rc $SEND_RC ($SEND_OUT$SEND_ERR)"; return 1; }
+    [ "$(wc -l < "$HUB/agent-send.log")" -eq 1 ] || { echo "  not_here: no agent.send fallback"; return 1; }
+    # The guard's own route reads the same answer with the same helper, and
+    # for it not_here is FAILED: this box's registry named the handle.
+    fresh_route
+    got="$(route_append "nfs rw,vers=3 A:/x" "nfs4 A:/x" unix:/own "" \
+        '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":{"error":"no box knows that handle: t-peer","code":"not_here"}}')"; rc=$?
+    [ "$rc" -eq 1 ] && [ "$got" = "no box knows that handle: t-peer" ] || { echo "  guard not_here: rc $rc ($got)"; return 1; }
+    return 0
+}
+
+# The hub may wait its whole lock bound before it files; a read window no
+# longer than that would call a filed line FAILED and the sender would resend
+# it. A 1s lock wait and a caller's 1s send timeout: the window is still the
+# lock wait plus 10s, so an answer at 2s is filed.
+case_the_read_window_outlasts_the_hubs_lock_wait() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    write_hub_stub '{"ok":true}' 2
+    wire_send SOT_INBOX_LOCK_WAIT_SECS=1 SOT_SEND_TIMEOUT=1
+    [ "$SEND_RC" -eq 0 ] && [ "$SEND_OUT" = "filed -> @t-far" ] \
+        || { echo "  rc $SEND_RC ($SEND_OUT$SEND_ERR)"; return 1; }
+    return 0
+}
+
+# T6 — the hub's line (file_frame's shape, repo "daemon") and a local one.
+case_a_hub_line_and_a_local_line_read_alike() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local out n
+    append_one "$PEER" '{"from":"t-sender","to":"t-peer","repo":"r","msg":"local line","ts":"2026-09-30T00:00:01Z"}' \
+        || { echo "  the local append failed"; return 1; }
+    printf '%s\n' '{"from":"t-sender","to":"t-peer","repo":"daemon","msg":"hub line","ts":"2026-09-30T00:00:02Z"}' \
+        >> "$INBOX/$PEER.jsonl"
+    out="$(cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" "$BIN/comm-poll.sh" 2>&1)"
+    n="$(printf '%s\n' "$out" | grep -c -E '^\[2026-09-30T00:00:0[12]Z\] \[t-sender:(r|daemon)\] (local|hub) line$')"
+    [ "$n" -eq 2 ] || { echo "  $n of 2 lines rendered alike: $out"; return 1; }
+    out="$(cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" "$BIN/comm-poll.sh" 2>&1)"
+    contains "$out" "No new messages." || { echo "  the cursor did not pass both: $out"; return 1; }
+    return 0
+}
+
 check "two writers through the lock give 400 whole lines" case_two_writers_give_400_whole_lines
 check "a holder killed with -9 frees the lock at once and the send files" case_a_killed_holder_frees_the_lock_at_once
 check "a frozen holder makes the send wait its bound and report FAILED, never filed" case_a_frozen_holder_makes_the_send_wait_then_fail
@@ -329,6 +436,9 @@ check "the wire is this box's daemon, else the relay; one that does not answer i
 check "the wire frame says whether the line was a broadcast copy" case_the_wire_frame_carries_the_broadcast_flag
 check "the lock identity matches the fixture set the Rust test reads" case_the_lock_identity_matches_the_shared_fixtures
 check "the wait is one number, 10, in both languages, and no lease constant is spelled" case_the_wait_is_one_number_and_no_lease_survives
+check "T5: a wire send is one comm.file frame and prints the hub's answer; not_here alone falls back" case_a_wire_send_prints_the_hubs_answer
+check "the comm.file read window outlasts the hub's lock wait: a line filed after it is filed" case_the_read_window_outlasts_the_hubs_lock_wait
+check "T6: a hub-filed and a locally-filed line read alike and both advance the cursor" case_a_hub_line_and_a_local_line_read_alike
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

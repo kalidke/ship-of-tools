@@ -1043,7 +1043,8 @@ case_relay_send_fails_loudly_with_no_reachable_daemon() {
     err="$(cat "$errfile" 2>/dev/null || true)"
     [ "$rc" -ne 0 ] || { echo "  comm-relay.sh send succeeded with no reachable daemon: $out"; return 1; }
     contains "$out" "relayed ->" && { echo "  claimed 'relayed' despite no reachable daemon: $out"; return 1; }
-    contains "$err" "unreachable, nothing filed" || { echo "  missing the nothing-filed error: $err"; return 1; }
+    contains "$err" "FAILED -> @somebody: the daemon did not answer at unix:$WORK/no-such-daemon-anywhere.sock" \
+        || { echo "  missing the no-answer FAILED line: $err"; return 1; }
     return 0
 }
 

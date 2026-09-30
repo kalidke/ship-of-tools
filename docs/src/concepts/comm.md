@@ -25,12 +25,13 @@ are the only way in. The poke is a shortcut, never the delivery — `+woken` or
 
 **The wire: the daemon.** For a handle this host cannot name — one on another
 box — the frame rides the Ship of Tools daemon, the same connection the
-frontend already uses, and the receiving side's listener (or, on Windows, the
-frontend itself) files it. Because the relay reuses the backend connection, a
+frontend already uses. The hub files it itself when its own comm folder holds
+that handle; any other handle is still offered to the receiving side's
+listener (or, on Windows, the frontend itself), which files it. Because the relay reuses the backend connection, a
 message from a GPU server reaches a session on your laptop with no extra port
-or service. The daemon forwards frames and does not queue them, so a send it
-cannot file for anyone is reported as a failure — `no such handle` — instead of
-an ack for the daemon's own success.
+or service. The daemon does not queue frames, so a send nothing can file is
+reported as a failure — `FAILED -> @h: …` — instead of an ack for the daemon's
+own success.
 
 ## The contract
 

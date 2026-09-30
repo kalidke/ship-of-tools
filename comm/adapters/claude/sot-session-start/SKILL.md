@@ -19,8 +19,10 @@ with `comm-send.sh @handle "text"` and read its one result. When
 `comm-poll.sh`. To wait for a reply, end your turn. Run the session-start step
 once, when a session first starts — not again on every resume.
 
-This is ADR 0049's design of record, landing in stages: today the failure verdict
-reads `no such handle: <h>` or `NOT CONFIRMED:` rather than `FAILED ->`, the
+This is ADR 0049's design of record, landing in stages: a send's verdict now is
+`filed -> @h` or `FAILED -> @h: <reason>`, except that until B2 a handle the
+hub's folder does not list can still get `NOT CONFIRMED: sent for @h; …` or
+`filed -> @h (by <filer>, relay)`; the
 line typed into a row reads `[sot-comm] new message for @<handle> — run
 …/comm-poll.sh` rather than `[sot-comm] you have mail`, and a resumed session
 must still re-run this bootstrap — until the daemon does the waking, the

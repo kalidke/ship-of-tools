@@ -53,9 +53,9 @@ MATRIX_POLL="${SOT_MATRIX_POLL:-0.5}"    # inbox re-read interval
 
 # matrix_claimed_filed RC OUT TARGET — did the SENDER claim delivery? The claim
 # is the literal receipt line, never the exit code alone: comm-send.sh prints
-# "  filed -> @x" and comm-relay.sh "filed -> @x (by …, relay)", while
-# "NOT CONFIRMED", "no such handle" and "ERROR: unreachable" are the three
-# honest negatives. Both facts must agree; an rc 0 with no receipt line is not
+# "  filed -> @x" and comm-relay.sh "filed -> @x" (on the not-mine leg, until
+# B2 deletes it, "filed -> @x (by …, relay)"), while "FAILED -> @x: …" and that
+# leg's "NOT CONFIRMED" are the honest negatives. Both facts must agree; an rc 0 with no receipt line is not
 # a claim anyone made.
 matrix_claimed_filed() {
     local rc="$1" out="$2" target="$3"
@@ -65,13 +65,15 @@ matrix_claimed_filed() {
 }
 
 # matrix_refused_for_handle OUT — is this refusal ABOUT THE TARGET HANDLE?
-# comm-relay.sh's two handle verdicts are "no such handle" (nobody can file for
-# it) and "NOT CONFIRMED" (somebody might have, nobody said so). Every other
-# error — an unresolved sender identity, an unreachable daemon — is about this
-# END of the send and settles nothing about the other.
+# A "FAILED -> @x: …" line carries the daemon's own answer about the handle,
+# and "NOT CONFIRMED" (somebody might have filed it, nobody said so) survives
+# on the not-mine leg until B2 deletes it. The no-answer FAILED line, and every
+# other error — an unresolved sender identity — is about this END of the send
+# and settles nothing about the other.
 matrix_refused_for_handle() {
     case "$1" in
-        *"no such handle"*|*"NOT CONFIRMED"*) return 0 ;;
+        *"FAILED -> @"*": the daemon did not answer at "*) return 1 ;;
+        *"FAILED -> @"*|*"NOT CONFIRMED"*) return 0 ;;
     esac
     return 1
 }

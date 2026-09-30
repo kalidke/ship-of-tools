@@ -13,7 +13,8 @@
 #                   success lines.
 #
 # The literal sender lines below are the real ones (comm-send.sh's two-space
-# "  filed -> @x", comm-relay.sh's "NOT CONFIRMED"/"no such handle"), and the
+# "  filed -> @x", comm-relay.sh's "FAILED -> @x: …" and, on the not-mine leg
+# until B2, "NOT CONFIRMED" and "(by …, relay)"), and the
 # inbox fixtures are real inbox lines. Nothing pre-computes the verdict's
 # inputs: every case feeds raw sender output and a raw inbox file.
 #
@@ -44,7 +45,8 @@ OTHER="0f0f0f0f0f0f"
 FILED="  filed -> @probe-kitt (woke)"
 FILED_RELAY="filed -> @probe-asus2024 (by bridge@kitt, relay)"
 NOT_CONFIRMED="NOT CONFIRMED: sent for @probe-kitt; nobody claimed it within 5s. Attached: fe@kitt."
-NO_SUCH="no such handle: probe-nosuchrow-kitt"
+NO_SUCH="FAILED -> @probe-nosuchrow-box: no box knows that handle: probe-nosuchrow-box"
+NO_ANSWER="FAILED -> @probe-nosuchrow-box: the daemon did not answer at ssh:hub"
 
 PASS=0; FAIL=0
 check() {  # DESC EXPECTED ACTUAL
@@ -86,7 +88,7 @@ v="$(matrix_line_verdict echo 1 "$NOT_CONFIRMED" probe-kitt "$INBOX" "$ME" "$NON
 check "refused AND silent is a FAIL (a real outage)" "FAIL" "$(state_of "$v")"
 
 inbox_reset
-v="$(matrix_line_verdict nodelivery 1 "$NO_SUCH" probe-nosuchrow-kitt "$INBOX" "$ME" "$NONCE")"
+v="$(matrix_line_verdict nodelivery 1 "$NO_SUCH" probe-nosuchrow-box "$INBOX" "$ME" "$NONCE")"
 check "a handle no row hosts, refused, is a PASS" "PASS" "$(state_of "$v")"
 
 inbox_reset
@@ -100,6 +102,11 @@ IDENT_ERR="ERROR: your sot-comm identity did not resolve — refusing to send wi
 inbox_reset
 v="$(matrix_line_verdict nodelivery 1 "$IDENT_ERR" probe-nosuchrow-kitt "$INBOX" "$ME" "$NONCE")"
 check "a send that failed before the handle was in question is a SKIP, not a PASS" "SKIP" "$(state_of "$v")"
+
+# The same for a daemon that never answered: its FAILED line is about this end.
+inbox_reset
+v="$(matrix_line_verdict nodelivery 1 "$NO_ANSWER" probe-nosuchrow-box "$INBOX" "$ME" "$NONCE")"
+check "a daemon that did not answer is a SKIP, not a PASS" "SKIP" "$(state_of "$v")"
 
 # --- what must never be mistaken for this line's echo ------------------------
 

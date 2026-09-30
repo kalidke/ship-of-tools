@@ -8,24 +8,29 @@
 #      `filed -> @name`, and exits 0. `relayed` never meant this: it reported
 #      the daemon's own success, which is why callers were told "only a reply
 #      proves the path" — a design defect pushed onto every sender.
-#   2. A handle nothing can file for is a FAILURE: `no such handle` on stderr,
-#      exit 1. It used to print `relayed` plus a warning and exit 0.
-#   3. A cross-box verdict is the FILER'S RECEIPT and nothing else (ADR 0048):
+#   2. A handle nothing can file for is a FAILURE on stderr, exit 1. It used to
+#      print `relayed` plus a warning and exit 0.
+#   3. A cross-box directed send is ONE `comm.file` request (0031 B1) and the
+#      hub's answer is the verdict: `ok` is `filed -> @h` exit 0 whatever the
+#      transport's exit status or stderr say; an `error`, with or without a
+#      `code`, is `FAILED -> @h: <the daemon's own words>` exit 1; no answer is
+#      `FAILED -> @h: the daemon did not answer at <endpoint>`, and only then
+#      does the transport's stderr lengthen the reason.
+#   4. The NOT-MINE LEG, deleted in B2: a `not_here` answer falls back to
+#      `agent.send`, whose verdict is the FILER'S RECEIPT (ADR 0048):
 #      `filed -> @h (by <filer>, relay)` exit 0 when a receipt carrying this
-#      sender's own frame id arrives. A receipt is ONLY ever positive -- no
-#      filer can honestly say "not me", since it cannot know about the others
-#      and every attached frontend would say it about a handle it does not
-#      host -- so silence is the negative: NOT CONFIRMED, with the attached
-#      roster as a diagnostic. An ack with no `id` says the hub predates
-#      receipts, and an empty roster is `no such handle`, both decided on the
-#      ack. The name-suffix GUESS this replaces (a target whose name ends in
+#      sender's own frame id arrives. A receipt is ONLY ever positive, so
+#      silence is the negative: NOT CONFIRMED, with the attached roster as a
+#      diagnostic; an empty roster is `FAILED -> @h: no box knows that handle`,
+#      decided on the ack. The name-suffix GUESS (a target whose name ends in
 #      an attached `fe@<host>`) is gone from the script; a case below is the
 #      regression guard that the suffix now means nothing at all.
 #
 # No bats dependency. HERMETIC, same seams as test-leave-stops-bridge.sh: a
 # temp $SOT_COMM_HOME, a per-case $SOT_COMM_SELF_FILE, a pinned
-# $SOT_COMM_TEST_HOST, and where a daemon is needed a canned one-shot fake over
-# a unix socket — never the real ~/.sot-comm and never the real daemon.
+# $SOT_COMM_TEST_HOST, and where a daemon is needed a stub `nc`/`ssh` on PATH
+# that answers each connection — never the real ~/.sot-comm and never the real
+# daemon.
 #
 # Usage: comm/core/tests/test-relay-file-first.sh
 # Exit: 0 if every case PASSes or SKIPs cleanly, 1 if any FAILs.
@@ -109,83 +114,6 @@ relay_send_with_path() {
     return 0
 }
 
-# A one-shot fake daemon: answers the first connection with a canned
-# `agent.send` response naming RECEIVERS, then exits. This is what makes the
-# wire cases deterministic without a real sotd.
-# A one-shot fake daemon that READS the request before it answers, so the
-# receipt it returns carries the sender's own minted `id` -- the thing the
-# verdict is attributed by (ADR 0048). Two processes over one socket: `nc`
-# writes whatever appears on the reply FIFO and dumps the request to a file;
-# the handler waits for the `agent.send` line, extracts its id, and writes the
-# canned lines. The redirection ORDER matters (nc opens the fifo for reading,
-# the handler for writing): each unblocks the other, and reversing either one
-# deadlocks on the open.
-#
-# ACK_ID_MODE: echo (a receipt-capable hub), drop (a hub that predates them),
-# or wrong (a receipt for somebody else's frame -- the attributability guard).
-# A receipt is positive-only, so the only parameter left is WHO filed.
-FAKE_PID=""; HANDLER_PID=""
-fake_daemon() {  # SOCKET RECEIVERS_JSON [RECEIPT_JSON_TEMPLATE] [ACK_ID_MODE]
-    command -v nc >/dev/null 2>&1 || return 1
-    local sock="$1" recv="$2" rcpt="${3:-}" mode="${4:-echo}"
-    local fifo="$WORK/reply.fifo" req="$WORK/req.txt"
-    rm -f "$fifo" "$req"; mkfifo "$fifo" || return 1
-    : > "$req"
-    # `-N` (shutdown the socket on stdin EOF) is what makes the no-receipt
-    # case end on EOF instead of sitting out the sender's whole window: this
-    # netcat flavor does NOT close on EOF without it. A flavor that lacks the
-    # flag fails to bind, and the case SKIPs rather than hanging.
-    ( nc -N -lU "$sock" < "$fifo" > "$req" 2>/dev/null ) &
-    FAKE_PID=$!
-    (
-        exec > "$fifo"
-        local tries=0 id=""
-        while [ "$tries" -lt 100 ]; do
-            id="$(grep -h '"op":"agent.send"' "$req" 2>/dev/null | head -1 \
-                  | jq -r '.payload.id // ""' 2>/dev/null || true)"
-            [ -n "$id" ] && break
-            sleep 0.05; tries=$((tries + 1))
-        done
-        local ack_id="$id"
-        case "$mode" in
-            drop)  ack_id="" ;;
-            wrong) ack_id="$id"; id="$id-not-yours" ;;
-        esac
-        if [ -n "$ack_id" ]; then
-            jq -nc --argjson r "$recv" --arg i "$ack_id" \
-                '{v:1,id:1,kind:"resp",op:"agent.send",payload:{ok:true,receivers:$r,id:$i}}'
-        else
-            jq -nc --argjson r "$recv" \
-                '{v:1,id:1,kind:"resp",op:"agent.send",payload:{ok:true,receivers:$r}}'
-        fi
-        if [ -n "$rcpt" ]; then
-            printf '%s\n' "$rcpt" | jq -c --arg i "$id" '.payload.id = $i'
-        fi
-    ) &
-    HANDLER_PID=$!
-    local tries=0
-    while [ "$tries" -lt 50 ]; do
-        [ -S "$sock" ] && return 0
-        sleep 0.1; tries=$((tries + 1))
-    done
-    fake_daemon_stop
-    return 1
-}
-fake_daemon_stop() {
-    [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null
-    [ -n "$HANDLER_PID" ] && kill "$HANDLER_PID" 2>/dev/null
-    FAKE_PID=""; HANDLER_PID=""
-    rm -f "$WORK/reply.fifo"
-    return 0
-}
-
-# One `agent.receipt` evt line -- id filled in by the handler above, filer
-# stamped by the daemon in production. Two fields, no negative form.
-receipt_evt() {  # FILER
-    jq -nc --arg who "$1" \
-        '{v:1,id:1,kind:"evt",op:"agent.receipt",payload:{id:"", filer:$who}}'
-}
-
 # _patch_target_row JSON -- merge JSON into TARGET's own registry row (the
 # entry a sender's `send @target` reads to resolve the handle, and now also
 # to annotate it -- messaging ruling, 2026-09-26).
@@ -215,30 +143,36 @@ case_registry_target_is_filed_with_the_daemon_down() {
     return 0
 }
 
-case_a_receipt_is_the_only_delivery() {
+case_the_hubs_answer_is_the_delivery() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    local sock="$WORK/fake-receipt.sock"
-    fake_daemon "$sock" '["fe@'"$PEER_HOST"'"]' \
-        "$(receipt_evt "fe@$PEER_HOST")" \
-        || { echo "  nc -lU unavailable; cannot stand up a fake daemon"; return 2; }
-    relay_send "unix:$sock" send "@peer-$PEER_HOST" "over the wire"
-    fake_daemon_stop
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    # The hub files it and says so: one request, one answer, nothing to
+    # attribute. The stub would receipt an `agent.send` too, so a verdict that
+    # fell through to that leg would name a filer.
+    write_row_ssh_stub "$dir" ok yes yes 0 none
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "/over the wire"
     [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC, want 0 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
-    contains "$RELAY_OUT" "filed -> @peer-$PEER_HOST (by fe@$PEER_HOST" \
-        || { echo "  verdict was '$RELAY_OUT', want a filed line naming the filer"; return 1; }
+    contains "$RELAY_OUT" "filed -> @peer-$PEER_HOST" \
+        || { echo "  verdict was '$RELAY_OUT', want 'filed -> @peer-$PEER_HOST'"; return 1; }
+    contains "$RELAY_OUT" "(by " && { echo "  the hub's own answer named a filer: '$RELAY_OUT'"; return 1; }
+    [ ! -e "$dir/agent-send.log" ] || { echo "  an agent.send went out as well"; return 1; }
+    [ "$(wc -l < "$dir/comm-file.log")" -eq 1 ] || { echo "  want exactly one comm.file request"; return 1; }
+    jq -e --arg t "peer-$PEER_HOST" --arg f "$SENDER" \
+        '.payload == {from:$f,to:$t,text:"/over the wire",broadcast:false}' "$dir/comm-file.log" >/dev/null \
+        || { echo "  the frame was not {from,to,text,broadcast:false} with no id: $(cat "$dir/comm-file.log")"; return 1; }
     return 0
 }
 
+# The not-mine leg's receipt vocabulary, deleted in B2: in each case below the
+# hub answers `not_here` first, so the `agent.send` fallback runs.
 case_an_unanswered_send_is_not_confirmed_and_names_who_was_attached() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    local sock="$WORK/fake-silent.sock"
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
     # Ack only, no receipt: an rc9-era frontend appends the frame and says
     # nothing about it. The roster survives HERE and only here, as a
     # diagnostic naming who was attached and did not answer.
-    fake_daemon "$sock" '["fe@'"$PEER_HOST"'"]' \
-        || { echo "  nc -lU unavailable; cannot stand up a fake daemon"; return 2; }
-    relay_send "unix:$sock" send "@peer-$PEER_HOST" "over the wire"
-    fake_daemon_stop
+    write_row_ssh_stub "$dir" not_here no yes 0 none '["fe@'"$PEER_HOST"'"]'
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "over the wire"
     [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
     contains "$RELAY_ERR" "NOT CONFIRMED" \
         || { echo "  stderr was '$RELAY_ERR', want NOT CONFIRMED"; return 1; }
@@ -264,11 +198,9 @@ case_the_name_suffix_means_nothing_now() {
     # the same NOT CONFIRMED as any other unanswered send -- the suffix is not
     # read anywhere.
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    local sock="$WORK/fake-suffix.sock"
-    fake_daemon "$sock" '["fe@'"$PEER_HOST"'"]' \
-        || { echo "  nc -lU unavailable; cannot stand up a fake daemon"; return 2; }
-    relay_send "unix:$sock" send "@peeeer-$PEER_HOST" "over the wire"
-    fake_daemon_stop
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    write_row_ssh_stub "$dir" not_here no yes 0 none '["fe@'"$PEER_HOST"'"]'
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peeeer-$PEER_HOST" "over the wire"
     [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
     contains "$RELAY_ERR" "NOT CONFIRMED" \
         || { echo "  stderr was '$RELAY_ERR', want NOT CONFIRMED"; return 1; }
@@ -279,36 +211,17 @@ case_the_name_suffix_means_nothing_now() {
 
 case_a_receipt_for_another_frame_is_not_a_verdict() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    local sock="$WORK/fake-wrongid.sock"
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
     # Attributability (ADR 0048): a receipt whose id is not this sender's own
     # must not be read as its verdict, or two concurrent sends to one handle
     # can swap them and one success vouches for a failure.
-    fake_daemon "$sock" '["fe@'"$PEER_HOST"'"]' \
-        "$(receipt_evt "fe@$PEER_HOST")" wrong \
-        || { echo "  nc -lU unavailable; cannot stand up a fake daemon"; return 2; }
-    relay_send "unix:$sock" send "@peer-$PEER_HOST" "over the wire"
-    fake_daemon_stop
+    write_row_ssh_stub "$dir" not_here yes yes 0 none '["fe@'"$PEER_HOST"'"]' wrong
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "over the wire"
     [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
     contains "$RELAY_ERR" "NOT CONFIRMED" \
         || { echo "  stderr was '$RELAY_ERR', want NOT CONFIRMED"; return 1; }
     contains "$RELAY_OUT" "filed" \
         && { echo "  another frame's receipt was read as a delivery: '$RELAY_OUT'"; return 1; }
-    return 0
-}
-
-case_a_hub_with_no_id_says_so_instead_of_waiting() {
-    setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    local sock="$WORK/fake-oldhub.sock"
-    # An older daemon drops the `id` from its ack: no receipt can ever be
-    # attributed, and the sender says that on the ACK rather than spending
-    # five seconds waiting for an answer nobody can give.
-    fake_daemon "$sock" '["fe@'"$PEER_HOST"'"]' "" drop \
-        || { echo "  nc -lU unavailable; cannot stand up a fake daemon"; return 2; }
-    relay_send "unix:$sock" send "@peer-$PEER_HOST" "over the wire"
-    fake_daemon_stop
-    [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
-    contains "$RELAY_ERR" "predates filer receipts" \
-        || { echo "  stderr was '$RELAY_ERR', want the predates-receipts verdict"; return 1; }
     return 0
 }
 
@@ -391,19 +304,18 @@ case_annotation_absent_for_a_malformed_row() {
     return 0
 }
 
-case_an_empty_roster_is_no_such_handle() {
+case_an_empty_roster_is_failed_no_box_knows() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    local sock="$WORK/fake-empty.sock"
-    # Nobody at all is attached to the hub: there is nowhere for the frame to
-    # land and nothing that could ever receipt it. Decided on the ACK -- this
-    # case must not spend the five-second receipt window.
-    fake_daemon "$sock" '[]' \
-        || { echo "  nc -lU unavailable; cannot stand up a fake daemon"; return 2; }
-    relay_send "unix:$sock" send "@peer-$PEER_HOST" "into the void"
-    fake_daemon_stop
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    # The not-mine leg, deleted in B2. The hub does not list it and nobody at
+    # all is attached: there is nowhere for the frame to land and nothing that
+    # could ever receipt it. Decided on the ACK -- this case must not spend
+    # the five-second receipt window.
+    write_row_ssh_stub "$dir" not_here no yes 0 none '[]'
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "into the void"
     [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
-    contains "$RELAY_ERR" "no such handle: peer-$PEER_HOST" \
-        || { echo "  stderr was '$RELAY_ERR', want 'no such handle'"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> @peer-$PEER_HOST: no box knows that handle: peer-$PEER_HOST" \
+        || { echo "  stderr was '$RELAY_ERR', want the no-box-knows FAILED line"; return 1; }
     contains "$RELAY_ERR" "NOT CONFIRMED" \
         && { echo "  an empty roster waited for a receipt: '$RELAY_ERR'"; return 1; }
     return 0
@@ -438,11 +350,13 @@ case_an_empty_roster_is_no_such_handle() {
 # other half: the same stderr line, a non-zero exit, and NO receipt -- so
 # the reason is all there is and it must still be reported loudly.
 # The three cases are one body: a receipted send over an ssh child that then
-# exits with $1. The verdict must be the receipt's in all three.
+# exits with $1. The verdict must be the receipt's in all three. They drive the
+# not-mine leg (the hub answers `not_here` first) and go with it in B2; the
+# table below holds the same property for the hub's own answer.
 _filed_despite_ssh_exit() {  # EXIT_STATUS
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local sshdir; sshdir="$(mktemp -d "$WORK/ssh-exit$1-XXXXXX")"
-    write_row_ssh_stub "$sshdir" yes yes "$1" noise
+    write_row_ssh_stub "$sshdir" not_here yes yes "$1" noise
     relay_send_with_path "$sshdir" "ssh:testtarget" send "@peer-$PEER_HOST" "over ssh"
     [ "$RELAY_RC" -eq 0 ] \
         || { echo "  exited $RELAY_RC, want 0 (the ssh child exited $1 AFTER the receipt; out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
@@ -470,12 +384,13 @@ EOF
     # status-only assertion (RELAY_RC -ne 0) would ALSO have passed on the
     # pre-fix code, which died at 127 (also nonzero) before ever touching
     # this stub -- the message is what proves the bridge actually ran and
-    # THEN failed, not that it never ran at all.
+    # THEN failed, not that it never ran at all. The `comm.file` request got
+    # no answer, so the child's stderr is the reason after the no-answer line.
     [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
     contains "$RELAY_ERR" "FAILED -> @peer-$PEER_HOST:" \
         || { echo "  stderr was '$RELAY_ERR', want a FAILED line naming the target"; return 1; }
-    contains "$RELAY_ERR" "exited 255" \
-        || { echo "  stderr was '$RELAY_ERR', want the child's own exit status"; return 1; }
+    contains "$RELAY_ERR" "the daemon did not answer at ssh:testtarget" \
+        || { echo "  stderr was '$RELAY_ERR', want the no-answer sentence"; return 1; }
     contains "$RELAY_ERR" "Permission denied" \
         || { echo "  stderr was '$RELAY_ERR', want the child's own stderr folded into the reason"; return 1; }
     return 0
@@ -515,11 +430,17 @@ case_an_ask_window_ending_does_not_unsay_the_filed_frame() {
 # below is derived from IT and not from the code: a send with a receipt
 # reports delivered, whatever the ssh child's exit status or stderr say. With
 # no receipt the ack decides; with neither, the bridge's reason decides and
-# its text is shown; with none of the three, the generic "unreachable,
-# nothing filed". Stderr content never changes a verdict -- it only lengthens
-# the text of a FAILED reason.
+# its text is shown; with none of the three, the daemon did not answer.
+# Stderr content never changes a verdict -- it only lengthens the text of a
+# FAILED reason.
 #
-# Axes: receipt yes/no x ack yes/no x exit 0/255/141 x stderr
+# 0031 B1 put a `comm.file` leg in front of all of that, and its 16 rows come
+# first: the hub's answer ok / error with a code / error with no code / none,
+# x exit 0/255 x stderr none/complaint. The answer decides; stderr is read
+# only when there is none. The 38 rows after them are the not-mine leg (the
+# hub answers `not_here` first), deleted in B2.
+#
+# Not-mine axes: receipt yes/no x ack yes/no x exit 0/255/141 x stderr
 # none/complaint/noise = 36 rows. 141 is where this defect came from:
 # send_frame breaks out of its read loop the instant a receipt lands and
 # closes the pipe the child is still writing to, so SIGPIPE is the ORDINARY
@@ -539,32 +460,52 @@ _stderr_text() {  # KIND
     esac
 }
 
-# write_row_ssh_stub DIR RECEIPT ACK EXIT STDERR_KIND -- a stub `ssh` that
-# says exactly what one row asks for. The row is baked into the script's own
-# header (and its stderr text into a file beside it, which keeps every quote
-# in that text out of the generated script), so the body below is one static
-# template for all 38 rows.
+# write_row_ssh_stub DIR COMMFILE RECEIPT ACK EXIT STDERR_KIND [RECEIVERS] [ID_MODE]
+# -- a stub `ssh` (and the same script as `nc`, for a unix: endpoint) that says
+# exactly what one row asks for; each connection is one run of it. COMMFILE is
+# the hub's `comm.file` answer: ok, code, nocode, not_here, or none. The row is
+# baked into the script's own header (and its stderr text into a file beside
+# it, which keeps every quote in that text out of the generated script), so
+# the body below is one static template for all 54 rows. RECEIVERS is the
+# ack's roster (the first one files); ID_MODE `wrong` receipts another frame.
 write_row_ssh_stub() {
-    local dir="$1" receipt="$2" ack="$3" status="$4" errkind="$5"
+    local dir="$1" commfile="$2" receipt="$3" ack="$4" status="$5" errkind="$6"
+    local receivers="${7:-[\"peer-$PEER_HOST\"]}" idmode="${8:-echo}"
     local hang=no
     if [ "$status" = hang ]; then hang=yes; status=0; fi
     _stderr_text "$errkind" > "$dir/stderr.txt"
     {
         printf '#!/bin/sh\n'
         printf "d='%s'\n" "$dir"
-        printf 'receipt=%s\nack=%s\nhang=%s\nstatus=%s\nreceiver=%s\n' \
-            "$receipt" "$ack" "$hang" "$status" "peer-$PEER_HOST"
+        printf 'commfile=%s\nreceipt=%s\nack=%s\nhang=%s\nstatus=%s\nidmode=%s\n' \
+            "$commfile" "$receipt" "$ack" "$hang" "$status" "$idmode"
+        printf "receivers='%s'\n" "$receivers"
         cat <<'STUB'
+receiver=$(printf '%s' "$receivers" | sed -n 's/^\["\([^"]*\)".*/\1/p')
 [ -s "$d/stderr.txt" ] && cat "$d/stderr.txt" >&2
 while IFS= read -r line; do
     case "$line" in
         *'"op":"hello"'*)
             printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"ok":true}}\n' ;;
+        *'"op":"comm.file"'*)
+            printf '%s\n' "$line" >> "$d/comm-file.log"
+            to=$(printf '%s' "$line" | sed -n 's/.*"to":"\([^"]*\)".*/\1/p')
+            r='{"v":1,"id":1,"kind":"res","op":"comm.file","payload":'
+            case "$commfile" in
+                ok)       printf '%s{"ok":true}}\n' "$r" ;;
+                code)     printf '%s{"error":"no live session holds @%s","code":"no_live_session"}}\n' "$r" "$to" ;;
+                nocode)   printf '%s{"error":"unknown op: comm.file"}}\n' "$r" ;;
+                not_here) printf '%s{"error":"no box knows that handle: %s","code":"not_here"}}\n' "$r" "$to" ;;
+            esac
+            exit "$status"
+            ;;
         *'"op":"agent.send"'*)
+            printf '%s\n' "$line" >> "$d/agent-send.log"
             id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
             if [ "$ack" = yes ]; then
-                printf '{"v":1,"id":1,"kind":"res","op":"agent.send","payload":{"ok":true,"receivers":["%s"],"id":"%s"}}\n' "$receiver" "$id"
+                printf '{"v":1,"id":1,"kind":"res","op":"agent.send","payload":{"ok":true,"receivers":%s,"id":"%s"}}\n' "$receivers" "$id"
             fi
+            [ "$idmode" = wrong ] && id="$id-not-yours"
             if [ "$receipt" = yes ]; then
                 printf '{"v":1,"id":1,"kind":"evt","op":"agent.receipt","payload":{"id":"%s","filer":"%s"}}\n' "$id" "$receiver"
             fi
@@ -580,64 +521,92 @@ exit "$status"
 STUB
     } > "$dir/ssh"
     chmod +x "$dir/ssh"
+    cp "$dir/ssh" "$dir/nc"
 }
 
-# RECEIPT ACK EXIT STDERR EXPECT -- EXPECT is what the rule requires:
-#   filed        the receipt is the verdict, nothing outranks it
-#   notconfirmed no receipt, but the ack is the record and it decides
-#   failed       neither: the bridge's reason speaks, and names the exit
-#   timeout      the same, for a child killed at the 5s bound
-#   generic      nothing answered and the transport has no complaint
+# COMMFILE RECEIPT ACK EXIT STDERR EXPECT -- EXPECT is what the rule requires:
+#   hubfiled     the hub's `ok` is the verdict, with no filer to name
+#   refused      the hub's error with a code, in its own words
+#   oldhub       an older daemon's code-less unknown-op refusal, as FAILED
+#   noanswer     nothing answered: the no-answer sentence
+#   filed        (not-mine) the receipt is the verdict, nothing outranks it
+#   notconfirmed (not-mine) no receipt, but the ack is the record and decides
+#   failed       (not-mine) neither: the bridge's reason speaks, names the exit
+#   timeout      (not-mine) the same, for a child killed at the 5s bound
 _VERDICT_TABLE=(
-    "yes yes 0    none      filed"
-    "yes yes 0    complaint filed"
-    "yes yes 0    noise     filed"
-    "yes yes 255  none      filed"
-    "yes yes 255  complaint filed"
-    "yes yes 255  noise     filed"
-    "yes yes 141  none      filed"
-    "yes yes 141  complaint filed"
-    "yes yes 141  noise     filed"
-    "yes no  0    none      filed"
-    "yes no  0    complaint filed"
-    "yes no  0    noise     filed"
-    "yes no  255  none      filed"
-    "yes no  255  complaint filed"
-    "yes no  255  noise     filed"
-    "yes no  141  none      filed"
-    "yes no  141  complaint filed"
-    "yes no  141  noise     filed"
-    "no  yes 0    none      notconfirmed"
-    "no  yes 0    complaint notconfirmed"
-    "no  yes 0    noise     notconfirmed"
-    "no  yes 255  none      notconfirmed"
-    "no  yes 255  complaint notconfirmed"
-    "no  yes 255  noise     notconfirmed"
-    "no  yes 141  none      notconfirmed"
-    "no  yes 141  complaint notconfirmed"
-    "no  yes 141  noise     notconfirmed"
-    "no  no  0    none      generic"
-    "no  no  0    complaint generic"
-    "no  no  0    noise     generic"
-    "no  no  255  none      failed"
-    "no  no  255  complaint failed"
-    "no  no  255  noise     failed"
-    "no  no  141  none      failed"
-    "no  no  141  complaint failed"
-    "no  no  141  noise     failed"
-    "no  yes hang noise     notconfirmed"
-    "no  no  hang noise     timeout"
+    "ok       yes yes 0    none      hubfiled"
+    "ok       yes yes 0    complaint hubfiled"
+    "ok       yes yes 255  none      hubfiled"
+    "ok       yes yes 255  complaint hubfiled"
+    "code     yes yes 0    none      refused"
+    "code     yes yes 0    complaint refused"
+    "code     yes yes 255  none      refused"
+    "code     yes yes 255  complaint refused"
+    "nocode   yes yes 0    none      oldhub"
+    "nocode   yes yes 0    complaint oldhub"
+    "nocode   yes yes 255  none      oldhub"
+    "nocode   yes yes 255  complaint oldhub"
+    "none     yes yes 0    none      noanswer"
+    "none     yes yes 0    complaint noanswer"
+    "none     yes yes 255  none      noanswer"
+    "none     yes yes 255  complaint noanswer"
+    "not_here yes yes 0    none      filed"
+    "not_here yes yes 0    complaint filed"
+    "not_here yes yes 0    noise     filed"
+    "not_here yes yes 255  none      filed"
+    "not_here yes yes 255  complaint filed"
+    "not_here yes yes 255  noise     filed"
+    "not_here yes yes 141  none      filed"
+    "not_here yes yes 141  complaint filed"
+    "not_here yes yes 141  noise     filed"
+    "not_here yes no  0    none      filed"
+    "not_here yes no  0    complaint filed"
+    "not_here yes no  0    noise     filed"
+    "not_here yes no  255  none      filed"
+    "not_here yes no  255  complaint filed"
+    "not_here yes no  255  noise     filed"
+    "not_here yes no  141  none      filed"
+    "not_here yes no  141  complaint filed"
+    "not_here yes no  141  noise     filed"
+    "not_here no  yes 0    none      notconfirmed"
+    "not_here no  yes 0    complaint notconfirmed"
+    "not_here no  yes 0    noise     notconfirmed"
+    "not_here no  yes 255  none      notconfirmed"
+    "not_here no  yes 255  complaint notconfirmed"
+    "not_here no  yes 255  noise     notconfirmed"
+    "not_here no  yes 141  none      notconfirmed"
+    "not_here no  yes 141  complaint notconfirmed"
+    "not_here no  yes 141  noise     notconfirmed"
+    "not_here no  no  0    none      noanswer"
+    "not_here no  no  0    complaint noanswer"
+    "not_here no  no  0    noise     noanswer"
+    "not_here no  no  255  none      failed"
+    "not_here no  no  255  complaint failed"
+    "not_here no  no  255  noise     failed"
+    "not_here no  no  141  none      failed"
+    "not_here no  no  141  complaint failed"
+    "not_here no  no  141  noise     failed"
+    "not_here no  yes hang noise     notconfirmed"
+    "not_here no  no  hang noise     timeout"
 )
 
 # One row: build its stub, send through it, and hold the result against the
 # rule. Prints the row and what it got on a disagreement, nothing otherwise.
-_check_verdict_row() {  # RECEIPT ACK EXIT STDERR_KIND EXPECT
-    local receipt="$1" ack="$2" status="$3" errkind="$4" expect="$5"
+_check_verdict_row() {  # COMMFILE RECEIPT ACK EXIT STDERR_KIND EXPECT
+    local commfile="$1" receipt="$2" ack="$3" status="$4" errkind="$5" expect="$6"
     local dir; dir="$(mktemp -d "$WORK/row-XXXXXX")"
-    write_row_ssh_stub "$dir" "$receipt" "$ack" "$status" "$errkind"
+    write_row_ssh_stub "$dir" "$commfile" "$receipt" "$ack" "$status" "$errkind"
     relay_send_with_path "$dir" "ssh:testtarget" send "@peer-$PEER_HOST" "table row"
     local want_rc=1 got="$RELAY_OUT$RELAY_ERR" want=""
     case "$expect" in
+        hubfiled)
+            want_rc=0; want="filed -> @peer-$PEER_HOST" ;;
+        refused)
+            want="FAILED -> @peer-$PEER_HOST: no live session holds @peer-$PEER_HOST" ;;
+        oldhub)
+            want="FAILED -> @peer-$PEER_HOST: unknown op: comm.file" ;;
+        noanswer)
+            want="FAILED -> @peer-$PEER_HOST: the daemon did not answer at ssh:testtarget" ;;
         filed)
             want_rc=0; want="filed -> @peer-$PEER_HOST (by peer-$PEER_HOST, relay)" ;;
         notconfirmed)
@@ -646,8 +615,6 @@ _check_verdict_row() {  # RECEIPT ACK EXIT STDERR_KIND EXPECT
             want="FAILED -> @peer-$PEER_HOST: ssh to testtarget exited $status" ;;
         timeout)
             want="FAILED -> @peer-$PEER_HOST: timed out after 5s reaching testtarget" ;;
-        generic)
-            want="unreachable, nothing filed" ;;
     esac
     local bad=""
     [ "$RELAY_RC" -eq "$want_rc" ] || bad="exit $RELAY_RC, want $want_rc"
@@ -655,14 +622,22 @@ _check_verdict_row() {  # RECEIPT ACK EXIT STDERR_KIND EXPECT
     # A verdict the transport decided: a filed frame must carry no FAILED
     # line, and a FAILED reason must carry the child's stderr when it wrote
     # any -- the text of a reason is the ONLY thing stderr may change.
-    if [ "$expect" = filed ]; then
+    if [ "$expect" = filed ] || [ "$expect" = hubfiled ]; then
         ! contains "$RELAY_ERR" "FAILED" || bad="${bad:+$bad; }a filed frame also printed FAILED"
     fi
-    if [ "$errkind" != none ] && { [ "$expect" = failed ] || [ "$expect" = timeout ]; }; then
-        contains "$got" "$(_stderr_text "$errkind")" || bad="${bad:+$bad; }the reason dropped the child's stderr"
+    if [ "$expect" = hubfiled ]; then
+        ! contains "$RELAY_OUT" "(by " || bad="${bad:+$bad; }the hub's own answer fell through to a receipt"
+    fi
+    if [ "$errkind" != none ]; then
+        case "$commfile:$expect" in
+            *:failed|*:timeout|none:noanswer)
+                contains "$got" "$(_stderr_text "$errkind")" || bad="${bad:+$bad; }the reason dropped the child's stderr" ;;
+            ok:*|code:*|nocode:*)
+                ! contains "$got" "$(_stderr_text "$errkind")" || bad="${bad:+$bad; }stderr was read although the hub answered" ;;
+        esac
     fi
     [ -z "$bad" ] && return 0
-    echo "  row [$receipt $ack $status $errkind -> $expect]: $bad (out: '$RELAY_OUT' err: '$RELAY_ERR')"
+    echo "  row [$commfile $receipt $ack $status $errkind -> $expect]: $bad (out: '$RELAY_OUT' err: '$RELAY_ERR')"
     return 1
 }
 
@@ -671,22 +646,21 @@ case_every_combination_gets_the_verdict_the_rule_requires() {
     local row rows=0 bad=0
     for row in "${_VERDICT_TABLE[@]}"; do
         rows=$((rows + 1))
-        # Word-split on purpose: the row IS five fields.
+        # Word-split on purpose: the row IS six fields.
         # shellcheck disable=SC2086
         _check_verdict_row $row || bad=$((bad + 1))
     done
-    [ "$rows" -eq 38 ] || { echo "  the table holds $rows rows, want 36 plus the 2 timeout rows"; return 1; }
+    [ "$rows" -eq 54 ] || { echo "  the table holds $rows rows, want 16 comm.file rows plus 36 and 2 timeout rows"; return 1; }
     [ "$bad" -eq 0 ] || { echo "  $bad of $rows rows disagreed with the rule"; return 1; }
     return 0
 }
 
 check "a registry target is filed with the daemon down" case_registry_target_is_filed_with_the_daemon_down
-check "a filer's receipt is the delivery, and names the filer" case_a_receipt_is_the_only_delivery
+check "the hub's own answer is the delivery: one comm.file frame, no id, no filer named" case_the_hubs_answer_is_the_delivery
 check "an ack with no receipt is NOT CONFIRMED and names who was attached" case_an_unanswered_send_is_not_confirmed_and_names_who_was_attached
 check "a target whose name ends in an attached frontend's host gets no credit for it" case_the_name_suffix_means_nothing_now
 check "a receipt carrying another frame's id is not this send's verdict" case_a_receipt_for_another_frame_is_not_a_verdict
-check "a hub whose ack drops the id says it predates receipts" case_a_hub_with_no_id_says_so_instead_of_waiting
-check "an ack with an empty receivers list is 'no such handle', decided on the ack" case_an_empty_roster_is_no_such_handle
+check "not-mine: an ack with an empty receivers list is FAILED, no box knows it, decided on the ack" case_an_empty_roster_is_failed_no_box_knows
 check "a working recipient is annotated with its stamped age and turn-boundary wording" case_annotation_working_recipient
 check "a recipient stopped on an open question is annotated 'needs its own user', quoted and truncated" case_annotation_recipient_needs_its_own_user
 check "a stale heartbeat overrides a fresh 'working' stamp" case_annotation_stale_heartbeat_overrides_working
@@ -697,7 +671,7 @@ check "a receipt outranks the SIGPIPE (141) the child takes when the send succee
 check "a receipt outranks an abrupt ssh teardown (255) after the frame was filed" case_a_receipt_outranks_an_abrupt_teardown_exit
 check "a dying ssh child says FAILED and names the target, its exit status and its stderr" case_ssh_endpoint_bridge_failure_says_failed_with_reason
 check "an ask window running out still reports the filed frame, not the transport's timeout" case_an_ask_window_ending_does_not_unsay_the_filed_frame
-check "all 36 receipt/ack/exit/stderr combinations (plus 2 timeout rows) get the verdict the rule requires" case_every_combination_gets_the_verdict_the_rule_requires
+check "all 16 comm.file answer/exit/stderr rows and 36+2 not-mine rows get the verdict the rule requires" case_every_combination_gets_the_verdict_the_rule_requires
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"

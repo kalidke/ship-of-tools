@@ -150,10 +150,12 @@ The smallest useful working slice:
 
 ## Messaging between sessions
 
-- This is ADR 0049's design of record, landing in stages: today's failure
-  verdict reads `no such handle: <h>` or `NOT CONFIRMED:` rather than
-  `FAILED ->`, and the typed wake line reads `[sot-comm] new message for
-  @<handle> — run …/comm-poll.sh` rather than `[sot-comm] you have mail`.
+- This is ADR 0049's design of record, landing in stages: a send's verdict
+  now is `filed -> @h` or `FAILED -> @h: <reason>`, except that until B2 a
+  handle the hub's folder does not list can still get `NOT CONFIRMED: sent
+  for @h; …` or `filed -> @h (by <filer>, relay)`; and until B3 the typed
+  wake line reads `[sot-comm] new message for @<handle> — run
+  …/comm-poll.sh` rather than `[sot-comm] you have mail`.
 - A session that can receive has one handle: its folder name plus its box name.
 - `comm-context.sh` prints yours.
 - Send with `comm-send.sh @handle "text"` and read its one result, `filed` or `FAILED` — nothing is queued and there is no second route.

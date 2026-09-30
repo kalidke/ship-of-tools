@@ -142,7 +142,7 @@ case_a_hostless_row_terminates_instead_of_ping_ponging() {
     # asked by different doors, comm-send.sh handed this to the relay, the
     # relay handed it straight back, and the pair span forever (leaking one
     # temp file per lap). The endpoint below is a socket nothing listens on,
-    # so the ONE honest lap ends in the relay's unreachable refusal.
+    # so the ONE honest lap ends in the relay's no-answer FAILED line.
     jq --arg t "$LOCAL_PEER" '.agents[$t] = {}' "$SOT_COMM_HOME/registry.json" \
         > "$SOT_COMM_HOME/registry.json.tmp" \
         && mv "$SOT_COMM_HOME/registry.json.tmp" "$SOT_COMM_HOME/registry.json"
@@ -153,8 +153,8 @@ case_a_hostless_row_terminates_instead_of_ping_ponging() {
     rc=$?
     [ "$rc" -ne 124 ] || { echo "  the two verbs ping-ponged until the timeout killed them"; return 1; }
     [ "$rc" -eq 1 ] || { echo "  exited $rc, want 1 (out: '$out')"; return 1; }
-    local n; n="$(printf '%s\n' "$out" | grep -c 'nothing filed' || true)"
-    [ "$n" -eq 1 ] || { echo "  $n unreachable refusals, want exactly 1 (out: '$out')"; return 1; }
+    local n; n="$(printf '%s\n' "$out" | grep -c "FAILED -> @$LOCAL_PEER: the daemon did not answer at " || true)"
+    [ "$n" -eq 1 ] || { echo "  $n no-answer refusals, want exactly 1 (out: '$out')"; return 1; }
     return 0
 }
 

@@ -14,8 +14,10 @@ with `comm-send.sh @handle "text"` and read its one result. When
 `comm-poll.sh`. To wait for a reply, end your turn. Run the session-start step
 once, when a session first starts — not again on every resume.
 
-This is ADR 0049's design of record, landing in stages: today the failure verdict
-reads `no such handle: <h>` or `NOT CONFIRMED:` rather than `FAILED ->`, and the
+This is ADR 0049's design of record, landing in stages: a send's verdict now is
+`filed -> @h` or `FAILED -> @h: <reason>`, except that until B2 a handle the
+hub's folder does not list can still get `NOT CONFIRMED: sent for @h; …` or
+`filed -> @h (by <filer>, relay)`; and the
 line typed into a row reads `[sot-comm] new message for @<handle> — run
 …/comm-poll.sh` rather than `[sot-comm] you have mail`. There is nothing to arm,
 own or re-arm. A session outside any row is never woken while idle — it sees
@@ -82,25 +84,28 @@ you're sitting at a free prompt when it lands. Re-send only with positive
 evidence the message was lost (peer was deaf or restarted).
 `comm-send.sh @handle "msg"` reaches anyone, same box or across machines —
 it picks the route itself (`comm-relay.sh` is the plumbing underneath, not a
-verb you call). A handle this box's registry names is filed locally (`filed
--> @handle` — the file IS
-the ack, read at that session's next turn boundary); one it cannot name goes
-over the wire, and there the verdict is the FILER'S RECEIPT: `filed -> @handle
-(by <filer>, relay)` means that named filer appended your frame. Failures are
-loud and specific, all non-zero:
+verb you call). A handle this box's registry names is filed through this box's comm folder
+(`filed -> @handle` — the file IS the ack, read at that session's next turn
+boundary); one it cannot name goes to the hub as one `comm.file` request, and
+the hub's answer is the verdict: `filed -> @handle` means the hub appended your
+frame. A failure is loud, non-zero and one form:
 
-- `no such handle: h` — nothing is attached to the hub at all, so there is
-  nowhere for the frame to land. Check the spelling first.
-- `NOT CONFIRMED: sent for @h; nobody claimed it within 5s. Attached: …` — the
-  frame was sent and may well have been filed; nobody claimed it. A receipt is
-  only ever positive (nobody can honestly say "not me" about a handle they do
-  not host), so this one line covers a misspelled handle, a frontend too old to
-  claim, and a filer that was simply slow. The `Attached:` list is a
-  diagnostic, not a delivery.
-- `NOT CONFIRMED: this daemon predates filer receipts` — the hub is older than
-  the mechanism; nothing on that path can vouch for anything.
+- `FAILED -> @h: <reason>` — the reason is the daemon's own sentence
+  (`no box knows that handle: h` — check the spelling first; `no live session
+  holds @h`; `unknown op: comm.file` — the hub is older than this route), or
+  `the daemon did not answer at <endpoint>` with the transport's own complaint
+  after it when it had one.
 
-The frame is never withdrawn by a failure; only the claim that it landed is.
+Until B2, a handle the hub's folder does not list falls back to the older
+route, decided on a filer's receipt: `filed -> @h (by <filer>, relay)` means
+that named filer appended your frame, and `NOT CONFIRMED: sent for @h; nobody
+claimed it within 5s. Attached: …` means the frame was sent and may well have
+been filed but nobody claimed it — a misspelled handle, a frontend too old to
+claim, or a filer that was simply slow. The `Attached:` list is a diagnostic,
+not a delivery.
+
+A refusal means nothing was appended; with no answer, or `NOT CONFIRMED`, the
+frame may have landed and only the claim that it did is missing.
 There is no "only a reply proves it" rule any more.
 
 `filed -> @handle` carries one more factual clause when the registry can

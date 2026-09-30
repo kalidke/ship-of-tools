@@ -124,45 +124,58 @@ lists the receiver:
    daemon that does not answer is `FAILED` and no second route is tried; one
    older than the record answers `unknown op: comm.file`. A daemon sees a
    remount of its comm folder only when it restarts.
-2. It cannot: it hands the message to the hub, which offers it to every
-   daemon linked to it. The daemon whose comm folder holds that inbox adds
-   the line and says "filed" (the hub itself, for its own home). The hub
-   passes that back.
+2. It cannot: `comm-relay.sh send @h` (which `comm-send.sh` execs on a
+   registry miss) writes ONE `comm.file` request to the relay endpoint, the
+   hub, and reads ONE answer. The hub files for its own home: when its comm
+   folder lists the handle and a session holds it, it adds the line under
+   the same inbox lock and answers `ok`.
 
-A daemon on a box with its own disk keeps its own link to the hub, opened
-when it starts and reopened if it drops, so the box is reachable whenever
-its rows run, window open or not; its sessions send through that same link.
+From B2, a daemon on a box with its own disk keeps its own link to the hub,
+opened when it starts and reopened if it drops, so the box is reachable
+whenever its rows run, window open or not; its sessions send through that
+same link.
 
-A liveness check runs first: a row still runs a session with that handle, or
-the session was active in the last ten minutes.
+The daemon's filer checks liveness first: a row still runs a session with
+that handle, or the session was active in the last ten minutes. A script's
+own append in route 1 does not check it yet.
 
 **The one result**, nothing else:
 
-- `filed -> @h` (exit 0).
-- `FAILED -> @h: <reason>` (exit 1): no box knows that handle; no live
-  session holds it; the inbox lock was held for 10 seconds (`the inbox lock
-  for @h was held for 10s — nothing was appended`); the hub cannot be
-  reached; or no daemon said "filed" within 5 seconds. Nothing was added. Retrying or reporting is the sender's
-  call.
+- `filed -> @h` (exit 0; a script's own append prints it indented).
+- `FAILED -> @h: <reason>` (exit 1), the reason being the daemon's own
+  sentence whenever there is one: `no box knows that handle: <h>`,
+  `no live session holds @h`, `not a handle: …`, a failed append; the inbox
+  lock held for 10 seconds (`the inbox lock for @h was held for 10s — nothing
+  was appended`); a daemon older than the op (`unknown op: comm.file`); or no
+  answer at all (`the daemon did not answer at <endpoint>`, followed by the
+  transport's own stderr when it wrote any). A refusal means nothing was
+  added; with no answer nothing is known to have been. Retrying or reporting
+  is the sender's call.
 
-**A send with a receipt reports delivered, whatever the ssh child's exit
-status or stderr say** — the transport's status and stderr only ever supply
-the `<reason>` in a `FAILED` line the record could not explain.
+**The answer decides, whatever the transport's exit status or stderr say**:
+the transport's stderr is read only when no answer came, and then only
+lengthens the reason. The read window is the lock wait plus 10 seconds, so a
+hub that waited out the lock and then filed is not reported `FAILED`.
 
-**Landing in stages: today `comm-relay.sh` prints more negatives than the one
-above, in the verdict's own precedence.** A receipt gives `filed -> @h`
-(exit 0). Without one: an ack naming nobody, or a daemon too old to prove a
-receiver either way, gives `NOT CONFIRMED: …` with the attached roster as a
-diagnostic and never as a verdict; a handle no box knows gives `no such
-handle: <h>`; a transport that failed with something to say gives
-`FAILED -> @h: <reason>`; and nothing at all gives `ERROR: unreachable,
-nothing filed …`. **Every one of those exits 1**, and B6 collapses them to the
-single `FAILED` line above. A reply window that cannot open is not in this
-list at all: the frame is already filed, so `ask` reports `no reply window: …`
-and still exits 0.
+**Landing in stages: until B2, a handle the hub's folder does not list
+(`not_here`) falls back to the older route** — `agent.send` offered to
+everything attached to the hub, decided on a filer's receipt. There, a
+receipt gives `filed -> @h (by <filer>, relay)` (exit 0); an ack whose roster
+is empty gives `FAILED -> @h: no box knows that handle: <h>`; an ack naming
+anyone with no receipt within 5 seconds gives `NOT CONFIRMED: sent for @h;
+nobody claimed it within 5s. Attached: …`, the roster a diagnostic and never
+a verdict — so a handle no box knows gives `NOT CONFIRMED` whenever anything
+is attached; any other ack, or none, gives `FAILED -> @h: <reason>` when the
+transport failed with one to give, else `FAILED -> @h: the daemon did not
+answer at <endpoint>`. Every one of those but the receipt exits 1. A broadcast
+(`send --all`) still goes this way and prints `relayed -> <all> (<n>
+receiver(s)) via <endpoint>`. With no daemon found at all a wire send prints
+`ERROR: no sotd daemon found; …` and exits 1. A reply window that cannot open
+is not in this list: the frame is already filed, so `ask` reports `no reply
+window: …` and still exits 0.
 
-Nothing is queued anywhere and there is no second route. To get an answer,
-send, end the turn, and be woken.
+Nothing is queued anywhere, and a failed send is not retried by another
+route. To get an answer, send, end the turn, and be woken.
 
 **Waking.** Every two seconds each daemon looks at every row it runs. If the
 row's handle has unread mail and the row sits at a free prompt — the cursor
@@ -199,7 +212,7 @@ Monitor exists.
 |-------------|------------------|-------|
 | join        | `comm-join.sh`   | **Superseded by ADR 0049, removed in B6** — the handle is derived (folder plus box name), not chosen by flag. `--name <n>` `--expertise "a, b"`; writes registry + self file. Refuses (exit 3) when the self-file slot is already claimed for a DIFFERENT project — the slot is keyed by the workspace row in the environment while the identity comes from the shell's cwd, and a row that comes to name another project's session reads that session's mail. `--repin` is the deliberate override |
 | audit slots | `comm-self-audit.sh` | compares each workspace-keyed slot's key against the `repo=` it carries; reports the ones naming a different project (exit 1), passes a suffixed or path-disambiguated name |
-| send        | `comm-send.sh`   | `@name "msg"` or `--broadcast "msg"`; recipient is only the first positional `@arg`, so the message may itself begin with `@`. **Either verb routes**: a directed target this box's registry names is filed locally (`comm-relay.sh send` execs here), and one it cannot name goes to the wire (this execs `comm-relay.sh send`). The triggers are mutually exclusive, so a session never has to know which verb reaches a peer |
+| send        | `comm-send.sh`   | `@name "msg"` or `--broadcast "msg"`; recipient is only the first positional `@arg`, so the message may itself begin with `@`. **Either verb routes**: a directed target this box's registry names is filed by route 1 of Delivery (`comm-relay.sh send` execs here), and one it cannot name goes to the hub as `comm.file` (this execs `comm-relay.sh send`). The triggers are mutually exclusive, so a session never has to know which verb reaches a peer |
 | poll        | `comm-poll.sh`   | shows the inbox lines past the read cursor, then advances it |
 | list        | `comm-list.sh`   | all agents + live/stale + (me) marker |
 | leave       | `comm-leave.sh`  | removes self from registry; `--name <handle>` removes an orphan row (registry only — `comm-despawn.sh` is full teardown) |

@@ -396,6 +396,16 @@ Verdicts, in the order the first that applies wins:
 | a receipt carrying this send's `id` | `filed -> @h (by <filer>, relay)` | 0 |
 | no receipt before EOF or the 5 s bound | `NOT CONFIRMED: sent for @h; nobody claimed it within 5s. Attached: …` | 1 |
 
+> **Superseded in part by admiral decision 0031, B1.** A directed send now asks
+> the hub first with one `comm.file` request, and the hub's answer is the
+> verdict (`filed -> @h`, or `FAILED -> @h: <reason>`). This table applies only
+> to the fallback for a handle the hub's folder does not list (`not_here`),
+> which B2 deletes, and there: the empty-roster row prints `FAILED -> @h: no
+> box knows that handle: h`; the no-ack row prints `FAILED -> @h: <the
+> transport's reason>`, else `FAILED -> @h: the daemon did not answer at
+> <endpoint>`; and the ack-without-`id` row is gone, because a daemon that
+> predates receipts also predates `comm.file` and refuses it first.
+
 Everything a receipt cannot exist for is decided on the ack — a broadcast, a hub
 that dropped the id, an empty roster — so no path waits out five seconds for an
 answer nobody can give. **What does wait is the rule, not a list of cases: once

@@ -197,6 +197,13 @@ jobs:
           # still files, pokes and prints its line with the append behind it.
           bash test-hub-files.sh
           bash test-send-poke-row.sh
+          # 0031 B1's caller: a registry miss goes to the wire and one lap ends
+          # in one verdict; the acceptance matrix's classifier keys on that
+          # verdict; and a spawn onto another box writes no row here, so a
+          # folder that lists a handle is one whose own box can file for it.
+          bash test-send-routes-to-relay.sh
+          bash test-comm-matrix-verdict.sh
+          bash test-spawn-remote-no-local-row.sh
           bash test-status-floor.sh
           bash test-session-start-survived.sh
           bash test-sot-fe-version.sh

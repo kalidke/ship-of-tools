@@ -650,28 +650,55 @@ sot_inbox_append() {  # HANDLE
 # else the relay endpoint (the hub, for a shared-home box that runs no
 # daemon). One route, chosen once: an endpoint that does not answer is FAILED.
 _sot_inbox_append_via_daemon() {  # HANDLE LINE
-    local h="$1" frame resp reason ENDPOINT
+    local ENDPOINT
     ENDPOINT="$(sot_daemon_endpoint 2>/dev/null)" || ENDPOINT=""
     [ -n "$ENDPOINT" ] || { ENDPOINT="$(sot_relay_endpoint 2>/dev/null)" || ENDPOINT=""; }
     if [ -z "$ENDPOINT" ]; then
         printf 'this box cannot take the inbox lock itself, and no daemon is reachable to file it\n'
         return 1
     fi
+    sot_comm_file "$1" "$2" || return 1
+}
+
+# sot_comm_file HANDLE LINE — THE one `comm.file` request and its verdict, for
+# the guard's daemon route above and comm-relay.sh's send_frame alike. LINE is
+# the inbox line (`from`, `to`, `msg`); ENDPOINT comes from the caller's scope.
+# 0 = filed; otherwise the reason is on stdout for the caller to print after
+# `FAILED -> @h: `, and the status is 2 when the daemon does not list HANDLE
+# (`not_here`), 1 for everything else. The response line decides, in this
+# order: an `error` is FAILED in the daemon's own words (keyed on its
+# presence, never on `code` — an older daemon refuses the unknown op with no
+# code); `ok` is filed whatever the transport's exit status or stderr say; no
+# response is FAILED, and only then does the transport's stderr give the why.
+sot_comm_file() {  # HANDLE LINE
+    local h="$1" frame resp reason code err diag window
+    # The daemon may wait the whole inbox-lock bound before it files, so a read
+    # window no longer than that reports FAILED for a line that WAS filed, and
+    # the sender resends it: the lock wait plus 10s for the transport's setup.
+    window=$(( SOT_INBOX_LOCK_WAIT_SECS + 10 ))
+    [ "${SOT_SEND_TIMEOUT:-0}" -gt "$window" ] 2>/dev/null && window="$SOT_SEND_TIMEOUT"
     # The text reaches jq on stdin, never argv (the MSYS2 guard, sot_jq_rawfile).
     # A broadcast copy (the line's own `to` empty) must stay one after filing.
     frame="$(printf '%s' "$2" | jq -c --arg t "$h" \
         '{v:1,id:1,kind:"req",op:"comm.file",payload:{from:.from,to:$t,text:.msg,broadcast:(.to == "")}}')" || {
         printf 'the frame could not be built\n'; return 1; }
-    resp="$(sot_oneshot_request "$frame" comm.file 2>/dev/null)" || resp=""
+    err="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/sot-comm-file-XXXXXX")" || err=""
+    resp="$(SOT_SEND_TIMEOUT="$window" sot_oneshot_request "$frame" comm.file 2>"${err:-/dev/null}")" || resp=""
+    diag=""
+    if [ -n "$err" ]; then diag="$(tr '\n' ' ' < "$err")"; rm -f "$err"; fi
     reason="$(printf '%s' "$resp" | sot_jq -r '.payload.error // empty' 2>/dev/null)" || reason=""
     if [ -n "$reason" ]; then
-        printf '%s\n' "$reason"; return 1
+        printf '%s\n' "$reason"
+        code="$(printf '%s' "$resp" | sot_jq -r '.payload.code // empty' 2>/dev/null)" || code=""
+        [ "$code" = not_here ] && return 2
+        return 1
     fi
     # `-n` first: `jq -e` over empty input exits 0.
     if [ -n "$resp" ] && printf '%s' "$resp" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
         return 0
     fi
-    printf 'the daemon did not answer at %s\n' "$ENDPOINT"
+    diag="${diag% }"
+    printf 'the daemon did not answer at %s%s\n' "$ENDPOINT" "${diag:+: $diag}"
     return 1
 }
 

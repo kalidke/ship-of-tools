@@ -36,6 +36,7 @@ struct Env {
     _runtime_tmp: tempfile::TempDir,
     hosts_toml: PathBuf,
     socket_path: PathBuf,
+    comm_root: PathBuf,
     daemon: Child,
 }
 
@@ -95,7 +96,7 @@ impl Env {
             .spawn()
             .expect("spawn sotd");
 
-        Self { _tmp: tmp, _runtime_tmp: runtime_tmp, hosts_toml, socket_path, daemon }
+        Self { _tmp: tmp, _runtime_tmp: runtime_tmp, hosts_toml, socket_path, comm_root, daemon }
     }
 }
 
@@ -174,6 +175,22 @@ async fn topology_set_writes_the_real_file_and_broadcasts_over_the_real_wire() {
     let env = Env::spawn("add", "hub-a", HUB_TOML);
     let (mut editor, eid) = connect_and_hello(&env.socket_path, "editor", "hub-a").await;
     let (mut watcher, _wid) = connect_and_hello(&env.socket_path, "watcher", "hub-a").await;
+
+    // 0031 B1: a booted daemon names its inbox lock manager in its comm home.
+    let record = env.comm_root.join("inbox-lock-manager");
+    let deadline = std::time::Instant::now() + BOUND;
+    let text = loop {
+        if let Ok(t) = std::fs::read_to_string(&record) {
+            break t;
+        }
+        assert!(std::time::Instant::now() < deadline, "sotd never wrote {}", record.display());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let line = text.strip_suffix('\n').unwrap_or(&text);
+    assert!(
+        !line.contains('\n') && (line == "none" || line.starts_with("nfs4 ") || line.starts_with("local ")),
+        "inbox-lock-manager is not one `nfs4 …`, `local …` or `none` line: {text:?}"
+    );
 
     let edit = serde_json::json!({"edit": {"kind": "add_host", "name": "gamma", "daemon": true}});
     let res = call(&mut editor, eid, op::TOPOLOGY_SET, edit).await;

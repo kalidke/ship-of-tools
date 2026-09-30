@@ -261,6 +261,10 @@ send_frame() {  # $1 to, $2 text
     # Not `local`: the EXIT trap below fires after this function has returned.
     msg_file="$(sot_jq_rawfile "$2")" || return 1
     trap 'rm -f "$msg_file"' EXIT
+    # A directed send is ONE `comm.file` request and ONE verdict (0031 B1): the
+    # daemon that appends answers, so the answer is the whole record.
+    local filing=""
+    [ -n "$1" ] && filing="$(jq -nc --arg f "$NAME" --arg t "$1" --rawfile m "$msg_file" '{from:$f,to:$t,msg:$m}')"
     # ADR 0048: one opaque id per send, minted HERE and nowhere else. It is
     # what makes a filer's receipt attributable to exactly this frame —
     # without it two concurrent sends to one handle can swap verdicts and a
@@ -271,6 +275,19 @@ send_frame() {  # $1 to, $2 text
     local frame; frame="$(jq -nc --arg f "$NAME" --arg t "$1" --arg i "$MSG_ID" --rawfile m "$msg_file" \
         '{v:1,id:1,kind:"req",op:"agent.send",payload:{from:$f,to:$t,text:$m,id:$i}}')"
     rm -f "$msg_file"
+    if [ -n "$1" ]; then
+        local reason rc=0
+        reason="$(sot_comm_file "$1" "$filing")" || rc=$?
+        case "$rc" in
+            0) echo "filed -> @$1"; return 0 ;;
+            2) ;;   # not_here: the hub's folder does not list it — the leg below
+            *) echo "FAILED -> @$1: $reason" >&2; return 1 ;;
+        esac
+    fi
+    # THE NOT-MINE LEG, deleted in B2: a handle the hub's folder does not list
+    # still goes out as `agent.send` and waits for a filer's receipt. A
+    # broadcast (`send --all`, sot-nav.sh's envelope) takes this path for its
+    # `relayed` count.
     # ONE connection carries both legs (ADR 0048): the `agent.send` ack, then
     # this sender's own `agent.receipt`. Read until the receipt arrives, the
     # daemon closes (EOF ends the loop), or nc_send's existing `timeout 5`
@@ -279,7 +296,7 @@ send_frame() {  # $1 to, $2 text
     #
     # The loop body runs in THIS shell (process substitution, never a pipe),
     # so the verdict variables below survive it.
-    local line op ack_ok=false ack_array=false ack_has_id=false
+    local line op ack_ok=false ack_array=false
     local rcpt_seen=false rcpt_filer=""
     local -a receivers=()
     # Not `local`: nc_send below runs inside the process substitution's own
@@ -297,8 +314,7 @@ send_frame() {  # $1 to, $2 text
                 # round-3 finding 3). `ok` stays the wire-compat gate,
                 # checked first; `receivers` is the roster snapshot, now a
                 # DIAGNOSTIC only (it names who was attached, never that
-                # anyone appended); and the echoed `id` is what separates "no
-                # filer answered" from "this hub predates receipts".
+                # anyone appended).
                 if printf '%s' "$line" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
                     ack_ok=true
                 fi
@@ -306,17 +322,14 @@ send_frame() {  # $1 to, $2 text
                     ack_array=true
                     mapfile -t receivers < <(printf '%s' "$line" | sot_jq -r '.payload.receivers[]')
                 fi
-                if printf '%s' "$line" | jq -e --arg i "$MSG_ID" '.payload.id == $i' >/dev/null 2>&1; then
-                    ack_has_id=true
-                fi
                 # Wait for a receipt ONLY where one can exist: a directed
-                # send, acked by a receipt-capable hub, with somebody
-                # attached. Everything else is decided on the ack and must
-                # not spend the caller's seconds — a broadcast has no single
+                # send with somebody attached. Everything else is decided on
+                # the ack and must not spend the caller's seconds — a
+                # broadcast has no single
                 # addressee to file for, and nobody attached means nobody
                 # can append.
                 if [ "$ack_ok" = false ] || [ "$ack_array" = false ] || [ -z "$1" ] \
-                   || [ "$ack_has_id" = false ] || [ "${#receivers[@]}" -eq 0 ]; then
+                   || [ "${#receivers[@]}" -eq 0 ]; then
                     break
                 fi
                 ;;
@@ -341,7 +354,7 @@ send_frame() {  # $1 to, $2 text
     #   1. this sender's own receipt -- the frame was appended;
     #   2. the daemon's own ack -- what it said about the send;
     #   3. the bridge's reason -- consulted ONLY where 1 and 2 said nothing;
-    #   4. the generic "unreachable, nothing filed".
+    #   4. the daemon did not answer.
     #
     # The RECORD decides; the transport only EXPLAINS. An exit status, a
     # signal or a line of stderr cannot turn an appended frame into a
@@ -381,14 +394,10 @@ send_frame() {  # $1 to, $2 text
             return 0
         fi
         if [ "${#receivers[@]}" -eq 0 ]; then
-            # Nothing is attached to this daemon, and this box's own registry
-            # does not name the target either (checked before the wire was
-            # chosen at all). There is nowhere for the frame to land.
-            echo "no such handle: $1" >&2
-            return 1
-        fi
-        if [ "$ack_has_id" = false ]; then
-            echo "NOT CONFIRMED: this daemon predates filer receipts; nothing can vouch for @$1." >&2
+            # Nothing is attached to this daemon, and neither this box's
+            # registry nor the hub's folder names the target. There is nowhere
+            # for the frame to land.
+            echo "FAILED -> @$1: no box knows that handle: $1" >&2
             return 1
         fi
         # The frame WAS sent and may well have been filed; nothing claimed
@@ -404,8 +413,8 @@ send_frame() {  # $1 to, $2 text
         echo "NOT CONFIRMED: sent for @$1; nobody claimed it within 5s. Attached: ${joined%, }." >&2
         return 1
     fi
-    # 3. `ok` false, or `receivers` absent (an OLD daemon that can't prove a
-    # receiver either way), or no ack at all: the record supplied no verdict,
+    # 3. `ok` false, or `receivers` absent, or no ack at all: the record
+    # supplied no verdict,
     # so NOW the bridge's own reason gets to speak. BLOCKER 1's loud-failure
     # requirement lives exactly here -- a bridge that died or timed out with
     # nothing to show for it must say WHY, never the generic line below.
@@ -418,8 +427,11 @@ send_frame() {  # $1 to, $2 text
         return 1
     fi
     # 4. Nothing answered and the transport has no complaint of its own.
-    echo "ERROR: unreachable, nothing filed — no ack from the daemon at $ENDPOINT." >&2
-    echo "      (If every send does this, the daemon may predate agent.send.)" >&2
+    if [ -z "$1" ]; then
+        echo "FAILED -> <all>: the daemon did not answer at $ENDPOINT" >&2
+    else
+        echo "FAILED -> @$1: the daemon did not answer at $ENDPOINT" >&2
+    fi
     return 1
 }
 
