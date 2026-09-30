@@ -108,12 +108,21 @@ Unread mail is any line past it addressed to this handle by someone else.
 **Sending** picks one of two routes, by whether the sender's own comm folder
 lists the receiver:
 
-1. It can reach the inbox (same box, or a box sharing the home): it adds the
-   line itself, under the inbox lock — the kernel's file lock (`flock`) on
-   `inbox/<handle>.lock`, which the filing daemon takes too. The inbox is
-   opened inside the lock and closed before it is released. A box without
-   `flock(1)` never appends unlocked: it hands the line to its own daemon
-   (`comm.file`), and with no daemon there the send fails.
+1. It can reach the inbox (same box, or a box sharing the home): the line
+   goes in under the inbox lock — the kernel's file lock (`flock`) on
+   `inbox/<handle>.lock`, taken by the daemon's filer and the scripts alike.
+   The inbox is opened inside the lock and closed before it is released. A
+   lock excludes only writers that share one lock manager, so a daemon
+   records its own in `inbox-lock-manager`, beside `registry.json`, when it
+   starts: `nfs4 <server>:<export>`, `local <machine-id>` or `none`. A script
+   adds the line itself only when `flock(1)` exists, the box is Linux, and
+   `findmnt -T` on the inbox names that same manager. Anything else (an NFSv3
+   mount, an unknown mount, another box mounting the daemon's local disk, no
+   record) hands the line to the daemon that owns the comm folder as
+   `comm.file`: this box's own daemon, else the relay endpoint (the hub). A
+   daemon that does not answer is `FAILED` and no second route is tried; one
+   older than the record answers `unknown op: comm.file`. A daemon sees a
+   remount of its comm folder only when it restarts.
 2. It cannot: it hands the message to the hub, which offers it to every
    daemon linked to it. The daemon whose comm folder holds that inbox adds
    the line and says "filed" (the hub itself, for its own home). The hub

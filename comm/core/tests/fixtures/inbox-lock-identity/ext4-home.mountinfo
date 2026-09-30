@@ -1,0 +1,2 @@
+21 1 259:2 / / rw,relatime shared:1 - ext4 /dev/vda2 rw
+90 21 259:17 / /fixture-home rw,relatime shared:40 - ext4 /dev/vdb1 rw

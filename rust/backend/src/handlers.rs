@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 use sot_protocol::{
-    op, AgentFiledReq, AgentFiledRes, AgentJoinReq, AgentJoinRes, AgentSendReq, AgentSendRes, BlobDescriptor, ConceptListRes, ConceptReadReq, ConceptReadRes,
+    op, AgentFiledReq, AgentFiledRes, CommFileReq, CommFileRes, AgentJoinReq, AgentJoinRes, AgentSendReq, AgentSendRes, BlobDescriptor, ConceptListRes, ConceptReadReq, ConceptReadRes,
     ConceptWriteReq, ConceptWriteRes, DirCreateReq, DirCreateRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
     FeCommandSendRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq,
     FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
@@ -30,7 +30,7 @@ use crate::mathjax::MathJax;
 use crate::repl::ReplFrameMsg;
 use crate::pluto::Pluto;
 use crate::session::Session;
-use crate::workspaces::{AgentMessage, Workspace, WorkspaceChanged, Workspaces};
+use crate::workspaces::{AgentMessage, Phase, Workspace, WorkspaceChanged, Workspaces};
 use tokio::sync::broadcast;
 
 /// Output of an op handler. The first frame is the response to the request;
@@ -5597,6 +5597,228 @@ pub async fn handle_agent_join(
     )])
 }
 
+/// File one frame into THIS daemon's comm folder (`comm.file`, 0031 B1): the
+/// hub files for its own home. The response is `{ok:true}` only when the line
+/// is in the file; every refusal is `{error, code}` and nothing was appended.
+/// The file work runs off the reactor, like the registry helpers.
+pub async fn handle_comm_file(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    workspaces: &Workspaces,
+) -> Result<HandlerOutput> {
+    let req: CommFileReq = serde_json::from_value(payload_json).context("comm.file payload")?;
+    let rows = workspaces.list();
+    let (from, to) = (req.from.clone(), req.to.clone());
+    let verdict = tokio::task::spawn_blocking(move || {
+        // Arm 1 of liveness: a running row holds the handle, by THE
+        // row-binding rule and the two phases counted as running.
+        let row_holds = || {
+            rows.iter().any(|ws| {
+                matches!(ws.phase(), Phase::Starting | Phase::Ready)
+                    && comm_handle_for_workspace(ws) == req.to
+            })
+        };
+        comm_file_verdict(
+            crate::paths::sot_comm_home().as_deref(),
+            row_holds,
+            &req,
+            unix_now_secs(),
+            comm_stale_secs(),
+            crate::comm_inbox::inbox_lock_wait(),
+        )
+    })
+    .await
+    .context("comm.file join")?;
+    let payload = match verdict {
+        Ok(()) => {
+            tracing::info!(%from, %to, "comm.file filed");
+            serde_json::to_value(CommFileRes { ok: true })?
+        }
+        Err((code, error)) => {
+            tracing::info!(%from, %to, code, %error, "comm.file refused");
+            json!({ "error": error, "code": code })
+        }
+    };
+    Ok(vec![(Frame::res(req_id, op::COMM_FILE, payload), None)])
+}
+
+/// `comm.file`'s verdict against the comm folder it is handed. In order: `to`
+/// is a handle; this folder LISTS it (`.agents[to].host` non-empty — the
+/// question `comm-send.sh` and `comm-relay.sh`'s `_registry_target` ask, and
+/// deliberately not whether the host is this box); a session holds it (a
+/// running row, else a fresh heartbeat); then the append under the inbox lock.
+/// `Err` is `(code, sentence)`, the sentence what the sender prints after
+/// `FAILED -> @<to>: `.
+fn comm_file_verdict(
+    comm_home: Option<&std::path::Path>,
+    row_holds: impl FnOnce() -> bool,
+    req: &CommFileReq,
+    now_secs: u64,
+    stale_secs: u64,
+    wait: std::time::Duration,
+) -> std::result::Result<(), (&'static str, String)> {
+    let to = req.to.as_str();
+    if !valid_name(to) {
+        return Err(("bad_handle", format!("not a handle: {to:?}")));
+    }
+    let not_here = || ("not_here", format!("no box knows that handle: {to}"));
+    let Some(home) = comm_home else {
+        return Err(not_here());
+    };
+    let agents = read_comm_agents_at(&home.join("registry.json"));
+    let entry = agents.as_ref().and_then(|a| a.get(to));
+    let field = |k: &str| entry.and_then(|e| e.get(k)).and_then(|v| v.as_str());
+    if field("host").map_or(true, str::is_empty) {
+        return Err(not_here());
+    }
+    if !(row_holds() || heartbeat_fresh(field("last_seen"), now_secs, stale_secs)) {
+        return Err(("no_live_session", format!("no live session holds @{to}")));
+    }
+    let ts = iso8601_utc_from_secs(now_secs);
+    crate::comm_inbox::file_frame(&home.join("inbox"), &req.from, to, req.broadcast, &req.text, &ts, wait)
+        .map_err(|e| ("file_failed", e))
+}
+
+/// Arm 2 of `comm.file`'s liveness: `last_seen` within `stale_secs` of now.
+/// Both writers stamp one fixed-width UTC shape (`now_iso`,
+/// `iso8601_utc_now`), so string order is time order; a stamp that is absent
+/// or not exactly that shape is no heartbeat, never a fresh one.
+fn heartbeat_fresh(last_seen: Option<&str>, now_secs: u64, stale_secs: u64) -> bool {
+    let Some(s) = last_seen else {
+        return false;
+    };
+    let shape = s.len() == 20
+        && s.bytes().enumerate().all(|(i, b)| match i {
+            4 | 7 => b == b'-',
+            10 => b == b'T',
+            13 | 16 => b == b':',
+            19 => b == b'Z',
+            _ => b.is_ascii_digit(),
+        });
+    shape && s > iso8601_utc_from_secs(now_secs.saturating_sub(stale_secs)).as_str()
+}
+
+/// `SOT_COMM_STALE_SECS`, default 600 — the name and number `comm-lib.sh`'s
+/// `sot_recipient_note` reads for the same field.
+fn comm_stale_secs() -> u64 {
+    std::env::var("SOT_COMM_STALE_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(600)
+}
+
+#[cfg(test)]
+mod comm_file_tests {
+    use super::*;
+    use std::time::Duration;
+
+    const NOW: u64 = 1_790_000_000;
+
+    fn home() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("inbox")).unwrap();
+        let reg = json!({"agents": {
+            "fresh": {"host": "b", "last_seen": iso8601_utc_from_secs(NOW - 5)},
+            "stale": {"host": "b", "last_seen": iso8601_utc_from_secs(NOW - 3600)},
+            "hostless": {"host": "", "last_seen": iso8601_utc_from_secs(NOW - 5)},
+        }});
+        std::fs::write(d.path().join("registry.json"), reg.to_string()).unwrap();
+        d
+    }
+
+    fn file(home: Option<&std::path::Path>, to: &str, row: bool) -> std::result::Result<(), (&'static str, String)> {
+        let req = CommFileReq { from: "s".into(), to: to.into(), text: "hi".into(), broadcast: false };
+        comm_file_verdict(home, || row, &req, NOW, 600, Duration::from_secs(1))
+    }
+
+    // T2 — every verdict, and a refusal leaves the inbox untouched.
+    #[test]
+    fn listed_and_fresh_files_the_line() {
+        let d = home();
+        assert_eq!(file(Some(d.path()), "fresh", false), Ok(()));
+        let line = std::fs::read_to_string(d.path().join("inbox/fresh.jsonl")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(v, json!({"from": "s", "to": "fresh", "repo": "daemon", "msg": "hi",
+                              "ts": iso8601_utc_from_secs(NOW)}));
+    }
+
+    // A broadcast copy is stamped `to:""` and still lands in `to`'s inbox;
+    // a request that omits the field is directed.
+    #[test]
+    fn a_broadcast_copy_is_stamped_to_empty() {
+        let d = home();
+        let req: CommFileReq =
+            serde_json::from_value(json!({"from": "s", "to": "fresh", "text": "all", "broadcast": true})).unwrap();
+        assert_eq!(comm_file_verdict(Some(d.path()), || false, &req, NOW, 600, Duration::from_secs(1)), Ok(()));
+        let line = std::fs::read_to_string(d.path().join("inbox/fresh.jsonl")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!((v["to"].as_str(), v["repo"].as_str()), (Some(""), Some("daemon")));
+        let req: CommFileReq = serde_json::from_value(json!({"from": "s", "to": "fresh", "text": "x"})).unwrap();
+        assert!(!req.broadcast);
+    }
+
+    #[test]
+    fn a_running_row_wins_over_a_stale_heartbeat() {
+        let d = home();
+        assert_eq!(file(Some(d.path()), "stale", true), Ok(()));
+    }
+
+    #[test]
+    fn no_row_and_a_stale_heartbeat_is_no_live_session_and_appends_nothing() {
+        let d = home();
+        let inbox = d.path().join("inbox/stale.jsonl");
+        std::fs::write(&inbox, "{\"msg\":\"before\"}\n").unwrap();
+        let (code, error) = file(Some(d.path()), "stale", false).unwrap_err();
+        assert_eq!((code, error.as_str()), ("no_live_session", "no live session holds @stale"));
+        assert_eq!(std::fs::read_to_string(&inbox).unwrap(), "{\"msg\":\"before\"}\n");
+    }
+
+    #[test]
+    fn unlisted_hostless_and_no_folder_are_not_here() {
+        let d = home();
+        for to in ["nobody", "hostless"] {
+            assert_eq!(
+                file(Some(d.path()), to, true),
+                Err(("not_here", format!("no box knows that handle: {to}")))
+            );
+        }
+        assert_eq!(file(None, "fresh", true).unwrap_err().0, "not_here");
+        assert!(!d.path().join("inbox/nobody.jsonl").exists());
+    }
+
+    #[test]
+    fn an_empty_or_invalid_to_is_bad_handle() {
+        let d = home();
+        assert_eq!(file(Some(d.path()), "", true), Err(("bad_handle", "not a handle: \"\"".into())));
+        assert_eq!(file(Some(d.path()), "../x", true).unwrap_err().0, "bad_handle");
+    }
+
+    #[test]
+    fn an_append_that_cannot_happen_is_file_failed() {
+        let d = home();
+        std::fs::create_dir(d.path().join("inbox/fresh.jsonl")).unwrap();
+        let (code, error) = file(Some(d.path()), "fresh", false).unwrap_err();
+        assert_eq!(code, "file_failed");
+        assert!(error.starts_with("the append failed: "), "{error}");
+    }
+
+    // T4 — the cutoff: one second inside is fresh, one outside and the edge
+    // are stale (the shell's `age >= stale`), malformed and absent are no
+    // heartbeat.
+    #[test]
+    fn the_heartbeat_cutoff_is_a_string_compare_on_one_shape() {
+        let at = |s: u64| iso8601_utc_from_secs(s);
+        assert!(heartbeat_fresh(Some(&at(NOW - 599)), NOW, 600));
+        assert!(!heartbeat_fresh(Some(&at(NOW - 600)), NOW, 600));
+        assert!(!heartbeat_fresh(Some(&at(NOW - 601)), NOW, 600));
+        assert!(!heartbeat_fresh(Some("2026-9-29T01:02:03Z"), NOW, 600));
+        assert!(!heartbeat_fresh(Some("9999-99-99 99:99:99Z"), NOW, 600));
+        assert!(!heartbeat_fresh(None, NOW, 600));
+        assert_eq!(at(0), "1970-01-01T00:00:00Z");
+        assert_eq!(at(NOW).len(), 20);
+    }
+}
+
 #[cfg(test)]
 mod agent_relay_tests {
     use super::*;
@@ -6537,10 +6759,19 @@ mod fe_command_send_tests {
 /// chrono — the backend has no time crate, so format the civil date from
 /// the Unix timestamp directly. Used to stamp relayed agent messages.
 fn iso8601_utc_now() -> String {
-    let secs = std::time::SystemTime::now()
+    iso8601_utc_from_secs(unix_now_secs())
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+/// The same fixed-width shape for any instant — what `comm.file`'s heartbeat
+/// cutoff is built with, so it compares as a string against `last_seen`.
+fn iso8601_utc_from_secs(secs: u64) -> String {
     // Days since the Unix epoch and seconds-of-day.
     let days = (secs / 86_400) as i64;
     let sod = secs % 86_400;
@@ -6611,8 +6842,13 @@ fn capsule_comm_handle(workspace_id: &str) -> String {
 /// JSON all yield `None` so `workspace.list` never errors on the registry. The
 /// FE can't read the registry (separate HOME), so we surface it here.
 fn read_comm_agents() -> Option<serde_json::Value> {
-    let path = comm_registry_path()?;
-    let bytes = std::fs::read(&path).ok()?;
+    read_comm_agents_at(&comm_registry_path()?)
+}
+
+/// `read_comm_agents` for a registry named by path, so `comm.file`'s verdict
+/// can be decided (and tested) against a comm folder it is handed.
+fn read_comm_agents_at(path: &std::path::Path) -> Option<serde_json::Value> {
+    let bytes = std::fs::read(path).ok()?;
     let root: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     root.get("agents").cloned()
 }

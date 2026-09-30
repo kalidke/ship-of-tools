@@ -1,0 +1,2 @@
+21 1 259:2 / / rw,relatime shared:1 - ext4 /dev/vda2 rw
+90 21 0:61 / /fixture\040home rw,relatime shared:40 - nfs4 filer.example:/export/team\040home rw,vers=4.2

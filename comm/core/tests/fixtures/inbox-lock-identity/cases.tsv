@@ -1,0 +1,11 @@
+# The inbox lock identity (0031 B1): one fixture set both languages read —
+# comm_inbox.rs's identity_from and comm-lib.sh's sot_inbox_lock_identity.
+# <mountinfo file>	<path>	<identity>   (tab-separated; the machine id is ./machine-id)
+# Each path is a mount point: `findmnt -F` finds a fixture's mount only by
+# exact target, so the prefix walk is asserted in Rust alone.
+nfs4-home.mountinfo	/fixture-home	nfs4 filer.example:/export/home
+nfs3-home.mountinfo	/fixture-home	none
+ext4-home.mountinfo	/fixture-home	local 0123456789abcdef0123456789abcdef
+fuse-home.mountinfo	/fixture-home	none
+stacked.mountinfo	/fixture-home	nfs4 filer.example:/export/home
+escaped-space.mountinfo	/fixture home	nfs4 filer.example:/export/team home

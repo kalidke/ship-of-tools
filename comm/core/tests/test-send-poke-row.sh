@@ -34,6 +34,10 @@ SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-send-poke-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
 export SOT_COMM_HOME="$WORK/home"
+# 0031 B1: the record a daemon writes at startup. Without it no script
+# appends locally, and every filing here would go to a daemon instead.
+mkdir -p "$SOT_COMM_HOME/inbox"
+bash -c 'source "$1"; sot_inbox_lock_identity "$INBOX_DIR"' _ "$SCRIPTS_DIR/comm-lib.sh" > "$SOT_COMM_HOME/inbox-lock-manager"
 mkdir -p "$SOT_COMM_HOME"
 trap 'rm -rf "$WORK"' EXIT
 

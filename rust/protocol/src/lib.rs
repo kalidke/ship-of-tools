@@ -34,7 +34,7 @@ pub use codec::{read_frame, write_frame};
 pub use ir::{BlobDescriptor, PreviewPayload, TreeNode};
 pub use ops::{
     op, AccountEntry, AccountsListReq, AccountsListRes, AgentFiledReq, AgentFiledRes,
-    AgentJoinReq, AgentJoinRes, AgentReceiptEvt, AgentSendReq, AgentSendRes, ClientVersion, ConceptListRes, ConceptReadReq, ConceptReadRes,
+    AgentJoinReq, AgentJoinRes, AgentReceiptEvt, AgentSendReq, AgentSendRes, ClientVersion, CommFileReq, CommFileRes, ConceptListRes, ConceptReadReq, ConceptReadRes,
     ConceptWriteReq, ConceptWriteRes, DaemonVersion, DeclaredSession, DisconnectedBox, DirCreateReq, DirCreateRes, DirectoryEntry,
     DirectoryListReq, DirectoryListRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
     FeCommandSendRes,

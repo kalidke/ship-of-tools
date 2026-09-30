@@ -571,28 +571,59 @@ registry_touch() {  # name — bump last_seen if present
 
 # --- the inbox append (0031 B1) ---
 # sot_inbox_append HANDLE — THE one place a script appends a frame to an
-# inbox. One JSON line on stdin. 0 = appended; 1 = nothing appended, with the
+# inbox. One JSON line on stdin. 0 = filed; 1 = nothing appended, with the
 # reason on stdout for the caller to print after `FAILED -> @h: `.
 #
 # The lock is the kernel's file lock (flock) on the sidecar
-# `inbox/<handle>.lock`, which the daemon's `comm.file` filer takes too: one
-# primitive for both writers, and on a shared home the writers are on several
-# boxes. The OS releases it when its holder dies, so there is no reclaim; a
-# frozen holder only makes the next sender wait, and a sender that cannot take
-# the lock within SOT_INBOX_LOCK_WAIT_SECS appends NOTHING and fails — a
-# `filed` for an append that did not happen is a false success. The inbox is
-# opened inside the lock and closed before it is released: correctness is the
-# lock plus close-to-open consistency, never O_APPEND's offset across boxes.
+# `inbox/<handle>.lock`, which the daemon's `comm.file` filer takes too. The
+# OS releases it when its holder dies, so there is no reclaim; a frozen holder
+# only makes the next sender wait, and a sender that cannot take the lock
+# within SOT_INBOX_LOCK_WAIT_SECS appends NOTHING and fails — a `filed` for an
+# append that did not happen is a false success. The inbox is opened inside
+# the lock and closed before it is released: correctness is the lock plus
+# close-to-open consistency, never O_APPEND's offset across boxes.
 #
-# Where flock(1) is absent (macOS, some git-bash builds) the frame is never
-# appended unlocked: it goes to this box's own daemon as `comm.file`, whose
-# filer holds the same lock, and with no daemon here the send fails.
+# A lock excludes only writers that go through ONE lock manager: an NFSv3 and
+# an NFSv4 lock on one export exclude nothing, and a local flock on a disk
+# other hosts mount does not exclude their NFS locks. So a script appends
+# locally only when flock(1) exists, this is Linux, and the identity it
+# computes for $INBOX_DIR is byte-equal to the one the daemon recorded in
+# `$COMM_HOME/inbox-lock-manager` at startup. Anything else — no record, a
+# `none` record, NFSv3, an unknown mount, another host mounting the daemon's
+# local disk — hands the frame to the daemon that owns this comm folder as
+# `comm.file`, and a daemon that does not answer is FAILED.
 SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-10}"
 _sot_have_flock() { command -v flock >/dev/null 2>&1; }
+_sot_findmnt() { findmnt "$@"; }
+_sot_machine_id() { local m=""; { read -r m < /etc/machine-id; } 2>/dev/null; printf '%s' "$m"; }
+# sot_inbox_lock_identity DIR — the lock manager an append to DIR goes
+# through, by the rule comm_inbox.rs's record uses: `nfs4 <source>`,
+# `local <machine-id>` on a local block filesystem, else `none`. The last
+# line of `findmnt -T` is the mount on top when one is stacked over another.
+sot_inbox_lock_identity() {  # DIR
+    local fs="" src="" mid
+    read -r fs src < <(_sot_findmnt -n -o FSTYPE,SOURCE -T "$1" 2>/dev/null | tail -n 1)
+    case "$fs" in
+        nfs4) [ -z "$src" ] || { printf 'nfs4 %s\n' "$src"; return 0; } ;;
+        ext2|ext3|ext4|xfs|btrfs|zfs|f2fs)
+            mid="$(_sot_machine_id)"
+            [ -z "$mid" ] || { printf 'local %s\n' "$mid"; return 0; } ;;
+    esac
+    printf 'none\n'
+}
+# 0 when this script takes the same lock manager as every other writer of
+# the inbox; a missing, empty or `none` record never matches.
+_sot_inbox_lock_is_ours() {
+    local rec="" id
+    _sot_have_flock && [ "$(uname -s 2>/dev/null)" = Linux ] || return 1
+    rec="$(cat "$COMM_HOME/inbox-lock-manager" 2>/dev/null)"
+    id="$(sot_inbox_lock_identity "$INBOX_DIR")"
+    [ -n "$id" ] && [ "$id" != none ] && [ "$id" = "$rec" ]
+}
 sot_inbox_append() {  # HANDLE
     local h="$1" line err rc=0
     line="$(cat)"
-    if ! _sot_have_flock; then
+    if ! _sot_inbox_lock_is_ours; then
         _sot_inbox_append_via_daemon "$h" "$line"
         return
     fi
@@ -609,16 +640,21 @@ sot_inbox_append() {  # HANDLE
     esac
     return 1
 }
+# The daemon that owns this comm folder: this box's own when there is one,
+# else the relay endpoint (the hub, for a shared-home box that runs no
+# daemon). One route, chosen once: an endpoint that does not answer is FAILED.
 _sot_inbox_append_via_daemon() {  # HANDLE LINE
     local h="$1" frame resp reason ENDPOINT
     ENDPOINT="$(sot_daemon_endpoint 2>/dev/null)" || ENDPOINT=""
+    [ -n "$ENDPOINT" ] || { ENDPOINT="$(sot_relay_endpoint 2>/dev/null)" || ENDPOINT=""; }
     if [ -z "$ENDPOINT" ]; then
-        printf 'no flock(1) here to lock the inbox, and no daemon here to file it\n'
+        printf 'this box cannot take the inbox lock itself, and no daemon is reachable to file it\n'
         return 1
     fi
     # The text reaches jq on stdin, never argv (the MSYS2 guard, sot_jq_rawfile).
+    # A broadcast copy (the line's own `to` empty) must stay one after filing.
     frame="$(printf '%s' "$2" | jq -c --arg t "$h" \
-        '{v:1,id:1,kind:"req",op:"comm.file",payload:{from:.from,to:$t,text:.msg}}')" || {
+        '{v:1,id:1,kind:"req",op:"comm.file",payload:{from:.from,to:$t,text:.msg,broadcast:(.to == "")}}')" || {
         printf 'the frame could not be built\n'; return 1; }
     resp="$(sot_oneshot_request "$frame" comm.file 2>/dev/null)" || resp=""
     reason="$(printf '%s' "$resp" | sot_jq -r '.payload.error // empty' 2>/dev/null)" || reason=""

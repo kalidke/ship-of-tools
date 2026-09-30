@@ -6,9 +6,10 @@
 # Every send lands in the recipient's durable inbox, and THAT is the
 # acknowledgement: a filed frame is read by the recipient's next turn boundary
 # (its Stop hook reads its own inbox), so `filed -> @name` is the verdict and
-# exit 0 means it. The append is taken under the inbox lock (comm-lib.sh's
-# sot_inbox_append); one that cannot be made prints `FAILED -> @name: <why>`
-# and exits 1, never `filed`. A directed send to a row on THIS host is additionally POKED
+# exit 0 means it. The append is comm-lib.sh's sot_inbox_append: under the
+# inbox lock, or by the daemon that owns the comm folder when this box cannot
+# prove it takes the same lock; one that cannot be made prints
+# `FAILED -> @name: <why>` and exits 1, never `filed`. A directed send to a row on THIS host is additionally POKED
 # — one gated keystroke line (comm-lib.sh's sot_pty_input_gated) for a
 # genuinely idle row, since a stopped agent is blocked on stdin and keystrokes
 # are the only way in. The poke is diagnostic only: `+woken` / `not woken:
@@ -94,9 +95,10 @@ deliver() {  # $1 = target name
         echo "no such handle: $t" >&2; return 1
     fi
 
-    # 1) durable inbox — this append IS the delivery, made under the inbox lock
-    # by the one helper that appends (sot_inbox_append); a refused lock or a
-    # failed write appends nothing and is FAILED, never `filed`. Stamp `to` so
+    # 1) durable inbox — this append IS the delivery, made by the one helper
+    # that appends (sot_inbox_append), under the inbox lock or by the daemon;
+    # a refused lock, a failed write or a daemon that does not file is FAILED,
+    # never `filed`. Stamp `to` so
     # the recipient can rank:
     # a directed send (to == their own name) wakes the session; a broadcast
     # copy (to == "") files silently for comm-poll — the same demotion rule

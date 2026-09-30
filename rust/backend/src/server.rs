@@ -1845,6 +1845,9 @@ where
                 )
                 .await
             }
+            op::COMM_FILE => {
+                handlers::handle_comm_file(frame.id, frame.payload, &workspaces).await
+            }
             op::AGENT_JOIN => {
                 handlers::handle_agent_join(frame.id, frame.payload, &workspaces, &ws_events_tx)
                     .await

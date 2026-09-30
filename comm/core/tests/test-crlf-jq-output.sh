@@ -51,6 +51,10 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-crlf-jq-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$WORK"' EXIT
 export SOT_COMM_HOME="$WORK/home"
+# 0031 B1: the record a daemon writes at startup. Without it no script
+# appends locally, and every filing here would go to a daemon instead.
+mkdir -p "$SOT_COMM_HOME/inbox"
+bash -c 'source "$1"; sot_inbox_lock_identity "$INBOX_DIR"' _ "$SCRIPTS_DIR/comm-lib.sh" > "$SOT_COMM_HOME/inbox-lock-manager"
 mkdir -p "$SOT_COMM_HOME"
 
 # The CRLF-emitting jq stub: real jq's own stdout and exit status, unchanged,
@@ -206,7 +210,9 @@ LIST_LAST="t-crlf-last-row"
 SELF_FIRST="$WORK/self-first-row.txt"
 SELF_LAST="$WORK/self-last-row.txt"
 seed_two_rows() {
-    mkdir -p "$LIST_HOME" || return 1
+    mkdir -p "$LIST_HOME/inbox" || return 1
+    SOT_COMM_HOME="$LIST_HOME" bash -c 'source "$1"; sot_inbox_lock_identity "$INBOX_DIR"' _ "$SCRIPTS_DIR/comm-lib.sh" \
+        > "$LIST_HOME/inbox-lock-manager"   # 0031 B1: the daemon's record
     ( cd "$WORK" && SOT_COMM_HOME="$LIST_HOME" SOT_COMM_SELF_FILE="$SELF_FIRST" \
         SOT_COMM_TEST_HOST="crlfbox" "$JOIN" --name "$LIST_FIRST" ) >/dev/null 2>&1 || return 1
     ( cd "$WORK" && SOT_COMM_HOME="$LIST_HOME" SOT_COMM_SELF_FILE="$SELF_LAST" \

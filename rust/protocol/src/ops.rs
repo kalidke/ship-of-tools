@@ -241,6 +241,14 @@ pub mod op {
     /// work, checkable against the roster — not a proof against a hostile
     /// client, which is not the threat model here.
     pub const AGENT_RECEIPT: &str = "agent.receipt";
+    /// Client→daemon request (0031 B1): append this frame to `to`'s inbox in
+    /// THIS daemon's comm folder — the hub files for its own home. Payload
+    /// `CommFileReq { from, to, text }`; response `CommFileRes { ok: true }`
+    /// only when the line is in the file, else the standard `{error, code}`
+    /// with `code` one of `bad_handle`, `not_here` (this folder does not list
+    /// `to`), `no_live_session`, `file_failed` — and nothing was appended.
+    /// One verb per job: `AGENT_SEND` still means "publish onto the bus".
+    pub const COMM_FILE: &str = "comm.file";
     /// Client→daemon request: a session inside a workspace declares its
     /// sot-comm handle to the daemon that spawned/pinned its env (ADR
     /// 0046 decision 1), over the typed owner endpoint (`SOT_SOCKET`) —
@@ -1700,6 +1708,28 @@ pub struct AgentFiledRes {
 pub struct AgentReceiptEvt {
     pub id: String,
     pub filer: String,
+}
+
+/// `comm.file` request (0031 B1). `to` addresses the inbox, `from` is stamped
+/// into the line, `text` is the message. No id: the verdict is the response
+/// to this request on this connection, so there is nothing to correlate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommFileReq {
+    pub from: String,
+    pub to: String,
+    pub text: String,
+    /// A broadcast copy never ranks as directed mail: when true the line is
+    /// stamped `to:""`, as `comm-send.sh` stamps a `--broadcast` copy, so it
+    /// files silently for `comm-poll.sh` instead of waking its reader.
+    #[serde(default)]
+    pub broadcast: bool,
+}
+
+/// `comm.file` response: the line is in the file. A refusal is the standard
+/// `{error, code}` payload instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommFileRes {
+    pub ok: bool,
 }
 
 /// `agent.join` request (ADR 0046 decision 1) — a session declares its

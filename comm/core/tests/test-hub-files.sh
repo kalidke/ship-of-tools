@@ -8,16 +8,24 @@
 #      the next send files with nothing to time out; a FROZEN holder makes the
 #      next send wait its bound and then report FAILED, never `filed`, and when
 #      the holder resumes the inbox has no torn line.
-#   3. Where flock(1) is absent the script never appends unlocked: the frame
-#      goes to this box's own daemon as `comm.file`, and with no daemon, or a
-#      refusal, the send is FAILED.
-#   4. The wait is ONE number, 10, and no stale/patience/reclaim constant is
-#      spelled at all — the lease is deleted and this keeps it deleted.
+#   3. A script appends locally only when flock(1) exists, this is Linux, and
+#      its lock identity for the inbox equals the daemon's record; NFSv3, an
+#      unknown mount, a mismatched export, a host mounting the daemon's local
+#      disk, no record, a `none` record and no flock(1) all go to the wire —
+#      the fake daemon gets exactly one `comm.file` and the inbox is unchanged.
+#      The wire is this box's own daemon, else the relay endpoint, and one that
+#      does not answer is FAILED with no second route tried.
+#   4. The wait is ONE number, 10, in both languages, and no stale/patience/
+#      reclaim constant is spelled at all — the lease is deleted and this
+#      keeps it deleted.
+#   5. The lock identity: the same fixture set comm_inbox.rs's unit test reads
+#      gives the same strings here; a broadcast copy says so on the wire.
 #
 # No bats dependency. HERMETIC: a temp $SOT_COMM_HOME, per-case self files, a
 # pinned $SOT_COMM_TEST_HOST, and a COPY of the scripts dir whose comm-lib.sh
-# gets `sot_daemon_endpoint` APPENDED (a sourced file's later definitions win)
-# so no real daemon is ever dialled. Never the real ~/.sot-comm.
+# gets its endpoints and mount lookup APPENDED (a sourced file's later
+# definitions win) so no real daemon is ever dialled and the route does not
+# depend on this box's disks. Never the real ~/.sot-comm.
 #
 # Usage: comm/core/tests/test-hub-files.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -37,9 +45,14 @@ BIN="$WORK/bin"
 cp -r "$SCRIPTS_DIR" "$BIN"
 cat >> "$BIN/comm-lib.sh" <<'STUB'
 
-# ---- no daemon (test only) --------------------------------------------------
+# ---- no daemon, a fixture mount (test only) ---------------------------------
 sot_daemon_endpoint() { return 1; }
+sot_relay_endpoint() { return 1; }
+_sot_findmnt() { printf '%s\n' "${FAKE_MNT-nfs4   filer.example:/export/home}"; }
+_sot_machine_id() { printf '0123456789abcdef0123456789abcdef'; }
 STUB
+RECORD="nfs4 filer.example:/export/home"
+printf '%s\n' "$RECORD" > "$SOT_COMM_HOME/inbox-lock-manager"
 SEND="$BIN/comm-send.sh"
 JOIN="$BIN/comm-join.sh"
 LIB="$BIN/comm-lib.sh"
@@ -174,31 +187,112 @@ case_a_failed_write_is_failed_not_filed() {
     return 0
 }
 
-# No flock(1): the frame goes to this box's daemon as comm.file, never an
-# unlocked append. $1 = the daemon's answer ("" = no daemon at all).
-no_flock_append() {
-    printf '%s\n' '{"from":"t-sender","to":"t-peer","repo":"r","msg":"/slash first","ts":"t"}' \
-        | ANSWER="$1" FRAME_LOG="$WORK/frame.log" bash -c '
+# One append through the guard with the wire faked. $1 = own mount as
+# findmnt prints it ("" = unknown), $2 = the record ("-" = absent), $3 = own
+# daemon endpoint, $4 = relay endpoint ("" = none), $5 = the fake daemon's
+# answer ("" = silence), $6 = 0 for no flock(1), $7 = the line. Each wire
+# attempt is one `<endpoint> <frame>` line in $WORK/wire.log.
+OK_ANSWER='{"v":1,"id":1,"kind":"res","op":"comm.file","payload":{"ok":true}}'
+DIRECTED='{"from":"t-sender","to":"t-peer","repo":"r","msg":"/slash first","ts":"t"}'
+route_append() {
+    rm -f "$SOT_COMM_HOME/inbox-lock-manager"
+    [ "$2" = - ] || printf '%s\n' "$2" > "$SOT_COMM_HOME/inbox-lock-manager"
+    printf '%s\n' "${7:-$DIRECTED}" | FAKE_MNT="$1" OWN="$3" RELAY="$4" ANSWER="$5" FLOCK="${6:-1}" \
+        WIRE="$WORK/wire.log" bash -c '
             source "$1/comm-lib.sh"
-            _sot_have_flock() { return 1; }
-            if [ -n "$ANSWER" ]; then
-                sot_daemon_endpoint() { printf "unix:/fixture"; }
-                sot_oneshot_request() { printf "%s\n" "$1" > "$FRAME_LOG"; [ "$2" = comm.file ] && printf "%s" "$ANSWER"; }
-            fi
+            if [ "$FLOCK" = 0 ]; then _sot_have_flock() { return 1; }; fi
+            sot_daemon_endpoint() { [ -n "$OWN" ] && printf "%s" "$OWN"; }
+            sot_relay_endpoint() { [ -n "$RELAY" ] && printf "%s" "$RELAY"; }
+            sot_oneshot_request() { printf "%s %s\n" "$ENDPOINT" "$1" >> "$WIRE"; [ -n "$ANSWER" ] && printf "%s" "$ANSWER"; }
             sot_inbox_append t-peer' _ "$BIN"
+    local rc=$?
+    printf '%s\n' "$RECORD" > "$SOT_COMM_HOME/inbox-lock-manager"
+    return "$rc"
 }
-case_no_flock_routes_through_the_daemon() {
+fresh_route() { rm -f "$WORK/wire.log"; printf '%s\n' '{"msg":"before"}' > "$INBOX/t-peer.jsonl"; }
+wire_count() { [ -e "$WORK/wire.log" ] && wc -l < "$WORK/wire.log" || echo 0; }
+
+case_a_shared_nfs4_lock_manager_appends_locally() {
     local out rc
-    rm -f "$INBOX/t-peer.jsonl" "$WORK/frame.log"
-    out="$(no_flock_append '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":{"ok":true}}')"; rc=$?
-    [ "$rc" -eq 0 ] || { echo "  ok answer: rc $rc ($out)"; return 1; }
-    jq -e '.op == "comm.file" and .payload == {from:"t-sender",to:"t-peer",text:"/slash first"}' \
-        "$WORK/frame.log" >/dev/null || { echo "  frame: $(cat "$WORK/frame.log")"; return 1; }
-    out="$(no_flock_append '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":{"error":"no live session holds @t-peer","code":"no_live_session"}}')"; rc=$?
+    fresh_route
+    out="$(route_append "nfs4   A:/x" "nfs4 A:/x" unix:/own ssh:hub "$OK_ANSWER")"; rc=$?
+    [ "$rc" -eq 0 ] || { echo "  rc $rc ($out)"; return 1; }
+    [ "$(wire_count)" -eq 0 ] || { echo "  went to the wire"; return 1; }
+    [ "$(wc -l < "$INBOX/t-peer.jsonl")" -eq 2 ] || { echo "  not appended locally"; return 1; }
+    return 0
+}
+
+# Every case that cannot prove one lock manager goes to the wire.
+case_anything_unproven_goes_to_the_wire() {
+    local mnt rec flock out rc
+    while IFS='|' read -r mnt rec flock; do
+        fresh_route
+        out="$(route_append "$mnt" "$rec" unix:/own ssh:hub "$OK_ANSWER" "$flock")"; rc=$?
+        [ "$rc" -eq 0 ] || { echo "  [$mnt|$rec|$flock] rc $rc ($out)"; return 1; }
+        [ "$(wire_count)" -eq 1 ] || { echo "  [$mnt|$rec|$flock] $(wire_count) wire frames, want 1"; return 1; }
+        jq -e '.op == "comm.file"' <<<"$(cut -d' ' -f2- "$WORK/wire.log")" >/dev/null \
+            || { echo "  [$mnt|$rec|$flock] not comm.file"; return 1; }
+        [ "$(cat "$INBOX/t-peer.jsonl")" = '{"msg":"before"}' ] || { echo "  [$mnt|$rec|$flock] appended locally"; return 1; }
+    done <<'CASES'
+nfs    A:/x|nfs4 A:/x|1
+|nfs4 A:/x|1
+nfs4   B:/x|nfs4 A:/x|1
+nfs4   hub.example:/home|local 0123456789abcdef0123456789abcdef|1
+nfs4   A:/x|-|1
+nfs4   A:/x|none|1
+fuse.sshfs u@far.example:/x|none|1
+nfs4   A:/x|nfs4 A:/x|0
+CASES
+    return 0
+}
+
+# The wire is this box's own daemon, else the relay; one route, chosen once.
+case_the_wire_is_the_own_daemon_else_the_relay_and_only_one() {
+    local out rc
+    fresh_route; route_append "nfs    A:/x" "nfs4 A:/x" unix:/own ssh:hub "$OK_ANSWER" >/dev/null
+    [ "$(cut -d' ' -f1 "$WORK/wire.log")" = unix:/own ] || { echo "  own daemon not chosen: $(cat "$WORK/wire.log")"; return 1; }
+    fresh_route; route_append "nfs    A:/x" "nfs4 A:/x" "" ssh:hub "$OK_ANSWER" >/dev/null
+    [ "$(cut -d' ' -f1 "$WORK/wire.log")" = ssh:hub ] || { echo "  relay not chosen: $(cat "$WORK/wire.log")"; return 1; }
+    fresh_route; out="$(route_append "nfs    A:/x" "nfs4 A:/x" unix:/own ssh:hub "")"; rc=$?
+    [ "$rc" -eq 1 ] && [ "$out" = "the daemon did not answer at unix:/own" ] || { echo "  silence: rc $rc ($out)"; return 1; }
+    [ "$(wire_count)" -eq 1 ] || { echo "  a second route was tried: $(cat "$WORK/wire.log")"; return 1; }
+    fresh_route; out="$(route_append "nfs    A:/x" "nfs4 A:/x" unix:/own ssh:hub \
+        '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":{"error":"no live session holds @t-peer","code":"no_live_session"}}')"; rc=$?
     [ "$rc" -eq 1 ] && [ "$out" = "no live session holds @t-peer" ] || { echo "  refusal: rc $rc ($out)"; return 1; }
-    out="$(no_flock_append '')"; rc=$?
-    [ "$rc" -eq 1 ] && contains "$out" "no daemon here" || { echo "  no daemon: rc $rc ($out)"; return 1; }
-    [ ! -e "$INBOX/t-peer.jsonl" ] || { echo "  appended unlocked"; return 1; }
+    fresh_route; out="$(route_append "nfs    A:/x" "nfs4 A:/x" "" "" "$OK_ANSWER")"; rc=$?
+    [ "$rc" -eq 1 ] && contains "$out" "no daemon is reachable" || { echo "  no endpoint: rc $rc ($out)"; return 1; }
+    [ "$(cat "$INBOX/t-peer.jsonl")" = '{"msg":"before"}' ] || { echo "  appended locally"; return 1; }
+    return 0
+}
+
+# The frame: from/to/text and whether the line was a broadcast copy (to:"").
+case_the_wire_frame_carries_the_broadcast_flag() {
+    fresh_route; route_append "" - unix:/own "" "$OK_ANSWER" >/dev/null
+    jq -e '.payload == {from:"t-sender",to:"t-peer",text:"/slash first",broadcast:false}' \
+        <<<"$(cut -d' ' -f2- "$WORK/wire.log")" >/dev/null || { echo "  directed: $(cat "$WORK/wire.log")"; return 1; }
+    fresh_route; route_append "" - unix:/own "" "$OK_ANSWER" 1 \
+        '{"from":"t-sender","to":"","repo":"r","msg":"all","ts":"t"}' >/dev/null
+    jq -e '.payload == {from:"t-sender",to:"t-peer",text:"all",broadcast:true}' \
+        <<<"$(cut -d' ' -f2- "$WORK/wire.log")" >/dev/null || { echo "  broadcast: $(cat "$WORK/wire.log")"; return 1; }
+    return 0
+}
+
+# Identity parity: the fixture set comm_inbox.rs's unit test reads, through
+# the REAL identity function with findmnt pointed at each fixture.
+case_the_lock_identity_matches_the_shared_fixtures() {
+    local fx="$SCRIPT_DIR/fixtures/inbox-lock-identity" file path want got n=0
+    command -v findmnt >/dev/null 2>&1 || { echo "  no findmnt on this box"; return 1; }
+    while IFS=$'\t' read -r file path want; do
+        case "$file" in ''|'#'*) continue ;; esac
+        got="$(FX="$fx" MI="$fx/$file" bash -c '
+            source "$1"
+            _sot_findmnt() { command findmnt -F "$MI" "$@"; }
+            _sot_machine_id() { local m; read -r m < "$FX/machine-id"; printf "%s" "$m"; }
+            sot_inbox_lock_identity "$2"' _ "$SCRIPTS_DIR/comm-lib.sh" "$path")"
+        [ "$got" = "$want" ] || { echo "  $file: got [$got], want [$want]"; return 1; }
+        n=$((n + 1))
+    done < "$fx/cases.tsv"
+    [ "$n" -eq 6 ] || { echo "  $n fixtures, want 6"; return 1; }
     return 0
 }
 
@@ -212,6 +306,15 @@ case_the_wait_is_one_number_and_no_lease_survives() {
     grep -niE 'inbox.{0,40}(stale|patience|reclaim|lease)|(stale|patience|reclaim|lease).{0,40}inbox' "$lib" \
         | grep -v '^[0-9]*: *#' && { echo "  a lease constant is spelled in comm-lib.sh"; return 1; }
     grep -n 'flock -w' "$lib" | grep -qv 'SOT_INBOX_LOCK_WAIT_SECS' && { echo "  a flock wait not read from the one knob"; return 1; }
+    # The Rust filer: the same knob, the same 10, no other wait outside its
+    # tests, and no lease word outside a comment.
+    local rs="$SCRIPT_DIR/../../../rust/backend/src/comm_inbox.rs"
+    [ "$(grep -c 'pub const INBOX_LOCK_WAIT_DEFAULT_SECS: u64 = 10;' "$rs")" -eq 1 ] \
+        || { echo "  comm_inbox.rs does not default the wait to 10 exactly once"; return 1; }
+    grep -q 'pub const INBOX_LOCK_WAIT_ENV: &str = "SOT_INBOX_LOCK_WAIT_SECS";' "$rs" \
+        || { echo "  comm_inbox.rs does not read the one knob"; return 1; }
+    sed '/^#\[cfg(test)\]/,$d' "$rs" | grep -nE 'from_secs\([0-9]' && { echo "  a wait literal in the filer"; return 1; }
+    grep -vE '^[[:space:]]*//' "$rs" | grep -niE 'stale|patience|reclaim|lease' && { echo "  a lease constant is spelled in comm_inbox.rs"; return 1; }
     return 0
 }
 
@@ -219,8 +322,12 @@ check "two writers through the lock give 400 whole lines" case_two_writers_give_
 check "a holder killed with -9 frees the lock at once and the send files" case_a_killed_holder_frees_the_lock_at_once
 check "a frozen holder makes the send wait its bound and report FAILED, never filed" case_a_frozen_holder_makes_the_send_wait_then_fail
 check "an append that fails under the lock is FAILED with its error" case_a_failed_write_is_failed_not_filed
-check "with no flock(1) the frame goes to the daemon as comm.file, never unlocked" case_no_flock_routes_through_the_daemon
-check "the wait is one number, 10, and no lease constant is spelled" case_the_wait_is_one_number_and_no_lease_survives
+check "a script whose lock identity equals the record appends locally" case_a_shared_nfs4_lock_manager_appends_locally
+check "v3, unknown, a mismatched export, the hub's disk over NFS, no or a none record, and no flock(1) all go to the wire" case_anything_unproven_goes_to_the_wire
+check "the wire is this box's daemon, else the relay; one that does not answer is FAILED with no second route" case_the_wire_is_the_own_daemon_else_the_relay_and_only_one
+check "the wire frame says whether the line was a broadcast copy" case_the_wire_frame_carries_the_broadcast_flag
+check "the lock identity matches the fixture set the Rust test reads" case_the_lock_identity_matches_the_shared_fixtures
+check "the wait is one number, 10, in both languages, and no lease constant is spelled" case_the_wait_is_one_number_and_no_lease_survives
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

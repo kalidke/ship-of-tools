@@ -17,6 +17,7 @@
 mod accounts;
 mod capsule_workspace;
 mod clients;
+mod comm_inbox;
 mod concept;
 mod file_io;
 mod files_mode;
@@ -382,6 +383,15 @@ Pure queries (no startup side effects, answered before any of the above):
         label = ?opts.label,
         "sotd starting"
     );
+
+    // 0031 B1: name the lock manager this daemon's inbox appends go through;
+    // a script appends locally only when it computes the same name.
+    if let Some(home) = paths::sot_comm_home().filter(|h| h.is_dir()) {
+        match comm_inbox::write_lock_record(&home) {
+            Ok(id) => tracing::info!(%id, "comm inbox lock manager recorded"),
+            Err(e) => tracing::warn!(error = %e, "comm inbox lock record not written"),
+        }
+    }
 
     server::run(opts).await
 }
