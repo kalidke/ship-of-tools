@@ -1,6 +1,6 @@
 //! The inbox append (0031 B1): the daemon's arm of the ONE lock both writers
 //! take. `comm-lib.sh`'s `sot_inbox_append` is the other arm, and the two
-//! meet at the kernel: `flock(1)` and `File::try_lock` are both `flock(2)` on
+//! meet at the kernel: `flock(1)` and `File::lock` are both `flock(2)` on
 //! unix, on the same sidecar `inbox/<handle>.lock`. The OS releases the lock
 //! when its holder's handle closes — a kill, a panic, a lost ssh child — so
 //! there is no reclaim; a frozen holder only makes the next writer wait, and a
@@ -25,19 +25,17 @@
 //! std and serde only, so `tests/comm_file.rs` can include this file by path
 //! and drive the real filer from outside a binary-only crate.
 
-use std::fs::{File, OpenOptions, TryLockError};
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// The one knob, read under the same name as the script arm's.
 pub const INBOX_LOCK_WAIT_ENV: &str = "SOT_INBOX_LOCK_WAIT_SECS";
 /// The one number: `comm-lib.sh` defaults the same variable to 10.
 pub const INBOX_LOCK_WAIT_DEFAULT_SECS: u64 = 10;
-
-/// Poll step while another writer holds the lock.
-const LOCK_POLL: Duration = Duration::from_millis(50);
 
 /// The wait a writer spends on a held lock before it gives up.
 pub fn inbox_lock_wait() -> Duration {
@@ -63,7 +61,9 @@ struct Line<'a> {
 /// bridge has always written, so every reader renders it unchanged; a
 /// `broadcast` copy is stamped `to:""`, as `comm-send.sh` stamps one. `Err`
 /// is the sentence the sender prints after `FAILED -> @<to>: `, and it means
-/// nothing was appended.
+/// nothing was appended. The wait is bounded, but a helper thread stays
+/// blocked behind a frozen holder until that holder releases or dies; if it
+/// gets the lock after the caller gave up, it lets it go at once.
 pub fn file_frame(
     inbox_dir: &Path,
     from: &str,
@@ -89,22 +89,27 @@ pub fn file_frame(
         .append(true)
         .open(inbox_dir.join(format!("{to}.lock")))
         .map_err(failed)?;
-    let start = Instant::now();
-    loop {
-        match lock.try_lock() {
-            Ok(()) => break,
-            Err(TryLockError::WouldBlock) if start.elapsed() < wait => {
-                std::thread::sleep(LOCK_POLL)
-            }
-            Err(TryLockError::WouldBlock) => {
-                return Err(format!(
-                    "the inbox lock for @{to} was held for {}s — nothing was appended",
-                    wait.as_secs()
-                ))
-            }
-            Err(TryLockError::Error(e)) => return Err(failed(e)),
+    // A blocking `lock()` queues at the lock manager as the scripts' blocking
+    // `flock -w` does; a poller never queues and loses to every blocking
+    // waiter. The helper blocks, the caller bounds the wait. A `flock` belongs
+    // to the open file description, so it travels with the `File`.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let locked = lock.lock().map(|()| lock);
+        // A send that fails means the caller gave up: the `File` comes back in
+        // the error and is dropped at once, which releases the lock.
+        let _ = tx.send(locked);
+    });
+    let lock = match rx.recv_timeout(wait) {
+        Ok(Ok(lock)) => lock,
+        Ok(Err(e)) => return Err(failed(e)),
+        Err(_) => {
+            return Err(format!(
+                "the inbox lock for @{to} was held for {}s — nothing was appended",
+                wait.as_secs()
+            ))
         }
-    }
+    };
     let written = append_line(&inbox_dir.join(format!("{to}.jsonl")), &line);
     // The inbox is closed inside `append_line`; only now does the lock go.
     drop(lock);
@@ -625,6 +630,26 @@ mod tests {
         assert_eq!(lines[0], "{\"from\":\"died\",");
         let v: serde_json::Value = serde_json::from_str(lines[1]).expect("the new line parses");
         assert_eq!((lines.len(), v["msg"].as_str()), (2, Some("whole")));
+    }
+
+    // A waiter that gave up never keeps the lock.
+    #[test]
+    fn a_waiter_that_gave_up_never_keeps_the_lock() {
+        let d = tempfile::tempdir().unwrap();
+        let holder = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(d.path().join("h.lock"))
+            .unwrap();
+        holder.lock().unwrap();
+        let w = Duration::from_millis(200);
+        assert!(file_frame(d.path(), "a", "h", false, "late", "t", w).is_err());
+        drop(holder);
+        let start = std::time::Instant::now();
+        file_frame(d.path(), "a", "h", false, "only", "t", w).unwrap();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        let lines = read_lines(&d.path().join("h.jsonl"));
+        assert_eq!((lines.len(), lines[0]["msg"].as_str()), (1, Some("only")));
     }
 
     #[test]
