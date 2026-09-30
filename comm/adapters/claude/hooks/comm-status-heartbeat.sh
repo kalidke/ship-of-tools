@@ -132,9 +132,15 @@ if [ -x "$SELF_DIR/comm-context.sh" ]; then
 fi
 [ -n "${NAME:-}" ] || exit 0
 
+# The registry's bytes come from comm-lib.sh's sot_registry_bytes, which
+# re-reads a zero-byte read; it is sourced in a subshell (see below), deployed
+# layout first (update_comm puts every script in the comm home's bin), then
+# next to this file, the same fallback pair the hook uses for comm-context.sh.
 # -s: an empty or many-document registry is unreadable (""), never a row.
-row="$(jq -r -s --arg n "$NAME" 'if length != 1 or (.[0].agents | type) != "object" then ""
-    else .[0].agents[$n] | if . then (.floor // "") + "|" + (.status_at // "") else "" end end' "$REGISTRY" 2>/dev/null || true)"
+hb_lib="$COMM_HOME/bin/comm-lib.sh"
+[ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
+row="$( ( . "$hb_lib" >/dev/null 2>&1 && sot_registry_bytes "$REGISTRY" ) | jq -r -s --arg n "$NAME" 'if length != 1 or (.[0].agents | type) != "object" then ""
+    else .[0].agents[$n] | if . then (.floor // "") + "|" + (.status_at // "") else "" end end' 2>/dev/null || true)"
 [ -n "$row" ] || exit 0
 
 # DEAF-SESSION WARNING (2026-09-15): a session whose harness inbox Monitor
@@ -153,8 +159,8 @@ row="$(jq -r -s --arg n "$NAME" 'if length != 1 or (.[0].agents | type) != "obje
 # live watcher told a genuinely deaf session it was fine. The helper verifies
 # the recorded pid IS a watcher for this handle.
 #
-# Sourced in a SUBSHELL, the one place this standalone-by-design hook touches
-# the library: comm-lib.sh owns variable names this hook also uses (SELF_DIR
+# Sourced in a SUBSHELL, as for the registry reads, the only way this
+# standalone-by-design hook touches the library: comm-lib.sh owns variable names this hook also uses (SELF_DIR
 # among them), so only the exit status crosses back. One fork per throttle
 # window, and if the library cannot be sourced at all the answer is "no live
 # watcher" — for a deafness warning, a spurious warning (throttled to once per
@@ -168,11 +174,6 @@ row="$(jq -r -s --arg n "$NAME" 'if length != 1 or (.[0].agents | type) != "obje
 if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
     watch_marker="$COMM_HOME/state/$NAME.watch"
     watcher_alive=0
-    # Deployed layout first (update_comm puts every script in the comm home's
-    # bin), then next to this file — the same fallback pair the hook already
-    # uses for comm-context.sh.
-    hb_lib="$COMM_HOME/bin/comm-lib.sh"
-    [ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
     if [ -f "$watch_marker" ] && [ -r "$hb_lib" ] \
         && ( . "$hb_lib" >/dev/null 2>&1 && sot_watcher_pid_for "$NAME" >/dev/null 2>&1 ); then
         watcher_alive=1
@@ -216,12 +217,14 @@ LOCKDIR="$COMM_HOME/.registry.lock"
 if mkdir "$LOCKDIR" 2>/dev/null; then
     trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
     # comm-lib.sh's registry_replace, inline (this hook is standalone): the
-    # tmp is renamed only if it is one document with an .agents object and its
-    # data is on the server; otherwise nothing is written.
-    if jq --arg n "$NAME" --arg t "$ts" \
+    # bytes are sot_registry_bytes's, and the tmp is renamed only if it is one
+    # document with an .agents object and its data is on the server;
+    # otherwise nothing is written.
+    if ( . "$hb_lib" >/dev/null 2>&1 && sot_registry_bytes "$REGISTRY" ) \
+       | jq --arg n "$NAME" --arg t "$ts" \
           'if .agents[$n] and .agents[$n].floor
            then .agents[$n] += {status_at:$t, last_seen:$t} else . end' \
-          "$REGISTRY" > "$REGISTRY.hb.tmp" 2>/dev/null \
+          > "$REGISTRY.hb.tmp" 2>/dev/null \
        && jq -e -s 'length == 1 and (.[0].agents | type == "object")' "$REGISTRY.hb.tmp" >/dev/null 2>&1 \
        && perl -MIO::Handle -e 'my $f; open($f, "+<", $ARGV[0]) && $f->sync && close($f) or exit 1' "$REGISTRY.hb.tmp" 2>/dev/null; then
         mv "$REGISTRY.hb.tmp" "$REGISTRY"

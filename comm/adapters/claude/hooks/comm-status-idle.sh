@@ -87,6 +87,10 @@ HOME_DIR="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$HOME_DIR/bin/comm-status.sh"
 REGISTRY="$HOME_DIR/registry.json"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# comm-lib.sh, deployed layout first, then next to this file. It is only ever
+# sourced in a subshell: for the registry's bytes (sot_registry_bytes, which
+# re-reads a zero-byte read) and for the mail gate below.
+FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
 
 # Every Stop ends with `stop`, whatever else this hook did first (the marker
 # stamp, the nudge continuation): it sets `done` only when `floor` was `user`
@@ -134,7 +138,7 @@ CTX="$HOME_DIR/bin/comm-context.sh"; [ -x "$CTX" ] || CTX="$SELF_DIR/comm-contex
 # files, not the registry. -s and the length check: jq 1.6's -e exits 0 on an
 # empty file.
 _reg_rc=0
-[ -n "${NAME:-}" ] && { jq -e -s --arg n "$NAME" 'if length == 1 and (.[0].agents | type == "object") then .[0].agents[$n] else error("unreadable") end' "$REGISTRY" >/dev/null 2>&1 || _reg_rc=$?; }
+[ -n "${NAME:-}" ] && { ( . "$FE_LIB" >/dev/null 2>&1 && sot_registry_bytes "$REGISTRY" ) | jq -e -s --arg n "$NAME" 'if length == 1 and (.[0].agents | type == "object") then .[0].agents[$n] else error("unreadable") end' >/dev/null 2>&1 || _reg_rc=$?; }
 if [ -z "${NAME:-}" ] || [ "$_reg_rc" -eq 1 ]; then
     turn_floor; exit 0
 fi
@@ -296,7 +300,6 @@ mail_total=0; mail_pending=0
 # handle and session so a session relaunched under the handle is told too, and
 # the next clean check removes it so a new fault blocks again.
 # A missing library or any failure yields no mail (fail open).
-FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
 lock_warn=""
 fault_tick="$HOME_DIR/state/lock-fault-$(printf '%s' "$NAME.$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
 if [ -r "$MAIL_INBOX" ]; then
@@ -445,8 +448,11 @@ fi
 # otherwise nudge every short exchange on the row (ADR 0044 amendment, a
 # deleted arm); a turn that IS newly waiting still declares SITREP-WAITING:
 # and the marker path above sets it.
-row_facts="$(jq -r -s --arg n "$NAME" 'if length != 1 or (.[0].agents | type) != "object" then "|"
-    else .[0].agents[$n] | (.floor // "") + "|" + (if .question != null then "blocked" elif .done == true then "done" else "" end) end' "$REGISTRY" 2>/dev/null || echo "|")"
+row_facts="$( ( . "$FE_LIB" >/dev/null 2>&1 && sot_registry_bytes "$REGISTRY" ) | jq -r -s --arg n "$NAME" 'if length != 1 or (.[0].agents | type) != "object" then "|"
+    else .[0].agents[$n] | (.floor // "") + "|" + (if .question != null then "blocked" elif .done == true then "done" else "" end) end' 2>/dev/null)"
+# Not `|| echo`: under pipefail a bytes read that found nothing fails the
+# pipeline AFTER jq has printed its "|".
+[ -n "$row_facts" ] || row_facts="|"
 origin="${row_facts%%|*}"; parked="${row_facts#*|}"
 stored_origin="$origin"
 

@@ -574,7 +574,7 @@ registry_touch() {  # name — bump last_seen if present
 # The check slurps: jq 1.6's -e exits 0 on a file with no document, and judges two by the last.
 registry_replace() {
     local filter="$1" why; shift
-    if jq "$@" "$filter" "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null \
+    if sot_registry_bytes | jq "$@" "$filter" > "$REGISTRY.tmp" 2>/dev/null \
        && jq -e -s 'length == 1 and (.[0].agents | type == "object")' "$REGISTRY.tmp" >/dev/null 2>&1; then
         if why="$(_sot_fsync "$REGISTRY.tmp" 2>&1)" && mv "$REGISTRY.tmp" "$REGISTRY"; then return 0; fi
         rm -f "${REGISTRY:?}.tmp"; echo "FAILED: the registry update could not be flushed ($why), so nothing was written" >&2; return 1
@@ -584,6 +584,24 @@ registry_replace() {
 # _sot_fsync FILE — FILE's data on the server before a rename publishes it (the sync _sot_append_whole does).
 # ($f is declared in its own statement: a `my` is not in scope until the next one.)
 _sot_fsync() { perl -MIO::Handle -e 'my $f; open($f, "+<", $ARGV[0]) && $f->sync && close($f) or do { print STDERR "$ARGV[0]: $!\n"; exit 1 }' "$1"; }
+
+# sot_registry_bytes [FILE] — the registry's bytes (FILE, default $REGISTRY) on stdout: THE read under
+# every registry read and write, this library's and the standalone hooks' (they source it in a subshell).
+# An empty file is never a registry, because every writer fsyncs a checked tmp before its rename. But
+# under NFSv4 close-to-open a client on another box can open a just-renamed registry and read zero bytes,
+# so a zero-byte read opens the folder, which revalidates it, and reads by path again: up to 3 times in
+# about 200 ms. Still empty, or a file that will not open, returns 1 with nothing on stdout, and the
+# caller's slurp sees no document: unreadable. Non-empty bytes are never re-read, parseable or not.
+# Emptiness is the bytes read, never a stat and never jq's exit code.
+sot_registry_bytes() {
+    local f="${1:-$REGISTRY}" bytes pause
+    for pause in - 0 0.1 0.1; do
+        [ "$pause" = - ] || { sleep "$pause"; : < "${f%/*}"; } 2>/dev/null
+        { bytes="$(<"$f")"; } 2>/dev/null || return 1
+        [ -n "$bytes" ] && { printf '%s\n' "$bytes"; return 0; }
+    done
+    return 1
+}
 
 # --- the inbox append (0031 B1) ---
 # sot_inbox_append HANDLE — THE one place a script appends a frame to an
@@ -2262,11 +2280,11 @@ sot_registry_entry_status() {
 # exits 0 on a file with no document.
 sot_registry_read() {
     local out
-    out="$(sot_jq -s -r --arg n "${1-}" --arg one "${1+1}" '
+    out="$(sot_registry_bytes | sot_jq -s -r --arg n "${1-}" --arg one "${1+1}" '
         if length != 1 or (.[0].agents | type) != "object" then "unreadable"
         else .[0] | if $one == "" then "present\t" + tojson
         elif .agents | has($n) then "present\t" + (.agents[$n] | tojson) else "absent" end end' \
-        "$REGISTRY" 2>/dev/null)" || return 2
+        2>/dev/null)" || return 2
     case "$out" in present$'\t'*) printf '%s\n' "${out#present$'\t'}" ;; absent) return 1 ;; *) return 2 ;; esac
 }
 

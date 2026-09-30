@@ -28,6 +28,11 @@
 #  10. The Stop hook with unread mail: on an empty or two-document registry it
 #      goes on to the mail gate and blocks; on a registry without my row it
 #      ends the turn with no block.
+#  11. A registry that reads as 0 bytes for ~50 ms and is then whole (a
+#      scratch file renamed over it by a helper the case reaps) is re-read:
+#      sot_registry_read answers my row and registry_put lands. One that stays
+#      empty for 1 s is unreadable: the read answers 2 with nothing on stdout,
+#      and the put FAILs and leaves the bytes and the inode as they were.
 #
 # No bats dependency. HERMETIC: a temp $SOT_COMM_HOME, a v2 self file, a
 # pinned $SOT_COMM_TEST_HOST, and a COPY of the scripts dir with the hooks
@@ -253,6 +258,34 @@ case_the_stop_hook_on_an_unreadable_registry_reaches_the_mail_gate() {
     rm -f "${SOT_COMM_HOME:?}/inbox/me.jsonl"
 }
 
+# empty_for SECS — the registry is 0 bytes now and $VALID after SECS, renamed
+# over it from a scratch file by a helper ($SWAP) the caller reaps.
+empty_for() {
+    put_reg ""; printf '%s' "$VALID" > "$WORK/whole"
+    ( sleep "$1"; mv "$WORK/whole" "$REG" ) & SWAP=$!
+}
+
+case_a_zero_byte_read_is_re_read_and_a_lasting_one_is_unreadable() {
+    local rc out held
+    empty_for 0.05
+    rc=0; out="$(sot_registry_read me)" || rc=$?; wait "$SWAP"
+    [ "$rc" -eq 0 ] && [ "$(printf '%s' "$out" | jq -r .root)" = "$ROOT" ] \
+        || { echo "  reader, empty for 50 ms: rc $rc out '$out', want my row"; return 1; }
+    empty_for 0.05
+    rc=0; with_lock registry_put x '{"host":"testhost"}' 2>"$WORK/err" || rc=$?; wait "$SWAP"
+    [ "$rc" -eq 0 ] && jq -e '.agents.x.host == "testhost" and .agents.me.root != null' "$REG" >/dev/null \
+        || { echo "  writer, empty for 50 ms: rc $rc: $(cat "$WORK/err")"; return 1; }
+    empty_for 1
+    rc=0; out="$(sot_registry_read me)" || rc=$?; wait "$SWAP"
+    [ "$rc" -eq 2 ] && [ -z "$out" ] || { echo "  reader, empty for 1 s: rc $rc out '$out', want 2 and nothing"; return 1; }
+    empty_for 1; snap
+    rc=0; with_lock registry_put x '{"host":"testhost"}' 2>"$WORK/err" || rc=$?
+    held=0; same "writer, empty for 1 s" > "$WORK/same" || held=1   # before the helper's rename
+    wait "$SWAP"
+    [ "$rc" -ne 0 ] && grep -q FAILED "$WORK/err" && [ "$held" -eq 0 ] \
+        || { echo "  writer, empty for 1 s: rc $rc: $(cat "$WORK/err" "$WORK/same")"; return 1; }
+}
+
 PASS=0; FAIL=0
 for c in case_reader_table \
          case_send_on_a_lasting_empty_registry_is_unreadable \
@@ -263,7 +296,8 @@ for c in case_reader_table \
          case_ensure_home_never_truncates \
          case_the_heartbeat_on_an_unreadable_registry_writes_nothing \
          case_the_reminders_on_an_unreadable_registry_remind \
-         case_the_stop_hook_on_an_unreadable_registry_reaches_the_mail_gate; do
+         case_the_stop_hook_on_an_unreadable_registry_reaches_the_mail_gate \
+         case_a_zero_byte_read_is_re_read_and_a_lasting_one_is_unreadable; do
     # Each case runs in a subshell with the cleanup trap cleared: with_lock
     # saves and restores the EXIT trap it sees, and a subshell sees this one.
     if out="$(trap - EXIT; "$c" 2>&1)"; then echo "PASS $c"; PASS=$((PASS + 1))

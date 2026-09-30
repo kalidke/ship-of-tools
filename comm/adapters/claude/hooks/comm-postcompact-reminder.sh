@@ -33,8 +33,10 @@ NAME=""
 [ -f "$REGISTRY" ] || exit 0
 # jq -e: 1 is no row; an unreadable registry (any other failure) still
 # reminds — a spurious reminder costs a line, a missed one the identity.
-# -s and the length check: jq 1.6's -e exits 0 on an empty file.
-_reg_rc=0; jq -e -s --arg n "$NAME" 'if length == 1 and (.[0].agents | type == "object") then .[0].agents[$n] else error("unreadable") end' "$REGISTRY" >/dev/null 2>&1 || _reg_rc=$?
+# -s and the length check: jq 1.6's -e exits 0 on an empty file. The bytes
+# are comm-lib.sh's sot_registry_bytes (a zero-byte read is re-read), sourced
+# in a subshell.
+_reg_rc=0; ( . "$SELF_DIR/comm-lib.sh" >/dev/null 2>&1 && sot_registry_bytes "$REGISTRY" ) | jq -e -s --arg n "$NAME" 'if length == 1 and (.[0].agents | type == "object") then .[0].agents[$n] else error("unreadable") end' >/dev/null 2>&1 || _reg_rc=$?
 [ "$_reg_rc" -eq 1 ] && exit 0
 
 "$SELF_DIR/comm-session-start.sh" --context

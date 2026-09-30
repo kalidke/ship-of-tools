@@ -84,7 +84,15 @@ and never truncates or repairs one. Every read goes through
 `sot_registry_read` (the standalone hooks inline its check), which has three
 answers: present, absent (it parsed; no such row) and unreadable (missing,
 empty, not JSON, not exactly one document, or no object `.agents`).
-Unreadable is never absent. A send on an unreadable registry prints
+Unreadable is never absent. Every read, and every writer's read under the
+lock, takes its bytes from `sot_registry_bytes` (the daemon's `comm.file` from
+its Rust twin), because of an NFSv4 close-to-open effect: a client on another
+host can briefly open a just-renamed registry and read zero bytes. An empty file
+is never a valid registry, so a zero-byte read revalidates the folder and reads
+by path again, up to 3 times in about 200 ms, and only still-empty is
+unreadable; non-empty bytes that do not parse are never re-read. Before the
+re-read, the two-host test measured 6 unreadable reads in about 11,000 on an
+NFSv4 pair. A send on an unreadable registry prints
 `FAILED -> @<to>: the registry could not be read, so identity @<me> is
 unverified; nothing was sent`. leave, list, spawn and despawn print
 `FAILED: the registry could not be read; nothing was <removed|listed|spawned|despawned>`,

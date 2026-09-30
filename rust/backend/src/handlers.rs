@@ -5762,7 +5762,7 @@ fn comm_file_verdict(
     }
     // A missing registry lists nobody; bytes that are not a registry are no
     // answer at all, never "not here".
-    let agents = match std::fs::read(home.join("registry.json")) {
+    let agents = match read_registry_fresh(&home.join("registry.json")) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_here()),
         Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
             .ok()
@@ -5913,6 +5913,24 @@ mod comm_file_tests {
         assert!(!d.path().join("inbox/fresh.jsonl").exists());
         std::fs::remove_file(d.path().join("registry.json")).unwrap();
         assert_eq!(file(Some(d.path()), "fresh", true).unwrap_err().0, "not_here");
+    }
+
+    // A registry another box sees empty for a moment is re-read; one that
+    // stays empty is unreadable.
+    #[test]
+    fn a_registry_empty_for_50ms_is_read_and_one_empty_for_1s_is_file_failed() {
+        for (empty_ms, want) in [(50, Ok(())), (1000, Err("file_failed"))] {
+            let d = home();
+            let (reg, tmp) = (d.path().join("registry.json"), d.path().join("registry.json.tmp"));
+            std::fs::copy(&reg, &tmp).unwrap();
+            std::fs::write(&reg, "").unwrap();
+            let swap = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(empty_ms));
+                std::fs::rename(tmp, reg).unwrap();
+            });
+            assert_eq!(file(Some(d.path()), "fresh", false).map_err(|e| e.0), want.map_err(String::from), "{empty_ms} ms");
+            swap.join().unwrap();
+        }
     }
 
     #[test]
@@ -7059,6 +7077,28 @@ fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut f = std::fs::File::create(path)?;
     f.write_all(bytes)?;
     f.sync_all()
+}
+
+/// The registry's bytes, as the scripts' `sot_registry_bytes` reads them. An
+/// empty file is never a registry (every writer syncs a checked tmp before its
+/// rename), but under NFSv4 close-to-open another box can open a just-renamed
+/// registry and read zero bytes. So a zero-byte read opens the folder, which
+/// revalidates it, and reads by path again: up to 3 times in about 200 ms.
+/// Still empty is returned empty, which no caller reads as a registry.
+/// Non-empty bytes are never re-read.
+fn read_registry_fresh(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let mut bytes = std::fs::read(path)?;
+    for pause_ms in [0, 100, 100] {
+        if !bytes.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(pause_ms));
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::File::open(dir);
+        }
+        bytes = std::fs::read(path)?;
+    }
+    Ok(bytes)
 }
 
 /// `read_comm_agents` for a registry named by path, so `comm.file`'s verdict

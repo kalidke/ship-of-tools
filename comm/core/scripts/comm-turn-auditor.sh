@@ -80,8 +80,10 @@ tools="$(printf '%s\n' "$tail_lines" \
                                 | map(select(. != null)) | join(" | ")) | tostring | .[0:200])' 2>/dev/null \
     | tail -n 40)"
 
-row_state="$(jq -r -s --arg n "$NAME" 'if length != 1 or (.[0].agents | type) != "object" then empty
-    else .[0].agents[$n] | (.state // "?") + " waiting=" + (.waiting // "-") end' "$REGISTRY" 2>/dev/null)"
+# The bytes are comm-lib.sh's sot_registry_bytes (a zero-byte read is re-read),
+# sourced in a subshell.
+row_state="$( ( . "$(dirname "${BASH_SOURCE[0]}")/comm-lib.sh" >/dev/null 2>&1 && sot_registry_bytes "$REGISTRY" ) | jq -r -s --arg n "$NAME" 'if length != 1 or (.[0].agents | type) != "object" then empty
+    else .[0].agents[$n] | (.state // "?") + " waiting=" + (.waiting // "-") end' 2>/dev/null)"
 [ -n "$row_state" ] || row_state="unreadable"
 
 # ---- tier 1: candidate filters ----------------------------------------------
