@@ -127,12 +127,24 @@ printf '%s\n%s\n' "$id_here" "$(tr -d '\n' < /etc/machine-id)" > "$D/inbox-lock-
 verdict "the v4 peer computes the record's identity ($id_here)" "$([ "$id_peer" = "$id_here" ] || echo "peer computes '$id_peer'")"
 verdict "the v3 host computes a different identity ($id_v3)" "$([ "$id_v3" != "$id_here" ] || echo "v3 host computes the same identity")"
 
-# Clock skew of each remote against this host, for reading the timings.
-skew_peer=0; skew_v3=0
+# Clock skew of each remote against this host: the min-RTT exchange over ONE
+# established ssh connection. A fresh `ssh host date` runs the remote date after
+# connection setup and returns fast, so its midpoint reads ~150 ms of setup as skew.
+# A correction is applied only when its error (at most RTT/2) is known and small.
+skew_peer=0; skew_v3=0; skew_tol=0
 for h in "$PEER" "$V3"; do
-    a="$(now)"; r="$(on "$h" 'date +%s%3N')"; b="$(now)"
-    sk=$((r - (a + b) / 2)); echo "clock skew $h: $sk ms"
+    coproc SK { ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" 'while read -r _; do date +%s%3N; done'; }
+    best=""; sk=0
+    for _ in 1 2 3 4 5; do
+        a="$(now)"; echo >&"${SK[1]}"; r=""; read -r -t 5 r <&"${SK[0]}"; b="$(now)"
+        [ -n "$r" ] || { best=99999; break; }
+        if [ -z "$best" ] || [ $((b - a)) -lt "$best" ]; then best=$((b - a)); sk=$((r - (a + b) / 2)); fi
+    done
+    fd="${SK[1]}"; exec {fd}>&-; wait "$SK_PID" 2>/dev/null
+    echo "clock skew $h: $sk ms (rtt $best ms)"
+    [ "$best" -le 20 ] || { echo "FATAL: the skew exchange with $h took $best ms; it cannot bound a timing" >&2; exit 1; }
     [ "$h" = "$PEER" ] && skew_peer=$sk || skew_v3=$sk
+    [ $((best / 2 + 2)) -le "$skew_tol" ] || skew_tol=$((best / 2 + 2))
 done
 
 # Rows: readers on host e2e-reg, senders on host e2e-snd, so no send ever
@@ -387,8 +399,8 @@ for h in "${HANDLES[@]}"; do
     # strict phase: every send has its own ping before the next send to that handle
     { for sn in here peer; do awk -v h="$h" -v s="$(skew_of "e2e-snd-$sn")" '$3==h{print $1 - s, $4}' "$L/strict-e2e-snd-$sn.log"; done; } | sort -n > "$L/strictsends-$t"
     nst="$(wc -l < "$L/strictsends-$t")"
-    unp="$(awk 'FILENAME==ARGV[1]{p[++n]=$1;next} {st[++m]=$1; id[m]=$2}
-        END{for(i=1;i<=m;i++){lo=st[i]; hi=(i<m)?st[i+1]:9e18; c=0; for(j=1;j<=n;j++) if(p[j]>=lo && p[j]<hi) c++; if(c<1) print id[i]}}' "$L/pings-norm-$t" "$L/strictsends-$t" | awk 'NR<=3' | tr '\n' ' ')"
+    unp="$(awk -v u="$skew_tol" 'FILENAME==ARGV[1]{p[++n]=$1;next} {st[++m]=$1; id[m]=$2}
+        END{for(i=1;i<=m;i++){lo=st[i]-u; hi=(i<m)?st[i+1]-u:9e18; c=0; for(j=1;j<=n;j++) if(p[j]>=lo && p[j]<hi) c++; if(c<1) print id[i]}}' "$L/pings-norm-$t" "$L/strictsends-$t" | awk 'NR<=3' | tr '\n' ' ')"
     nsp="$(awk -v ss="$sst" '$1>=ss' "$L/pings-norm-$t" | wc -l)"
     verdict "5a. $h: strict phase, every one of its $nst sends got its own ping before the next send to it ($nsp pings since the phase began)" \
         "$([ "$nst" -eq 20 ] && [ -z "$unp" ] || echo "$nst sends; no ping before the next send after: $unp")"
