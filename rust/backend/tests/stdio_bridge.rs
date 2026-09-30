@@ -1,20 +1,28 @@
 #![cfg(unix)]
-//! `sotd stdio-bridge --label <label>` against real processes — the three
-//! claims its callers depend on, each proved by running the real binary
-//! with real pipes rather than by calling into `stdio_bridge::run`:
+//! `sotd stdio-bridge [--host <host>]` against real processes — the claims
+//! its callers depend on, each proved by running the real binary with real
+//! pipes rather than by calling into `stdio_bridge::run`:
 //!
-//! 1. **Byte transparency.** An echo listener bound at the label's own
-//!    endpoint gets back exactly what went in, and stdout carries exactly
-//!    that and nothing else — no greeting, no trailing newline. The
-//!    payload carries `\n`, `\r\n`, a lone `\r`, a NUL and a `0xff`,
-//!    because this stream is newline-delimited and any translation of
-//!    either newline form would corrupt a frame far from its cause.
-//! 2. **It reaches a real daemon.** A hello frame written into the
-//!    bridge's stdin comes back as that daemon's own reply.
-//! 3. **A missing endpoint is a prompt, named failure** — nonzero at once,
+//! 1. **Byte transparency, no argument.** An echo listener bound at THIS
+//!    box's own endpoint (`session_socket_path(local_daemon_label())`)
+//!    gets back exactly what went in, and stdout carries exactly that and
+//!    nothing else — no greeting, no trailing newline. The payload carries
+//!    `\n`, `\r\n`, a lone `\r`, a NUL and a `0xff`, because this stream is
+//!    newline-delimited and any translation of either newline form would
+//!    corrupt a frame far from its cause.
+//! 2. **`--host <host>` reaches the hub's relay socket for that host**, a
+//!    different derivation (`topology::relay_socket_path`) than the
+//!    no-argument form — proved by the same byte-transparency round trip.
+//! 3. **A third form is a usage error** — nonzero, one line on stderr
+//!    naming the usage, nothing on stdout.
+//! 4. **A missing endpoint is a prompt, named failure** — nonzero at once,
 //!    one line on stderr naming it, nothing at all on stdout. The value of
 //!    the code is deliberately not asserted: there is one failure code,
 //!    and the line is the diagnosis.
+//! 5. **It reaches a real daemon**, no argument on either side: the daemon
+//!    started at `local_daemon_label()` and the bridge started with no
+//!    argument reach the same socket, because that is the whole point of
+//!    dropping a caller-supplied label.
 //!
 //! Unix-gated because the echo listener below is a `UnixListener` bound at
 //! the endpoint the daemon would own. The bridge itself is
@@ -36,7 +44,9 @@ use support::sotd_exe;
 use support::{Env, TEST_STATE_HOST};
 
 /// Real-process tests share one CI runner; serialize them like every other
-/// file in this crate that spawns a real `sotd`.
+/// file in this crate that spawns a real `sotd`. Serializing also gives
+/// every test exclusive use of the fixed no-argument socket path below —
+/// there is no longer a per-test label to keep them apart there.
 static SERIAL: Mutex<()> = Mutex::new(());
 
 /// A private runtime dir of this suite's own, shared by every test here
@@ -45,9 +55,10 @@ static SERIAL: Mutex<()> = Mutex::new(());
 /// sockets, a different derivation), and moving it is the whole point:
 /// without it every endpoint below would be bound in the REAL
 /// `/run/user/<uid>/sot/sessions`, beside a live daemon's own socket.
-/// One dir for the suite, not one per test, because this process resolves
-/// it through its own env — so the value has to be settled before the
-/// first derivation, and distinct labels keep the tests apart inside it.
+/// One dir for the suite, not one per test: the no-argument form always
+/// resolves the SAME path (`local_daemon_label()` takes no override), so
+/// tests share it and rely on `SERIAL` plus the daemon's own stale-socket
+/// cleanup at bind time rather than on distinct labels.
 static RUNTIME: OnceLock<tempfile::TempDir> = OnceLock::new();
 
 fn runtime_root() -> &'static Path {
@@ -64,7 +75,8 @@ fn runtime_root() -> &'static Path {
         std::env::set_var("XDG_RUNTIME_DIR", tmp.path());
         // Every endpoint here is a sibling in one sessions dir; derive it
         // rather than spelling the layout out a second time.
-        let sessions = sot_protocol::session_socket_path("any").parent().expect("a socket has a parent").to_path_buf();
+        let sessions =
+            sot_protocol::session_socket_path(sot_protocol::local_daemon_label()).parent().expect("a socket has a parent").to_path_buf();
         create_private_under(tmp.path(), &sessions);
         tmp
     });
@@ -98,12 +110,13 @@ const BOUND: Duration = Duration::from_secs(20);
 /// survives: a NUL and a non-UTF-8 `0xff`.
 const PAYLOAD: &[u8] = b"one\ntwo\r\nthree\rfour\x00\xff\nfive\r\n";
 
-fn spawn_bridge(label: &str) -> Child {
-    Command::new(sotd_exe())
-        .arg("stdio-bridge")
-        .arg("--label")
-        .arg(label)
-        .env("XDG_RUNTIME_DIR", runtime_root())
+fn spawn_bridge(args: &[&str]) -> Child {
+    let mut cmd = Command::new(sotd_exe());
+    cmd.arg("stdio-bridge");
+    for a in args {
+        cmd.arg(a);
+    }
+    cmd.env("XDG_RUNTIME_DIR", runtime_root())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -139,17 +152,18 @@ fn next(rx: &Receiver<std::io::Result<Vec<u8>>>, what: &str) -> Vec<u8> {
     }
 }
 
-#[test]
-fn bytes_survive_both_newline_forms_and_stdout_carries_nothing_else() {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let label = "bridge-echo";
-    runtime_root();
-
-    // The endpoint the bridge will resolve for itself — bound here by a
-    // plain echo listener rather than a daemon, so the bytes coming back
-    // are known exactly.
-    let socket = sot_protocol::session_socket_path(label);
-    let listener = UnixListener::bind(&socket).expect("bind the echo listener");
+/// One byte-transparency round trip against a listener already bound at
+/// `socket`, driving the bridge with `args`. Shared by the no-argument
+/// case and the `--host` case, which differ only in which path the
+/// listener binds and which args reach it.
+fn round_trip(socket: &Path, args: &[&str]) {
+    // Best-effort stale-unlink, the same thing `sotd`'s own bind does: the
+    // no-argument path is fixed (`local_daemon_label()` takes no
+    // override), so a killed daemon from an earlier test in this suite can
+    // leave the dirent behind and `bind` would otherwise fail with
+    // `AddrInUse` on a file nothing is listening on.
+    let _ = std::fs::remove_file(socket);
+    let listener = UnixListener::bind(socket).expect("bind the echo listener");
     let echo = std::thread::spawn(move || {
         let (mut conn, _) = listener.accept().expect("accept");
         let mut buf = [0u8; 4096];
@@ -165,7 +179,7 @@ fn bytes_survive_both_newline_forms_and_stdout_carries_nothing_else() {
         }
     });
 
-    let mut child = spawn_bridge(label);
+    let mut child = spawn_bridge(args);
     let mut stdin = child.stdin.take().expect("bridge stdin");
     let rx = read_head_then_tail(child.stdout.take().expect("bridge stdout"), PAYLOAD.len());
     stdin.write_all(PAYLOAD).expect("write the payload");
@@ -189,12 +203,45 @@ fn bytes_survive_both_newline_forms_and_stdout_carries_nothing_else() {
 }
 
 #[test]
+fn no_argument_reaches_this_boxs_own_endpoint() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    runtime_root();
+    let socket = sot_protocol::session_socket_path(sot_protocol::local_daemon_label());
+    round_trip(&socket, &[]);
+}
+
+#[test]
+fn dash_dash_host_reaches_the_hubs_relay_socket_for_that_host() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    runtime_root();
+    let socket = sot_protocol::topology::relay_socket_path("bridge-host");
+    round_trip(&socket, &["--host", "bridge-host"]);
+}
+
+#[test]
+fn a_third_form_is_a_usage_error() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    runtime_root();
+    // The dropped flag itself, kept as the usage-error case: it is exactly
+    // the argument pattern this change removes.
+    let out = spawn_bridge(&["--label", "sot"]).wait_with_output().expect("wait for the bridge");
+    assert!(!out.status.success(), "an unrecognised form is a failure");
+    assert!(out.stdout.is_empty(), "nothing may reach stdout on the usage-error path: {:?}", out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stderr.lines().count(), 1, "one line names the usage: {stderr:?}");
+    assert!(stderr.contains("Usage: sotd stdio-bridge [--host <host>]"), "{stderr:?}");
+}
+
+#[test]
 fn a_missing_endpoint_exits_promptly_with_one_stderr_line_and_no_stdout() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     runtime_root();
 
     let started = Instant::now();
-    let out = spawn_bridge("nothing-listens-here").wait_with_output().expect("wait for the bridge");
+    // `--host` with a name nothing binds: the relay-socket derivation puts
+    // the name straight into the path, so the diagnosis names it without
+    // this test needing a caller-supplied label the flag no longer has.
+    let out = spawn_bridge(&["--host", "nothing-listens-here"]).wait_with_output().expect("wait for the bridge");
     let elapsed = started.elapsed();
 
     assert!(!out.status.success(), "an endpoint that is not there is a failure");
@@ -223,7 +270,10 @@ fn daemon_said(path: &Path) -> String {
 fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let env = Env::new("bridge-daemon");
-    let label = "bridge-daemon";
+    // The daemon MUST run at this box's own label — a no-argument bridge
+    // never accepts a caller-supplied one, so this is the only label that
+    // reaches it, exactly as the hub's own relay unit runs it.
+    let label = sot_protocol::local_daemon_label();
     runtime_root();
 
     let hosts_toml = env._tmp.path().join("hosts.toml");
@@ -300,7 +350,7 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
     let mut line = serde_json::to_vec(&frame).expect("frame serializes");
     line.push(b'\n');
 
-    let mut child = spawn_bridge(label);
+    let mut child = spawn_bridge(&[]);
     let mut stdin = child.stdin.take().expect("bridge stdin");
     let mut stdout = std::io::BufReader::new(child.stdout.take().expect("bridge stdout"));
     let (tx, rx) = channel();

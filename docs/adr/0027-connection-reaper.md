@@ -50,9 +50,10 @@ The frontend and tunnel are **not** the leak source (confirmed by win-fe):
 - The FE's exit-75 relaunch (ADR 0017) is `std::process::exit(75)` — abrupt, no
   Rust destructors — but the OS reclaims fds on exit, so a FIN **is** emitted on
   the daemon socket. A clean relaunch closes cleanly.
-- The SSH tunnel runs with `ServerAliveInterval=30 ServerAliveCountMax=6
-  ExitOnForwardFailure=yes` on the `-L 18743` forward, so a dead tunnel
-  propagates closure too.
+- The frontend's `ssh` child runs with `ServerAliveInterval=15
+  ServerAliveCountMax=3` (no forward, so no `ExitOnForwardFailure`), so a
+  dead network still kills the child and the daemon still sees the closed
+  connection — the same signal a dead `-L` forward used to give.
 
 The leak is the genuinely-silent death (kill -9 / hard network drop) that
 neither path can signal — exactly the case TCP keepalive exists for.

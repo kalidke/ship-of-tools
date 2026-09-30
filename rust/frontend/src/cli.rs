@@ -30,8 +30,9 @@ pub(crate) fn parse_demo_session(entry: &str) -> Option<(String, Option<String>)
 #[derive(Debug, Clone)]
 pub struct Cli {
     /// `--dial <host>=<endpoint>` (repeatable) — one connection per flag,
-    /// `<endpoint>` spelled `unix:<path>` / `pipe:<path>` / `tcp:<host:port>`
-    /// (the same scheme `sotd topology plan` emits). This is the launcher's
+    /// `<endpoint>` spelled `unix:<path>` / `pipe:<path>` /
+    /// `ssh:<target>[/<host>]` (the same scheme `sotd topology plan`
+    /// emits). This is the launcher's
     /// own connection set (topology plan, lane D) — the frontend parses
     /// these and nothing else for hosts; it reads no config file. Raw
     /// strings here; `dial::parse_dial_arg` does the validation.
@@ -39,11 +40,6 @@ pub struct Cli {
     /// Backend local-socket path (Unix socket or Windows named pipe).
     /// `--socket` overrides `$SOT_SOCKET`.
     pub socket: Option<PathBuf>,
-    /// Backend TCP address as `host:port` (per ADR 0010 cross-machine
-    /// transport). `--tcp` overrides `$SOT_TCP`. When both `--socket` and
-    /// `--tcp` are set, the pipe is tried first and TCP serves as the
-    /// fallback on connect failure.
-    pub tcp: Option<String>,
     /// App-level token sent in the `hello` handshake. Required when the
     /// backend is configured with `--token` / `$SOT_TOKEN`; mirror that
     /// here. `--token` overrides `$SOT_TOKEN`.
@@ -192,7 +188,6 @@ impl Cli {
     pub fn parse() -> Self {
         let mut dial: Vec<String> = Vec::new();
         let mut socket: Option<PathBuf> = None;
-        let mut tcp: Option<String> = None;
         let mut token: Option<String> = None;
         let mut capture: Option<PathBuf> = None;
         let mut scale: f32 = 1.0;
@@ -242,14 +237,14 @@ Usage: sot [OPTIONS]
 
 Connection:
   --dial <host>=<endpoint>  one connection (repeatable); endpoint is
-                            unix:<path> / pipe:<path> / tcp:<host:port>
+                            unix:<path> / pipe:<path> / ssh:<target>[/<host>]
                             (what the launcher renders from
                             `sotd topology plan --self <host>`)
-  --tcp <host:port>     connect to a backend over TCP (e.g. 127.0.0.1:18743)
   --socket <path>       connect over a unix socket / named pipe
   --token <token>       app-level auth token (must match the backend)
-  (--tcp/--socket override the "local" connection; no connection flag at
-   all is offline sample mode with demo data)
+  (--socket overrides the "local" connection; no connection flag at all is
+   offline sample mode with demo data — a remote box is `--dial
+   local=ssh:<target>`)
 
 Status:
   --update-status       how far this box's own self-update has got
@@ -283,11 +278,6 @@ F1 opens Help directly. Focused pane borders show the active shortcuts."#);
                 "--socket" => {
                     if let Some(v) = args.next() {
                         socket = Some(PathBuf::from(v));
-                    }
-                }
-                "--tcp" => {
-                    if let Some(v) = args.next() {
-                        tcp = Some(v);
                     }
                 }
                 "--token" => {
@@ -441,11 +431,6 @@ F1 opens Help directly. Focused pane borders show the active shortcuts."#);
                 socket = Some(PathBuf::from(v));
             }
         }
-        if tcp.is_none() {
-            if let Ok(v) = std::env::var("SOT_TCP") {
-                tcp = Some(v);
-            }
-        }
         if token.is_none() {
             if let Ok(v) = std::env::var("SOT_TOKEN") {
                 token = Some(v);
@@ -455,7 +440,6 @@ F1 opens Help directly. Focused pane borders show the active shortcuts."#);
         Self {
             dial,
             socket,
-            tcp,
             token,
             capture,
             scale,

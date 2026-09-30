@@ -1769,6 +1769,15 @@ case_comm_listen_windows_no_bridge_started() {
     local fakebin out err rc
     fakebin="$WORK/winuname"
     mkdir -p "$fakebin"
+    # C10: the closed-port lever below is now a stub `ssh` that exits
+    # nonzero with no stdout -- the same "child fails before any reply"
+    # shape a real ssh gives against a refused/closed target, hermetic
+    # either way.
+    cat > "$fakebin/ssh" <<'FAKESSH'
+#!/bin/sh
+exit 1
+FAKESSH
+    chmod +x "$fakebin/ssh"
     cat > "$fakebin/uname" <<'FAKEUNAME'
 #!/bin/sh
 echo "MINGW64_NT-10.0-19045"
@@ -1799,13 +1808,14 @@ FAKEUNAME
 
     # --selftest injects a real frame over $SOT_RELAY_ENDPOINT and polls
     # fe-inbox.jsonl for it (no bridge to restart there — see comm-listen.sh's
-    # Windows selftest branch). Point it at a closed local port (never a real
-    # daemon — this suite must stay hermetic regardless of whether a real
-    # sotd happens to be running on the box) so the daemon-unreachable path is
+    # Windows selftest branch). Point it at an ssh: endpoint whose child
+    # (the stub `ssh` above) exits nonzero before ever answering (C10) —
+    # this suite must stay hermetic regardless of whether a real sotd
+    # happens to be running on the box — so the daemon-unreachable path is
     # deterministic: exit 1, and — the actual invariant this case exists to
     # protect — still no bridge, ever, on Windows.
     out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" SOT_COMM_HOME="$WORK/winnoop-home" \
-        SOT_RELAY_ENDPOINT="tcp:127.0.0.1:1" \
+        SOT_RELAY_ENDPOINT="ssh:closed-stub-target" \
         bash "$LISTEN" --name winnoop-handle --selftest 2>&1)"
     rc=$?
     [ "$rc" -eq 1 ] || { echo "  --selftest exited $rc (want 1, daemon unreachable): $out"; return 1; }
@@ -2001,6 +2011,15 @@ if [ "$1" = "session-socket-path" ] && [ "$2" = "local" ]; then
     printf '%s\n' '\\.\pipe\sot-fakeuser-local'
     exit 0
 fi
+# C10 named check 1: the same fake must dispatch on argv, not just answer
+# every call the same way -- `topology relay-endpoint` on a box with no
+# hosts.toml answers this box's own endpoint (the Rust-side no-plan rule,
+# isolation-plan.md §3 C10), which on this simulated Windows box is its
+# own pipe.
+if [ "$1" = "topology" ] && [ "$2" = "relay-endpoint" ]; then
+    printf '%s\n' 'pipe:\\.\pipe\sot-fakeuser-local'
+    exit 0
+fi
 exit 1
 FAKESOTD
     chmod +x "$appdata/sot/bin/sotd.exe"
@@ -2020,76 +2039,32 @@ FAKESOTD
     return 0
 }
 
-case_windows_relay_endpoint_is_the_tunnel_even_with_a_live_local_pipe() {
-    # sot_relay_endpoint on the same simulated Windows host, WITH a live
-    # local pipe on offer: relay traffic (send/listen) must still go to the
-    # backend tunnel -- a handle lives on the backend daemon, and the local
-    # daemon's pipe has no route to it (2026-09-08: cross-host sends from a
-    # Windows session went dark when discovery became pipe-first).
+case_windows_relay_endpoint_is_never_the_pipe_the_shell_probed() {
+    # sot_relay_endpoint on the simulated Windows host: the SHELL no longer
+    # decides "prefer this box's own pipe for relay traffic" at all (C10,
+    # isolation-plan.md §3) -- it asks `sotd topology relay-endpoint` and
+    # returns whatever the BINARY says, through the one gate. On this box
+    # (no hosts.toml) the binary's own no-plan rule answers this box's own
+    # endpoint, which happens to print as a pipe: value here -- but it is
+    # the binary's answer, not the shell reaching for the pipe it already
+    # knew about the way the old pipe-first discovery did (2026-09-08:
+    # cross-host sends from a Windows session went dark exactly that way).
     local fakebin appdata out
     fakebin="$WORK/win-discovery-bin"
     appdata="$WORK/win-discovery-localappdata"
     [ -x "$fakebin/uname" ] && [ -x "$appdata/sot/bin/sotd.exe" ] \
         || { echo "  depends on case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep's fakes"; return 1; }
-    out="$(
-        unset OS OSTYPE SOT_SOCKET SOTD_BIN SOT_PORT SOT_RELAY_ENDPOINT
-        PATH="$fakebin:$PATH"
-        LOCALAPPDATA="$appdata"
-        sot_relay_endpoint
-    )"
-    [ "$out" = "tcp:127.0.0.1:18743" ] \
-        || { echo "  expected the backend tunnel tcp:127.0.0.1:18743 for relay traffic, got: $out"; return 1; }
     out="$(
         unset OS OSTYPE SOT_SOCKET SOTD_BIN SOT_RELAY_ENDPOINT
         PATH="$fakebin:$PATH"
         LOCALAPPDATA="$appdata"
-        SOT_PORT=18750 sot_relay_endpoint
+        sot_relay_endpoint
     )"
-    [ "$out" = "tcp:127.0.0.1:18750" ] \
-        || { echo "  expected SOT_PORT to pick the tunnel port, got: $out"; return 1; }
+    [ "$out" = 'pipe:\\.\pipe\sot-fakeuser-local' ] \
+        || { echo "  expected the binary's own no-plan pipe: answer, got: $out"; return 1; }
     out="$(sot_relay_endpoint "unix:/explicit.sock")"
     [ "$out" = "unix:/explicit.sock" ] \
         || { echo "  an explicit endpoint must win verbatim, got: $out"; return 1; }
-    return 0
-}
-
-case_windows_relay_endpoint_prefers_the_launcher_exported_env_over_the_hardcoded_port() {
-    # Topology plan (lane D), the laptop fix: launch-sot.ps1 now derives
-    # this box's relay endpoint from `sotd topology plan` and exports/
-    # persists SOT_RELAY_ENDPOINT -- comm-lib must take THAT over the old
-    # hardcoded tcp:127.0.0.1:18743 guess, which was wrong on any box not
-    # literally tunneling the hub on the default port (every send from
-    # such a box went nowhere before this fix). The hardcoded guess stays
-    # the fallback for a box with no plan yet (SOT_RELAY_ENDPOINT unset).
-    local fakebin appdata out
-    fakebin="$WORK/win-discovery-bin"
-    appdata="$WORK/win-discovery-localappdata"
-    [ -x "$fakebin/uname" ] && [ -x "$appdata/sot/bin/sotd.exe" ] \
-        || { echo "  depends on case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep's fakes"; return 1; }
-    out="$(
-        unset OS OSTYPE SOT_SOCKET SOTD_BIN SOT_PORT
-        PATH="$fakebin:$PATH"
-        LOCALAPPDATA="$appdata"
-        SOT_RELAY_ENDPOINT="unix:/run/user/1000/sot-relay.sock" sot_relay_endpoint
-    )"
-    [ "$out" = "unix:/run/user/1000/sot-relay.sock" ] \
-        || { echo "  expected the plan-derived SOT_RELAY_ENDPOINT verbatim, got: $out"; return 1; }
-    # No plan on this box (SOT_RELAY_ENDPOINT unset) -- still the old
-    # hardcoded fallback, unchanged.
-    out="$(
-        unset OS OSTYPE SOT_SOCKET SOTD_BIN SOT_PORT SOT_RELAY_ENDPOINT
-        PATH="$fakebin:$PATH"
-        LOCALAPPDATA="$appdata"
-        sot_relay_endpoint
-    )"
-    [ "$out" = "tcp:127.0.0.1:18743" ] \
-        || { echo "  expected the hardcoded fallback with no plan, got: $out"; return 1; }
-    # An explicit endpoint still wins over SOT_RELAY_ENDPOINT too.
-    out="$(
-        SOT_RELAY_ENDPOINT="unix:/should-not-win.sock" sot_relay_endpoint "unix:/explicit.sock"
-    )"
-    [ "$out" = "unix:/explicit.sock" ] \
-        || { echo "  an explicit endpoint must win over SOT_RELAY_ENDPOINT too, got: $out"; return 1; }
     return 0
 }
 
@@ -2343,8 +2318,7 @@ check "sot_oneshot_request over a pipe: endpoint dispatches to the stub powershe
 check "sot_oneshot_request over a pipe: endpoint fails cleanly with no powershell.exe on PATH (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_powershell
 check "sot_oneshot_request over a pipe: endpoint fails cleanly with comm-pipe-request.ps1 missing (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_missing_ps1
 check "sot_daemon_endpoint on a simulated Windows host returns pipe: first and never calls pgrep (LU6e)" case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep
-check "sot_relay_endpoint on a simulated Windows host is the backend tunnel even with a live local pipe (never the pipe)" case_windows_relay_endpoint_is_the_tunnel_even_with_a_live_local_pipe
-check "sot_relay_endpoint prefers the launcher-exported SOT_RELAY_ENDPOINT over the hardcoded port, falls back with no plan (topology plan, lane D)" case_windows_relay_endpoint_prefers_the_launcher_exported_env_over_the_hardcoded_port
+check "sot_relay_endpoint on a simulated Windows host returns the binary's own answer, never the pipe the shell itself probed (C10)" case_windows_relay_endpoint_is_never_the_pipe_the_shell_probed
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

@@ -3,7 +3,7 @@
 # registered) and destroy its workspace row (the daemon ends the row's
 # capsule leg and removes the workspace toml, so the FE strip row goes away).
 #
-# Usage: comm-despawn.sh <name|slug|workspace_id> [--endpoint tcp:H:P|unix:PATH]
+# Usage: comm-despawn.sh <name|slug|workspace_id> [--endpoint ssh:target[/host]|unix:PATH]
 #
 # The default workspace cannot be destroyed (daemon refuses).
 set -euo pipefail
@@ -24,14 +24,14 @@ resolve_endpoint() {
     sot_daemon_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
 }
 # App-level auth (ADR 0010 hardening): daemon requires a token-valid hello
-# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1).
+# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1). Both
+# schemes delegate to sot_oneshot_request (comm-lib.sh), which already
+# carries a tested arm for each.
 sot_send() {
-    local frame="$1" op="$2" hp
+    local frame="$1" op="$2"
     case "$ENDPOINT" in
-        tcp:*)  hp="${ENDPOINT#tcp:}"
-                { sot_hello_frame; printf '%s\n' "$frame"; } | timeout 6 nc "${hp%:*}" "${hp##*:}" 2>/dev/null | grep -m1 "\"op\":\"$op\"" ;;
-        unix:*) sot_oneshot_request "$frame" "$op" ;;
-        *)      return 1 ;;
+        ssh:*|unix:*) sot_oneshot_request "$frame" "$op" ;;
+        *)            return 1 ;;
     esac
 }
 
@@ -72,8 +72,12 @@ _reap_markers() {
 }
 
 # 2) destroy the workspace
-if ! command -v nc >/dev/null 2>&1; then echo "nc not found; cannot reach daemon to destroy workspace" >&2; exit 1; fi
-if ! ENDPOINT="$(resolve_endpoint)"; then echo "ERROR: no sotd daemon found; set --endpoint unix:/path or tcp:HOST:PORT" >&2; exit 1; fi
+if ! ENDPOINT="$(resolve_endpoint)"; then echo "ERROR: no sotd daemon found; set --endpoint unix:/path or ssh:target[/host]" >&2; exit 1; fi
+# nc is needed only for a unix: daemon (sot_oneshot_request's unix: arm) --
+# an ssh: endpoint needs nothing but ssh itself (C10).
+case "$ENDPOINT" in
+    unix:*) command -v nc >/dev/null 2>&1 || { echo "nc not found; cannot reach daemon to destroy workspace" >&2; exit 1; } ;;
+esac
 
 LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list || true)"
 WSID="$(printf '%s' "$LIST" | sot_jq -r --arg w "$WHO" \

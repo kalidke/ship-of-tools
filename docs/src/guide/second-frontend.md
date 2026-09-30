@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/
 ```
 
 (On Windows, use the release zip and `scripts\install-shortcut.ps1`; see [Install](../start/install.md).)
-Launch it with `sot-launch`; it opens its own SSH forward and connects as one
+Launch it with `sot-launch`; it spawns its own `ssh` child and connects as one
 more client of the daemon. Nothing on the server changes.
 
 ## What is shared and what is not

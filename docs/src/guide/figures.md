@@ -54,13 +54,13 @@ wglshow(surface(-10:0.4:10, -10:0.4:10, (x, y) -> sin(sqrt(x^2 + y^2));
 
 The figure opens in your OS browser, and pan, zoom and rotate work the same
 with a local or a remote backend: the page and its WebSocket ride the existing
-control tunnel. WGLMakie and Bonito come from *your* project environment
+control connection. WGLMakie and Bonito come from *your* project environment
 (`using WGLMakie` first); Ship of Tools adds no plotting dependency of its own.
 
 ## Pluto notebooks
 
 A Pluto notebook in your project previews as highlighted source in the pane;
 open it and it runs as a live Pluto session in your browser — on the backend
-host, next to your data — over the same tunnel. Quarto documents and HTML
+host, next to your data — over the same connection. Quarto documents and HTML
 follow the same rule: source in the pane, the rich rendered form in the
 browser. See [Previews](previews.md#Opens-in-the-browser,-not-the-pane).

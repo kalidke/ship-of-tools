@@ -175,6 +175,21 @@ jobs:
         working-directory: comm/core/tests
         run: |
           bash test-join-disambiguation.sh
+          # C10 (isolation-plan.md §3): the one gate every endpoint value
+          # leaves comm-lib.sh through, plus the ssh: resolvers and the
+          # sot_ssh_bridge wire round trip -- a suite that runs nowhere is
+          # not a test.
+          bash test-endpoint-gate.sh
+          # The verdict table: every receipt/ack/exit-status/stderr
+          # combination through the one place a send's verdict is decided,
+          # asserting the rule PROTOCOL.md now states -- a send with a
+          # receipt reports delivered, whatever the transport's exit status
+          # or stderr say. Three rounds of fixes each closed the instances
+          # they were handed and left another behind, because the verdict was
+          # read from the transport; 22 of its 38 rows disagreed with the
+          # rule before this stage. A table that runs only when somebody
+          # remembers cannot hold that closed. 28 seconds, hermetic.
+          bash test-relay-file-first.sh
           bash test-status-floor.sh
           bash test-session-start-survived.sh
           bash test-sot-fe-version.sh

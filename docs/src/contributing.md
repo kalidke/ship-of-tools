@@ -90,7 +90,8 @@ build** — a failed build leaves the running app untouched.
     either way. Still restart through the relaunch loop —
     `scripts/relaunch-sot.ps1` (build → sentinel → exit-75 → re-stage →
     respawn) — rather than a process kill: it re-stages the freshly built
-    binary and keeps the supervisor's SSH tunnel alive across the swap.
+    binary, and the swap costs one reconnect per host — the frontend's
+    backoff respawns each `ssh` child.
 
 Note that changes to the *supervisor script itself* (`launch-sot.ps1`) are not
 picked up by the exit-75 in-place loop — those require a full restart of the

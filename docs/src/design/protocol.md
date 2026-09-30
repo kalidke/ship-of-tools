@@ -9,7 +9,7 @@ hand-debuggable: you can `tail -f` any seam and read what is happening.
 This page describes the *application* protocol. The separate session-to-session
 messaging used by Claude instances (sot-comm) is a different transport
 entirely — see [The comm protocol](../ref/comm.md). For where these bytes flow
-(Unix sockets, SSH forwarding, reconnect) see [Backend & Sessions](backend.md).
+(Unix sockets, the ssh stdio bridge, reconnect) see [Backend & Sessions](backend.md).
 
 ## Control frames — NDJSON
 

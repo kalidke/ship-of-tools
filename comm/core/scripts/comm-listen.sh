@@ -101,10 +101,16 @@ if _sot_is_windows; then
         mkdir -p "$(dirname "$fe_inbox")" 2>/dev/null || true
         : >> "$fe_inbox"
         EP="$(sot_relay_endpoint "${SOT_RELAY_ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}")" \
-            || { echo "selftest @$NAME: no daemon endpoint found (set SOT_RELAY_ENDPOINT=tcp:HOST:PORT — the local tunnel to the remote socket)" >&2; exit 1; }
+            || { echo "selftest @$NAME: no daemon endpoint found (set SOT_RELAY_ENDPOINT=ssh:target[/host] — the box this session relays through)" >&2; exit 1; }
         case "$EP" in
-            tcp:*) hp="${EP#tcp:}"; SH="${hp%:*}"; SP="${hp##*:}" ;;
-            *) echo "selftest @$NAME: endpoint '$EP' is not tcp — a Windows FE always relays over its local tunnel" >&2; exit 1 ;;
+            ssh:*)
+                ep_rest="${EP#ssh:}"
+                case "$ep_rest" in
+                    */*) SSH_TARGET="${ep_rest%%/*}"; SSH_HOST="${ep_rest#*/}" ;;
+                    *)   SSH_TARGET="$ep_rest"; SSH_HOST="" ;;
+                esac
+                ;;
+            *) echo "selftest @$NAME: endpoint '$EP' is not ssh: — a Windows FE always relays over its own ssh child" >&2; exit 1 ;;
         esac
 
         # _win_probe_once NONCE -- ONE connect+hello+send+read attempt.
@@ -115,13 +121,26 @@ if _sot_is_windows; then
         # e.g. a cold bridge) — Codex review finding 14: the old version
         # discarded the reply entirely (`cat >/dev/null`), so a real
         # rejection looked identical to a benign cold-start retry.
+        #
+        # C10 (isolation-plan.md §3): the child is `sot_ssh_bridge`, not a
+        # raw /dev/tcp fd — there is no separate "connect" step to check
+        # before writing, so the mapping is decided on the OUTPUT and the
+        # child's own exit status together: nothing on stdout AND a
+        # nonzero exit means the child itself failed (login, or a hub
+        # whose `sotd` predates C1) before any reply could come back
+        # ("unreachable"); nothing on stdout with a zero-ish exit means it
+        # connected and the DAEMON stayed silent ("silent") — the same
+        # distinction the old connect-then-read split drew, now drawn from
+        # one child's own reporting instead of two fd operations.
         _win_probe_once() {
-            exec 8<>"/dev/tcp/$SH/$SP" 2>/dev/null || { echo unreachable; return 0; }
-            sot_hello_frame >&8
-            printf '%s\n' "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"agent.send\",\"payload\":{\"from\":\"__selftest__\",\"to\":\"$NAME\",\"text\":\"$1\"}}" >&8
-            local out; out="$(cat <&8 2>/dev/null)"
-            exec 8<&- 8>&- 2>/dev/null || true
-            [ -n "$out" ] || { echo silent; return 0; }
+            local out rc
+            out="$( { sot_hello_frame; printf '%s\n' "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"agent.send\",\"payload\":{\"from\":\"__selftest__\",\"to\":\"$NAME\",\"text\":\"$1\"}}"; } \
+                | sot_ssh_bridge "$SSH_TARGET" "$SSH_HOST" 2>/dev/null )"
+            rc=$?
+            if [ -z "$out" ]; then
+                if [ "$rc" -ne 0 ]; then echo unreachable; else echo silent; fi
+                return 0
+            fi
             local hello_line send_line
             hello_line="$(printf '%s' "$out" | grep -m1 '"op":"hello"')"
             send_line="$(printf '%s' "$out" | grep -m1 '"op":"agent.send"')"
@@ -134,19 +153,18 @@ if _sot_is_windows; then
             fi
             echo silent
         }
-        # The WHOLE attempt (connect, write, read) is time-bounded, not just
-        # the read half (finding 14: an unbounded /dev/tcp connect to a
+        # The WHOLE attempt (spawn, write, read) is time-bounded, not just
+        # the read half (finding 14: an unbounded connect to a
         # black-holed address used to hang this indefinitely). `export -f`
-        # hands the function to a fresh `bash -c` under `timeout` — the
-        # connect is a shell builtin (/dev/tcp), so an external `timeout`
-        # can only bound it by wrapping a whole bash process, not the
-        # builtin directly.
+        # hands the function to a fresh `bash -c` under `timeout`.
         # sot_hello_frame's own dependencies (S13, Codex finding S13) must
         # travel with it: sot_host (the declared-host resolver) and
         # sot_json_escape (S19's JSON-safe interpolation) — a child bash
-        # missing either produces an empty-host hello (reproduced).
-        export -f _win_probe_once sot_hello_frame sot_host sot_json_escape
-        export SH SP NAME SOT_TOKEN XDG_CONFIG_HOME SOT_SELF_HOST HOST SOT_WORKSPACE
+        # missing either produces an empty-host hello (reproduced). Same
+        # for sot_ssh_bridge's own two helpers, new with C10.
+        export -f _win_probe_once sot_hello_frame sot_host sot_json_escape \
+            sot_ssh_bridge _sot_ssh_control _sot_ssh_sharing_ok
+        export SSH_TARGET SSH_HOST NAME SOT_TOKEN XDG_CONFIG_HOME SOT_SELF_HOST HOST SOT_WORKSPACE
         _win_probe() {
             local r; r="$(timeout 5 bash -c '_win_probe_once "$1"' _ "$1" 2>/dev/null)"
             printf '%s' "${r:-unreachable}"
@@ -245,10 +263,16 @@ case "$MODE" in
         # cosmetic, but it derailed a real first-join diagnosis. Append-touch.
         : >> "$INBOX"
         EP="$(sot_relay_endpoint "${SOT_RELAY_ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}")" \
-            || { echo "selftest @$NAME: no daemon endpoint found (set SOT_RELAY_ENDPOINT=unix:/path or tcp:HOST:PORT)" >&2; exit 1; }
-        SH=""; SP=""; SU=""
+            || { echo "selftest @$NAME: no daemon endpoint found (set SOT_RELAY_ENDPOINT=unix:/path or ssh:target[/host])" >&2; exit 1; }
+        SSH_TARGET=""; SSH_HOST=""; SU=""
         case "$EP" in
-            tcp:*)  hp="${EP#tcp:}"; SH="${hp%:*}"; SP="${hp##*:}" ;;
+            ssh:*)
+                ep_rest="${EP#ssh:}"
+                case "$ep_rest" in
+                    */*) SSH_TARGET="${ep_rest%%/*}"; SSH_HOST="${ep_rest#*/}" ;;
+                    *)   SSH_TARGET="$ep_rest" ;;
+                esac
+                ;;
             unix:*) SU="${EP#unix:}" ;;
             *) echo "selftest @$NAME: bad daemon endpoint '$EP'" >&2; exit 1 ;;
         esac
@@ -258,21 +282,14 @@ case "$MODE" in
         }
         # A one-shot direct connection to the daemon (bypassing NAME's own
         # bridge entirely) that sends the self-test frame and prints its
-        # `agent.send` ack line on stdout — nothing on failure. The connect
-        # MUST live in a subshell: `exec` with redirections only EXITS a
-        # non-interactive shell on a failed redirect — a bare `|| return 1`
-        # after it never runs, and the whole selftest used to die silently
-        # between the probe and the DOWN diagnostics (the unidentified kill
-        # site from the 2026-06-11 fresh-join report). In a subshell the
-        # death is contained and surfaces as ordinary empty output instead.
+        # `agent.send` ack line on stdout — nothing on failure. The `ssh:`
+        # branch has no separate connect step to fail before writing
+        # (C10): a `sot_ssh_bridge` that never answers just times out below
+        # with empty output, same observable shape as the unix: branch's
+        # own miss.
         _inject() {
-            if [ -n "$SH" ]; then
-                (
-                    exec 8<>"/dev/tcp/$SH/$SP" 2>/dev/null || exit 1
-                    _selftest_frames >&8
-                    timeout 3 cat <&8 2>/dev/null
-                    exec 8<&- 8>&- 2>/dev/null || true
-                ) 2>/dev/null | grep -m1 '"op":"agent.send"'
+            if [ -n "$SSH_TARGET" ]; then
+                _selftest_frames | sot_ssh_bridge "$SSH_TARGET" "$SSH_HOST" 3 2>/dev/null | grep -m1 '"op":"agent.send"'
                 return
             fi
             command -v nc >/dev/null 2>&1 || return 1

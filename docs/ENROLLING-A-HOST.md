@@ -2,8 +2,8 @@
 
 A box is **enrolled** when any frontend in the fleet can select its rows,
 attach to one, and type — without that frontend having an account, a key,
-or a route to the box. The route is: frontend → its own forwarded port →
-the **hub**'s socket for that box → one `ssh` from the hub → `sotd
+or a route to the box. The route is: frontend → its own `ssh` child to the
+hub → the **hub**'s socket for that box → one `ssh` from the hub → `sotd
 stdio-bridge` on the box → that box's daemon. The hub is the only machine
 that ever ssh's in; ADR 0048 is the decision, this page is the procedure.
 

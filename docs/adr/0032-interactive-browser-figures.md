@@ -3,11 +3,15 @@
 **Status:** partly superseded by ADR 0035 — IMPLEMENTED + VALIDATED LIVE END-TO-END
 (2026-07-12, branch `feat/wglmakie-browser`).
 
-> **Transport note (2026-08-10):** the launcher `-L 1241` forward described
-> here is the pre-ADR-0035 transport. Since v0.5.0 the WGL page and its
-> WebSocket ride the control tunnel through the daemon TCP proxy; the fixed
-> forward is retired (opt-in via `SOT_LEGACY_FORWARDS=1` for pre-v0.5.0
-> backends). Port 1241 remains the loopback port Bonito binds on the backend.
+> **Transport note (2026-08-10, updated 2026-09-29):** the launcher `-L 1241`
+> forward described here is the pre-ADR-0035 transport. Since v0.5.0 the WGL
+> page and its WebSocket ride the daemon proxy over the control connection;
+> the fixed forward was retired first as an opt-in fallback
+> (`SOT_LEGACY_FORWARDS=1` for pre-v0.5.0 backends) and then, once the
+> control connection itself stopped being a tunnel (the isolation lane,
+> `dev/output/isolation-plan.md`), deleted outright. Port 1241 remains the
+> loopback port Bonito tries first on the backend, falling back to an
+> OS-assigned one.
 
 > **Display-stack integration (2026-09-01):** a consumer no longer has to call
 > `wglshow` explicitly. `ShipToolsRepl` pushes a `WGLDisplay <: Base.AbstractDisplay`

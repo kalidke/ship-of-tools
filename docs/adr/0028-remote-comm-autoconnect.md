@@ -125,8 +125,30 @@ follows for `sotd.service.d`.
 The shell profile's per-host `case` on `SOT_RELAY_ENDPOINT` is superseded
 too — see `.sot/hosts.toml.example` and the installer's post-install message
 for the one-liner that replaces it (`sotd topology relay-endpoint`, correct
-on every box: the hub's own socket, a frontend's forward tunnel, or the
-reverse-tunnel socket this ADR describes).
+on every box: the hub's own socket, `ssh:<hub>` on a box that reaches the hub
+directly, or the reverse-tunnel socket this ADR describes — see the Update
+below).
+
+## Update (2026-09-29, transport isolation lane): the fixed port dies, the reverse tunnels survive
+
+The isolation lane (`dev/output/isolation-plan.md`) deletes the frontend's
+`ssh -L` forwarding and the name-derived local-port series everywhere they
+served the Rust frontend↔backend connection — see
+[Transport](../src/concepts/transport.md). That is a different transport
+than the one this ADR describes: none of it touches the **reverse**
+`sot-relay-tunnel@<host>` units above, their `systemd --user` supervision, or
+`sotd topology apply`'s generation of them, all of which are unchanged.
+
+What does retire is this ADR's fixed-port premise: `-R
+127.0.0.1:18743:127.0.0.1:18743` and the shared line `export
+SOT_RELAY_ENDPOINT=tcp:127.0.0.1:18743` are no longer what any box answers.
+`sotd topology relay-endpoint` (the 2026-09-15 update's replacement for the
+shell-profile `case`) now answers one of three things: this box's own
+`unix:`/`pipe:` socket, `ssh:<hub>` on a box that reaches the hub directly, or
+the unchanged reverse-tunnel socket everywhere else — never a fixed
+`tcp:127.0.0.1:18743`. The `18743` literal survives in the tree only as a
+deliberately-retired example the endpoint gate's own tests feed it to prove
+it is refused.
 
 ## Addendum: derived-handle disambiguation ("derived vs explicit")
 

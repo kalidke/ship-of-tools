@@ -61,11 +61,9 @@ client, and not depend on host-specific port allocation.
   so its lifecycle survives SSH drops; its log is `sotd.log` under the state
   root.
 - **Per-session Unix socket, not a TCP port.** It listens at
-  `$XDG_RUNTIME_DIR/sot/<session_id>.sock`. The frontend forwards that remote
-  socket to a local one over SSH (`-L`, with `StreamLocalBindUnlink=yes` and
-  `ServerAliveInterval=15`). Where Unix-socket forwarding isn't available — older
-  Windows OpenSSH — it falls back to a per-session local TCP port allocated at
-  runtime, never fixed.
+  `$XDG_RUNTIME_DIR/sot/<session_id>.sock`. Cross-machine, the frontend reaches
+  it by spawning its own `ssh` child rather than forwarding a port — see
+  [Transport](../concepts/transport.md).
 - **Transport auth.** SSH authenticates the Unix user for remote socket access,
   and the socket path is private to that user. Direct TCP remains token-gated
   because `localhost` on a shared remote is machine-scoped, not user-scoped.
@@ -116,8 +114,8 @@ the registry**, and the "orchestrator role" is a frontend-side library plus
 ## Workspaces
 
 Two requirements surfaced after the initial sessions design: switching projects
-must not stop the Julia kernel, and the deployment must stay one tunnel, one
-socket. The earlier "frontend reconnects to a different daemon socket per
+must not stop the Julia kernel, and the deployment must stay one daemon, one
+socket, one `ssh` child. The earlier "frontend reconnects to a different daemon socket per
 session" approach satisfied the first but fought the second, so the two
 concerns — where kernels live vs. which process is the protocol entry point — are
 split.
@@ -148,5 +146,5 @@ Julia state across all workspaces. That buys away kernel-discovery sweeps and
 health probes; spawning sits behind a `KernelHost` trait so a tmux-hosted
 implementation can be swapped in later (phase 3) without protocol changes, if
 "kernel survives daemon restart" ever becomes a felt pain point. Cross-machine
-deployment is unchanged — one daemon, one socket, one `ssh -L`, with workspace
+deployment is unchanged — one daemon, one socket, one `ssh` child, with workspace
 switching in-band on that single connection.

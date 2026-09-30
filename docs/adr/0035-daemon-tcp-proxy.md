@@ -1,6 +1,6 @@
 # ADR 0035: Daemon TCP proxy — any backend page through the one control tunnel
 
-**Status:** current — Proposed (implements ADR 0024's deferred generalization / rejected-alt #4; supersedes the per-port `-L` sprawl as the primary reachability mechanism — the launcher forwards stay as legacy fallback)
+**Status:** current — Accepted (implements ADR 0024's deferred generalization / rejected-alt #4; supersedes the per-port `-L` sprawl as the primary reachability mechanism — the legacy-forward fallback this ADR once kept is retired outright, see below)
 **Date:** 2026-07-21
 
 ## Context
@@ -222,11 +222,12 @@ Forwarding a fixed port we cannot prove is ours means an HTTP GET **succeeds**
 against a stranger's server and renders their content looking entirely normal.
 Silent wrong-content, no error anywhere. Not forwarding fails closed instead.
 
-- **Opt-in, not deleted**: `SOT_LEGACY_FORWARDS=1` restores the forwards in both
-  `launch-sot.ps1` and `launch-sot.sh`. The one case that needs it is a NEW
-  launcher against a **pre-v0.5.0 backend**, which advertises no proxy and has no
-  other path to these pages. Deliberately explicit rather than an automatic
-  fallback: on a shared host the safe default is to forward nothing unverified.
+- **Retired outright (2026-09-29), not merely opt-in.** `SOT_LEGACY_FORWARDS=1`
+  used to restore the forwards in both `launch-sot.ps1` and `launch-sot.sh`,
+  for a NEW launcher against a **pre-v0.5.0 backend** with no proxy. C4 of the
+  isolation lane (`dev/output/isolation-plan.md`) deletes the launcher's own
+  forwarding code along with the flag — a pre-v0.5.0 backend now has no path
+  to these pages from this launcher at all.
 - **`AddrInUse` is no longer treated as a friendly legacy forward.** The FE's
   proxy-listener arm previously logged `port already bound (legacy -L forward?)`
   and let the browser open anyway. With the forwards retired that inference is

@@ -13,7 +13,7 @@
 ADR 0013 introduced "session-per-backend": each project gets its own tmux session containing its own `devenv-backend` daemon, the frontend reconnects to that daemon's socket on session switch. The tmux plumbing (B1–B6) is built and works. What is not built is the frontend transport reconnect on switch — and on revisit the user surfaced two requirements that change the calculus:
 
 1. **Switching workspaces must not stop the Julia kernel.** State (variables, loaded modules, in-flight computations) must be preserved across switches; switching is expected to be fast and frequent, "like tmux windows in the same session."
-2. **The deployment topology stays Windows-frontend → Linux-backend over `ssh -L`.** Per-session SSH tunnels or a multi-socket proxy are unwanted complexity; one tunnel, one socket is the contract.
+2. **The deployment topology stays Windows-frontend → Linux-backend over `ssh`.** Per-session SSH children or a multi-socket proxy are unwanted complexity; one daemon, one socket, one `ssh` child is the contract.
 
 ADR 0013's "frontend reconnects to a different daemon socket per session" satisfies (1) — each daemon's kernel keeps computing — but fights (2). It also conflates two concerns:
 
@@ -135,7 +135,7 @@ Wall-clock cost: one round-trip + a redraw. Kernel state untouched on both sides
 
 ### Cross-machine deployment
 
-Unchanged. One daemon = one socket = one `ssh -L`. Workspace switching is in-band on the single connection.
+Unchanged. One daemon = one socket = one `ssh` child. Workspace switching is in-band on the single connection.
 
 ### Sessions mode → Workspaces mode (cosmetic rename, deferred)
 
@@ -168,7 +168,7 @@ The protocol, the registry, the routing, the frontend Sessions/Workspaces UX do 
 
 ## Consequences
 
-- **One socket, one tunnel.** Cross-machine deployment is unchanged. Windows-via-WSL or Windows→remote-Linux both work with the existing single-port `ssh -L`.
+- **One socket, one `ssh` child.** Cross-machine deployment is unchanged. Windows-via-WSL or Windows→remote-Linux both work over the same `ssh` child.
 - **Switching is instant.** No kernel restart, no transport reconnect, no Julia warmup. Frontend tags ops with a new id; daemon routes.
 - **Kernels can have different `Project.toml` environments.** Each kernel is its own Julia process; module tables are isolated. `MyPackage@0.1` in workspace A and `MyPackage@0.2` in workspace B coexist.
 - **`workspace_id` is additive.** Missing field = default workspace; existing single-backend deployments continue to work unchanged.

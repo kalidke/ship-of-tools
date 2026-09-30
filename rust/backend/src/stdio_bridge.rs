@@ -1,9 +1,12 @@
-//! `sotd stdio-bridge --label <label>` — the last inch of a cross-host
-//! dial. It resolves THIS box's own control endpoint for `label`
+//! `sotd stdio-bridge [--host <host>]` — the last inch of a cross-host
+//! dial. With no argument it resolves THIS box's own control endpoint, at
+//! the label this box resolves for itself (`local_daemon_label()`), never
+//! one a caller names; `--host <host>` resolves the hub's own relay
+//! socket for that host instead. Either way the connect
 //! (`paths::session_socket_path`, whatever shape that endpoint has here —
-//! Unix socket or Windows named pipe), connects with the same bounded
-//! connector `LaneDial::Local` uses, and copies bytes both ways until
-//! either side reaches EOF.
+//! Unix socket or Windows named pipe) uses the same bounded connector
+//! `LaneDial::Local` uses, and copies bytes both ways until either side
+//! reaches EOF.
 //!
 //! Why a process and not a port forward: the endpoint's shape is the
 //! owning box's own business. A caller elsewhere forwards a byte stream to
@@ -77,15 +80,22 @@ fn connect(path: &Path) -> Result<Bridged, TransportError> {
 }
 
 pub fn run(args: &[String]) -> i32 {
-    let label = match args {
-        [flag, label] if flag == "--label" => label.clone(),
+    let path = match args {
+        // This box's own daemon, at the label it resolves for itself —
+        // never a caller-supplied one. A `--label` argument was how a
+        // Windows box came to dial a pipe name nothing listens on
+        // (`local` vs `sot`); dropping it is what makes this obey the
+        // rule stated at the top of this file.
+        [] => crate::paths::session_socket_path(crate::paths::local_daemon_label()),
+        // The hub's own relay socket for `<name>`, derived on the hub —
+        // never carried over the wire.
+        [flag, host] if flag == "--host" => sot_protocol::topology::relay_socket_path(host),
         _ => {
-            eprintln!("Usage: sotd stdio-bridge --label <label>");
+            eprintln!("Usage: sotd stdio-bridge [--host <host>]");
             return EXIT_FAILED;
         }
     };
 
-    let path = crate::paths::session_socket_path(&label);
     let client = match connect(&path) {
         Ok(c) => Arc::new(c),
         Err(e) => {

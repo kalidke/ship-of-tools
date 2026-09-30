@@ -119,17 +119,9 @@ stop_daemon() {
 }
 trap 'stop_daemon; rm -rf "$RUNDIR"' EXIT
 
-# Transport: Windows sotd --socket wants a \\.\pipe\ named pipe path, which
-# MSYS mangles ("\\"→"\", "not a named pipe path"); a loopback TCP port is the
-# portable substrate. Unix/macOS keep the original unix socket.
-CONN_FLAG="--socket"
-case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) CONN_FLAG="--tcp" ;; esac
-TCP_PORT=18780   # bumped per daemon start; avoids the live daemon's 18743
 CONN_VALUE=""    # set by start_daemon (NOT echoed): a $(...) capture would run
-                 # start_daemon in a SUBSHELL and lose both the DAEMON_PID it
-                 # records (so stop_daemon becomes a no-op — daemons orphan) and
-                 # the TCP_PORT it increments (so every daemon reuses one port —
-                 # a later root-switch then connects to the wrong stale daemon).
+                 # start_daemon in a SUBSHELL and lose the DAEMON_PID it records,
+                 # so stop_daemon becomes a no-op and daemons orphan.
 
 start_daemon() { # $1 = project root; sets globals DAEMON_PID + CONN_VALUE. Call it
                  # directly (start_daemon "$x"; v="$CONN_VALUE"), NEVER via $(...).
@@ -137,28 +129,13 @@ start_daemon() { # $1 = project root; sets globals DAEMON_PID + CONN_VALUE. Call
     # inherit it, which is what lets --demo-repl-eval use the relative
     # include("scripts/route.jl"). Manual/PowerShell replication must
     # also start the scratch sotd FROM the project root.
-    if [ "$CONN_FLAG" = "--tcp" ]; then
-        TCP_PORT=$((TCP_PORT + 1))
-        local ep="127.0.0.1:$TCP_PORT"
-        (cd "$1" && exec "$SOTD" --tcp "$ep" --project-root "$1") >"$RUNDIR/sotd.log" 2>&1 &
-        DAEMON_PID=$!
-        local ok=""
-        for _ in $(seq 1 50); do
-            (exec 3<>"/dev/tcp/127.0.0.1/$TCP_PORT") 2>/dev/null && { exec 3>&-; ok=1; break; }
-            kill -0 "$DAEMON_PID" 2>/dev/null || break
-            sleep 0.2
-        done
-        [ -n "$ok" ] || die "scratch sotd did not open tcp $ep (see $RUNDIR/sotd.log)"
-        CONN_VALUE="$ep"
-    else
-        local sock="$RUNDIR/sotd.sock"
-        rm -f "$sock"
-        (cd "$1" && exec "$SOTD" --socket "$sock" --project-root "$1") >"$RUNDIR/sotd.log" 2>&1 &
-        DAEMON_PID=$!
-        for _ in $(seq 1 50); do [ -S "$sock" ] && break; sleep 0.2; done
-        [ -S "$sock" ] || die "scratch sotd did not open $sock (see $RUNDIR/sotd.log)"
-        CONN_VALUE="$sock"
-    fi
+    local sock="$RUNDIR/sotd.sock"
+    rm -f "$sock"
+    (cd "$1" && exec "$SOTD" --socket "$sock" --project-root "$1") >"$RUNDIR/sotd.log" 2>&1 &
+    DAEMON_PID=$!
+    for _ in $(seq 1 50); do [ -S "$sock" ] && break; sleep 0.2; done
+    [ -S "$sock" ] || die "scratch sotd did not open $sock (see $RUNDIR/sotd.log)"
+    CONN_VALUE="$sock"
 }
 
 run_matrix() {
@@ -239,18 +216,18 @@ run_matrix() {
                     # workspace (ship-of-tools, not the scanned DemoProject
                     # sub-workspace) and (b) absorb the kernel spawn + the lazy
                     # first in-process HDF5Preview load before the kept H5 shot.
-                    "$SOT" $CONN_FLAG "$sock" --capture "$RUNDIR/warmup.png" \
+                    "$SOT" --socket "$sock" --capture "$RUNDIR/warmup.png" \
                         --start-fullscreen --capture-preview examples/preview/sample.h5 \
                         --capture-delay-ms 150000 || true
                 else
-                    "$SOT" $CONN_FLAG "$sock" --capture "$RUNDIR/warmup.png" \
+                    "$SOT" --socket "$sock" --capture "$RUNDIR/warmup.png" \
                         --start-fullscreen --start-mode files \
                         --start-path src/DemoProject.jl \
                         --capture-delay-ms 30000 || true
                 fi
             fi
             # shellcheck disable=SC2086
-            "$SOT" $CONN_FLAG "$sock" --capture "$OUT/$name.png" $flags
+            "$SOT" --socket "$sock" --capture "$OUT/$name.png" $flags
         fi
         [ -s "$OUT/$name.png" ] || die "capture produced no PNG for $name"
     done

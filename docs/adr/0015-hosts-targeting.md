@@ -17,7 +17,8 @@ per box; see `docs/src/start/setup.md`. Only the "one active host, chosen via
 still exists but is now a live connected/unreachable status list (see
 ADR 0042 L2a); the frontend no longer writes `last_host` to
 `state-<hostname>.toml`. The launcher's READ side of `last_host` is
-untouched for now (a later slice's concern — per-host tunnels).
+untouched for now (a later slice's concern — per-host dialing, since done:
+see the 2026-09-29 addendum below).
 **Date:** 2026-05-19
 
 ## Context
@@ -127,3 +128,15 @@ launcher opens must stay inside that OS user's private port range, not
 just the hub's own tunnel — since the network stack's port namespace is
 per-machine, not per-user, and a second user's process can otherwise bind
 (or, worse, silently reuse) a port the first user already owns.
+
+## Addendum (2026-09-29, transport isolation lane): the port hash itself is retired
+
+C2 of the isolation lane (`dev/output/isolation-plan.md`) deletes the port
+series this addendum patched, not merely reshapes it. There is no `18743 +
+(h % 100)` anywhere now: cross-host reachability is `ssh:<target>` — an
+`ssh` child speaking the protocol over its own stdin/stdout, running `sotd
+stdio-bridge` — and `sotd topology relay-endpoint` never answers a `tcp:`
+value. The two-OS-users-on-one-box collision this addendum fixed cannot
+recur, for a different reason now: there is no shared loopback port on the
+control plane at all for a second account to reach or reuse. See
+[Transport](../src/concepts/transport.md).

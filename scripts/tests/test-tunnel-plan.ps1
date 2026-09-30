@@ -65,9 +65,7 @@ try {
         'hub hub-box',
         'relay-endpoint tcp:127.0.0.1:18743',
         'dial hub-box tcp:127.0.0.1:18743',
-        'dial otherbox tcp:127.0.0.1:18744',
-        'tunnel hub-box 18743',
-        'tunnel otherbox 18744'
+        'dial otherbox tcp:127.0.0.1:18744'
     )
     $plan = Get-SotTopologyPlan -SotdPath $goodSotd -SelfHost myserver
     Check 'no error' (-not $plan.Error) "got: $($plan.Error)"
@@ -80,10 +78,6 @@ try {
     Check 'otherbox dial endpoint carried through' `
         (($plan.Dials | Where-Object { $_.Host -eq 'otherbox' }).Endpoint -eq 'tcp:127.0.0.1:18744') `
         'endpoint mismatch'
-    Check 'two tunnels captured, ports parsed as int' `
-        ((($plan.Tunnels | Where-Object { $_.Host -eq 'hub-box' }).Port -eq 18743) -and
-         (($plan.Tunnels | Where-Object { $_.Host -eq 'otherbox' }).Port -eq 18744)) `
-        "got $(($plan.Tunnels | ForEach-Object { "$($_.Host)=$($_.Port)" }) -join ',')"
 
     Write-Host "`n=== 2. an endpoint containing a space (Windows pipe path, verbatim username) ===" -ForegroundColor Cyan
     $spaceSotd = New-FakeSotd 'space' @(
@@ -118,7 +112,7 @@ try {
     Write-Host "`n=== 4. no sotd binary at all ===" -ForegroundColor Cyan
     $missingPlan = Get-SotTopologyPlan -SotdPath (Join-Path $root 'does-not-exist.exe')
     Check 'missing binary yields an empty, errored plan (not a throw)' `
-        ($missingPlan.Error -and $missingPlan.Dials.Count -eq 0 -and $missingPlan.Tunnels.Count -eq 0) `
+        ($missingPlan.Error -and $missingPlan.Dials.Count -eq 0) `
         "got error=[$($missingPlan.Error)]"
 
     Write-Host "`n=== 5. Invoke-SotTopologySync: the one side-effecting call ===" -ForegroundColor Cyan
