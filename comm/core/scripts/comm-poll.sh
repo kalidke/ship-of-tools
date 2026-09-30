@@ -69,8 +69,11 @@ show_stream() {
 #
 # Counting and reading run under the shared read lock where one applies (see
 # sot_inbox_read_lock), so a writer's in-flight line is never counted and then
-# cut back. A busy inbox is "try again": nothing was read, the cursor is
-# untouched, exit 75. Only newline-terminated lines are counted
+# cut back; the batch is read ONCE into a variable, the lock is let go, and only
+# then is it shown (about 67 ms of jq per line would otherwise hold off every
+# writer). The cursor is written from the bytes of the batch's last line, never
+# from the file again. A busy inbox is "try again": nothing was read, the
+# cursor is untouched, exit 75. Only newline-terminated lines are counted
 # (sot_file_lines), so a dead writer's partial line is never shown.
 if [ -f "$INBOX" ]; then
     if ! sot_inbox_read_lock "$NAME"; then
@@ -79,11 +82,15 @@ if [ -f "$INBOX" ]; then
     fi
     pos="$(sot_cursor_offset "$NAME")"
     total="$(sot_inbox_lines "$NAME")"
-    if [ "$total" -gt "$pos" ]; then
-        show_stream < <(sed -n "$((pos + 1)),${total}p" "$INBOX")
-        sot_cursor_write "$NAME" "$total"
-    fi
+    batch=""
+    # The sentinel keeps a trailing empty line that $(...) would strip.
+    [ "$total" -gt "$pos" ] && { batch="$(sed -n "$((pos + 1)),${total}p" "$INBOX"; printf x)"; batch="${batch%x}"; }
     sot_inbox_read_unlock
+    if [ -n "$batch" ]; then
+        batch="${batch%$'\n'}"
+        show_stream <<< "$batch"
+        sot_cursor_write "$NAME" "$total" "${batch##*$'\n'}"
+    fi
 fi
 
 if [ -n "$FE_INBOX" ] && [ -r "$FE_INBOX" ]; then

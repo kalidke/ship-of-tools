@@ -168,8 +168,8 @@ fn take_lock(lock: File, own: &str, wait: Duration) -> Result<File, LockWait> {
 /// writer that never answered `filed`, so nothing kept is lost — the bytes are
 /// flushed to disk on this descriptor by `sync` before `Ok`, and any error
 /// cuts the file back to its length after that cut. That length is a seek to
-/// the end of this descriptor, opened under the lock — on NFS the seek asks
-/// the server — never a size that an attribute cache can answer stale.
+/// the end of this descriptor, opened under the lock — never a size that an
+/// attribute cache can answer stale.
 /// Production passes `File::sync_data` as `sync`; a test passes one that
 /// fails.
 fn append_line(
@@ -839,7 +839,7 @@ mod tests {
         let (out, _) = failing_sync_with_reader(
             d.path(),
             np,
-            r#"n="$(sot_inbox_lines h)"; sot_cursor_write h "$n"; echo "$n""#,
+            r#"n="$(sot_inbox_lines h)"; sot_cursor_write h "$n" "$(sed -n "${n}p" "$COMM_HOME/inbox/h.jsonl")"; echo "$n""#,
         );
         assert_eq!(out.trim(), "2", "the unlocked reader should have counted the in-flight line");
         file_frame(&d.path().join("inbox"), "a", "h", false, "real", "t", Duration::from_secs(5), "local t").unwrap();

@@ -31,6 +31,11 @@
 #      outlasts the hub's lock wait, so a line filed after it is not FAILED.
 #   7. A hub-filed line and a locally-filed line read the same through
 #      comm-poll.sh, and both advance the one cursor.
+#   8. Every inbox lock descriptor is opened read-write (an NFS client
+#      refuses a shared lock without read access); the cursor hashes the
+#      bytes the reader held, so a line filed after a cut-back is shown; a
+#      hashed cursor one past the end steps back one; a poll shows its batch
+#      after letting go of the lock, so a slow display never holds off a writer.
 #
 # No bats dependency. HERMETIC: a temp $SOT_COMM_HOME, per-case self files, a
 # pinned $SOT_COMM_TEST_HOST, and a COPY of the scripts dir whose comm-lib.sh
@@ -50,7 +55,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-hub-files-XXXXXX")"
 export SOT_COMM_HOME="$WORK/home"
 mkdir -p "$SOT_COMM_HOME/inbox"
 HOLDERS=()
-trap 'for p in "${HOLDERS[@]}"; do kill -9 "$p" 2>/dev/null; done; rm -rf "$WORK"' EXIT
+trap 'for p in "${HOLDERS[@]}"; do kill -9 "$p" 2>/dev/null; done; rm -rf "${WORK:?}"' EXIT
 
 BIN="$WORK/bin"
 cp -r "$SCRIPTS_DIR" "$BIN"
@@ -85,7 +90,7 @@ check() {
 contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
 setup_rows() {
-    rm -f "$SOT_COMM_HOME/registry.json" "$INBOX"/*
+    rm -f "${SOT_COMM_HOME:?}/registry.json" "${INBOX:?}"/* "${SOT_COMM_HOME:?}"/read/*.cursor
     ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" \
         "$JOIN" --name "$PEER" ) >/dev/null 2>&1 || return 1
     ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-sender.txt" SOT_COMM_TEST_HOST="$HOST_PIN" \
@@ -123,7 +128,7 @@ whole_lines() {
 # inherited fd 9 would keep the lock past the kill.
 start_holder() {
     local body="$1"
-    rm -f "$WORK/ready"
+    rm -f "${WORK:?}/ready"
     bash -c 'exec 9>> "$1/$2.lock"; flock 9; exec 8>> "$1/$2.jsonl"; touch "$3"; '"$body" \
         _ "$INBOX" "$PEER" "$WORK/ready" &
     HOLDER=$!
@@ -136,7 +141,7 @@ start_holder() {
 # T3 (shell arm) — two writers, 200 lines each, one inbox.
 case_two_writers_give_400_whole_lines() {
     local h="t-two" f="$INBOX/t-two.jsonl" w n
-    rm -f "$f"
+    rm -f "${f:?}"
     for w in a b; do
         ( for i in $(seq 1 200); do
               append_one "$h" "{\"from\":\"$w\",\"to\":\"$h\",\"repo\":\"r\",\"msg\":\"$w-$i $(printf 'x%.0s' $(seq 1 64))\",\"ts\":\"t\"}" \
@@ -255,7 +260,7 @@ case_a_nul_tail_is_cut_before_the_new_line() {
 OK_ANSWER='{"v":1,"id":1,"kind":"res","op":"comm.file","payload":{"ok":true}}'
 DIRECTED='{"from":"t-sender","to":"t-peer","repo":"r","msg":"/slash first","ts":"t"}'
 route_append() {
-    rm -f "$SOT_COMM_HOME/inbox-lock-manager"
+    rm -f "${SOT_COMM_HOME:?}/inbox-lock-manager"
     [ "$2" = - ] || printf '%s\n' "$2" > "$SOT_COMM_HOME/inbox-lock-manager"
     printf '%s\n' "${7:-$DIRECTED}" | FAKE_MNT="$1" OWN="$3" RELAY="$4" ANSWER="$5" FLOCK="${6:-1}" \
         WIRE="$WORK/wire.log" bash -c '
@@ -269,7 +274,7 @@ route_append() {
     printf '%s\n' "$RECORD" > "$SOT_COMM_HOME/inbox-lock-manager"
     return "$rc"
 }
-fresh_route() { rm -f "$WORK/wire.log"; printf '%s\n' '{"msg":"before"}' > "$INBOX/t-peer.jsonl"; }
+fresh_route() { rm -f "${WORK:?}/wire.log"; printf '%s\n' '{"msg":"before"}' > "$INBOX/t-peer.jsonl"; }
 wire_count() { [ -e "$WORK/wire.log" ] && wc -l < "$WORK/wire.log" || echo 0; }
 
 case_a_shared_nfs4_lock_manager_appends_locally() {
@@ -342,7 +347,7 @@ case_no_perl_goes_to_the_wire() {
     local d out rc
     mkdir -p "$WORK/noperl"
     for d in ${PATH//:/ }; do ln -s "$d"/* "$WORK/noperl/" 2>/dev/null; done
-    rm -f "$WORK/noperl"/perl*
+    rm -f "${WORK:?}/noperl"/perl*
     ! PATH="$WORK/noperl" command -v perl >/dev/null 2>&1 || { echo "  perl is still on the PATH"; return 1; }
     PATH="$WORK/noperl" command -v flock >/dev/null 2>&1 || { echo "  flock left the PATH"; return 1; }
     fresh_route
@@ -438,7 +443,7 @@ case_the_wait_is_one_number_and_no_lease_survives() {
 # receipted by fe@far. Every frame it reads is logged by op.
 HUB="$WORK/hub"
 write_hub_stub() {  # PAYLOAD [WAIT]
-    rm -rf "$HUB"; mkdir -p "$HUB"
+    rm -rf "${HUB:?}"; mkdir -p "$HUB"
     printf '%s' "$1" > "$HUB/answer"; printf '%s' "${2:-0}" > "$HUB/wait"
     { printf '#!/bin/sh\nd=%s\n' "$HUB"; cat <<'STUB'
 while IFS= read -r line; do
@@ -515,7 +520,7 @@ FAKEPS
 } > "$WINFAKE/powershell.exe"
 chmod +x "$WINFAKE/uname" "$WINFAKE/powershell.exe" "$WINAPP/sot/bin/sotd.exe"
 win_send() {  # ANSWER
-    rm -f "$WINHUB"/*.log; printf '%s' "$1" > "$WINHUB/answer"
+    rm -f "${WINHUB:?}"/*.log; printf '%s' "$1" > "$WINHUB/answer"
     SEND_OUT="$(cd "$WORK" && unset OS OSTYPE SOT_SOCKET SOTD_BIN && PATH="$WINFAKE:$PATH" LOCALAPPDATA="$WINAPP" \
         SOT_COMM_SELF_FILE="$WORK/self-sender.txt" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_SEND_TIMEOUT=3 \
         SOT_INBOX_LOCK_WAIT_SECS=1 "$WINBIN/comm-send.sh" @t-peer "/win text on stdin only" 2>"$WORK/err.txt")"
@@ -721,7 +726,7 @@ echo "rc=\$?"
 RD
     chmod +x "$WORK/reader.sh"
     [ "$mode" = unlocked ] && rp="$WORK/noflock"
-    rm -f "$WORK/reader.out"
+    rm -f "${WORK:?}/reader.out"
     printf '%s\n' '{"from":"t-sender","to":"t-peer","repo":"r","msg":"inflight","ts":"t"}' \
         | STUB_READER="$WORK/reader.sh" STUB_OUT="$WORK/reader.out" READER_PATH="$rp" \
           PERL5LIB="$WORK/perlstub" PERL5OPT="-MStubSync" \
@@ -734,7 +739,7 @@ make_noflock() {
     local d
     mkdir -p "$WORK/noflock"
     for d in ${PATH//:/ }; do ln -s "$d"/* "$WORK/noflock/" 2>/dev/null; done
-    rm -f "$WORK/noflock"/flock
+    rm -f "${WORK:?}/noflock"/flock
 }
 
 case_a_reader_on_the_shared_lock_never_counts_a_line_that_is_cut_back() {
@@ -791,6 +796,102 @@ case_the_cursor_takes_a_bare_count_a_ts_and_a_hash_and_steps_back_one() {
     return 0
 }
 
+# B-1: the Linux NFS client refuses a shared lock on a descriptor without read
+# access, and a local disk never says so — so the test reads the open mode. A
+# wrapper `flock` records the flags of its inherited fd 9; the low two bits of
+# the last octal digit are the access mode (2 = O_RDWR).
+case_every_inbox_lock_descriptor_is_read_write() {
+    local real fl line n=0 d
+    real="$(command -v flock)"
+    mkdir -p "$WORK/fbin9"
+    printf '#!/bin/sh\necho "$* $(grep flags /proc/self/fdinfo/9)" >> "%s/flock9.log"\nexec %s "$@"\n' "$WORK" "$real" > "$WORK/fbin9/flock"
+    chmod +x "$WORK/fbin9/flock"
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    rm -f "${WORK:?}/flock9.log"
+    PATH="$WORK/fbin9:$PATH" append_one "$PEER" '{"from":"a","to":"'"$PEER"'","repo":"r","msg":"w","ts":"t"}' >/dev/null \
+        || { echo "  the append refused"; return 1; }
+    PATH="$WORK/fbin9:$PATH" poll_peer
+    contains "$POLL_OUT" '"msg"' || contains "$POLL_OUT" w || { echo "  the poll showed nothing: $POLL_OUT"; return 1; }
+    grep -q -e '-x' "$WORK/flock9.log" && grep -q -e '-s' "$WORK/flock9.log" \
+        || { echo "  want one writer and one reader flock: $(tr '\n' '|' < "$WORK/flock9.log")"; return 1; }
+    while IFS= read -r line; do
+        fl="${line##*flags:}"; fl="${fl//[[:space:]]/}"
+        d="${fl: -1}"
+        [ -n "$fl" ] && [ $((d & 3)) -eq 2 ] || { echo "  fd 9 not O_RDWR: $line"; return 1; }
+        n=$((n + 1))
+    done < "$WORK/flock9.log"
+    [ "$n" -ge 2 ] || { echo "  only $n flock calls logged"; return 1; }
+    return 0
+}
+
+# B-2 at function level: a reader showed in-flight line 3, the writer cut it
+# back, a new line filed in its place. The cursor is written from the bytes the
+# reader HELD, so the next offset steps back one and the new line is shown.
+case_a_cursor_hashes_the_line_it_read_not_the_one_filed_after() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local f="$INBOX/$PEER.jsonl" held out
+    mkdir -p "$SOT_COMM_HOME/read"
+    printf '%s\n' '{"from":"a","to":"t-peer","msg":"m1","ts":"1"}' '{"from":"a","to":"t-peer","msg":"m2","ts":"2"}' \
+        '{"from":"a","to":"t-peer","msg":"inflight","ts":"3"}' > "$f"
+    held="$(sed -n 3p "$f")"
+    head -n 2 "$f" > "$f.cut" && mv "$f.cut" "$f"
+    printf '%s\n' '{"from":"a","to":"t-peer","msg":"new","ts":"4"}' >> "$f"
+    out="$(bash -c 'source "$1/comm-lib.sh"; sot_cursor_write "$2" 3 "$3"; sot_cursor_offset "$2"' _ "$BIN" "$PEER" "$held" 2>&1)"
+    [ "${out##*$'\n'}" = 2 ] && contains "$out" "was cut back" || { echo "  offset after the cut: $out"; return 1; }
+    poll_peer
+    [ "$(count_of "$POLL_OUT" new)" -eq 1 ] && ! contains "$POLL_OUT" m2 || { echo "  the new line was not shown once: $POLL_OUT"; return 1; }
+    return 0
+}
+
+# S-1: a hashed cursor exactly one past the end is a cut-back with nothing new:
+# step back one. Anything further past the end, or a bare count, is 0.
+case_a_cursor_one_past_the_end_steps_back_one_and_further_gives_zero() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local f="$INBOX/$PEER.jsonl" cur="$SOT_COMM_HOME/read/$PEER.cursor" out
+    mkdir -p "$SOT_COMM_HOME/read"
+    printf '%s\n' '{"from":"a","to":"t-peer","msg":"m1","ts":"1"}' '{"from":"a","to":"t-peer","msg":"m2","ts":"2"}' > "$f"
+    printf '3 1-1' > "$cur"
+    out="$(bash -c 'source "$1/comm-lib.sh"; sot_cursor_offset "$2"' _ "$BIN" "$PEER" 2>&1)"
+    [ "${out##*$'\n'}" = 2 ] && contains "$out" "was cut back" || { echo "  3 <hash> over 2 lines: $out"; return 1; }
+    printf '5 1-1' > "$cur"
+    out="$(bash -c 'source "$1/comm-lib.sh"; sot_cursor_offset "$2"' _ "$BIN" "$PEER" 2>&1)"
+    [ "$out" = 0 ] || { echo "  5 <hash> over 2 lines: $out"; return 1; }
+    printf '3' > "$cur"
+    out="$(bash -c 'source "$1/comm-lib.sh"; sot_cursor_offset "$2"' _ "$BIN" "$PEER" 2>&1)"
+    [ "$out" = 0 ] || { echo "  a bare 3 over 2 lines: $out"; return 1; }
+    return 0
+}
+
+# S-2: a poll shows its batch AFTER letting go of the lock. Behind a jq that
+# sleeps 50 ms per call, a 100-line backlog takes ~25 s to show; a writer's
+# append must still file within a second while it does.
+case_a_slow_display_does_not_hold_off_a_writer() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local i pid t0 ms real
+    real="$(command -v jq)"
+    mkdir -p "$WORK/slowjq"
+    printf '#!/bin/sh\necho x >> "%s/jq.calls"\nsleep 0.05\nexec %s "$@"\n' "$WORK" "$real" > "$WORK/slowjq/jq"
+    chmod +x "$WORK/slowjq/jq"
+    for i in $(seq 100); do
+        printf '{"from":"a","to":"t-peer","repo":"r","msg":"m%s","ts":"t"}\n' "$i"
+    done > "$INBOX/$PEER.jsonl"
+    rm -f "${WORK:?}/jq.calls"
+    ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" PATH="$WORK/slowjq:$PATH" \
+        "$BIN/comm-poll.sh" >/dev/null 2>&1 ) &
+    pid=$!
+    i=0
+    while [ "$( { wc -l < "$WORK/jq.calls"; } 2>/dev/null || echo 0)" -lt 8 ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+    [ "$( { wc -l < "$WORK/jq.calls"; } 2>/dev/null || echo 0)" -ge 8 ] || { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; echo "  the poll never reached its display"; return 1; }
+    t0="$(date +%s%N)"
+    append_one "$PEER" '{"from":"a","to":"'"$PEER"'","repo":"r","msg":"late","ts":"t"}' >/dev/null
+    local rc=$?
+    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    echo "  the append filed ${ms} ms into a slow display"
+    [ "$rc" -eq 0 ] && [ "$ms" -lt 1000 ] || { echo "  the append rc $rc after ${ms} ms"; return 1; }
+    return 0
+}
+
 # The wait is chosen by lock kind: under `nfs4 …` the append POLLS (`flock -n`,
 # every 15-25 ms) and follows a release within a retry; under `local …` or
 # `none@…` it BLOCKS (`flock -w`), as before. A wrapper logs each flock call.
@@ -808,7 +909,7 @@ case_the_lock_wait_is_chosen_by_lock_kind() {
         esac
         setup_rows || return 1
         printf '%s\n' "$rec" > "$SOT_COMM_HOME/inbox-lock-manager"
-        rm -f "$WORK/flock.log"
+        rm -f "${WORK:?}/flock.log"
         start_holder 'exec sleep 0.3' || { echo "  no holder"; return 1; }
         t0="$(date +%s%N)"
         if ! FAKE_MNT="$mnt" PATH="$WORK/fbin:$PATH" append_one "$PEER" '{"from":"a","to":"'"$PEER"'","repo":"r","msg":"w","ts":"t"}' >/dev/null; then
@@ -856,6 +957,11 @@ check "a frozen writer makes a poll and the end-of-turn hook say try again withi
 check "stubbed fsync failure (shell arm), locked reader: waits, counts nothing, skips nothing" case_a_reader_on_the_shared_lock_never_counts_a_line_that_is_cut_back
 check "stubbed fsync failure (shell arm), unlocked reader: steps back one line and skips nothing" case_an_unlocked_reader_steps_back_one_line_after_a_cut_back
 check "the cursor takes a bare count, a ts and a hash, and a mismatch steps back exactly one line" case_the_cursor_takes_a_bare_count_a_ts_and_a_hash_and_steps_back_one
+
+check "B-1: the reader's and the writer's lock descriptor are both opened read-write" case_every_inbox_lock_descriptor_is_read_write
+check "B-2: the cursor hashes the line the reader held; a line filed after a cut-back is shown" case_a_cursor_hashes_the_line_it_read_not_the_one_filed_after
+check "S-1: a hashed cursor one past the end steps back one; further past, or a bare count, gives 0" case_a_cursor_one_past_the_end_steps_back_one_and_further_gives_zero
+check "S-2: a slow display does not hold off a writer" case_a_slow_display_does_not_hold_off_a_writer
 
 check "the lock wait is chosen by lock kind: nfs4 polls, local and none@ block, both follow a release" case_the_lock_wait_is_chosen_by_lock_kind
 

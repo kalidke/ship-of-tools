@@ -33,6 +33,12 @@
 # `filed`, and any FAILED fails it — a send that fails under ordinary
 # two-host load is a working-comms failure.
 #
+# The reader (B-1's proof). During a3 this tree's real comm-poll.sh polls the
+# case's inbox HERE in a loop, under the nfs4 record that matches, and once
+# more after the writers finish: every poll must exit 0 or 75 (the NFS client
+# refusing a shared lock is 65), and across all polls every line is shown
+# exactly once, none skipped, none twice.
+#
 # Pass is zero torn or lost lines, each line one JSON object, and every
 # `filed` matching exactly one line. The peer runs a COPY of this tree's
 # comm-lib.sh placed beside the inbox, so the worktree need not exist there.
@@ -165,6 +171,37 @@ proof_case() {  # $1 = description, $2 = inbox file, $3.. = check_inbox args (wa
     [ -z "$content$ov" ] || PROOF_BAD=$((PROOF_BAD + 1))
 }
 
+# The reader: this tree's real comm-poll.sh HERE, joined as t11 on a case
+# folder with a pinned self file, host and SOT_COMM_HOME (as
+# test-comm-poll-cursor.sh runs it). Each poll's exit status is one line of
+# $LOCAL/reader.rc and its output goes to $LOCAL/reader.out.
+reader_sh() {  # $1 = case folder, $2 = script, rest = its args
+    local c="$1" s="$2"; shift 2
+    SOT_COMM_HOME="$c" SOT_COMM_SELF_FILE="$c/self-reader.txt" SOT_COMM_TEST_HOST=t11-reader "$SCRIPTS_DIR/$s" "$@"
+}
+reader_loop() {  # $1 = case folder, $2 = stop file: poll until it exists, then once more
+    local rc stop=""
+    while [ -z "$stop" ]; do
+        [ ! -e "$2" ] || stop=1
+        rc=0; reader_sh "$1" comm-poll.sh >> "$LOCAL/reader.out" 2>&1 || rc=$?
+        echo "$rc" >> "$LOCAL/reader.rc"
+    done
+}
+# Every poll exited 0 or 75 (65 is the NFS client refusing the shared lock),
+# and every line of the inbox was shown exactly once. $1 = inbox file; prints
+# "" or a reason.
+check_reader() {
+    local bad skip twice extra
+    bad="$(grep -v -x -E '0|75' "$LOCAL/reader.rc" | sort | uniq -c | awk '{printf "%s x exit %s ", $1, $2}')"
+    sed -n 's/^\[[^]]*\] \[[^]]*\] //p' "$LOCAL/reader.out" | sort > "$LOCAL/reader.shown"
+    jq -r .msg "$1" | sort > "$LOCAL/reader.want"
+    twice="$(uniq -d "$LOCAL/reader.shown" | wc -l)"
+    skip="$(comm -13 <(uniq "$LOCAL/reader.shown") "$LOCAL/reader.want" | wc -l)"
+    extra="$(comm -23 <(uniq "$LOCAL/reader.shown") "$LOCAL/reader.want" | wc -l)"
+    [ -z "$bad" ] || echo "polls exited $bad"
+    [ $((skip + twice + extra)) -eq 0 ] || echo "skipped $skip, shown twice $twice, shown but not in the inbox $extra"
+}
+
 echo "peer: $PEER; working folder on the shared home; wait ${WAIT}s"
 echo "here:  $(findmnt -no FSTYPE,OPTIONS -T "$DIR" | tr , '\n' | grep -E '^(nfs|vers|local_lock)' | tr '\n' ' ')"
 echo "there: $(rpeer "findmnt -no FSTYPE,OPTIONS -T $(printf %q "$DIR") | tr , '\n' | grep -E '^(nfs|vers|local_lock)' | tr '\n' ' '; flock --version | head -1")"
@@ -287,20 +324,31 @@ proof_case "(a) shell here and shell on $PEER, 200 each, paced, one inbox ($((SE
 # ---- (a3) liveness: shell here, shell there and the Rust filer, unpaced ------
 # Three writers, 200 each, all at once, no pacing. Content as always, and every
 # send must be `filed`: FAILED counts are reported per writer, any FAILED fails.
+# The reader polls here throughout (B-1's proof: a shared lock on the real
+# mount, under the nfs4 record) and once more after the writers finish.
 c="$(new_case a3)"; mkfifo "$LOCAL/go.a3"; t0=$SECONDS
+reader_sh "$c" comm-join.sh --name t11 >/dev/null 2>&1 || echo "  the reader could not join"
 peer_sh "$c" "echo ready; read -r _; W=peer; $APPEND" < "$LOCAL/go.a3" > "$LOCAL/a3.peer" &
+wpids=($!)
 exec 7> "$LOCAL/go.a3"
 SOT_T11_PACE_MS=0 rust_arm "$c" t11_rust_appends_200 > "$LOCAL/a3.rust" &
+wpids+=($!)
 local_sh "$c" "while [ ! -e \"\$SOT_COMM_HOME/inbox/go\" ]; do sleep 0.01; done; W=here; $APPEND" > "$LOCAL/a3.here" &
+wpids+=($!)
 for _ in $(seq 1 1200); do
     grep -q ready "$LOCAL/a3.peer" 2>/dev/null && [ -e "$c/inbox/rust.ready" ] && break; sleep 0.1
 done
+reader_loop "$c" "$LOCAL/a3.done" &
+rdpid=$!
 echo go >&7; touch "$c/inbox/go"; exec 7>&-
-wait
+wait "${wpids[@]}"
+touch "$LOCAL/a3.done"; wait "$rdpid"
 failed_of() { grep -c '^FAILED' "$1" 2>/dev/null; }
 nf_peer="$(failed_of "$LOCAL/a3.peer")"; nf_here="$(failed_of "$LOCAL/a3.here")"; nf_rust="$(failed_of "$LOCAL/a3.rust")"
 verdict "(a3) liveness, unpaced, 600 sends: FAILED peer $nf_peer, here $nf_here, Rust $nf_rust; content ($((SECONDS - t0))s)" \
     "$([ "$((nf_peer + nf_here + nf_rust))" -eq 0 ] || echo "sends were FAILED under ordinary load: $(grep -h '^FAILED' "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust" | head -2 | tr '\n' ' ')")$(check_inbox "$c/inbox/t11.jsonl" 600 "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust")"
+verdict "(a3) the reader here, the real comm-poll.sh: $(wc -l < "$LOCAL/reader.rc") polls, $(grep -c -x 75 "$LOCAL/reader.rc") exited 75; every line shown exactly once" \
+    "$(check_reader "$c/inbox/t11.jsonl")"
 
 # The inbox after a freeze: the holder's line whole, the frozen-out send absent.
 check_after_freeze() {  # $1 = inbox file, $2 = the refused msg, $3 = send report

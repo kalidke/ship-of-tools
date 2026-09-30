@@ -186,14 +186,19 @@ expects 0 `FAILED`, since a send that fails under ordinary two-host load is a
 working-comms failure.
 
 **Readers** have two guards against a line that a failed append then cuts
-back. Where a writer would append locally (`flock(1)`, Linux, identity equal
-to line 1), the count-and-read runs under a shared lock on
-`inbox/<handle>.lock`, bounded by `SOT_INBOX_READ_WAIT_SECS` (default 3); a
-timeout means try again, never a skip: `comm-poll.sh` says the inbox is being
-written, leaves the cursor and exits 75, the end-of-turn hook prints that the
-inbox was busy and does not block the turn, and a wake reader checks again on
-its next tick. On every host the hashed cursor steps back one line when a
-cut-back removed the last line read. The accepted residual: a reader on a
+back. Where a writer would append locally (`flock(1)` and `perl`, Linux,
+identity equal to line 1), the count-and-read runs under a shared lock on
+`inbox/<handle>.lock`, bounded by `SOT_INBOX_READ_WAIT_SECS` (default 3). Every
+inbox lock descriptor, a reader's or a writer's, is opened read-write: the
+Linux NFS client refuses a shared lock on one without read access.
+`comm-poll.sh` reads its batch once under the lock, lets go, shows the batch,
+and then writes the cursor from the bytes of the last line it read, never from
+the file again, so a slow display never holds off a writer. A timeout means
+try again, never a skip: `comm-poll.sh` says the inbox is being written,
+leaves the cursor and exits 75, the end-of-turn hook prints that the inbox was
+busy and does not block the turn, and a wake reader checks again on its next
+tick. On every host the hashed cursor steps back one line when a cut-back
+removed the last line read. The accepted residual: a reader on a
 mismatched host may deliver a line whose sender was told `FAILED`, so a retry
 can duplicate it; it can never lose one.
 
