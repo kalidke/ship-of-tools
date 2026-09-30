@@ -24,10 +24,13 @@
 # swap onto the destination — see below) and then prunes exact names — it never
 # discovers-and-prunes by scanning the dir, so a file the installer did not
 # write is never touched (separate-HOME Windows FE boxes update only via pull +
-# update_comm; there is no shared NFS HOME to clean centrally). RULE: nothing
-# to do when a commit renames/deletes a managed bin file — each install records
-# the names it ships in `<bin>/.sot-comm-installed`, and the next install
-# removes every name in that record the release no longer ships.
+# update_comm; there is no shared NFS HOME to clean centrally). Each install
+# records the names it ships in `<bin>/.sot-comm-installed`, and the next
+# install removes every name in that record the release no longer ships.
+# RULE: a commit that retires a managed bin script first checks every shipped
+# version for a running loop that re-execs it. If one exists, the name stays
+# SHIPPED as a stub that logs once and then sleeps (a shipped name is never
+# pruned); only otherwise is the file deleted, and the record removes it.
 # `COMM_DEPRECATED_BIN` below is FROZEN and covers only boxes installed before
 # the record existed; nobody appends to it again.
 
@@ -514,7 +517,8 @@ function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
 end
 
 # Every name this release installs directly into `<bin>`: the core scripts and
-# both adapters' hook scripts, whichever CLIs this run installs for.
+# both adapters' hook scripts, from all three dirs whatever CLIs this run
+# installs, so a name only another CLI's run installs is never pruned.
 function _comm_bin_shipped()
     dirs = [joinpath(COMM_SRC, "core", "scripts"),
             joinpath(COMM_SRC, "adapters", "claude", "hooks"),

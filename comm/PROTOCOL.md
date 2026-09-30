@@ -309,7 +309,10 @@ Once 0.6.6 is installed, bridge loops started by earlier versions stop working:
 session, and an untied one sleeps idle until the next reboot. No action is
 needed. The install also removes the comm scripts a release no longer ships
 (`comm-listen.sh`, `bus.sh`, and any later retirement), by exact name, from
-the list it recorded in `bin/.sot-comm-installed`.
+the list it recorded in `bin/.sot-comm-installed`. A commit that retires a
+bin script first checks every shipped version for a running loop that
+re-execs it; if one exists, the name stays shipped as a stub that logs once
+and then sleeps, and only otherwise is the file deleted.
 
 ## Verbs (reference client = `bin/*.sh`)
 
