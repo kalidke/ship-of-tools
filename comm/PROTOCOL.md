@@ -302,6 +302,13 @@ prints it and exits 1; the Stop hook blocks once per episode with it as the
 reason, prefixes every later block with it, and clears it on the first turn end
 with the tools present.
 
+## Upgrading to 0.6.6
+
+Once 0.6.6 is installed, bridge loops started by earlier versions stop working:
+`comm-relay.sh bridge` is retired. A loop tied to a session ends with that
+session, and an untied one sleeps idle until the next reboot. No action is
+needed.
+
 ## Verbs (reference client = `bin/*.sh`)
 
 | Verb        | Script           | Notes |

@@ -116,5 +116,48 @@ rm -rf "${SOT_COMM_HOME:?}/state"; mkdir -p "$SOT_COMM_HOME/state"
 out="$(printf '{"stop_hook_active":true}' | PATH="$(path_without jq)" "$BASH_BIN" "$HOOKS_DIR/comm-status-idle.sh" 2>/dev/null)"
 hasnt "jq missing, stop_hook_active: no block" "$out" '"decision":"block"'
 
+# --- the retired `bridge` verb: one log line, then it sleeps ----------------
+# An old-form loop (the pre-0.6.6 comm-lib BRIDGE_LOOP text) still re-runs
+# `comm-relay.sh bridge` every 2 s on every host; the verb must log once and idle.
+OLD_LOOP='while :; do
+    "$1" bridge --name "$2" & _c=$!
+    while kill -0 "$_c" 2>/dev/null; do
+        if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then
+            kill "$_c" 2>/dev/null; [ -z "${4:-}" ] || rm -f -- "${4:?}" 2>/dev/null; exit 0
+        fi
+        sleep 2
+    done
+    if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then [ -z "${4:-}" ] || rm -f -- "${4:?}" 2>/dev/null; exit 0; fi
+    sleep 2
+done'
+RETIRED='comm-relay: bridge retired in 0.6.6; this leftover loop now sleeps (a reboot clears it)'
+mkdir -p "$WORK/bridge"
+
+# (a) tethered: the line appears once; the loop and its child go when the tether dies.
+sleep 30 & TETHER=$!
+bash -c "$OLD_LOOP" sot-bridge "$SCRIPTS_DIR/comm-relay.sh" h "$TETHER" "" </dev/null >"$WORK/bridge/a.log" 2>&1 &
+LOOPA=$!
+sleep 3
+check "retired bridge, tethered: the line is logged once" "$(grep -cF "$RETIRED" "$WORK/bridge/a.log")" "1"
+CHILDA="$(pgrep -P "$LOOPA" | head -n1)"
+kill "$TETHER" 2>/dev/null; wait "$TETHER" 2>/dev/null
+gone=0
+for _ in $(seq 1 50); do
+    if ! kill -0 "$LOOPA" 2>/dev/null && { [ -z "$CHILDA" ] || ! kill -0 "$CHILDA" 2>/dev/null; }; then gone=1; break; fi
+    sleep 0.1
+done
+check "retired bridge, tethered: loop and child gone within 5 s of the tether" "$gone" "1"
+if [ "$gone" != 1 ]; then kill "$LOOPA" $CHILDA 2>/dev/null; fi
+
+# (b) untethered: no retry, the child is a sleep; the test then cleans up its own fixtures.
+bash -c "$OLD_LOOP" sot-bridge "$SCRIPTS_DIR/comm-relay.sh" h "" "" </dev/null >"$WORK/bridge/b.log" 2>&1 &
+LOOPB=$!
+sleep 6
+check "retired bridge, untethered: still exactly one line after 6 s" "$(grep -cF "$RETIRED" "$WORK/bridge/b.log")" "1"
+CHILDB="$(pgrep -P "$LOOPB" | head -n1)"
+check "retired bridge, untethered: the child is a sleep" "$(ps -o comm= -p "${CHILDB:-0}" 2>/dev/null)" "sleep"
+kill "$LOOPB" 2>/dev/null; [ -z "$CHILDB" ] || kill "$CHILDB" 2>/dev/null
+wait "$LOOPB" 2>/dev/null
+
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

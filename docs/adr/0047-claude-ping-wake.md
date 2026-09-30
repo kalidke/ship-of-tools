@@ -28,8 +28,7 @@ to `--deliver full` (Codex's behaviour, unchanged). Claude sessions get
 
 - **One fixed notice, never the message.** A batch of new directed frames
   types a single line (`[sot-comm] new message for @<handle> — run
-  comm-poll.sh`, or a selftest-specific line when every new frame is the
-  wake-proof selftest) — the session reads the real backlog itself. A burst
+  comm-poll.sh`) — the session reads the real backlog itself. A burst
   of N messages costs one wake, not N.
 - **Prompt-free gate.** Before typing, it reads the row's current screen
   (`pty.screen`, lifted into `comm-lib.sh`'s `sot_pty_screen` so `sot-fe`
@@ -181,9 +180,8 @@ obvious simplification and it is a bug in whichever direction it is folded.
 That also exposed the scan's cost. Starting at the read cursor makes a
 full-file scan reachable (a cursor past EOF clamps to 0 on a trimmed or
 restored inbox), and the scan spawned one `jq` per LINE — 1500 lines inside one
-two-second cycle. It is one `jq` over the whole range now, emitting the two
-booleans a batch decides: is any of it directed at us, and is all of it the
-selftest frame. Nothing is capped or skipped; the batch is read in full, by one
+two-second cycle. It is one `jq` over the whole range now, emitting the
+boolean a batch decides: is any of it directed at us. Nothing is capped or skipped; the batch is read in full, by one
 process.
 
 ### Reaching the agent on a frontend box
