@@ -1149,7 +1149,7 @@ case_a_nul_a_cr_or_an_empty_last_line_is_shown_once() {
 # the account's own home, whatever HOME says. Sourcing records the real
 # account home (read-only: only its path is compared), which is getent's
 # answer where getent exists; a stubbed `id` names root's home instead, and an
-# `id` name outside [A-Za-z0-9._-] is never evaluated and records none.
+# `id` name outside [A-Za-z0-9._-], or not starting [A-Za-z_], is never evaluated and records none.
 # T/other passes, and sourcing drops the host's comm identity and daemon route.
 guard_run() {  # T COMM_HOME — the guard's verdict on COMM_HOME under HOME=T
     GUARD_RC=0
@@ -1193,6 +1193,13 @@ case_the_home_guard_refuses_a_live_comm_home() {
     h="$(PATH="$t/id-bin:$PATH" HOME="$t" SOT_COMM_HOME= bash -c '. "$1"; printf %s "$_GUARD_ACCT|${#_GUARD_LIVE[@]}"' \
         _ "$SCRIPT_DIR/lib-home-guard.sh")"
     [ "$h" = "|1" ] && [ ! -e "$t/evaluated" ] || { echo "  an invalid name recorded an account home: $h"; return 1; }
+    # a name that starts with a digit, or is - or all digits, is never `~name`
+    for n in - 0 12; do
+        printf '#!/bin/sh\necho %s\n' "$n" > "$t/id-bin/id"
+        h="$(PATH="$t/id-bin:$PATH" HOME="$t" SOT_COMM_HOME= bash -c '. "$1"; printf %s "$_GUARD_ACCT|${#_GUARD_LIVE[@]}"' \
+            _ "$SCRIPT_DIR/lib-home-guard.sh")"
+        [ "$h" = "|1" ] || { echo "  the name '$n' recorded an account home: $h"; return 1; }
+    done
     h="$(SOT_COMM_NAME=n SOT_COMM_SELF_FILE=f SOT_WORKSPACE_ID=w SOT_SOCKET=s SOT_FE_ENDPOINT=e \
         SOT_RELAY_ENDPOINT=e SOT_SPAWN_ENDPOINT=e SOT_ANY_ENDPOINT=e HOME="$t" bash -c '. "$1"
         echo "${SOT_COMM_HOME-}${SOT_COMM_NAME-}${SOT_COMM_SELF_FILE-}${SOT_WORKSPACE_ID-}${SOT_SOCKET-}"; env | grep "_ENDPOINT="' \

@@ -28,6 +28,7 @@
 # Usage: comm/core/tests/test-rm-guard.sh
 # Exit: 0 if no unguarded site or suite, 1 naming each one.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)" || { echo "FATAL: not in a git checkout" >&2; exit 1; }
@@ -109,16 +110,15 @@ done < <(git -C "$REPO" ls-files)
 
 sites="$(perl -e "$RM_SCAN" "${files[@]}")"
 
-# unguarded SUITE... — each suite whose non-comment lines name a comm script
-# but whose first command other than `set` is not the guard's source line.
+# unguarded SUITE... — each suite whose first command other than `set` is not
+# the guard's source line.
 unguarded() {
     local f
     for f in "$@"; do
         awk '/^[[:space:]]*#/ { next }
-             /comm[-][A-Za-z0-9_.-]*[.]sh|comm[-]lib/ { names = 1 }
              !seen && !/^[[:space:]]*$/ && !/^[[:space:]]*set[[:space:]]/ {
                  seen = 1; first = ($0 ~ /^[[:space:]]*(\.|source)[[:space:]].*lib-home-guard\.sh/) }
-             END { exit !(names && !first) }' "$f" && printf '%s\n' "$f"
+             END { exit !(seen && !first) }' "$f" && printf '%s\n' "$f"
     done
 }
 sed '/^\. .*lib-home-guard\.sh/d' "$SCRIPT_DIR/test-hub-files.sh" > "$T/test-copy.sh"
@@ -135,10 +135,10 @@ else
     rc=1
 fi
 if [ -z "$bad" ]; then
-    echo "PASS: every comm suite that names a comm script sources the home guard first (${#suites[@]} suites)"
+    echo "PASS: every comm suite sources the home guard first (${#suites[@]} suites)"
 else
     printf '%s\n' "$bad" | sed "s#^$REPO/##" | while IFS= read -r f; do
-        echo "FAIL: $f names a comm script but does not source lib-home-guard.sh before any command but set"
+        echo "FAIL: $f does not source lib-home-guard.sh before any command but set"
     done
     rc=1
 fi

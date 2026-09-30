@@ -1,13 +1,12 @@
-# lib-home-guard.sh — every test-*.sh under comm/ whose code names a comm script
-# (comm-*.sh or comm-lib) sources this before any command but `set`, and
-# test-rm-guard.sh fails a suite that does not (test code only; never
+# lib-home-guard.sh — every test-*.sh under comm/ sources this before any
+# command but `set`, and test-rm-guard.sh fails a suite that does not (test code only; never
 # deployed). A suite's setup deletes registry.json and inbox files, so a comm
 # home that resolved to the live one would wipe the fleet's registry and inboxes.
 #
 # Sourcing records the live comm homes: $HOME/.sot-comm, the account's own
 # home as the system records it plus /.sot-comm (`~name` for `id -un`, which
 # reads getpwnam on every platform; a HOME swapped by env -i or by an earlier
-# guard is not the live folder; a name outside [A-Za-z0-9._-] records none),
+# guard is not the live folder; a name not starting [A-Za-z_] or outside [A-Za-z0-9._-] records none),
 # and any inherited SOT_COMM_HOME. It then drops the host's comm identity and
 # its daemon route: SOT_COMM_HOME, SOT_COMM_NAME, SOT_COMM_SELF_FILE,
 # SOT_WORKSPACE_ID, SOT_SOCKET and every exported *_ENDPOINT. Right after the
@@ -24,8 +23,8 @@
 _GUARD_LIVE=("$HOME/.sot-comm")
 _GUARD_ACCT="" _GUARD_USER="$(id -un 2>/dev/null)"
 case "$_GUARD_USER" in
-    ''|*[!A-Za-z0-9._-]*) ;;
-    *) eval "_GUARD_ACCT=~$_GUARD_USER" ;;  # the name is checked: eval sees no shell syntax
+    ''|[!A-Za-z_]*|*[!A-Za-z0-9._-]*) ;;
+    *) eval "_GUARD_ACCT=~$_GUARD_USER" ;;  # the name is checked: no shell syntax, and no ~-, ~+ or ~0 form
 esac
 case "$_GUARD_ACCT" in /*) _GUARD_LIVE+=("$_GUARD_ACCT/.sot-comm") ;; *) _GUARD_ACCT="" ;; esac
 [ -z "${SOT_COMM_HOME:-}" ] || _GUARD_LIVE+=("$SOT_COMM_HOME")

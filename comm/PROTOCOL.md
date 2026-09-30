@@ -20,8 +20,10 @@ all clients are mutually addressable through the same registry and inboxes.
   self/<host>__<pane>.txt  # this pane's declared agent name (identity recovery)
   state/                   # per-session scratch; the end-of-turn check keeps mail-<key>.tick,
                            # lock-fault-<handle>.<key>.tick and stop-feedback-<key>.jsonl here.
-                           # A session that ends mid-block leaves its own behind: bounded
-                           # per-session litter, one of each per session, and nothing sweeps it.
+                           # Nothing removes a mail tick, so every session ever held on mail
+                           # leaves one; a fault tick or a feedback record is left only by a
+                           # session that ends mid-block. Bounded per-session litter, and
+                           # nothing sweeps it.
 ```
 
 The registry and inboxes are **data at rest** — discovery and catch-up need a

@@ -703,6 +703,12 @@ held_marker_turn() {
     LT_BLOCKED "$out"; LT_REPLY 'nothing for me'
     out="$(LT_STOP true)"
     [ -z "$out" ] || { echo "    the turn end after the poll still blocked: '$out'"; return 1; }
+    fb_gone || return 1
+}
+# The passing Stop removes the session's feedback record (the hook's EXIT trap).
+fb_gone() {
+    local left; left="$(ls "${SOT_COMM_HOME:?}"/state/stop-feedback-* 2>/dev/null)"
+    [ -z "$left" ] || { echo "    the passing Stop left its feedback record: $left"; return 1; }
 }
 case_a_held_question_turn_ends_red_with_its_question() {
     held_marker_turn $'SITREP-QUESTION: which port?\n\nContext...' || return 1
@@ -738,14 +744,13 @@ case_a_turn_held_twice_keeps_its_first_marker() {
     expect blocked/-/q/-/- state && [ "$(summ)" = "which port?" ] || { echo "    summary '$(summ)'"; return 1; }
 }
 case_a_real_prompt_after_a_marker_turn_starts_a_new_turn() {
-    seed idle; W "$GENUINE"; _mail_reset
-    LT_NEW "please do the thing"; LT_REPLY 'SITREP-QUESTION: which port?'
-    local out; out="$(LT_STOP)"
-    [ -z "$out" ] && expect blocked/-/q/-/- asked || { echo "    '$out'"; return 1; }
+    held_marker_turn 'SITREP-QUESTION: which port?' || return 1
+    expect blocked/-/q/-/- asked || return 1
+    local out
     W "$GENUINE"; LT_PROMPT "port 8080"; LT_REPLY 'It listens on 8080 now.'
     out="$(LT_STOP)"
     [ -z "$out" ] || { echo "    the answered turn blocked: '$out'"; return 1; }
-    expect done/-/-/-/d answered
+    expect done/-/-/-/d answered && fb_gone
 }
 case_feedback_the_hook_did_not_record_reads_as_a_prompt() {
     seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"
@@ -756,6 +761,20 @@ case_feedback_the_hook_did_not_record_reads_as_a_prompt() {
     out="$(LT_STOP true)"
     [ -z "$out" ] || { echo "    the turn end blocked: '$out'"; return 1; }
     expect done/-/-/-/d "a loosely matching feedback kept the marker"
+}
+case_feedback_without_ismeta_reads_as_a_prompt() {
+    seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"
+    LT_NEW "please do the thing"; LT_REPLY 'SITREP-QUESTION: which port?'
+    local out; out="$(LT_STOP)"
+    [ "$out" = "$MAIL_BLOCK" ] || { echo "    no mail block: '$out'"; return 1; }
+    poll_mail
+    # the exact recorded text, pasted by a person: no isMeta
+    jq -nc --arg r "$(printf '%s' "$out" | jq -r '.reason')" \
+        '{type:"user",message:{role:"user",content:("Stop hook feedback:\n" + $r)}}' >> "$LT"
+    LT_REPLY 'nothing for me'
+    out="$(LT_STOP true)"
+    [ -z "$out" ] || { echo "    the turn end blocked: '$out'"; return 1; }
+    expect done/-/-/-/d "the pasted text was taken for the hook's own feedback"
 }
 case_mail_filed_mid_turn_blocks_the_marker_end() {
     seed idle; _mail_reset; _mail_line "$NAME"; poll_mail
@@ -1002,6 +1021,7 @@ check "(c) the last marker in a held turn wins" case_the_last_marker_in_a_held_t
 check "(d) a turn held twice keeps its first marker" case_a_turn_held_twice_keeps_its_first_marker
 check "(e) a real prompt after a marker turn starts a new turn" case_a_real_prompt_after_a_marker_turn_starts_a_new_turn
 check "(f) a feedback record the hook did not record reads as a prompt" case_feedback_the_hook_did_not_record_reads_as_a_prompt
+check "(g) the recorded text without isMeta reads as a prompt" case_feedback_without_ismeta_reads_as_a_prompt
 check "mail filed mid-turn blocks that turn's marker end" case_mail_filed_mid_turn_blocks_the_marker_end
 check "a frontend-inbox line for this handle blocks a marker turn too" case_frontend_mail_blocks_a_marker_turn
 check "a marker turn with its mail read prints nothing and stamps as before" case_marker_turn_with_read_mail_is_unchanged

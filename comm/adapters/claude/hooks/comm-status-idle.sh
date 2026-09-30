@@ -99,9 +99,10 @@ turn_floor() { [ -x "$STATUS" ] && "$STATUS" stop >/dev/null 2>&1 || true; }
 # slice pass knows it by that text as this hook's own, not a new turn. A Stop
 # that prints no block removes the file (the EXIT trap below). A failed write
 # fails open: that feedback then reads as a prompt, as it did before.
-blocked=""
+blocked="" fb_file=""
 print_block() {  # BLOCK_JSON
     blocked=1
+    [ -n "$fb_file" ] || { printf '%s\n' "$1"; return 0; }
     { mkdir -p "$HOME_DIR/state" && printf '%s' "$1" | jq -c '.reason' >> "$fb_file"; } 2>/dev/null || true
     printf '%s\n' "$1"
 }
@@ -146,8 +147,12 @@ tp="$(jqget '.transcript_path // empty')"
 mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
 [ -n "$mail_key" ] && [ "$mail_key" != "nopane" ] || mail_key="${tp##*/}"
 [ -n "$mail_key" ] || mail_key="$PPID"
-fb_file="$HOME_DIR/state/stop-feedback-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').jsonl"
-trap '[ -n "$blocked" ] || rm -f -- "${fb_file:?}" 2>/dev/null' EXIT
+# With no transcript path the key can fall to $PPID, which no later run shares,
+# so nothing could find the record again: record nothing, and remove nothing.
+if [ -n "$tp" ]; then
+    fb_file="$HOME_DIR/state/stop-feedback-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').jsonl"
+    trap '[ -n "$blocked" ] || rm -f -- "${fb_file:?}" 2>/dev/null' EXIT
+fi
 
 # The current turn's slice: everything after the last HUMAN/machine prompt (a
 # `user` record whose content is a string / carries no tool_result -- tool
@@ -182,7 +187,7 @@ if [ -n "$tp" ] && [ -r "$tp" ]; then
                     tail -n 3000 "$tp" 2>/dev/null; } | jq -sc '
         def is_prompt: .type=="user" and ((.message.content|type)=="string"
             or (([.message.content[]? | .type] | index("tool_result")) == null));
-        def is_own_feedback($fb): (.message.content) as $c | ($c|type)=="string"
+        def is_own_feedback($fb): (.message.content) as $c | .isMeta == true and ($c|type)=="string"
             and any($fb[]; "Stop hook feedback:\n" + . == $c);
         def secs: sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch 0);
         def prompt_of: (.message.content) as $c

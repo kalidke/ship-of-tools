@@ -67,8 +67,20 @@ E="$D/e2e"; L="$D/log"
 export SOT_COMM_HOME="$D"
 BG=()
 cleanup() {
-    local rc=$? p t
-    for t in here peer v3; do : > "$E/stop-$t" 2>/dev/null; done
+    local rc=$? p t n
+    # Removing $D used to stop every reader, because each wait loop also ends when
+    # $E is gone. A kept $D must stop them with files: reader.sh waits on
+    # pollstop-<t> (poller, then the phase-1 wait), strictpoll-<t> (before the
+    # strict poll) and stop-<t> (hook loop, final wait); sender.sh waits on go.
+    for t in here peer v3; do
+        for p in pollstop strictpoll stop; do : > "$E/$p-$t" 2>/dev/null; done
+    done
+    : > "$E/go" 2>/dev/null
+    # Let the helpers reap their own children (wake and watch), bounded.
+    for n in $(seq 1 100); do
+        for p in "${BG[@]}"; do kill -0 "$p" 2>/dev/null && continue 2; done
+        break
+    done
     for p in "${BG[@]}"; do kill "$p" 2>/dev/null; done
     wait 2>/dev/null
     if [ "$rc" -eq 0 ]; then
