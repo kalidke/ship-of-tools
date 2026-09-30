@@ -607,9 +607,10 @@ registry_touch() {  # name — bump last_seen if present
 # cover a line a failed append then cuts back: where a writer would append
 # locally the reader's count-and-read takes a shared lock bounded by
 # SOT_INBOX_READ_WAIT_SECS (a lock held past it means try again, exit 75; any
-# other lock error is named and the read runs unlocked) — comm-poll and
-# comm-wake let go before they show anything, while comm-watch holds the lock
-# as it prints (B3 replaces it) — and on every host the cursor keeps
+# other lock fault, a lock file that will not open or any flock error, is named
+# and the read runs unlocked) — comm-poll and comm-wake let go before they
+# show anything, while comm-watch holds the lock as it prints (B3 replaces
+# it) — and on every host the cursor keeps
 # `<count> <crc>-<len>` of the last line the reader READ (hashed from the bytes
 # it holds, never re-read from the file), so a reader steps back one line when
 # a cut-back removed it.
@@ -662,7 +663,8 @@ _sot_inbox_lock_ours() {  # DIR
 # non-blocking try is repeated every 15-25 ms until the bound. NLM (v3) and one machine's own
 # kernel lock (`local …`, `none@…`) wake a blocked waiter on release, so those
 # block, bounded. 75 = the bound passed with the lock held elsewhere; any
-# other non-zero is flock's own error (65, 71, …), never a held lock.
+# other non-zero is flock's own error, never a held lock, and flock names it on
+# stderr (`flock: 9: <strerror>`).
 _sot_flock_wait() {  # MODE SECS ID
     local rc end
     case "$3" in
@@ -729,32 +731,47 @@ _sot_append_whole() {  # FILE LINE
 # access. sot_inbox_read_lock takes it on fd 9 of the calling
 # shell (never a subshell: the reader's counters must survive) and returns 0
 # when held or when no lock applies, 75 when the bound passed with the lock
-# held elsewhere — which means try again, never a skip. Any other lock error
-# is not "try again": it returns 0 unheld, with SOT_INBOX_READ_WARNING naming
-# flock's code for the caller to show where its session sees it. An unheld
-# reader, like every reader elsewhere, is covered by the cursor's line hash
-# (sot_cursor_write): a line may show twice, none is lost. comm-poll reads its
-# batch under the lock, lets go, then shows it: a slow display never holds off
-# a writer.
+# held elsewhere — which means try again, never a skip. Any other lock fault
+# is not "try again": a lock file that will not open, or any other flock error,
+# returns 0 unheld, with SOT_INBOX_READ_WARNING naming it (flock's code and its
+# own stderr text) for the caller to show where its session sees it. flock runs
+# inside $(…) to catch that text: the lock is on the open file description,
+# which the calling shell's fd 9 still holds. An unheld reader, like every
+# reader elsewhere, is covered by the cursor's line hash (sot_cursor_write): a
+# line may show twice, none is lost. comm-poll reads its batch under the lock,
+# lets go, then shows it: a slow display never holds off a writer.
 SOT_INBOX_READ_WAIT_SECS="${SOT_INBOX_READ_WAIT_SECS:-3}"
 sot_inbox_read_lock() {  # HANDLE
-    local rc=0 id why
+    local rc=0 id err
     SOT_INBOX_READ_WARNING=""
     id="$(_sot_inbox_lock_ours "$COMM_HOME/inbox")"
     [ -n "$id" ] || return 0
-    { exec 9<> "$COMM_HOME/inbox/$1.lock"; } 2>/dev/null || return 0
-    _sot_flock_wait -s "$SOT_INBOX_READ_WAIT_SECS" "$id" || rc=$?
+    if ! { exec 9<> "$COMM_HOME/inbox/$1.lock"; } 2>/dev/null; then
+        SOT_INBOX_READ_WARNING="WARNING: the inbox lock for @$1 failed (cannot open its lock file) — reading without it; a line may show twice, none is lost"
+        return 0
+    fi
+    err="$(_sot_flock_wait -s "$SOT_INBOX_READ_WAIT_SECS" "$id" 2>&1)" || rc=$?
     [ "$rc" -ne 0 ] || return 0
     exec 9>&-
     [ "$rc" -ne 75 ] || return 75
-    case "$rc" in
-        65) why="65: bad file descriptor" ;;
-        71) why="71: no locks available" ;;
-        *)  why="code $rc" ;;
-    esac
-    SOT_INBOX_READ_WARNING="WARNING: the inbox lock for @$1 failed ($why) — reading without it; a line may show twice, none is lost"
+    err="${err##*$'\n'}"
+    [ -n "$err" ] && err="$rc: ${err##*: }" || err="code $rc"
+    SOT_INBOX_READ_WARNING="WARNING: the inbox lock for @$1 failed ($err) — reading without it; a line may show twice, none is lost"
 }
 sot_inbox_read_unlock() { exec 9>&-; }
+# sot_inbox_read_warning_log HANDLE — for a reader that loops (comm-wake,
+# comm-watch; B3 replaces both): after sot_inbox_read_lock, the warning goes to
+# stderr only when it changes, and one line says when it clears, so a lasting
+# fault is one log line rather than one per tick.
+sot_inbox_read_warning_log() {  # HANDLE
+    [ "$SOT_INBOX_READ_WARNING" != "${_SOT_INBOX_WARNING_LOGGED:-}" ] || return 0
+    if [ -n "$SOT_INBOX_READ_WARNING" ]; then
+        printf '%s\n' "$SOT_INBOX_READ_WARNING" >&2
+    else
+        printf 'the inbox lock fault for @%s has cleared\n' "$1" >&2
+    fi
+    _SOT_INBOX_WARNING_LOGGED="$SOT_INBOX_READ_WARNING"
+}
 sot_inbox_append() {  # HANDLE
     local h="$1" line err rc=0 id
     line="$(cat)"

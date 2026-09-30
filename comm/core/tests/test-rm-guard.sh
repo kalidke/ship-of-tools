@@ -10,7 +10,9 @@
 # `&`, `|`, `)`, a redirect or the end of the line), steps over the inside of
 # `$(...)`, and names every argument that starts — after any quotes, escaped
 # or not — with `$VAR`, `${VAR}`, `${VAR<any other modifier>}`, or a `$(...)`
-# followed by `/` (its output may be empty too, and `"$(f)"/*` is then `/*`).
+# followed by anything in the same argument (its output may be empty too, and
+# `"$(f)"/*` is then `/*`, `"$(f)"*` every file here). A `$(...)` that is the
+# whole argument passes, and so does `$((...))`, which is never empty.
 # Commands inside strings (`bash -c '…'`, ssh command lines, `trap '…'`,
 # heredocs written to a stub) are read the same way. Comment lines are
 # skipped. A file with a dot in its NAME is read only as `*.sh`; a dot in a
@@ -36,7 +38,7 @@ done < <(git -C "$REPO" ls-files)
 
 sites="$(perl -e '
 my $V = q{(?:[A-Za-z_]\w*+|\d++)};
-my $TOK = qr/(?:^|\s)(?:\\*["\x27])*\\*\$(?:\(X*(?:\\*["\x27])*\/|\{$V(?:\[[@*]\])?+\}|$V|\{$V(?:\[[@*]\])?+(?:[^}:]|:[^?])[^}]*\})/;
+my $TOK = qr/(?:^|\s)(?:\\*["\x27])*\\*\$(?:\(X*+(?:\\*["\x27])*+\S|\{$V(?:\[[@*]\])?+\}|$V|\{$V(?:\[[@*]\])?+(?:[^}:]|:[^?])[^}]*\})/;
 for my $f (@ARGV) {
     open my $fh, "<", $f or next;
     while (my $line = <$fh>) {
@@ -45,7 +47,7 @@ for my $f (@ARGV) {
             my ($i, $depth, $mask) = (pos($line), 0, "");
             while ($i < length $line) {
                 my $c = substr($line, $i, 1);
-                if (substr($line, $i, 2) eq q{$(}) { $mask .= $depth ? "XX" : q{$(}; $depth++; $i += 2; next; }
+                if (substr($line, $i, 2) eq q{$(}) { $mask .= ($depth || substr($line, $i, 3) eq q{$((}) ? "XX" : q{$(}; $depth++; $i += 2; next; }
                 if ($depth) { $depth-- if $c eq ")"; $depth++ if $c eq "("; $mask .= "X"; $i++; next; }
                 last if $c =~ /[;&|>)\n]/;
                 $mask .= $c; $i++;

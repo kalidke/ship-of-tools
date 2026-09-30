@@ -869,7 +869,6 @@ mod tests {
         assert_eq!(read_lines(&d.path().join("inbox/h.jsonl"))[1]["msg"], "real");
     }
 
-    // A waiter that gave up never keeps the lock.
     // The daemon's lock descriptor is read-write too: a zero-length read on a
     // write-only one is EBADF.
     #[test]
@@ -880,6 +879,7 @@ mod tests {
         assert_eq!(lock.read(&mut []).unwrap(), 0);
     }
 
+    // A waiter that gave up never keeps the lock.
     #[test]
     fn a_waiter_that_gave_up_never_keeps_the_lock() {
         let d = tempfile::tempdir().unwrap();

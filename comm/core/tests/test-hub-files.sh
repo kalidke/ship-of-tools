@@ -691,13 +691,15 @@ poll_peer_env() {
         "$BIN/comm-poll.sh" 2>&1)"
     POLL_RC=$?
 }
+# idle_hook [TEXT] [STOP_HOOK_ACTIVE] — the peer's Stop hook for a turn that
+# ends in TEXT (default a plain "all done."), as session $HOOK_SESSION.
 idle_hook() {
     local tr="$WORK/transcript.jsonl"
     { jq -nc '{type:"user",message:{content:"go"}}'
-      jq -nc '{type:"assistant",message:{content:[{type:"text",text:"all done."}]}}'; } > "$tr"
-    jq -nc --arg p "$tr" '{transcript_path:$p, stop_hook_active:false}' \
+      jq -nc --arg t "${1:-all done.}" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'; } > "$tr"
+    jq -nc --arg p "$tr" --argjson a "${2:-false}" '{transcript_path:$p, stop_hook_active:$a}' \
         | ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" \
-            CLAUDE_CODE_SESSION_ID="hub-files-test" bash "$SCRIPT_DIR/../../adapters/claude/hooks/comm-status-idle.sh" )
+            CLAUDE_CODE_SESSION_ID="${HOOK_SESSION:-hub-files-test}" bash "$SCRIPT_DIR/../../adapters/claude/hooks/comm-status-idle.sh" )
 }
 
 # The stubbed fsync failure, shell arm. A test-only perl module (loaded by
@@ -943,53 +945,153 @@ poll_stdout() {
     POLL_ERR="$(cat "$WORK/poll.err" 2>/dev/null)"
 }
 
-# S-A: only a held lock is "try again". A `flock` wrapper makes every shared
-# lock fail with CODE while the writers' exclusive lock stays real. comm-poll
+# S-A: only a held lock is "try again". A lock fault makes every shared lock
+# fail while the writers' exclusive lock stays real (faulty below). comm-poll
 # names the fault on stdout before the messages, exits 0 and reads unlocked:
 # every line exactly once across two polls with a send between. The
 # end-of-turn hook carries the warning on its mail block and blocks once for
 # the fault alone, never again for the same one; a clean check clears the
-# tick, so the fault blocks again. Nothing says busy.
-lock_fault_case() {  # CODE MEANING
-    local code="$1" warn real ff="$WORK/ff$1" tick="$SOT_COMM_HOME/state/lock-fault-$PEER.tick" h shown="" said="" m
-    warn="WARNING: the inbox lock for @$PEER failed ($code: $2) — reading without it; a line may show twice, none is lost"
-    real="$(command -v flock)"
-    mkdir -p "$ff"
-    printf '#!/bin/sh\ncase " $* " in *" -s "*) exit %s ;; esac\nexec %s "$@"\n' "$code" "$real" > "$ff/flock"
-    chmod +x "$ff/flock"
+# tick, so the fault blocks again. Nothing says busy. The warning's text is
+# flock's own error line (`flock: 9: <strerror>`), never a table: exit 65
+# covers EIO as well as EBADF.
+FF="$WORK/ff"
+# flock_stub CODE STRERROR — $FF/flock fails every shared lock with CODE and
+# flock's own shape of error while $FF/on exists, and is the real flock
+# otherwise.
+flock_stub() {
+    rm -rf "${FF:?}"; mkdir -p "$FF"; : > "$FF/on"
+    printf '#!/bin/sh\ncase " $* " in *" -s "*) [ -e "%s/on" ] && { echo "flock: 9: %s" >&2; exit %s; } ;; esac\nexec %s "$@"\n' \
+        "$FF" "$2" "$1" "$(command -v flock)" > "$FF/flock"
+    chmod +x "$FF/flock"
+}
+# faulty KIND CMD... — CMD under the fault: KIND `dir` makes the peer's lock
+# file a directory while CMD runs, so no reader can open it (a send between
+# runs with the real file: a writer on this host fails on the same open, and
+# says so); any other KIND runs CMD with $FF/flock first on the PATH.
+faulty() {  # KIND CMD...
+    local kind="$1" rc=0; shift
+    [ "$kind" = dir ] || { PATH="$FF:$PATH" "$@"; return; }
+    rm -f "${INBOX:?}/$PEER.lock"; mkdir "$INBOX/$PEER.lock"
+    "$@" || rc=$?
+    rmdir "$INBOX/$PEER.lock"
+    return "$rc"
+}
+fault_ticks() { compgen -G "$SOT_COMM_HOME/state/lock-fault-*.tick" >/dev/null; }
+lock_fault_case() {  # KIND WHY — KIND a flock exit code or `dir`; WHY what the warning's parentheses say
+    local kind="$1" warn h shown="" said="" m
+    warn="WARNING: the inbox lock for @$PEER failed ($2) — reading without it; a line may show twice, none is lost"
+    [ "$kind" = dir ] || flock_stub "$kind" "${2#*: }"
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    rm -f "${SOT_COMM_HOME:?}"/state/mail-*.tick
+    rm -f "${SOT_COMM_HOME:?}"/state/mail-*.tick "${SOT_COMM_HOME:?}"/state/lock-fault-*.tick
     ln -sfn "$BIN" "$SOT_COMM_HOME/bin"
-    run_send "@$PEER" "f$code-one"; run_send "@$PEER" "f$code-two"
-    h="$(PATH="$ff:$PATH" idle_hook 2>&1)"; said+="$h"$'\n'
+    run_send "@$PEER" "f$kind-one"; run_send "@$PEER" "f$kind-two"
+    h="$(faulty "$kind" idle_hook 2>&1)"; said+="$h"$'\n'
     contains "$h" '"decision":"block"' && contains "$h" "$warn New sot-comm mail for @$PEER" \
-        || { echo "  [$code] the mail block did not carry the warning: $h"; return 1; }
-    h="$(PATH="$ff:$PATH" idle_hook 2>&1)"; said+="$h"$'\n'
-    ! contains "$h" '"decision"' || { echo "  [$code] blocked again for the same fault: $h"; return 1; }
+        || { echo "  [$kind] the mail block did not carry the warning: $h"; return 1; }
+    h="$(faulty "$kind" idle_hook 2>&1)"; said+="$h"$'\n'
+    ! contains "$h" '"decision"' || { echo "  [$kind] blocked again for the same fault: $h"; return 1; }
     for m in poll1 poll2; do
-        [ "$m" = poll1 ] || run_send "@$PEER" "f$code-three"
-        PATH="$ff:$PATH" poll_stdout
+        [ "$m" = poll1 ] || run_send "@$PEER" "f$kind-three"
+        [ "$SEND_RC" -eq 0 ] || { echo "  [$kind] the send between failed: $SEND_OUT"; return 1; }
+        faulty "$kind" poll_stdout
         said+="$POLL_OUT"$'\n'"$POLL_ERR"$'\n'; shown+="$POLL_OUT"$'\n'
         [ "$POLL_RC" -eq 0 ] && [ "${POLL_OUT%%$'\n'*}" = "$warn" ] \
-            || { echo "  [$code] $m rc $POLL_RC, stdout: $POLL_OUT"; return 1; }
+            || { echo "  [$kind] $m rc $POLL_RC, stdout: $POLL_OUT"; return 1; }
     done
     for m in one two three; do
-        [ "$(count_of "$shown" "f$code-$m")" -eq 1 ] || { echo "  [$code] f$code-$m not shown exactly once: $shown"; return 1; }
+        [ "$(count_of "$shown" "f$kind-$m")" -eq 1 ] || { echo "  [$kind] f$kind-$m not shown exactly once: $shown"; return 1; }
     done
-    h="$(PATH="$ff:$PATH" idle_hook 2>&1)"; said+="$h"$'\n'
-    ! contains "$h" '"decision"' || { echo "  [$code] blocked again after the polls: $h"; return 1; }
+    h="$(faulty "$kind" idle_hook 2>&1)"; said+="$h"$'\n'
+    ! contains "$h" '"decision"' || { echo "  [$kind] blocked again after the polls: $h"; return 1; }
     h="$(idle_hook 2>&1)"
-    ! contains "$h" '"decision"' && [ ! -e "$tick" ] || { echo "  [$code] a clean check left the tick: $h"; return 1; }
-    h="$(PATH="$ff:$PATH" idle_hook 2>&1)"; said+="$h"$'\n'
-    contains "$h" "{\"decision\":\"block\",\"reason\":\"$warn\"}" || { echo "  [$code] the fault alone did not block once: $h"; return 1; }
-    h="$(PATH="$ff:$PATH" idle_hook 2>&1)"; said+="$h"$'\n'
-    ! contains "$h" '"decision"' || { echo "  [$code] the fault alone blocked twice: $h"; return 1; }
-    ! contains "$said" busy && ! contains "$said" "being written" || { echo "  [$code] said busy: $said"; return 1; }
-    echo "  [$code] poll stdout: $warn"
+    ! contains "$h" '"decision"' && ! fault_ticks || { echo "  [$kind] a clean check left the tick: $h"; return 1; }
+    h="$(faulty "$kind" idle_hook 2>&1)"; said+="$h"$'\n'
+    contains "$h" "{\"decision\":\"block\",\"reason\":\"$warn\"}" || { echo "  [$kind] the fault alone did not block once: $h"; return 1; }
+    h="$(faulty "$kind" idle_hook 2>&1)"; said+="$h"$'\n'
+    ! contains "$h" '"decision"' || { echo "  [$kind] the fault alone blocked twice: $h"; return 1; }
+    ! contains "$said" busy && ! contains "$said" "being written" || { echo "  [$kind] said busy: $said"; return 1; }
+    echo "  [$kind] poll stdout: $warn"
     return 0
 }
-case_a_lock_error_71_is_named_and_the_inbox_read_unlocked() { lock_fault_case 71 "no locks available"; }
-case_a_lock_error_65_is_named_and_the_inbox_read_unlocked() { lock_fault_case 65 "bad file descriptor"; }
+case_a_lock_error_71_is_named_and_the_inbox_read_unlocked() { lock_fault_case 71 "71: No locks available"; }
+case_a_lock_error_65_is_named_and_the_inbox_read_unlocked() { lock_fault_case 65 "65: Bad file descriptor"; }
+case_a_lock_error_65_eio_is_named_as_flock_names_it() { lock_fault_case 65 "65: Input/output error"; }
+case_a_lock_file_that_will_not_open_is_named() { lock_fault_case dir "cannot open its lock file"; }
+
+# flock runs inside $(…) to catch its error text, and the shared lock still
+# holds in the calling shell: the lock is on the open file description, which
+# the caller's fd 9 keeps. Another process's exclusive try fails while the
+# reader holds it and succeeds once it lets go.
+case_a_shared_lock_taken_inside_a_subshell_holds_in_the_caller() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local out
+    out="$(bash -c 'source "$1/comm-lib.sh"; sot_inbox_read_lock "$2" || exit 9
+        flock -n -x "$3" true && echo free || echo held
+        sot_inbox_read_unlock
+        flock -n -x "$3" true && echo free || echo held' _ "$BIN" "$PEER" "$INBOX/$PEER.lock" 2>&1)"
+    [ "$out" = $'held\nfree' ] || { echo "  want held then free, got: $out"; return 1; }
+}
+
+# The end-of-turn hook under a lasting fault (71) with no mail pending. The
+# fault's once-block never fires inside a stop-hook continuation; it waits for
+# the next turn end. On a MARKER turn it fires and leaves the row unstamped;
+# the next marker turn end passes, stamps from its marker and fires nothing
+# more. A session relaunched under the handle is told once too. A nudge that
+# is not about mail, the missing-marker one, carries the warning first.
+peer_row() { jq -c --arg n "$PEER" '.agents[$n] | [.state, .summary, .status_at]' "$SOT_COMM_HOME/registry.json"; }
+peer_status() {
+    ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" "$BIN/comm-status.sh" "$@" ) >/dev/null 2>&1
+}
+case_a_lock_fault_blocks_a_marker_turn_once_and_prefixes_every_nudge() {
+    local warn blk h row0
+    warn="WARNING: the inbox lock for @$PEER failed (71: No locks available) — reading without it; a line may show twice, none is lost"
+    blk="{\"decision\":\"block\",\"reason\":\"$warn\"}"
+    flock_stub 71 "No locks available"
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    rm -f "${SOT_COMM_HOME:?}"/state/mail-*.tick "${SOT_COMM_HOME:?}"/state/lock-fault-*.tick
+    ln -sfn "$BIN" "$SOT_COMM_HOME/bin"
+    h="$(faulty 71 idle_hook 'all done.' true 2>&1)"
+    [ -z "$h" ] && ! fault_ticks || { echo "  fired inside a stop-hook continuation: $h"; return 1; }
+    row0="$(peer_row)"
+    h="$(faulty 71 idle_hook $'SITREP: the marker turn\n\nDone.' 2>&1)"
+    [ "$h" = "$blk" ] || { echo "  the marker turn did not block once with the warning: $h"; return 1; }
+    [ "$(peer_row)" = "$row0" ] || { echo "  the blocked marker turn changed the row: $row0 -> $(peer_row)"; return 1; }
+    h="$(faulty 71 idle_hook $'SITREP: the marker turn\n\nDone.' 2>&1)"
+    [ -z "$h" ] && [ "$(peer_row | jq -r '.[1]')" = "the marker turn" ] \
+        || { echo "  the next marker turn end did not pass and stamp: '$h' $(peer_row)"; return 1; }
+    h="$(faulty 71 idle_hook 'SITREP: again' 2>&1)"
+    [ -z "$h" ] || { echo "  fired again for the same fault: $h"; return 1; }
+    h="$(HOOK_SESSION=relaunched faulty 71 idle_hook 2>&1)"
+    [ "$h" = "$blk" ] || { echo "  a session relaunched under the handle was not told: $h"; return 1; }
+    h="$(HOOK_SESSION=relaunched faulty 71 idle_hook 2>&1)"
+    [ -z "$h" ] || { echo "  the relaunched session was told twice: $h"; return 1; }
+    COMM_STATUS_ORIGIN=user peer_status prompt; peer_status blocked "which one?"
+    h="$(faulty 71 idle_hook 'I will wait here.' 2>&1)"
+    printf '%s' "$h" | jq -e --arg w "$warn Your row ends this turn as \`blocked\`" '.decision == "block" and (.reason | startswith($w))' >/dev/null \
+        || { echo "  the missing-marker nudge did not carry the warning first: $h"; return 1; }
+    return 0
+}
+
+# A lasting fault is ONE line in a looping reader's log, not one per tick, and
+# its end is one more. comm-watch runs its ticks on a fast `sleep` stub that
+# ends the fault at the sixth.
+case_a_lasting_fault_is_logged_once_by_a_looping_reader() {
+    local warn n fs="$WORK/fastsleep"
+    warn="WARNING: the inbox lock for @$PEER failed (65: Input/output error) — reading without it; a line may show twice, none is lost"
+    flock_stub 65 "Input/output error"
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    mkdir -p "$fs"; rm -f "${fs:?}/n"
+    printf '#!/bin/sh\nn=$(( $(cat "%s/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "%s/n"\n[ "$n" -ne 6 ] || rm -f "%s/on"\nexec /bin/sleep 0.05\n' \
+        "$fs" "$fs" "$FF" > "$fs/sleep"
+    chmod +x "$fs/sleep"
+    ( cd "$WORK" && PATH="$fs:$FF:$PATH" timeout 2 bash "$BIN/comm-watch.sh" "$PEER" >/dev/null 2>"$WORK/watch.err" )
+    rm -f "${SOT_COMM_HOME:?}/state/$PEER.watch"
+    n="$(cat "$fs/n" 2>/dev/null || echo 0)"
+    [ "$n" -ge 10 ] && [ "$(grep -c -F -x -- "$warn" "$WORK/watch.err")" -eq 1 ] \
+        && [ "$(grep -c -F -x -- "the inbox lock fault for @$PEER has cleared" "$WORK/watch.err")" -eq 1 ] \
+        || { echo "  $n ticks, log: $(cat "$WORK/watch.err")"; return 1; }
+    return 0
+}
 
 # ...and a real held lock is still exit 75 and "being written", no warning.
 case_a_held_lock_is_still_try_again() {
@@ -1092,6 +1194,11 @@ check "the lock wait is chosen by lock kind: nfs4 polls, local and none@ block, 
 
 check "S-A: a shared lock failing 71 is named on the poll's stdout, read unlocked, every line once; the hook blocks once" case_a_lock_error_71_is_named_and_the_inbox_read_unlocked
 check "S-A: a shared lock failing 65 is named on the poll's stdout, read unlocked, every line once; the hook blocks once" case_a_lock_error_65_is_named_and_the_inbox_read_unlocked
+check "S-A: a shared lock failing 65 with EIO is named as flock names it, never as a bad descriptor" case_a_lock_error_65_eio_is_named_as_flock_names_it
+check "S-A: a lock file that will not open is named, read unlocked, every line once; the hook blocks once" case_a_lock_file_that_will_not_open_is_named
+check "flock inside a subshell leaves the shared lock held in the calling shell" case_a_shared_lock_taken_inside_a_subshell_holds_in_the_caller
+check "a lock fault blocks a marker turn once, unstamped, never in a continuation, once per session, and prefixes every nudge" case_a_lock_fault_blocks_a_marker_turn_once_and_prefixes_every_nudge
+check "a lasting fault is one line in a looping reader's log, and its end one more" case_a_lasting_fault_is_logged_once_by_a_looping_reader
 check "S-A: a real held lock is still exit 75 and being written, never a warning" case_a_held_lock_is_still_try_again
 check "S-B: a last line holding a NUL, ending in CR, or empty is shown once and never stepped back over" case_a_nul_a_cr_or_an_empty_last_line_is_shown_once
 

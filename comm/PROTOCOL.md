@@ -205,9 +205,10 @@ the file again, so a slow display never holds off a writer. A timeout means
 try again, never a skip: `comm-poll.sh` says the inbox is being written,
 leaves the cursor and exits 75, the end-of-turn hook prints that the inbox was
 busy and does not block the turn, and a wake reader checks again on its next
-tick. Only a held lock is "try again": any other lock error is named with
-flock's code where the session sees it (comm-poll's output, the end-of-turn
-hook's block) and the read runs unlocked, covered by the hashed cursor. On
+tick. Only a held lock is "try again": any other lock fault, a lock file that
+cannot be opened or any flock error, is named (flock's code and its own error
+text) where the session sees it (comm-poll's output, every block of the
+end-of-turn hook) and the read runs unlocked, covered by the hashed cursor. On
 every host the hashed cursor steps back one line when a cut-back removed the
 last line read. The accepted residual: a reader on a
 mismatched host may deliver a line whose sender was told `FAILED`, so a retry
@@ -268,7 +269,9 @@ message itself: a pasted message is never marked read, so it would show
 again. One line per new batch of mail; one more if it is
 still unread ten minutes later at a free prompt. A busy session needs no
 typing: its end-of-turn check will not let a turn finish while unread mail
-waits. This is the only wake — no per-session watcher, listener, bridge or
+waits. That check reads the inbox before anything else, so a turn that closes
+with a report marker is held too, and its row is stamped only at the turn end
+that passes. This is the only wake — no per-session watcher, listener, bridge or
 Monitor exists.
 
 **Cases.**

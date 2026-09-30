@@ -134,13 +134,14 @@ while true; do
         # The per-handle inbox is counted and read under the shared read lock
         # (comm-lib.sh, sot_inbox_read_lock), so a writer's in-flight line is
         # never counted and then cut back; a busy inbox is checked again at the
-        # next tick, and any other lock error goes to stderr (this watch's log)
-        # and the inbox is read unlocked. Every read is `NR>counted && NR<=c`:
-        # only newline-terminated lines, never a dead writer's partial tail.
+        # next tick, and any other lock fault goes to stderr (this watch's log)
+        # once, not at every tick, and the inbox is read unlocked. Every read
+        # is `NR>counted && NR<=c`: only newline-terminated lines, never a dead
+        # writer's partial tail.
         locked=0
         case "${sources[$i]}" in
             "$INBOX_DIR/"*) sot_inbox_read_lock "$handle" || continue; locked=1
-                [ -z "$SOT_INBOX_READ_WARNING" ] || printf '%s\n' "$SOT_INBOX_READ_WARNING" >&2 ;;
+                sot_inbox_read_warning_log "$handle" ;;
         esac
         c=$(sot_file_lines "${sources[$i]}")
         # File shrank/rotated/recreated — reset to 0 so the next compare re-reads the

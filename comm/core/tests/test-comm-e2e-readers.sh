@@ -306,7 +306,9 @@ done
 
 # A lock the client refused is no longer an exit status: every reader names it
 # in a WARNING line and reads unlocked, so a refusal is caught here or nowhere.
-warned="$(grep -l -F 'WARNING: the inbox lock' "$L"/pollout-*.log "$L"/watch-*.out "$L"/wake-*.err "$L"/hookwarn-*.log 2>/dev/null)"
+# Each reader's own file: comm-wake sends its stderr to its log in the comm
+# home (comm-wake.sh's exec 2>>), never to wake-*.err.
+warned="$(grep -l -F 'WARNING: the inbox lock' "$L"/pollout-*.log "$L"/watch-*.out "$D"/state/comm-wake-*.log "$L"/hookwarn-*.log 2>/dev/null)"
 verdict "3a. no reader named a lock failure (poll, Stop hook, wake, watch)" \
     "$([ -z "$warned" ] || { echo "warned in: $(printf '%s ' $warned)"; grep -h -m1 -F 'WARNING: the inbox lock' $warned | awk 'NR<=3'; })"
 

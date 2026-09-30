@@ -657,6 +657,61 @@ case_marker_artifact_audit_skipped_in_continuation() {
     expect blocked/-/q/-/- state && [ "$(summ)" = "which port?" ]
 }
 
+# ---- the inbox read runs before the closing marker (B1 fix-up 7b) ----
+# A marker turn does not end on unread mail: the read and the mail gate come
+# before the marker branch, so a turn that closes with a marker while directed
+# mail waits blocks with the same "run comm-poll.sh" text, neither stamped from
+# its marker nor floored; the turn end that passes stamps. With no unread mail
+# a marker turn is exactly as before.
+MAIL_BLOCK="{\"decision\":\"block\",\"reason\":\"New sot-comm mail for @$NAME — run comm-poll.sh now, act on it, then end the turn.\"}"
+row_all() { jq -c --arg n "$NAME" '.agents[$n]' "$REGISTRY"; }
+poll_mail() { "$SCRIPTS_DIR/comm-poll.sh" >/dev/null 2>&1; }
+case_marker_turn_with_unread_mail_blocks_unstamped_then_stamps_after_poll() {
+    seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"
+    local before out; before="$(row_all)"
+    out="$(IT $'SITREP: finished the port\n\nThe chain...')"
+    [ "$out" = "$MAIL_BLOCK" ] || { echo "    the marker turn did not block on the mail: '$out'"; return 1; }
+    [ "$(row_all)" = "$before" ] || { echo "    the blocked marker turn changed the row: $before -> $(row_all)"; return 1; }
+    poll_mail || { echo "    comm-poll.sh failed"; return 1; }
+    out="$(IT $'SITREP: finished the port\n\nThe chain...')"
+    [ -z "$out" ] || { echo "    the turn end after the poll still blocked: '$out'"; return 1; }
+    expect done/-/-/-/d state && [ "$(summ)" = "finished the port" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+case_mail_filed_mid_turn_blocks_the_marker_end() {
+    seed idle; _mail_reset; _mail_line "$NAME"; poll_mail
+    W "$GENUINE"; _mail_line "$NAME"
+    local before out; before="$(row_all)"
+    out="$(IT 'SITREP-WAITING: the build')"
+    [ "$out" = "$MAIL_BLOCK" ] && [ "$(row_all)" = "$before" ] || { echo "    '$out' $before -> $(row_all)"; return 1; }
+}
+# Faked Windows ($OS, %LOCALAPPDATA%) for this one Stop: the frontend inbox.
+case_frontend_mail_blocks_a_marker_turn() {
+    seed idle; W "$GENUINE"; _mail_reset
+    local app="$WORK/appdata" before out
+    mkdir -p "$app/sot"; rm -f "${SOT_COMM_HOME:?}/read/$NAME.fe.cursor"
+    jq -nc --arg to "$NAME" '{from:"peer",to:$to,repo:"r",text:"from another box",ts:"t"}' > "$app/sot/fe-inbox.jsonl"
+    before="$(row_all)"
+    out="$(OS=Windows_NT LOCALAPPDATA="$app" IT 'SITREP: done here')"
+    rm -f "${app:?}/sot/fe-inbox.jsonl"
+    [ "$out" = "$MAIL_BLOCK" ] && [ "$(row_all)" = "$before" ] || { echo "    '$out' $before -> $(row_all)"; return 1; }
+}
+case_marker_turn_with_read_mail_is_unchanged() {
+    seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"; poll_mail
+    local out rc=0
+    out="$(IT $'SITREP: nothing waiting\n\nDone.')" || rc=$?
+    [ "$rc" -eq 0 ] && [ -z "$out" ] || { echo "    rc $rc, '$out'"; return 1; }
+    expect done/-/-/-/d state && [ "$(summ)" = "nothing waiting" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+case_marker_audit_block_with_read_mail_is_byte_identical() {
+    seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"; poll_mail
+    local out
+    out="$(PATH="$CLAUDE_STUB_DIR:$PATH" SOT_TEST_CLAUDE_FINDINGS='{"findings":[{"kind":"artifact","message":"badge /tmp/brief2.md"}]}' \
+        ITT "Write:::/tmp/brief2.md" $'SITREP: wrote the second brief\n\nThe plan is in /tmp/brief2.md.')"
+    [ "$out" = '{"decision":"block","reason":"Your closing block names a result that was never surfaced: [artifact] badge /tmp/brief2.md -- badge it now via the show-result skill (show-result <path>), then end the turn. Your row is already stamped from the marker -- do not write a second sitrep block."}' ] \
+        || { echo "    '$out'"; return 1; }
+    expect done/-/-/-/d state && [ "$(summ)" = "wrote the second brief" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+
 # ---- races: the read-decide-write decides against the row as it is UNDER the lock ----
 # Hold the registry lock, start the writer under test (it blocks on the lock;
 # the barrier seam tells us it got there), commit a competing write, release,
@@ -861,6 +916,11 @@ check "a turn that already has its block is never nudged, whatever the block say
 check "a marker naming an unsurfaced result is blocked by the artifact audit" case_marker_artifact_audit_blocks_unsurfaced_result
 check "a marker whose result was read and show-result'd is not blocked" case_marker_artifact_audit_clean_when_shown
 check "the artifact audit does not re-fire in a stop-hook continuation" case_marker_artifact_audit_skipped_in_continuation
+check "a marker turn with unread mail blocks unstamped, and stamps once the mail is polled" case_marker_turn_with_unread_mail_blocks_unstamped_then_stamps_after_poll
+check "mail filed mid-turn blocks that turn's marker end" case_mail_filed_mid_turn_blocks_the_marker_end
+check "a frontend-inbox line for this handle blocks a marker turn too" case_frontend_mail_blocks_a_marker_turn
+check "a marker turn with its mail read prints nothing and stamps as before" case_marker_turn_with_read_mail_is_unchanged
+check "a marker turn's artifact-audit block is byte-identical with its mail read" case_marker_audit_block_with_read_mail_is_byte_identical
 check "race: a done committed while stop waits for the lock is kept" case_race_done_committed_while_stop_waits_is_kept
 check "race: a machine start committed while stop waits ends gray, not blue" case_race_machine_start_while_stop_waits_ends_gray
 check "a failed declaration write exits non-zero and leaves the row untouched" case_failed_declaration_write_exits_nonzero

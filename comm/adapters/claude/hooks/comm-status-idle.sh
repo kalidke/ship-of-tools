@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# comm-status-idle.sh — Claude Code `Stop` hook for comm agents. Four jobs:
+# comm-status-idle.sh — Claude Code `Stop` hook for comm agents. Four jobs,
+# numbered by topic. They RUN in this order: the inbox read and (2)'s mail
+# block, then a lock fault's once-block, on EVERY turn, a marker turn
+# included; then (0); then (1) and the other nudges; then (3). While an inbox
+# lock fault lasts, every block carries its warning first.
 #
 #   (0) CLOSING MARKER (2026-09-09). A turn whose last reply opens a line with
 #       `SITREP:` / `SITREP-QUESTION:` / `SITREP-WAITING:` has DECLARED its
 #       end state (done / blocked / waiting) and written the report that state
 #       demands (sitrep skill). The hook stamps that state EXPLICITLY, with the
 #       rest of the marker line as the nav-row summary, so the chat and the
-#       row come from one line and cannot disagree. A marker ends the hook: no
-#       floor, no nudge, no auditor. Conversely, a HUMAN turn that ends with an
-#       explicit blocked / waiting / done row and NO marker gets one nudge
-#       naming the shape it owes (a machine wake never does — a relay ack on a
-#       parked row is not a report). See sot-comm references/work-state.md.
+#       row come from one line and cannot disagree. Once the inbox check has
+#       let the turn end, a marker ends the hook: no nudge, no auditor.
+#       Unread mail blocks a marker turn first, unstamped, and the turn end
+#       that finally passes stamps from its marker. Conversely, a HUMAN turn
+#       that ends with an explicit blocked / waiting / done row and NO marker
+#       gets one nudge naming the shape it owes (a machine wake never does — a
+#       relay ack on a parked row is not a report). See sot-comm references/work-state.md.
 #       Two refinements (2026-09-10, owner: "sessions are not strictly
 #       following the sitrep rules" + "don't need that formal thing during a
 #       back and forth"): (a) a HUMAN turn that was an EFFORT — many tool
@@ -85,6 +91,13 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # and neither `question` nor `waiting` is set, then clears `floor` — a fact
 # already set (by the marker, or an earlier declaration) survives untouched.
 turn_floor() { [ -x "$STATUS" ] && "$STATUS" stop >/dev/null 2>&1 || true; }
+# Every `decision: "block"` this hook prints goes through here: while an inbox
+# lock fault lasts, its warning ($lock_warn, read below) prefixes the reason.
+# With no fault the JSON passes through byte for byte. The warning never
+# begins with `/`, so --arg is safe from MSYS2's argv conversion.
+emit_block() {
+    if [ -z "${lock_warn:-}" ]; then cat; else jq -c --arg w "$lock_warn" '.reason = $w + " " + .reason'; fi
+}
 
 # Stop-hook input (JSON on stdin): {stop_hook_active, transcript_path, ...}.
 input="$(cat 2>/dev/null || true)"
@@ -186,49 +199,17 @@ if [ -n "$last_text" ]; then
                 if ($0 ~ /[^[:space:]]/) { print; exit } ; found=1 }')"
     fi
 fi
-if [ -n "$marker_state" ]; then
-    # Explicit: the marker IS the model's report. `waiting` sets the fact;
-    # every other marker clears it (comm-status.sh's declaration reduction).
-    [ -x "$STATUS" ] && "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || true
-    # Every Stop still ends with `stop` (ADR 0044 amendment): it clears
-    # `floor` and sets `done` only when floor was user AND neither `question`
-    # nor `waiting` is set — the fact the marker just set survives untouched.
-    turn_floor
-
-    # ARTIFACT AUDIT EXCEPTION (2026-09-14): the row is already stamped from
-    # the marker above -- this only catches a result the closing block named
-    # (or produced) but never badged into the nav pane. Loop guard first: a
-    # stop-hook continuation never gets a second nudge.
-    [ "$(jqget '.stop_hook_active // false')" = "true" ] && exit 0
-    AUDITOR="$SELF_DIR/comm-turn-auditor.sh"
-    if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
-        findings="$(SOT_AUDITOR_CHECKS=artifact "$AUDITOR" "$NAME" "$tp" 2>/dev/null)"; arc=$?
-        if [ "$arc" -eq 0 ] && [ -n "$findings" ]; then
-            # Same MSYS2 argv-conversion guard as the general auditor path
-            # below: findings is free text and must not reach jq via --arg.
-            _findings_file="$(mktemp "${TMPDIR:-/tmp}/sot-comm-idle-marker-findings.XXXXXX" 2>/dev/null)"
-            if [ -n "$_findings_file" ] && printf '%s' "$findings" > "$_findings_file" 2>/dev/null; then
-                jq -nc --rawfile f "$_findings_file" '{
-                  decision: "block",
-                  reason: ("Your closing block names a result that was never surfaced: " + $f + " -- badge it now via the show-result skill (show-result <path>), then end the turn. Your row is already stamped from the marker -- do not write a second sitrep block.")
-                }'
-                rm -f "${_findings_file:?}"
-                exit 0
-            fi
-            [ -z "${_findings_file:-}" ] || rm -f -- "${_findings_file:?}" 2>/dev/null
-        fi
-    fi
-    exit 0
-fi
-
-# (3) NEW MAIL — delivery to a BUSY session, at the turn boundary (messaging
+# (2) NEW MAIL — delivery to a BUSY session, at the turn boundary (messaging
 # ruling §2, 2026-09-26). The inbox is a file this session can read, so nothing
 # has to reach into it: a turn does not END while directed mail sits unread. The
 # block's reason is fed back to the model, which polls, acts, then ends the
 # turn — and polling is what advances the cursor, so this terminates by
-# construction. It runs BEFORE every nudge below (mail outranks a reminder) and
-# is bounded to one block per pending batch by a tick file keyed like the
-# heartbeat's, so a model that refuses to poll is nudged once, not in a loop.
+# construction. The read runs on EVERY turn, BEFORE the closing marker and
+# every nudge below (mail outranks a report or a reminder): a marker turn with
+# unread mail blocks too, neither stamped from its marker nor floored, and the
+# turn end that finally passes stamps. It is bounded to one block per pending
+# batch by a tick file keyed like the heartbeat's, so a model that refuses to
+# poll is nudged once, not in a loop.
 #
 # What counts as mail: `to` non-empty (a BROADCAST, to == "", never fires this —
 # the same demotion rule the sender and the ping watcher apply), `from` neither
@@ -255,15 +236,22 @@ mail_total=0; mail_pending=0
 # never counted and then cut back. Only newline-terminated lines are counted.
 # A busy inbox does NOT block the turn: behind a frozen writer that would loop
 # forever. The hook says so on stderr and checks again at the next turn end.
-# Any other lock error is not busy: the count comes from an unlocked read, so
-# mail is never hidden behind the fault, and the warning ($lock_warn) is
-# prepended to every mail block while it lasts; with no mail block to carry it,
-# the hook blocks once per fault (handle and code) through its own tick file,
-# which the next clean check removes so a new fault blocks again.
+# Any other lock fault is not busy: the count comes from an unlocked read, so
+# mail is never hidden behind the fault, and the warning ($lock_warn) prefixes
+# every block this hook emits while it lasts (emit_block); with no block to
+# carry it, the hook blocks once per fault through its own tick file, keyed by
+# handle and session so a session relaunched under the handle is told too, and
+# the next clean check removes it so a new fault blocks again.
 # A missing library or any failure yields no mail (fail open).
 FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
+# The session's key for both tick files, which must be STABLE for the
+# session: $PPID is not (every hook run is its own process), so the transcript
+# path — already read above, one file per session — is the fallback before it.
+mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
+[ -n "$mail_key" ] && [ "$mail_key" != "nopane" ] || mail_key="${tp##*/}"
+[ -n "$mail_key" ] || mail_key="$PPID"
 lock_warn=""
-fault_tick="$HOME_DIR/state/lock-fault-$(printf '%s' "$NAME" | tr -c 'A-Za-z0-9._-' '_').tick"
+fault_tick="$HOME_DIR/state/lock-fault-$(printf '%s' "$NAME.$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
 if [ -r "$MAIL_INBOX" ]; then
     mail_out="$( ( . "$FE_LIB" >/dev/null 2>&1 || exit 0
         sot_inbox_read_lock "$NAME" || { echo busy; exit 0; }
@@ -325,13 +313,7 @@ if [ -n "$FE_MAIL_INBOX" ] && [ -r "$FE_MAIL_INBOX" ]; then
 fi
 
 if [ "$((mail_pending + fe_pending))" -gt 0 ]; then
-    # ONE block per pending batch, bounded by a tick file whose key must be
-    # STABLE for the session: $PPID is not (every hook run is its own
-    # process), so the transcript path — already read above, one file per
-    # session — is the fallback before it.
-    mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
-    [ -n "$mail_key" ] && [ "$mail_key" != "nopane" ] || mail_key="${tp##*/}"
-    [ -n "$mail_key" ] || mail_key="$PPID"
+    # ONE block per pending batch, bounded by a tick file keyed by session.
     mail_tick="$HOME_DIR/state/mail-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
     # The mark names BOTH totals: keyed on the per-handle count alone, frontend
     # mail arriving while that file stood still would be suppressed as a batch
@@ -347,22 +329,60 @@ if [ "$((mail_pending + fe_pending))" -gt 0 ]; then
         # announcement is acceptable; an inescapable block is not.
         if printf '%s' "$mail_mark" 2>/dev/null > "$mail_tick"; then
             [ -z "$lock_warn" ] || printf '%s' "$lock_warn" 2>/dev/null > "$fault_tick" || true
-            jq -nc --arg n "$NAME" --arg w "$lock_warn" '{
+            jq -nc --arg n "$NAME" '{
               decision: "block",
-              reason: ((if $w == "" then "" else $w + " " end) + "New sot-comm mail for @" + $n + " — run comm-poll.sh now, act on it, then end the turn.")
-            }'
+              reason: ("New sot-comm mail for @" + $n + " — run comm-poll.sh now, act on it, then end the turn.")
+            }' | emit_block
             exit 0
         fi
     fi
 fi
 # A lock fault with no mail block to carry it: ONE block per fault, failing
-# open like the mail tick when the tick cannot be recorded.
-if [ -n "$lock_warn" ] && [ "$(cat "$fault_tick" 2>/dev/null || true)" != "$lock_warn" ]; then
+# open like the mail tick when the tick cannot be recorded. Never inside a
+# stop-hook continuation: the fault waits for the next turn end, as a nudge
+# does (the loop guard below).
+if [ -n "$lock_warn" ] && [ "$(jqget '.stop_hook_active // false')" != "true" ] \
+    && [ "$(cat "$fault_tick" 2>/dev/null || true)" != "$lock_warn" ]; then
     mkdir -p "$HOME_DIR/state" 2>/dev/null || true
     if printf '%s' "$lock_warn" 2>/dev/null > "$fault_tick"; then
         jq -nc --arg w "$lock_warn" '{decision: "block", reason: $w}'
         exit 0
     fi
+fi
+
+if [ -n "$marker_state" ]; then
+    # Explicit: the marker IS the model's report. `waiting` sets the fact;
+    # every other marker clears it (comm-status.sh's declaration reduction).
+    [ -x "$STATUS" ] && "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || true
+    # Every Stop still ends with `stop` (ADR 0044 amendment): it clears
+    # `floor` and sets `done` only when floor was user AND neither `question`
+    # nor `waiting` is set — the fact the marker just set survives untouched.
+    turn_floor
+
+    # ARTIFACT AUDIT EXCEPTION (2026-09-14): the row is already stamped from
+    # the marker above -- this only catches a result the closing block named
+    # (or produced) but never badged into the nav pane. Loop guard first: a
+    # stop-hook continuation never gets a second nudge.
+    [ "$(jqget '.stop_hook_active // false')" = "true" ] && exit 0
+    AUDITOR="$SELF_DIR/comm-turn-auditor.sh"
+    if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
+        findings="$(SOT_AUDITOR_CHECKS=artifact "$AUDITOR" "$NAME" "$tp" 2>/dev/null)"; arc=$?
+        if [ "$arc" -eq 0 ] && [ -n "$findings" ]; then
+            # Same MSYS2 argv-conversion guard as the general auditor path
+            # below: findings is free text and must not reach jq via --arg.
+            _findings_file="$(mktemp "${TMPDIR:-/tmp}/sot-comm-idle-marker-findings.XXXXXX" 2>/dev/null)"
+            if [ -n "$_findings_file" ] && printf '%s' "$findings" > "$_findings_file" 2>/dev/null; then
+                jq -nc --rawfile f "$_findings_file" '{
+                  decision: "block",
+                  reason: ("Your closing block names a result that was never surfaced: " + $f + " -- badge it now via the show-result skill (show-result <path>), then end the turn. Your row is already stamped from the marker -- do not write a second sitrep block.")
+                }' | emit_block
+                rm -f "${_findings_file:?}"
+                exit 0
+            fi
+            [ -z "${_findings_file:-}" ] || rm -f -- "${_findings_file:?}" 2>/dev/null
+        fi
+    fi
+    exit 0
 fi
 
 # Loop guard: if we are ALREADY in a stop-hook continuation, never re-nudge —
@@ -417,7 +437,7 @@ case "$parked" in
             jq -nc --arg s "$parked" --arg o "$owed" '{
               decision: "block",
               reason: ("Your row ends this turn as `" + $s + "` but the reply carries no closing marker. Write the closing block now, as the last thing in your reply, opening with the marker line:  " + $o + ".  The Stop hook stamps the row from that line (the rest of the marker line is the nav summary). If the state is wrong, run comm-status.sh with the right one and still close with the matching marker.")
-            }'
+            }' | emit_block
             exit 0
         fi
         turn_floor; exit 0 ;;
@@ -432,7 +452,7 @@ if [ "$origin" = user ] && { [ "$turn_tools" -ge "$EFFORT_TOOLS" ] || [ "$turn_s
     jq -nc --arg n "$turn_tools" --arg m "$((turn_secs / 60))" '{
       decision: "block",
       reason: ("This turn ran " + $n + " tool calls over " + $m + " min and ends with no closing marker. IF it CLOSED a work effort (a result landed, a fix shipped, a diagnosis was reached, a decision point arrived), close with the sitrep block now, as the last thing in your reply: a line  SITREP: <one-line headline>  then the chain (issue in context, diagnosis, design, result with its scale, interpretation, plan) in plain words -- no hashes, paths, names, backticks or bullets. IF this turn was a step in a live back-and-forth with the user, end normally: no block is owed. This will not fire again this turn.")
-    }'
+    }' | emit_block
     exit 0
 fi
 
@@ -462,7 +482,7 @@ if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
                 jq -nc --rawfile f "$_findings_file" '{
                   decision: "block",
                   reason: ("Turn-end audit: " + $f + " -- IF a finding is real, act on it now AND clearly RESTATE it for the user: blocked -> restate the exact question you are awaiting (one standalone sentence, as BOTH the comm-status summary and the final line of your reply); waiting -> state plainly what is being monitored and what completion looks like (same two places); artifact -> badge it via the show-result skill. IF a finding is wrong (rhetorical question, artifact already shown, job already done), just end the turn normally. This audit will not re-fire for the same situation.")
-                }'
+                }' | emit_block
                 rm -f "${_findings_file:?}"
             else
                 # Temp file failed -- degrade rather than risk a corrupted
@@ -482,7 +502,7 @@ if printf '%s' "$last_text" | grep -q '?'; then
     jq -nc '{
       decision: "block",
       reason: "Reminder: your last reply contains a question mark, and a plain-text question (not the AskUserQuestion tool) fires no automatic frontend signal. IF you are ending this turn AWAITING THE USER on a blocking question, run  ~/.sot-comm/bin/comm-status.sh blocked \"<the question>\"  now so your row shows red on the frontend. IF the question(s) were rhetorical or already answered, just end the turn normally — this nudge will not fire again this turn."
-    }'
+    }' | emit_block
     exit 0
 fi
 
