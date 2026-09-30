@@ -17,16 +17,18 @@
 //! startup, and every writer — a script, or a daemon at each filing — appends
 //! locally only when it computes the same name for the inbox by the same
 //! rule; a script sends anything else to a daemon, a guest daemon forwards it
-//! to the hub, and the hub refuses it with the recovery named.
+//! to the hub, and the hub refuses it with the recovery named. An unknown lock
+//! is named `none@<machine-id>`, so it binds the folder to the one machine
+//! that wrote the record: that machine's processes share its one kernel lock,
+//! and every other machine computes a different name.
 //!
 //! std and serde only, so `tests/comm_file.rs` can include this file by path
 //! and drive the real filer from outside a binary-only crate.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
-#[cfg(any(target_os = "linux", test))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// The one knob, read under the same name as the script arm's.
@@ -143,13 +145,63 @@ pub const LOCK_RECORD: &str = "inbox-lock-manager";
 #[cfg(any(target_os = "linux", test))]
 const LOCAL_FS: [&str; 7] = ["ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs"];
 
-/// Write `<comm_home>/inbox-lock-manager` (a temp file, then a rename): line
-/// 1 the lock manager `id` appends to `<comm_home>/inbox` go through, line 2
-/// the host that wrote it. Only the folder's hub calls this.
-pub fn write_lock_record(comm_home: &Path, id: &str, self_host: &str) -> std::io::Result<()> {
-    let tmp = comm_home.join(format!(".{LOCK_RECORD}.{}", std::process::id()));
-    std::fs::write(&tmp, format!("{id}\n{self_host}\n"))?;
-    std::fs::rename(&tmp, comm_home.join(LOCK_RECORD))
+/// The record's text: line 1 the lock manager `id` appends to
+/// `<comm_home>/inbox` go through, line 2 the writer's machine id — no line 2
+/// when it has none, an unknown writer.
+fn record_text(id: &str, mid: Option<&str>) -> String {
+    mid.map_or_else(|| format!("{id}\n"), |m| format!("{id}\n{m}\n"))
+}
+
+/// The full record in a temp file beside it, fsynced. Each call its own name
+/// (machine, pid, sequence), so two racing daemons never share one.
+fn record_temp(comm_home: &Path, id: &str, mid: Option<&str>) -> std::io::Result<PathBuf> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = comm_home.join(format!(".{LOCK_RECORD}.{}.{}.{n}", mid.unwrap_or("none"), std::process::id()));
+    let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    if let Err(e) = f.write_all(record_text(id, mid).as_bytes()).and_then(|()| f.sync_all()) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(tmp)
+}
+
+/// The exclusive create: of two daemons starting at once only one makes the
+/// record. A hard link of the finished temp file, so the record never exists
+/// half-written; `Ok(false)` when another writer's already stood there. On
+/// NFS a link can report an error though it succeeded (a retried request), so
+/// a temp file with two links is this call's record. The temp file goes
+/// either way.
+pub fn create_lock_record(comm_home: &Path, id: &str, mid: Option<&str>) -> std::io::Result<bool> {
+    let tmp = record_temp(comm_home, id, mid)?;
+    let made = match std::fs::hard_link(&tmp, comm_home.join(LOCK_RECORD)) {
+        Ok(()) => Ok(true),
+        Err(_) if links(&tmp) == Some(2) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    };
+    let _ = std::fs::remove_file(&tmp);
+    made
+}
+
+/// A file's link count, where the OS reports one.
+fn links(p: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    return std::fs::metadata(p).ok().map(|m| std::os::unix::fs::MetadataExt::nlink(&m));
+    #[cfg(not(unix))]
+    {
+        let _ = p;
+        None
+    }
+}
+
+/// The only overwrite (a temp file, then a rename): the hub over a record its
+/// own machine wrote for another lock manager — itself, before a remount.
+fn replace_lock_record(comm_home: &Path, id: &str, mid: Option<&str>) -> std::io::Result<()> {
+    let tmp = record_temp(comm_home, id, mid)?;
+    std::fs::rename(&tmp, comm_home.join(LOCK_RECORD)).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 /// Who a daemon is to its comm folder, evaluated at each use.
@@ -212,7 +264,7 @@ fn windows_volume_fixed(dir: &Path) -> Option<(bool, String)> {
     Some((kind == DRIVE_FIXED, canonical))
 }
 
-/// The record's two lines: the lock manager, and the host that wrote it —
+/// The record's two lines: the lock manager, and the machine that wrote it —
 /// `None` when there is no second line, an unknown writer that is never "mine".
 pub fn parse_record(text: &str) -> (&str, Option<&str>) {
     let mut lines = text.lines();
@@ -223,30 +275,37 @@ pub fn parse_record(text: &str) -> (&str, Option<&str>) {
 /// What the hub does with the record when it starts.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AtStart {
-    Write,
+    /// Absent: made by the exclusive create.
+    Create,
+    /// Line 1 already names this daemon's lock manager; nothing is written.
+    Current,
+    /// This machine wrote it for another lock manager (the hub after a
+    /// remount): replaced.
+    Replace,
     /// Left untouched, and why.
     Keep(String),
 }
 
-/// The start-time decision: only the hub writes, and it replaces a record
-/// only when this host wrote it (the hub after a remount) or it names this
-/// hub's own known lock manager; a `none` record another host wrote is kept. A guest never writes or deletes it.
-pub fn at_start(role: Role, own: &str, record: Option<&str>, self_host: &str, path: &Path) -> AtStart {
+/// Line 2 names this machine — never when either side has no machine id.
+fn written_here(writer: Option<&str>, own_mid: Option<&str>) -> bool {
+    writer.is_some() && writer == own_mid
+}
+
+/// The start-time decision from this daemon's lock manager `own` and machine
+/// id `own_mid`: only the hub writes, a record another machine wrote is a
+/// different lock manager and is kept, and a guest never writes or deletes it.
+pub fn at_start(role: Role, own: &str, own_mid: Option<&str>, record: Option<&str>, path: &Path) -> AtStart {
     if role == Role::Guest {
         return AtStart::Keep(format!(
             "{path}: this daemon is a guest on its folder's hub, which alone writes the inbox lock record",
             path = path.display()
         ));
     }
-    let Some((id, writer)) = record.map(parse_record) else {
-        return AtStart::Write;
-    };
-    if (id == own && own != "none") || writer == Some(self_host) {
-        AtStart::Write
-    } else if id == "none" && own == "none" {
-        AtStart::Keep(refusal::unknown_lock_taken(writer, path))
-    } else {
-        AtStart::Keep(refusal::foreign(id, writer, own, path))
+    match record.map(parse_record) {
+        None => AtStart::Create,
+        Some((id, _)) if id == own => AtStart::Current,
+        Some((_, writer)) if written_here(writer, own_mid) => AtStart::Replace,
+        Some((id, writer)) => AtStart::Keep(refusal::foreign(id, writer, own, path)),
     }
 }
 
@@ -261,23 +320,29 @@ pub enum Route {
     Refuse(String),
 }
 
-/// The route for one filing, from this daemon's own lock manager `own`
-/// (recomputed per filing) and the record. A `none` record is safe only for
-/// the hub that wrote it: no script appends locally under `none` and guests
-/// forward, so that hub is the folder's only writer.
-pub fn route(role: Role, own: &str, record: Option<&str>, forwarded: bool, self_host: &str, path: &Path) -> Route {
+/// The route for one filing, from this daemon's own lock manager `own` and
+/// machine id `own_mid` (recomputed per filing) and the record: local only
+/// when line 1 is `own` and `own` is not bare `none`. A `none@<machine>`
+/// record carries its one machine in line 1 itself, so only that machine's
+/// writers ever match it.
+pub fn route(
+    role: Role,
+    own: &str,
+    own_mid: Option<&str>,
+    record: Option<&str>,
+    forwarded: bool,
+    self_host: &str,
+    path: &Path,
+) -> Route {
     let rec = record.map(parse_record);
-    if rec.is_some_and(|(id, writer)| {
-        id == own && (own != "none" || (role == Role::Hub && writer == Some(self_host)))
-    }) {
+    if own != "none" && rec.is_some_and(|(id, _)| id == own) {
         return Route::Local;
     }
     match (role, rec) {
         (Role::Guest, _) if forwarded => Route::Refuse(refusal::forwarded_to_guest(self_host)),
         (Role::Guest, _) => Route::Forward,
         (Role::Hub, None) => Route::Refuse(refusal::no_record(path)),
-        (Role::Hub, Some(("none", writer))) if own == "none" => Route::Refuse(refusal::unknown_lock_taken(writer, path)),
-        (Role::Hub, Some((id, writer))) if writer == Some(self_host) => Route::Refuse(refusal::remounted(own, id)),
+        (Role::Hub, Some((id, writer))) if written_here(writer, own_mid) => Route::Refuse(refusal::remounted(own, id)),
         (Role::Hub, Some((id, writer))) => Route::Refuse(refusal::foreign(id, writer, own, path)),
     }
 }
@@ -298,16 +363,8 @@ pub mod refusal {
 
     pub fn foreign(rec: &str, writer: Option<&str>, own: &str, path: &Path) -> String {
         format!(
-            "the inbox lock record says {rec} (written by {}), not this hub's {own}: stop every daemon on this comm folder, delete {}, then start the hub",
-            writer.unwrap_or("an unknown host"),
-            path.display()
-        )
-    }
-
-    pub fn unknown_lock_taken(writer: Option<&str>, path: &Path) -> String {
-        format!(
-            "the inbox lock record says none, written by {}: an unknown lock is safe for one writer only; stop every daemon on this comm folder, delete {}, then start the hub",
-            writer.unwrap_or("an unknown host"),
+            "the inbox lock record names {rec}, written by {}, a different lock manager from this hub's {own}: stop every daemon on this comm folder, delete {}, then start the hub",
+            writer.map_or_else(|| "an unknown machine".to_string(), |w| format!("machine {w}")),
             path.display()
         )
     }
@@ -325,44 +382,110 @@ pub mod refusal {
     }
 }
 
-/// The hub's start step: create `inbox/` (its lock manager is computed for
-/// `inbox/`, as the scripts compute it), then decide and write. Returns the
-/// role, this daemon's lock manager and what it did.
-pub fn record_at_start(comm_home: &Path, topology_hub: bool, self_host: &str) -> std::io::Result<(Role, String, AtStart)> {
-    std::fs::create_dir_all(comm_home.join("inbox"))?;
-    let own = lock_identity(&comm_home.join("inbox"));
+/// The hub's start step over this daemon's lock manager `own` for `inbox/`
+/// and its machine id `own_mid` (the caller computes both, after creating
+/// `inbox/`): decide, then create or replace. A lost create race re-reads the
+/// winner's record and decides over it. Returns the role and what it did.
+pub fn record_at_start(
+    comm_home: &Path,
+    topology_hub: bool,
+    own: &str,
+    own_mid: Option<&str>,
+) -> std::io::Result<(Role, AtStart)> {
     // The hub when the topology says so (or names none) or the folder is on this box's own disk.
-    let role = if topology_hub || own_disk(&comm_home.join("inbox"), &own) { Role::Hub } else { Role::Guest };
+    let role = if topology_hub || own_disk(&comm_home.join("inbox"), own) { Role::Hub } else { Role::Guest };
     let path = comm_home.join(LOCK_RECORD);
     let record = std::fs::read_to_string(&path).ok();
-    let decision = at_start(role, &own, record.as_deref(), self_host, &path);
-    if decision == AtStart::Write {
-        write_lock_record(comm_home, &own, self_host)?;
+    let mut decision = at_start(role, own, own_mid, record.as_deref(), &path);
+    if decision == AtStart::Create && !create_lock_record(comm_home, own, own_mid)? {
+        decision = at_start(role, own, own_mid, Some(&std::fs::read_to_string(&path)?), &path);
     }
-    Ok((role, own, decision))
+    if decision == AtStart::Replace {
+        replace_lock_record(comm_home, own, own_mid)?;
+    }
+    Ok((role, decision))
+}
+
+/// This machine's id: the record's line 2 and the `@` of `none@…`. Linux
+/// `/etc/machine-id`; macOS `gethostuuid(2)`; Windows the registry's
+/// `MachineGuid`; any other OS, or any error, none. Never a hostname, which
+/// two machines can share.
+pub fn machine_id() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    let id = std::fs::read_to_string("/etc/machine-id").ok().map(|m| m.trim().to_string());
+    #[cfg(target_os = "macos")]
+    let id = macos_host_uuid();
+    #[cfg(windows)]
+    let id = windows_machine_guid();
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    let id: Option<String> = None;
+    id.filter(|m| !m.is_empty())
+}
+
+/// `gethostuuid(2)`, waiting at most a second.
+#[cfg(target_os = "macos")]
+fn macos_host_uuid() -> Option<String> {
+    let mut b = [0u8; 16];
+    let wait = libc::timespec { tv_sec: 1, tv_nsec: 0 };
+    // SAFETY: `b` is the 16-byte `uuid_t` the call fills.
+    (unsafe { libc::gethostuuid(b.as_mut_ptr(), &wait) } == 0).then(|| uuid_text(&b))
+}
+
+/// A UUID's 16 bytes as its canonical text, uppercase and hyphenated.
+#[cfg(any(target_os = "macos", test))]
+fn uuid_text(b: &[u8; 16]) -> String {
+    let hex: String = b.iter().map(|x| format!("{x:02X}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..])
+}
+
+/// `HKLM\SOFTWARE\Microsoft\Cryptography`'s `MachineGuid`, from the 64-bit view.
+#[cfg(windows)]
+fn windows_machine_guid() -> Option<String> {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY};
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let (key, value) = (wide(r"SOFTWARE\Microsoft\Cryptography"), wide("MachineGuid"));
+    let mut buf = [0u16; 64];
+    let mut bytes = std::mem::size_of_val(&buf) as u32;
+    // SAFETY: `key` and `value` are nul-terminated, and `buf` holds `bytes` bytes.
+    let err = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    let units = buf.get(..bytes as usize / 2).filter(|_| err == 0)?;
+    String::from_utf16(units).ok().map(|s| s.trim_end_matches('\0').to_string())
 }
 
 /// The lock manager an append to `dir` goes through: `nfs4 <source>` (an NFS
-/// v4 mount with `local_lock=none`), `local <machine-id>`, or `none` — every non-Linux platform, and anything
-/// whose lock is not provably one manager's. `comm-lib.sh`'s
+/// v4 mount with `local_lock=none`), `local <machine-id>`, or, for anything
+/// whose lock is not provably one manager's — every non-Linux platform
+/// included — `none@<machine-id>`, this machine's own lock alone (bare `none`
+/// with no machine id, which never matches). `comm-lib.sh`'s
 /// `sot_inbox_lock_identity` computes the same string with `findmnt -T`.
 pub fn lock_identity(dir: &Path) -> String {
+    let mid = machine_id().unwrap_or_default();
     #[cfg(target_os = "linux")]
     {
-        let (Ok(path), Ok(mountinfo)) = (
+        if let (Ok(path), Ok(mountinfo)) = (
             std::fs::canonicalize(dir),
             std::fs::read_to_string("/proc/self/mountinfo"),
-        ) else {
-            return "none".into();
-        };
-        let machine_id = std::fs::read_to_string("/etc/machine-id").unwrap_or_default();
-        identity_from(&mountinfo, &path, machine_id.trim())
+        ) {
+            return identity_from(&mountinfo, &path, &mid);
+        }
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = dir;
-        "none".into()
-    }
+    let _ = dir;
+    unknown_lock(&mid)
+}
+
+/// An unknown lock is its one machine's: `none@<machine-id>`, or bare `none`.
+fn unknown_lock(machine_id: &str) -> String {
+    if machine_id.is_empty() { "none".into() } else { format!("none@{machine_id}") }
 }
 
 /// `lock_identity` over mountinfo text, for a canonical `path`. The mount is
@@ -400,7 +523,7 @@ pub fn identity_from(mountinfo: &str, path: &Path, machine_id: &str) -> String {
         Some((_, fstype, _, _)) if LOCAL_FS.contains(&fstype.as_str()) && !machine_id.is_empty() => {
             format!("local {machine_id}")
         }
-        _ => "none".into(),
+        _ => unknown_lock(machine_id),
     }
 }
 
@@ -524,90 +647,155 @@ mod tests {
 
     // B1 — the start-time decision, every row.
     #[test]
-    fn only_the_hub_writes_the_record_and_only_over_its_own() {
+    fn only_the_hub_writes_the_record_and_only_over_its_own_machines() {
         let p = Path::new("/c/inbox-lock-manager");
-        let at = |role, own, rec: Option<&str>| at_start(role, own, rec, "hub-a", p);
-        assert_eq!(at(Role::Hub, "nfs4 A:/x", None), AtStart::Write);
-        assert_eq!(at(Role::Hub, "nfs4 A:/x", Some("nfs4 A:/x\nhub-b\n")), AtStart::Write);
-        assert_eq!(at(Role::Hub, "nfs4 A:/x", Some("nfs4 A:/x\n")), AtStart::Write);
-        assert_eq!(at(Role::Hub, "nfs4 A:/x", Some("none\nhub-a\n")), AtStart::Write);
-        for rec in ["none\nhub-b\n", "none\n", "none"] {
+        let at = |role, own, rec: Option<&str>| at_start(role, own, Some("m1"), rec, p);
+        assert_eq!(at(Role::Hub, "nfs4 A:/x", None), AtStart::Create);
+        assert_eq!(at(Role::Hub, "nfs4 A:/x", Some("nfs4 A:/x\nm2\n")), AtStart::Current);
+        assert_eq!(at(Role::Hub, "nfs4 A:/x", Some("nfs4 A:/x\n")), AtStart::Current);
+        assert_eq!(at(Role::Hub, "none@m1", Some("none@m1\nm1\n")), AtStart::Current);
+        assert_eq!(at(Role::Hub, "nfs4 A:/x", Some("none@m1\nm1\n")), AtStart::Replace);
+        assert_eq!(at(Role::Hub, "none@m1", Some("nfs4 A:/x\nm1\n")), AtStart::Replace);
+        for rec in ["none@m2\nm2\n", "nfs4 B:/y\nm2\n", "none@m1\n", "none"] {
             let AtStart::Keep(why) = at(Role::Hub, "nfs4 A:/x", Some(rec)) else { panic!("{rec:?} overwritten") };
             assert!(why.contains("stop every daemon on this comm folder, delete /c/inbox-lock-manager"), "{why}");
         }
+        // No machine id is never "written here", not even over a record with no line 2.
+        assert!(matches!(at_start(Role::Hub, "none", None, Some("nfs4 A:/x\n"), p), AtStart::Keep(_)));
         assert!(matches!(at(Role::Guest, "nfs4 A:/x", None), AtStart::Keep(_)));
-        assert!(matches!(at(Role::Guest, "nfs4 A:/x", Some("nfs4 B:/y\nguest-b\n")), AtStart::Keep(_)));
+        assert!(matches!(at(Role::Guest, "nfs4 A:/x", Some("nfs4 B:/y\nm1\n")), AtStart::Keep(_)));
     }
 
     // B1 — the route for one filing, every row.
     #[test]
     fn the_route_is_local_only_on_a_proven_shared_lock() {
         let p = Path::new("/c/inbox-lock-manager");
-        let r = |role, own, rec: Option<&str>, fwd| route(role, own, rec, fwd, "hub-a", p);
+        let r = |role, own, rec: Option<&str>, fwd| route(role, own, Some("m1"), rec, fwd, "hub-a", p);
         let refused = |x: Route, frag: &str| match x {
             Route::Refuse(t) => assert!(t.contains(frag), "{t}"),
             other => panic!("{other:?}, want a refusal naming {frag:?}"),
         };
-        assert_eq!(r(Role::Hub, "none", Some("none\nhub-a\n"), false), Route::Local);
-        assert_eq!(r(Role::Hub, "nfs4 A:/x", Some("nfs4 A:/x\nhub-b\n"), true), Route::Local);
-        assert_eq!(r(Role::Guest, "nfs4 A:/x", Some("nfs4 A:/x\nhub-a\n"), false), Route::Local);
-        assert_eq!(r(Role::Guest, "none", Some("none\nhub-a\n"), false), Route::Forward);
-        assert_eq!(r(Role::Guest, "nfs4 A:/x", Some("nfs4 B:/y\nhub-a\n"), false), Route::Forward);
+        assert_eq!(r(Role::Hub, "nfs4 A:/x", Some("nfs4 A:/x\nm2\n"), true), Route::Local);
+        assert_eq!(r(Role::Guest, "nfs4 A:/x", Some("nfs4 A:/x\nm2\n"), false), Route::Local);
+        assert_eq!(r(Role::Guest, "nfs4 A:/x", Some("nfs4 B:/y\nm2\n"), false), Route::Forward);
         assert_eq!(r(Role::Guest, "nfs4 A:/x", None, false), Route::Forward);
         refused(r(Role::Guest, "nfs4 A:/x", None, true), "is not its folder's hub (hub-a)");
-        refused(r(Role::Guest, "none", Some("none\n"), true), "is not its folder's hub");
+        refused(r(Role::Guest, "none@m1", Some("none@m2\nm2\n"), true), "is not its folder's hub");
         refused(r(Role::Hub, "nfs4 A:/x", None, false), "no inbox lock record at /c/inbox-lock-manager: restart");
         refused(
-            r(Role::Hub, "nfs4 A:/x", Some("nfs4 B:/y\nhub-a\n"), false),
+            r(Role::Hub, "nfs4 A:/x", Some("nfs4 B:/y\nm1\n"), false),
             "is now nfs4 A:/x but its record says nfs4 B:/y: restart this daemon",
         );
-        refused(r(Role::Hub, "nfs4 A:/x", Some("nfs4 B:/y\nhub-b\n"), false), "(written by hub-b)");
-        refused(r(Role::Hub, "nfs4 A:/x", Some("nfs4 B:/y\n"), true), "(written by an unknown host)");
+        refused(r(Role::Hub, "nfs4 A:/x", Some("nfs4 B:/y\nm2\n"), false), "written by machine m2, a different lock manager");
+        refused(r(Role::Hub, "nfs4 A:/x", Some("nfs4 B:/y\n"), true), "written by an unknown machine");
         refused(r(Role::Hub, "nfs4 A:/x", Some("nfs4 B:/y"), false), "stop every daemon on this comm folder");
     }
 
-    // X2 — an unknown lock has at most one writer: the host that wrote the
-    // `none` record files under it; another hub, or a record with no writer,
-    // is refused and kept.
+    // An unknown lock binds the folder to one machine: a `none@m1` record is
+    // local from m1 alone; from m2 a guest forwards and a hub refuses it as
+    // another lock manager; bare `none` never matches, not even itself.
     #[test]
-    fn a_none_record_is_filed_under_only_by_the_host_that_wrote_it() {
+    fn a_none_record_is_filed_under_only_on_the_machine_that_wrote_it() {
         let p = Path::new("/c/inbox-lock-manager");
-        let rec = "none\nhub-a\n";
-        assert_eq!(route(Role::Hub, "none", Some(rec), false, "hub-a", p), Route::Local);
-        assert_eq!(at_start(Role::Hub, "none", Some(rec), "hub-a", p), AtStart::Write);
-        for (rec, who) in [(rec, "hub-a"), ("none\n", "hub-a")] {
-            let host = if rec == "none\n" { who } else { "hub-b" };
-            let Route::Refuse(t) = route(Role::Hub, "none", Some(rec), false, host, p) else { panic!("{rec:?} routed") };
-            assert!(t.contains("an unknown lock is safe for one writer only"), "{t}");
-            assert!(t.contains("delete /c/inbox-lock-manager, then start the hub"), "{t}");
-            let AtStart::Keep(why) = at_start(Role::Hub, "none", Some(rec), host, p) else { panic!("{rec:?} taken") };
-            assert!(why.contains("safe for one writer only"), "{why}");
+        let rec = Some("none@m1\nm1\n");
+        let from = |role, own, mid| route(role, own, Some(mid), rec, false, "h", p);
+        assert_eq!(from(Role::Hub, "none@m1", "m1"), Route::Local);
+        assert_eq!(from(Role::Guest, "none@m1", "m1"), Route::Local);
+        assert_eq!(from(Role::Guest, "none@m2", "m2"), Route::Forward);
+        let Route::Refuse(t) = from(Role::Hub, "none@m2", "m2") else { panic!("filed from m2") };
+        assert!(t.contains("names none@m1, written by machine m1, a different lock manager from this hub's none@m2"), "{t}");
+        assert!(t.contains("delete /c/inbox-lock-manager, then start the hub"), "{t}");
+        for (role, rec) in [(Role::Hub, "none\n"), (Role::Hub, "none"), (Role::Guest, "none\n")] {
+            assert_ne!(route(role, "none", None, Some(rec), false, "h", p), Route::Local, "{rec:?}");
         }
-        assert_eq!(at_start(Role::Hub, "none", None, "hub-a", p), AtStart::Write);
-        assert_eq!(route(Role::Hub, "none", Some("none\nhub-a\n"), false, "hub-a", p), Route::Local);
-        assert_eq!(route(Role::Guest, "none", Some(rec), false, "hub-b", p), Route::Forward);
+        assert!(matches!(at_start(Role::Hub, "none@m2", Some("m2"), rec, p), AtStart::Keep(_)));
+        assert_eq!(at_start(Role::Hub, "nfs4 A:/x", Some("m1"), rec, p), AtStart::Replace);
     }
 
-    // B1 — the stale record at start, on real files: another writer's is
-    // left byte-identical, this host's own stale one is rewritten, and an
-    // absent one is written.
+    // B1 — the start step on real files: an absent record is created with the
+    // machine id on line 2 and no temp file left; a current one is left alone,
+    // another machine's is left byte-identical, and this machine's stale one
+    // is replaced.
     #[test]
-    fn the_start_step_keeps_another_writers_record_and_rewrites_its_own() {
+    fn the_start_step_keeps_another_machines_record_and_replaces_its_own() {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join(LOCK_RECORD);
-        let (role, own, did) = record_at_start(d.path(), true, "hub-a").unwrap();
-        assert_eq!((role, &did), (Role::Hub, &AtStart::Write));
-        assert!(d.path().join("inbox").is_dir(), "inbox/ is created before its lock manager is named");
-        assert_eq!(std::fs::read_to_string(&rec).unwrap(), format!("{own}\nhub-a\n"));
+        let start = |own: &str| record_at_start(d.path(), true, own, Some("m1")).unwrap();
+        let only_the_record = || assert_eq!(names(d.path()), [LOCK_RECORD], "a temp file was left");
+        assert_eq!(start("none@m1"), (Role::Hub, AtStart::Create));
+        assert_eq!(std::fs::read_to_string(&rec).unwrap(), "none@m1\nm1\n");
+        only_the_record();
+        assert_eq!(start("none@m1").1, AtStart::Current);
 
-        std::fs::write(&rec, "nfs4 B:/y\nhub-b\n").unwrap();
-        let (_, _, did) = record_at_start(d.path(), true, "hub-a").unwrap();
-        assert!(matches!(did, AtStart::Keep(_)), "{did:?}");
-        assert_eq!(std::fs::read_to_string(&rec).unwrap(), "nfs4 B:/y\nhub-b\n");
+        std::fs::write(&rec, "nfs4 B:/y\nm2\n").unwrap();
+        assert!(matches!(start("none@m1").1, AtStart::Keep(_)));
+        assert_eq!(std::fs::read_to_string(&rec).unwrap(), "nfs4 B:/y\nm2\n");
 
-        std::fs::write(&rec, "nfs4 B:/y\nhub-a\n").unwrap();
-        assert_eq!(record_at_start(d.path(), true, "hub-a").unwrap().2, AtStart::Write);
-        assert_eq!(std::fs::read_to_string(&rec).unwrap(), format!("{own}\nhub-a\n"));
+        std::fs::write(&rec, "nfs4 B:/y\nm1\n").unwrap();
+        assert_eq!(start("none@m1").1, AtStart::Replace);
+        assert_eq!(std::fs::read_to_string(&rec).unwrap(), "none@m1\nm1\n");
+        only_the_record();
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect()
+    }
+
+    /// Two hub-less daemons' start steps on one fresh folder, released
+    /// together: what each did and the one record left.
+    fn race(ids: [(&'static str, &'static str); 2]) -> (tempfile::TempDir, Vec<AtStart>, String) {
+        let d = tempfile::tempdir().unwrap();
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let runs: Vec<_> = ids
+            .into_iter()
+            .map(|(own, mid)| {
+                let (home, gate) = (d.path().to_path_buf(), gate.clone());
+                std::thread::spawn(move || {
+                    gate.wait();
+                    record_at_start(&home, true, own, Some(mid)).unwrap().1
+                })
+            })
+            .collect();
+        let did = runs.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(names(d.path()), [LOCK_RECORD], "one record and no temp file");
+        let text = std::fs::read_to_string(d.path().join(LOCK_RECORD)).unwrap();
+        (d, did, text)
+    }
+
+    // Two hub-less daemons started together: exactly one writes the record,
+    // it is the winner's, and the loser's filing is refused with the recovery
+    // named. On one shared `nfs4` lock manager both file.
+    #[test]
+    fn two_daemons_started_together_leave_one_record() {
+        for _ in 0..50 {
+            let ids = [("none@m1", "m1"), ("none@m2", "m2")];
+            let (d, did, text) = race(ids);
+            let w = did.iter().position(|x| *x == AtStart::Create).expect("one daemon created it");
+            assert!(matches!(did[1 - w], AtStart::Keep(_)), "{did:?}");
+            let ((own_w, mid_w), (own_l, mid_l)) = (ids[w], ids[1 - w]);
+            assert_eq!(text, format!("{own_w}\n{mid_w}\n"));
+            let path = d.path().join(LOCK_RECORD);
+            assert_eq!(route(Role::Hub, own_w, Some(mid_w), Some(&text), false, "h", &path), Route::Local);
+            let Route::Refuse(t) = route(Role::Hub, own_l, Some(mid_l), Some(&text), false, "h", &path) else {
+                panic!("the loser filed")
+            };
+            assert!(t.contains(&format!("delete {}, then start the hub", path.display())), "{t}");
+
+            let ids = [("nfs4 A:/x", "m1"), ("nfs4 A:/x", "m2")];
+            let (d, did, text) = race(ids);
+            let created = did.iter().filter(|x| **x == AtStart::Create).count();
+            assert!(created == 1 && did.contains(&AtStart::Current), "{did:?}");
+            let path = d.path().join(LOCK_RECORD);
+            for (own, mid) in ids {
+                assert_eq!(route(Role::Hub, own, Some(mid), Some(&text), false, "h", &path), Route::Local);
+            }
+        }
+    }
+
+    #[test]
+    fn a_host_uuid_is_its_canonical_uppercase_text() {
+        let b = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef];
+        assert_eq!(uuid_text(&b), "01234567-89AB-CDEF-0123-456789ABCDEF");
     }
 
     fn fixtures() -> PathBuf {
@@ -633,7 +821,8 @@ mod tests {
     }
 
     // The prefix walk, which `findmnt -F` cannot be asked about: the longest
-    // mount point by whole components, and no machine id is no identity.
+    // mount point by whole components; an unknown lock is its machine's, and
+    // with no machine id it is bare `none`.
     #[test]
     fn identity_from_takes_the_longest_whole_component_prefix() {
         let text = std::fs::read_to_string(fixtures().join("nfs4-home.mountinfo")).unwrap();
@@ -641,6 +830,10 @@ mod tests {
         assert_eq!(at("/fixture-home/u/.sot-comm/inbox", "m"), "nfs4 filer.example:/export/home");
         assert_eq!(at("/fixture-homework/inbox", "m"), "local m");
         assert_eq!(at("/fixture-homework/inbox", ""), "none");
-        assert_eq!(identity_from("", Path::new("/x"), "m"), "none");
+        assert_eq!(identity_from("", Path::new("/x"), "m"), "none@m");
+        assert_eq!(identity_from("", Path::new("/x"), ""), "none");
+        let v3 = std::fs::read_to_string(fixtures().join("nfs3-home.mountinfo")).unwrap();
+        assert_eq!(identity_from(&v3, Path::new("/fixture-home"), "m"), "none@m");
+        assert_eq!(identity_from(&v3, Path::new("/fixture-home"), ""), "none");
     }
 }

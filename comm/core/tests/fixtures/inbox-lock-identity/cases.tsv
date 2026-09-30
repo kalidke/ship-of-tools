@@ -4,9 +4,9 @@
 # Each path is a mount point: `findmnt -F` finds a fixture's mount only by
 # exact target, so the prefix walk is asserted in Rust alone.
 nfs4-home.mountinfo	/fixture-home	nfs4 filer.example:/export/home
-nfs3-home.mountinfo	/fixture-home	none
+nfs3-home.mountinfo	/fixture-home	none@0123456789abcdef0123456789abcdef
 ext4-home.mountinfo	/fixture-home	local 0123456789abcdef0123456789abcdef
-fuse-home.mountinfo	/fixture-home	none
+fuse-home.mountinfo	/fixture-home	none@0123456789abcdef0123456789abcdef
 stacked.mountinfo	/fixture-home	nfs4 filer.example:/export/home
 escaped-space.mountinfo	/fixture home	nfs4 filer.example:/export/team home
-nfs4-local-lock-flock.mountinfo	/fixture-home	none
+nfs4-local-lock-flock.mountinfo	/fixture-home	none@0123456789abcdef0123456789abcdef

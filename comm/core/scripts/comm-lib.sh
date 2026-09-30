@@ -589,21 +589,27 @@ registry_touch() {  # name — bump last_seen if present
 # locally only when flock(1) and perl exist, this is Linux, and the identity it
 # computes for $INBOX_DIR is byte-equal to line 1 of
 # `$COMM_HOME/inbox-lock-manager`, which only the folder's hub writes, at
-# startup (line 2 names the host that wrote it). Anything else — no record, a
-# `none` record, NFSv3, an NFS v4 mount whose `local_lock` is not `none`, an unknown mount, another host mounting the daemon's
-# local disk — hands the frame to the daemon that owns this comm folder as
-# `comm.file`, and a daemon that does not answer is FAILED. A daemon makes the
-# same check at each filing: a guest on the hub's folder forwards what it
-# cannot prove to the hub, and the hub refuses it with the recovery named.
+# startup, by an exclusive create (line 2 is the writing machine's id). On
+# NFSv3 or an unknown mount the identity is `none@<machine-id>`: the folder is
+# bound to the one machine that wrote the record, whose processes share its
+# one kernel lock, and every other machine computes a different string.
+# Anything else — no record, a bare `none` record, another machine's
+# `none@…` (NFSv3, an unknown mount, an NFS v4 mount whose `local_lock` is not
+# `none`), another host mounting the daemon's local disk — hands the frame to
+# the daemon that owns this comm folder as `comm.file`, and a daemon that does
+# not answer is FAILED. A daemon makes the same check at each filing: a guest
+# on the hub's folder forwards what it cannot prove to the hub, and the hub
+# refuses it with the recovery named.
 SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-10}"
 _sot_have_flock() { command -v flock >/dev/null 2>&1; }
 _sot_findmnt() { findmnt "$@"; }
 _sot_machine_id() { local m=""; { read -r m < /etc/machine-id; } 2>/dev/null; printf '%s' "$m"; }
 # sot_inbox_lock_identity DIR — the lock manager an append to DIR goes
 # through, by the rule comm_inbox.rs's record uses: `nfs4 <source>`,
-# `local <machine-id>` on a local block filesystem, else `none` — so an NFS v4
-# mount without `local_lock=none` (its lock stays on the client) goes to the
-# wire. The last
+# `local <machine-id>` on a local block filesystem, else `none@<machine-id>`,
+# this machine's lock alone (bare `none` with no machine id, which never
+# matches) — so an NFS v4 mount without `local_lock=none` (its lock stays on
+# the client) is local only on the machine that wrote the record. The last
 # line of `findmnt -T` is the mount on top when one is stacked over another.
 sot_inbox_lock_identity() {  # DIR
     local fs="" opts="" src="" mid
@@ -618,11 +624,13 @@ sot_inbox_lock_identity() {  # DIR
             mid="$(_sot_machine_id)"
             [ -z "$mid" ] || { printf 'local %s\n' "$mid"; return 0; } ;;
     esac
+    mid="$(_sot_machine_id)"
+    [ -z "$mid" ] || { printf 'none@%s\n' "$mid"; return 0; }
     printf 'none\n'
 }
 # 0 when this script takes the same lock manager as every other writer of
-# the inbox (the record's line 1); a missing, empty or `none` record never
-# matches.
+# the inbox (the record's line 1); a missing, empty or bare `none` record
+# never matches.
 _sot_inbox_lock_is_ours() {
     local rec="" id
     _sot_have_flock && command -v perl >/dev/null 2>&1 && [ "$(uname -s 2>/dev/null)" = Linux ] || return 1

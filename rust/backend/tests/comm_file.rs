@@ -18,7 +18,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use comm_inbox::{file_frame, inbox_lock_wait, lock_identity, record_at_start, write_lock_record, AtStart, Role};
+use comm_inbox::{
+    create_lock_record, file_frame, inbox_lock_wait, lock_identity, machine_id, record_at_start, route, AtStart, Role, Route,
+    LOCK_RECORD,
+};
 
 fn comm_lib() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../comm/core/scripts/comm-lib.sh")
@@ -105,7 +108,7 @@ fn the_filer_and_the_script_take_the_same_lock() {
     let d = inbox_home();
     let inbox = d.path().join("inbox");
     let id = lock_identity(&inbox);
-    write_lock_record(d.path(), &id, "hub-a").unwrap();
+    assert!(create_lock_record(d.path(), &id, machine_id().as_deref()).unwrap());
     assert_ne!(id, "none", "this test needs a folder whose lock manager is provable");
     let script = {
         let home = d.path().to_path_buf();
@@ -259,9 +262,50 @@ fn t11_rust_appends_200() {
 #[test]
 #[ignore = "driven by test-inbox-lock-twohost.sh"]
 fn t11_write_lock_record() {
-    let (role, id, did) = record_at_start(env_dir().parent().unwrap(), true, "t11-hub").unwrap();
-    assert_eq!((role, did), (Role::Hub, AtStart::Write));
+    std::fs::create_dir_all(env_dir()).unwrap();
+    let id = lock_identity(&env_dir());
+    let (role, did) = record_at_start(env_dir().parent().unwrap(), true, &id, machine_id().as_deref()).unwrap();
+    assert_eq!((role, did), (Role::Hub, AtStart::Create));
     println!("record {id}");
+}
+
+// The one-host case (test-inbox-lock-onehost.sh), the daemon's shape: four
+// filer threads in ONE process on the machine the record binds, 50 long lines
+// each, once its route says this machine files locally.
+#[test]
+#[ignore = "driven by test-inbox-lock-onehost.sh"]
+fn onehost_four_filer_threads() {
+    let inbox = env_dir();
+    let home = inbox.parent().unwrap().to_path_buf();
+    let record = std::fs::read_to_string(home.join(LOCK_RECORD)).ok();
+    let own = lock_identity(&inbox);
+    let r = route(Role::Hub, &own, machine_id().as_deref(), record.as_deref(), false, "onehost", &home.join(LOCK_RECORD));
+    println!("route {own}: {r:?}");
+    assert_eq!(r, Route::Local);
+    let t0 = Instant::now();
+    while !inbox.join("go").exists() {
+        assert!(t0.elapsed() < Duration::from_secs(120), "no go from the driver");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let pad = "x".repeat(2048);
+    let threads: Vec<_> = (0..4)
+        .map(|t| {
+            let (inbox, pad) = (inbox.clone(), pad.clone());
+            std::thread::spawn(move || {
+                for i in 0..50 {
+                    let key = format!("rust{t}-{i}");
+                    match file_frame(&inbox, &format!("rust{t}"), "t1h", false, &format!("{key} {pad}"), "t", inbox_lock_wait()) {
+                        Ok(()) => println!("filed {key}"),
+                        Err(e) => println!("FAILED {key}: {e}"),
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
 }
 
 // T11 (b), (c) — one send, its verdict and how long it took.

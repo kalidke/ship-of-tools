@@ -230,15 +230,18 @@ async fn topology_set_writes_the_real_file_and_broadcasts_over_the_real_wire() {
     let (mut watcher, _wid) = connect_and_hello(&env.socket_path, "watcher", "hub-a").await;
 
     // 0031 B1: a booted hub names its inbox lock manager in its comm home,
-    // and itself as the record's writer.
+    // and its machine's id as the record's writer.
     let text = lock_record(&env).await;
     let lines: Vec<&str> = text.lines().collect();
+    let mid = lines.get(1).copied().unwrap_or("");
     assert!(
         lines.len() == 2
-            && (lines[0] == "none" || lines[0].starts_with("nfs4 ") || lines[0].starts_with("local "))
-            && lines[1] == "hub-a",
-        "inbox-lock-manager is not an `nfs4 …`, `local …` or `none` line then this host: {text:?}"
+            && !mid.is_empty()
+            && (lines[0].starts_with("nfs4 ") || lines[0] == format!("local {mid}") || lines[0] == format!("none@{mid}")),
+        "inbox-lock-manager is not an `nfs4 …`, `local <machine-id>` or `none@<machine-id>` line then that machine id: {text:?}"
     );
+    #[cfg(target_os = "linux")]
+    assert_eq!(mid, std::fs::read_to_string("/etc/machine-id").unwrap().trim(), "line 2 is this machine's id");
 
     let edit = serde_json::json!({"edit": {"kind": "add_host", "name": "gamma", "daemon": true}});
     let res = call(&mut editor, eid, op::TOPOLOGY_SET, edit).await;

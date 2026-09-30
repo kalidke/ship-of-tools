@@ -5635,6 +5635,7 @@ pub async fn handle_comm_file(
                 crate::comm_inbox::Role::Guest
             },
             own,
+            machine_id: crate::comm_inbox::machine_id(),
             self_host: self_host.clone(),
         };
         let forward = |fwd: &CommFileReq| {
@@ -5704,6 +5705,8 @@ struct Filer {
     role: crate::comm_inbox::Role,
     /// This daemon's own lock manager for `inbox/`.
     own: String,
+    /// This machine's id, which a record's line 2 names when it wrote it.
+    machine_id: Option<String>,
     self_host: String,
 }
 
@@ -5738,7 +5741,8 @@ fn comm_file_verdict(
     let record_path = home.join(crate::comm_inbox::LOCK_RECORD);
     let record = std::fs::read_to_string(&record_path).ok();
     use crate::comm_inbox::Route;
-    match crate::comm_inbox::route(filer.role, &filer.own, record.as_deref(), req.forwarded, &filer.self_host, &record_path) {
+    let (own, mid) = (filer.own.as_str(), filer.machine_id.as_deref());
+    match crate::comm_inbox::route(filer.role, own, mid, record.as_deref(), req.forwarded, &filer.self_host, &record_path) {
         Route::Local => {}
         Route::Forward => {
             let answer = forward(&CommFileReq { forwarded: true, ..req.clone() }).map_err(|e| ("file_failed".to_string(), e))?;
@@ -5807,7 +5811,7 @@ mod comm_file_tests {
 
     type Verdict = std::result::Result<(), (String, String)>;
 
-    /// A folder whose record names `local m`, written by `hub-a`.
+    /// A folder whose record names `local m`, written by machine `m`.
     fn home() -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join("inbox")).unwrap();
@@ -5817,12 +5821,12 @@ mod comm_file_tests {
             "hostless": {"host": "", "last_seen": iso8601_utc_from_secs(NOW - 5)},
         }});
         std::fs::write(d.path().join("registry.json"), reg.to_string()).unwrap();
-        std::fs::write(d.path().join("inbox-lock-manager"), "local m\nhub-a\n").unwrap();
+        std::fs::write(d.path().join("inbox-lock-manager"), "local m\nm\n").unwrap();
         d
     }
 
     fn filer(role: crate::comm_inbox::Role, own: &str) -> Filer {
-        Filer { role, own: own.into(), self_host: "hub-a".into() }
+        Filer { role, own: own.into(), machine_id: Some("m".into()), self_host: "hub-a".into() }
     }
 
     fn no_forward(_: &CommFileReq) -> std::result::Result<serde_json::Value, String> {
@@ -5921,9 +5925,9 @@ mod comm_file_tests {
         let inbox = d.path().join("inbox/fresh.jsonl");
         std::fs::write(&inbox, "{\"msg\":\"before\"}\n").unwrap();
         for (record, fragment) in [
-            ("nfs4 B:/y\nhub-a\n", "restart this daemon to re-record it after the remount"),
-            ("nfs4 B:/y\nhub-b\n", "(written by hub-b), not this hub's local m: stop every daemon"),
-            ("nfs4 B:/y\n", "(written by an unknown host)"),
+            ("nfs4 B:/y\nm\n", "restart this daemon to re-record it after the remount"),
+            ("nfs4 B:/y\nm-b\n", "written by machine m-b, a different lock manager from this hub's local m: stop every daemon"),
+            ("nfs4 B:/y\n", "written by an unknown machine"),
         ] {
             std::fs::write(d.path().join("inbox-lock-manager"), record).unwrap();
             let (code, error) = file(Some(d.path()), "fresh", true).unwrap_err();
@@ -5942,7 +5946,12 @@ mod comm_file_tests {
     #[test]
     fn a_guest_with_a_mismatch_forwards_and_returns_the_hubs_answer() {
         let d = home();
-        let guest = Filer { role: crate::comm_inbox::Role::Guest, own: "nfs4 A:/x".into(), self_host: "guest-b".into() };
+        let guest = Filer {
+            role: crate::comm_inbox::Role::Guest,
+            own: "nfs4 A:/x".into(),
+            machine_id: Some("m-b".into()),
+            self_host: "guest-b".into(),
+        };
         let forward_with = |answer: std::result::Result<serde_json::Value, String>| {
             let sent = std::cell::RefCell::new(None);
             let v = comm_file_verdict(

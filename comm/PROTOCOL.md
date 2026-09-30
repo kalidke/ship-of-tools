@@ -119,8 +119,14 @@ lists the receiver:
    lock excludes only writers that share one lock manager, so the folder's
    hub records its own in `inbox-lock-manager`, beside `registry.json`, when
    it starts. Line 1 is the manager: `nfs4 <server>:<export>` (an NFS v4
-   mount with `local_lock=none`), `local <machine-id>` or `none`; line 2 is
-   the host that wrote it, and every comparison reads line 1 only. The hub is
+   mount with `local_lock=none`), `local <machine-id>`, or, on NFSv3 or any
+   other mount whose lock is unknown, `none@<machine-id>` — that one
+   machine's own lock, so the record binds the folder to the machine that
+   wrote it (bare `none`, with no machine id, never matches). A non-Linux
+   daemon is `none@<its machine id>` on every mount. Line 2 is the writing
+   machine's id (Linux `/etc/machine-id`, macOS its host UUID, Windows
+   `MachineGuid`; never a hostname, which two machines can share); a record
+   without it has an unknown writer. Every route compares line 1 only. The hub is
    the daemon with no topology, the topology's hub (an unreadable
    `hosts.toml` names no hub, so that daemon is a guest unless its folder is
    on its own disk), or a daemon whose comm
@@ -128,24 +134,30 @@ lists the receiver:
    <machine-id>`; macOS: its mount is `MNT_LOCAL`; Windows: a fixed drive, not a
    UNC path; anything else, or an error: not own disk); every
    other daemon is a guest on the hub's folder and never writes or deletes
-   the record. The hub writes it when it is absent, when line 1 already
-   names the hub's own manager (never `none`), or when line 2 names the hub
-   (a remount); any other record, including a `none` one another host wrote
-   or one with no writer line, it leaves untouched and logs as an error. A script
+   the record. The hub makes it by an exclusive create when it is absent
+   (of two daemons starting at once only one writes it; the other reads the
+   winner's), leaves it alone when line 1 already names the hub's own
+   manager, and replaces it only when line 2 is the hub's own machine id
+   (the hub after a remount). A record another machine wrote names a
+   different lock manager: the hub leaves it untouched and logs it as an
+   error, and only an explicit reset with no other daemon running replaces
+   it. A v3 hub writes `none@<its machine>` and serves other hosts over the
+   wire. A script
    adds the line itself only when `flock(1)` and `perl` exist (perl makes
    the append, its fsync and its cut-back on one descriptor), the box is Linux, and
-   `findmnt -T` on the inbox names that same manager. Anything else (an NFSv3
-   mount, an NFS v4 mount whose `local_lock` is not `none`, an unknown mount, another box mounting the daemon's local disk, no
-   record, no `flock(1)` or `perl`) hands the line to the daemon that owns the comm folder as
+   `findmnt -T` on the inbox names that same manager — under a `none@…`
+   record, only a script on the record's own machine. Anything else (another
+   machine's `none@…`, a mismatched export, another box mounting the daemon's local disk, no
+   record, a bare `none`, no `flock(1)` or `perl`) hands the line to the daemon that owns the comm folder as
    `comm.file`: this box's own daemon, else the relay endpoint (the hub). A
    daemon that does not answer is `FAILED` and no second route is tried; one
    older than the record answers `unknown op: comm.file`. Every daemon
    rechecks its own manager against line 1 at each filing: a match appends
-   (a `none` match only at the hub that wrote the record); a guest forwards anything else to the
+   (never on bare `none`); a guest forwards anything else to the
    hub, once, marked `forwarded`, and answers with the hub's own verdict;
    the hub refuses it as `file_failed` with the recovery named — restart
-   the hub when it wrote the record itself, else stop every daemon on the
-   folder, delete the record and start the hub.
+   the hub when its own machine wrote the record (a remount), else stop
+   every daemon on the folder, delete the record and start the hub.
 2. It cannot: `comm-relay.sh send @h` (which `comm-send.sh` execs on a
    registry miss) writes ONE `comm.file` request to the relay endpoint, the
    hub, and reads ONE answer. The hub files for its own home: when its comm

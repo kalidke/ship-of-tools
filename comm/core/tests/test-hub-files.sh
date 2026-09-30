@@ -8,11 +8,12 @@
 #      the next send files with nothing to time out; a FROZEN holder makes the
 #      next send wait its bound and then report FAILED, never `filed`, and when
 #      the holder resumes the inbox has no torn line.
-#   3. A script appends locally only when flock(1) exists, this is Linux, and
-#      its lock identity for the inbox equals the daemon's record; NFSv3, an
-#      unknown mount, a mismatched export, a host mounting the daemon's local
-#      disk, no record, a `none` record, no flock(1) and no perl all go to the
-#      wire —
+#   3. A script appends locally only when flock(1) and perl exist, this is
+#      Linux, and its lock identity for the inbox equals the daemon's record;
+#      NFSv3 or an unknown mount is `none@<machine-id>`, local only against a
+#      record this machine wrote. Another machine's `none@…`, a mismatched
+#      export, a host mounting the daemon's local disk, no record, a bare
+#      `none` record, no flock(1) and no perl all go to the wire —
 #      the fake daemon gets exactly one `comm.file` and the inbox is unchanged.
 #      The wire is this box's own daemon, else the relay endpoint, and one that
 #      does not answer is FAILED with no second route tried.
@@ -269,12 +270,26 @@ case_a_shared_nfs4_lock_manager_appends_locally() {
     return 0
 }
 
-# The hub's record is two lines, its lock manager then its writer; a script
-# compares line 1 only.
+# The hub's record is two lines, its lock manager then its writer's machine id;
+# a script compares line 1 only.
 case_a_two_line_record_whose_line_1_matches_appends_locally() {
     local out rc
     fresh_route
-    out="$(route_append "nfs4 rw,vers=4.2,local_lock=none A:/x" "nfs4 A:/x"$'\n'"hub-a" unix:/own ssh:hub "$OK_ANSWER")"; rc=$?
+    out="$(route_append "nfs4 rw,vers=4.2,local_lock=none A:/x" "nfs4 A:/x"$'\n'"m-a" unix:/own ssh:hub "$OK_ANSWER")"; rc=$?
+    [ "$rc" -eq 0 ] || { echo "  rc $rc ($out)"; return 1; }
+    [ "$(wire_count)" -eq 0 ] || { echo "  went to the wire"; return 1; }
+    [ "$(wc -l < "$INBOX/t-peer.jsonl")" -eq 2 ] || { echo "  not appended locally"; return 1; }
+    return 0
+}
+
+# An unknown lock binds the folder to the machine that wrote the record: on
+# NFSv3, a record naming this machine's own `none@<machine-id>` appends
+# locally under its one kernel lock (another machine's goes to the wire, below).
+case_a_v3_record_naming_this_machine_appends_locally() {
+    local out rc
+    fresh_route
+    out="$(route_append "nfs rw,vers=3 A:/x" "none@0123456789abcdef0123456789abcdef"$'\n'"0123456789abcdef0123456789abcdef" \
+        unix:/own ssh:hub "$OK_ANSWER")"; rc=$?
     [ "$rc" -eq 0 ] || { echo "  rc $rc ($out)"; return 1; }
     [ "$(wire_count)" -eq 0 ] || { echo "  went to the wire"; return 1; }
     [ "$(wc -l < "$INBOX/t-peer.jsonl")" -eq 2 ] || { echo "  not appended locally"; return 1; }
@@ -294,6 +309,8 @@ case_anything_unproven_goes_to_the_wire() {
         [ "$(cat "$INBOX/t-peer.jsonl")" = '{"msg":"before"}' ] || { echo "  [$mnt|$rec|$flock] appended locally"; return 1; }
     done <<'CASES'
 nfs rw,vers=3 A:/x|nfs4 A:/x|1
+nfs rw,vers=3 A:/x|none@fedcba9876543210fedcba9876543210|1
+nfs rw,vers=3 A:/x|none|1
 |nfs4 A:/x|1
 nfs4 rw,vers=4.2,local_lock=none B:/x|nfs4 A:/x|1
 nfs4 rw,vers=4.2,local_lock=none hub.example:/home|local 0123456789abcdef0123456789abcdef|1
@@ -371,6 +388,13 @@ case_the_lock_identity_matches_the_shared_fixtures() {
         n=$((n + 1))
     done < "$fx/cases.tsv"
     [ "$n" -eq 7 ] || { echo "  $n fixtures, want 7"; return 1; }
+    # With no machine id an unknown lock is bare `none`, which never matches.
+    got="$(MI="$fx/nfs3-home.mountinfo" bash -c '
+        source "$1"
+        _sot_findmnt() { command findmnt -F "$MI" "$@"; }
+        _sot_machine_id() { :; }
+        sot_inbox_lock_identity /fixture-home' _ "$SCRIPTS_DIR/comm-lib.sh")"
+    [ "$got" = none ] || { echo "  v3 with no machine id: got [$got], want [none]"; return 1; }
     return 0
 }
 
@@ -585,7 +609,8 @@ check "S2: a write cut short by the file-size limit is FAILED and leaves the fil
 check "S-a: a NUL-filled tail is ended before the new line" case_a_nul_tail_is_ended_before_the_new_line
 check "S4: a directed wire send with no daemon found is FAILED -> @h, exit 1" case_a_wire_send_with_no_daemon_is_failed
 check "T5 (faked Windows): a send is one comm.file frame over the pipe, never a local append" case_a_windows_send_is_one_comm_file_over_the_pipe
-check "v3, unknown, a mismatched export, the hub's disk over NFS, no or a none record, and no flock(1) all go to the wire" case_anything_unproven_goes_to_the_wire
+check "a v3 record naming this machine's own none@<machine-id> appends locally" case_a_v3_record_naming_this_machine_appends_locally
+check "v3 against another machine's record, unknown, a mismatched export, the hub's disk over NFS, no or a bare none record, and no flock(1) all go to the wire" case_anything_unproven_goes_to_the_wire
 check "no perl on the PATH goes to the wire, never a local append" case_no_perl_goes_to_the_wire
 check "the wire is this box's daemon, else the relay; one that does not answer is FAILED with no second route" case_the_wire_is_the_own_daemon_else_the_relay_and_only_one
 check "the wire frame says whether the line was a broadcast copy" case_the_wire_frame_carries_the_broadcast_flag
