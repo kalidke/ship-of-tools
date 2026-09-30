@@ -586,7 +586,7 @@ registry_touch() {  # name — bump last_seen if present
 # A lock excludes only writers that go through ONE lock manager: an NFSv3 and
 # an NFSv4 lock on one export exclude nothing, and a local flock on a disk
 # other hosts mount does not exclude their NFS locks. So a script appends
-# locally only when flock(1) exists, this is Linux, and the identity it
+# locally only when flock(1) and perl exist, this is Linux, and the identity it
 # computes for $INBOX_DIR is byte-equal to line 1 of
 # `$COMM_HOME/inbox-lock-manager`, which only the folder's hub writes, at
 # startup (line 2 names the host that wrote it). Anything else — no record, a
@@ -625,27 +625,36 @@ sot_inbox_lock_identity() {  # DIR
 # matches.
 _sot_inbox_lock_is_ours() {
     local rec="" id
-    _sot_have_flock && [ "$(uname -s 2>/dev/null)" = Linux ] || return 1
+    _sot_have_flock && command -v perl >/dev/null 2>&1 && [ "$(uname -s 2>/dev/null)" = Linux ] || return 1
     { IFS= read -r rec < "$COMM_HOME/inbox-lock-manager"; } 2>/dev/null
     id="$(sot_inbox_lock_identity "$INBOX_DIR")"
     [ -n "$id" ] && [ "$id" != none ] && [ "$id" = "$rec" ]
 }
 # _sot_append_whole FILE LINE — under the caller's lock, LINE goes in whole or
-# not at all: a torn tail (a writer that died mid-line) is ended first so it
-# stays its own line; dd's exit status covers the write, the fsync and the
-# close, so 0 means the bytes are on disk; any failure cuts FILE back to its
-# length before, and the status is dd's.
+# not at all, in ONE perl process on ONE descriptor: the length before is a
+# seek to its end (on NFS the seek asks the server; a path stat can be
+# answered from the attribute cache and cut away a line another host filed),
+# a torn tail (a writer that died mid-line, or NULs after a client crash) is
+# ended first so it stays its own line, 0 means written, fsynced and closed,
+# and any failure cuts FILE back to that length on the same descriptor. LINE
+# goes on stdin, never argv.
 _sot_append_whole() {  # FILE LINE
-    local f="$1" len=0 nl="" rc=0
-    # the length comes from a descriptor opened here, under the lock: a path
-    # stat can be answered from the NFS attribute cache and cut away a line
-    # another host filed
-    : >> "$f" || return 1
-    len="$(wc -c < "$f")" || return 1
-    [ "$len" -gt 0 ] && [ "$(tail -c 1 "$f" | wc -l)" -eq 0 ] && nl=$'\n'
-    printf '%s%s\n' "$nl" "$2" | dd of="$f" oflag=append conv=notrunc,fsync status=none || rc=$?
-    [ "$rc" -eq 0 ] || truncate -s "$len" "$f"
-    return "$rc"
+    printf '%s\n' "$2" | perl -e '
+        use strict; use Fcntl qw(O_RDWR O_APPEND O_CREAT SEEK_SET SEEK_END); use IO::Handle;
+        my $f = shift; my $buf = do { local $/; <STDIN> }; my ($fh, $len);
+        sub fail { my $e = "$!"; truncate($fh, $len) if defined $len; print STDERR "$f: $e\n"; exit 1 }
+        sysopen($fh, $f, O_RDWR | O_APPEND | O_CREAT, 0666) or fail();
+        defined($len = sysseek($fh, 0, SEEK_END)) or fail();
+        $len += 0;   # sysseek says "0 but true" for 0
+        if ($len > 0) {
+            defined sysseek($fh, $len - 1, SEEK_SET) or fail();
+            (sysread($fh, my $last, 1) // fail()) == 1 or fail();
+            $buf = "\n$buf" if $last ne "\n";
+        }
+        for (my $off = 0; $off < length $buf;) { $off += syswrite($fh, $buf, length($buf) - $off, $off) // fail() }
+        $fh->sync or fail();
+        close($fh) or fail();
+    ' "$1"
 }
 sot_inbox_append() {  # HANDLE
     local h="$1" line err rc=0

@@ -11,7 +11,8 @@
 #   3. A script appends locally only when flock(1) exists, this is Linux, and
 #      its lock identity for the inbox equals the daemon's record; NFSv3, an
 #      unknown mount, a mismatched export, a host mounting the daemon's local
-#      disk, no record, a `none` record and no flock(1) all go to the wire —
+#      disk, no record, a `none` record, no flock(1) and no perl all go to the
+#      wire —
 #      the fake daemon gets exactly one `comm.file` and the inbox is unchanged.
 #      The wire is this box's own daemon, else the relay endpoint, and one that
 #      does not answer is FAILED with no second route tried.
@@ -208,8 +209,8 @@ case_a_torn_tail_is_ended_before_the_new_line() {
 }
 
 # S2 — a write the file-size limit cuts off mid-line (`ulimit -f 1` is 1024
-# bytes; the file holds 1000; SIGXFSZ ignored so dd sees EFBIG): FAILED, and
-# the file is byte-identical. The fsync itself is read, not tested.
+# bytes; the file holds 1000; SIGXFSZ ignored so perl's write sees EFBIG):
+# FAILED, and the file is byte-identical. The fsync itself is read, not tested.
 case_a_write_cut_short_leaves_the_file_byte_identical() {
     local out rc=0 f="$INBOX/t-fsize.jsonl" long
     printf '{"msg":"%s"}\n' "$(printf '%0989d' 0)" > "$f"
@@ -220,22 +221,6 @@ case_a_write_cut_short_leaves_the_file_byte_identical() {
     [ "$rc" -eq 1 ] || { echo "  rc $rc, want 1 ($out)"; return 1; }
     contains "$out" "the append failed: " || { echo "  out: $out"; return 1; }
     cmp -s "$f" "$WORK/fsize.before" || { echo "  the file changed: $(wc -c < "$f") bytes"; return 1; }
-    return 0
-}
-
-# X1 — the cut-back length never comes from a path stat (an NFS attribute
-# cache can answer it stale): with a `stat` that always says 0 first on PATH, a
-# failed append still leaves a non-empty inbox byte-identical.
-case_a_stale_stat_cannot_empty_the_inbox() {
-    local out rc=0 f="$INBOX/t-stale.jsonl" long
-    mkdir -p "$WORK/fakestat"
-    printf '#!/bin/sh\necho 0\n' > "$WORK/fakestat/stat"; chmod +x "$WORK/fakestat/stat"
-    printf '{"msg":"%s"}\n' "$(printf '%0989d' 0)" > "$f"
-    cp "$f" "$WORK/stale.before"
-    long="$(printf '%0200d' 0)"
-    out="$( PATH="$WORK/fakestat:$PATH"; ulimit -f 1; trap '' XFSZ; append_one t-stale "{\"from\":\"a\",\"msg\":\"$long\"}" )" || rc=$?
-    [ "$rc" -eq 1 ] || { echo "  rc $rc, want 1 ($out)"; return 1; }
-    cmp -s "$f" "$WORK/stale.before" || { echo "  the file changed: $(wc -c < "$f") bytes"; return 1; }
     return 0
 }
 
@@ -318,6 +303,24 @@ fuse.sshfs rw u@far.example:/x|none|1
 nfs4 rw,vers=4.2,local_lock=none A:/x|nfs4 A:/x|0
 nfs4 rw,vers=4.2,local_lock=flock A:/x|nfs4 A:/x|1
 CASES
+    return 0
+}
+
+# perl makes the append, so a box without it cannot append locally: with
+# flock(1), a matching record and a PATH holding every tool but perl, the
+# send is one comm.file frame and the inbox is unchanged.
+case_no_perl_goes_to_the_wire() {
+    local d out rc
+    mkdir -p "$WORK/noperl"
+    for d in ${PATH//:/ }; do ln -s "$d"/* "$WORK/noperl/" 2>/dev/null; done
+    rm -f "$WORK/noperl"/perl*
+    ! PATH="$WORK/noperl" command -v perl >/dev/null 2>&1 || { echo "  perl is still on the PATH"; return 1; }
+    PATH="$WORK/noperl" command -v flock >/dev/null 2>&1 || { echo "  flock left the PATH"; return 1; }
+    fresh_route
+    out="$(PATH="$WORK/noperl" route_append "nfs4 rw,vers=4.2,local_lock=none A:/x" "nfs4 A:/x" unix:/own ssh:hub "$OK_ANSWER")"; rc=$?
+    [ "$rc" -eq 0 ] || { echo "  rc $rc ($out)"; return 1; }
+    [ "$(wire_count)" -eq 1 ] || { echo "  $(wire_count) wire frames, want 1"; return 1; }
+    [ "$(cat "$INBOX/t-peer.jsonl")" = '{"msg":"before"}' ] || { echo "  appended locally"; return 1; }
     return 0
 }
 
@@ -579,11 +582,11 @@ check "a script whose lock identity equals the record appends locally" case_a_sh
 check "a two-line record whose line 1 matches appends locally" case_a_two_line_record_whose_line_1_matches_appends_locally
 check "S2: a torn tail stays its own line and the new line stays whole" case_a_torn_tail_is_ended_before_the_new_line
 check "S2: a write cut short by the file-size limit is FAILED and leaves the file byte-identical" case_a_write_cut_short_leaves_the_file_byte_identical
-check "X1: a stale path stat cannot empty the inbox on a failed append" case_a_stale_stat_cannot_empty_the_inbox
 check "S-a: a NUL-filled tail is ended before the new line" case_a_nul_tail_is_ended_before_the_new_line
 check "S4: a directed wire send with no daemon found is FAILED -> @h, exit 1" case_a_wire_send_with_no_daemon_is_failed
 check "T5 (faked Windows): a send is one comm.file frame over the pipe, never a local append" case_a_windows_send_is_one_comm_file_over_the_pipe
 check "v3, unknown, a mismatched export, the hub's disk over NFS, no or a none record, and no flock(1) all go to the wire" case_anything_unproven_goes_to_the_wire
+check "no perl on the PATH goes to the wire, never a local append" case_no_perl_goes_to_the_wire
 check "the wire is this box's daemon, else the relay; one that does not answer is FAILED with no second route" case_the_wire_is_the_own_daemon_else_the_relay_and_only_one
 check "the wire frame says whether the line was a broadcast copy" case_the_wire_frame_carries_the_broadcast_flag
 check "the lock identity matches the fixture set the Rust test reads" case_the_lock_identity_matches_the_shared_fixtures

@@ -114,7 +114,8 @@ lists the receiver:
    The inbox is opened inside the lock and closed before it is released.
    "Filed" means kept: the line is flushed to disk before the answer, a torn
    last line is ended first so the new one stays whole, and a failed append
-   is cut back to the length before it. A
+   is cut back to the length before it, taken by a seek to the end of the
+   descriptor opened under the lock, never from a path's cached size. A
    lock excludes only writers that share one lock manager, so the folder's
    hub records its own in `inbox-lock-manager`, beside `registry.json`, when
    it starts. Line 1 is the manager: `nfs4 <server>:<export>` (an NFS v4
@@ -131,10 +132,11 @@ lists the receiver:
    names the hub's own manager (never `none`), or when line 2 names the hub
    (a remount); any other record, including a `none` one another host wrote
    or one with no writer line, it leaves untouched and logs as an error. A script
-   adds the line itself only when `flock(1)` exists, the box is Linux, and
+   adds the line itself only when `flock(1)` and `perl` exist (perl makes
+   the append, its fsync and its cut-back on one descriptor), the box is Linux, and
    `findmnt -T` on the inbox names that same manager. Anything else (an NFSv3
    mount, an NFS v4 mount whose `local_lock` is not `none`, an unknown mount, another box mounting the daemon's local disk, no
-   record) hands the line to the daemon that owns the comm folder as
+   record, no `flock(1)` or `perl`) hands the line to the daemon that owns the comm folder as
    `comm.file`: this box's own daemon, else the relay endpoint (the hub). A
    daemon that does not answer is `FAILED` and no second route is tried; one
    older than the record answers `unknown op: comm.file`. Every daemon

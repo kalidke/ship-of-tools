@@ -112,10 +112,12 @@ pub fn file_frame(
 /// `line` goes in whole or not at all ("filed" means kept): a torn tail (a
 /// writer that died mid-line) is ended first so it stays its own line, the
 /// bytes are flushed to disk on this descriptor before `Ok`, and any error
-/// cuts the file back to its length before.
+/// cuts the file back to its length before. That length is a seek to the end
+/// of this descriptor, opened under the lock — on NFS the seek asks the
+/// server — never a size that an attribute cache can answer stale.
 fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
     let mut f: File = OpenOptions::new().create(true).read(true).append(true).open(path)?;
-    let len = f.metadata()?.len();
+    let len = f.seek(SeekFrom::End(0))?;
     let mut last = [b'\n'];
     if len > 0 {
         f.seek(SeekFrom::Start(len - 1))?;
