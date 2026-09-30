@@ -1023,7 +1023,7 @@ sot_recipient_note() {
 # works on a box with no daemon reachable.
 sot_handle_live() {
     local last_seen age
-    last_seen="$(jq -r --arg n "$1" '.agents[$n].last_seen // empty | if type=="string" then . else empty end' "$REGISTRY" 2>/dev/null)" || return 1
+    last_seen="$(sot_registry_read "$1" | jq -r '.last_seen // empty | if type=="string" then . else empty end' 2>/dev/null)" || return 1
     age="$(_sot_last_seen_age "$last_seen")" || return 1
     [ "$age" -lt "${SOT_COMM_STALE_SECS:-600}" ]
 }

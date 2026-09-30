@@ -232,10 +232,13 @@ case_ensure_home_never_truncates() {
     jq -e --argjson v "$PROTOCOL_VERSION" '.protocol_version == $v and .agents == {}' "$REG" >/dev/null \
         || { echo "  ensure_home on no file wrote '$(cat "$REG" 2>/dev/null)'"; return 1; }
     set -- "$REG".new.*; [ ! -e "$1" ] || { echo "  ensure_home left its tmp: $1"; return 1; }
-    mkdir -p "$WORK/noperl"
-    printf '#!/bin/sh\nexit 1\n' > "$WORK/noperl/perl"; chmod +x "$WORK/noperl/perl"
+    # A perl whose fsync (the -MIO::Handle call) fails and whose every other
+    # call, the link included, is the real perl's: only the fsync gates it.
+    mkdir -p "$WORK/nosync"
+    printf '#!/bin/sh\ncase "$1" in -MIO::Handle) exit 1 ;; esac\nexec %s "$@"\n' "$(command -v perl)" > "$WORK/nosync/perl"
+    chmod +x "$WORK/nosync/perl"
     put_reg MISSING
-    PATH="$WORK/noperl:$PATH" ensure_home
+    PATH="$WORK/nosync:$PATH" ensure_home
     [ ! -e "$REG" ] || { echo "  ensure_home published a skeleton it could not fsync"; return 1; }
     set -- "$REG".new.*; [ ! -e "$1" ] || { echo "  ensure_home left its tmp: $1"; return 1; }
     put_reg MISSING; mkdir "$REG"

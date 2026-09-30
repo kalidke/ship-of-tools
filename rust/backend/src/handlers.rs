@@ -7112,9 +7112,13 @@ fn capsule_comm_handle(workspace_id: &str) -> String {
 /// Read + parse the sot-comm registry, returning the `.agents` object as a
 /// JSON value. Fully defensive: a missing file, unreadable path, or malformed
 /// JSON all yield `None` so `workspace.list` never errors on the registry. The
-/// FE can't read the registry (separate HOME), so we surface it here.
+/// FE can't read the registry (separate HOME), so we surface it here. The
+/// bytes are `read_registry_fresh`'s, whose retry sleeps: call it on a
+/// blocking thread.
 fn read_comm_agents() -> Option<serde_json::Value> {
-    read_comm_agents_at(&comm_registry_path()?)
+    let bytes = read_registry_fresh(&comm_registry_path()?).ok()?;
+    let root: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    root.get("agents").cloned()
 }
 
 /// Write `bytes` to `path` and flush them to the server, so the rename that
@@ -7159,14 +7163,6 @@ fn read_registry_fresh(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
         };
     }
     Err(std::io::Error::other(format!("no good read in 4 tries; the last: {failed}")))
-}
-
-/// `read_comm_agents` for a registry named by path, so `comm.file`'s verdict
-/// can be decided (and tested) against a comm folder it is handed.
-fn read_comm_agents_at(path: &std::path::Path) -> Option<serde_json::Value> {
-    let bytes = std::fs::read(path).ok()?;
-    let root: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    root.get("agents").cloned()
 }
 
 /// Does this sot-comm registry row's `host` field match `host` (case-
@@ -7532,7 +7528,8 @@ pub async fn handle_workspace_list(
     // Read the sot-comm registry once per list call (fresh — picks up the
     // owning agents' latest `comm-status.sh` writes). `None` when the file is
     // absent/malformed; every lookup below then falls back to empty strings.
-    let comm_agents = read_comm_agents();
+    // On a blocking thread: the read's retry sleeps after a failed read.
+    let comm_agents = tokio::task::spawn_blocking(read_comm_agents).await.ok().flatten();
     let host = crate::workspaces::declared_host();
     // Pull `.agents[agent_name].<field>` as an owned String, "" if anything is
     // missing or not a string. LU5d2: `agent_name` here is a handle the caller

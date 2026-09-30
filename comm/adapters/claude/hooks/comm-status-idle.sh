@@ -85,11 +85,11 @@ set -uo pipefail
 [ "${SOT_COMM_HOOKS:-}" = off ] && exit 0
 HOME_DIR="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$HOME_DIR/bin/comm-status.sh"
-REGISTRY="$HOME_DIR/registry.json"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # comm-lib.sh, deployed layout first, then next to this file. It is only ever
-# sourced in a subshell: for the registry's bytes (sot_registry_bytes, which
-# retries a failed or empty read) and for the mail gate below.
+# sourced in a subshell: for the tool list, the registry reads (sot_registry_read,
+# or sot_registry_bytes without jq; both retry a failed or empty read) and the
+# mail gate below.
 FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
 
 # Every Stop ends with `stop`, whatever else this hook did first (the marker
@@ -143,7 +143,7 @@ CTX="$HOME_DIR/bin/comm-context.sh"; [ -x "$CTX" ] || CTX="$SELF_DIR/comm-contex
 # The list and the message are comm-lib.sh's (sot_mail_tools, sot_require_tools),
 # read in a subshell like the other lib reads here.
 tool_miss=""; tool_warn=""
-_mail_tools="$( . "$HOME_DIR/bin/comm-lib.sh" 2>/dev/null || . "$SELF_DIR/comm-lib.sh" 2>/dev/null; sot_mail_tools 2>/dev/null)" || _mail_tools=""
+_mail_tools="$( . "$FE_LIB" 2>/dev/null; sot_mail_tools 2>/dev/null)" || _mail_tools=""
 [ -n "$_mail_tools" ] || _mail_tools="jq"
 for _t in $_mail_tools; do
     command -v "$_t" >/dev/null 2>&1 && continue
@@ -151,21 +151,24 @@ for _t in $_mail_tools; do
 done
 if [ -n "$tool_miss" ]; then
     # shellcheck disable=SC2086
-    tool_warn="$( . "$HOME_DIR/bin/comm-lib.sh" 2>/dev/null || . "$SELF_DIR/comm-lib.sh" 2>/dev/null
+    tool_warn="$( . "$FE_LIB" 2>/dev/null
         sot_require_tools "check mail at turn end" $tool_miss 2>&1 | tr '\n' ' ')"
     tool_warn="${tool_warn% }"
 fi
 # sot_registry_read: 0 a row, 1 no row, 2 unreadable (a lib that cannot be
 # sourced is 2 too, never "no row"). Only "no row" ends here; unreadable goes
 # on to the mail gate, which reads the inbox files, not the registry. Without
-# jq (which sot_registry_read needs), grep: 1 no match, 2 an unreadable file.
+# jq (which sot_registry_read needs), grep over sot_registry_bytes: 1 no match, 2
+# unreadable. The bytes are captured first: piped straight into grep, pipefail
+# would let grep's 1 turn "unreadable" into "no row".
 _reg_rc=0
 if [ -z "${NAME:-}" ]; then
     :
 elif command -v jq >/dev/null 2>&1; then
     ( . "$FE_LIB" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" >/dev/null ) || _reg_rc=$?
 else
-    grep -q "\"${NAME}\"[[:space:]]*:" "$REGISTRY" 2>/dev/null || _reg_rc=$?
+    ( . "$FE_LIB" >/dev/null 2>&1 || exit 2; b="$(sot_registry_bytes)" || exit 2
+      printf '%s' "$b" | grep -q "\"${NAME}\"[[:space:]]*:" ) || _reg_rc=$?
 fi
 if [ -z "${NAME:-}" ] || [ "$_reg_rc" -eq 1 ]; then
     turn_floor; exit 0

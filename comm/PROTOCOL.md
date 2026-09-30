@@ -80,12 +80,14 @@ silent; the daemon flushes its tmp before its rename too. **perl is required for
 line. `ensure_home` creates the registry only when there is no file: it flushes a
 skeleton tmp and publishes it by a hard link, which fails on an existing name,
 so it never replaces, truncates or repairs a registry. Every read goes through
-`sot_registry_read` (the hooks source the library in a subshell for it), which has three
+`sot_registry_read` (the hooks source the library in a subshell for it; only the Stop
+hook's joined-agent test on a host without jq greps `sot_registry_bytes` instead), which has three
 answers: present, absent (it parsed; no such row) and unreadable (missing,
 empty, not JSON, not exactly one document, or no object `.agents`).
 Unreadable is never absent. Every read, and every writer's read under the
-lock, takes its bytes from `sot_registry_bytes` (the daemon's `comm.file` from
-its Rust twin), because an NFSv4 client can get ESTALE (stale file handle) on a
+lock, takes its bytes from `sot_registry_bytes` (every daemon read from its
+Rust twin, `read_registry_fresh`, but its 1.5 s change poll, where a failed read
+skips one tick), because an NFSv4 client can get ESTALE (stale file handle) on a
 read after its open succeeded, when another host renames a new registry over
 the file. Before the retry, the two-host test measured 16 such reads in about
 2,000 on the first host, and 0 in about 9,000 on the peer. So a read that failed
