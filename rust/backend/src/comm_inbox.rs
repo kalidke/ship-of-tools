@@ -258,30 +258,25 @@ fn record_temp(comm_home: &Path, id: &str, mid: Option<&str>) -> std::io::Result
 
 /// The exclusive create: of two daemons starting at once only one makes the
 /// record. A hard link of the finished temp file, so the record never exists
-/// half-written; `Ok(false)` when another writer's already stood there. On
-/// NFS a link can report an error though it succeeded (a retried request), so
-/// a temp file with two links is this call's record. The temp file goes
-/// either way.
+/// half-written; `Ok(false)` when the link failed over a record, and the
+/// caller's re-read decides. The temp file goes either way.
 pub fn create_lock_record(comm_home: &Path, id: &str, mid: Option<&str>) -> std::io::Result<bool> {
     let tmp = record_temp(comm_home, id, mid)?;
-    let made = match std::fs::hard_link(&tmp, comm_home.join(LOCK_RECORD)) {
-        Ok(()) => Ok(true),
-        Err(_) if links(&tmp) == Some(2) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(e),
-    };
+    let rec = comm_home.join(LOCK_RECORD);
+    let linked = std::fs::hard_link(&tmp, &rec);
     let _ = std::fs::remove_file(&tmp);
-    made
+    linked_or_standing(linked, rec.exists())
 }
 
-/// A file's link count, where the OS reports one.
-fn links(p: &Path) -> Option<u64> {
-    #[cfg(unix)]
-    return std::fs::metadata(p).ok().map(|m| std::os::unix::fs::MetadataExt::nlink(&m));
-    #[cfg(not(unix))]
-    {
-        let _ = p;
-        None
+/// The link's outcome: made, or a record stands for the re-read to decide —
+/// another writer's, or on NFS this call's own, where a retried link can
+/// report an error though it succeeded. `AlreadyExists` is always the
+/// re-read's; any other error is returned only when no record stands.
+fn linked_or_standing(linked: std::io::Result<()>, standing: bool) -> std::io::Result<bool> {
+    match linked {
+        Ok(()) => Ok(true),
+        Err(e) if standing || e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
@@ -486,8 +481,10 @@ pub mod refusal {
 
 /// The hub's start step over this daemon's lock manager `own` for `inbox/`
 /// and its machine id `own_mid` (the caller computes both, after creating
-/// `inbox/`): decide, then create or replace. A lost create race re-reads the
-/// winner's record and decides over it. Returns the role and what it did.
+/// `inbox/`): decide, then create or replace. A create whose link failed over
+/// a standing record re-reads it and decides over it: a lost race's winner,
+/// or this daemon's own after a retried NFS link, which reads back `Current`.
+/// Returns the role and what it did.
 pub fn record_at_start(
     comm_home: &Path,
     topology_hub: bool,
@@ -1067,6 +1064,38 @@ mod tests {
         assert_eq!(start("none@m1").1, AtStart::Replace);
         assert_eq!(std::fs::read_to_string(&rec).unwrap(), "none@m1\nm1\n");
         only_the_record();
+    }
+
+    // B1 — a failed link is decided by the record it leaves, never by its
+    // error: over a standing record any error is the re-read's, and only an
+    // error with no record standing is returned.
+    #[test]
+    fn a_failed_link_over_a_standing_record_is_the_re_reads() {
+        use std::io::{Error, ErrorKind};
+        let stale = || Err(Error::from(ErrorKind::StaleNetworkFileHandle));
+        assert!(linked_or_standing(Ok(()), false).unwrap());
+        assert!(!linked_or_standing(Err(Error::from(ErrorKind::AlreadyExists)), false).unwrap());
+        assert!(!linked_or_standing(Err(Error::from(ErrorKind::AlreadyExists)), true).unwrap());
+        assert!(!linked_or_standing(stale(), true).unwrap(), "a retried link that made the record");
+        assert_eq!(linked_or_standing(stale(), false).unwrap_err().kind(), ErrorKind::StaleNetworkFileHandle);
+    }
+
+    // B1 — the re-read after such a link: this daemon's own record (a retried
+    // NFS link that made it) is the hub's, current and filed locally; another
+    // machine's is the lost race's refusal.
+    #[test]
+    fn a_record_left_by_a_failed_link_reads_back_as_a_lost_race() {
+        let d = tempfile::tempdir().unwrap();
+        let rec = d.path().join(LOCK_RECORD);
+        let start = || record_at_start(d.path(), true, "none@m1", Some("m1")).unwrap();
+        std::fs::write(&rec, record_text("none@m1", Some("m1"))).unwrap();
+        assert_eq!(start(), (Role::Hub, AtStart::Current));
+        let text = std::fs::read_to_string(&rec).unwrap();
+        assert_eq!(route(Role::Hub, "none@m1", Some("m1"), Some(&text), false, "h", &rec), Route::Local);
+
+        std::fs::write(&rec, record_text("none@m2", Some("m2"))).unwrap();
+        assert!(matches!(start(), (Role::Hub, AtStart::Keep(_))));
+        assert_eq!(std::fs::read_to_string(&rec).unwrap(), "none@m2\nm2\n");
     }
 
     fn names(dir: &Path) -> Vec<String> {
