@@ -44,6 +44,14 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=comm-lib.sh
 source "$SCRIPT_DIR/comm-lib.sh"
+# A missing jq, flock or perl means this session never sees mail: say so loudly
+# on stdout, where the calling skill reads, and stop.
+_start_tools="jq"; [ "$(uname -s 2>/dev/null)" = Linux ] && _start_tools="jq flock perl"
+# shellcheck disable=SC2086
+if ! _start_missing="$(sot_require_tools "start the comm session" $_start_tools 2>&1)"; then
+    printf '%s\n' "$_start_missing"
+    exit 1
+fi
 
 MODE="arm"
 case "${1:-}" in
