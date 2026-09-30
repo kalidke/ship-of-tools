@@ -395,12 +395,13 @@ _comm_wake_deliver_ping() {
         # "0" is the only answer that means nothing here is ours. Anything
         # else (jq failed, so the answer is empty) pings: a spurious notice
         # costs one line, while a silent skip let the cursor pass a batch no
-        # one was woken for.
+        # one was woken for. A held batch is re-judged every cycle, so the
+        # log line is written on the transition, not per cycle.
+        [ "$verdict" = 0 ] || any_directed=1
         case "$verdict" in
-            1) any_directed=1 ;;
-            0) ;;
-            *) echo "comm-wake: inbox verdict unreadable ('$verdict'), pinging anyway" >&2
-               any_directed=1 ;;
+            0|1) VERDICT_UNREADABLE="" ;;
+            *) [ -n "${VERDICT_UNREADABLE:-}" ] || echo "comm-wake: inbox verdict unreadable, pinging anyway" >&2
+               VERDICT_UNREADABLE=1 ;;
         esac
     done
     sot_inbox_read_unlock

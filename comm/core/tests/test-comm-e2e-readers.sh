@@ -134,17 +134,21 @@ verdict "the v3 host computes a different identity ($id_v3)" "$([ "$id_v3" != "$
 skew_peer=0; skew_v3=0; skew_tol=0
 for h in "$PEER" "$V3"; do
     coproc SK { ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" 'while read -r _; do date +%s%3N; done'; }
+    # Bash unsets SK and SK_PID once it reaps a dead coproc (fatal under set -u),
+    # and a dead reader must fail the write, not kill this script: copy them now.
+    sk_in=${SK[1]} sk_out=${SK[0]} sk_pid=$SK_PID; trap '' PIPE
     best=""; sk=0
     for _ in 1 2 3 4 5; do
-        a="$(now)"; echo >&"${SK[1]}"; r=""; read -r -t 5 r <&"${SK[0]}"; b="$(now)"
+        a="$(now)"; echo >&"$sk_in" 2>/dev/null; r=""; read -r -t 5 r <&"$sk_out"; b="$(now)"
         [ -n "$r" ] || { best=99999; break; }
         if [ -z "$best" ] || [ $((b - a)) -lt "$best" ]; then best=$((b - a)); sk=$((r - (a + b) / 2)); fi
     done
-    fd="${SK[1]}"; exec {fd}>&-; wait "$SK_PID" 2>/dev/null
+    { exec {sk_in}>&- {sk_out}<&-; } 2>/dev/null; kill "$sk_pid" 2>/dev/null; wait "$sk_pid" 2>/dev/null; trap - PIPE
     echo "clock skew $h: $sk ms (rtt $best ms)"
     [ "$best" -le 20 ] || { echo "FATAL: the skew exchange with $h took $best ms; it cannot bound a timing" >&2; exit 1; }
     [ "$h" = "$PEER" ] && skew_peer=$sk || skew_v3=$sk
-    [ $((best / 2 + 2)) -le "$skew_tol" ] || skew_tol=$((best / 2 + 2))
+    # 5a pairs a send on one host with a ping on another: their errors add.
+    skew_tol=$((skew_tol + best / 2 + 2))
 done
 
 # Rows: readers on host e2e-reg, senders on host e2e-snd, so no send ever

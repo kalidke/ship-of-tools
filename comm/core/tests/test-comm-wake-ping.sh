@@ -134,7 +134,8 @@ EOF
 
 # A batch whose verdict cannot be read (jq fails, so the answer is empty) still
 # pings, and says so once in the log. Before, it advanced the cursor silently:
-# an idle session was not woken until the next line arrived.
+# an idle session was not woken until the next line arrived. The prompt is held
+# for two cycles, so the batch is re-judged unreadable three times: one log line.
 case_an_unreadable_verdict_still_pings_and_logs_once() {
     local d="$WORK/bad-verdict"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
@@ -145,7 +146,14 @@ source "$WAKE"
 export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
 sot_daemon_endpoint() { printf fixture; }
 _comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'; }
+_comm_wake_pty_screen() {
+    printf x >> "$d/screen.calls"
+    if [ "\$(wc -c < "$d/screen.calls")" -ge 3 ]; then
+        printf '%s' '{"payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'
+    else
+        printf '%s' '{"payload":{"lines":["Allow this action? (y/n)"],"cursor":{"row":0,"col":24}}}'
+    fi
+}
 _comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
 turns=0
 sleep() {
@@ -155,13 +163,15 @@ sleep() {
         # From here on the batch verdict's jq fails; every other jq call is untouched.
         sot_jq() { case "\$*" in *reduce*) return 5 ;; esac; command jq "\$@" | tr -d '\r'; return "\${PIPESTATUS[0]}"; }
     fi
-    [ "\$turns" -le 2 ] || exit 0
+    [ "\$turns" -le 4 ] || exit 0
 }
 _comm_wake_main watchee --deliver ping --owner \$\$
 EOF
     bash "$d/run.sh" 2>/dev/null
     local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
     [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s), want exactly 1"; return 1; }
+    local sc; sc="$(wc -c < "$d/screen.calls" 2>/dev/null || echo 0)"
+    [ "$sc" -ge 3 ] || { echo "  the prompt was checked $sc time(s); the batch was never held"; return 1; }
     local logged; logged="$(grep -c 'inbox verdict unreadable' "$d/state/comm-wake-watchee.log" 2>/dev/null)"
     [ "${logged:-0}" -eq 1 ] || { echo "  the unreadable verdict was logged ${logged:-0} time(s), want exactly 1"; return 1; }
     return 0
