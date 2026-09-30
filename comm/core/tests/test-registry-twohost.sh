@@ -82,7 +82,7 @@ export SOT_COMM_HOME="$pair/home"
 tag="$side-$role"; out="$pair/out/$tag"
 export SOT_COMM_TEST_RETRY_LOG="$out.retry"
 echo $$ > "$pair/pids/$tag"
-trap 'rm -f "$pair/pids/$tag"' EXIT
+trap 'rm -f "${pair:?}/pids/$tag"' EXIT
 while [ "$(date +%s)" -lt "$start" ]; do sleep 0.1; done
 running() { [ "$(date +%s)" -lt "$end" ] && [ ! -e "$pair/../stop" ]; }
 case "$role" in
