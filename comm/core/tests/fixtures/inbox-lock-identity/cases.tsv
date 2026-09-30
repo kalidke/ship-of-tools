@@ -9,3 +9,4 @@ ext4-home.mountinfo	/fixture-home	local 0123456789abcdef0123456789abcdef
 fuse-home.mountinfo	/fixture-home	none
 stacked.mountinfo	/fixture-home	nfs4 filer.example:/export/home
 escaped-space.mountinfo	/fixture home	nfs4 filer.example:/export/team home
+nfs4-local-lock-flock.mountinfo	/fixture-home	none

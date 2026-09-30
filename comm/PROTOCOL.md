@@ -114,10 +114,11 @@ lists the receiver:
    The inbox is opened inside the lock and closed before it is released. A
    lock excludes only writers that share one lock manager, so a daemon
    records its own in `inbox-lock-manager`, beside `registry.json`, when it
-   starts: `nfs4 <server>:<export>`, `local <machine-id>` or `none`. A script
+   starts: `nfs4 <server>:<export>` (an NFS v4 mount with
+   `local_lock=none`), `local <machine-id>` or `none`. A script
    adds the line itself only when `flock(1)` exists, the box is Linux, and
    `findmnt -T` on the inbox names that same manager. Anything else (an NFSv3
-   mount, an unknown mount, another box mounting the daemon's local disk, no
+   mount, an NFS v4 mount whose `local_lock` is not `none`, an unknown mount, another box mounting the daemon's local disk, no
    record) hands the line to the daemon that owns the comm folder as
    `comm.file`: this box's own daemon, else the relay endpoint (the hub). A
    daemon that does not answer is `FAILED` and no second route is tried; one

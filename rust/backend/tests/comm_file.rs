@@ -207,7 +207,8 @@ fn t11_rust_appends_200() {
         }
         // Paced near the shell arm's fork-per-line rate, so the two sides
         // overlap instead of this one finishing before the other starts.
-        std::thread::sleep(Duration::from_millis(5));
+        // A remote waiter's NFS lock retries back off from ~100 ms, so a burst shorter than that can finish before the other host gets one turn and the case would prove no concurrency.
+        std::thread::sleep(Duration::from_millis(25));
     }
 }
 

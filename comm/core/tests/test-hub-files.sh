@@ -48,7 +48,7 @@ cat >> "$BIN/comm-lib.sh" <<'STUB'
 # ---- no daemon, a fixture mount (test only) ---------------------------------
 sot_daemon_endpoint() { return 1; }
 sot_relay_endpoint() { return 1; }
-_sot_findmnt() { printf '%s\n' "${FAKE_MNT-nfs4   filer.example:/export/home}"; }
+_sot_findmnt() { printf '%s\n' "${FAKE_MNT-nfs4 rw,vers=4.2,local_lock=none filer.example:/export/home}"; }
 _sot_machine_id() { printf '0123456789abcdef0123456789abcdef'; }
 STUB
 RECORD="nfs4 filer.example:/export/home"
@@ -215,7 +215,7 @@ wire_count() { [ -e "$WORK/wire.log" ] && wc -l < "$WORK/wire.log" || echo 0; }
 case_a_shared_nfs4_lock_manager_appends_locally() {
     local out rc
     fresh_route
-    out="$(route_append "nfs4   A:/x" "nfs4 A:/x" unix:/own ssh:hub "$OK_ANSWER")"; rc=$?
+    out="$(route_append "nfs4 rw,vers=4.2,local_lock=none A:/x" "nfs4 A:/x" unix:/own ssh:hub "$OK_ANSWER")"; rc=$?
     [ "$rc" -eq 0 ] || { echo "  rc $rc ($out)"; return 1; }
     [ "$(wire_count)" -eq 0 ] || { echo "  went to the wire"; return 1; }
     [ "$(wc -l < "$INBOX/t-peer.jsonl")" -eq 2 ] || { echo "  not appended locally"; return 1; }
@@ -234,14 +234,15 @@ case_anything_unproven_goes_to_the_wire() {
             || { echo "  [$mnt|$rec|$flock] not comm.file"; return 1; }
         [ "$(cat "$INBOX/t-peer.jsonl")" = '{"msg":"before"}' ] || { echo "  [$mnt|$rec|$flock] appended locally"; return 1; }
     done <<'CASES'
-nfs    A:/x|nfs4 A:/x|1
+nfs rw,vers=3 A:/x|nfs4 A:/x|1
 |nfs4 A:/x|1
-nfs4   B:/x|nfs4 A:/x|1
-nfs4   hub.example:/home|local 0123456789abcdef0123456789abcdef|1
-nfs4   A:/x|-|1
-nfs4   A:/x|none|1
-fuse.sshfs u@far.example:/x|none|1
-nfs4   A:/x|nfs4 A:/x|0
+nfs4 rw,vers=4.2,local_lock=none B:/x|nfs4 A:/x|1
+nfs4 rw,vers=4.2,local_lock=none hub.example:/home|local 0123456789abcdef0123456789abcdef|1
+nfs4 rw,vers=4.2,local_lock=none A:/x|-|1
+nfs4 rw,vers=4.2,local_lock=none A:/x|none|1
+fuse.sshfs rw u@far.example:/x|none|1
+nfs4 rw,vers=4.2,local_lock=none A:/x|nfs4 A:/x|0
+nfs4 rw,vers=4.2,local_lock=flock A:/x|nfs4 A:/x|1
 CASES
     return 0
 }
@@ -249,17 +250,17 @@ CASES
 # The wire is this box's own daemon, else the relay; one route, chosen once.
 case_the_wire_is_the_own_daemon_else_the_relay_and_only_one() {
     local out rc
-    fresh_route; route_append "nfs    A:/x" "nfs4 A:/x" unix:/own ssh:hub "$OK_ANSWER" >/dev/null
+    fresh_route; route_append "nfs rw,vers=3 A:/x" "nfs4 A:/x" unix:/own ssh:hub "$OK_ANSWER" >/dev/null
     [ "$(cut -d' ' -f1 "$WORK/wire.log")" = unix:/own ] || { echo "  own daemon not chosen: $(cat "$WORK/wire.log")"; return 1; }
-    fresh_route; route_append "nfs    A:/x" "nfs4 A:/x" "" ssh:hub "$OK_ANSWER" >/dev/null
+    fresh_route; route_append "nfs rw,vers=3 A:/x" "nfs4 A:/x" "" ssh:hub "$OK_ANSWER" >/dev/null
     [ "$(cut -d' ' -f1 "$WORK/wire.log")" = ssh:hub ] || { echo "  relay not chosen: $(cat "$WORK/wire.log")"; return 1; }
-    fresh_route; out="$(route_append "nfs    A:/x" "nfs4 A:/x" unix:/own ssh:hub "")"; rc=$?
+    fresh_route; out="$(route_append "nfs rw,vers=3 A:/x" "nfs4 A:/x" unix:/own ssh:hub "")"; rc=$?
     [ "$rc" -eq 1 ] && [ "$out" = "the daemon did not answer at unix:/own" ] || { echo "  silence: rc $rc ($out)"; return 1; }
     [ "$(wire_count)" -eq 1 ] || { echo "  a second route was tried: $(cat "$WORK/wire.log")"; return 1; }
-    fresh_route; out="$(route_append "nfs    A:/x" "nfs4 A:/x" unix:/own ssh:hub \
+    fresh_route; out="$(route_append "nfs rw,vers=3 A:/x" "nfs4 A:/x" unix:/own ssh:hub \
         '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":{"error":"no live session holds @t-peer","code":"no_live_session"}}')"; rc=$?
     [ "$rc" -eq 1 ] && [ "$out" = "no live session holds @t-peer" ] || { echo "  refusal: rc $rc ($out)"; return 1; }
-    fresh_route; out="$(route_append "nfs    A:/x" "nfs4 A:/x" "" "" "$OK_ANSWER")"; rc=$?
+    fresh_route; out="$(route_append "nfs rw,vers=3 A:/x" "nfs4 A:/x" "" "" "$OK_ANSWER")"; rc=$?
     [ "$rc" -eq 1 ] && contains "$out" "no daemon is reachable" || { echo "  no endpoint: rc $rc ($out)"; return 1; }
     [ "$(cat "$INBOX/t-peer.jsonl")" = '{"msg":"before"}' ] || { echo "  appended locally"; return 1; }
     return 0
@@ -292,7 +293,7 @@ case_the_lock_identity_matches_the_shared_fixtures() {
         [ "$got" = "$want" ] || { echo "  $file: got [$got], want [$want]"; return 1; }
         n=$((n + 1))
     done < "$fx/cases.tsv"
-    [ "$n" -eq 6 ] || { echo "  $n fixtures, want 6"; return 1; }
+    [ "$n" -eq 7 ] || { echo "  $n fixtures, want 7"; return 1; }
     return 0
 }
 

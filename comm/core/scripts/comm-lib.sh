@@ -589,7 +589,7 @@ registry_touch() {  # name — bump last_seen if present
 # locally only when flock(1) exists, this is Linux, and the identity it
 # computes for $INBOX_DIR is byte-equal to the one the daemon recorded in
 # `$COMM_HOME/inbox-lock-manager` at startup. Anything else — no record, a
-# `none` record, NFSv3, an unknown mount, another host mounting the daemon's
+# `none` record, NFSv3, an NFS v4 mount whose `local_lock` is not `none`, an unknown mount, another host mounting the daemon's
 # local disk — hands the frame to the daemon that owns this comm folder as
 # `comm.file`, and a daemon that does not answer is FAILED.
 SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-10}"
@@ -598,13 +598,19 @@ _sot_findmnt() { findmnt "$@"; }
 _sot_machine_id() { local m=""; { read -r m < /etc/machine-id; } 2>/dev/null; printf '%s' "$m"; }
 # sot_inbox_lock_identity DIR — the lock manager an append to DIR goes
 # through, by the rule comm_inbox.rs's record uses: `nfs4 <source>`,
-# `local <machine-id>` on a local block filesystem, else `none`. The last
+# `local <machine-id>` on a local block filesystem, else `none` — so an NFS v4
+# mount without `local_lock=none` (its lock stays on the client) goes to the
+# wire. The last
 # line of `findmnt -T` is the mount on top when one is stacked over another.
 sot_inbox_lock_identity() {  # DIR
-    local fs="" src="" mid
-    read -r fs src < <(_sot_findmnt -n -o FSTYPE,SOURCE -T "$1" 2>/dev/null | tail -n 1)
+    local fs="" opts="" src="" mid
+    read -r fs opts src < <(_sot_findmnt -n -o FSTYPE,FS-OPTIONS,SOURCE -T "$1" 2>/dev/null | tail -n 1)
     case "$fs" in
-        nfs4) [ -z "$src" ] || { printf 'nfs4 %s\n' "$src"; return 0; } ;;
+        nfs4) case ",$opts," in
+                  *,vers=4.*,*) case ",$opts," in
+                      *,local_lock=none,*) [ -z "$src" ] || { printf 'nfs4 %s\n' "$src"; return 0; } ;;
+                  esac ;;
+              esac ;;
         ext2|ext3|ext4|xfs|btrfs|zfs|f2fs)
             mid="$(_sot_machine_id)"
             [ -z "$mid" ] || { printf 'local %s\n' "$mid"; return 0; } ;;

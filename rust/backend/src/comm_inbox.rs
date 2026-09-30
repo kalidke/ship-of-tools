@@ -129,8 +129,8 @@ pub fn write_lock_record(comm_home: &Path) -> std::io::Result<String> {
     Ok(id)
 }
 
-/// The lock manager an append to `dir` goes through: `nfs4 <source>`,
-/// `local <machine-id>`, or `none` — every non-Linux platform, and anything
+/// The lock manager an append to `dir` goes through: `nfs4 <source>` (an NFS
+/// v4 mount with `local_lock=none`), `local <machine-id>`, or `none` — every non-Linux platform, and anything
 /// whose lock is not provably one manager's. `comm-lib.sh`'s
 /// `sot_inbox_lock_identity` computes the same string with `findmnt -T`.
 pub fn lock_identity(dir: &Path) -> String {
@@ -154,30 +154,36 @@ pub fn lock_identity(dir: &Path) -> String {
 
 /// `lock_identity` over mountinfo text, for a canonical `path`. The mount is
 /// the one `findmnt -T` finds: the longest mount-point prefix, the LAST entry
-/// when one is stacked over another, `\040`-style escapes decoded.
+/// when one is stacked over another, `\040`-style escapes decoded. An `nfs4`
+/// mount counts only with `vers=4.x` and `local_lock=none` in its super options.
 pub fn identity_from(mountinfo: &str, path: &Path, machine_id: &str) -> String {
-    let mut best: Option<(usize, String, String)> = None;
+    let mut best: Option<(usize, String, String, String)> = None;
     for line in mountinfo.lines() {
         let Some((pre, post)) = line.split_once(" - ") else {
             continue;
         };
         let mut post = post.split(' ');
-        let (Some(point), Some(fstype), Some(source)) =
-            (pre.split(' ').nth(4), post.next(), post.next())
+        let (Some(point), Some(fstype), Some(source), Some(opts)) =
+            (pre.split(' ').nth(4), post.next(), post.next(), post.next())
         else {
             continue;
         };
         let point = PathBuf::from(unescape(point));
         let depth = point.components().count();
         if path.starts_with(&point) && best.as_ref().map_or(true, |b| depth >= b.0) {
-            best = Some((depth, unescape(fstype), unescape(source)));
+            best = Some((depth, unescape(fstype), unescape(source), opts.to_string()));
         }
     }
     match best {
-        Some((_, fstype, source)) if fstype == "nfs4" && !source.is_empty() => {
+        Some((_, fstype, source, opts))
+            if fstype == "nfs4"
+                && !source.is_empty()
+                && opts.split(',').any(|o| o.starts_with("vers=4."))
+                && opts.split(',').any(|o| o == "local_lock=none") =>
+        {
             format!("nfs4 {source}")
         }
-        Some((_, fstype, _)) if LOCAL_FS.contains(&fstype.as_str()) && !machine_id.is_empty() => {
+        Some((_, fstype, _, _)) if LOCAL_FS.contains(&fstype.as_str()) && !machine_id.is_empty() => {
             format!("local {machine_id}")
         }
         _ => "none".into(),
@@ -298,7 +304,7 @@ mod tests {
             assert_eq!(identity_from(&text, Path::new(path), mid.trim()), want, "{file}");
             n += 1;
         }
-        assert_eq!(n, 6);
+        assert_eq!(n, 7);
     }
 
     // The prefix walk, which `findmnt -F` cannot be asked about: the longest
