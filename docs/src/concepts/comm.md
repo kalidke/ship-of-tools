@@ -17,7 +17,7 @@ which files it. Either way the send answers `filed -> @handle`, which is the
 acknowledgement: **the file is the ack.** A filed frame is read by the recipient's next turn boundary,
 because the recipient's own end-of-turn hook reads its inbox and will not let
 the turn end while directed mail sits unread. That is also how a BUSY session
-is reached — no process, no keystrokes, nobody to ask.
+is reached — no process, no keystrokes, nobody to ask. If a poll finds the inbox mid-write it says so and asks to be run again; it never skips a message.
 
 A session sitting idle at its prompt is additionally *poked*: one gated line
 typed into its row, because a stopped agent is blocked on stdin and keystrokes

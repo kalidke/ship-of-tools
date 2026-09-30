@@ -13,7 +13,7 @@ daemon protocol logic.
 ```bash
 ~/.sot-comm/bin/comm-send.sh @<handle> "message"       # durable, registry-based
 ~/.sot-comm/bin/comm-send.sh --broadcast "message"
-~/.sot-comm/bin/comm-poll.sh                           # read queued inbox
+~/.sot-comm/bin/comm-poll.sh                           # read queued inbox (a busy inbox exits 75: run it again)
 ~/.sot-comm/bin/comm-list.sh                           # registered sessions
 ~/.sot-comm/bin/comm-status.sh waiting "watching X"    # purple until you report
 ~/.sot-comm/bin/comm-status.sh blocked "need Y"        # red

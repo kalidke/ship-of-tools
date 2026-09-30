@@ -235,9 +235,8 @@ fi
 # this handle (self-echo) nor `__selftest__` (a wake proof comm-poll.sh does not
 # show, so it must not hold a turn open either), and the line sitting PAST the
 # read cursor. The cursor is a LINE OFFSET (comm-lib.sh's sot_cursor_offset owns
-# the format; this hook is standalone by design, so the read is inlined,
-# including the one-shot conversion of a legacy ts cursor which is NEVER written
-# back from here). Timestamps could not do this job: they are second-resolution
+# the format, including the one-shot conversion of a legacy ts cursor, which
+# is NEVER written back from here). Timestamps could not do this job: they are second-resolution
 # and every comparison was strictly-greater, so a frame filed in the same second
 # as one already read would be announced to nobody while its sender was told it
 # had landed. This hook never advances the cursor — only a real comm-poll.sh
@@ -249,40 +248,35 @@ MAIL_INBOX="$HOME_DIR/inbox/$NAME.jsonl"
 # not exist at all (no listener writes it) and the frontend arm below must
 # still run.
 mail_total=0; mail_pending=0
+# The count and the read run in a SUBSHELL that sources comm-lib.sh, so this
+# hook sees exactly the offset comm-poll.sh does (sot_cursor_offset: the ts
+# migration, the past-the-end clamp, the cursor's line hash) and takes the same
+# shared read lock (sot_inbox_read_lock) — a line a writer is still fsyncing is
+# never counted and then cut back. Only newline-terminated lines are counted.
+# A busy inbox does NOT block the turn: behind a frozen writer that would loop
+# forever. The hook says so on stderr and checks again at the next turn end.
+# A missing library or any failure yields no mail (fail open).
+FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
 if [ -r "$MAIL_INBOX" ]; then
-    mail_total="$(wc -l < "$MAIL_INBOX" 2>/dev/null | tr -d ' ')"
-    case "$mail_total" in ''|*[!0-9]*) mail_total=0 ;; esac
-    mail_cursor="$(cat "$HOME_DIR/read/$NAME.cursor" 2>/dev/null || true)"
-    case "${mail_cursor:-0}" in
-        ''|*[!0-9]*)
-            # A legacy ts cursor, converted the same way comm-lib.sh's
-            # sot_cursor_offset does it: the lines BEFORE THE FIRST one past the
-            # cursor, never "every line at or below it" (skewed clocks and
-            # same-second frames would step over something unread). `-R` so a
-            # torn line cannot abort the count -- it maps to false, read and
-            # never a boundary; slurping the file as JSON failed outright on one,
-            # which silently meant "no mail" at every turn end from then on.
-            mail_pos="$(jq -Rrs --arg cur "$mail_cursor" '
-                [ split("\n")[] | select(length > 0)
-                  | (((fromjson? // {}) | (.ts // "")) > $cur) ] as $past
-                | ($past | index(true)) // ($past | length)' \
-                "$MAIL_INBOX" 2>/dev/null || echo 0)" ;;
-        *) mail_pos="$mail_cursor" ;;
+    mail_out="$( ( . "$FE_LIB" >/dev/null 2>&1 || exit 0
+        sot_inbox_read_lock "$NAME" || { echo busy; exit 0; }
+        mail_pos="$(sot_cursor_offset "$NAME" 2>/dev/null)"
+        mail_total="$(sot_inbox_lines "$NAME")"
+        mail_pending=0
+        if [ "$mail_total" -gt "$mail_pos" ]; then
+            mail_pending="$(sed -n "$((mail_pos + 1)),${mail_total}p" "$MAIL_INBOX" 2>/dev/null \
+                | jq -Rrs --arg me "$NAME" '[ split("\n")[] | select(length > 0)
+                    | (fromjson? // empty) | select(type == "object")
+                    | select(((.to // "") != "") and (.from // "") != $me and (.from // "") != "__selftest__")
+                  ] | length' 2>/dev/null || echo 0)"
+        fi
+        echo "$mail_total $mail_pending" ) 2>/dev/null || true )"
+    case "$mail_out" in
+        busy) echo "comm-status-idle: the inbox for @$NAME is being written; it will be checked again at the next turn end" >&2 ;;
+        *)  read -r mail_total mail_pending <<< "$mail_out" || true
+            case "$mail_total" in ''|*[!0-9]*) mail_total=0 ;; esac
+            case "$mail_pending" in ''|*[!0-9]*) mail_pending=0 ;; esac ;;
     esac
-    case "$mail_pos" in ''|*[!0-9]*) mail_pos=0 ;; esac
-    # An offset past the end means the inbox was cleared, truncated or restored
-    # by hand (production only appends). Left alone, this handle would never be
-    # told about another message.
-    [ "$mail_pos" -gt "$mail_total" ] && mail_pos=0
-    mail_pending=0
-    if [ "$mail_total" -gt "$mail_pos" ]; then
-        mail_pending="$(sed -n "$((mail_pos + 1)),${mail_total}p" "$MAIL_INBOX" 2>/dev/null \
-            | jq -Rrs --arg me "$NAME" '[ split("\n")[] | select(length > 0)
-                | (fromjson? // empty) | select(type == "object")
-                | select(((.to // "") != "") and (.from // "") != $me and (.from // "") != "__selftest__")
-              ] | length' 2>/dev/null || echo 0)"
-        case "$mail_pending" in ''|*[!0-9]*) mail_pending=0 ;; esac
-    fi
 fi
 # The FRONTEND inbox — the SECOND mail file on Windows, where the frontend files
 # every inbound relay frame because no listener runs there. It is SHARED by every
@@ -301,7 +295,6 @@ fi
 # unreadable file or any jq failure yields NO frontend mail and no block — the
 # same fail-open discipline as the rest of the hook. Like the read above, this arm
 # never writes a cursor.
-FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
 FE_MAIL_INBOX="$( ( . "$FE_LIB" >/dev/null 2>&1 && sot_fe_inbox_path ) 2>/dev/null || true )"
 fe_total=0; fe_pending=0
 if [ -n "$FE_MAIL_INBOX" ] && [ -r "$FE_MAIL_INBOX" ]; then

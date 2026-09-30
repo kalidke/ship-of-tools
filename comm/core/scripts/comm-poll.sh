@@ -36,7 +36,8 @@ show_stream() {
     local line from
     while IFS= read -r line; do
         [ -z "$line" ] && continue
-        # A TORN or otherwise unparseable line is SKIPPED, never fatal: under
+        # An unparseable line is SKIPPED, never fatal (a dead writer's partial
+        # is cut by the next writer and never counted here): under
         # this script's `set -e` a jq failure here exited the whole poll, which
         # froze the cursor and left the handle permanently deaf while its senders
         # kept printing a success line. It is still COUNTED as read (the cursor
@@ -65,12 +66,24 @@ show_stream() {
 # legacy ts cursor on first read): every line up to it has been shown. Comparing
 # timestamps could not separate two frames filed in the same second, so one of
 # them was shown to nobody while its sender was told it had landed.
-pos="$(sot_cursor_offset "$NAME")"
-total="$(sot_inbox_lines "$NAME")"
-
-if [ -f "$INBOX" ] && [ "$total" -gt "$pos" ]; then
-    show_stream < <(sed -n "$((pos + 1)),${total}p" "$INBOX")
-    printf '%s' "$total" > "$CUR"
+#
+# Counting and reading run under the shared read lock where one applies (see
+# sot_inbox_read_lock), so a writer's in-flight line is never counted and then
+# cut back. A busy inbox is "try again": nothing was read, the cursor is
+# untouched, exit 75. Only newline-terminated lines are counted
+# (sot_file_lines), so a dead writer's partial line is never shown.
+if [ -f "$INBOX" ]; then
+    if ! sot_inbox_read_lock "$NAME"; then
+        echo "the inbox for @$NAME is being written — nothing was read; run comm-poll.sh again"
+        exit 75
+    fi
+    pos="$(sot_cursor_offset "$NAME")"
+    total="$(sot_inbox_lines "$NAME")"
+    if [ "$total" -gt "$pos" ]; then
+        show_stream < <(sed -n "$((pos + 1)),${total}p" "$INBOX")
+        sot_cursor_write "$NAME" "$total"
+    fi
+    sot_inbox_read_unlock
 fi
 
 if [ -n "$FE_INBOX" ] && [ -r "$FE_INBOX" ]; then

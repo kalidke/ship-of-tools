@@ -319,7 +319,7 @@ _comm_wake_deliver_full() {
         if [ "$rc" -eq 2 ]; then exit 0; fi
         [ "$rc" -eq 0 ] || break
         delivered_through=$((pos + lineno))
-    done < <(sed -n "$((pos + 1)),${total}p" "$INBOX")
+    done <<< "$BATCH"
     pos="$delivered_through"
 }
 
@@ -343,6 +343,15 @@ _comm_wake_deliver_ping() {
         # read and a broadcast-only batch is not re-scanned forever.
         ENDS[$i]="${POS[$i]}"
         [ -r "$INBOX" ] || continue
+        # The per-handle inbox is counted, validated and scanned under the
+        # shared read lock (comm-lib.sh, sot_inbox_read_lock); a busy inbox
+        # keeps this source's cursor and is checked again next cycle. Taking
+        # the next source's lock closes this one's descriptor, and the lock
+        # is let go after the loop.
+        sot_inbox_read_unlock
+        case "$INBOX" in
+            "$COMM_HOME/inbox/"*) sot_inbox_read_lock "$HANDLE" || continue ;;
+        esac
         total="$(sot_file_lines "$INBOX")"
         # inbox rotated/truncated: re-read the (now smaller) file from line 1.
         if [ "$total" -lt "${POS[$i]}" ]; then POS[$i]=0; ENDS[$i]=0; fi
@@ -385,6 +394,7 @@ _comm_wake_deliver_ping() {
             "1 0") any_directed=1; all_selftest=0 ;;
         esac
     done
+    sot_inbox_read_unlock
 
     if [ "$any_directed" -eq 0 ]; then
         _comm_wake_advance
@@ -486,8 +496,17 @@ _comm_wake_run() {
             SELECT="${CONDS[$i]}"
             pos="${POS[$i]}"
             [ -f "$INBOX" ] || continue
+            # Counted and read under the shared read lock, into BATCH, and
+            # the lock is let go BEFORE anything is injected: an inject can
+            # take seconds and must not hold writers off.
+            case "$INBOX" in
+                "$COMM_HOME/inbox/"*) sot_inbox_read_lock "$HANDLE" || continue ;;
+            esac
             total=$(sot_file_lines "$INBOX")
             if [ "$total" -lt "$pos" ]; then pos=0; fi   # inbox rotated/truncated
+            BATCH=""
+            [ "$total" -gt "$pos" ] && BATCH="$(sed -n "$((pos + 1)),${total}p" "$INBOX")"
+            sot_inbox_read_unlock
             [ "$total" -gt "$pos" ] && _comm_wake_deliver_full
             # Whatever the body consumed, never what it was handed: a body
             # that stops early (a refused inject) leaves $pos on the last

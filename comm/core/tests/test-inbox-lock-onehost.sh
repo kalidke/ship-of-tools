@@ -17,8 +17,9 @@
 #     SIGCONTed, finishes it);
 #   - verdict: every line whose writer reported `filed` is present exactly
 #     once and parses with its padding intact, so no two lines interleave;
-#     the ONLY unparseable content is the killed helper's own partial line,
-#     ended by the next writer's newline; every FAILED line is absent;
+#     nothing is unparseable, because the next writer cut the killed helper's
+#     partial line back to the last newline (a final send after every writer
+#     guarantees a next writer); every FAILED line is absent;
 #   - and from THIS machine, a script send against the same folder goes to
 #     the wire, never local.
 #
@@ -150,6 +151,11 @@ kill -9 "$K"; wait "$K" 2>/dev/null
 echo "helper $K killed holding the lock mid-line ($([ -e "$C/killed-ready" ] && echo ready || echo NOT ready)) at line $(lines)"
 wait
 echo "all writers done"
+# One more send after everything: the killed helper's partial line is cut by
+# the next writer, and this one guarantees there is one.
+bash -c 'source "$1/comm-lib.sh"; source "$1/wire-stub.sh"
+    printf "{\"from\":\"final\",\"to\":\"t1h\",\"repo\":\"r\",\"msg\":\"final-0 %s\",\"ts\":\"t\"}\n" "$2" \
+        | sot_inbox_append t1h >/dev/null && echo "filed final-0" || echo "FAILED final-0"' _ "$LIB" "$PAD" > "$C/rep/final" 2>&1
 RUN
 C="$DIR"
 t0=$(date +%s)
@@ -176,16 +182,17 @@ RUNS="$(jq -R -r 'fromjson? | .from' "$F" | uniq | wc -l)"
 MIXED="$(jq -R -r 'fromjson? | .from | sub("[0-9]+$"; "")' "$F" | uniq | wc -l)"
 echo "counts: filed $N_FILED, FAILED $N_FAILED, lines $N_LINES, unparseable $N_BAD; writer runs $RUNS, script/filer alternations $MIXED"
 echo "order by arm (first 12 runs): $(jq -R -r 'fromjson? | .from | sub("[0-9]+$"; "")' "$F" | uniq -c | head -n 12 | awk '{printf "%s x%s ", $2, $1}')"
-verdict "every writer answered every line (8x50 script, 4x50 filer threads, the holder)" \
-    "$([ $((N_FILED + N_FAILED)) -eq 601 ] || echo "$((N_FILED + N_FAILED)) answers, want 601")"
+verdict "every writer answered every line (8x50 script, 4x50 filer threads, the holder, the final send)" \
+    "$([ $((N_FILED + N_FAILED)) -eq 602 ] || echo "$((N_FILED + N_FAILED)) answers, want 602")"
 verdict "the inbox ends in a newline: no partial tail" "$([ -z "$(tail -c1 "$F")" ] || echo "a partial last line")"
-verdict "the only unparseable content is the killed helper's own partial line" \
-    "$([ "$N_BAD" -eq 1 ] && [ "$(cat "$LOCAL/bad")" = "$PARTIAL" ] || { echo "$N_BAD unparseable:"; cut -c1-120 "$LOCAL/bad" | head -3; })"
+verdict "nothing is unparseable: the killed helper's partial line was cut, never kept" \
+    "$([ "$N_BAD" -eq 0 ] && ! grep -q 'killed-half' "$F" || { echo "$N_BAD unparseable:"; cut -c1-120 "$LOCAL/bad" | head -3; })"
 verdict "every filed line is present exactly once, whole, and nothing else is" \
     "$(diff "$LOCAL/filed" "$LOCAL/keys" >/dev/null || { echo "filed vs lines:"; diff "$LOCAL/filed" "$LOCAL/keys" | head -5; })"
 verdict "every FAILED line is absent" \
     "$(comm -12 "$LOCAL/failed" "$LOCAL/keys" | head -3)"
 verdict "the frozen holder's line landed whole" "$(grep -qx 'holder-frozen' "$LOCAL/keys" || echo "absent or torn")"
+echo "inbox tail after the final send (last three lines):"; tail -n 3 "$F" | cut -c1-150 | sed 's/^/  /'
 verdict "the filer threads routed local on $HOST" "$(grep -q '^route .*: Local$' "$C/rep/rust" || echo "no local route")"
 
 # ---- another machine against the same folder -------------------------------

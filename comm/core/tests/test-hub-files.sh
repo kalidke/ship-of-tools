@@ -4,6 +4,8 @@
 #
 #   1. Two writers through `sot_inbox_append` on one inbox give every line
 #      whole: none torn, none interleaved, none lost.
+#      A writer killed mid-line leaves a partial that the next writer CUTS
+#      back to the last newline; a reader never counts it.
 #   2. The lock is the kernel's: a holder killed with -9 frees it at once, so
 #      the next send files with nothing to time out; a FROZEN holder makes the
 #      next send wait its bound and then report FAILED, never `filed`, and when
@@ -196,16 +198,21 @@ case_a_failed_write_is_failed_not_filed() {
     return 0
 }
 
-# S2 — a torn tail (a writer that died mid-line) stays its own line, and the
-# new line stays whole and parses.
-case_a_torn_tail_is_ended_before_the_new_line() {
+# S2 — a torn tail (a writer that died mid-line) is CUT back to the last
+# newline, the cut is noted on the sender's stderr, and the new line is whole.
+case_a_torn_tail_is_cut_before_the_new_line() {
     local out rc=0 f="$INBOX/t-torn.jsonl"
-    printf '%s' '{"from":"died",' > "$f"
-    out="$(append_one t-torn '{"from":"a","msg":"whole"}')" || rc=$?
+    printf '%s\n%s' '{"a":1}' '{"from":"died",' > "$f"
+    out="$(append_one t-torn '{"from":"a","msg":"whole"}' 2>&1)" || rc=$?
     [ "$rc" -eq 0 ] || { echo "  rc $rc ($out)"; return 1; }
-    [ "$(sed -n 1p "$f")" = '{"from":"died",' ] || { echo "  the torn line changed: $(sed -n 1p "$f")"; return 1; }
+    contains "$out" "note: cut 15 bytes of an unterminated line a dead writer left in @t-torn's inbox" \
+        || { echo "  no cut note: $out"; return 1; }
+    [ "$(wc -l < "$f")" -eq 2 ] && [ "$(whole_lines "$f")" = 2 ] || { echo "  not two whole lines: $(cat "$f")"; return 1; }
+    [ "$(sed -n 1p "$f")" = '{"a":1}' ] || { echo "  line 1 changed: $(sed -n 1p "$f")"; return 1; }
     [ "$(sed -n 2p "$f" | jq -r .msg)" = whole ] || { echo "  the new line: $(sed -n 2p "$f")"; return 1; }
-    [ "$(wc -l < "$f")" -eq 2 ] || { echo "  $(wc -l < "$f") lines, want 2"; return 1; }
+    printf '%s' 'no newline at all' > "$f"
+    out="$(append_one t-torn '{"from":"a","msg":"only"}' 2>&1)" || { echo "  rc: $out"; return 1; }
+    [ "$(wc -l < "$f")" -eq 1 ] && [ "$(jq -r .msg "$f")" = only ] || { echo "  not cut to 0: $(cat "$f")"; return 1; }
     return 0
 }
 
@@ -225,13 +232,18 @@ case_a_write_cut_short_leaves_the_file_byte_identical() {
     return 0
 }
 
-# S-a — a tail of NUL bytes (NFS after a client crash) is not a line end.
-case_a_nul_tail_is_ended_before_the_new_line() {
+# S-a — a tail of NUL bytes (NFS after a client crash) is cut like any other;
+# a file of only NULs is cut to empty.
+case_a_nul_tail_is_cut_before_the_new_line() {
     local out rc=0 f="$INBOX/t-nul.jsonl"
     printf '{"from":"old"}\n\0\0\0' > "$f"
-    out="$(append_one t-nul '{"from":"a","msg":"whole"}')" || rc=$?
+    out="$(append_one t-nul '{"from":"a","msg":"whole"}' 2>&1)" || rc=$?
     [ "$rc" -eq 0 ] || { echo "  rc $rc ($out)"; return 1; }
-    [ "$(tail -n 1 "$f" | jq -r .msg)" = whole ] || { echo "  the new line: $(tail -n 1 "$f" | od -c | head -3)"; return 1; }
+    contains "$out" "note: cut 3 bytes" || { echo "  no cut note: $out"; return 1; }
+    [ "$(whole_lines "$f")" = 2 ] || { echo "  not two whole lines: $(od -c "$f" | head -3)"; return 1; }
+    printf '\0\0\0\0' > "$f"
+    out="$(append_one t-nul '{"from":"a","msg":"alone"}' 2>&1)" || { echo "  rc: $out"; return 1; }
+    [ "$(whole_lines "$f")" = 1 ] && [ "$(jq -r .msg "$f")" = alone ] || { echo "  NULs not cut to empty: $(od -c "$f" | head -3)"; return 1; }
     return 0
 }
 
@@ -598,15 +610,196 @@ case_a_hub_line_and_a_local_line_read_alike() {
     return 0
 }
 
+# ---- the cut, the reader's invariant and its two guards (B1 fix-up 5) -------
+
+POLL_OUT=""; POLL_RC=0
+poll_peer() {
+    POLL_OUT="$(cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" \
+        "$BIN/comm-poll.sh" 2>&1)"
+    POLL_RC=$?
+    return 0
+}
+peer_cursor() { cat "$SOT_COMM_HOME/read/$PEER.cursor" 2>/dev/null; }
+count_of() { printf '%s\n' "$1" | grep -c -F -- "$2"; }
+
+# The captain's test: a writer killed mid-line. A poll shows nothing new and
+# leaves the cursor alone; the next real send cuts the tail and says so; the
+# next poll shows the new message once and skips nothing; every line parses.
+case_a_dead_writers_partial_line_is_never_counted_and_is_cut() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    run_send "@$PEER" "first"
+    poll_peer
+    contains "$POLL_OUT" "first" || { echo "  first not shown: $POLL_OUT"; return 1; }
+    local cur; cur="$(peer_cursor)"
+    start_holder 'printf "%s" "{\"from\":\"holder\"," >&8; exec sleep 60' || { echo "  holder never took the lock"; return 1; }
+    kill -9 "$HOLDER"; wait "$HOLDER" 2>/dev/null
+    poll_peer
+    contains "$POLL_OUT" "No new messages." || { echo "  poll showed the partial: $POLL_OUT"; return 1; }
+    [ "$(peer_cursor)" = "$cur" ] || { echo "  cursor moved: '$cur' -> '$(peer_cursor)'"; return 1; }
+    run_send "@$PEER" "second"
+    [ "$SEND_RC" -eq 0 ] || { echo "  send rc $SEND_RC: $SEND_ERR"; return 1; }
+    contains "$SEND_ERR" "note: cut 17 bytes of an unterminated line a dead writer left in @$PEER's inbox" \
+        || { echo "  the sender's stderr had no cut note: $SEND_ERR"; return 1; }
+    poll_peer
+    [ "$(count_of "$POLL_OUT" "second")" -eq 1 ] && ! contains "$POLL_OUT" "first" \
+        || { echo "  second not shown exactly once: $POLL_OUT"; return 1; }
+    [ "$(whole_lines "$INBOX/$PEER.jsonl")" = 2 ] || { echo "  a line does not parse: $(cat "$INBOX/$PEER.jsonl")"; return 1; }
+    echo "  inbox tail (last three lines):"; tail -n 3 "$INBOX/$PEER.jsonl" | sed 's/^/    /'
+    return 0
+}
+
+# Main's test: a FROZEN writer that wrote a whole line holds the lock. A poll
+# and the end-of-turn hook both return within the read bound with the
+# try-again line, the cursor is unchanged, and after SIGCONT every line is
+# delivered exactly once.
+case_a_frozen_writer_makes_a_reader_try_again_never_skip_or_hang() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    run_send "@$PEER" "one"; poll_peer
+    local cur t0; cur="$(peer_cursor)"
+    start_holder 'printf "%s\n" "{\"from\":\"holder\",\"to\":\"t-peer\",\"repo\":\"r\",\"msg\":\"two\",\"ts\":\"t\"}" >&8; kill -STOP $$; :' \
+        || { echo "  holder never took the lock"; return 1; }
+    t0=$SECONDS
+    SOT_INBOX_READ_WAIT_SECS=1 poll_peer_env
+    [ $((SECONDS - t0)) -le 2 ] || { echo "  poll took $((SECONDS - t0))s"; kill -CONT "$HOLDER"; return 1; }
+    [ "$POLL_RC" -eq 75 ] && contains "$POLL_OUT" "the inbox for @$PEER is being written — nothing was read; run comm-poll.sh again" \
+        || { echo "  rc $POLL_RC: $POLL_OUT"; kill -CONT "$HOLDER"; return 1; }
+    [ "$(peer_cursor)" = "$cur" ] || { echo "  cursor moved"; kill -CONT "$HOLDER"; return 1; }
+    local hout hrc
+    ln -sfn "$BIN" "$SOT_COMM_HOME/bin"
+    t0=$SECONDS
+    hout="$(SOT_INBOX_READ_WAIT_SECS=1 idle_hook 2>&1)"; hrc=$?
+    [ $((SECONDS - t0)) -le 3 ] || { echo "  hook took $((SECONDS - t0))s"; kill -CONT "$HOLDER"; return 1; }
+    contains "$hout" "the inbox for @$PEER is being written; it will be checked again at the next turn end" \
+        || { echo "  hook said: $hout (rc $hrc)"; kill -CONT "$HOLDER"; return 1; }
+    ! contains "$hout" '"decision"' || { echo "  the hook blocked the turn on a busy inbox"; kill -CONT "$HOLDER"; return 1; }
+    kill -CONT "$HOLDER"; wait "$HOLDER" 2>/dev/null
+    run_send "@$PEER" "three"
+    poll_peer
+    [ "$(count_of "$POLL_OUT" "two")" -eq 1 ] && [ "$(count_of "$POLL_OUT" "three")" -eq 1 ] && ! contains "$POLL_OUT" "one" \
+        || { echo "  not exactly once each: $POLL_OUT"; return 1; }
+    return 0
+}
+poll_peer_env() {
+    POLL_OUT="$(cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" \
+        "$BIN/comm-poll.sh" 2>&1)"
+    POLL_RC=$?
+}
+idle_hook() {
+    local tr="$WORK/transcript.jsonl"
+    { jq -nc '{type:"user",message:{content:"go"}}'
+      jq -nc '{type:"assistant",message:{content:[{type:"text",text:"all done."}]}}'; } > "$tr"
+    jq -nc --arg p "$tr" '{transcript_path:$p, stop_hook_active:false}' \
+        | ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" \
+            CLAUDE_CODE_SESSION_ID="hub-files-test" bash "$SCRIPT_DIR/../../adapters/claude/hooks/comm-status-idle.sh" )
+}
+
+# The stubbed fsync failure, shell arm. A test-only perl module (loaded by
+# PERL5OPT, production code has no hook) makes IO::Handle::sync start a reader,
+# wait 0.5 s and fail, so the perl program cuts the in-flight line back.
+# $1 = locked: the reader is comm-poll.sh as-is (it waits on the shared lock);
+# $1 = unlocked: its PATH has no flock(1), so it counts the in-flight line.
+stub_fsync_append() {  # MODE — appends "inflight" to the peer's inbox, reader output in $WORK/reader.out
+    local mode="$1" rp="$PATH"
+    mkdir -p "$WORK/perlstub"
+    cat > "$WORK/perlstub/StubSync.pm" <<'PM'
+package StubSync;
+use IO::Handle;
+{ no warnings 'redefine';
+  *IO::Handle::sync = sub {
+      system("bash -c '\"\$STUB_READER\"' >\"\$STUB_OUT\" 2>&1 9>&- &");
+      select(undef, undef, undef, 0.5);
+      $! = 5; return undef;
+  };
+}
+1;
+PM
+    cat > "$WORK/reader.sh" <<RD
+#!/usr/bin/env bash
+cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_INBOX_READ_WAIT_SECS=5 \
+    PATH="\${READER_PATH:-\$PATH}" "$BIN/comm-poll.sh"
+echo "rc=\$?"
+RD
+    chmod +x "$WORK/reader.sh"
+    [ "$mode" = unlocked ] && rp="$WORK/noflock"
+    rm -f "$WORK/reader.out"
+    printf '%s\n' '{"from":"t-sender","to":"t-peer","repo":"r","msg":"inflight","ts":"t"}' \
+        | STUB_READER="$WORK/reader.sh" STUB_OUT="$WORK/reader.out" READER_PATH="$rp" \
+          PERL5LIB="$WORK/perlstub" PERL5OPT="-MStubSync" \
+          bash -c 'source "$1/comm-lib.sh"; sot_inbox_append "$2"' _ "$BIN" "$PEER" >"$WORK/stubappend.out" 2>&1
+    STUB_RC=$?
+    sleep 1   # the reader is detached; give it its second
+    return 0
+}
+make_noflock() {
+    local d
+    mkdir -p "$WORK/noflock"
+    for d in ${PATH//:/ }; do ln -s "$d"/* "$WORK/noflock/" 2>/dev/null; done
+    rm -f "$WORK/noflock"/flock
+}
+
+case_a_reader_on_the_shared_lock_never_counts_a_line_that_is_cut_back() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    run_send "@$PEER" "one"; poll_peer
+    stub_fsync_append locked
+    [ "$STUB_RC" -eq 1 ] || { echo "  the stubbed append did not fail (rc $STUB_RC): $(cat "$WORK/stubappend.out")"; return 1; }
+    local out; out="$(cat "$WORK/reader.out" 2>/dev/null)"
+    contains "$out" "No new messages." && ! contains "$out" inflight && contains "$out" "rc=0" \
+        || { echo "  the locked reader: $out"; return 1; }
+    [ "$(whole_lines "$INBOX/$PEER.jsonl")" = 1 ] || { echo "  the in-flight line was not cut back"; return 1; }
+    run_send "@$PEER" "next"; poll_peer
+    [ "$(count_of "$POLL_OUT" "next")" -eq 1 ] || { echo "  next not shown once: $POLL_OUT"; return 1; }
+    ! contains "$POLL_OUT" "cut back" || { echo "  a needless step-back note: $POLL_OUT"; return 1; }
+    return 0
+}
+
+case_an_unlocked_reader_steps_back_one_line_after_a_cut_back() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    make_noflock
+    run_send "@$PEER" "one"; poll_peer
+    stub_fsync_append unlocked
+    [ "$STUB_RC" -eq 1 ] || { echo "  the stubbed append did not fail (rc $STUB_RC)"; return 1; }
+    local out; out="$(cat "$WORK/reader.out" 2>/dev/null)"
+    contains "$out" inflight || { echo "  the unlocked reader did not count the in-flight line: $out"; return 1; }
+    [ "$(whole_lines "$INBOX/$PEER.jsonl")" = 1 ] || { echo "  the in-flight line was not cut back"; return 1; }
+    run_send "@$PEER" "real"; poll_peer
+    [ "$(count_of "$POLL_OUT" "real")" -eq 1 ] || { echo "  real not shown exactly once (nothing skipped): $POLL_OUT"; return 1; }
+    contains "$POLL_OUT" "the last line read from @$PEER's inbox was cut back; reading from the line before it" \
+        || { echo "  no step-back note: $POLL_OUT"; return 1; }
+    ! contains "$POLL_OUT" "one" || { echo "  a step-back of more than one line: $POLL_OUT"; return 1; }
+    return 0
+}
+
+# The cursor's format: `<count>` (every old file) still works, a legacy ts
+# cursor still migrates, a hash mismatch steps back exactly one line.
+case_the_cursor_takes_a_bare_count_a_ts_and_a_hash_and_steps_back_one() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local f="$INBOX/$PEER.jsonl" cur="$SOT_COMM_HOME/read/$PEER.cursor"
+    mkdir -p "$SOT_COMM_HOME/read"
+    printf '%s\n' '{"from":"a","to":"t-peer","msg":"m1","ts":"2026-01-01T00:00:01Z"}' \
+        '{"from":"a","to":"t-peer","msg":"m2","ts":"2026-01-01T00:00:02Z"}' \
+        '{"from":"a","to":"t-peer","msg":"m3","ts":"2026-01-01T00:00:03Z"}' > "$f"
+    printf '2' > "$cur"; poll_peer
+    [ "$(count_of "$POLL_OUT" m3)" -eq 1 ] && ! contains "$POLL_OUT" m2 || { echo "  bare count: $POLL_OUT"; return 1; }
+    [ "$(peer_cursor | cut -d' ' -f1)" = 3 ] && [ -n "$(peer_cursor | cut -d' ' -f2)" ] || { echo "  cursor not '3 <hash>': $(peer_cursor)"; return 1; }
+    printf '2026-01-01T00:00:01Z' > "$cur"; poll_peer
+    [ "$(count_of "$POLL_OUT" m2)" -eq 1 ] && [ "$(count_of "$POLL_OUT" m3)" -eq 1 ] && ! contains "$POLL_OUT" m1 \
+        || { echo "  ts cursor: $POLL_OUT"; return 1; }
+    # a hash naming a line that is no longer line 3: one step back, not two
+    printf '3 1-1' > "$cur"; poll_peer
+    contains "$POLL_OUT" "was cut back" && [ "$(count_of "$POLL_OUT" m3)" -eq 1 ] && ! contains "$POLL_OUT" m2 \
+        || { echo "  hash mismatch: $POLL_OUT"; return 1; }
+    return 0
+}
+
 check "two writers through the lock give 400 whole lines" case_two_writers_give_400_whole_lines
 check "a holder killed with -9 frees the lock at once and the send files" case_a_killed_holder_frees_the_lock_at_once
 check "a frozen holder makes the send wait its bound and report FAILED, never filed" case_a_frozen_holder_makes_the_send_wait_then_fail
 check "an append that fails under the lock is FAILED with its error" case_a_failed_write_is_failed_not_filed
 check "a script whose lock identity equals the record appends locally" case_a_shared_nfs4_lock_manager_appends_locally
 check "a two-line record whose line 1 matches appends locally" case_a_two_line_record_whose_line_1_matches_appends_locally
-check "S2: a torn tail stays its own line and the new line stays whole" case_a_torn_tail_is_ended_before_the_new_line
+check "S2: a torn tail is cut back to the last newline and the new line is whole" case_a_torn_tail_is_cut_before_the_new_line
 check "S2: a write cut short by the file-size limit is FAILED and leaves the file byte-identical" case_a_write_cut_short_leaves_the_file_byte_identical
-check "S-a: a NUL-filled tail is ended before the new line" case_a_nul_tail_is_ended_before_the_new_line
+check "S-a: a NUL-filled tail is cut, and a file of only NULs is cut to empty" case_a_nul_tail_is_cut_before_the_new_line
 check "S4: a directed wire send with no daemon found is FAILED -> @h, exit 1" case_a_wire_send_with_no_daemon_is_failed
 check "T5 (faked Windows): a send is one comm.file frame over the pipe, never a local append" case_a_windows_send_is_one_comm_file_over_the_pipe
 check "a v3 record naming this machine's own none@<machine-id> appends locally" case_a_v3_record_naming_this_machine_appends_locally
@@ -619,6 +812,12 @@ check "the wait is one number, 10, in both languages, and no lease constant is s
 check "T5: a wire send is one comm.file frame and prints the hub's answer; not_here alone falls back" case_a_wire_send_prints_the_hubs_answer
 check "the comm.file read window outlasts the hub's lock wait: a line filed after it is filed" case_the_read_window_outlasts_the_hubs_lock_wait
 check "T6: a hub-filed and a locally-filed line read alike and both advance the cursor" case_a_hub_line_and_a_local_line_read_alike
+
+check "a dead writer's partial line is never counted; the next send cuts it and says so; nothing is skipped" case_a_dead_writers_partial_line_is_never_counted_and_is_cut
+check "a frozen writer makes a poll and the end-of-turn hook say try again within the bound; nothing is skipped" case_a_frozen_writer_makes_a_reader_try_again_never_skip_or_hang
+check "stubbed fsync failure (shell arm), locked reader: waits, counts nothing, skips nothing" case_a_reader_on_the_shared_lock_never_counts_a_line_that_is_cut_back
+check "stubbed fsync failure (shell arm), unlocked reader: steps back one line and skips nothing" case_an_unlocked_reader_steps_back_one_line_after_a_cut_back
+check "the cursor takes a bare count, a ts and a hash, and a mismatch steps back exactly one line" case_the_cursor_takes_a_bare_count_a_ts_and_a_hash_and_steps_back_one
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

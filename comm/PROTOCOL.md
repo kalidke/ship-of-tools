@@ -16,7 +16,7 @@ all clients are mutually addressable through the same registry and inboxes.
   registry.json            # who is reachable + liveness  (source of truth for discovery)
   .registry.lock/          # mkdir-based spinlock for registry writes
   inbox/<name>.jsonl       # durable per-recipient inbox (append-only)
-  read/<name>.cursor       # per-recipient read cursor (COUNT of inbox lines shown)
+  read/<name>.cursor       # per-recipient read cursor (`<count> <crc>-<len>`: lines shown, and a hash of the last)
   self/<host>__<pane>.txt  # this pane's declared agent name (identity recovery)
 ```
 
@@ -75,7 +75,10 @@ and every comparison was strictly-greater, so a frame filed in the same second
 as one already read was shown to nobody while its sender was told it had
 landed. A count cannot lose a frame that way. `comm-poll.sh` is the only writer;
 a legacy timestamp cursor is converted on first read (the count of lines at or
-before it).
+before it). The cursor is `<count> <crc>-<len>`: the count, then the `cksum` of
+line `<count>`. If that line no longer hashes so, a cut-back removed it, and the
+reader steps back one line and says so. A count-only cursor still works. Only
+newline-terminated lines are ever counted.
 
 `to` equal to the handle is directed mail and counts as unread; `""` is a
 broadcast copy, filed and read at the next poll, never counted as unread. A
@@ -102,7 +105,8 @@ newer declaration moves it. A box whose daemon runs no rows holds no
 addresses.
 
 **Inbox.** One file per handle, `inbox/<handle>.jsonl`, in the box's comm
-folder. The read cursor is a line count, kept in `read/<handle>.cursor`.
+folder. The read cursor is a line count and a hash of its last line, kept in
+`read/<handle>.cursor`.
 Unread mail is any line past it addressed to this handle by someone else.
 
 **Sending** picks one of two routes, by whether the sender's own comm folder
@@ -112,9 +116,10 @@ lists the receiver:
    goes in under the inbox lock — the kernel's file lock (`flock`) on
    `inbox/<handle>.lock`, taken by the daemon's filer and the scripts alike.
    The inbox is opened inside the lock and closed before it is released.
-   "Filed" means kept: the line is flushed to disk before the answer, a torn
-   last line is ended first so the new one stays whole, and a failed append
-   is cut back to the length before it, taken by a seek to the end of the
+   "Filed" means kept: the line is flushed to disk before the answer, an
+   unterminated last line (a dead writer's partial) is cut back to the last
+   newline first, and logged, so the new one stays whole, and a failed append
+   is cut back to the length before it (after that cut), taken by a seek to the end of the
    descriptor opened under the lock, never from a path's cached size. A
    lock excludes only writers that share one lock manager, so the folder's
    hub records its own in `inbox-lock-manager`, beside `registry.json`, when
@@ -163,6 +168,18 @@ lists the receiver:
    hub, and reads ONE answer. The hub files for its own home: when its comm
    folder lists the handle and a session holds it, it adds the line under
    the same inbox lock and answers `ok`.
+
+**Readers** have two guards against a line that a failed append then cuts
+back. Where a writer would append locally (`flock(1)`, Linux, identity equal
+to line 1), the count-and-read runs under a shared lock on
+`inbox/<handle>.lock`, bounded by `SOT_INBOX_READ_WAIT_SECS` (default 3); a
+timeout means try again, never a skip: `comm-poll.sh` says the inbox is being
+written, leaves the cursor and exits 75, the end-of-turn hook prints that the
+inbox was busy and does not block the turn, and a wake reader checks again on
+its next tick. On every host the hashed cursor steps back one line when a
+cut-back removed the last line read. The accepted residual: a reader on a
+mismatched host may deliver a line whose sender was told `FAILED`, so a retry
+can duplicate it; it can never lose one.
 
 The daemon's filer checks liveness first: a row still runs a session with
 that handle, or the session was active in the last ten minutes. A script's
@@ -242,7 +259,7 @@ Monitor exists.
 | join        | `comm-join.sh`   | **Superseded by ADR 0049, removed in B6** — the handle is derived (folder plus box name), not chosen by flag. `--name <n>` `--expertise "a, b"`; writes registry + self file. Refuses (exit 3) when the self-file slot is already claimed for a DIFFERENT project — the slot is keyed by the workspace row in the environment while the identity comes from the shell's cwd, and a row that comes to name another project's session reads that session's mail. `--repin` is the deliberate override |
 | audit slots | `comm-self-audit.sh` | compares each workspace-keyed slot's key against the `repo=` it carries; reports the ones naming a different project (exit 1), passes a suffixed or path-disambiguated name |
 | send        | `comm-send.sh`   | `@name "msg"` or `--broadcast "msg"`; recipient is only the first positional `@arg`, so the message may itself begin with `@`. **Either verb routes**: a directed target this box's registry names is filed by route 1 of Delivery (`comm-relay.sh send` execs here), and one it cannot name goes to the hub as `comm.file` (this execs `comm-relay.sh send`). The triggers are mutually exclusive, so a session never has to know which verb reaches a peer |
-| poll        | `comm-poll.sh`   | shows the inbox lines past the read cursor, then advances it |
+| poll        | `comm-poll.sh`   | shows the inbox lines past the read cursor, then advances it; a busy inbox exits 75 (try again) |
 | list        | `comm-list.sh`   | all agents + live/stale + (me) marker |
 | leave       | `comm-leave.sh`  | removes self from registry; `--name <handle>` removes an orphan row (registry only — `comm-despawn.sh` is full teardown) |
 

@@ -11,7 +11,8 @@ inboxes live under `~/.sot-comm/`. Full contract: `comm/PROTOCOL.md`.
 **What a session is told at start.** `comm-context.sh` prints your handle. Send
 with `comm-send.sh @handle "text"` and read its one result. When
 `[sot-comm] you have mail` appears, or your end-of-turn check says so, run
-`comm-poll.sh`. To wait for a reply, end your turn. Run the session-start step
+`comm-poll.sh`; if it says the inbox is being written (exit 75), run it again.
+To wait for a reply, end your turn. Run the session-start step
 once, when a session first starts — not again on every resume.
 
 This is ADR 0049's design of record, landing in stages: a send's verdict now is

@@ -71,7 +71,7 @@ case_a_torn_line_is_skipped_and_counted_as_read() {
     case "$POLL_OUT" in *third*) ;; *) echo "  the line AFTER the torn one was not shown: $POLL_OUT"; return 1 ;; esac
     # Counted as read: the cursor reaches every line, so one bad line cannot pin
     # it and a second poll has nothing left to show.
-    [ "$(cat "$CURSOR" 2>/dev/null)" = "3" ] \
+    [ "$(cut -d" " -f1 "$CURSOR" 2>/dev/null)" = "3" ] \
         || { echo "  cursor is '$(cat "$CURSOR" 2>/dev/null)', want 3 (the torn line counts as read)"; return 1; }
     poll
     case "$POLL_OUT" in *"No new messages"*) ;; *) echo "  a second poll re-showed messages: $POLL_OUT"; return 1 ;; esac
@@ -87,7 +87,7 @@ case_an_offset_past_the_end_resets() {
     poll
     [ "$POLL_RC" -eq 0 ] || { echo "  comm-poll.sh exited $POLL_RC: $POLL_OUT"; return 1; }
     case "$POLL_OUT" in *"only one"*) ;; *) echo "  a stale offset silenced the inbox: $POLL_OUT"; return 1 ;; esac
-    [ "$(cat "$CURSOR" 2>/dev/null)" = "1" ] \
+    [ "$(cut -d" " -f1 "$CURSOR" 2>/dev/null)" = "1" ] \
         || { echo "  cursor is '$(cat "$CURSOR" 2>/dev/null)', want 1"; return 1; }
     return 0
 }
@@ -104,7 +104,7 @@ case_legacy_cursor_stops_at_the_first_unread_stamp() {
     poll
     [ "$POLL_RC" -eq 0 ] || { echo "  comm-poll.sh exited $POLL_RC: $POLL_OUT"; return 1; }
     case "$POLL_OUT" in *"from the fast clock"*) ;; *) echo "  the unread out-of-order line was never shown: $POLL_OUT"; return 1 ;; esac
-    [ "$(cat "$CURSOR" 2>/dev/null)" = "2" ] \
+    [ "$(cut -d" " -f1 "$CURSOR" 2>/dev/null)" = "2" ] \
         || { echo "  cursor is '$(cat "$CURSOR" 2>/dev/null)', want 2 (migrated to a count)"; return 1; }
     return 0
 }
@@ -126,7 +126,7 @@ case_selftest_frames_are_read_but_never_shown() {
     case "$POLL_OUT" in *"No new messages"*) ;; *) echo "  a selftest frame was shown as a message: $POLL_OUT"; return 1 ;; esac
     # Read, not shown: a cursor stuck behind one re-showed every frame after it
     # for as long as it sat there.
-    [ "$(cat "$CURSOR" 2>/dev/null)" = "1" ] \
+    [ "$(cut -d" " -f1 "$CURSOR" 2>/dev/null)" = "1" ] \
         || { echo "  cursor is '$(cat "$CURSOR" 2>/dev/null)', want 1 (a selftest frame still counts as read)"; return 1; }
     return 0
 }

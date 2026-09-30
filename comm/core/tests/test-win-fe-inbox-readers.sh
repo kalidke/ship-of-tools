@@ -216,7 +216,7 @@ case_the_two_cursors_advance_independently() {
     for want in "per-handle one" "frontend one" "frontend two"; do
         case "$POLL_OUT" in *"$want"*) ;; *) echo "  poll did not show '$want': $POLL_OUT"; return 1 ;; esac
     done
-    [ "$(cat "$CUR" 2>/dev/null)" = "1" ] \
+    [ "$(cut -d" " -f1 "$CUR" 2>/dev/null)" = "1" ] \
         || { echo "  per-handle cursor is '$(cat "$CUR" 2>/dev/null)', want 1"; return 1; }
     [ "$(cat "$FE_CUR" 2>/dev/null)" = "2" ] \
         || { echo "  frontend cursor is '$(cat "$FE_CUR" 2>/dev/null)', want 2"; return 1; }
@@ -227,7 +227,7 @@ case_the_two_cursors_advance_independently() {
     poll_win
     case "$POLL_OUT" in *"frontend three"*) ;; *) echo "  poll missed the new frontend frame: $POLL_OUT"; return 1 ;; esac
     case "$POLL_OUT" in *"frontend one"*) echo "  poll re-showed an already-read frontend frame: $POLL_OUT"; return 1 ;; esac
-    [ "$(cat "$CUR" 2>/dev/null)" = "1" ] \
+    [ "$(cut -d" " -f1 "$CUR" 2>/dev/null)" = "1" ] \
         || { echo "  the per-handle cursor moved with the frontend file: '$(cat "$CUR" 2>/dev/null)'"; return 1; }
     [ "$(cat "$FE_CUR" 2>/dev/null)" = "3" ] \
         || { echo "  frontend cursor is '$(cat "$FE_CUR" 2>/dev/null)', want 3"; return 1; }

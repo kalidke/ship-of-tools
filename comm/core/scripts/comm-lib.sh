@@ -600,6 +600,15 @@ registry_touch() {  # name — bump last_seen if present
 # not answer is FAILED. A daemon makes the same check at each filing: a guest
 # on the hub's folder forwards what it cannot prove to the hub, and the hub
 # refuses it with the recovery named.
+#
+# An unterminated tail a dead writer left is CUT back to the last newline under
+# the lock (a note on stderr says how many bytes), never ended. Readers count
+# newline-terminated lines only, so a cut never moves a cursor, and two guards
+# cover a line a failed append then cuts back: where a writer would append
+# locally the reader's count-and-read takes a shared lock bounded by
+# SOT_INBOX_READ_WAIT_SECS (a timeout means try again, exit 75), and on every
+# host the cursor keeps `<count> <crc>-<len>` of its last line, so a reader
+# steps back one line when a cut-back removed it.
 SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-10}"
 _sot_have_flock() { command -v flock >/dev/null 2>&1; }
 _sot_findmnt() { findmnt "$@"; }
@@ -631,39 +640,74 @@ sot_inbox_lock_identity() {  # DIR
 # 0 when this script takes the same lock manager as every other writer of
 # the inbox (the record's line 1); a missing, empty or bare `none` record
 # never matches.
-_sot_inbox_lock_is_ours() {
-    local rec="" id
+_sot_inbox_lock_is_ours() {  # [DIR]
+    local rec="" id dir="${1:-$INBOX_DIR}"
     _sot_have_flock && command -v perl >/dev/null 2>&1 && [ "$(uname -s 2>/dev/null)" = Linux ] || return 1
     { IFS= read -r rec < "$COMM_HOME/inbox-lock-manager"; } 2>/dev/null
-    id="$(sot_inbox_lock_identity "$INBOX_DIR")"
+    id="$(sot_inbox_lock_identity "$dir")"
     [ -n "$id" ] && [ "$id" != none ] && [ "$id" = "$rec" ]
 }
 # _sot_append_whole FILE LINE — under the caller's lock, LINE goes in whole or
 # not at all, in ONE perl process on ONE descriptor: the length before is a
 # seek to its end (on NFS the seek asks the server; a path stat can be
-# answered from the attribute cache and cut away a line another host filed),
-# a torn tail (a writer that died mid-line, or NULs after a client crash) is
-# ended first so it stays its own line, 0 means written, fsynced and closed,
-# and any failure cuts FILE back to that length on the same descriptor. LINE
-# goes on stdin, never argv.
+# answered from the attribute cache and cut away a line another host filed).
+# An unterminated tail (a writer that died mid-line, or NULs after a client
+# crash) is CUT back to the last newline first, in blocks on that descriptor,
+# and the cut is noted on stderr: everything past the last newline was
+# written by a writer that never answered `filed`, so nothing kept is lost.
+# 0 means written, fsynced and closed, and any failure cuts FILE back to the
+# length after that cut, on the same descriptor. LINE goes on stdin, never
+# argv.
 _sot_append_whole() {  # FILE LINE
     printf '%s\n' "$2" | perl -e '
         use strict; use Fcntl qw(O_RDWR O_APPEND O_CREAT SEEK_SET SEEK_END); use IO::Handle;
         my $f = shift; my $buf = do { local $/; <STDIN> }; my ($fh, $len);
         sub fail { my $e = "$!"; truncate($fh, $len) if defined $len; print STDERR "$f: $e\n"; exit 1 }
+        sub readat { my ($at, $n) = @_; my $got = "";
+            defined sysseek($fh, $at, SEEK_SET) or fail();
+            while (length($got) < $n) { my $r = sysread($fh, $got, $n - length($got), length($got)) // fail(); $r > 0 or fail() }
+            $got }
         sysopen($fh, $f, O_RDWR | O_APPEND | O_CREAT, 0666) or fail();
         defined($len = sysseek($fh, 0, SEEK_END)) or fail();
         $len += 0;   # sysseek says "0 but true" for 0
-        if ($len > 0) {
-            defined sysseek($fh, $len - 1, SEEK_SET) or fail();
-            (sysread($fh, my $last, 1) // fail()) == 1 or fail();
-            $buf = "\n$buf" if $last ne "\n";
+        if ($len > 0 && readat($len - 1, 1) ne "\n") {
+            my ($end, $cut) = ($len, 0);
+            while ($end > 0) {
+                my $start = $end > 4096 ? $end - 4096 : 0;
+                my $i = rindex(readat($start, $end - $start), "\n");
+                if ($i >= 0) { $cut = $start + $i + 1; last }
+                $end = $start;
+            }
+            truncate($fh, $cut) or fail();
+            my ($h) = $f =~ m{([^/]*)\.jsonl$};
+            print STDERR "note: cut " . ($len - $cut) . " bytes of an unterminated line a dead writer left in \@$h\x27s inbox\n";
+            $len = $cut;
         }
         for (my $off = 0; $off < length $buf;) { $off += syswrite($fh, $buf, length($buf) - $off, $off) // fail() }
         $fh->sync or fail();
         close($fh) or fail();
     ' "$1"
 }
+# A reader that polls after a writer's `write` but before its `fsync` fails
+# would count a line the writer then cuts back, and its line-count cursor would
+# sit one past the end and skip the next message. Where a writer would append
+# locally (the test above) a reader therefore counts and reads under a SHARED
+# lock on the writers' `inbox/<h>.lock`, waiting at most
+# SOT_INBOX_READ_WAIT_SECS. sot_inbox_read_lock takes it on fd 9 of the calling
+# shell (never a subshell: the reader's counters must survive) and returns 0
+# when held or when no lock applies, 75 on a timeout — which means try again,
+# never a skip. Everywhere else the reader is unlocked and the cursor's line
+# hash (sot_cursor_write) covers it.
+SOT_INBOX_READ_WAIT_SECS="${SOT_INBOX_READ_WAIT_SECS:-3}"
+sot_inbox_read_lock() {  # HANDLE
+    local rc=0
+    _sot_inbox_lock_is_ours "$COMM_HOME/inbox" || return 0
+    { exec 9>> "$COMM_HOME/inbox/$1.lock"; } 2>/dev/null || return 0
+    flock -s -w "$SOT_INBOX_READ_WAIT_SECS" -E 75 9 || rc=$?
+    [ "$rc" -eq 0 ] || exec 9>&-
+    return "$rc"
+}
+sot_inbox_read_unlock() { exec 9>&-; }
 sot_inbox_append() {  # HANDLE
     local h="$1" line err rc=0
     line="$(cat)"
@@ -677,10 +721,11 @@ sot_inbox_append() {  # HANDLE
                 _sot_append_whole "$INBOX_DIR/$h.jsonl" "$line"
               ) 9>> "$INBOX_DIR/$h.lock"; } 2>&1 )" || rc=$?
     case "$rc" in
-        0)  return 0 ;;
+        0)  [ -z "$err" ] || printf '%s\n' "$err" >&2   # the cut's note
+            return 0 ;;
         75) printf 'the inbox lock for @%s was held for %ss — nothing was appended\n' \
                 "$h" "$SOT_INBOX_LOCK_WAIT_SECS" ;;
-        *)  printf 'the append failed: %s\n' "${err%%$'\n'*}" ;;
+        *)  printf 'the append failed: %s\n' "${err##*$'\n'}" ;;   # the last line: a cut's note may precede it
     esac
     return 1
 }
@@ -1378,15 +1423,31 @@ _sot_scan_pids() {
 # Anything unreadable yields 0. On doubt this biases LOW: showing a frame twice
 # is tolerable where dropping one is not.
 sot_cursor_offset() {
-    local handle="$1" cur n
+    local handle="$1" cur n cnt hash="" total
     # $COMM_HOME, not the source-time $READ_DIR: comm-wake.sh re-derives its
     # home inside its own main, and a helper reading a different one than its
     # caller is a silently wrong answer.
     cur="$(cat "$COMM_HOME/read/$handle.cursor" 2>/dev/null || true)"
     [ -n "$cur" ] || { printf '0\n'; return 0; }
-    case "$cur" in
+    # `<count>` (every cursor written before the hash existed) or
+    # `<count> <hash>`; anything else is the legacy ts form.
+    cnt="${cur%% *}"
+    [ "$cnt" = "$cur" ] || hash="${cur#* }"
+    case "$cnt" in
         ''|*[!0-9]*) ;;
-        *) _sot_clamp_offset "$handle" "$cur"; return 0 ;;
+        *)
+            total="$(sot_inbox_lines "$handle")"
+            if [ "$cnt" -gt "$total" ]; then printf '0\n'; return 0; fi
+            # A hash says which line the cursor consumed last. If line CNT is
+            # no longer it, a cut-back removed it (the append that wrote it
+            # failed after a reader counted it), and a cut-back removes at most
+            # that one line: one step back is exact.
+            if [ "$cnt" -gt 0 ] && [ -n "$hash" ] \
+                && [ "$(sot_line_hash "$COMM_HOME/inbox/$handle.jsonl" "$cnt")" != "$hash" ]; then
+                printf "note: the last line read from @%s's inbox was cut back; reading from the line before it\n" "$handle" >&2
+                cnt=$((cnt - 1))
+            fi
+            printf '%s\n' "$cnt"; return 0 ;;
     esac
     n="$(sot_jq -Rrs --arg cur "$cur" '
         [ split("\n")[] | select(length > 0)
@@ -1397,6 +1458,24 @@ sot_cursor_offset() {
     _sot_clamp_offset "$handle" "$n"
 }
 
+# sot_line_hash FILE N — `<crc>-<len>` (cksum, POSIX, in git-bash too) of line
+# N's bytes without its newline; empty when there is no such line.
+sot_line_hash() {
+    sed -n "${2}p" "$1" 2>/dev/null | tr -d '\n' | cksum | awk '{print $1 "-" $2}'
+}
+
+# sot_cursor_write HANDLE COUNT — the read cursor: `<count> <hash of line
+# COUNT>`, or just `0`. The caller holds the read lock where one applies and
+# has read no further than COUNT.
+sot_cursor_write() {
+    local h="$1" n="$2"
+    if [ "$n" -gt 0 ]; then
+        printf '%s %s' "$n" "$(sot_line_hash "$COMM_HOME/inbox/$h.jsonl" "$n")" > "$COMM_HOME/read/$h.cursor"
+    else
+        printf '0' > "$COMM_HOME/read/$h.cursor"
+    fi
+}
+
 # _sot_clamp_offset HANDLE N — N, or 0 when it points past the end of the inbox.
 _sot_clamp_offset() {
     local total; total="$(sot_inbox_lines "$1")"
@@ -1404,6 +1483,10 @@ _sot_clamp_offset() {
 }
 
 # sot_file_lines PATH — PATH's line count, 0 when it is absent or unreadable.
+# The invariant every inbox reader leans on: this counts newline-TERMINATED
+# lines only (`wc -l`), and readers read `sed -n "a,${count}p"` up to that
+# count, so an unterminated tail a dead writer left is never counted, never
+# read, and its later cut never moves a cursor.
 # THE line counter: every inbox reader needs one, and each copy was a chance
 # to get the two quiet parts wrong. Readability is tested FIRST because the
 # SHELL, not wc, prints "No such file" for `< missing` — before wc's own
@@ -1473,6 +1556,8 @@ sot_fe_inbox_lines() {
 # appends, so an offset past the end means the file was cleared, truncated or
 # restored by hand — exactly the moment nobody suspects the cursor, and left
 # as-is this handle never sees another frontend frame.
+# The FE cursor stays count-only, with no line hash and no read lock: the
+# frontend that writes fe-inbox.jsonl never cuts a line back.
 sot_fe_cursor_offset() {
     local cur total
     cur="$(cat "$COMM_HOME/read/$1.fe.cursor" 2>/dev/null || true)"

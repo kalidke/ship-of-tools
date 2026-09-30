@@ -131,6 +131,15 @@ while true; do
     # correctly reads as gone after the original parent exits.
     kill -0 "$PPID" 2>/dev/null || exit 0
     for i in "${!sources[@]}"; do
+        # The per-handle inbox is counted and read under the shared read lock
+        # (comm-lib.sh, sot_inbox_read_lock), so a writer's in-flight line is
+        # never counted and then cut back; a busy inbox is checked again at the
+        # next tick. Every read is `NR>counted && NR<=c`: only newline-
+        # terminated lines, never a dead writer's partial tail.
+        locked=0
+        case "${sources[$i]}" in
+            "$INBOX_DIR/"*) sot_inbox_read_lock "$handle" || continue; locked=1 ;;
+        esac
         c=$(sot_file_lines "${sources[$i]}")
         # File shrank/rotated/recreated — reset to 0 so the next compare re-reads the
         # whole (now-smaller) file from line 1. Resetting to $c instead would skip any
@@ -139,11 +148,12 @@ while true; do
         [ "$c" -lt "${counts[$i]}" ] && counts[$i]=0
         if [ "$c" -gt "${counts[$i]}" ]; then
             # --arg me passes the handle safely (no string-splice).
-            awk -v s="${counts[$i]}" 'NR>s' "${sources[$i]}" | while IFS= read -r l; do
+            awk -v s="${counts[$i]}" -v e="$c" 'NR>s && NR<=e' "${sources[$i]}" | while IFS= read -r l; do
                 printf '%s' "$l" | jq -rc --arg me "$handle" "${filters[$i]}" 2>/dev/null
             done
             counts[$i]=$c
         fi
+        [ "$locked" -eq 0 ] || sot_inbox_read_unlock
     done
     sleep 2
 done

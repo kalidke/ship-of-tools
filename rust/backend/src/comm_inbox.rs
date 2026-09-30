@@ -73,6 +73,20 @@ pub fn file_frame(
     ts: &str,
     wait: Duration,
 ) -> Result<(), String> {
+    file_frame_with(inbox_dir, from, to, broadcast, text, ts, wait, File::sync_data)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn file_frame_with(
+    inbox_dir: &Path,
+    from: &str,
+    to: &str,
+    broadcast: bool,
+    text: &str,
+    ts: &str,
+    wait: Duration,
+    sync: impl FnOnce(&File) -> std::io::Result<()>,
+) -> Result<(), String> {
     let failed = |e: std::io::Error| format!("the append failed: {e}");
     let mut line = serde_json::to_string(&Line {
         from,
@@ -110,36 +124,68 @@ pub fn file_frame(
             ))
         }
     };
-    let written = append_line(&inbox_dir.join(format!("{to}.jsonl")), &line);
+    let written = append_line(&inbox_dir.join(format!("{to}.jsonl")), &line, sync);
     // The inbox is closed inside `append_line`; only now does the lock go.
     drop(lock);
     written.map_err(failed)
 }
 
-/// `line` goes in whole or not at all ("filed" means kept): a torn tail (a
-/// writer that died mid-line) is ended first so it stays its own line, the
-/// bytes are flushed to disk on this descriptor before `Ok`, and any error
-/// cuts the file back to its length before. That length is a seek to the end
-/// of this descriptor, opened under the lock — on NFS the seek asks the
-/// server — never a size that an attribute cache can answer stale.
-fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+/// `line` goes in whole or not at all ("filed" means kept): an unterminated
+/// tail (a writer that died mid-line, or NULs after a client crash) is cut
+/// back to the last newline first — everything past it was written by a
+/// writer that never answered `filed`, so nothing kept is lost — the bytes are
+/// flushed to disk on this descriptor by `sync` before `Ok`, and any error
+/// cuts the file back to its length after that cut. That length is a seek to
+/// the end of this descriptor, opened under the lock — on NFS the seek asks
+/// the server — never a size that an attribute cache can answer stale.
+/// Production passes `File::sync_data` as `sync`; a test passes one that
+/// fails.
+fn append_line(
+    path: &Path,
+    line: &str,
+    sync: impl FnOnce(&File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let mut f: File = OpenOptions::new().create(true).read(true).append(true).open(path)?;
-    let len = f.seek(SeekFrom::End(0))?;
-    let mut last = [b'\n'];
+    let mut len = f.seek(SeekFrom::End(0))?;
     if len > 0 {
         f.seek(SeekFrom::Start(len - 1))?;
+        let mut last = [0u8];
         f.read_exact(&mut last)?;
+        if last[0] != b'\n' {
+            let keep = end_of_last_line(&mut f, len)?;
+            f.set_len(keep)?;
+            tracing::warn!(
+                "cut {} bytes of an unterminated line a dead writer left in {}",
+                len - keep,
+                path.display()
+            );
+            len = keep;
+        }
     }
-    let mut bytes = Vec::with_capacity(line.len() + 1);
-    if last[0] != b'\n' {
-        bytes.push(b'\n');
-    }
-    bytes.extend_from_slice(line.as_bytes());
-    let written = f.write_all(&bytes).and_then(|()| f.sync_data());
+    let written = f.write_all(line.as_bytes()).and_then(|()| sync(&f));
     if written.is_err() {
         let _ = f.set_len(len);
     }
     written
+}
+
+/// The offset just past the last `\n` in the first `len` bytes of `f`, read
+/// backwards in blocks; 0 when there is none.
+fn end_of_last_line(f: &mut File, len: u64) -> std::io::Result<u64> {
+    const BLOCK: u64 = 4096;
+    let mut end = len;
+    let mut buf = vec![0u8; BLOCK as usize];
+    while end > 0 {
+        let start = end.saturating_sub(BLOCK);
+        let n = (end - start) as usize;
+        f.seek(SeekFrom::Start(start))?;
+        f.read_exact(&mut buf[..n])?;
+        if let Some(i) = buf[..n].iter().rposition(|&b| b == b'\n') {
+            return Ok(start + i as u64 + 1);
+        }
+        end = start;
+    }
+    Ok(0)
 }
 
 /// The lock record's name, beside `registry.json` — never in `inbox/`, and
@@ -619,17 +665,157 @@ mod tests {
         assert_eq!(seen.len(), 400, "a line was lost or doubled");
     }
 
-    // S2 — a torn tail stays its own line and the new line stays whole.
+    fn inbox_lines(p: &Path) -> Vec<String> {
+        std::fs::read_to_string(p).unwrap().lines().map(str::to_string).collect()
+    }
+
+    // S2 — an unterminated tail is CUT back to the last newline, the new line
+    // goes in whole and last.
     #[test]
-    fn a_torn_tail_is_ended_before_the_new_line() {
+    fn a_torn_tail_is_cut_before_the_new_line() {
         let d = tempfile::tempdir().unwrap();
-        std::fs::write(d.path().join("h.jsonl"), "{\"from\":\"died\",").unwrap();
+        let f = d.path().join("h.jsonl");
+        std::fs::write(&f, "{\"a\":1}\n{\"from\":\"died\",").unwrap();
         file_frame(d.path(), "a", "h", false, "whole", "t", Duration::from_secs(1)).unwrap();
-        let raw = std::fs::read_to_string(d.path().join("h.jsonl")).unwrap();
-        let lines: Vec<&str> = raw.lines().collect();
-        assert_eq!(lines[0], "{\"from\":\"died\",");
-        let v: serde_json::Value = serde_json::from_str(lines[1]).expect("the new line parses");
-        assert_eq!((lines.len(), v["msg"].as_str()), (2, Some("whole")));
+        let lines = read_lines(&f);
+        assert_eq!(lines.len(), 2, "{:?}", std::fs::read_to_string(&f));
+        assert_eq!(lines[0]["a"], 1);
+        assert_eq!(lines[1]["msg"], "whole");
+    }
+
+    // S-a — NULs after a client crash are cut like any tail: a file of only
+    // NULs is cut to empty and then holds the new line; no newline at all is
+    // cut to 0.
+    #[test]
+    fn a_nul_tail_and_a_newline_free_file_are_cut() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("h.jsonl");
+        std::fs::write(&f, [0u8; 5000]).unwrap();
+        file_frame(d.path(), "a", "h", false, "alone", "t", Duration::from_secs(1)).unwrap();
+        assert_eq!(read_lines(&f).len(), 1);
+        std::fs::write(&f, "{\"a\":1}\n\0\0\0").unwrap();
+        file_frame(d.path(), "a", "h", false, "after", "t", Duration::from_secs(1)).unwrap();
+        assert_eq!(read_lines(&f).len(), 2);
+        std::fs::write(&f, "no newline at all").unwrap();
+        file_frame(d.path(), "a", "h", false, "only", "t", Duration::from_secs(1)).unwrap();
+        let lines = read_lines(&f);
+        assert_eq!((lines.len(), lines[0]["msg"].as_str()), (1, Some("only")));
+    }
+
+    // A tail longer than one block is still cut at the last newline.
+    #[test]
+    fn a_tail_longer_than_a_block_is_cut_at_the_last_newline() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("h.jsonl");
+        std::fs::write(&f, format!("{{\"a\":1}}\n{}", "x".repeat(10_000))).unwrap();
+        file_frame(d.path(), "a", "h", false, "whole", "t", Duration::from_secs(1)).unwrap();
+        assert_eq!(inbox_lines(&f).len(), 2);
+        assert_eq!(read_lines(&f)[0]["a"], 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn scripts_lib() -> String {
+        format!("{}/../../comm/core/scripts/comm-lib.sh", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn shell(home: &Path, path: &str, script: &str) -> std::process::Output {
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!("source {}; {script}", scripts_lib()))
+            .env("SOT_COMM_HOME", home)
+            .env("PATH", path)
+            .output()
+            .unwrap()
+    }
+
+    // The stubbed fsync failure, Rust arm: `sync` starts a reader, waits 0.5 s
+    // and fails, so `append_line` cuts the in-flight line back. The reader is
+    // the scripts' own (comm-lib.sh), so the guards under test are the real
+    // ones. A comm home whose folder record matches this disk lets the locked
+    // reader take the shared lock; a PATH with no flock(1) leaves the other
+    // one unlocked.
+    #[cfg(target_os = "linux")]
+    fn failing_sync_with_reader(
+        home: &Path,
+        path: &str,
+        reader: &'static str,
+    ) -> (String, String) {
+        let inbox = home.join("inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let id = shell(home, &std::env::var("PATH").unwrap(), r#"sot_inbox_lock_identity "$INBOX_DIR""#);
+        std::fs::write(home.join("inbox-lock-manager"), &id.stdout).unwrap();
+        file_frame(&inbox, "a", "h", false, "one", "t", Duration::from_secs(5)).unwrap();
+        let child = std::cell::RefCell::new(None);
+        let sync = |_f: &File| -> std::io::Result<()> {
+            let c = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(format!("source {}; {reader}", scripts_lib()))
+                .env("SOT_COMM_HOME", home)
+                .env("PATH", path)
+                .env("SOT_INBOX_READ_WAIT_SECS", "5")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            *child.borrow_mut() = Some(c);
+            std::thread::sleep(Duration::from_millis(500));
+            Err(std::io::Error::other("stubbed fsync failure"))
+        };
+        let r = file_frame_with(&inbox, "a", "h", false, "inflight", "t", Duration::from_secs(5), sync);
+        assert!(r.unwrap_err().contains("stubbed fsync failure"));
+        assert_eq!(read_lines(&inbox.join("h.jsonl")).len(), 1, "the in-flight line was not cut back");
+        let out = child.into_inner().unwrap().wait_with_output().unwrap();
+        (String::from_utf8_lossy(&out.stdout).into(), String::from_utf8_lossy(&out.stderr).into())
+    }
+
+    // (a) The reader that waits on the shared lock counts nothing new after the
+    // cut-back.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_locked_reader_counts_nothing_after_a_cut_back() {
+        let d = tempfile::tempdir().unwrap();
+        let (out, _) = failing_sync_with_reader(
+            d.path(),
+            &std::env::var("PATH").unwrap(),
+            r#"sot_inbox_read_lock h || exit 75; sot_inbox_lines h"#,
+        );
+        assert_eq!(out.trim(), "1", "a locked reader counted the in-flight line");
+    }
+
+    // (b) The unlocked reader (no flock(1) on its PATH) counts and cursors the
+    // in-flight line; after the cut-back and one real send its cursor steps
+    // back one line, says so, and the real line is next — nothing is skipped.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unlocked_reader_steps_back_one_line_after_a_cut_back() {
+        let d = tempfile::tempdir().unwrap();
+        let noflock = d.path().join("noflock");
+        std::fs::create_dir_all(&noflock).unwrap();
+        for dir in std::env::var("PATH").unwrap().split(':') {
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    let n = e.file_name();
+                    if n != "flock" {
+                        let _ = std::os::unix::fs::symlink(e.path(), noflock.join(n));
+                    }
+                }
+            }
+        }
+        std::fs::create_dir_all(d.path().join("read")).unwrap();
+        let np = noflock.to_str().unwrap();
+        let (out, _) = failing_sync_with_reader(
+            d.path(),
+            np,
+            r#"n="$(sot_inbox_lines h)"; sot_cursor_write h "$n"; echo "$n""#,
+        );
+        assert_eq!(out.trim(), "2", "the unlocked reader should have counted the in-flight line");
+        file_frame(&d.path().join("inbox"), "a", "h", false, "real", "t", Duration::from_secs(5)).unwrap();
+        let o = shell(d.path(), np, r#"sot_cursor_offset h"#);
+        assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "1");
+        assert!(String::from_utf8_lossy(&o.stderr)
+            .contains("the last line read from @h's inbox was cut back; reading from the line before it"));
+        assert_eq!(read_lines(&d.path().join("inbox/h.jsonl"))[1]["msg"], "real");
     }
 
     // A waiter that gave up never keeps the lock.
