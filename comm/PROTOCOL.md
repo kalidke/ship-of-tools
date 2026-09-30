@@ -307,7 +307,9 @@ with the tools present.
 Once 0.6.6 is installed, bridge loops started by earlier versions stop working:
 `comm-relay.sh bridge` is retired. A loop tied to a session ends with that
 session, and an untied one sleeps idle until the next reboot. No action is
-needed.
+needed. The install also removes the comm scripts a release no longer ships
+(`comm-listen.sh`, `bus.sh`, and any later retirement), by exact name, from
+the list it recorded in `bin/.sot-comm-installed`.
 
 ## Verbs (reference client = `bin/*.sh`)
 
