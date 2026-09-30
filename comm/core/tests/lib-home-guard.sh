@@ -9,7 +9,10 @@
 # guard is not the live folder; a name not starting [A-Za-z_] or outside [A-Za-z0-9._-] records none),
 # and any inherited SOT_COMM_HOME. It then drops the host's comm identity and
 # its daemon route: SOT_COMM_HOME, SOT_COMM_NAME, SOT_COMM_SELF_FILE,
-# SOT_WORKSPACE_ID, SOT_SOCKET and every exported *_ENDPOINT. Right after the
+# SOT_WORKSPACE_ID, SOT_SOCKET and every exported *_ENDPOINT, plus the host
+# session's CLAUDE_CODE_SESSION_ID, which the hooks key their tick files on
+# ahead of SOT_WORKSPACE_ID (inherited, it merged a suite's per-run keys into
+# one and throttled every run after the first). Right after the
 # suite makes its mktemp work directory and names its comm home, before any
 # other command, it calls:
 #   guard_fresh_home WORK            HOME becomes WORK/test-home, fresh, so the
@@ -28,7 +31,7 @@ case "$_GUARD_USER" in
 esac
 case "$_GUARD_ACCT" in /*) _GUARD_LIVE+=("$_GUARD_ACCT/.sot-comm") ;; *) _GUARD_ACCT="" ;; esac
 [ -z "${SOT_COMM_HOME:-}" ] || _GUARD_LIVE+=("$SOT_COMM_HOME")
-unset SOT_COMM_HOME SOT_COMM_NAME SOT_COMM_SELF_FILE SOT_WORKSPACE_ID SOT_SOCKET
+unset SOT_COMM_HOME SOT_COMM_NAME SOT_COMM_SELF_FILE SOT_WORKSPACE_ID SOT_SOCKET CLAUDE_CODE_SESSION_ID
 for _guard_v in $(compgen -e); do
     case "$_guard_v" in *_ENDPOINT) unset "$_guard_v" ;; esac
 done
