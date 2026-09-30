@@ -566,12 +566,13 @@ function _prune_comm_bin(bin::AbstractString, shipped, prev)
     return nothing
 end
 
-# Copy-then-rename, like every other file the install writes.
+# Write-then-rename, like every other file the install writes (a plain
+# `Base.Filesystem.rename`, never `mv(; force = true)` — see `install_file`).
 function _write_comm_manifest(bin::AbstractString, shipped)
     path = joinpath(bin, COMM_MANIFEST)
-    tmp = path * ".tmp"
+    tmp = _tmp_name(path)
     write(tmp, join(shipped, "\n") * "\n")
-    mv(tmp, path; force = true)
+    Base.Filesystem.rename(tmp, path)
     return nothing
 end
 
