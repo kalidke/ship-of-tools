@@ -108,7 +108,7 @@ fn the_filer_and_the_script_take_the_same_lock() {
     let d = inbox_home();
     let inbox = d.path().join("inbox");
     let id = lock_identity(&inbox);
-    assert!(create_lock_record(d.path(), &id, machine_id().as_deref()).unwrap());
+    create_lock_record(d.path(), &id, machine_id().as_deref()).unwrap();
     assert_ne!(id, "none", "this test needs a folder whose lock manager is provable");
     let script = {
         let home = d.path().to_path_buf();

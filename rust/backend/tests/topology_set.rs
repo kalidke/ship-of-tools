@@ -19,7 +19,7 @@
 
 mod support;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -37,16 +37,7 @@ struct Env {
     hosts_toml: PathBuf,
     socket_path: PathBuf,
     comm_root: PathBuf,
-    _guest: Option<Guest>,
     daemon: Child,
-}
-
-/// A guest daemon's own places: its comm folder, and the runtime base its
-/// relay endpoint is read from.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-struct Guest {
-    comm: tempfile::TempDir,
-    run: tempfile::TempDir,
 }
 
 impl Env {
@@ -58,20 +49,21 @@ impl Env {
         Self::start(tag, self_host, hosts_toml_text, None)
     }
 
-    /// A guest daemon of `hub`: its comm folder on tmpfs, off this box's own
-    /// disk, so it is its folder's guest and forwards every filing; and its
+    /// A guest daemon of `hub`: its places on tmpfs, off this box's own disk,
+    /// so it is its comm folder's guest and forwards every filing; and its
     /// runtime base holding `sot-relay.sock` linked to the hub's socket,
     /// where the relay tunnel lands it.
     #[cfg(target_os = "linux")]
     fn spawn_guest(tag: &str, self_host: &str, hosts_toml_text: &str, hub: &Env) -> Self {
-        let comm = tempfile::Builder::new().prefix("sot-toposet-comm-").tempdir_in("/dev/shm").expect("tmpfs tempdir");
-        let run = tempfile::Builder::new().prefix("sottsrun-").tempdir_in("/tmp").expect("runtime base tempdir");
-        std::os::unix::fs::symlink(&hub.socket_path, run.path().join("sot-relay.sock")).expect("link the hub's socket");
-        Self::start(tag, self_host, hosts_toml_text, Some(Guest { comm, run }))
+        Self::start(tag, self_host, hosts_toml_text, Some(&hub.socket_path))
     }
 
-    fn start(tag: &str, self_host: &str, hosts_toml_text: &str, guest: Option<Guest>) -> Self {
-        let tmp = tempfile::Builder::new().prefix("sot-toposet-").tempdir().expect("tempdir");
+    /// `hub` is a guest's: the socket of the hub it forwards to.
+    fn start(tag: &str, self_host: &str, hosts_toml_text: &str, hub: Option<&Path>) -> Self {
+        let tmp = match hub {
+            Some(_) => tempfile::Builder::new().prefix("sot-toposet-").tempdir_in("/dev/shm").expect("tmpfs tempdir"),
+            None => tempfile::Builder::new().prefix("sot-toposet-").tempdir().expect("tempdir"),
+        };
         let project_root = tmp.path().join("project");
         std::fs::create_dir_all(&project_root).expect("mkdir project_root");
         let state_root = tmp.path().join("state");
@@ -81,7 +73,6 @@ impl Env {
         let hosts_toml = tmp.path().join("hosts.toml");
         std::fs::write(&hosts_toml, hosts_toml_text).expect("write hosts.toml");
         let (home_root, comm_root) = support::comm_isolation_dirs(tmp.path());
-        let comm_root = guest.as_ref().map_or(comm_root, |g| g.comm.path().to_path_buf());
 
         #[cfg(unix)]
         let runtime_base = PathBuf::from("/tmp");
@@ -92,6 +83,9 @@ impl Env {
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(runtime_tmp.path(), std::fs::Permissions::from_mode(0o700)).expect("chmod runtime tempdir");
+            if let Some(hub) = hub {
+                std::os::unix::fs::symlink(hub, runtime_tmp.path().join("sot-relay.sock")).expect("link the hub's socket");
+            }
         }
 
         let socket_path = {
@@ -119,12 +113,12 @@ impl Env {
             .env("SOT_COMM_HOME", &comm_root)
             .env("SOT_HOSTS", &hosts_toml)
             .stdin(Stdio::null());
-        if let Some(g) = &guest {
-            cmd.env("XDG_RUNTIME_DIR", g.run.path());
+        if hub.is_some() {
+            cmd.env("XDG_RUNTIME_DIR", runtime_tmp.path());
         }
         let daemon = cmd.spawn().expect("spawn sotd");
 
-        Self { _tmp: tmp, _runtime_tmp: runtime_tmp, hosts_toml, socket_path, comm_root, _guest: guest, daemon }
+        Self { _tmp: tmp, _runtime_tmp: runtime_tmp, hosts_toml, socket_path, comm_root, daemon }
     }
 }
 
