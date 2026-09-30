@@ -464,7 +464,7 @@ cat > "$WORK/free.sh" <<'FREE'
 eval "orig_step() $(declare -f _sot_lock_step | tail -n +2)"
 eval "orig_take() $(declare -f _sot_lock_take | tail -n +2)"
 _sot_lock_step() { orig_step "$@" || return; printf '%s\n' 'elsewhere:-:-:-:4242:-' > "$P"; RETOOK=1; }
-_sot_lock_take() { orig_take "$@"; local rc=$?; [ -z "${RETOOK:-}" ] || [ "$1" != "$P" ] || rm -f "$P"; return "$rc"; }
+_sot_lock_take() { orig_take "$@"; local rc=$?; [ -z "${RETOOK:-}" ] || [ "$1" != "$P" ] || rm -f "${P:?}"; return "$rc"; }
 SOT_LOCK_WAIT_SECS=0 with_lock true
 FREE
 t17() {
