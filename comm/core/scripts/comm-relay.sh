@@ -21,6 +21,18 @@
 #   comm-relay.sh send @to "message"        # fire-and-forget, instant
 #   comm-relay.sh send --all "message"      # broadcast to all clients
 set -euo pipefail
+
+# `bridge` is a RETIRED verb: loops started by earlier versions still re-run it
+# every 2 s from their own loop text. Say so once, then sleep silently — a loop
+# tied to a dead session ends by its own tether check, an untied one idles until
+# a reboot. No product code kills anything. It runs before anything is sourced,
+# so the retired verb costs nothing and nothing can exit before its one line;
+# a number of seconds, not `infinity`, which macOS's sleep refuses.
+if [ "${1:-}" = bridge ]; then
+    echo "comm-relay: bridge retired in 0.6.6; this leftover loop now sleeps (a reboot clears it)" >&2
+    exec sleep 2147483647
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
@@ -36,16 +48,6 @@ SUB="${1:-}"; [ $# -gt 0 ] && shift || true
 case "$SUB" in
     send) sot_require_routable_identity || exit 1 ;;
 esac
-
-# `bridge` is a RETIRED verb: loops started by earlier versions still re-run it
-# every 2 s from their own loop text. Say so once, then sleep silently — a loop
-# tied to a dead session ends by its own tether check, an untied one idles until
-# a reboot. No product code kills anything.
-if [ "$SUB" = bridge ]; then
-    echo "comm-relay: bridge retired in 0.6.6; this leftover loop now sleeps (a reboot clears it)" >&2
-    exec sleep infinity 2>/dev/null
-    while :; do sleep 86400; done
-fi
 
 ENDPOINT="${SOT_RELAY_ENDPOINT:-}"
 resolve_endpoint() {
