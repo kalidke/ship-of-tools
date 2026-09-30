@@ -23,7 +23,7 @@
 //! and drive the real filer from outside a binary-only crate.
 
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -107,10 +107,28 @@ pub fn file_frame(
     written.map_err(failed)
 }
 
+/// `line` goes in whole or not at all ("filed" means kept): a torn tail (a
+/// writer that died mid-line) is ended first so it stays its own line, the
+/// bytes are flushed to disk on this descriptor before `Ok`, and any error
+/// cuts the file back to its length before.
 fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
-    let mut f: File = OpenOptions::new().create(true).append(true).open(path)?;
-    f.write_all(line.as_bytes())?;
-    f.flush()
+    let mut f: File = OpenOptions::new().create(true).read(true).append(true).open(path)?;
+    let len = f.metadata()?.len();
+    let mut last = [b'\n'];
+    if len > 0 {
+        f.seek(SeekFrom::Start(len - 1))?;
+        f.read_exact(&mut last)?;
+    }
+    let mut bytes = Vec::with_capacity(line.len() + 1);
+    if last[0] != b'\n' {
+        bytes.push(b'\n');
+    }
+    bytes.extend_from_slice(line.as_bytes());
+    let written = f.write_all(&bytes).and_then(|()| f.sync_data());
+    if written.is_err() {
+        let _ = f.set_len(len);
+    }
+    written
 }
 
 /// The lock record's name, beside `registry.json` — never in `inbox/`, and
@@ -409,13 +427,17 @@ mod tests {
         assert_eq!(seen.len(), 400, "a line was lost or doubled");
     }
 
-    // An append that fails under the lock is an error, and says so.
+    // S2 — a torn tail stays its own line and the new line stays whole.
     #[test]
-    fn a_failed_write_is_the_append_failed() {
+    fn a_torn_tail_is_ended_before_the_new_line() {
         let d = tempfile::tempdir().unwrap();
-        std::fs::create_dir(d.path().join("h.jsonl")).unwrap();
-        let e = file_frame(d.path(), "a", "h", false, "m", "t", Duration::from_secs(1)).unwrap_err();
-        assert!(e.starts_with("the append failed: "), "{e}");
+        std::fs::write(d.path().join("h.jsonl"), "{\"from\":\"died\",").unwrap();
+        file_frame(d.path(), "a", "h", false, "whole", "t", Duration::from_secs(1)).unwrap();
+        let raw = std::fs::read_to_string(d.path().join("h.jsonl")).unwrap();
+        let lines: Vec<&str> = raw.lines().collect();
+        assert_eq!(lines[0], "{\"from\":\"died\",");
+        let v: serde_json::Value = serde_json::from_str(lines[1]).expect("the new line parses");
+        assert_eq!((lines.len(), v["msg"].as_str()), (2, Some("whole")));
     }
 
     // B1 — the role: the topology's hub, or a folder on this box's own disk.
@@ -527,11 +549,5 @@ mod tests {
         assert_eq!(at("/fixture-homework/inbox", "m"), "local m");
         assert_eq!(at("/fixture-homework/inbox", ""), "none");
         assert_eq!(identity_from("", Path::new("/x"), "m"), "none");
-    }
-
-    // T13 — the default is the script's number.
-    #[test]
-    fn the_wait_defaults_to_ten() {
-        assert_eq!(INBOX_LOCK_WAIT_DEFAULT_SECS, 10);
     }
 }

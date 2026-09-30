@@ -220,6 +220,9 @@ jobs:
           # remembering to run them. Both are hermetic and take under a second.
           bash test-crlf-jq-output.sh
           bash test-crlf-gh-auth.sh
+          # The frontend's inbox readers on a Windows box, which B1's filing
+          # changed; a suite edited in a lane runs here, not only by hand.
+          bash test-win-fe-inbox-readers.sh
 
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
   # `ClosePseudoConsole` that returns immediately — it cannot exercise the

@@ -630,6 +630,19 @@ _sot_inbox_lock_is_ours() {
     id="$(sot_inbox_lock_identity "$INBOX_DIR")"
     [ -n "$id" ] && [ "$id" != none ] && [ "$id" = "$rec" ]
 }
+# _sot_append_whole FILE LINE — under the caller's lock, LINE goes in whole or
+# not at all: a torn tail (a writer that died mid-line) is ended first so it
+# stays its own line; dd's exit status covers the write, the fsync and the
+# close, so 0 means the bytes are on disk; any failure cuts FILE back to its
+# length before, and the status is dd's.
+_sot_append_whole() {  # FILE LINE
+    local f="$1" len=0 nl="" rc=0
+    [ -e "$f" ] && { len="$(stat -c %s "$f")" || return 1; }
+    [ "$len" -gt 0 ] && [ -n "$(tail -c 1 "$f")" ] && nl=$'\n'
+    printf '%s%s\n' "$nl" "$2" | dd of="$f" oflag=append conv=notrunc,fsync status=none || rc=$?
+    [ "$rc" -eq 0 ] || truncate -s "$len" "$f"
+    return "$rc"
+}
 sot_inbox_append() {  # HANDLE
     local h="$1" line err rc=0
     line="$(cat)"
@@ -640,7 +653,7 @@ sot_inbox_append() {  # HANDLE
     # 75 is flock's own conflict exit (-E), so a lock that was never taken is
     # told apart from an append that failed under it.
     err="$( { ( flock -w "$SOT_INBOX_LOCK_WAIT_SECS" -E 75 9 || exit $?
-                printf '%s\n' "$line" >> "$INBOX_DIR/$h.jsonl"
+                _sot_append_whole "$INBOX_DIR/$h.jsonl" "$line"
               ) 9>> "$INBOX_DIR/$h.lock"; } 2>&1 )" || rc=$?
     case "$rc" in
         0)  return 0 ;;

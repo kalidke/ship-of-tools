@@ -35,6 +35,13 @@ export SOT_COMM_HOME="$WORK/home"
 # 0031 B1: the record a daemon writes at startup. Without it no script
 # appends locally, and every filing here would go to a daemon instead.
 mkdir -p "$SOT_COMM_HOME/inbox"
+# A fake findmnt first on PATH reports a local filesystem, so the record and
+# every script's identity are `local <machine-id>` whatever $WORK sits on (a
+# function stub would not survive: comm-lib.sh defines _sot_findmnt itself).
+mkdir -p "$WORK/findmnt-bin"
+printf '#!/bin/sh\necho "ext4 rw,relatime /dev/fake"\n' > "$WORK/findmnt-bin/findmnt"
+chmod +x "$WORK/findmnt-bin/findmnt"
+export PATH="$WORK/findmnt-bin:$PATH"
 bash -c 'source "$1"; sot_inbox_lock_identity "$INBOX_DIR"' _ "$SCRIPTS_DIR/comm-lib.sh" > "$SOT_COMM_HOME/inbox-lock-manager"
 mkdir -p "$SOT_COMM_HOME"
 trap 'rm -rf "$WORK"' EXIT
@@ -135,6 +142,25 @@ case_a_broadcast_never_execs_the_relay() {
     return 0
 }
 
+# S3 — a broadcast counts only the copies that were filed: one that cannot be
+# appended prints its FAILED line, the count says N of M, and the exit is 1.
+case_a_broadcast_with_a_failed_copy_is_not_success() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-broken.txt" SOT_COMM_TEST_HOST="otherbox" \
+        "$JOIN" --name t-broken-peer ) >/dev/null 2>&1 || { echo "  setup: could not join a third row"; return 1; }
+    local broken="$SOT_COMM_HOME/inbox/t-broken-peer.jsonl"
+    rm -f "$broken"; mkdir -p "$broken"   # a directory: that copy cannot be appended
+    run_send --broadcast "to everyone, one copy fails"
+    rmdir "$broken"
+    [ "$SEND_RC" -eq 1 ] || { echo "  exited $SEND_RC, want 1 (out: '$SEND_OUT' err: '$SEND_ERR')"; return 1; }
+    contains "$SEND_ERR" "FAILED -> @t-broken-peer: the append failed: " \
+        || { echo "  no FAILED line for the broken copy: '$SEND_ERR'"; return 1; }
+    contains "$SEND_OUT" "Broadcast to 1 of 2 agent(s)." || { echo "  the count: '$SEND_OUT'"; return 1; }
+    grep -q 'one copy fails' "$SOT_COMM_HOME/inbox/$LOCAL_PEER.jsonl" \
+        || { echo "  the copy that could be filed is missing"; return 1; }
+    return 0
+}
+
 case_a_hostless_row_terminates_instead_of_ping_ponging() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     # A row that EXISTS with no `host`: a hit for "does a row exist", a miss
@@ -162,6 +188,7 @@ check "a registry miss on a directed send execs the relay with the same args" ca
 check "a registry hit files locally and never calls the relay" case_a_registry_hit_files_locally_and_never_calls_the_relay
 check "a broadcast never execs the relay" case_a_broadcast_never_execs_the_relay
 check "a row that exists with no host terminates in one refusal, never a ping-pong" case_a_hostless_row_terminates_instead_of_ping_ponging
+check "a broadcast with a failed copy counts only the filed ones and exits 1" case_a_broadcast_with_a_failed_copy_is_not_success
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

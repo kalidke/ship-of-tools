@@ -194,6 +194,35 @@ case_a_failed_write_is_failed_not_filed() {
     return 0
 }
 
+# S2 — a torn tail (a writer that died mid-line) stays its own line, and the
+# new line stays whole and parses.
+case_a_torn_tail_is_ended_before_the_new_line() {
+    local out rc=0 f="$INBOX/t-torn.jsonl"
+    printf '%s' '{"from":"died",' > "$f"
+    out="$(append_one t-torn '{"from":"a","msg":"whole"}')" || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  rc $rc ($out)"; return 1; }
+    [ "$(sed -n 1p "$f")" = '{"from":"died",' ] || { echo "  the torn line changed: $(sed -n 1p "$f")"; return 1; }
+    [ "$(sed -n 2p "$f" | jq -r .msg)" = whole ] || { echo "  the new line: $(sed -n 2p "$f")"; return 1; }
+    [ "$(wc -l < "$f")" -eq 2 ] || { echo "  $(wc -l < "$f") lines, want 2"; return 1; }
+    return 0
+}
+
+# S2 — a write the file-size limit cuts off mid-line (`ulimit -f 1` is 1024
+# bytes; the file holds 1000; SIGXFSZ ignored so dd sees EFBIG): FAILED, and
+# the file is byte-identical. The fsync itself is read, not tested.
+case_a_write_cut_short_leaves_the_file_byte_identical() {
+    local out rc=0 f="$INBOX/t-fsize.jsonl" long
+    printf '{"msg":"%s"}\n' "$(printf '%0989d' 0)" > "$f"
+    [ "$(wc -c < "$f")" -eq 1000 ] || { echo "  setup: $(wc -c < "$f") bytes"; return 1; }
+    cp "$f" "$WORK/fsize.before"
+    long="$(printf '%0200d' 0)"
+    out="$( ulimit -f 1; trap '' XFSZ; append_one t-fsize "{\"from\":\"a\",\"msg\":\"$long\"}" )" || rc=$?
+    [ "$rc" -eq 1 ] || { echo "  rc $rc, want 1 ($out)"; return 1; }
+    contains "$out" "the append failed: " || { echo "  out: $out"; return 1; }
+    cmp -s "$f" "$WORK/fsize.before" || { echo "  the file changed: $(wc -c < "$f") bytes"; return 1; }
+    return 0
+}
+
 # One append through the guard with the wire faked. $1 = own mount as
 # findmnt prints it ("" = unknown), $2 = the record ("-" = absent), $3 = own
 # daemon endpoint, $4 = relay endpoint ("" = none), $5 = the fake daemon's
@@ -375,6 +404,84 @@ wire_send() {
     return 0
 }
 
+# S4 — a directed wire send with no daemon found is that send's FAILED line.
+case_a_wire_send_with_no_daemon_is_failed() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local out rc=0 err
+    out="$(cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-sender.txt" SOT_COMM_TEST_HOST="$HOST_PIN" \
+        env -u SOT_RELAY_ENDPOINT -u SOT_SOCKET "$BIN/comm-relay.sh" send @t-far "no daemon" 2>"$WORK/err.txt")" || rc=$?
+    err="$(cat "$WORK/err.txt" 2>/dev/null)"
+    [ "$rc" -eq 1 ] || { echo "  rc $rc, want 1 (out: $out err: $err)"; return 1; }
+    contains "$err" "FAILED -> @t-far: no sotd daemon found; " || { echo "  err: $err"; return 1; }
+    contains "$err$out" "ERROR:" && { echo "  an ERROR line: $err"; return 1; }
+    return 0
+}
+
+# T5 on a faked Windows box: `uname` says MINGW, this box's own daemon is a
+# fake `sotd.exe` under a fake LOCALAPPDATA, and a fake `powershell.exe` is
+# the pipe transport (fakes from test-join-disambiguation.sh's Windows
+# discovery case). It answers the connect probe, logs each oneshot's argv and
+# the frames on its stdin, and answers `comm.file` with $WINHUB/answer
+# ("" = silence). A copy of the scripts WITHOUT this file's endpoint stubs, so
+# the real Windows discovery runs.
+WINBIN="$WORK/winbin"; WINFAKE="$WORK/winfake"; WINAPP="$WORK/winappdata"; WINHUB="$WORK/winhub"
+cp -r "$SCRIPTS_DIR" "$WINBIN"
+mkdir -p "$WINFAKE" "$WINAPP/sot/bin" "$WINHUB"
+printf '#!/bin/sh\necho "MINGW64_NT-10.0-19045"\n' > "$WINFAKE/uname"
+cat > "$WINAPP/sot/bin/sotd.exe" <<'FAKESOTD'
+#!/bin/sh
+if [ "$1" = session-socket-path ] && [ "$2" = local ]; then printf '%s\n' '\\.\pipe\sot-fakeuser-local'; exit 0; fi
+exit 1
+FAKESOTD
+{ printf '#!/bin/sh\nd=%s\n' "$WINHUB"; cat <<'FAKEPS'
+case " $* " in *" -File "*) ;; *) exit 0 ;; esac
+printf '%s\n' "$*" >> "$d/argv.log"
+while IFS= read -r line; do
+    printf '%s\n' "$line" >> "$d/stdin.log"
+    case "$line" in
+        *'"op":"hello"'*) ;;
+        *'"op":"comm.file"'*)
+            [ -s "$d/answer" ] && printf '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":%s}\n' "$(cat "$d/answer")"
+            exit 0 ;;
+        *) exit 0 ;;
+    esac
+done
+FAKEPS
+} > "$WINFAKE/powershell.exe"
+chmod +x "$WINFAKE/uname" "$WINFAKE/powershell.exe" "$WINAPP/sot/bin/sotd.exe"
+win_send() {  # ANSWER
+    rm -f "$WINHUB"/*.log; printf '%s' "$1" > "$WINHUB/answer"
+    SEND_OUT="$(cd "$WORK" && unset OS OSTYPE SOT_SOCKET SOTD_BIN && PATH="$WINFAKE:$PATH" LOCALAPPDATA="$WINAPP" \
+        SOT_COMM_SELF_FILE="$WORK/self-sender.txt" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_SEND_TIMEOUT=3 \
+        SOT_INBOX_LOCK_WAIT_SECS=1 "$WINBIN/comm-send.sh" @t-peer "/win text on stdin only" 2>"$WORK/err.txt")"
+    SEND_RC=$?
+    SEND_ERR="$(cat "$WORK/err.txt" 2>/dev/null)"
+}
+
+case_a_windows_send_is_one_comm_file_over_the_pipe() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local frame
+    win_send '{"ok":true}'
+    [ "$SEND_RC" -eq 0 ] || { echo "  ok: rc $SEND_RC (out: $SEND_OUT err: $SEND_ERR)"; return 1; }
+    contains "$SEND_OUT" "filed -> @t-peer" || { echo "  ok: out: $SEND_OUT"; return 1; }
+    [ ! -s "$INBOX/t-peer.jsonl" ] || { echo "  the send appended locally"; return 1; }
+    frame="$(grep '"op":"comm.file"' "$WINHUB/stdin.log")"
+    [ "$(printf '%s\n' "$frame" | wc -l)" -eq 1 ] || { echo "  comm.file frames: $frame"; return 1; }
+    printf '%s' "$frame" | jq -e '(.payload | has("id") | not) and .payload.to == "t-peer" and .payload.text == "/win text on stdin only"' >/dev/null \
+        || { echo "  the frame: $frame"; return 1; }
+    grep -q 'win text on stdin only' "$WINHUB/argv.log" && { echo "  the text reached argv"; return 1; }
+
+    win_send '{"error":"no live session holds @t-peer","code":"no_live_session"}'
+    [ "$SEND_RC" -eq 1 ] || { echo "  refusal: rc $SEND_RC"; return 1; }
+    contains "$SEND_ERR" "FAILED -> @t-peer: no live session holds @t-peer" || { echo "  refusal: err: $SEND_ERR"; return 1; }
+
+    win_send ''
+    [ "$SEND_RC" -eq 1 ] || { echo "  silence: rc $SEND_RC"; return 1; }
+    contains "$SEND_ERR" "FAILED -> @t-peer: the daemon did not answer at pipe:" || { echo "  silence: err: $SEND_ERR"; return 1; }
+    [ ! -s "$INBOX/t-peer.jsonl" ] || { echo "  a send appended locally"; return 1; }
+    return 0
+}
+
 case_a_wire_send_prints_the_hubs_answer() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local answer rc want got
@@ -444,6 +551,10 @@ check "a frozen holder makes the send wait its bound and report FAILED, never fi
 check "an append that fails under the lock is FAILED with its error" case_a_failed_write_is_failed_not_filed
 check "a script whose lock identity equals the record appends locally" case_a_shared_nfs4_lock_manager_appends_locally
 check "a two-line record whose line 1 matches appends locally" case_a_two_line_record_whose_line_1_matches_appends_locally
+check "S2: a torn tail stays its own line and the new line stays whole" case_a_torn_tail_is_ended_before_the_new_line
+check "S2: a write cut short by the file-size limit is FAILED and leaves the file byte-identical" case_a_write_cut_short_leaves_the_file_byte_identical
+check "S4: a directed wire send with no daemon found is FAILED -> @h, exit 1" case_a_wire_send_with_no_daemon_is_failed
+check "T5 (faked Windows): a send is one comm.file frame over the pipe, never a local append" case_a_windows_send_is_one_comm_file_over_the_pipe
 check "v3, unknown, a mismatched export, the hub's disk over NFS, no or a none record, and no flock(1) all go to the wire" case_anything_unproven_goes_to_the_wire
 check "the wire is this box's daemon, else the relay; one that does not answer is FAILED with no second route" case_the_wire_is_the_own_daemon_else_the_relay_and_only_one
 check "the wire frame says whether the line was a broadcast copy" case_the_wire_frame_carries_the_broadcast_flag

@@ -167,6 +167,40 @@ fn a_frozen_holder_makes_the_filer_wait_then_fail() {
     assert_eq!(whole_lines(&inbox.join("f.jsonl")), ["resumed", "after"]);
 }
 
+// S2 (Rust arm) — a write the file-size limit cuts off mid-line: the filer
+// answers the append failed and the file is byte-identical. The filer runs
+// in a child (this binary, the ignored case below) under `ulimit -f 1`
+// (1024 bytes) with SIGXFSZ ignored, so the write returns EFBIG after a
+// partial write instead of killing it. The fsync itself is read, not tested.
+#[test]
+fn a_write_cut_short_by_the_file_size_limit_leaves_the_file_byte_identical() {
+    let d = inbox_home();
+    let inbox = d.path().join("inbox");
+    let before = format!("{{\"msg\":\"{}\"}}\n", "x".repeat(1000 - 11));
+    assert_eq!(before.len(), 1000);
+    std::fs::write(inbox.join("z.jsonl"), &before).unwrap();
+    let out = Command::new("bash")
+        .arg("-c")
+        .arg(r#"ulimit -f 1; trap '' XFSZ; exec "$@""#)
+        .args(["_", std::env::current_exe().unwrap().to_str().unwrap()])
+        .args(["--exact", "fsize_child_files_one", "--ignored", "--nocapture", "--test-threads=1"])
+        .env("SOT_TEST_INBOX_DIR", &inbox)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("FAILED the append failed: "), "{stdout}");
+    assert_eq!(std::fs::read_to_string(inbox.join("z.jsonl")).unwrap(), before);
+}
+
+#[test]
+#[ignore = "run by a_write_cut_short_by_the_file_size_limit_leaves_the_file_byte_identical"]
+fn fsize_child_files_one() {
+    match file_frame(&env_dir(), "rust", "z", false, &"y".repeat(200), "t", Duration::from_secs(1)) {
+        Ok(()) => println!("filed"),
+        Err(e) => println!("FAILED {e}"),
+    }
+}
+
 fn env_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("SOT_TEST_INBOX_DIR").expect("SOT_TEST_INBOX_DIR"))
 }

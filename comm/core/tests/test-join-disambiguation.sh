@@ -69,6 +69,13 @@ export SOT_COMM_HOME="$WORK/home"
 # 0031 B1: the record a daemon writes at startup. Without it no script
 # appends locally, and every filing here would go to a daemon instead.
 mkdir -p "$SOT_COMM_HOME/inbox"
+# A fake findmnt first on PATH reports a local filesystem, so the record and
+# every script's identity are `local <machine-id>` whatever $WORK sits on (a
+# function stub would not survive: comm-lib.sh defines _sot_findmnt itself).
+mkdir -p "$WORK/findmnt-bin"
+printf '#!/bin/sh\necho "ext4 rw,relatime /dev/fake"\n' > "$WORK/findmnt-bin/findmnt"
+chmod +x "$WORK/findmnt-bin/findmnt"
+export PATH="$WORK/findmnt-bin:$PATH"
 bash -c 'source "$1"; sot_inbox_lock_identity "$INBOX_DIR"' _ "$SCRIPTS_DIR/comm-lib.sh" > "$SOT_COMM_HOME/inbox-lock-manager"
 mkdir -p "$SOT_COMM_HOME"
 REGISTRY="$SOT_COMM_HOME/registry.json"

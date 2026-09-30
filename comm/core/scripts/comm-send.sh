@@ -170,12 +170,18 @@ deliver() {  # $1 = target name
 
 if [ "$BROADCAST" = true ]; then
     mapfile -t TARGETS < <(sot_jq -r --arg me "$NAME" '.agents | keys[] | select(. != $me)' "$REGISTRY")
-    n=0
-    for t in "${TARGETS[@]}"; do [ -n "$t" ] && { deliver "$t" || true; n=$((n + 1)); }; done
-    echo "Broadcast to $n agent(s)."
+    # Only a filed copy counts; deliver prints each FAILED one.
+    n=0; of=0
+    for t in "${TARGETS[@]}"; do
+        [ -n "$t" ] || continue
+        of=$((of + 1))
+        if deliver "$t"; then n=$((n + 1)); fi
+    done
+    if [ "$n" -eq "$of" ]; then echo "Broadcast to $n agent(s)."; else echo "Broadcast to $n of $of agent(s)."; fi
 else
     [ -z "$TARGET" ] && { echo "no target; use @name or --broadcast" >&2; exit 1; }
     deliver "$TARGET"
 fi
 
 with_lock registry_touch "$NAME" 2>/dev/null || true
+if [ "$BROADCAST" = true ] && [ "$n" -ne "$of" ]; then exit 1; fi

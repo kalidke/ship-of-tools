@@ -66,10 +66,12 @@ HAVE_NC=0; command -v nc >/dev/null 2>&1 && HAVE_NC=1
 # registry names is reached by appending to its inbox, which needs no daemon at
 # all — so a missing daemon must not refuse the send. Every path that really
 # needs the wire calls _require_endpoint and fails there instead.
-_endpoint_missing() {
-    echo "ERROR: no sotd daemon found; set SOT_RELAY_ENDPOINT=unix:/path, ssh:target[/host], or (Windows) pipe:name" >&2
+# A directed send (HANDLE given) reports it as that send's verdict.
+_endpoint_missing() {  # [HANDLE]
+    local why="no sotd daemon found; set SOT_RELAY_ENDPOINT=unix:/path, ssh:target[/host], or (Windows) pipe:name"
+    if [ -n "${1:-}" ]; then echo "FAILED -> @$1: $why" >&2; else echo "ERROR: $why" >&2; fi
 }
-_require_endpoint() { [ -n "$ENDPOINT" ] && return 0; _endpoint_missing; return 1; }
+_require_endpoint() { [ -n "$ENDPOINT" ] && return 0; _endpoint_missing "${1:-}"; return 1; }
 ENDPOINT="$(resolve_endpoint || true)"
 if [ -z "$ENDPOINT" ]; then
     case "$SUB" in
@@ -244,7 +246,7 @@ nc_hold() {
 }
 
 send_frame() {  # $1 to, $2 text
-    _require_endpoint || return 1
+    _require_endpoint "$1" || return 1
     # Identity is already validated (sot_require_routable_identity, called
     # above for SUB in {send,ask} before any transport setup — Codex review
     # round-2 finding 4/C) — every relay frame stamps `from:$NAME` on the
@@ -585,8 +587,11 @@ case "$SUB" in
             # `to` is preserved so the inbox Monitor can rank: direct (to==me)
             # wakes the session, broadcast (to=="") files silently for
             # comm-poll. filter_inbound already dropped to-other frames.
-            printf '%s' "$m" | jq -c '{from:.payload.from, to:(.payload.to // ""), repo:"daemon", msg:.payload.text, ts:.payload.ts}' \
-                >> "$INBOX_DIR/$NAME.jsonl" || continue
+            bline="$(printf '%s' "$m" | jq -c '{from:.payload.from, to:(.payload.to // ""), repo:"daemon", msg:.payload.text, ts:.payload.ts}')" \
+                && [ -n "$bline" ] || continue
+            # Through the one helper that appends, under the inbox lock.
+            breason="$(printf '%s\n' "$bline" | sot_inbox_append "$NAME")" \
+                || { echo "bridge: FAILED -> @$NAME: $breason" >&2; continue; }
             # ADR 0048: the append above IS the delivery, so claim it — and
             # only now, after it returned 0. A bridge IS its handle, so
             # `filed: true` is honest by construction; an append that fails

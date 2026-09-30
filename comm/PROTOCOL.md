@@ -111,7 +111,10 @@ lists the receiver:
 1. It can reach the inbox (same box, or a box sharing the home): the line
    goes in under the inbox lock — the kernel's file lock (`flock`) on
    `inbox/<handle>.lock`, taken by the daemon's filer and the scripts alike.
-   The inbox is opened inside the lock and closed before it is released. A
+   The inbox is opened inside the lock and closed before it is released.
+   "Filed" means kept: the line is flushed to disk before the answer, a torn
+   last line is ended first so the new one stays whole, and a failed append
+   is cut back to the length before it. A
    lock excludes only writers that share one lock manager, so the folder's
    hub records its own in `inbox-lock-manager`, beside `registry.json`, when
    it starts. Line 1 is the manager: `nfs4 <server>:<export>` (an NFS v4
@@ -141,11 +144,6 @@ lists the receiver:
    hub, and reads ONE answer. The hub files for its own home: when its comm
    folder lists the handle and a session holds it, it adds the line under
    the same inbox lock and answers `ok`.
-
-From B2, a daemon on a box with its own disk keeps its own link to the hub,
-opened when it starts and reopened if it drops, so the box is reachable
-whenever its rows run, window open or not; its sessions send through that
-same link.
 
 The daemon's filer checks liveness first: a row still runs a session with
 that handle, or the session was active in the last ten minutes. A script's
@@ -182,7 +180,7 @@ transport failed with one to give, else `FAILED -> @h: the daemon did not
 answer at <endpoint>`. Every one of those but the receipt exits 1. A broadcast
 (`send --all`) still goes this way and prints `relayed -> <all> (<n>
 receiver(s)) via <endpoint>`. With no daemon found at all a wire send prints
-`ERROR: no sotd daemon found; …` and exits 1. A reply window that cannot open
+`FAILED -> @h: no sotd daemon found; …` and exits 1. A reply window that cannot open
 is not in this list: the frame is already filed, so `ask` reports `no reply
 window: …` and still exits 0.
 
