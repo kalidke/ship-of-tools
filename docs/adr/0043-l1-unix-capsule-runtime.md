@@ -941,6 +941,8 @@ rule D's claim and the contention re-probe; decision 34 is superseded into ADR
     Invariant: teardown mirrors ownership — no orphaned registry row or bridge
     outlives the process that owned it. **Merged: 4cca1859.**
 
+> *Note (2026-09-30, ADR 0049 B1): item 35's clause "The bridge is the handle's: `comm-leave.sh` runs `comm-listen.sh --stop`" and the "no orphaned … bridge" invariant are retired, because no per-session bridge exists. The registry-row and watcher halves stand.*
+
 36. **Retirement on a stale-authority attach, and own-inode legs — the two
     decision-34 rules ADR 0045 does not carry.** (a) RETIREMENT: an attach to
     a row whose authority has ended (`EndedNoRespawn`) retires it — stop →

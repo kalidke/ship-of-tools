@@ -101,8 +101,7 @@ fn write_deadline(blob: Option<&[u8]>) -> std::time::Duration {
 /// frame AT ALL from the peer within this long means treat the connection
 /// as dead: drop it and reap it through the same `ClientGuard::drop` path
 /// as a clean exit (`clients.rs:329`). Three times the client-side `ping`
-/// interval (30s — the frontend transport and `comm-listen.sh`'s bridge
-/// loop): one missed tick is noise, three in a row is a dead peer.
+/// interval (30s — the frontend transport): one missed tick is noise, three in a row is a dead peer.
 /// `cli`/`agent` (one-shot) connections never gate on this — see
 /// `is_long_lived_role` at its declaration site.
 const PING_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);

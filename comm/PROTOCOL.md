@@ -96,9 +96,11 @@ directed.
 ## Delivery
 
 This section is ADR 0049's design of record. The mechanism below lands in
-stages; until each stage does, the two-mode delivery, ping watcher and relay
-bridge this replaces stay in place — except on a Windows host, which starts no
-bridge: its frontend files inbound frames into its own `fe-inbox.jsonl`.
+stages; until each stage does, the two-mode delivery and ping watcher this
+replaces stay in place. The per-session relay bridge is gone on every box
+that shares the hub's comm folder: the hub files for every handle that folder
+lists. A Windows host's receive path is still its frontend's `fe-inbox.jsonl`
+until B2.
 
 **Words.** A *row* is a session running inside Ship of Tools. The *daemon*
 is the background program on each box that runs that box's rows; it keeps
@@ -255,10 +257,7 @@ transport failed with one to give, else `FAILED -> @h: the daemon did not
 answer at <endpoint>`. Every one of those but the receipt exits 1. A broadcast
 (`send --all`) still goes this way and prints `relayed -> <all> (<n>
 receiver(s)) via <endpoint>`. With no daemon found at all a wire send prints
-`FAILED -> @h: no sotd daemon found; …` and exits 1. A reply window that cannot open
-is not in this list: the frame is already filed, so `ask` reports `no reply
-window: …` and still exits 0.
-
+`FAILED -> @h: no sotd daemon found; …` and exits 1. 
 Nothing is queued anywhere, and a failed send is not retried by another
 route. To get an answer, send, end the turn, and be woken.
 

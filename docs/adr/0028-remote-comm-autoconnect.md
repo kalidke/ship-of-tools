@@ -15,6 +15,8 @@ and inbox Monitor depend on — needs a TCP connection to `sotd`, and a loopback
 bind is unreachable from another machine (verified: `myhost:18743` UNREACHABLE
 from host-b).
 
+> *Note (2026-09-30, ADR 0049 B1): the comm bridge (`comm-listen.sh`) named here is gone; what remains at this anchor is the autoconnect decision itself.*
+
 Result: a `ccb`/`ccbe` session launched on a server could only catch up on its
 durable inbox on its next natural turn; it never woke on inbound. In practice the
 servers ran **zero** sessions — the registry was 100% myhost — and "the monitors of
@@ -84,6 +86,8 @@ and keep setting `SOT_RELAY_ENDPOINT` inline in git-bash.
 - **Verified 2026-06-27:** relay frames sent *from host-b* (both inline-endpoint
   and zero-config-from-profile) reached myhost's `sotd` and woke the myhost session's
   inbox Monitor; the tunnels survived the `sotd` systemd cutover.
+
+> *Note (2026-09-30, ADR 0049 B1): the comm bridge (`comm-listen.sh`) named here is gone; what remains at this anchor is the autoconnect decision itself.*
 
 ### Operational notes
 - Add a remote: `systemctl --user enable --now sot-relay-tunnel@<host>` (host must

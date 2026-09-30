@@ -28,7 +28,7 @@ are the only way in. The poke is a shortcut, never the delivery — `+woken` or
 box — the frame rides the Ship of Tools daemon, the same connection the
 frontend already uses. The hub files it itself when its own comm folder holds
 that handle; any other handle is still offered to the receiving side's
-listener (or, on Windows, the frontend itself), which files it. Because the relay reuses the backend connection, a
+box's own daemon (or, on Windows, the frontend itself), which files it. Because the relay reuses the backend connection, a
 message from a GPU server reaches a session on your laptop with no extra port
 or service. The daemon does not queue frames, so a send nothing can file is
 reported as a failure — `FAILED -> @h: …` — instead of an ack for the daemon's

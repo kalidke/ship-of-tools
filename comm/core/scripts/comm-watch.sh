@@ -44,8 +44,8 @@
 # the daemon broadcasts to every connection). So its wake filter checks `to`
 # against OUR exact handle only (a frontend is a client, never a comm peer, so
 # there is no FE-family label to honour), and the frame carries the message under
-# `.text` (the raw `agent.message` payload), not `.msg` (comm-relay.sh bridge's
-# transformed field, Linux-only).
+# `.text` (the raw `agent.message` payload), not `.msg` (the field a
+# daemon-filed line carries in the per-handle inbox).
 #
 # LIVENESS MARKER: comm-session-start.sh's survival check needs to tell a
 # live Monitor from a dead one. Linux does this with `pgrep` against the

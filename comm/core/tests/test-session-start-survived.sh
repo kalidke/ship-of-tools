@@ -6,10 +6,9 @@
 # from a dead session passed a liveness-only check and left the new session
 # deaf while the bootstrap said "nothing to do".
 #
-# Since 2026-09-20 it also covers the OTHER half: a survived watcher says
-# nothing about the relay bridge, and the block must never tell a session
-# with a dead bridge not to re-listen (a peer session sat deaf for half an
-# hour on exactly that sentence).
+# The per-session relay bridge is gone (the hub files for every handle its
+# folder lists), so the block says nothing about a listener: the survived line
+# is `SURVIVED handle=<h>` and nothing else.
 #
 # Runs against a temp $SOT_COMM_HOME with a pinned self-file — never touches
 # the real ~/.sot-comm. Usage: comm/core/tests/test-session-start-survived.sh
@@ -33,21 +32,6 @@ SLEEPERS=()
 # the fake watcher is a shell running `sleep 300`, so killing the shell leaves
 # the sleep behind: children first, then the shell.
 cleanup() {
-    sot_bridge_stop "${NAME:-}" 2>/dev/null || true
-    # AND the bridge fake's own processes, which sot_bridge_stop cannot reach.
-    # It reaps by `_sot_bridge_pattern`, which matches `comm-relay.sh ... bridge
-    # --name <handle>` or `sot-bridge <relay> <handle>` -- and this suite's fake
-    # is deliberately named fake-relay.sh, matching NEITHER. That is load-bearing
-    # and must stay: it is what makes a leftover here INERT, unable to be read as
-    # a live bridge by the tether case. The cost of that choice is that the
-    # suite has to reap its own, which it never did -- six per run, one per
-    # bridge start, outliving their temp directory. Never rename this fake to
-    # comm-relay.sh to "fix" it; that trades a leak for a suite that can pass
-    # on a dead bridge.
-    for p in $(pgrep -f "$WORK/fake-relay.sh" 2>/dev/null); do
-        pkill -P "$p" 2>/dev/null || true
-        kill "$p" 2>/dev/null || true
-    done
     local p
     for p in $(pgrep -f "$WORK/fakebin/comm-w" 2>/dev/null) "${SLEEPERS[@]:-}"; do
         [ -n "$p" ] || continue
@@ -125,7 +109,7 @@ check() {
 
 case_own_live_watcher_survives() {
     local p; p="$(wake_sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
-    [[ "$(ctx sess-A)" == "SURVIVED handle=$NAME listener="* ]] || { echo "    got '$(ctx sess-A)'"; return 1; }
+    [[ "$(ctx sess-A)" == "SURVIVED handle=$NAME"* ]] || { echo "    got '$(ctx sess-A)'"; return 1; }
     kill -0 "$p" 2>/dev/null || { echo "    own watcher was killed"; return 1; }
 }
 case_orphan_from_another_session_is_not_survived_and_reaped() {
@@ -137,7 +121,7 @@ case_orphan_from_another_session_is_not_survived_and_reaped() {
 }
 case_legacy_marker_without_session_line_keeps_liveness_answer() {
     local p; p="$(wake_sleeper)"; printf '%s' "$p" > "$MARKER"
-    [[ "$(ctx sess-B)" == "SURVIVED handle=$NAME listener="* ]] || { echo "    got '$(ctx sess-B)'"; return 1; }
+    [[ "$(ctx sess-B)" == "SURVIVED handle=$NAME"* ]] || { echo "    got '$(ctx sess-B)'"; return 1; }
 }
 case_dead_pid_is_not_survived() {
     local p; p="$(wake_sleeper)"; kill "$p"; wait "$p" 2>/dev/null; printf '%s\nsess-A\n' "$p" > "$MARKER"
@@ -146,64 +130,21 @@ case_dead_pid_is_not_survived() {
 case_no_session_id_in_env_trusts_liveness() {
     local p; p="$(wake_sleeper)"; printf '%s\nsess-OLD\n' "$p" > "$MARKER"
     local out; out="$(env -u CLAUDE_CODE_SESSION_ID bash "$SCRIPTS_DIR/comm-session-start.sh" --context 2>/dev/null | head -n1)"
-    [[ "$out" == "SURVIVED handle=$NAME listener="* ]] || { echo "    got '$out'"; return 1; }
+    [[ "$out" == "SURVIVED handle=$NAME"* ]] || { echo "    got '$out'"; return 1; }
 }
 
-# --- the bridge half (2026-09-20) -------------------------------------
-# A bridge-shaped loop the real predicate accepts (argv[3]=sot-bridge,
-# argv[5]=handle), pointed at a relay that just sleeps: no daemon needed.
-printf '#!/usr/bin/env bash\nsleep 300\n' > "$WORK/fake-relay.sh"; chmod +x "$WORK/fake-relay.sh"
 full() { CLAUDE_CODE_SESSION_ID="$1" bash "$SCRIPTS_DIR/comm-session-start.sh" --context 2>"$WORK/err"; }
 
-case_live_bridge_is_reported_up_and_keeps_the_do_not_relisten_line() {
+case_the_survived_block_names_no_listener() {
     local p; p="$(wake_sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
-    sot_bridge_start "$NAME" "$WORK/fake-relay.sh"
-    sot_bridge_running_for "$NAME" || { echo "    fixture bridge did not start"; return 1; }
     local out; out="$(full sess-A)"
-    [[ "$(printf '%s' "$out" | head -n1)" == "SURVIVED handle=$NAME listener=up" ]] \
+    [[ "$(printf '%s' "$out" | head -n1)" == "SURVIVED handle=$NAME" ]] \
         || { echo "    got '$(printf '%s' "$out" | head -n1)'"; return 1; }
-    printf '%s' "$out" | grep -q "Do not re-join, re-listen, or re-poll" \
-        || { echo "    a live bridge must keep the do-not-re-listen line"; return 1; }
-    sot_bridge_stop "$NAME"
-}
-case_dead_bridge_is_reported_down_and_never_says_do_not_relisten() {
-    local p; p="$(wake_sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
-    sot_bridge_stop "$NAME" 2>/dev/null || true
-    local out; out="$(full sess-A)"
-    [[ "$(printf '%s' "$out" | head -n1)" == "SURVIVED handle=$NAME listener=down" ]] \
-        || { echo "    got '$(printf '%s' "$out" | head -n1)'"; return 1; }
-    printf '%s' "$out" | grep -q "re-listen" \
-        && { echo "    told a deaf session not to re-listen"; return 1; }
-    printf '%s' "$out" | grep -q "comm-listen.sh --name $NAME now" \
-        || { echo "    no handle-explicit instruction to restart the listener"; return 1; }
-    ! sot_bridge_running_for "$NAME" || { echo "    the query path started a bridge"; return 1; }
-}
-
-# The bootstrap path (no flags) is the half that must HEAL, not only
-# report -- Codex review of PR 254: both cases above call --context, so a
-# regression that turned `_ensure_bridge` back into a query would leave
-# them green.
-boot() { CLAUDE_CODE_SESSION_ID="$1" timeout 30 bash "$SCRIPTS_DIR/comm-session-start.sh" 2>"$WORK/err" | head -n1; }
-
-case_bootstrap_restarts_a_dead_bridge() {
-    # A ping watcher, not a Monitor: this case is about the bridge on the
-    # SURVIVED path, and only a comm-wake survivor takes that path now.
-    local p; p="$(wake_sleeper)"; printf '%s\nsess-A\n' "$p" > "$MARKER"
-    sot_bridge_stop "$NAME" 2>/dev/null || true
-    local out; out="$(boot sess-A)"
-    [[ "$out" == "SURVIVED handle=$NAME listener=restarted" ]] || { echo "    got '$out' (err: $(head -c 300 "$WORK/err"))"; return 1; }
-    sot_bridge_running_for "$NAME" || { echo "    reported restarted with no bridge running"; return 1; }
-    sot_bridge_stop "$NAME"
-}
-case_two_racing_starts_leave_one_bridge() {
-    sot_bridge_stop "$NAME" 2>/dev/null || true
-    sot_bridge_start "$NAME" "$WORK/fake-relay.sh" & local a=$!
-    sot_bridge_start "$NAME" "$WORK/fake-relay.sh" & local b=$!
-    wait "$a" "$b" 2>/dev/null
-    sleep 0.3
-    local n; n="$(pgrep -u "$(id -un)" -f "fake-relay.sh $NAME\$" 2>/dev/null | wc -l)"
-    [ "$n" -le 1 ] || { echo "    $n bridge loops survived a concurrent start"; return 1; }
-    sot_bridge_stop "$NAME"
+    printf '%s' "$out" | grep -q -i -E 'listen|bridge' \
+        && { echo "    the block still names a listener or bridge"; return 1; }
+    printf '%s' "$out" | grep -q "Do not re-join or re-poll" \
+        || { echo "    a survived session lost its do-not-re-join line"; return 1; }
+    return 0
 }
 
 # A daemon that does not answer must not cost a capsule row its wake path. The
@@ -353,38 +294,5 @@ check "orphan armed by another session: NOT SURVIVED and reaped" case_orphan_fro
 check "legacy marker (pid only) keeps the liveness-only answer" case_legacy_marker_without_session_line_keeps_liveness_answer
 check "dead pid is not survived" case_dead_pid_is_not_survived
 check "no session id in the environment: liveness alone decides" case_no_session_id_in_env_trusts_liveness
-check "a live bridge reads listener=up and keeps the do-not-re-listen line" case_live_bridge_is_reported_up_and_keeps_the_do_not_relisten_line
-check "a dead bridge reads listener=down and is never told not to re-listen" case_dead_bridge_is_reported_down_and_never_says_do_not_relisten
-# THE BRIDGE TETHER, both directions, because the owner check is the one that
-# can take a box's comms down. The loop runs in a bare `bash -c` with no
-# library sourced, so an owner check that calls a function which does not
-# exist there takes the failure branch every time: the loop would kill its
-# relay child, drop the pidfile and exit within about two seconds of starting,
-# and the named receiver the daemon counts for that box would be gone. That is
-# a worse outcome than the deafness this lane is fixing, so it is measured,
-# not argued -- a live owner must keep its bridge, and a dead one must not.
-case_a_bridge_keeps_a_live_owner_and_follows_a_dead_one() {
-    local owner tries=0
-    owner="$(sleeper)"
-    sot_bridge_stop "$NAME" 2>/dev/null || true
-    sot_bridge_start "$NAME" "$WORK/fake-relay.sh" "$owner"
-    sleep 3
-    # Check the FIXTURE before blaming the code: if the owner itself died (a
-    # sweep from another case, a slow box), the bridge following it is correct
-    # behaviour and the case has proved nothing either way.
-    kill -0 "$owner" 2>/dev/null || { echo "    the fixture's owner process died; inconclusive, not a bridge failure"; return 1; }
-    sot_bridge_running_for "$NAME" || { echo "    the bridge died while its owner was alive"; return 1; }
-    kill "$owner" 2>/dev/null
-    while [ "$tries" -lt 50 ] && sot_bridge_running_for "$NAME"; do sleep 0.2; tries=$((tries + 1)); done
-    if sot_bridge_running_for "$NAME"; then
-        echo "    the bridge outlived its owner"
-        sot_bridge_stop "$NAME"
-        return 1
-    fi
-    return 0
-}
-
-check "the bootstrap path restarts a dead bridge" case_bootstrap_restarts_a_dead_bridge
-check "a bridge keeps a live owner and follows a dead one" case_a_bridge_keeps_a_live_owner_and_follows_a_dead_one
-check "two racing starts leave at most one bridge" case_two_racing_starts_leave_one_bridge
+check "the survived block names no listener or bridge" case_the_survived_block_names_no_listener
 echo; echo "$PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

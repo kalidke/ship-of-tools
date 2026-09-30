@@ -1,22 +1,19 @@
 #!/usr/bin/env bash
 # comm-session-start.sh — the deterministic sot-comm receive-bootstrap, split
 # into TWO phases (Codex review finding 5) so a message can never land before
-# the Monitor that would wake on it exists, and so the wake-proof selftest
-# always has a live Monitor to actually prove:
+# the Monitor that would wake on it exists:
 #
-#   comm-session-start.sh             phase 1 ("arm"): resolve identity, start
-#                                      the listener, print ONE line and STOP —
+#   comm-session-start.sh             phase 1 ("arm"): resolve identity, print
+#                                      ONE line and STOP —
 #                                      either SURVIVED (nothing to do) or
 #                                      BOOTSTRAP-ARM (arm the printed MONITOR
 #                                      command, THEN run phase 2).
 #   comm-session-start.sh --catch-up  phase 2, run only after the Monitor is
-#                                      armed: poll the backlog, selftest (now
-#                                      safe — the Monitor exists to catch its
-#                                      wake frame), and the sot layer. Prints
-#                                      the final verdict.
+#                                      armed: poll the backlog and the sot
+#                                      layer. Prints the final verdict.
 #   comm-session-start.sh --context   read-only: print a short context block
 #                                      if survived, else say so and name the
-#                                      phase-1 re-run. NEVER joins, listens,
+#                                      phase-1 re-run. NEVER joins,
 #                                      polls, or writes anything to disk
 #                                      (comm-context.sh honors
 #                                      $SOT_COMM_READONLY for both of its own
@@ -51,14 +48,11 @@ case "${1:-}" in
     --catch-up) MODE="catchup" ;;
 esac
 
-IS_WINDOWS=0
-_sot_is_windows && IS_WINDOWS=1
-
 _watch_marker() { printf '%s/state/%s.watch\n' "${SOT_COMM_HOME:-$HOME/.sot-comm}" "$1"; }
 
 # The owner-pid walk lives in comm-lib.sh (`sot_owner_pid`) now: comm-wake.sh
-# and comm-listen.sh discover their own owner with it, so no caller can leave a
-# leg ownerless by forgetting a flag. This script still passes the pid it finds
+# discovers its own owner with it, so no caller can leave a leg ownerless by
+# forgetting a flag. This script still passes the pid it finds
 # to the watcher it spawns, because it is attached to the agent RIGHT NOW and
 # the watcher is about to be backgrounded — if its parent exits first the
 # watcher reparents to init and its own walk would find nothing.
@@ -141,44 +135,6 @@ _survived() {
     return 1
 }
 
-# The OTHER half of receiving (2026-09-20, a peer session's field report).
-# `_survived` answers one question only: will anything WAKE this session
-# (a watcher/ping marker armed by THIS session). It says nothing about
-# whether anything WRITES to the inbox — that is the relay bridge. A
-# session that kept its watcher but lost its bridge was told "it survived
-# this wipe. Do not re-join, re-listen, or re-poll" — the one instruction
-# that guaranteed it stayed deaf to durable mail while its nav row looked
-# healthy. So the bridge is now reported as its own fact, and the
-# do-not-re-listen sentence is printed only when that fact is `up`.
-#
-# `$1` is the handle; prints exactly one word:
-#   n/a        no bridge on this platform (Windows: the FE files frames itself)
-#   up         a bridge for this handle is running
-#   down       none is running (the caller decides whether to start one)
-_bridge_state() {
-    [ "$IS_WINDOWS" = 1 ] && { echo "n/a"; return 0; }
-    if sot_bridge_running_for "$1"; then echo "up"; else echo "down"; fi
-}
-
-# The bootstrap's half: a `down` bridge is started here and re-checked, so
-# the word printed is what is TRUE after the attempt, never what was
-# intended. The query path (`--context`, the wipe hook) never calls this —
-# a question must not start processes, and a bridge parented to a hook
-# shell is not one this script can promise anything about.
-_ensure_bridge() {
-    local h="$1" state
-    state="$(_bridge_state "$h")"
-    [ "$state" = "down" ] || { echo "$state"; return 0; }
-    # Ownership is comm-lib.sh's `sot_bridge_owner_pid`, the same tiers
-    # comm-listen.sh uses. This path used to keep its own agent-only check, so
-    # a start with no discoverable agent reported `down` and never reached the
-    # shared logic at all — the fault CI's hermetic leg caught (2026-09-26).
-    local owner; owner="$(sot_bridge_owner_pid || true)"
-    [ -n "$owner" ] || { echo "down"; return 0; }
-    sot_bridge_start "$h" "$COMM_HOME/bin/comm-relay.sh" "$owner" 2>/dev/null || true
-    if sot_bridge_running_for "$h"; then echo "restarted"; else echo "down"; fi
-}
-
 # The work-state rule, printed on EVERY bootstrap outcome (fresh, survived,
 # catch-up): the nav row colour is derived from it, and a session that
 # launches a background job without stamping `waiting` shows green while the
@@ -207,7 +163,7 @@ CAPEOF
 }
 
 _context_block() {
-    local h="$1" listener="${2:-n/a}" inbox
+    local h="$1" inbox
     # comm-lib.sh owns the platform branch (sot_fe_inbox_path): on Windows the
     # mail is the frontend's own file, everywhere else the per-handle one.
     inbox="$(sot_fe_inbox_path)"
@@ -218,32 +174,15 @@ Verbs: comm-send.sh @<peer> "msg" | comm-poll.sh | comm-status.sh <working|waiti
 EOF
     _workstate_rule
     _capability_lines
-    case "$listener" in
-        restarted)
-            cat <<EOF
-Your inbox watcher never stopped, but your inbox listener had DIED and was restarted just now — both halves are live again. Prove it with comm-listen.sh --name $h --selftest if the next minutes matter, and run comm-poll.sh for anything that landed while it was down. Do not re-join.
-EOF
-            ;;
-        down)
-            cat <<EOF
-Your inbox watcher never stopped, but your inbox listener is DOWN: nothing is writing durable mail to your inbox, however healthy the nav row looks. Run comm-listen.sh --name $h now, then comm-poll.sh. Do not re-join. (The handle is spelled out because a pinned identity and this shell's own derivation can differ, and a bare comm-listen.sh would then revive the wrong one.)
-EOF
-            ;;
-        *)
-            cat <<EOF
-Your inbox watcher never stopped and your inbox listener is up: it survived this wipe. Do not re-join, re-listen, or re-poll.
-EOF
-            ;;
-    esac
+    echo "Your inbox watcher never stopped: it survived this wipe. Do not re-join or re-poll."
 }
 
 if [ "$MODE" = "context" ]; then
     eval "$(SOT_COMM_READONLY=1 "$SCRIPT_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
     H="${SOT_COMM_NAME:-${NAME:-}}"
     if [ -n "$H" ] && _survived "$H"; then
-        LISTENER="$(_bridge_state "$H")"
-        echo "SURVIVED handle=$H listener=$LISTENER"
-        _context_block "$H" "$LISTENER"
+        echo "SURVIVED handle=$H"
+        _context_block "$H"
     else
         echo "NOT SURVIVED handle=${H:-none} — run comm-session-start.sh (no flags) now to rebootstrap; a Monitor does not count as a wake path, and a wipe hook alone never re-joins/re-polls/re-arms."
     fi
@@ -254,21 +193,9 @@ if [ "$MODE" = "catchup" ]; then
     eval "$("$SCRIPT_DIR/comm-context.sh")"
     H="${SOT_COMM_NAME:-${NAME:-}}"
     if [ -z "$H" ]; then
-        echo "BOOTSTRAP handle=none poll=n/a selftest=down identity=FAIL"
+        echo "BOOTSTRAP handle=none poll=n/a identity=FAIL"
         exit 0
     fi
-
-    # Selftest runs AFTER the Monitor is armed (phase 1 already printed
-    # BOOTSTRAP-ARM and the skill armed it before running this phase — Codex
-    # review finding 5): its own wake-proof frame now has a live watcher to
-    # catch it, instead of racing a Monitor that doesn't exist yet.
-    SELFTEST_OUT="$("$SCRIPT_DIR/comm-listen.sh" --selftest 2>&1)"; rc=$?
-    printf '%s\n' "$SELFTEST_OUT"
-    case "$rc" in
-        0) SELFTEST="ok" ;;
-        3) SELFTEST="retry" ;;
-        *) SELFTEST="down" ;;
-    esac
 
     # ONE reader, every platform. comm-poll.sh reads AND cursors both inboxes
     # on Windows (comm-lib.sh's sot_fe_* helpers), so the Windows branch that
@@ -285,7 +212,7 @@ if [ "$MODE" = "catchup" ]; then
         [ "${POLL_COUNT:-0}" -gt 0 ] 2>/dev/null && { echo "BACKLOG:"; printf '%s\n' "$POLL_OUT"; }
     fi
 
-    echo "BOOTSTRAP handle=$H poll=${POLL_COUNT:-0} selftest=$SELFTEST identity=ok"
+    echo "BOOTSTRAP handle=$H poll=${POLL_COUNT:-0} identity=ok"
     _workstate_rule
     _capability_lines
     exit 0
@@ -315,7 +242,7 @@ fi
 # coordinator session's identity during this PR's own testing).
 if [ "$COLD_PRODUCER" = 0 ] && [ -z "$PIN_NAME" ] && [ -z "${NAME:-}" ] \
    && [ -n "${SELF_FILE:-}" ] && [ -f "$SELF_FILE" ]; then
-    echo "BOOTSTRAP-ARM handle=none listener=n/a identity=FAIL MONITOR: n/a"
+    echo "BOOTSTRAP-ARM handle=none identity=FAIL MONITOR: n/a"
     echo "REFUSED: $SELF_FILE already names a different, validated identity (see the diagnostic line above) and no SOT_COMM_NAME/SOT_COMM_SELF_FILE pin was given — refusing to join over it. A subagent/lane launcher must pin a distinct SOT_COMM_NAME and, ideally, a private SOT_COMM_SELF_FILE of its own; see this skill's Identity line and references/reclaim-handle.md." >&2
     exit 0
 fi
@@ -331,9 +258,8 @@ fi
 # question (a live comm-wake for this handle) in its one place; a surviving
 # MONITOR falls through here and the bootstrap below arms a ping watcher.
 if [ -n "$H" ] && _survived "$H"; then
-    LISTENER="$(_ensure_bridge "$H")"
-    echo "SURVIVED handle=$H listener=$LISTENER"
-    # Manager review (S5): a survived listener never re-runs comm-join.sh
+    echo "SURVIVED handle=$H"
+    # Manager review (S5): a survived session never re-runs comm-join.sh
     # (that's the whole point of "survived" — nothing was re-joined), so
     # this is the ONLY place a --continue restart re-declares to the
     # daemon. Idempotent (the daemon just overwrites the same value) and
@@ -354,11 +280,11 @@ if [ -n "$H" ] && _survived "$H"; then
             echo "comm-session-start.sh: WARNING — this session's identity names row '$join_ws' but no daemon endpoint could be resolved; the daemon won't learn '@$H' until the next comm-session-start." >&2
         fi
     fi
-    _context_block "$H" "$LISTENER"
+    _context_block "$H"
     exit 0
 fi
 
-# --- deaf: cold start or --continue restart. Identity + listener only. -----
+# --- deaf: cold start or --continue restart. Identity only. -----------------
 # A session's handle is its row's handle everywhere, Windows included —
 # comm-join.sh's own precedence (pin > validated self-file > derive) applies
 # unchanged; nothing here derives a family handle for it.
@@ -366,30 +292,15 @@ JOIN_OUT="$("$SCRIPT_DIR/comm-join.sh" 2>&1)" || true
 printf '%s\n' "$JOIN_OUT"
 IDENTITY_MISMATCH=0
 case "$JOIN_OUT" in
-    *"ALREADY RUNNING"*) IDENTITY_MISMATCH=1 ;;
+    *"still being heartbeated"*) IDENTITY_MISMATCH=1 ;;
 esac
 HANDLE="$(printf '%s\n' "$JOIN_OUT" | sed -n 's/^Joined sot-comm as @\([^ ]*\).*/\1/p' | head -n1)"
 if [ -z "$HANDLE" ]; then
     # comm-join.sh failed outright (derivation exhausted every tier, or the
     # self-file write failed) — its own stderr (already printed above) names
     # the reason.
-    echo "BOOTSTRAP-ARM handle=none listener=n/a identity=FAIL MONITOR: n/a"
+    echo "BOOTSTRAP-ARM handle=none identity=FAIL MONITOR: n/a"
     exit 0
-fi
-
-LISTEN_OUT="$("$SCRIPT_DIR/comm-listen.sh" 2>&1)"; listen_rc=$?
-# LISTEN_OUT is read ONLY for listen_rc's sake, never echoed: comm-listen.sh's
-# own start banner (its "NEXT (required...) ... Monitor command: ..." block,
-# ~comm-listen.sh:195) is a free-form multi-line explainer meant for a human
-# running it directly, not for this script's one-line-per-outcome contract —
-# dumping it here duplicated (and predated) the MONITOR/WAKE line this script
-# prints itself below with the resolved absolute path.
-if [ "$IS_WINDOWS" = 1 ]; then
-    LISTENER_STATE="n/a"
-elif [ "$listen_rc" -eq 0 ]; then
-    LISTENER_STATE="up"
-else
-    LISTENER_STATE="down"
 fi
 
 IDENTITY="ok"
@@ -486,14 +397,14 @@ if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
 fi
 
 if [ "$WAKE_ACTIVE" = 1 ]; then
-    echo "BOOTSTRAP-ARM handle=$HANDLE listener=$LISTENER_STATE identity=$IDENTITY WAKE: comm-wake.sh (ping; no Monitor needed)"
+    echo "BOOTSTRAP-ARM handle=$HANDLE identity=$IDENTITY WAKE: comm-wake.sh (ping; no Monitor needed)"
 else
     # printf %q quotes BOTH the executable path and the handle (Codex
     # review finding 8): an unquoted command breaks under a spaced
     # installation path. comm-watch.sh itself honors $SOT_COMM_HOME for
     # the inbox/marker it reads — nothing extra to thread through here.
     MONITOR_CMD="$(printf '%q %q' "$SCRIPT_DIR/comm-watch.sh" "$HANDLE")"
-    echo "BOOTSTRAP-ARM handle=$HANDLE listener=$LISTENER_STATE identity=$IDENTITY MONITOR: $MONITOR_CMD (persistent; if the harness ends it, re-arm on the notice - this hook warns if you miss one)"
+    echo "BOOTSTRAP-ARM handle=$HANDLE identity=$IDENTITY MONITOR: $MONITOR_CMD (persistent; if the harness ends it, re-arm on the notice - this hook warns if you miss one)"
 fi
 _workstate_rule
 _capability_lines

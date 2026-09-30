@@ -8,6 +8,8 @@ and the frontend (those halves ride a release). **A checkout without those
 commits has none of it**, and the test is a grep: no `agent.receipt` under
 `rust/`, no `filed ->` under `comm/core/scripts/`.
 
+> *Note (2026-09-30, ADR 0049 B1): the clause "the filer's receipt survives as the hub route's single `filed` answer" is now true only for the leg to a box with its own disk, until B2. For a handle the hub's comm folder lists, the appending daemon answers `filed`/`FAILED` itself, and no per-session bridge files or claims anything.*
+
 ## Context
 
 `comm/PROTOCOL.md`'s own rule is that the append IS the delivery: a frame in a

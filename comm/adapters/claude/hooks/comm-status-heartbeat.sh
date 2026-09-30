@@ -137,7 +137,7 @@ row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.floor // "") + "|" + (.s
 
 # DEAF-SESSION WARNING (2026-09-15): a session whose harness inbox Monitor
 # died still looks alive here — this hook keeps running, the registry row
-# keeps updating below — while comm-listen.sh keeps filing relay traffic
+# keeps updating below — while the daemon keeps filing relay traffic
 # into its inbox with nothing left to wake it on. The bug is silence, not a
 # crash, so this must run BEFORE the state/staleness early exits below
 # (the case statement and the throttle's `exit 0`), because those two exit

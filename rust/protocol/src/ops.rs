@@ -422,7 +422,7 @@ pub mod op {
     /// Empty request (`PingReq`); the daemon answers `PingRes{ok:true}`
     /// with no side effect beyond proving the read half of this
     /// connection is still alive. Sent every `PING_INTERVAL` by the
-    /// frontend transport and the comm relay bridge (`comm-listen.sh`);
+    /// frontend transport;
     /// the daemon gives an `fe`/`bridge` connection a `READ_DEADLINE`
     /// (server.rs) and drops one that goes quiet that long, reaping it
     /// through the same `ClientGuard::drop` path as a clean exit.

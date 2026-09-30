@@ -2,7 +2,7 @@
 # comm-postcompact-reminder.sh — Claude Code `SessionStart` hook (matcher:
 # compact): print short context after a context COMPACTION, never a
 # re-bootstrap directive. Compaction does not kill the receive path (the
-# watcher/listener are background tasks that outlive a summary) — only
+# watcher is a background task that outlives a summary) — only
 # `comm-session-start.sh`'s own survival check decides whether to say so or to
 # tell the session to actually rebootstrap, so this hook never repeats logic
 # the script already owns. Prints `--context`'s output verbatim (a few short

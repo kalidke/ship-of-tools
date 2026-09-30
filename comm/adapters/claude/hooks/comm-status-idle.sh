@@ -273,7 +273,7 @@ fi
 # must never be able to wedge a turn.
 MAIL_INBOX="$HOME_DIR/inbox/$NAME.jsonl"
 # Both counters start at 0 OUTSIDE the gate: on Windows this file often does
-# not exist at all (no listener writes it) and the frontend arm below must
+# not exist at all (nothing but the frontend files there) and the frontend arm below must
 # still run.
 mail_total=0; mail_pending=0
 # The count and the read run in a SUBSHELL that sources comm-lib.sh, so this
@@ -317,7 +317,7 @@ if [ -r "$MAIL_INBOX" ]; then
     esac
 fi
 # The FRONTEND inbox — the SECOND mail file on Windows, where the frontend files
-# every inbound relay frame because no listener runs there. It is SHARED by every
+# every inbound relay frame because the daemon does not file into a per-handle inbox there. It is SHARED by every
 # handle on the box, so a line counts only when `to` is EXACTLY this handle (the
 # per-handle rule above admits a line with no `to` at all; that file is already
 # this handle's alone, this one is not). Its cursor is its own file — the two

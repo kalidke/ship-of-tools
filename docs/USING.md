@@ -105,11 +105,6 @@ reachable `systemd --user` manager it runs `--survival degraded` instead
 (a warn line in `sotd.log` names why) and shares the daemon's own kill
 domain there.
 
-After upgrading to the release that removed the keeper, rerun
-`/sot-session-start` once in each open session so its relay bridge
-restarts as a child of the session (the old bridges lived in the removed
-tmux server).
-
 ## Windows: never launch the daemon from an agent's shell
 
 Never launch the frontend or the daemon from a shell running under an

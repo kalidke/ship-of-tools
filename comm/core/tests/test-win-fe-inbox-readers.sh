@@ -5,8 +5,8 @@
 # addressed to it while comm-poll.sh printed "No new messages" from a per-handle
 # file three weeks stale).
 #
-# There is no inbox listener on Windows: the frontend files every inbound relay
-# frame into its own fe-inbox.jsonl (comm-listen.sh's header, comm-watch.sh's
+# On Windows the frontend files every inbound relay
+# frame into its own fe-inbox.jsonl (comm-watch.sh's
 # Windows branch), so THAT file is the mail. Two facts make it a different file
 # rather than the same one renamed, and both are asserted here:
 #
@@ -307,10 +307,9 @@ case_a_same_box_frame_wakes_on_windows() {
     return 0
 }
 
-# (i) The post-arm wake-proof. comm-listen.sh --selftest injects a __selftest__
-#     frame and sot-session-start RELIES on the Monitor firing on it; comm-poll.sh
-#     deliberately does the opposite and never shows it. Both halves must hold on
-#     the frontend file too.
+# (i) A __selftest__ frame (one already in an inbox) still wakes the Monitor;
+#     comm-poll.sh deliberately does the opposite and never shows it. Both halves
+#     must hold on the frontend file too.
 case_a_frontend_selftest_frame_still_wakes() {
     reset_inboxes
     wake_win "$FE_INBOX" "$(fe_frame "$NAME" "receive-path self-test" "__selftest__")"

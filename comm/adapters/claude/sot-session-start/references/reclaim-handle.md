@@ -5,23 +5,22 @@ problems — read which one you actually have before picking a recipe.
 
 - **`identity=MISMATCH`** — it joined you anyway, but under an ESCALATED
   handle (e.g. `<repo>-<parentdir>-<host>` instead of the bare
-  `<repo>-<host>`) because a live listener bridge for your CANONICAL handle
-  was already running under your uid at join time. Recipe below.
+  `<repo>-<host>`) because your CANONICAL handle still had a fresh heartbeat
+  under your uid at join time. Recipe below.
 - **`identity=FAIL` with a `REFUSED:` line** — it did NOT join at all: the
   self-file at this identity slot already names a different, validated
   project, and no `$SOT_COMM_NAME`/`$SOT_COMM_SELF_FILE` pin was given to
   say what to do about it. See "Unblocking a REFUSED start" below — this is
   a DIFFERENT situation, not a smaller version of the same one.
 
-This is ADR 0049's design of record, landing in stages: the listener bridge
-and Monitor named below are what this tree still runs today. ADR 0049
-replaces them with one daemon-side wake and nothing to arm, but that
-replacement has not landed yet, so the recipe below still has to account for
-what is actually running.
+This is ADR 0049's design of record, landing in stages: the Monitor named
+below is what this tree still runs today. ADR 0049 replaces it with one
+daemon-side wake and nothing to arm, but that replacement has not landed yet,
+so the recipe below still has to account for what is actually running.
 
 ## MISMATCH recipe
 
-A live bridge under YOUR canonical handle is almost always your own earlier
+A fresh heartbeat under YOUR canonical handle is almost always your own earlier
 identity — a real collision with a different project looks identical from
 the outside, so verify before reclaiming. **The no-arg `comm-join.sh` is the
 WRONG move here.** No-args derives a handle from scratch; derivation sees
@@ -48,11 +47,10 @@ explicitly instead.
    ```
 
 This is the same two-command recipe `comm-join.sh`'s own warning prints when
-`identity=MISMATCH` fires. It does not move your listener bridge or any
-armed Monitor — this tree still runs both, and they keep serving whichever
-handle they were started against, exactly as that warning says. There is no
-separate step here to move them; the design of record (ADR 0049) removes
-them instead, in a later lane.
+`identity=MISMATCH` fires. It does not move any armed Monitor — this tree
+still runs it, and it keeps serving whichever handle it was started against,
+exactly as that warning says. There is no separate step here to move it; the
+design of record (ADR 0049) removes it instead, in a later lane.
 
 ### Why MISMATCH is rare
 

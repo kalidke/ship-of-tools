@@ -154,17 +154,17 @@ if [ "$NEED_DERIVE" = true ]; then
     # self-file discarded by comm-context.sh, pre-self-heal or otherwise) —
     # the registry still shows tier-1 as held by "an unknown project", so
     # derivation treats it as someone else's and hands back a DIFFERENT
-    # handle, silently. A live listener bridge for the bare handle, under
-    # this same uid, is strong evidence that "unknown project" is actually
-    # THIS session's own prior identity — a real collision from an
-    # unrelated project has no reason to be running a bridge named after
-    # OUR root's basename+host. Warn loudly so the operator/session can no
-    # longer strand silently; still proceed with the qualified join (the
-    # bridge alone doesn't prove ownership — a genuinely different, still
-    # -live session for the same repo+host could be the one running it —
-    # so this NEVER auto-reclaims).
+    # handle, silently. A fresh heartbeat still being stamped under the bare
+    # handle is strong evidence that "unknown project" is actually THIS
+    # session's own prior identity — a real collision from an unrelated
+    # project has no reason to be heartbeating under OUR root's
+    # basename+host. Warn loudly so the operator/session can no longer
+    # strand silently; still proceed with the qualified join (a heartbeat
+    # alone doesn't prove ownership — a genuinely different, still-live
+    # session for the same repo+host could be the one stamping it — so this
+    # NEVER auto-reclaims).
     if [ -n "$CLAIMED_QUALIFIER" ] && [ -n "$CLAIMED_TIER1" ] && [ "$CLAIMED_TIER1" != "$NAME" ] \
-       && sot_bridge_running_for "$CLAIMED_TIER1"; then
+       && sot_handle_live "$CLAIMED_TIER1"; then
         # The printed recipe below uses THIS install's own SCRIPT_DIR —
         # never a hardcoded ~/.sot-comm/bin/, wrong under a non-default
         # $SOT_COMM_HOME (supported) — and %q-quotes every interpolated
@@ -176,20 +176,19 @@ if [ "$NEED_DERIVE" = true ]; then
         QSCRIPT_DIR="$(printf '%q' "$SCRIPT_DIR")"
         cat >&2 <<WARN
 
-*** WARNING: joined as '@$NAME', but a relay listener bridge for
-*** '@$CLAIMED_TIER1' (this project's bare handle) is ALREADY RUNNING under
-*** this user. That is almost certainly YOUR OWN earlier identity, not a
-*** real collision with another project — most likely this session's own
-*** '@$CLAIMED_TIER1' row was evicted as stale (see comm-context.sh) and
-*** this join escalated away from it instead of reclaiming it. Proceeding
-*** with the qualified join as '@$NAME' — a running bridge alone doesn't
-*** prove ownership, so this is never auto-reclaimed — but if this IS your
-*** own handle, you can now strand yourself silently: your listener bridge
-*** and any armed Monitor go on serving '@$CLAIMED_TIER1''s inbox while
-*** everyone else now addresses you as '@$NAME'.
+*** WARNING: joined as '@$NAME', but '@$CLAIMED_TIER1' (this project's bare
+*** handle) is still being heartbeated under this user. That is almost
+*** certainly YOUR OWN earlier identity, not a real collision with another
+*** project — most likely this session's own '@$CLAIMED_TIER1' row was
+*** evicted as stale (see comm-context.sh) and this join escalated away from
+*** it instead of reclaiming it. Proceeding with the qualified join as
+*** '@$NAME' — a heartbeat alone doesn't prove ownership, so this is never
+*** auto-reclaimed — but if this IS your own handle, you can now strand
+*** yourself silently: '@$CLAIMED_TIER1''s inbox is the one still being
+*** filled while everyone else now addresses you as '@$NAME'.
 ***
-*** If you confirm sole ownership (one live session with this repo as cwd,
-*** whose bridge creation time matches when THIS session started), reclaim
+*** If you confirm sole ownership (one live session with this repo as cwd
+*** whose own heartbeat is the fresh one), reclaim
 *** the bare handle instead of staying on '@$NAME':
 ***   $QSCRIPT_DIR/comm-leave.sh --name $QNAME
 ***   $QSCRIPT_DIR/comm-join.sh --name $QTIER1

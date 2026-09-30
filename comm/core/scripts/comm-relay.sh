@@ -4,9 +4,9 @@
 # The only live link between machines (Linux ⇄ Windows) is the SSH-forwarded
 # backend socket, so cross-machine agent messages ride it: `agent.send` ->
 # daemon -> `agent.message` evt broadcast
-# to every connected client. On the Linux side the `bridge` subcommand holds a connection
-# and drops received messages into the local sot-comm inbox so comm-poll.sh
-# sees them; on Windows the frontend writes them to <state-dir>/fe-inbox.jsonl.
+# to every connected client. A handle the hub's comm folder lists is filed by the
+# hub (`comm.file`); on Windows the frontend writes received messages to
+# <state-dir>/fe-inbox.jsonl.
 #
 # Requires a daemon built with agent.send/agent.message support (workspace push +
 # this relay land together).
@@ -15,17 +15,11 @@
 # or — Windows only, ADR 0042 amendment decision 5 — pipe:\\.\pipe\name /
 # pipe:name, reaching that box's OWN local daemon over its named pipe via
 # comm-pipe-request.ps1 (PowerShell; git-bash cannot open a named pipe
-# itself). `send`/`ask` work over a pipe: endpoint; `bridge` refuses one
-# (no persistent bridge loop on Windows, ever — see that subcommand).
+# itself). `send` works over a pipe: endpoint.
 #
 # Usage:
 #   comm-relay.sh send @to "message"        # fire-and-forget, instant
 #   comm-relay.sh send --all "message"      # broadcast to all clients
-#   comm-relay.sh ask  @to "message" [secs] # send, then print replies for secs (default 15)
-#   comm-relay.sh bridge [--name NAME]      # hold a connection; relay inbound msgs
-#                                           # into ~/.sot-comm/inbox/<NAME>.jsonl
-#                                           # (run in background; poll with comm-poll.sh)
-#   comm-relay.sh listen [secs]             # print inbound msgs to stdout for secs
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
@@ -33,23 +27,18 @@ eval "$("$SCRIPT_DIR/comm-context.sh")"
 ensure_home
 
 # Subcommand parsed FIRST, before any transport setup (Codex review round-2
-# SHOULD-FIX 2): `send`/`ask` need a routable identity to stamp a from-field
+# SHOULD-FIX 2): `send` needs a routable identity to stamp a from-field
 # that means anything, and that check must run BEFORE endpoint/socket
 # resolution below — otherwise an unresolved sender on a box with no
 # reachable daemon sees only "no sotd daemon found", never the identity
-# refusal that's the actual, fixable problem. `bridge`/`listen` are receive
-# operations and need no identity at all (bridge takes its own --name).
+# refusal that's the actual, fixable problem.
 SUB="${1:-}"; [ $# -gt 0 ] && shift || true
 case "$SUB" in
-    send|ask) sot_require_routable_identity || exit 1 ;;
+    send) sot_require_routable_identity || exit 1 ;;
 esac
 
-# ADR 0046 decision 1: the `bridge` subcommand's held connection IS what
-# "bridge" means (comm-listen.sh's reconnect loop execs exactly this,
-# `_sot_bridge_pattern`'s own anchor) — every other subcommand lets
-# `sot_hello_frame` infer its role.
+# Every connection lets `sot_hello_frame` infer its role.
 HELLO_ROLE=""
-[ "$SUB" = "bridge" ] && HELLO_ROLE="bridge"
 
 ENDPOINT="${SOT_RELAY_ENDPOINT:-}"
 resolve_endpoint() {
@@ -58,11 +47,11 @@ resolve_endpoint() {
 # nc preferred; on hosts without it (e.g. git-bash on Windows, which ships no
 # nc) fall back to bash's /dev/tcp for tcp endpoints. unix-socket endpoints
 # still require nc -U (/dev/tcp can't speak AF_UNIX). A pipe: endpoint uses
-# neither — see the EP_PIPE branches in nc_send/nc_hold below, which drive
+# neither — see the EP_PIPE branch in nc_send below, which drive
 # comm-pipe-request.ps1 (PowerShell) instead, since git-bash cannot open a
 # named pipe itself.
 HAVE_NC=0; command -v nc >/dev/null 2>&1 && HAVE_NC=1
-# SOFT for `send`/`ask` (see the file-first rule below): a target this box's
+# SOFT for `send` (see the file-first rule below): a target this box's
 # registry names is reached by appending to its inbox, which needs no daemon at
 # all — so a missing daemon must not refuse the send. Every path that really
 # needs the wire calls _require_endpoint and fails there instead.
@@ -75,7 +64,7 @@ _require_endpoint() { [ -n "$ENDPOINT" ] && return 0; _endpoint_missing "${1:-}"
 ENDPOINT="$(resolve_endpoint || true)"
 if [ -z "$ENDPOINT" ]; then
     case "$SUB" in
-        send|ask) ;;
+        send) ;;
         *) _endpoint_missing; exit 1 ;;
     esac
 fi
@@ -125,9 +114,8 @@ nc_send() {
         # loud-failure requirement) -- nc_send runs as a pipeline stage of
         # its own caller, in its own subshell, so a plain variable set
         # here would never be seen back in send_frame; the file is how it
-        # survives the fork. `${...:-/dev/null}` keeps the other caller of
-        # nc_send (the `bridge` subcommand's best-effort receipt) exactly
-        # as silent as before.
+        # survives the fork. `${...:-/dev/null}` keeps a caller that has not
+        # set it silent.
         # `|| rc=${PIPESTATUS[1]}`, not a bare pipeline: this script runs
         # under `set -euo pipefail`, so an unchecked nonzero pipe would
         # exit the whole script right here, before the reformatting below
@@ -164,95 +152,14 @@ nc_send() {
         echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2; return 1
     fi
 }
-# nc_hold: keep the connection open (write half stays open so the daemon doesn't
-# EOF us) and stream inbound frames to stdout. $1 = seconds (empty = forever).
-#
-# SELF-HEAL: an ssh: endpoint's read side is `sot_ssh_bridge`'s own child
-# process (C10), which EOFs the instant the daemon closes the far end
-# (ssh itself exiting is what surfaces as EOF here) — same property the
-# old `tail -f /dev/null | nc` form lacked: that form never exited on a
-# graceful daemon close (nc's stdin, tail -f, never EOFs), so the socket
-# sat in CLOSE-WAIT and the bridge stopped delivering FOREVER (this froze
-# an inbox for ~2 days until a manual restart). Unix-socket endpoints
-# keep nc -U, which has no child-process EOF to lean on.
-#
-# sot_hold_stdin: the write side of every branch below -- hello once, then
-# hold the pipe open forever without exiting. For `$HELLO_ROLE = bridge`
-# (topology plan §F step 2, D10: the half-open-roster fix) that means a
-# `ping` every `sot_ping_interval_s` instead of silence, so the daemon's
-# 90s read deadline for long-lived roles never trips a connection that's
-# actually still there; every other role (`ask`/`listen`, one-shot, always
-# called with an explicit `$secs` bound) keeps the original silent hold --
-# a `ping` on those would be harmless but pointless, so it stays scoped to
-# the role that actually needs it.
-sot_hold_stdin() {
-    sot_hello_frame "$HELLO_ROLE"
-    if [ "$HELLO_ROLE" = "bridge" ]; then
-        while :; do sleep "$(sot_ping_interval_s)"; sot_ping_frame; done
-    else
-        tail -f /dev/null
-    fi
-}
-nc_hold() {
-    local secs="${1:-}"
-    if [ -n "$EP_PIPE" ]; then
-        # No unbounded hold over a pipe: endpoint — a Windows box never
-        # runs a persistent bridge loop (ADR 0042 amendment decision 5;
-        # see comm-listen.sh's own no-bridge-on-Windows rule). `ask`
-        # always passes a concrete $SECS; only a bare `listen`/`bridge`
-        # (no seconds) would hit this, and both are refused rather than
-        # silently substituting some arbitrary bound.
-        [ -n "$secs" ] || {
-            echo "ERROR: an unbounded hold is not supported over a pipe: endpoint (no bridge loop on Windows) -- pass an explicit number of seconds" >&2
-            return 1; }
-        command -v powershell.exe >/dev/null 2>&1 || {
-            echo "ERROR: powershell.exe not found and endpoint is a named pipe" >&2; return 1; }
-        local ps1="$SCRIPT_DIR/comm-pipe-request.ps1"
-        [ -f "$ps1" ] || {
-            echo "ERROR: comm-pipe-request.ps1 not found next to comm-relay.sh ($SCRIPT_DIR)" >&2; return 1; }
-        # A bounded hold that runs out is its BOUND, not a failure: 124 is
-        # how `timeout` reports the ordinary end of every `ask` window, and
-        # under this script's `set -e` that status aborted `ask` before it
-        # could print its own "not an error -- the frame is filed" verdict.
-        # Same class as the verdict block in send_frame below: a transport's
-        # exit status overruling a record that had already decided. The two
-        # branches after this one say it by returning 0 outright; this one
-        # keeps a REAL failure (a pipe that refuses the connection) visible.
-        local rc=0
-        sot_hello_frame "$HELLO_ROLE" | timeout "$secs" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-            -File "$ps1" -PipeName "$EP_PIPE" -Mode Hold -TimeoutSec "$secs" || rc=$?
-        if [ "$rc" -eq 124 ]; then rc=0; fi
-        return "$rc"
-    fi
-    if [ -n "$EP_SSH_TARGET" ]; then
-        # The self-heal /dev/tcp was written for (this function's own doc
-        # above) comes free from a child process (C10; C3's own Rust
-        # spawn is the same shape): `sot_ssh_bridge`'s stdout is the
-        # child's own stdout, so `cat` reading it sees EOF the instant
-        # the daemon closes -- no fd-9 dance, no nc-vs-/dev/tcp split
-        # needed the way a single bidirectional socket fd required.
-        # An empty $secs is now the unbounded case inside sot_ssh_bridge
-        # itself, so the if/else this used to need collapses to one line.
-        sot_hold_stdin | sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST" "$secs"
-        return 0
-    fi
-    # Unix-socket endpoint: requires nc -U (/dev/tcp can't speak AF_UNIX).
-    if [ -n "$EP_UNIX" ] && [ "$HAVE_NC" = 1 ]; then
-        if [ -n "$secs" ]; then sot_hold_stdin | timeout "$secs" nc -U "$EP_UNIX"
-        else sot_hold_stdin | nc -U "$EP_UNIX"; fi
-        return 0
-    fi
-    echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2; return 1
-}
 
 send_frame() {  # $1 to, $2 text
     _require_endpoint "$1" || return 1
     # Identity is already validated (sot_require_routable_identity, called
-    # above for SUB in {send,ask} before any transport setup — Codex review
+    # above for SUB=send before any transport setup — Codex review
     # round-2 finding 4/C) — every relay frame stamps `from:$NAME` on the
-    # wire, and a peer's reply (or the self-echo filter in filter_inbound
-    # above) routes off that field, so this is never called with an
-    # unroutable NAME.
+    # wire, and a peer's reply routes off that field, so this is never
+    # called with an unroutable NAME.
     # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): the
     # message text ($2) can legitimately start with "/" and must never
     # reach jq via --arg — see that helper's comment for the mechanism.
@@ -437,21 +344,6 @@ send_frame() {  # $1 to, $2 text
     return 1
 }
 
-# Filter inbound frames for agent.message addressed to me (or broadcast).
-# Reads frames on stdin; emits one compact JSON line per matching message.
-filter_inbound() {
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        local op to from; op="$(printf '%s' "$line" | sot_jq -r '.op // empty' 2>/dev/null || true)"
-        [ "$op" = "agent.message" ] || continue
-        from="$(printf '%s' "$line" | sot_jq -r '.payload.from // ""' 2>/dev/null || true)"
-        [ "$from" = "$NAME" ] && continue   # drop our own broadcasts (self-echo)
-        to="$(printf '%s' "$line" | sot_jq -r '.payload.to // ""' 2>/dev/null || true)"
-        [ "$to" = "" ] || [ "$to" = "$NAME" ] || continue
-        printf '%s\n' "$line"
-    done
-}
-
 # FILE-FIRST (messaging ruling, 2026-09-26). A target with a row in THIS box's
 # registry shares this $SOT_COMM_HOME, so its inbox is a plain local append:
 # comm-send.sh files the frame, pokes the row if it is idle, and the FILE is the
@@ -494,133 +386,6 @@ case "$SUB" in
         fi
         send_frame "$TO" "$MSG"
         ;;
-    ask)
-        TO=""; MSG=""; SECS=15; TO_SET=false
-        while [ $# -gt 0 ]; do
-            case "$1" in
-                # First token = recipient; after that an '@'-arg is message body
-                # (a message may begin with "@peer …"). See `send` above.
-                @*) if [ "$TO_SET" = false ]; then TO="${1#@}"; TO_SET=true
-                    else MSG="${MSG:+$MSG }$1"; fi; shift ;;
-                *)  if [ -z "$MSG" ]; then MSG="$1"
-                    elif [[ "$1" =~ ^[0-9]+$ ]]; then SECS="$1"
-                    else MSG="$MSG $1"; fi; shift ;;
-            esac
-        done
-        [ "$TO_SET" = true ] || { echo "usage: comm-relay.sh ask @to \"msg\" [secs]  (no recipient)" >&2; exit 1; }
-        [ -z "$MSG" ] && { echo "usage: comm-relay.sh ask @to \"msg\" [secs]" >&2; exit 1; }
-        if _registry_target "$TO"; then
-            "$SCRIPT_DIR/comm-send.sh" "@$TO" "$MSG"
-        else
-            send_frame "$TO" "$MSG"
-        fi
-        # The frame is filed; the wait is for a convenience reply, so running
-        # out of seconds is not a failure and was never one to report.
-        echo "listening ${SECS}s for replies (a timeout is not an error — the frame is filed)..."
-        # Replies still stream live as they arrive (unchanged) -- the marker
-        # file is only how the caller, after nc_hold's pipeline returns,
-        # learns whether it saw NONE of them, so the TIMEOUT annotation below
-        # (messaging ruling, 2026-09-26) fires only on a genuine timeout.
-        _seen="$(mktemp "${TMPDIR:-/tmp}/sot-comm-ask-seen.XXXXXX")" || _seen=""
-        # The verdict was printed BEFORE this window opened, so nothing the
-        # window does may change it -- the same rule the verdict block in
-        # send_frame states, one call frame out. `nc_hold`'s `pipe:` branch
-        # returns a real refusal's status (a named pipe that denies the
-        # connection is not a timeout), and under this script's `set -euo
-        # pipefail` an uncaught pipeline failure aborted `ask` HERE: after
-        # `filed -> @h` had been printed, before the TIMEOUT annotation, and
-        # with a non-zero exit that PROTOCOL.md pairs with `FAILED`. So the
-        # CALLER owns the status: the window's failure is reported as what it
-        # is -- no reply window -- and `ask` still exits 0, because the frame
-        # is filed either way.
-        _hold_rc=0
-        { nc_hold "$SECS" | filter_inbound | while IFS= read -r m; do
-            [ -n "$_seen" ] && printf '1' > "$_seen"
-            printf '[%s] [%s] %s\n' \
-                "$(printf '%s' "$m" | jq -r '.payload.ts')" \
-                "$(printf '%s' "$m" | jq -r '.payload.from')" \
-                "$(printf '%s' "$m" | jq -r '.payload.text')"
-        done; } || _hold_rc=$?
-        if [ "$_hold_rc" -ne 0 ]; then
-            echo "no reply window: the hold over this endpoint exited $_hold_rc -- @$TO's frame is already filed, so this is not a delivery failure (the hold's own reason is above)."
-        elif [ -n "$_seen" ] && [ ! -s "$_seen" ]; then
-            note="$(sot_recipient_note "$TO" 2>/dev/null)" || note=""
-            case "$note" in
-                working*)
-                    echo "TIMEOUT: no reply from @$TO in ${SECS}s, but it has not ignored you -- it was $note (not an error — the frame is filed)." ;;
-                "needs its own user"*)
-                    echo "TIMEOUT: no reply from @$TO in ${SECS}s -- it is stopped on its own user and $note; a reply needs that human first (not an error — the frame is filed)." ;;
-                "no heartbeat"*)
-                    echo "TIMEOUT: no reply from @$TO in ${SECS}s -- $note (not an error — the frame is filed)." ;;
-                "")
-                    echo "TIMEOUT: no reply from @$TO in ${SECS}s (not an error — the frame is filed)." ;;
-                *)
-                    echo "TIMEOUT: no reply from @$TO in ${SECS}s -- it is $note (not an error — the frame is filed)." ;;
-            esac
-        fi
-        [ -z "${_seen:-}" ] || rm -f -- "${_seen:?}"
-        ;;
-    listen)
-        SECS="${1:-}"
-        nc_hold "$SECS" | filter_inbound | while IFS= read -r m; do
-            printf '[%s] [%s] %s\n' \
-                "$(printf '%s' "$m" | jq -r '.payload.ts')" \
-                "$(printf '%s' "$m" | jq -r '.payload.from')" \
-                "$(printf '%s' "$m" | jq -r '.payload.text')"
-        done
-        ;;
-    bridge)
-        [ "${1:-}" = "--name" ] && { NAME="$2"; shift 2; }
-        [ -z "$NAME" ] && { echo "ERROR: not joined and no --name; run comm-join.sh first" >&2; exit 1; }
-        # ADR 0042 amendment decision 5: no bridge loop on Windows, ever —
-        # a persistent `comm-relay.sh bridge` pins this script open and
-        # blocks update_comm's replace-in-place (the same reason
-        # comm-listen.sh starts no bridge there). A pipe: endpoint only
-        # ever means "this box's own local daemon"; that box's receive
-        # path is the FE inbox, not a bridge.
-        if [ -n "$EP_PIPE" ]; then
-            echo "ERROR: comm-relay.sh bridge does not support a pipe: endpoint -- a Windows box's receive path is the FE inbox (fe-inbox.jsonl), never a bridge loop. Use 'comm-relay.sh ask' or 'sot-fe type/screen' for direct pipe requests instead." >&2
-            exit 1
-        fi
-        echo "bridge: relaying inbound agent.messages for @$NAME into $INBOX_DIR/$NAME.jsonl (Ctrl-C to stop)"
-        nc_hold | filter_inbound | while IFS= read -r m; do
-            # `to` is preserved so the inbox Monitor can rank: direct (to==me)
-            # wakes the session, broadcast (to=="") files silently for
-            # comm-poll. filter_inbound already dropped to-other frames.
-            bline="$(printf '%s' "$m" | jq -c '{from:.payload.from, to:(.payload.to // ""), repo:"daemon", msg:.payload.text, ts:.payload.ts}')" \
-                && [ -n "$bline" ] || continue
-            # Through the one helper that appends, under the inbox lock.
-            breason="$(printf '%s\n' "$bline" | sot_inbox_append "$NAME")" \
-                || { echo "bridge: FAILED -> @$NAME: $breason" >&2; continue; }
-            # ADR 0048: the append above IS the delivery, so claim it — and
-            # only now, after it returned 0. A bridge IS its handle, so
-            # `filed: true` is honest by construction; an append that fails
-            # claims nothing and the sender reports NOT CONFIRMED.
-            # Directed frames only (a broadcast has no addressee to file
-            # for), and only when the sender minted an id to attribute it to.
-            rid="$(printf '%s' "$m" | jq -r '.payload.id // ""' 2>/dev/null || true)"
-            rto="$(printf '%s' "$m" | jq -r '.payload.to // ""' 2>/dev/null || true)"
-            [ -n "$rid" ] && [ -n "$rto" ] || continue
-            # A fresh one-shot connection, with the bridge role CLEARED: the
-            # daemon's roster must not gain a phantom second bridge, and the
-            # long-lived-role read deadline must not be armed for a
-            # connection that lives for one frame. A receipt that cannot be
-            # sent is not an error for the recipient — the frame is filed
-            # either way.
-            # `grep -qm1` is load-bearing, not tidiness: nc_send is
-            # `timeout 5 nc` and the daemon never closes a one-shot
-            # connection, so without an early exit every filed frame would
-            # cost five seconds inside this loop — a burst would file at one
-            # message per five seconds and each receipt would miss its
-            # sender's window. The SIGPIPE on the ack is what returns here.
-            (
-                HELLO_ROLE=""
-                printf '%s\n' "$(jq -nc --arg i "$rid" \
-                    '{v:1,id:1,kind:"req",op:"agent.filed",payload:{id:$i}}')" \
-                    | nc_send 2>/dev/null | grep -qm1 '"op":"agent.filed"'
-            ) || true
-        done
-        ;;
     *)
-        echo "usage: comm-relay.sh {send|ask|listen|bridge} ..." >&2; exit 1 ;;
+        echo "usage: comm-relay.sh send ..." >&2; exit 1 ;;
 esac
