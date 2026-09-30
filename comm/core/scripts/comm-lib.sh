@@ -769,7 +769,7 @@ _sot_lock_take() {
 _sot_lock_fresh() {
     _SOT_LOCK_READ=""
     { : <"${1%/*}"; } 2>/dev/null || [ -z "${_SOT_LOCK_SELF:-}" ] || return 2
-    _SOT_LOCK_READ="$(cat -- "$1" 2>/dev/null)" || { _SOT_LOCK_READ=""; return 2; }
+    { _SOT_LOCK_READ="$(cat -- "$1")"; } 2>/dev/null || { _SOT_LOCK_READ=""; return 2; }
     _SOT_LOCK_READ="${_SOT_LOCK_READ%%$'\n'*}"
     [[ "$_SOT_LOCK_READ" =~ ^[^:]*:[^:]*:[^:]*:[^:]*:[0-9]+:[^:]*$ ]]
 }

@@ -173,8 +173,8 @@ a stream; the record keeps its colons.
 - **FAILED** names the holder and the recovery, in the scripts and in the
   daemon's log alike: `registry lock <path> is held by <host> pid <pid> start
   <tick> (<age> old): <why>. If it is dead, run any comm command on <host>, or
-  run comm-registry-lock-clear.sh.` A lock found released since the last read,
-  or whose record could not be read, says instead `registry lock <path> was held by <host> pid <pid> start <tick>
+  run comm-registry-lock-clear.sh.` A lock found released since the last read
+  says instead `registry lock <path> was held by <host> pid <pid> start <tick>
   when last read (<why>); it may have been released since. Retry.` With no clock the scripts say `registry
   lock <path> is held, and there is no clock to wait by: <which>`; a daemon
   thread that never got its turn says `registry lock <path> was not tried:
@@ -183,7 +183,7 @@ a stream; the record keeps its colons.
   version's directory, or a marker naming a record its walk already passed) says `registry lock <path> still
   held (<age> old): <why>. If its holder is dead, remove <path> by hand and
   retry.` A wait that ends with no holder read, the lock released or taken
-  again just then, says `registry lock <path> was not taken by the deadline:
+  again just then or its record not read, says `registry lock <path> was not taken by the deadline:
   <why>. Retry.` `comm-registry-lock-clear.sh` takes the
   reclaim path above with a person's word in place of the holder's liveness
   proof, and nothing else: it never clears a holder this box proves alive, it
