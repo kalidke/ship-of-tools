@@ -12,8 +12,10 @@
 #       rest of the marker line as the nav-row summary, so the chat and the
 #       row come from one line and cannot disagree. Once the inbox check has
 #       let the turn end, a marker ends the hook: no nudge, no auditor.
-#       Unread mail blocks a marker turn first, unstamped, and the turn end
-#       that finally passes stamps from its marker. Conversely, a HUMAN turn
+#       Unread mail, or a lock fault's once-block, holds a marker turn first,
+#       unstamped; the turn end that finally passes stamps from the LAST marker
+#       anywhere in the turn, because this hook's own held-turn notices do not
+#       start a new turn (the slice pass below). Conversely, a HUMAN turn
 #       that ends with an explicit blocked / waiting / done row and NO marker
 #       gets one nudge naming the shape it owes (a machine wake never does — a
 #       relay ack on a parked row is not a report). See sot-comm references/work-state.md.
@@ -91,12 +93,26 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # and neither `question` nor `waiting` is set, then clears `floor` — a fact
 # already set (by the marker, or an earlier declaration) survives untouched.
 turn_floor() { [ -x "$STATUS" ] && "$STATUS" stop >/dev/null 2>&1 || true; }
-# Every `decision: "block"` this hook prints goes through here: while an inbox
-# lock fault lasts, its warning ($lock_warn, read below) prefixes the reason.
-# With no fault the JSON passes through byte for byte. The warning never
-# begins with `/`, so --arg is safe from MSYS2's argv conversion.
-emit_block() {
-    if [ -z "${lock_warn:-}" ]; then cat; else jq -c --arg w "$lock_warn" '.reason = $w + " " + .reason'; fi
+# Every block this hook prints goes through print_block, which also records
+# its exact reason, one JSON string per line, in $fb_file (named below): the
+# transcript brings the block back as a "Stop hook feedback:" record, and the
+# slice pass knows it by that text as this hook's own, not a new turn. A Stop
+# that prints no block removes the file (the EXIT trap below). A failed write
+# fails open: that feedback then reads as a prompt, as it did before.
+blocked=""
+print_block() {  # BLOCK_JSON
+    blocked=1
+    { mkdir -p "$HOME_DIR/state" && printf '%s' "$1" | jq -c '.reason' >> "$fb_file"; } 2>/dev/null || true
+    printf '%s\n' "$1"
+}
+# Every other block (all but the lock fault's own once-block, whose reason is
+# the warning) goes through emit_block: while an inbox lock fault lasts, its
+# warning ($lock_warn, read below) prefixes the reason. With no fault the JSON
+# passes through byte for byte. The warning never begins with `/`, so --arg is
+# safe from MSYS2's argv conversion.
+emit_block() {  # BLOCK_JSON
+    if [ -z "${lock_warn:-}" ]; then print_block "$1"
+    else print_block "$(printf '%s' "$1" | jq -c --arg w "$lock_warn" '.reason = $w + " " + .reason')"; fi
 }
 
 # Stop-hook input (JSON on stdin): {stop_hook_active, transcript_path, ...}.
@@ -124,6 +140,14 @@ fi
 rm -f "${HOME_DIR:?}/state/hb-$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-$PPID}}" | tr -c 'A-Za-z0-9._-' '_').tick" 2>/dev/null
 
 tp="$(jqget '.transcript_path // empty')"
+# The session's key for the tick files and the feedback record, which must be
+# STABLE for the session: $PPID is not (every hook run is its own process), so
+# the transcript path — one file per session — is the fallback before it.
+mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
+[ -n "$mail_key" ] && [ "$mail_key" != "nopane" ] || mail_key="${tp##*/}"
+[ -n "$mail_key" ] || mail_key="$PPID"
+fb_file="$HOME_DIR/state/stop-feedback-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').jsonl"
+trap '[ -n "$blocked" ] || rm -f -- "${fb_file:?}" 2>/dev/null' EXIT
 
 # The current turn's slice: everything after the last HUMAN/machine prompt (a
 # `user` record whose content is a string / carries no tool_result -- tool
@@ -140,17 +164,33 @@ tp="$(jqget '.transcript_path // empty')"
 # A long reply can stream across several assistant transcript records for one
 # logical turn, and a marker opening an earlier record was silently dropped
 # when only the last record was read.
+#
+# The turn is the LOGICAL turn: a block this hook printed comes back as a
+# `user` record whose content is "Stop hook feedback:\n" plus the block's
+# reason, and a record whose content EQUALS that for a reason in $fb_file is
+# not a prompt, so the slice starts after the last prompt that is not one of
+# them. The marker a held turn closed with therefore still counts at the turn
+# end that passes. Any other "Stop hook feedback:" record, one this hook did
+# not record, is a prompt (the origin correction below takes it as machine).
+# The recorded reasons reach jq on stdin, ahead of the tail and each wrapped
+# as {stop_feedback: R}, never through argv: a reason can hold free text, and
+# MSYS2 rewrites an argument that looks like a path.
 EFFORT_TOOLS=8; EFFORT_SECS=300
 turn_tools=0; turn_secs=0; last_text=""; prompt_text=""
 if [ -n "$tp" ] && [ -r "$tp" ]; then
-    turn_json="$(tail -n 3000 "$tp" 2>/dev/null | jq -sc '
+    turn_json="$( { jq -cR 'fromjson? | strings | {stop_feedback: .}' "$fb_file" 2>/dev/null
+                    tail -n 3000 "$tp" 2>/dev/null; } | jq -sc '
         def is_prompt: .type=="user" and ((.message.content|type)=="string"
             or (([.message.content[]? | .type] | index("tool_result")) == null));
+        def is_own_feedback($fb): (.message.content) as $c | ($c|type)=="string"
+            and any($fb[]; "Stop hook feedback:\n" + . == $c);
         def secs: sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch 0);
         def prompt_of: (.message.content) as $c
             | if ($c|type)=="string" then $c
               else ([$c[]? | select(.type=="text") | .text] | join("\n")) end;
-        ([to_entries[] | select(.value | is_prompt) | .key] | last) as $h
+        [.[] | .stop_feedback? // empty] as $fb
+        | [.[] | select(.stop_feedback? == null)]
+        | ([to_entries[] | select(.value | is_prompt and (is_own_feedback($fb) | not)) | .key] | last) as $h
         | (if $h == null then . else .[$h+1:] end) as $turn
         | ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text] | join("\n")) as $text
         | if $h == null then {tools: 9999, secs: 9999, text: $text, prompt: ""}
@@ -180,23 +220,25 @@ ${lam}"
     case "$turn_secs" in ''|*[!0-9]*) turn_secs=0 ;; esac
 fi
 
-# (0) CLOSING MARKER: first line opening with SITREP[-QUESTION|-WAITING]:
-# (optionally bold-wrapped). State from the marker, summary from the rest of
-# the line — or the next non-empty line when the marker stands alone.
+# (0) CLOSING MARKER: the LAST line in the turn opening with
+# SITREP[-QUESTION|-WAITING]: (optionally bold-wrapped). State from that
+# marker, summary from the rest of its line — or the next non-empty line when
+# the marker stands alone.
 marker_state=""; marker_summary=""
 if [ -n "$last_text" ]; then
     marker_state="$(printf '%s\n' "$last_text" | awk '
         /^[[:space:]]*(#+[[:space:]]*)?(\*\*)?SITREP(-QUESTION|-WAITING)?(\*\*)?:/ {
             m=$0; sub(/^[[:space:]]*(#+[[:space:]]*)?(\*\*)?SITREP/, "", m); gsub(/\*\*/, "", m)
-            if (m ~ /^-QUESTION:/) print "blocked"; else if (m ~ /^-WAITING:/) print "waiting"; else print "done"
-            exit }')"
+            if (m ~ /^-QUESTION:/) s = "blocked"; else if (m ~ /^-WAITING:/) s = "waiting"; else s = "done" }
+        END { if (s != "") print s }')"
     if [ -n "$marker_state" ]; then
         marker_summary="$(printf '%s\n' "$last_text" | awk '
-            found { if ($0 ~ /[^[:space:]]/) { print; exit } ; next }
             /^[[:space:]]*(#+[[:space:]]*)?(\*\*)?SITREP(-QUESTION|-WAITING)?(\*\*)?:/ {
                 sub(/^[[:space:]]*(#+[[:space:]]*)?(\*\*)?SITREP(-QUESTION|-WAITING)?(\*\*)?:[[:space:]]*/, "")
                 sub(/[[:space:]]*(\*\*)?[[:space:]]*$/, "")
-                if ($0 ~ /[^[:space:]]/) { print; exit } ; found=1 }')"
+                s = $0; found = ($0 !~ /[^[:space:]]/); next }
+            found && /[^[:space:]]/ { s = $0; found = 0 }
+            END { print s }')"
     fi
 fi
 # (2) NEW MAIL — delivery to a BUSY session, at the turn boundary (messaging
@@ -207,9 +249,9 @@ fi
 # construction. The read runs on EVERY turn, BEFORE the closing marker and
 # every nudge below (mail outranks a report or a reminder): a marker turn with
 # unread mail blocks too, neither stamped from its marker nor floored, and the
-# turn end that finally passes stamps. It is bounded to one block per pending
-# batch by a tick file keyed like the heartbeat's, so a model that refuses to
-# poll is nudged once, not in a loop.
+# turn end that finally passes stamps from the turn's last marker. It is
+# bounded to one block per pending batch by a tick file keyed like the
+# heartbeat's, so a model that refuses to poll is nudged once, not in a loop.
 #
 # What counts as mail: `to` non-empty (a BROADCAST, to == "", never fires this —
 # the same demotion rule the sender and the ping watcher apply), `from` neither
@@ -244,12 +286,6 @@ mail_total=0; mail_pending=0
 # the next clean check removes it so a new fault blocks again.
 # A missing library or any failure yields no mail (fail open).
 FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
-# The session's key for both tick files, which must be STABLE for the
-# session: $PPID is not (every hook run is its own process), so the transcript
-# path — already read above, one file per session — is the fallback before it.
-mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
-[ -n "$mail_key" ] && [ "$mail_key" != "nopane" ] || mail_key="${tp##*/}"
-[ -n "$mail_key" ] || mail_key="$PPID"
 lock_warn=""
 fault_tick="$HOME_DIR/state/lock-fault-$(printf '%s' "$NAME.$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
 if [ -r "$MAIL_INBOX" ]; then
@@ -329,10 +365,10 @@ if [ "$((mail_pending + fe_pending))" -gt 0 ]; then
         # announcement is acceptable; an inescapable block is not.
         if printf '%s' "$mail_mark" 2>/dev/null > "$mail_tick"; then
             [ -z "$lock_warn" ] || printf '%s' "$lock_warn" 2>/dev/null > "$fault_tick" || true
-            jq -nc --arg n "$NAME" '{
+            emit_block "$(jq -nc --arg n "$NAME" '{
               decision: "block",
               reason: ("New sot-comm mail for @" + $n + " — run comm-poll.sh now, act on it, then end the turn.")
-            }' | emit_block
+            }')"
             exit 0
         fi
     fi
@@ -345,7 +381,7 @@ if [ -n "$lock_warn" ] && [ "$(jqget '.stop_hook_active // false')" != "true" ] 
     && [ "$(cat "$fault_tick" 2>/dev/null || true)" != "$lock_warn" ]; then
     mkdir -p "$HOME_DIR/state" 2>/dev/null || true
     if printf '%s' "$lock_warn" 2>/dev/null > "$fault_tick"; then
-        jq -nc --arg w "$lock_warn" '{decision: "block", reason: $w}'
+        print_block "$(jq -nc --arg w "$lock_warn" '{decision: "block", reason: $w}')"
         exit 0
     fi
 fi
@@ -372,10 +408,10 @@ if [ -n "$marker_state" ]; then
             # below: findings is free text and must not reach jq via --arg.
             _findings_file="$(mktemp "${TMPDIR:-/tmp}/sot-comm-idle-marker-findings.XXXXXX" 2>/dev/null)"
             if [ -n "$_findings_file" ] && printf '%s' "$findings" > "$_findings_file" 2>/dev/null; then
-                jq -nc --rawfile f "$_findings_file" '{
+                emit_block "$(jq -nc --rawfile f "$_findings_file" '{
                   decision: "block",
                   reason: ("Your closing block names a result that was never surfaced: " + $f + " -- badge it now via the show-result skill (show-result <path>), then end the turn. Your row is already stamped from the marker -- do not write a second sitrep block.")
-                }' | emit_block
+                }')"
                 rm -f "${_findings_file:?}"
                 exit 0
             fi
@@ -411,7 +447,9 @@ stored_origin="$origin"
 # twin -- keep both pattern lists in sync by hand; no shared library, both
 # hooks stay standalone by design). $prompt_text is "" when the turn is
 # longer than the tail ($h was null above), so this never fires there --
-# $origin is left exactly as read, same as before this change.
+# $origin is left exactly as read, same as before this change. This hook's
+# own recorded feedback never lands here (the slice pass skips it), so the
+# "Stop hook feedback:" arm now covers only feedback it did not record.
 case "$prompt_text" in
     "[SYSTEM NOTIFICATION"*|*"<task-notification>"*|"[relay] from"*|"[sot-comm] "*|\[*:*\]\ *)
         origin=machine ;;
@@ -434,10 +472,10 @@ case "$parked" in
                 blocked) owed='SITREP-QUESTION: <the exact question, one sentence>  then the context needed to answer it cold: what was being done, the options and what follows from each, the default if unanswered, what is irreversible' ;;
                 *)       owed='SITREP: <one-line headline>  then the sitrep chain (the sitrep skill): issue in context, diagnosis, design, result with its scale, interpretation, plan' ;;
             esac
-            jq -nc --arg s "$parked" --arg o "$owed" '{
+            emit_block "$(jq -nc --arg s "$parked" --arg o "$owed" '{
               decision: "block",
               reason: ("Your row ends this turn as `" + $s + "` but the reply carries no closing marker. Write the closing block now, as the last thing in your reply, opening with the marker line:  " + $o + ".  The Stop hook stamps the row from that line (the rest of the marker line is the nav summary). If the state is wrong, run comm-status.sh with the right one and still close with the matching marker.")
-            }' | emit_block
+            }')"
             exit 0
         fi
         turn_floor; exit 0 ;;
@@ -449,10 +487,10 @@ esac
 # back-and-forth (owes nothing). Short turns never trip this, whatever they
 # did; the thresholds are the effort/exchange line, not a work detector.
 if [ "$origin" = user ] && { [ "$turn_tools" -ge "$EFFORT_TOOLS" ] || [ "$turn_secs" -ge "$EFFORT_SECS" ]; }; then
-    jq -nc --arg n "$turn_tools" --arg m "$((turn_secs / 60))" '{
+    emit_block "$(jq -nc --arg n "$turn_tools" --arg m "$((turn_secs / 60))" '{
       decision: "block",
       reason: ("This turn ran " + $n + " tool calls over " + $m + " min and ends with no closing marker. IF it CLOSED a work effort (a result landed, a fix shipped, a diagnosis was reached, a decision point arrived), close with the sitrep block now, as the last thing in your reply: a line  SITREP: <one-line headline>  then the chain (issue in context, diagnosis, design, result with its scale, interpretation, plan) in plain words -- no hashes, paths, names, backticks or bullets. IF this turn was a step in a live back-and-forth with the user, end normally: no block is owed. This will not fire again this turn.")
-    }' | emit_block
+    }')"
     exit 0
 fi
 
@@ -479,10 +517,10 @@ if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
             # sot_jq_rawfile.
             _findings_file="$(mktemp "${TMPDIR:-/tmp}/sot-comm-idle-findings.XXXXXX" 2>/dev/null)"
             if [ -n "$_findings_file" ] && printf '%s' "$findings" > "$_findings_file" 2>/dev/null; then
-                jq -nc --rawfile f "$_findings_file" '{
+                emit_block "$(jq -nc --rawfile f "$_findings_file" '{
                   decision: "block",
                   reason: ("Turn-end audit: " + $f + " -- IF a finding is real, act on it now AND clearly RESTATE it for the user: blocked -> restate the exact question you are awaiting (one standalone sentence, as BOTH the comm-status summary and the final line of your reply); waiting -> state plainly what is being monitored and what completion looks like (same two places); artifact -> badge it via the show-result skill. IF a finding is wrong (rhetorical question, artifact already shown, job already done), just end the turn normally. This audit will not re-fire for the same situation.")
-                }' | emit_block
+                }')"
                 rm -f "${_findings_file:?}"
             else
                 # Temp file failed -- degrade rather than risk a corrupted
@@ -499,10 +537,10 @@ fi
 # LEGACY FALLBACK (auditor disabled/unavailable): grep the last reply for `?`.
 if printf '%s' "$last_text" | grep -q '?'; then
     # NUDGE — block the stop with a reminder. The model gates: self-report or not.
-    jq -nc '{
+    emit_block "$(jq -nc '{
       decision: "block",
       reason: "Reminder: your last reply contains a question mark, and a plain-text question (not the AskUserQuestion tool) fires no automatic frontend signal. IF you are ending this turn AWAITING THE USER on a blocking question, run  ~/.sot-comm/bin/comm-status.sh blocked \"<the question>\"  now so your row shows red on the frontend. IF the question(s) were rhetorical or already answered, just end the turn normally — this nudge will not fire again this turn."
-    }' | emit_block
+    }')"
     exit 0
 fi
 

@@ -18,6 +18,10 @@ all clients are mutually addressable through the same registry and inboxes.
   inbox/<name>.jsonl       # durable per-recipient inbox (append-only)
   read/<name>.cursor       # per-recipient read cursor (`<count> <crc>-<len>`: lines shown, and a hash of the last)
   self/<host>__<pane>.txt  # this pane's declared agent name (identity recovery)
+  state/                   # per-session scratch; the end-of-turn check keeps mail-<key>.tick,
+                           # lock-fault-<handle>.<key>.tick and stop-feedback-<key>.jsonl here.
+                           # A session that ends mid-block leaves its own behind: bounded
+                           # per-session litter, one of each per session, and nothing sweeps it.
 ```
 
 The registry and inboxes are **data at rest** — discovery and catch-up need a
@@ -271,7 +275,8 @@ still unread ten minutes later at a free prompt. A busy session needs no
 typing: its end-of-turn check will not let a turn finish while unread mail
 waits. That check reads the inbox before anything else, so a turn that closes
 with a report marker is held too, and its row is stamped only at the turn end
-that passes. This is the only wake — no per-session watcher, listener, bridge or
+that passes, from the last marker anywhere in the turn: the check's own
+held-turn notices do not start a new turn. This is the only wake — no per-session watcher, listener, bridge or
 Monitor exists.
 
 **Cases.**

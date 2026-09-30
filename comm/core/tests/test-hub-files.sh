@@ -693,11 +693,16 @@ poll_peer_env() {
 }
 # idle_hook [TEXT] [STOP_HOOK_ACTIVE] — the peer's Stop hook for a turn that
 # ends in TEXT (default a plain "all done."), as session $HOOK_SESSION.
+# idle_hook_over TRANSCRIPT [STOP_HOOK_ACTIVE] — the same over a transcript
+# the case wrote.
 idle_hook() {
     local tr="$WORK/transcript.jsonl"
     { jq -nc '{type:"user",message:{content:"go"}}'
       jq -nc --arg t "${1:-all done.}" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'; } > "$tr"
-    jq -nc --arg p "$tr" --argjson a "${2:-false}" '{transcript_path:$p, stop_hook_active:$a}' \
+    idle_hook_over "$tr" "${2:-false}"
+}
+idle_hook_over() {
+    jq -nc --arg p "$1" --argjson a "${2:-false}" '{transcript_path:$p, stop_hook_active:$a}' \
         | ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" \
             CLAUDE_CODE_SESSION_ID="${HOOK_SESSION:-hub-files-test}" bash "$SCRIPT_DIR/../../adapters/claude/hooks/comm-status-idle.sh" )
 }
@@ -1035,7 +1040,9 @@ case_a_shared_lock_taken_inside_a_subshell_holds_in_the_caller() {
 # The end-of-turn hook under a lasting fault (71) with no mail pending. The
 # fault's once-block never fires inside a stop-hook continuation; it waits for
 # the next turn end. On a MARKER turn it fires and leaves the row unstamped;
-# the next marker turn end passes, stamps from its marker and fires nothing
+# its feedback comes back in the transcript (the real shape, the reason from
+# the hook's own stdout), the model replies plainly, and that turn end, a
+# continuation, passes and stamps from the marker. The fault fires nothing
 # more. A session relaunched under the handle is told once too. A nudge that
 # is not about mail, the missing-marker one, carries the warning first.
 peer_row() { jq -c --arg n "$PEER" '.agents[$n] | [.state, .summary, .status_at]' "$SOT_COMM_HOME/registry.json"; }
@@ -1043,7 +1050,7 @@ peer_status() {
     ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" "$BIN/comm-status.sh" "$@" ) >/dev/null 2>&1
 }
 case_a_lock_fault_blocks_a_marker_turn_once_and_prefixes_every_nudge() {
-    local warn blk h row0
+    local warn blk h row0 tr
     warn="WARNING: the inbox lock for @$PEER failed (71: No locks available) — reading without it; a line may show twice, none is lost"
     blk="{\"decision\":\"block\",\"reason\":\"$warn\"}"
     flock_stub 71 "No locks available"
@@ -1053,12 +1060,18 @@ case_a_lock_fault_blocks_a_marker_turn_once_and_prefixes_every_nudge() {
     h="$(faulty 71 idle_hook 'all done.' true 2>&1)"
     [ -z "$h" ] && ! fault_ticks || { echo "  fired inside a stop-hook continuation: $h"; return 1; }
     row0="$(peer_row)"
-    h="$(faulty 71 idle_hook $'SITREP: the marker turn\n\nDone.' 2>&1)"
+    tr="$WORK/held.jsonl"; rm -f "${SOT_COMM_HOME:?}"/state/stop-feedback-*.jsonl
+    { jq -nc '{type:"user",promptId:"p1",message:{role:"user",content:"go"}}'
+      jq -nc --arg t $'SITREP: the marker turn\n\nDone.' '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'; } > "$tr"
+    h="$(faulty 71 idle_hook_over "$tr" 2>&1)"
     [ "$h" = "$blk" ] || { echo "  the marker turn did not block once with the warning: $h"; return 1; }
     [ "$(peer_row)" = "$row0" ] || { echo "  the blocked marker turn changed the row: $row0 -> $(peer_row)"; return 1; }
-    h="$(faulty 71 idle_hook $'SITREP: the marker turn\n\nDone.' 2>&1)"
+    { jq -nc --arg r "$(printf '%s' "$h" | jq -r '.reason')" \
+          '{type:"user",isMeta:true,promptId:"p1",message:{role:"user",content:("Stop hook feedback:\n" + $r)}}'
+      jq -nc '{type:"assistant",message:{content:[{type:"text",text:"all done."}]}}'; } >> "$tr"
+    h="$(faulty 71 idle_hook_over "$tr" true 2>&1)"
     [ -z "$h" ] && [ "$(peer_row | jq -r '.[1]')" = "the marker turn" ] \
-        || { echo "  the next marker turn end did not pass and stamp: '$h' $(peer_row)"; return 1; }
+        || { echo "  the held turn's end did not pass and stamp from its marker: '$h' $(peer_row)"; return 1; }
     h="$(faulty 71 idle_hook 'SITREP: again' 2>&1)"
     [ -z "$h" ] || { echo "  fired again for the same fault: $h"; return 1; }
     h="$(HOOK_SESSION=relaunched faulty 71 idle_hook 2>&1)"

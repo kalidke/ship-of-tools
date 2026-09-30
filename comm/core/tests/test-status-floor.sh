@@ -666,16 +666,96 @@ case_marker_artifact_audit_skipped_in_continuation() {
 MAIL_BLOCK="{\"decision\":\"block\",\"reason\":\"New sot-comm mail for @$NAME — run comm-poll.sh now, act on it, then end the turn.\"}"
 row_all() { jq -c --arg n "$NAME" '.agents[$n]' "$REGISTRY"; }
 poll_mail() { "$SCRIPTS_DIR/comm-poll.sh" >/dev/null 2>&1; }
-case_marker_turn_with_unread_mail_blocks_unstamped_then_stamps_after_poll() {
+# ---- a held marker turn keeps its marker (B1 fix-up 8) ----
+# The turn end that passes stamps from the LAST marker anywhere in the logical
+# turn: the hook's own held-turn notices do not start a new one. The shape is a
+# live transcript's (2026-09-30): a block comes back as an isMeta `user` record
+# with the opening prompt's promptId and "Stop hook feedback:\n" plus the
+# reason, byte for byte. LT_NEW PROMPT starts the turn (and a fresh session:
+# no recorded feedback), LT_PROMPT appends a real prompt, LT_REPLY a reply,
+# LT_BLOCKED OUT the feedback for the block OUT the hook itself printed, and
+# LT_STOP [stop_hook_active] runs the Stop hook over it. Every second or later
+# Stop runs with stop_hook_active true.
+LT="$WORK/logical.jsonl"; LT_ID=0
+LT_PROMPT() {
+    LT_ID=$((LT_ID + 1))
+    jq -nc --arg p "$1" --arg id "prompt-$LT_ID" '{type:"user",promptId:$id,message:{role:"user",content:$p}}' >> "$LT"
+}
+LT_NEW() { rm -f "${SOT_COMM_HOME:?}"/state/stop-feedback-*.jsonl; : > "$LT"; LT_PROMPT "$1"; }
+LT_REPLY() { jq -nc --arg t "$1" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}' >> "$LT"; }
+LT_FEEDBACK() {
+    jq -nc --arg r "$1" --arg id "prompt-$LT_ID" \
+        '{type:"user",isMeta:true,promptId:$id,message:{role:"user",content:("Stop hook feedback:\n" + $r)}}' >> "$LT"
+}
+LT_BLOCKED() { LT_FEEDBACK "$(printf '%s' "$1" | jq -r '.reason')"; }
+LT_STOP() { jq -nc --arg p "$LT" --argjson a "${1:-false}" '{transcript_path:$p, stop_hook_active:$a}' | bash "$HOOKS_DIR/comm-status-idle.sh"; }
+# held_marker_turn REPLY — REPLY closes a human turn while mail waits: the hook
+# blocks, unstamped; the model polls and replies "nothing for me"; that turn
+# end passes.
+held_marker_turn() {
     seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"
+    LT_NEW "please do the thing"; LT_REPLY "$1"
     local before out; before="$(row_all)"
-    out="$(IT $'SITREP: finished the port\n\nThe chain...')"
+    out="$(LT_STOP)"
     [ "$out" = "$MAIL_BLOCK" ] || { echo "    the marker turn did not block on the mail: '$out'"; return 1; }
     [ "$(row_all)" = "$before" ] || { echo "    the blocked marker turn changed the row: $before -> $(row_all)"; return 1; }
     poll_mail || { echo "    comm-poll.sh failed"; return 1; }
-    out="$(IT $'SITREP: finished the port\n\nThe chain...')"
+    LT_BLOCKED "$out"; LT_REPLY 'nothing for me'
+    out="$(LT_STOP true)"
     [ -z "$out" ] || { echo "    the turn end after the poll still blocked: '$out'"; return 1; }
-    expect done/-/-/-/d state && [ "$(summ)" = "finished the port" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+case_a_held_question_turn_ends_red_with_its_question() {
+    held_marker_turn $'SITREP-QUESTION: which port?\n\nContext...' || return 1
+    expect blocked/-/q/-/- state && [ "$(summ)" = "which port?" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+case_a_held_waiting_or_done_turn_ends_as_its_marker() {
+    held_marker_turn 'SITREP-WAITING: the build' || return 1
+    expect waiting/-/-/w/- waiting && [ "$(summ)" = "the build" ] || { echo "    summary '$(summ)'"; return 1; }
+    held_marker_turn $'SITREP: finished the port\n\nThe chain...' || return 1
+    expect done/-/-/-/d done && [ "$(summ)" = "finished the port" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+case_the_last_marker_in_a_held_turn_wins() {
+    seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"
+    LT_NEW "please do the thing"; LT_REPLY 'SITREP: the first word'
+    local out; out="$(LT_STOP)"
+    [ "$out" = "$MAIL_BLOCK" ] || { echo "    no mail block: '$out'"; return 1; }
+    poll_mail; LT_BLOCKED "$out"; LT_REPLY 'SITREP-WAITING: the second word'
+    out="$(LT_STOP true)"
+    [ -z "$out" ] || { echo "    the turn end after the poll still blocked: '$out'"; return 1; }
+    expect waiting/-/-/w/- state && [ "$(summ)" = "the second word" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+case_a_turn_held_twice_keeps_its_first_marker() {
+    seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"
+    LT_NEW "please do the thing"; LT_REPLY 'SITREP-QUESTION: which port?'
+    local out; out="$(LT_STOP)"
+    [ "$out" = "$MAIL_BLOCK" ] || { echo "    no first block: '$out'"; return 1; }
+    LT_BLOCKED "$out"; LT_REPLY 'looking'; _mail_line "$NAME"
+    out="$(LT_STOP true)"
+    [ "$out" = "$MAIL_BLOCK" ] || { echo "    no second block for the new mail: '$out'"; return 1; }
+    poll_mail; LT_BLOCKED "$out"; LT_REPLY 'nothing for me'
+    out="$(LT_STOP true)"
+    [ -z "$out" ] || { echo "    the third turn end still blocked: '$out'"; return 1; }
+    expect blocked/-/q/-/- state && [ "$(summ)" = "which port?" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+case_a_real_prompt_after_a_marker_turn_starts_a_new_turn() {
+    seed idle; W "$GENUINE"; _mail_reset
+    LT_NEW "please do the thing"; LT_REPLY 'SITREP-QUESTION: which port?'
+    local out; out="$(LT_STOP)"
+    [ -z "$out" ] && expect blocked/-/q/-/- asked || { echo "    '$out'"; return 1; }
+    W "$GENUINE"; LT_PROMPT "port 8080"; LT_REPLY 'It listens on 8080 now.'
+    out="$(LT_STOP)"
+    [ -z "$out" ] || { echo "    the answered turn blocked: '$out'"; return 1; }
+    expect done/-/-/-/d answered
+}
+case_feedback_the_hook_did_not_record_reads_as_a_prompt() {
+    seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"
+    LT_NEW "please do the thing"; LT_REPLY 'SITREP-QUESTION: which port?'
+    local out; out="$(LT_STOP)"
+    [ "$out" = "$MAIL_BLOCK" ] || { echo "    no mail block: '$out'"; return 1; }
+    poll_mail; LT_FEEDBACK "$(printf '%s' "$out" | jq -r '.reason') (and another hook's words)"; LT_REPLY 'nothing for me'
+    out="$(LT_STOP true)"
+    [ -z "$out" ] || { echo "    the turn end blocked: '$out'"; return 1; }
+    expect done/-/-/-/d "a loosely matching feedback kept the marker"
 }
 case_mail_filed_mid_turn_blocks_the_marker_end() {
     seed idle; _mail_reset; _mail_line "$NAME"; poll_mail
@@ -916,7 +996,12 @@ check "a turn that already has its block is never nudged, whatever the block say
 check "a marker naming an unsurfaced result is blocked by the artifact audit" case_marker_artifact_audit_blocks_unsurfaced_result
 check "a marker whose result was read and show-result'd is not blocked" case_marker_artifact_audit_clean_when_shown
 check "the artifact audit does not re-fire in a stop-hook continuation" case_marker_artifact_audit_skipped_in_continuation
-check "a marker turn with unread mail blocks unstamped, and stamps once the mail is polled" case_marker_turn_with_unread_mail_blocks_unstamped_then_stamps_after_poll
+check "(a) a question turn held on mail ends red with its question" case_a_held_question_turn_ends_red_with_its_question
+check "(b) a waiting or done turn held on mail ends as its marker says" case_a_held_waiting_or_done_turn_ends_as_its_marker
+check "(c) the last marker in a held turn wins" case_the_last_marker_in_a_held_turn_wins
+check "(d) a turn held twice keeps its first marker" case_a_turn_held_twice_keeps_its_first_marker
+check "(e) a real prompt after a marker turn starts a new turn" case_a_real_prompt_after_a_marker_turn_starts_a_new_turn
+check "(f) a feedback record the hook did not record reads as a prompt" case_feedback_the_hook_did_not_record_reads_as_a_prompt
 check "mail filed mid-turn blocks that turn's marker end" case_mail_filed_mid_turn_blocks_the_marker_end
 check "a frontend-inbox line for this handle blocks a marker turn too" case_frontend_mail_blocks_a_marker_turn
 check "a marker turn with its mail read prints nothing and stamps as before" case_marker_turn_with_read_mail_is_unchanged
