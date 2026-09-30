@@ -639,28 +639,26 @@ sot_inbox_lock_identity() {  # DIR
     [ -z "$mid" ] || { printf 'none@%s\n' "$mid"; return 0; }
     printf 'none\n'
 }
-# 0 when this script takes the same lock manager as every other writer of
-# the inbox (the record's line 1); a missing, empty or bare `none` record
-# never matches.
-_sot_inbox_lock_is_ours() {  # [DIR]
-    local rec="" id dir="${1:-$INBOX_DIR}"
+# 0 when ID, this script's sot_inbox_lock_identity for the inbox, is the
+# lock manager every other writer of the inbox takes (the record's line 1); a
+# missing, empty or bare `none` record never matches.
+_sot_inbox_lock_is_ours() {  # ID
+    local rec=""
     _sot_have_flock && command -v perl >/dev/null 2>&1 && [ "$(uname -s 2>/dev/null)" = Linux ] || return 1
     { IFS= read -r rec < "$COMM_HOME/inbox-lock-manager"; } 2>/dev/null
-    id="$(sot_inbox_lock_identity "$dir")"
-    _SOT_INBOX_ID="$id"   # for _sot_flock_wait, in the same shell
-    [ -n "$id" ] && [ "$id" != none ] && [ "$id" = "$rec" ]
+    [ -n "$1" ] && [ "$1" != none ] && [ "$1" = "$rec" ]
 }
-# _sot_flock_wait MODE SECS — the lock on fd 9 (MODE -x or -s) within SECS,
-# chosen by the identity _sot_inbox_lock_is_ours just computed. The Linux NFSv4
-# client retries a blocked lock with a backoff that doubles from 100 ms, so a
-# local writer re-takes the lock before a remote waiter's next retry and a
-# blocking waiter can sleep past a free lock: under `nfs4 ` a non-blocking try
-# is repeated every 15-25 ms until the bound. NLM (v3) and one machine's own
+# _sot_flock_wait MODE SECS ID — the lock on fd 9 (MODE -x or -s) within SECS,
+# chosen by ID, the identity the caller checked with _sot_inbox_lock_is_ours.
+# The Linux NFSv4 client retries a blocked lock with a backoff that doubles
+# from 100 ms, so a local writer re-takes the lock before a remote waiter's
+# next retry and a blocking waiter can sleep past a free lock: under `nfs4 ` a
+# non-blocking try is repeated every 15-25 ms until the bound. NLM (v3) and one machine's own
 # kernel lock (`local …`, `none@…`) wake a blocked waiter on release, so those
 # block, bounded. 75 = the bound passed with the lock held elsewhere.
-_sot_flock_wait() {  # MODE SECS
+_sot_flock_wait() {  # MODE SECS ID
     local rc end
-    case "${_SOT_INBOX_ID:-}" in
+    case "$3" in
         "nfs4 "*)
             end=$(( $(date +%s%N) + $2 * 1000000000 ))
             while :; do
@@ -729,24 +727,26 @@ _sot_append_whole() {  # FILE LINE
 # lets go, then shows it: a slow display never holds off a writer.
 SOT_INBOX_READ_WAIT_SECS="${SOT_INBOX_READ_WAIT_SECS:-3}"
 sot_inbox_read_lock() {  # HANDLE
-    local rc=0
-    _sot_inbox_lock_is_ours "$COMM_HOME/inbox" || return 0
+    local rc=0 id
+    id="$(sot_inbox_lock_identity "$COMM_HOME/inbox")"
+    _sot_inbox_lock_is_ours "$id" || return 0
     { exec 9<> "$COMM_HOME/inbox/$1.lock"; } 2>/dev/null || return 0
-    _sot_flock_wait -s "$SOT_INBOX_READ_WAIT_SECS" || rc=$?
+    _sot_flock_wait -s "$SOT_INBOX_READ_WAIT_SECS" "$id" || rc=$?
     [ "$rc" -eq 0 ] || exec 9>&-
     return "$rc"
 }
 sot_inbox_read_unlock() { exec 9>&-; }
 sot_inbox_append() {  # HANDLE
-    local h="$1" line err rc=0
+    local h="$1" line err rc=0 id
     line="$(cat)"
-    if ! _sot_inbox_lock_is_ours; then
+    id="$(sot_inbox_lock_identity "$INBOX_DIR")"
+    if ! _sot_inbox_lock_is_ours "$id"; then
         _sot_inbox_append_via_daemon "$h" "$line"
         return
     fi
     # 75 is flock's own conflict exit (-E), so a lock that was never taken is
     # told apart from an append that failed under it.
-    err="$( { ( _sot_flock_wait -x "$SOT_INBOX_LOCK_WAIT_SECS" || exit $?
+    err="$( { ( _sot_flock_wait -x "$SOT_INBOX_LOCK_WAIT_SECS" "$id" || exit $?
                 _sot_append_whole "$INBOX_DIR/$h.jsonl" "$line"
               ) 9<> "$INBOX_DIR/$h.lock"; } 2>&1 )" || rc=$?
     case "$rc" in

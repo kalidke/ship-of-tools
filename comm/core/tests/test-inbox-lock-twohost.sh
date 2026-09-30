@@ -31,7 +31,8 @@
 # lock in use. The liveness case (a3) stays UNPACED: shell here, shell on the
 # peer and the Rust filer here, 200 lines each, all at once; every send must be
 # `filed`, and any FAILED fails it — a send that fails under ordinary
-# two-host load is a working-comms failure.
+# two-host load is a working-comms failure. a3 has its own overlap line too
+# (more than 3 writer runs), and the proof verdict needs it.
 #
 # The reader (B-1's proof). During a3 this tree's real comm-poll.sh polls the
 # case's inbox HERE in a loop, under the nfs4 record that matches, and once
@@ -142,8 +143,8 @@ check_inbox() {
     fi
     echo ""
 }
-# Runs of one writer in a row: 2 means the sides never overlapped, and a
-# concurrency case that did not run concurrently proves nothing.
+# Runs of one writer in a row: as many as there are writers means they never
+# overlapped, and a concurrency case that did not run concurrently proves nothing.
 # interleaved FILE — for each writer, how many of its lines lie strictly
 # between the other writer's first and last line: 0 means one finished
 # before the other began, and a large number on both sides means a real mix.
@@ -155,9 +156,9 @@ interleaved() {  # $1 = inbox file
           "interleaved: \($w[0]) \(inside($w[0]; $w[1])) inside \($w[1])\u0027s span, \($w[1]) \(inside($w[1]; $w[0])) inside \($w[0])\u0027s"
           end' "$1" 2>/dev/null
 }
-overlap() {  # $1 = inbox file; prints "" or a reason
+overlap() {  # $1 = inbox file, $2 = its writers (default 2); prints "" or a reason
     local runs; runs="$(jq -r .from "$1" 2>/dev/null | uniq | wc -l)"
-    [ "$runs" -gt 2 ] || echo "the two sides did not overlap ($runs runs)"
+    [ "$runs" -gt "${2:-2}" ] || echo "the ${2:-2} writers did not overlap ($runs runs)"
 }
 # A proof case's two lines: content always, overlap on its own. PROOF_BAD
 # counts the cases whose content failed or whose overlap was zero.
@@ -217,8 +218,8 @@ echo "expect: $PEER appends $([ "$EXPECT" = local ] && echo locally || echo 'ove
 
 # ---- the route each side takes against the record --------------------------
 c="$(new_case route)"
-here_route="$(local_sh "$c" '_sot_inbox_lock_is_ours && echo local || echo wire')"
-there_route="$(peer_sh "$c" '_sot_inbox_lock_is_ours && echo local || echo wire')"
+here_route="$(local_sh "$c" '_sot_inbox_lock_is_ours "$(sot_inbox_lock_identity "$INBOX_DIR")" && echo local || echo wire')"
+there_route="$(peer_sh "$c" '_sot_inbox_lock_is_ours "$(sot_inbox_lock_identity "$INBOX_DIR")" && echo local || echo wire')"
 verdict "the route: here $here_route, $PEER $there_route" \
     "$([ "$here_route" = local ] || echo "this box does not append locally")$([ "$there_route" = "$EXPECT" ] || echo "$PEER's route is $there_route, expected $EXPECT")"
 
@@ -345,8 +346,11 @@ wait "${wpids[@]}"
 touch "$LOCAL/a3.done"; wait "$rdpid"
 failed_of() { grep -c '^FAILED' "$1" 2>/dev/null; }
 nf_peer="$(failed_of "$LOCAL/a3.peer")"; nf_here="$(failed_of "$LOCAL/a3.here")"; nf_rust="$(failed_of "$LOCAL/a3.rust")"
-verdict "(a3) liveness, unpaced, 600 sends: FAILED peer $nf_peer, here $nf_here, Rust $nf_rust; content ($((SECONDS - t0))s)" \
-    "$([ "$((nf_peer + nf_here + nf_rust))" -eq 0 ] || echo "sends were FAILED under ordinary load: $(grep -h '^FAILED' "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust" | head -2 | tr '\n' ' ')")$(check_inbox "$c/inbox/t11.jsonl" 600 "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust")"
+a3_content="$([ "$((nf_peer + nf_here + nf_rust))" -eq 0 ] || echo "sends were FAILED under ordinary load: $(grep -h '^FAILED' "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust" | head -2 | tr '\n' ' ')")$(check_inbox "$c/inbox/t11.jsonl" 600 "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust")"
+a3_ov="$(overlap "$c/inbox/t11.jsonl" 3)"
+verdict "(a3) liveness, unpaced, 600 sends: FAILED peer $nf_peer, here $nf_here, Rust $nf_rust; content ($((SECONDS - t0))s)" "$a3_content"
+verdict "(a3) liveness: overlap > 0 ($(jq -r .from "$c/inbox/t11.jsonl" 2>/dev/null | uniq | wc -l) writer runs, 3 writers)" "$a3_ov"
+[ -z "$a3_content$a3_ov" ] || PROOF_BAD=$((PROOF_BAD + 1))
 verdict "(a3) the reader here, the real comm-poll.sh: $(wc -l < "$LOCAL/reader.rc") polls, $(grep -c -x 75 "$LOCAL/reader.rc") exited 75; every line shown exactly once" \
     "$(check_reader "$c/inbox/t11.jsonl")"
 
@@ -432,7 +436,7 @@ fi
 
 n=0; for w in "$DIR"/*/wire.log; do [ -e "$w" ] && n=$((n + $(wc -l < "$w"))); done
 verdict "no send on either side went to the wire" "$([ "$n" -eq 0 ] || echo "$n wire frames")"
-verdict "proof: every (a) case has content PASS and overlap > 0" "$([ "$PROOF_BAD" -eq 0 ] || echo "$PROOF_BAD proof case(s) failed content or had no overlap")"
+verdict "proof: every (a) case, a3 included, has content PASS and overlap > 0" "$([ "$PROOF_BAD" -eq 0 ] || echo "$PROOF_BAD proof case(s) failed content or had no overlap")"
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -146,7 +146,9 @@ lists the receiver:
    (the hub after a remount). A record another machine wrote names a
    different lock manager: the hub leaves it untouched and logs it as an
    error, and only an explicit reset with no other daemon running replaces
-   it. A v3 hub writes `none@<its machine>` and serves other hosts over the
+   it. A hub with no machine id (bare `none`) never creates or replaces the
+   record and refuses every filing, saying so: give the machine a machine id
+   (`/etc/machine-id` on Linux), then restart the daemon. A v3 hub writes `none@<its machine>` and serves other hosts over the
    wire. A script
    adds the line itself only when `flock(1)` and `perl` exist (perl makes
    the append, its fsync and its cut-back on one descriptor), the box is Linux, and
@@ -183,7 +185,8 @@ bound. `test-inbox-lock-twohost.sh` counts a concurrency case as proof only
 when its content checks pass and its two writers overlap; its unpaced liveness
 case (shell here, shell on the peer and the daemon's filer, 200 each at once)
 expects 0 `FAILED`, since a send that fails under ordinary two-host load is a
-working-comms failure.
+working-comms failure, and counts as proof only when its three writers overlap
+too.
 
 **Readers** have two guards against a line that a failed append then cuts
 back. Where a writer would append locally (`flock(1)` and `perl`, Linux,

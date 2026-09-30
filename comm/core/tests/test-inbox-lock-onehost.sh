@@ -111,7 +111,7 @@ echo "record (Rust, on $HOST): $REC1 / $REC2"
     echo "FATAL: the record is not none@<$HOST's machine id>, so this is not a one-host case:"; cat "$LOCAL/record.out"; exit 1; }
 verdict "the record names $HOST's own machine: none@<its machine id>, then that id" ""
 
-r="$(host_sh "$DIR" 'sot_inbox_lock_identity "$INBOX_DIR"; _sot_inbox_lock_is_ours && echo local || echo wire')"
+r="$(host_sh "$DIR" 'id="$(sot_inbox_lock_identity "$INBOX_DIR")"; echo "$id"; _sot_inbox_lock_is_ours "$id" && echo local || echo wire')"
 verdict "a script on $HOST computes the record's identity and routes local" \
     "$([ "$r" = "none@$HOST_MID"$'\n'"local" ] || echo "got: $r")"
 
@@ -229,7 +229,7 @@ verdict "the reader on $HOST, the real comm-poll.sh: $N_POLLS polls, $N_75 exite
 
 # ---- another machine against the same folder -------------------------------
 before="$(wc -l < "$F")"
-r="$(local_sh "$C" '_sot_inbox_lock_is_ours && echo local || echo wire
+r="$(local_sh "$C" '_sot_inbox_lock_is_ours "$(sot_inbox_lock_identity "$INBOX_DIR")" && echo local || echo wire
     printf "{\"from\":\"away\",\"to\":\"t1h\",\"repo\":\"r\",\"msg\":\"away-0\",\"ts\":\"t\"}\n" | sot_inbox_append t1h >/dev/null && echo filed || echo FAILED')"
 verdict "a script send from this machine goes to the wire, never local" \
     "$([ "$r" = "wire"$'\n'"FAILED" ] && [ "$(wc -l < "$C/wire.log" 2>/dev/null)" = 1 ] && [ "$(wc -l < "$F")" = "$before" ] \

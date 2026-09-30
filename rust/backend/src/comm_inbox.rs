@@ -376,13 +376,17 @@ fn written_here(writer: Option<&str>, own_mid: Option<&str>) -> bool {
 
 /// The start-time decision from this daemon's lock manager `own` and machine
 /// id `own_mid`: only the hub writes, a record another machine wrote is a
-/// different lock manager and is kept, and a guest never writes or deletes it.
+/// different lock manager and is kept, a guest never writes or deletes it,
+/// and a hub with no machine id (bare `none`) never creates or replaces it.
 pub fn at_start(role: Role, own: &str, own_mid: Option<&str>, record: Option<&str>, path: &Path) -> AtStart {
     if role == Role::Guest {
         return AtStart::Keep(format!(
             "{path}: this daemon is a guest on its folder's hub, which alone writes the inbox lock record",
             path = path.display()
         ));
+    }
+    if own == "none" {
+        return AtStart::Keep(refusal::no_machine_id(path));
     }
     match record.map(parse_record) {
         None => AtStart::Create,
@@ -405,9 +409,9 @@ pub enum Route {
 
 /// The route for one filing, from this daemon's own lock manager `own` and
 /// machine id `own_mid` (recomputed per filing) and the record: local only
-/// when line 1 is `own` and `own` is not bare `none`. A `none@<machine>`
-/// record carries its one machine in line 1 itself, so only that machine's
-/// writers ever match it.
+/// when line 1 is `own` and `own` is not bare `none`, and a hub with bare
+/// `none` refuses every filing. A `none@<machine>` record carries its one
+/// machine in line 1 itself, so only that machine's writers ever match it.
 pub fn route(
     role: Role,
     own: &str,
@@ -424,6 +428,7 @@ pub fn route(
     match (role, rec) {
         (Role::Guest, _) if forwarded => Route::Refuse(refusal::forwarded_to_guest(self_host)),
         (Role::Guest, _) => Route::Forward,
+        (Role::Hub, _) if own == "none" => Route::Refuse(refusal::no_machine_id(path)),
         (Role::Hub, None) => Route::Refuse(refusal::no_record(path)),
         (Role::Hub, Some((id, writer))) if written_here(writer, own_mid) => Route::Refuse(refusal::remounted(own, id)),
         (Role::Hub, Some((id, writer))) => Route::Refuse(refusal::foreign(id, writer, own, path)),
@@ -448,6 +453,13 @@ pub mod refusal {
         format!(
             "the inbox lock record names {rec}, written by {}, a different lock manager from this hub's {own}: stop every daemon on this comm folder, delete {}, then start the hub",
             writer.map_or_else(|| "an unknown machine".to_string(), |w| format!("machine {w}")),
+            path.display()
+        )
+    }
+
+    pub fn no_machine_id(path: &Path) -> String {
+        format!(
+            "this hub has no machine id, so it cannot own the inbox lock record at {}: give this machine a machine id (/etc/machine-id on Linux), then restart the daemon",
             path.display()
         )
     }
@@ -997,6 +1009,22 @@ mod tests {
         }
         assert!(matches!(at_start(Role::Hub, "none@m2", Some("m2"), rec, p), AtStart::Keep(_)));
         assert_eq!(at_start(Role::Hub, "nfs4 A:/x", Some("m1"), rec, p), AtStart::Replace);
+    }
+
+    // A daemon with no machine id is bare `none`: as the hub it never creates
+    // or replaces the record and refuses every filing, naming the recovery;
+    // as a guest it still forwards.
+    #[test]
+    fn a_hub_with_no_machine_id_says_so_and_never_writes_the_record() {
+        let p = Path::new("/c/inbox-lock-manager");
+        let want = refusal::no_machine_id(p);
+        assert!(want.contains("no machine id") && want.contains("/etc/machine-id") && want.contains("restart the daemon"), "{want}");
+        for rec in [None, Some("none\n"), Some("none"), Some("nfs4 A:/x\nm1\n")] {
+            assert_eq!(at_start(Role::Hub, "none", None, rec, p), AtStart::Keep(want.clone()), "{rec:?}");
+            assert_eq!(route(Role::Hub, "none", None, rec, false, "h", p), Route::Refuse(want.clone()), "{rec:?}");
+        }
+        assert_eq!(route(Role::Guest, "none", None, Some("nfs4 A:/x\nm1\n"), false, "h", p), Route::Forward);
+        assert_eq!(route(Role::Guest, "none", None, None, false, "h", p), Route::Forward);
     }
 
     // B1 — the start step on real files: an absent record is created with the
