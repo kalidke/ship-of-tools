@@ -186,7 +186,10 @@ when its content checks pass and its two writers overlap; its unpaced liveness
 case (shell here, shell on the peer and the daemon's filer, 200 each at once)
 expects 0 `FAILED`, since a send that fails under ordinary two-host load is a
 working-comms failure, and counts as proof only when its three writers overlap
-too.
+too. `test-comm-e2e-readers.sh` runs the real readers (comm-poll, the Stop
+hook, comm-wake and comm-watch) on three hosts against a scratch comm home on
+the shared mount; like the two lock tests it needs real boxes, so it runs in no
+workflow.
 
 **Readers** have two guards against a line that a failed append then cuts
 back. Where a writer would append locally (`flock(1)` and `perl`, Linux,
