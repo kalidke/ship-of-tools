@@ -23,7 +23,7 @@ TGT="${1:-}"; SUGG="${2:-}"
 # comm-send.sh and comm-relay.sh: the nudge below embeds "@$NAME" as the
 # reply-to address it hands the target session — a target that dutifully
 # replies to an unroutable handle would have no working reply path at all.
-sot_require_routable_identity || exit 1
+why="$(sot_require_routable_identity)" || { echo "FAILED: $why" >&2; exit 1; }
 
 ENDPOINT="$(sot_daemon_endpoint "${SOT_SPAWN_ENDPOINT:-}")" \
     || { echo "ERROR: no sotd daemon found; set SOT_SPAWN_ENDPOINT=unix:/path or ssh:target[/host]" >&2; exit 1; }

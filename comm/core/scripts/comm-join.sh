@@ -265,12 +265,16 @@ fi
 # written in full v2 form, as above) the moment it's actually used. See
 # ADR 0028's "Self-file read-side transition" for why a legacy file is no
 # longer "already inert" the way it was pre-hotfix.
-have="$(sot_jq -r '.protocol_version // 0' "$REGISTRY")"
-if [ "$have" != "$PROTOCOL_VERSION" ]; then
-    echo "WARNING: registry protocol v$have != client v$PROTOCOL_VERSION — run ShipTools.update_comm() on all machines" >&2
+# Display only: the join has already succeeded, so a registry that cannot be
+# read now prints neither the version warning nor the others line.
+reg_rc=0; REG="$(sot_registry_read)" || reg_rc=$?
+if [ "$reg_rc" -eq 0 ]; then
+    have="$(printf '%s' "$REG" | sot_jq -r '.protocol_version // 0')"
+    if [ "$have" != "$PROTOCOL_VERSION" ]; then
+        echo "WARNING: registry protocol v$have != client v$PROTOCOL_VERSION — run ShipTools.update_comm() on all machines" >&2
+    fi
+    others="$(printf '%s' "$REG" | sot_jq -r --arg me "$NAME" '.agents | keys[] | select(. != $me)' | paste -sd ", " -)"
 fi
-
-others="$(sot_jq -r --arg me "$NAME" '.agents | keys[] | select(. != $me)' "$REGISTRY" | paste -sd ", " -)"
 echo "Joined sot-comm as @$NAME  ($REPO on $HOST)."
 echo "  inbox: $INBOX_DIR/$NAME.jsonl"
-echo "Others registered: ${others:-none}"
+if [ "$reg_rc" -eq 0 ]; then echo "Others registered: ${others:-none}"; fi

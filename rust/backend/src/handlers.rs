@@ -5760,8 +5760,19 @@ fn comm_file_verdict(
             return Err(("file_failed".into(), text));
         }
     }
-    let agents = read_comm_agents_at(&home.join("registry.json"));
-    let entry = agents.as_ref().and_then(|a| a.get(to));
+    // A missing registry lists nobody; bytes that are not a registry are no
+    // answer at all, never "not here".
+    let agents = match std::fs::read(home.join("registry.json")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_here()),
+        Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|root| root.get("agents").filter(|a| a.is_object()).cloned()),
+        Err(_) => None,
+    };
+    let Some(agents) = agents else {
+        return Err(("file_failed".into(), format!("the registry could not be read, so @{to} is unverified; nothing was filed")));
+    };
+    let entry = agents.get(to);
     let field = |k: &str| entry.and_then(|e| e.get(k)).and_then(|v| v.as_str());
     if field("host").map_or(true, str::is_empty) {
         return Err(not_here());
@@ -5889,6 +5900,19 @@ mod comm_file_tests {
         let (code, error) = file(Some(d.path()), "stale", false).unwrap_err();
         assert_eq!((code.as_str(), error.as_str()), ("no_live_session", "no live session holds @stale"));
         assert_eq!(std::fs::read_to_string(&inbox).unwrap(), "{\"msg\":\"before\"}\n");
+    }
+
+    // An unreadable registry is no verdict on `to`; a missing one lists nobody.
+    #[test]
+    fn an_empty_registry_is_file_failed_and_a_missing_one_not_here() {
+        let d = home();
+        std::fs::write(d.path().join("registry.json"), "").unwrap();
+        let (code, error) = file(Some(d.path()), "fresh", true).unwrap_err();
+        assert_eq!(code, "file_failed");
+        assert!(error.contains("could not be read"), "{error}");
+        assert!(!d.path().join("inbox/fresh.jsonl").exists());
+        std::fs::remove_file(d.path().join("registry.json")).unwrap();
+        assert_eq!(file(Some(d.path()), "fresh", true).unwrap_err().0, "not_here");
     }
 
     #[test]
@@ -7028,6 +7052,15 @@ fn read_comm_agents() -> Option<serde_json::Value> {
     read_comm_agents_at(&comm_registry_path()?)
 }
 
+/// Write `bytes` to `path` and flush them to the server, so the rename that
+/// follows can never publish a registry whose data is not there yet.
+fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()
+}
+
 /// `read_comm_agents` for a registry named by path, so `comm.file`'s verdict
 /// can be decided (and tested) against a comm folder it is handed.
 fn read_comm_agents_at(path: &std::path::Path) -> Option<serde_json::Value> {
@@ -7265,7 +7298,7 @@ fn remove_comm_agents_for_workspace_bounded(
             }
         };
         serialized.push(b'\n');
-        if let Err(e) = std::fs::write(tmp_path, &serialized) {
+        if let Err(e) = write_synced(tmp_path, &serialized) {
             tracing::warn!(error = %e, "comm registry tmp write failed");
             return Vec::new();
         }
@@ -7378,7 +7411,7 @@ fn clear_comm_unread(ws: &Workspace, host: &str) {
             }
         };
         serialized.push(b'\n');
-        if let Err(e) = std::fs::write(tmp_path, &serialized) {
+        if let Err(e) = write_synced(tmp_path, &serialized) {
             tracing::warn!(error = %e, "comm registry tmp write failed");
             return;
         }

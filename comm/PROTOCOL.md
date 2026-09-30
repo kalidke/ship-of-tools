@@ -69,6 +69,33 @@ turn-end to `idle`. The daemon joins these fields onto `workspace.list` (as
 renders `summary` as the per-session glance, colored by `state` and aged off
 `status_at`.
 
+**One writer, one reader.** Every script write goes through `registry_replace`
+(`comm-lib.sh`), under the registry lock. jq writes a tmp, and the tmp is
+renamed over `registry.json` only if it is one JSON document with an object
+`.agents` and its data has been flushed to the server; otherwise nothing is
+written and the writer prints `FAILED: the registry could not be read or
+updated, so nothing was written` (or `FAILED: the registry update could not be
+flushed (…), so nothing was written`). The standalone heartbeat hook carries
+the same check inline and stays silent; the daemon flushes its tmp before its
+rename too. **perl is required for registry writes**: the flush is perl's
+`sync`, and a host without perl fails closed with the "could not be flushed"
+line. `ensure_home` creates the registry only when there is no file (noclobber),
+and never truncates or repairs one. Every read goes through
+`sot_registry_read` (the standalone hooks inline its check), which has three
+answers: present, absent (it parsed; no such row) and unreadable (missing,
+empty, not JSON, not exactly one document, or no object `.agents`).
+Unreadable is never absent. A send on an unreadable registry prints
+`FAILED -> @<to>: the registry could not be read, so identity @<me> is
+unverified; nothing was sent`. leave, list, spawn and despawn print
+`FAILED: the registry could not be read; nothing was <removed|listed|spawned|despawned>`,
+status and worktree-sync end the same line with `stamp discarded` and `nobody
+was reminded`, and a join prints the writer's FAILED line or `the registry
+could not be read, so no handle was derived; nothing was written`. Each exits
+1. **A registry that stays unreadable is not repaired
+automatically**, because rewriting an unreadable file is the wipe. The fix is
+by hand: move `registry.json` aside; the next script creates an empty one, and
+each session's next send says `reclaim it with comm-join.sh --name <handle>`.
+
 ## Message frame (inbox JSONL, one object per line)
 
 ```json

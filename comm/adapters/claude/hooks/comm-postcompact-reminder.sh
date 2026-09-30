@@ -31,6 +31,10 @@ NAME=""
 [ -x "$SELF_DIR/comm-context.sh" ] && eval "$(SOT_COMM_READONLY=1 "$SELF_DIR/comm-context.sh" 2>/dev/null)" 2>/dev/null || true
 [ -n "${NAME:-}" ] || exit 0
 [ -f "$REGISTRY" ] || exit 0
-jq -e --arg n "$NAME" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 || exit 0
+# jq -e: 1 is no row; an unreadable registry (any other failure) still
+# reminds — a spurious reminder costs a line, a missed one the identity.
+# -s and the length check: jq 1.6's -e exits 0 on an empty file.
+_reg_rc=0; jq -e -s --arg n "$NAME" 'if length == 1 and (.[0].agents | type == "object") then .[0].agents[$n] else error("unreadable") end' "$REGISTRY" >/dev/null 2>&1 || _reg_rc=$?
+[ "$_reg_rc" -eq 1 ] && exit 0
 
 "$SELF_DIR/comm-session-start.sh" --context

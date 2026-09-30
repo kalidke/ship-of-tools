@@ -22,8 +22,12 @@ done
 if [ -n "$WHO" ] && [ "$WHO" != "$NAME" ]; then
     # Removing someone else's row touches the registry only — their SELF_FILE
     # belongs to their session, and comm-despawn.sh is the full teardown tool.
-    jq -e --arg n "$WHO" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1 \
-        || { echo "@$WHO not in registry — nothing to do."; exit 0; }
+    rc=0; sot_registry_read "$WHO" >/dev/null || rc=$?
+    case "$rc" in
+        0) ;;
+        1) echo "@$WHO not in registry — nothing to do."; exit 0 ;;
+        *) echo "FAILED: the registry could not be read; nothing was removed" >&2; exit 1 ;;
+    esac
     with_lock registry_del "$WHO"
     echo "Removed @$WHO from the registry (row only; comm-despawn.sh does full teardown)."
     exit 0

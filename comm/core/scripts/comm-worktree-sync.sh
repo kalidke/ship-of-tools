@@ -40,9 +40,10 @@ command -v jq >/dev/null 2>&1 || { echo "comm-worktree-sync.sh: jq required" >&2
 [ -f "$REGISTRY" ] || { echo "comm-worktree-sync.sh: no registry at $REGISTRY" >&2; exit 1; }
 
 # Family = exact base OR `<base>-...` (dash-guarded so pkg != pkg-analysis).
-mapfile -t FAMILY < <(sot_jq -r --arg b "$BASE" '
+REG="$(sot_registry_read)" || { echo "FAILED: the registry could not be read; nobody was reminded" >&2; exit 1; }
+mapfile -t FAMILY < <(printf '%s' "$REG" | sot_jq -r --arg b "$BASE" '
     .agents // {} | keys[] | select(. == $b or startswith($b + "-"))
-' "$REGISTRY" 2>/dev/null || true)
+' 2>/dev/null || true)
 
 if [ "${#FAMILY[@]}" -eq 0 ]; then
     echo "comm-worktree-sync.sh: no sessions found for base repo '$BASE' in the registry" >&2

@@ -41,7 +41,7 @@ ensure_home
 # operations and need no identity at all (bridge takes its own --name).
 SUB="${1:-}"; [ $# -gt 0 ] && shift || true
 case "$SUB" in
-    send|ask) sot_require_routable_identity || exit 1 ;;
+    send|ask) why="$(sot_require_routable_identity)" || { to="${1:-}"; echo "FAILED -> @${to#@}: $why" >&2; exit 1; } ;;
 esac
 
 # ADR 0046 decision 1: the `bridge` subcommand's held connection IS what
@@ -466,8 +466,13 @@ filter_inbound() {
 # for send, so each handed the send to the other, forever, leaking a temp
 # file per lap. The predicates agreeing is what deletes that loop; a
 # recursion guard would only survive it.
+# 0 a hit, 1 a miss, 2 the registry could not be read (never a miss).
 _registry_target() {
-    [ -n "$1" ] && jq -e --arg n "$1" '(.agents[$n].host // "") != ""' "$REGISTRY" >/dev/null 2>&1
+    local row rc=0
+    [ -n "$1" ] || return 1
+    row="$(sot_registry_read "$1")" || rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    [ -n "$(printf '%s' "$row" | sot_jq -r '.host // empty' 2>/dev/null)" ]
 }
 
 # SUB was already parsed (and shifted off) above, before the identity gate
@@ -489,9 +494,12 @@ case "$SUB" in
         done
         [ "$TO_SET" = true ] || { echo "usage: comm-relay.sh send @to \"msg\" | --all \"msg\"  (no recipient)" >&2; exit 1; }
         [ -z "$MSG" ] && { echo "usage: comm-relay.sh send @to \"msg\" | --all \"msg\"  (empty message)" >&2; exit 1; }
-        if _registry_target "$TO"; then
-            exec "$SCRIPT_DIR/comm-send.sh" "@$TO" "$MSG"
-        fi
+        rc=0; _registry_target "$TO" || rc=$?
+        case "$rc" in
+            0) exec "$SCRIPT_DIR/comm-send.sh" "@$TO" "$MSG" ;;
+            1) ;;
+            *) echo "FAILED -> @$TO: the registry could not be read, so @$TO could not be routed; nothing was sent" >&2; exit 1 ;;
+        esac
         send_frame "$TO" "$MSG"
         ;;
     ask)

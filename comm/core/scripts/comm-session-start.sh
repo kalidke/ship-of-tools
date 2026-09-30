@@ -74,9 +74,9 @@ _watch_marker() { printf '%s/state/%s.watch\n' "${SOT_COMM_HOME:-$HOME/.sot-comm
 # the self-file is internally consistent, not that the registry still
 # agrees).
 _owns_handle() {
-    [ -f "${REGISTRY:-}" ] || return 1
-    local root
-    root="$(jq -r --arg n "$1" '.agents[$n].root // ""' "$REGISTRY" 2>/dev/null)"
+    local row root
+    row="$(sot_registry_read "$1")" || return 1   # absent or unreadable: not ours
+    root="$(printf '%s' "$row" | jq -r '.root // ""' 2>/dev/null)"
     [ -n "$root" ] && [ "$root" = "${PROJECT_ROOT:-}" ]
 }
 

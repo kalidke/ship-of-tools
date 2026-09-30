@@ -461,9 +461,11 @@ sot_daemon_endpoint() {
 
 ensure_home() {
     mkdir -p "$COMM_HOME" "$INBOX_DIR" "$SELF_DIR" "$READ_DIR"
-    if [ ! -f "$REGISTRY" ]; then
-        printf '{"protocol_version": %s, "agents": {}}\n' "$PROTOCOL_VERSION" > "$REGISTRY"
-    fi
+    # Create only, never truncate: `test -f` is false on any stat error (an
+    # ESTALE during another host's rename), and a plain `>` then wiped a live
+    # registry. noclobber opens with O_EXCL and without O_TRUNC, so a wrong
+    # stat fails here instead. An empty registry is never repaired here.
+    [ -f "$REGISTRY" ] || ( set -C; printf '{"protocol_version": %s, "agents": {}}\n' "$PROTOCOL_VERSION" > "$REGISTRY" ) 2>/dev/null || true
 }
 
 # with_lock CMD [ARGS...] — run CMD holding the registry lock (mkdir
@@ -555,19 +557,33 @@ registry_put() {  # name objJSON
         echo "registry_put: refusing to write an empty/blank handle" >&2
         return 1
     fi
-    jq --arg n "$1" --argjson o "$2" '.agents[$n] = $o' "$REGISTRY" \
-        > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+    registry_replace '.agents[$n] = $o' --arg n "$1" --argjson o "$2"
 }
 registry_del() {  # name
-    jq --arg n "$1" 'del(.agents[$n])' "$REGISTRY" \
-        > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+    registry_replace 'del(.agents[$n])' --arg n "$1"
 }
 registry_touch() {  # name — bump last_seen if present
     local ts; ts="$(now_iso)"
-    jq --arg n "$1" --arg t "$ts" \
-        'if .agents[$n] then .agents[$n].last_seen = $t else . end' \
-        "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+    registry_replace 'if .agents[$n] then .agents[$n].last_seen = $t else . end' --arg n "$1" --arg t "$ts"
 }
+
+# registry_replace FILTER [JQ_OPTIONS...] — THE one registry write; call inside with_lock.
+# The tmp is renamed only if it is ONE document with an .agents object and has been fsynced.
+# jq emits nothing for an empty file and fails on an unparseable one, so an unreadable
+# read can never produce a tmp that passes: it aborts, and the registry's inode and bytes stay as they were.
+# The check slurps: jq 1.6's -e exits 0 on a file with no document, and judges two by the last.
+registry_replace() {
+    local filter="$1" why; shift
+    if jq "$@" "$filter" "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null \
+       && jq -e -s 'length == 1 and (.[0].agents | type == "object")' "$REGISTRY.tmp" >/dev/null 2>&1; then
+        if why="$(_sot_fsync "$REGISTRY.tmp" 2>&1)" && mv "$REGISTRY.tmp" "$REGISTRY"; then return 0; fi
+        rm -f "${REGISTRY:?}.tmp"; echo "FAILED: the registry update could not be flushed ($why), so nothing was written" >&2; return 1
+    fi
+    rm -f "${REGISTRY:?}.tmp"; echo "FAILED: the registry could not be read or updated, so nothing was written" >&2; return 1
+}
+# _sot_fsync FILE — FILE's data on the server before a rename publishes it (the sync _sot_append_whole does).
+# ($f is declared in its own statement: a `my` is not in scope until the next one.)
+_sot_fsync() { perl -MIO::Handle -e 'my $f; open($f, "+<", $ARGV[0]) && $f->sync && close($f) or do { print STDERR "$ARGV[0]: $!\n"; exit 1 }' "$1"; }
 
 # --- the inbox append (0031 B1) ---
 # sot_inbox_append HANDLE — THE one place a script appends a frame to an
@@ -887,7 +903,7 @@ sot_fmt_age() {
 # no word.
 sot_recipient_note() {
     local h="$1" row state summary status_at last_seen now
-    row="$(jq -c --arg n "$h" '.agents[$n] // empty' "$REGISTRY" 2>/dev/null)" || row=""
+    row="$(sot_registry_read "$h")" || row=""
     [ -n "$row" ] && [ "$row" != "null" ] || return 1
     state="$(printf '%s' "$row" | jq -r 'if (.state|type)=="string" then .state else empty end' 2>/dev/null)" || state=""
     [ -n "$state" ] || return 1
@@ -943,11 +959,14 @@ sot_recipient_note() {
 #       expected outcome once a real join has happened, not an error
 registry_del_if_provisional() {
     local name="$1" want_root="$2" want_nonce="$3"
-    local cur_status cur_root cur_nonce
+    local row rc=0 cur_status cur_root cur_nonce
     [ -n "$name" ] && [ -n "$want_nonce" ] || return 2
-    cur_status="$(sot_jq -r --arg n "$name" '.agents[$n].status // ""' "$REGISTRY" 2>/dev/null)"
-    cur_root="$(sot_jq -r --arg n "$name" '.agents[$n].root // ""' "$REGISTRY" 2>/dev/null)"
-    cur_nonce="$(sot_jq -r --arg n "$name" '.agents[$n].nonce // ""' "$REGISTRY" 2>/dev/null)"
+    # Unreadable is 1 (the caller's "check by hand"), never the absent 2.
+    row="$(sot_registry_read "$name")" || rc=$?
+    case "$rc" in 0) ;; 1) return 2 ;; *) return 1 ;; esac
+    cur_status="$(printf '%s' "$row" | sot_jq -r '.status // ""' 2>/dev/null)"
+    cur_root="$(printf '%s' "$row" | sot_jq -r '.root // ""' 2>/dev/null)"
+    cur_nonce="$(printf '%s' "$row" | sot_jq -r '.nonce // ""' 2>/dev/null)"
     if [ "$cur_status" != "spawning" ] || [ "$cur_root" != "$want_root" ] || [ "$cur_nonce" != "$want_nonce" ]; then
         return 2
     fi
@@ -2045,12 +2064,14 @@ sot_jq_rawfile() {
 # (Codex review round-2 SHOULD-FIX 2) so an unresolved sender always sees
 # THIS refusal, never an unrelated daemon/socket error.
 #
-# Prints nothing and returns 0 if routable. Prints ONE refusal line and
-# returns 1 otherwise. Depends on NAME/PROJECT_ROOT already being set by
+# Prints nothing and returns 0 if routable. Otherwise prints ONE reason on
+# stdout, the way sot_inbox_append does, for the caller to print after its
+# own `FAILED` prefix, and returns 1. An unreadable registry is its own
+# reason, never "no registry row". Depends on NAME/PROJECT_ROOT already being set by
 # `eval "$(comm-context.sh)"` — call after that, never before.
 sot_require_routable_identity() {
     if [ -z "${NAME:-}" ]; then
-        echo "ERROR: your sot-comm identity did not resolve — refusing to send with no verifiable from-handle (a reply would silently misroute). Join first: comm-join.sh --name <canonical-handle> (never a bare comm-join.sh if you previously held one — see the sot-session-start skill's recovery recipe)." >&2
+        echo "your sot-comm identity did not resolve — refusing to send with no verifiable from-handle (a reply would silently misroute). Join first: comm-join.sh --name <canonical-handle> (never a bare comm-join.sh if you previously held one — see the sot-session-start skill's recovery recipe)."
         return 1
     fi
     local reg_status reg_root qname qdir
@@ -2062,12 +2083,13 @@ sot_require_routable_identity() {
     # directory (every caller sources comm-lib.sh after setting it).
     qname="$(printf '%q' "$NAME")"
     qdir="$(printf '%q' "${SCRIPT_DIR:-.}")"
-    if [ "$reg_status" != "present" ]; then
-        echo "ERROR: your sot-comm identity '@$NAME' has no registry row — refusing to send with an unroutable from-handle (a reply would silently misroute). Reclaim it: $qdir/comm-join.sh --name $qname" >&2
-        return 1
-    fi
+    case "$reg_status" in
+        present) ;;
+        absent) echo "your identity @$NAME has no registry row; reclaim it with $qdir/comm-join.sh --name $qname"; return 1 ;;
+        *) echo "the registry could not be read, so identity @$NAME is unverified; nothing was sent"; return 1 ;;
+    esac
     if [ -n "$reg_root" ] && [ "$reg_root" != "${PROJECT_ROOT:-}" ]; then
-        echo "ERROR: your sot-comm identity '@$NAME' is registered to a DIFFERENT project's root ('$reg_root') — refusing to send with a misrouting from-handle. Reclaim it: $qdir/comm-join.sh --name $qname" >&2
+        echo "your sot-comm identity '@$NAME' is registered to a DIFFERENT project's root ('$reg_root') — refusing to send with a misrouting from-handle. Reclaim it: $qdir/comm-join.sh --name $qname"
         return 1
     fi
     return 0
@@ -2223,15 +2245,29 @@ sot_sanitize_component() {
 #                         effectively unconsultable. Callers MUST treat
 #                         "error" as NO EVIDENCE, never as "absent".
 sot_registry_entry_status() {
+    local row rc=0 root
+    row="$(sot_registry_read "$1")" || rc=$?
+    case "$rc" in
+        0) root="$(printf '%s' "$row" | sot_jq -r '.root // ""' 2>/dev/null)" || { printf 'error\t\n'; return 0; }
+           printf 'present\t%s\n' "$root" ;;
+        1) printf 'absent\t\n' ;;
+        *) printf 'error\t\n' ;;
+    esac
+}
+
+# sot_registry_read [HANDLE] — THE unlocked registry read. No HANDLE: the registry, compact.
+# HANDLE: that row, compact. 0 present; 1 absent (it parsed, no such row); 2 unreadable
+# (missing, empty, not JSON, not one document, or no .agents object), with nothing on stdout.
+# 2 never means absent. It slurps and reads jq's output, never its exit code alone: jq 1.6
+# exits 0 on a file with no document.
+sot_registry_read() {
     local out
-    out="$(sot_jq -r --arg n "$1" \
-        'if (.agents | has($n)) then "present\t" + (.agents[$n].root // "") else "absent\t" end' \
-        "$REGISTRY" 2>/dev/null)"
-    if [ $? -ne 0 ] || [ -z "$out" ]; then
-        printf 'error\t\n'
-        return 0
-    fi
-    printf '%s\n' "$out"
+    out="$(sot_jq -s -r --arg n "${1-}" --arg one "${1+1}" '
+        if length != 1 or (.[0].agents | type) != "object" then "unreadable"
+        else .[0] | if $one == "" then "present\t" + tojson
+        elif .agents | has($n) then "present\t" + (.agents[$n] | tojson) else "absent" end end' \
+        "$REGISTRY" 2>/dev/null)" || return 2
+    case "$out" in present$'\t'*) printf '%s\n' "${out#present$'\t'}" ;; absent) return 1 ;; *) return 2 ;; esac
 }
 
 # _sot_tier_claimable MODE ROOT STATUS HELD_ROOT — true if a tier whose
@@ -2313,6 +2349,7 @@ sot_derive_handle() {
     local mode="$1" root="$2" raw_host="$3"
     local base parent hash6 tier1 tier2 tier3 host host_digest
     local status1 held1 status2 held2 status3 held3 shown1 shown2 shown3
+    local unreadable="comm: the registry could not be read, so no handle was derived; nothing was written"
 
     case "$mode" in
         reclaim|fresh) : ;;
@@ -2328,6 +2365,7 @@ sot_derive_handle() {
 
     tier1="${base}-${host}"
     IFS=$'\t' read -r status1 held1 <<< "$(sot_registry_entry_status "$tier1")"
+    [ "$status1" = "error" ] && { echo "$unreadable" >&2; return 1; }
     if _sot_tier_claimable "$mode" "$root" "$status1" "$held1"; then
         printf '%s\n%s\n%s\n' "$tier1" "" "$tier1"
         return 0
@@ -2337,6 +2375,7 @@ sot_derive_handle() {
     parent="$(sot_sanitize_component "$(basename "$(dirname "$root")")")"
     tier2="${base}-${parent}-${host}"
     IFS=$'\t' read -r status2 held2 <<< "$(sot_registry_entry_status "$tier2")"
+    [ "$status2" = "error" ] && { echo "$unreadable" >&2; return 1; }
     if _sot_tier_claimable "$mode" "$root" "$status2" "$held2"; then
         echo "comm: '@$tier1' is already held by $shown1 — joining as '@$tier2' instead" >&2
         printf '%s\n%s\n%s\n' "$tier2" "$parent" "$tier1"
@@ -2347,6 +2386,7 @@ sot_derive_handle() {
     hash6="$(sot_hash6 "$root")" || return 1
     tier3="${base}-${hash6}-${host}"
     IFS=$'\t' read -r status3 held3 <<< "$(sot_registry_entry_status "$tier3")"
+    [ "$status3" = "error" ] && { echo "$unreadable" >&2; return 1; }
     if _sot_tier_claimable "$mode" "$root" "$status3" "$held3"; then
         echo "comm: '@$tier1' (held by $shown1) and '@$tier2' (held by $shown2) are both taken — joining as '@$tier3' instead" >&2
         printf '%s\n%s\n%s\n' "$tier3" "$hash6" "$tier1"

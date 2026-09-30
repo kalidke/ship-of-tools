@@ -132,7 +132,9 @@ if [ -x "$SELF_DIR/comm-context.sh" ]; then
 fi
 [ -n "${NAME:-}" ] || exit 0
 
-row="$(jq -r --arg n "$NAME" '.agents[$n] | if . then (.floor // "") + "|" + (.status_at // "") else "" end' "$REGISTRY" 2>/dev/null || true)"
+# -s: an empty or many-document registry is unreadable (""), never a row.
+row="$(jq -r -s --arg n "$NAME" 'if length != 1 or (.[0].agents | type) != "object" then ""
+    else .[0].agents[$n] | if . then (.floor // "") + "|" + (.status_at // "") else "" end end' "$REGISTRY" 2>/dev/null || true)"
 [ -n "$row" ] || exit 0
 
 # DEAF-SESSION WARNING (2026-09-15): a session whose harness inbox Monitor
@@ -213,10 +215,19 @@ ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 LOCKDIR="$COMM_HOME/.registry.lock"
 if mkdir "$LOCKDIR" 2>/dev/null; then
     trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
-    jq --arg n "$NAME" --arg t "$ts" \
-       'if .agents[$n] and .agents[$n].floor
-        then .agents[$n] += {status_at:$t, last_seen:$t} else . end' \
-       "$REGISTRY" > "$REGISTRY.hb.tmp" 2>/dev/null && mv "$REGISTRY.hb.tmp" "$REGISTRY"
+    # comm-lib.sh's registry_replace, inline (this hook is standalone): the
+    # tmp is renamed only if it is one document with an .agents object and its
+    # data is on the server; otherwise nothing is written.
+    if jq --arg n "$NAME" --arg t "$ts" \
+          'if .agents[$n] and .agents[$n].floor
+           then .agents[$n] += {status_at:$t, last_seen:$t} else . end' \
+          "$REGISTRY" > "$REGISTRY.hb.tmp" 2>/dev/null \
+       && jq -e -s 'length == 1 and (.[0].agents | type == "object")' "$REGISTRY.hb.tmp" >/dev/null 2>&1 \
+       && perl -MIO::Handle -e 'my $f; open($f, "+<", $ARGV[0]) && $f->sync && close($f) or exit 1' "$REGISTRY.hb.tmp" 2>/dev/null; then
+        mv "$REGISTRY.hb.tmp" "$REGISTRY"
+    else
+        rm -f "${REGISTRY:?}.hb.tmp"
+    fi
     rmdir "$LOCKDIR" 2>/dev/null
     trap - EXIT
 fi

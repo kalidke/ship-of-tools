@@ -53,7 +53,10 @@ trap 'rm -f "${MSG_FILE:?}"' EXIT
 # comm-relay.sh and comm-bootstrap.sh: requires more than a merely nonempty
 # NAME — see the helper's own comment. Checked BEFORE any transport work so
 # an unresolved sender always sees THIS refusal, never a daemon error.
-sot_require_routable_identity || exit 1
+if ! why="$(sot_require_routable_identity)"; then
+    if [ "$BROADCAST" = true ]; then echo "FAILED -> --broadcast: $why" >&2; else echo "FAILED -> @$TARGET: $why" >&2; fi
+    exit 1
+fi
 
 FORMATTED="[${NAME:-?}:$REPO] $MSG"
 
@@ -67,8 +70,16 @@ _live_endpoint() {
 }
 
 deliver() {  # $1 = target name
-    local t="$1" thost tws ts resp ok enter_sent code
-    thost="$(sot_jq -r --arg n "$t" '.agents[$n].host         // empty' "$REGISTRY")"
+    local t="$1" thost tws ts resp ok enter_sent code row reg_rc=0
+    row="$(sot_registry_read "$t")" || reg_rc=$?
+    if [ "$reg_rc" -ge 2 ]; then
+        # Unreadable is not a miss: handing a LOCAL target to the relay would
+        # route it by a registry nobody read.
+        echo "FAILED -> @$t: the registry could not be read, so @$t could not be routed; nothing was sent" >&2
+        return 1
+    fi
+    thost=""
+    [ "$reg_rc" -eq 0 ] && { thost="$(printf '%s' "$row" | sot_jq -r '.host // empty' 2>/dev/null)" || thost=""; }
     if [ -z "$thost" ]; then
         # Registry MISS on a DIRECTED send: this box cannot name the target.
         # "Miss" is exactly `.host` empty-or-absent, and comm-relay.sh's
@@ -169,7 +180,8 @@ deliver() {  # $1 = target name
 }
 
 if [ "$BROADCAST" = true ]; then
-    mapfile -t TARGETS < <(sot_jq -r --arg me "$NAME" '.agents | keys[] | select(. != $me)' "$REGISTRY")
+    REG="$(sot_registry_read)" || { echo "FAILED -> --broadcast: the registry could not be read; nothing was sent" >&2; exit 1; }
+    mapfile -t TARGETS < <(printf '%s' "$REG" | sot_jq -r --arg me "$NAME" '.agents | keys[] | select(. != $me)')
     # Only a filed copy counts; deliver prints each FAILED one.
     n=0; of=0
     for t in "${TARGETS[@]}"; do

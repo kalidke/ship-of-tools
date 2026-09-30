@@ -196,6 +196,9 @@ jobs:
           # the one wait constant. The poke guard pins that comm-send.sh
           # still files, pokes and prints its line with the append behind it.
           bash test-hub-files.sh
+          # The registry's one writer never publishes an empty, unparseable or
+          # two-document file, and its one reader says unreadable, never absent.
+          bash test-registry-io.sh
           # The read cursor is a line count with the hash of the last line
           # read, so a cut-back steps back one line and nothing is shown twice.
           bash test-comm-poll-cursor.sh
