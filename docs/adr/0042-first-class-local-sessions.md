@@ -374,7 +374,7 @@ retiring `-Local` (it keeps its "no tunnels, no freshness" meaning).
   active participant, not a forwarder, and there are no `attach.proxy`/
   `mgmt.proxy` ops.
 - Acceptance: a microscope-control PC's capsule session driven from the main
-  frontend; the tunnel dropping and returning re-attaches from the
+  frontend; the connection dropping and returning re-attaches from the
   checkpoint; take-on-first-input and exactly-once input hold across it.
 
 ## Amendment — a session types into and reads a sibling row (added 2026-09-07; one Codex text round folded in)

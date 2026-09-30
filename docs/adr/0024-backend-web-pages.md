@@ -3,11 +3,14 @@
 **Status:** partly superseded by ADR 0035 (2026-06-20; built + merged same day)
 **Date:** 2026-06-20
 
-> **Transport note (2026-08-10):** the static `-L` helper forwards described
-> here are the pre-ADR-0035 transport. Since v0.5.0 these pages ride the
-> control tunnel through the daemon TCP proxy; the fixed forwards are retired
-> (opt-in via `SOT_LEGACY_FORWARDS=1`). The open-in-browser flow this ADR
-> decides is unchanged.
+> **Transport note (2026-08-10, updated 2026-09-29):** the static `-L` helper
+> forwards described here are the pre-ADR-0035 transport. Since v0.5.0 these
+> pages ride the daemon proxy over the control connection; the fixed forwards
+> were retired first as an opt-in fallback (`SOT_LEGACY_FORWARDS=1`) and then,
+> once the control connection itself stopped being a tunnel (the isolation
+> lane, `dev/output/isolation-plan.md`), deleted outright — there is no
+> forward left to opt into. The open-in-browser flow this ADR decides is
+> unchanged.
 
 ## Context
 

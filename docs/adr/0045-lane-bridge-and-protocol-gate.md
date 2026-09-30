@@ -82,9 +82,11 @@ migration mechanism, not two.
    (rx, tx, upstream)`; the daemon never decodes a lane frame after the
    reply. Invariant: recovery and identity share one dial.
 
-3. **`DaemonLaneEndpoint` in `sot-protocol`.** `LaneDial::Tcp` (the
-   loopback tunnel) or `LaneDial::Local` (a Unix socket or Windows named
-   pipe). It holds NO row — the row rides the `Endpoint` calls
+3. **`DaemonLaneEndpoint` in `sot-protocol`.** `LaneDial::Local` (a Unix
+   socket or Windows named pipe) or `LaneDial::Ssh` (an `ssh` child
+   bridging a remote lane, C3 of the isolation lane). `LaneDial::Tcp` — the
+   loopback tunnel this decision originally described — is retired:
+   `lane_dial` never produces it now. It holds NO row — the row rides the `Endpoint` calls
    (`connect_supervisor_unchallenged(&self, lane)`,
    `connect_voyage_unchallenged(&self, lane, voyage_id)`), so the target
    is named exactly once, never duplicated onto the endpoint value

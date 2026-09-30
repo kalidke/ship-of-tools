@@ -53,9 +53,10 @@ matters is backend vs. frontend, not one OS vs. another:
   in its own capsule, so both survive SSH drops.
 - **The frontend** — the native window that renders previews and owns the
   keyboard — runs on the machine in front of you: Linux, Windows or a Mac.
-- **A per-user socket is SSH-forwarded** from the remote to the local
-  machine; the frontend connects over that forward. Local and remote operation
-  use the same protocol — only the transport differs.
+- **The frontend reaches a remote backend over its own `ssh` child** — no
+  forwarded socket, no local port. Local and remote operation use the same
+  protocol; only the transport differs. See
+  [Transport](../concepts/transport.md).
 
 ## The machine-role question
 
@@ -69,10 +70,10 @@ The Q&A asks which of three roles the machine fills:
 
 For **frontend-local**, the flow also records this machine as a `frontend`
 host and the backend server as a `daemon` host in `hosts.toml` (the hub's
-copy). The launcher derives everything else — the SSH forward's local
-port, and the remote's socket path (`sotd session-socket-path sot`, always
-queried, never configured) — from `sotd topology plan --self <host>` at
-launch time; there is nothing else to fill in by hand.
+copy). The launcher derives everything else — how to dial each host, and the
+remote's socket path (`sotd session-socket-path sot`, always queried, never
+configured) — from `sotd topology plan --self <host>` at launch time; there
+is nothing else to fill in by hand.
 
 ## What gets written
 

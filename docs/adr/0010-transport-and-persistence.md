@@ -67,3 +67,16 @@ connect); the half-open reaper keeps only its write-timeout half
 (SO_KEEPALIVE lived in the TCP listener; a dead SSH forward closes the
 local stream with EOF). The release smoke tests boot via the Unix socket on
 all platforms and assert `--tcp` fails loudly.
+
+## Update (2026-09-29, transport isolation lane): the frontend's own forward goes too
+
+The 2026-07-14 update above called the frontend's local `-L` forward-and-dial
+"unaffected" by the daemon-listener removal — that was true then, and is no
+longer true. The isolation lane (`dev/output/isolation-plan.md`) deletes the
+frontend side of this ADR's Decision section as well: the `ssh -L
+"$LOCAL_SOCK:$REMOTE_SOCK"` command block above, and the "fall back to a
+per-session local TCP port" clause that followed it, describe a transport the
+frontend no longer has. The frontend now spawns `ssh <host> sotd
+stdio-bridge` and speaks the protocol directly over that child's own
+stdin/stdout — no local socket, no local port, on any platform. See
+[Transport](../src/concepts/transport.md).

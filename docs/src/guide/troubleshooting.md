@@ -41,9 +41,12 @@ kill domain.
 ## A browser page says `127.0.0.1 refused to connect`
 
 `Shift+W` (built docs), `o` (video playback, Pluto) and `wglshow` pages are
-relayed through the frontend↔daemon connection, not through separate port
-forwards. Suspect that
-connection first: reconnect with `F5`, then reopen the page.
+relayed through the frontend↔daemon connection, over the same `ssh` child that
+connection already dialled for that host — not a separate port forward. A
+failed dial shows up the same way any dial failure does: that child's last
+stderr line, in the host row's status text. See
+[Transport](../concepts/transport.md). Reconnect with `F5`, then reopen the
+page.
 
 ## The Windows taskbar launch looks dead
 
@@ -53,7 +56,7 @@ The Windows shortcut runs the launcher hidden, so an early failure can look like
 - `%LOCALAPPDATA%\sot\logs\launch-status.txt` — last launcher phase or fatal
   status.
 - `%LOCALAPPDATA%\sot\logs\supervisor.log` — detailed launcher, rebuild,
-  tunnel, and frontend respawn log.
+  and frontend respawn log.
 - `%APPDATA%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar` —
   the pinned `.lnk`; stale pins can still point at an old binary or an old
   checkout.

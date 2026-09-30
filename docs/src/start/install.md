@@ -41,12 +41,11 @@ the role explicitly:
 | Flag | Role |
 |------|------|
 | `--local` | all-in-one: frontend and backend on this machine |
-| `--backend <ssh-alias>` | frontend here, backend on a remote host over SSH forwarding; the flag names where the *backend* lives |
+| `--backend <ssh-alias>` | frontend here, backend on a remote host over SSH; the flag names where the *backend* lives |
 | `--be-only` | headless backend only (servers) |
 
 Plus `--version vX.Y.Z` to pin a release (default: latest), `--prefix <dir>` to
-relocate the install, `--port <n>` for the frontend's local TCP port of the SSH
-forward (remote role only), `--no-service` on backend roles when a
+relocate the install, `--no-service` on backend roles when a
 shared-home deployment should not get a persistent user systemd unit,
 `--hub <ssh-alias>` to copy the hub's `~/.config/sot/hosts.toml` to this
 machine first (for a machine that does not share the hub's home directory),
@@ -72,8 +71,9 @@ Connection behaviour is role-specific:
 
 - `--local` runs frontend and backend on one machine over the backend user's
   per-user socket. There is no SSH-to-localhost requirement.
-- `--backend <ssh-alias>` creates SSH local forwards to the remote user's
-  per-user backend socket.
+- `--backend <ssh-alias>` writes a launcher that passes `--dial <host>=ssh:<host>`
+  to the frontend, which reaches the remote user's per-user backend socket by
+  spawning its own `ssh` child — no forward.
 - `--be-only` installs the headless backend and, unless `--no-service`, runs it
   as the `systemd --user` unit `sotd.service`.
 

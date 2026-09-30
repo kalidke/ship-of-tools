@@ -1,9 +1,9 @@
 # Going remote
 
 The **backend daemon** runs where your GPUs and data are, the **frontend**
-window runs on the machine in front of you, and the two talk over SSH:
-the launcher forwards the backend's socket, and browser pages ride that same
-connection. If the frontend closes, the agents and the REPL keep
+window runs on the machine in front of you, and the two talk over SSH: the
+frontend dials each host with its own `ssh` child, and browser pages ride
+that same connection. If the frontend closes, the agents and the REPL keep
 running on the server.
 
 ```@raw html
@@ -45,11 +45,10 @@ described under [Install](install.md).
 
 ## 3. Launch
 
-Run `sot-launch` (or the desktop entry). The launcher opens the SSH forwards
-to the backend, applies any staged update, and starts the frontend. The daemon
-on the server is started once and survives across launches. On Linux and
-macOS the SSH forwards run in the background and outlive the window; a later
-launch reuses them.
+Run `sot-launch` (or the desktop entry). The launcher applies any staged
+update and starts the frontend, which dials each host with its own `ssh`
+child. The daemon on the server is started once and survives across
+launches.
 
 With more than one server, the frontend connects to every backend host listed
 in `hosts.toml`. One machine, the *hub*, holds the canonical copy, and

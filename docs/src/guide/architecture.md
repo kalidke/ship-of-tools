@@ -91,9 +91,9 @@ or local frontend driving a Linux backend where the Julia kernel and GPU live.
 - The **backend runs as a long-lived daemon on the remote** — the
   `systemd --user` unit `sotd.service` — so it survives SSH disconnects.
 - It listens on a **per-session Unix socket**, not a host-allocated TCP port.
-- The **frontend forwards that remote socket to a local one over `ssh -L`** —
-  one tunnel, one socket — and speaks the same JSON line protocol it would speak
-  to a local backend.
+- The **frontend spawns its own `ssh` child** running `sotd stdio-bridge` on
+  the remote and speaks the same JSON line protocol over its stdin/stdout — no
+  forward, no local port. See [Transport](../concepts/transport.md).
 - On reconnect (after a laptop sleep, a wifi flap, or a fresh client), the
   frontend re-attaches by **session id**; the kernel keeps its state — variables,
   loaded modules, in-flight computations — across the gap.
