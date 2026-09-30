@@ -819,13 +819,13 @@ case_marker_audit_block_with_read_mail_is_byte_identical() {
 race() {  # SEED_FACTS_JSON COMPETING_JQ WANT
     seed_facts "$1"
     local barrier="$WORK/barrier.$$"; rm -f "${barrier:?}"
-    mkdir "$LOCKDIR" || return 1
+    mkdir "${_SOT_REG_LOCK:?}" || return 1
     ( SOT_COMM_TEST_LOCK_BARRIER="$barrier" "$ST" stop ) &
     local pid=$! i=0
     while [ ! -e "$barrier" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done
-    [ -e "$barrier" ] || { rmdir "$LOCKDIR"; kill "$pid" 2>/dev/null; echo "    stop never reached the lock"; return 1; }
+    [ -e "$barrier" ] || { rmdir "${_SOT_REG_LOCK:?}"; kill "$pid" 2>/dev/null; echo "    stop never reached the lock"; return 1; }
     jq --arg n "$NAME" "$2" "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
-    rmdir "$LOCKDIR"
+    rmdir "${_SOT_REG_LOCK:?}"
     wait "$pid"
     expect "$3" after-race
 }

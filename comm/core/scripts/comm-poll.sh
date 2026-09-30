@@ -34,7 +34,7 @@ FE_CUR="$READ_DIR/$NAME.fe.cursor"
 
 if [ ! -f "$INBOX" ] && { [ -z "$FE_INBOX" ] || [ ! -f "$FE_INBOX" ]; }; then
     echo "No messages."
-    with_lock registry_touch "$NAME" 2>/dev/null || true
+    SOT_LOCK_WAIT_SECS=1 with_lock registry_touch "$NAME" 2>/dev/null || true
     exit 0
 fi
 
@@ -107,4 +107,4 @@ if [ -n "$FE_INBOX" ] && [ -r "$FE_INBOX" ]; then
 fi
 
 [ "$count" -eq 0 ] && echo "No new messages."
-with_lock registry_touch "$NAME" 2>/dev/null || true
+SOT_LOCK_WAIT_SECS=1 with_lock registry_touch "$NAME" 2>/dev/null || true

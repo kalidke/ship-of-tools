@@ -209,20 +209,19 @@ at_s=$(date -u -d "$at" +%s 2>/dev/null || echo 0)
 [ $((now_s - at_s)) -ge 60 ] || exit 0
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-# Best-effort merge under the registry's mkdir-spinlock convention
-# (comm-lib.sh's with_lock uses LOCKDIR="$COMM_HOME/.registry.lock" — a
-# DIRECTORY). No spinning here: if the lock is held, just skip — the next
-# tool call retries within a minute anyway.
-LOCKDIR="$COMM_HOME/.registry.lock"
-if mkdir "$LOCKDIR" 2>/dev/null; then
-    trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
-    # comm-lib.sh's registry_replace, the one registry write: on any failure
-    # nothing is written, and its FAILED line is dropped (this hook is silent).
-    ( . "$hb_lib" >/dev/null 2>&1 && registry_replace \
-          'if .agents[$n] and .agents[$n].floor
-           then .agents[$n] += {status_at:$t, last_seen:$t} else . end' \
-          --arg n "$NAME" --arg t "$ts" ) >/dev/null 2>&1
-    rmdir "$LOCKDIR" 2>/dev/null
-    trap - EXIT
-fi
+# Best-effort merge under the registry lock (comm-lib.sh's with_lock, a file
+# naming its holder). One try: a held lock is skipped — the next tool call
+# retries within a minute anyway — but a dead holder on this machine is still
+# reclaimed, because the reclaim runs on the first failed take. hb_merge is
+# comm-lib.sh's registry_replace, the one registry write: on any failure
+# nothing is written. Silent: the subshell's output is dropped, and no readable
+# comm-lib.sh means skip.
+hb_merge() {
+    registry_replace \
+        'if .agents[$n] and .agents[$n].floor
+         then .agents[$n] += {status_at:$t, last_seen:$t} else . end' \
+        --arg n "$NAME" --arg t "$ts"
+}
+[ -r "$hb_lib" ] || exit 0
+( . "$hb_lib" >/dev/null 2>&1 && SOT_LOCK_WAIT_SECS=0 with_lock hb_merge ) >/dev/null 2>&1
 exit 0

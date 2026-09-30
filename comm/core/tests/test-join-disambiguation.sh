@@ -1483,7 +1483,7 @@ SCRIPT
     [ "$rc" -ne 0 ] || { echo "  subprocess did not fail as expected (rc=0): $(cat "$WORK/trap-restore.err")"; return 1; }
     [ -f "$marker" ] || { echo "  prior EXIT trap did not fire (no marker file); stderr: $(cat "$WORK/trap-restore.err")"; return 1; }
     contains "$(cat "$marker")" "prior-trap-fired" || { echo "  marker content wrong: $(cat "$marker")"; return 1; }
-    [ ! -d "$LOCKDIR" ] || { echo "  lock dir leaked after the failure"; return 1; }
+    [ ! -e "$LOCKDIR" ] || { echo "  lock dir leaked after the failure"; return 1; }
     return 0
 }
 
