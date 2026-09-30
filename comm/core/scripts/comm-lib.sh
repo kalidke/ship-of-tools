@@ -531,10 +531,10 @@ ensure_home() {
 # The reclaim (`_sot_lock_step`) runs on the FIRST failed take, before any
 # sleep, so a zero-wait heartbeat and a ~1 s touch reach it too: prove the
 # holder D dead, take the marker `.registry.lock.reclaim.<D>` (only its
-# creator acts; markers are kept forever), settle 1 s for D's orphaned
-# children and in-flight calls, re-read the lock fresh, and remove it only if
-# it still names D. A removed lock is retaken at once, as part of the try that
-# removed it, even past the deadline.
+# creator acts; markers are kept forever, but for the daemon's own), settle
+# 1 s for D's orphaned children and in-flight calls, re-read the lock fresh,
+# and remove it only if it still names D. A removed lock is retaken at once,
+# as part of the try that removed it, even past the deadline.
 #
 # The bound is a deadline, SOT_LOCK_WAIT_SECS, polled every 50 ms: 10 s for
 # every ruled write, about 1 s for the best-effort `last_seen` touches of send,
@@ -542,10 +542,10 @@ ensure_home() {
 # failed take on, so an uncontended take reads none: bash 5's EPOCHREALTIME,
 # or perl's Time::HiRes before bash 5 (3.2 has nothing finer than SECONDS),
 # both a wall clock, so a clock jump stretches or shortens one wait. No clock
-# is FAILED naming it. There is always one try, and its reclaim step; after
-# the first failed take the deadline is checked after every failed take and
-# after every sleep, so a failed retake fails at once, no reclaim chains past
-# the deadline, and no try starts after it.
+# is FAILED naming it. There is always one try, and with a clock its reclaim
+# step; after the first failed take the deadline is checked after every
+# failed take, after every sleep and before every marker a step walks past its
+# first, so no reclaim chains past the deadline and no try starts after it.
 #
 # Release is TRAP-based, not a plain post-command `rm` (Codex review F2
 # second half / F7): a caller's `set -e` aborts the WHOLE SCRIPT the moment
@@ -605,7 +605,7 @@ with_lock() {
         elif _sot_lock_over "$deadline"; then
             return 1
         fi
-        if _sot_lock_step; then
+        if _sot_lock_step "$deadline"; then
             _SOT_LOCK_HOLDER="" _SOT_LOCK_WHO="" retook=1
             _SOT_LOCK_WHY="another process took it as soon as a dead holder's lock was removed"
             continue
@@ -701,6 +701,14 @@ _sot_lock_self_id() {
         _SOT_LOCK_SELF="$name:$machine:$boot:$pidns"
     fi
     _SOT_LOCK_ID="$name:$machine:$boot:$pidns:$pid:$start"
+}
+
+# _sot_lock_is_me ID — 0 when ID is this process's, and only where it carries
+# proof: without it the ID is `name:-:-:-:pid:-`, and `-` never equals
+# anything, so another box's process with the same host name and pid would
+# read as mine (review SF1).
+_sot_lock_is_me() {
+    [ -n "${_SOT_LOCK_SELF:-}" ] && [ "$1" = "$_SOT_LOCK_ID" ]
 }
 
 # _sot_lock_start PID — set _SOT_LOCK_START to field 22 of /proc/PID/stat,
@@ -812,8 +820,8 @@ _sot_lock_vouch() {
     esac
 }
 
-# _sot_lock_step [--forced] — one reclaim attempt against the lock as it
-# stands. 0 = this step saw the lock go, retake at once; 1 = not (a lock
+# _sot_lock_step [--forced | DEADLINE] — one reclaim attempt against the lock
+# as it stands. 0 = this step saw the lock go, retake at once; 1 = not (a lock
 # released since the take is a try, and keeps the last holder named), with
 # _SOT_LOCK_HOLDER (the ID the lock names, "" for none), _SOT_LOCK_WHO (the
 # ID that blocks) and _SOT_LOCK_WHY set for the FAILED line. The chain runs
@@ -821,13 +829,18 @@ _sot_lock_vouch() {
 # every step past a marker needs its creator proved dead, so the live process
 # holding the chain's last marker is the only one with authority over "the
 # lock names a member of the chain". A marker naming me is one I took earlier
-# in this wait. --forced (the clear command) takes a person's word for the
+# in this wait. A marker naming a record the chain already holds, not mine,
+# ends the walk: no reclaim can pass it (a daemon's own marker, left naming
+# it when it died during its reclaim; review B1), so the lock is removed by
+# hand. Past its first marker the walk stops at DEADLINE, a _sot_lock_now
+# value. --forced (the clear command) takes a person's word for the
 # unprovable holder the lock names, never against a proof that it is alive,
 # and never for a marker's creator: a reclaimer that cannot be proved dead
 # here may be pending on its own machine, and would remove the next holder's
 # lock (review B1).
 _sot_lock_step() {
-    local x chain=() m c
+    local x chain=() m c y deadline=""
+    [ "${1:-}" = --forced ] || deadline="${1:-}"
     if ! _sot_lock_fresh "$_SOT_REG_LOCK"; then
         [ -e "$_SOT_REG_LOCK" ] || return 1
         _SOT_LOCK_HOLDER=""; _SOT_LOCK_WHO=""
@@ -841,7 +854,12 @@ _sot_lock_step() {
     _SOT_LOCK_HOLDER="$_SOT_LOCK_READ"; _SOT_LOCK_WHO=""; x="$_SOT_LOCK_READ"
     while :; do
         chain+=("$x")
-        [ "${#chain[@]}" -gt 1 ] && [ "$x" = "$_SOT_LOCK_ID" ] && break
+        [ "${#chain[@]}" -gt 1 ] && _sot_lock_is_me "$x" && break
+        if [ "${#chain[@]}" -gt 1 ] && [ -n "$deadline" ] \
+            && { ! _sot_lock_now 0 2>/dev/null || [ "$_SOT_LOCK_NOW" -ge "$deadline" ]; }; then
+            _SOT_LOCK_WHO="$x"; _SOT_LOCK_WHY="its reclaim chain was still being walked at the deadline"
+            return 1
+        fi
         _sot_lock_judge "$x"
         [ "${1:-}" = --forced ] && [ "${#chain[@]}" = 1 ] && [ "$_SOT_LOCK_VERDICT" = UNPROVABLE ] && _SOT_LOCK_VERDICT=DEAD
         if [ "$_SOT_LOCK_VERDICT" != DEAD ]; then
@@ -858,6 +876,13 @@ _sot_lock_step() {
             return 1
         fi
         x="$_SOT_LOCK_READ"
+        for y in "${chain[@]}"; do
+            if [ "$y" = "$x" ] && ! _sot_lock_is_me "$x"; then
+                _SOT_LOCK_HOLDER="" _SOT_LOCK_WHO=""
+                _SOT_LOCK_WHY="its reclaim marker $m names $x, which its reclaim chain already holds, so no reclaim can pass it"
+                return 1
+            fi
+        done
     done
     sleep "${SOT_COMM_TEST_LOCK_SETTLE:-1}"
     if ! _sot_lock_fresh "$_SOT_REG_LOCK"; then

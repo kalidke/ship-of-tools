@@ -15,7 +15,7 @@ all clients are mutually addressable through the same registry and inboxes.
   bin/                     # installed scripts (the reference client)
   registry.json            # who is reachable + liveness  (source of truth for discovery)
   .registry.lock           # the registry-write lock: a file naming its holder (below)
-  .registry.lock.reclaim.<id>  # one marker per dead holder reclaimed; kept forever
+  .registry.lock.reclaim.<id>  # one marker per dead holder reclaimed; kept forever, but a daemon's own
   .registry.lock.tmp.<id>      # a take's temp file, removed by the take
   inbox/<name>.jsonl       # durable per-recipient inbox (append-only)
   read/<name>.cursor       # per-recipient read cursor (`<count> <crc>-<len>`: lines shown, and a hash of the last)
@@ -146,20 +146,27 @@ a stream; the record keeps its colons.
   record), and removes it only if it still names D. Only the marker's creator
   acts; if the creator died too, the next waiter proves that and takes
   `reclaim.<creator>`, which carries the same authority. Markers are kept
-  forever. A removed lock is retaken at once, as part of the try that removed
-  it, even past the deadline below.
+  forever, but for a daemon's own (below). A marker naming a record the walk
+  has already passed, other than the waiter's own, ends it: no reclaim can
+  pass that marker, and FAILED says to remove the lock by hand. A removed lock
+  is retaken at once, as part of the try that removed it, even past the
+  deadline below.
 - **Bounds** are deadlines, polled every 50 ms (`SOT_LOCK_WAIT_SECS` in the
   scripts): 10 s for join, leave, spawn, despawn, status and the daemon's
   workspace destroy; about 1 s for the best-effort `last_seen` touches of send,
   poll and spawn, and for the daemon's unread clear; 0 for the heartbeat, which
-  still makes its one try and reclaims a dead holder. There is always one try
-  and its reclaim step (in the daemon, once the thread has its turn); after the
-  first failed take the deadline is checked after every failed take and every
-  sleep, so a failed retake after a reclaim fails at once, no reclaim chains
-  past the deadline, and no try starts after it. One daemon thread at a time is
-  inside the lock, and its wait for that turn counts inside the same deadline;
-  a lock naming the daemon itself, seen by the thread with the turn, was left
-  by one of its threads, and is reclaimed like a dead holder's. The scripts'
+  still makes its one try and reclaims a dead holder. There is always one try,
+  and with a clock its reclaim step (in the daemon, once the thread has its
+  turn); after the first failed take the deadline is checked after every
+  failed take, every sleep and every marker a step walks past its first, so no
+  reclaim chains past the deadline and no try starts after it. One daemon
+  thread at a time is inside the lock, and its wait for that turn counts
+  inside the same deadline; a lock naming the daemon itself, seen by the thread
+  with the turn, was left by one of its threads, and is reclaimed like a dead
+  holder's, through a marker naming the daemon, which it removes once the lock
+  is gone. An ID is the process's own only with its proof fields: `-` never
+  equals anything, so a daemon or script with none never adopts a marker or
+  reclaims a lock as its own. The scripts'
   clock is bash 5's `EPOCHREALTIME`, or perl's `Time::HiRes` before bash 5
   (the mail tools check it there); both are wall clocks, so a clock jump can
   stretch or shorten one wait. The daemon's is monotonic.
@@ -169,15 +176,18 @@ a stream; the record keeps its colons.
   run comm-registry-lock-clear.sh.` With no clock the scripts say `registry
   lock <path> is held, and there is no clock to wait by: <which>`; a daemon
   thread that never got its turn says `registry lock <path> was not tried:
-  another thread of this daemon held its turn past the bound`.
-  `comm-registry-lock-clear.sh` takes the
+  another thread of this daemon held its turn past the bound`. A lock no
+  reclaim can clear (no readable holder, an older version's, or a marker
+  naming a record its walk already passed) says `registry lock <path> still
+  held (<age> old): <why>. If its holder is dead, remove <path> by hand and
+  retry.` `comm-registry-lock-clear.sh` takes the
   reclaim path above with a person's word in place of the holder's liveness
   proof, and nothing else: it never clears a holder this box proves alive, it
   never passes a marker whose creator this box cannot prove dead, and it is
   never a bare `rm`; either would let a pending reclaimer remove the next
   holder's lock. With no lock it says the lock is free and exits 0. When the
-  record that blocks it has no proof fields, its refusal says to remove the
-  lock by hand, because no box can prove that record dead.
+  record that blocks it has no proof fields, or no reclaim can clear the lock,
+  its refusal says to remove the lock by hand.
 - **Older peers.** An older version's lock is a holderless directory: it is
   never reclaimed, and FAILED says "held by an older version that records no
   holder". An older waiter's `mkdir` fails on the file and waits as before.
@@ -189,7 +199,12 @@ a stream; the record keeps its colons.
   lands later than that is not covered. A clear killed during its settle, or
   whose re-read fails, on a box that proves no deaths (macOS, git-bash) leaves
   `reclaim.<D>` naming a record no box can prove dead: every later clear
-  refuses, and the lock is removed by hand.
+  refuses, and the lock is removed by hand. A daemon S killed during its own
+  reclaim's settle, or whose re-read there fails and that dies before another
+  of its writes adopts the marker, leaves `reclaim.<S>` naming S while the lock
+  names S; so does one whose removal of that marker fails and that later
+  leaves its lock and dies. Every walk then stops at that marker, and the lock
+  is removed by hand.
 
 ## Message frame (inbox JSONL, one object per line)
 

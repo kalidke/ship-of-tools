@@ -37,7 +37,11 @@
 #  12 a zero wait whose retake after a reclaim fails makes one step and that
 #     retake, and FAILs at once: nothing chains (review SF2);
 #  13 the clock is EPOCHREALTIME's digits under a comma decimal, and an unset
-#     or non-numeric one is FAILED naming the clock, never the holder.
+#     or non-numeric one is FAILED naming the clock, never the holder;
+#  14 a dead holder D whose marker reclaim.<D> names D: the next writer and
+#     the clear each stop at that marker within their bound, say to remove
+#     the lock by hand, and leave lock and marker as they were (review B1);
+#  15 an ID with no proof fields is never judged mine (review SF1).
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
@@ -385,6 +389,38 @@ t13() {
     end_holder
 }
 check "13: the clock is EPOCHREALTIME's digits in any locale, and no clock is FAILED naming it" t13
+
+# A daemon that died during its own reclaim leaves reclaim.<D> naming D.
+# `timeout` turns the endless walk this replaced into a failure, not a hang.
+t14() {
+    reset; local d out t0 ms
+    d="$(dead_holder)"
+    printf '%s\n' "$d" > "$(marker "$d")"
+    t0=$(date +%s%N)
+    out="$(timeout 20 bash -c ". '$LIB'; SOT_LOCK_WAIT_SECS=1 with_lock true" 2>&1)" && { echo "took the lock: $out"; return 1; }
+    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+    [ "$ms" -lt 2500 ] || { echo "a 1 s writer took ${ms}ms"; return 1; }
+    contains "$out" "its reclaim marker $(marker "$d") names $d, which its reclaim chain already holds" \
+        && contains "$out" "remove $P by hand" || { echo "$out"; return 1; }
+    t0=$(date +%s%N)
+    out="$(timeout 20 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" && { echo "cleared: $out"; return 1; }
+    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+    [ "$ms" -lt 2500 ] || { echo "the clear took ${ms}ms"; return 1; }
+    contains "$out" "its reclaim marker $(marker "$d") names $d" && contains "$out" "remove the lock by hand" \
+        || { echo "$out"; return 1; }
+    [ "$(cat "$P")" = "$d" ] && [ "$(cat "$(marker "$d")")" = "$d" ] || { echo "the lock or its marker changed"; return 1; }
+}
+check "14: a marker naming its own dead holder stops the writer and the clear, which say by hand" t14
+
+t15() {
+    local out
+    out="$(lib '_sot_lock_self_id; _sot_lock_is_me "$_SOT_LOCK_ID" && echo mine')"
+    [ "$out" = mine ] || { echo "this process, with its proof: $out"; return 1; }
+    out="$(lib '_sot_lock_self_id; _SOT_LOCK_SELF=""; _SOT_LOCK_ID="${_SOT_LOCK_ID%%:*}:-:-:-:$BASHPID:-"
+        _sot_lock_is_me "$_SOT_LOCK_ID" && echo mine || echo not')"
+    [ "$out" = not ] || { echo "the same host name and pid, with no proof: $out"; return 1; }
+}
+check "15: an ID with no proof fields is never judged mine" t15
 
 echo "---"
 echo "$PASS passed, $FAIL failed"
