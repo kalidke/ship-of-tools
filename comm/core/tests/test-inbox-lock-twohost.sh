@@ -126,6 +126,17 @@ check_inbox() {
 }
 # Runs of one writer in a row: 2 means the sides never overlapped, and a
 # concurrency case that did not run concurrently proves nothing.
+# interleaved FILE — for each writer, how many of its lines lie strictly
+# between the other writer's first and last line: 0 means one finished
+# before the other began, and a large number on both sides means a real mix.
+interleaved() {  # $1 = inbox file
+    jq -rs '[.[].from] as $f | ($f | unique) as $w
+        | if ($w | length) != 2 then "interleaved: n/a" else
+          def inside($a; $b): [range(0; $f | length) as $i
+              | select($f[$i] == $a and $i > ($f | index($b)) and $i < ($f | rindex($b)))] | length;
+          "interleaved: \($w[0]) \(inside($w[0]; $w[1])) inside \($w[1])\u0027s span, \($w[1]) \(inside($w[1]; $w[0])) inside \($w[0])\u0027s"
+          end' "$1" 2>/dev/null
+}
 overlap() {  # $1 = inbox file; prints "" or a reason
     local runs; runs="$(jq -r .from "$1" 2>/dev/null | uniq | wc -l)"
     [ "$runs" -gt 2 ] || echo "the two sides did not overlap ($runs runs)"
@@ -236,7 +247,7 @@ for _ in $(seq 1 1200); do
 done
 echo go >&7; touch "$c/inbox/go"; exec 7>&-
 wait
-verdict "(a) Rust here and shell on $PEER, 200 each, one inbox ($((SECONDS - t0))s, $(jq -r .from "$c/inbox/t11.jsonl" | uniq | wc -l) writer runs)" \
+verdict "(a) Rust here and shell on $PEER, 200 each, one inbox ($((SECONDS - t0))s, $(jq -r .from "$c/inbox/t11.jsonl" | uniq | wc -l) writer runs; $(interleaved "$c/inbox/t11.jsonl"))" \
     "$(overlap "$c/inbox/t11.jsonl")$(check_inbox "$c/inbox/t11.jsonl" 400 "$LOCAL/a1.peer" "$LOCAL/a1.rust")"
 
 # ---- (a2) shell here, shell there, one inbox --------------------------------
@@ -247,7 +258,7 @@ local_sh "$c" "while [ ! -e \"\$SOT_COMM_HOME/inbox/go\" ]; do sleep 0.01; done;
 for _ in $(seq 1 600); do grep -q ready "$LOCAL/a2.peer" 2>/dev/null && break; sleep 0.1; done
 echo go >&7; touch "$c/inbox/go"; exec 7>&-
 wait
-verdict "(a) shell here and shell on $PEER, 200 each, one inbox ($((SECONDS - t0))s, $(jq -r .from "$c/inbox/t11.jsonl" | uniq | wc -l) writer runs)" \
+verdict "(a) shell here and shell on $PEER, 200 each, one inbox ($((SECONDS - t0))s, $(jq -r .from "$c/inbox/t11.jsonl" | uniq | wc -l) writer runs; $(interleaved "$c/inbox/t11.jsonl"))" \
     "$(overlap "$c/inbox/t11.jsonl")$(check_inbox "$c/inbox/t11.jsonl" 400 "$LOCAL/a2.peer" "$LOCAL/a2.here")"
 
 # The inbox after a freeze: the holder's line whole, the frozen-out send absent.
