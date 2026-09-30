@@ -132,6 +132,41 @@ EOF
     return 0
 }
 
+# A batch whose verdict cannot be read (jq fails, so the answer is empty) still
+# pings, and says so once in the log. Before, it advanced the cursor silently:
+# an idle session was not woken until the next line arrived.
+case_an_unreadable_verdict_still_pings_and_logs_once() {
+    local d="$WORK/bad-verdict"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
+    : > "$d/inbox/watchee.jsonl"
+    local calls="$d/pty-input.calls"
+    : > "$calls"
+    cat > "$d/run.sh" <<EOF
+source "$WAKE"
+export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
+sot_daemon_endpoint() { printf fixture; }
+_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
+_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'; }
+_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
+turns=0
+sleep() {
+    turns=\$((turns + 1))
+    if [ "\$turns" -eq 1 ]; then
+        printf '{"from":"peer","to":"me","msg":"one"}\n' >> "$d/inbox/watchee.jsonl"
+        # From here on the batch verdict's jq fails; every other jq call is untouched.
+        sot_jq() { case "\$*" in *reduce*) return 5 ;; esac; command jq "\$@" | tr -d '\r'; return "\${PIPESTATUS[0]}"; }
+    fi
+    [ "\$turns" -le 2 ] || exit 0
+}
+_comm_wake_main watchee --deliver ping --owner \$\$
+EOF
+    bash "$d/run.sh" 2>/dev/null
+    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
+    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s), want exactly 1"; return 1; }
+    local logged; logged="$(grep -c 'inbox verdict unreadable' "$d/state/comm-wake-watchee.log" 2>/dev/null)"
+    [ "${logged:-0}" -eq 1 ] || { echo "  the unreadable verdict was logged ${logged:-0} time(s), want exactly 1"; return 1; }
+    return 0
+}
+
 case_selftest_only_batch_types_the_selftest_text() {
     local d="$WORK/selftest-only"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
     : > "$d/inbox/watchee.jsonl"
@@ -1262,6 +1297,7 @@ EOF
 }
 
 check "three new directed lines type the ping notice exactly once" case_three_new_directed_lines_type_the_ping_once
+check "a batch whose verdict cannot be read still pings once and is logged once" case_an_unreadable_verdict_still_pings_and_logs_once
 check "a 1500-line backlog is one scan, not one per line" case_a_fifteen_hundred_line_backlog_scans_in_one_pass
 check "a frontend backlog filed before the watcher is announced" case_a_frontend_backlog_from_before_the_watcher_is_announced
 check "a frontend backlog already read stays silent" case_a_frontend_backlog_already_read_is_silent

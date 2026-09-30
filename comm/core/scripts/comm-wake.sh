@@ -392,9 +392,16 @@ _comm_wake_deliver_ping() {
         # and a double-quoted splice would have bash expand it away first.
         printf -v prog 'reduce (inputs | (fromjson? // empty) | select(type == "object")) as $f ({d: 0, s: 1}; if ($f | %s) then {d: 1, s: (if ($f.from == "__selftest__") then .s else 0 end)} else . end) | "\\(.d) \\(.s)"' "${CONDS[$i]}"
         verdict="$(sed -n "$((POS[$i] + 1)),${total}p" "$INBOX" | sot_jq -Rrn --arg me "$HANDLE" "$prog" 2>/dev/null)"
+        # "0 1" is the only answer that means nothing here is ours. Anything
+        # else (jq failed, so the answer is empty) pings: a spurious notice
+        # costs one line, while a silent skip let the cursor pass a batch no
+        # one was woken for.
         case "$verdict" in
             "1 1") any_directed=1 ;;
             "1 0") any_directed=1; all_selftest=0 ;;
+            "0 1") ;;
+            *) echo "comm-wake: inbox verdict unreadable ('$verdict'), pinging anyway" >&2
+               any_directed=1; all_selftest=0 ;;
         esac
     done
     sot_inbox_read_unlock
