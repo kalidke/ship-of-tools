@@ -307,22 +307,6 @@ case_a_same_box_frame_wakes_on_windows() {
     return 0
 }
 
-# (i) A __selftest__ frame (one already in an inbox) still wakes the Monitor;
-#     comm-poll.sh deliberately does the opposite and never shows it. Both halves
-#     must hold on the frontend file too.
-case_a_frontend_selftest_frame_still_wakes() {
-    reset_inboxes
-    wake_win "$FE_INBOX" "$(fe_frame "$NAME" "receive-path self-test" "__selftest__")"
-    case "$WAKE_OUT" in *"receive-path self-test"*) ;; *) echo "  the frontend selftest frame did not wake the session: '$WAKE_OUT'"; return 1 ;; esac
-    reset_inboxes
-    fe_line "$NAME" "receive-path self-test" "__selftest__"
-    poll_win
-    case "$POLL_OUT" in *"receive-path self-test"*) echo "  poll showed a selftest frame as a message: $POLL_OUT"; return 1 ;; esac
-    [ "$(cat "$FE_CUR" 2>/dev/null)" = "1" ] \
-        || { echo "  frontend cursor is '$(cat "$FE_CUR" 2>/dev/null)', want 1 (a selftest frame still counts as read)"; return 1; }
-    return 0
-}
-
 # (j) Off Windows the Monitor watches exactly what it watched before: the
 #     per-handle inbox, and not the frontend file sitting right there.
 case_off_windows_the_monitor_watches_only_the_per_handle_inbox() {
@@ -351,8 +335,6 @@ check "another handle's frontend frame never wakes this session" \
     case_another_handles_frontend_frame_does_not_wake
 check "a same-box frame in the per-handle inbox wakes the session on Windows" \
     case_a_same_box_frame_wakes_on_windows
-check "a frontend __selftest__ frame wakes the Monitor and is still never shown by poll" \
-    case_a_frontend_selftest_frame_still_wakes
 check "off Windows the Monitor watches the per-handle inbox and nothing else" \
     case_off_windows_the_monitor_watches_only_the_per_handle_inbox
 

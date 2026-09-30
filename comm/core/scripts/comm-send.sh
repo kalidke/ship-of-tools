@@ -102,7 +102,7 @@ deliver() {  # $1 = target name
     # the recipient can rank:
     # a directed send (to == their own name) wakes the session; a broadcast
     # copy (to == "") files silently for comm-poll — the same demotion rule
-    # the relay bridge applies. Lines without a `to` key (pre-stamp senders)
+    # the ping watcher applies. Lines without a `to` key (pre-stamp senders)
     # read as directed, which is why a --broadcast used to wake the whole
     # network (observed 2026-06-12: an @sot help blast woke every session).
     local to_stamp="$t"

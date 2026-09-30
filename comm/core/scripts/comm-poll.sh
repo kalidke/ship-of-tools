@@ -6,7 +6,7 @@ source "$SCRIPT_DIR/comm-lib.sh"
 # jq parses every frame; flock and perl are the inbox's read and write lock on
 # Linux. Without one, mail is never seen and nothing said so: say it, here,
 # on stdout too (the session reads poll's stdout).
-_poll_tools="jq"; [ "$(uname -s 2>/dev/null)" = Linux ] && _poll_tools="jq flock perl"
+_poll_tools="$(sot_mail_tools)"
 # shellcheck disable=SC2086
 if ! _poll_missing="$(sot_require_tools "poll for mail" $_poll_tools 2>&1)"; then
     printf '%s\n' "$_poll_missing" | tee /dev/stderr
@@ -54,14 +54,6 @@ show_stream() {
         # either.
         printf '%s' "$line" | jq -e 'type == "object"' >/dev/null 2>&1 || continue
         from="$(printf '%s' "$line" | sot_jq -r '.from // ""' 2>/dev/null)"
-        # Selftest frames (from:__selftest__) are wake-path proofs; frames already in
-        # inboxes keep rendering as nothing. They are in the durable inbox but are NOT
-        # real peer messages, so they are not SHOWN. They are still counted as
-        # read below: a cursor that stuck behind one re-showed every frame after
-        # it, for as long as it sat there. (comm-watch.sh deliberately does the
-        # OPPOSITE -- it WAKES on a __selftest__ frame, because that frame is
-        # exactly the post-arm wake-proof.)
-        [ "$from" = "__selftest__" ] && continue
         printf '[%s] [%s:%s] %s\n' \
             "$(printf '%s' "$line" | jq -r '.ts // ""' 2>/dev/null)" \
             "$from" \

@@ -394,10 +394,10 @@ case_broadcast_only_inbox_never_blocks() {
     local out; out="$(IT 'all done.')"
     [ -z "$out" ] || { echo "    a broadcast blocked the stop: '$out'"; return 1; }
 }
-case_self_echo_and_selftest_never_block() {
-    seed idle; _mail_reset; _mail_line "$NAME" "$NAME"; _mail_line "$NAME" "__selftest__"
+case_self_echo_never_blocks() {
+    seed idle; _mail_reset; _mail_line "$NAME" "$NAME"
     local out; out="$(IT 'all done.')"
-    [ -z "$out" ] || { echo "    a self-echo or selftest frame blocked the stop: '$out'"; return 1; }
+    [ -z "$out" ] || { echo "    a self-echo frame blocked the stop: '$out'"; return 1; }
 }
 case_offset_cursor_covering_the_inbox_never_blocks() {
     seed idle; _mail_reset; _mail_line "$NAME"
@@ -992,7 +992,7 @@ export CLAUDE_CODE_SESSION_ID=mail-turn
 check "pending directed mail blocks the stop, naming comm-poll" case_pending_mail_blocks_naming_comm_poll
 check "a second stop for the same pending mail does not block again" case_second_stop_in_the_same_turn_does_not_block_again
 check "a broadcast-only inbox never blocks the stop" case_broadcast_only_inbox_never_blocks
-check "a self-echo or a selftest frame never blocks the stop" case_self_echo_and_selftest_never_block
+check "a self-echo frame never blocks the stop" case_self_echo_never_blocks
 check "an offset cursor covering the inbox never blocks the stop" case_offset_cursor_covering_the_inbox_never_blocks
 check "a frame filed in the same second as one already read is still announced" case_same_second_frame_is_still_announced
 check "a torn inbox line does not silence pending mail" case_torn_line_does_not_silence_pending_mail

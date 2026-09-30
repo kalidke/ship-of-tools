@@ -121,23 +121,10 @@ case_legacy_cursor_covering_the_inbox_shows_nothing() {
     return 0
 }
 
-case_selftest_frames_are_read_but_never_shown() {
-    reset_inbox
-    jq -nc --arg to "$NAME" '{from:"__selftest__",to:$to,repo:"daemon",msg:"receive-path self-test",ts:"2026-01-01T00:00:01Z"}' >> "$INBOX"
-    poll
-    case "$POLL_OUT" in *"No new messages"*) ;; *) echo "  a selftest frame was shown as a message: $POLL_OUT"; return 1 ;; esac
-    # Read, not shown: a cursor stuck behind one re-showed every frame after it
-    # for as long as it sat there.
-    [ "$(cut -d" " -f1 "$CURSOR" 2>/dev/null)" = "1" ] \
-        || { echo "  cursor is '$(cat "$CURSOR" 2>/dev/null)', want 1 (a selftest frame still counts as read)"; return 1; }
-    return 0
-}
-
 check "a torn line is skipped, counted as read, and never fatal" case_a_torn_line_is_skipped_and_counted_as_read
 check "an offset past the end of the inbox resets to 0" case_an_offset_past_the_end_resets
 check "a legacy cursor stops at the first stamp past it, not at the last below it" case_legacy_cursor_stops_at_the_first_unread_stamp
 check "a legacy cursor covering the inbox re-shows nothing" case_legacy_cursor_covering_the_inbox_shows_nothing
-check "a selftest frame is counted as read but never shown" case_selftest_frames_are_read_but_never_shown
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

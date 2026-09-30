@@ -43,6 +43,13 @@ LOCKDIR="$COMM_HOME/.registry.lock"
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# sot_mail_tools — the tools every path that reads mail runs, one line: jq
+# parses every frame; flock and perl are the inbox's read and write lock,
+# Linux only. Poll, session start and the Stop hook all take their list here.
+sot_mail_tools() {
+    if [ "$(uname -s 2>/dev/null)" = Linux ]; then echo "jq flock perl"; else echo "jq"; fi
+}
+
 # sot_require_tools PATH_NAME TOOL... — say, on stderr, one line per TOOL that
 # is not on PATH, and return nonzero if any is missing. A session whose jq,
 # flock or perl is missing never sees its mail and used to be told nothing:
@@ -900,6 +907,18 @@ sot_fmt_age() {
 # unembellished (idle, done, waiting, or a future state this helper has never
 # heard of) -- silence beats a confident wrong summary, but a real word beats
 # no word.
+# _sot_last_seen_age LAST_SEEN — print the heartbeat's age in seconds and
+# return 0; return 1 (printing nothing) when LAST_SEEN is empty, unparseable,
+# or `date -d` fails. A future timestamp gives a negative age, which callers
+# treat as fresh.
+_sot_last_seen_age() {
+    local seens
+    [ -n "${1:-}" ] || return 1
+    seens="$(date -u -d "$1" +%s 2>/dev/null)" || return 1
+    [ -n "$seens" ] && [ "$seens" -gt 0 ] 2>/dev/null || return 1
+    echo $(( $(date -u +%s) - seens ))
+}
+
 sot_recipient_note() {
     local h="$1" row state summary status_at last_seen now
     row="$(jq -c --arg n "$h" '.agents[$n] // empty' "$REGISTRY" 2>/dev/null)" || row=""
@@ -911,16 +930,11 @@ sot_recipient_note() {
     last_seen="$(printf '%s' "$row" | jq -r 'if (.last_seen|type)=="string" then .last_seen else empty end' 2>/dev/null)" || last_seen=""
     now="$(date -u +%s)"
 
-    if [ -n "$last_seen" ]; then
-        local seens hb_age
-        seens="$(date -u -d "$last_seen" +%s 2>/dev/null)" || seens=""
-        if [ -n "$seens" ] && [ "$seens" -gt 0 ] 2>/dev/null; then
-            hb_age=$((now - seens))
-            if [ "$hb_age" -ge "${SOT_COMM_STALE_SECS:-600}" ]; then
-                echo "no heartbeat for $(sot_fmt_age "$hb_age") -- may be gone"
-                return 0
-            fi
-        fi
+    local hb_age
+    if hb_age="$(_sot_last_seen_age "$last_seen")" \
+        && [ "$hb_age" -ge "${SOT_COMM_STALE_SECS:-600}" ]; then
+        echo "no heartbeat for $(sot_fmt_age "$hb_age") -- may be gone"
+        return 0
     fi
 
     [ -n "$status_at" ] || return 1
@@ -947,12 +961,10 @@ sot_recipient_note() {
 # the heartbeat only (no daemon round trip), so comm-join.sh's stranding warning
 # works on a box with no daemon reachable.
 sot_handle_live() {
-    local last_seen seens
+    local last_seen age
     last_seen="$(jq -r --arg n "$1" '.agents[$n].last_seen // empty | if type=="string" then . else empty end' "$REGISTRY" 2>/dev/null)" || return 1
-    [ -n "$last_seen" ] || return 1
-    seens="$(date -u -d "$last_seen" +%s 2>/dev/null)" || return 1
-    [ "$seens" -gt 0 ] 2>/dev/null || return 1
-    [ $(( $(date -u +%s) - seens )) -lt "${SOT_COMM_STALE_SECS:-600}" ]
+    age="$(_sot_last_seen_age "$last_seen")" || return 1
+    [ "$age" -lt "${SOT_COMM_STALE_SECS:-600}" ]
 }
 
 # registry_del_if_provisional NAME WANT_ROOT WANT_NONCE — conditionally
@@ -1609,7 +1621,7 @@ sot_fe_cursor_offset() {
 # An unparseable line is SKIPPED, never fatal: a torn append is realistic and the
 # reader advances its cursor past it, so it counts as read exactly like a torn
 # per-handle line — one bad line must not be able to pin a cursor and leave a
-# handle permanently deaf. Provenance filters (self-echo, __selftest__) stay with
+# handle permanently deaf. Provenance filters (self-echo) stay with
 # the readers, which already apply them to the per-handle schema this output now
 # shares.
 sot_fe_unread_lines() {
@@ -2340,7 +2352,7 @@ sot_host() {
     printf '%s\n' "$raw" | tr '[:upper:]' '[:lower:]'
 }
 
-# sot_hello_frame [ROLE] — the ONE hello frame every comm script sends
+# sot_hello_frame — the ONE hello frame every comm script sends
 # before any other op (ADR 0046 decision 1: a connection declares
 # `{host, role, name}` once, and the daemon binds it — never recomputed
 # downstream). Replaces six pasted copies of this exact literal frame
@@ -2348,8 +2360,7 @@ sot_host() {
 # and the join-disambiguation test's own fixture) that predated `host`/
 # `role`/`name` entirely and so declared nothing about the sender.
 #
-# ROLE overrides the default inference; no comm script passes one now.
-# Every caller lets this infer "agent" ($SOT_WORKSPACE set — a session running
+# The role is inferred: "agent" ($SOT_WORKSPACE set — a session running
 # inside a daemon-owned workspace) or "cli" (a bare shell invocation, the
 # common case for comm-relay.sh/comm-despawn.sh/comm-spawn.sh/sot-fe).
 #
@@ -2358,10 +2369,8 @@ sot_host() {
 # resolved one (empty for a not-yet-joined shell — an anonymous hello,
 # exactly today's behavior).
 sot_hello_frame() {
-    local role="${1:-}"
-    if [ -z "$role" ]; then
-        if [ -n "${SOT_WORKSPACE:-}" ]; then role="agent"; else role="cli"; fi
-    fi
+    local role
+    if [ -n "${SOT_WORKSPACE:-}" ]; then role="agent"; else role="cli"; fi
     local tok host
     tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
     host="$(sot_host)" || return 1
