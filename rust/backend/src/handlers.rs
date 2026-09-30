@@ -5961,6 +5961,25 @@ mod comm_file_tests {
         }
     }
 
+    // The shape ESTALE takes across boxes: the open succeeds and the read
+    // fails. A directory at the registry's path does the same on one box.
+    #[test]
+    fn a_registry_that_opens_but_will_not_read_for_50ms_is_read_and_for_1s_is_file_failed() {
+        for (fail_ms, want) in [(50, Ok(())), (1000, Err("file_failed"))] {
+            let d = home();
+            let (reg, tmp) = (d.path().join("registry.json"), d.path().join("registry.json.tmp"));
+            std::fs::rename(&reg, &tmp).unwrap();
+            std::fs::create_dir(&reg).unwrap();
+            let heal = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(fail_ms));
+                std::fs::remove_dir(&reg).unwrap();
+                std::fs::rename(tmp, reg).unwrap();
+            });
+            assert_eq!(file(Some(d.path()), "fresh", false).map_err(|e| e.0), want.map_err(String::from), "{fail_ms} ms");
+            heal.join().unwrap();
+        }
+    }
+
     #[test]
     fn unlisted_hostless_and_no_folder_are_not_here() {
         let d = home();
@@ -7118,7 +7137,8 @@ fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 /// mid-retry, a failed try like any other, and no good read by then is an
 /// error that is never NotFound, so never absent. Zero bytes stays in the rule
 /// because an empty file is never a registry (every writer syncs a checked tmp
-/// before its rename), but no zero-byte read has ever been observed. Non-empty
+/// before its rename, and the scripts' `ensure_home` its skeleton before its
+/// link), but no zero-byte read has ever been observed. Non-empty
 /// bytes are never retried, parseable or not.
 fn read_registry_fresh(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     let mut failed = match std::fs::read(path) {
@@ -7335,7 +7355,7 @@ fn remove_comm_agents_for_workspace_bounded(
     bound: std::time::Duration,
 ) -> Vec<String> {
     with_comm_registry_lock(bound, |reg_path, tmp_path| -> Vec<String> {
-        let bytes = match std::fs::read(reg_path) {
+        let bytes = match read_registry_fresh(reg_path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
             Err(e) => {
@@ -7445,7 +7465,7 @@ fn clear_comm_unread(ws: &Workspace, host: &str) {
     }
 
     with_comm_registry_lock(CLEAR_COMM_UNREAD_LOCK_BOUND, |reg_path, tmp_path| {
-        let bytes = match std::fs::read(reg_path) {
+        let bytes = match read_registry_fresh(reg_path) {
             Ok(b) => b,
             Err(_) => return,
         };
