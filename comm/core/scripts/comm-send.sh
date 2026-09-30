@@ -6,7 +6,9 @@
 # Every send lands in the recipient's durable inbox, and THAT is the
 # acknowledgement: a filed frame is read by the recipient's next turn boundary
 # (its Stop hook reads its own inbox), so `filed -> @name` is the verdict and
-# exit 0 means it. A directed send to a row on THIS host is additionally POKED
+# exit 0 means it. The append is taken under the inbox lock (comm-lib.sh's
+# sot_inbox_append); one that cannot be made prints `FAILED -> @name: <why>`
+# and exits 1, never `filed`. A directed send to a row on THIS host is additionally POKED
 # — one gated keystroke line (comm-lib.sh's sot_pty_input_gated) for a
 # genuinely idle row, since a stopped agent is blocked on stdin and keystrokes
 # are the only way in. The poke is diagnostic only: `+woken` / `not woken:
@@ -92,8 +94,10 @@ deliver() {  # $1 = target name
         echo "no such handle: $t" >&2; return 1
     fi
 
-    # 1) durable inbox, always — this append IS the delivery. Stamp `to` so the
-    # recipient can rank:
+    # 1) durable inbox — this append IS the delivery, made under the inbox lock
+    # by the one helper that appends (sot_inbox_append); a refused lock or a
+    # failed write appends nothing and is FAILED, never `filed`. Stamp `to` so
+    # the recipient can rank:
     # a directed send (to == their own name) wakes the session; a broadcast
     # copy (to == "") files silently for comm-poll — the same demotion rule
     # the relay bridge applies. Lines without a `to` key (pre-stamp senders)
@@ -102,8 +106,12 @@ deliver() {  # $1 = target name
     local to_stamp="$t"
     [ "$BROADCAST" = true ] && to_stamp=""
     ts="$(now_iso)"
-    jq -nc --arg from "$NAME" --arg to "$to_stamp" --arg repo "$REPO" --rawfile msg "$MSG_FILE" --arg ts "$ts" \
-        '{from:$from, to:$to, repo:$repo, msg:$msg, ts:$ts}' >> "$INBOX_DIR/$t.jsonl"
+    local reason
+    if ! reason="$(jq -nc --arg from "$NAME" --arg to "$to_stamp" --arg repo "$REPO" --rawfile msg "$MSG_FILE" --arg ts "$ts" \
+        '{from:$from, to:$to, repo:$repo, msg:$msg, ts:$ts}' | sot_inbox_append "$t")"; then
+        echo "FAILED -> @$t: $reason" >&2
+        return 1
+    fi
 
     # 2) the poke. The frame is already filed, so this is no longer delivery:
     # it only shortens the wait for a row that is sitting idle at its prompt.

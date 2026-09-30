@@ -109,7 +109,11 @@ Unread mail is any line past it addressed to this handle by someone else.
 lists the receiver:
 
 1. It can reach the inbox (same box, or a box sharing the home): it adds the
-   line itself.
+   line itself, under the inbox lock — the kernel's file lock (`flock`) on
+   `inbox/<handle>.lock`, which the filing daemon takes too. The inbox is
+   opened inside the lock and closed before it is released. A box without
+   `flock(1)` never appends unlocked: it hands the line to its own daemon
+   (`comm.file`), and with no daemon there the send fails.
 2. It cannot: it hands the message to the hub, which offers it to every
    daemon linked to it. The daemon whose comm folder holds that inbox adds
    the line and says "filed" (the hub itself, for its own home). The hub
@@ -126,8 +130,9 @@ the session was active in the last ten minutes.
 
 - `filed -> @h` (exit 0).
 - `FAILED -> @h: <reason>` (exit 1): no box knows that handle; no live
-  session holds it; the hub cannot be reached; or no daemon said "filed"
-  within 5 seconds. Nothing was added. Retrying or reporting is the sender's
+  session holds it; the inbox lock was held for 10 seconds (`the inbox lock
+  for @h was held for 10s — nothing was appended`); the hub cannot be
+  reached; or no daemon said "filed" within 5 seconds. Nothing was added. Retrying or reporting is the sender's
   call.
 
 **A send with a receipt reports delivered, whatever the ssh child's exit

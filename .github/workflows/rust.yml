@@ -190,6 +190,13 @@ jobs:
           # rule before this stage. A table that runs only when somebody
           # remembers cannot hold that closed. 28 seconds, hermetic.
           bash test-relay-file-first.sh
+          # 0031 B1: every inbox append is taken under the kernel's file
+          # lock, and one that cannot be made is FAILED, never `filed` -- the
+          # two writers, a killed holder, a frozen one, the no-flock route and
+          # the one wait constant. The poke guard pins that comm-send.sh
+          # still files, pokes and prints its line with the append behind it.
+          bash test-hub-files.sh
+          bash test-send-poke-row.sh
           bash test-status-floor.sh
           bash test-session-start-survived.sh
           bash test-sot-fe-version.sh

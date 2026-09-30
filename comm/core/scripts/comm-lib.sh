@@ -569,6 +569,70 @@ registry_touch() {  # name — bump last_seen if present
         "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
 }
 
+# --- the inbox append (0031 B1) ---
+# sot_inbox_append HANDLE — THE one place a script appends a frame to an
+# inbox. One JSON line on stdin. 0 = appended; 1 = nothing appended, with the
+# reason on stdout for the caller to print after `FAILED -> @h: `.
+#
+# The lock is the kernel's file lock (flock) on the sidecar
+# `inbox/<handle>.lock`, which the daemon's `comm.file` filer takes too: one
+# primitive for both writers, and on a shared home the writers are on several
+# boxes. The OS releases it when its holder dies, so there is no reclaim; a
+# frozen holder only makes the next sender wait, and a sender that cannot take
+# the lock within SOT_INBOX_LOCK_WAIT_SECS appends NOTHING and fails — a
+# `filed` for an append that did not happen is a false success. The inbox is
+# opened inside the lock and closed before it is released: correctness is the
+# lock plus close-to-open consistency, never O_APPEND's offset across boxes.
+#
+# Where flock(1) is absent (macOS, some git-bash builds) the frame is never
+# appended unlocked: it goes to this box's own daemon as `comm.file`, whose
+# filer holds the same lock, and with no daemon here the send fails.
+SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-10}"
+_sot_have_flock() { command -v flock >/dev/null 2>&1; }
+sot_inbox_append() {  # HANDLE
+    local h="$1" line err rc=0
+    line="$(cat)"
+    if ! _sot_have_flock; then
+        _sot_inbox_append_via_daemon "$h" "$line"
+        return
+    fi
+    # 75 is flock's own conflict exit (-E), so a lock that was never taken is
+    # told apart from an append that failed under it.
+    err="$( { ( flock -w "$SOT_INBOX_LOCK_WAIT_SECS" -E 75 9 || exit $?
+                printf '%s\n' "$line" >> "$INBOX_DIR/$h.jsonl"
+              ) 9>> "$INBOX_DIR/$h.lock"; } 2>&1 )" || rc=$?
+    case "$rc" in
+        0)  return 0 ;;
+        75) printf 'the inbox lock for @%s was held for %ss — nothing was appended\n' \
+                "$h" "$SOT_INBOX_LOCK_WAIT_SECS" ;;
+        *)  printf 'the append failed: %s\n' "${err%%$'\n'*}" ;;
+    esac
+    return 1
+}
+_sot_inbox_append_via_daemon() {  # HANDLE LINE
+    local h="$1" frame resp reason ENDPOINT
+    ENDPOINT="$(sot_daemon_endpoint 2>/dev/null)" || ENDPOINT=""
+    if [ -z "$ENDPOINT" ]; then
+        printf 'no flock(1) here to lock the inbox, and no daemon here to file it\n'
+        return 1
+    fi
+    # The text reaches jq on stdin, never argv (the MSYS2 guard, sot_jq_rawfile).
+    frame="$(printf '%s' "$2" | jq -c --arg t "$h" \
+        '{v:1,id:1,kind:"req",op:"comm.file",payload:{from:.from,to:$t,text:.msg}}')" || {
+        printf 'the frame could not be built\n'; return 1; }
+    resp="$(sot_oneshot_request "$frame" comm.file 2>/dev/null)" || resp=""
+    reason="$(printf '%s' "$resp" | sot_jq -r '.payload.error // empty' 2>/dev/null)" || reason=""
+    if [ -n "$reason" ]; then
+        printf '%s\n' "$reason"; return 1
+    fi
+    # `-n` first: `jq -e` over empty input exits 0.
+    if [ -n "$resp" ] && printf '%s' "$resp" | jq -e '.payload.ok == true' >/dev/null 2>&1; then
+        return 0
+    fi
+    printf 'the daemon did not answer at %s\n' "$ENDPOINT"
+    return 1
+}
+
 # sot_fmt_age SECONDS -> "12s"/"6m"/"32m"/"8h"/"3d" (no "ago" suffix -- every
 # caller supplies its own wording, since the same figure reads differently in
 # a success line vs a timeout message). A negative age (clock skew) floors to
