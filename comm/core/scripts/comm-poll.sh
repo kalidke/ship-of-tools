@@ -3,6 +3,15 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
+# jq parses every frame; flock and perl are the inbox's read and write lock on
+# Linux. Without one, mail is never seen and nothing said so: say it, here,
+# on stdout too (the session reads poll's stdout).
+_poll_tools="jq"; [ "$(uname -s 2>/dev/null)" = Linux ] && _poll_tools="jq flock perl"
+# shellcheck disable=SC2086
+if ! _poll_missing="$(sot_require_tools "poll for mail" $_poll_tools 2>&1)"; then
+    printf '%s\n' "$_poll_missing" | tee /dev/stderr
+    exit 1
+fi
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 ensure_home
 

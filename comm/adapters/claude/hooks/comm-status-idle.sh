@@ -111,9 +111,12 @@ print_block() {  # BLOCK_JSON
 # warning ($lock_warn, read below) prefixes the reason. With no fault the JSON
 # passes through byte for byte. The warning never begins with `/`, so --arg is
 # safe from MSYS2's argv conversion.
+# A missing tool ($tool_warn, set below) prefixes the reason the same way.
 emit_block() {  # BLOCK_JSON
-    if [ -z "${lock_warn:-}" ]; then print_block "$1"
-    else print_block "$(printf '%s' "$1" | jq -c --arg w "$lock_warn" '.reason = $w + " " + .reason')"; fi
+    local w="${tool_warn:+$tool_warn }${lock_warn:-}"
+    w="${w% }"
+    if [ -z "$w" ]; then print_block "$1"
+    else print_block "$(printf '%s' "$1" | jq -c --arg w "$w" '.reason = $w + " " + .reason')"; fi
 }
 
 # Stop-hook input (JSON on stdin): {stop_hook_active, transcript_path, ...}.
@@ -129,7 +132,22 @@ NAME=""
 # fallback. In the repo checkout the hooks dir holds only hooks.
 CTX="$HOME_DIR/bin/comm-context.sh"; [ -x "$CTX" ] || CTX="$SELF_DIR/comm-context.sh"
 [ -x "$CTX" ] && eval "$("$CTX" 2>/dev/null)" 2>/dev/null || true
-if [ -z "${NAME:-}" ] || ! jq -e --arg n "${NAME:-}" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
+# The tools this hook runs. A session whose jq, flock or perl is missing never
+# sees its mail, so the hook SAYS so instead of passing: it must not need the
+# missing tool to do it, so the joined-agent test below falls back to grep and
+# the block is printed by hand. flock and perl are the inbox lock, Linux only.
+tool_miss=""; tool_warn=""
+for _t in jq $([ "$(uname -s 2>/dev/null)" = Linux ] && echo flock perl); do
+    command -v "$_t" >/dev/null 2>&1 && continue
+    tool_miss="${tool_miss:+$tool_miss }$_t"
+    tool_warn="${tool_warn:+$tool_warn }sot-comm: cannot check mail at turn end: $_t is missing (install it)."
+done
+if command -v jq >/dev/null 2>&1; then
+    registered() { jq -e --arg n "${NAME:-}" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; }
+else
+    registered() { grep -q -F "\"${NAME:-}\"" "$REGISTRY" 2>/dev/null; }
+fi
+if [ -z "${NAME:-}" ] || ! registered; then
     turn_floor; exit 0
 fi
 
@@ -149,6 +167,26 @@ mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
 [ -n "$mail_key" ] || mail_key="$PPID"
 # With no transcript path the key can fall to $PPID, which no later run shares,
 # so nothing could find the record again: record nothing, and remove nothing.
+# A missing tool: ONE block per episode, through a tick file keyed like the
+# lock fault's (handle and session) and holding the missing tools, so a new
+# tool going missing blocks again; every later block is prefixed by the warning
+# (emit_block) and the first turn end with the tools present clears the tick.
+# Failing open, like the other ticks, when the tick cannot be recorded. The
+# block is printed by hand: jq itself may be the missing tool.
+tool_tick="$HOME_DIR/state/tool-fault-$(printf '%s' "$NAME.$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
+if [ -z "$tool_miss" ]; then
+    rm -f "${tool_tick:?}" 2>/dev/null
+else
+    echo "$tool_warn" >&2
+    if [ "$(cat "$tool_tick" 2>/dev/null || true)" != "$tool_miss" ]; then
+        mkdir -p "$HOME_DIR/state" 2>/dev/null || true
+        if printf '%s' "$tool_miss" 2>/dev/null > "$tool_tick"; then
+            printf '{"decision":"block","reason":"%s"}\n' "$tool_warn"
+            exit 0
+        fi
+    fi
+fi
+
 if [ -n "$tp" ]; then
     fb_file="$HOME_DIR/state/stop-feedback-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').jsonl"
     trap '[ -n "$blocked" ] || rm -f -- "${fb_file:?}" 2>/dev/null' EXIT

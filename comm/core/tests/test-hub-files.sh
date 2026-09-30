@@ -711,7 +711,9 @@ idle_hook_over() {
 # PERL5OPT, production code has no hook) makes IO::Handle::sync start a reader,
 # wait 0.5 s and fail, so the perl program cuts the in-flight line back.
 # $1 = locked: the reader is comm-poll.sh as-is (it waits on the shared lock);
-# $1 = unlocked: its PATH has no flock(1), so it counts the in-flight line.
+# $1 = unlocked: the reader alone sees an empty mount (FAKE_MNT=""), so its lock
+# identity is none@<machine-id>, not the record's: the lock is not ours, it takes
+# none, and it counts the in-flight line. The writer stays ours.
 stub_fsync_append() {  # MODE — appends "inflight" to the peer's inbox, reader output in $WORK/reader.out
     local mode="$1" rp="$PATH"
     mkdir -p "$WORK/perlstub"
@@ -729,26 +731,21 @@ use IO::Handle;
 PM
     cat > "$WORK/reader.sh" <<RD
 #!/usr/bin/env bash
+[ -z "\${READER_UNLOCKED:-}" ] || export FAKE_MNT=
 cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_INBOX_READ_WAIT_SECS=5 \
     PATH="\${READER_PATH:-\$PATH}" "$BIN/comm-poll.sh"
 echo "rc=\$?"
 RD
     chmod +x "$WORK/reader.sh"
-    [ "$mode" = unlocked ] && rp="$WORK/noflock"
+    local unl=""; [ "$mode" = unlocked ] && unl=1
     rm -f "${WORK:?}/reader.out"
     printf '%s\n' '{"from":"t-sender","to":"t-peer","repo":"r","msg":"inflight","ts":"t"}' \
-        | STUB_READER="$WORK/reader.sh" STUB_OUT="$WORK/reader.out" READER_PATH="$rp" \
+        | STUB_READER="$WORK/reader.sh" STUB_OUT="$WORK/reader.out" READER_PATH="$rp" READER_UNLOCKED="$unl" \
           PERL5LIB="$WORK/perlstub" PERL5OPT="-MStubSync" \
           bash -c 'source "$1/comm-lib.sh"; sot_inbox_append "$2"' _ "$BIN" "$PEER" >"$WORK/stubappend.out" 2>&1
     STUB_RC=$?
     sleep 1   # the reader is detached; give it its second
     return 0
-}
-make_noflock() {
-    local d
-    mkdir -p "$WORK/noflock"
-    for d in ${PATH//:/ }; do ln -s "$d"/* "$WORK/noflock/" 2>/dev/null; done
-    rm -f "${WORK:?}/noflock"/flock
 }
 
 case_a_reader_on_the_shared_lock_never_counts_a_line_that_is_cut_back() {
@@ -768,7 +765,12 @@ case_a_reader_on_the_shared_lock_never_counts_a_line_that_is_cut_back() {
 
 case_an_unlocked_reader_steps_back_one_line_after_a_cut_back() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    make_noflock
+    # The reader's identity differs from the record and the writer's does not,
+    # with flock on PATH for both: the reader really is on the unlocked path.
+    [ -z "$(FAKE_MNT= bash -c 'source "$1/comm-lib.sh"; _sot_inbox_lock_ours "$2"' _ "$BIN" "$INBOX")" ] \
+        || { echo "  the reader's lock is still ours"; return 1; }
+    [ -n "$(bash -c 'source "$1/comm-lib.sh"; _sot_inbox_lock_ours "$2"' _ "$BIN" "$INBOX")" ] \
+        || { echo "  the writer's lock is not ours"; return 1; }
     run_send "@$PEER" "one"; poll_peer
     stub_fsync_append unlocked
     [ "$STUB_RC" -eq 1 ] || { echo "  the stubbed append did not fail (rc $STUB_RC)"; return 1; }

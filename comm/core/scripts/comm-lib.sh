@@ -43,6 +43,22 @@ LOCKDIR="$COMM_HOME/.registry.lock"
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# sot_require_tools PATH_NAME TOOL... — say, on stderr, one line per TOOL that
+# is not on PATH, and return nonzero if any is missing. A session whose jq,
+# flock or perl is missing never sees its mail and used to be told nothing:
+# each path that reads mail (comm-poll, session start, the Stop hook) checks
+# the tools IT runs before first use and shows this line to the session.
+sot_require_tools() {
+    local path_name="$1" t rc=0
+    shift
+    for t in "$@"; do
+        command -v "$t" >/dev/null 2>&1 && continue
+        printf 'sot-comm: cannot %s: %s is missing (install it)\n' "$path_name" "$t" >&2
+        rc=1
+    done
+    return "$rc"
+}
+
 # sot_jq ARGS... — run jq, but normalise ITS OWN OUTPUT so a caller that
 # captures a single field (command substitution) or splits several
 # records (mapfile / `while read`) never keeps a stray carriage return

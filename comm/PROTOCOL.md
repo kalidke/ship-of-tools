@@ -293,6 +293,17 @@ Monitor exists.
 - A subagent is part of its parent session: it may send under the parent's
   handle and never reads the inbox.
 
+## Dependencies
+
+The shell client needs `jq` (every path that reads or writes a frame) and, on
+Linux, `flock` and `perl` (the inbox lock and the whole-line append). A session
+whose tool is missing would never see its mail, so each path that reads mail
+checks the tools it runs before first use and says so, naming the tool:
+`comm-poll.sh` prints the line on stdout and exits 1; `comm-session-start.sh`
+prints it and exits 1; the Stop hook blocks once per episode with it as the
+reason, prefixes every later block with it, and clears it on the first turn end
+with the tools present.
+
 ## Verbs (reference client = `bin/*.sh`)
 
 | Verb        | Script           | Notes |
