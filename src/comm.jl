@@ -21,13 +21,15 @@
 # instead, since there is nothing there to preserve).
 #
 # Install copies each file via copy-then-rename (`install_file`, an atomic
-# swap onto the destination — see below) and then prunes a small deprecation
-# list — it does NOT discover-and-prune by diffing the dir, so a RENAMED or
-# DELETED managed file would otherwise linger as an orphan on every machine
-# (separate-HOME Windows FE boxes update only via pull + update_comm; there is
-# no shared NFS HOME to clean centrally). RULE: the commit that renames/deletes
-# a managed bin file MUST append its OLD name to `COMM_DEPRECATED_BIN` below —
-# install_comm removes those, so a pull + update_comm cleans the orphan.
+# swap onto the destination — see below) and then prunes exact names — it never
+# discovers-and-prunes by scanning the dir, so a file the installer did not
+# write is never touched (separate-HOME Windows FE boxes update only via pull +
+# update_comm; there is no shared NFS HOME to clean centrally). RULE: nothing
+# to do when a commit renames/deletes a managed bin file — each install records
+# the names it ships in `<bin>/.sot-comm-installed`, and the next install
+# removes every name in that record the release no longer ships.
+# `COMM_DEPRECATED_BIN` below is FROZEN and covers only boxes installed before
+# the record existed; nobody appends to it again.
 
 const COMM_PROTOCOL_VERSION = 1
 const COMM_SRC = normpath(joinpath(@__DIR__, "..", "comm"))
@@ -223,11 +225,19 @@ function _json_toplevel_keys(txt::AbstractString)
     return ks
 end
 
-# Managed bin/ files removed or RENAMED in a past commit. install_comm deletes
-# these from `$SOT_COMM_HOME/bin` so a pull + update_comm cleans the orphan on
-# every machine (install is otherwise copy-only — see the RULE above). Append the
-# OLD name here IN THE SAME COMMIT that renames/removes a managed bin file.
-const COMM_DEPRECATED_BIN = String[]
+# Managed bin/ files retired before the install kept a record of what it wrote
+# (`COMM_MANIFEST`). FROZEN: seeded once, from
+#   git log --diff-filter=D --name-only --format= -- comm/core/scripts \
+#       comm/adapters/claude/hooks comm/adapters/codex/hooks
+# (and --diff-filter=R --name-status, which found no rename), keeping basenames
+# not shipped today. Later retirements are handled by the manifest diff, so
+# nobody appends here again. No running loop re-execs either name: the old
+# relay/listen loops re-exec `comm-relay.sh bridge`, which is still shipped and
+# so never pruned; `comm-listen.sh` and `bus.sh` were only one-shot calls.
+const COMM_DEPRECATED_BIN = ["bus.sh", "comm-listen.sh"]
+
+# The names the last successful install shipped into `<bin>`, one per line.
+const COMM_MANIFEST = ".sot-comm-installed"
 
 # Skill directories retired in a past commit. Pruned from both the Claude
 # skills dir and the Codex skills dir on every install — same convention as
@@ -503,6 +513,68 @@ function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
     return nothing
 end
 
+# Every name this release installs directly into `<bin>`: the core scripts and
+# both adapters' hook scripts, whichever CLIs this run installs for.
+function _comm_bin_shipped()
+    dirs = [joinpath(COMM_SRC, "core", "scripts"),
+            joinpath(COMM_SRC, "adapters", "claude", "hooks"),
+            joinpath(COMM_SRC, "adapters", "codex", "hooks")]
+    return sort!(unique(reduce(vcat, [isdir(d) ? readdir(d) : String[] for d in dirs])))
+end
+
+# A bare file name: the only shape a prune will act on.
+_plain_name(n::AbstractString) =
+    !isempty(n) && n != "." && n != ".." && !any(c -> c in ('/', '\\', '\0', '\n'), n)
+
+# The previous install's names, or `nothing` when the record is missing, empty
+# or has a line that is not a bare name — then only COMM_DEPRECATED_BIN prunes.
+function _read_comm_manifest(bin::AbstractString)
+    path = joinpath(bin, COMM_MANIFEST)
+    isfile(path) || return nothing
+    names = try
+        split(read(path, String), '\n'; keepempty = false)
+    catch
+        String[]
+    end
+    if isempty(names) || !all(_plain_name, names)
+        @info "Previous comm install record is empty or unparseable; pruning from the frozen list only" file = path
+        return nothing
+    end
+    return String.(names)
+end
+
+# Remove every name in the previous record or COMM_DEPRECATED_BIN that this
+# release does not ship. Plain files directly in `bin` only: a symlink, a
+# directory or anything else is left alone, and nothing is matched by pattern.
+function _prune_comm_bin(bin::AbstractString, shipped, prev)
+    for n in sort!(unique(vcat(COMM_DEPRECATED_BIN, something(prev, String[]))))
+        _plain_name(n) || continue
+        p = joinpath(bin, n)
+        if n in shipped
+            ispath(p) && @info "Kept comm script: still shipped by this release" file = p
+            continue
+        end
+        st = try lstat(p) catch; continue end
+        isfile(st) || continue
+        try
+            rm(p)
+            @info "Pruned retired comm script" file = p
+        catch err
+            @warn "Could not prune retired comm script" file = p exception = err
+        end
+    end
+    return nothing
+end
+
+# Copy-then-rename, like every other file the install writes.
+function _write_comm_manifest(bin::AbstractString, shipped)
+    path = joinpath(bin, COMM_MANIFEST)
+    tmp = path * ".tmp"
+    write(tmp, join(shipped, "\n") * "\n")
+    mv(tmp, path; force = true)
+    return nothing
+end
+
 """
     install_comm(; clis = [:claude])
 
@@ -534,15 +606,7 @@ function install_comm(; clis = [:claude, :codex])
     _stage!(problems, "comm scripts") do
         _install_files(srcscripts, bin, srcfiles; executable = endswith(".sh"))
     end
-    # Remove orphans left by past renames/deletions (see COMM_DEPRECATED_BIN),
-    # so a pull + update_comm doesn't leave a stale binary on the machine.
-    for f in COMM_DEPRECATED_BIN
-        p = joinpath(bin, f)
-        if isfile(p)
-            rm(p; force = true)
-            @info "Pruned deprecated comm script" file = p
-        end
-    end
+    prev_manifest = _read_comm_manifest(bin)
     @info "Installed comm scripts" dir = bin count = length(readdir(bin))
 
     for cli in clis
@@ -553,6 +617,12 @@ function install_comm(; clis = [:claude, :codex])
     isempty(problems) ||
         error("sot-comm install INCOMPLETE — " * join(problems, "; ") *
               "; no version stamp written, `sot-fe version` reports this install as unknown")
+
+    # Only now, with every file of this install copied, prune what the release
+    # no longer ships and record what it does; a failed install got here never.
+    shipped = _comm_bin_shipped()
+    _prune_comm_bin(bin, shipped, prev_manifest)
+    _write_comm_manifest(bin, shipped)
 
     # Published LAST, only once every copy above has actually succeeded —
     # invariant "the scripts on this box came from commit X" (dirty-
