@@ -89,7 +89,7 @@ REGISTRY="$HOME_DIR/registry.json"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # comm-lib.sh, deployed layout first, then next to this file. It is only ever
 # sourced in a subshell: for the registry's bytes (sot_registry_bytes, which
-# re-reads a zero-byte read) and for the mail gate below.
+# retries a failed or empty read) and for the mail gate below.
 FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
 
 # Every Stop ends with `stop`, whatever else this hook did first (the marker

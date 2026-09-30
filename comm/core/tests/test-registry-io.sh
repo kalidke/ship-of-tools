@@ -33,6 +33,17 @@
 #      sot_registry_read answers my row and registry_put lands. One that stays
 #      empty for 1 s is unreadable: the read answers 2 with nothing on stdout,
 #      and the put FAILs and leaves the bytes and the inode as they were.
+#  12. With SOT_COMM_TEST_RETRY_LOG counting retries: a missing registry is
+#      absent (sot_registry_bytes answers 1, nothing on stdout) and takes no
+#      retry, nor does a put on it; non-empty bytes that do not parse take no
+#      retry, the read answers 2 and the put FAILs.
+#  13. A registry whose read FAILS (mode 000 here; ESTALE across boxes) for
+#      ~50 ms is retried: the reader answers my row, the log shows the retry
+#      resolved, and a put lands. One that fails for 1 s takes 3 retries and
+#      is unreadable (2, nothing on stdout), and the put FAILs leaving the
+#      bytes and the inode as they were. One that vanishes while it is retried
+#      is unreadable (sot_registry_bytes answers 2), never absent. Skipped,
+#      with the reason printed, where mode 000 does not stop the open (root).
 #
 # No bats dependency. HERMETIC: a temp $SOT_COMM_HOME, a v2 self file, a
 # pinned $SOT_COMM_TEST_HOST, and a COPY of the scripts dir with the hooks
@@ -286,6 +297,62 @@ case_a_zero_byte_read_is_re_read_and_a_lasting_one_is_unreadable() {
         || { echo "  writer, empty for 1 s: rc $rc: $(cat "$WORK/err" "$WORK/same")"; return 1; }
 }
 
+export SOT_COMM_TEST_RETRY_LOG="$WORK/retries"
+retries() { grep -c "^$1" "$SOT_COMM_TEST_RETRY_LOG" 2>/dev/null; }   # PREFIX — lines logged
+
+case_a_missing_registry_is_absent_and_unparseable_bytes_are_not_retried() {
+    local rc out
+    put_reg MISSING; : > "$SOT_COMM_TEST_RETRY_LOG"
+    rc=0; sot_registry_bytes > "$WORK/out" || rc=$?
+    [ "$rc" -eq 1 ] && [ ! -s "$WORK/out" ] && [ "$(retries retry)" -eq 0 ] \
+        || { echo "  missing: rc $rc, $(retries retry) retries, want 1 (absent) and none"; return 1; }
+    with_lock registry_put x '{"host":"testhost"}' 2>/dev/null; rm -f "${REG:?}"
+    [ "$(retries retry)" -eq 0 ] || { echo "  missing, put: $(retries retry) retries, want none"; return 1; }
+    put_reg '{"agents": {"me": {"host"'
+    rc=0; out="$(sot_registry_read me)" || rc=$?
+    [ "$rc" -eq 2 ] && [ -z "$out" ] && [ "$(retries retry)" -eq 0 ] \
+        || { echo "  unparseable: rc $rc out '$out', $(retries retry) retries, want 2 and none"; return 1; }
+    rc=0; with_lock registry_put x '{"host":"testhost"}' 2>"$WORK/err" || rc=$?
+    [ "$rc" -ne 0 ] && grep -q FAILED "$WORK/err" && [ "$(retries retry)" -eq 0 ] \
+        || { echo "  unparseable, put: rc $rc, $(retries retry) retries: $(cat "$WORK/err")"; return 1; }
+}
+
+# fail_for SECS [vanish] — the registry is $VALID with mode 000 (its open
+# fails) now, and after SECS readable again, or removed; by a helper ($SWAP)
+# the caller reaps.
+fail_for() {
+    put_reg "$VALID"; chmod 000 "$REG"
+    if [ "${2-}" = vanish ]; then ( sleep "$1"; rm -f "${REG:?}" ) & SWAP=$!
+    else ( sleep "$1"; chmod 644 "$REG" ) & SWAP=$!; fi
+}
+
+case_a_failed_read_is_retried_and_a_lasting_one_is_unreadable() {
+    local rc out held
+    put_reg "$VALID"; chmod 000 "$REG"
+    if cat "$REG" >/dev/null 2>&1; then echo "SKIP: mode 000 does not stop this user's open (root)"; return 0; fi
+    fail_for 0.05; : > "$SOT_COMM_TEST_RETRY_LOG"
+    rc=0; out="$(sot_registry_read me)" || rc=$?; wait "$SWAP"
+    [ "$rc" -eq 0 ] && [ "$(printf '%s' "$out" | jq -r .root)" = "$ROOT" ] && [ "$(retries resolved)" -eq 1 ] \
+        || { echo "  reader, failing for 50 ms: rc $rc out '$out', log: $(tr '\n' ' ' < "$SOT_COMM_TEST_RETRY_LOG"), want my row, resolved"; return 1; }
+    fail_for 0.05
+    rc=0; with_lock registry_put x '{"host":"testhost"}' 2>"$WORK/err" || rc=$?; wait "$SWAP"
+    [ "$rc" -eq 0 ] && jq -e '.agents.x.host == "testhost" and .agents.me.root != null' "$REG" >/dev/null \
+        || { echo "  writer, failing for 50 ms: rc $rc: $(cat "$WORK/err")"; return 1; }
+    fail_for 1; : > "$SOT_COMM_TEST_RETRY_LOG"
+    rc=0; out="$(sot_registry_read me)" || rc=$?; wait "$SWAP"
+    [ "$rc" -eq 2 ] && [ -z "$out" ] && [ "$(retries retry)" -eq 3 ] && [ "$(retries resolved)" -eq 0 ] \
+        || { echo "  reader, failing for 1 s: rc $rc out '$out', log: $(tr '\n' ' ' < "$SOT_COMM_TEST_RETRY_LOG"), want 2, 3 retries, none resolved"; return 1; }
+    fail_for 1; chmod 644 "$REG"; snap; chmod 000 "$REG"
+    rc=0; with_lock registry_put x '{"host":"testhost"}' 2>"$WORK/err" || rc=$?
+    wait "$SWAP"   # the helper's chmod keeps the bytes and the inode; `same` needs them readable
+    held=0; same "writer, failing for 1 s" > "$WORK/same" || held=1
+    [ "$rc" -ne 0 ] && grep -q FAILED "$WORK/err" && [ "$held" -eq 0 ] \
+        || { echo "  writer, failing for 1 s: rc $rc: $(cat "$WORK/err" "$WORK/same")"; return 1; }
+    fail_for 0.05 vanish
+    rc=0; sot_registry_bytes > "$WORK/out" || rc=$?; wait "$SWAP"
+    [ "$rc" -eq 2 ] && [ ! -s "$WORK/out" ] || { echo "  vanishing mid-retry: rc $rc, want 2 (unreadable), never 1"; return 1; }
+}
+
 PASS=0; FAIL=0
 for c in case_reader_table \
          case_send_on_a_lasting_empty_registry_is_unreadable \
@@ -297,10 +364,13 @@ for c in case_reader_table \
          case_the_heartbeat_on_an_unreadable_registry_writes_nothing \
          case_the_reminders_on_an_unreadable_registry_remind \
          case_the_stop_hook_on_an_unreadable_registry_reaches_the_mail_gate \
-         case_a_zero_byte_read_is_re_read_and_a_lasting_one_is_unreadable; do
+         case_a_zero_byte_read_is_re_read_and_a_lasting_one_is_unreadable \
+         case_a_missing_registry_is_absent_and_unparseable_bytes_are_not_retried \
+         case_a_failed_read_is_retried_and_a_lasting_one_is_unreadable; do
     # Each case runs in a subshell with the cleanup trap cleared: with_lock
     # saves and restores the EXIT trap it sees, and a subshell sees this one.
-    if out="$(trap - EXIT; "$c" 2>&1)"; then echo "PASS $c"; PASS=$((PASS + 1))
+    if out="$(trap - EXIT; "$c" 2>&1)"; then
+        case "$out" in SKIP:*) echo "SKIP $c${out#SKIP}" ;; *) echo "PASS $c"; PASS=$((PASS + 1)) ;; esac
     else echo "FAIL $c"; printf '%s\n' "$out"; FAIL=$((FAIL + 1)); fi
 done
 echo "registry-io: $PASS passed, $FAIL failed"

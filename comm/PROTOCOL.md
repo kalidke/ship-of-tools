@@ -86,13 +86,17 @@ answers: present, absent (it parsed; no such row) and unreadable (missing,
 empty, not JSON, not exactly one document, or no object `.agents`).
 Unreadable is never absent. Every read, and every writer's read under the
 lock, takes its bytes from `sot_registry_bytes` (the daemon's `comm.file` from
-its Rust twin), because of an NFSv4 close-to-open effect: a client on another
-host can briefly open a just-renamed registry and read zero bytes. An empty file
-is never a valid registry, so a zero-byte read revalidates the folder and reads
-by path again, up to 3 times in about 200 ms, and only still-empty is
-unreadable; non-empty bytes that do not parse are never re-read. Before the
-re-read, the two-host test measured 6 unreadable reads in about 11,000 on an
-NFSv4 pair. A send on an unreadable registry prints
+its Rust twin), because an NFSv4 client can get ESTALE (stale file handle) on a
+read after its open succeeded, when another host renames a new registry over
+the file. Before the retry, the two-host test measured 16 such reads in about
+2,000 on the first host, and 0 in about 9,000 on the peer. So a read that failed
+(any error but a missing file, even after some bytes, which are discarded) or
+that returned zero bytes revalidates the folder and opens the file by path
+again, up to 3 times in about 200 ms; no good read by then is unreadable. A
+missing file is told at the open, never by a stat. Zero bytes stays in the rule
+because an empty file is never a valid registry, but no zero-byte read has ever
+been observed. Non-empty bytes that do not parse are never retried. A send on
+an unreadable registry prints
 `FAILED -> @<to>: the registry could not be read, so identity @<me> is
 unverified; nothing was sent`. leave, list, spawn and despawn print
 `FAILED: the registry could not be read; nothing was <removed|listed|spawned|despawned>`,

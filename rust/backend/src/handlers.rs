@@ -5915,7 +5915,7 @@ mod comm_file_tests {
         assert_eq!(file(Some(d.path()), "fresh", true).unwrap_err().0, "not_here");
     }
 
-    // A registry another box sees empty for a moment is re-read; one that
+    // A registry that reads empty for a moment is read again; one that
     // stays empty is unreadable.
     #[test]
     fn a_registry_empty_for_50ms_is_read_and_one_empty_for_1s_is_file_failed() {
@@ -5930,6 +5930,34 @@ mod comm_file_tests {
             });
             assert_eq!(file(Some(d.path()), "fresh", false).map_err(|e| e.0), want.map_err(String::from), "{empty_ms} ms");
             swap.join().unwrap();
+        }
+    }
+
+    // A registry whose read fails for a moment (mode 000 here; ESTALE across
+    // boxes) is read again; one that fails for 1 s, or that vanishes while it
+    // is retried, is unreadable, never "not here".
+    #[cfg(unix)]
+    #[test]
+    fn a_registry_failing_for_50ms_is_read_and_one_failing_for_1s_or_vanishing_is_file_failed() {
+        use std::os::unix::fs::PermissionsExt;
+        for (fail_ms, vanish, want) in [(50, false, Ok(())), (1000, false, Err("file_failed")), (50, true, Err("file_failed"))] {
+            let d = home();
+            let reg = d.path().join("registry.json");
+            std::fs::set_permissions(&reg, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::File::open(&reg).is_ok() {
+                eprintln!("skipped: mode 000 does not stop this user's open (root)");
+                return;
+            }
+            let heal = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(fail_ms));
+                if vanish {
+                    std::fs::remove_file(reg).unwrap();
+                } else {
+                    std::fs::set_permissions(reg, std::fs::Permissions::from_mode(0o644)).unwrap();
+                }
+            });
+            assert_eq!(file(Some(d.path()), "fresh", false).map_err(|e| e.0), want.map_err(String::from), "{fail_ms} ms, vanish {vanish}");
+            heal.join().unwrap();
         }
     }
 
@@ -7080,25 +7108,37 @@ fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// The registry's bytes, as the scripts' `sot_registry_bytes` reads them. An
-/// empty file is never a registry (every writer syncs a checked tmp before its
-/// rename), but under NFSv4 close-to-open another box can open a just-renamed
-/// registry and read zero bytes. So a zero-byte read opens the folder, which
-/// revalidates it, and reads by path again: up to 3 times in about 200 ms.
-/// Still empty is returned empty, which no caller reads as a registry.
-/// Non-empty bytes are never re-read.
+/// NFSv4 client can get ESTALE (stale file handle) from a read after its open
+/// succeeded, when another host renames a new registry over the file: the
+/// two-host test measured 16 in about 2,000 reads on the first host before the
+/// retry, 0 in about 9,000 on the peer. So a try that fails (any error, or zero
+/// bytes) opens the folder, which revalidates it, and reads by path again, a
+/// new open each time: up to 3 retries in about 200 ms. NotFound is returned
+/// only from the first try (absent); a later try's is a file that vanished
+/// mid-retry, a failed try like any other, and no good read by then is an
+/// error that is never NotFound, so never absent. Zero bytes stays in the rule
+/// because an empty file is never a registry (every writer syncs a checked tmp
+/// before its rename), but no zero-byte read has ever been observed. Non-empty
+/// bytes are never retried, parseable or not.
 fn read_registry_fresh(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
-    let mut bytes = std::fs::read(path)?;
+    let mut failed = match std::fs::read(path) {
+        Ok(bytes) if !bytes.is_empty() => return Ok(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(e),
+        Ok(_) => "zero bytes".to_string(),
+        Err(e) => e.to_string(),
+    };
     for pause_ms in [0, 100, 100] {
-        if !bytes.is_empty() {
-            break;
-        }
         std::thread::sleep(std::time::Duration::from_millis(pause_ms));
         if let Some(dir) = path.parent() {
             let _ = std::fs::File::open(dir);
         }
-        bytes = std::fs::read(path)?;
+        failed = match std::fs::read(path) {
+            Ok(bytes) if !bytes.is_empty() => return Ok(bytes),
+            Ok(_) => "zero bytes".to_string(),
+            Err(e) => e.to_string(),
+        };
     }
-    Ok(bytes)
+    Err(std::io::Error::other(format!("no good read in 4 tries; the last: {failed}")))
 }
 
 /// `read_comm_agents` for a registry named by path, so `comm.file`'s verdict

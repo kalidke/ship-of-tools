@@ -12,9 +12,12 @@
 #     whose put returned 0 and each put that did not as FAILED;
 #   - 1 reader loops sot_registry_read over the other box's 10 rows (seeded
 #     before the clock starts) and counts the answers 0, 1 and 2.
+# Every helper logs its registry retries (SOT_COMM_TEST_RETRY_LOG), and each
+# box's line gives the reads that took a retry and how many a retry resolved.
 # A pair passes with, on each box: zero reads answering 1 or 2, zero FAILED
-# puts, and at the end every row present with its writer's last logged N
-# (no lost update).
+# puts, every read that took a retry resolved, and at the end every row
+# present with its writer's last logged N (no lost update). A pass with no
+# retry taken proves the read, not the retry: the race did not happen.
 #
 # Every helper is started by this script and ends by itself at the deadline
 # (or at the stop file); the script waits for every one on every box, checks
@@ -77,6 +80,7 @@ pair="$1" side="$2" role="$3" other="$4" start="$5" end="$6"
 export SOT_COMM_HOME="$pair/home"
 . "$(dirname "$0")/comm-lib.sh"
 tag="$side-$role"; out="$pair/out/$tag"
+export SOT_COMM_TEST_RETRY_LOG="$out.retry"
 echo $$ > "$pair/pids/$tag"
 trap 'rm -f "$pair/pids/$tag"' EXIT
 while [ "$(date +%s)" -lt "$start" ]; do sleep 0.1; done
@@ -129,10 +133,14 @@ run_pair() {  # NAME HOST_A HOST_B — "" is this box
         echo "  ${h:-this box}: $left helper(s) still running after $name"
         [ "${left:-1}" -eq 0 ] || FAIL=1
     done
-    local ok bad lost reads c0 c1 c2 want got pass=1
+    local ok bad lost reads c0 c1 c2 want got retried resolved pass=1
     for side in a b; do
         h="${host[$side]}"
-        ok=0 bad=0 lost=0
+        ok=0 bad=0 lost=0 retried=0 resolved=0
+        for role in w1 w2 r; do
+            retried=$((retried + $(count -x 'retry 1' "$pair/out/$side-$role.retry")))
+            resolved=$((resolved + $(count -x 'resolved' "$pair/out/$side-$role.retry")))
+        done
         for role in w1 w2; do
             ok=$((ok + $(count -v '^FAILED' "$pair/out/$side-$role")))
             bad=$((bad + $(count '^FAILED' "$pair/out/$side-$role")))
@@ -144,8 +152,9 @@ run_pair() {  # NAME HOST_A HOST_B — "" is this box
             done
         done
         read -r c0 c1 c2 < "$pair/out/$side-r" 2>/dev/null || { c0=0; c1=0; c2=0; echo "  ${h:-this box}: the reader left no count"; pass=0; }
-        echo "  $name ${h:-this box}: reads 0/1/2 = $c0/$c1/$c2; puts ok $ok, FAILED $bad; lost updates $lost"
-        [ "$c1" -eq 0 ] && [ "$c2" -eq 0 ] && [ "$bad" -eq 0 ] && [ "$lost" -eq 0 ] && [ "$c0" -gt 0 ] && [ "$ok" -gt 0 ] || pass=0
+        echo "  $name ${h:-this box}: reads 0/1/2 = $c0/$c1/$c2; puts ok $ok, FAILED $bad; lost updates $lost; reads retried $retried, resolved $resolved"
+        [ "$c1" -eq 0 ] && [ "$c2" -eq 0 ] && [ "$bad" -eq 0 ] && [ "$lost" -eq 0 ] && [ "$c0" -gt 0 ] && [ "$ok" -gt 0 ] \
+            && [ "$resolved" -eq "$retried" ] || pass=0
         cat "$pair/out/$side"-w?.err 2>/dev/null | sort | uniq -c | sed 's/^/    writer stderr: /'
     done
     if [ "$pass" = 1 ]; then echo "PASS $name"; else echo "FAIL $name"; FAIL=1; fi

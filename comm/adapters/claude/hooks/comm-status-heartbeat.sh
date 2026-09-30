@@ -133,7 +133,7 @@ fi
 [ -n "${NAME:-}" ] || exit 0
 
 # The registry's bytes come from comm-lib.sh's sot_registry_bytes, which
-# re-reads a zero-byte read; it is sourced in a subshell (see below), deployed
+# retries a failed or empty read; it is sourced in a subshell (see below), deployed
 # layout first (update_comm puts every script in the comm home's bin), then
 # next to this file, the same fallback pair the hook uses for comm-context.sh.
 # -s: an empty or many-document registry is unreadable (""), never a row.

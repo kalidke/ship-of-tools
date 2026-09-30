@@ -587,21 +587,36 @@ _sot_fsync() { perl -MIO::Handle -e 'my $f; open($f, "+<", $ARGV[0]) && $f->sync
 
 # sot_registry_bytes [FILE] — the registry's bytes (FILE, default $REGISTRY) on stdout: THE read under
 # every registry read and write, this library's and the standalone hooks' (they source it in a subshell).
-# An empty file is never a registry, because every writer fsyncs a checked tmp before its rename. But
-# under NFSv4 close-to-open a client on another box can open a just-renamed registry and read zero bytes,
-# so a zero-byte read opens the folder, which revalidates it, and reads by path again: up to 3 times in
-# about 200 ms. Still empty, or a file that will not open, returns 1 with nothing on stdout, and the
-# caller's slurp sees no document: unreadable. Non-empty bytes are never re-read, parseable or not.
-# Emptiness is the bytes read, never a stat and never jq's exit code.
+# 0 = the bytes, whole; 1 = absent; 2 = unreadable. Nothing is on stdout but for 0.
+# An NFSv4 client can get ESTALE (stale file handle) from a read after its open succeeded, when another
+# host renames a new registry over the file: the two-host test measured 16 in about 2,000 reads on the
+# first host before this retry, 0 in about 9,000 on the peer. So a try that FAILED (an open error other
+# than no such file, a read error even after some bytes, which are discarded, or zero bytes) opens the
+# folder, which revalidates it, and opens the file by path again, never another read of the old
+# descriptor: up to 3 retries in about 200 ms. No good read by then is unreadable, never absent.
+# Absent is told at the open, never by a stat: the first try's open said "No such file or directory"
+# (LC_ALL=C, so the C library's text). A later try's is a file that vanished mid-retry: a failed try.
+# Zero bytes stays in the rule because an empty file is never a registry (every writer fsyncs a checked
+# tmp before its rename), but no zero-byte read has ever been observed. Non-empty bytes read whole are
+# never retried, parseable or not. The open is a redirection and the read is cat, whose exit says a
+# read failed; bash 3.2 and git-bash have both.
+# SOT_COMM_TEST_RETRY_LOG (tests only): a file that gets "retry N" per retry and "resolved" per read a
+# retry made good. Unset, nothing is written.
 sot_registry_bytes() {
-    local f="${1:-$REGISTRY}" bytes pause
-    for pause in - 0 0.1 0.1; do
-        [ "$pause" = - ] || { sleep "$pause"; : < "${f%/*}"; } 2>/dev/null
-        { bytes="$(<"$f")"; } 2>/dev/null || return 1
-        [ -n "$bytes" ] && { printf '%s\n' "$bytes"; return 0; }
+    local f="${1:-$REGISTRY}" out try=0 nl=$'\n'
+    while :; do
+        { out="$(LC_ALL=C; { cat 2>/dev/null && printf '\n+' || printf '\n-'; } 2>&1 < "$f")" || :; } 2>/dev/null
+        case "$out" in
+            *"$nl+") out="${out%??}"
+                     [ -n "$out" ] && { [ "$try" -eq 0 ] || _sot_retry_note resolved; printf '%s' "$out"; return 0; } ;;
+            *": No such file or directory") [ "$try" -eq 0 ] && return 1 ;;
+        esac
+        [ "$try" -lt 3 ] || return 2
+        try=$((try + 1)); _sot_retry_note "retry $try"
+        { [ "$try" -eq 1 ] || sleep 0.1; : < "${f%/*}"; } 2>/dev/null
     done
-    return 1
 }
+_sot_retry_note() { [ -z "${SOT_COMM_TEST_RETRY_LOG:-}" ] || echo "$1" >> "$SOT_COMM_TEST_RETRY_LOG" 2>/dev/null || :; }
 
 # --- the inbox append (0031 B1) ---
 # sot_inbox_append HANDLE — THE one place a script appends a frame to an
