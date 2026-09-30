@@ -41,7 +41,13 @@
 #  14 a dead holder D whose marker reclaim.<D> names D: the next writer and
 #     the clear each stop at that marker within their bound, say to remove
 #     the lock by hand, and leave lock and marker as they were (review B1);
-#  15 an ID with no proof fields is never judged mine (review SF1).
+#  15 an ID with no proof fields is never judged mine (review SF1), and no
+#     call site compares a record to the own ID but through the one test;
+#  16 a clear forcing a proof-less holder whose lock a new holder N takes
+#     during the settle names N, and never says N has no proof fields or to
+#     remove the lock by hand (review SF2);
+#  17 a zero wait whose retake fails and whose fresh read finds the lock gone
+#     FAILs a free lock, never one to remove by hand (review note 3).
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
@@ -419,8 +425,57 @@ t15() {
     out="$(lib '_sot_lock_self_id; _SOT_LOCK_SELF=""; _SOT_LOCK_ID="${_SOT_LOCK_ID%%:*}:-:-:-:$BASHPID:-"
         _sot_lock_is_me "$_SOT_LOCK_ID" && echo mine || echo not')"
     [ "$out" = not ] || { echo "the same host name and pid, with no proof: $out"; return 1; }
+    # A call site put back to a bare comparison would pass the two above.
+    local rs="$SCRIPT_DIR/../../../rust/backend/src/comm_registry_lock.rs" hits
+    [ -f "$rs" ] || { echo "no $rs"; return 1; }
+    hits="$( { sed '/^_sot_lock_is_me() {/,/^}/s/.*//' "$SCRIPTS_DIR/comm-lib.sh" \
+            | grep -nE ' (=|==|!=) +"?\$\{?_SOT_LOCK_ID([^A-Za-z0-9_]|$)|\$\{?_SOT_LOCK_ID\}?"? +(=|==|!=) |case +"?\$\{?_SOT_LOCK_ID|^ *"?\$\{?_SOT_LOCK_ID\}?"? *\)' \
+            | sed 's/^/comm-lib.sh:/'
+        sed '/fn is_me(/,/^    }/s/.*//' "$rs" \
+            | grep -nE '(==|!=) *[&*]*[A-Za-z0-9_:().]*\.id([^A-Za-z0-9_]|$)|\.id *(==|!=)|contains\(&[A-Za-z0-9_:().]*\.id\)' \
+            | sed 's/^/comm_registry_lock.rs:/'; } )"
+    [ -z "$hits" ] || { echo "the own ID compared but through _sot_lock_is_me / Me::is_me: $hits"; return 1; }
 }
-check "15: an ID with no proof fields is never judged mine" t15
+check "15: an ID with no proof fields is never judged mine, and nothing compares to it but the one test" t15
+
+# The clear forces a proof-less D; during its settle (a `sleep` of 0.07 on
+# PATH) a mac writer N takes the lock.
+t16() {
+    reset; local out n='mac:-:-:-:4343:-'
+    mkdir -p "$WORK/settle"
+    cat > "$WORK/settle/sleep" <<SLEEP
+#!/bin/sh
+[ "\$1" = 0.07 ] && printf '%s\n' '$n' > '$P'
+exec '$(command -v sleep)' "\$@"
+SLEEP
+    chmod +x "$WORK/settle/sleep"
+    printf '%s\n' 'far:-:-:-:4242:-' > "$P"
+    out="$(PATH="$WORK/settle:$PATH" SOT_COMM_TEST_LOCK_SETTLE=0.07 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" \
+        && { echo "cleared: $out"; return 1; }
+    [ "$(cat "$P")" = "$n" ] || { echo "N's lock changed: $out"; return 1; }
+    contains "$out" ", held by mac pid 4343: it was taken again during the reclaim" && ! contains "$out" "no proof fields" \
+        && hasnt_by_hand "$out" || { echo "$out"; return 1; }
+}
+check "16: a clear whose proof-less holder's lock is taken during the settle names the new holder, not by hand" t16
+
+# The retake after a reclaim fails, and the lock is gone by its fresh read.
+cat > "$WORK/free.sh" <<'FREE'
+. "$LIB"
+eval "orig_step() $(declare -f _sot_lock_step | tail -n +2)"
+eval "orig_take() $(declare -f _sot_lock_take | tail -n +2)"
+_sot_lock_step() { orig_step "$@" || return; printf '%s\n' 'elsewhere:-:-:-:4242:-' > "$P"; RETOOK=1; }
+_sot_lock_take() { orig_take "$@"; local rc=$?; [ -z "${RETOOK:-}" ] || [ "$1" != "$P" ] || rm -f "$P"; return "$rc"; }
+SOT_LOCK_WAIT_SECS=0 with_lock true
+FREE
+t17() {
+    reset; local out
+    dead_holder >/dev/null
+    out="$(LIB="$LIB" P="$P" bash "$WORK/free.sh" 2>&1)" && { echo "took the lock: $out"; return 1; }
+    [ ! -e "$P" ] || { echo "the lock is not free"; return 1; }
+    contains "$out" "was not taken by the deadline: another process took it as soon as a dead holder's lock was removed" \
+        && hasnt_by_hand "$out" || { echo "$out"; return 1; }
+}
+check "17: a free lock at the deadline is FAILED as not taken, never as one to remove by hand" t17
 
 echo "---"
 echo "$PASS passed, $FAIL failed"

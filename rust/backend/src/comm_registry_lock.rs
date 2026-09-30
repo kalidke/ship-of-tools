@@ -11,7 +11,8 @@
 //! holder D dead takes the marker `.registry.lock.reclaim.<D>`, settles, reads
 //! the lock again fresh, and removes it only if it still names D. Markers are
 //! kept forever, but for the one this daemon takes for a lock naming itself,
-//! which it removes once that lock is gone. File names map ':' to '.', because
+//! which it removes when that reclaim removes the lock or finds it gone. File
+//! names map ':' to '.', because
 //! Windows reads a ':' in a name as a stream; the record keeps its colons.
 
 use std::fs;
@@ -53,11 +54,8 @@ pub fn acquire(lock: &Path, bound: Duration) -> Result<Held, String> {
     acquire_with(lock, bound, SETTLE)
 }
 
-/// `bound` is a deadline over the wait for the turn and the lock together.
-/// Once it has the turn there is always one try and its reclaim step; after
-/// the first failed take the deadline is checked after every failed take,
-/// after every sleep and before every marker a step walks past its first, so
-/// no reclaim chains past it and no try starts after it.
+/// `bound` is a deadline over the wait for the turn and the lock together,
+/// checked where comm/PROTOCOL.md's Bounds says.
 fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, String> {
     let deadline = Instant::now() + bound;
     let turn = loop {
@@ -76,7 +74,7 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
         std::thread::sleep(POLL.min(deadline - now));
     };
     let me = Me::now();
-    let mut last = Blocked { holder: None, who: None, why: "it was released just now".into() };
+    let mut last = Blocked { holder: None, who: None, why: "it was released just now".into(), by_hand: false };
     let (mut first, mut retook) = (true, false);
     loop {
         match take(lock, lock, &me.id) {
@@ -86,6 +84,8 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
         }
         // A failed retake: the FAILED line names whoever took it.
         if std::mem::take(&mut retook) {
+            #[cfg(all(test, target_os = "linux"))]
+            let _ = tests::GONE_AFTER_RETAKE.swap(false, std::sync::atomic::Ordering::SeqCst).then(|| fs::remove_file(lock));
             last.holder = fresh(lock, me.mine.is_some()).ok();
         }
         if !first && Instant::now() >= deadline {
@@ -96,7 +96,7 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
             Ok(()) => {
                 #[cfg(all(test, target_os = "linux"))]
                 let _ = tests::AFTER_STEP.lock().unwrap().take().map(|d2| fs::write(lock, d2));
-                last = Blocked { holder: None, who: None, why: RETAKEN.into() };
+                last = Blocked { holder: None, who: None, why: RETAKEN.into(), by_hand: false };
                 retook = true;
                 continue;
             }
@@ -323,11 +323,13 @@ fn vouch(_lock: &Path) -> Result<(), String> {
 }
 
 /// Why a step did not free the lock: the ID the lock names (`None` for no
-/// readable holder), the ID that blocks, and the reason.
+/// readable holder), the ID that blocks, the reason, and whether no reclaim
+/// can clear it, so only a person can, by hand.
 struct Blocked {
     holder: Option<String>,
     who: Option<String>,
     why: String,
+    by_hand: bool,
 }
 
 impl Blocked {
@@ -339,11 +341,14 @@ impl Blocked {
             .and_then(|t| Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64 - t.as_secs() as i64))
             .map_or("unknown".to_string(), |s| format!("{s}s"));
         let p = lock.display();
-        let Some(holder) = &self.holder else {
+        if self.by_hand {
             return format!(
                 "registry lock {p} still held ({age} old): {}. If its holder is dead, remove {p} by hand and retry.",
                 self.why
             );
+        }
+        let Some(holder) = &self.holder else {
+            return format!("registry lock {p} was not taken by the deadline: {}. Retry.", self.why);
         };
         let f = parse(holder).unwrap_or_default();
         let who = self.who.as_deref().unwrap_or(holder);
@@ -370,15 +375,16 @@ impl Blocked {
 fn step(lock: &Path, me: &Me, settle: Duration, deadline: Instant) -> Result<(), Option<Blocked>> {
     let proves = me.mine.is_some();
     let blocked = |holder: Option<&String>, who: Option<&String>, why: String| {
-        Err(Some(Blocked { holder: holder.cloned(), who: who.cloned(), why }))
+        Err(Some(Blocked { holder: holder.cloned(), who: who.cloned(), why, by_hand: false }))
     };
+    let only_by_hand = |why: String| Err(Some(Blocked { holder: None, who: None, why, by_hand: true }));
     let d = match fresh(lock, proves) {
         Ok(d) => d,
         Err(_) if fs::symlink_metadata(lock).is_err() => return Err(None),
-        Err(_) if lock.is_dir() => return blocked(None, None, "held by an older version that records no holder".into()),
+        Err(_) if lock.is_dir() => return only_by_hand("held by an older version that records no holder".into()),
         Err(read) => {
             let read = if read.is_empty() { "empty".to_string() } else { read };
-            return blocked(None, None, format!("its record names no holder ({read})"));
+            return only_by_hand(format!("its record names no holder ({read})"));
         }
     };
     let mut chain = vec![d.clone()];
@@ -428,30 +434,34 @@ fn step(lock: &Path, me: &Me, settle: Duration, deadline: Instant) -> Result<(),
         match fresh(&marker, proves) {
             Ok(r) if chain.contains(&r) && !me.is_me(&r) => {
                 let why = format!("its reclaim marker {} names {r}, which its reclaim chain already holds, so no reclaim can pass it", marker.display());
-                return blocked(None, None, why);
+                return only_by_hand(why);
             }
             Ok(r) => chain.push(r),
             Err(_) => return blocked(Some(&d), Some(&x), format!("its reclaim marker {} cannot be read", marker.display())),
         }
     }
     std::thread::sleep(settle);
+    #[cfg(all(test, target_os = "linux"))]
+    let _ = tests::GONE_IN_SETTLE.swap(false, std::sync::atomic::Ordering::SeqCst).then(|| fs::remove_file(lock));
     let reread = fresh(lock, proves);
     #[cfg(all(test, target_os = "linux"))]
     let reread = if tests::FAIL_REREAD.swap(false, std::sync::atomic::Ordering::SeqCst) { Err(String::new()) } else { reread };
-    match reread {
+    let result = match reread {
         Ok(now) if chain.contains(&now) => {
             let _ = fs::remove_file(lock);
-            // My own marker, naming me: removed, a later death of this daemon
-            // with its lock named is reclaimed like any holder's.
-            if chain.iter().all(|r| me.is_me(r)) {
-                let _ = fs::remove_file(marker_for(lock, &chain[0]));
-            }
             Ok(())
         }
         Ok(now) => blocked(Some(&now), None, "it was taken again during the reclaim".into()),
         Err(_) if fs::symlink_metadata(lock).is_err() => Ok(()),
         Err(_) => blocked(Some(&d), None, "its record changed during the reclaim".into()),
+    };
+    // My own marker, naming me, once the lock is gone, removed or found
+    // removed: a later death of this daemon with its lock named is reclaimed
+    // like any holder's.
+    if result.is_ok() && chain.iter().all(|r| me.is_me(r)) {
+        let _ = fs::remove_file(marker_for(lock, &chain[0]));
     }
+    result
 }
 
 /// The marker `reclaim.<x>` beside `lock`.
@@ -473,8 +483,13 @@ mod tests {
     /// Set, the record written into the lock just after the next step removes it.
     pub(super) static AFTER_STEP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+    /// Set, the lock is removed at the end of the next settle, before its re-read.
+    pub(super) static GONE_IN_SETTLE: AtomicBool = AtomicBool::new(false);
+
+    /// Set, the lock is removed after the next failed retake, before its fresh read.
+    pub(super) static GONE_AFTER_RETAKE: AtomicBool = AtomicBool::new(false);
+
     const LIB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../comm/core/scripts/comm-lib.sh");
-    const CLEAR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../comm/core/scripts/comm-registry-lock-clear.sh");
 
     /// Held by every test here: the records read `SOT_SELF_HOST`, which other
     /// tests in this binary set, and the shell children inherit the env.
@@ -700,6 +715,40 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
     }
 
+    /// This daemon's own leftover lock, removed during its reclaim's settle
+    /// (by hand, or its own late unlink): its marker goes all the same
+    /// (review SF1).
+    #[test]
+    fn its_own_marker_goes_when_its_lock_goes_during_the_settle() {
+        let _env = env_lock();
+        let home = scratch("gone");
+        let lock = home.join(".registry.lock");
+        let me = format!("{}\n", Me::now().id);
+        fs::write(&lock, &me).unwrap();
+        GONE_IN_SETTLE.store(true, Ordering::SeqCst);
+        let held = acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50));
+        assert!(held.is_ok(), "{:?}", held.err());
+        drop(held);
+        assert!(!marker_for(&lock, me.trim()).exists(), "its own marker went with the lock");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// A zero wait whose retake fails, and whose fresh read then finds the
+    /// lock gone: a free lock, never one to remove by hand (review note 3).
+    #[test]
+    fn a_lock_free_at_the_deadline_is_never_to_be_removed_by_hand() {
+        let _env = env_lock();
+        let home = scratch("free");
+        let lock = home.join(".registry.lock");
+        dead_shell_holder(&home);
+        *AFTER_STEP.lock().unwrap() = Some("elsewhere:-:-:-:4242:-\n".into());
+        GONE_AFTER_RETAKE.store(true, Ordering::SeqCst);
+        let err = acquire_with(&lock, Duration::ZERO, Duration::from_millis(50)).err().expect("FAILED");
+        assert!(!err.contains("by hand") && err.contains(RETAKEN), "{err}");
+        assert!(!lock.exists(), "the lock is free");
+        let _ = fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn an_id_without_proof_is_never_mine() {
         let _env = env_lock();
@@ -710,8 +759,8 @@ mod tests {
     }
 
     /// A dead holder D whose marker `reclaim.<D>` names D (a daemon that died
-    /// during its own reclaim): the next writer and the clear each stop at
-    /// the marker within their bound, and say to remove the lock by hand.
+    /// during its own reclaim): the next writer stops at the marker within its
+    /// bound, and says to remove the lock by hand. Hermetic t14 runs the clear.
     #[test]
     fn a_marker_naming_its_own_dead_holder_stops_every_walk() {
         let _env = env_lock();
@@ -726,11 +775,6 @@ mod tests {
         assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
         assert!(err.contains(&format!("its reclaim marker {} names {}", marker.display(), dead.trim())), "{err}");
         assert!(err.ends_with(&format!("remove {} by hand and retry.", lock.display())), "{err}");
-        let t0 = Instant::now();
-        let out = Command::new("bash").arg(CLEAR).env("SOT_COMM_HOME", &home).output().unwrap();
-        assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
-        let text = String::from_utf8_lossy(&out.stderr);
-        assert!(!out.status.success() && text.contains("remove the lock by hand"), "{text}");
         assert_eq!(fs::read_to_string(&lock).unwrap(), dead, "the lock is untouched");
         assert_eq!(fs::read_to_string(&marker).unwrap(), dead, "and its marker");
         let _ = fs::remove_dir_all(&home);

@@ -542,10 +542,8 @@ ensure_home() {
 # failed take on, so an uncontended take reads none: bash 5's EPOCHREALTIME,
 # or perl's Time::HiRes before bash 5 (3.2 has nothing finer than SECONDS),
 # both a wall clock, so a clock jump stretches or shortens one wait. No clock
-# is FAILED naming it. There is always one try, and with a clock its reclaim
-# step; after the first failed take the deadline is checked after every
-# failed take, after every sleep and before every marker a step walks past its
-# first, so no reclaim chains past the deadline and no try starts after it.
+# is FAILED naming it. Where the deadline is checked is comm/PROTOCOL.md's
+# Bounds.
 #
 # Release is TRAP-based, not a plain post-command `rm` (Codex review F2
 # second half / F7): a caller's `set -e` aborts the WHOLE SCRIPT the moment
@@ -606,7 +604,7 @@ with_lock() {
             return 1
         fi
         if _sot_lock_step "$deadline"; then
-            _SOT_LOCK_HOLDER="" _SOT_LOCK_WHO="" retook=1
+            _SOT_LOCK_HOLDER="" _SOT_LOCK_WHO="" _SOT_LOCK_BYHAND="" retook=1
             _SOT_LOCK_WHY="another process took it as soon as a dead holder's lock was removed"
             continue
         fi
@@ -687,7 +685,8 @@ _sot_lock_self_id() {
     name="$(sot_host 2>/dev/null)" || name=""
     name="${name//[!A-Za-z0-9._-]/_}"
     name="${name:--}"
-    _SOT_LOCK_SELF="" _SOT_LOCK_HOLDER="" _SOT_LOCK_WHO="" _SOT_LOCK_WHY="it was released just now"
+    _SOT_LOCK_SELF="" _SOT_LOCK_HOLDER="" _SOT_LOCK_WHO="" _SOT_LOCK_BYHAND=""
+    _SOT_LOCK_WHY="it was released just now"
     if [ "$(uname -s 2>/dev/null)" = Linux ]; then
         read -r self_pid _ 2>/dev/null </proc/self/stat || true
     fi
@@ -824,8 +823,9 @@ _sot_lock_vouch() {
 # as it stands. 0 = this step saw the lock go, retake at once; 1 = not (a lock
 # released since the take is a try, and keeps the last holder named), with
 # _SOT_LOCK_HOLDER (the ID the lock names, "" for none), _SOT_LOCK_WHO (the
-# ID that blocks) and _SOT_LOCK_WHY set for the FAILED line. The chain runs
-# D, then the creator of reclaim.<D> if that one is dead too, and so on;
+# ID that blocks), _SOT_LOCK_BYHAND (1 when no reclaim can clear it, so only
+# a person can, by hand) and _SOT_LOCK_WHY set for the FAILED line. The chain
+# runs D, then the creator of reclaim.<D> if that one is dead too, and so on;
 # every step past a marker needs its creator proved dead, so the live process
 # holding the chain's last marker is the only one with authority over "the
 # lock names a member of the chain". A marker naming me is one I took earlier
@@ -843,7 +843,7 @@ _sot_lock_step() {
     [ "${1:-}" = --forced ] || deadline="${1:-}"
     if ! _sot_lock_fresh "$_SOT_REG_LOCK"; then
         [ -e "$_SOT_REG_LOCK" ] || return 1
-        _SOT_LOCK_HOLDER=""; _SOT_LOCK_WHO=""
+        _SOT_LOCK_HOLDER=""; _SOT_LOCK_WHO=""; _SOT_LOCK_BYHAND=1
         if [ -d "$_SOT_REG_LOCK" ]; then
             _SOT_LOCK_WHY="held by an older version that records no holder"
         else
@@ -851,7 +851,7 @@ _sot_lock_step() {
         fi
         return 1
     fi
-    _SOT_LOCK_HOLDER="$_SOT_LOCK_READ"; _SOT_LOCK_WHO=""; x="$_SOT_LOCK_READ"
+    _SOT_LOCK_HOLDER="$_SOT_LOCK_READ"; _SOT_LOCK_WHO=""; _SOT_LOCK_BYHAND=""; x="$_SOT_LOCK_READ"
     while :; do
         chain+=("$x")
         [ "${#chain[@]}" -gt 1 ] && _sot_lock_is_me "$x" && break
@@ -878,7 +878,7 @@ _sot_lock_step() {
         x="$_SOT_LOCK_READ"
         for y in "${chain[@]}"; do
             if [ "$y" = "$x" ] && ! _sot_lock_is_me "$x"; then
-                _SOT_LOCK_HOLDER="" _SOT_LOCK_WHO=""
+                _SOT_LOCK_HOLDER="" _SOT_LOCK_WHO="" _SOT_LOCK_BYHAND=1
                 _SOT_LOCK_WHY="its reclaim marker $m names $x, which its reclaim chain already holds, so no reclaim can pass it"
                 return 1
             fi
@@ -912,8 +912,12 @@ _sot_lock_fail_text() {
     local age="unknown" mtime="" who="${_SOT_LOCK_WHO:-${_SOT_LOCK_HOLDER:-}}"
     mtime="$(stat -c %Y "$_SOT_REG_LOCK" 2>/dev/null)" || mtime=""
     [ -n "$mtime" ] && age="$(( $(date +%s) - mtime ))s"
-    if [ -z "${_SOT_LOCK_HOLDER:-}" ]; then
+    if [ -n "${_SOT_LOCK_BYHAND:-}" ]; then
         echo "ERROR: registry lock $_SOT_REG_LOCK still held ($age old): $_SOT_LOCK_WHY. If its holder is dead, remove $_SOT_REG_LOCK by hand and retry."
+        return 0
+    fi
+    if [ -z "${_SOT_LOCK_HOLDER:-}" ]; then
+        echo "ERROR: registry lock $_SOT_REG_LOCK was not taken by the deadline: $_SOT_LOCK_WHY. Retry."
         return 0
     fi
     echo "ERROR: registry lock $_SOT_REG_LOCK is held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5) start $(_sot_lock_field "$_SOT_LOCK_HOLDER" 6) ($age old): $_SOT_LOCK_WHY. If it is dead, run any comm command on ${who%%:*}, or run comm-registry-lock-clear.sh."

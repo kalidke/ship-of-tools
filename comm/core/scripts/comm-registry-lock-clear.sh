@@ -31,13 +31,15 @@ if [ ! -e "$_SOT_REG_LOCK" ]; then
     echo "registry lock $_SOT_REG_LOCK is free"
     exit 0
 fi
-if [ -z "$_SOT_LOCK_HOLDER" ]; then
+if [ -n "$_SOT_LOCK_BYHAND" ]; then
     echo "NOT cleared: registry lock $_SOT_REG_LOCK: $_SOT_LOCK_WHY. No reclaim can clear it: if its holder is dead, remove the lock by hand." >&2
     exit 1
 fi
-if [[ "${_SOT_LOCK_WHO:-$_SOT_LOCK_HOLDER}" =~ ^[^:]*:-:-:-:[0-9]+:-$ ]]; then
-    echo "NOT cleared: registry lock $_SOT_REG_LOCK: $_SOT_LOCK_WHY. That record has no proof fields, so no box can prove it dead: if it is, remove the lock by hand." >&2
+held=""
+[ -z "$_SOT_LOCK_HOLDER" ] || held=", held by ${_SOT_LOCK_HOLDER%%:*} pid $(_sot_lock_field "$_SOT_LOCK_HOLDER" 5)"
+if [[ "$_SOT_LOCK_WHO" =~ ^[^:]*:-:-:-:[0-9]+:-$ ]]; then
+    echo "NOT cleared: registry lock $_SOT_REG_LOCK$held: $_SOT_LOCK_WHY. That record has no proof fields, so no box can prove it dead: if it is, remove the lock by hand." >&2
     exit 1
 fi
-echo "NOT cleared: registry lock $_SOT_REG_LOCK: $_SOT_LOCK_WHY" >&2
+echo "NOT cleared: registry lock $_SOT_REG_LOCK$held: $_SOT_LOCK_WHY" >&2
 exit 1

@@ -145,12 +145,18 @@ a stream; the record keeps its colons.
   settles 1 s, reads the lock again fresh (open its folder, then open the
   record), and removes it only if it still names D. Only the marker's creator
   acts; if the creator died too, the next waiter proves that and takes
-  `reclaim.<creator>`, which carries the same authority. Markers are kept
-  forever, but for a daemon's own (below). A marker naming a record the walk
-  has already passed, other than the waiter's own, ends it: no reclaim can
-  pass that marker, and FAILED says to remove the lock by hand. A removed lock
-  is retaken at once, as part of the try that removed it, even past the
-  deadline below.
+  `reclaim.<creator>`, which carries the same authority. A lock naming the
+  daemon itself, seen by the daemon thread with the turn (below), was left by
+  one of its threads, and is reclaimed like a dead holder's, through a marker
+  naming the daemon. Markers are kept forever, but for that one: the daemon
+  removes it when that reclaim removes the lock or finds it gone after the
+  settle, and every record its walk passed is its own. An ID is the process's
+  own only with its proof fields: `-` never equals anything, so a daemon or
+  script with none never adopts a marker or reclaims a lock as its own. A
+  marker naming a record the walk has already passed, other than the waiter's
+  own, ends it: no reclaim can pass that marker, and FAILED says to remove the
+  lock by hand. A removed lock is retaken at once, as part of the try that
+  removed it, even past the deadline below.
 - **Bounds** are deadlines, polled every 50 ms (`SOT_LOCK_WAIT_SECS` in the
   scripts): 10 s for join, leave, spawn, despawn, status and the daemon's
   workspace destroy; about 1 s for the best-effort `last_seen` touches of send,
@@ -161,13 +167,7 @@ a stream; the record keeps its colons.
   failed take, every sleep and every marker a step walks past its first, so no
   reclaim chains past the deadline and no try starts after it. One daemon
   thread at a time is inside the lock, and its wait for that turn counts
-  inside the same deadline; a lock naming the daemon itself, seen by the thread
-  with the turn, was left by one of its threads, and is reclaimed like a dead
-  holder's, through a marker naming the daemon, which it removes once the lock
-  is gone. An ID is the process's own only with its proof fields: `-` never
-  equals anything, so a daemon or script with none never adopts a marker or
-  reclaims a lock as its own. The scripts'
-  clock is bash 5's `EPOCHREALTIME`, or perl's `Time::HiRes` before bash 5
+  inside the same deadline. The scripts' clock is bash 5's `EPOCHREALTIME`, or perl's `Time::HiRes` before bash 5
   (the mail tools check it there); both are wall clocks, so a clock jump can
   stretch or shorten one wait. The daemon's is monotonic.
 - **FAILED** names the holder and the recovery, in the scripts and in the
@@ -180,7 +180,9 @@ a stream; the record keeps its colons.
   reclaim can clear (no readable holder, an older version's, or a marker
   naming a record its walk already passed) says `registry lock <path> still
   held (<age> old): <why>. If its holder is dead, remove <path> by hand and
-  retry.` `comm-registry-lock-clear.sh` takes the
+  retry.` A wait that ends with no holder read, the lock released or taken
+  again just then, says `registry lock <path> was not taken by the deadline:
+  <why>. Retry.` `comm-registry-lock-clear.sh` takes the
   reclaim path above with a person's word in place of the holder's liveness
   proof, and nothing else: it never clears a holder this box proves alive, it
   never passes a marker whose creator this box cannot prove dead, and it is
@@ -199,12 +201,21 @@ a stream; the record keeps its colons.
   lands later than that is not covered. A clear killed during its settle, or
   whose re-read fails, on a box that proves no deaths (macOS, git-bash) leaves
   `reclaim.<D>` naming a record no box can prove dead: every later clear
-  refuses, and the lock is removed by hand. A daemon S killed during its own
-  reclaim's settle, or whose re-read there fails and that dies before another
-  of its writes adopts the marker, leaves `reclaim.<S>` naming S while the lock
-  names S; so does one whose removal of that marker fails and that later
-  leaves its lock and dies. Every walk then stops at that marker, and the lock
-  is removed by hand.
+  refuses, and the lock is removed by hand. A daemon S killed after taking its
+  own marker and before removing the lock (the settle and the re-read
+  included), or whose re-read fails and that dies before another of its writes
+  adopts the marker, leaves `reclaim.<S>` naming S while the lock names S; so
+  does one whose removal of that marker fails and that later leaves its lock
+  and dies. Every walk then stops at that marker, and the lock is removed by
+  hand. A clear on another box, run on a person's false word that a live S is
+  dead, can remove S's live lock, so two processes hold it; S's ID is the same
+  on every hold, so this was so before any daemon removed its own marker. That
+  clear also leaves `reclaim.<S>` naming itself, which no walk on S's box can
+  pass: a lock S later leaves is refused until a clear on that clear's box, or
+  a person by hand, removes it. A removal of `reclaim.<S>` that failed for a
+  live S but reaches the server later (NFS) can remove a later walker's
+  `reclaim.<S>` after S has died, so two walkers each act for one dead holder,
+  and one can remove the lock the other retook; this is very improbable.
 
 ## Message frame (inbox JSONL, one object per line)
 
