@@ -25,7 +25,7 @@
 # ignoring it left sessions deaf to everything filed before they armed.
 #
 # TWO INBOXES ON WINDOWS, one cursor each, exactly as comm-watch.sh already
-# reads them: there is no relay bridge on a frontend box, so the frontend
+# reads them: the frontend
 # files every inbound frame into its own fe-inbox.jsonl, while a send from a
 # session on the SAME box still lands in inbox/<handle>.jsonl. Watching only
 # the per-handle file there woke a session on half its mail and never on the
@@ -332,7 +332,7 @@ _comm_wake_deliver_full() {
 # count CYCLES), so the poll slowed down on the third cycle instead of the
 # fifth.
 _comm_wake_deliver_ping() {
-    local any_directed=0 all_selftest=1 rc text_to_type read_pos verdict
+    local any_directed=0 rc read_pos verdict
     local i total prog
     ENDS=()
 
@@ -386,16 +386,13 @@ _comm_wake_deliver_ping() {
         # cycle re-read the entire file -- 1430 lines on a live box is 1430
         # spawns inside one two-second cycle. Nothing is capped or skipped to
         # pay for this: every line in the range is still read, by one process
-        # that answers the only two questions the batch decides -- is any of
-        # it directed at us, and is all of it the selftest frame.
+        # that answers the one question the batch decides -- is any of
+        # it directed at us.
         # printf -v, not a quoted splice: the condition contains `$me` for jq
         # and a double-quoted splice would have bash expand it away first.
-        printf -v prog 'reduce (inputs | (fromjson? // empty) | select(type == "object")) as $f ({d: 0, s: 1}; if ($f | %s) then {d: 1, s: (if ($f.from == "__selftest__") then .s else 0 end)} else . end) | "\\(.d) \\(.s)"' "${CONDS[$i]}"
+        printf -v prog 'reduce (inputs | (fromjson? // empty) | select(type == "object")) as $f ({d: 0}; if ($f | %s) then {d: 1} else . end) | "\\(.d)"' "${CONDS[$i]}"
         verdict="$(sed -n "$((POS[$i] + 1)),${total}p" "$INBOX" | sot_jq -Rrn --arg me "$HANDLE" "$prog" 2>/dev/null)"
-        case "$verdict" in
-            "1 1") any_directed=1 ;;
-            "1 0") any_directed=1; all_selftest=0 ;;
-        esac
+        [ "$verdict" = 1 ] && any_directed=1
     done
     sot_inbox_read_unlock
 
@@ -438,12 +435,7 @@ _comm_wake_deliver_ping() {
         blocked_since=""
     fi
 
-    if [ "$all_selftest" -eq 1 ]; then
-        text_to_type="$SELFTEST_TEXT"
-    else
-        text_to_type="$PING_TEXT"
-    fi
-    _comm_wake_ping_inject "$text_to_type"
+    _comm_wake_ping_inject "$PING_TEXT"
     rc=$?
     if [ "$rc" -eq 2 ]; then exit 0; fi
     [ "$rc" -eq 0 ] && _comm_wake_advance
@@ -703,7 +695,6 @@ _comm_wake_main() {
     else
         PING_TEXT="[sot-comm] new message for @$HANDLE — run ~/.sot-comm/bin/comm-poll.sh"
     fi
-    SELFTEST_TEXT="[sot-comm] wake selftest OK — nothing to read"
 
     # START-TIME MUTEX. Two watchers double every ping, and the one the marker
     # does not name is invisible to every future start and unreapable by every

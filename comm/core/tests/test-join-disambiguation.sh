@@ -1721,9 +1721,8 @@ FAKEUNAME
         LOCALAPPDATA= XDG_STATE_HOME= HOME= SOT_COMM_HOME="$WORK/winnoop-home2" \
         bash -c 'source "$1"; sot_fe_inbox_path' _ "$lib" 2>&1)"
     [ -n "$out" ] || { echo "  empty path with every variable cleared"; return 1; }
-    [ "$out" = "/sot/fe-inbox.jsonl" ] \
-        && { echo "  receive path collapsed to a bare /-rooted guess: $out"; return 1; }
-    case "$out" in */.local/state/sot/fe-inbox.jsonl) ;; *) echo "  not rooted under the fallback directory: '$out'"; return 1 ;; esac
+    [ "$out" = "/.local/state/sot/fe-inbox.jsonl" ] \
+        || { echo "  fallback path wrong (want /.local/state/sot/fe-inbox.jsonl): '$out'"; return 1; }
 
     rm -rf "${WORK:?}/winnoop-home2"
     return 0

@@ -92,10 +92,29 @@ done
 out="$(POLL "$PATH")"; rc=$?
 check "all tools: poll behaves as before" "$out" "No messages."
 check "all tools: poll exits 0" "$rc" "0"
-out="$(START "$PATH")"
+out="$(START "$PATH")"; rc=$?
 hasnt "all tools: session start says nothing missing" "$out" "is missing"
+# The 2026-09-19 cold-start field bug: a cold start must exit 0, print exactly
+# one BOOTSTRAP-ARM line, and report the identity as ok.
+check "all tools: cold session start exits 0" "$rc" "0"
+check "all tools: exactly one BOOTSTRAP-ARM line" "$(printf '%s\n' "$out" | grep -c '^BOOTSTRAP-ARM ')" "1"
+has "all tools: cold session start reports identity=ok" "$out" "identity=ok"
 out="$(STOP "$PATH")"
 check "all tools: stop hook prints no block" "$out" ""
+
+# The tool-fault block records its feedback (fb_file is set up before it), so
+# the next Stop knows it as the hook's own and not a new prompt: with jq
+# present and flock missing, the feedback file is written.
+rm -rf "${SOT_COMM_HOME:?}/state"; mkdir -p "$SOT_COMM_HOME/state"
+printf '{"transcript_path":"%s"}' "$WORK/tp.jsonl" \
+    | PATH="$(path_without flock)" CLAUDE_CODE_SESSION_ID=fb-sess "$BASH_BIN" "$HOOKS_DIR/comm-status-idle.sh" >/dev/null 2>&1
+fbn="$(ls "$SOT_COMM_HOME"/state/stop-feedback-fb-sess.jsonl 2>/dev/null | wc -l)"
+check "flock missing: the block's feedback is recorded" "$fbn" "1"
+rm -rf "${SOT_COMM_HOME:?}/state"; mkdir -p "$SOT_COMM_HOME/state"
+
+# With jq missing and stop_hook_active true, a Stop never blocks twice in a row.
+out="$(printf '{"stop_hook_active":true}' | PATH="$(path_without jq)" "$BASH_BIN" "$HOOKS_DIR/comm-status-idle.sh" 2>/dev/null)"
+hasnt "jq missing, stop_hook_active: no block" "$out" '"decision":"block"'
 
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

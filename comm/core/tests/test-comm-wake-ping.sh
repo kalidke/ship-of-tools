@@ -2,7 +2,7 @@
 # test-comm-wake-ping.sh — `comm-wake.sh <handle> --deliver ping`'s notice
 # path: one fixed line typed for a whole batch of new directed messages
 # (never the message text itself — the session reads that with
-# comm-poll.sh), the selftest-only variant, the prompt-free gate, ping
+# comm-poll.sh), the prompt-free gate, ping
 # coalescing (an unread ping suppresses a second one; a cursor whose CONTENT
 # already covers the pending batch's newest ts skips a second ping rather
 # than firing on any cursor movement at all), the no-reply give-up (pty.screen
@@ -129,39 +129,6 @@ EOF
     # would false-positive on the sandbox path embedded in the ping text.
     local expected="[sot-comm] new message for @watchee — run $d/bin/comm-poll.sh"
     [ "$(cat "$attempts" 2>/dev/null)" = "$expected" ] || { echo "  typed text was '$(cat "$attempts" 2>/dev/null)', want '$expected'"; return 1; }
-    return 0
-}
-
-case_selftest_only_batch_types_the_selftest_text() {
-    local d="$WORK/selftest-only"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state"
-    : > "$d/inbox/watchee.jsonl"
-    local calls="$d/pty-input.calls" attempts="$d/pty-input.log"
-    : > "$calls"
-    cat > "$d/run.sh" <<EOF
-source "$WAKE"
-export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
-sot_daemon_endpoint() { printf fixture; }
-_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
-_comm_wake_pty_input() {
-    printf x >> "$calls"
-    printf '%s' "\$2" | base64 -d >> "$attempts"; printf '\n' >> "$attempts"
-    printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'
-}
-turns=0
-sleep() {
-    turns=\$((turns + 1))
-    if [ "\$turns" -eq 1 ]; then
-        printf '{"from":"__selftest__","to":"me","msg":"ping"}\n{"from":"__selftest__","to":"me","msg":"ping2"}\n' >> "$d/inbox/watchee.jsonl"
-    fi
-    [ "\$turns" -le 2 ] || exit 0
-}
-_comm_wake_main watchee --deliver ping --owner \$\$
-EOF
-    bash "$d/run.sh" 2>/dev/null
-    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
-    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s), want exactly 1"; return 1; }
-    grep -q "wake selftest OK" "$attempts" || { echo "  typed text was not the selftest notice: $(cat "$attempts")"; return 1; }
     return 0
 }
 
@@ -1568,7 +1535,6 @@ check "a frame the frontend files on Windows pings this session" case_a_frontend
 check "mail in both inboxes in one cycle types the notice once" case_both_inboxes_in_one_cycle_ping_once
 check "the five-probe silence budget is per cycle, not per inbox" case_the_silence_budget_is_five_cycles_with_both_sources_hot
 check "a frontend frame for another handle on the box does not ping" case_a_frontend_frame_for_another_handle_does_not_ping
-check "a batch that is only __selftest__ frames types the selftest notice" case_selftest_only_batch_types_the_selftest_text
 check "a not-free prompt withholds the ping and types it once the prompt frees up" case_prompt_not_free_waits_then_types_once_free
 check "five unanswered pty.screen probes back off instead of giving up" case_five_unanswered_probes_back_off_and_keep_watching
 check "the poll speeds up again once the daemon answers" case_the_poll_speeds_up_again_once_the_daemon_answers

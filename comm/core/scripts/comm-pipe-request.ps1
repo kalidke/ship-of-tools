@@ -32,11 +32,9 @@
 #     it, then relays EVERY line the pipe sends to stdout verbatim for up
 #     to -TimeoutSec seconds (no op filtering -- the bash side's own
 #     filter_inbound does that, exactly as it does for nc_hold's unix/tcp
-#     arms). Used by comm-relay.sh's `ask` (a bounded reply-listening
-#     window); there is no unbounded/forever form here on purpose -- a
-#     Windows box never runs a persistent bridge loop (it would pin this
-#     process open and block update_comm's replace-in-place, the same
-#     reason comm-listen.sh starts no bridge on Windows at all).
+#     arms). There is no unbounded/forever form here on purpose: a
+#     persistent reader would pin this process open and block
+#     update_comm's replace-in-place.
 #
 # Connects with NamedPipeClientStream(".", <name>, InOut) -- the same call
 # scripts/sot-local-daemon.ps1's Test-SotPipeOpen already uses to probe

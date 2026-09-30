@@ -136,16 +136,25 @@ CTX="$HOME_DIR/bin/comm-context.sh"; [ -x "$CTX" ] || CTX="$SELF_DIR/comm-contex
 # sees its mail, so the hook SAYS so instead of passing: it must not need the
 # missing tool to do it, so the joined-agent test below falls back to grep and
 # the block is printed by hand. flock and perl are the inbox lock, Linux only.
+# The list and the message are comm-lib.sh's (sot_mail_tools, sot_require_tools),
+# read in a subshell like the other lib reads here.
 tool_miss=""; tool_warn=""
-for _t in jq $([ "$(uname -s 2>/dev/null)" = Linux ] && echo flock perl); do
+_mail_tools="$( . "$HOME_DIR/bin/comm-lib.sh" 2>/dev/null || . "$SELF_DIR/comm-lib.sh" 2>/dev/null; sot_mail_tools 2>/dev/null)" || _mail_tools=""
+[ -n "$_mail_tools" ] || _mail_tools="jq"
+for _t in $_mail_tools; do
     command -v "$_t" >/dev/null 2>&1 && continue
     tool_miss="${tool_miss:+$tool_miss }$_t"
-    tool_warn="${tool_warn:+$tool_warn }sot-comm: cannot check mail at turn end: $_t is missing (install it)."
 done
+if [ -n "$tool_miss" ]; then
+    # shellcheck disable=SC2086
+    tool_warn="$( . "$HOME_DIR/bin/comm-lib.sh" 2>/dev/null || . "$SELF_DIR/comm-lib.sh" 2>/dev/null
+        sot_require_tools "check mail at turn end" $tool_miss 2>&1 | tr '\n' ' ')"
+    tool_warn="${tool_warn% }"
+fi
 if command -v jq >/dev/null 2>&1; then
     registered() { jq -e --arg n "${NAME:-}" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; }
 else
-    registered() { grep -q -F "\"${NAME:-}\"" "$REGISTRY" 2>/dev/null; }
+    registered() { grep -q "\"${NAME:-}\"[[:space:]]*:" "$REGISTRY" 2>/dev/null; }
 fi
 if [ -z "${NAME:-}" ] || ! registered; then
     turn_floor; exit 0
@@ -173,23 +182,27 @@ mail_key="${CLAUDE_CODE_SESSION_ID:-${SOT_WORKSPACE_ID:-}}"
 # (emit_block) and the first turn end with the tools present clears the tick.
 # Failing open, like the other ticks, when the tick cannot be recorded. The
 # block is printed by hand: jq itself may be the missing tool.
+if [ -n "$tp" ]; then
+    fb_file="$HOME_DIR/state/stop-feedback-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').jsonl"
+    trap '[ -n "$blocked" ] || rm -f -- "${fb_file:?}" 2>/dev/null' EXIT
+fi
+
 tool_tick="$HOME_DIR/state/tool-fault-$(printf '%s' "$NAME.$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
 if [ -z "$tool_miss" ]; then
     rm -f "${tool_tick:?}" 2>/dev/null
 else
     echo "$tool_warn" >&2
+    # Never inside a stop-hook continuation: with jq missing there may be no
+    # stable session key, so the tick could never match and every Stop would
+    # block again.
+    case "$input" in *'"stop_hook_active":true'*) turn_floor; exit 0 ;; esac
     if [ "$(cat "$tool_tick" 2>/dev/null || true)" != "$tool_miss" ]; then
         mkdir -p "$HOME_DIR/state" 2>/dev/null || true
         if printf '%s' "$tool_miss" 2>/dev/null > "$tool_tick"; then
-            printf '{"decision":"block","reason":"%s"}\n' "$tool_warn"
+            print_block "$(printf '{"decision":"block","reason":"%s"}' "$tool_warn")"
             exit 0
         fi
     fi
-fi
-
-if [ -n "$tp" ]; then
-    fb_file="$HOME_DIR/state/stop-feedback-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').jsonl"
-    trap '[ -n "$blocked" ] || rm -f -- "${fb_file:?}" 2>/dev/null' EXIT
 fi
 
 # The current turn's slice: everything after the last HUMAN/machine prompt (a
@@ -298,9 +311,7 @@ fi
 #
 # What counts as mail: `to` non-empty (a BROADCAST, to == "", never fires this —
 # the same demotion rule the sender and the ping watcher apply), `from` neither
-# this handle (self-echo) nor `__selftest__` (a wake proof comm-poll.sh does not
-# show, so it must not hold a turn open either), and the line sitting PAST the
-# read cursor. The cursor is a LINE OFFSET (comm-lib.sh's sot_cursor_offset owns
+# this handle (self-echo), and the line sitting PAST the read cursor. The cursor is a LINE OFFSET (comm-lib.sh's sot_cursor_offset owns
 # the format, including the one-shot conversion of a legacy ts cursor, which
 # is NEVER written back from here). Timestamps could not do this job: they are second-resolution
 # and every comparison was strictly-greater, so a frame filed in the same second
@@ -341,7 +352,7 @@ if [ -r "$MAIL_INBOX" ]; then
             mail_pending="$(sed -n "$((mail_pos + 1)),${mail_total}p" "$MAIL_INBOX" 2>/dev/null \
                 | jq -Rrs --arg me "$NAME" '[ split("\n")[] | select(length > 0)
                     | (fromjson? // empty) | select(type == "object")
-                    | select(((.to // "") != "") and (.from // "") != $me and (.from // "") != "__selftest__")
+                    | select(((.to // "") != "") and (.from // "") != $me)
                   ] | length' 2>/dev/null || echo 0)"
         fi
         echo "$mail_total $mail_pending"
@@ -385,7 +396,7 @@ if [ -n "$FE_MAIL_INBOX" ] && [ -r "$FE_MAIL_INBOX" ]; then
         fe_pending="$(sed -n "$((fe_pos + 1)),${fe_total}p" "$FE_MAIL_INBOX" 2>/dev/null \
             | jq -Rrs --arg me "$NAME" '[ split("\n")[] | select(length > 0)
                 | (fromjson? // empty) | select(type == "object")
-                | select((.to // "") == $me and (.from // "") != $me and (.from // "") != "__selftest__")
+                | select((.to // "") == $me and (.from // "") != $me)
               ] | length' 2>/dev/null || echo 0)"
         case "$fe_pending" in ''|*[!0-9]*) fe_pending=0 ;; esac
     fi

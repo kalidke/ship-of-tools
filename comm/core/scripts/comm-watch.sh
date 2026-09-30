@@ -23,11 +23,6 @@
 #                                                 next natural turn (wake-ups cost a
 #                                                 model turn each)
 #   - everything else (directed, .to non-empty) -> emitted -> wakes the session
-#   - the __selftest__ frame is NOT special-cased and MUST stay emitted: it's
-#     from:__selftest__ to:<you> (directed, non-empty .to), so it passes the
-#     select naturally. The post-arm wake-proof in sot-session-start RELIES on
-#     this Monitor firing on that frame. (comm-poll.sh does the opposite and
-#     FILTERS __selftest__ — wake here, ignore there; do not conflate.)
 #
 # TWO SOURCES ON WINDOWS, and this used to be an EITHER/OR (2026-09-27): the
 # native frontend files every inbound relay frame straight into fe-inbox.jsonl

@@ -97,8 +97,7 @@ This section is ADR 0049's design of record. The mechanism below lands in
 stages; until each stage does, the two-mode delivery and ping watcher this
 replaces stay in place. The per-session relay bridge is gone on every box
 that shares the hub's comm folder: the hub files for every handle that folder
-lists. A Windows host's receive path is still its frontend's `fe-inbox.jsonl`
-until B2.
+lists. A Windows host's receive path is still its frontend's `fe-inbox.jsonl`.
 
 **Words.** A *row* is a session running inside Ship of Tools. The *daemon*
 is the background program on each box that runs that box's rows; it keeps
@@ -242,7 +241,7 @@ the transport's stderr is read only when no answer came, and then only
 lengthens the reason. The read window is the lock wait plus 10 seconds, so a
 hub that waited out the lock and then filed is not reported `FAILED`.
 
-**Landing in stages: until B2, a handle the hub's folder does not list
+**Landing in stages: a handle the hub's folder does not list
 (`not_here`) falls back to the older route** — `agent.send` offered to
 everything attached to the hub, decided on a filer's receipt. There, a
 receipt gives `filed -> @h (by <filer>, relay)` (exit 0); an ack whose roster
@@ -255,7 +254,8 @@ transport failed with one to give, else `FAILED -> @h: the daemon did not
 answer at <endpoint>`. Every one of those but the receipt exits 1. A broadcast
 (`send --all`) still goes this way and prints `relayed -> <all> (<n>
 receiver(s)) via <endpoint>`. With no daemon found at all a wire send prints
-`FAILED -> @h: no sotd daemon found; …` and exits 1. 
+`FAILED -> @h: no sotd daemon found; …` and exits 1.
+
 Nothing is queued anywhere, and a failed send is not retried by another
 route. To get an answer, send, end the turn, and be woken.
 
