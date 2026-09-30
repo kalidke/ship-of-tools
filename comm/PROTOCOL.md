@@ -169,6 +169,22 @@ lists the receiver:
    folder lists the handle and a session holds it, it adds the line under
    the same inbox lock and answers `ok`.
 
+**The wait is chosen by lock kind, and bounded at 10 s (`SOT_INBOX_LOCK_WAIT_SECS`)
+on both paths.** The Linux NFSv4 client retries a blocked lock with a backoff
+that doubles from 100 ms, so a local writer re-takes the lock before a remote
+waiter's next retry and a blocking waiter can sleep past a free lock. Under
+`nfs4 …` the daemon's filer and the scripts therefore try the lock without
+blocking every 15-25 ms (jittered) until the bound; under `local …` or
+`none@…` (NLM on v3, one machine's own kernel lock) a blocked waiter is woken
+on release, so they block, bounded. Past the bound nothing is appended and the
+answer is `FAILED -> @<h>: the inbox lock for @<h> was held for 10s — nothing
+was appended`. The reader's shared lock takes the same choice for its 3 s
+bound. `test-inbox-lock-twohost.sh` counts a concurrency case as proof only
+when its content checks pass and its two writers overlap; its unpaced liveness
+case (shell here, shell on the peer and the daemon's filer, 200 each at once)
+expects 0 `FAILED`, since a send that fails under ordinary two-host load is a
+working-comms failure.
+
 **Readers** have two guards against a line that a failed append then cuts
 back. Where a writer would append locally (`flock(1)`, Linux, identity equal
 to line 1), the count-and-read runs under a shared lock on

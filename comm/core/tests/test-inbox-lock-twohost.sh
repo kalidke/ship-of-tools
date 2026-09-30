@@ -22,6 +22,17 @@
 # the inbox holds no line from it. The wire is a stub that records each frame
 # and never answers, so no daemon is ever dialled.
 #
+# The proof rule. Content checks ALWAYS run, for every case whatever the
+# overlap: no torn line, no lost line, no FAILED line. Overlap is reported on
+# its own PASS/FAIL line. A concurrency case (a) counts as proof only if its
+# overlap is nonzero, and the overall verdict needs, for each, content PASS and
+# overlap > 0. The (a) writers are paced 25 ms between appends on both hosts so
+# that a remote waiter's NFS lock retries (which back off from ~100 ms) meet a
+# lock in use. The liveness case (a3) stays UNPACED: shell here, shell on the
+# peer and the Rust filer here, 200 lines each, all at once; every send must be
+# `filed`, and any FAILED fails it — a send that fails under ordinary
+# two-host load is a working-comms failure.
+#
 # Pass is zero torn or lost lines, each line one JSON object, and every
 # `filed` matching exactly one line. The peer runs a COPY of this tree's
 # comm-lib.sh placed beside the inbox, so the worktree need not exist there.
@@ -86,6 +97,7 @@ wires() { [ -e "$1/wire.log" ] && wc -l < "$1/wire.log" || echo 0; }
 
 # 200 appends as writer $W, each reported `filed W-i` or `FAILED W-i`.
 APPEND='for i in $(seq 0 199); do
+    [ -z "${PACE:-}" ] || sleep "$PACE"
     if printf "{\"from\":\"%s\",\"to\":\"t11\",\"repo\":\"r\",\"msg\":\"%s-%s\",\"ts\":\"t\"}\n" "$W" "$W" "$i" \
         | sot_inbox_append t11 >/dev/null; then echo "filed $W-$i"; else echo "FAILED $W-$i"; fi
 done'
@@ -140,6 +152,17 @@ interleaved() {  # $1 = inbox file
 overlap() {  # $1 = inbox file; prints "" or a reason
     local runs; runs="$(jq -r .from "$1" 2>/dev/null | uniq | wc -l)"
     [ "$runs" -gt 2 ] || echo "the two sides did not overlap ($runs runs)"
+}
+# A proof case's two lines: content always, overlap on its own. PROOF_BAD
+# counts the cases whose content failed or whose overlap was zero.
+PROOF_BAD=0
+proof_case() {  # $1 = description, $2 = inbox file, $3.. = check_inbox args (want, reports)
+    local d="$1" f="$2" content ov; shift 2
+    content="$(check_inbox "$f" "$@")"
+    ov="$(overlap "$f")"
+    verdict "$d: content ($(interleaved "$f"))" "$content"
+    verdict "$d: overlap > 0 ($(jq -r .from "$f" 2>/dev/null | uniq | wc -l) writer runs)" "$ov"
+    [ -z "$content$ov" ] || PROOF_BAD=$((PROOF_BAD + 1))
 }
 
 echo "peer: $PEER; working folder on the shared home; wait ${WAIT}s"
@@ -238,7 +261,7 @@ fi
 
 # ---- (a1) Rust here, shell there, one inbox --------------------------------
 c="$(new_case a1)"; mkfifo "$LOCAL/go.a1"; t0=$SECONDS
-peer_sh "$c" "echo ready; read -r _; W=peer; $APPEND" < "$LOCAL/go.a1" > "$LOCAL/a1.peer" &
+peer_sh "$c" "echo ready; read -r _; PACE=0.025; W=peer; $APPEND" < "$LOCAL/go.a1" > "$LOCAL/a1.peer" &
 exec 7> "$LOCAL/go.a1"
 rust_arm "$c" t11_rust_appends_200 > "$LOCAL/a1.rust" &
 rpid=$!
@@ -247,19 +270,37 @@ for _ in $(seq 1 1200); do
 done
 echo go >&7; touch "$c/inbox/go"; exec 7>&-
 wait
-verdict "(a) Rust here and shell on $PEER, 200 each, one inbox ($((SECONDS - t0))s, $(jq -r .from "$c/inbox/t11.jsonl" | uniq | wc -l) writer runs; $(interleaved "$c/inbox/t11.jsonl"))" \
-    "$(overlap "$c/inbox/t11.jsonl")$(check_inbox "$c/inbox/t11.jsonl" 400 "$LOCAL/a1.peer" "$LOCAL/a1.rust")"
+proof_case "(a) Rust here and shell on $PEER, 200 each, paced, one inbox ($((SECONDS - t0))s)" \
+    "$c/inbox/t11.jsonl" 400 "$LOCAL/a1.peer" "$LOCAL/a1.rust"
 
 # ---- (a2) shell here, shell there, one inbox --------------------------------
 c="$(new_case a2)"; mkfifo "$LOCAL/go.a2"; t0=$SECONDS
-peer_sh "$c" "echo ready; read -r _; W=peer; $APPEND" < "$LOCAL/go.a2" > "$LOCAL/a2.peer" &
+peer_sh "$c" "echo ready; read -r _; PACE=0.025; W=peer; $APPEND" < "$LOCAL/go.a2" > "$LOCAL/a2.peer" &
 exec 7> "$LOCAL/go.a2"
-local_sh "$c" "while [ ! -e \"\$SOT_COMM_HOME/inbox/go\" ]; do sleep 0.01; done; W=here; $APPEND" > "$LOCAL/a2.here" &
+local_sh "$c" "while [ ! -e \"\$SOT_COMM_HOME/inbox/go\" ]; do sleep 0.01; done; PACE=0.025; W=here; $APPEND" > "$LOCAL/a2.here" &
 for _ in $(seq 1 600); do grep -q ready "$LOCAL/a2.peer" 2>/dev/null && break; sleep 0.1; done
 echo go >&7; touch "$c/inbox/go"; exec 7>&-
 wait
-verdict "(a) shell here and shell on $PEER, 200 each, one inbox ($((SECONDS - t0))s, $(jq -r .from "$c/inbox/t11.jsonl" | uniq | wc -l) writer runs; $(interleaved "$c/inbox/t11.jsonl"))" \
-    "$(overlap "$c/inbox/t11.jsonl")$(check_inbox "$c/inbox/t11.jsonl" 400 "$LOCAL/a2.peer" "$LOCAL/a2.here")"
+proof_case "(a) shell here and shell on $PEER, 200 each, paced, one inbox ($((SECONDS - t0))s)" \
+    "$c/inbox/t11.jsonl" 400 "$LOCAL/a2.peer" "$LOCAL/a2.here"
+
+# ---- (a3) liveness: shell here, shell there and the Rust filer, unpaced ------
+# Three writers, 200 each, all at once, no pacing. Content as always, and every
+# send must be `filed`: FAILED counts are reported per writer, any FAILED fails.
+c="$(new_case a3)"; mkfifo "$LOCAL/go.a3"; t0=$SECONDS
+peer_sh "$c" "echo ready; read -r _; W=peer; $APPEND" < "$LOCAL/go.a3" > "$LOCAL/a3.peer" &
+exec 7> "$LOCAL/go.a3"
+SOT_T11_PACE_MS=0 rust_arm "$c" t11_rust_appends_200 > "$LOCAL/a3.rust" &
+local_sh "$c" "while [ ! -e \"\$SOT_COMM_HOME/inbox/go\" ]; do sleep 0.01; done; W=here; $APPEND" > "$LOCAL/a3.here" &
+for _ in $(seq 1 1200); do
+    grep -q ready "$LOCAL/a3.peer" 2>/dev/null && [ -e "$c/inbox/rust.ready" ] && break; sleep 0.1
+done
+echo go >&7; touch "$c/inbox/go"; exec 7>&-
+wait
+failed_of() { grep -c '^FAILED' "$1" 2>/dev/null; }
+nf_peer="$(failed_of "$LOCAL/a3.peer")"; nf_here="$(failed_of "$LOCAL/a3.here")"; nf_rust="$(failed_of "$LOCAL/a3.rust")"
+verdict "(a3) liveness, unpaced, 600 sends: FAILED peer $nf_peer, here $nf_here, Rust $nf_rust; content ($((SECONDS - t0))s)" \
+    "$([ "$((nf_peer + nf_here + nf_rust))" -eq 0 ] || echo "sends were FAILED under ordinary load: $(grep -h '^FAILED' "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust" | head -2 | tr '\n' ' ')")$(check_inbox "$c/inbox/t11.jsonl" 600 "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust")"
 
 # The inbox after a freeze: the holder's line whole, the frozen-out send absent.
 check_after_freeze() {  # $1 = inbox file, $2 = the refused msg, $3 = send report
@@ -343,6 +384,7 @@ fi
 
 n=0; for w in "$DIR"/*/wire.log; do [ -e "$w" ] && n=$((n + $(wc -l < "$w"))); done
 verdict "no send on either side went to the wire" "$([ "$n" -eq 0 ] || echo "$n wire frames")"
+verdict "proof: every (a) case has content PASS and overlap > 0" "$([ "$PROOF_BAD" -eq 0 ] || echo "$PROOF_BAD proof case(s) failed content or had no overlap")"
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

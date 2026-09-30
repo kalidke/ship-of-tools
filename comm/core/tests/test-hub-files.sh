@@ -791,6 +791,44 @@ case_the_cursor_takes_a_bare_count_a_ts_and_a_hash_and_steps_back_one() {
     return 0
 }
 
+# The wait is chosen by lock kind: under `nfs4 …` the append POLLS (`flock -n`,
+# every 15-25 ms) and follows a release within a retry; under `local …` or
+# `none@…` it BLOCKS (`flock -w`), as before. A wrapper logs each flock call.
+case_the_lock_wait_is_chosen_by_lock_kind() {
+    local mid=0123456789abcdef0123456789abcdef kind mnt rec want t0 ms real
+    real="$(command -v flock)"
+    mkdir -p "$WORK/fbin"
+    printf '#!/bin/sh\necho "$*" >> "%s/flock.log"\nexec %s "$@"\n' "$WORK" "$real" > "$WORK/fbin/flock"
+    chmod +x "$WORK/fbin/flock"
+    for kind in nfs4 local none; do
+        case "$kind" in
+            nfs4)  mnt="nfs4 rw,vers=4.2,local_lock=none filer.example:/export/home"; rec="$RECORD"; want=poll ;;
+            local) mnt="ext4 rw /dev/sda1"; rec="local $mid"; want=block ;;
+            none)  mnt="nfs rw,vers=3 filer.example:/export/home"; rec="none@$mid"; want=block ;;
+        esac
+        setup_rows || return 1
+        printf '%s\n' "$rec" > "$SOT_COMM_HOME/inbox-lock-manager"
+        rm -f "$WORK/flock.log"
+        start_holder 'exec sleep 0.3' || { echo "  no holder"; return 1; }
+        t0="$(date +%s%N)"
+        if ! FAKE_MNT="$mnt" PATH="$WORK/fbin:$PATH" append_one "$PEER" '{"from":"a","to":"'"$PEER"'","repo":"r","msg":"w","ts":"t"}' >/dev/null; then
+            echo "  $kind: append refused"
+            printf '%s\n' "$RECORD" > "$SOT_COMM_HOME/inbox-lock-manager"
+            return 1
+        fi
+        ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+        printf '%s\n' "$RECORD" > "$SOT_COMM_HOME/inbox-lock-manager"
+        echo "  $kind: filed ${ms} ms after start, flock calls: $(tr '\n' '|' < "$WORK/flock.log")"
+        [ "$ms" -lt 450 ] || { echo "  $kind: took ${ms} ms, more than a retry after the 300 ms release"; return 1; }
+        case "$want" in
+            poll)  grep -q -e '-n ' "$WORK/flock.log" && ! grep -q -e '-w ' "$WORK/flock.log" || { echo "  $kind should poll"; return 1; } ;;
+            block) grep -q -e '-w ' "$WORK/flock.log" && ! grep -q -e '-n ' "$WORK/flock.log" || { echo "  $kind should block"; return 1; } ;;
+        esac
+        [ "$(whole_lines "$INBOX/$PEER.jsonl")" = 1 ] || { echo "  $kind: inbox not one whole line"; return 1; }
+    done
+    return 0
+}
+
 check "two writers through the lock give 400 whole lines" case_two_writers_give_400_whole_lines
 check "a holder killed with -9 frees the lock at once and the send files" case_a_killed_holder_frees_the_lock_at_once
 check "a frozen holder makes the send wait its bound and report FAILED, never filed" case_a_frozen_holder_makes_the_send_wait_then_fail
@@ -818,6 +856,8 @@ check "a frozen writer makes a poll and the end-of-turn hook say try again withi
 check "stubbed fsync failure (shell arm), locked reader: waits, counts nothing, skips nothing" case_a_reader_on_the_shared_lock_never_counts_a_line_that_is_cut_back
 check "stubbed fsync failure (shell arm), unlocked reader: steps back one line and skips nothing" case_an_unlocked_reader_steps_back_one_line_after_a_cut_back
 check "the cursor takes a bare count, a ts and a hash, and a mismatch steps back exactly one line" case_the_cursor_takes_a_bare_count_a_ts_and_a_hash_and_steps_back_one
+
+check "the lock wait is chosen by lock kind: nfs4 polls, local and none@ block, both follow a release" case_the_lock_wait_is_chosen_by_lock_kind
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

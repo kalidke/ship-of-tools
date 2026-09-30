@@ -30,7 +30,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The one knob, read under the same name as the script arm's.
 pub const INBOX_LOCK_WAIT_ENV: &str = "SOT_INBOX_LOCK_WAIT_SECS";
@@ -63,7 +63,10 @@ struct Line<'a> {
 /// is the sentence the sender prints after `FAILED -> @<to>: `, and it means
 /// nothing was appended. The wait is bounded, but a helper thread stays
 /// blocked behind a frozen holder until that holder releases or dies; if it
-/// gets the lock after the caller gave up, it lets it go at once.
+/// gets the lock after the caller gave up, it lets it go at once. `own` is the
+/// lock identity this filing runs under; it picks how the lock is waited for
+/// (see `take_lock`).
+#[allow(clippy::too_many_arguments)]
 pub fn file_frame(
     inbox_dir: &Path,
     from: &str,
@@ -72,8 +75,9 @@ pub fn file_frame(
     text: &str,
     ts: &str,
     wait: Duration,
+    own: &str,
 ) -> Result<(), String> {
-    file_frame_with(inbox_dir, from, to, broadcast, text, ts, wait, File::sync_data)
+    file_frame_with(inbox_dir, from, to, broadcast, text, ts, wait, own, File::sync_data)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -85,6 +89,7 @@ fn file_frame_with(
     text: &str,
     ts: &str,
     wait: Duration,
+    own: &str,
     sync: impl FnOnce(&File) -> std::io::Result<()>,
 ) -> Result<(), String> {
     let failed = |e: std::io::Error| format!("the append failed: {e}");
@@ -103,10 +108,46 @@ fn file_frame_with(
         .append(true)
         .open(inbox_dir.join(format!("{to}.lock")))
         .map_err(failed)?;
-    // A blocking `lock()` queues at the lock manager as the scripts' blocking
-    // `flock -w` does; a poller never queues and loses to every blocking
-    // waiter. The helper blocks, the caller bounds the wait. A `flock` belongs
-    // to the open file description, so it travels with the `File`.
+    let lock = take_lock(lock, own, wait).map_err(|e| match e {
+        LockWait::Timeout => format!("the inbox lock for @{to} was held for {}s — nothing was appended", wait.as_secs()),
+        LockWait::Io(e) => failed(e),
+    })?;
+    let written = append_line(&inbox_dir.join(format!("{to}.jsonl")), &line, sync);
+    // The inbox is closed inside `append_line`; only now does the lock go.
+    drop(lock);
+    written.map_err(failed)
+}
+
+enum LockWait {
+    Timeout,
+    Io(std::io::Error),
+}
+
+/// The exclusive lock on the inbox's `.lock` file within `wait`, chosen by the
+/// lock manager `own`. The Linux NFSv4 client retries a blocked lock with a
+/// backoff that doubles from 100 ms, so a local writer re-takes the lock before
+/// a remote waiter's next retry and a blocking waiter can sleep past a free lock
+/// and time out: under `nfs4 ` a non-blocking try is repeated every 15-25 ms
+/// instead. NLM (v3) and one machine's own kernel lock (`local …`, `none@…`)
+/// wake a blocked waiter on release, so those block, on a helper thread that
+/// the caller bounds. A `flock` belongs to the open file description, so it
+/// travels with the `File`.
+fn take_lock(lock: File, own: &str, wait: Duration) -> Result<File, LockWait> {
+    if own.starts_with("nfs4 ") {
+        let deadline = Instant::now() + wait;
+        loop {
+            match lock.try_lock() {
+                Ok(()) => return Ok(lock),
+                Err(std::fs::TryLockError::Error(e)) => return Err(LockWait::Io(e)),
+                Err(std::fs::TryLockError::WouldBlock) => {}
+            }
+            if Instant::now() >= deadline {
+                return Err(LockWait::Timeout);
+            }
+            let jitter = 15 + u64::from(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos())) % 11;
+            std::thread::sleep(Duration::from_millis(jitter));
+        }
+    }
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let locked = lock.lock().map(|()| lock);
@@ -114,20 +155,11 @@ fn file_frame_with(
         // the error and is dropped at once, which releases the lock.
         let _ = tx.send(locked);
     });
-    let lock = match rx.recv_timeout(wait) {
-        Ok(Ok(lock)) => lock,
-        Ok(Err(e)) => return Err(failed(e)),
-        Err(_) => {
-            return Err(format!(
-                "the inbox lock for @{to} was held for {}s — nothing was appended",
-                wait.as_secs()
-            ))
-        }
-    };
-    let written = append_line(&inbox_dir.join(format!("{to}.jsonl")), &line, sync);
-    // The inbox is closed inside `append_line`; only now does the lock go.
-    drop(lock);
-    written.map_err(failed)
+    match rx.recv_timeout(wait) {
+        Ok(Ok(lock)) => Ok(lock),
+        Ok(Err(e)) => Err(LockWait::Io(e)),
+        Err(_) => Err(LockWait::Timeout),
+    }
 }
 
 /// `line` goes in whole or not at all ("filed" means kept): an unterminated
@@ -618,8 +650,8 @@ mod tests {
     fn file_frame_writes_the_bridge_line_shape_one_per_call() {
         let d = tempfile::tempdir().unwrap();
         let w = Duration::from_secs(1);
-        file_frame(d.path(), "a", "h", false, "one", "2026-01-02T03:04:05Z", w).unwrap();
-        file_frame(d.path(), "a", "h", false, "two\nlines", "2026-01-02T03:04:06Z", w).unwrap();
+        file_frame(d.path(), "a", "h", false, "one", "2026-01-02T03:04:05Z", w, "local t").unwrap();
+        file_frame(d.path(), "a", "h", false, "two\nlines", "2026-01-02T03:04:06Z", w, "local t").unwrap();
         let raw = std::fs::read_to_string(d.path().join("h.jsonl")).unwrap();
         assert_eq!(
             raw.lines().next().unwrap(),
@@ -646,7 +678,7 @@ mod tests {
                 std::thread::spawn(move || {
                     for i in 0..200 {
                         let text = format!("{w}-{i} {}", "x".repeat(64));
-                        file_frame(&dir, w, "t3", false, &text, "t", inbox_lock_wait()).unwrap();
+                        file_frame(&dir, w, "t3", false, &text, "t", inbox_lock_wait(), "local t").unwrap();
                     }
                 })
             })
@@ -676,7 +708,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("h.jsonl");
         std::fs::write(&f, "{\"a\":1}\n{\"from\":\"died\",").unwrap();
-        file_frame(d.path(), "a", "h", false, "whole", "t", Duration::from_secs(1)).unwrap();
+        file_frame(d.path(), "a", "h", false, "whole", "t", Duration::from_secs(1), "local t").unwrap();
         let lines = read_lines(&f);
         assert_eq!(lines.len(), 2, "{:?}", std::fs::read_to_string(&f));
         assert_eq!(lines[0]["a"], 1);
@@ -691,13 +723,13 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("h.jsonl");
         std::fs::write(&f, [0u8; 5000]).unwrap();
-        file_frame(d.path(), "a", "h", false, "alone", "t", Duration::from_secs(1)).unwrap();
+        file_frame(d.path(), "a", "h", false, "alone", "t", Duration::from_secs(1), "local t").unwrap();
         assert_eq!(read_lines(&f).len(), 1);
         std::fs::write(&f, "{\"a\":1}\n\0\0\0").unwrap();
-        file_frame(d.path(), "a", "h", false, "after", "t", Duration::from_secs(1)).unwrap();
+        file_frame(d.path(), "a", "h", false, "after", "t", Duration::from_secs(1), "local t").unwrap();
         assert_eq!(read_lines(&f).len(), 2);
         std::fs::write(&f, "no newline at all").unwrap();
-        file_frame(d.path(), "a", "h", false, "only", "t", Duration::from_secs(1)).unwrap();
+        file_frame(d.path(), "a", "h", false, "only", "t", Duration::from_secs(1), "local t").unwrap();
         let lines = read_lines(&f);
         assert_eq!((lines.len(), lines[0]["msg"].as_str()), (1, Some("only")));
     }
@@ -708,7 +740,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("h.jsonl");
         std::fs::write(&f, format!("{{\"a\":1}}\n{}", "x".repeat(10_000))).unwrap();
-        file_frame(d.path(), "a", "h", false, "whole", "t", Duration::from_secs(1)).unwrap();
+        file_frame(d.path(), "a", "h", false, "whole", "t", Duration::from_secs(1), "local t").unwrap();
         assert_eq!(inbox_lines(&f).len(), 2);
         assert_eq!(read_lines(&f)[0]["a"], 1);
     }
@@ -745,7 +777,7 @@ mod tests {
         std::fs::create_dir_all(&inbox).unwrap();
         let id = shell(home, &std::env::var("PATH").unwrap(), r#"sot_inbox_lock_identity "$INBOX_DIR""#);
         std::fs::write(home.join("inbox-lock-manager"), &id.stdout).unwrap();
-        file_frame(&inbox, "a", "h", false, "one", "t", Duration::from_secs(5)).unwrap();
+        file_frame(&inbox, "a", "h", false, "one", "t", Duration::from_secs(5), "local t").unwrap();
         let child = std::cell::RefCell::new(None);
         let sync = |_f: &File| -> std::io::Result<()> {
             let c = std::process::Command::new("bash")
@@ -762,7 +794,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(500));
             Err(std::io::Error::other("stubbed fsync failure"))
         };
-        let r = file_frame_with(&inbox, "a", "h", false, "inflight", "t", Duration::from_secs(5), sync);
+        let r = file_frame_with(&inbox, "a", "h", false, "inflight", "t", Duration::from_secs(5), "local t", sync);
         assert!(r.unwrap_err().contains("stubbed fsync failure"));
         assert_eq!(read_lines(&inbox.join("h.jsonl")).len(), 1, "the in-flight line was not cut back");
         let out = child.into_inner().unwrap().wait_with_output().unwrap();
@@ -810,7 +842,7 @@ mod tests {
             r#"n="$(sot_inbox_lines h)"; sot_cursor_write h "$n"; echo "$n""#,
         );
         assert_eq!(out.trim(), "2", "the unlocked reader should have counted the in-flight line");
-        file_frame(&d.path().join("inbox"), "a", "h", false, "real", "t", Duration::from_secs(5)).unwrap();
+        file_frame(&d.path().join("inbox"), "a", "h", false, "real", "t", Duration::from_secs(5), "local t").unwrap();
         let o = shell(d.path(), np, r#"sot_cursor_offset h"#);
         assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "1");
         assert!(String::from_utf8_lossy(&o.stderr)
@@ -829,13 +861,57 @@ mod tests {
             .unwrap();
         holder.lock().unwrap();
         let w = Duration::from_millis(200);
-        assert!(file_frame(d.path(), "a", "h", false, "late", "t", w).is_err());
+        assert!(file_frame(d.path(), "a", "h", false, "late", "t", w, "local t").is_err());
         drop(holder);
         let start = std::time::Instant::now();
-        file_frame(d.path(), "a", "h", false, "only", "t", w).unwrap();
+        file_frame(d.path(), "a", "h", false, "only", "t", w, "local t").unwrap();
         assert!(start.elapsed() < Duration::from_secs(1));
         let lines = read_lines(&d.path().join("h.jsonl"));
         assert_eq!((lines.len(), lines[0]["msg"].as_str()), (1, Some("only")));
+    }
+
+    // A holder frees the lock after 300 ms; the filing follows it within a
+    // retry, under either wait, and a lock that is never freed gives the same
+    // sentence at the bound.
+    fn held_then_freed(own: &str) -> (Duration, Result<(), String>) {
+        let d = tempfile::tempdir().unwrap();
+        let holder = OpenOptions::new().create(true).append(true).open(d.path().join("h.lock")).unwrap();
+        holder.lock().unwrap();
+        let freed = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(holder);
+        });
+        let start = Instant::now();
+        let r = file_frame(d.path(), "a", "h", false, "x", "t", Duration::from_secs(5), own);
+        freed.join().unwrap();
+        (start.elapsed(), r)
+    }
+
+    #[test]
+    fn under_nfs4_the_lock_is_polled_and_follows_the_unlock() {
+        let (took, r) = held_then_freed("nfs4 srv:/export");
+        r.unwrap();
+        assert!(took >= Duration::from_millis(300) && took < Duration::from_millis(500), "{took:?}");
+    }
+
+    #[test]
+    fn under_a_local_lock_the_wait_blocks_and_follows_the_unlock() {
+        for own in ["local m", "none@m"] {
+            let (took, r) = held_then_freed(own);
+            r.unwrap();
+            assert!(took >= Duration::from_millis(300) && took < Duration::from_millis(500), "{own}: {took:?}");
+        }
+    }
+
+    #[test]
+    fn both_waits_give_the_same_sentence_at_the_bound() {
+        let d = tempfile::tempdir().unwrap();
+        let holder = OpenOptions::new().create(true).append(true).open(d.path().join("h.lock")).unwrap();
+        holder.lock().unwrap();
+        for own in ["nfs4 srv:/export", "local m"] {
+            let e = file_frame(d.path(), "a", "h", false, "x", "t", Duration::from_secs(1), own).unwrap_err();
+            assert_eq!(e, "the inbox lock for @h was held for 1s — nothing was appended", "{own}");
+        }
     }
 
     #[test]

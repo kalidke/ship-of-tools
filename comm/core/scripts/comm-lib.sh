@@ -645,7 +645,31 @@ _sot_inbox_lock_is_ours() {  # [DIR]
     _sot_have_flock && command -v perl >/dev/null 2>&1 && [ "$(uname -s 2>/dev/null)" = Linux ] || return 1
     { IFS= read -r rec < "$COMM_HOME/inbox-lock-manager"; } 2>/dev/null
     id="$(sot_inbox_lock_identity "$dir")"
+    _SOT_INBOX_ID="$id"   # for _sot_flock_wait, in the same shell
     [ -n "$id" ] && [ "$id" != none ] && [ "$id" = "$rec" ]
+}
+# _sot_flock_wait MODE SECS — the lock on fd 9 (MODE -x or -s) within SECS,
+# chosen by the identity _sot_inbox_lock_is_ours just computed. The Linux NFSv4
+# client retries a blocked lock with a backoff that doubles from 100 ms, so a
+# local writer re-takes the lock before a remote waiter's next retry and a
+# blocking waiter can sleep past a free lock: under `nfs4 ` a non-blocking try
+# is repeated every 15-25 ms until the bound. NLM (v3) and one machine's own
+# kernel lock (`local …`, `none@…`) wake a blocked waiter on release, so those
+# block, bounded. 75 = the bound passed with the lock held elsewhere.
+_sot_flock_wait() {  # MODE SECS
+    local rc end
+    case "${_SOT_INBOX_ID:-}" in
+        "nfs4 "*)
+            end=$(( $(date +%s%N) + $2 * 1000000000 ))
+            while :; do
+                rc=0
+                flock -n -E 75 "$1" 9 || rc=$?
+                [ "$rc" -eq 75 ] || return "$rc"
+                [ "$(date +%s%N)" -lt "$end" ] || return 75
+                sleep "0.0$((15 + RANDOM % 11))"
+            done ;;
+        *) flock "$1" -w "$2" -E 75 9 ;;
+    esac
 }
 # _sot_append_whole FILE LINE — under the caller's lock, LINE goes in whole or
 # not at all, in ONE perl process on ONE descriptor: the length before is a
@@ -703,7 +727,7 @@ sot_inbox_read_lock() {  # HANDLE
     local rc=0
     _sot_inbox_lock_is_ours "$COMM_HOME/inbox" || return 0
     { exec 9>> "$COMM_HOME/inbox/$1.lock"; } 2>/dev/null || return 0
-    flock -s -w "$SOT_INBOX_READ_WAIT_SECS" -E 75 9 || rc=$?
+    _sot_flock_wait -s "$SOT_INBOX_READ_WAIT_SECS" || rc=$?
     [ "$rc" -eq 0 ] || exec 9>&-
     return "$rc"
 }
@@ -717,7 +741,7 @@ sot_inbox_append() {  # HANDLE
     fi
     # 75 is flock's own conflict exit (-E), so a lock that was never taken is
     # told apart from an append that failed under it.
-    err="$( { ( flock -w "$SOT_INBOX_LOCK_WAIT_SECS" -E 75 9 || exit $?
+    err="$( { ( _sot_flock_wait -x "$SOT_INBOX_LOCK_WAIT_SECS" || exit $?
                 _sot_append_whole "$INBOX_DIR/$h.jsonl" "$line"
               ) 9>> "$INBOX_DIR/$h.lock"; } 2>&1 )" || rc=$?
     case "$rc" in

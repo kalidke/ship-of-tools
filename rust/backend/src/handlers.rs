@@ -5770,7 +5770,7 @@ fn comm_file_verdict(
         return Err(("no_live_session".into(), format!("no live session holds @{to}")));
     }
     let ts = iso8601_utc_from_secs(now_secs);
-    crate::comm_inbox::file_frame(&home.join("inbox"), &req.from, to, req.broadcast, &req.text, &ts, wait)
+    crate::comm_inbox::file_frame(&home.join("inbox"), &req.from, to, req.broadcast, &req.text, &ts, wait, own)
         .map_err(|e| ("file_failed".into(), e))
 }
 

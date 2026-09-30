@@ -127,7 +127,7 @@ fn the_filer_and_the_script_take_the_same_lock() {
         })
     };
     for i in 0..200 {
-        file_frame(&inbox, "rust", "t3", false, &format!("rust-{i}"), "t", inbox_lock_wait()).unwrap();
+        file_frame(&inbox, "rust", "t3", false, &format!("rust-{i}"), "t", inbox_lock_wait(), "local t").unwrap();
     }
     script.join().unwrap();
     assert_distinct(&whole_lines(&inbox.join("t3.jsonl")), 400);
@@ -142,7 +142,7 @@ fn a_killed_holder_frees_the_lock_at_once() {
     h.kill().unwrap();
     h.wait().unwrap();
     let t0 = Instant::now();
-    file_frame(&inbox, "rust", "k", false, "after", "t", Duration::from_secs(10)).unwrap();
+    file_frame(&inbox, "rust", "k", false, "after", "t", Duration::from_secs(10), "local t").unwrap();
     assert!(t0.elapsed() < Duration::from_secs(2), "waited {:?} for a dead holder", t0.elapsed());
     assert_eq!(whole_lines(&inbox.join("k.jsonl")), ["after"]);
 }
@@ -159,14 +159,14 @@ fn a_frozen_holder_makes_the_filer_wait_then_fail() {
         r#"printf '%s' '{"from":"holder",' >&8; kill -STOP $$; printf '%s\n' '"msg":"resumed"}' >&8"#,
     );
     let t0 = Instant::now();
-    let e = file_frame(&inbox, "rust", "f", false, "frozen", "t", Duration::from_secs(1)).unwrap_err();
+    let e = file_frame(&inbox, "rust", "f", false, "frozen", "t", Duration::from_secs(1), "local t").unwrap_err();
     assert!(t0.elapsed() >= Duration::from_secs(1));
     assert_eq!(e, "the inbox lock for @f was held for 1s — nothing was appended");
     let st = Command::new("kill").args(["-CONT", &h.id().to_string()]).status().unwrap();
     assert!(st.success());
     h.wait().unwrap();
     assert_eq!(whole_lines(&inbox.join("f.jsonl")), ["resumed"]);
-    file_frame(&inbox, "rust", "f", false, "after", "t", Duration::from_secs(1)).unwrap();
+    file_frame(&inbox, "rust", "f", false, "after", "t", Duration::from_secs(1), "local t").unwrap();
     assert_eq!(whole_lines(&inbox.join("f.jsonl")), ["resumed", "after"]);
 }
 
@@ -198,7 +198,7 @@ fn a_write_cut_short_by_the_file_size_limit_leaves_the_file_byte_identical() {
 #[test]
 #[ignore = "run by a_write_cut_short_by_the_file_size_limit_leaves_the_file_byte_identical"]
 fn fsize_child_files_one() {
-    match file_frame(&env_dir(), "rust", "z", false, &"y".repeat(200), "t", Duration::from_secs(1)) {
+    match file_frame(&env_dir(), "rust", "z", false, &"y".repeat(200), "t", Duration::from_secs(1), "local t") {
         Ok(()) => println!("filed"),
         Err(e) => println!("FAILED {e}"),
     }
@@ -220,7 +220,7 @@ fn two_threads_on_the_env_dir() {
             let inbox = inbox.clone();
             std::thread::spawn(move || {
                 for i in 0..200 {
-                    file_frame(&inbox, w, "t3", false, &format!("{w}-{i}"), "t", inbox_lock_wait()).unwrap();
+                    file_frame(&inbox, w, "t3", false, &format!("{w}-{i}"), "t", inbox_lock_wait(), &lock_identity(&inbox)).unwrap();
                 }
             })
         })
@@ -246,14 +246,16 @@ fn t11_rust_appends_200() {
     }
     for i in 0..200 {
         let msg = format!("rust-{i}");
-        match file_frame(&inbox, "rust", "t11", false, &msg, "t", inbox_lock_wait()) {
+        match file_frame(&inbox, "rust", "t11", false, &msg, "t", inbox_lock_wait(), &lock_identity(&inbox)) {
             Ok(()) => println!("filed {msg}"),
             Err(e) => println!("FAILED {msg}: {e}"),
         }
         // Paced near the shell arm's fork-per-line rate, so the two sides
         // overlap instead of this one finishing before the other starts.
         // A remote waiter's NFS lock retries back off from ~100 ms, so a burst shorter than that can finish before the other host gets one turn and the case would prove no concurrency.
-        std::thread::sleep(Duration::from_millis(25));
+        // The unpaced liveness case sets SOT_T11_PACE_MS=0.
+        let pace = std::env::var("SOT_T11_PACE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(25);
+        std::thread::sleep(Duration::from_millis(pace));
     }
 }
 
@@ -294,7 +296,7 @@ fn onehost_four_filer_threads() {
             std::thread::spawn(move || {
                 for i in 0..50 {
                     let key = format!("rust{t}-{i}");
-                    match file_frame(&inbox, &format!("rust{t}"), "t1h", false, &format!("{key} {pad}"), "t", inbox_lock_wait()) {
+                    match file_frame(&inbox, &format!("rust{t}"), "t1h", false, &format!("{key} {pad}"), "t", inbox_lock_wait(), &lock_identity(&inbox)) {
                         Ok(()) => println!("filed {key}"),
                         Err(e) => println!("FAILED {key}: {e}"),
                     }
@@ -315,7 +317,7 @@ fn t11_rust_sends_one() {
     let inbox = env_dir();
     let msg = format!("rust-one-{}", std::process::id());
     let t0 = Instant::now();
-    let r = file_frame(&inbox, "rust", "t11", false, &msg, "t", inbox_lock_wait());
+    let r = file_frame(&inbox, "rust", "t11", false, &msg, "t", inbox_lock_wait(), &lock_identity(&inbox));
     let ms = t0.elapsed().as_millis();
     match r {
         Ok(()) => println!("filed {msg} after {ms}ms"),
