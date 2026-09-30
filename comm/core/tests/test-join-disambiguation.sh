@@ -53,7 +53,6 @@ JOIN="$SCRIPTS_DIR/comm-join.sh"
 SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 CONTEXT="$SCRIPTS_DIR/comm-context.sh"
 SEND="$SCRIPTS_DIR/comm-send.sh"
-LISTEN="$SCRIPTS_DIR/comm-listen.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-test-XXXXXX")"
 # Codex review (PR #148, test notes): an unchecked mktemp failure leaves
@@ -101,7 +100,7 @@ LOCKDIR="$SOT_COMM_HOME/.registry.lock"
 export SOT_SPAWN_ENDPOINT="unix:$WORK/no-daemon.sock"
 export SOT_TOKEN="dummy-test-token"
 unset SOT_SOCKET SOT_WORKSPACE_ID
-trap 'stop_stub_daemon; sot_bridge_stop "$FAKE_BRIDGE_HANDLE" 2>/dev/null; rm -rf "${WORK:?}"' EXIT
+trap 'stop_stub_daemon; rm -rf "${WORK:?}"' EXIT
 
 # Pinned, hermetic HOST — see the file header. Deliberately short and
 # already within the allowed charset so it is NEVER transformed by
@@ -266,15 +265,6 @@ stop_stub_daemon() {
     exec 3>&- 2>/dev/null || true
     STUB_NC_PID=""; STUB_WATCHER_PID=""
 }
-
-# A fake relay for bridge cases: comm-lib.sh's sot_bridge_start runs it in
-# the real loop shape, so the pidfile + argv check is exercised for real;
-# it only has to stay alive. FAKE_BRIDGE_HANDLE is whatever the last case
-# started, stopped by the EXIT trap if the case did not.
-# Named comm-relay.sh so sot_bridge_stop's process pattern reaps it too.
-mkdir -p "$WORK/fakebin"; FAKE_RELAY="$WORK/fakebin/comm-relay.sh"
-printf '#!/bin/sh\nsleep 60\n' > "$FAKE_RELAY"; chmod +x "$FAKE_RELAY"
-FAKE_BRIDGE_HANDLE=""
 
 # context_in ROOT SELF — run comm-context.sh DIRECTLY (not through
 # comm-join.sh) with cwd=ROOT and self-file SELF, which may pre-exist
@@ -1178,127 +1168,54 @@ case_legacy_unknown_root_row() {
     return 0
 }
 
-case_join_warns_on_stranding_escalation_when_bridge_running() {
+case_join_warns_on_stranding_escalation_when_the_bare_handle_is_live() {
     # Coordinator ruling item 2: comm-join.sh must warn LOUDLY — never
     # silently strand — when a derived join is about to escalate AWAY from
-    # the bare tier-1 handle AND a listener bridge for that bare handle is
-    # already running under this uid: the near-certain signature of this
+    # the bare tier-1 handle AND that bare handle still has a fresh
+    # heartbeat (sot_handle_live): the near-certain signature of this
     # session's OWN evicted identity (case_legacy_unknown_root_row above is
     # the exact registry shape that forces this escalation), not a real
-    # collision with an unrelated project.
-    local root base parent h1 h2 legacy_obj
+    # collision with an unrelated project. A stale or absent last_seen must
+    # not fire it.
+    local root base parent h1 h2 legacy_obj fresh stale
     mkdir -p "$WORK/strandtest/grpZ/proj7"
     root="$(realpath "$WORK/strandtest/grpZ/proj7")"
     base="proj7"; parent="grpZ"
     h1="${base}-${HOST}"
     h2="${base}-${parent}-${HOST}"
+    fresh="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    stale="2000-01-01T00:00:00Z"
 
-    legacy_obj="$(jq -n --arg repo "$base" \
-        '{host:"other",tmux:"",pane_id:"",repo:$repo,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
-    jq --arg n "$h1" --argjson o "$legacy_obj" '.agents[$n] = $o' "$REGISTRY" > "$REGISTRY.tmp" \
-        && mv "$REGISTRY.tmp" "$REGISTRY"
+    # $1 = last_seen to stamp on the bare handle's row ("" = no such field)
+    _strand_run() {
+        legacy_obj="$(jq -n --arg repo "$base" --arg ls "$1" \
+            '{host:"other",tmux:"",pane_id:"",repo:$repo,expertise:[],status:"idle",joined:"t"} + (if $ls == "" then {} else {last_seen:$ls} end)')"
+        jq --arg n "$h1" --argjson o "$legacy_obj" '.agents[$n] = $o' "$REGISTRY" > "$REGISTRY.tmp" \
+            && mv "$REGISTRY.tmp" "$REGISTRY"
+        join_in "$root"
+        [ "$JOIN_RC" -eq 0 ] || { echo "  comm-join.sh exited $JOIN_RC: $JOIN_ERR"; return 1; }
+        contains "$JOIN_OUT" "Joined sot-comm as @$h2" \
+            || { echo "  stdout: $JOIN_OUT (want escalation to @$h2)"; return 1; }
+    }
 
-    # A real bridge loop for the bare handle (comm-lib.sh's own
-    # sot_bridge_start, pidfile under this suite's isolated comm home) with
-    # the fake relay standing in for comm-relay.sh.
-    sot_bridge_start "$h1" "$FAKE_RELAY"; FAKE_BRIDGE_HANDLE="$h1"
-    sot_bridge_running_for "$h1" || { echo "  setup: sot_bridge_start did not yield a running bridge for @$h1"; return 1; }
-
-    join_in "$root"
-    sot_bridge_stop "$h1"; FAKE_BRIDGE_HANDLE=""
-
-    [ "$JOIN_RC" -eq 0 ] || { echo "  comm-join.sh exited $JOIN_RC: $JOIN_ERR"; return 1; }
-    contains "$JOIN_OUT" "Joined sot-comm as @$h2" \
-        || { echo "  stdout: $JOIN_OUT (want escalation to @$h2, same as the no-bridge case)"; return 1; }
-    contains "$JOIN_ERR" "WARNING" || { echo "  missing the stranding warning: $JOIN_ERR"; return 1; }
+    _strand_run "$fresh" || return 1
+    contains "$JOIN_ERR" "WARNING" || { echo "  a fresh heartbeat under @$h1 fired no stranding warning: $JOIN_ERR"; return 1; }
     contains "$JOIN_ERR" "$h1" || { echo "  warning doesn't name the bare handle @$h1: $JOIN_ERR"; return 1; }
     contains "$JOIN_ERR" "comm-leave.sh --name $h2" \
         || { echo "  warning missing the exact reclaim recipe (comm-leave.sh --name $h2): $JOIN_ERR"; return 1; }
     contains "$JOIN_ERR" "comm-join.sh --name $h1" \
         || { echo "  warning missing the exact reclaim recipe (comm-join.sh --name $h1): $JOIN_ERR"; return 1; }
-    return 0
-}
 
-case_join_bridge_probe_exact_match_ignores_prefix_decoy() {
-    # A bridge for a DIFFERENT handle that merely starts with h1 (its
-    # pidfile is bridge-<h1>-decoy.pid, its argv names <h1>-decoy) must
-    # never satisfy the probe for h1 and fire the stranding warning for a
-    # session that was never stranded. Same registry setup that forces escalation as
-    # case_join_warns_on_stranding_escalation_when_bridge_running above,
-    # but the ONLY bridge session present is the prefix decoy — no EXACT
-    # "commbridge-<h1>" session exists — so the warning must NOT fire.
-    local root base parent h1 h2 legacy_obj
-    mkdir -p "$WORK/bridgeprefix/grpP/proj10"
-    root="$(realpath "$WORK/bridgeprefix/grpP/proj10")"
-    base="proj10"; parent="grpP"
-    h1="${base}-${HOST}"
-    h2="${base}-${parent}-${HOST}"
-
-    legacy_obj="$(jq -n --arg repo "$base" \
-        '{host:"other",tmux:"",pane_id:"",repo:$repo,expertise:[],status:"idle",joined:"t",last_seen:"t"}')"
-    jq --arg n "$h1" --argjson o "$legacy_obj" '.agents[$n] = $o' "$REGISTRY" > "$REGISTRY.tmp" \
-        && mv "$REGISTRY.tmp" "$REGISTRY"
-
-    # A bridge for a DIFFERENT handle that merely starts with h1: its own
-    # pidfile, its own argv — the probe for h1 must not see it.
-    sot_bridge_start "$h1-decoy" "$FAKE_RELAY"; FAKE_BRIDGE_HANDLE="$h1-decoy"
-    sot_bridge_running_for "$h1-decoy" || { echo "  setup: no running decoy bridge"; return 1; }
-
-    join_in "$root"
-    sot_bridge_stop "$h1-decoy"; FAKE_BRIDGE_HANDLE=""
-
-    [ "$JOIN_RC" -eq 0 ] || { echo "  comm-join.sh exited $JOIN_RC: $JOIN_ERR"; return 1; }
-    contains "$JOIN_OUT" "Joined sot-comm as @$h2" \
-        || { echo "  stdout: $JOIN_OUT (want escalation to @$h2, same as the no-bridge case)"; return 1; }
+    # A fresh join needs a clean slate: drop the escalated row.
+    with_lock registry_del "$h2"
+    _strand_run "$stale" || return 1
     contains "$JOIN_ERR" "WARNING" \
-        && { echo "  stranding warning fired against a PREFIX-only decoy bridge (the pidfile/argv probe regressed): $JOIN_ERR"; return 1; }
-    return 0
-}
+        && { echo "  a STALE heartbeat under @$h1 fired the stranding warning: $JOIN_ERR"; return 1; }
 
-case_listen_start_reaps_a_stray_bridge_and_records_a_pidfile() {
-    # A bridge with no pidfile — one started by hand, or by a previous
-    # release inside a tmux session — is a STRAY: sot_bridge_pids_for finds
-    # it by process pattern, sot_bridge_running_for does not count it, and
-    # comm-listen.sh start kills it before starting the recorded loop, so
-    # no two bridges ever file one frame twice. --status names the pid;
-    # --stop ends the loop and drops the pidfile.
-    #
-    # The stray is a wrapper literally NAMED comm-relay.sh (its argv carries
-    # the exact substring the pattern matches); the trailing `:` stops the
-    # shell from tail-call-exec'ing into `sleep`, which would replace the
-    # argv being searched for.
-    local handle wrapper stray_pid tries out home
-    handle="straybridge-$$-${RANDOM:-0}"
-    home="$WORK/listen-home"; mkdir -p "$home/bin"
-    cp "$FAKE_RELAY" "$home/bin/comm-relay.sh"   # what the recorded loop will run
-    wrapper="$WORK/comm-relay.sh"
-    printf '#!/bin/sh\nsleep 60\n:\n' > "$wrapper"; chmod +x "$wrapper"
-    { "$wrapper" bridge --name "$handle" & } 2>/dev/null
-    stray_pid=$!
-    tries=0
-    while [ "$tries" -lt 50 ] && [ -z "$(SOT_COMM_HOME="$home" sot_bridge_pids_for "$handle")" ]; do sleep 0.1; tries=$((tries + 1)); done
-    [ -n "$(sot_bridge_pids_for "$handle")" ] || { pkill -P "$stray_pid"; kill "$stray_pid"; echo "  sot_bridge_pids_for did not find the stray"; return 1; }
-    if COMM_HOME="$home" sot_bridge_running_for "$handle"; then pkill -P "$stray_pid"; kill "$stray_pid"; echo "  a stray with no pidfile counted as running"; return 1; fi
-
-    out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" --owner $$ 2>&1)"
-    contains "$out" "started relay listener for @$handle" || { pkill -P "$stray_pid" 2>/dev/null; kill "$stray_pid" 2>/dev/null; echo "  start did not report a started listener: $out"; return 1; }
-    tries=0
-    while [ "$tries" -lt 50 ] && kill -0 "$stray_pid" 2>/dev/null; do sleep 0.1; tries=$((tries + 1)); done
-    if kill -0 "$stray_pid" 2>/dev/null; then pkill -P "$stray_pid"; kill "$stray_pid"; echo "  the stray bridge survived comm-listen.sh start"; return 1; fi
-    wait "$stray_pid" 2>/dev/null || true
-    [ -s "$home/state/bridge-$handle.pid" ] || { echo "  no pidfile after start"; return 1; }
-    COMM_HOME="$home" sot_bridge_running_for "$handle" || { echo "  the recorded loop is not reported running"; return 1; }
-    out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" --status 2>&1)"
-    contains "$out" "RUNNING (pid $(cat "$home/state/bridge-$handle.pid"))" || { echo "  --status: $out"; return 1; }
-    out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" --owner $$ 2>&1)"
-    contains "$out" "already running" || { echo "  a second start did not see the recorded loop: $out"; return 1; }
-
-    out="$(cd "$WORK" && SOT_COMM_HOME="$home" SOT_COMM_SELF_FILE="$WORK/listen-self.txt" bash "$LISTEN" --name "$handle" --stop 2>&1)"
-    contains "$out" "stopped relay listener" || { echo "  --stop: $out"; return 1; }
-    [ ! -f "$home/state/bridge-$handle.pid" ] || { echo "  pidfile survived --stop"; return 1; }
-    tries=0
-    while [ "$tries" -lt 50 ] && [ -n "$(sot_bridge_pids_for "$handle")" ]; do sleep 0.1; tries=$((tries + 1)); done
-    [ -z "$(sot_bridge_pids_for "$handle")" ] || { echo "  bridge processes survived --stop: $(sot_bridge_pids_for "$handle")"; return 1; }
+    with_lock registry_del "$h2"
+    _strand_run "" || return 1
+    contains "$JOIN_ERR" "WARNING" \
+        && { echo "  an ABSENT last_seen under @$h1 fired the stranding warning: $JOIN_ERR"; return 1; }
     return 0
 }
 
@@ -1767,90 +1684,12 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     return 0
 }
 
-case_comm_listen_windows_no_bridge_started() {
-    # No-bridge-on-Windows fix: a Windows FE box's capsule session used to
-    # run comm-listen.sh's `while true; do comm-relay.sh bridge …; done`
-    # reconnect loop forever — useless there (the frontend already files
-    # every inbound frame into its own fe-inbox.jsonl) and actively
-    # harmful (the endless loop keeps comm-relay.sh open, which on real
-    # Windows blocks update_comm's remove-then-copy replace of it and
-    # wedges the box send-deaf). Fakes `uname` as the detection's
-    # THIRD-tier signal (comm-session-skill.sh's own `_is_windows` checks
-    # $OS, then $OSTYPE, then `uname -s` — this exercises the fallback a
-    # real git-bash box with neither helpful env var would hit) via the
-    # same PATH-prefix seam case_hash_command_failure_fails_loudly uses
-    # for a fake sha256sum.
-    local fakebin out err rc
-    fakebin="$WORK/winuname"
-    mkdir -p "$fakebin"
-    # C10: the closed-port lever below is now a stub `ssh` that exits
-    # nonzero with no stdout -- the same "child fails before any reply"
-    # shape a real ssh gives against a refused/closed target, hermetic
-    # either way.
-    cat > "$fakebin/ssh" <<'FAKESSH'
-#!/bin/sh
-exit 1
-FAKESSH
-    chmod +x "$fakebin/ssh"
-    cat > "$fakebin/uname" <<'FAKEUNAME'
-#!/bin/sh
-echo "MINGW64_NT-10.0-19045"
-FAKEUNAME
-    chmod +x "$fakebin/uname"
-
-    out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" SOT_COMM_HOME="$WORK/winnoop-home" \
-        bash "$LISTEN" --name winnoop-handle 2>"$WORK/winnoop.err")"
-    rc=$?
-    err="$(cat "$WORK/winnoop.err" 2>/dev/null)"
-    [ "$rc" -eq 0 ] || { echo "  exited $rc (want 0): stdout=$out stderr=$err"; return 1; }
-    contains "$out" "comm-listen: this host receives through the FE inbox" \
-        || { echo "  missing the FE-inbox receive-path line: $out"; return 1; }
-    contains "$out" "no relay bridge is started" \
-        || { echo "  missing 'no relay bridge is started': $out"; return 1; }
-    [ ! -f "$WORK/winnoop-home/state/bridge-winnoop-handle.pid" ] \
-        || { echo "  a bridge pidfile was written on a Windows host (must never start one)"; return 1; }
-    [ -z "$(sot_bridge_pids_for "winnoop-handle")" ] \
-        || { echo "  a bridge process for winnoop-handle is running (must never start one on a Windows host)"; return 1; }
-
-    # --status reports the same fact, no bridge probing.
-    out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" SOT_COMM_HOME="$WORK/winnoop-home" \
-        bash "$LISTEN" --name winnoop-handle --status 2>&1)"
-    rc=$?
-    [ "$rc" -eq 0 ] || { echo "  --status exited $rc (want 0): $out"; return 1; }
-    contains "$out" "no relay bridge is started" \
-        || { echo "  --status didn't report the no-bridge fact: $out"; return 1; }
-
-    # --selftest injects a real frame over $SOT_RELAY_ENDPOINT and polls
-    # fe-inbox.jsonl for it (no bridge to restart there — see comm-listen.sh's
-    # Windows selftest branch). Point it at an ssh: endpoint whose child
-    # (the stub `ssh` above) exits nonzero before ever answering (C10) —
-    # this suite must stay hermetic regardless of whether a real sotd
-    # happens to be running on the box — so the daemon-unreachable path is
-    # deterministic: exit 1, and — the actual invariant this case exists to
-    # protect — still no bridge, ever, on Windows.
-    out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" SOT_COMM_HOME="$WORK/winnoop-home" \
-        SOT_RELAY_ENDPOINT="ssh:closed-stub-target" \
-        bash "$LISTEN" --name winnoop-handle --selftest 2>&1)"
-    rc=$?
-    [ "$rc" -eq 1 ] || { echo "  --selftest exited $rc (want 1, daemon unreachable): $out"; return 1; }
-    contains "$out" "daemon unreachable" \
-        || { echo "  --selftest didn't report the daemon as unreachable: $out"; return 1; }
-    [ ! -f "$WORK/winnoop-home/state/bridge-winnoop-handle.pid" ] \
-        || { echo "  a bridge pidfile was written by --selftest on a Windows host (must never start one)"; return 1; }
-    [ -z "$(sot_bridge_pids_for "winnoop-handle")" ] \
-        || { echo "  a bridge process for winnoop-handle is running after --selftest (must never start one on a Windows host)"; return 1; }
-
-    rm -rf "${WORK:?}/winnoop-home" "${WORK:?}/winnoop.err"
-    return 0
-}
-
-case_comm_listen_windows_receive_path_never_bare_slash() {
-    # The line comm-listen.sh prints on a Windows host names the FE's
-    # receive path, built through the SAME LOCALAPPDATA/XDG_STATE_HOME/HOME
-    # resolver comm-session-skill.sh's fe_inbox uses (gpu.rs::
-    # sot_state_dir) — never a bare "/"-rooted collapse if an upstream env
-    # var the daemon would normally inject (capsule-comm-identity, #178)
-    # resolved empty.
+case_the_windows_receive_path_never_collapses_to_a_bare_slash() {
+    # sot_fe_inbox_path (comm-lib.sh) names the frontend's receive path on a
+    # Windows host: LOCALAPPDATA, else XDG_STATE_HOME, else $HOME/.local/state.
+    # If an upstream env var the daemon would normally inject
+    # (capsule-comm-identity, #178) resolved empty, it must never collapse to
+    # a bare "/"-rooted guess.
     local fakebin out
     fakebin="$WORK/winuname2"
     mkdir -p "$fakebin"
@@ -1859,23 +1698,32 @@ case_comm_listen_windows_receive_path_never_bare_slash() {
 echo "MINGW64_NT-10.0-19045"
 FAKEUNAME
     chmod +x "$fakebin/uname"
+    local lib="$SCRIPTS_DIR/comm-lib.sh"
 
     # LOCALAPPDATA present -> the path is rooted under it.
     out="$(env -u OS -u OSTYPE -u XDG_STATE_HOME PATH="$fakebin:$PATH" \
         LOCALAPPDATA="$WORK/AppDataLocal" SOT_COMM_HOME="$WORK/winnoop-home2" \
-        bash "$LISTEN" 2>&1)"
-    contains "$out" "$WORK/AppDataLocal/sot/fe-inbox.jsonl" \
-        || { echo "  LOCALAPPDATA-rooted path missing: $out"; return 1; }
+        bash -c 'source "$1"; sot_fe_inbox_path' _ "$lib" 2>&1)"
+    [ "$out" = "$WORK/AppDataLocal/sot/fe-inbox.jsonl" ] \
+        || { echo "  LOCALAPPDATA-rooted path wrong: '$out'"; return 1; }
 
-    # LOCALAPPDATA and XDG_STATE_HOME both unset (the "resolved empty"
-    # scenario) -> falls back to \$HOME, never a bare /sot/fe-inbox.jsonl.
+    # LOCALAPPDATA and XDG_STATE_HOME both unset -> falls back to $HOME.
     out="$(env -u OS -u OSTYPE -u LOCALAPPDATA -u XDG_STATE_HOME PATH="$fakebin:$PATH" \
         HOME="$WORK/fakehome" SOT_COMM_HOME="$WORK/winnoop-home2" \
-        bash "$LISTEN" 2>&1)"
-    contains "$out" "$WORK/fakehome/.local/state/sot/fe-inbox.jsonl" \
-        || { echo "  HOME-fallback path missing or wrong: $out"; return 1; }
-    contains "$out" "(/sot/fe-inbox.jsonl)" \
+        bash -c 'source "$1"; sot_fe_inbox_path' _ "$lib" 2>&1)"
+    [ "$out" = "$WORK/fakehome/.local/state/sot/fe-inbox.jsonl" ] \
+        || { echo "  HOME-fallback path wrong: '$out'"; return 1; }
+
+    # LOCALAPPDATA, XDG_STATE_HOME and HOME all EMPTY (the "resolved empty"
+    # scenario): the result is still non-empty and rooted under the fallback
+    # directory, never the bare /sot/fe-inbox.jsonl.
+    out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" \
+        LOCALAPPDATA= XDG_STATE_HOME= HOME= SOT_COMM_HOME="$WORK/winnoop-home2" \
+        bash -c 'source "$1"; sot_fe_inbox_path' _ "$lib" 2>&1)"
+    [ -n "$out" ] || { echo "  empty path with every variable cleared"; return 1; }
+    [ "$out" = "/sot/fe-inbox.jsonl" ] \
         && { echo "  receive path collapsed to a bare /-rooted guess: $out"; return 1; }
+    case "$out" in */.local/state/sot/fe-inbox.jsonl) ;; *) echo "  not rooted under the fallback directory: '$out'"; return 1 ;; esac
 
     rm -rf "${WORK:?}/winnoop-home2"
     return 0
@@ -1989,7 +1837,7 @@ FAKEPS
 
 case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep() {
     # sot_daemon_endpoint, on a simulated Windows host (faked via `uname`
-    # exactly like case_comm_listen_windows_no_bridge_started does, since
+    # exactly like the receive-path case above does, since
     # $OS/$OSTYPE are unset here): must ask the local daemon for its pipe
     # FIRST (the same query scripts/sot-local-daemon.ps1 makes), prove it
     # live with a bounded connect probe, and return pipe:<path> -- all
@@ -2304,9 +2152,7 @@ check "comm-send.sh succeeds with two genuinely rooted, registered identities (r
 check "comm-send.sh refuses when NAME resolves but has no registry row (round-2 F4/C)" case_send_refuses_when_registry_row_missing_despite_resolved_name
 check "comm-send.sh refuses when the registry row belongs to a different project (round-2 F4/C)" case_send_refuses_when_registry_root_mismatches_current_project
 check "legacy registry row with no root= is a collision, not a free pass" case_legacy_unknown_root_row
-check "comm-join.sh warns loudly on stranding escalation when a bridge for the bare handle is running" case_join_warns_on_stranding_escalation_when_bridge_running
-check "comm-join.sh bridge probe ignores a prefix-only decoy session (round-1 F4)" case_join_bridge_probe_exact_match_ignores_prefix_decoy
-check "comm-listen.sh start reaps a stray bridge, records a pidfile; --status/--stop follow it" case_listen_start_reaps_a_stray_bridge_and_records_a_pidfile
+check "comm-join.sh warns loudly on stranding escalation when the bare handle has a fresh heartbeat, and not on a stale or absent one" case_join_warns_on_stranding_escalation_when_the_bare_handle_is_live
 check "comm-spawn.sh fresh-mode refuses to reclaim a live row (F3)" case_spawn_fresh_only_refusal
 check "comm-spawn.sh --task refuses with no spawner identity, no-task spawn still works (round-2 SHOULD-FIX 3/G)" case_spawn_refuses_task_when_spawner_has_no_identity
 check "comm-spawn.sh --task refuses when the spawner's registry row is gone (round-3 F4)" case_spawn_task_refuses_when_spawner_has_no_registry_row
@@ -2318,7 +2164,6 @@ check "a long/dirty host triggers the F7 host-alias digest suffix" case_host_ali
 check "a pinned SOT_COMM_NAME never adopts a name from any self-file (capsule-comm-identity fix)" case_pinned_comm_name_never_adopts_selffile_identity
 check "sot_jq_rawfile round-trips a leading-slash value through jq --rawfile" case_jq_rawfile_helper_round_trips_leading_slash_value
 check "every jq --arg binding in the comm scripts + hooks is on the slash-safe allowlist" case_jq_arg_names_are_allowlisted_against_slash_prone_values
-check "comm-listen.sh starts no bridge on a Windows host (start/status/selftest all report the FE-inbox receive path)" case_comm_listen_windows_no_bridge_started
 check "a slot claimed for another project refuses the join (exit 3), incumbent intact" case_slot_guard_refuses_another_projects_slot
 check "--repin writes over another project's slot deliberately" case_slot_guard_repin_writes_anyway
 check "a same-project rewrite is never refused" case_slot_guard_allows_a_same_project_rewrite
@@ -2327,7 +2172,7 @@ check "comm-self-audit.sh flags a slot naming another project and no suffixed/ke
 check "the audit slugs a repo name with the daemon's own rule, not a second copy" case_self_audit_uses_the_daemons_own_slug_rule
 check "the audit does not excuse a repo that suffixes the label (the other direction)" case_self_audit_does_not_excuse_a_repo_suffixing_the_label
 check "a slot claimed during the join is refused by the writer with exit 3, not 1" case_slot_guard_refusal_in_the_write_gap_exits_three
-check "comm-listen.sh's Windows receive-path line resolves under LOCALAPPDATA/HOME, never a bare /" case_comm_listen_windows_receive_path_never_bare_slash
+check "the Windows frontend receive path resolves under LOCALAPPDATA/HOME, never a bare /" case_the_windows_receive_path_never_collapses_to_a_bare_slash
 check "sot_oneshot_request over a pipe: endpoint dispatches to the stub powershell.exe and returns its matching reply (LU6e)" case_pipe_endpoint_oneshot_request_matches_reply
 check "sot_oneshot_request over a pipe: endpoint fails cleanly with no powershell.exe on PATH (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_powershell
 check "sot_oneshot_request over a pipe: endpoint fails cleanly with comm-pipe-request.ps1 missing (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_missing_ps1

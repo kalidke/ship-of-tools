@@ -9,7 +9,7 @@
 # /sot-session-start bootstrap skill last, so the session comes up already
 # RECEIVING fast-comm. ADR 0049 is the design of record: the daemon that runs
 # the row wakes it, and there is nothing to arm; until that lands, the
-# receive path is the listener the bootstrap starts. Project-agnostic: use it
+# receive path is the per-session wake watcher. Project-agnostic: use it
 # for any backend session that should receive cross-session messages.
 #
 # Usage:

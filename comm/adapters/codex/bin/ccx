@@ -9,8 +9,7 @@
 #   1. join sot-comm as $SOT_COMM_NAME (default: <repo>-cx-<host> — the -cx-
 #      infix keeps a codex session from colliding with a claude session on
 #      the same repo);
-#   2. start the durable relay listener (files inbound into the inbox);
-#   3. start codex-watch.sh — the wake: polls the inbox (NFS! poll, never
+#   2. start codex-watch.sh — the wake: polls the inbox (NFS! poll, never
 #      tail -F), delivers into THIS session (the row's pty.input).
 # Then exec codex, which reads AGENTS.md (identity, comm CLI usage, state
 # discipline) from the repo/checkout natively.
@@ -68,7 +67,6 @@ export SOT_COMM_NAME
 
 if [ -x "$COMM/comm-join.sh" ]; then
     "$COMM/comm-join.sh" --name "$SOT_COMM_NAME" >/dev/null 2>&1 || true
-    "$COMM/comm-listen.sh" >/dev/null 2>&1 || true
     # The wake half. Backgrounded; dies with the leg. Only a capsule row
     # has a pty.input target, so only --capsule starts it.
     if [ -x "$COMM/codex-watch.sh" ] && [ "$CAPSULE" = 1 ]; then

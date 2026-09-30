@@ -161,6 +161,8 @@ new is added to the daemon, the protocol, or the workspace toml:
    never run a relay-bridge loop (it pins `comm-relay.sh` open and blocks
    `update_comm`); the generic skill's Windows branch already skips it.
 
+> *Note (2026-09-30, ADR 0049 B1): the parenthesis's `comm-listen.sh` half describes a script that no longer exists; the `fe-inbox.jsonl` half stands until B2.*
+
 Deleted by this amendment once the boxes have cut over: the FE-specific
 bootstrap skill, the resume ritual's default and template line, and the
 "drawer session" as a comm identity. Open question 2 below is answered by

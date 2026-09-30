@@ -26,7 +26,7 @@
 #      an attached `fe@<host>`) is gone from the script; a case below is the
 #      regression guard that the suffix now means nothing at all.
 #
-# No bats dependency. HERMETIC, same seams as test-leave-stops-bridge.sh: a
+# No bats dependency. HERMETIC: a
 # temp $SOT_COMM_HOME, a per-case $SOT_COMM_SELF_FILE, a pinned
 # $SOT_COMM_TEST_HOST, and where a daemon is needed a stub `nc`/`ssh` on PATH
 # that answers each connection — never the real ~/.sot-comm and never the real
@@ -405,32 +405,6 @@ EOF
     return 0
 }
 
-# The same class a THIRD time, on the Windows receive path: `ask` files the
-# frame and then holds the pipe for a reply, and `timeout`'s 124 for the
-# ordinary end of that window aborted the script (`set -euo pipefail`) before
-# the "not an error -- the frame is filed" line it promises could print. A
-# stub `powershell.exe` stands in for the pipe driver -- never a real pipe,
-# never a real daemon; the target is a registry row, so the send itself needs
-# no wire at all and the ONLY thing under test is what the window's end does
-# to a verdict already reached.
-case_an_ask_window_ending_does_not_unsay_the_filed_frame() {
-    setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    local bindir; bindir="$(mktemp -d "$WORK/ps-hold-XXXXXX")"
-    # `exec`, so `timeout`'s signal reaches the sleep itself: a shell that
-    # left a `sleep` holding the hold's stdout would stall the reply filter
-    # reading it, which is a different wait with a different cause.
-    printf '#!/bin/sh\nexec sleep 30\n' > "$bindir/powershell.exe"
-    chmod +x "$bindir/powershell.exe"
-    relay_send_with_path "$bindir" "pipe:sot-test-hold" ask "@$TARGET" "anyone there" 1
-    [ "$RELAY_RC" -eq 0 ] \
-        || { echo "  exited $RELAY_RC, want 0 -- the window's own timeout was read as a failure (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
-    contains "$RELAY_OUT" "filed -> @$TARGET" \
-        || { echo "  the send's own verdict is missing: '$RELAY_OUT'"; return 1; }
-    contains "$RELAY_OUT" "TIMEOUT: no reply from @$TARGET in 1s" \
-        || { echo "  the timeout line this file promises never printed: '$RELAY_OUT' (err: '$RELAY_ERR')"; return 1; }
-    return 0
-}
-
 # ---- THE TABLE (round-3 addendum). Every combination of the four things a
 # send's verdict could be read from, walked through the ONE verdict block in
 # send_frame over the real transport, and asserted.
@@ -679,7 +653,6 @@ check "a noisy but clean ssh: exit still files -- stderr output alone is not a f
 check "a receipt outranks the SIGPIPE (141) the child takes when the send succeeds" case_a_receipt_outranks_a_sigpipe_exit
 check "a receipt outranks an abrupt ssh teardown (255) after the frame was filed" case_a_receipt_outranks_an_abrupt_teardown_exit
 check "a dying ssh child says FAILED and names the target, its exit status and its stderr" case_ssh_endpoint_bridge_failure_says_failed_with_reason
-check "an ask window running out still reports the filed frame, not the transport's timeout" case_an_ask_window_ending_does_not_unsay_the_filed_frame
 check "all 16 comm.file answer/exit/stderr rows and 36+2 not-mine rows get the verdict the rule requires" case_every_combination_gets_the_verdict_the_rule_requires
 
 echo "---"

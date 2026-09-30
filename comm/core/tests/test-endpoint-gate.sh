@@ -240,8 +240,7 @@ EOF
 
 # =========================================================================
 # 5. The wire: sot_ssh_bridge reaches a stub daemon through a stub ssh
-#    first on PATH, and comm-listen.sh --selftest completes over an
-#    ssh: endpoint through the same helper.
+#    first on PATH.
 # =========================================================================
 
 case_ssh_bridge_carries_the_frame_to_a_stub_daemon_and_back() {

@@ -27,7 +27,7 @@ line typed into a row reads `[sot-comm] new message for @<handle> — run
 …/comm-poll.sh` rather than `[sot-comm] you have mail`, and a resumed session
 must still re-run this bootstrap — until the daemon does the waking, the
 launcher's `--continue` re-runs it for exactly that reason. Any
-line the call above prints that orders a Monitor armed or a listener started
+line the call above prints that orders a Monitor armed
 is the old mechanism, not this design, and is not to be acted on: there is
 nothing to arm, own or re-arm. Mail is read with `comm-poll.sh` regardless of
 what any of those lines say.

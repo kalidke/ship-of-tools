@@ -21,14 +21,13 @@ but they are plain scripts in `~/.sot-comm/bin`:
 ```bash
 comm-list.sh                                 # who is reachable, and their state
 comm-relay.sh send @other-session "message"  # fire-and-forget
-comm-relay.sh ask  @other-session "question?" 60   # send, then print replies for 60 s
 comm-relay.sh send --all "message"           # broadcast to every session
 comm-poll.sh                                 # catch up on anything that arrived while you were away
 ```
 
-`send` and `ask` go through the Ship of Tools daemon for live delivery; a
-session that was away catches up with `comm-poll.sh`. On arrival, the recipient's listener files each message into
-its inbox (`~/.sot-comm/inbox/<handle>.jsonl`), so a session that was busy
+`send` goes through the Ship of Tools daemon for live delivery; a
+session that was away catches up with `comm-poll.sh`. On arrival, the filing daemon appends each message to
+the recipient's inbox (`~/.sot-comm/inbox/<handle>.jsonl`), so a session that was busy
 reads it with `comm-poll.sh` when it gets to it.
 
 ## A message wakes the recipient

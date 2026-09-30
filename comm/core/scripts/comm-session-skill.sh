@@ -103,8 +103,7 @@ if [ "${1:-}" = "--is-sot-repo" ]; then
 fi
 
 # `--selftest` — run the detection matrix against THIS copy of the script and
-# exit nonzero on any miss. Same idiom as `comm-listen.sh --selftest`: runnable
-# on any machine, so a topology that breaks a rule shows up as a failing case
+# exit nonzero on any miss. Runnable on any machine, so a topology that breaks a rule shows up as a failing case
 # instead of a silently misrouted session. Every case below is a layout that
 # either occurs in the fleet or previously misrouted (the two marked REGRESSION
 # were real bugs, verified 2026-07-25). Checks `--is-sot-repo`'s exit code —

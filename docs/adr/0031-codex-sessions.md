@@ -90,6 +90,10 @@ harness **Monitor** wake (codex has no equivalent primitive).
   different format — phase 3 adapts the reader; until then the pane-idle
   detector + hooks are the truth floor.
 
+> *Note (2026-09-30, ADR 0049 B1): the comm bridge (`comm-listen.sh`) named here is gone; the hub files the inbox for every handle its folder lists. The `codex-watch` wake stands.*
+
+> *Note (2026-09-30, ADR 0049 B1): the comm bridge (`comm-listen`) named here is gone; the `codex-watch` half stands.*
+
 ### 4. Identity + interop
 - Handle convention **`<repo>-cx-<host>`** so a CC session and a Codex
   session coexist on one repo without collision; registry row gains

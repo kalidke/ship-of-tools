@@ -52,11 +52,10 @@ if jq -e --arg n "$WHO" '.agents[$n]' "$REGISTRY" >/dev/null 2>&1; then
 fi
 
 # Belt-and-braces for the owned lifetimes (messaging ruling §3): the watcher
-# and the bridge now end with their owner by themselves, so this should find
-# nothing — but a row being torn down is exactly where a survivor would look
-# like a live receiver for a handle that no longer exists, so the markers are
-# read and cleared here too. sot_bridge_stop is the bridge half (loop, its
-# relay child, any stray, then the pidfile).
+# now ends with its owner by itself, so this should find nothing — but a row
+# being torn down is exactly where a survivor would look like a live receiver
+# for a handle that no longer exists, so the marker is read and cleared here
+# too.
 _reap_markers() {
     local who="$1" pid
     # sot_watcher_pid_for, never the bare pid on the marker's first line: these
@@ -68,7 +67,6 @@ _reap_markers() {
         kill "$pid" 2>/dev/null && echo "Stopped watcher pid $pid for @$who"
     fi
     rm -f "${COMM_HOME:?}/state/$who.watch" 2>/dev/null || true
-    sot_bridge_stop "$who" 2>/dev/null || true
 }
 
 # 2) destroy the workspace

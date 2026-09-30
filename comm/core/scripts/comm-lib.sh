@@ -6,7 +6,7 @@
 # _sot_is_windows — the ONE shared platform test (Codex review, PR1 round 2
 # finding 6: Windows-specific defaults/guards must live HERE, not duplicated
 # per-caller — a caller-side workaround dies with that process, so a later,
-# separately-invoked script (e.g. a retried `comm-listen.sh --selftest`) never
+# separately-invoked script (e.g. a retried invocation) never
 # sees it and falls through to Linux-only logic that has no role on Windows).
 # comm-session-skill.sh keeps its own tiny copy (it does not source this file, by
 # design). comm-watch.sh used to as well, and mirroring is how it came to poll a
@@ -335,9 +335,8 @@ sot_ssh_bridge() {
     fi
 }
 
-# sot_relay_endpoint [EXPLICIT] — the endpoint for comm RELAY traffic (send,
-# ask, listen, selftest): where the HANDLES live. A handle is registered live
-# on the BACKEND daemon by its listener connection, so on a Windows box this
+# sot_relay_endpoint [EXPLICIT] — the endpoint for comm RELAY traffic (send):
+# where the HANDLES live. On a Windows box this
 # is the box's own ssh child to the hub — never the local daemon's pipe,
 # which has no route to a handle on another host and drops the frame
 # without a word (2026-09-08: every cross-host send from a Windows session
@@ -446,7 +445,7 @@ sot_daemon_endpoint() {
         local line
         while IFS= read -r line; do
             case "$line" in
-                *comm-relay*|*comm-spawn*|*comm-despawn*|*comm-listen*|*comm-watch*|*comm-poll*|*sot-fe*|*sot-nav*)
+                *comm-relay*|*comm-spawn*|*comm-despawn*|*comm-watch*|*comm-poll*|*sot-fe*|*sot-nav*)
                     continue
                     ;;
             esac
@@ -925,6 +924,21 @@ sot_recipient_note() {
     esac
 }
 
+# sot_handle_live HANDLE — rc 0 when the registry's .agents[HANDLE].last_seen is
+# fresh (within SOT_COMM_STALE_SECS, default 600 — the threshold
+# sot_recipient_note and comm-list.sh use), else rc 1. An absent row, an absent
+# or unparseable last_seen all mean not live: it never fabricates liveness. Asks
+# the heartbeat only (no daemon round trip), so comm-join.sh's stranding warning
+# works on a box with no daemon reachable.
+sot_handle_live() {
+    local last_seen seens
+    last_seen="$(jq -r --arg n "$1" '.agents[$n].last_seen // empty | if type=="string" then . else empty end' "$REGISTRY" 2>/dev/null)" || return 1
+    [ -n "$last_seen" ] || return 1
+    seens="$(date -u -d "$last_seen" +%s 2>/dev/null)" || return 1
+    [ "$seens" -gt 0 ] 2>/dev/null || return 1
+    [ $(( $(date -u +%s) - seens )) -lt "${SOT_COMM_STALE_SECS:-600}" ]
+}
+
 # registry_del_if_provisional NAME WANT_ROOT WANT_NONCE — conditionally
 # delete NAME's row, but ONLY if it's STILL provably the exact provisional
 # row identified by WANT_ROOT + WANT_NONCE (status "spawning" is implied —
@@ -1049,52 +1063,7 @@ sot_write_self_file() {
     return 0
 }
 
-# --- relay bridge (started by comm-listen.sh; checked by comm-join.sh's
-# stranding guard and comm-listen.sh's --status/--stop/start-check) ---
-#
-# The bridge is the reconnect loop `comm-relay.sh bridge --name <handle>`,
-# run as a plain background child of the session's own process tree. It
-# ends with the row's scope (workspace.destroy, or the run ending) — not
-# with any one leg — so it survives a leg restart and is reused through
-# its pidfile rather than restarted. Its loop pid is recorded in a
-# pidfile under the comm state dir; "running" means
-# that pid is alive AND is our loop for this handle (argv checked field by
-# field, so a reused pid never counts). There is never a bridge on Windows
-# (the frontend files inbound frames itself).
-#
-# The loop is started with a fixed argv shape — `bash -c <script>
-# sot-bridge <comm-relay.sh> <handle>` — so identification is an exact
-# argv comparison, not a regex over a command line.
-BRIDGE_ARGV0="sot-bridge"
-# $1 relay, $2 handle, $3 the OWNING agent's pid (empty = untethered), $4 the
-# pidfile. The relay child blocks for as long as the connection holds, so the
-# owner check cannot live at the top of the loop only: it polls alongside the
-# child, and when the owner is gone it kills the child, drops the pidfile and
-# exits — an ownerless bridge must not survive as a named receiver the daemon
-# still counts (the false-receiver defect). argv indices 3 and 5 are unchanged
-# by the two extra arguments, so sot_bridge_pid_for still identifies the loop.
-# BOTH checks are `kill -0`, including the OWNER one, and that is deliberate
-# rather than an oversight: there is no bridge loop on Windows at all (ADR 0042
-# amendment decision 5, stated as an invariant in comm-relay.sh, and the reason
-# the bootstrap reports bridge=n/a there — the frontend files frames itself).
-# This loop therefore runs only where the portable walk answers and `kill -0`
-# is correct, so sot_pid_alive's msys arm is unreachable from here. Routing it
-# through the helper meant carrying the helper's definition into this shell,
-# and that plumbing had a failure mode of its own: drop it and the bridge dies
-# while its owner is alive.
-BRIDGE_LOOP='while :; do
-    "$1" bridge --name "$2" & _c=$!
-    while kill -0 "$_c" 2>/dev/null; do
-        if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then
-            kill "$_c" 2>/dev/null; [ -z "${4:-}" ] || rm -f -- "${4:?}" 2>/dev/null; exit 0
-        fi
-        sleep 2
-    done
-    if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then [ -z "${4:-}" ] || rm -f -- "${4:?}" 2>/dev/null; exit 0; fi
-    sleep 2
-done'
-
-# --- owned lifetimes: who a watcher or a bridge belongs to -------------------
+# --- owned lifetimes: who a watcher belongs to -------------------
 #
 # sot_owner_pid — the pid of the nearest ancestor whose command is `claude` or
 # `codex`, walking up from $PPID. Lives HERE, not in one caller, because every
@@ -1254,38 +1223,6 @@ for ($i = 0; $i -lt 64 -and $map.ContainsKey($id); $i++) {
 }' 2>/dev/null | tr -d '\r' | tr -dc '0-9')"
     [[ "$win" =~ ^[0-9]+$ ]] || return 1
     _sot_msys_pid_of "$win"
-}
-
-# sot_bridge_owner_pid [PID] — the pid a BRIDGE is tethered to, decided HERE
-# because two callers start bridges (comm-listen.sh and the bootstrap's
-# `_ensure_bridge`), and a second copy of the decision is exactly how the
-# bootstrap kept reporting `down` after the listen path learned to accept an
-# agentless start (CI's hermetic leg, 2026-09-26). Three tiers, in order:
-#   1. an explicit pid from a caller with the better vantage,
-#   2. the nearest claude/codex ancestor,
-#   3. the invoking shell ($PPID — a bash builtin, so it holds on the macOS
-#      and git-bash legs too, unlike a session id, which is a pid on Linux and
-#      a kernel address on BSD).
-# An agentless start IS legitimate — the bridge only FILES, and a human at a
-# prompt is a reader — so the absence of an agent must not refuse; tier 3 fails
-# SHORT, never immortal, since a caller that exits early leaves a bridge that
-# dies within one poll and a `--status` that says so out loud, which is the
-# property this ownership rule exists to protect. The agent tier stays FIRST:
-# reverse them and every session's bridge silently shortens to the life of
-# whatever launched it. Prints nothing (rc 1) only when orphaned to PPID 1 — a
-# refusal at the call site, never an untethered bridge. One edge is documented
-# rather than guarded: a parent that outlives everything (a systemd unit
-# starting a bridge directly) would own it forever, which is the harm this rule
-# exists to prevent. Nothing starts one that way today — every caller is a
-# session script, a hook or a test. Add the guard the day a unit starts one.
-# A WATCHER is not a bridge: it types into a pty, so an agent ancestor is its
-# only correct owner and it keeps calling `sot_owner_pid` directly.
-sot_bridge_owner_pid() {
-    local owner="${1:-}"
-    [[ "$owner" =~ ^[0-9]+$ ]] || owner="$(sot_owner_pid || true)"
-    [[ "$owner" =~ ^[0-9]+$ ]] || owner="${PPID:-}"
-    [[ "$owner" =~ ^[0-9]+$ ]] && [ "$owner" != 1 ] || return 1
-    printf '%s\n' "$owner"
 }
 
 # sot_watcher_pid_for HANDLE — the live watcher pid recorded in
@@ -1590,9 +1527,9 @@ sot_inbox_lines() {
 
 # --- the WINDOWS FRONTEND inbox: a second file, a second cursor --------------
 #
-# On Windows nothing writes inbox/<handle>.jsonl — there is no listener there:
+# On Windows nothing writes inbox/<handle>.jsonl:
 # the frontend files every inbound relay frame into its own fe-inbox.jsonl
-# (comm-listen.sh's header, comm-watch.sh's Windows branch), so THAT file is the
+# (comm-watch.sh's Windows branch), so THAT file is the
 # mail. Every reader was blind to it, and a Windows session went an hour without
 # seeing two messages while comm-poll.sh printed "No new messages" from a
 # per-handle file three weeks stale (field report, 2026-09-27). Two facts make it
@@ -1671,93 +1608,6 @@ sot_fe_unread_lines() {
             (fromjson? // empty) | select(type == "object")
             | select((.to // "") == $me)
             | . + {msg: (.msg // .text // "")}' 2>/dev/null || true
-}
-
-sot_bridge_pidfile() { printf '%s/state/bridge-%s.pid\n' "$COMM_HOME" "$1"; }
-
-# sot_bridge_pid_for NAME — print the live loop pid for NAME (rc 0), or
-# nothing (rc 1) when the pidfile is absent, stale, or names another process.
-sot_bridge_pid_for() {
-    local name="$1" pid
-    _sot_is_windows && return 1
-    pid="$(cat "$(sot_bridge_pidfile "$name")" 2>/dev/null)" || return 1
-    [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] || return 1
-    local -a argv=()
-    mapfile -d '' argv < "/proc/$pid/cmdline" 2>/dev/null
-    [ "${argv[3]:-}" = "$BRIDGE_ARGV0" ] && [ "${argv[5]:-}" = "$name" ] || return 1
-    printf '%s\n' "$pid"
-}
-
-sot_bridge_running_for() { sot_bridge_pid_for "$1" >/dev/null; }
-
-# _sot_bridge_pattern NAME — end-anchored pgrep -f pattern matching every
-# bridge process for NAME under this uid: the loop's relay child, a bridge
-# someone ran by hand, the loop of a bridge a previous release wrapped in a
-# tmux session (its shell quoted the handle, hence the optional quotes), and
-# the current loop itself — `bash -c ... sot-bridge <relay> NAME`, which
-# never contains "comm-relay.sh bridge --name" as one substring so it needs
-# its own alternative. Every non-alphanumeric character of NAME is escaped.
-_sot_bridge_pattern() {
-    local escaped; escaped="$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/\\&/g')"
-    printf "(comm-relay\\\\.sh'? bridge --name '?%s'?(;|\$)|%s [^ ]+ %s( |\$))" \
-        "$escaped" "$BRIDGE_ARGV0" "$escaped"
-}
-
-# sot_bridge_pids_for NAME — pids (this uid only) of every bridge process
-# for NAME OTHER than the recorded loop: the loop's own relay child plus any
-# stray. comm-listen.sh kills these on --stop and before starting a fresh
-# loop, so a bridge from before the pidfile (or one whose pidfile was lost)
-# never files the same frame twice next to the new one.
-sot_bridge_pids_for() {
-    local name="$1"
-    _sot_is_windows && return 1
-    pgrep -u "$(id -u)" -f "$(_sot_bridge_pattern "$name")" 2>/dev/null
-}
-
-# sot_bridge_stop NAME — stop the loop (first, so it cannot respawn its
-# child), then every bridge process for NAME, and drop the pidfile.
-sot_bridge_stop() {
-    local name="$1" pid
-    if pid="$(sot_bridge_pid_for "$name")"; then kill "$pid" 2>/dev/null || true; fi
-    # shellcheck disable=SC2046
-    kill $(sot_bridge_pids_for "$name") 2>/dev/null || true
-    rm -f "$(sot_bridge_pidfile "$name")"
-}
-
-# sot_bridge_start NAME RELAY_SH [OWNER_PID] — stop any stray first, then start the
-# loop detached from this shell's stdio (a caller's pipe must never be held
-# open by it) and record its pid. Output goes to state/bridge-NAME.log,
-# truncated at each start.
-sot_bridge_start() {
-    local name="$1" relay="$2" owner="${3:-}" log lockdir held=0 spins=0
-    mkdir -p "$COMM_HOME/state"
-    # Codex review (PR 254): stop-then-start is a read-modify-write over
-    # one pidfile, and two bootstraps racing it (a session's own and a
-    # hook, say) each cleared the strays and each started a loop -- every
-    # inbound frame filed twice, and the loop that lost the pidfile race
-    # left behind as an unkillable stray. `mkdir` is the portable atomic
-    # test-and-set (bash 3.2 on macOS has no `{fd}` allocation, and the
-    # home is NFS): whoever creates the directory owns the start.
-    #
-    # After ~5s we proceed WITHOUT the lock rather than refuse to start:
-    # a crashed holder must never be able to make a session permanently
-    # deaf, and starting unlocked is exactly the behaviour this had
-    # before the lock existed.
-    lockdir="$COMM_HOME/state/bridge-$name.lock.d"
-    while :; do
-        if mkdir "$lockdir" 2>/dev/null; then held=1; break; fi
-        spins=$((spins + 1))
-        [ "$spins" -ge 50 ] && break
-        sleep 0.1
-    done
-    sot_bridge_stop "$name"
-    log="$COMM_HOME/state/bridge-$name.log"
-    : > "$log"
-    bash -c "$BRIDGE_LOOP" "$BRIDGE_ARGV0" "$relay" "$name" "$owner" \
-        "$(sot_bridge_pidfile "$name")" </dev/null >>"$log" 2>&1 &
-    printf '%s\n' "$!" > "$(sot_bridge_pidfile "$name")"
-    [ "$held" = 1 ] && rmdir "$lockdir" 2>/dev/null
-    return 0
 }
 
 # --- live delivery into a workspace row (comm-send.sh, comm-bootstrap.sh,
@@ -2478,14 +2328,12 @@ sot_host() {
 # before any other op (ADR 0046 decision 1: a connection declares
 # `{host, role, name}` once, and the daemon binds it — never recomputed
 # downstream). Replaces six pasted copies of this exact literal frame
-# (comm-relay.sh, comm-despawn.sh, comm-listen.sh, comm-spawn.sh, sot-fe,
+# (comm-relay.sh, comm-despawn.sh, comm-spawn.sh, sot-fe,
 # and the join-disambiguation test's own fixture) that predated `host`/
 # `role`/`name` entirely and so declared nothing about the sender.
 #
-# ROLE overrides the default inference: comm-listen.sh's reconnect-loop
-# bridge passes "bridge" explicitly (that loop's own lifetime IS what
-# "bridge" means — nothing else in this tree ever is one). Every other
-# caller lets this infer "agent" ($SOT_WORKSPACE set — a session running
+# ROLE overrides the default inference; no comm script passes one now.
+# Every caller lets this infer "agent" ($SOT_WORKSPACE set — a session running
 # inside a daemon-owned workspace) or "cli" (a bare shell invocation, the
 # common case for comm-relay.sh/comm-despawn.sh/comm-spawn.sh/sot-fe).
 #
@@ -2515,30 +2363,6 @@ sot_hello_frame() {
     # function's doc comment).
     printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":2,"app_version":"comm","token":%s,"host":%s,"role":%s,"name":%s}}\n' \
         "$(sot_json_escape "$tok")" "$(sot_json_escape "$host")" "$(sot_json_escape "$role")" "$(sot_json_escape "${NAME:-}")"
-}
-
-# sot_ping_frame — one `ping` request line (topology plan §F step 2). No
-# per-connection state needed (unlike `sot_hello_frame`, this carries no
-# payload at all) -- id 2 is fixed and never correlated against a reply on
-# this write-only-in-practice path: `comm-relay.sh bridge`'s read side
-# (`filter_inbound`) already drops every frame whose op isn't
-# `agent.message`, so the daemon's `{"ok":true}` ack is simply ignored,
-# same as it ignores its own `hello` reply today.
-sot_ping_frame() {
-    printf '{"v":1,"id":2,"kind":"req","op":"ping","payload":{}}\n'
-}
-
-# sot_ping_interval_s — seconds between `ping` frames a long-lived bridge
-# connection sends (topology plan §F step 2, D10) -- a third of the
-# daemon's own 90s read deadline (`PING_READ_DEADLINE`, server.rs), so one
-# or two missed ticks is noise and three in a row is what actually trips
-# the daemon's reaper. `SOT_TEST_PING_INTERVAL_MS` overrides it for tests
-# -- same env var name the frontend transport reads for its own ping
-# timer, so one override drives both senders in a test. Unset in every
-# real deployment.
-sot_ping_interval_s() {
-    local ms="${SOT_TEST_PING_INTERVAL_MS:-30000}"
-    awk -v ms="$ms" 'BEGIN{printf "%.3f", ms/1000}'
 }
 
 # sot_oneshot_request FRAME OP — one-shot request/response on a fresh daemon
