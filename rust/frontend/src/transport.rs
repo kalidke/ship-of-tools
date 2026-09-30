@@ -51,12 +51,22 @@ use tokio::sync::mpsc::{self as tmpsc, UnboundedReceiver, UnboundedSender};
 
 use winit::window::Window;
 
-/// What the transport task should dial. At least one of `pipe`/`ssh` must
-/// be set or `spawn` is a no-op (caller checks).
+/// What the transport task should dial: a local socket/named pipe, or an
+/// ssh child's stdio (C3). Exactly one, never neither and never both —
+/// replaces the former `pipe: Option<PathBuf>` / `ssh: Option<SshRecipe>`
+/// pair, whose "at least one must be set" was a doc caveat callers had to
+/// honor by convention (the CLI never actually built one with neither set;
+/// the only construction with both was a `#[cfg(test)]` state the CLI
+/// cannot produce) rather than a fact the type itself enforced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dial {
+    Pipe(PathBuf),
+    Ssh(sot_protocol::ssh_bridge::SshRecipe),
+}
+
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
-    pub pipe: Option<PathBuf>,
-    pub ssh: Option<sot_protocol::ssh_bridge::SshRecipe>,
+    pub dial: Dial,
     pub token: Option<String>,
 }
 
@@ -107,8 +117,7 @@ pub enum IncomingEvt {
         /// for the ssh child, carrying the exact recipe it spawned. The
         /// proxy arms on `proxy && !matches!(resolved, ResolvedDial::Local)`
         /// (`gpu.rs`) — keyed on the transport that CONNECTED, not the CLI
-        /// shape, so the documented `--socket <local>` remote config with a
-        /// `--dial local=ssh:…` override is correctly detected as remote.
+        /// shape.
         /// Replaces the former separate `remote: bool` / `tcp_peer:
         /// Option<SocketAddr>` pair: `remote` was literally `via_tcp`, and
         /// the two values that gate proxying and that a second connection
@@ -1696,11 +1705,14 @@ pub fn spawn(
     });
 }
 
-/// Try pipe first (if set), fall back to an ssh child on connect failure
-/// (if set). Once a connection is established we hand off to
-/// `run_protocol`; any error from there is *not* retried via the other
-/// transport — that's a runtime disconnect, not a startup-time
-/// choose-your-transport decision.
+/// Dial whichever transport `config.dial` names. Once a connection is
+/// established we hand off to `run_protocol`; any error from there is
+/// *not* retried via the other transport — that's a runtime disconnect,
+/// not a startup-time choose-your-transport decision. There is no
+/// fallback between the two arms: pre-C3 both could be configured and a
+/// pipe failure fell through to ssh, but `Dial` makes that unconstructible
+/// now, so each arm either connects and hands off or returns its own
+/// `Err`.
 async fn connect_and_run(
     host: HostKey,
     config: TransportConfig,
@@ -1709,93 +1721,82 @@ async fn connect_and_run(
     window: Arc<Window>,
     backoff_ms: &mut u64,
 ) -> Result<()> {
-    if let Some(pipe_path) = config.pipe.as_ref() {
-        match connect_pipe(pipe_path).await {
-            Ok(stream) => {
-                // Pre-hello: the daemon hasn't declared its host yet, so
-                // `host` here is only this connection's DIAL key, not a
-                // claim about identity (ADR 0046 decision 1) — label it
-                // plainly so it's never misread as the declared value the
-                // later `"connected"` line's `declared` field carries.
-                tracing::info!(dial = %host, ?pipe_path, "connected via local socket");
-                let (rx, tx) = stream.split();
-                let rx = codec::buffered(rx);
-                return run_protocol(
-                    host,
-                    rx,
-                    tx,
-                    config.token.as_deref(),
-                    &evt_tx,
-                    out_rx,
-                    &window,
-                    backoff_ms,
-                    ResolvedDial::Local,
-                )
-                .await;
-            }
-            Err(e) if config.ssh.is_some() => {
-                tracing::warn!(
-                    pipe = ?pipe_path,
-                    error = %e,
-                    "local-socket connect failed; falling back to ssh"
-                );
-                // fall through to the ssh block below
-            }
-            Err(e) => return Err(e),
+    match &config.dial {
+        Dial::Pipe(pipe_path) => {
+            let stream = connect_pipe(pipe_path).await?;
+            // Pre-hello: the daemon hasn't declared its host yet, so
+            // `host` here is only this connection's DIAL key, not a
+            // claim about identity (ADR 0046 decision 1) — label it
+            // plainly so it's never misread as the declared value the
+            // later `"connected"` line's `declared` field carries.
+            tracing::info!(dial = %host, ?pipe_path, "connected via local socket");
+            let (rx, tx) = stream.split();
+            let rx = codec::buffered(rx);
+            run_protocol(
+                host,
+                rx,
+                tx,
+                config.token.as_deref(),
+                &evt_tx,
+                out_rx,
+                &window,
+                backoff_ms,
+                ResolvedDial::Local,
+            )
+            .await
         }
-    }
-    if let Some(recipe) = config.ssh.as_ref() {
-        let mut child = sot_protocol::ssh_bridge::spawn_async(recipe)
-            .with_context(|| format!("spawn ssh {recipe}"))?;
-        let stdin = child.stdin.take().expect("spawned with a piped stdin");
-        let stdout = child.stdout.take().expect("spawned with a piped stdout");
-        let stderr = child.stderr.take().expect("spawned with a piped stderr");
-        // The child's last non-empty stderr line, drained on its own task
-        // for as long as `child` lives — ssh's own complaint ("Permission
-        // denied", or `unrecognised argument: --host` from a hub whose
-        // `sotd` predates C1) is the diagnosis a dead child leaves behind,
-        // the same rule `stdio_bridge.rs` already sets for the far end.
-        let last_stderr = Arc::new(std::sync::Mutex::new(None::<String>));
-        {
-            let last_stderr = Arc::clone(&last_stderr);
-            tokio::spawn(async move {
-                use tokio::io::AsyncBufReadExt;
-                let mut lines = tokio::io::BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if !line.trim().is_empty() {
-                        if let Ok(mut guard) = last_stderr.lock() {
-                            *guard = Some(line);
+        Dial::Ssh(recipe) => {
+            let mut child = sot_protocol::ssh_bridge::spawn_async(recipe)
+                .with_context(|| format!("spawn ssh {recipe}"))?;
+            let stdin = child.stdin.take().expect("spawned with a piped stdin");
+            let stdout = child.stdout.take().expect("spawned with a piped stdout");
+            let stderr = child.stderr.take().expect("spawned with a piped stderr");
+            // The child's last non-empty stderr line, drained on its own task
+            // for as long as `child` lives — ssh's own complaint ("Permission
+            // denied", or `unrecognised argument: --host` from a hub whose
+            // `sotd` predates C1) is the diagnosis a dead child leaves behind,
+            // the same rule `stdio_bridge.rs` already sets for the far end.
+            let last_stderr = Arc::new(std::sync::Mutex::new(None::<String>));
+            {
+                let last_stderr = Arc::clone(&last_stderr);
+                tokio::spawn(async move {
+                    use tokio::io::AsyncBufReadExt;
+                    let mut lines = tokio::io::BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        if !line.trim().is_empty() {
+                            if let Ok(mut guard) = last_stderr.lock() {
+                                *guard = Some(line);
+                            }
                         }
                     }
-                }
-            });
-        }
-        // Pre-hello, same labeling rule as the pipe branch above.
-        tracing::info!(dial = %host, %recipe, "connected via ssh child");
-        let rx = codec::buffered(stdout);
-        let result = run_protocol(
-            host,
-            rx,
-            stdin,
-            config.token.as_deref(),
-            &evt_tx,
-            out_rx,
-            &window,
-            backoff_ms,
-            ResolvedDial::Ssh(recipe.clone()),
-        )
-        .await;
-        // `child` is dropped here (`kill_on_drop`), ending the ssh login
-        // this attempt owns before the reconnect loop's next attempt spawns
-        // a fresh one.
-        if result.is_err() {
-            if let Some(line) = sot_protocol::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
-                return Err(anyhow::anyhow!(line));
+                });
             }
+            // Pre-hello, same labeling rule as the pipe branch above.
+            tracing::info!(dial = %host, %recipe, "connected via ssh child");
+            let rx = codec::buffered(stdout);
+            let result = run_protocol(
+                host,
+                rx,
+                stdin,
+                config.token.as_deref(),
+                &evt_tx,
+                out_rx,
+                &window,
+                backoff_ms,
+                ResolvedDial::Ssh(recipe.clone()),
+            )
+            .await;
+            // `child` is dropped here (`kill_on_drop`), ending the ssh login
+            // this attempt owns before the reconnect loop's next attempt spawns
+            // a fresh one.
+            if result.is_err() {
+                if let Some(line) = sot_protocol::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
+                    return Err(anyhow::anyhow!(line));
+                }
+            }
+            result
         }
-        return result;
     }
-    anyhow::bail!("no transport configured (set --socket or a --dial ssh: endpoint)")
 }
 
 /// Connect to the local socket / named pipe at `path`.
@@ -1994,8 +1995,7 @@ async fn run_protocol<R, W>(
     // connected — `ResolvedDial::Local` for the pipe, `ResolvedDial::Ssh`
     // for the ssh child, carrying the exact recipe it spawned. The proxy
     // arms only when NOT `Local` — keyed on the transport that CONNECTED,
-    // not the CLI shape (a `--socket <local>` config overridden by a
-    // `--dial local=ssh:…` entry is correctly detected as remote this way).
+    // not the CLI shape.
     resolved: ResolvedDial,
 ) -> Result<()>
 where

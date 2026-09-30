@@ -66,8 +66,7 @@ pub fn parse_dial_arg(arg: &str) -> Result<(HostKey, crate::transport::Transport
             return Err(format!("`--dial {arg}`: empty socket path"));
         }
         crate::transport::TransportConfig {
-            pipe: Some(PathBuf::from(path)),
-            ssh: None,
+            dial: crate::transport::Dial::Pipe(PathBuf::from(path)),
             token: None,
         }
     } else if let Some(rest) = endpoint.strip_prefix("ssh:") {
@@ -84,8 +83,7 @@ pub fn parse_dial_arg(arg: &str) -> Result<(HostKey, crate::transport::Transport
         let recipe = sot_protocol::ssh_bridge::SshRecipe::new(target, ssh_host)
             .map_err(|e| format!("`--dial {arg}`: {e}"))?;
         crate::transport::TransportConfig {
-            pipe: None,
-            ssh: Some(recipe),
+            dial: crate::transport::Dial::Ssh(recipe),
             token: None,
         }
     } else {
@@ -145,12 +143,12 @@ pub fn resolve_connections(
         // one's ssh claim first so re-dialing the same host on a new
         // endpoint doesn't spuriously collide with itself.
         if let Some(pos) = out.iter().position(|(h, _)| h == host) {
-            if let Some(recipe) = &out[pos].1.ssh {
+            if let crate::transport::Dial::Ssh(recipe) = &out[pos].1.dial {
                 claimed_ssh.remove(&recipe.to_string());
             }
             out.remove(pos);
         }
-        if let Some(recipe) = &config.ssh {
+        if let crate::transport::Dial::Ssh(recipe) = &config.dial {
             let key = recipe.to_string();
             if let Some(existing) = claimed_ssh.get(&key) {
                 tracing::warn!(host = %host, existing_host = %existing, endpoint = %key, "duplicate ssh --dial endpoint with another host; skipping to avoid reaching the wrong daemon");
@@ -160,10 +158,9 @@ pub fn resolve_connections(
         }
         out.push((host.clone(), config.clone()));
     }
-    if cli.socket.is_some() {
+    if let Some(socket) = cli.socket.clone() {
         let config = crate::transport::TransportConfig {
-            pipe: cli.socket.clone(),
-            ssh: None,
+            dial: crate::transport::Dial::Pipe(socket),
             token: cli.token.clone(),
         };
         if let Some(existing) = out.iter_mut().find(|(h, _)| h == "local") {
@@ -191,34 +188,41 @@ mod tests {
             .expect("valid");
         assert_eq!(host, "host-2");
         assert_eq!(
-            cfg.pipe,
-            Some(PathBuf::from("/run/user/1234/sot/sessions/sot.sock"))
+            cfg.dial,
+            crate::transport::Dial::Pipe(PathBuf::from("/run/user/1234/sot/sessions/sot.sock"))
         );
-        assert!(cfg.ssh.is_none());
     }
 
     #[test]
     fn parse_dial_arg_good_ssh_no_host() {
         let (host, cfg) = parse_dial_arg("host-1=ssh:hub").expect("valid");
         assert_eq!(host, "host-1");
-        assert_eq!(cfg.ssh.as_ref().map(|r| r.target()), Some("hub"));
-        assert_eq!(cfg.ssh.as_ref().and_then(|r| r.host()), None);
-        assert!(cfg.pipe.is_none());
+        let crate::transport::Dial::Ssh(recipe) = &cfg.dial else {
+            panic!("expected an ssh dial")
+        };
+        assert_eq!(recipe.target(), "hub");
+        assert_eq!(recipe.host(), None);
     }
 
     #[test]
     fn parse_dial_arg_good_ssh_with_host() {
         let (host, cfg) = parse_dial_arg("host-3=ssh:hub/host-3").expect("valid");
         assert_eq!(host, "host-3");
-        assert_eq!(cfg.ssh.as_ref().map(|r| r.target()), Some("hub"));
-        assert_eq!(cfg.ssh.as_ref().and_then(|r| r.host()), Some("host-3"));
+        let crate::transport::Dial::Ssh(recipe) = &cfg.dial else {
+            panic!("expected an ssh dial")
+        };
+        assert_eq!(recipe.target(), "hub");
+        assert_eq!(recipe.host(), Some("host-3"));
     }
 
     #[test]
     fn parse_dial_arg_good_pipe() {
         let (host, cfg) = parse_dial_arg(r"host-4=pipe:\\.\pipe\sot-host-4").expect("valid");
         assert_eq!(host, "host-4");
-        assert_eq!(cfg.pipe, Some(PathBuf::from(r"\\.\pipe\sot-host-4")));
+        assert_eq!(
+            cfg.dial,
+            crate::transport::Dial::Pipe(PathBuf::from(r"\\.\pipe\sot-host-4"))
+        );
     }
 
     #[test]
@@ -250,7 +254,7 @@ mod tests {
     fn parse_dial_arg_unknown_host_rejects_bad_syntax() {
         // Uppercase, a leading dash, and an embedded space are all outside
         // the plain-host-name grammar `sotd topology plan` emits hosts in.
-        assert!(parse_dial_arg("Descent=ssh:hub").is_err());
+        assert!(parse_dial_arg("Alpha=ssh:hub").is_err());
         assert!(parse_dial_arg("-host-2=ssh:hub").is_err());
         assert!(parse_dial_arg("de scent=ssh:hub").is_err());
         assert!(parse_dial_arg("=ssh:hub").is_err());
@@ -264,7 +268,10 @@ mod tests {
         ];
         let out = resolve_connections(&dials, &CliOverride::default());
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].1.ssh.as_ref().map(|r| r.target()), Some("hub-b"));
+        let crate::transport::Dial::Ssh(recipe) = &out[0].1.dial else {
+            panic!("expected an ssh dial")
+        };
+        assert_eq!(recipe.target(), "hub-b");
     }
 
     #[test]
@@ -288,8 +295,11 @@ mod tests {
         let out = resolve_connections(&dials, &cli);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, "local");
-        assert_eq!(out[0].1.pipe, Some(PathBuf::from("/fresh.sock")));
-        assert!(out[0].1.ssh.is_none(), "cli override replaces the stale dial entirely");
+        assert_eq!(
+            out[0].1.dial,
+            crate::transport::Dial::Pipe(PathBuf::from("/fresh.sock")),
+            "cli override replaces the stale dial entirely"
+        );
     }
 
     #[test]

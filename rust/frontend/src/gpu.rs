@@ -3923,24 +3923,27 @@ enum ProxyTarget {
 }
 
 /// Which `LaneDial` `spawn_pane_attach_term` should use for a host, given
-/// its own `TransportConfig` (for `pipe`/`token`) and the CONTROL
+/// its own `TransportConfig` (for `dial`/`token`) and the CONTROL
 /// transport's own resolved selection for it (never re-derived: `Ssh`
 /// carries the exact recipe the control connection already resolved and
-/// dialed, so this never re-parses `config.ssh` a second time).
+/// dialed, so this never re-parses `config.dial` a second time).
 /// Pulled out so the choice is unit-tested without a live `State`/window.
-/// `None` when `resolved` says `Local` but no pipe path is configured —
+/// `None` when `resolved` says `Local` but `config.dial` holds `Ssh` —
 /// shouldn't happen (the control connection could not have resolved
-/// `Local` without one), but degrading to "no dial" rather than
-/// panicking matches this codebase's fail-soft convention throughout.
+/// `Local` without a configured pipe), but degrading to "no dial" rather
+/// than panicking matches this codebase's fail-soft convention throughout.
 fn lane_dial(
     config: &crate::transport::TransportConfig,
     resolved: ResolvedDial,
 ) -> Option<(sot_protocol::lane_client::LaneDial, Option<String>)> {
     match resolved {
-        ResolvedDial::Local => {
-            let path = config.pipe.clone()?;
-            Some((sot_protocol::lane_client::LaneDial::Local(path), config.token.clone()))
-        }
+        ResolvedDial::Local => match &config.dial {
+            crate::transport::Dial::Pipe(path) => Some((
+                sot_protocol::lane_client::LaneDial::Local(path.clone()),
+                config.token.clone(),
+            )),
+            crate::transport::Dial::Ssh(_) => None,
+        },
         ResolvedDial::Ssh(recipe) => {
             Some((sot_protocol::lane_client::LaneDial::Ssh(recipe), config.token.clone()))
         }
@@ -13019,12 +13022,10 @@ impl State {
                     // ADR 0035: arm the proxy for THIS host only when its own
                     // daemon can proxy (capability) AND this FE actually
                     // connected to it remotely (not the local pipe). Keyed
-                    // on the transport that CONNECTED, not the CLI shape --
-                    // the documented `--socket <local>` config overridden by
-                    // a `--dial local=ssh:…` entry is correctly detected as
-                    // remote this way. A local (pipe) connection to a host
-                    // reaches that host's loopback ports directly and never
-                    // proxies. Per-host insert/remove, never a single
+                    // on the transport that CONNECTED, not the CLI shape. A
+                    // local (pipe) connection to a host reaches that host's
+                    // loopback ports directly and never proxies. Per-host
+                    // insert/remove, never a single
                     // FE-wide flag: every host's own Connected evt only ever
                     // touches its own entry, so a local pipe daemon on this
                     // box cannot clobber a DIFFERENT host's proxy arming
@@ -30953,15 +30954,13 @@ mod capsule_pane_tests {
 
     /// BLOCKER (Codex review, lane B5 discharge): `lane_dial` must dial
     /// the SAME endpoint the control transport actually resolved for a
-    /// host — never a second, independent preference guess. Both a
-    /// pipe-configured AND ssh-configured host must still dial the PIPE
-    /// when `ResolvedDial::Local` says that's what the control
-    /// connection is using (the old "the other transport always wins
-    /// when both are configured" behavior would reach a DIFFERENT
-    /// daemon, or fail outright, whenever the pipe is the one actually
-    /// healthy); a `ResolvedDial::Ssh(recipe)` carries the exact resolved
-    /// recipe through untouched, proving no second, independent read of
-    /// `config.ssh` ever happens. `LaneDial` has no `Debug`/`PartialEq`
+    /// host — never a second, independent preference guess. A
+    /// `ResolvedDial::Ssh(recipe)` carries the exact resolved recipe
+    /// through untouched, proving no second, independent read of
+    /// `config.dial` ever happens; a `ResolvedDial::Local` against an
+    /// ssh-configured host — the mismatch that used to trigger the old
+    /// "guess from config" bug — degrades to no dial instead of reaching
+    /// a DIFFERENT daemon. `LaneDial` has no `Debug`/`PartialEq`
     /// (its own doc: an endpoint value names one dial, nothing to
     /// compare structurally), so each case matches the variant directly.
     #[test]
@@ -30992,15 +30991,13 @@ mod capsule_pane_tests {
     #[test]
     fn lane_dial_matches_the_resolved_control_transport_selection() {
         let recipe = sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap();
-        let both = crate::transport::TransportConfig {
-            pipe: Some(std::path::PathBuf::from("/tmp/sock")),
-            ssh: Some(recipe.clone()),
+        let pipe_config = crate::transport::TransportConfig {
+            dial: crate::transport::Dial::Pipe(std::path::PathBuf::from("/tmp/sock")),
             token: Some("tok".to_string()),
         };
-        // The control connection resolved LOCAL (the pipe is healthy) —
-        // the lane dial must follow, even though `ssh` is ALSO
-        // configured and names a real target.
-        match lane_dial(&both, ResolvedDial::Local) {
+        // A pipe-configured host whose control connection resolved LOCAL —
+        // the lane dial follows.
+        match lane_dial(&pipe_config, ResolvedDial::Local) {
             Some((sot_protocol::lane_client::LaneDial::Local(path), token)) => {
                 assert_eq!(path, std::path::PathBuf::from("/tmp/sock"));
                 assert_eq!(token.as_deref(), Some("tok"));
@@ -31013,10 +31010,14 @@ mod capsule_pane_tests {
             }
             None => panic!("a resolved+configured pipe must dial, got None"),
         }
-        // The SAME config, but the control connection resolved SSH (the
-        // pipe attempt failed and it fell back) — the lane dial follows
-        // that instead, carrying the resolved recipe verbatim.
-        match lane_dial(&both, ResolvedDial::Ssh(recipe.clone())) {
+        // An ssh-configured host whose control connection resolved SSH —
+        // the lane dial follows, carrying the resolved recipe verbatim
+        // (never a second, independent read of `config.dial`).
+        let ssh_config = crate::transport::TransportConfig {
+            dial: crate::transport::Dial::Ssh(recipe.clone()),
+            token: Some("tok".to_string()),
+        };
+        match lane_dial(&ssh_config, ResolvedDial::Ssh(recipe.clone())) {
             Some((sot_protocol::lane_client::LaneDial::Ssh(got), token)) => {
                 assert_eq!(got, recipe);
                 assert_eq!(token.as_deref(), Some("tok"));
@@ -31029,11 +31030,10 @@ mod capsule_pane_tests {
             }
             None => panic!("a resolved ssh connection must dial, got None"),
         }
-        // Resolved Local but no pipe configured (shouldn't happen — the
-        // control connection could not have resolved Local without one)
-        // degrades to no dial rather than panicking.
-        let ssh_only = crate::transport::TransportConfig { pipe: None, ssh: Some(recipe), token: None };
-        assert!(lane_dial(&ssh_only, ResolvedDial::Local).is_none());
+        // Resolved Local but `config.dial` holds Ssh (shouldn't happen —
+        // the control connection could not have resolved Local without a
+        // configured pipe) degrades to no dial rather than panicking.
+        assert!(lane_dial(&ssh_config, ResolvedDial::Local).is_none());
     }
 
     /// Cross-host figure defect (topology plan step 7): `resolve_proxy_target`
@@ -31054,8 +31054,9 @@ mod capsule_pane_tests {
         host_transports.insert(
             host.clone(),
             crate::transport::TransportConfig {
-                pipe: None,
-                ssh: Some(sot_protocol::ssh_bridge::SshRecipe::new("ignored", None).unwrap()),
+                dial: crate::transport::Dial::Ssh(
+                    sot_protocol::ssh_bridge::SshRecipe::new("ignored", None).unwrap(),
+                ),
                 token: Some("tok-gpu".to_string()),
             },
         );
