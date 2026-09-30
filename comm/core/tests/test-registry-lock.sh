@@ -477,6 +477,24 @@ t17() {
 }
 check "17: a free lock at the deadline is FAILED as not taken, never as one to remove by hand" t17
 
+# A step that finds the lock already gone clears the previous step's by-hand
+# flag, and says the holder it last read WAS held.
+t18() {
+    reset; local out
+    mkdir "$P"
+    out="$(lib "_SOT_REG_LOCK='$P'; _sot_lock_step; rmdir '$P'; _sot_lock_step; echo \"[\$_SOT_LOCK_BYHAND]\"; _sot_lock_fail_text")"
+    contains "$out" "[]" && hasnt_by_hand "$out" || { echo "$out"; return 1; }
+}
+check "18: a lock gone at the step after a by-hand step is not FAILED as one to remove by hand" t18
+
+t19() {
+    reset; local out
+    out="$(lib "_SOT_REG_LOCK='$P'; _SOT_LOCK_HOLDER='mac:-:-:-:4343:77'; _SOT_LOCK_WHY='it is alive'; _SOT_LOCK_GONE=''; _sot_lock_step; _sot_lock_fail_text")"
+    contains "$out" "was held by mac pid 4343 start 77 when last read (it is alive)" && ! contains "$out" "is held" \
+        && contains "$out" "comm-registry-lock-clear.sh" || { echo "$out"; return 1; }
+}
+check "19: a lock released since the last read is FAILED as was held, never as is held" t19
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
