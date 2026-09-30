@@ -1133,8 +1133,11 @@ case_a_nul_a_cr_or_an_empty_last_line_is_shown_once() {
 # T/.sot-comm. T/.sot-comm and a path under it are FATAL with exit 2, first
 # while it does not exist (its literal path) and then through a symlink to it
 # (its physical path); so are an inherited SOT_COMM_HOME, an empty name, and
-# the account's own home as getent records it (stubbed to a temp path).
-# T/other passes, and sourcing drops the host's comm identity.
+# the account's own home, whatever HOME says. Sourcing records the real
+# account home (read-only: only its path is compared), which is getent's
+# answer where getent exists; a stubbed `id` names root's home instead, and an
+# `id` name outside [A-Za-z0-9._-] is never evaluated and records none.
+# T/other passes, and sourcing drops the host's comm identity and daemon route.
 guard_run() {  # T COMM_HOME — the guard's verdict on COMM_HOME under HOME=T
     GUARD_RC=0
     GUARD_OUT="$(HOME="$1" SOT_COMM_HOME="$1/inherited" bash -c '. "$1"; guard_refuse_live_home "$2"; echo passed' \
@@ -1152,24 +1155,36 @@ case_the_home_guard_refuses_a_live_comm_home() {
     guard_run "$t" "$t/other"
     [ "$GUARD_RC" -eq 0 ] && [ "$GUARD_OUT" = passed ] || { echo "  '$t/other' was refused: rc $GUARD_RC, $GUARD_OUT"; return 1; }
     # The account's home as the system records it counts too, whatever HOME
-    # says: a stubbed getent names a temp A as this uid's home, HOME stays T.
-    mkdir -p "$t/acct" "$t/getent-bin"
-    printf '#!/bin/sh\nprintf "u:x:%%s:0::%s:/bin/sh\\n" "$(id -u)"\n' "$t/acct" > "$t/getent-bin/getent"
-    chmod +x "$t/getent-bin/getent"
-    for h in "$t/acct/.sot-comm/x" "$t/other"; do
+    # says: getpwnam's answer, which getent gives too where it exists.
+    h="$(HOME="$t" bash -c '. "$1"; printf %s "$_GUARD_ACCT"' _ "$SCRIPT_DIR/lib-home-guard.sh")"
+    [ -n "$h" ] || { echo "  sourcing recorded no account home"; return 1; }
+    if command -v getent >/dev/null 2>&1; then
+        [ "$h" = "$(getent passwd "$(id -un)" | cut -d: -f6)" ] \
+            || { echo "  the account home '$h' is not getent's"; return 1; }
+    fi
+    mkdir -p "$t/id-bin"
+    printf '#!/bin/sh\necho root\n' > "$t/id-bin/id"; chmod +x "$t/id-bin/id"
+    local root=~root
+    for h in "$root/.sot-comm/x" "$t/other"; do
         GUARD_RC=0
-        GUARD_OUT="$(PATH="$t/getent-bin:$PATH" HOME="$t" bash -c '. "$1"; guard_refuse_live_home "$2"; echo passed' \
+        GUARD_OUT="$(PATH="$t/id-bin:$PATH" HOME="$t" bash -c '. "$1"; guard_refuse_live_home "$2"; echo passed' \
             _ "$SCRIPT_DIR/lib-home-guard.sh" "$h" 2>&1)" || GUARD_RC=$?
         case "$h" in
-            */acct/*) [ "$GUARD_RC" -eq 2 ] && contains "$GUARD_OUT" FATAL \
+            "$root"/*) [ "$GUARD_RC" -eq 2 ] && contains "$GUARD_OUT" FATAL \
                 || { echo "  the account's own home was not refused: rc $GUARD_RC, $GUARD_OUT"; return 1; } ;;
             *) [ "$GUARD_RC" -eq 0 ] && [ "$GUARD_OUT" = passed ] \
-                || { echo "  '$h' was refused under the stubbed account home: rc $GUARD_RC, $GUARD_OUT"; return 1; } ;;
+                || { echo "  '$h' was refused under the stubbed account: rc $GUARD_RC, $GUARD_OUT"; return 1; } ;;
         esac
     done
-    h="$(SOT_COMM_NAME=n SOT_COMM_SELF_FILE=f SOT_WORKSPACE_ID=w HOME="$t" \
-        bash -c '. "$1"; echo "${SOT_COMM_HOME-}${SOT_COMM_NAME-}${SOT_COMM_SELF_FILE-}${SOT_WORKSPACE_ID-}"' _ "$SCRIPT_DIR/lib-home-guard.sh")"
-    [ -z "$h" ] || { echo "  sourcing left the comm identity set: $h"; return 1; }
+    printf '#!/bin/sh\necho "x\\$(touch %s/evaluated)"\n' "$t" > "$t/id-bin/id"
+    h="$(PATH="$t/id-bin:$PATH" HOME="$t" SOT_COMM_HOME= bash -c '. "$1"; printf %s "$_GUARD_ACCT|${#_GUARD_LIVE[@]}"' \
+        _ "$SCRIPT_DIR/lib-home-guard.sh")"
+    [ "$h" = "|1" ] && [ ! -e "$t/evaluated" ] || { echo "  an invalid name recorded an account home: $h"; return 1; }
+    h="$(SOT_COMM_NAME=n SOT_COMM_SELF_FILE=f SOT_WORKSPACE_ID=w SOT_SOCKET=s SOT_FE_ENDPOINT=e \
+        SOT_RELAY_ENDPOINT=e SOT_SPAWN_ENDPOINT=e SOT_ANY_ENDPOINT=e HOME="$t" bash -c '. "$1"
+        echo "${SOT_COMM_HOME-}${SOT_COMM_NAME-}${SOT_COMM_SELF_FILE-}${SOT_WORKSPACE_ID-}${SOT_SOCKET-}"; env | grep "_ENDPOINT="' \
+        _ "$SCRIPT_DIR/lib-home-guard.sh")"
+    [ -z "$h" ] || { echo "  sourcing left the comm identity or daemon route set: $h"; return 1; }
     return 0
 }
 

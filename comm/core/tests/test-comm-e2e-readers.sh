@@ -30,11 +30,14 @@
 # reports how many lines a ping covered first.
 #
 # Needs real boxes, so it runs in no workflow. Nothing here touches
-# ~/.sot-comm or a live daemon; the scratch home is removed on exit.
+# ~/.sot-comm or a live daemon. The scratch home is removed only when the run
+# exits 0; on any other exit it is kept whole, its path printed as `KEPT: <dir>`
+# on stdout and stderr, and removed by hand after diagnosis.
 #
 # It keeps the real HOME by design: its scratch home must live on the shared
-# mount every host sees. lib-home-guard.sh refuses to start (FATAL, exit 2)
-# when that scratch home is, or lies under, the live ~/.sot-comm.
+# mount every host sees: a fresh mktemp folder beside ~/.sot-comm, never
+# under it. Sourcing lib-home-guard.sh drops the host's comm identity and
+# daemon route.
 #
 # Usage: comm/core/tests/test-comm-e2e-readers.sh --peer HOST --v3-host HOST
 # Exit: 0 all pass, 1 any fail, 2 usage.
@@ -57,19 +60,22 @@ SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 HOOK="$(cd "$SCRIPT_DIR/../../adapters/claude/hooks" && pwd)/comm-status-idle.sh"
 HERE="$(hostname -s)"
 PACED="${E2E_PACED:-30}"; BURST="${E2E_BURST:-30}"; QUIET="${E2E_QUIET_SECS:-60}"
-unset SOT_WORKSPACE_ID SOT_COMM_HOOKS SOT_COMM_NAME SOT_COMM_SELF_FILE SOT_COMM_TEST_HOST
+unset SOT_COMM_HOOKS SOT_COMM_TEST_HOST
 
 D="$(mktemp -d -p "$HOME" .sot-e2e.XXXXXX)" || { echo "FATAL: mktemp under \$HOME failed" >&2; exit 1; }
 E="$D/e2e"; L="$D/log"
 export SOT_COMM_HOME="$D"
-guard_refuse_live_home "$D"
 BG=()
 cleanup() {
-    local p t
+    local rc=$? p t
     for t in here peer v3; do : > "$E/stop-$t" 2>/dev/null; done
     for p in "${BG[@]}"; do kill "$p" 2>/dev/null; done
     wait 2>/dev/null
-    rm -rf -- "${D:?}"
+    if [ "$rc" -eq 0 ]; then
+        rm -rf -- "${D:?}"
+    else
+        echo "KEPT: $D"; echo "KEPT: $D" >&2
+    fi
 }
 trap cleanup EXIT
 mkdir -p "$D/bin" "$D/proj" "$D/self" "$D/inbox" "$E" "$L"

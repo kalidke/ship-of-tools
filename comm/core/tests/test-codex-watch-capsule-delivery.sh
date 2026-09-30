@@ -7,9 +7,14 @@
 # Usage: comm/core/tests/test-codex-watch-capsule-delivery.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-codex-watch-delivery-test-XXXXXX")"
+[ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
+guard_fresh_home "$WORK"; guard_refuse_live_home "$HOME/.sot-comm"
+trap 'rm -rf "${WORK:?}"' EXIT
 # shellcheck source=../scripts/comm-wake.sh
 source "$SCRIPTS_DIR/comm-wake.sh"
 
@@ -42,8 +47,7 @@ RESP_GONE='{"v":1,"id":1,"kind":"res","op":"pty.input","payload":{"error":"unkno
 # Stub the only daemon call. FILE-based counter (a plain variable will
 # not survive the command-substitution subshell) proves "never retypes".
 export SOT_WORKSPACE_ID="ws-test"
-COUNT_FILE="$(mktemp)"
-trap 'rm -f "${COUNT_FILE:?}"' EXIT
+COUNT_FILE="$WORK/count"; : > "$COUNT_FILE"
 _comm_wake_pty_input() { printf 'x' >> "$COUNT_FILE"; printf '%s' "$STUB_RESP"; }
 reset_call_count() { : > "$COUNT_FILE"; }
 call_count() { wc -c < "$COUNT_FILE" 2>/dev/null | tr -d ' '; }

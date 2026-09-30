@@ -14,6 +14,7 @@
 # Usage: comm/core/tests/test-codex-watch-capsule-loop.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
@@ -21,6 +22,7 @@ WATCH="$SCRIPTS_DIR/comm-wake.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-codex-watch-loop-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
+guard_fresh_home "$WORK"; guard_refuse_live_home "$HOME/.sot-comm"
 trap 'rm -rf "${WORK:?}"' EXIT
 
 PASS=0

@@ -25,17 +25,19 @@
 # same as any other offline box). Usage:
 #   comm/core/tests/test-session-start-exit.sh
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-session-exit-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
+export SOT_COMM_HOME="$WORK/home"
+guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 cleanup() {
     "$SCRIPTS_DIR/comm-listen.sh" --stop >/dev/null 2>&1 || true
     rm -rf "${WORK:?}"
 }
 trap cleanup EXIT
 
-export SOT_COMM_HOME="$WORK/home"
 export SOT_COMM_SELF_FILE="$WORK/self.txt"
 export SOT_COMM_NAME="exit-test-$$"
 # Never let an ambient capsule/daemon env leak into this hermetic run --

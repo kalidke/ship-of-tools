@@ -14,10 +14,13 @@
 # Runs against a temp $SOT_COMM_HOME with a pinned self-file — never touches
 # the real ~/.sot-comm. Usage: comm/core/tests/test-session-start-survived.sh
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-survived-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
+export SOT_COMM_HOME="$WORK/home"
+guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 SLEEPERS=()
 # This suite leaked a fake watcher per case -- twenty were found alive on the
 # hub across four of its temp directories. TWO causes, and the first is why
@@ -55,7 +58,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export SOT_COMM_HOME="$WORK/home"
 export SOT_COMM_SELF_FILE="$WORK/self.txt"
 export SOT_COMM_TEST_HOST="testhost"
 unset SOT_COMM_NAME

@@ -9,6 +9,7 @@
 # Usage: comm/core/tests/test-spawn-capsule-workspace.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
@@ -19,6 +20,8 @@ if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
     echo "FATAL: mktemp did not produce a usable work directory (got: '$WORK')" >&2
     exit 1
 fi
+
+guard_fresh_home "$WORK"; guard_refuse_live_home "$HOME/.sot-comm"
 
 export SOT_COMM_TEST_HOST="test-host"
 unset SOT_WORKSPACE_ID   # never let an ambient row leak into the self-file slot

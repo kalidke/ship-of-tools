@@ -1,15 +1,18 @@
-# lib-home-guard.sh — sourced FIRST by every comm test suite, before anything
-# changes HOME (test code only; never deployed). A suite's setup deletes
-# registry.json and inbox files, so a comm home that resolved to the live one
-# would wipe the fleet's registry and inboxes.
+# lib-home-guard.sh — every test-*.sh under comm/ whose code names a comm script
+# (comm-*.sh or comm-lib) sources this before any command but `set`, and
+# test-rm-guard.sh fails a suite that does not (test code only; never
+# deployed). A suite's setup deletes registry.json and inbox files, so a comm
+# home that resolved to the live one would wipe the fleet's registry and inboxes.
 #
 # Sourcing records the live comm homes: $HOME/.sot-comm, the account's own
-# home as the system records it plus /.sot-comm (getent passwd for the uid; a
-# HOME swapped by env -i or by an earlier guard is not the live folder), and
-# any inherited SOT_COMM_HOME. Where getent is absent (macOS) the literal
-# $HOME path stands. It then drops the host's comm identity. Right after the suite
-# makes its mktemp work directory and names its comm home, before any other
-# command, it calls:
+# home as the system records it plus /.sot-comm (`~name` for `id -un`, which
+# reads getpwnam on every platform; a HOME swapped by env -i or by an earlier
+# guard is not the live folder; a name outside [A-Za-z0-9._-] records none),
+# and any inherited SOT_COMM_HOME. It then drops the host's comm identity and
+# its daemon route: SOT_COMM_HOME, SOT_COMM_NAME, SOT_COMM_SELF_FILE,
+# SOT_WORKSPACE_ID, SOT_SOCKET and every exported *_ENDPOINT. Right after the
+# suite makes its mktemp work directory and names its comm home, before any
+# other command, it calls:
 #   guard_fresh_home WORK            HOME becomes WORK/test-home, fresh, so the
 #                                    suite's own cleanup of WORK removes it
 #   guard_refuse_live_home HOME_DIR  FATAL and exit 2 when HOME_DIR, the
@@ -19,10 +22,18 @@
 # is kept as written, so a live home that does not exist (as on CI) compares as
 # its literal path.
 _GUARD_LIVE=("$HOME/.sot-comm")
-_GUARD_ACCT="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
-[ -z "$_GUARD_ACCT" ] || _GUARD_LIVE+=("$_GUARD_ACCT/.sot-comm")
+_GUARD_ACCT="" _GUARD_USER="$(id -un 2>/dev/null)"
+case "$_GUARD_USER" in
+    ''|*[!A-Za-z0-9._-]*) ;;
+    *) eval "_GUARD_ACCT=~$_GUARD_USER" ;;  # the name is checked: eval sees no shell syntax
+esac
+case "$_GUARD_ACCT" in /*) _GUARD_LIVE+=("$_GUARD_ACCT/.sot-comm") ;; *) _GUARD_ACCT="" ;; esac
 [ -z "${SOT_COMM_HOME:-}" ] || _GUARD_LIVE+=("$SOT_COMM_HOME")
-unset SOT_COMM_HOME SOT_COMM_NAME SOT_COMM_SELF_FILE SOT_WORKSPACE_ID
+unset SOT_COMM_HOME SOT_COMM_NAME SOT_COMM_SELF_FILE SOT_WORKSPACE_ID SOT_SOCKET
+for _guard_v in $(compgen -e); do
+    case "$_guard_v" in *_ENDPOINT) unset "$_guard_v" ;; esac
+done
+unset _guard_v
 
 _guard_phys() {  # PATH
     local d="${1%/}" rest=""

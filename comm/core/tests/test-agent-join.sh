@@ -11,6 +11,7 @@
 # Usage: comm/core/tests/test-agent-join.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
@@ -23,6 +24,7 @@ if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
 fi
 
 export SOT_COMM_HOME="$WORK/home"
+guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 mkdir -p "$SOT_COMM_HOME"
 # Hermetic host: comm-context.sh reads $SOT_COMM_TEST_HOST exactly as
 # every other comm test does (manager review: no on-disk namespace or
