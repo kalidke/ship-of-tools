@@ -19,15 +19,6 @@
 
 mod support;
 
-// The guest's real forward (`forward_comm_file`), included by path because
-// this crate is a binary; its own unit tests need `crate::paths`' lock.
-#[path = "../src/topology_dial.rs"]
-#[allow(dead_code)]
-mod topology_dial;
-mod paths {
-    pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-}
-
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -46,7 +37,16 @@ struct Env {
     hosts_toml: PathBuf,
     socket_path: PathBuf,
     comm_root: PathBuf,
+    _guest: Option<Guest>,
     daemon: Child,
+}
+
+/// A guest daemon's own places: its comm folder, and the runtime base its
+/// relay endpoint is read from.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+struct Guest {
+    comm: tempfile::TempDir,
+    run: tempfile::TempDir,
 }
 
 impl Env {
@@ -55,6 +55,22 @@ impl Env {
     /// while the file still names `hub-a` as hub (proving `not_hub`
     /// against the REAL daemon, not just the handler unit test).
     fn spawn(tag: &str, self_host: &str, hosts_toml_text: &str) -> Self {
+        Self::start(tag, self_host, hosts_toml_text, None)
+    }
+
+    /// A guest daemon of `hub`: its comm folder on tmpfs, off this box's own
+    /// disk, so it is its folder's guest and forwards every filing; and its
+    /// runtime base holding `sot-relay.sock` linked to the hub's socket,
+    /// where the relay tunnel lands it.
+    #[cfg(target_os = "linux")]
+    fn spawn_guest(tag: &str, self_host: &str, hosts_toml_text: &str, hub: &Env) -> Self {
+        let comm = tempfile::Builder::new().prefix("sot-toposet-comm-").tempdir_in("/dev/shm").expect("tmpfs tempdir");
+        let run = tempfile::Builder::new().prefix("sottsrun-").tempdir_in("/tmp").expect("runtime base tempdir");
+        std::os::unix::fs::symlink(&hub.socket_path, run.path().join("sot-relay.sock")).expect("link the hub's socket");
+        Self::start(tag, self_host, hosts_toml_text, Some(Guest { comm, run }))
+    }
+
+    fn start(tag: &str, self_host: &str, hosts_toml_text: &str, guest: Option<Guest>) -> Self {
         let tmp = tempfile::Builder::new().prefix("sot-toposet-").tempdir().expect("tempdir");
         let project_root = tmp.path().join("project");
         std::fs::create_dir_all(&project_root).expect("mkdir project_root");
@@ -65,6 +81,7 @@ impl Env {
         let hosts_toml = tmp.path().join("hosts.toml");
         std::fs::write(&hosts_toml, hosts_toml_text).expect("write hosts.toml");
         let (home_root, comm_root) = support::comm_isolation_dirs(tmp.path());
+        let comm_root = guest.as_ref().map_or(comm_root, |g| g.comm.path().to_path_buf());
 
         #[cfg(unix)]
         let runtime_base = PathBuf::from("/tmp");
@@ -87,8 +104,8 @@ impl Env {
                 runtime_tmp.path().join(format!("wire-{tag}.sock"))
             }
         };
-        let daemon = Command::new(sotd_exe())
-            .arg("--socket")
+        let mut cmd = Command::new(sotd_exe());
+        cmd.arg("--socket")
             .arg(&socket_path)
             .arg("--project-root")
             .arg(&project_root)
@@ -101,11 +118,13 @@ impl Env {
             .env("USERPROFILE", &home_root)
             .env("SOT_COMM_HOME", &comm_root)
             .env("SOT_HOSTS", &hosts_toml)
-            .stdin(Stdio::null())
-            .spawn()
-            .expect("spawn sotd");
+            .stdin(Stdio::null());
+        if let Some(g) = &guest {
+            cmd.env("XDG_RUNTIME_DIR", g.run.path());
+        }
+        let daemon = cmd.spawn().expect("spawn sotd");
 
-        Self { _tmp: tmp, _runtime_tmp: runtime_tmp, hosts_toml, socket_path, comm_root, daemon }
+        Self { _tmp: tmp, _runtime_tmp: runtime_tmp, hosts_toml, socket_path, comm_root, _guest: guest, daemon }
     }
 }
 
@@ -192,33 +211,36 @@ async fn lock_record(env: &Env) -> String {
     }
 }
 
-// 0031 B1: a guest's forward, over the real wire to a real hub whose record
-// is its own — the line lands in the hub's inbox and the answer is `ok`.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
+const GUEST_TOML: &str = "hub = \"hub-a\"\n\n[host.hub-a]\ndaemon = true\n\n[host.guest-b]\ndaemon = true\n";
+
+// 0031 B1: a guest daemon's `comm.file` forwards, over the real wire to a
+// real hub whose record is its own — the line lands in the hub's inbox, not
+// the guest's, and the guest answers `ok`.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_guests_forward_files_at_the_hub_over_the_real_wire() {
-    let env = Env::spawn("fwd", "hub-a", HUB_TOML);
-    drop(connect_and_hello(&env.socket_path, "probe", "hub-a").await);
-    lock_record(&env).await;
+    let hub = Env::spawn("fwd", "hub-a", GUEST_TOML);
+    drop(connect_and_hello(&hub.socket_path, "probe", "hub-a").await);
+    lock_record(&hub).await;
     let now = Command::new("date").args(["-u", "+%Y-%m-%dT%H:%M:%SZ"]).output().expect("date").stdout;
     let now = String::from_utf8(now).unwrap().trim().to_string();
     let registry = serde_json::json!({"agents": {"peer": {"host": "hub-a", "last_seen": now}}});
-    std::fs::write(env.comm_root.join("registry.json"), registry.to_string()).expect("write registry");
+    std::fs::write(hub.comm_root.join("registry.json"), registry.to_string()).expect("write registry");
 
+    let guest = Env::spawn_guest("fwd-guest", "guest-b", GUEST_TOML, &hub);
+    let (mut conn, id) = connect_and_hello(&guest.socket_path, "guest-sender", "guest-b").await;
     let req = sot_protocol::CommFileReq {
         from: "guest-sender".into(),
         to: "peer".into(),
         text: "forwarded hi".into(),
         broadcast: false,
-        forwarded: true,
+        forwarded: false,
     };
-    let endpoint = format!("unix:{}", env.socket_path.display());
-    let answer = tokio::task::spawn_blocking(move || topology_dial::forward_comm_file(&endpoint, "guest-b", &req, BOUND))
-        .await
-        .expect("join")
-        .expect("the hub answered");
+    let answer = call(&mut conn, id, op::COMM_FILE, serde_json::to_value(&req).unwrap()).await;
     assert_eq!(answer, serde_json::json!({"ok": true}));
-    let inbox = std::fs::read_to_string(env.comm_root.join("inbox/peer.jsonl")).expect("the hub's inbox");
+    assert!(!guest.comm_root.join("inbox/peer.jsonl").exists(), "the guest filed it itself");
+    let inbox = std::fs::read_to_string(hub.comm_root.join("inbox/peer.jsonl")).expect("the hub's inbox");
     let line: serde_json::Value = serde_json::from_str(inbox.trim_end()).expect("one line");
     assert_eq!((line["from"].as_str(), line["msg"].as_str()), (Some("guest-sender"), Some("forwarded hi")));
 }
