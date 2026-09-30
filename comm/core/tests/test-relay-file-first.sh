@@ -86,6 +86,25 @@ relay_send() {
     return 0
 }
 
+# relay_send_with_path SSHDIR ENDPOINT ARGS... -> same as relay_send, with
+# SSHDIR prepended to PATH for the call only (BLOCKER 1's ssh: cases below:
+# a stub `ssh` ahead of any real one, never leaked into a later case).
+relay_send_with_path() {
+    local sshdir="$1" ep="$2"; shift 2
+    # XDG_RUNTIME_DIR unset for the same reason test-endpoint-gate.sh's own
+    # sot_ssh_bridge cases unset it: with it set, _sot_ssh_sharing_ok's own
+    # `ssh -G ...` probe (no stdin redirection of its own) reads from the
+    # SAME pipe as the real frame, and a stub `ssh` naive enough to answer
+    # any invocation -- ours -- drains the frame there instead of at the
+    # real bridge call. A real ssh's `-G` never touches stdin at all, so
+    # this is a test-fixture concern only, never live behavior.
+    RELAY_OUT="$(cd "$WORK" && unset XDG_RUNTIME_DIR && PATH="$sshdir:$PATH" SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$SENDER_HOST" \
+        SOT_RELAY_ENDPOINT="$ep" "$RELAY" "$@" 2>"$WORK/err.txt")"
+    RELAY_RC=$?
+    RELAY_ERR="$(cat "$WORK/err.txt" 2>/dev/null)"
+    return 0
+}
+
 # A one-shot fake daemon: answers the first connection with a canned
 # `agent.send` response naming RECEIVERS, then exits. This is what makes the
 # wire cases deterministic without a real sotd.
@@ -386,6 +405,60 @@ case_an_empty_roster_is_no_such_handle() {
     return 0
 }
 
+# BLOCKER 1 (`timeout N sot_ssh_bridge` never ran a shell function through
+# `timeout`'s own execvp): the real call site, comm-relay.sh's send_frame
+# via nc_send. A stub `ssh` on PATH stands in for the far end -- never a
+# real ssh, never a real daemon.
+case_ssh_endpoint_reaches_a_stub_daemon_and_files() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local sshdir; sshdir="$(mktemp -d "$WORK/ssh-ok-XXXXXX")"
+    cat > "$sshdir/ssh" <<EOF
+#!/bin/sh
+while IFS= read -r line; do
+    case "\$line" in
+        *'"op":"hello"'*)
+            printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"ok":true}}\n' ;;
+        *'"op":"agent.send"'*)
+            id=\$(printf '%s' "\$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+            printf '{"v":1,"id":1,"kind":"res","op":"agent.send","payload":{"ok":true,"receivers":["peer-$PEER_HOST"],"id":"%s"}}\n' "\$id"
+            printf '{"v":1,"id":1,"kind":"evt","op":"agent.receipt","payload":{"id":"%s","filer":"peer-$PEER_HOST"}}\n' "\$id"
+            ;;
+    esac
+done
+EOF
+    chmod +x "$sshdir/ssh"
+    relay_send_with_path "$sshdir" "ssh:testtarget" send "@peer-$PEER_HOST" "over ssh"
+    [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_OUT" "filed -> @peer-$PEER_HOST (by peer-$PEER_HOST, relay)" \
+        || { echo "  verdict was '$RELAY_OUT' -- the bridge never reached the stub ssh"; return 1; }
+    return 0
+}
+
+case_ssh_endpoint_bridge_failure_says_failed_with_reason() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local sshdir; sshdir="$(mktemp -d "$WORK/ssh-fail-XXXXXX")"
+    cat > "$sshdir/ssh" <<'EOF'
+#!/bin/sh
+echo "Permission denied (publickey)." >&2
+exit 255
+EOF
+    chmod +x "$sshdir/ssh"
+    relay_send_with_path "$sshdir" "ssh:testtarget" send "@peer-$PEER_HOST" "over ssh"
+    # BLOCKER 1's loud-failure requirement, and the captain's check 3: a
+    # status-only assertion (RELAY_RC -ne 0) would ALSO have passed on the
+    # pre-fix code, which died at 127 (also nonzero) before ever touching
+    # this stub -- the message is what proves the bridge actually ran and
+    # THEN failed, not that it never ran at all.
+    [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> @peer-$PEER_HOST:" \
+        || { echo "  stderr was '$RELAY_ERR', want a FAILED line naming the target"; return 1; }
+    contains "$RELAY_ERR" "exited 255" \
+        || { echo "  stderr was '$RELAY_ERR', want the child's own exit status"; return 1; }
+    contains "$RELAY_ERR" "Permission denied" \
+        || { echo "  stderr was '$RELAY_ERR', want the child's own stderr folded into the reason"; return 1; }
+    return 0
+}
+
 check "a registry target is filed with the daemon down" case_registry_target_is_filed_with_the_daemon_down
 check "a filer's receipt is the delivery, and names the filer" case_a_receipt_is_the_only_delivery
 check "an ack with no receipt is NOT CONFIRMED and names who was attached" case_an_unanswered_send_is_not_confirmed_and_names_who_was_attached
@@ -398,6 +471,8 @@ check "a recipient stopped on an open question is annotated 'needs its own user'
 check "a stale heartbeat overrides a fresh 'working' stamp" case_annotation_stale_heartbeat_overrides_working
 check "a row missing the annotation fields entirely sends fine with no annotation" case_annotation_absent_for_a_row_missing_the_fields
 check "a malformed row (wrong types, bad timestamps) sends fine with no annotation" case_annotation_absent_for_a_malformed_row
+check "an ssh: endpoint reaches a stub daemon through the real bridge and files" case_ssh_endpoint_reaches_a_stub_daemon_and_files
+check "a dying ssh child says FAILED and names the target, its exit status and its stderr" case_ssh_endpoint_bridge_failure_says_failed_with_reason
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"

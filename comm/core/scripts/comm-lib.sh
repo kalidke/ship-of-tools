@@ -198,6 +198,28 @@ _sot_sotd_bin() {
                       "$HOME/.local/share/sot/bin/sotd" "$HOME/.local/bin/sotd"; do
         [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
     done
+    # LAST candidate (BLOCKER 3): a live `sotd`'s own binary, read out of
+    # /proc/<pid>/exe -- a source-built box (`rust/target/release/sotd`, no
+    # release install, `SOTD_BIN` unset, neither `~/.local` path present)
+    # fell through this whole ladder to nothing before this line existed,
+    # and this ladder's own caller (`_sot_planned_relay_endpoint`) no
+    # longer falls through further to `sot_daemon_endpoint` (main's ruling,
+    # pinned at test-join-disambiguation.sh:2023-2053: never the local
+    # daemon for a question about the hub's endpoint) -- finding the
+    # BINARY here and asking IT `topology relay-endpoint` is still a
+    # planned answer, not the local daemon's own socket, so that ruling
+    # stays met. `sot_daemon_endpoint` (below) guards the identical pgrep
+    # loop the same way; pgrep is not on a stock git-bash PATH and must
+    # never be reached for on Windows.
+    if ! _sot_is_windows; then
+        while IFS= read -r line; do
+            local pid="${line%% *}"
+            case "$pid" in ''|*[!0-9]*) continue ;; esac
+            [ -r "/proc/$pid/exe" ] || continue
+            candidate="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+            [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+        done < <(pgrep -af 'sotd' 2>/dev/null || true)
+    fi
     return 1
 }
 
@@ -262,27 +284,43 @@ _sot_ssh_sharing_ok() {
     [ "$_SOT_SSH_SHARING" = 1 ]
 }
 
-# sot_ssh_bridge TARGET [HOST] — stdin → that daemon; its replies → stdout.
-# The one child every `ssh:` scheme switch spawns (six call sites, C10):
-# `ssh <target> '<PATH prelude>; sotd stdio-bridge [--host <host>]'`, the
-# option set and prelude literally the ones the hub's own relay unit runs
-# (`rust/protocol/src/topology.rs`) and C3 spawns identically from Rust
-# (`rust/protocol/src/ssh_bridge.rs`) -- kept as this file's own
-# implementation, not shared code, because shell cannot call into that
-# crate. The connection-sharing trio is part of THIS helper, not an
-# optional extra: without it "one authentication per host" (isolation-
-# plan.md §10) is false as specified, since each send would be a full
-# login on every platform rather than only on Windows -- applied through
-# this one place so it is written once, not at each of the six call sites.
+# sot_ssh_bridge TARGET [HOST] [TIMEOUT_SECS] — stdin → that daemon; its
+# replies → stdout. The one child every `ssh:` scheme switch spawns (six
+# call sites, C10): `ssh <target> '<PATH prelude>; sotd stdio-bridge
+# [--host <host>]'`, the option set and prelude literally the ones the
+# hub's own relay unit runs (`rust/protocol/src/topology.rs`) and C3
+# spawns identically from Rust (`rust/protocol/src/ssh_bridge.rs`) -- kept
+# as this file's own implementation, not shared code, because shell
+# cannot call into that crate. The connection-sharing trio is part of THIS
+# helper, not an optional extra: without it "one authentication per host"
+# (isolation-plan.md §10) is false as specified, since each send would be
+# a full login on every platform rather than only on Windows -- applied
+# through this one place so it is written once, not at each of the six
+# call sites.
+#
+# THE BOUND LIVES HERE, not at the call site. `timeout N sot_ssh_bridge …`
+# looked right and never ran: `timeout` is coreutils and `execvp`s its
+# argument, so it never sees a shell function even after `export -f` --
+# every one of the four call sites that tried it died at 127 with no
+# output (reproduced: `timeout 1 f` on an exported function). A caller
+# that wants a bound passes it as this THIRD POSITIONAL parameter, never
+# an environment variable (`VAR=x func` scoping in bash is a quirk nobody
+# should have to remember) -- this wraps its OWN `ssh` in `timeout` when
+# the bound is non-empty, and runs unbounded, exactly as before, when it
+# is empty.
 sot_ssh_bridge() {
-    local target="$1" host="${2:-}"
+    local target="$1" host="${2:-}" secs="${3:-}"
     local remote='export PATH="$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"; sotd stdio-bridge'
     [ -n "$host" ] && remote="$remote --host $host"
     local opts=(-T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
     if _sot_ssh_sharing_ok; then
         opts+=(-o ControlMaster=auto -o ControlPath="$(_sot_ssh_control)" -o ControlPersist=600)
     fi
-    ssh "${opts[@]}" "$target" "$remote"
+    if [ -n "$secs" ]; then
+        timeout "$secs" ssh "${opts[@]}" "$target" "$remote"
+    else
+        ssh "${opts[@]}" "$target" "$remote"
+    fi
 }
 
 # sot_relay_endpoint [EXPLICIT] — the endpoint for comm RELAY traffic (send,
@@ -2219,8 +2257,14 @@ sot_oneshot_request() {
                 */*) target="${rest%%/*}"; sshhost="${rest#*/}" ;;
                 *) target="$rest"; sshhost="" ;;
             esac
+            # Own scratch file, not /dev/null (BLOCKER 1's loud-failure
+            # requirement): a dying ssh child's own stderr used to vanish
+            # here, so a failure and a cold-but-reachable daemon looked
+            # identical. Read back below, once the wait loop ends with no
+            # reply, and folded into a diagnostic on THIS function's own
+            # stderr -- never into $line, which stays the reply or nothing.
             _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
-                | timeout "$timeout_s" sot_ssh_bridge "$target" "$sshhost" > "$tmp" 2>/dev/null &
+                | sot_ssh_bridge "$target" "$sshhost" "$timeout_s" > "$tmp" 2>"$tmp.err" &
             ncpid=$!
             ;;
         pipe:*)
@@ -2276,7 +2320,13 @@ sot_oneshot_request() {
     done
     kill "$ncpid" 2>/dev/null || true
     [ -r "$tmp.snd" ] && kill "$(cat "$tmp.snd" 2>/dev/null)" 2>/dev/null
-    rm -f "$tmp" "$tmp.snd"
+    # A ssh: bridge that exited or timed out with no reply: its own stderr
+    # (captured above instead of discarded) names the reason -- printed
+    # here, on THIS function's stderr, never folded into $line.
+    if [ -z "$line" ] && [ -s "$tmp.err" ]; then
+        printf 'sot_oneshot_request: %s: %s\n' "${target:-ssh bridge}" "$(tr '\n' ' ' < "$tmp.err")" >&2
+    fi
+    rm -f "$tmp" "$tmp.snd" "$tmp.err"
     [ -n "$line" ] && printf '%s\n' "$line"
 }
 

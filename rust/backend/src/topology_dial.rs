@@ -1,6 +1,6 @@
 // topology_dial.rs — the one-shot blocking client `sotd topology set` (and
 // `status`'s "cache diverged" line) use to reach a daemon over its
-// already-established endpoint spelling (`unix:`/`tcp:`/`pipe:`, per
+// already-established endpoint spelling (`unix:`/`tcp:`/`pipe:`/`ssh:`, per
 // `topology::local_endpoint`/`relay_endpoint`). No new credential: per
 // `op::TOPOLOGY_SET`'s own doc, the dial itself IS the authorisation, so
 // this sends a plain unauthenticated `hello` (role `cli`) the same way any
@@ -19,49 +19,57 @@ enum Conn {
     Tcp(std::net::TcpStream),
     #[cfg(windows)]
     Pipe(std::fs::File),
+    /// An `ssh:` endpoint's connection IS the spawned child (C2/C3,
+    /// `sot_protocol::ssh_bridge`) -- there is no separate "connect" step
+    /// the way a socket has one, so this variant holds the not-yet-split
+    /// `Child` rather than a stream.
+    Bridged(std::process::Child),
+}
+
+/// Kills and reaps the ssh child `Conn::Bridged` hands to [`Conn::split`]
+/// once its two halves are taken -- held by `dial_and_call` for as long as
+/// the connection is open, so any early return (a bad hello, a reply that
+/// never comes) cannot leak the process the way a bare `Child` dropped on
+/// the floor would (the default `Drop` for `std::process::Child` neither
+/// kills nor waits).
+struct ChildGuard(std::process::Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 impl Conn {
-    fn try_clone(&self) -> std::io::Result<Conn> {
+    /// Consume the connection and hand back its write half, its read
+    /// half, and — for `Bridged` only — the guard that keeps the ssh
+    /// child alive for as long as those halves are in use. A socket or
+    /// pipe's two halves are the stream and its `try_clone()`, exactly
+    /// what `try_clone()` + the old `Read`/`Write` impls gave
+    /// `dial_and_call` before; `Bridged` takes the child's own stdin and
+    /// stdout out of the `Child` instead of dialing anything.
+    fn split(self) -> std::io::Result<(Box<dyn std::io::Write + Send>, Box<dyn std::io::Read + Send>, Option<ChildGuard>)> {
         match self {
             #[cfg(unix)]
-            Conn::Unix(s) => s.try_clone().map(Conn::Unix),
-            Conn::Tcp(s) => s.try_clone().map(Conn::Tcp),
+            Conn::Unix(s) => {
+                let r = s.try_clone()?;
+                Ok((Box::new(s), Box::new(r), None))
+            }
+            Conn::Tcp(s) => {
+                let r = s.try_clone()?;
+                Ok((Box::new(s), Box::new(r), None))
+            }
             #[cfg(windows)]
-            Conn::Pipe(f) => f.try_clone().map(Conn::Pipe),
-        }
-    }
-}
-
-impl std::io::Read for Conn {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            #[cfg(unix)]
-            Conn::Unix(s) => s.read(buf),
-            Conn::Tcp(s) => s.read(buf),
-            #[cfg(windows)]
-            Conn::Pipe(f) => f.read(buf),
-        }
-    }
-}
-
-impl std::io::Write for Conn {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match self {
-            #[cfg(unix)]
-            Conn::Unix(s) => s.write(buf),
-            Conn::Tcp(s) => s.write(buf),
-            #[cfg(windows)]
-            Conn::Pipe(f) => f.write(buf),
-        }
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            #[cfg(unix)]
-            Conn::Unix(s) => s.flush(),
-            Conn::Tcp(s) => s.flush(),
-            #[cfg(windows)]
-            Conn::Pipe(f) => f.flush(),
+            Conn::Pipe(f) => {
+                let r = f.try_clone()?;
+                Ok((Box::new(f), Box::new(r), None))
+            }
+            Conn::Bridged(mut child) => {
+                let stdin = child.stdin.take().expect("spawn_sync pipes stdin");
+                let stdout = child.stdout.take().expect("spawn_sync pipes stdout");
+                Ok((Box::new(stdin), Box::new(stdout), Some(ChildGuard(child))))
+            }
         }
     }
 }
@@ -94,7 +102,20 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
             return Err(format!("{endpoint}: pipe endpoints are Windows-only"));
         }
     }
-    Err(format!("{endpoint}: unrecognised endpoint spelling (expected unix:/tcp:/pipe:)"))
+    if let Some(rest) = endpoint.strip_prefix("ssh:") {
+        // Same two forms `rust/frontend/src/dial.rs` already parses --
+        // `ssh:<target>` for that box's own daemon, `ssh:<target>/<host>`
+        // for a daemon `<target>` relays to on `<host>`'s behalf — one
+        // grammar, not a second one invented here.
+        let (target, host) = match rest.split_once('/') {
+            Some((t, h)) => (t, Some(h)),
+            None => (rest, None),
+        };
+        let recipe = sot_protocol::ssh_bridge::SshRecipe::new(target, host).map_err(|e| format!("{endpoint}: {e}"))?;
+        let child = sot_protocol::ssh_bridge::spawn_sync(&recipe).map_err(|e| format!("{endpoint}: {e}"))?;
+        return Ok(Conn::Bridged(child));
+    }
+    Err(format!("{endpoint}: unrecognised endpoint spelling (expected unix:/tcp:/pipe:/ssh:)"))
 }
 
 /// Dial `endpoint`, send a `cli`-role hello declaring `self_host`, then one
@@ -105,8 +126,7 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
 /// short-lived, but the wire protocol allows it) are skipped rather than
 /// treated as a protocol violation.
 pub fn dial_and_call(endpoint: &str, self_host: &str, req_op: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
-    let mut w = connect(endpoint)?;
-    let r = w.try_clone().map_err(|e| format!("{endpoint}: {e}"))?;
+    let (mut w, r, _guard) = connect(endpoint)?.split().map_err(|e| format!("{endpoint}: {e}"))?;
     let mut br = std::io::BufReader::new(r);
 
     let hello = HelloReq {
@@ -135,4 +155,42 @@ pub fn dial_and_call(endpoint: &str, self_host: &str, req_op: &str, payload: ser
         }
     }
     Err(format!("{endpoint}: no reply to {req_op} within 8 frames"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// BLOCKER 2: `connect` must dispatch `ssh:` through
+    /// `sot_protocol::ssh_bridge`, exactly as `rust/frontend/src/dial.rs`
+    /// already parses it, and `split()` must hand `dial_and_call` a
+    /// `ChildGuard` for that arm so an early return cannot leak the
+    /// spawned `ssh`. `Command::spawn()` returns as soon as the child
+    /// process image exists, before it does any network connecting --
+    /// this proves the endpoint is recognised and dispatched to a real
+    /// spawn, never that a connection to `hub` itself succeeds (nothing
+    /// here waits on that, and the guard kills the child immediately).
+    #[test]
+    fn ssh_endpoint_is_recognised_dispatches_to_ssh_bridge_and_carries_a_guard() {
+        let conn = connect("ssh:hub").expect("ssh: must no longer be `unrecognised endpoint spelling`");
+        let (_w, _r, guard) = conn.split().expect("split must hand back the spawned child's own stdin/stdout");
+        assert!(guard.is_some(), "an ssh: connection must carry a ChildGuard, or dial_and_call returning early leaks the ssh process");
+        drop(guard);
+
+        let conn = connect("ssh:hub/gamma").expect("ssh:<target>/<host> must parse the same way dial.rs does");
+        drop(conn.split().unwrap());
+
+        // The same grammar SshRecipe::new enforces (frontend/src/dial.rs's
+        // own parsing, C3) -- connect() delegates to it rather than
+        // inventing a second check, so a value SshRecipe rejects must
+        // fail HERE too, not just at the frontend.
+        assert!(connect("ssh:-oProxyCommand=x").is_err(), "a leading-dash target must be refused");
+        assert!(connect("ssh:Hub").is_err(), "an uppercase target must be refused (not a plain host name)");
+    }
+
+    #[test]
+    fn unrecognised_scheme_names_all_four_dialable_spellings() {
+        let err = connect("carrier-pigeon:whatever").err().expect("must be an error");
+        assert!(err.contains("unix:/tcp:/pipe:/ssh:"), "error should name all four schemes, got: {err}");
+    }
 }

@@ -293,6 +293,90 @@ EOF
     return 0
 }
 
+# =========================================================================
+# 6. BLOCKER 1 (S1 fix round): the bound moved INTO sot_ssh_bridge as a
+#    third positional parameter -- a caller passes it there now, never
+#    wraps the call in `timeout` (which never saw a shell function, even
+#    exported: `timeout 1 f` on an exported function is 127, no output).
+#    comm-lib.sh's sot_oneshot_request (call site 1) is sourced right
+#    here, so it is driven directly rather than through a subprocess.
+# =========================================================================
+
+case_ssh_bridge_third_arg_bounds_it_and_an_empty_one_stays_unbounded() {
+    local dir
+    dir="$(fake_bin_dir)"
+    cat > "$dir/ssh" <<'EOF'
+#!/bin/sh
+sleep 5
+EOF
+    chmod +x "$dir/ssh"
+    local out rc start end
+    start="$(date +%s)"
+    out="$(
+        unset XDG_RUNTIME_DIR
+        PATH="$dir:$PATH"
+        sot_ssh_bridge hub "" 1 </dev/null 2>/dev/null
+    )"
+    rc=$?
+    end="$(date +%s)"
+    { [ -z "$out" ] && [ "$rc" -eq 124 ]; } || { echo "  a 1s bound on a 5s-sleeping child gave out='$out' rc=$rc, want empty/124"; return 1; }
+    [ "$((end - start))" -le 3 ] || { echo "  took $((end - start))s to time out at 1s -- the bound did not apply"; return 1; }
+    return 0
+}
+
+case_oneshot_request_ssh_arm_reaches_a_stub_daemon_and_back() {
+    local dir
+    dir="$(fake_bin_dir)"
+    cat > "$dir/ssh" <<'EOF'
+#!/bin/sh
+while IFS= read -r line; do
+    case "$line" in
+        *'"op":"hello"'*) printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"ok":true}}\n' ;;
+        *'"op":"workspace.list"'*) printf '{"v":1,"id":1,"kind":"res","op":"workspace.list","payload":{"rows":[]}}\n' ;;
+    esac
+done
+EOF
+    chmod +x "$dir/ssh"
+    local out
+    out="$(
+        unset XDG_RUNTIME_DIR
+        PATH="$dir:$PATH"
+        ENDPOINT="ssh:hub" sot_oneshot_request \
+            '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list
+    )"
+    contains "$out" '"op":"workspace.list"' \
+        || { echo "  expected the stub daemon's reply, got: '$out' (the bridge never reached it)"; return 1; }
+    return 0
+}
+
+case_oneshot_request_ssh_arm_dying_child_is_silent_but_diagnosed() {
+    local dir
+    dir="$(fake_bin_dir)"
+    cat > "$dir/ssh" <<'EOF'
+#!/bin/sh
+echo "ssh: connect to host hub port 22: Connection refused" >&2
+exit 255
+EOF
+    chmod +x "$dir/ssh"
+    local out err rc
+    out="$(
+        unset XDG_RUNTIME_DIR
+        PATH="$dir:$PATH"
+        ENDPOINT="ssh:hub" SOT_SEND_TIMEOUT=3 sot_oneshot_request \
+            '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list 2>"$WORK/oneshot.err"
+    )"
+    rc=$?
+    err="$(cat "$WORK/oneshot.err" 2>/dev/null)"
+    # A status-only assertion here would also have passed pre-fix (that
+    # code died at 127 before ever touching the stub, also nonzero, also
+    # empty stdout) -- the diagnostic naming the real reason is what a
+    # caller now sees on comm-lib.sh's own stderr instead of /dev/null.
+    { [ -z "$out" ] && [ "$rc" -ne 0 ]; } || { echo "  a dying bridge gave out='$out' rc=$rc, want empty/nonzero"; return 1; }
+    contains "$err" "Connection refused" \
+        || { echo "  the child's own stderr never reached ours: '$err'"; return 1; }
+    return 0
+}
+
 check "the gate passes unix:/pipe:/ssh: verbatim" case_gate_passes_the_dialable_schemes
 check "the gate discards tcp: and an unknown scheme, with exactly one stderr line" case_gate_discards_tcp_and_unknown_schemes_with_one_stderr_line
 check "the gate treats an empty value as a silent nonzero" case_gate_empty_value_is_a_silent_nonzero
@@ -308,6 +392,77 @@ check "sot_daemon_endpoint's explicit arm passes a good value through verbatim" 
 check "sot_relay_endpoint's explicit arm treats a refusal as a miss, not a death" case_relay_endpoint_explicit_refused_is_a_miss_not_a_death
 check "sot_ssh_bridge carries a frame to a stub daemon over a stub ssh and back" case_ssh_bridge_carries_the_frame_to_a_stub_daemon_and_back
 check "a dying stub ssh yields no reply, never a hang" case_ssh_bridge_dying_child_yields_no_reply
+check "sot_ssh_bridge's third arg bounds the call, and an empty one stays unbounded" case_ssh_bridge_third_arg_bounds_it_and_an_empty_one_stays_unbounded
+check "sot_oneshot_request's ssh: arm (call site 1) reaches a stub daemon and back" case_oneshot_request_ssh_arm_reaches_a_stub_daemon_and_back
+check "sot_oneshot_request's ssh: arm folds a dying child's stderr into its own diagnostic" case_oneshot_request_ssh_arm_dying_child_is_silent_but_diagnosed
+
+# =========================================================================
+# 7. BLOCKER 3: a source-built box (no release install, SOTD_BIN unset,
+#    neither ~/.local path present) resolves its relay endpoint through
+#    the LIVE process, not just a PATH lookup -- `_sot_sotd_bin`'s last
+#    candidate reads /proc/<pid>/exe. A shell script's own /proc/pid/exe
+#    resolves to its INTERPRETER, not to the script (the kernel loads the
+#    shebang target), so a real ELF is compiled here -- the smallest thing
+#    that runs directly, answers `topology relay-endpoint` on its own
+#    argv, and otherwise just sleeps so `pgrep` finds it alive.
+# =========================================================================
+
+case_source_built_box_resolves_relay_endpoint_via_proc_exe() {
+    command -v cc >/dev/null 2>&1 || { echo "  no cc on PATH; cannot build the live-process stub"; return 2; }
+    local dir src
+    dir="$(mktemp -d "$WORK/proc-stub-XXXXXX")"
+    src="$dir/stub.c"
+    cat > "$src" <<'EOF'
+#include <string.h>
+#include <stdio.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    if (argc >= 3 && strcmp(argv[1], "topology") == 0 && strcmp(argv[2], "relay-endpoint") == 0) {
+        printf("ssh:hub-from-proc\n");
+        return 0;
+    }
+    sleep(300);
+    return 0;
+}
+EOF
+    cc -O0 -o "$dir/sotd" "$src" 2>"$WORK/cc.err" || { echo "  cc failed: $(cat "$WORK/cc.err")"; return 2; }
+
+    # A live "daemon": no args, so it sleeps -- exactly like a real sotd
+    # sitting on its socket. Named check: NEVER on this test's own PATH
+    # and NEVER at either ~/.local fallback -- only pgrep/proc can find it.
+    "$dir/sotd" &
+    local pid=$!
+    trap 'kill '"$pid"' 2>/dev/null; wait '"$pid"' 2>/dev/null' RETURN
+    local tries=0
+    while [ ! -r "/proc/$pid/exe" ] && [ "$tries" -lt 50 ]; do sleep 0.05; tries=$((tries + 1)); done
+    [ -r "/proc/$pid/exe" ] || { echo "  stub never came up (no /proc/$pid/exe)"; return 1; }
+
+    # A fake `pgrep` naming ONLY this stub's own pid -- this box (the one
+    # actually running this test) is not hermetic against a REAL `sotd`
+    # elsewhere in its own process table, and the real one's lower pid
+    # would sort first and win the loop before ever reaching ours. Real
+    # `pgrep` is still what production runs; this is the same seam
+    # test-join-disambiguation.sh already fakes `pgrep` through.
+    local fakebin
+    fakebin="$(mktemp -d "$WORK/proc-stub-fakebin-XXXXXX")"
+    printf '#!/bin/sh\necho "%s %s"\n' "$pid" "$dir/sotd" > "$fakebin/pgrep"
+    chmod +x "$fakebin/pgrep"
+
+    local fakehome out
+    fakehome="$(mktemp -d "$WORK/proc-stub-home-XXXXXX")"
+    # A plain assignment prefix, not `env` (an external command that
+    # `execve`s its argument and, same class as BLOCKER 1, would never see
+    # a shell function): sets PATH/HOME for this one sourced-function call
+    # only.
+    out="$(
+        unset SOTD_BIN
+        PATH="$fakebin:/usr/bin:/bin" HOME="$fakehome" sot_relay_endpoint 2>/dev/null
+    )"
+    [ "$out" = "ssh:hub-from-proc" ] \
+        || { echo "  expected the stub's own answer 'ssh:hub-from-proc', got: '$out'"; return 1; }
+    return 0
+}
+check "a source-built box (no release install) resolves its relay endpoint via a live process's /proc/pid/exe" case_source_built_box_resolves_relay_endpoint_via_proc_exe
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

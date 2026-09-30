@@ -118,8 +118,33 @@ nc_send() {
         return
     fi
     if [ -n "$EP_SSH_TARGET" ]; then
-        { sot_hello_frame "$HELLO_ROLE"; cat; } | timeout 5 sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST"
-        return
+        # `_SOT_BRIDGE_FAIL_FILE`, when send_frame has set it, is where a
+        # dying or timed-out bridge's own reason lands (BLOCKER 1's
+        # loud-failure requirement) -- nc_send runs as a pipeline stage of
+        # its own caller, in its own subshell, so a plain variable set
+        # here would never be seen back in send_frame; the file is how it
+        # survives the fork. `${...:-/dev/null}` keeps the other caller of
+        # nc_send (the `bridge` subcommand's best-effort receipt) exactly
+        # as silent as before.
+        # `|| rc=${PIPESTATUS[1]}`, not a bare pipeline: this script runs
+        # under `set -euo pipefail`, so an unchecked nonzero pipe would
+        # exit the whole script right here, before the reformatting below
+        # ever ran (it did, the first time this was written -- a dying
+        # bridge's raw, unprefixed stderr reached send_frame instead of
+        # the "ssh to TARGET exited N: ..." reason).
+        local rc=0
+        { sot_hello_frame "$HELLO_ROLE"; cat; } | sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST" 5 2>"${_SOT_BRIDGE_FAIL_FILE:-/dev/null}" || rc=${PIPESTATUS[1]}
+        if [ "$rc" -ne 0 ] && [ -n "${_SOT_BRIDGE_FAIL_FILE:-}" ]; then
+            local detail; detail="$(tr '\n' ' ' < "$_SOT_BRIDGE_FAIL_FILE" 2>/dev/null)"
+            if [ "$rc" -eq 124 ]; then
+                printf 'timed out after 5s reaching %s' "$EP_SSH_TARGET" > "$_SOT_BRIDGE_FAIL_FILE"
+            else
+                printf 'ssh to %s exited %d' "$EP_SSH_TARGET" "$rc" > "$_SOT_BRIDGE_FAIL_FILE"
+            fi
+            [ -n "$detail" ] && printf ': %s' "$detail" >> "$_SOT_BRIDGE_FAIL_FILE"
+            printf '\n' >> "$_SOT_BRIDGE_FAIL_FILE"
+        fi
+        return "$rc"
     fi
     if [ "$HAVE_NC" = 1 ] && [ -n "$EP_UNIX" ]; then
         { sot_hello_frame "$HELLO_ROLE"; cat; } | timeout 5 nc -U "$EP_UNIX"
@@ -184,8 +209,9 @@ nc_hold() {
         # child's own stdout, so `cat` reading it sees EOF the instant
         # the daemon closes -- no fd-9 dance, no nc-vs-/dev/tcp split
         # needed the way a single bidirectional socket fd required.
-        if [ -n "$secs" ]; then sot_hold_stdin | timeout "$secs" sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST"
-        else sot_hold_stdin | sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST"; fi
+        # An empty $secs is now the unbounded case inside sot_ssh_bridge
+        # itself, so the if/else this used to need collapses to one line.
+        sot_hold_stdin | sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST" "$secs"
         return 0
     fi
     # Unix-socket endpoint: requires nc -U (/dev/tcp can't speak AF_UNIX).
@@ -236,6 +262,10 @@ send_frame() {  # $1 to, $2 text
     local line op ack_ok=false ack_array=false ack_has_id=false
     local rcpt_seen=false rcpt_filer=""
     local -a receivers=()
+    # Not `local`: nc_send below runs inside the process substitution's own
+    # subshell (a fork, not this loop), so only a path on disk -- not a
+    # variable -- carries a dying/timed-out bridge's reason back here.
+    _SOT_BRIDGE_FAIL_FILE="$(mktemp "${TMPDIR:-/tmp}/sot-comm-bridge-fail.XXXXXX")" || _SOT_BRIDGE_FAIL_FILE=""
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         op="$(printf '%s' "$line" | sot_jq -r '.op // empty' 2>/dev/null || true)"
@@ -285,6 +315,22 @@ send_frame() {  # $1 to, $2 text
                 ;;
         esac
     done < <(printf '%s\n' "$frame" | nc_send 2>/dev/null)
+
+    # BLOCKER 1's loud-failure requirement: a bridge that died or timed out
+    # left no ack to read, and the branch below would have reported the
+    # generic "unreachable, nothing filed" -- true, but silent about WHY.
+    # This is more specific and takes priority over it.
+    if [ -n "$_SOT_BRIDGE_FAIL_FILE" ] && [ -s "$_SOT_BRIDGE_FAIL_FILE" ]; then
+        local bridge_reason; bridge_reason="$(cat "$_SOT_BRIDGE_FAIL_FILE")"
+        rm -f "$_SOT_BRIDGE_FAIL_FILE"
+        if [ -z "$1" ]; then
+            echo "FAILED -> <all>: $bridge_reason" >&2
+        else
+            echo "FAILED -> @$1: $bridge_reason" >&2
+        fi
+        return 1
+    fi
+    rm -f "$_SOT_BRIDGE_FAIL_FILE"
 
     if [ "$ack_ok" = true ] && [ "$ack_array" = true ]; then
         if [ -z "$1" ]; then

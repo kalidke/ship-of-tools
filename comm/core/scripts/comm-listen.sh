@@ -289,7 +289,7 @@ case "$MODE" in
         # own miss.
         _inject() {
             if [ -n "$SSH_TARGET" ]; then
-                _selftest_frames | timeout 3 sot_ssh_bridge "$SSH_TARGET" "$SSH_HOST" 2>/dev/null | grep -m1 '"op":"agent.send"'
+                _selftest_frames | sot_ssh_bridge "$SSH_TARGET" "$SSH_HOST" 3 2>/dev/null | grep -m1 '"op":"agent.send"'
                 return
             fi
             command -v nc >/dev/null 2>&1 || return 1
