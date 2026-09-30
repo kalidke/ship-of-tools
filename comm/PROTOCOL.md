@@ -120,14 +120,17 @@ lists the receiver:
    it starts. Line 1 is the manager: `nfs4 <server>:<export>` (an NFS v4
    mount with `local_lock=none`), `local <machine-id>` or `none`; line 2 is
    the host that wrote it, and every comparison reads line 1 only. The hub is
-   the daemon with no topology, the topology's hub, or a daemon whose comm
+   the daemon with no topology, the topology's hub (an unreadable
+   `hosts.toml` names no hub, so that daemon is a guest unless its folder is
+   on its own disk), or a daemon whose comm
    folder is on its own disk, asked of the folder on each OS (Linux: `local
    <machine-id>`; macOS: its mount is `MNT_LOCAL`; Windows: a fixed drive, not a
    UNC path; anything else, or an error: not own disk); every
    other daemon is a guest on the hub's folder and never writes or deletes
    the record. The hub writes it when it is absent, when line 1 already
-   names the hub's own manager, or when line 2 names the hub (a remount);
-   any other record it leaves untouched and logs as an error. A script
+   names the hub's own manager (never `none`), or when line 2 names the hub
+   (a remount); any other record, including a `none` one another host wrote
+   or one with no writer line, it leaves untouched and logs as an error. A script
    adds the line itself only when `flock(1)` exists, the box is Linux, and
    `findmnt -T` on the inbox names that same manager. Anything else (an NFSv3
    mount, an NFS v4 mount whose `local_lock` is not `none`, an unknown mount, another box mounting the daemon's local disk, no
@@ -136,7 +139,7 @@ lists the receiver:
    daemon that does not answer is `FAILED` and no second route is tried; one
    older than the record answers `unknown op: comm.file`. Every daemon
    rechecks its own manager against line 1 at each filing: a match appends
-   (a `none` match only at the hub); a guest forwards anything else to the
+   (a `none` match only at the hub that wrote the record); a guest forwards anything else to the
    hub, once, marked `forwarded`, and answers with the hub's own verdict;
    the hub refuses it as `file_failed` with the recovery named — restart
    the hub when it wrote the record itself, else stop every daemon on the

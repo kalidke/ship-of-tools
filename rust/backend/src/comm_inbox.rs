@@ -24,7 +24,9 @@
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "linux", test))]
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// The one knob, read under the same name as the script arm's.
@@ -136,6 +138,7 @@ fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
 pub const LOCK_RECORD: &str = "inbox-lock-manager";
 
 /// Local block filesystems: a lock on one is this kernel's own.
+#[cfg(any(target_os = "linux", test))]
 const LOCAL_FS: [&str; 7] = ["ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs"];
 
 /// Write `<comm_home>/inbox-lock-manager` (a temp file, then a rename): line
@@ -154,17 +157,6 @@ pub enum Role {
     Hub,
     /// Files only on a proven shared lock; everything else goes to the hub.
     Guest,
-}
-
-/// The folder's hub when `topology_hub` (no topology file loads, or it names
-/// this host as hub) or `own_disk` (see [`own_disk`]) — a daemon on its own
-/// disk files for its own comm folder, which no hub shares.
-pub fn role(topology_hub: bool, own_disk: bool) -> Role {
-    if topology_hub || own_disk {
-        Role::Hub
-    } else {
-        Role::Guest
-    }
 }
 
 /// Whether `dir` is on this box's own disk, asked of the folder on every OS
@@ -201,17 +193,18 @@ fn is_unc(canonical: &str) -> bool {
 #[cfg(windows)]
 fn windows_volume_fixed(dir: &Path) -> Option<(bool, String)> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumePathNameW};
     // `DRIVE_FIXED` (winbase.h); windows-sys keeps it in a feature this crate does not otherwise use.
     const DRIVE_FIXED: u32 = 3;
     let canonical = std::fs::canonicalize(dir).ok()?.to_string_lossy().into_owned();
-    // The drive root is `X:\`; a UNC path has none and is refused by the caller.
-    let plain = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
-    let mut root: Vec<u16> = std::ffi::OsStr::new(plain).encode_wide().take(3).collect();
-    if root.len() < 3 || root[1] != u16::from(b':') {
-        return Some((false, canonical));
+    // The volume root of the canonical path itself, so a volume mounted in a
+    // folder is asked about itself, not about the drive that holds the folder.
+    let path: Vec<u16> = std::ffi::OsStr::new(&canonical).encode_wide().chain(Some(0)).collect();
+    let mut root = vec![0u16; path.len() + 1];
+    // SAFETY: `path` is nul-terminated and `root` holds `root.len()` units.
+    if unsafe { GetVolumePathNameW(path.as_ptr(), root.as_mut_ptr(), root.len() as u32) } == 0 {
+        return None;
     }
-    root.push(0);
     // SAFETY: `root` is a nul-terminated UTF-16 string.
     let kind = unsafe { GetDriveTypeW(root.as_ptr()) };
     Some((kind == DRIVE_FIXED, canonical))
@@ -234,8 +227,8 @@ pub enum AtStart {
 }
 
 /// The start-time decision: only the hub writes, and it replaces a record
-/// naming another lock manager only when this host wrote that record (the
-/// hub after a remount). A guest never writes or deletes it.
+/// only when this host wrote it (the hub after a remount) or it names this
+/// hub's own known lock manager; a `none` record another host wrote is kept. A guest never writes or deletes it.
 pub fn at_start(role: Role, own: &str, record: Option<&str>, self_host: &str, path: &Path) -> AtStart {
     if role == Role::Guest {
         return AtStart::Keep(format!(
@@ -246,8 +239,10 @@ pub fn at_start(role: Role, own: &str, record: Option<&str>, self_host: &str, pa
     let Some((id, writer)) = record.map(parse_record) else {
         return AtStart::Write;
     };
-    if id == own || writer == Some(self_host) {
+    if (id == own && own != "none") || writer == Some(self_host) {
         AtStart::Write
+    } else if id == "none" && own == "none" {
+        AtStart::Keep(refusal::unknown_lock_taken(writer, path))
     } else {
         AtStart::Keep(refusal::foreign(id, writer, own, path))
     }
@@ -266,17 +261,20 @@ pub enum Route {
 
 /// The route for one filing, from this daemon's own lock manager `own`
 /// (recomputed per filing) and the record. A `none` record is safe only for
-/// its hub: no script appends locally under `none` and guests forward, so the
-/// hub is the folder's only writer.
+/// the hub that wrote it: no script appends locally under `none` and guests
+/// forward, so that hub is the folder's only writer.
 pub fn route(role: Role, own: &str, record: Option<&str>, forwarded: bool, self_host: &str, path: &Path) -> Route {
     let rec = record.map(parse_record);
-    if rec.is_some_and(|(id, _)| id == own && (own != "none" || role == Role::Hub)) {
+    if rec.is_some_and(|(id, writer)| {
+        id == own && (own != "none" || (role == Role::Hub && writer == Some(self_host)))
+    }) {
         return Route::Local;
     }
     match (role, rec) {
         (Role::Guest, _) if forwarded => Route::Refuse(refusal::forwarded_to_guest(self_host)),
         (Role::Guest, _) => Route::Forward,
         (Role::Hub, None) => Route::Refuse(refusal::no_record(path)),
+        (Role::Hub, Some(("none", writer))) if own == "none" => Route::Refuse(refusal::unknown_lock_taken(writer, path)),
         (Role::Hub, Some((id, writer))) if writer == Some(self_host) => Route::Refuse(refusal::remounted(own, id)),
         (Role::Hub, Some((id, writer))) => Route::Refuse(refusal::foreign(id, writer, own, path)),
     }
@@ -304,6 +302,18 @@ pub mod refusal {
         )
     }
 
+    pub fn unknown_lock_taken(writer: Option<&str>, path: &Path) -> String {
+        format!(
+            "the inbox lock record says none, written by {}: an unknown lock is safe for one writer only; stop every daemon on this comm folder, delete {}, then start the hub",
+            writer.unwrap_or("an unknown host"),
+            path.display()
+        )
+    }
+
+    pub fn hosts_toml_unreadable(err: &str) -> String {
+        format!("this box's hosts.toml cannot be read, so it names no hub: {err}")
+    }
+
     pub fn forwarded_to_guest(self_host: &str) -> String {
         format!("a forwarded frame reached a daemon that is not its folder's hub ({self_host})")
     }
@@ -319,7 +329,8 @@ pub mod refusal {
 pub fn record_at_start(comm_home: &Path, topology_hub: bool, self_host: &str) -> std::io::Result<(Role, String, AtStart)> {
     std::fs::create_dir_all(comm_home.join("inbox"))?;
     let own = lock_identity(&comm_home.join("inbox"));
-    let role = role(topology_hub, own_disk(&comm_home.join("inbox"), &own));
+    // The hub when the topology says so (or names none) or the folder is on this box's own disk.
+    let role = if topology_hub || own_disk(&comm_home.join("inbox"), &own) { Role::Hub } else { Role::Guest };
     let path = comm_home.join(LOCK_RECORD);
     let record = std::fs::read_to_string(&path).ok();
     let decision = at_start(role, &own, record.as_deref(), self_host, &path);
@@ -356,6 +367,7 @@ pub fn lock_identity(dir: &Path) -> String {
 /// the one `findmnt -T` finds: the longest mount-point prefix, the LAST entry
 /// when one is stacked over another, `\040`-style escapes decoded. An `nfs4`
 /// mount counts only with `vers=4.x` and `local_lock=none` in its super options.
+#[cfg(any(target_os = "linux", test))]
 pub fn identity_from(mountinfo: &str, path: &Path, machine_id: &str) -> String {
     let mut best: Option<(usize, String, String, String)> = None;
     for line in mountinfo.lines() {
@@ -391,6 +403,7 @@ pub fn identity_from(mountinfo: &str, path: &Path, machine_id: &str) -> String {
 }
 
 /// Decode mountinfo's `\ooo` octal escapes (a space is `\040`).
+#[cfg(any(target_os = "linux", test))]
 fn unescape(field: &str) -> String {
     let b = field.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -489,15 +502,6 @@ mod tests {
         assert_eq!((lines.len(), v["msg"].as_str()), (2, Some("whole")));
     }
 
-    // B1 — the role: the topology's hub, or a folder on this box's own disk.
-    #[test]
-    fn the_role_is_hub_by_topology_or_by_own_disk() {
-        assert_eq!(role(true, true), Role::Hub);
-        assert_eq!(role(true, false), Role::Hub);
-        assert_eq!(role(false, true), Role::Hub);
-        assert_eq!(role(false, false), Role::Guest);
-    }
-
     #[test]
     fn a_windows_folder_is_own_disk_only_on_a_fixed_non_unc_drive() {
         assert!(windows_own_disk(true, r"\\?\C:\x"));
@@ -558,6 +562,28 @@ mod tests {
         refused(r(Role::Hub, "nfs4 A:/x", Some("nfs4 B:/y\nhub-b\n"), false), "(written by hub-b)");
         refused(r(Role::Hub, "nfs4 A:/x", Some("nfs4 B:/y\n"), true), "(written by an unknown host)");
         refused(r(Role::Hub, "nfs4 A:/x", Some("nfs4 B:/y"), false), "stop every daemon on this comm folder");
+    }
+
+    // X2 — an unknown lock has at most one writer: the host that wrote the
+    // `none` record files under it; another hub, or a record with no writer,
+    // is refused and kept.
+    #[test]
+    fn a_none_record_is_filed_under_only_by_the_host_that_wrote_it() {
+        let p = Path::new("/c/inbox-lock-manager");
+        let rec = "none\nhub-a\n";
+        assert_eq!(route(Role::Hub, "none", Some(rec), false, "hub-a", p), Route::Local);
+        assert_eq!(at_start(Role::Hub, "none", Some(rec), "hub-a", p), AtStart::Write);
+        for (rec, who) in [(rec, "hub-a"), ("none\n", "hub-a")] {
+            let host = if rec == "none\n" { who } else { "hub-b" };
+            let Route::Refuse(t) = route(Role::Hub, "none", Some(rec), false, host, p) else { panic!("{rec:?} routed") };
+            assert!(t.contains("an unknown lock is safe for one writer only"), "{t}");
+            assert!(t.contains("delete /c/inbox-lock-manager, then start the hub"), "{t}");
+            let AtStart::Keep(why) = at_start(Role::Hub, "none", Some(rec), host, p) else { panic!("{rec:?} taken") };
+            assert!(why.contains("safe for one writer only"), "{why}");
+        }
+        assert_eq!(at_start(Role::Hub, "none", None, "hub-a", p), AtStart::Write);
+        assert_eq!(route(Role::Hub, "none", Some("none\nhub-a\n"), false, "hub-a", p), Route::Local);
+        assert_eq!(route(Role::Guest, "none", Some(rec), false, "hub-b", p), Route::Forward);
     }
 
     // B1 — the stale record at start, on real files: another writer's is

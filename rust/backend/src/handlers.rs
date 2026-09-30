@@ -5629,7 +5629,11 @@ pub async fn handle_comm_file(
             .map_or_else(|| "none".to_string(), |h| crate::comm_inbox::lock_identity(&h.join("inbox")));
         let own_disk = home.as_deref().is_some_and(|h| crate::comm_inbox::own_disk(&h.join("inbox"), &own));
         let filer = Filer {
-            role: crate::comm_inbox::role(comm_topology_hub(&topology, &self_host), own_disk),
+            role: if comm_topology_hub(&topology, &self_host) || own_disk {
+                crate::comm_inbox::Role::Hub
+            } else {
+                crate::comm_inbox::Role::Guest
+            },
             own,
             self_host: self_host.clone(),
         };
@@ -5638,7 +5642,7 @@ pub async fn handle_comm_file(
             let endpoint = match &topology {
                 Ok(Some((_, t))) => sot_protocol::topology::relay_endpoint(t, &self_host),
                 Ok(None) => Err("no hosts.toml names a hub".to_string()),
-                Err(e) => Err(e.clone()),
+                Err(e) => return Err(crate::comm_inbox::refusal::hosts_toml_unreadable(e)),
             };
             let endpoint = endpoint.map_err(|e| crate::comm_inbox::refusal::hub_did_not_answer("the relay endpoint", &e))?;
             crate::topology_dial::forward_comm_file(&endpoint, &self_host, fwd, within).map_err(|e| {

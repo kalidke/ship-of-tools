@@ -9,11 +9,12 @@ work-state facts) and one append-only `inbox/<handle>.jsonl` per session.
 Discovery, catch-up after a sleep, and the work-state colours all read these
 files; nothing about them needs a live broker.
 
-**Delivery is a file.** A send to a handle this host's registry names is a
-plain append to that handle's inbox — the two sides share `~/.sot-comm/`, so
-there is no broker in the path at all. `comm-relay.sh send` takes that route
-itself and answers `filed -> @handle`, which is the acknowledgement: **the file
-is the ack.** A filed frame is read by the recipient's next turn boundary,
+**Delivery is a file.** A send to a handle this host's registry names is
+appended to that handle's inbox directly only when this host provably shares
+the hub's lock on `~/.sot-comm/`. Otherwise the frame goes to a daemon as
+`comm.file`, and a daemon that is not the folder's hub hands it to the hub,
+which files it. Either way the send answers `filed -> @handle`, which is the
+acknowledgement: **the file is the ack.** A filed frame is read by the recipient's next turn boundary,
 because the recipient's own end-of-turn hook reads its inbox and will not let
 the turn end while directed mail sits unread. That is also how a BUSY session
 is reached — no process, no keystrokes, nobody to ask.

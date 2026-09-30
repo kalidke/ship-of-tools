@@ -637,8 +637,12 @@ _sot_inbox_lock_is_ours() {
 # length before, and the status is dd's.
 _sot_append_whole() {  # FILE LINE
     local f="$1" len=0 nl="" rc=0
-    [ -e "$f" ] && { len="$(stat -c %s "$f")" || return 1; }
-    [ "$len" -gt 0 ] && [ -n "$(tail -c 1 "$f")" ] && nl=$'\n'
+    # the length comes from a descriptor opened here, under the lock: a path
+    # stat can be answered from the NFS attribute cache and cut away a line
+    # another host filed
+    : >> "$f" || return 1
+    len="$(wc -c < "$f")" || return 1
+    [ "$len" -gt 0 ] && [ "$(tail -c 1 "$f" | wc -l)" -eq 0 ] && nl=$'\n'
     printf '%s%s\n' "$nl" "$2" | dd of="$f" oflag=append conv=notrunc,fsync status=none || rc=$?
     [ "$rc" -eq 0 ] || truncate -s "$len" "$f"
     return "$rc"

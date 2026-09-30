@@ -223,6 +223,32 @@ case_a_write_cut_short_leaves_the_file_byte_identical() {
     return 0
 }
 
+# X1 — the cut-back length never comes from a path stat (an NFS attribute
+# cache can answer it stale): with a `stat` that always says 0 first on PATH, a
+# failed append still leaves a non-empty inbox byte-identical.
+case_a_stale_stat_cannot_empty_the_inbox() {
+    local out rc=0 f="$INBOX/t-stale.jsonl" long
+    mkdir -p "$WORK/fakestat"
+    printf '#!/bin/sh\necho 0\n' > "$WORK/fakestat/stat"; chmod +x "$WORK/fakestat/stat"
+    printf '{"msg":"%s"}\n' "$(printf '%0989d' 0)" > "$f"
+    cp "$f" "$WORK/stale.before"
+    long="$(printf '%0200d' 0)"
+    out="$( PATH="$WORK/fakestat:$PATH"; ulimit -f 1; trap '' XFSZ; append_one t-stale "{\"from\":\"a\",\"msg\":\"$long\"}" )" || rc=$?
+    [ "$rc" -eq 1 ] || { echo "  rc $rc, want 1 ($out)"; return 1; }
+    cmp -s "$f" "$WORK/stale.before" || { echo "  the file changed: $(wc -c < "$f") bytes"; return 1; }
+    return 0
+}
+
+# S-a — a tail of NUL bytes (NFS after a client crash) is not a line end.
+case_a_nul_tail_is_ended_before_the_new_line() {
+    local out rc=0 f="$INBOX/t-nul.jsonl"
+    printf '{"from":"old"}\n\0\0\0' > "$f"
+    out="$(append_one t-nul '{"from":"a","msg":"whole"}')" || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  rc $rc ($out)"; return 1; }
+    [ "$(tail -n 1 "$f" | jq -r .msg)" = whole ] || { echo "  the new line: $(tail -n 1 "$f" | od -c | head -3)"; return 1; }
+    return 0
+}
+
 # One append through the guard with the wire faked. $1 = own mount as
 # findmnt prints it ("" = unknown), $2 = the record ("-" = absent), $3 = own
 # daemon endpoint, $4 = relay endpoint ("" = none), $5 = the fake daemon's
@@ -553,6 +579,8 @@ check "a script whose lock identity equals the record appends locally" case_a_sh
 check "a two-line record whose line 1 matches appends locally" case_a_two_line_record_whose_line_1_matches_appends_locally
 check "S2: a torn tail stays its own line and the new line stays whole" case_a_torn_tail_is_ended_before_the_new_line
 check "S2: a write cut short by the file-size limit is FAILED and leaves the file byte-identical" case_a_write_cut_short_leaves_the_file_byte_identical
+check "X1: a stale path stat cannot empty the inbox on a failed append" case_a_stale_stat_cannot_empty_the_inbox
+check "S-a: a NUL-filled tail is ended before the new line" case_a_nul_tail_is_ended_before_the_new_line
 check "S4: a directed wire send with no daemon found is FAILED -> @h, exit 1" case_a_wire_send_with_no_daemon_is_failed
 check "T5 (faked Windows): a send is one comm.file frame over the pipe, never a local append" case_a_windows_send_is_one_comm_file_over_the_pipe
 check "v3, unknown, a mismatched export, the hub's disk over NFS, no or a none record, and no flock(1) all go to the wire" case_anything_unproven_goes_to_the_wire
