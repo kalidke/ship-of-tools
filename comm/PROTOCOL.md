@@ -112,18 +112,30 @@ lists the receiver:
    goes in under the inbox lock — the kernel's file lock (`flock`) on
    `inbox/<handle>.lock`, taken by the daemon's filer and the scripts alike.
    The inbox is opened inside the lock and closed before it is released. A
-   lock excludes only writers that share one lock manager, so a daemon
-   records its own in `inbox-lock-manager`, beside `registry.json`, when it
-   starts: `nfs4 <server>:<export>` (an NFS v4 mount with
-   `local_lock=none`), `local <machine-id>` or `none`. A script
+   lock excludes only writers that share one lock manager, so the folder's
+   hub records its own in `inbox-lock-manager`, beside `registry.json`, when
+   it starts. Line 1 is the manager: `nfs4 <server>:<export>` (an NFS v4
+   mount with `local_lock=none`), `local <machine-id>` or `none`; line 2 is
+   the host that wrote it, and every comparison reads line 1 only. The hub is
+   the daemon with no topology, the topology's hub, or a daemon whose comm
+   folder is on its own disk (not Linux, or `local <machine-id>`); every
+   other daemon is a guest on the hub's folder and never writes or deletes
+   the record. The hub writes it when it is absent, when line 1 already
+   names the hub's own manager, or when line 2 names the hub (a remount);
+   any other record it leaves untouched and logs as an error. A script
    adds the line itself only when `flock(1)` exists, the box is Linux, and
    `findmnt -T` on the inbox names that same manager. Anything else (an NFSv3
    mount, an NFS v4 mount whose `local_lock` is not `none`, an unknown mount, another box mounting the daemon's local disk, no
    record) hands the line to the daemon that owns the comm folder as
    `comm.file`: this box's own daemon, else the relay endpoint (the hub). A
    daemon that does not answer is `FAILED` and no second route is tried; one
-   older than the record answers `unknown op: comm.file`. A daemon sees a
-   remount of its comm folder only when it restarts.
+   older than the record answers `unknown op: comm.file`. Every daemon
+   rechecks its own manager against line 1 at each filing: a match appends
+   (a `none` match only at the hub); a guest forwards anything else to the
+   hub, once, marked `forwarded`, and answers with the hub's own verdict;
+   the hub refuses it as `file_failed` with the recovery named — restart
+   the hub when it wrote the record itself, else stop every daemon on the
+   folder, delete the record and start the hub.
 2. It cannot: `comm-relay.sh send @h` (which `comm-send.sh` execs on a
    registry miss) writes ONE `comm.file` request to the relay endpoint, the
    hub, and reads ONE answer. The hub files for its own home: when its comm

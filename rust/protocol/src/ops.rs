@@ -242,11 +242,13 @@ pub mod op {
     /// client, which is not the threat model here.
     pub const AGENT_RECEIPT: &str = "agent.receipt";
     /// Client→daemon request (0031 B1): append this frame to `to`'s inbox in
-    /// THIS daemon's comm folder — the hub files for its own home. Payload
-    /// `CommFileReq { from, to, text }`; response `CommFileRes { ok: true }`
-    /// only when the line is in the file, else the standard `{error, code}`
-    /// with `code` one of `bad_handle`, `not_here` (this folder does not list
-    /// `to`), `no_live_session`, `file_failed` — and nothing was appended.
+    /// THIS daemon's comm folder — the hub files for its own home, and a
+    /// guest on the hub's folder forwards what it cannot prove it may append.
+    /// Payload `CommFileReq { from, to, text, broadcast, forwarded }`;
+    /// response `CommFileRes { ok: true }` only when the line is in the file,
+    /// else the standard `{error, code}` with `code` one of `bad_handle`,
+    /// `not_here` (this folder does not list `to`), `no_live_session`,
+    /// `file_failed` — and nothing was appended.
     /// One verb per job: `AGENT_SEND` still means "publish onto the bus".
     pub const COMM_FILE: &str = "comm.file";
     /// Client→daemon request: a session inside a workspace declares its
@@ -1723,6 +1725,10 @@ pub struct CommFileReq {
     /// files silently for `comm-poll.sh` instead of waking its reader.
     #[serde(default)]
     pub broadcast: bool,
+    /// Set by a guest daemon that forwards this request to its folder's hub.
+    /// A frame is forwarded at most once, so a misconfigured hub cannot loop.
+    #[serde(default)]
+    pub forwarded: bool,
 }
 
 /// `comm.file` response: the line is in the file. A refusal is the standard

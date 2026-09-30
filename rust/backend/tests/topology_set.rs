@@ -19,6 +19,15 @@
 
 mod support;
 
+// The guest's real forward (`forward_comm_file`), included by path because
+// this crate is a binary; its own unit tests need `crate::paths`' lock.
+#[path = "../src/topology_dial.rs"]
+#[allow(dead_code)]
+mod topology_dial;
+mod paths {
+    pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}
+
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -170,26 +179,65 @@ async fn call(conn: &mut Conn, id: u64, opname: &str, payload: serde_json::Value
 
 const HUB_TOML: &str = "hub = \"hub-a\"\n\n[host.hub-a]\ndaemon = true\n";
 
+/// The daemon's `inbox-lock-manager`, once it has written one.
+async fn lock_record(env: &Env) -> String {
+    let record = env.comm_root.join("inbox-lock-manager");
+    let deadline = std::time::Instant::now() + BOUND;
+    loop {
+        if let Ok(t) = std::fs::read_to_string(&record) {
+            return t;
+        }
+        assert!(std::time::Instant::now() < deadline, "sotd never wrote {}", record.display());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+// 0031 B1: a guest's forward, over the real wire to a real hub whose record
+// is its own — the line lands in the hub's inbox and the answer is `ok`.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_guests_forward_files_at_the_hub_over_the_real_wire() {
+    let env = Env::spawn("fwd", "hub-a", HUB_TOML);
+    drop(connect_and_hello(&env.socket_path, "probe", "hub-a").await);
+    lock_record(&env).await;
+    let now = Command::new("date").args(["-u", "+%Y-%m-%dT%H:%M:%SZ"]).output().expect("date").stdout;
+    let now = String::from_utf8(now).unwrap().trim().to_string();
+    let registry = serde_json::json!({"agents": {"peer": {"host": "hub-a", "last_seen": now}}});
+    std::fs::write(env.comm_root.join("registry.json"), registry.to_string()).expect("write registry");
+
+    let req = sot_protocol::CommFileReq {
+        from: "guest-sender".into(),
+        to: "peer".into(),
+        text: "forwarded hi".into(),
+        broadcast: false,
+        forwarded: true,
+    };
+    let endpoint = format!("unix:{}", env.socket_path.display());
+    let answer = tokio::task::spawn_blocking(move || topology_dial::forward_comm_file(&endpoint, "guest-b", &req, BOUND))
+        .await
+        .expect("join")
+        .expect("the hub answered");
+    assert_eq!(answer, serde_json::json!({"ok": true}));
+    let inbox = std::fs::read_to_string(env.comm_root.join("inbox/peer.jsonl")).expect("the hub's inbox");
+    let line: serde_json::Value = serde_json::from_str(inbox.trim_end()).expect("one line");
+    assert_eq!((line["from"].as_str(), line["msg"].as_str()), (Some("guest-sender"), Some("forwarded hi")));
+}
+
 #[tokio::test]
 async fn topology_set_writes_the_real_file_and_broadcasts_over_the_real_wire() {
     let env = Env::spawn("add", "hub-a", HUB_TOML);
     let (mut editor, eid) = connect_and_hello(&env.socket_path, "editor", "hub-a").await;
     let (mut watcher, _wid) = connect_and_hello(&env.socket_path, "watcher", "hub-a").await;
 
-    // 0031 B1: a booted daemon names its inbox lock manager in its comm home.
-    let record = env.comm_root.join("inbox-lock-manager");
-    let deadline = std::time::Instant::now() + BOUND;
-    let text = loop {
-        if let Ok(t) = std::fs::read_to_string(&record) {
-            break t;
-        }
-        assert!(std::time::Instant::now() < deadline, "sotd never wrote {}", record.display());
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    let line = text.strip_suffix('\n').unwrap_or(&text);
+    // 0031 B1: a booted hub names its inbox lock manager in its comm home,
+    // and itself as the record's writer.
+    let text = lock_record(&env).await;
+    let lines: Vec<&str> = text.lines().collect();
     assert!(
-        !line.contains('\n') && (line == "none" || line.starts_with("nfs4 ") || line.starts_with("local ")),
-        "inbox-lock-manager is not one `nfs4 …`, `local …` or `none` line: {text:?}"
+        lines.len() == 2
+            && (lines[0] == "none" || lines[0].starts_with("nfs4 ") || lines[0].starts_with("local "))
+            && lines[1] == "hub-a",
+        "inbox-lock-manager is not an `nfs4 …`, `local …` or `none` line then this host: {text:?}"
     );
 
     let edit = serde_json::json!({"edit": {"kind": "add_host", "name": "gamma", "daemon": true}});

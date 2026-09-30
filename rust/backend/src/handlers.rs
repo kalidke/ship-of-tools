@@ -5598,9 +5598,11 @@ pub async fn handle_agent_join(
 }
 
 /// File one frame into THIS daemon's comm folder (`comm.file`, 0031 B1): the
-/// hub files for its own home. The response is `{ok:true}` only when the line
-/// is in the file; every refusal is `{error, code}` and nothing was appended.
-/// The file work runs off the reactor, like the registry helpers.
+/// hub files for its own home, and a guest on the hub's folder files only on
+/// a proven shared lock, forwarding everything else to the hub. The response
+/// is `{ok:true}` only when the line is in the file; every refusal is
+/// `{error, code}` and nothing was appended. The file work runs off the
+/// reactor, like the registry helpers.
 pub async fn handle_comm_file(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -5618,9 +5620,36 @@ pub async fn handle_comm_file(
                     && comm_handle_for_workspace(ws) == req.to
             })
         };
+        let home = crate::paths::sot_comm_home();
+        let self_host = comm_self_host();
+        let topology = sot_protocol::topology::load();
+        // Recomputed at every filing: a remount changes it under a running daemon.
+        let own = home
+            .as_deref()
+            .map_or_else(|| "none".to_string(), |h| crate::comm_inbox::lock_identity(&h.join("inbox")));
+        let filer = Filer {
+            role: crate::comm_inbox::role(comm_topology_hub(&topology, &self_host), &own),
+            own,
+            self_host: self_host.clone(),
+        };
+        let forward = |fwd: &CommFileReq| {
+            let within = crate::comm_inbox::inbox_lock_wait() + COMM_FORWARD_SLACK;
+            let endpoint = match &topology {
+                Ok(Some((_, t))) => sot_protocol::topology::relay_endpoint(t, &self_host),
+                Ok(None) => Err("no hosts.toml names a hub".to_string()),
+                Err(e) => Err(e.clone()),
+            };
+            let endpoint = endpoint.map_err(|e| crate::comm_inbox::refusal::hub_did_not_answer("the relay endpoint", &e))?;
+            crate::topology_dial::forward_comm_file(&endpoint, &self_host, fwd, within).map_err(|e| {
+                let e = e.strip_prefix(&format!("{endpoint}: ")).unwrap_or(&e);
+                crate::comm_inbox::refusal::hub_did_not_answer(&endpoint, e)
+            })
+        };
         comm_file_verdict(
-            crate::paths::sot_comm_home().as_deref(),
+            home.as_deref(),
+            &filer,
             row_holds,
+            forward,
             &req,
             unix_now_secs(),
             comm_stale_secs(),
@@ -5642,29 +5671,86 @@ pub async fn handle_comm_file(
     Ok(vec![(Frame::res(req_id, op::COMM_FILE, payload), None)])
 }
 
+/// A guest's forward answers inside the script's read window (the lock wait
+/// plus 10 s): the hub's own lock wait plus this.
+const COMM_FORWARD_SLACK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// This host's name — the one `sotd topology` uses — or empty when it has
+/// none, which never matches a hub or a record's writer.
+pub(crate) fn comm_self_host() -> String {
+    sot_log::state_dir::host_name().unwrap_or_default()
+}
+
+/// The topology's half of "this daemon is its comm folder's hub": no topology
+/// file loads, or it names this host as hub. An unreadable file names no one.
+pub(crate) fn comm_topology_hub(
+    topology: &std::result::Result<Option<(std::path::PathBuf, sot_protocol::topology::Topology)>, String>,
+    self_host: &str,
+) -> bool {
+    match topology {
+        Ok(None) => true,
+        Ok(Some((_, t))) => !self_host.is_empty() && t.hub == self_host,
+        Err(_) => false,
+    }
+}
+
+/// Who this daemon is to its comm folder at one filing.
+struct Filer {
+    role: crate::comm_inbox::Role,
+    /// This daemon's own lock manager for `inbox/`.
+    own: String,
+    self_host: String,
+}
+
 /// `comm.file`'s verdict against the comm folder it is handed. In order: `to`
-/// is a handle; this folder LISTS it (`.agents[to].host` non-empty — the
-/// question `comm-send.sh` and `comm-relay.sh`'s `_registry_target` ask, and
-/// deliberately not whether the host is this box); a session holds it (a
-/// running row, else a fresh heartbeat); then the append under the inbox lock.
-/// `Err` is `(code, sentence)`, the sentence what the sender prints after
+/// is a handle; the route (`comm_inbox::route`) — a forward returns the hub's
+/// answer verbatim, a refusal is `file_failed`; this folder LISTS `to`
+/// (`.agents[to].host` non-empty — the question `comm-send.sh` and
+/// `comm-relay.sh`'s `_registry_target` ask, and deliberately not whether the
+/// host is this box); a session holds it (a running row, else a fresh
+/// heartbeat); then the append under the inbox lock. `Err` is
+/// `(code, sentence)`, the sentence what the sender prints after
 /// `FAILED -> @<to>: `.
+#[allow(clippy::too_many_arguments)]
 fn comm_file_verdict(
     comm_home: Option<&std::path::Path>,
+    filer: &Filer,
     row_holds: impl FnOnce() -> bool,
+    forward: impl FnOnce(&CommFileReq) -> std::result::Result<serde_json::Value, String>,
     req: &CommFileReq,
     now_secs: u64,
     stale_secs: u64,
     wait: std::time::Duration,
-) -> std::result::Result<(), (&'static str, String)> {
+) -> std::result::Result<(), (String, String)> {
     let to = req.to.as_str();
     if !valid_name(to) {
-        return Err(("bad_handle", format!("not a handle: {to:?}")));
+        return Err(("bad_handle".into(), format!("not a handle: {to:?}")));
     }
-    let not_here = || ("not_here", format!("no box knows that handle: {to}"));
+    let not_here = || ("not_here".to_string(), format!("no box knows that handle: {to}"));
     let Some(home) = comm_home else {
         return Err(not_here());
     };
+    let record_path = home.join(crate::comm_inbox::LOCK_RECORD);
+    let record = std::fs::read_to_string(&record_path).ok();
+    use crate::comm_inbox::Route;
+    match crate::comm_inbox::route(filer.role, &filer.own, record.as_deref(), req.forwarded, &filer.self_host, &record_path) {
+        Route::Local => {}
+        Route::Forward => {
+            let answer = forward(&CommFileReq { forwarded: true, ..req.clone() }).map_err(|e| ("file_failed".to_string(), e))?;
+            if answer.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                return Ok(());
+            }
+            let field = |k: &str| answer.get(k).and_then(|v| v.as_str()).map(str::to_string);
+            return Err(match (field("code"), field("error")) {
+                (Some(code), Some(error)) => (code, error),
+                _ => ("file_failed".into(), format!("the hub answered neither ok nor a refusal: {answer}")),
+            });
+        }
+        Route::Refuse(text) => {
+            tracing::error!(%to, "{text}");
+            return Err(("file_failed".into(), text));
+        }
+    }
     let agents = read_comm_agents_at(&home.join("registry.json"));
     let entry = agents.as_ref().and_then(|a| a.get(to));
     let field = |k: &str| entry.and_then(|e| e.get(k)).and_then(|v| v.as_str());
@@ -5672,11 +5758,11 @@ fn comm_file_verdict(
         return Err(not_here());
     }
     if !(row_holds() || heartbeat_fresh(field("last_seen"), now_secs, stale_secs)) {
-        return Err(("no_live_session", format!("no live session holds @{to}")));
+        return Err(("no_live_session".into(), format!("no live session holds @{to}")));
     }
     let ts = iso8601_utc_from_secs(now_secs);
     crate::comm_inbox::file_frame(&home.join("inbox"), &req.from, to, req.broadcast, &req.text, &ts, wait)
-        .map_err(|e| ("file_failed", e))
+        .map_err(|e| ("file_failed".into(), e))
 }
 
 /// Arm 2 of `comm.file`'s liveness: `last_seen` within `stale_secs` of now.
@@ -5714,6 +5800,9 @@ mod comm_file_tests {
 
     const NOW: u64 = 1_790_000_000;
 
+    type Verdict = std::result::Result<(), (String, String)>;
+
+    /// A folder whose record names `local m`, written by `hub-a`.
     fn home() -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join("inbox")).unwrap();
@@ -5723,12 +5812,32 @@ mod comm_file_tests {
             "hostless": {"host": "", "last_seen": iso8601_utc_from_secs(NOW - 5)},
         }});
         std::fs::write(d.path().join("registry.json"), reg.to_string()).unwrap();
+        std::fs::write(d.path().join("inbox-lock-manager"), "local m\nhub-a\n").unwrap();
         d
     }
 
-    fn file(home: Option<&std::path::Path>, to: &str, row: bool) -> std::result::Result<(), (&'static str, String)> {
-        let req = CommFileReq { from: "s".into(), to: to.into(), text: "hi".into(), broadcast: false };
-        comm_file_verdict(home, || row, &req, NOW, 600, Duration::from_secs(1))
+    fn filer(role: crate::comm_inbox::Role, own: &str) -> Filer {
+        Filer { role, own: own.into(), self_host: "hub-a".into() }
+    }
+
+    fn no_forward(_: &CommFileReq) -> std::result::Result<serde_json::Value, String> {
+        panic!("a filing at the hub never forwards")
+    }
+
+    fn file_as(home: Option<&std::path::Path>, filer: &Filer, req: &CommFileReq, row: bool) -> Verdict {
+        comm_file_verdict(home, filer, || row, no_forward, req, NOW, 600, Duration::from_secs(1))
+    }
+
+    fn req(to: &str) -> CommFileReq {
+        CommFileReq { from: "s".into(), to: to.into(), text: "hi".into(), broadcast: false, forwarded: false }
+    }
+
+    fn file(home: Option<&std::path::Path>, to: &str, row: bool) -> Verdict {
+        file_as(home, &filer(crate::comm_inbox::Role::Hub, "local m"), &req(to), row)
+    }
+
+    fn err(code: &str, text: &str) -> Verdict {
+        Err((code.into(), text.into()))
     }
 
     // T2 — every verdict, and a refusal leaves the inbox untouched.
@@ -5749,7 +5858,7 @@ mod comm_file_tests {
         let d = home();
         let req: CommFileReq =
             serde_json::from_value(json!({"from": "s", "to": "fresh", "text": "all", "broadcast": true})).unwrap();
-        assert_eq!(comm_file_verdict(Some(d.path()), || false, &req, NOW, 600, Duration::from_secs(1)), Ok(()));
+        assert_eq!(file_as(Some(d.path()), &filer(crate::comm_inbox::Role::Hub, "local m"), &req, false), Ok(()));
         let line = std::fs::read_to_string(d.path().join("inbox/fresh.jsonl")).unwrap();
         let v: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
         assert_eq!((v["to"].as_str(), v["repo"].as_str()), (Some(""), Some("daemon")));
@@ -5769,7 +5878,7 @@ mod comm_file_tests {
         let inbox = d.path().join("inbox/stale.jsonl");
         std::fs::write(&inbox, "{\"msg\":\"before\"}\n").unwrap();
         let (code, error) = file(Some(d.path()), "stale", false).unwrap_err();
-        assert_eq!((code, error.as_str()), ("no_live_session", "no live session holds @stale"));
+        assert_eq!((code.as_str(), error.as_str()), ("no_live_session", "no live session holds @stale"));
         assert_eq!(std::fs::read_to_string(&inbox).unwrap(), "{\"msg\":\"before\"}\n");
     }
 
@@ -5777,10 +5886,7 @@ mod comm_file_tests {
     fn unlisted_hostless_and_no_folder_are_not_here() {
         let d = home();
         for to in ["nobody", "hostless"] {
-            assert_eq!(
-                file(Some(d.path()), to, true),
-                Err(("not_here", format!("no box knows that handle: {to}")))
-            );
+            assert_eq!(file(Some(d.path()), to, true), err("not_here", &format!("no box knows that handle: {to}")));
         }
         assert_eq!(file(None, "fresh", true).unwrap_err().0, "not_here");
         assert!(!d.path().join("inbox/nobody.jsonl").exists());
@@ -5789,7 +5895,7 @@ mod comm_file_tests {
     #[test]
     fn an_empty_or_invalid_to_is_bad_handle() {
         let d = home();
-        assert_eq!(file(Some(d.path()), "", true), Err(("bad_handle", "not a handle: \"\"".into())));
+        assert_eq!(file(Some(d.path()), "", true), err("bad_handle", "not a handle: \"\""));
         assert_eq!(file(Some(d.path()), "../x", true).unwrap_err().0, "bad_handle");
     }
 
@@ -5800,6 +5906,69 @@ mod comm_file_tests {
         let (code, error) = file(Some(d.path()), "fresh", false).unwrap_err();
         assert_eq!(code, "file_failed");
         assert!(error.starts_with("the append failed: "), "{error}");
+    }
+
+    // B1 — a stale record at the hub is refused with the recovery named,
+    // and the inbox is byte-identical.
+    #[test]
+    fn a_stale_record_at_the_hub_is_file_failed_with_the_recovery() {
+        let d = home();
+        let inbox = d.path().join("inbox/fresh.jsonl");
+        std::fs::write(&inbox, "{\"msg\":\"before\"}\n").unwrap();
+        for (record, fragment) in [
+            ("nfs4 B:/y\nhub-a\n", "restart this daemon to re-record it after the remount"),
+            ("nfs4 B:/y\nhub-b\n", "(written by hub-b), not this hub's local m: stop every daemon"),
+            ("nfs4 B:/y\n", "(written by an unknown host)"),
+        ] {
+            std::fs::write(d.path().join("inbox-lock-manager"), record).unwrap();
+            let (code, error) = file(Some(d.path()), "fresh", true).unwrap_err();
+            assert_eq!(code, "file_failed", "{record:?}");
+            assert!(error.contains(fragment), "{record:?}: {error}");
+            assert_eq!(std::fs::read_to_string(&inbox).unwrap(), "{\"msg\":\"before\"}\n");
+        }
+        std::fs::remove_file(d.path().join("inbox-lock-manager")).unwrap();
+        let (code, error) = file(Some(d.path()), "fresh", true).unwrap_err();
+        assert!(code == "file_failed" && error.starts_with("no inbox lock record at "), "{error}");
+        assert_eq!(std::fs::read_to_string(&inbox).unwrap(), "{\"msg\":\"before\"}\n");
+    }
+
+    // B1 — a guest that cannot prove the shared lock forwards, marked
+    // forwarded, and answers with the hub's own verdict.
+    #[test]
+    fn a_guest_with_a_mismatch_forwards_and_returns_the_hubs_answer() {
+        let d = home();
+        let guest = Filer { role: crate::comm_inbox::Role::Guest, own: "nfs4 A:/x".into(), self_host: "guest-b".into() };
+        let forward_with = |answer: std::result::Result<serde_json::Value, String>| {
+            let sent = std::cell::RefCell::new(None);
+            let v = comm_file_verdict(
+                Some(d.path()),
+                &guest,
+                || true,
+                |fwd: &CommFileReq| {
+                    *sent.borrow_mut() = Some(fwd.clone());
+                    answer
+                },
+                &req("fresh"),
+                NOW,
+                600,
+                Duration::from_secs(1),
+            );
+            (v, sent.into_inner().expect("forwarded"))
+        };
+        let (v, sent) = forward_with(Ok(json!({"ok": true})));
+        assert_eq!(v, Ok(()));
+        assert!(sent.forwarded && sent.to == "fresh" && sent.text == "hi" && !sent.broadcast);
+        let (v, _) = forward_with(Ok(json!({"error": "no box knows that handle: fresh", "code": "not_here"})));
+        assert_eq!(v, err("not_here", "no box knows that handle: fresh"));
+        let (v, _) = forward_with(Err("the hub did not answer at unix:/x: refused".into()));
+        assert_eq!(v, err("file_failed", "the hub did not answer at unix:/x: refused"));
+        assert!(!d.path().join("inbox/fresh.jsonl").exists(), "a guest's forward appends nothing here");
+
+        // A forwarded frame at a guest is refused, never forwarded again.
+        let mut again = req("fresh");
+        again.forwarded = true;
+        let (code, error) = file_as(Some(d.path()), &guest, &again, true).unwrap_err();
+        assert!(code == "file_failed" && error.contains("not its folder's hub (guest-b)"), "{error}");
     }
 
     // T4 — the cutoff: one second inside is fresh, one outside and the edge

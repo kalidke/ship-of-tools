@@ -11,13 +11,14 @@
 //! in-process and cross-box exclusion have to be proved rather than assumed.
 
 #[path = "../src/comm_inbox.rs"]
+#[allow(dead_code)] // the forward's sentence is the binary's alone
 mod comm_inbox;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use comm_inbox::{file_frame, inbox_lock_wait, lock_identity, write_lock_record};
+use comm_inbox::{file_frame, inbox_lock_wait, lock_identity, record_at_start, write_lock_record, AtStart, Role};
 
 fn comm_lib() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../comm/core/scripts/comm-lib.sh")
@@ -69,12 +70,17 @@ fn holder(inbox: &Path, h: &str, body: &str) -> Child {
     child
 }
 
+/// Sourced after `comm-lib.sh`: the script arm's daemon is one that is not
+/// there, so no case can reach a live daemon (with `SOT_SOCKET` removed).
+const NO_DAEMON: &str = r#"sot_daemon_endpoint() { printf 'unix:/nonexistent/sot-test.sock'; }"#;
+
 /// `sot_inbox_lock_identity DIR` from the script arm.
 fn script_identity(dir: &Path) -> String {
     let out = Command::new("bash")
         .arg("-c")
-        .arg(r#"source "$1"; sot_inbox_lock_identity "$2""#)
+        .arg(format!(r#"source "$1"; {NO_DAEMON}; sot_inbox_lock_identity "$2""#))
         .args(["_", comm_lib().to_str().unwrap(), dir.to_str().unwrap()])
+        .env_remove("SOT_SOCKET")
         .output()
         .unwrap();
     String::from_utf8(out.stdout).unwrap().trim_end().to_string()
@@ -98,17 +104,19 @@ fn the_filer_and_the_script_name_the_same_lock_manager() {
 fn the_filer_and_the_script_take_the_same_lock() {
     let d = inbox_home();
     let inbox = d.path().join("inbox");
-    let id = write_lock_record(d.path()).unwrap();
+    let id = lock_identity(&inbox);
+    write_lock_record(d.path(), &id, "hub-a").unwrap();
     assert_ne!(id, "none", "this test needs a folder whose lock manager is provable");
     let script = {
         let home = d.path().to_path_buf();
         std::thread::spawn(move || {
             let st = Command::new("bash")
                 .arg("-c")
-                .arg(r#"source "$1"; for i in $(seq 0 199); do
-                        printf '{"from":"sh","to":"t3","repo":"r","msg":"sh-%s","ts":"t"}\n' "$i" \
-                          | sot_inbox_append t3 >/dev/null || exit 1; done"#)
+                .arg(format!(r#"source "$1"; {NO_DAEMON}; for i in $(seq 0 199); do
+                        printf '{{"from":"sh","to":"t3","repo":"r","msg":"sh-%s","ts":"t"}}\n' "$i" \
+                          | sot_inbox_append t3 >/dev/null || exit 1; done"#))
                 .args(["_", comm_lib().to_str().unwrap()])
+                .env_remove("SOT_SOCKET")
                 .env("SOT_COMM_HOME", &home)
                 .status()
                 .unwrap();
@@ -212,12 +220,13 @@ fn t11_rust_appends_200() {
     }
 }
 
-// T11 — the record the daemon writes at startup, into the driver's comm
-// folder (the parent of `SOT_TEST_INBOX_DIR`).
+// T11 — the record the hub writes at startup, into the driver's comm folder
+// (the parent of `SOT_TEST_INBOX_DIR`): this box is that folder's hub.
 #[test]
 #[ignore = "driven by test-inbox-lock-twohost.sh"]
 fn t11_write_lock_record() {
-    let id = write_lock_record(env_dir().parent().unwrap()).unwrap();
+    let (role, id, did) = record_at_start(env_dir().parent().unwrap(), true, "t11-hub").unwrap();
+    assert_eq!((role, did), (Role::Hub, AtStart::Write));
     println!("record {id}");
 }
 

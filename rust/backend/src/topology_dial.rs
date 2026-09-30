@@ -222,6 +222,39 @@ pub fn dial_and_call(endpoint: &str, self_host: &str, req_op: &str, payload: ser
     Err(fold(&guard, format!("{endpoint}: no reply to {req_op} within 8 frames")))
 }
 
+/// [`dial_and_call`] bounded to `within`: the call runs on its own thread,
+/// and no answer by then is an error. `dial_and_call` sets no deadline of its
+/// own, so a caller that must answer inside someone else's read window goes
+/// through this. A call that outlives the bound leaves its thread to end when
+/// the connection does.
+pub fn dial_and_call_within(
+    endpoint: &str,
+    self_host: &str,
+    req_op: &str,
+    payload: serde_json::Value,
+    within: std::time::Duration,
+) -> Result<serde_json::Value, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (e, h, o) = (endpoint.to_string(), self_host.to_string(), req_op.to_string());
+    std::thread::spawn(move || {
+        let _ = tx.send(dial_and_call(&e, &h, &o, payload));
+    });
+    rx.recv_timeout(within)
+        .unwrap_or_else(|_| Err(format!("{endpoint}: no reply to {req_op} within {}s", within.as_secs())))
+}
+
+/// A guest daemon's `comm.file` forward to its folder's hub (0031 B1): the
+/// request as given, answered within `within`, the hub's payload verbatim.
+pub fn forward_comm_file(
+    endpoint: &str,
+    self_host: &str,
+    req: &sot_protocol::CommFileReq,
+    within: std::time::Duration,
+) -> Result<serde_json::Value, String> {
+    let payload = serde_json::to_value(req).map_err(|e| e.to_string())?;
+    dial_and_call_within(endpoint, self_host, sot_protocol::op::COMM_FILE, payload, within)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

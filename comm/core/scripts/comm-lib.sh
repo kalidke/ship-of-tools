@@ -587,11 +587,14 @@ registry_touch() {  # name — bump last_seen if present
 # an NFSv4 lock on one export exclude nothing, and a local flock on a disk
 # other hosts mount does not exclude their NFS locks. So a script appends
 # locally only when flock(1) exists, this is Linux, and the identity it
-# computes for $INBOX_DIR is byte-equal to the one the daemon recorded in
-# `$COMM_HOME/inbox-lock-manager` at startup. Anything else — no record, a
+# computes for $INBOX_DIR is byte-equal to line 1 of
+# `$COMM_HOME/inbox-lock-manager`, which only the folder's hub writes, at
+# startup (line 2 names the host that wrote it). Anything else — no record, a
 # `none` record, NFSv3, an NFS v4 mount whose `local_lock` is not `none`, an unknown mount, another host mounting the daemon's
 # local disk — hands the frame to the daemon that owns this comm folder as
-# `comm.file`, and a daemon that does not answer is FAILED.
+# `comm.file`, and a daemon that does not answer is FAILED. A daemon makes the
+# same check at each filing: a guest on the hub's folder forwards what it
+# cannot prove to the hub, and the hub refuses it with the recovery named.
 SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-10}"
 _sot_have_flock() { command -v flock >/dev/null 2>&1; }
 _sot_findmnt() { findmnt "$@"; }
@@ -618,11 +621,12 @@ sot_inbox_lock_identity() {  # DIR
     printf 'none\n'
 }
 # 0 when this script takes the same lock manager as every other writer of
-# the inbox; a missing, empty or `none` record never matches.
+# the inbox (the record's line 1); a missing, empty or `none` record never
+# matches.
 _sot_inbox_lock_is_ours() {
     local rec="" id
     _sot_have_flock && [ "$(uname -s 2>/dev/null)" = Linux ] || return 1
-    rec="$(cat "$COMM_HOME/inbox-lock-manager" 2>/dev/null)"
+    { IFS= read -r rec < "$COMM_HOME/inbox-lock-manager"; } 2>/dev/null
     id="$(sot_inbox_lock_identity "$INBOX_DIR")"
     [ -n "$id" ] && [ "$id" != none ] && [ "$id" = "$rec" ]
 }

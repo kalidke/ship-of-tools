@@ -384,11 +384,16 @@ Pure queries (no startup side effects, answered before any of the above):
         "sotd starting"
     );
 
-    // 0031 B1: name the lock manager this daemon's inbox appends go through;
-    // a script appends locally only when it computes the same name.
+    // 0031 B1: the folder's hub names the lock manager its inbox appends go
+    // through; every writer appends locally only when it computes the same
+    // name. A guest never writes the record.
     if let Some(home) = paths::sot_comm_home().filter(|h| h.is_dir()) {
-        match comm_inbox::write_lock_record(&home) {
-            Ok(id) => tracing::info!(%id, "comm inbox lock manager recorded"),
+        let self_host = handlers::comm_self_host();
+        let topology_hub = handlers::comm_topology_hub(&sot_protocol::topology::load(), &self_host);
+        match comm_inbox::record_at_start(&home, topology_hub, &self_host) {
+            Ok((_, id, comm_inbox::AtStart::Write)) => tracing::info!(%id, "comm inbox lock manager recorded"),
+            Ok((comm_inbox::Role::Hub, _, comm_inbox::AtStart::Keep(why))) => tracing::error!("{why}"),
+            Ok((comm_inbox::Role::Guest, _, comm_inbox::AtStart::Keep(why))) => tracing::info!("{why}"),
             Err(e) => tracing::warn!(error = %e, "comm inbox lock record not written"),
         }
     }

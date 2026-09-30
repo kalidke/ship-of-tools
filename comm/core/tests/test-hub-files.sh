@@ -229,6 +229,18 @@ case_a_shared_nfs4_lock_manager_appends_locally() {
     return 0
 }
 
+# The hub's record is two lines, its lock manager then its writer; a script
+# compares line 1 only.
+case_a_two_line_record_whose_line_1_matches_appends_locally() {
+    local out rc
+    fresh_route
+    out="$(route_append "nfs4 rw,vers=4.2,local_lock=none A:/x" "nfs4 A:/x"$'\n'"hub-a" unix:/own ssh:hub "$OK_ANSWER")"; rc=$?
+    [ "$rc" -eq 0 ] || { echo "  rc $rc ($out)"; return 1; }
+    [ "$(wire_count)" -eq 0 ] || { echo "  went to the wire"; return 1; }
+    [ "$(wc -l < "$INBOX/t-peer.jsonl")" -eq 2 ] || { echo "  not appended locally"; return 1; }
+    return 0
+}
+
 # Every case that cannot prove one lock manager goes to the wire.
 case_anything_unproven_goes_to_the_wire() {
     local mnt rec flock out rc
@@ -431,6 +443,7 @@ check "a holder killed with -9 frees the lock at once and the send files" case_a
 check "a frozen holder makes the send wait its bound and report FAILED, never filed" case_a_frozen_holder_makes_the_send_wait_then_fail
 check "an append that fails under the lock is FAILED with its error" case_a_failed_write_is_failed_not_filed
 check "a script whose lock identity equals the record appends locally" case_a_shared_nfs4_lock_manager_appends_locally
+check "a two-line record whose line 1 matches appends locally" case_a_two_line_record_whose_line_1_matches_appends_locally
 check "v3, unknown, a mismatched export, the hub's disk over NFS, no or a none record, and no flock(1) all go to the wire" case_anything_unproven_goes_to_the_wire
 check "the wire is this box's daemon, else the relay; one that does not answer is FAILED with no second route" case_the_wire_is_the_own_daemon_else_the_relay_and_only_one
 check "the wire frame says whether the line was a broadcast copy" case_the_wire_frame_carries_the_broadcast_flag
