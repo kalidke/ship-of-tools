@@ -120,10 +120,8 @@ stop_daemon() {
 trap 'stop_daemon; rm -rf "$RUNDIR"' EXIT
 
 CONN_VALUE=""    # set by start_daemon (NOT echoed): a $(...) capture would run
-                 # start_daemon in a SUBSHELL and lose both the DAEMON_PID it
-                 # records (so stop_daemon becomes a no-op — daemons orphan) and
-                 # the TCP_PORT it increments (so every daemon reuses one port —
-                 # a later root-switch then connects to the wrong stale daemon).
+                 # start_daemon in a SUBSHELL and lose the DAEMON_PID it records,
+                 # so stop_daemon becomes a no-op and daemons orphan.
 
 start_daemon() { # $1 = project root; sets globals DAEMON_PID + CONN_VALUE. Call it
                  # directly (start_daemon "$x"; v="$CONN_VALUE"), NEVER via $(...).
