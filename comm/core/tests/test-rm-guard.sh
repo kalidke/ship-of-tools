@@ -121,9 +121,9 @@ unguarded() {
              END { exit !(seen && !first) }' "$f" && printf '%s\n' "$f"
     done
 }
-sed '/^\. .*lib-home-guard\.sh/d' "$SCRIPT_DIR/test-hub-files.sh" > "$T/test-copy.sh"
-[ "$(unguarded "$T/test-copy.sh")" = "$T/test-copy.sh" ] && [ -z "$(unguarded "$SCRIPT_DIR/test-hub-files.sh")" ] \
-    || { echo "FAIL: the home-guard check does not tell test-hub-files.sh from a copy without its source line"; exit 1; }
+printf 'set -u\necho x\n' > "$T/test-synthetic.sh"
+[ "$(unguarded "$T/test-synthetic.sh")" = "$T/test-synthetic.sh" ] && [ -z "$(unguarded "$SCRIPT_DIR/test-hub-files.sh")" ] \
+    || { echo "FAIL: the home-guard check does not tell test-hub-files.sh from a synthetic suite with no guard"; exit 1; }
 bad="$(unguarded "${suites[@]}")"
 
 rc=0
