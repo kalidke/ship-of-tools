@@ -467,6 +467,12 @@ pub mod refusal {
     }
 }
 
+/// Test-only: runs between `record_at_start`'s first read and its link.
+#[cfg(test)]
+thread_local! {
+    static BETWEEN_READ_AND_LINK: std::cell::RefCell<Option<Box<dyn Fn(&Path)>>> = std::cell::RefCell::new(None);
+}
+
 /// The hub's start step over this daemon's lock manager `own` for `inbox/`
 /// and its machine id `own_mid` (the caller computes both, after creating
 /// `inbox/`): decide, then create or replace. A create whose link fails, with
@@ -486,6 +492,8 @@ pub fn record_at_start(
     let record = std::fs::read_to_string(&path).ok();
     let mut decision = at_start(role, own, own_mid, record.as_deref(), &path);
     if decision == AtStart::Create {
+        #[cfg(test)]
+        BETWEEN_READ_AND_LINK.with(|h| h.borrow().as_ref().map(|f| f(&path)));
         if let Err(e) = create_lock_record(comm_home, own, own_mid) {
             let Ok(text) = std::fs::read_to_string(&path) else { return Err(e) };
             decision = at_start(role, own, own_mid, Some(&text), &path);
@@ -1090,6 +1098,25 @@ mod tests {
         std::fs::create_dir(d.path().join(LOCK_RECORD)).unwrap();
         let e = record_at_start(d.path(), true, "none@m1", Some("m1")).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists, "{e}");
+        assert_eq!(names(d.path()), [LOCK_RECORD], "no temp file");
+    }
+
+    // B1 — the first read finds nothing, the link fails because another
+    // holder's record appeared in between, and the re-read finds it: the
+    // start step decides over it and refuses, it does not return `Current`.
+    #[test]
+    fn a_record_that_appears_after_the_first_read_decides_the_start() {
+        let d = tempfile::tempdir().unwrap();
+        let rec = d.path().join(LOCK_RECORD);
+        BETWEEN_READ_AND_LINK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(|p| std::fs::write(p, record_text("none@m2", Some("m2"))).unwrap()));
+        });
+        let got = record_at_start(d.path(), true, "none@m1", Some("m1"));
+        BETWEEN_READ_AND_LINK.with(|h| *h.borrow_mut() = None);
+        let (_, decision) = got.unwrap();
+        let AtStart::Keep(msg) = decision else { panic!("{decision:?}") };
+        assert_eq!(msg, refusal::foreign("none@m2", Some("m2"), "none@m1", &rec));
+        assert_eq!(std::fs::read_to_string(&rec).unwrap(), record_text("none@m2", Some("m2")));
         assert_eq!(names(d.path()), [LOCK_RECORD], "no temp file");
     }
 
