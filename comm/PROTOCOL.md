@@ -129,7 +129,8 @@ a stream; the record keeps its colons.
   the lock was taken (a retransmitted NFSv3 LINK answers "exists" for the
   caller's own link). **Release** removes the file. The comm home must support
   hard links: every filesystem listed under Reclaim does, and so does NTFS; on
-  FAT or SMB every ruled write FAILs, naming "hard links unsupported on <path>".
+  FAT every write fails (the best-effort touches silently), and a ruled one
+  FAILs naming "cannot hard-link in <dir>: <errno>".
 - **Proof of death** (Linux only, and only from the holder's own machine): the
   same boot and pid namespace, with the pid gone or its start tick changed; or
   the same machine-id AND the same host name with a different boot. This
@@ -151,18 +152,32 @@ a stream; the record keeps its colons.
   scripts): 10 s for join, leave, spawn, despawn, status and the daemon's
   workspace destroy; about 1 s for the best-effort `last_seen` touches of send,
   poll and spawn, and for the daemon's unread clear; 0 for the heartbeat, which
-  still makes its one try and reclaims a dead holder. There is always one try,
-  and no try starts after the deadline. One daemon thread at a time is inside
-  the lock, and its wait for that turn counts inside the same deadline.
+  still makes its one try and reclaims a dead holder. There is always one try
+  and its reclaim step (in the daemon, once the thread has its turn); after the
+  first failed take the deadline is checked after every failed take and every
+  sleep, so a failed retake after a reclaim fails at once, no reclaim chains
+  past the deadline, and no try starts after it. One daemon thread at a time is
+  inside the lock, and its wait for that turn counts inside the same deadline;
+  a lock naming the daemon itself, seen by the thread with the turn, was left
+  by one of its threads, and is reclaimed like a dead holder's. The scripts'
+  clock is bash 5's `EPOCHREALTIME`, or perl's `Time::HiRes` before bash 5
+  (the mail tools check it there); both are wall clocks, so a clock jump can
+  stretch or shorten one wait. The daemon's is monotonic.
 - **FAILED** names the holder and the recovery, in the scripts and in the
   daemon's log alike: `registry lock <path> is held by <host> pid <pid> start
   <tick> (<age> old): <why>. If it is dead, run any comm command on <host>, or
-  run comm-registry-lock-clear.sh.` `comm-registry-lock-clear.sh` takes the
+  run comm-registry-lock-clear.sh.` With no clock the scripts say `registry
+  lock <path> is held, and there is no clock to wait by: <which>`; a daemon
+  thread that never got its turn says `registry lock <path> was not tried:
+  another thread of this daemon held its turn past the bound`.
+  `comm-registry-lock-clear.sh` takes the
   reclaim path above with a person's word in place of the holder's liveness
   proof, and nothing else: it never clears a holder this box proves alive, it
   never passes a marker whose creator this box cannot prove dead, and it is
   never a bare `rm`; either would let a pending reclaimer remove the next
-  holder's lock. With no lock it says the lock is free and exits 0.
+  holder's lock. With no lock it says the lock is free and exits 0. When the
+  record that blocks it has no proof fields, its refusal says to remove the
+  lock by hand, because no box can prove that record dead.
 - **Older peers.** An older version's lock is a holderless directory: it is
   never reclaimed, and FAILED says "held by an older version that records no
   holder". An older waiter's `mkdir` fails on the file and waits as before.
@@ -171,7 +186,10 @@ a stream; the record keeps its colons.
   other box FAILs each ruled lock after 10 s, and every send or poll waits out
   the ~1 s touch bound. The 1 s settle is the only guard against a dead holder's
   late operations, its orphaned release `rm` and its in-flight calls; one that
-  lands later than that is not covered.
+  lands later than that is not covered. A clear killed during its settle, or
+  whose re-read fails, on a box that proves no deaths (macOS, git-bash) leaves
+  `reclaim.<D>` naming a record no box can prove dead: every later clear
+  refuses, and the lock is removed by hand.
 
 ## Message frame (inbox JSONL, one object per line)
 

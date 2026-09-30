@@ -46,13 +46,18 @@ now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # sot_mail_tools — the tools every path that reads mail runs, one line: jq
 # parses every frame; flock and perl are the inbox's read and write lock,
-# Linux only. Poll, session start and the Stop hook all take their list here.
+# Linux only; before bash 5 (macOS's 3.2), perl's Time::HiRes is the registry
+# lock's clock. Poll, session start and the Stop hook all take their list here.
 sot_mail_tools() {
-    if [ "$(uname -s 2>/dev/null)" = Linux ]; then echo "jq flock perl"; else echo "jq"; fi
+    local t=jq
+    [ "$(uname -s 2>/dev/null)" != Linux ] || t="jq flock perl"
+    [ "${BASH_VERSINFO[0]}" -ge 5 ] || t="$t Time::HiRes"
+    echo "$t"
 }
 
 # sot_require_tools PATH_NAME TOOL... — say, on stderr, one line per TOOL that
-# is not on PATH, and return nonzero if any is missing. A session whose jq,
+# is not on PATH (a TOOL with `::` is a perl module perl cannot load), and
+# return nonzero if any is missing. A session whose jq,
 # flock or perl is missing never sees its mail and used to be told nothing:
 # each path that reads mail (comm-poll, session start, the Stop hook) checks
 # the tools IT runs before first use and shows this line to the session.
@@ -60,7 +65,10 @@ sot_require_tools() {
     local path_name="$1" t rc=0
     shift
     for t in "$@"; do
-        command -v "$t" >/dev/null 2>&1 && continue
+        case "$t" in
+            *::*) perl -M"$t" -e 1 >/dev/null 2>&1 && continue; t="perl's $t" ;;
+            *) command -v "$t" >/dev/null 2>&1 && continue ;;
+        esac
         printf 'sot-comm: cannot %s: %s is missing (install it)\n' "$path_name" "$t" >&2
         rc=1
     done
@@ -530,10 +538,14 @@ ensure_home() {
 #
 # The bound is a deadline, SOT_LOCK_WAIT_SECS, polled every 50 ms: 10 s for
 # every ruled write, about 1 s for the best-effort `last_seen` touches of send,
-# poll and spawn, and 0 for the heartbeat. Its clock is perl's Time::HiRes
-# (bash 3.2 has nothing finer than SECONDS) and starts at the first failed
-# take, so an uncontended take reads no clock. There is always one try, and no
-# try starts after the deadline; with no clock, the one try is all.
+# poll and spawn, and 0 for the heartbeat. The clock is read from the first
+# failed take on, so an uncontended take reads none: bash 5's EPOCHREALTIME,
+# or perl's Time::HiRes before bash 5 (3.2 has nothing finer than SECONDS),
+# both a wall clock, so a clock jump stretches or shortens one wait. No clock
+# is FAILED naming it. There is always one try, and its reclaim step; after
+# the first failed take the deadline is checked after every failed take and
+# after every sleep, so a failed retake fails at once, no reclaim chains past
+# the deadline, and no try starts after it.
 #
 # Release is TRAP-based, not a plain post-command `rm` (Codex review F2
 # second half / F7): a caller's `set -e` aborts the WHOLE SCRIPT the moment
@@ -559,7 +571,7 @@ ensure_home() {
 # and restore always execute before this function returns, on every path.
 SOT_LOCK_WAIT_SECS=10
 with_lock() {
-    local deadline="" now r took
+    local deadline="" took retook=""
     # Test seam (F10): let a test PROVE a background waiter has reached its
     # first lock attempt, instead of racing it with a sleep. Touched once,
     # right before that attempt; unset (the default) this is a no-op.
@@ -575,23 +587,32 @@ with_lock() {
     [ -n "${SOT_COMM_TEST_LOCK_BARRIER:-}" ] && { touch -- "$SOT_COMM_TEST_LOCK_BARRIER" 2>/dev/null || true; }
     _sot_lock_self_id
     while :; do
+        # Test seam: a slow try, so a test can show the bound is time.
+        [ -z "${SOT_COMM_TEST_LOCK_TRY_DELAY:-}" ] || sleep "$SOT_COMM_TEST_LOCK_TRY_DELAY"
         if _sot_lock_take "$_SOT_REG_LOCK"; then break; else took=$?; fi
         if [ "$took" = 2 ]; then
             echo "ERROR: registry lock $_SOT_REG_LOCK cannot be taken: $_SOT_LOCK_WHY" >&2
             return 1
         fi
-        [ -n "$deadline" ] || deadline="$(_sot_lock_ms "$SOT_LOCK_WAIT_SECS")"
-        # Test seam: a slow try, so a test can show the bound is time.
-        [ -z "${SOT_COMM_TEST_LOCK_TRY_DELAY:-}" ] || sleep "$SOT_COMM_TEST_LOCK_TRY_DELAY"
-        _sot_lock_step && continue
-        now="$(_sot_lock_ms 0)"
-        if [ -z "$now" ] || [ -z "$deadline" ] || [ "$now" -ge "$deadline" ]; then
-            _sot_lock_fail_text >&2
+        # A failed retake: the FAILED line names whoever took it.
+        if [ -n "$retook" ]; then
+            retook=""
+            _sot_lock_fresh "$_SOT_REG_LOCK" && _SOT_LOCK_HOLDER="$_SOT_LOCK_READ"
+        fi
+        if [ -z "$deadline" ]; then
+            _sot_lock_now "$SOT_LOCK_WAIT_SECS" || return 1
+            deadline="$_SOT_LOCK_NOW"
+        elif _sot_lock_over "$deadline"; then
             return 1
         fi
-        r=$((deadline - now)); [ "$r" -lt 50 ] || r=50
-        printf -v r '0.%03d' "$r"
-        sleep "$r"
+        if _sot_lock_step; then
+            _SOT_LOCK_HOLDER="" _SOT_LOCK_WHO="" retook=1
+            _SOT_LOCK_WHY="another process took it as soon as a dead holder's lock was removed"
+            continue
+        fi
+        _sot_lock_over "$deadline" && return 1
+        sleep "$_SOT_LOCK_NAP"
+        _sot_lock_over "$deadline" && return 1
     done
     # Lock acquired — guarantee release via EXIT trap (see header comment),
     # preserving whatever EXIT trap the caller already had.
@@ -612,8 +633,43 @@ with_lock() {
     return $rc
 }
 
-# _sot_lock_ms SECS — the clock in milliseconds, SECS from now.
-_sot_lock_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", (time + $ARGV[0]) * 1000' "$1" 2>/dev/null; }
+# _sot_lock_now SECS — set _SOT_LOCK_NOW to the clock in microseconds, SECS
+# (to the microsecond) from now. The clock is chosen by the bash version, never probed:
+# bash 5's EPOCHREALTIME with every non-digit deleted (its separator follows
+# the locale), else perl's Time::HiRes. A value that is empty or not all
+# digits (an unset EPOCHREALTIME is an ordinary, empty variable) is no clock:
+# say the FAILED line naming it, and return 1.
+_sot_lock_now() {
+    local t what i="${1%%.*}" f
+    f="${1#"$i"}"; f="${f#.}000000"
+    if [ "${BASH_VERSINFO[0]}" -ge 5 ]; then
+        t="${EPOCHREALTIME//[!0-9]/}" what="bash's EPOCHREALTIME is unset or not a number"
+    else
+        t="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time * 1e6' 2>/dev/null)" what="perl's Time::HiRes is missing (install it)"
+    fi
+    if [[ "$t" =~ ^[0-9]+$ ]]; then
+        _SOT_LOCK_NOW=$((t + 10#${i:-0} * 1000000 + 10#${f:0:6}))
+        return 0
+    fi
+    echo "ERROR: registry lock $_SOT_REG_LOCK is held, and there is no clock to wait by: $what" >&2
+    return 1
+}
+
+# _sot_lock_over DEADLINE — 0 when the wait ends, its FAILED line said: the
+# deadline has passed, or there is no clock. 1 = time is left, and
+# _SOT_LOCK_NAP is a sleep of at most 50 ms that ends by the deadline.
+_sot_lock_over() {
+    local r
+    _sot_lock_now 0 || return 0
+    r=$((($1 - _SOT_LOCK_NOW) / 1000))
+    if [ "$r" -le 0 ]; then
+        _sot_lock_fail_text >&2
+        return 0
+    fi
+    [ "$r" -lt 50 ] || r=50
+    printf -v _SOT_LOCK_NAP '0.%03d' "$r"
+    return 1
+}
 
 # _sot_lock_self_id — set _SOT_LOCK_ID to THIS process's holder record, and
 # _SOT_LOCK_SELF to `name:machine:boot:pidns` where this shell can prove a
@@ -623,7 +679,9 @@ _sot_lock_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", (time + $ARGV[0]) * 
 # waiter on this machine would reclaim a live holder (review S5). bash 3.2
 # has no BASHPID, so there the recorded pid is `$$`, which /proc/self then
 # contradicts: nothing is proved from that record, and only the FAILED text is
-# affected.
+# affected while no script runs two with_lock subshells at once: sibling
+# subshells share `$$`, so they would share one ID and one temp file, and the
+# take's `-ef` test would read a sibling's link as its own. No caller does.
 _sot_lock_self_id() {
     local name machine=- boot=- pidns=- pid="${BASHPID:-$$}" start=- self_pid="" ns=""
     name="$(sot_host 2>/dev/null)" || name=""
@@ -663,7 +721,7 @@ _sot_lock_start() {
 # names map ':' to '.', because Windows reads a ':' in a name as a stream
 # (review B2); the record itself keeps its colons.
 _sot_lock_take() {
-    local tmp="$_SOT_REG_LOCK.tmp.${_SOT_LOCK_ID//:/.}" err
+    local tmp="$_SOT_REG_LOCK.tmp.${_SOT_LOCK_ID//:/.}" err taken=""
     # An earlier temp is removed before this one is written: one a take could
     # not remove may still be a link to that take's marker.
     if [ -e "$tmp" ] && ! rm -f "${tmp:?}" 2>/dev/null; then
@@ -674,24 +732,21 @@ _sot_lock_take() {
         _SOT_LOCK_WHY="cannot write $tmp"
         return 2
     fi
-    if err="$(LC_ALL=C link "$tmp" "$1" 2>&1)"; then
-        rm -f "${tmp:?}"
-        return 0
-    fi
     # A retransmitted LINK on NFSv3 answers "exists" for this call's own
     # link, so whether TARGET is now my temp file, both opened first so their
     # attributes are fresh, decides (review S4); `-ef` is a builtin, and BSD
     # stat has no `-c %h`.
-    if { : <"$tmp" && : <"$1"; } 2>/dev/null && [ "$tmp" -ef "$1" ]; then
-        rm -f "${tmp:?}"
-        return 0
+    if err="$(LC_ALL=C link "$tmp" "$1" 2>&1)" \
+        || { { : <"$tmp" && : <"$1"; } 2>/dev/null && [ "$tmp" -ef "$1" ]; }; then
+        taken=1
     fi
     rm -f "${tmp:?}"
+    [ -z "$taken" ] || return 0
     # Held is the link's own EEXIST, never "the target exists now": a holder
     # can release between the two, which would read as an error.
     case "$err" in *"File exists"*) return 1 ;; esac
     err="${err##*: }"
-    _SOT_LOCK_WHY="hard links unsupported on ${1%/*}: ${err:-link failed}"
+    _SOT_LOCK_WHY="cannot hard-link in ${1%/*}: ${err:-link failed}"
     return 2
 }
 

@@ -52,8 +52,11 @@ pub fn acquire(lock: &Path, bound: Duration) -> Result<Held, String> {
     acquire_with(lock, bound, SETTLE)
 }
 
-/// `bound` is a deadline over the wait for the turn and the lock together:
-/// there is always one try, and no try starts after it.
+/// `bound` is a deadline over the wait for the turn and the lock together.
+/// Once it has the turn there is always one try; after the first failed take
+/// the deadline is checked after every failed take and after every sleep, so
+/// a failed retake fails at once, no reclaim chains past it, and no try
+/// starts after it.
 fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, String> {
     let deadline = Instant::now() + bound;
     let turn = loop {
@@ -73,24 +76,39 @@ fn acquire_with(lock: &Path, bound: Duration, settle: Duration) -> Result<Held, 
     };
     let me = Me::now();
     let mut last = Blocked { holder: None, who: None, why: "it was released just now".into() };
+    let (mut first, mut retook) = (true, false);
     loop {
         match take(lock, lock, &me.id) {
             Ok(true) => return Ok(Held { path: lock.to_path_buf(), _turn: turn }),
             Ok(false) => {}
             Err(e) => return Err(format!("registry lock {} cannot be taken: {e}", lock.display())),
         }
+        // A failed retake: the FAILED line names whoever took it.
+        if std::mem::take(&mut retook) {
+            last.holder = fresh(lock, me.mine.is_some()).ok();
+        }
+        if !first && Instant::now() >= deadline {
+            return Err(last.fail_text(lock));
+        }
+        first = false;
         match step(lock, &me, settle) {
-            Ok(()) => continue,
+            Ok(()) => {
+                last = Blocked { holder: None, who: None, why: RETAKEN.into() };
+                retook = true;
+                continue;
+            }
             Err(Some(b)) => last = b,
             Err(None) => {}
         }
-        let now = Instant::now();
-        if now >= deadline {
+        std::thread::sleep(POLL.min(deadline.saturating_duration_since(Instant::now())));
+        if Instant::now() >= deadline {
             return Err(last.fail_text(lock));
         }
-        std::thread::sleep(POLL.min(deadline - now));
     }
 }
+
+/// Why a retake after a reclaim removed the lock failed.
+const RETAKEN: &str = "another process took it as soon as a dead holder's lock was removed";
 
 /// This process's record, and what it proves with: `name:machine:boot:pidns`
 /// where it can prove a death (Linux, with a `/proc` that is its own).
@@ -187,7 +205,7 @@ fn take(lock: &Path, target: &Path, id: &str) -> Result<bool, String> {
     match linked {
         _ if taken => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(format!("hard links unsupported on {}: {e}", target.parent().unwrap_or(target).display())),
+        Err(e) => Err(format!("cannot hard-link in {}: {e}", target.parent().unwrap_or(target).display())),
         Ok(()) => unreachable!("a made link is taken"),
     }
 }
@@ -361,7 +379,16 @@ fn step(lock: &Path, me: &Me, settle: Duration) -> Result<(), Option<Blocked>> {
         if chain.len() > 1 && x == me.id {
             break;
         }
-        let (verdict, why) = judge(&x, me);
+        // The lock itself naming this process, seen by the thread holding the
+        // turn, is one a thread of it left: its release's unlink failed, or
+        // its own link went unconfirmed. `Held` removes the file before it
+        // gives up the turn, so no live thread of it is inside; it goes
+        // through the marker like any dead holder (review SF1).
+        let (verdict, why) = if x == me.id {
+            (Verdict::Dead, "it is this daemon's own, left by one of its threads")
+        } else {
+            judge(&x, me)
+        };
         if !matches!(verdict, Verdict::Dead) {
             let why = if x == d {
                 why.to_string()
@@ -615,6 +642,24 @@ mod tests {
             e.as_ref().unwrap().file_name().to_string_lossy().starts_with(".registry.lock.reclaim.")
         });
         assert_eq!(markers.count(), 1, "the one marker was adopted, not passed");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_lock_naming_this_daemon_is_reclaimed_by_its_next_writer() {
+        let _env = env_lock();
+        let home = scratch("self");
+        let lock = home.join(".registry.lock");
+        let me = format!("{}\n", Me::now().id);
+        fs::write(&lock, &me).unwrap();
+        let held = acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50));
+        assert!(held.is_ok(), "a lock a thread of this daemon left does not wedge it: {:?}", held.err());
+        drop(held);
+        assert!(!lock.exists(), "released");
+        let marker = PathBuf::from(format!("{}.reclaim.{}", lock.display(), me.trim().replace(':', ".")));
+        assert_eq!(fs::read_to_string(&marker).unwrap(), me, "through its own marker");
+        fs::write(&lock, &me).unwrap();
+        assert!(acquire_with(&lock, Duration::from_secs(2), Duration::from_millis(50)).is_ok(), "and again, past the kept marker");
         let _ = fs::remove_dir_all(&home);
     }
 

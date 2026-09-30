@@ -28,10 +28,16 @@
 #   9 the clear command removes an unprovable holder's lock through its
 #     marker, refuses a holder this box proves alive, refuses a marker held by
 #     a reclaimer it cannot prove dead (a frozen one "on another machine")
-#     leaving lock and marker as they were, and says "free", exit 0, for no lock;
+#     leaving lock and marker as they were, tells a person to remove the lock
+#     by hand only when that reclaimer's record has no proof fields, and says
+#     "free", exit 0, for no lock;
 #  10 the bound is time: a touch with 0.5 s tries against a live holder ends
 #     within its 1 s deadline plus one try;
-#  11 a home without hard links FAILs naming the cause and leaves nothing.
+#  11 a home without hard links FAILs naming the cause and leaves nothing;
+#  12 a zero wait whose retake after a reclaim fails makes one step and that
+#     retake, and FAILs at once: nothing chains (review SF2);
+#  13 the clock is EPOCHREALTIME's digits under a comma decimal, and an unset
+#     or non-numeric one is FAILED naming the clock, never the holder.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
@@ -70,6 +76,7 @@ check() {  # run in this shell, not a subshell, so PIDS reaches the EXIT trap
     fi
 }
 contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
+hasnt_by_hand() { ! contains "$1" "by hand" || { echo "a provable record told to remove by hand: $1"; return 1; }; }
 lib() { bash -c ". '$LIB'; $1"; }
 field() { cut -d: -f"$2" <<<"$1"; }
 marker() { printf '%s.reclaim.%s' "$P" "${1//:/.}"; }
@@ -282,15 +289,21 @@ t9() {
     reset
     far='elsewhere:ffffffffffffffffffffffffffffffff:00000000-0000-0000-0000-000000000000:1:4242:1'
     printf '%s\n' "$far" > "$P"
-    record_then STOP; r="$(cat "$WORK/r")"
-    r="elsewhere:ffffffffffffffffffffffffffffffff:00000000-0000-0000-0000-000000000000:1:$(field "$r" 5):$(field "$r" 6)"
+    r='elsewhere:ffffffffffffffffffffffffffffffff:00000000-0000-0000-0000-000000000000:1:4343:1'
     printf '%s\n' "$r" > "$(marker "$far")"
     out="$(SOT_COMM_TEST_LOCK_SETTLE=0.05 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)"; local rc=$?
-    kill -CONT "$R"; kill -9 "$R"; wait "$R" 2>/dev/null
     [ "$rc" != 0 ] || { echo "passed a reclaimer it cannot prove dead: $out"; return 1; }
     [ "$(cat "$P")" = "$far" ] && [ "$(cat "$(marker "$far")")" = "$r" ] && [ ! -e "$(marker "$r")" ] \
         || { echo "the lock or its marker changed: $out"; return 1; }
-    contains "$out" "its reclaim by elsewhere pid $(field "$r" 5) did not finish: it is on another machine" || { echo "$out"; return 1; }
+    contains "$out" "its reclaim by elsewhere pid 4343 did not finish: it is on another machine" || { echo "$out"; return 1; }
+    hasnt_by_hand "$out" || return 1
+    # A reclaimer with no proof fields (a clear killed on macOS or git-bash):
+    # no box can prove it dead, so the refusal says to remove the lock by hand.
+    reset
+    printf '%s\n' "$far" > "$P"
+    printf '%s\n' 'mac:-:-:-:4343:-' > "$(marker "$far")"
+    out="$(SOT_COMM_TEST_LOCK_SETTLE=0.05 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" && { echo "passed a proof-less reclaimer"; return 1; }
+    contains "$out" "remove the lock by hand" && [ "$(cat "$P")" = "$far" ] || { echo "$out"; return 1; }
     reset
     out="$(bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" || { echo "no lock, rc=$?: $out"; return 1; }
     contains "$out" "is free" || { echo "$out"; return 1; }
@@ -318,11 +331,60 @@ exit 1
 LINK
     chmod +x "$WORK/nolink/link"
     err="$(PATH="$WORK/nolink:$PATH" lib 'with_lock true' 2>&1)" && { echo "took a lock with no hard links"; return 1; }
-    contains "$err" "registry lock $P cannot be taken: hard links unsupported on $SOT_COMM_HOME: Operation not permitted" \
+    contains "$err" "registry lock $P cannot be taken: cannot hard-link in $SOT_COMM_HOME: Operation not permitted" \
         || { echo "$err"; return 1; }
     [ ! -e "$P" ] && [ -z "$(find "$SOT_COMM_HOME" -maxdepth 1 -name '.registry.lock.tmp.*')" ] || { echo "a lock or temp was left"; return 1; }
 }
 check "11: a home without hard links FAILs naming the cause and leaves nothing" t11
+
+# The step and take, counted: after the step removes the dead holder's lock,
+# another dead holder takes it before the retake (review SF2).
+cat > "$WORK/count.sh" <<'COUNT'
+. "$LIB"
+eval "orig_step() $(declare -f _sot_lock_step | tail -n +2)"
+eval "orig_take() $(declare -f _sot_lock_take | tail -n +2)"
+_sot_lock_step() { echo step >> "$WORK/count"; orig_step "$@" || return; printf '%s\n' "$D2" > "$P"; }
+_sot_lock_take() { [ "$1" != "$P" ] || echo take >> "$WORK/count"; orig_take "$@"; }
+SOT_LOCK_WAIT_SECS=0 with_lock true
+COUNT
+t12() {
+    reset; local d2 out t0 ms
+    record_then KILL; d2="$(cat "$WORK/r")"
+    dead_holder >/dev/null; rm -f "${WORK:?}/count"
+    t0=$(date +%s%N)
+    out="$(LIB="$LIB" WORK="$WORK" P="$P" D2="$d2" bash "$WORK/count.sh" 2>&1)" && { echo "took the lock: $out"; return 1; }
+    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+    [ "$(grep -c step "$WORK/count")" = 1 ] && [ "$(grep -c take "$WORK/count")" = 2 ] \
+        || { echo "not one step and one retake: $(tr '\n' ' ' < "$WORK/count")"; return 1; }
+    [ "$(cat "$P")" = "$d2" ] || { echo "the second dead holder's lock was reclaimed"; return 1; }
+    [ "$ms" -lt 1000 ] || { echo "a zero wait took ${ms}ms"; return 1; }
+    contains "$out" "is held by $(field "$d2" 1) pid $(field "$d2" 5) start $(field "$d2" 6) (" \
+        && contains "$out" "another process took it as soon as a dead holder's lock was removed" || { echo "$out"; return 1; }
+}
+check "12: a zero wait against a chain of dead holders makes one step and its retake, and fails at once" t12
+
+# The clock: bash 5's EPOCHREALTIME, digits only in any locale (review SF3).
+t13() {
+    reset; local out loc
+    out="$(lib 'unset EPOCHREALTIME; EPOCHREALTIME="1727712345,123456"; _sot_lock_now 0.5 && echo "$_SOT_LOCK_NOW"')"
+    [ "$out" = 1727712345623456 ] || { echo "comma stub: $out"; return 1; }
+    loc="$(locale -a 2>/dev/null | grep -m1 -iE '^(de_DE|fr_FR|nl_NL|ru_RU)\.utf-?8$')"
+    if [ -n "$loc" ]; then
+        out="$(LC_ALL="$loc" lib 'case "$EPOCHREALTIME" in *,*) ;; *) echo "no comma in $EPOCHREALTIME"; exit 1 ;; esac; _sot_lock_now 0 && echo "$_SOT_LOCK_NOW"')"
+        [[ "$out" =~ ^[0-9]{16}$ ]] || { echo "$loc: $out"; return 1; }
+    else
+        echo "  no comma-decimal locale on this box: the stub alone"
+    fi
+    live_holder || return 1
+    for v in unset '' abc; do
+        if [ "$v" = unset ]; then out="$(lib 'unset EPOCHREALTIME; with_lock true' 2>&1)"
+        else out="$(lib "unset EPOCHREALTIME; EPOCHREALTIME='$v'; with_lock true" 2>&1)"; fi && { echo "took a live lock ($v)"; end_holder; return 1; }
+        contains "$out" "is held, and there is no clock to wait by: bash's EPOCHREALTIME is unset or not a number" \
+            && ! contains "$out" "it is running" || { echo "$v: $out"; end_holder; return 1; }
+    done
+    end_holder
+}
+check "13: the clock is EPOCHREALTIME's digits in any locale, and no clock is FAILED naming it" t13
 
 echo "---"
 echo "$PASS passed, $FAIL failed"

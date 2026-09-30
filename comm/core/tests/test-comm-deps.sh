@@ -159,5 +159,24 @@ check "retired bridge, untethered: the child is a sleep" "$(ps -o comm= -p "${CH
 kill "$LOOPB" 2>/dev/null; [ -z "$CHILDB" ] || kill "$CHILDB" 2>/dev/null
 wait "$LOOPB" 2>/dev/null
 
+# Before bash 5 the registry lock's clock is perl's Time::HiRes, so the mail
+# tools list it there, and the check names the module when perl cannot load
+# it. bash 5 cannot be made to take that branch (BASH_VERSINFO is read-only),
+# so the check itself is tested here, with a perl that has no Time::HiRes.
+REAL_PERL="$(command -v perl)"
+mkdir -p "$WORK/nohires"
+cat > "$WORK/nohires/perl" <<NOHIRES
+#!/bin/sh
+case "\$*" in *Time::HiRes*) echo "Can't locate Time/HiRes.pm in @INC" >&2; exit 2 ;; esac
+exec "$REAL_PERL" "\$@"
+NOHIRES
+chmod +x "$WORK/nohires/perl"
+out="$(PATH="$WORK/nohires:$PATH" bash -c ". '$SCRIPTS_DIR/comm-lib.sh'; sot_require_tools 'read mail' jq Time::HiRes" 2>&1)"; rc=$?
+check "no Time::HiRes: the tool check fails" "$rc" "1"
+check "no Time::HiRes: one line names it" "$out" "sot-comm: cannot read mail: perl's Time::HiRes is missing (install it)"
+out="$(bash -c ". '$SCRIPTS_DIR/comm-lib.sh'; sot_require_tools 'read mail' jq Time::HiRes" 2>&1)"; rc=$?
+check "Time::HiRes present: the tool check passes" "$rc:$out" "0:"
+check "bash 5 on Linux: the mail tools need no Time::HiRes" "$(bash -c ". '$SCRIPTS_DIR/comm-lib.sh'; sot_mail_tools")" "jq flock perl"
+
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

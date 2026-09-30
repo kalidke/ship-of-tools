@@ -89,7 +89,8 @@ REGISTRY="$SOT_COMM_HOME/registry.json"
 # $SOT_COMM_HOME, already exported above.
 source "$SCRIPTS_DIR/comm-lib.sh"
 ensure_home
-# Mirrors comm-lib.sh's LOCKDIR="$COMM_HOME/.registry.lock" exactly — used by
+# The registry lock's path (comm-lib.sh's _SOT_REG_LOCK). A directory there is
+# an older peer's lock, which the file lock never reclaims — used by
 # case_lock_closes_derive_write_gap below to simulate a concurrent claim
 # landing WHILE a derived join is blocked waiting for the lock.
 LOCKDIR="$SOT_COMM_HOME/.registry.lock"
