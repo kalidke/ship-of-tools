@@ -407,7 +407,8 @@ for h in "${HANDLES[@]}"; do
         END{for(i=1;i<=m;i++){lo=st[i]-u; hi=(i<m)?st[i+1]-u:9e18; c=0; for(j=1;j<=n;j++) if(p[j]>=lo && p[j]<hi) c++; if(c<1) print id[i]}}' "$L/pings-norm-$t" "$L/strictsends-$t" | awk 'NR<=3' | tr '\n' ' ')"
     nsp="$(awk -v ss="$sst" '$1>=ss' "$L/pings-norm-$t" | wc -l)"
     # Every strict send's wake latency, one line each (the kept run log is the record; $L goes on a pass): the
-    # first ping in its 5a window less its filing, in ms, skew-normalised (below 0 means within the tolerance).
+    # first ping in its 5a window less the time comm-send.sh returned, in ms, skew-normalised. The send files the
+    # line before it returns, so a ping can land first and the value go below 0.
     { for sn in here peer; do awk -v h="$h" -v s="$(skew_of "e2e-snd-$sn")" '$3==h{print $1 - s, $2 - s, $4}' "$L/strict-e2e-snd-$sn.log"; done; } | sort -n |
         awk -v u="$skew_tol" 'FILENAME==ARGV[1]{p[++n]=$1;next} {st[++m]=$1; fd[m]=$2; id[m]=$3}
             END{for(i=1;i<=m;i++){lo=st[i]-u; hi=(i<m)?st[i+1]-u:9e18; pg="-"; for(j=1;j<=n;j++) if(p[j]>=lo && p[j]<hi){pg=p[j]; break}
