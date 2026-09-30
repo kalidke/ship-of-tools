@@ -217,7 +217,20 @@ _sot_sotd_bin() {
             case "$pid" in ''|*[!0-9]*) continue ;; esac
             [ -r "/proc/$pid/exe" ] || continue
             candidate="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-            [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+            [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+            # basename gate (round-2 lane fix): unlike `sot_daemon_endpoint`'s
+            # loop below, this candidate is never executed to prove itself
+            # (there is no socket-serving process to query yet -- that's the
+            # whole point of this ladder rung), so "readable and executable"
+            # alone matches ANY process pgrep's substring search turned up --
+            # a `journalctl -fu sotd` or a `tail -f .../sotd.log` with a lower
+            # pid than the real daemon's own. `continue` to the next pid
+            # instead of returning the first plausible one.
+            case "${candidate##*/}" in
+                sotd|sotd.exe) ;;
+                *) continue ;;
+            esac
+            printf '%s\n' "$candidate"; return 0
         done < <(pgrep -af 'sotd' 2>/dev/null || true)
     fi
     return 1
@@ -285,8 +298,8 @@ _sot_ssh_sharing_ok() {
 }
 
 # sot_ssh_bridge TARGET [HOST] [TIMEOUT_SECS] — stdin → that daemon; its
-# replies → stdout. The one child every `ssh:` scheme switch spawns (six
-# call sites, C10): `ssh <target> '<PATH prelude>; sotd stdio-bridge
+# replies → stdout. The one child every `ssh:` scheme switch spawns
+# (C10): `ssh <target> '<PATH prelude>; sotd stdio-bridge
 # [--host <host>]'`, the option set and prelude literally the ones the
 # hub's own relay unit runs (`rust/protocol/src/topology.rs`) and C3
 # spawns identically from Rust (`rust/protocol/src/ssh_bridge.rs`) -- kept
@@ -295,8 +308,7 @@ _sot_ssh_sharing_ok() {
 # helper, not an optional extra: without it "one authentication per host"
 # (isolation-plan.md §10) is false as specified, since each send would be
 # a full login on every platform rather than only on Windows -- applied
-# through this one place so it is written once, not at each of the six
-# call sites.
+# through this one place so it is written once, not at each call site.
 #
 # THE BOUND LIVES HERE, not at the call site. `timeout N sot_ssh_bridge …`
 # looked right and never ran: `timeout` is coreutils and `execvp`s its

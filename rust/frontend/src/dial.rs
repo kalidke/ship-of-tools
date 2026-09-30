@@ -256,7 +256,7 @@ mod tests {
         // the plain-host-name grammar `sotd topology plan` emits hosts in.
         assert!(parse_dial_arg("Alpha=ssh:hub").is_err());
         assert!(parse_dial_arg("-host-2=ssh:hub").is_err());
-        assert!(parse_dial_arg("de scent=ssh:hub").is_err());
+        assert!(parse_dial_arg("al pha=ssh:hub").is_err());
         assert!(parse_dial_arg("=ssh:hub").is_err());
     }
 

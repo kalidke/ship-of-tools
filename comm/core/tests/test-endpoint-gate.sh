@@ -437,16 +437,34 @@ EOF
     while [ ! -r "/proc/$pid/exe" ] && [ "$tries" -lt 50 ]; do sleep 0.05; tries=$((tries + 1)); done
     [ -r "/proc/$pid/exe" ] || { echo "  stub never came up (no /proc/$pid/exe)"; return 1; }
 
-    # A fake `pgrep` naming ONLY this stub's own pid -- this box (the one
-    # actually running this test) is not hermetic against a REAL `sotd`
-    # elsewhere in its own process table, and the real one's lower pid
-    # would sort first and win the loop before ever reaching ours. Real
-    # `pgrep` is still what production runs; this is the same seam
-    # test-join-disambiguation.sh already fakes `pgrep` through.
+    # A DECOY first, then the real stub: round-2 item 2's own regression
+    # guard. `_sot_sotd_bin`'s /proc loop used to take the FIRST match
+    # `pgrep -af 'sotd'` turned up and return it merely because
+    # `/proc/<pid>/exe` was readable and executable -- true of ANY live
+    # process, never proof it IS the daemon. A `sleep` sitting in the
+    # background matches that pgrep pattern just as well as a real
+    # `journalctl -fu sotd` or `tail -f .../sotd.log` would (both have
+    # "sotd" somewhere on their command line), and its own /proc/pid/exe
+    # resolves to the real `sleep` binary -- executable, and WRONG. The
+    # fixed loop must skip it by basename and keep going.
+    "sleep" 300 &
+    local decoy_pid=$!
+    local decoy_tries=0
+    while [ ! -r "/proc/$decoy_pid/exe" ] && [ "$decoy_tries" -lt 50 ]; do sleep 0.05; decoy_tries=$((decoy_tries + 1)); done
+    [ -r "/proc/$decoy_pid/exe" ] || { echo "  decoy never came up (no /proc/$decoy_pid/exe)"; kill "$decoy_pid" 2>/dev/null; wait "$decoy_pid" 2>/dev/null; return 2; }
+
+    # A fake `pgrep` naming the decoy FIRST, then this stub's own pid --
+    # this box (the one actually running this test) is not hermetic
+    # against a REAL `sotd` elsewhere in its own process table, and the
+    # real one's lower pid would sort first and win the loop before ever
+    # reaching ours. Real `pgrep` is still what production runs; this is
+    # the same seam test-join-disambiguation.sh already fakes `pgrep`
+    # through.
     local fakebin
     fakebin="$(mktemp -d "$WORK/proc-stub-fakebin-XXXXXX")"
-    printf '#!/bin/sh\necho "%s %s"\n' "$pid" "$dir/sotd" > "$fakebin/pgrep"
+    printf '#!/bin/sh\necho "%s sleep 300"\necho "%s %s"\n' "$decoy_pid" "$pid" "$dir/sotd" > "$fakebin/pgrep"
     chmod +x "$fakebin/pgrep"
+    trap 'kill '"$decoy_pid"' 2>/dev/null; wait '"$decoy_pid"' 2>/dev/null; kill '"$pid"' 2>/dev/null; wait '"$pid"' 2>/dev/null' RETURN
 
     local fakehome out
     fakehome="$(mktemp -d "$WORK/proc-stub-home-XXXXXX")"

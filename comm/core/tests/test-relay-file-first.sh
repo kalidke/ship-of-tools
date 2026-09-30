@@ -409,11 +409,27 @@ case_an_empty_roster_is_no_such_handle() {
 # `timeout`'s own execvp): the real call site, comm-relay.sh's send_frame
 # via nc_send. A stub `ssh` on PATH stands in for the far end -- never a
 # real ssh, never a real daemon.
+#
+# ROUND 2's OWN BLOCKER, and why this stub now writes to stderr before
+# doing anything else: the fix above redirected the child's stderr
+# unconditionally into the same file `send_frame` reads as "a real failure
+# happened", so anything a real `ssh` writes there on a CLEAN exit --
+# the `Warning: Permanently added ... to the list of known hosts.` line on
+# a first connection, a server `Banner`, any remote shell noise -- turned
+# a delivered frame into a reported FAILED with a nonzero exit. The stub
+# below is the noisy-success half of that pair: it writes exactly that
+# kind of line, then answers the protocol normally and exits 0. Held
+# constant against `case_ssh_endpoint_bridge_failure_says_failed_with_reason`
+# below (which already writes to stderr before it dies): the ONE thing
+# that differs between the two stubs is the exit status, which is what
+# makes this pair prove the verdict is decided on THAT, not on whether
+# stderr is empty.
 case_ssh_endpoint_reaches_a_stub_daemon_and_files() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local sshdir; sshdir="$(mktemp -d "$WORK/ssh-ok-XXXXXX")"
     cat > "$sshdir/ssh" <<EOF
 #!/bin/sh
+echo "Warning: Permanently added 'testtarget' (ED25519) to the list of known hosts." >&2
 while IFS= read -r line; do
     case "\$line" in
         *'"op":"hello"'*)
@@ -471,7 +487,7 @@ check "a recipient stopped on an open question is annotated 'needs its own user'
 check "a stale heartbeat overrides a fresh 'working' stamp" case_annotation_stale_heartbeat_overrides_working
 check "a row missing the annotation fields entirely sends fine with no annotation" case_annotation_absent_for_a_row_missing_the_fields
 check "a malformed row (wrong types, bad timestamps) sends fine with no annotation" case_annotation_absent_for_a_malformed_row
-check "an ssh: endpoint reaches a stub daemon through the real bridge and files" case_ssh_endpoint_reaches_a_stub_daemon_and_files
+check "a noisy but clean ssh: exit still files -- stderr output alone is not a failure" case_ssh_endpoint_reaches_a_stub_daemon_and_files
 check "a dying ssh child says FAILED and names the target, its exit status and its stderr" case_ssh_endpoint_bridge_failure_says_failed_with_reason
 
 echo "---"

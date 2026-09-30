@@ -132,10 +132,19 @@ nc_send() {
         # ever ran (it did, the first time this was written -- a dying
         # bridge's raw, unprefixed stderr reached send_frame instead of
         # the "ssh to TARGET exited N: ..." reason).
+        # The child's stderr lands in `$raw_file`, a path DISTINCT from
+        # `_SOT_BRIDGE_FAIL_FILE`: send_frame's `-s` check reads the latter
+        # as "a real failure happened", so it must stay empty on a clean
+        # exit -- a successful ssh that merely wrote a known-hosts warning
+        # or a login banner to stderr is a delivered frame, not a FAILED
+        # one (round-2 blocker: raw stderr used to land straight in the
+        # file the success path also checked).
         local rc=0
-        { sot_hello_frame "$HELLO_ROLE"; cat; } | sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST" 5 2>"${_SOT_BRIDGE_FAIL_FILE:-/dev/null}" || rc=${PIPESTATUS[1]}
+        local raw_file=""
+        [ -n "${_SOT_BRIDGE_FAIL_FILE:-}" ] && raw_file="${_SOT_BRIDGE_FAIL_FILE}.raw"
+        { sot_hello_frame "$HELLO_ROLE"; cat; } | sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST" 5 2>"${raw_file:-/dev/null}" || rc=${PIPESTATUS[1]}
         if [ "$rc" -ne 0 ] && [ -n "${_SOT_BRIDGE_FAIL_FILE:-}" ]; then
-            local detail; detail="$(tr '\n' ' ' < "$_SOT_BRIDGE_FAIL_FILE" 2>/dev/null)"
+            local detail; detail="$(tr '\n' ' ' < "$raw_file" 2>/dev/null)"
             if [ "$rc" -eq 124 ]; then
                 printf 'timed out after 5s reaching %s' "$EP_SSH_TARGET" > "$_SOT_BRIDGE_FAIL_FILE"
             else
@@ -144,6 +153,7 @@ nc_send() {
             [ -n "$detail" ] && printf ': %s' "$detail" >> "$_SOT_BRIDGE_FAIL_FILE"
             printf '\n' >> "$_SOT_BRIDGE_FAIL_FILE"
         fi
+        [ -n "$raw_file" ] && rm -f "$raw_file"
         return "$rc"
     fi
     if [ "$HAVE_NC" = 1 ] && [ -n "$EP_UNIX" ]; then
