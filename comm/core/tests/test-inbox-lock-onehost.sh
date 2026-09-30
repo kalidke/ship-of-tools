@@ -40,9 +40,14 @@
 # Needs a real NFSv3 host on this home, so it runs in no workflow (like
 # test-inbox-lock-twohost.sh). Requires cargo and jq here.
 #
+# It keeps the real HOME by design: its scratch home must live on the shared
+# mount every host sees. lib-home-guard.sh refuses to start (FATAL, exit 2)
+# when that scratch home is, or lies under, the live ~/.sot-comm.
+#
 # Usage: comm/core/tests/test-inbox-lock-onehost.sh --host HOST
 # Exit: 0 all pass, 1 any fail, 2 usage.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 HOST=""
 while [ $# -gt 0 ]; do
@@ -59,6 +64,7 @@ RUST_DIR="$(cd "$SCRIPT_DIR/../../../rust" && pwd)"
 
 DIR="$(mktemp -d "$HOME/.sot-inbox-lock-1h-XXXXXX")" || { echo "FATAL: mktemp under \$HOME failed" >&2; exit 1; }
 LOCAL="$(mktemp -d "${TMPDIR:-/tmp}/sot-inbox-lock-1h-XXXXXX")" || exit 1
+guard_refuse_live_home "$DIR"
 trap 'rhost "pkill -9 -f $(printf %q "$DIR")" 2>/dev/null; rm -rf "${DIR:?}" "${LOCAL:?}"' EXIT
 mkdir -p "$DIR/lib" "$DIR/bin" "$DIR/inbox"
 cp "$SCRIPTS_DIR/comm-lib.sh" "$DIR/lib/comm-lib.sh"

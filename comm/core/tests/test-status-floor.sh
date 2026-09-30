@@ -12,6 +12,7 @@
 # Usage: comm/core/tests/test-status-floor.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
@@ -23,6 +24,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-status-test-XXXXXX")"
 trap 'rm -rf "${WORK:?}"' EXIT
 
 export SOT_COMM_HOME="$WORK/home"
+guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 export SOT_COMM_SELF_FILE="$WORK/self.txt"
 export SOT_COMM_TEST_HOST="testhost"
 unset SOT_COMM_NAME COMM_STATUS_ORIGIN CLAUDE_CODE_SESSION_ID

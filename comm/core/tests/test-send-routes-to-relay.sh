@@ -25,6 +25,7 @@
 # Usage: comm/core/tests/test-send-routes-to-relay.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
@@ -32,6 +33,7 @@ SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-send-routes-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
 export SOT_COMM_HOME="$WORK/home"
+guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 # 0031 B1: the record a daemon writes at startup. Without it no script
 # appends locally, and every filing here would go to a daemon instead.
 mkdir -p "$SOT_COMM_HOME/inbox"

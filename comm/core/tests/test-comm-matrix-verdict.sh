@@ -24,11 +24,13 @@
 # Usage: comm/core/tests/test-comm-matrix-verdict.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-matrix-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
 export SOT_COMM_HOME="$WORK/home"
+guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 export SOT_COMM_SELF_FILE="$WORK/self.txt"
 mkdir -p "$SOT_COMM_HOME/inbox"
 trap 'rm -rf "${WORK:?}"' EXIT

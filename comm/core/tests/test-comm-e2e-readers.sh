@@ -32,9 +32,14 @@
 # Needs real boxes, so it runs in no workflow. Nothing here touches
 # ~/.sot-comm or a live daemon; the scratch home is removed on exit.
 #
+# It keeps the real HOME by design: its scratch home must live on the shared
+# mount every host sees. lib-home-guard.sh refuses to start (FATAL, exit 2)
+# when that scratch home is, or lies under, the live ~/.sot-comm.
+#
 # Usage: comm/core/tests/test-comm-e2e-readers.sh --peer HOST --v3-host HOST
 # Exit: 0 all pass, 1 any fail, 2 usage.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 PEER=""; V3=""
 while [ $# -gt 0 ]; do
@@ -57,6 +62,7 @@ unset SOT_WORKSPACE_ID SOT_COMM_HOOKS SOT_COMM_NAME SOT_COMM_SELF_FILE SOT_COMM_
 D="$(mktemp -d -p "$HOME" .sot-e2e.XXXXXX)" || { echo "FATAL: mktemp under \$HOME failed" >&2; exit 1; }
 E="$D/e2e"; L="$D/log"
 export SOT_COMM_HOME="$D"
+guard_refuse_live_home "$D"
 BG=()
 cleanup() {
     local p t

@@ -46,6 +46,7 @@
 # Usage: comm/core/tests/test-hub-files.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
@@ -53,6 +54,7 @@ SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-hub-files-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
 export SOT_COMM_HOME="$WORK/home"
+guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 mkdir -p "$SOT_COMM_HOME/inbox"
 HOLDERS=()
 trap 'for p in "${HOLDERS[@]}"; do kill -9 "$p" 2>/dev/null; done; rm -rf "${WORK:?}"' EXIT
@@ -1024,6 +1026,35 @@ case_a_nul_a_cr_or_an_empty_last_line_is_shown_once() {
     return 0
 }
 
+# The home guard every suite sources (lib-home-guard.sh), pointed at a temp
+# HOME T and never at the real one, so the live home it records is
+# T/.sot-comm. T/.sot-comm and a path under it are FATAL with exit 2, first
+# while it does not exist (its literal path) and then through a symlink to it
+# (its physical path); so are an inherited SOT_COMM_HOME and an empty name.
+# T/other passes, and sourcing drops the host's comm identity.
+guard_run() {  # T COMM_HOME — the guard's verdict on COMM_HOME under HOME=T
+    GUARD_RC=0
+    GUARD_OUT="$(HOME="$1" SOT_COMM_HOME="$1/inherited" bash -c '. "$1"; guard_refuse_live_home "$2"; echo passed' \
+        _ "$SCRIPT_DIR/lib-home-guard.sh" "$2" 2>&1)" || GUARD_RC=$?
+}
+case_the_home_guard_refuses_a_live_comm_home() {
+    local t="$WORK/guard-home" h
+    mkdir -p "$t/other"
+    for h in "$t/.sot-comm" "$t/.sot-comm/x" MKDIR "$t/.sot-comm" "$t/.sot-comm/x" "$t/link/x" "$t/inherited" ""; do
+        [ "$h" != MKDIR ] || { mkdir -p "$t/.sot-comm"; ln -sfn "$t/.sot-comm" "$t/link"; continue; }
+        guard_run "$t" "$h"
+        [ "$GUARD_RC" -eq 2 ] && contains "$GUARD_OUT" FATAL && ! contains "$GUARD_OUT" passed \
+            || { echo "  '$h' was not refused: rc $GUARD_RC, $GUARD_OUT"; return 1; }
+    done
+    guard_run "$t" "$t/other"
+    [ "$GUARD_RC" -eq 0 ] && [ "$GUARD_OUT" = passed ] || { echo "  '$t/other' was refused: rc $GUARD_RC, $GUARD_OUT"; return 1; }
+    h="$(SOT_COMM_NAME=n SOT_COMM_SELF_FILE=f SOT_WORKSPACE_ID=w HOME="$t" \
+        bash -c '. "$1"; echo "${SOT_COMM_HOME-}${SOT_COMM_NAME-}${SOT_COMM_SELF_FILE-}${SOT_WORKSPACE_ID-}"' _ "$SCRIPT_DIR/lib-home-guard.sh")"
+    [ -z "$h" ] || { echo "  sourcing left the comm identity set: $h"; return 1; }
+    return 0
+}
+
+check "the home guard refuses a live comm home, and only that" case_the_home_guard_refuses_a_live_comm_home
 check "two writers through the lock give 400 whole lines" case_two_writers_give_400_whole_lines
 check "a holder killed with -9 frees the lock at once and the send files" case_a_killed_holder_frees_the_lock_at_once
 check "a frozen holder makes the send wait its bound and report FAILED, never filed" case_a_frozen_holder_makes_the_send_wait_then_fail

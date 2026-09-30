@@ -50,9 +50,14 @@
 # Needs real boxes, so it runs in no workflow: CI has no second host on this
 # home. Requires cargo (the Rust arm is tests/comm_file.rs's ignored cases).
 #
+# It keeps the real HOME by design: its scratch home must live on the shared
+# mount every host sees. lib-home-guard.sh refuses to start (FATAL, exit 2)
+# when that scratch home is, or lies under, the live ~/.sot-comm.
+#
 # Usage: comm/core/tests/test-inbox-lock-twohost.sh --peer HOST --expect local|wire
 # Exit: 0 all pass, 1 any fail, 2 usage.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 PEER=""; EXPECT=""
 while [ $# -gt 0 ]; do
@@ -72,6 +77,7 @@ WAIT=10
 
 DIR="$(mktemp -d "$HOME/.sot-inbox-lock-XXXXXX")" || { echo "FATAL: mktemp under \$HOME failed" >&2; exit 1; }
 LOCAL="$(mktemp -d "${TMPDIR:-/tmp}/sot-inbox-lock-XXXXXX")" || exit 1
+guard_refuse_live_home "$DIR"
 PEER_PIDS=(); LOCAL_PIDS=()
 cleanup() {
     local p

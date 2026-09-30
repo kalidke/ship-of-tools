@@ -31,6 +31,7 @@
 # Usage: comm/core/tests/test-comm-wake-ping.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
@@ -45,6 +46,8 @@ unset SOT_COMM_SELF_FILE
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-wake-ping-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
+export SOT_COMM_HOME="$WORK/home"   # each case names its own; nothing falls back to a live one
+guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 trap '_isolate; rm -rf "${WORK:?}"' EXIT
 
 # EVERY CASE STARTS FROM NOTHING RUNNING FOR THIS HANDLE.

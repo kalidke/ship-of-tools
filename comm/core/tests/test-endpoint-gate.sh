@@ -6,6 +6,7 @@
 # `sotd`/`ssh` binaries on `PATH` and a temp `$SOT_COMM_HOME` — never the
 # real `~/.sot-comm`, a real daemon, or a real network connection.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 
@@ -13,6 +14,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-endpoint-gate-XXXXXX")"
 trap 'rm -rf "${WORK:?}"' EXIT
 
 export SOT_COMM_HOME="$WORK/home"
+guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 # shellcheck source=../scripts/comm-lib.sh
 source "$SCRIPTS_DIR/comm-lib.sh"
 ensure_home

@@ -19,6 +19,7 @@
 # Usage: comm/core/tests/test-spawn-remote-no-local-row.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
@@ -29,6 +30,8 @@ if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
     echo "FATAL: mktemp did not produce a usable work directory (got: '$WORK')" >&2
     exit 1
 fi
+export SOT_COMM_HOME="$WORK/home"   # each spawn names its own; nothing falls back to a live one
+guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 
 # THIS box, for both resolvers: SOT_COMM_TEST_HOST pins comm-context.sh's
 # own HOST (registry `host` field, handle derivation), SOT_SELF_HOST pins
