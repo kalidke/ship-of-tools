@@ -16,7 +16,20 @@
 //
 // Why hand-rolled rather than axum/tower-http: same reasoning as http_serve —
 // the backend has no HTTP stack and the need is narrow (GET a file under a root).
-// Range support is omitted: these assets are small and browsers don't seek them.
+// Range, content types and the empty-file case are shared with `http_serve`
+// (`serve_file`), so a linked movie seeks the way a `video.open` one does.
+//
+// A `Site` splits two roots that used to be one. CONTENT root S is where
+// ordinary files are served from (`find_site_root`, unchanged). URL root is
+// where the URL path space maps: the repo top when the page is opened from the
+// shared prefix server, git tracks a symlink under it and this machine declares
+// a data root, else S. A page's `../../data/x.mp4` can only reach the link
+// folder when the URL space starts above S. Widening the URL space does not
+// widen what is served: outside S, only files inside the target of a link git
+// tracks, under a data root the machine's own `data-roots` file declares, are
+// served (see `resolve_and_open` for the refusals). No file whose resolved path
+// lies inside a `.git` directory below the folder it is served from (the site
+// or the data root) is served.
 //
 // Scope/security: binds 127.0.0.1 only (then SSH-forwarded, loopback on both
 // ends), but neither port has auth of its own — any local user on a shared
@@ -35,15 +48,21 @@
 // cookie; anything else is a 403, not a silent serve.
 
 use std::collections::BTreeMap;
+#[cfg(unix)]
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
+#[cfg(unix)]
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
+#[cfg(test)]
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
-const READ_CHUNK: usize = 64 * 1024;
+use crate::http_serve::{content_type, serve_file, write_simple};
 
 /// Per-connection site roots, keyed by an unguessable per-open NONCE — not
 /// the connection serial. (Security review: the old scheme put the raw,
@@ -57,7 +76,7 @@ const READ_CHUNK: usize = 64 * 1024;
 /// the stale nonce's entry) and `ClientGuard::drop` can reap the right one on
 /// disconnect. Empty until the first open. `RwLock::new` and `BTreeMap::new`
 /// are both const, so this initializes without lazy init.
-static SITE_ROOTS: RwLock<BTreeMap<String, PathBuf>> = RwLock::new(BTreeMap::new());
+static SITE_ROOTS: RwLock<BTreeMap<String, Arc<Site>>> = RwLock::new(BTreeMap::new());
 static SERIAL_NONCE: RwLock<BTreeMap<u64, String>> = RwLock::new(BTreeMap::new());
 
 /// ADR 0029 Option B — the per-port pool for ROOT-RELATIVE sites. A site whose
@@ -77,7 +96,7 @@ static SERIAL_NONCE: RwLock<BTreeMap<u64, String>> = RwLock::new(BTreeMap::new()
 /// (`site_port()+1 ..= site_port()+POOL_SIZE`) so the launchers can
 /// SSH-forward it statically.
 pub const POOL_SIZE: u16 = 4;
-static POOL: RwLock<BTreeMap<u16, (u64, PathBuf, String)>> = RwLock::new(BTreeMap::new());
+static POOL: RwLock<BTreeMap<u16, (u64, Arc<Site>, String)>> = RwLock::new(BTreeMap::new());
 
 /// The pool ports THIS daemon successfully bound at `spawn_pool` — the ports
 /// it actually serves. `assign_pool_port` picks only from here (not the full
@@ -107,7 +126,8 @@ pub fn pool_ports() -> std::ops::RangeInclusive<u16> {
 /// every port is owned by another live connection (the caller surfaces
 /// "slots busy"; the two cases share one message since the RNG failure should
 /// never actually happen).
-pub fn assign_pool_port(serial: u64, root: PathBuf) -> Option<(u16, String)> {
+pub fn assign_pool_port(serial: u64, site: Site) -> Option<(u16, String)> {
+    let root = Arc::new(site);
     let secret = random_token()?;
     let mut g = POOL.write().unwrap_or_else(|p| p.into_inner());
     if let Some(port) = g
@@ -164,7 +184,7 @@ pub fn pool_assigned_ports() -> Vec<u16> {
 
 /// Root AND secret for a pool port — what `handle_conn`'s `ServeMode::Pool`
 /// arm needs to authenticate a request (security review; see `assign_pool_port`).
-fn pool_entry_for(port: u16) -> Option<(PathBuf, String)> {
+fn pool_entry_for(port: u16) -> Option<(Arc<Site>, String)> {
     POOL.read()
         .unwrap_or_else(|p| p.into_inner())
         .get(&port)
@@ -204,7 +224,7 @@ pub fn bound_site_port() -> Option<u16> {
 /// `None` if the CSPRNG couldn't be read — fails closed rather than mint a
 /// guessable nonce (security review). Ignores lock poisoning (a panicked
 /// reader can't corrupt the map).
-pub fn set_root(serial: u64, root: PathBuf) -> Option<String> {
+pub fn set_root(serial: u64, site: Site) -> Option<String> {
     let nonce = random_token()?;
     let mut sn = SERIAL_NONCE.write().unwrap_or_else(|p| p.into_inner());
     let old_nonce = sn.insert(serial, nonce.clone());
@@ -213,7 +233,7 @@ pub fn set_root(serial: u64, root: PathBuf) -> Option<String> {
     if let Some(old) = old_nonce {
         g.remove(&old);
     }
-    g.insert(nonce.clone(), root);
+    g.insert(nonce.clone(), Arc::new(site));
     Some(nonce)
 }
 
@@ -231,7 +251,7 @@ pub fn remove_root(serial: u64) {
     p.retain(|_, (s, _, _)| *s != serial);
 }
 
-fn root_for(nonce: &str) -> Option<PathBuf> {
+fn root_for(nonce: &str) -> Option<Arc<Site>> {
     SITE_ROOTS
         .read()
         .unwrap_or_else(|p| p.into_inner())
@@ -415,38 +435,6 @@ pub async fn spawn_pool() {
     }
 }
 
-/// Content-Type for a static web asset by extension. Covers what a Documenter /
-/// generic static site ships; falls back to octet-stream.
-fn content_type(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("html") | Some("htm") => "text/html; charset=utf-8",
-        Some("css") => "text/css; charset=utf-8",
-        Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
-        Some("json") | Some("map") => "application/json; charset=utf-8",
-        Some("svg") => "image/svg+xml",
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("ico") => "image/x-icon",
-        Some("woff") => "font/woff",
-        Some("woff2") => "font/woff2",
-        Some("ttf") => "font/ttf",
-        Some("otf") => "font/otf",
-        Some("eot") => "application/vnd.ms-fontobject",
-        Some("wasm") => "application/wasm",
-        Some("pdf") => "application/pdf",
-        Some("txt") => "text/plain; charset=utf-8",
-        Some("xml") => "application/xml; charset=utf-8",
-        _ => "application/octet-stream",
-    }
-}
-
 /// Minimal percent-decode for request-target paths (`%20` etc.). Good enough for
 /// filesystem paths; not a general URL decoder. (Mirrors http_serve's.)
 fn percent_decode(s: &str) -> String {
@@ -478,36 +466,613 @@ fn cookie_value<'a>(cookie_hdr: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-/// Resolve a decoded request path to a real file under `root`, applying
-/// directory-index (`/`, `/foo/`, or a directory → `index.html`) and the
-/// traversal guard (the canonicalized target must stay within the canonicalized
-/// root). Returns `None` for anything that doesn't resolve to a file inside root.
-fn resolve(root: &Path, decoded: &str) -> Option<PathBuf> {
-    let rel = decoded.trim_start_matches('/');
-    let mut candidate = root.to_path_buf();
-    if !rel.is_empty() {
-        candidate.push(rel);
+/// One open site: where ordinary files are served from, where the URL space
+/// maps, and (unix, when this machine declares data roots and the folder is in
+/// a git repo) the state needed to follow tracked links. See the header.
+pub struct Site {
+    /// Canonical S: the only place ordinary files are served from.
+    content_root: PathBuf,
+    /// Canonical root of the URL path space: S, or the repo top when widened.
+    url_root: PathBuf,
+    /// Test-only override of the data-roots file; `None` reads the config dir.
+    roots_file: Option<PathBuf>,
+    /// The canonical data roots, keyed on the data-roots file's stat: an
+    /// unchanged file is never canonicalized again (a stalled share would
+    /// otherwise stall every request). A miss still canonicalizes every root,
+    /// so a dead hard mount stalls that request and the ones queued behind it.
+    #[cfg(unix)]
+    roots_cache: Mutex<Option<(Option<IndexStamp>, std::sync::Arc<DataRoots>)>>,
+    /// Test-only: how many times the file was read and its roots canonicalized.
+    #[cfg(all(unix, test))]
+    roots_reads: std::sync::atomic::AtomicUsize,
+    #[cfg(unix)]
+    git: Option<GitState>,
+}
+
+/// The repo a site sits in, and the tracked-link set built from its index.
+#[cfg(unix)]
+struct GitState {
+    top: PathBuf,
+    index: PathBuf,
+    cache: Mutex<LinkCache>,
+}
+
+#[cfg(unix)]
+#[derive(Default)]
+struct LinkCache {
+    stamp: Option<IndexStamp>,
+    /// Tracked symlinks (git mode 120000), relative to the site's `url_root`.
+    links: BTreeSet<PathBuf>,
+}
+
+/// mtime, size and inode of the repo's index file: any `git add`/`git rm`
+/// rewrites it (by rename), so a changed stamp means the link set is stale.
+#[cfg(unix)]
+type IndexStamp = (std::time::SystemTime, u64, u64);
+
+#[cfg(unix)]
+fn index_stamp(index: &Path) -> Option<IndexStamp> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(index).ok()?;
+    Some((m.modified().ok()?, m.len(), m.ino()))
+}
+
+/// The declared data roots as read from the file, canonical, plus every line
+/// that was skipped and why (named in the R2c/R3 refusal so a person sees why
+/// their root did not count).
+#[cfg(unix)]
+#[derive(Debug, Default, Clone)]
+pub(crate) struct DataRoots {
+    pub(crate) roots: Vec<PathBuf>,
+    pub(crate) skipped: Vec<String>,
+}
+
+/// Read the data-roots file: one absolute directory per line, blank and `#`
+/// lines ignored. A line is skipped (fail closed) when it is relative, does not
+/// canonicalize (not on this host), is not a directory, or is `/` or contains
+/// the canonical `home`: that would make a tracked link to the user's ssh
+/// directory followable. A missing file declares nothing.
+#[cfg(unix)]
+pub(crate) fn read_data_roots(file: &Path, home: Option<&Path>) -> DataRoots {
+    let mut out = DataRoots::default();
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return out;
+    };
+    let home = home.and_then(|h| h.canonicalize().ok());
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let p = Path::new(line);
+        if !p.is_absolute() {
+            tracing::warn!(root = line, "data-roots: relative path skipped");
+            out.skipped.push(format!("{line} (not an absolute path)"));
+            continue;
+        }
+        let Ok(canon) = p.canonicalize() else {
+            tracing::debug!(root = line, "data-roots: not on this host, skipped");
+            out.skipped.push(format!("{line} (does not exist on this host)"));
+            continue;
+        };
+        if !canon.is_dir() {
+            out.skipped.push(format!("{line} (not a directory)"));
+            continue;
+        }
+        if canon.parent().is_none() || home.as_ref().is_some_and(|h| h.starts_with(&canon)) {
+            tracing::warn!(root = line, "data-roots: root contains the home directory, skipped");
+            out.skipped.push(format!("{line} (contains the home directory)"));
+            continue;
+        }
+        out.roots.push(canon);
     }
-    if rel.is_empty() || candidate.is_dir() {
-        candidate.push("index.html");
-    }
-    let canon = candidate.canonicalize().ok()?;
-    let root_canon = root.canonicalize().ok()?;
-    if canon.starts_with(&root_canon) {
-        Some(canon)
+    out
+}
+
+/// Run `git` in `dir` with the repo-selecting env removed, stdin null, and a
+/// 10 s limit. `Err(true)` = git ran and exited nonzero (not a repo, or a
+/// refusal, first stderr line included); `Err(false)` = it could not run or
+/// timed out.
+#[cfg(unix)]
+fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, (bool, String)> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "core.fsmonitor=false"])
+        .args(args)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| (false, e.to_string()))?;
+    let mut so = child.stdout.take().expect("piped");
+    let mut se = child.stderr.take().expect("piped");
+    let t_out = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = so.read_to_end(&mut v);
+        v
+    });
+    let t_err = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = se.read_to_end(&mut v);
+        v
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err((false, "timed out after 10 s".into()));
+            }
+            Err(e) => return Err((false, e.to_string())),
+        }
+    };
+    let out = t_out.join().unwrap_or_default();
+    let err = t_err.join().unwrap_or_default();
+    if status.success() {
+        Ok(out)
     } else {
-        None
+        let first = String::from_utf8_lossy(&err).lines().next().unwrap_or("").to_string();
+        Err((true, first))
     }
 }
 
-async fn write_simple(stream: &mut TcpStream, status: &str, body: &str) -> Result<()> {
-    let resp = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(resp.as_bytes()).await?;
-    stream.flush().await?;
-    Ok(())
+#[cfg(unix)]
+impl GitState {
+    /// The repo containing `dir`: its canonical top and index file. `None`
+    /// (fail closed, no links) when it is not a repo or git will not answer.
+    fn find(dir: &Path) -> Option<GitState> {
+        let out = match run_git(dir, &["rev-parse", "--show-toplevel", "--git-path", "index"]) {
+            Ok(o) => o,
+            Err((true, first)) if first.is_empty() || first.contains("not a git repository") => {
+                tracing::debug!(dir = %dir.display(), "site_serve: not a git repo, no links");
+                return None;
+            }
+            Err((_, first)) => {
+                tracing::warn!(dir = %dir.display(), error = first, "site_serve: git refused, no links followed");
+                return None;
+            }
+        };
+        let text = String::from_utf8_lossy(&out).into_owned();
+        let mut lines = text.lines();
+        let top = PathBuf::from(lines.next()?).canonicalize().ok()?;
+        let index = dir.join(lines.next()?);
+        Some(GitState { top, index, cache: Mutex::new(LinkCache::default()) })
+    }
+
+    /// Tracked symlinks under `url_root`, relative to it. Re-stats the index on
+    /// every call and rebuilds the set only when the stamp changed, so a link
+    /// untracked (or added) after the open is honoured at the next request.
+    /// The stamp is taken BEFORE listing, so a write during the listing shows
+    /// as changed next time.
+    fn links(&self, url_root: &Path) -> BTreeSet<PathBuf> {
+        let stamp = index_stamp(&self.index);
+        let mut c = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        if stamp.is_none() || c.stamp != stamp {
+            c.links = self.list_links(url_root);
+            c.stamp = stamp;
+        }
+        c.links.clone()
+    }
+
+    fn list_links(&self, url_root: &Path) -> BTreeSet<PathBuf> {
+        use std::os::unix::ffi::OsStrExt;
+        let mut set = BTreeSet::new();
+        let out = match run_git(&self.top, &["ls-files", "-s", "-z"]) {
+            Ok(o) => o,
+            Err((_, first)) => {
+                tracing::warn!(error = first, "site_serve: git ls-files failed, no links followed");
+                return set;
+            }
+        };
+        for entry in out.split(|&b| b == 0) {
+            let Some(tab) = entry.iter().position(|&b| b == b'\t') else { continue };
+            if !entry.starts_with(b"120000 ") {
+                continue;
+            }
+            let rel = Path::new(std::ffi::OsStr::from_bytes(&entry[tab + 1..]));
+            if let Ok(under) = self.top.join(rel).strip_prefix(url_root) {
+                set.insert(under.to_path_buf());
+            }
+        }
+        set
+    }
+}
+
+impl Site {
+    /// A plain site: served from `root` alone, no linked data. Today's behaviour.
+    pub fn plain(root: PathBuf) -> Site {
+        let root = root.canonicalize().unwrap_or(root);
+        Site {
+            content_root: root.clone(),
+            url_root: root,
+            roots_file: None,
+            #[cfg(unix)]
+            roots_cache: Mutex::new(None),
+            #[cfg(all(unix, test))]
+            roots_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(unix)]
+            git: None,
+        }
+    }
+
+    /// Open a site for `docs.open`, reading the machine's data-roots file.
+    /// `ws_root` bounds how far the URL space may widen; `widen` is false for
+    /// root-relative sites (they keep S as their URL root).
+    pub async fn open(content_root: PathBuf, ws_root: PathBuf, widen: bool) -> Site {
+        Self::build(content_root, ws_root, widen, None).await
+    }
+
+    /// As `open`, naming the data-roots file (tests never read the real config).
+    #[cfg(test)]
+    pub(crate) async fn with_roots(
+        content_root: PathBuf,
+        ws_root: PathBuf,
+        widen: bool,
+        roots_file: PathBuf,
+    ) -> Site {
+        Self::build(content_root, ws_root, widen, Some(roots_file)).await
+    }
+
+    async fn build(
+        content_root: PathBuf,
+        ws_root: PathBuf,
+        widen: bool,
+        roots_file: Option<PathBuf>,
+    ) -> Site {
+        let mut site = Site::plain(content_root);
+        site.roots_file = roots_file;
+        #[cfg(unix)]
+        {
+            // git is only asked when the machine declares at least one root;
+            // no root is canonicalized here, a dead share must not stall open.
+            let site = tokio::task::spawn_blocking(move || {
+                if site.declares_a_root() {
+                    site.attach_git(&ws_root, widen);
+                }
+                site
+            })
+            .await;
+            return site.expect("site build task");
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (ws_root, widen);
+            site
+        }
+    }
+
+    #[cfg(unix)]
+    fn attach_git(&mut self, ws_root: &Path, widen: bool) {
+        let Some(mut g) = GitState::find(&self.content_root) else { return };
+        if widen {
+            let ws = ws_root.canonicalize().unwrap_or_else(|_| ws_root.to_path_buf());
+            // The inner of the repo top and the workspace root; both are
+            // ancestors of S, so one contains the other.
+            let inner = if g.top.starts_with(&ws) {
+                Some(g.top.clone())
+            } else if ws.starts_with(&g.top) {
+                Some(ws)
+            } else {
+                None
+            };
+            if let Some(r) = inner {
+                if self.content_root.starts_with(&r)
+                    && r != self.content_root
+                    && !g.links(&r).is_empty()
+                {
+                    self.url_root = r;
+                }
+            }
+            // The probe above listed links relative to the candidate root;
+            // start clean so the set is always relative to the final one.
+            g.cache = Mutex::new(LinkCache::default());
+        }
+        self.git = Some(g);
+    }
+
+    #[cfg(unix)]
+    fn roots_path(&self) -> Option<PathBuf> {
+        self.roots_file
+            .clone()
+            .or_else(|| sot_log::state_dir::sot_config_dir().map(|d| d.join("data-roots")))
+    }
+
+    /// Whether the data-roots file has a non-comment absolute line: text only,
+    /// nothing is resolved.
+    #[cfg(unix)]
+    fn declares_a_root(&self) -> bool {
+        let Some(text) = self.roots_path().and_then(|f| std::fs::read_to_string(f).ok()) else {
+            return false;
+        };
+        text.lines().map(str::trim).any(|l| !l.starts_with('#') && Path::new(l).is_absolute())
+    }
+
+    /// The data roots as of the file's current stat: a root added or removed
+    /// is seen at the next request, an unchanged file is not re-read. No
+    /// config dir (`None`) means no roots.
+    #[cfg(unix)]
+    fn data_roots(&self) -> std::sync::Arc<DataRoots> {
+        let Some(f) = self.roots_path() else {
+            return Default::default();
+        };
+        let stamp = index_stamp(&f);
+        let mut cache = self.roots_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((s, r)) = cache.as_ref() {
+            if *s == stamp {
+                return r.clone();
+            }
+        }
+        #[cfg(test)]
+        self.roots_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let r = std::sync::Arc::new(read_data_roots(
+            &f,
+            std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+        ));
+        *cache = Some((stamp, r.clone()));
+        r
+    }
+
+    /// The URL path (below the nonce) of a page `rel` under the content root:
+    /// `rel` itself when the URL space is not widened.
+    pub fn url_path(&self, rel: &str) -> String {
+        match self.content_root.strip_prefix(&self.url_root) {
+            Ok(s) if !s.as_os_str().is_empty() => {
+                let s = s.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+                format!("{s}/{rel}")
+            }
+            _ => rel.to_string(),
+        }
+    }
+}
+
+/// Why a request was not served, and the reply to send.
+pub(crate) struct Refusal {
+    status: &'static str,
+    body: String,
+}
+
+fn refuse(path: &str, status: &'static str, code: &str, body: String) -> Refusal {
+    tracing::info!(path, reason = code, "site_serve: refused");
+    Refusal { status, body }
+}
+
+fn not_found() -> Refusal {
+    Refusal { status: "404 Not Found", body: "no such file".into() }
+}
+
+/// Open `rel` beneath `base` without following a symlink anywhere below it: `base`
+/// by its canonical path, each intermediate component `O_DIRECTORY|O_NOFOLLOW`,
+/// the last `O_NOFOLLOW|O_NONBLOCK` (a FIFO cannot hang the task). A symlink
+/// swapped in after the caller's check fails with ELOOP or ENOTDIR.
+#[cfg(unix)]
+fn open_beneath(base: &Path, rel: &Path) -> std::io::Result<std::fs::File> {
+    use std::ffi::CString;
+    use std::io::{Error, ErrorKind};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    let cstr = |b: &[u8]| CString::new(b).map_err(|_| Error::from(ErrorKind::InvalidInput));
+    let comps: Vec<&std::ffi::OsStr> = rel
+        .components()
+        .map(|c| match c {
+            std::path::Component::Normal(n) => Ok(n),
+            _ => Err(Error::from(ErrorKind::InvalidInput)),
+        })
+        .collect::<Result<_, _>>()?;
+    if comps.is_empty() {
+        return Err(Error::from(ErrorKind::InvalidInput));
+    }
+    let flags = libc::O_RDONLY | libc::O_CLOEXEC;
+    let cbase = cstr(base.as_os_str().as_bytes())?;
+    // SAFETY: plain open(2) on a NUL-terminated path; the fd is owned at once.
+    let fd = unsafe { libc::open(cbase.as_ptr(), flags | libc::O_DIRECTORY) };
+    if fd < 0 {
+        return Err(Error::last_os_error());
+    }
+    // SAFETY: `fd` is a fresh, valid descriptor nobody else owns.
+    let mut dir = unsafe { OwnedFd::from_raw_fd(fd) };
+    let last = comps.len() - 1;
+    for (i, c) in comps.iter().enumerate() {
+        let cc = cstr(c.as_bytes())?;
+        let f = if i == last {
+            flags | libc::O_NOFOLLOW | libc::O_NONBLOCK
+        } else {
+            flags | libc::O_DIRECTORY | libc::O_NOFOLLOW
+        };
+        // SAFETY: openat(2) relative to a live directory fd, NUL-terminated name.
+        let fd = unsafe { libc::openat(dir.as_raw_fd(), cc.as_ptr(), f) };
+        if fd < 0 {
+            return Err(Error::last_os_error());
+        }
+        // SAFETY: as above, a fresh descriptor.
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+        if i == last {
+            return Ok(std::fs::File::from(owned));
+        }
+        dir = owned;
+    }
+    unreachable!("comps is non-empty and the last iteration returns")
+}
+
+#[cfg(not(unix))]
+fn open_beneath(base: &Path, rel: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(base.join(rel))
+}
+
+/// `open_beneath`, mapping the outcome to a file or a refusal: a swapped-in
+/// symlink is R6, anything else that is not a file is a 404.
+fn open_checked(base: &Path, rel: &Path, shown: &str) -> Result<std::fs::File, Refusal> {
+    #[cfg(not(unix))]
+    let _ = shown;
+    // R0 on the resolved path: a link into `.git`, an 8.3 short name or an
+    // NTFS stream all canonicalize to a `.git` component.
+    if rel.components().any(|c| c.as_os_str().eq_ignore_ascii_case(".git")) {
+        return Err(refuse(
+            shown,
+            "403 Forbidden",
+            "R0",
+            "refused: .git is never served".into(),
+        ));
+    }
+    match open_beneath(base, rel) {
+        Ok(f) => Ok(f),
+        #[cfg(unix)]
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP) | Some(libc::ENOTDIR)) => Err(refuse(
+            shown,
+            "403 Forbidden",
+            "R6",
+            format!("refused: {shown} changed while it was being opened"),
+        )),
+        Err(_) => Err(not_found()),
+    }
+}
+
+/// Resolve a decoded request path and open the file, applying the follow rule
+/// in order. Runs in `spawn_blocking`. Returns the open file and the canonical
+/// path its content type comes from.
+///
+/// R0 `.git` anywhere; R1 a `..` part; then Q = url_root + parts (a directory
+/// gets `index.html`). Fast path: Q canonicalizes inside S. Slow path: the
+/// first symlink below url_root must be a link git tracks (R2b), a data root
+/// must be declared (R2c), the link's target must lie under one (R3), it must
+/// resolve (R5), the file must stay inside the target (R4), and the open is
+/// `open_beneath` the data root (R6). Not unix: no link is ever followed (R2d).
+pub(crate) fn resolve_and_open(
+    site: &Site,
+    decoded: &str,
+) -> Result<(std::fs::File, PathBuf), Refusal> {
+    let mut parts: Vec<&str> = Vec::new();
+    for p in decoded.split(|c| c == '/' || c == '\\') {
+        match p {
+            "" | "." => {}
+            ".." => {
+                return Err(refuse(
+                    decoded,
+                    "403 Forbidden",
+                    "R1",
+                    "refused: the request path contains a \"..\" segment".into(),
+                ))
+            }
+            _ if p.eq_ignore_ascii_case(".git") => {
+                return Err(refuse(
+                    decoded,
+                    "403 Forbidden",
+                    "R0",
+                    "refused: .git is never served".into(),
+                ))
+            }
+            _ => parts.push(p),
+        }
+    }
+    let mut q = site.url_root.clone();
+    for p in &parts {
+        q.push(p);
+    }
+    if parts.is_empty() || q.is_dir() {
+        q.push("index.html");
+        parts.push("index.html");
+    }
+    let shown = parts.join("/");
+
+    // Fast path: today's rule, confined to the content root.
+    if let Ok(f) = q.canonicalize() {
+        if let Ok(rel) = f.strip_prefix(&site.content_root) {
+            let file = open_checked(&site.content_root, rel, &shown)?;
+            return Ok((file, f));
+        }
+    }
+
+    // Slow path: find the first symlink below url_root.
+    let mut cur = site.url_root.clone();
+    let mut link = PathBuf::new();
+    let mut found = false;
+    for p in &parts {
+        cur.push(p);
+        link.push(p);
+        match std::fs::symlink_metadata(&cur) {
+            Err(_) => return Err(not_found()),
+            Ok(m) if m.file_type().is_symlink() => {
+                found = true;
+                break;
+            }
+            Ok(_) => {}
+        }
+    }
+    if !found {
+        return Err(refuse(
+            &shown,
+            "403 Forbidden",
+            "R2a",
+            format!("refused: {shown} is outside the site folder; only the site folder and the repo's tracked data links are served"),
+        ));
+    }
+    let l = link.to_string_lossy().into_owned();
+    #[cfg(not(unix))]
+    {
+        let _ = &q;
+        return Err(refuse(
+            &shown,
+            "403 Forbidden",
+            "R2d",
+            format!("refused: {l} is a link; linked data is followed only on Linux and macOS"),
+        ));
+    }
+    #[cfg(unix)]
+    follow_link(site, &q, &shown, &link, &l)
+}
+
+#[cfg(unix)]
+fn follow_link(
+    site: &Site,
+    q: &Path,
+    shown: &str,
+    link: &Path,
+    l: &str,
+) -> Result<(std::fs::File, PathBuf), Refusal> {
+    let forbid = |code: &str, body: String| refuse(shown, "403 Forbidden", code, body);
+    let roots = site.data_roots();
+    let skipped = if roots.skipped.is_empty() {
+        String::new()
+    } else {
+        format!(" (skipped: {})", roots.skipped.join("; "))
+    };
+    if roots.roots.is_empty() {
+        return Err(forbid("R2c", format!("refused: {l} is a link, and links are followed only into a data root this machine declares in the data-roots file of its Ship of Tools config folder; none is declared{skipped}")));
+    }
+    let tracked = site.git.as_ref().is_some_and(|g| g.links(&site.url_root).contains(link));
+    if !tracked {
+        return Err(forbid("R2b", format!("refused: {l} is a link git does not track in this repo, so it is not followed (git add it, then open the page again)")));
+    }
+    let Ok(t) = site.url_root.join(link).canonicalize() else {
+        return Err(refuse(
+            shown,
+            "404 Not Found",
+            "R5",
+            format!("the linked folder {l} does not resolve on this host (is its share mounted?)"),
+        ));
+    };
+    let Some(d) = roots.roots.iter().find(|r| t.starts_with(r)) else {
+        return Err(forbid("R3", format!("refused: {l} is a tracked link, but its target is not under a data root declared in this machine's data-roots file{skipped}")));
+    };
+    let Ok(f) = q.canonicalize() else {
+        return Err(not_found());
+    };
+    if !f.starts_with(&t) {
+        return Err(forbid("R4", format!("refused: {shown} leaves the linked folder {l} through a link inside it")));
+    }
+    let rel = f.strip_prefix(d).expect("f is under t, which is under d");
+    let file = open_checked(d, rel, shown)?;
+    Ok((file, f))
 }
 
 async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
@@ -543,10 +1108,13 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
     // Cookie header (case-insensitive name) — only pool-mode auth needs it,
     // but it's cheap to always scan.
     let mut cookie_hdr: Option<String> = None;
+    let mut range_hdr: Option<String> = None;
     for line in lines {
         if let Some((name, val)) = line.split_once(':') {
             if name.trim().eq_ignore_ascii_case("cookie") {
                 cookie_hdr = Some(val.trim().to_string());
+            } else if name.trim().eq_ignore_ascii_case("range") {
+                range_hdr = Some(val.trim().to_string());
             }
         }
     }
@@ -557,9 +1125,9 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
     // root-relative links resolve on that origin. `set_cookie`, if `Some`, is
     // a `Set-Cookie` header value the eventual 200 response must include.
     let raw_path = target.split(|c| c == '?' || c == '#').next().unwrap_or("");
-    let (root, rest, set_cookie) = match mode {
+    let (site, rest, set_cookie) = match mode {
         ServeMode::Pool(port) => {
-            let Some((root, secret)) = pool_entry_for(port) else {
+            let Some((site, secret)) = pool_entry_for(port) else {
                 return write_simple(
                     &mut stream,
                     "404 Not Found",
@@ -597,7 +1165,7 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
             }
             let set_cookie = (!cookie_ok)
                 .then(|| format!("{cookie_name}={secret}; HttpOnly; SameSite=Strict; Path=/"));
-            (root, raw_path.trim_start_matches('/').to_string(), set_cookie)
+            (site, raw_path.trim_start_matches('/').to_string(), set_cookie)
         }
         ServeMode::Prefix => {
             let trimmed = raw_path.trim_start_matches('/');
@@ -605,7 +1173,7 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
                 Some((t, r)) => (t, r),
                 None => (trimmed, ""),
             };
-            let Some(root) = root_for(token) else {
+            let Some(site) = root_for(token) else {
                 // Either a stale/disconnected nonce, or a root-relative asset
                 // (`/assets/…`) that landed here — `docs.open` routes sites
                 // with root-relative links to the pool instead, so this is
@@ -618,53 +1186,36 @@ async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
                 )
                 .await;
             };
-            (root, rest.to_string(), None)
+            (site, rest.to_string(), None)
         }
     };
 
-    // Percent-decode the per-root path and resolve under the chosen root.
+    // Percent-decode the per-root path and resolve it. `resolve_and_open` does
+    // blocking filesystem work (a stalled share must not stall the runtime).
     let decoded = percent_decode(&rest);
-    let resolved = match resolve(&root, &decoded) {
-        Some(p) => p,
-        None => return write_simple(&mut stream, "404 Not Found", "no such file").await,
+    let opened = {
+        let site = site.clone();
+        tokio::task::spawn_blocking(move || resolve_and_open(&site, &decoded)).await?
     };
-    let meta = match tokio::fs::metadata(&resolved).await {
-        Ok(m) if m.is_file() => m,
-        _ => return write_simple(&mut stream, "404 Not Found", "no such file").await,
+    let (file, resolved) = match opened {
+        Ok(f) => f,
+        Err(r) => return write_simple(&mut stream, r.status, &r.body).await,
     };
-    let total = meta.len();
-    let ctype = content_type(&resolved);
 
     // no-cache so a rebuilt site is picked up without a hard browser refresh.
-    let mut header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {total}\r\nCache-Control: no-cache\r\nConnection: close\r\n"
-    );
+    let mut extra = String::from("Cache-Control: no-cache\r\n");
     if let Some(cookie) = &set_cookie {
-        header.push_str(&format!("Set-Cookie: {cookie}\r\n"));
+        extra.push_str(&format!("Set-Cookie: {cookie}\r\n"));
     }
-    header.push_str("\r\n");
-    stream.write_all(header.as_bytes()).await?;
-
-    if method == "HEAD" {
-        stream.flush().await?;
-        return Ok(());
-    }
-
-    let mut file = tokio::fs::File::open(&resolved).await?;
-    let mut chunk = vec![0u8; READ_CHUNK];
-    loop {
-        let n = file.read(&mut chunk).await?;
-        if n == 0 {
-            break;
-        }
-        // A broken pipe just means the browser closed the connection — not an
-        // error worth surfacing.
-        if stream.write_all(&chunk[..n]).await.is_err() {
-            return Ok(());
-        }
-    }
-    stream.flush().await.ok();
-    Ok(())
+    serve_file(
+        &mut stream,
+        method == "HEAD",
+        tokio::fs::File::from_std(file),
+        content_type(&resolved),
+        range_hdr.as_deref(),
+        &extra,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -685,10 +1236,10 @@ mod pool_tests {
         // freed this test's pool entries mid-assert.
         const S: u64 = 9_000_000_001;
         // Four distinct connections fill the pool in order.
-        let (p1, s1) = assign_pool_port(S + 1, PathBuf::from("/a")).unwrap();
-        let (p2, s2) = assign_pool_port(S + 2, PathBuf::from("/b")).unwrap();
-        let (p3, _s3) = assign_pool_port(S + 3, PathBuf::from("/c")).unwrap();
-        let (p4, _s4) = assign_pool_port(S + 4, PathBuf::from("/d")).unwrap();
+        let (p1, s1) = assign_pool_port(S + 1, Site::plain(PathBuf::from("/a"))).unwrap();
+        let (p2, s2) = assign_pool_port(S + 2, Site::plain(PathBuf::from("/b"))).unwrap();
+        let (p3, _s3) = assign_pool_port(S + 3, Site::plain(PathBuf::from("/c"))).unwrap();
+        let (p4, _s4) = assign_pool_port(S + 4, Site::plain(PathBuf::from("/d"))).unwrap();
         assert_eq!(
             vec![p1, p2, p3, p4],
             (base + 1..=base + POOL_SIZE).collect::<Vec<_>>()
@@ -698,20 +1249,20 @@ mod pool_tests {
         // A re-open by an existing owner REPOINTS its port, not a new one,
         // and mints a FRESH secret — the old one (and any cookie it set)
         // stops working (security review).
-        let (p2_again, s2_again) = assign_pool_port(S + 2, PathBuf::from("/b2")).unwrap();
+        let (p2_again, s2_again) = assign_pool_port(S + 2, Site::plain(PathBuf::from("/b2"))).unwrap();
         assert_eq!(p2_again, p2);
         assert_ne!(s2_again, s2);
         assert_eq!(
-            pool_entry_for(p2).map(|(r, _)| r),
+            pool_entry_for(p2).map(|(r, _)| r.content_root.clone()),
             Some(PathBuf::from("/b2"))
         );
         // Fifth connection: exhausted.
-        assert_eq!(assign_pool_port(S + 5, PathBuf::from("/e")), None);
+        assert_eq!(assign_pool_port(S + 5, Site::plain(PathBuf::from("/e"))), None);
         assert_eq!(pool_in_use(), 4);
         // Disconnect frees exactly the owner's port; next claim gets it.
         remove_root(S + 3);
         assert_eq!(pool_in_use(), 3);
-        let (p5, _s5) = assign_pool_port(S + 5, PathBuf::from("/e")).unwrap();
+        let (p5, _s5) = assign_pool_port(S + 5, Site::plain(PathBuf::from("/e"))).unwrap();
         assert_eq!(p5, p3);
         reset();
     }
@@ -828,7 +1379,7 @@ mod prefix_serve_tests {
         // (pool_tests uses 9_000_000_00x) — parallel test runs share the
         // same static maps.
         const SERIAL: u64 = 8_000_000_001;
-        let nonce = set_root(SERIAL, root.clone()).expect("set_root");
+        let nonce = set_root(SERIAL, Site::plain(root.clone())).expect("set_root");
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -883,9 +1434,457 @@ mod prefix_serve_tests {
         // A `../` escape past the root is refused even though the target
         // exists on disk.
         let (status, _, _) = get(addr, &format!("/{nonce}/../secret.txt")).await;
-        assert_eq!(status, 404, "traversal escape must be refused");
+        assert_eq!(status, 403, "traversal escape must be refused");
 
         remove_root(SERIAL);
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod linked_data_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Far outside the serials other tests in this file use.
+    static NEXT_SERIAL: AtomicU64 = AtomicU64::new(8_100_000_000);
+
+    fn git(dir: &Path, args: &[&str]) {
+        let st = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .expect("run git");
+        assert!(st.success(), "git {args:?} failed");
+    }
+
+    fn write(path: &Path, bytes: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    const MOVIE_LEN: usize = 300_000;
+
+    /// `repo/` (git) with `site/`, tracked links `data` and `bad` (plus a
+    /// dangling tracked `dangling`), untracked links `loose` and `site/lnk`;
+    /// `share/` holding the movie and an escaping link; `outside/`.
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        base: PathBuf,
+        repo: PathBuf,
+        share: PathBuf,
+        outside: PathBuf,
+        roots_file: PathBuf,
+    }
+
+    fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let repo = base.join("repo");
+        let share = base.join("share");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        write(&repo.join("site/index.html"), b"<html>idx</html>");
+        write(
+            &repo.join("site/exp/page.html"),
+            b"<video src=\"../../data/results/r1/movie.mp4\">",
+        );
+        write(&repo.join("site/empty.js"), b"");
+        write(&repo.join("other.txt"), b"repo file outside the site");
+        let movie: Vec<u8> = (0..MOVIE_LEN).map(|i| (i % 251) as u8).collect();
+        write(&share.join("results/r1/movie.mp4"), &movie);
+        write(&outside.join("secret.txt"), b"secret");
+        symlink("../share", repo.join("data")).unwrap();
+        symlink("../outside", repo.join("bad")).unwrap();
+        symlink("../nowhere", repo.join("dangling")).unwrap();
+        symlink("../../../outside", share.join("results/r1/esc")).unwrap();
+        symlink("../share", repo.join("loose")).unwrap();
+        symlink("../../share", repo.join("site/lnk")).unwrap();
+        git(&repo, &["add", "data", "bad", "dangling", "other.txt", "site"]);
+        let roots_file = base.join("data-roots");
+        std::fs::write(&roots_file, format!("{}\n", share.display())).unwrap();
+        Fixture { _dir: dir, base, repo, share, outside, roots_file }
+    }
+
+    /// Serve `site` on loopback and return `(addr, nonce, serial)`.
+    async fn serve(site: Site) -> (std::net::SocketAddr, String, u64) {
+        let serial = NEXT_SERIAL.fetch_add(1, Ordering::SeqCst);
+        let nonce = set_root(serial, site).expect("set_root");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _ = handle_conn(stream, ServeMode::Prefix).await;
+                });
+            }
+        });
+        (addr, nonce, serial)
+    }
+
+    /// GET `path` with extra request headers; `(status, response head, body)`.
+    async fn get(
+        addr: std::net::SocketAddr,
+        path: &str,
+        headers: &[&str],
+    ) -> (u16, String, Vec<u8>) {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let extra: String = headers.iter().map(|h| format!("{h}\r\n")).collect();
+        stream
+            .write_all(format!("GET {path} HTTP/1.1\r\n{extra}Connection: close\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut raw = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut raw))
+            .await
+            .expect("server did not close the connection within 5s")
+            .unwrap();
+        let split = raw.windows(4).position(|w| w == b"\r\n\r\n").expect("separator");
+        let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+        let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        (status, head, raw[split + 4..].to_vec())
+    }
+
+    async fn widened(f: &Fixture) -> Site {
+        Site::with_roots(f.repo.join("site"), f.repo.clone(), true, f.roots_file.clone()).await
+    }
+
+    fn body_text(b: &[u8]) -> String {
+        String::from_utf8_lossy(b).into_owned()
+    }
+
+    const MOVIE: &str = "data/results/r1/movie.mp4";
+
+    #[tokio::test]
+    async fn a_linked_movie_seeks_through_the_widened_url_space() {
+        let f = fixture();
+        let site = widened(&f).await;
+        assert_eq!(site.url_path("exp/page.html"), "site/exp/page.html");
+        assert_eq!(site.url_path(""), "site/");
+        let (addr, nonce, serial) = serve(site).await;
+        // The page itself, at its widened URL.
+        let (st, _, body) = get(addr, &format!("/{nonce}/site/exp/page.html"), &[]).await;
+        assert_eq!(st, 200);
+        assert!(body_text(&body).contains("movie.mp4"));
+        let (st, head, body) =
+            get(addr, &format!("/{nonce}/{MOVIE}"), &["Range: bytes=1000-1999"]).await;
+        assert_eq!(st, 206, "{head}");
+        assert!(head.contains("Content-Range: bytes 1000-1999/300000"), "{head}");
+        assert!(head.contains("Content-Type: video/mp4"), "{head}");
+        assert!(head.contains("Accept-Ranges: bytes"), "{head}");
+        let want: Vec<u8> = (1000..2000).map(|i| (i % 251) as u8).collect();
+        assert_eq!(body, want);
+        let (st, _, body) = get(addr, &format!("/{nonce}/{MOVIE}"), &[]).await;
+        assert_eq!(st, 200);
+        assert_eq!(body.len(), MOVIE_LEN);
+        remove_root(serial);
+    }
+
+    #[tokio::test]
+    async fn b_untracked_link_is_not_followed_r2b() {
+        let f = fixture();
+        let (addr, nonce, serial) = serve(widened(&f).await).await;
+        let (st, _, body) = get(addr, &format!("/{nonce}/loose/results/r1/movie.mp4"), &[]).await;
+        assert_eq!(st, 403);
+        assert!(body_text(&body).contains("loose is a link git does not track"), "{}", body_text(&body));
+        remove_root(serial);
+    }
+
+    #[tokio::test]
+    async fn c_tracked_link_outside_a_data_root_is_refused_r3() {
+        let f = fixture();
+        let (addr, nonce, serial) = serve(widened(&f).await).await;
+        let (st, _, body) = get(addr, &format!("/{nonce}/bad/secret.txt"), &[]).await;
+        assert_eq!(st, 403);
+        assert!(body_text(&body).contains("bad is a tracked link, but its target is not under a data root"));
+        remove_root(serial);
+    }
+
+    #[tokio::test]
+    async fn d_dotdot_is_refused_r1() {
+        let f = fixture();
+        let (addr, nonce, serial) = serve(widened(&f).await).await;
+        for p in ["site/../../outside/secret.txt", "data/../outside/secret.txt"] {
+            let (st, _, body) = get(addr, &format!("/{nonce}/{p}"), &[]).await;
+            assert_eq!(st, 403, "{p}");
+            assert!(body_text(&body).contains("\"..\" segment"), "{p}");
+        }
+        remove_root(serial);
+    }
+
+    #[tokio::test]
+    async fn e_a_link_inside_the_linked_folder_is_not_followed_out_r4() {
+        let f = fixture();
+        let (addr, nonce, serial) = serve(widened(&f).await).await;
+        let (st, _, body) =
+            get(addr, &format!("/{nonce}/data/results/r1/esc/secret.txt"), &[]).await;
+        assert_eq!(st, 403);
+        assert!(body_text(&body).contains("leaves the linked folder data through a link inside it"));
+        remove_root(serial);
+    }
+
+    #[tokio::test]
+    async fn f_git_dir_is_refused_on_the_widened_site_r0() {
+        let f = fixture();
+        let (addr, nonce, serial) = serve(widened(&f).await).await;
+        for p in [".git/config", ".GIT/config", "site/.git/config"] {
+            let (st, _, body) = get(addr, &format!("/{nonce}/{p}"), &[]).await;
+            assert_eq!(st, 403, "{p}");
+            assert!(body_text(&body).contains(".git is never served"), "{p}");
+        }
+        remove_root(serial);
+    }
+
+    /// Defect: when the site folder IS the repo top, the site server used to
+    /// serve `.git/`. R0 closes it for a plain site too.
+    #[tokio::test]
+    async fn git_dir_of_a_repo_top_site_is_refused() {
+        let f = fixture();
+        assert!(f.repo.join(".git/config").is_file());
+        write(&f.repo.join("index.html"), b"<html>top</html>");
+        let (addr, nonce, serial) = serve(Site::plain(f.repo.clone())).await;
+        let (st, _, body) = get(addr, &format!("/{nonce}/index.html"), &[]).await;
+        assert_eq!(st, 200, "the site itself still serves");
+        assert!(body_text(&body).contains("top"));
+        let (st, _, body) = get(addr, &format!("/{nonce}/.git/config"), &[]).await;
+        assert_eq!(st, 403);
+        assert!(body_text(&body).contains(".git is never served"));
+        remove_root(serial);
+    }
+
+    #[tokio::test]
+    async fn g_no_roots_means_todays_url_space_and_r2c() {
+        let f = fixture();
+        let empty = f.base.join("empty-roots");
+        std::fs::write(&empty, "# nothing\n").unwrap();
+        let site = Site::with_roots(f.repo.join("site"), f.repo.clone(), true, empty).await;
+        assert_eq!(site.url_path("exp/page.html"), "exp/page.html");
+        let (addr, nonce, serial) = serve(site).await;
+        let (st, _, body) = get(addr, &format!("/{nonce}/lnk/results/r1/movie.mp4"), &[]).await;
+        assert_eq!(st, 403);
+        assert!(body_text(&body).contains("none is declared"), "{}", body_text(&body));
+        // The site itself is untouched.
+        let (st, _, _) = get(addr, &format!("/{nonce}/exp/page.html"), &[]).await;
+        assert_eq!(st, 200);
+        remove_root(serial);
+    }
+
+    #[tokio::test]
+    async fn h_empty_file_has_content_length_zero_through_the_site_server() {
+        let f = fixture();
+        let (addr, nonce, serial) = serve(widened(&f).await).await;
+        let (st, head, body) = get(addr, &format!("/{nonce}/site/empty.js"), &[]).await;
+        assert_eq!(st, 200);
+        assert!(head.contains("Content-Length: 0"), "{head}");
+        assert!(body.is_empty());
+        remove_root(serial);
+    }
+
+    #[test]
+    fn i_read_data_roots_filters_and_canonicalizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let home = base.join("h/user");
+        let real = base.join("real");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&real).unwrap();
+        symlink(&real, base.join("alias")).unwrap();
+        std::fs::write(base.join("afile"), b"x").unwrap();
+        let file = base.join("data-roots");
+        std::fs::write(
+            &file,
+            format!(
+                "# comment\n\nrelative/dir\n{}\n/\n{}\n{}\n{}\n{}\n",
+                base.join("missing").display(),
+                home.display(),
+                base.join("h").display(),
+                base.join("afile").display(),
+                base.join("alias").display(),
+            ),
+        )
+        .unwrap();
+        let got = read_data_roots(&file, Some(&home));
+        assert_eq!(got.roots, vec![real.clone()], "only the real dir, canonical");
+        assert_eq!(got.skipped.len(), 6, "{:?}", got.skipped);
+        assert!(read_data_roots(&base.join("nope"), None).roots.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_page_outside_the_site_is_r2a() {
+        let f = fixture();
+        let (addr, nonce, serial) = serve(widened(&f).await).await;
+        let (st, _, body) = get(addr, &format!("/{nonce}/other.txt"), &[]).await;
+        assert_eq!(st, 403);
+        assert!(body_text(&body).contains("other.txt is outside the site folder"));
+        remove_root(serial);
+    }
+
+    #[tokio::test]
+    async fn a_dangling_tracked_link_is_r5() {
+        let f = fixture();
+        let (addr, nonce, serial) = serve(widened(&f).await).await;
+        let (st, _, body) = get(addr, &format!("/{nonce}/dangling/x.txt"), &[]).await;
+        assert_eq!(st, 404);
+        assert!(body_text(&body).contains("does not resolve on this host"));
+        remove_root(serial);
+    }
+
+    #[test]
+    fn a_symlink_swapped_in_at_open_time_is_r6() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        write(&base.join("real/f.txt"), b"x");
+        write(&base.join("elsewhere/secret.txt"), b"s");
+        symlink(base.join("elsewhere/secret.txt"), base.join("real/last")).unwrap();
+        symlink(base.join("elsewhere"), base.join("real/mid")).unwrap();
+        let r = open_checked(&base.join("real"), Path::new("last"), "last").err().expect("refused");
+        assert_eq!(r.status, "403 Forbidden");
+        assert!(r.body.contains("changed while it was being opened"));
+        let r = open_checked(&base.join("real"), Path::new("mid/secret.txt"), "mid/secret.txt")
+            .err()
+            .expect("refused");
+        assert!(r.body.contains("changed while it was being opened"));
+        assert!(open_checked(&base.join("real"), Path::new("f.txt"), "f.txt").is_ok());
+        // Missing is a plain 404, not R6.
+        let r = open_checked(&base.join("real"), Path::new("nope"), "nope").err().unwrap();
+        assert_eq!(r.status, "404 Not Found");
+    }
+
+    /// Freshness: the tracked-link set follows the repo index at every request.
+    #[tokio::test]
+    async fn untracking_a_link_between_requests_refuses_the_second_r2b() {
+        let f = fixture();
+        let (addr, nonce, serial) = serve(widened(&f).await).await;
+        let (st, _, _) = get(addr, &format!("/{nonce}/{MOVIE}"), &["Range: bytes=0-9"]).await;
+        assert_eq!(st, 206);
+        git(&f.repo, &["rm", "--cached", "-q", "data"]);
+        let (st, _, body) = get(addr, &format!("/{nonce}/{MOVIE}"), &["Range: bytes=0-9"]).await;
+        assert_eq!(st, 403);
+        assert!(body_text(&body).contains("data is a link git does not track"));
+        // And tracking it again is picked up too.
+        git(&f.repo, &["add", "data"]);
+        let (st, _, _) = get(addr, &format!("/{nonce}/{MOVIE}"), &["Range: bytes=0-9"]).await;
+        assert_eq!(st, 206);
+        remove_root(serial);
+    }
+
+    /// Freshness: the data-roots file is read at every request.
+    #[tokio::test]
+    async fn removing_a_root_between_requests_refuses_the_second_r3_then_r2c() {
+        let f = fixture();
+        let (addr, nonce, serial) = serve(widened(&f).await).await;
+        let url = format!("/{nonce}/{MOVIE}");
+        let (st, _, _) = get(addr, &url, &["Range: bytes=0-9"]).await;
+        assert_eq!(st, 206);
+        // Another root remains: the target is no longer under any -> R3.
+        std::fs::write(&f.roots_file, format!("{}\n", f.outside.display())).unwrap();
+        let (st, _, body) = get(addr, &url, &[]).await;
+        assert_eq!(st, 403);
+        assert!(body_text(&body).contains("target is not under a data root"));
+        // Nothing left declared -> R2c.
+        std::fs::write(&f.roots_file, "").unwrap();
+        let (st, _, body) = get(addr, &url, &[]).await;
+        assert_eq!(st, 403);
+        assert!(body_text(&body).contains("none is declared"));
+        remove_root(serial);
+    }
+
+    #[tokio::test]
+    async fn a_skipped_root_is_named_in_the_refusal() {
+        let f = fixture();
+        let (addr, nonce, serial) = serve(widened(&f).await).await;
+        let ghost = f.base.join("ghost-share");
+        std::fs::write(
+            &f.roots_file,
+            format!("{}\n{}\n", ghost.display(), f.outside.display()),
+        )
+        .unwrap();
+        let (st, _, body) = get(addr, &format!("/{nonce}/{MOVIE}"), &[]).await;
+        assert_eq!(st, 403);
+        let t = body_text(&body);
+        assert!(t.contains(&format!("skipped: {} (does not exist on this host)", ghost.display())), "{t}");
+        // R2c names it too.
+        std::fs::write(&f.roots_file, format!("{}\n", ghost.display())).unwrap();
+        let (st, _, body) = get(addr, &format!("/{nonce}/{MOVIE}"), &[]).await;
+        assert_eq!(st, 403);
+        let t = body_text(&body);
+        assert!(t.contains("none is declared") && t.contains("ghost-share"), "{t}");
+        remove_root(serial);
+    }
+
+    /// B1: the repo top is the site; a tracked link reaches `.git`.
+    #[tokio::test]
+    async fn a_tracked_link_into_dot_git_is_refused_b1a() {
+        let f = fixture();
+        symlink("../.git", f.repo.join("site/g")).unwrap();
+        git(&f.repo, &["add", "site/g"]);
+        let (addr, nonce, serial) = serve(Site::plain(f.repo.clone())).await;
+        let (st, _, body) = get(addr, &format!("/{nonce}/site/g/config"), &[]).await;
+        assert_eq!(st, 403, "{}", body_text(&body));
+        assert!(body_text(&body).contains(".git is never served"));
+        remove_root(serial);
+    }
+
+    /// B1: a mixed-case `.Git` directory reached through a link.
+    #[tokio::test]
+    async fn a_mixed_case_dot_git_behind_a_link_is_refused_b1b() {
+        let f = fixture();
+        write(&f.repo.join("meta/.Git/secret"), b"s");
+        symlink("meta/.Git", f.repo.join("g2")).unwrap();
+        git(&f.repo, &["add", "g2"]);
+        let (addr, nonce, serial) = serve(Site::plain(f.repo.clone())).await;
+        let (st, _, body) = get(addr, &format!("/{nonce}/g2/secret"), &[]).await;
+        assert_eq!(st, 403, "{}", body_text(&body));
+        assert!(body_text(&body).contains(".git is never served"));
+        remove_root(serial);
+    }
+
+    fn reads(site: &Site) -> usize {
+        site.roots_reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// B2a: opening canonicalizes nothing, even for a root that is not there.
+    #[tokio::test]
+    async fn open_does_not_resolve_a_missing_root_b2a() {
+        let f = fixture();
+        let ghost = f.base.join("ghost-share");
+        std::fs::write(&f.roots_file, format!("{}\n", ghost.display())).unwrap();
+        let site =
+            Site::with_roots(f.repo.join("site"), f.repo.clone(), true, f.roots_file.clone()).await;
+        assert_eq!(reads(&site), 0);
+    }
+
+    /// B2b and B2c: one read for an unchanged file, a fresh one after a change.
+    #[tokio::test]
+    async fn roots_are_resolved_once_per_file_state_b2() {
+        let f = fixture();
+        let site = widened(&f).await;
+        assert_eq!(reads(&site), 0);
+        assert_eq!(site.data_roots().roots, vec![f.share.clone()]);
+        assert_eq!(site.data_roots().roots, vec![f.share.clone()]);
+        assert_eq!(reads(&site), 1);
+        std::fs::write(&f.roots_file, format!("{}\n{}\n", f.share.display(), f.outside.display()))
+            .unwrap();
+        assert_eq!(site.data_roots().roots, vec![f.share.clone(), f.outside.clone()]);
+        assert_eq!(reads(&site), 2);
+    }
+
+    #[tokio::test]
+    async fn a_root_declared_through_a_symlinked_path_matches_its_canonical_target() {
+        let f = fixture();
+        let alias = f.base.join("share-alias");
+        symlink(&f.share, &alias).unwrap();
+        std::fs::write(&f.roots_file, format!("{}\n", alias.display())).unwrap();
+        let (addr, nonce, serial) = serve(widened(&f).await).await;
+        let (st, _, body) = get(addr, &format!("/{nonce}/{MOVIE}"), &[]).await;
+        assert_eq!(st, 200);
+        assert_eq!(body.len(), MOVIE_LEN);
+        remove_root(serial);
     }
 }
