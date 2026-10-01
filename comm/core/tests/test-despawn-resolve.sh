@@ -233,7 +233,7 @@ run_clean() {
 lists() { grep -c '"op":"workspace.list"' "$REQLOG" 2>/dev/null || true; }
 
 case_worktree_clean_despawns_once() {
-    rm -rf "$WORK/wt"; make_worktree
+    rm -rf "${WORK:?}/wt"; make_worktree
     new_home; seed_row proj-wt-x ws-wt
     LIST_PAYLOAD="{\"workspaces\":[$(ws_entry ws-wt p-wt-x .P-wt-x)]}"
     DESTROY_PAYLOAD='{"workspace_id":"ws-wt"}'
@@ -249,7 +249,7 @@ case_worktree_clean_despawns_once() {
 
 # Guard: with no registry row the LABEL fallback still destroys.
 case_worktree_clean_label_fallback() {
-    rm -rf "$WORK/wt"; make_worktree
+    rm -rf "${WORK:?}/wt"; make_worktree
     new_home; mkdir -p "$CH"
     LIST_PAYLOAD="{\"workspaces\":[$(ws_entry ws-wt p-wt-x .P-wt-x)]}"
     DESTROY_PAYLOAD='{"workspace_id":"ws-wt"}'
