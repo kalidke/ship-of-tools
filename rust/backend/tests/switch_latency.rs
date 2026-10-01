@@ -394,7 +394,7 @@ fn write_fake_kernel(dir: &Path) -> PathBuf {
     let script = r#"#!/bin/sh
 gen=1
 if [ -n "$SOT_LANE_FAKE_JULIA_COUNTER_DIR" ]; then
-    : > "$SOT_LANE_FAKE_JULIA_COUNTER_DIR/spawn-$$-$(date +%s%N 2>/dev/null || date +%s)"
+    : > "$SOT_LANE_FAKE_JULIA_COUNTER_DIR/spawn-$$-$(date +%s%N)"
     set -- "$SOT_LANE_FAKE_JULIA_COUNTER_DIR"/spawn-*
     gen=$#
 fi
@@ -634,8 +634,8 @@ mod dead_kernel {
         assert_kernel_unavailable(&first, "request that killed the kernel");
         // Sent right after: the cached reason inside the floor, or gen 2's own
         // death if late; typed either way. The cached case is not
-        // order-provable, and preview_get's hang guard catches a Dead arm
-        // that waits.
+        // order-provable. preview_get's hang guard catches a Dead arm that
+        // waits out the deadline, not one that waits for the next generation.
         assert_kernel_unavailable(&second, "request right after the kernel died");
         let stamps = crate::support::poll_until(
             || {
@@ -647,10 +647,14 @@ mod dead_kernel {
         )
         .await;
         let gap = Duration::from_nanos(stamps[1] - stamps[0]);
-        // A lower bound: load only lengthens it.
+        // A lower bound: load only lengthens it, so it never fails correct
+        // code under load. Its limits: the gap starts at gen 1's start, so
+        // under load gen 1's own life can hide a missing backoff (a weaker
+        // check, never a false fail); and the stamps are wall clock, so a
+        // backward clock step between them can fail it.
         assert!(
             gap >= RESPAWN_BACKOFF_FLOOR,
-            "respawn came {gap:?} after the death, inside the {RESPAWN_BACKOFF_FLOOR:?} backoff floor"
+            "respawn came {gap:?} after gen 1 started, inside the {RESPAWN_BACKOFF_FLOOR:?} backoff floor"
         );
     }
 
