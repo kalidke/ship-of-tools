@@ -1192,6 +1192,11 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
         env.push(("SOT_COMM_HOME".to_string(), comm_home));
         env.push(("SOT_COMM_SELF_FILE".to_string(), self_file));
     }
+    // Claude Code's feedback survey is a modal panel that holds a row's
+    // session until someone answers it, so no row's agent shows it, on
+    // any OS. Only this switch: telemetry and nonessential traffic stay
+    // the user's own choice.
+    env.push(("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".to_string(), "1".to_string()));
     // The `ccb` launcher's own PATH rule, promoted to the daemon: a leg
     // inherits the SERVICE's PATH, which has no `~/.local/bin` (CLAUDE.md's
     // documented gotcha — the same reason [`claude_argv`] full-paths
@@ -5538,6 +5543,25 @@ mod tests {
             get("SOT_COMM_SELF_FILE"),
             Some("/fake-home/.sot-comm/self/testhost__ws-myrepo-1a2b.txt")
         );
+    }
+
+    #[test]
+    fn capsule_supervisor_env_disables_the_feedback_survey() {
+        // Every row's agent, named or not, on every OS: the survey's
+        // modal panel would otherwise hold the row's session until
+        // someone answers it. Only that switch, not telemetry's.
+        let _guard = self_file_env_guarded();
+        std::env::set_var("SOT_SELF_HOST", "testhost");
+        std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
+        for name in ["myrepo-myhost", ""] {
+            let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), name);
+            let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY").collect();
+            assert_eq!(hits.len(), 1, "exactly one survey switch for agent_name {name:?}");
+            assert_eq!(hits[0].1, "1");
+            assert!(!env
+                .iter()
+                .any(|(k, _)| k == "DISABLE_TELEMETRY" || k == "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"));
+        }
     }
 
     #[test]
