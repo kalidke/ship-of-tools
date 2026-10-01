@@ -332,11 +332,11 @@ fn direct_children_of(pid: u32) -> Vec<u32> {
 ///
 /// Takes `&mut Child` (Codex review round 3, N13), never an owned
 /// `Child` — an earlier version moved the child out of its own
-/// `KillGuard` before calling this, so a `panic!` on timeout unwound
+/// `CapsuleGuard` before calling this, so a `panic!` on timeout unwound
 /// past a bare `Child` with no guard left watching it: `Child`'s own
 /// `Drop` does not kill anything, only closes the handle, so the
 /// timed-out supervisor process leaked, orphaned, past every test that
-/// hit this exact path. Borrowing keeps the CALLER's `KillGuard` in
+/// hit this exact path. Borrowing keeps the CALLER's `CapsuleGuard` in
 /// possession of the child throughout, so its `Drop` still runs
 /// (kill + wait) as the panic unwinds through it.
 fn wait_for_exit_with_diagnostics(child: &mut Child, h: &str, timeout: Duration) -> std::process::ExitStatus {
@@ -821,7 +821,7 @@ fn a_different_build_id_with_the_same_proto_is_proven() {
 /// already spawned) must still be alive and serving after the refusal, so
 /// this reconnects with the RIGHT proto (this build's own), waits for
 /// Ready, then ends the run and stops the authority before the
-/// `KillGuard` ever runs -- otherwise a `KillGuard` that only kills the
+/// `CapsuleGuard` ever runs -- otherwise a `CapsuleGuard` that only kills the
 /// supervisor at scope exit strands the leg (a live `SHELL`) for however
 /// long it takes the temp state dir to be reclaimed.
 #[test]
@@ -1604,19 +1604,31 @@ fn first_leg_without_does_not_exempt_a_real_crash_loop_from_the_anti_flap_bound(
 #[test]
 fn the_sweep_refuses_any_root_outside_the_test_temp_dir() {
     use capsule_guard::sweep_root_ok;
-    let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
-    let bad = [
+    use capsule_guard::sweep_root_ok_in;
+    let mut bad = vec![
         PathBuf::new(),
         PathBuf::from("relative/dir"),
         std::env::temp_dir(),
         std::env::temp_dir().join("x/../.."),
         PathBuf::from("/run/user/1000/sot"),
-        home.join(".local/share/sot"),
-        home.join(".sot-comm"),
     ];
+    // HOME may be unset (windows CI): skip only the HOME-based rows.
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if let Some(home) = &home {
+        bad.push(home.join(".local/share/sot"));
+        bad.push(home.join(".sot-comm"));
+    }
     for root in &bad {
         assert!(!sweep_root_ok(root), "{root:?} must be refused");
     }
+    // A temp dir with no normal component refuses everything.
+    assert!(!sweep_root_ok_in(Path::new("/x/y"), Path::new("/"), None, None));
+    // A root under a protected dir refuses even when the temp dir contains it.
+    if let Some(home) = &home {
+        let root = home.join(".local/share/sot/x");
+        assert!(!sweep_root_ok_in(&root, home, Some(home), None));
+    }
+    assert!(!sweep_root_ok_in(Path::new("/run/user/1000/sot/x"), Path::new("/run"), None, None));
     let dir = tempfile::tempdir().unwrap();
     assert!(sweep_root_ok(dir.path()));
 }

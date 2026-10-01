@@ -768,8 +768,6 @@ fn pdeathsig_kills_the_producer_when_the_capsule_dies_hard() {
             break pid;
         }
         if Instant::now() >= deadline {
-            let _ = child.child_mut().kill();
-            let _ = child.child_mut().wait();
             panic!("the capsule never spawned a producer child within 10s");
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -786,8 +784,6 @@ fn pdeathsig_kills_the_producer_when_the_capsule_dies_hard() {
             break;
         }
         if Instant::now() >= deadline {
-            let _ = child.child_mut().kill();
-            let _ = child.child_mut().wait();
             panic!("the producer never became a ready, post-exec `sleep` session leader within 10s");
         }
         std::thread::sleep(Duration::from_millis(20));

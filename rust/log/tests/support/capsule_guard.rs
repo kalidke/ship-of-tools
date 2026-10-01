@@ -8,8 +8,6 @@
 //! test `Env::drop` does. Included by each test file with
 //! `#[path = "support/capsule_guard.rs"] mod capsule_guard;`.
 
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 use std::process::Child;
 
@@ -23,6 +21,15 @@ pub struct CapsuleGuard {
 /// and STRICTLY below the temp dir. An empty or unanchored pattern would
 /// match every process, a production daemon included.
 pub fn sweep_root_ok(root: &Path) -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let xdg = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    sweep_root_ok_in(root, &std::env::temp_dir(), home.as_deref(), xdg.as_deref())
+}
+
+/// [`sweep_root_ok`] with the environment passed in. Also refuses a temp dir
+/// with no normal component (TMPDIR=`/`) and any root at or under the
+/// production state dirs.
+pub fn sweep_root_ok_in(root: &Path, tmp: &Path, home: Option<&Path>, xdg: Option<&Path>) -> bool {
     use std::path::Component;
     if root.as_os_str().is_empty() || !root.is_absolute() {
         return false;
@@ -30,8 +37,21 @@ pub fn sweep_root_ok(root: &Path) -> bool {
     if root.components().any(|c| matches!(c, Component::ParentDir)) {
         return false;
     }
-    let tmp = std::env::temp_dir();
-    root.starts_with(&tmp) && root != tmp.as_path()
+    if !tmp.components().any(|c| matches!(c, Component::Normal(_))) {
+        return false;
+    }
+    let mut protected = vec![PathBuf::from("/run/user")];
+    if let Some(home) = home {
+        protected.push(home.join(".local/share/sot"));
+        protected.push(home.join(".sot-comm"));
+    }
+    if let Some(xdg) = xdg {
+        protected.push(xdg.to_path_buf());
+    }
+    if protected.iter().any(|p| root.starts_with(p)) {
+        return false;
+    }
+    root.starts_with(tmp) && root != tmp
 }
 
 impl CapsuleGuard {
@@ -52,17 +72,14 @@ impl CapsuleGuard {
         Self { child: Some(child), exe: exe.into(), state_root }
     }
 
+    #[allow(dead_code)]
     pub fn id(&self) -> u32 {
         self.child.as_ref().expect("capsule child still held").id()
     }
 
+    #[allow(dead_code)]
     pub fn child_mut(&mut self) -> &mut Child {
         self.child.as_mut().expect("capsule child still held")
-    }
-
-    /// Defuses the guard, for a test that hands the child on deliberately.
-    pub fn into_child(mut self) -> Child {
-        self.child.take().expect("capsule child still held")
     }
 }
 
@@ -70,7 +87,11 @@ impl Drop for CapsuleGuard {
     fn drop(&mut self) {
         if let Some(mut c) = self.child.take() {
             let _ = c.kill();
-            let _ = c.wait();
+            // Bounded: a capsule stuck in uninterruptible sleep must not hang the binary.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !matches!(c.try_wait(), Ok(Some(_)) | Err(_)) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
         }
         // Never panic here: a panic during unwinding aborts the process.
         if !sweep_root_ok(&self.state_root) {
@@ -83,12 +104,27 @@ impl Drop for CapsuleGuard {
             // Supervisors first each pass, so no new leg is spawned after
             // this pass's supervisor-kill lands; repeat until a pass finds
             // nothing or 2 s pass.
-            let supervise = build_leg_pgrep_pattern(&self.exe, "supervise", &self.state_root);
-            let run = build_leg_pgrep_pattern(&self.exe, "run", &self.state_root);
-            let combined = build_leg_pgrep_pattern(&self.exe, "(supervise|run)", &self.state_root);
+            // The supervise child carries the exe as spawned, its legs the
+            // canonical one: sweep both spellings.
+            let mut exes = vec![self.exe.clone()];
+            if let Ok(canon) = std::fs::canonicalize(&self.exe) {
+                if canon != self.exe {
+                    exes.push(canon);
+                }
+            }
+            let sweeps: Vec<String> = exes
+                .iter()
+                .flat_map(|e| {
+                    ["supervise", "run"].map(|sub| build_leg_pgrep_pattern(e, sub, &self.state_root))
+                })
+                .collect();
+            let combined: Vec<String> = exes
+                .iter()
+                .map(|e| build_leg_pgrep_pattern(e, "(supervise|run)", &self.state_root))
+                .collect();
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
-                for pattern in [&supervise, &run] {
+                for pattern in &sweeps {
                     let _ = Command::new("pkill")
                         .arg("-9")
                         .arg("-f")
@@ -98,7 +134,7 @@ impl Drop for CapsuleGuard {
                         .stderr(Stdio::null())
                         .status();
                 }
-                if !any_process_matches(&combined) || Instant::now() >= deadline {
+                if !combined.iter().any(|p| any_process_matches(p)) || Instant::now() >= deadline {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -123,10 +159,11 @@ fn regex_escape_path(path: &Path) -> String {
 }
 
 /// The anchored `pgrep`/`pkill` pattern for a `sot-capsule` invocation:
-/// `^<escaped exe path> <subcommand> <escaped state_root>`.
+/// `^<escaped exe path> <subcommand> <escaped state_root>(/| |$)`; the tail
+/// keeps `/tmp/.tmpABC` from matching `/tmp/.tmpABCD`.
 #[cfg(target_os = "linux")]
 pub fn build_leg_pgrep_pattern(exe: &Path, subcommand: &str, state_root: &Path) -> String {
-    format!("^{} {subcommand} {}", regex_escape_path(exe), regex_escape_path(state_root))
+    format!("^{} {subcommand} {}(/| |$)", regex_escape_path(exe), regex_escape_path(state_root))
 }
 
 /// Whether any live process's command line matches `pattern`.

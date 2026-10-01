@@ -1172,7 +1172,7 @@ fn attach_converges_on_the_supervisors_word() {
     let h = state_dir_hash(&state_dir);
 
     let started = Instant::now();
-    let mut guard = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "sleep 60"]);
+    let _guard = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "sleep 60"]);
 
     let (_woke, wake) = wake_flag();
     let mut client = FeAttachClient::attach(
@@ -1205,8 +1205,6 @@ fn attach_converges_on_the_supervisors_word() {
     // handling logs nothing on accept). Dropped, as the brief's own
     // fallback instructs.
     drop(client);
-    let _ = guard.child_mut().kill();
-    let _ = guard.child_mut().wait();
 }
 
 #[test]
@@ -1225,7 +1223,7 @@ fn quit_is_dispatched_before_ready() {
     // of the producer's behavior (~600ms either way): the real margin
     // this test relies on is `request_quit` being called at time ~0,
     // before the worker thread's first network round trip even starts.
-    let mut guard = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "sleep 3; sleep 60"]);
+    let _guard = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "sleep 3; sleep 60"]);
 
     let (_woke, wake) = wake_flag();
     let mut client: FeAttachClient = FeAttachClient::attach(
@@ -1279,8 +1277,6 @@ fn quit_is_dispatched_before_ready() {
     // Either way this test's property already holds, so teardown here is
     // a plain kill rather than negotiating a specific quit outcome.
     drop(client);
-    let _ = guard.child_mut().kill();
-    let _ = guard.child_mut().wait();
 }
 
 /// Codex review round finding 8: the predecessor version of this test
