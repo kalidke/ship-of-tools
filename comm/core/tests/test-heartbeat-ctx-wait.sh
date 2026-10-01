@@ -50,7 +50,9 @@ HB() {
     t0=$EPOCHREALTIME
     printf '{"tool_name":"Bash"}' | bash "$FLAT/comm-status-heartbeat.sh" >"$HB_OUT" 2>&1
     t1=$EPOCHREALTIME
-    echo $(( (${t1/./} - ${t0/./}) / 1000 ))
+    # Digits only, as comm-lib.sh reads its own clock: the decimal mark
+    # follows the locale, so the raw string is never used in arithmetic.
+    echo $(( (${t1//[!0-9]/} - ${t0//[!0-9]/}) / 1000 ))
 }
 
 # (a) fast context call: no whole-second dead time.
