@@ -88,17 +88,23 @@ fi
 if [ -n "$BRANCH" ]; then
     if [ "$FORCE" = true ]; then git branch -D "$BRANCH" 2>&1 || true; else git branch -d "$BRANCH" 2>&1 || true; fi
 fi
+DESPAWNED=false
 if [ "$KEEP_SESSION" != true ]; then
-    # Primary: despawn by HANDLE — deregisters the comm agent AND (via
-    # comm-despawn's registry-slug recovery) destroys the workspace even when the
-    # label/slug differs from the handle.
-    "$SCRIPT_DIR/comm-despawn.sh" "$HANDLE" 2>&1 | tail -3 || echo "  (despawn @$HANDLE: not running / already gone)"
-    # Belt-and-suspenders: if the LABEL differs from the HANDLE, also target it
-    # directly, covering the edge where the agent's registry row was already gone
-    # so the handle pass couldn't recover the slug. Idempotent — a no-op ("Nothing
-    # to destroy") if the handle pass already removed it.
-    if [ "$LABEL" != "$HANDLE" ]; then
-        "$SCRIPT_DIR/comm-despawn.sh" "$LABEL" 2>&1 | tail -2 || true
+    # By HANDLE first: comm-despawn finds the workspace through the handle's
+    # registry row even when the label differs (display-prefix decoupling).
+    # By LABEL only when that fails, e.g. the row is already gone: a
+    # comm-despawn that cannot resolve its name fails and changes nothing.
+    if "$SCRIPT_DIR/comm-despawn.sh" "$HANDLE"; then
+        DESPAWNED=true
+    elif [ "$LABEL" != "$HANDLE" ] && "$SCRIPT_DIR/comm-despawn.sh" "$LABEL"; then
+        DESPAWNED=true
     fi
 fi
-echo "cleaned: worktree removed${BRANCH:+, branch $BRANCH deleted}$([ "$KEEP_SESSION" = true ] && echo "" || echo ", session @$HANDLE despawned")."
+if [ "$KEEP_SESSION" = true ]; then
+    SESSION_NOTE=""
+elif [ "$DESPAWNED" = true ]; then
+    SESSION_NOTE=", session @$HANDLE despawned"
+else
+    SESSION_NOTE=", no session despawned (comm-despawn said why above)"
+fi
+echo "cleaned: worktree removed${BRANCH:+, branch $BRANCH deleted}${SESSION_NOTE}."

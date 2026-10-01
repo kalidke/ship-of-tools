@@ -486,8 +486,8 @@ _row_left_running() {  # reason
 # in place, anyone can comm-send @<name> immediately — the line queues durably,
 # and the agent's /sot-session-start bootstrap reads the backlog (comm-poll,
 # step 4) and replies once it's up (~1 min). The real join later overwrites
-# this row with full pane/expertise info; comm-despawn cleans it if the spawn
-# never boots. For a DERIVED name, PROV_OBJ was already written atomically
+# this row with full pane/expertise info; comm-leave.sh --name <handle> removes it if the
+# spawn never boots. For a DERIVED name, PROV_OBJ was already written atomically
 # above (claim_derived_handle) — only an EXPLICIT name still needs the
 # write here (its collision, if any, was already ruled out above).
 #
