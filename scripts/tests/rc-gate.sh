@@ -17,6 +17,7 @@
 # job that never ran cannot pass; each job's command has a 1200 s end (the
 # builds do not). CARGO_TARGET_DIR must be the gate's alone while it runs: any
 # new process started from it counts as a leftover.
+# ALLDONE marks the end of the run, not a pass: the rc lines are the verdict.
 
 SELF=$(readlink -f "$0")
 TO=(timeout -k 10 1200)
