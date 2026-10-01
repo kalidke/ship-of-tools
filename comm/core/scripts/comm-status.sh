@@ -35,8 +35,9 @@
 #   waiting set                  -> waiting   summary = waiting
 #   done set                     -> done      summary = note
 #   otherwise                    -> idle      summary = note
-# `note` holds the declaration's own line so the summary can return to it
-# once red or purple lifts — the daemon never touches it.
+# `note` holds the last working/idle/done line so the summary can return to it
+# once red or purple lifts; a blocked or waiting stamp WITH text deletes it.
+# The daemon never touches it.
 #
 # READ-DECIDE-WRITE IS ONE CRITICAL SECTION (Codex review, #223): apply the
 # verb, delete legacy keys, reduce, and stamp are ONE jq program run inside
@@ -103,14 +104,18 @@ status_txn() {
           elif $st == "stop" then
             (if .floor == "user" and .question == null and .waiting == null then .done = true else . end)
             | del(.floor)
-          else   # declarations — blocked/waiting set ONLY their own fact and
-                  # leave .note alone: it is the last line the session itself
-                  # declared, and aliasing it to the question text left that
-                  # text as the summary fallback long after the question was
-                  # answered and gone (a row read blocked/idle while `note`
-                  # still held dead question text — field report, 2026-09-27).
-            if $st == "blocked" then .question = (if $h == "1" then $sum else (.note // "") end)
-              elif $st == "waiting" then .waiting = (if $h == "1" then $sum else (.note // "") end)
+          else   # declarations — blocked/waiting set their own fact and never
+                  # copy their text into .note: aliasing it to the question
+                  # left that text as the summary fallback long after the
+                  # question was answered and gone (field report, 2026-09-27).
+                  # Text they carry does supersede the older note, which goes,
+                  # so a woken or answered row never shows a line written
+                  # before its latest declaration (a row read working with a
+                  # days-old note — field report, 2026-10-01).
+            if $st == "blocked" then (.question = (if $h == "1" then $sum else (.note // "") end))
+                | (if $h == "1" then del(.note) else . end)
+              elif $st == "waiting" then (.waiting = (if $h == "1" then $sum else (.note // "") end))
+                | (if $h == "1" then del(.note) else . end)
               elif $st == "done" then (if $h == "1" then .note = $sum else . end) | .done = true | del(.question, .waiting)
               else (if $h == "1" then .note = $sum else . end) | del(.question, .waiting, .done) end   # working, idle
           end

@@ -246,6 +246,19 @@ case_machine_wake_on_red_goes_green_returns_at_stop() {
     W "$RELAY"; expect working/machine/q/-/- wake || return 1
     IT "ack, noted." >/dev/null; expect blocked/-/q/-/- end
 }
+# A declaration that carries text supersedes the older note: a woken or
+# answered row never falls back to a line written before it.
+case_declared_text_supersedes_an_old_note() {
+    local v want
+    for v in blocked waiting; do
+        seed idle; "$ST" idle "old" >/dev/null; "$ST" "$v" "new" >/dev/null
+        [ "$v" = blocked ] && want=working/machine/q/-/- || want=working/machine/-/w/-
+        W "$RELAY"; expect "$want" "$v, then a machine prompt" || return 1
+        [ "$(summ)" = "" ] || { echo "    $v, then a machine prompt: summary '$(summ)'"; return 1; }
+        W "$GENUINE"
+        [ "$(summ)" = "" ] || { echo "    $v, then a user prompt: summary '$(summ)'"; return 1; }
+    done
+}
 case_human_answer_clears_question_ends_blue() {
     seed idle; W "$GENUINE"; "$ST" blocked "the question?" >/dev/null; floor_now
     expect blocked/-/q/-/- parked || return 1
@@ -860,6 +873,7 @@ check "blue survives a machine wake, gray at the next stop" case_blue_survives_m
 check "blue is cleared by the next genuine prompt" case_blue_cleared_by_next_user_prompt
 check "a question mid-turn is green, red once the turn stops" case_question_during_running_turn_is_green
 check "a machine wake on red goes green; a plain answer returns red" case_machine_wake_on_red_goes_green_returns_at_stop
+check "declared text supersedes an old note (blocked and waiting)" case_declared_text_supersedes_an_old_note
 check "the user's answer clears the question and ends blue" case_human_answer_clears_question_ends_blue
 check "a question outranks a wait; the wait returns once answered" case_red_over_purple
 check "a wait survives a user turn and a machine turn" case_purple_survives_user_and_machine_turns
