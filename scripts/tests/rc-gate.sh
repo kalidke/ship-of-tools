@@ -10,11 +10,13 @@
 # CARGO_TARGET_DIR (required); forwards JULIA_DEPOT_PATH, SSH_AUTH_SOCK and
 # CARGO_PROFILE_DEV_DEBUG when set. Rust jobs never get XDG_RUNTIME_DIR or
 # DBUS_SESSION_BUS_ADDRESS: they would put test scopes into the user's systemd
-# manager. Needs jq. Exit 2 on bad args; otherwise 0 (130 if interrupted) and the
-# verdict is in <logdir>/summary.txt (ends in ALLDONE, or ALLDONE FAILED when
-# the job runner failed, a job never ran, or a test left a process behind). Every job's result file starts as `unrun`, so
-# a job that never ran cannot pass; each job's command has a 1200 s end (the
-# builds do not).
+# manager. Needs jq. Exit 2 on bad args; otherwise 0 (130 if interrupted) and
+# the verdict is in <logdir>/summary.txt: it ends in ALLDONE, or ALLDONE FAILED
+# when the job runner failed, a job never ran, the run was interrupted, or a
+# test left a process behind. Every job's result file starts as `unrun`, so a
+# job that never ran cannot pass; each job's command has a 1200 s end (the
+# builds do not). CARGO_TARGET_DIR must be the gate's alone while it runs: any
+# new process started from it counts as a leftover.
 
 SELF=$(readlink -f "$0")
 TO=(timeout -k 10 1200)
@@ -242,11 +244,13 @@ JULIA_BIN=$(command -v julia) || { echo "rc-gate: julia not found" >&2; exit 2; 
 command -v jq > /dev/null || { echo "rc-gate: jq not found" >&2; exit 2; }
 export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$(dirname "$JULIA_BIN")
 envs
+INTR=0
+trap 'INTR=1' INT TERM HUP
 
 echo "head $(git -C "$D" rev-parse HEAD) tree $(git -C "$D" rev-parse 'HEAD^{tree}')" > "$L/summary.txt"
 echo "cap $CAP" >> "$L/summary.txt"
 
-TD=$(cd "$CARGO_TARGET_DIR" 2> /dev/null && pwd -P) || TD=$CARGO_TARGET_DIR
+TD=$(realpath -m -- "$CARGO_TARGET_DIR")
 # pids of every process whose executable lives under the target dir
 target_pids() {
   local d e
@@ -255,9 +259,16 @@ target_pids() {
     [[ $e == "$TD"/* ]] && echo "${d#/proc/}"
   done
 }
+# "<pid> <cmdline>" for each process new under the target dir since BEFORE,
+# rescanned after 5 s so one that is exiting is not counted and one started
+# meanwhile is
+leaks() {
+  local l p
+  l=$(comm -13 <(sort <<< "$BEFORE") <(target_pids | sort))
+  [ -z "$l" ] || { sleep 5; l=$(comm -13 <(sort <<< "$BEFORE") <(target_pids | sort)); }
+  for p in $l; do echo "$p $(tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null)"; done
+}
 BEFORE=$(target_pids)
-INTR=0
-trap 'INTR=1' INT TERM HUP
 
 T0=$(date +%s)
 M=$D/rust/Cargo.toml
@@ -265,12 +276,14 @@ BUILD_RC=0
 st build-capsule
 "${CE[@]}" cargo build --manifest-path "$M" -p sot-log --bin sot-capsule --locked > "$L/build-capsule.log" 2>&1
 r=$?; rc build-capsule $r; [ $r -ne 0 ] && BUILD_RC=$r
-st rust-build
-"${CE[@]}" cargo test --manifest-path "$M" --workspace --locked --no-run --message-format=json \
-  > "$L/rust-build.json" 2> "$L/rust-build.log"
-r=$?; rc rust-build $r; [ $r -ne 0 ] && BUILD_RC=$r
 : > "$L/tests.tsv"
-if [ "$BUILD_RC" -eq 0 ]; then
+if [ "$INTR" -eq 0 ]; then
+  st rust-build
+  "${CE[@]}" cargo test --manifest-path "$M" --workspace --locked --no-run --message-format=json \
+    > "$L/rust-build.json" 2> "$L/rust-build.log"
+  r=$?; rc rust-build $r; [ $r -ne 0 ] && BUILD_RC=$r
+fi
+if [ "$BUILD_RC" -eq 0 ] && [ "$INTR" -eq 0 ]; then
   if ! jq -r 'select(.reason=="compiler-artifact" and .profile.test==true and .executable!=null)
     | [.target.name, .executable, (.manifest_path|rtrimstr("/Cargo.toml"))] | @tsv' \
     "$L/rust-build.json" > "$L/tests.tsv" || ! [ -s "$L/tests.tsv" ]; then
@@ -280,19 +293,24 @@ if [ "$BUILD_RC" -eq 0 ]; then
 fi
 export RCG_BUILD_RC=$BUILD_RC
 
-( while kill -0 $$ 2> /dev/null; do cut -d' ' -f1 /proc/loadavg >> "$L/load.txt"; sleep 5; done ) &
-XS=130
+XS=130 LEFT=
 if [ "$INTR" -eq 0 ]; then
   setsid bash "$SELF" --pipeline "$CAP" &
   PG=$!
   wait "$PG"
   XS=$?
+  # every job of a clean run is done: look before the drain kills a leak
+  [ "$XS" -eq 0 ] && [ "$INTR" -eq 0 ] && LEFT=$(leaks)
   # the gate owns its session: drain it whatever way the pipeline ended
   pkill -TERM -s "$PG" 2> /dev/null
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do pgrep -s "$PG" > /dev/null || break; sleep 1; done
-  pkill -KILL -s "$PG" 2> /dev/null
+  for _ in 1 2 3 4 5; do pgrep -s "$PG" > /dev/null || break; pkill -KILL -s "$PG" 2> /dev/null; sleep 1; done
   wait "$PG" 2> /dev/null
 fi
+# anything the tests left under the target dir is reported, never killed
+[ -n "$LEFT" ] || LEFT=$(leaks)
+# the verdict is being written: from here no signal changes it
+trap '' INT TERM HUP
 
 PASSED=0 FAILED=0 IGNORED=0 FL=0 BIN=0 SEEN=" "
 for f in "$L"/rust/*.log; do
@@ -326,19 +344,12 @@ done
 rc rust-workspace "$RC" "binaries=$BIN passed=$PASSED failed=$FAILED ignored=$IGNORED $FL FAILED-lines"
 [ -n "$NOTES" ] && printf '%s' "$NOTES" >> "$L/summary.txt"
 [ "$XS" -eq 0 ] || rc pipeline "$XS"
-# anything the tests left under the target dir is reported, never killed
-LEFT=$(comm -13 <(sort <<< "$BEFORE") <(target_pids | sort))
-if [ -n "$LEFT" ]; then
-  sleep 5
-  AFTER=$(target_pids)
-  for p in $LEFT; do
-    grep -qx "$p" <<< "$AFTER" || continue
-    echo "leftover $p $(tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null)" >> "$L/summary.txt"
-  done
-fi
-PEAK=$(sort -n "$L/load.txt" 2> /dev/null | tail -1)
+[ -z "$LEFT" ] || sed 's/^/leftover /' <<< "$LEFT" >> "$L/summary.txt"
+# peak load from the samples every job start took
+PEAK=$({ awk '$2 == "start" {print $5}' "$L/summary.txt"
+  awk 'FNR == 1 && $1 == "Running" {print $NF}' "$L"/rust/*.log 2> /dev/null; } | sort -n | tail -n 1)
 echo "end $(date +%H:%M:%S) load $(cut -d' ' -f1-3 /proc/loadavg) cargo=$(pgrep -c cargo) peak-load ${PEAK:-0} wall $(($(date +%s) - T0))s" >> "$L/summary.txt"
-if [ "$XS" -eq 0 ] && [ "$INTR" -eq 0 ] && [ "$UNRUN" -eq 0 ] && ! grep -q '^leftover ' "$L/summary.txt"; then
+if [ "$XS" -eq 0 ] && [ "$INTR" -eq 0 ] && [ "$UNRUN" -eq 0 ] && [ -z "$LEFT" ]; then
   echo ALLDONE >> "$L/summary.txt"
 else
   echo "ALLDONE FAILED" >> "$L/summary.txt"
