@@ -5983,68 +5983,102 @@ mod comm_file_tests {
         assert_eq!(file(Some(d.path()), "fresh", true).unwrap_err().0, "not_here");
     }
 
-    // A registry that reads empty for a moment is read again; one that
+    // The heal runs inside a pause, so which try sees it is fixed; the verdict
+    // arm is pinned by the empty-registry test above.
+
+    /// Read the registry, running `heal` in pause number `at` (0 = never);
+    /// returns the result and how many pauses there were.
+    fn read_healed(reg: &std::path::Path, at: usize, heal: impl FnOnce()) -> (std::io::Result<Vec<u8>>, usize) {
+        let (mut pauses, mut heal) = (0, Some(heal));
+        let r = read_registry_fresh_with(reg, |_| {
+            pauses += 1;
+            if pauses == at {
+                if let Some(h) = heal.take() {
+                    h();
+                }
+            }
+        });
+        (r, pauses)
+    }
+
+    /// The message of an unreadable registry, which is never NotFound.
+    fn unreadable(r: std::io::Result<Vec<u8>>) -> String {
+        let e = r.unwrap_err();
+        assert_ne!(e.kind(), std::io::ErrorKind::NotFound, "{e}");
+        e.to_string()
+    }
+
+    // A registry that reads empty until a pause is read again; one that
     // stays empty is unreadable.
     #[test]
-    fn a_registry_empty_for_50ms_is_read_and_one_empty_for_1s_is_file_failed() {
-        for (empty_ms, want) in [(50, Ok(())), (1000, Err("file_failed"))] {
+    fn a_registry_empty_until_a_pause_is_read_and_one_that_stays_empty_is_unreadable() {
+        for at in [1, 3, 0] {
             let d = home();
             let (reg, tmp) = (d.path().join("registry.json"), d.path().join("registry.json.tmp"));
+            let good = std::fs::read(&reg).unwrap();
             std::fs::copy(&reg, &tmp).unwrap();
             std::fs::write(&reg, "").unwrap();
-            let swap = std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(empty_ms));
-                std::fs::rename(tmp, reg).unwrap();
-            });
-            assert_eq!(file(Some(d.path()), "fresh", false).map_err(|e| e.0), want.map_err(String::from), "{empty_ms} ms");
-            swap.join().unwrap();
+            let (r, pauses) = read_healed(&reg, at, || std::fs::rename(&tmp, &reg).unwrap());
+            if at > 0 {
+                assert_eq!((r.unwrap(), pauses), (good, at));
+            } else {
+                assert_eq!((unreadable(r).as_str(), pauses), ("no good read in 4 tries; the last: zero bytes", 3));
+            }
         }
     }
 
-    // A registry whose read fails for a moment (mode 000 here; ESTALE across
-    // boxes) is read again; one that fails for 1 s, or that vanishes while it
-    // is retried, is unreadable, never "not here".
+    // A registry whose read fails until a pause (mode 000 here; ESTALE across
+    // boxes) is read again; one that fails throughout, or that vanishes while
+    // it is retried, is unreadable, never "not here".
     #[cfg(unix)]
     #[test]
-    fn a_registry_failing_for_50ms_is_read_and_one_failing_for_1s_or_vanishing_is_file_failed() {
+    fn a_registry_failing_until_a_pause_is_read_and_one_failing_throughout_or_vanishing_is_unreadable() {
         use std::os::unix::fs::PermissionsExt;
-        for (fail_ms, vanish, want) in [(50, false, Ok(())), (1000, false, Err("file_failed")), (50, true, Err("file_failed"))] {
+        for (at, vanish) in [(1, false), (0, false), (1, true)] {
             let d = home();
             let reg = d.path().join("registry.json");
+            let good = std::fs::read(&reg).unwrap();
             std::fs::set_permissions(&reg, std::fs::Permissions::from_mode(0o000)).unwrap();
             if std::fs::File::open(&reg).is_ok() {
                 eprintln!("skipped: mode 000 does not stop this user's open (root)");
                 return;
             }
-            let heal = std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(fail_ms));
+            let (r, pauses) = read_healed(&reg, at, || {
                 if vanish {
-                    std::fs::remove_file(reg).unwrap();
+                    std::fs::remove_file(&reg).unwrap();
                 } else {
-                    std::fs::set_permissions(reg, std::fs::Permissions::from_mode(0o644)).unwrap();
+                    std::fs::set_permissions(&reg, std::fs::Permissions::from_mode(0o644)).unwrap();
                 }
             });
-            assert_eq!(file(Some(d.path()), "fresh", false).map_err(|e| e.0), want.map_err(String::from), "{fail_ms} ms, vanish {vanish}");
-            heal.join().unwrap();
+            if at > 0 && !vanish {
+                assert_eq!((r.unwrap(), pauses), (good, at));
+            } else {
+                unreadable(r);
+                assert_eq!(pauses, 3, "at {at}, vanish {vanish}");
+            }
         }
     }
 
     // The shape ESTALE takes across boxes: the open succeeds and the read
     // fails. A directory at the registry's path does the same on one box.
     #[test]
-    fn a_registry_that_opens_but_will_not_read_for_50ms_is_read_and_for_1s_is_file_failed() {
-        for (fail_ms, want) in [(50, Ok(())), (1000, Err("file_failed"))] {
+    fn a_registry_that_opens_but_will_not_read_until_a_pause_is_read_and_throughout_is_unreadable() {
+        for at in [1, 0] {
             let d = home();
             let (reg, tmp) = (d.path().join("registry.json"), d.path().join("registry.json.tmp"));
+            let good = std::fs::read(&reg).unwrap();
             std::fs::rename(&reg, &tmp).unwrap();
             std::fs::create_dir(&reg).unwrap();
-            let heal = std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(fail_ms));
+            let (r, pauses) = read_healed(&reg, at, || {
                 std::fs::remove_dir(&reg).unwrap();
-                std::fs::rename(tmp, reg).unwrap();
+                std::fs::rename(&tmp, &reg).unwrap();
             });
-            assert_eq!(file(Some(d.path()), "fresh", false).map_err(|e| e.0), want.map_err(String::from), "{fail_ms} ms");
-            heal.join().unwrap();
+            if at > 0 {
+                assert_eq!((r.unwrap(), pauses), (good, at));
+            } else {
+                unreadable(r);
+                assert_eq!(pauses, 3);
+            }
         }
     }
 
@@ -7213,6 +7247,12 @@ fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 /// link), but no zero-byte read has ever been observed. Non-empty
 /// bytes are never retried, parseable or not.
 fn read_registry_fresh(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    read_registry_fresh_with(path, std::thread::sleep)
+}
+
+/// `read_registry_fresh` with its pause as a parameter: a test hook, so a test
+/// acts between tries without racing a clock.
+fn read_registry_fresh_with(path: &std::path::Path, mut pause: impl FnMut(std::time::Duration)) -> std::io::Result<Vec<u8>> {
     let mut failed = match std::fs::read(path) {
         Ok(bytes) if !bytes.is_empty() => return Ok(bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(e),
@@ -7220,7 +7260,7 @@ fn read_registry_fresh(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
         Err(e) => e.to_string(),
     };
     for pause_ms in [0, 100, 100] {
-        std::thread::sleep(std::time::Duration::from_millis(pause_ms));
+        pause(std::time::Duration::from_millis(pause_ms));
         if let Some(dir) = path.parent() {
             let _ = std::fs::File::open(dir);
         }

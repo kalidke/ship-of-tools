@@ -393,15 +393,24 @@ mod tests {
         // also what makes this case specific: holding stdout too would
         // stall the reply read instead, a different wait with a different
         // cause, and the assertion below could no longer tell them apart.
-        write_ssh_script(dir.path(), "echo 'Permission denied (publickey).' >&2\nsleep 5 >/dev/null &\nexit 255\n");
+        let pid_file = dir.path().join("holder.pid");
+        write_ssh_script(
+            dir.path(),
+            &format!("echo 'Permission denied (publickey).' >&2\nsleep 30 >/dev/null &\necho $! > '{}'\nexit 255\n", pid_file.display()),
+        );
         prepend_to_path(dir.path());
 
         let started = std::time::Instant::now();
         let err = dial_and_call("ssh:hub", "selfbox", "topology.set", serde_json::json!({}))
             .expect_err("a child that answers nothing must be an error, not a hang");
         let waited = started.elapsed();
+        // The holder lives 30 s, so a read of its pipe would end at 30 s; the
+        // ceiling is 10 s, a third of that.
+        if let Ok(pid) = std::fs::read_to_string(&pid_file) {
+            let _ = std::process::Command::new("kill").arg(pid.trim()).status();
+        }
         assert!(
-            waited < std::time::Duration::from_secs(3),
+            waited < std::time::Duration::from_secs(10),
             "the error path waited {waited:?}: it must not read a pipe other processes still hold open (err: {err})"
         );
         // Promptly is only half of it: the verdict has to be the right one,

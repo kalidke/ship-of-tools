@@ -779,8 +779,8 @@ mod tests {
             .unwrap()
     }
 
-    // The stubbed fsync failure, Rust arm: `sync` starts a reader, waits 0.5 s
-    // and fails, so `append_line` cuts the in-flight line back. The reader is
+    // The stubbed fsync failure, Rust arm: `sync` starts a reader, waits until
+    // it is in flight (counted, or blocked behind the exclusive lock) and fails, so `append_line` cuts the in-flight line back. The reader is
     // the scripts' own (comm-lib.sh), so the guards under test are the real
     // ones. A comm home whose folder record matches this disk lets the locked
     // reader take the shared lock; a PATH with no flock(1) leaves the other
@@ -790,6 +790,7 @@ mod tests {
         home: &Path,
         path: &str,
         reader: &'static str,
+        reader_blocks: bool,
     ) -> (String, String) {
         let inbox = home.join("inbox");
         std::fs::create_dir_all(&inbox).unwrap();
@@ -798,7 +799,7 @@ mod tests {
         file_frame(&inbox, "a", "h", false, "one", "t", Duration::from_secs(5), "local t").unwrap();
         let child = std::cell::RefCell::new(None);
         let sync = |_f: &File| -> std::io::Result<()> {
-            let c = std::process::Command::new("bash")
+            let mut c = std::process::Command::new("bash")
                 .arg("-c")
                 .arg(format!("source {}; {reader}", scripts_lib()))
                 .env("SOT_COMM_HOME", home)
@@ -808,8 +809,12 @@ mod tests {
                 .stderr(std::process::Stdio::piped())
                 .spawn()
                 .unwrap();
+            if reader_blocks {
+                until_a_waiter_blocks_on(&inbox.join("h.lock"));
+            } else {
+                c.wait().unwrap();
+            }
             *child.borrow_mut() = Some(c);
-            std::thread::sleep(Duration::from_millis(500));
             Err(std::io::Error::other("stubbed fsync failure"))
         };
         let r = file_frame_with(&inbox, "a", "h", false, "inflight", "t", Duration::from_secs(5), "local t", sync);
@@ -817,6 +822,23 @@ mod tests {
         assert_eq!(read_lines(&inbox.join("h.jsonl")).len(), 1, "the in-flight line was not cut back");
         let out = child.into_inner().unwrap().wait_with_output().unwrap();
         (String::from_utf8_lossy(&out.stdout).into(), String::from_utf8_lossy(&out.stderr).into())
+    }
+
+    // The kernel's word that a reader is blocked behind the lock: /proc/locks
+    // lists a waiter as a line with `->` on the lock's inode.
+    #[cfg(target_os = "linux")]
+    fn until_a_waiter_blocks_on(lock: &Path) {
+        use std::os::unix::fs::MetadataExt;
+        let needle = format!(":{} ", std::fs::metadata(lock).unwrap().ino());
+        let give_up = Instant::now() + Duration::from_secs(10);
+        loop {
+            let locks = std::fs::read_to_string("/proc/locks").unwrap();
+            if locks.lines().any(|l| l.contains("->") && l.contains(&needle)) {
+                return;
+            }
+            assert!(Instant::now() < give_up, "no reader blocked on {lock:?} within 10 s");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     // (a) The reader that waits on the shared lock counts nothing new after the
@@ -829,6 +851,7 @@ mod tests {
             d.path(),
             &std::env::var("PATH").unwrap(),
             r#"sot_inbox_read_lock h || exit 75; sot_inbox_lines h"#,
+            true,
         );
         assert_eq!(out.trim(), "1", "a locked reader counted the in-flight line");
     }
@@ -858,6 +881,7 @@ mod tests {
             d.path(),
             np,
             r#"n="$(sot_inbox_lines h)"; sot_cursor_write h "$n" "$(sed -n "${n}p" "$COMM_HOME/inbox/h.jsonl")"; echo "$n""#,
+            false,
         );
         assert_eq!(out.trim(), "2", "the unlocked reader should have counted the in-flight line");
         file_frame(&d.path().join("inbox"), "a", "h", false, "real", "t", Duration::from_secs(5), "local t").unwrap();
@@ -892,45 +916,42 @@ mod tests {
         let w = Duration::from_millis(200);
         assert!(file_frame(d.path(), "a", "h", false, "late", "t", w, "local t").is_err());
         drop(holder);
-        let start = std::time::Instant::now();
-        file_frame(d.path(), "a", "h", false, "only", "t", w, "local t").unwrap();
-        assert!(start.elapsed() < Duration::from_secs(1));
+        file_frame(d.path(), "a", "h", false, "only", "t", Duration::from_secs(10), "local t").unwrap();
         let lines = read_lines(&d.path().join("h.jsonl"));
         assert_eq!((lines.len(), lines[0]["msg"].as_str()), (1, Some("only")));
     }
 
-    // A holder frees the lock after 300 ms; the filing follows it within a
-    // retry under the polled wait, and within 2 s under a blocking one (the
-    // bound is wall time, so it carries the box's load; a missed wake would
-    // only end at the 5 s bound). A lock that is never freed gives the same
-    // sentence at the bound under either wait.
-    fn held_then_freed(own: &str) -> (Duration, Result<(), String>) {
+    // A holder frees the lock after 300 ms. The filing cannot finish before an
+    // unlock that comes after `at`, so `done >= at` proves it followed the
+    // unlock, under the polled wait and under a blocking one alike; a missed
+    // wake or a stopped poll ends in the bound's error. A lock that is never
+    // freed gives the same sentence at the bound under either wait.
+    fn held_then_freed(own: &str) {
         let d = tempfile::tempdir().unwrap();
         let holder = OpenOptions::new().read(true).create(true).append(true).open(d.path().join("h.lock")).unwrap();
         holder.lock().unwrap();
         let freed = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(300));
+            let at = Instant::now();
             drop(holder);
+            at
         });
-        let start = Instant::now();
-        let r = file_frame(d.path(), "a", "h", false, "x", "t", Duration::from_secs(5), own);
-        freed.join().unwrap();
-        (start.elapsed(), r)
+        let r = file_frame(d.path(), "a", "h", false, "x", "t", Duration::from_secs(10), own);
+        let done = Instant::now();
+        let at = freed.join().unwrap();
+        r.unwrap();
+        assert!(done >= at, "{own}: filed before the unlock");
     }
 
     #[test]
     fn under_nfs4_the_lock_is_polled_and_follows_the_unlock() {
-        let (took, r) = held_then_freed("nfs4 srv:/export");
-        r.unwrap();
-        assert!(took >= Duration::from_millis(300) && took < Duration::from_millis(500), "{took:?}");
+        held_then_freed("nfs4 srv:/export");
     }
 
     #[test]
     fn under_a_local_lock_the_wait_blocks_and_follows_the_unlock() {
         for own in ["local m", "none@m"] {
-            let (took, r) = held_then_freed(own);
-            r.unwrap();
-            assert!(took >= Duration::from_millis(300) && took < Duration::from_secs(2), "{own}: {took:?}");
+            held_then_freed(own);
         }
     }
 

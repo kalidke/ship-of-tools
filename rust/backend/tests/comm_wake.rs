@@ -20,12 +20,12 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const HANDLE: &str = "wakeh";
 
-/// How long after one appended line the wake line must have been typed.
-const WAKE_WITHIN: Duration = Duration::from_secs(5);
+/// A hang guard: these tests prove order; the e2e harness measures latency.
+const WAKE_WITHIN: Duration = Duration::from_secs(30);
 
-/// The three wakes must land within this of each other (the spread bound for
-/// `rows_with_mail_are_held_at_once`).
-const MAX_SPREAD: Duration = Duration::from_secs(1);
+/// Serial checks put the first and third wakes at least two STILL_FOR holds
+/// (2 x 1.5 s) apart.
+const MAX_SPREAD: Duration = Duration::from_secs(3);
 
 /// A stub `claude`: banner, then the real input box and one line read at a time:
 /// a rule line, `❯` and a no-break space, a second rule line, the cursor back
@@ -179,7 +179,7 @@ async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
     Row { env, conn, next_id, ws, log, dialog, spin, stub_dir }
 }
 
-/// An idle row is woken within 5 s of one appended line, and only once.
+/// An idle row is woken by one appended line, and only once.
 #[tokio::test]
 async fn an_idle_row_is_woken_once() {
     let _serial = SERIAL.lock().await;
@@ -192,8 +192,8 @@ async fn an_idle_row_is_woken_once() {
     row.env.kill_daemon_bounded().await;
 }
 
-/// A row in a dialog is not typed into, and is woken within 5 s of the
-/// dialog closing.
+/// A row in a dialog is not typed into, and is woken once the dialog
+/// closes.
 #[tokio::test]
 async fn a_row_in_a_dialog_is_not_typed_into_until_it_closes() {
     let _serial = SERIAL.lock().await;
@@ -208,7 +208,7 @@ async fn a_row_in_a_dialog_is_not_typed_into_until_it_closes() {
 }
 
 /// A working row (its spinner redrawing above a live prompt) is not typed
-/// into, and is woken within 5 s of coming to rest.
+/// into, and is woken once it comes to rest.
 #[tokio::test]
 async fn a_working_row_is_not_typed_into_until_it_rests() {
     let _serial = SERIAL.lock().await;

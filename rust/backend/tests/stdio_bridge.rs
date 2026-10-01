@@ -237,12 +237,10 @@ fn a_missing_endpoint_exits_promptly_with_one_stderr_line_and_no_stdout() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     runtime_root();
 
-    let started = Instant::now();
     // `--host` with a name nothing binds: the relay-socket derivation puts
     // the name straight into the path, so the diagnosis names it without
     // this test needing a caller-supplied label the flag no longer has.
     let out = spawn_bridge(&["--host", "nothing-listens-here"]).wait_with_output().expect("wait for the bridge");
-    let elapsed = started.elapsed();
 
     assert!(!out.status.success(), "an endpoint that is not there is a failure");
     assert!(out.status.code().is_some(), "it exits, it is not killed by a signal: {:?}", out.status);
@@ -250,10 +248,12 @@ fn a_missing_endpoint_exits_promptly_with_one_stderr_line_and_no_stdout() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(stderr.lines().count(), 1, "one line names the cause: {stderr:?}");
     assert!(stderr.contains("nothing-listens-here"), "the line names the endpoint it could not reach: {stderr:?}");
-    // The connectors treat a missing endpoint as fatal on the first
-    // attempt; this is the assertion that keeps it that way rather than
-    // waiting out a connect bound (or a retry loop) to say so.
-    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?} to report an endpoint that is not there");
+    // The fatal first attempt names op `connect`; the bounded retry names
+    // `connect(bounded retry)`.
+    assert!(
+        stderr.contains(": connect: ") && !stderr.contains("bounded retry"),
+        "a missing endpoint is fatal on the first attempt, not after the connect bound: {stderr:?}"
+    );
 }
 
 /// Whatever the daemon managed to say before giving up.
