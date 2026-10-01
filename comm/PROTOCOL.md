@@ -425,8 +425,9 @@ row's handle has unread mail and the row sits at a free prompt — the cursor
 sitting at the start of the input line marked by the prompt glyph (`❯`,
 or on Windows `❯` or `>`, the latter being Claude Code's fallback when its
 unicode check fails), followed by a no-break space, between the input box's
-two rules (on every OS; on Windows a bare glyph too, for now), so a grey suggestion or any other decoration does not
-count as a draft but a real draft still does, and the screen must then hold
+two rules (on every OS; on Windows a bare glyph too, for now), so a grey
+suggestion or any other decoration does not count as a draft, while a draft
+counts unless its cursor sits at its very start, and the screen must then hold
 still for a second and a half before anything is typed, so a working
 session is not typed into while its screen is still changing — the daemon
 types one fixed line, `[sot-comm] you have mail: run

@@ -23,7 +23,9 @@
 //! The converse fails open: a working row whose screen happens not to change
 //! for [`STILL_FOR`] is typed into, and the line lands as a queued message.
 //! A permission menu is not free by construction (its options use an ASCII
-//! space and it is never boxed), though it holds still. The Windows-only gap:
+//! space and it is never boxed), though it holds still. The menu fixtures are
+//! synthetic (built from the bundle's layout; no menu screen has been
+//! captured), and this assumes the cursor follows focus into a dialog. The Windows-only gap:
 //! while the NBSP is not required there, an agents-view task box with an empty
 //! placeholder (a voice state) reads free.
 //!
@@ -398,8 +400,6 @@ mod tests {
     #[test]
     fn free_prompts() {
         for windows in [false, true] {
-            assert!(bfree("\u{276f}\u{a0}", 1, windows));
-            assert!(bfree("\u{276f}\u{a0}", 2, windows));
             // Ghost-text suggestion with the cursor at its start.
             assert!(bfree("\u{276f}\u{a0}try this", 2, windows));
         }
@@ -407,13 +407,14 @@ mod tests {
 
     #[test]
     fn drafts_dialogs_and_missing_cursors_are_not_free() {
-        assert!(!free(&["\u{276f} hello"], Some((0, 8))));
-        assert!(!free(&["\u{276f}h"], Some((0, 2))));
-        assert!(!free(&["\u{276f} h"], Some((0, 3))));
+        for w in [false, true] {
+            // The cursor at the draft's end (clause b), and text before the glyph (clause a).
+            assert!(!bfree("\u{276f}\u{a0}hello", 7, w));
+            assert!(!bfree("x\u{276f}\u{a0}", 3, w));
+        }
         assert!(!free(&["\u{276f}", "Allow this action? (y/n)"], Some((1, 24))));
         assert!(!free(&["\u{276f}"], None));
         assert!(!free(&["\u{276f}"], Some((5, 1))));
-        assert!(!free(&["x \u{276f}"], Some((0, 3))));
     }
 
     #[test]
@@ -634,6 +635,23 @@ mod tests {
         "  ⏵⏵ auto mode on · 2 monitors · ← for agents",
     ];
 
+    /// A claude row mid-turn, captured live on Linux (2026-10-01): the spinner is live above the box and the cursor still sits at (8, 2). Line 2 is a queued input echoed with the glyph OUTSIDE the box.
+    const LINUX_TURN_A: [&str; 13] = [
+        "     (ctrl+b to run in background)                                                                               │",
+        "                                                                                                                 │",
+        "❯ [sot-comm] you have mail: run comm-poll.sh                                                                     │",
+        "  ctrl+x ctrl+s to send now                                                                                      │",
+        "                                                                                                                 │",
+        "✢ Levitating… (56s · ↓ 3.4k tokens)                                                                              │",
+        "                                                                         ✔ Update installed · Restart to update  │",
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯\u{a0}Press up to edit queued messages",
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  Opus 5.5 [00000000] acct ·think:xhigh | v2.1.285 | demo:main | 0 uncommitted",
+        "  Session: 1k (in:1k out:1k) | $0.00",
+        "  ⏵⏵ auto mode on · 2 monitors · ← for agents",
+    ];
+
     // Windows: REAL captures of a claude row mid-turn on Windows (2026-10-01, Claude Code 2.1.282, the row's own
     // screen read, trailing spaces trimmed by the reader), statusline id and cost scrubbed. rows 75, cols 203,
     // cursor (69, 2) = row 7 here, col 2. The prompt is the single byte '>' and the rules are U+2500 x 203: Claude
@@ -695,7 +713,10 @@ mod tests {
     }
 
     #[test]
-    fn a_windows_turn_frame_passes_the_box_check() {
+    fn one_turn_frame_reads_free() {
+        // One frame of a working row reads free (its box shows the glyph, NBSP and a queued-message hint); only
+        // the hold in `wake_if_free` protects it (itest `a_working_row_is_not_typed_into_until_it_rests`).
+        assert!(on(&LINUX_TURN_A, (8, 2), false));
         assert_eq!(on(&WIN_TURN_A, (7, 2), true), !nbsp_required(true));
         let mut nbsp = WIN_TURN_A;
         nbsp[7] = ">\u{a0}";
@@ -722,11 +743,6 @@ mod tests {
         let mut quoted = WIN_QUOTED;
         quoted[1] = "\u{276f} quoted text";
         assert!(!on(&quoted, (1, 2), true));
-    }
-
-    #[test]
-    fn linux_never_takes_gt() {
-        assert!(!on(&WIN_REST, (7, 2), false));
     }
 
     /// SYNTHETIC, from the layout of Claude Code's permission dialog: every option is `[pointer-or-space, " ", label]`.
@@ -791,9 +807,6 @@ mod tests {
             assert!(!prompt_free_on(&lines(&[ask]), Some((0, 2)), "claude", windows));
             assert!(!bfree(ask, 2, windows));
             assert!(!bfree("\u{276f} describe a task for a new session", 2, windows));
-            // The agents-view task box with an empty placeholder (a voice state) reads as a bare glyph: free
-            // wherever the NBSP is not required, the named Windows-only gap.
-            assert_eq!(bfree("\u{276f}", 2, windows), !nbsp_required(windows));
         }
     }
 
@@ -828,10 +841,9 @@ mod tests {
 
     #[test]
     fn output_lines_are_not_free() {
-        let mut out = LINUX_IDLE;
-        out[2] = "\u{276f}\u{a0}an earlier prompt";
+        // The real queued-input echo of a working row: the glyph sits outside the box.
         for windows in [false, true] {
-            assert!(!on(&out, (2, 2), windows));
+            assert!(!on(&LINUX_TURN_A, (2, 2), windows));
         }
     }
 
@@ -839,6 +851,9 @@ mod tests {
     fn a_bare_glyph_follows_the_switch() {
         for windows in [false, true] {
             assert_eq!(bfree("\u{276f}", 1, windows), !nbsp_required(windows));
+            assert_eq!(bfree("\u{276f}", 2, windows), !nbsp_required(windows));
+            // The agents-view task box with an empty placeholder (a voice state) reads as a bare glyph: free
+            // wherever the NBSP is not required, the named Windows-only gap.
             assert_eq!(bfree("\u{276f}", 2, windows), !nbsp_required(windows));
         }
     }
