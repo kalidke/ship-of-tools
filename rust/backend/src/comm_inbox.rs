@@ -192,7 +192,9 @@ fn append_line(
         f.read_exact(&mut last)?;
         if last[0] != b'\n' {
             let keep = end_of_last_line(&mut f, len)?;
-            f.set_len(keep)?;
+            // Windows refuses to truncate through an append-only handle,
+            // so the cut and the rollback below each open a write handle.
+            OpenOptions::new().write(true).open(path)?.set_len(keep)?;
             tracing::warn!(
                 "cut {} bytes of an unterminated line a dead writer left in {}",
                 len - keep,
@@ -203,7 +205,7 @@ fn append_line(
     }
     let written = f.write_all(line.as_bytes()).and_then(|()| sync(&f));
     if written.is_err() {
-        let _ = f.set_len(len);
+        let _ = OpenOptions::new().write(true).open(path).and_then(|t| t.set_len(len));
     }
     written
 }
@@ -881,6 +883,7 @@ mod tests {
     fn a_waiter_that_gave_up_never_keeps_the_lock() {
         let d = tempfile::tempdir().unwrap();
         let holder = OpenOptions::new()
+            .read(true)
             .create(true)
             .append(true)
             .open(d.path().join("h.lock"))
@@ -903,7 +906,7 @@ mod tests {
     // sentence at the bound under either wait.
     fn held_then_freed(own: &str) -> (Duration, Result<(), String>) {
         let d = tempfile::tempdir().unwrap();
-        let holder = OpenOptions::new().create(true).append(true).open(d.path().join("h.lock")).unwrap();
+        let holder = OpenOptions::new().read(true).create(true).append(true).open(d.path().join("h.lock")).unwrap();
         holder.lock().unwrap();
         let freed = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(300));
@@ -934,7 +937,7 @@ mod tests {
     #[test]
     fn both_waits_give_the_same_sentence_at_the_bound() {
         let d = tempfile::tempdir().unwrap();
-        let holder = OpenOptions::new().create(true).append(true).open(d.path().join("h.lock")).unwrap();
+        let holder = OpenOptions::new().read(true).create(true).append(true).open(d.path().join("h.lock")).unwrap();
         holder.lock().unwrap();
         for own in ["nfs4 srv:/export", "local m"] {
             let e = file_frame(d.path(), "a", "h", false, "x", "t", Duration::from_secs(1), own).unwrap_err();
