@@ -389,7 +389,9 @@ tmux; a capsule-capable install needs no tmux.
      from `Workspace::meta_only`, which BLANKS the declared handle (the
      row goes colourless), it spawns a second supervisor for a row that
      already has one, and on a synchronous spawn failure it rolls back the
-     registry row and its toml, deleting a LIVE row.
+     registry row and its toml, deleting a LIVE row. **Update 2026-09-30
+     (0.6.6):** the daemon now refuses that call for any row in use
+     (`label_in_use`, ADR 0036's update), so the shortcut fails loudly instead.
    Refused before anything is touched: an unknown row, a row whose runtime
    is not `capsule`, a row whose agent is not `claude`, anything
    `accounts::account_env` already refuses (an invalid name, a codex or

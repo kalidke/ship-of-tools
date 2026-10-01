@@ -2958,9 +2958,9 @@ pub async fn handle_math_render(
 /// anchor (`Workspaces::is_inert_default_anchor`, ADR 0042 amendment): it is
 /// not a session and never runs an agent, so a real session at its root (a
 /// local host's home dir) is not the two-agents-one-tree collision this gate
-/// refuses. Same-slug matches are deliberately invisible here — a same-slug
-/// create is the id-preserving metadata refresh `Workspaces::insert` has
-/// always performed, and boot/spawn flows rely on that idempotence. A
+/// refuses. Same-slug matches are deliberately invisible here: a same-slug
+/// create is decided by `same_slug_row_in_use`, which keeps the id-preserving
+/// refresh only for a row not in use. A
 /// registered root that no longer canonicalizes (deleted dir, dangling
 /// symlink) is skipped, not fatal: judging that workspace is the Phase 2
 /// reap's job, not the create path's.
@@ -4360,6 +4360,24 @@ pub async fn handle_pty_screen(
     }
 }
 
+/// A same-slug `workspace.create` refreshes the existing row in place
+/// (`Workspaces::insert` keeps its id, new metadata wins) and then starts it
+/// in `StartMode::Start`, which is right only for a row no supervisor has
+/// published to. Any observed phase means a supervisor holds the row (a second
+/// leg exits contended, 70) and the refresh would rewrite the account, agent
+/// and task of a run that keeps its old ones; a non-capsule row would get a
+/// capsule started beside it. So the refresh is kept only for a capsule row
+/// still in phase `stopped`; this returns any other same-slug row.
+fn same_slug_row_in_use(
+    incoming_slug: &str,
+    workspaces: &Workspaces,
+) -> Option<std::sync::Arc<crate::workspaces::Workspace>> {
+    workspaces.list().into_iter().find(|w| {
+        w.slug == incoming_slug
+            && (w.runtime != "capsule" || w.phase() != crate::workspaces::Phase::Stopped)
+    })
+}
+
 pub async fn handle_workspace_create(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -4407,8 +4425,8 @@ pub async fn handle_workspace_create(
     // hands two agent sessions one shared working tree (the collision class
     // worktrees exist to prevent). Compared by canonical path on BOTH sides so
     // symlinked spellings of one directory still collide; refused only for a
-    // DIFFERENT slug (same-slug create = the long-standing id-preserving
-    // refresh, still allowed). The `existing` block lets the caller offer
+    // DIFFERENT slug (a same-slug create is the in-use gate's question, just
+    // below). The `existing` block lets the caller offer
     // "switch to that workspace" instead of dead-ending. Canonicalization
     // failure on the candidate skips the gate rather than failing the create —
     // prevention must not make creation less reliable than it is today.
@@ -4440,6 +4458,30 @@ pub async fn handle_workspace_create(
             tracing::warn!(error = %e, project_root = %req.project_root,
                 "duplicate-root gate skipped — candidate did not canonicalize");
         }
+    }
+
+    // In-use gate (see `same_slug_row_in_use`): refused before any state
+    // changes. `workspace_id` stays nested under `existing` -- the frontend
+    // reads a top-level `workspace_id` as success (transport.rs).
+    if let Some(existing) = same_slug_row_in_use(&incoming_slug, workspaces) {
+        let phase = existing.phase().as_wire_str();
+        let payload = json!({
+            "error": format!(
+                "workspace '{}' (slug '{}') is in use ({} row, phase '{}'): attach to it, or destroy it before creating it again",
+                existing.label, existing.slug, existing.runtime, phase
+            ),
+            "code": "label_in_use",
+            "existing": {
+                "workspace_id": existing.workspace_id,
+                "slug": existing.slug,
+                "label": existing.label,
+                "phase": phase,
+            },
+        });
+        return Ok(vec![(
+            Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+            None,
+        )]);
     }
 
     // Name validation (security review): `agent_name` is persisted and later
@@ -7870,6 +7912,73 @@ mod duplicate_root_tests {
         let existing = reg(vec![ws("dead", &gone)]);
         let canon = live.canonicalize().unwrap();
         assert!(find_other_workspace_with_root(&canon, "other", &existing).is_none());
+    }
+}
+
+#[cfg(test)]
+mod label_in_use_tests {
+    use super::same_slug_row_in_use;
+    use crate::workspaces::{Observation, Phase, SupervisorIdentity, Workspace, Workspaces};
+
+    fn row(label: &str, runtime: &str, observed: Option<Phase>) -> Workspace {
+        let mut w = Workspace::from_label(
+            label,
+            std::env::temp_dir(),
+            false,
+            "none".into(),
+            String::new(),
+            String::new(),
+        );
+        w.runtime = runtime.to_string();
+        if let Some(phase) = observed {
+            assert!(w.apply_phase_observation(Observation::Phase {
+                phase,
+                supervisor: SupervisorIdentity { pid: 1, created: 1 },
+                voyage: Some(uuid::Uuid::from_u128(1)),
+            }));
+            assert_eq!(w.phase(), phase);
+        }
+        w
+    }
+
+    fn reg(w: Workspace) -> Workspaces {
+        let r = Workspaces::new();
+        r.insert(w);
+        r
+    }
+
+    #[test]
+    fn stopped_capsule_row_is_not_in_use_so_the_refresh_stays_allowed() {
+        let r = reg(row("sot", "capsule", None));
+        assert!(same_slug_row_in_use("sot", &r).is_none());
+    }
+
+    #[test]
+    fn every_observed_phase_is_in_use() {
+        for phase in [
+            Phase::Starting,
+            Phase::Ready,
+            Phase::Ending,
+            Phase::EndedNoRespawn,
+            Phase::Terminal,
+        ] {
+            let r = reg(row("sot", "capsule", Some(phase)));
+            let hit = same_slug_row_in_use("sot", &r)
+                .unwrap_or_else(|| panic!("phase {phase:?} must be in use"));
+            assert_eq!(hit.slug, "sot");
+        }
+    }
+
+    #[test]
+    fn a_non_capsule_row_is_in_use_even_when_stopped() {
+        let r = reg(row("sot", "tmux", None));
+        assert!(same_slug_row_in_use("sot", &r).is_some());
+    }
+
+    #[test]
+    fn a_different_slug_is_not_this_gates_question() {
+        let r = reg(row("sot", "capsule", Some(Phase::Ready)));
+        assert!(same_slug_row_in_use("other", &r).is_none());
     }
 }
 

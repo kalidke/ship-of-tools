@@ -494,9 +494,8 @@ fi
 # collide with an EXISTING workspace — e.g. a worktree's
 # '<repo>-wt-<short>' grouping label happening to equal our
 # qualifier-composed one. workspace.create itself gives no usable
-# signal for this: same-slug is, BY DESIGN, an id-preserving metadata
-# refresh (`Workspaces::insert`, `rust/backend/src/workspaces.rs`) that
-# boot/spawn flows rely on for idempotence, and the duplicate-root gate
+# signal for this: a same-slug create on a row that is not in use is an id-preserving metadata
+# refresh (`Workspaces::insert`; a row in use is refused, `label_in_use`), and the duplicate-root gate
 # explicitly treats a same-slug match as invisible
 # (`find_other_workspace_with_root`'s doc comment,
 # `rust/backend/src/handlers.rs`) — a colliding create would silently
