@@ -140,7 +140,7 @@ pub(crate) fn cursor_offset(comm_home: &Path, handle: &str) -> u64 {
 /// Opens the inbox fresh (a cached size can lag another box's append on a
 /// shared home), reads up to the last `\n` only, and counts the lines at
 /// index >= max(cursor, `woken_line`) that are to `handle` and not from it.
-/// A `woken_line` past the inbox's end (it shrank) is no wake at all.
+/// A `woken_line` past the inbox's end (it shrank) counts as never woken.
 fn scan(comm_home: &Path, handle: &str, woken_line: u64) -> Scan {
     let cursor = cursor_offset(comm_home, handle);
     let Ok(bytes) = std::fs::read(comm_home.join("inbox").join(format!("{handle}.jsonl"))) else {
