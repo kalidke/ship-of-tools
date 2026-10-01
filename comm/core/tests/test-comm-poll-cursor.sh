@@ -126,6 +126,35 @@ check "an offset past the end of the inbox resets to 0" case_an_offset_past_the_
 check "a legacy cursor stops at the first stamp past it, not at the last below it" case_legacy_cursor_stops_at_the_first_unread_stamp
 check "a legacy cursor covering the inbox re-shows nothing" case_legacy_cursor_covering_the_inbox_shows_nothing
 
+# A read that fails part-way writes no cursor: nothing is marked read that was
+# not shown. A stub sed fails every line-range print (`N,Mp` / `Np`) for one
+# poll; the cursor must come out byte-identical, and the next real poll shows
+# every line past it.
+case_a_failing_read_changes_no_cursor() {
+    reset_inbox
+    line "2026-01-01T00:00:01Z" "one"
+    line "2026-01-01T00:00:02Z" "two"
+    line "2026-01-01T00:00:03Z" "three"
+    printf '%s' "2026-01-01T00:00:01Z" > "$CURSOR"
+    local before real_sed; before="$(cat "$CURSOR")"; real_sed="$(command -v sed)"
+    mkdir -p "$WORK/failsed"
+    cat > "$WORK/failsed/sed" <<EOF
+#!/bin/sh
+for a in "\$@"; do
+    case "\$a" in [0-9]*p) case "\${a%p}" in *[!0-9,]*) ;; *) exit 1 ;; esac ;; esac
+done
+exec "$real_sed" "\$@"
+EOF
+    chmod +x "$WORK/failsed/sed"
+    POLL_OUT="$(cd "$WORK" && PATH="$WORK/failsed:$PATH" SOT_COMM_SELF_FILE="$SELF" SOT_COMM_TEST_HOST="$HOST" "$POLL" 2>&1)"
+    [ "$(cat "$CURSOR")" = "$before" ] || { echo "  a failed read moved the cursor: '$before' -> '$(cat "$CURSOR")'"; return 1; }
+    poll
+    case "$POLL_OUT" in *two*three*) ;; *) echo "  the next poll did not show two and three: $POLL_OUT"; return 1 ;; esac
+    return 0
+}
+
+check "a read that fails part-way writes no cursor" case_a_failing_read_changes_no_cursor
+
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

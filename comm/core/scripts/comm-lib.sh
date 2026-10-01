@@ -1560,7 +1560,7 @@ sot_cursor_offset() {
     esac
     n="$(sot_jq -Rrs --arg cur "$cur" '
         [ split("\n")[] | select(length > 0)
-          | (((fromjson? // {}) | (.ts // "")) > $cur) ] as $past
+          | ((((fromjson? | objects) // {}) | (.ts // "")) > $cur) ] as $past
         | ($past | index(true)) // ($past | length)' \
         "$COMM_HOME/inbox/$handle.jsonl" 2>/dev/null)" || n=0
     [[ "$n" =~ ^[0-9]+$ ]] || n=0

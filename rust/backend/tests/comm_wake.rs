@@ -32,6 +32,7 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path) -> PathBuf {
     let claude = dir.join("claude");
     let script = format!(
         "#!/bin/sh\n\
+         [ -f '{dialog}.down' ] && exit 1\n\
          echo banner\n\
          while :; do\n\
            if [ -f '{dialog}' ]; then\n\
@@ -41,6 +42,7 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path) -> PathBuf {
            printf '\\342\\235\\257 '\n\
            IFS= read -r line\n\
            case \"$line\" in\n\
+             quit) exit 0 ;;
              '[sot-comm] you have mail'*) echo \"$(date +%s%3N) ping\" >> '{log}' ;;\n\
              *) echo \"$(date +%s%3N) other\" >> '{log}' ;;\n\
            esac\n\
@@ -99,6 +101,37 @@ impl Row {
         res.payload["lines"].as_array().expect("lines").iter().any(|l| l.as_str().unwrap_or_default().contains(needle))
     }
 }
+
+/// A second ready capsule row declaring `handle`.
+async fn add_row(row: &mut Row, label: &str, handle: &str, root: &str) -> String {
+    let root = row.env._tmp.path().join(root);
+    std::fs::create_dir_all(&root).expect("mkdir second root");
+    let create = serde_json::json!({
+        "label": label,
+        "project_root": root.to_string_lossy(),
+        "runtime": "capsule",
+        "agent": "claude",
+    });
+    let res = call(&mut row.conn, row.next_id, op::WORKSPACE_CREATE, create).await;
+    row.next_id += 1;
+    assert!(res.payload.get("error").is_none(), "workspace.create failed: {:?}", res.payload);
+    let ws = res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    let join = call(&mut row.conn, row.next_id, op::AGENT_JOIN, serde_json::json!({ "workspace_id": ws, "handle": handle })).await;
+    row.next_id += 1;
+    assert_eq!(join.payload["ok"], true, "agent.join failed: {:?}", join.payload);
+    poll_for_phase(&mut row.conn, &mut row.next_id, &ws, "ready", BOUND.max(Duration::from_secs(60))).await;
+    ws
+}
+
+async fn phase_of_row(row: &mut Row, ws: &str) -> String {
+    let id = row.next_id;
+    row.next_id += 1;
+    let payload = call(&mut row.conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    find_row(&payload, ws).and_then(|r| r["phase"].as_str().map(str::to_string)).unwrap_or_default()
+}
+
+/// Three ticks (2 s each) plus slack.
+const THREE_TICKS: Duration = Duration::from_secs(8);
 
 async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
     assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not built next to sotd: see the header");
@@ -180,6 +213,53 @@ async fn one_batch_gives_one_line() {
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await);
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert_eq!(pings(&row.log), 1);
+    row.env.kill_daemon_bounded().await;
+}
+
+/// Two rows declaring one handle: a wake aimed by a guess would type into
+/// someone else's session, so neither is woken (`comm_wake::run`).
+#[tokio::test]
+async fn two_rows_on_one_handle_are_not_woken() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start("cw2", None, false).await;
+    add_row(&mut row, "wake-row-2", HANDLE, "second").await;
+    append_mail(&row.env, 1);
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 0, "a row on a shared handle was woken");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// A row whose agent has exited holds unread mail: the wake types nothing and
+/// never restarts it. Nothing on the wake path restarts a row; this guards the
+/// outcome.
+#[tokio::test]
+async fn a_dead_row_is_never_restarted_by_a_wake() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start("cwx", None, false).await;
+    let ws = row.ws.clone();
+    std::fs::write(row.dialog.with_extension("down"), b"").unwrap();
+    let quit = serde_json::json!({ "workspace_id": ws, "data_b64": "cXVpdA==", "enter": true });
+    let res = call(&mut row.conn, row.next_id, op::PTY_INPUT, quit).await;
+    row.next_id += 1;
+    assert_eq!(res.payload["ok"], true, "pty.input failed: {:?}", res.payload);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    // The supervisor respawns a stub that exits, so the stub is made to exit
+    // at every start until the row rests in a phase other than ready.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let before = loop {
+        let phase = phase_of_row(&mut row, &ws).await;
+        if phase == "terminal" || phase == "ended_no_respawn" {
+            break phase;
+        }
+        assert!(Instant::now() < deadline, "the row never came to rest dead (phase {phase})");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    // Unblock the stub, so a restart WOULD let it draw a prompt and be woken.
+    std::fs::remove_file(row.dialog.with_extension("down")).unwrap();
+    append_mail(&row.env, 1);
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 0, "a dead row was typed a wake");
+    assert_eq!(phase_of_row(&mut row, &ws).await, before, "the wake restarted the row");
     row.env.kill_daemon_bounded().await;
 }
 
