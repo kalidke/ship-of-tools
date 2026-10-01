@@ -10,10 +10,14 @@
 # CARGO_TARGET_DIR (required); forwards JULIA_DEPOT_PATH, SSH_AUTH_SOCK and
 # CARGO_PROFILE_DEV_DEBUG when set. Rust jobs never get XDG_RUNTIME_DIR or
 # DBUS_SESSION_BUS_ADDRESS: they would put test scopes into the user's systemd
-# manager. Needs jq. Exit 2 on bad args; otherwise 0 and the verdict is in
-# <logdir>/summary.txt (ends in ALLDONE).
+# manager. Needs jq. Exit 2 on bad args; otherwise 0 (130 if interrupted) and the
+# verdict is in <logdir>/summary.txt (ends in ALLDONE, or ALLDONE FAILED when
+# the job runner itself failed). Every job's result file starts as `unrun`, so
+# a job that never ran cannot pass; each command has a 1200 s end.
 
 SELF=$(readlink -f "$0")
+TO=(timeout -k 10 1200)
+JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/video-file julia/sotlog)
 
 envs() {
   D=$RCG_D L=$RCG_L
@@ -25,45 +29,47 @@ envs() {
 
 st() { echo "$1 start $(date +%H:%M:%S) load $(cut -d' ' -f1-3 /proc/loadavg) cargo=$(pgrep -c cargo)" >> "$L/summary.txt"; }
 rc() { echo "$1 rc=$2 ${3:-}" >> "$L/summary.txt"; }
+# a step's verdict: its result file (swept at the end) and its summary line
+fin() { echo "$2" > "$L/steps/$1.rc"; rc "$1" "$2"; }
 
 job_julia() {
-  st julia
-  "${JE[@]}" julia --project="$D" -e 'using Pkg; Pkg.test()' > "$L/julia-root.log" 2>&1
-  rc julia-root $?
   local p s
-  for p in core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/video-file julia/sotlog; do
-    s=julia-$(echo "$p" | tr / -)
-    "${JE[@]}" julia --project="$D/$p" -e 'using Pkg; Pkg.instantiate(); Pkg.test()' > "$L/$s.log" 2>&1
-    rc "$s" $?
+  st julia
+  "${TO[@]}" "${JE[@]}" julia --project="$D" -e 'using Pkg; Pkg.test()' > "$L/julia-root.log" 2>&1
+  fin julia-root $?
+  for p in "${JULIA_PKGS[@]}"; do
+    s=julia-${p//\//-}
+    "${TO[@]}" "${JE[@]}" julia --project="$D/$p" -e 'using Pkg; Pkg.instantiate(); Pkg.test()' > "$L/$s.log" 2>&1
+    fin "$s" $?
   done
 }
 
 job_cargo_chain() {
   local M="$D/rust/Cargo.toml" r
   st rust-doc
-  "${CE[@]}" cargo test --manifest-path "$M" --workspace --locked --doc > "$L/rust/doc.log" 2>&1
+  "${TO[@]}" "${CE[@]}" cargo test --manifest-path "$M" --workspace --locked --doc --no-fail-fast > "$L/rust/doc.log" 2>&1
   r=$?
   echo "$r" > "$L/rust/doc.rc"
   rc rust-doc "$r"
   st win-check
-  "${CE[@]}" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
+  "${TO[@]}" "${CE[@]}" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
     cargo check --manifest-path "$M" --target x86_64-pc-windows-gnu -p sot-log -p sot-backend -p sot-frontend --locked \
     > "$L/win-check.log" 2>&1 &&
-  "${CE[@]}" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
+  "${TO[@]}" "${CE[@]}" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
     cargo check --manifest-path "$M" --target x86_64-pc-windows-gnu -p sot-backend -p sot-log --all-targets --locked \
     >> "$L/win-check.log" 2>&1
-  rc win-check $?
+  fin win-check $?
   st darwin-check
-  "${CE[@]}" cargo check --manifest-path "$M" --target aarch64-apple-darwin -p sot-log -p sot-backend --all-targets --locked \
+  "${TO[@]}" "${CE[@]}" cargo check --manifest-path "$M" --target aarch64-apple-darwin -p sot-log -p sot-backend --all-targets --locked \
     > "$L/darwin-check.log" 2>&1
-  rc darwin-check $?
+  fin darwin-check $?
 }
 
 job_shell() {
   local b
-  b=$(basename "$1")
-  "${SE[@]}" bash "$1" > "$L/$b.log" 2>&1
-  rc "$b" $?
+  b=$(basename "$1" .sh)
+  "${TO[@]}" "${SE[@]}" bash "$1" > "$L/$b.log" 2>&1
+  fin "$b" $?
 }
 
 # job_test <key> <exe> <pkgdir> [test]
@@ -71,13 +77,117 @@ job_test() {
   local key=$1 exe=$2 pkg=$3 t=${4:-} log r
   log=$L/rust/$key.log
   echo "     Running ($exe) load $(cut -d' ' -f1 /proc/loadavg)" > "$log"
-  if [ -n "$t" ]; then
-    (cd "$pkg" && "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --exact "$t") >> "$log" 2>&1
-  else
-    (cd "$pkg" && "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe") >> "$log" 2>&1
-  fi
+  (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" ${t:+--exact "$t"}) >> "$log" 2>&1
   r=$?
   echo "$r" > "$L/rust/$key.rc"
+}
+
+# one exactly-one-row lookup in tests.tsv; sets exe and pkg
+row_for() {
+  local r
+  r=$(awk -F'\t' -v n="$1" '$1==n' "$L/tests.tsv")
+  [ -n "$r" ] && [ "$(wc -l <<< "$r")" -eq 1 ] || return 1
+  IFS=$'\t' read -r _ exe pkg <<< "$r"
+}
+
+# emit <key> <line> [resultfile]: once per key; the result starts as unrun
+declare -A EMITTED
+emit() {
+  [ -n "${EMITTED[$1]:-}" ] && return
+  EMITTED[$1]=1
+  [ -n "${3:-}" ] && echo unrun > "$3"
+  printf '%s\n' "$2"
+}
+emit_bin() { emit "bin:$1" "$(printf 'bin\t%s\t%s' "$1" "$2")" "$L/rust/$(basename "$1").rc"; }
+emit_one() { emit "one:$1:$3" "$(printf 'one\t%s\t%s\t%s' "$1" "$2" "$3")" "$L/rust/$(basename "$1")__${3//:/_}.rc"; }
+emit_shell() { emit "shell:$1" "$(printf 'shell\t%s' "$1")" "$L/steps/$(basename "$1" .sh).rc"; }
+
+producer() {
+  local k tgt t n exe pkg f s found out lrc
+  local -A LISTED SPLIT_EXE SPLIT_PKG
+  local SHELL_ALL=()
+  local SLOW_FIRST=(
+    lane_bridge/a_blackhole_is_unreachable_and_retried
+    lane_bridge/a_daemon_outage_past_the_window_keeps_retrying
+    lane_bridge/a_terminal_row_is_terminal_after_the_window
+    fe_client/unresponsive_supervisor_expires_the_health_window
+    test-spawn-capsule-workspace
+    capsule_workspaces/capsule_supervisor_spawn_survives_fence_contention_without_marking_terminal
+    test-hub-files
+    supervisor
+    test-status-floor
+    test-relay-file-first
+    test-registry-lock
+  )
+  # shell suites: the SLOW_FIRST ones are emitted early, the rest at step 5
+  for f in "$D"/comm/core/tests/test-*.sh; do
+    case $(basename "$f" .sh) in
+      test-comm-e2e-readers|test-inbox-lock-onehost|test-inbox-lock-twohost|test-registry-twohost|test-registry-lock-twohost) ;;
+      *) SHELL_ALL+=("$f") ;;
+    esac
+  done
+  SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/test-tunnel-plan.sh")
+
+  for s in julia-root "${JULIA_PKGS[@]/#/julia-}"; do echo unrun > "$L/steps/${s//\//-}.rc"; done
+  emit julia julia
+  echo unrun > "$L/rust/doc.rc"
+  echo unrun > "$L/steps/win-check.rc"
+  echo unrun > "$L/steps/darwin-check.rc"
+  emit cargo-chain cargo-chain
+  [ "$BUILD_RC" -eq 0 ] && st rust-workspace
+
+  # list the four slow binaries; a split binary runs only per test
+  if [ "$BUILD_RC" -eq 0 ]; then
+    for n in capsule_workspaces comm_wake lane_bridge fe_client; do
+      if ! row_for "$n"; then echo "split-missing $n" >> "$L/summary.txt"; continue; fi
+      out=$(cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --format terse 2> "$L/rust/$n.list.log")
+      lrc=$?
+      out=$(grep ': test$' <<< "$out")
+      if [ "$lrc" -ne 0 ] || [ -z "$out" ]; then echo "split-missing $n" >> "$L/summary.txt"; continue; fi
+      LISTED[$n]=${out//: test/}
+      SPLIT_EXE[$n]=$exe SPLIT_PKG[$n]=$pkg
+      EMITTED["bin:$exe"]=1
+    done
+  fi
+
+  for k in "${SLOW_FIRST[@]}"; do
+    case $k in
+      test-*)
+        found=
+        for f in "${SHELL_ALL[@]}"; do
+          if [ "$(basename "$f" .sh)" = "$k" ]; then found=$f; fi
+        done
+        if [ -z "$found" ]; then echo "slow-first-missing $k" >> "$L/summary.txt"; continue; fi
+        emit_shell "$found"
+        ;;
+      */*)
+        [ "$BUILD_RC" -eq 0 ] || continue
+        tgt=${k%%/*}; t=${k#*/}
+        if [ -n "${LISTED[$tgt]:-}" ] && grep -qxF -- "$t" <<< "${LISTED[$tgt]}"; then
+          emit_one "${SPLIT_EXE[$tgt]}" "${SPLIT_PKG[$tgt]}" "$t"
+        else
+          echo "slow-first-missing $k" >> "$L/summary.txt"
+        fi
+        ;;
+      *)
+        [ "$BUILD_RC" -eq 0 ] || continue
+        if row_for "$k"; then emit_bin "$exe" "$pkg"; else echo "slow-first-missing $k" >> "$L/summary.txt"; fi
+        ;;
+    esac
+  done
+  st shell-suites
+  for f in "${SHELL_ALL[@]}"; do
+    emit_shell "$f"
+  done
+  [ "$BUILD_RC" -eq 0 ] || return 0
+  for n in "${!LISTED[@]}"; do
+    while IFS= read -r t; do
+      emit_one "${SPLIT_EXE[$n]}" "${SPLIT_PKG[$n]}" "$t"
+    done <<< "${LISTED[$n]}"
+  done
+  while IFS=$'\t' read -r _ exe pkg; do
+    emit_bin "$exe" "$pkg"
+  done < "$L/tests.tsv"
 }
 
 if [ "${1:-}" = --job ]; then
@@ -93,10 +203,17 @@ if [ "${1:-}" = --job ]; then
   exit 0
 fi
 
+if [ "${1:-}" = --pipeline ]; then
+  envs
+  BUILD_RC=$RCG_BUILD_RC
+  producer | xargs -d '\n' -n 1 -P "$2" bash "$SELF" --job
+  exit $?
+fi
+
 # ---- main flow ----
 CAP=${3:-10}
-if [ $# -lt 2 ] || [ -z "${CARGO_TARGET_DIR:-}" ]; then
-  echo "usage: CARGO_TARGET_DIR=... rc-gate.sh <checkout> <logdir> [cap]" >&2
+if [ $# -lt 2 ] || [ -z "${CARGO_TARGET_DIR:-}" ] || ! [[ $CAP =~ ^[1-9][0-9]*$ ]]; then
+  echo "usage: CARGO_TARGET_DIR=... rc-gate.sh <checkout> <logdir> [cap >= 1]" >&2
   exit 2
 fi
 if [ -d "$2" ] && [ -n "$(ls -A "$2")" ]; then
@@ -106,17 +223,17 @@ fi
 D=$(cd "$1" && pwd) || exit 2
 mkdir -p "$2" || exit 2
 L=$(cd "$2" && pwd)
-mkdir -p "$L/rust"
+mkdir -p "$L/rust" "$L/steps"
 CARGO_BIN=$(command -v cargo) || { echo "rc-gate: cargo not found" >&2; exit 2; }
 JULIA_BIN=$(command -v julia) || { echo "rc-gate: julia not found" >&2; exit 2; }
 command -v jq > /dev/null || { echo "rc-gate: jq not found" >&2; exit 2; }
-export RCG_D=$D RCG_L=$L RCG_CAP=$CAP RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$(dirname "$JULIA_BIN")
-export CARGO_TARGET_DIR
+export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$(dirname "$JULIA_BIN")
 envs
 
 echo "head $(git -C "$D" rev-parse HEAD) tree $(git -C "$D" rev-parse 'HEAD^{tree}')" > "$L/summary.txt"
 echo "cap $CAP" >> "$L/summary.txt"
 
+T0=$(date +%s)
 M=$D/rust/Cargo.toml
 BUILD_RC=0
 st build-capsule
@@ -126,140 +243,59 @@ st rust-build
 "${CE[@]}" cargo test --manifest-path "$M" --workspace --locked --no-run --message-format=json \
   > "$L/rust-build.json" 2> "$L/rust-build.log"
 r=$?; rc rust-build $r; [ $r -ne 0 ] && BUILD_RC=$r
+: > "$L/tests.tsv"
 if [ "$BUILD_RC" -eq 0 ]; then
-  jq -r 'select(.reason=="compiler-artifact" and .profile.test==true and .executable!=null)
+  if ! jq -r 'select(.reason=="compiler-artifact" and .profile.test==true and .executable!=null)
     | [.target.name, .executable, (.manifest_path|rtrimstr("/Cargo.toml"))] | @tsv' \
-    "$L/rust-build.json" > "$L/tests.tsv"
-else
-  : > "$L/tests.tsv"
-fi
-
-declare -A EMITTED
-emit() {
-  [ -n "${EMITTED[$1]:-}" ] && return
-  EMITTED[$1]=1
-  printf '%s\n' "$2"
-}
-
-# shell suites: the SLOW_FIRST ones are emitted early, the rest at step 5
-SHELL_ALL=()
-for f in "$D"/comm/core/tests/test-*.sh; do
-  case $(basename "$f" .sh) in
-    test-comm-e2e-readers|test-inbox-lock-onehost|test-inbox-lock-twohost|test-registry-twohost|test-registry-lock-twohost) ;;
-    *) SHELL_ALL+=("$f") ;;
-  esac
-done
-SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/test-tunnel-plan.sh")
-
-SPLIT_USED=()
-rows_for() { awk -F'\t' -v n="$1" '$1==n' "$L/tests.tsv"; }
-
-producer() {
-  local k tgt t rows n exe pkg f line name found
-  emit julia "$(printf 'julia')"
-  local SLOW_FIRST=(
-    lane_bridge/a_blackhole_is_unreachable_and_retried
-    lane_bridge/a_daemon_outage_past_the_window_keeps_retrying
-    lane_bridge/a_terminal_row_is_terminal_after_the_window
-    fe_client/unresponsive_supervisor_expires_the_health_window
-    test-spawn-capsule-workspace
-    capsule_workspaces/capsule_supervisor_spawn_survives_fence_contention_without_marking_terminal
-    test-hub-files
-    supervisor
-    test-status-floor
-    test-relay-file-first
-    test-registry-lock
-  )
-  if [ "$BUILD_RC" -eq 0 ]; then
-    st rust-workspace
-    emit cargo-chain "$(printf 'cargo-chain')"
+    "$L/rust-build.json" > "$L/tests.tsv" || ! [ -s "$L/tests.tsv" ]; then
+    BUILD_RC=1
+    rc rust-build 1 tests.tsv
   fi
-  for k in "${SLOW_FIRST[@]}"; do
-    case $k in
-      test-*)
-        found=
-        for f in "${SHELL_ALL[@]}"; do
-          if [ "$(basename "$f" .sh)" = "$k" ]; then found=$f; fi
-        done
-        if [ -z "$found" ]; then echo "slow-first-missing $k" >> "$L/summary.txt"; continue; fi
-        emit "shell:$found" "$(printf 'shell\t%s' "$found")"
-        ;;
-      */*)
-        [ "$BUILD_RC" -eq 0 ] || continue
-        tgt=${k%%/*}; t=${k#*/}
-        rows=$(rows_for "$tgt")
-        if [ -z "$rows" ] || [ "$(echo "$rows" | wc -l)" -ne 1 ]; then
-          echo "slow-first-missing $k" >> "$L/summary.txt"; continue
-        fi
-        IFS=$'\t' read -r _ exe pkg <<< "$rows"
-        emit "one:$exe:$t" "$(printf 'one\t%s\t%s\t%s' "$exe" "$pkg" "$t")"
-        ;;
-      *)
-        [ "$BUILD_RC" -eq 0 ] || continue
-        rows=$(rows_for "$k")
-        if [ -z "$rows" ] || [ "$(echo "$rows" | wc -l)" -ne 1 ]; then
-          echo "slow-first-missing $k" >> "$L/summary.txt"; continue
-        fi
-        IFS=$'\t' read -r _ exe pkg <<< "$rows"
-        emit "bin:$exe" "$(printf 'bin\t%s\t%s' "$exe" "$pkg")"
-        ;;
-    esac
-  done
-  st shell-suites
-  for f in "${SHELL_ALL[@]}"; do
-    emit "shell:$f" "$(printf 'shell\t%s' "$f")"
-  done
-  [ "$BUILD_RC" -eq 0 ] || return 0
-  for n in capsule_workspaces comm_wake lane_bridge fe_client; do
-    rows=$(rows_for "$n")
-    if [ -z "$rows" ] || [ "$(echo "$rows" | wc -l)" -ne 1 ]; then
-      echo "split-missing $n" >> "$L/summary.txt"
-      while IFS=$'\t' read -r _ exe pkg; do
-        [ -n "$exe" ] && emit "bin:$exe" "$(printf 'bin\t%s\t%s' "$exe" "$pkg")"
-      done <<< "$rows"
-      continue
-    fi
-    IFS=$'\t' read -r _ exe pkg <<< "$rows"
-    echo "$n" >> "$L/split-used.txt"
-    while IFS= read -r line; do
-      case $line in
-        *": test") name=${line%": test"}
-          emit "one:$exe:$name" "$(printf 'one\t%s\t%s\t%s' "$exe" "$pkg" "$name")" ;;
-      esac
-    done < <(cd "$pkg" && "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --format terse 2>/dev/null)
-  done
-  while IFS=$'\t' read -r _ exe pkg; do
-    emit "bin:$exe" "$(printf 'bin\t%s\t%s' "$exe" "$pkg")"
-  done < "$L/tests.tsv"
-}
+fi
+export RCG_BUILD_RC=$BUILD_RC
 
-( while :; do cut -d' ' -f1 /proc/loadavg >> "$L/load.txt"; sleep 5; done ) &
+( while kill -0 $$ 2> /dev/null; do cut -d' ' -f1 /proc/loadavg >> "$L/load.txt"; sleep 5; done ) &
 SAMPLER=$!
-T0=$(date +%s)
-producer | xargs -d '\n' -n 1 -P "$CAP" bash "$SELF" --job
-kill "$SAMPLER" 2> /dev/null
-wait "$SAMPLER" 2> /dev/null
+INTR=0
+setsid bash "$SELF" --pipeline "$CAP" &
+PG=$!
+trap 'INTR=1; kill -TERM -- -"$PG" 2> /dev/null; kill "$SAMPLER" 2> /dev/null' INT TERM
+wait "$PG"
+XS=$?
+if [ "$INTR" -eq 1 ]; then wait "$PG" 2> /dev/null; fi
 
-R=$(cat "$L"/rust/*.log 2> /dev/null | grep -c '^test result')
-read -r PASSED FAILED IGNORED < <(cat "$L"/rust/*.log 2> /dev/null | awk '/^test result/ {p+=$4; f+=$6; i+=$8} END {print p+0, f+0, i+0}')
-FL=$(cat "$L"/rust/*.log 2> /dev/null | grep -c '^test .* FAILED$')
-ONE=$(find "$L/rust" -name '*__*.log' | wc -l)
-NS=0
-[ -f "$L/split-used.txt" ] && while read -r n; do
-  ls "$L"/rust/"$n"-*__*.log > /dev/null 2>&1 && NS=$((NS + 1))
-done < "$L/split-used.txt"
-BIN=$((R - ONE + NS))
-RC=0
-for f in "$L"/rust/*.rc; do
+PASSED=0 FAILED=0 IGNORED=0 FL=0 BIN=0 SEEN=" "
+for f in "$L"/rust/*.log; do
   [ -e "$f" ] || continue
-  [ "$(cat "$f")" = 0 ] || RC=101
+  k=$(basename "$f" .log)
+  case $k in
+    *__*)
+      p=${k%%__*}
+      case $SEEN in *" $p "*) ;; *) SEEN+="$p "; BIN=$((BIN + 1)) ;; esac ;;
+    *) BIN=$((BIN + $(grep -c '^test result' "$f"))) ;;
+  esac
+  read -r p1 f1 i1 < <(awk '/^test result/ {p+=$4; f+=$6; i+=$8} END {print p+0, f+0, i+0}' "$f")
+  PASSED=$((PASSED + p1)) FAILED=$((FAILED + f1)) IGNORED=$((IGNORED + i1))
+  FL=$((FL + $(grep -c '^test .* FAILED$' "$f")))
+done
+
+# one sweep over every result file: a failure or a job that never ran is a failure
+RC=0
+NOTES=
+for f in "$L"/rust/*.rc "$L"/steps/*.rc; do
+  [ -e "$f" ] || continue
+  v=$(cat "$f")
+  case $f in
+    "$L"/rust/*) [ "$v" = 0 ] || { RC=101; NOTES+="rust-failed $(basename "$f" .rc) $v"$'\n'; } ;;
+    *) [ "$v" = unrun ] && NOTES+="$(basename "$f" .rc) rc=unrun"$'\n' ;;
+  esac
 done
 [ "$BUILD_RC" -eq 0 ] || RC=$BUILD_RC
 rc rust-workspace "$RC" "binaries=$BIN passed=$PASSED failed=$FAILED ignored=$IGNORED $FL FAILED-lines"
-for f in "$L"/rust/*.rc; do
-  [ -e "$f" ] || continue
-  [ "$(cat "$f")" = 0 ] || echo "rust-failed $(basename "$f" .rc)" >> "$L/summary.txt"
-done
+[ -n "$NOTES" ] && printf '%s' "$NOTES" >> "$L/summary.txt"
+[ "$XS" -eq 0 ] || rc xargs "$XS"
 PEAK=$(sort -n "$L/load.txt" 2> /dev/null | tail -1)
 echo "end $(date +%H:%M:%S) load $(cut -d' ' -f1-3 /proc/loadavg) cargo=$(pgrep -c cargo) peak-load ${PEAK:-0} wall $(($(date +%s) - T0))s" >> "$L/summary.txt"
-echo ALLDONE >> "$L/summary.txt"
+if [ "$XS" -eq 0 ]; then echo ALLDONE >> "$L/summary.txt"; else echo "ALLDONE FAILED" >> "$L/summary.txt"; fi
+[ "$INTR" -eq 1 ] && exit 130
+exit 0
