@@ -783,17 +783,6 @@ case_mail_filed_mid_turn_blocks_the_marker_end() {
     out="$(IT 'SITREP-WAITING: the build')"
     [ "$out" = "$MAIL_BLOCK" ] && [ "$(row_all)" = "$before" ] || { echo "    '$out' $before -> $(row_all)"; return 1; }
 }
-# Faked Windows ($OS, %LOCALAPPDATA%) for this one Stop: the frontend inbox.
-case_frontend_mail_blocks_a_marker_turn() {
-    seed idle; W "$GENUINE"; _mail_reset
-    local app="$WORK/appdata" before out
-    mkdir -p "$app/sot"; rm -f "${SOT_COMM_HOME:?}/read/$NAME.fe.cursor"
-    jq -nc --arg to "$NAME" '{from:"peer",to:$to,repo:"r",text:"from another box",ts:"t"}' > "$app/sot/fe-inbox.jsonl"
-    before="$(row_all)"
-    out="$(OS=Windows_NT LOCALAPPDATA="$app" IT 'SITREP: done here')"
-    rm -f "${app:?}/sot/fe-inbox.jsonl"
-    [ "$out" = "$MAIL_BLOCK" ] && [ "$(row_all)" = "$before" ] || { echo "    '$out' $before -> $(row_all)"; return 1; }
-}
 case_marker_turn_with_read_mail_is_unchanged() {
     seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"; poll_mail
     local out rc=0
@@ -1023,7 +1012,6 @@ check "(e) a real prompt after a marker turn starts a new turn" case_a_real_prom
 check "(f) a feedback record the hook did not record reads as a prompt" case_feedback_the_hook_did_not_record_reads_as_a_prompt
 check "(g) the recorded text without isMeta reads as a prompt" case_feedback_without_ismeta_reads_as_a_prompt
 check "mail filed mid-turn blocks that turn's marker end" case_mail_filed_mid_turn_blocks_the_marker_end
-check "a frontend-inbox line for this handle blocks a marker turn too" case_frontend_mail_blocks_a_marker_turn
 check "a marker turn with its mail read prints nothing and stamps as before" case_marker_turn_with_read_mail_is_unchanged
 check "a marker turn's artifact-audit block is byte-identical with its mail read" case_marker_audit_block_with_read_mail_is_byte_identical
 check "race: a done committed while stop waits for the lock is kept" case_race_done_committed_while_stop_waits_is_kept

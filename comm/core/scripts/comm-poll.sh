@@ -19,20 +19,7 @@ ensure_home
 
 INBOX="$INBOX_DIR/$NAME.jsonl"
 CUR="$READ_DIR/$NAME.cursor"
-# TWO inboxes on Windows. There is no listener there, so nothing writes the
-# per-handle file — the frontend files every inbound frame into its own
-# fe-inbox.jsonl, which is SHARED by every handle on the box. Reading only the
-# per-handle one left a Windows session deaf to every message from another box
-# while this script printed "No new messages" (field report, 2026-09-27).
-# comm-lib.sh owns the platform branch, the `to == me` admission rule and the
-# `.text` -> `.msg` rewrite, so everything below stays single-schema and never
-# learns which file a line came from. Both cursors advance HERE and only here:
-# advancing a cursor is what "read" MEANS, which is why the end-of-turn hook can
-# announce pending mail without ever being able to mark it read itself.
-FE_INBOX="$(sot_fe_inbox_path)"
-FE_CUR="$READ_DIR/$NAME.fe.cursor"
-
-if [ ! -f "$INBOX" ] && { [ -z "$FE_INBOX" ] || [ ! -f "$FE_INBOX" ]; }; then
+if [ ! -f "$INBOX" ]; then
     echo "No messages."
     SOT_LOCK_WAIT_SECS=1 with_lock registry_touch "$NAME" 2>/dev/null || true
     exit 0
@@ -95,15 +82,6 @@ if [ -f "$INBOX" ]; then
         show_stream <<< "$batch"
         sot_cursor_write "$NAME" "$total" "${batch##*$'\n'}"
     fi
-fi
-
-if [ -n "$FE_INBOX" ] && [ -r "$FE_INBOX" ]; then
-    # The total is read BEFORE the lines are shown, so a frame appended in
-    # between is shown by the NEXT poll instead of being skipped by this one:
-    # showing a frame twice is tolerable where dropping one is not.
-    fe_total="$(sot_fe_inbox_lines)"
-    show_stream < <(sot_fe_unread_lines "$NAME")
-    printf '%s' "$fe_total" > "$FE_CUR"
 fi
 
 [ "$count" -eq 0 ] && echo "No new messages."

@@ -24,16 +24,6 @@
 # notice rather than the mail, so a backlog costs one line to announce and
 # ignoring it left sessions deaf to everything filed before they armed.
 #
-# TWO INBOXES ON WINDOWS, one cursor each, exactly as comm-watch.sh already
-# reads them: the frontend
-# files every inbound frame into its own fe-inbox.jsonl, while a send from a
-# session on the SAME box still lands in inbox/<handle>.jsonl. Watching only
-# the per-handle file there woke a session on half its mail and never on the
-# half that comes from another box -- which is why a Windows session fell
-# back to the harness Monitor instead of this watcher. sot_fe_inbox_path
-# (comm-lib.sh) is the ONE place that platform branch lives: off Windows it
-# prints nothing and this watcher has a single source, exactly as before.
-#
 # PING MODE specifics:
 #   - Filter mirrors `full`: own echoes never wake; broadcasts (to:"") wait
 #     for comm-poll.sh on the next natural turn; directed frames wake.
@@ -364,8 +354,7 @@ _comm_wake_deliver_ping() {
         # shared, since the two inboxes have unrelated line counts and a shared
         # cursor would silence whichever file is shorter. The cursor is the
         # NUMBER of lines the session has been shown (comm-lib.sh's
-        # sot_cursor_offset / sot_fe_cursor_offset, which migrate a legacy ts
-        # cursor as they read). A cursor that already
+        # sot_cursor_offset, which migrates a legacy ts cursor as it reads). A cursor that already
         # reaches the end of this batch means the session read it through a
         # real poll -- advance past it with no ping. Comparing timestamps here
         # could not separate two frames filed in the same second, so a second
@@ -681,17 +670,10 @@ _comm_wake_main() {
     # treated as directed; a broadcast's empty `.to` waits for comm-poll.sh on
     # the next natural turn), while the frontend inbox is ONE file per box
     # shared by every handle on it, so there `.to` must be ours exactly. Both
-    # also require some text: a frame with none wakes nobody. The frontend
-    # inbox exists on Windows only, and only where a frontend files into it.
+    # also require some text: a frame with none wakes nobody.
     SOURCES=("$COMM_HOME/inbox/$HANDLE.jsonl")
     CONDS=('(.from != $me) and ((.to // "?") != "") and ((.text // .message // .msg // "") != "")')
     CURSORS=(sot_cursor_offset)
-    _fe_inbox="$(sot_fe_inbox_path)"
-    if [ -n "$_fe_inbox" ]; then
-        SOURCES+=("$_fe_inbox")
-        CONDS+=('(.from != $me) and ((.to // "") == $me) and ((.text // .message // .msg // "") != "")')
-        CURSORS+=(sot_fe_cursor_offset)
-    fi
     STATE_DIR="$COMM_HOME/state"; mkdir -p "$STATE_DIR"
     LOG_FILE="$STATE_DIR/comm-wake-$HANDLE.log"
     MARKER="$STATE_DIR/$HANDLE.watch"

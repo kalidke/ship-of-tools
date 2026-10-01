@@ -908,80 +908,6 @@ EOF
     return 0
 }
 
-# A Windows box has no inbox listener: the frontend files every inbound frame
-# into ONE fe-inbox.jsonl shared by every handle on the box, while a send from
-# a session on the SAME box still lands in the per-handle file. Watching only
-# the per-handle file left a Windows session waking on half its mail and never
-# on the half that comes from another box -- the reason a session there fell
-# back to the harness Monitor. Windows is FAKED per case ($OS + $LOCALAPPDATA,
-# the same seam test-win-fe-inbox-readers.sh uses), so these run on every leg.
-case_a_frontend_inbox_frame_pings() {
-    local d="$WORK/fe-inbox-ping"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
-    : > "$d/inbox/watchee.jsonl"
-    local calls="$d/pty-input.calls" attempts="$d/pty-input.log"
-    : > "$calls"
-    cat > "$d/run.sh" <<EOF
-source "$WAKE"
-export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
-export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
-sot_daemon_endpoint() { printf fixture; }
-_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
-_comm_wake_pty_input() {
-    printf x >> "$calls"
-    printf '%s' "\$2" | base64 -d >> "$attempts"; printf '\n' >> "$attempts"
-    printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'
-}
-turns=0
-sleep() {
-    turns=\$((turns + 1))
-    if [ "\$turns" -eq 1 ]; then
-        printf '{"from":"peer","to":"watchee","text":"from another box"}\n' >> "$d/AppDataLocal/sot/fe-inbox.jsonl"
-    fi
-    [ "\$turns" -le 2 ] || exit 0
-}
-_comm_wake_main watchee --deliver ping --owner \$\$
-EOF
-    bash "$d/run.sh" 2>/dev/null
-    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
-    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s), want exactly 1"; cat "$attempts" 2>/dev/null; return 1; }
-    local expected="[sot-comm] new message for @watchee — run $d/bin/comm-poll.sh"
-    [ "$(cat "$attempts" 2>/dev/null)" = "$expected" ] || { echo "  typed text was '$(cat "$attempts" 2>/dev/null)', want '$expected'"; return 1; }
-    return 0
-}
-
-# The frontend inbox is shared, so `.to` is the only thing separating our mail
-# from a sibling handle's on the same box -- a wake on someone else's frame
-# spends a model turn on a message this session cannot even read.
-case_a_frontend_frame_for_another_handle_does_not_ping() {
-    local d="$WORK/fe-inbox-sibling"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
-    : > "$d/inbox/watchee.jsonl"
-    local calls="$d/pty-input.calls"
-    : > "$calls"
-    cat > "$d/run.sh" <<EOF
-source "$WAKE"
-export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
-export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
-sot_daemon_endpoint() { printf fixture; }
-_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
-_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
-turns=0
-sleep() {
-    turns=\$((turns + 1))
-    if [ "\$turns" -eq 1 ]; then
-        printf '{"from":"peer","to":"someone-else","text":"not yours"}\n' >> "$d/AppDataLocal/sot/fe-inbox.jsonl"
-    fi
-    [ "\$turns" -le 2 ] || exit 0
-}
-_comm_wake_main watchee --deliver ping --owner \$\$
-EOF
-    bash "$d/run.sh" 2>/dev/null
-    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
-    [ "$n" -eq 0 ] || { echo "  pty.input called $n time(s) for a sibling handle's frame, want 0"; return 1; }
-    return 0
-}
-
 # A frame whose `.from` is not a string still wakes. The admission rule is
 # jq now, and a jq program that THROWS prints nothing and exits non-zero --
 # which reads here exactly like "not admitted", so one odd frame would be
@@ -1214,70 +1140,9 @@ EOF
     return 0
 }
 
-# THE FILE THAT ACTUALLY FAILED. The field report was a frontend box, where
-# the mail is the frontend's shared fe-inbox.jsonl read through its own
-# read/<handle>.fe.cursor -- so the backlog case has to be run against THAT
-# file, not only the per-handle one, or the fix is pinned on the file that was
-# never deaf.
-case_a_frontend_backlog_from_before_the_watcher_is_announced() {
-    local d="$WORK/fe-backlog"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/read" "$d/AppDataLocal/sot"
-    : > "$d/inbox/watchee.jsonl"
-    printf '{"from":"peer","to":"watchee","text":"filed while nothing was watching"}\n' \
-        > "$d/AppDataLocal/sot/fe-inbox.jsonl"
-    local calls="$d/pty-input.calls"
-    : > "$calls"
-    cat > "$d/run.sh" <<EOF
-source "$WAKE"
-export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
-export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
-sot_daemon_endpoint() { printf fixture; }
-_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
-_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
-turns=0
-sleep() { turns=\$((turns + 1)); [ "\$turns" -le 3 ] || exit 0; }
-_comm_wake_main watchee --deliver ping --owner \$\$
-EOF
-    bash "$d/run.sh" 2>/dev/null
-    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
-    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) for a frontend backlog present before arming, want exactly 1"; return 1; }
-    return 0
-}
-
-# Its twin, which is what proves the two cursors are not crossed: the same
-# backlog, already read through the FRONTEND cursor, announces nothing. Point
-# this at read/watchee.cursor instead and it goes red.
-case_a_frontend_backlog_already_read_is_silent() {
-    local d="$WORK/fe-backlog-read"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/read" "$d/AppDataLocal/sot"
-    : > "$d/inbox/watchee.jsonl"
-    printf '{"from":"peer","to":"watchee","text":"you already read this"}\n' \
-        > "$d/AppDataLocal/sot/fe-inbox.jsonl"
-    printf '1' > "$d/read/watchee.fe.cursor"
-    local calls="$d/pty-input.calls"
-    : > "$calls"
-    cat > "$d/run.sh" <<EOF
-source "$WAKE"
-export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
-export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
-sot_daemon_endpoint() { printf fixture; }
-_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
-_comm_wake_pty_input() { printf x >> "$calls"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
-turns=0
-sleep() { turns=\$((turns + 1)); [ "\$turns" -le 3 ] || exit 0; }
-_comm_wake_main watchee --deliver ping --owner \$\$
-EOF
-    bash "$d/run.sh" 2>/dev/null
-    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
-    [ "$n" -eq 0 ] || { echo "  pty.input called $n time(s) for frontend mail already read; a restart must be silent"; return 1; }
-    return 0
-}
-
 check "three new directed lines type the ping notice exactly once" case_three_new_directed_lines_type_the_ping_once
 check "a batch whose verdict cannot be read still pings once and is logged once" case_an_unreadable_verdict_still_pings_and_logs_once
 check "a 1500-line backlog is one scan, not one per line" case_a_fifteen_hundred_line_backlog_scans_in_one_pass
-check "a frontend backlog filed before the watcher is announced" case_a_frontend_backlog_from_before_the_watcher_is_announced
-check "a frontend backlog already read stays silent" case_a_frontend_backlog_already_read_is_silent
 # THE DEFECT ITSELF, which the two-start case above cannot reach: a watcher
 # that is ALIVE while the marker names someone else. On the hub the marker
 # named the later of two watchers and the earlier one -- forty-five minutes
@@ -1497,90 +1362,7 @@ check "a frame filed before the watcher started is announced" case_a_frame_from_
 check "a backlog already read is silent when a watcher restarts" case_a_backlog_already_read_is_not_announced_on_restart
 check "full mode does not retype a backlog" case_full_mode_does_not_retype_a_backlog
 check "a frame whose sender is not a string still wakes" case_a_non_string_sender_still_wakes
-# Mail in BOTH inboxes inside ONE cycle is ONE wake. The ping says only that
-# mail exists, so a cross-box frame and a same-box frame arriving together cost
-# one typed line and one model turn -- the same promise this file's header
-# makes for a burst within one file. A body that ran per source typed the
-# notice twice for one batch.
-case_both_inboxes_in_one_cycle_ping_once() {
-    local d="$WORK/both-inboxes"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
-    : > "$d/inbox/watchee.jsonl"
-    local calls="$d/pty-input.calls" attempts="$d/pty-input.log"
-    : > "$calls"
-    cat > "$d/run.sh" <<EOF
-source "$WAKE"
-export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
-export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
-sot_daemon_endpoint() { printf fixture; }
-_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["❯"],"cursor":{"row":0,"col":2}}}'; }
-_comm_wake_pty_input() {
-    printf x >> "$calls"
-    printf '%s' "\$2" | base64 -d >> "$attempts"; printf '\n' >> "$attempts"
-    printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'
-}
-turns=0
-sleep() {
-    turns=\$((turns + 1))
-    if [ "\$turns" -eq 1 ]; then
-        printf '{"from":"peer","to":"watchee","text":"from another box"}\n' >> "$d/AppDataLocal/sot/fe-inbox.jsonl"
-        printf '{"from":"sibling","to":"watchee","msg":"from this box"}\n' >> "$d/inbox/watchee.jsonl"
-    fi
-    [ "\$turns" -le 3 ] || exit 0
-}
-_comm_wake_main watchee --deliver ping --owner \$\$
-EOF
-    bash "$d/run.sh" 2>/dev/null
-    local n; n="$(wc -c < "$calls" 2>/dev/null || echo 0)"
-    [ "$n" -eq 1 ] || { echo "  pty.input called $n time(s) for one cycle's mail, want exactly 1"; cat "$attempts" 2>/dev/null; return 1; }
-    return 0
-}
 
-# The silence budget counts CYCLES, not sources: five unanswered pty.screen
-# probes, whether the mail sits in one inbox or both. A per-source body spent
-# two probes a cycle and hit the limit on cycle three, slowing a frontend-box
-# session's wake sooner than any other box's for the same hiccup.
-case_the_silence_budget_is_five_cycles_with_both_sources_hot() {
-    local d="$WORK/no-reply-both"; rm -rf "${d:?}"; mkdir -p "$d/inbox" "$d/state" "$d/AppDataLocal/sot"
-    : > "$d/inbox/watchee.jsonl"
-    local screen_calls="$d/screen.calls" intervals="$d/intervals"
-    : > "$screen_calls"; : > "$intervals"
-    cat > "$d/run.sh" <<EOF
-source "$WAKE"
-export SOT_WORKSPACE_ID=ws-test SOT_COMM_HOME="$d"
-export OS=Windows_NT LOCALAPPDATA="$d/AppDataLocal"
-sot_daemon_endpoint() { printf fixture; }
-_comm_wake_row() { printf '%s\n' "\$SOT_WORKSPACE_ID"; }
-_comm_wake_pty_screen() { printf x >> "$screen_calls"; printf ''; }
-turns=0
-sleep() {
-    turns=\$((turns + 1))
-    printf '%s\n' "\$1" >> "$intervals"
-    if [ "\$turns" -eq 1 ]; then
-        printf '{"from":"peer","to":"watchee","text":"from another box"}\n' >> "$d/AppDataLocal/sot/fe-inbox.jsonl"
-        printf '{"from":"sibling","to":"watchee","msg":"from this box"}\n' >> "$d/inbox/watchee.jsonl"
-    fi
-    [ "\$turns" -le 8 ] || exit 0
-}
-_comm_wake_main watchee --deliver ping --owner \$\$
-EOF
-    bash "$d/run.sh" 2>/dev/null
-    local rc=$?
-    [ "$rc" -eq 0 ] || { echo "  exited $rc, want 0"; return 1; }
-    local sc; sc="$(wc -c < "$screen_calls" 2>/dev/null || echo 0)"
-    [ "$sc" -eq 8 ] || { echo "  pty.screen was probed $sc time(s) in 8 cycles with both inboxes hot, want 8 (one per cycle)"; return 1; }
-    # THE assertion that separates the two shapes: a body that probes once per
-    # SOURCE spends the five silences in three cycles, so it slows down on the
-    # 4th poll instead of the 6th.
-    [ "$(sed -n '5p' "$intervals")" = "2" ] || { echo "  the 5th poll waited '$(sed -n '5p' "$intervals")'s, want 2"; return 1; }
-    [ "$(sed -n '6p' "$intervals")" = "30" ] || { echo "  the 6th poll waited '$(sed -n '6p' "$intervals")'s, want 30"; return 1; }
-    return 0
-}
-
-check "a frame the frontend files on Windows pings this session" case_a_frontend_inbox_frame_pings
-check "mail in both inboxes in one cycle types the notice once" case_both_inboxes_in_one_cycle_ping_once
-check "the five-probe silence budget is per cycle, not per inbox" case_the_silence_budget_is_five_cycles_with_both_sources_hot
-check "a frontend frame for another handle on the box does not ping" case_a_frontend_frame_for_another_handle_does_not_ping
 check "a not-free prompt withholds the ping and types it once the prompt frees up" case_prompt_not_free_waits_then_types_once_free
 check "five unanswered pty.screen probes back off instead of giving up" case_five_unanswered_probes_back_off_and_keep_watching
 check "the poll speeds up again once the daemon answers" case_the_poll_speeds_up_again_once_the_daemon_answers

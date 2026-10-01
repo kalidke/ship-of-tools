@@ -44,7 +44,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 # shellcheck source=../scripts/comm-lib.sh
-source "$SCRIPTS_DIR/comm-lib.sh"   # sot_host / sot_fe_inbox_path / INBOX_DIR
+source "$SCRIPTS_DIR/comm-lib.sh"   # sot_host / INBOX_DIR
 
 MATRIX_WAIT="${SOT_MATRIX_WAIT:-25}"     # seconds to wait for the echoes
 MATRIX_POLL="${SOT_MATRIX_POLL:-0.5}"    # inbox re-read interval
@@ -101,7 +101,7 @@ matrix_inbox_texts() {
 # (e.g. "ECHO <nonce>" or "VERDICT <nonce>"). rc 1 when none.
 matrix_find_prefix() {
     local file="$1" me="$2" prefix="$3" fe texts hit
-    fe="$(sot_fe_inbox_path)"
+    fe=""
     # A HERE-STRING, never a pipe: `grep -m1` closes its input on the match,
     # jq takes SIGPIPE, and under `pipefail` the whole pipeline then reports a
     # failure — a found line read as "nothing arrived", which is the exact
@@ -207,13 +207,8 @@ matrix_nonce() {
 # so a direction delivers two frames carrying the nonce and a hop line three.
 # No VERDICT line contains this substring.
 matrix_fe_inbox_copies() {
-    local fe n
-    fe="$(sot_fe_inbox_path)"
-    [ -n "$fe" ] || return 1
-    [ -r "$fe" ] || { printf '0\n'; return 0; }
-    n="$(grep -c -F -- "ECHO $1" "$fe" 2>/dev/null)" || n=0
-    [[ "$n" =~ ^[0-9]+$ ]] || n=0
-    printf '%s\n' "$n"
+    # No frontend inbox exists on any platform any more (decision 0031 B2).
+    return 1
 }
 
 # matrix_fe_dupe_verdict NONCE FRONTENDS — the two-frontend leg (ADR 0048

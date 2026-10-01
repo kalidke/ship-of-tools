@@ -334,13 +334,12 @@ done
 Note this XDG `$HOME` may be **per-machine**, so its registry is local to the
 box; the relay still bridges sessions across machines over the tunnel.
 
-(Windows: the FE writes inbound relay messages to
-`%LOCALAPPDATA%\sot\fe-inbox.jsonl`; the in-drawer session watches that file
-via a Monitor. The bootstrap only prints the command to arm one on each
+(Windows: the box's daemon holds a link to the hub and files inbound mail into
+`%USERPROFILE%\.sot-comm\inbox\<handle>.jsonl`, with the frontend window open
+or closed. The bootstrap only prints the command to arm a Monitor on each
 relaunch — nothing arms it unless the session runs that command, and the
-start skill now says not to act on that line. Until ADR 0049's daemon wake
-reaches Windows, a drawer session that follows it is never interrupted here;
-its mail still surfaces at its own turn-end check.)
+start skill now says not to act on that line. A session's mail surfaces at its
+own turn-end check.)
 Installing new skills requires a Claude Code **restart** to load them.
 
 ---

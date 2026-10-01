@@ -5,8 +5,8 @@
 # backend socket, so cross-machine agent messages ride it: `agent.send` ->
 # daemon -> `agent.message` evt broadcast
 # to every connected client. A handle the hub's comm folder lists is filed by the
-# hub (`comm.file`); on Windows the frontend writes received messages to
-# <state-dir>/fe-inbox.jsonl.
+# hub (`comm.file`); on a box that holds its own link to the hub, that box's
+# daemon files for its own folder (rust/backend/src/hub_link.rs).
 #
 # Requires a daemon built with agent.send/agent.message support (workspace push +
 # this relay land together).

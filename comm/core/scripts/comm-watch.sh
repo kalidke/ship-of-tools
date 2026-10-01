@@ -24,24 +24,6 @@
 #                                                 model turn each)
 #   - everything else (directed, .to non-empty) -> emitted -> wakes the session
 #
-# TWO SOURCES ON WINDOWS, and this used to be an EITHER/OR (2026-09-27): the
-# native frontend files every inbound relay frame straight into fe-inbox.jsonl
-# (mirrors gpu.rs::sot_state_dir(): `%LOCALAPPDATA%\sot` on Windows, else
-# `${XDG_STATE_HOME:-$HOME/.local/state}/sot`), so the Windows branch watched that
-# file INSTEAD of the per-handle inbox — and a directed send from a session on the
-# same box is filed into the per-handle inbox on every platform, Windows included
-# (comm-send.sh's durable append IS the delivery). Watching one file meant a
-# same-box frame woke nobody while a cross-box frame woke but was unreadable by
-# comm-poll.sh. Both files are watched now, each with its own line count.
-#
-# fe-inbox.jsonl is SHARED by every session on the host — including traffic
-# addressed to a SIBLING handle (the `to` field is advisory, not enforced routing;
-# the daemon broadcasts to every connection). So its wake filter checks `to`
-# against OUR exact handle only (a frontend is a client, never a comm peer, so
-# there is no FE-family label to honour), and the frame carries the message under
-# `.text` (the raw `agent.message` payload), not `.msg` (the field a
-# daemon-filed line carries in the per-handle inbox).
-#
 # LIVENESS MARKER: comm-session-start.sh's survival check needs to tell a
 # live Monitor from a dead one. Linux does this with `pgrep` against the
 # process table directly — no marker needed there. git-bash on Windows has
@@ -78,30 +60,19 @@ source "$SCRIPT_DIR/comm-lib.sh" 2>/dev/null || {
     exit 3
 }
 
-# BOTH inboxes, one line count each. The per-handle file is where a directed send
-# lands on every platform ($INBOX_DIR honours $SOT_COMM_HOME — Codex review
-# finding 8 — because the library derives it, not a mirrored line). The frontend
-# inbox exists only on Windows, and sot_fe_inbox_path is the ONE place that
-# platform branch lives: off Windows it prints nothing and this watcher has a
-# single source, exactly as before.
+# The per-handle file is where a directed send lands ($INBOX_DIR honours
+# $SOT_COMM_HOME because the library derives it, not a mirrored line). Its
+# filter: `.to // "?"` defaults a legacy line with NO .to key to non-empty ->
+# wakes (those predate the to-stamp and are treated as directed), and the
+# message is under `.msg`.
 #
-# The filters differ because the files differ. Per-handle: `.to // "?"` defaults a
-# legacy line with NO .to key to non-empty -> wakes (those predate the to-stamp
-# and are treated as directed), and the message is under `.msg`. Frontend: `.to`
-# must equal our exact handle, and the message is under `.text`.
-#
-# Neither filter consults a read cursor, and this script must never write one: a
+# The filter consults no read cursor, and this script must never write one: a
 # watcher wakes on frames that arrive AFTER it is armed, while the cursor means
 # "already shown to the model" — arming against the cursor would replay every
 # unread frame as a wake, and advancing it here would mark mail read that nobody
 # has seen.
 sources=("$INBOX_DIR/$handle.jsonl")
 filters=('select(.from != $me and ((.to // "?") != "")) | "[relay] from \(.from): \(.msg)"')
-fe_inbox="$(sot_fe_inbox_path)"
-if [ -n "$fe_inbox" ]; then
-    sources+=("$fe_inbox")
-    filters+=('select(.from != $me and (.to // "") == $me) | "[relay] from \(.from): \(.text)"')
-fi
 
 marker="$COMM_HOME/state/$handle.watch"
 mkdir -p "$(dirname "$marker")" 2>/dev/null || true
