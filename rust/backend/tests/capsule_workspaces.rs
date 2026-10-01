@@ -716,7 +716,8 @@ async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "unreachable", BOUND.max(Duration::from_secs(30))).await;
 
     // ADR 0046 decision 2: workspace.list reads pure memory -- even with the
-    // row genuinely unreachable, back-to-back calls must answer near-instantly.
+    // row genuinely unreachable, back-to-back calls keep reading it from
+    // memory; the log count below proves the burst provoked no lane probe.
     let log_path_for_list_check = env.state_root.join("sot").join("sotd.log");
     let unreachable_lines_before = count_log_occurrences(&log_path_for_list_check, "supervisor lane unreachable");
     for _ in 0..10 {

@@ -780,11 +780,12 @@ mod tests {
     }
 
     // The stubbed fsync failure, Rust arm: `sync` starts a reader, waits until
-    // it is in flight (counted, or blocked behind the exclusive lock) and fails, so `append_line` cuts the in-flight line back. The reader is
-    // the scripts' own (comm-lib.sh), so the guards under test are the real
-    // ones. A comm home whose folder record matches this disk lets the locked
-    // reader take the shared lock; a PATH with no flock(1) leaves the other
-    // one unlocked.
+    // it is in flight (counted, or blocked behind the exclusive lock) and
+    // fails, so `append_line` cuts the in-flight line back. The reader is the
+    // scripts' own (comm-lib.sh), so the guards under test are the real ones.
+    // A comm home whose folder record matches this disk lets the locked reader
+    // take the shared lock; a PATH with no flock(1) leaves the other one
+    // unlocked. The reader outwaits the 10 s poll of `until_a_waiter_blocks_on`.
     #[cfg(target_os = "linux")]
     fn failing_sync_with_reader(
         home: &Path,
@@ -804,7 +805,7 @@ mod tests {
                 .arg(format!("source {}; {reader}", scripts_lib()))
                 .env("SOT_COMM_HOME", home)
                 .env("PATH", path)
-                .env("SOT_INBOX_READ_WAIT_SECS", "5")
+                .env("SOT_INBOX_READ_WAIT_SECS", "30")
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
@@ -921,17 +922,28 @@ mod tests {
         assert_eq!((lines.len(), lines[0]["msg"].as_str()), (1, Some("only")));
     }
 
-    // A holder frees the lock after 300 ms. The filing cannot finish before an
-    // unlock that comes after `at`, so `done >= at` proves it followed the
-    // unlock, under the polled wait and under a blocking one alike; a missed
-    // wake or a stopped poll ends in the bound's error. A lock that is never
-    // freed gives the same sentence at the bound under either wait.
-    fn held_then_freed(own: &str) {
+    // A holder frees the lock once the filing is seen waiting: a blocking
+    // wait shows in /proc/locks before the unlock, a polled wait is held 1 s.
+    // `done >= at` proves the filing followed the unlock, under the polled wait
+    // and under a blocking one alike; a missed wake or a stopped poll ends in
+    // the bound's error. It promises no duration beyond that.
+    fn held_then_freed(own: &str, blocks: bool) {
         let d = tempfile::tempdir().unwrap();
-        let holder = OpenOptions::new().read(true).create(true).append(true).open(d.path().join("h.lock")).unwrap();
+        let lock = d.path().join("h.lock");
+        let holder = OpenOptions::new().read(true).create(true).append(true).open(&lock).unwrap();
         holder.lock().unwrap();
         let freed = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(300));
+            #[cfg(target_os = "linux")]
+            if blocks {
+                until_a_waiter_blocks_on(&lock);
+            } else {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = (blocks, &lock);
+                std::thread::sleep(Duration::from_secs(1));
+            }
             let at = Instant::now();
             drop(holder);
             at
@@ -945,13 +957,13 @@ mod tests {
 
     #[test]
     fn under_nfs4_the_lock_is_polled_and_follows_the_unlock() {
-        held_then_freed("nfs4 srv:/export");
+        held_then_freed("nfs4 srv:/export", false);
     }
 
     #[test]
     fn under_a_local_lock_the_wait_blocks_and_follows_the_unlock() {
         for own in ["local m", "none@m"] {
-            held_then_freed(own);
+            held_then_freed(own, true);
         }
     }
 

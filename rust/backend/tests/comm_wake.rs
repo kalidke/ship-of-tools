@@ -222,8 +222,8 @@ async fn a_working_row_is_not_typed_into_until_it_rests() {
     row.env.kill_daemon_bounded().await;
 }
 
-/// Rows with mail are checked together: three rows are all woken within one
-/// hold of each other, not one hold apiece.
+/// Rows with mail are checked together: three rows are all woken within two
+/// holds (`MAX_SPREAD`) of each other, not one hold apiece.
 #[tokio::test]
 async fn rows_with_mail_are_held_at_once() {
     let _serial = SERIAL.lock().await;

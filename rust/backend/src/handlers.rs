@@ -5975,7 +5975,10 @@ mod comm_file_tests {
     fn an_empty_registry_is_file_failed_and_a_missing_one_not_here() {
         let d = home();
         std::fs::write(d.path().join("registry.json"), "").unwrap();
+        let t0 = std::time::Instant::now();
         let (code, error) = file(Some(d.path()), "fresh", true).unwrap_err();
+        // An empty registry is retried over the 200 ms schedule before the verdict; this is a lower bound, so load only lengthens it.
+        assert!(t0.elapsed() >= std::time::Duration::from_millis(200), "{:?}", t0.elapsed());
         assert_eq!(code, "file_failed");
         assert!(error.contains("could not be read"), "{error}");
         assert!(!d.path().join("inbox/fresh.jsonl").exists());
@@ -5983,16 +5986,17 @@ mod comm_file_tests {
         assert_eq!(file(Some(d.path()), "fresh", true).unwrap_err().0, "not_here");
     }
 
-    // The heal runs inside a pause, so which try sees it is fixed; the verdict
-    // arm is pinned by the empty-registry test above.
+    // The heal runs inside a pause, so which try sees it is fixed; the
+    // empty-registry test above pins both the verdict arm and that `file()`
+    // reads through the retried read.
 
     /// Read the registry, running `heal` in pause number `at` (0 = never);
-    /// returns the result and how many pauses there were.
-    fn read_healed(reg: &std::path::Path, at: usize, heal: impl FnOnce()) -> (std::io::Result<Vec<u8>>, usize) {
-        let (mut pauses, mut heal) = (0, Some(heal));
-        let r = read_registry_fresh_with(reg, |_| {
-            pauses += 1;
-            if pauses == at {
+    /// returns the result and the pauses it took, in order.
+    fn read_healed(reg: &std::path::Path, at: usize, heal: impl FnOnce()) -> (std::io::Result<Vec<u8>>, Vec<std::time::Duration>) {
+        let (mut pauses, mut heal) = (Vec::new(), Some(heal));
+        let r = read_registry_fresh_with(reg, |d| {
+            pauses.push(d);
+            if pauses.len() == at {
                 if let Some(h) = heal.take() {
                     h();
                 }
@@ -6020,9 +6024,11 @@ mod comm_file_tests {
             std::fs::write(&reg, "").unwrap();
             let (r, pauses) = read_healed(&reg, at, || std::fs::rename(&tmp, &reg).unwrap());
             if at > 0 {
-                assert_eq!((r.unwrap(), pauses), (good, at));
+                assert_eq!((r.unwrap(), pauses.len()), (good, at));
+                assert_eq!(pauses, [0, 100, 100].map(std::time::Duration::from_millis)[..at], "the schedule");
             } else {
-                assert_eq!((unreadable(r).as_str(), pauses), ("no good read in 4 tries; the last: zero bytes", 3));
+                assert_eq!((unreadable(r).as_str(), pauses.len()), ("no good read in 4 tries; the last: zero bytes", 3));
+                assert_eq!(pauses, [0, 100, 100].map(std::time::Duration::from_millis), "the schedule");
             }
         }
     }
@@ -6051,10 +6057,12 @@ mod comm_file_tests {
                 }
             });
             if at > 0 && !vanish {
-                assert_eq!((r.unwrap(), pauses), (good, at));
+                assert_eq!((r.unwrap(), pauses.len()), (good, at));
+                assert_eq!(pauses, [0, 100, 100].map(std::time::Duration::from_millis)[..at], "the schedule");
             } else {
                 unreadable(r);
-                assert_eq!(pauses, 3, "at {at}, vanish {vanish}");
+                assert_eq!(pauses.len(), 3, "at {at}, vanish {vanish}");
+                assert_eq!(pauses, [0, 100, 100].map(std::time::Duration::from_millis), "the schedule");
             }
         }
     }
@@ -6074,10 +6082,12 @@ mod comm_file_tests {
                 std::fs::rename(&tmp, &reg).unwrap();
             });
             if at > 0 {
-                assert_eq!((r.unwrap(), pauses), (good, at));
+                assert_eq!((r.unwrap(), pauses.len()), (good, at));
+                assert_eq!(pauses, [0, 100, 100].map(std::time::Duration::from_millis)[..at], "the schedule");
             } else {
                 unreadable(r);
-                assert_eq!(pauses, 3);
+                assert_eq!(pauses.len(), 3);
+                assert_eq!(pauses, [0, 100, 100].map(std::time::Duration::from_millis), "the schedule");
             }
         }
     }

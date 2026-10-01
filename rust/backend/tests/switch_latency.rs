@@ -499,21 +499,23 @@ mod dead_kernel {
     }
 
     /// Finding 9 / concurrency: exactly ONE spawn attempt per backoff
-    /// window, no matter how many concurrent requests are asking — the
-    /// supervisor is a single sequential loop, so ten pipelined
+    /// window — the supervisor is a single sequential loop, so concurrent
     /// `kernel.request`s against an always-dies stub must all share the
     /// SAME (one) spawn, and a request sent after the backoff floor elapses
     /// must trigger exactly one MORE.
     #[tokio::test]
     async fn concurrent_failures_spawn_exactly_one_child_and_backoff_throttles_the_next() {
-        const N: u64 = 10;
+        // N is the daemon's off-loop concurrency (`OFFLOOP_CONCURRENCY`, server.rs), so every request is
+        // in flight at once and joins generation 1, which lives 2 s; more would queue behind its death and race the backoff
+        // floor that `child_that_dies_mid_request_delivers_kernel_unavailable_and_marks_dead` pins.
+        const N: u64 = 4;
         let stub_dir = tempfile::tempdir().expect("stub dir");
         let stub = write_fake_kernel(stub_dir.path());
         let env = Env::spawn_with(
             "deadkernel-concurrency",
             Some(&stub),
             &[],
-            // Generation 1 stays in flight 2 s, so all ten requests join it.
+            // Generation 1 stays in flight 2 s, so all N requests join it.
             &[("SOT_LANE_FAKE_JULIA_DIE_AFTER_N", "0"), ("SOT_LANE_FAKE_JULIA_DIE_DELAY_S", "2")],
         );
         let mut conn = poll_until_connected(&env.socket_path).await;
@@ -546,7 +548,7 @@ mod dead_kernel {
         assert_eq!(
             env.spawn_marker_count(),
             1,
-            "ten concurrent requests against a dead kernel must share exactly ONE spawn attempt"
+            "concurrent requests against a dead kernel must share exactly ONE spawn attempt"
         );
 
         // Past the 250ms respawn-backoff floor: exactly one MORE attempt.
