@@ -806,6 +806,14 @@ pub async fn run(opts: Opts) -> Result<()> {
     }
 
 
+    // Comm wake (0031 B3): types the unread-mail line into rows at a free
+    // prompt. Needs the comm home and this machine's capsule state root.
+    if let (Some(comm_home), Some(state_root)) =
+        (crate::paths::sot_comm_home(), sot_log::state_dir::sot_state_dir())
+    {
+        tokio::spawn(crate::comm_wake::run(comm_home, state_root, workspaces.clone(), crate::comm_wake::TICK));
+    }
+
     // Agent-relay bus: parallel to the workspace bus, typed `AgentMessage`.
     // `agent.send` publishes here; each connection subscribes and writes an
     // `agent.message` evt frame so a message reaches the other machine's

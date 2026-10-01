@@ -4167,16 +4167,65 @@ pub mod headless {
             client.shutdown(SHUTDOWN_WAIT);
             return Err(e);
         }
+        let out = type_and_enter(&mut client, text, op_budget, quiet_budget, pacing_budget);
+        client.shutdown(SHUTDOWN_WAIT);
+        out
+    }
 
+    /// What [`wake_if_free`] did.
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum WakeOutcome {
+        /// The screen was not a free prompt; nothing was typed.
+        NotFree,
+        /// The line was typed; `enter_sent` is [`write_and_enter`]'s own flag.
+        Woke { enter_sent: bool },
+    }
+
+    /// The comm wake's one attach (0031 B3): attach, checkpoint, test the
+    /// screen on that same client with `is_free(lines, cursor, agent)`, and
+    /// only then type `line` and Enter as [`write_and_enter`] does. Never
+    /// takes the pen unless the prompt is free, and never retries.
+    pub fn wake_if_free(
+        state_dir: &Path,
+        controller_id: &str,
+        line: &[u8],
+        is_free: fn(&[String], Option<(u16, u16)>, &str) -> bool,
+        agent: &str,
+        op_budget: Duration,
+        quiet_budget: Duration,
+        pacing_budget: Duration,
+    ) -> Result<WakeOutcome, HeadlessError> {
+        let mut client = attach(state_dir, controller_id)?;
+        if let Err(e) = wait_for_checkpoint(&mut client, Instant::now() + op_budget) {
+            client.shutdown(SHUTDOWN_WAIT);
+            return Err(e);
+        }
+        let cursor = Some(client.screen().cursor_position());
+        let out = if is_free(&current_lines(&client), cursor, agent) {
+            type_and_enter(&mut client, line, op_budget, quiet_budget, pacing_budget)
+                .map(|(_, enter_sent)| WakeOutcome::Woke { enter_sent })
+        } else {
+            Ok(WakeOutcome::NotFree)
+        };
+        client.shutdown(SHUTDOWN_WAIT);
+        out
+    }
+
+    /// [`write_and_enter`]'s steps 2-4 over an already attached,
+    /// checkpointed client; the caller shuts the client down.
+    fn type_and_enter(
+        client: &mut Client,
+        text: &[u8],
+        op_budget: Duration,
+        quiet_budget: Duration,
+        pacing_budget: Duration,
+    ) -> Result<(usize, bool), HeadlessError> {
         let n = if text.is_empty() {
             0
         } else {
-            match send_and_wait_recorded(&mut client, text, Instant::now() + op_budget) {
+            match send_and_wait_recorded(client, text, Instant::now() + op_budget) {
                 Ok(n) => n,
-                Err(e) => {
-                    client.shutdown(SHUTDOWN_WAIT);
-                    return Err(e);
-                }
+                Err(e) => return Err(e),
             }
         };
         // `SOT_TEST_PACING_HOLD` (test-only, the `SOT_TEST_ACTIVATION_BARRIER`
@@ -4185,7 +4234,7 @@ pub mod headless {
         let pacing_hold = std::env::var_os("SOT_TEST_PACING_HOLD").is_some();
 
         let pacing_deadline = Instant::now() + pacing_budget;
-        let mut previous = current_lines(&client);
+        let mut previous = current_lines(client);
         let mut last_change_at = Instant::now();
         loop {
             let quiet_elapsed = !pacing_hold && Instant::now().duration_since(last_change_at) >= quiet_budget;
@@ -4194,7 +4243,7 @@ pub mod headless {
             }
             std::thread::sleep(POLL_INTERVAL);
             client.pump();
-            let lines = current_lines(&client);
+            let lines = current_lines(client);
             if lines != previous {
                 previous = lines;
                 last_change_at = Instant::now();
@@ -4202,11 +4251,11 @@ pub mod headless {
         }
 
         // Doc above: once the text is recorded, always Ok.
-        let enter_sent = send_and_wait_recorded(&mut client, &[0x0d], Instant::now() + op_budget).is_ok();
+        let enter_sent = send_and_wait_recorded(client, &[0x0d], Instant::now() + op_budget).is_ok();
 
-        client.shutdown(SHUTDOWN_WAIT);
         Ok((n, enter_sent))
     }
+
 
     /// Current screen lines, top to bottom, trailing spaces trimmed —
     /// [`screen_of`]'s own shape, off an already-pumped client.

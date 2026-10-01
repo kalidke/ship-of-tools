@@ -18,6 +18,7 @@ mod accounts;
 mod capsule_workspace;
 mod clients;
 mod comm_inbox;
+mod comm_wake;
 mod comm_registry_lock;
 mod concept;
 mod file_io;
