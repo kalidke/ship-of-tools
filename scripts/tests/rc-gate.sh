@@ -12,11 +12,13 @@
 # DBUS_SESSION_BUS_ADDRESS: they would put test scopes into the user's systemd
 # manager. Needs jq. Exit 2 on bad args; otherwise 0 (130 if interrupted) and the
 # verdict is in <logdir>/summary.txt (ends in ALLDONE, or ALLDONE FAILED when
-# the job runner itself failed). Every job's result file starts as `unrun`, so
-# a job that never ran cannot pass; each command has a 1200 s end.
+# the job runner failed, a job never ran, or a test left a process behind). Every job's result file starts as `unrun`, so
+# a job that never ran cannot pass; each job's command has a 1200 s end (the
+# builds do not).
 
 SELF=$(readlink -f "$0")
 TO=(timeout -k 10 1200)
+SPLIT=(capsule_workspaces comm_wake lane_bridge fe_client)
 JULIA_PKGS=(core julia/kernel julia/repl julia/plugins/pdf-file julia/plugins/video-file julia/sotlog)
 
 envs() {
@@ -98,9 +100,18 @@ emit() {
   [ -n "${3:-}" ] && echo unrun > "$3"
   printf '%s\n' "$2"
 }
-emit_bin() { emit "bin:$1" "$(printf 'bin\t%s\t%s' "$1" "$2")" "$L/rust/$(basename "$1").rc"; }
-emit_one() { emit "one:$1:$3" "$(printf 'one\t%s\t%s\t%s' "$1" "$2" "$3")" "$L/rust/$(basename "$1")__${3//:/_}.rc"; }
-emit_shell() { emit "shell:$1" "$(printf 'shell\t%s' "$1")" "$L/steps/$(basename "$1" .sh).rc"; }
+emit_bin() {
+  local key; key=$(basename "$1")
+  emit "bin:$1" "$(printf 'bin\t%s\t%s\t%s' "$key" "$1" "$2")" "$L/rust/$key.rc"
+}
+emit_one() {
+  local key; key=$(basename "$1")__${3//:/_}
+  emit "one:$1:$3" "$(printf 'one\t%s\t%s\t%s\t%s' "$key" "$1" "$2" "$3")" "$L/rust/$key.rc"
+}
+emit_shell() {
+  local name; name=$(basename "$1" .sh)
+  emit "shell:$1" "$(printf 'shell\t%s\t%s' "$name" "$1")" "$L/steps/$name.rc"
+}
 
 producer() {
   local k tgt t n exe pkg f s found out lrc
@@ -138,9 +149,9 @@ producer() {
 
   # list the four slow binaries; a split binary runs only per test
   if [ "$BUILD_RC" -eq 0 ]; then
-    for n in capsule_workspaces comm_wake lane_bridge fe_client; do
+    for n in "${SPLIT[@]}"; do
       if ! row_for "$n"; then echo "split-missing $n" >> "$L/summary.txt"; continue; fi
-      out=$(cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --format terse 2> "$L/rust/$n.list.log")
+      out=$(cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --format terse 2> "$L/$n.list.log")
       lrc=$?
       out=$(grep ': test$' <<< "$out")
       if [ "$lrc" -ne 0 ] || [ -z "$out" ]; then echo "split-missing $n" >> "$L/summary.txt"; continue; fi
@@ -180,7 +191,8 @@ producer() {
     emit_shell "$f"
   done
   [ "$BUILD_RC" -eq 0 ] || return 0
-  for n in "${!LISTED[@]}"; do
+  for n in "${SPLIT[@]}"; do
+    [ -n "${LISTED[$n]:-}" ] || continue
     while IFS= read -r t; do
       emit_one "${SPLIT_EXE[$n]}" "${SPLIT_PKG[$n]}" "$t"
     done <<< "${LISTED[$n]}"
@@ -192,13 +204,13 @@ producer() {
 
 if [ "${1:-}" = --job ]; then
   envs
-  IFS=$'\t' read -r kind a b c <<< "$2"
+  IFS=$'\t' read -r kind a b c d <<< "$2"
   case $kind in
     julia) job_julia ;;
     cargo-chain) job_cargo_chain ;;
-    shell) job_shell "$a" ;;
-    bin) job_test "$(basename "$a")" "$a" "$b" ;;
-    one) job_test "$(basename "$a")__${c//:/_}" "$a" "$b" "$c" ;;
+    shell) job_shell "$b" ;;
+    bin) job_test "$a" "$b" "$c" ;;
+    one) job_test "$a" "$b" "$c" "$d" ;;
   esac
   exit 0
 fi
@@ -206,6 +218,7 @@ fi
 if [ "${1:-}" = --pipeline ]; then
   envs
   BUILD_RC=$RCG_BUILD_RC
+  set -o pipefail
   producer | xargs -d '\n' -n 1 -P "$2" bash "$SELF" --job
   exit $?
 fi
@@ -233,6 +246,19 @@ envs
 echo "head $(git -C "$D" rev-parse HEAD) tree $(git -C "$D" rev-parse 'HEAD^{tree}')" > "$L/summary.txt"
 echo "cap $CAP" >> "$L/summary.txt"
 
+TD=$(cd "$CARGO_TARGET_DIR" 2> /dev/null && pwd -P) || TD=$CARGO_TARGET_DIR
+# pids of every process whose executable lives under the target dir
+target_pids() {
+  local d e
+  for d in /proc/[0-9]*; do
+    e=$(readlink "$d/exe" 2> /dev/null) || continue
+    [[ $e == "$TD"/* ]] && echo "${d#/proc/}"
+  done
+}
+BEFORE=$(target_pids)
+INTR=0
+trap 'INTR=1' INT TERM HUP
+
 T0=$(date +%s)
 M=$D/rust/Cargo.toml
 BUILD_RC=0
@@ -255,14 +281,18 @@ fi
 export RCG_BUILD_RC=$BUILD_RC
 
 ( while kill -0 $$ 2> /dev/null; do cut -d' ' -f1 /proc/loadavg >> "$L/load.txt"; sleep 5; done ) &
-SAMPLER=$!
-INTR=0
-setsid bash "$SELF" --pipeline "$CAP" &
-PG=$!
-trap 'INTR=1; kill -TERM -- -"$PG" 2> /dev/null; kill "$SAMPLER" 2> /dev/null' INT TERM
-wait "$PG"
-XS=$?
-if [ "$INTR" -eq 1 ]; then wait "$PG" 2> /dev/null; fi
+XS=130
+if [ "$INTR" -eq 0 ]; then
+  setsid bash "$SELF" --pipeline "$CAP" &
+  PG=$!
+  wait "$PG"
+  XS=$?
+  # the gate owns its session: drain it whatever way the pipeline ended
+  pkill -TERM -s "$PG" 2> /dev/null
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do pgrep -s "$PG" > /dev/null || break; sleep 1; done
+  pkill -KILL -s "$PG" 2> /dev/null
+  wait "$PG" 2> /dev/null
+fi
 
 PASSED=0 FAILED=0 IGNORED=0 FL=0 BIN=0 SEEN=" "
 for f in "$L"/rust/*.log; do
@@ -282,20 +312,36 @@ done
 # one sweep over every result file: a failure or a job that never ran is a failure
 RC=0
 NOTES=
+UNRUN=0
 for f in "$L"/rust/*.rc "$L"/steps/*.rc; do
   [ -e "$f" ] || continue
   v=$(cat "$f")
   case $f in
-    "$L"/rust/*) [ "$v" = 0 ] || { RC=101; NOTES+="rust-failed $(basename "$f" .rc) $v"$'\n'; } ;;
-    *) [ "$v" = unrun ] && NOTES+="$(basename "$f" .rc) rc=unrun"$'\n' ;;
+    "$L"/rust/*) [ "$v" = unrun ] && UNRUN=1
+       [ "$v" = 0 ] || { RC=101; NOTES+="rust-failed $(basename "$f" .rc) $v"$'\n'; } ;;
+    *) [ "$v" = unrun ] && { UNRUN=1; NOTES+="$(basename "$f" .rc) rc=unrun"$'\n'; } ;;
   esac
 done
 [ "$BUILD_RC" -eq 0 ] || RC=$BUILD_RC
 rc rust-workspace "$RC" "binaries=$BIN passed=$PASSED failed=$FAILED ignored=$IGNORED $FL FAILED-lines"
 [ -n "$NOTES" ] && printf '%s' "$NOTES" >> "$L/summary.txt"
-[ "$XS" -eq 0 ] || rc xargs "$XS"
+[ "$XS" -eq 0 ] || rc pipeline "$XS"
+# anything the tests left under the target dir is reported, never killed
+LEFT=$(comm -13 <(sort <<< "$BEFORE") <(target_pids | sort))
+if [ -n "$LEFT" ]; then
+  sleep 5
+  AFTER=$(target_pids)
+  for p in $LEFT; do
+    grep -qx "$p" <<< "$AFTER" || continue
+    echo "leftover $p $(tr '\0' ' ' < "/proc/$p/cmdline" 2> /dev/null)" >> "$L/summary.txt"
+  done
+fi
 PEAK=$(sort -n "$L/load.txt" 2> /dev/null | tail -1)
 echo "end $(date +%H:%M:%S) load $(cut -d' ' -f1-3 /proc/loadavg) cargo=$(pgrep -c cargo) peak-load ${PEAK:-0} wall $(($(date +%s) - T0))s" >> "$L/summary.txt"
-if [ "$XS" -eq 0 ]; then echo ALLDONE >> "$L/summary.txt"; else echo "ALLDONE FAILED" >> "$L/summary.txt"; fi
+if [ "$XS" -eq 0 ] && [ "$INTR" -eq 0 ] && [ "$UNRUN" -eq 0 ] && ! grep -q '^leftover ' "$L/summary.txt"; then
+  echo ALLDONE >> "$L/summary.txt"
+else
+  echo "ALLDONE FAILED" >> "$L/summary.txt"
+fi
 [ "$INTR" -eq 1 ] && exit 130
 exit 0
