@@ -11,7 +11,7 @@
 // The topology is read once at start, like the frontend's tunnel set: a box
 // that is the hub, or has no `ssh:` endpoint to it, runs no link.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use sot_protocol::{codec, op, Frame, HelloReq, Kind};
@@ -148,7 +148,7 @@ where
         if id.is_empty() || to.is_empty() {
             continue;
         }
-        let req = sot_protocol::CommFileReq { from, to: to.clone(), text, broadcast: false, forwarded: false };
+        let req = hub_frame_req(from, to.clone(), text);
         match crate::handlers::file_comm(req, workspaces).await {
             Ok(Ok(())) => {
                 tracing::info!(%to, %id, "hub link filed");
@@ -164,28 +164,36 @@ where
     }
 }
 
+/// The filing request for a frame the hub sent. `forwarded: true` because it
+/// came from the hub: a box whose comm folder is not on its own disk refuses it
+/// rather than forwarding it back to the hub over ssh.
+fn hub_frame_req(from: String, to: String, text: String) -> sot_protocol::CommFileReq {
+    sot_protocol::CommFileReq { from, to, text, broadcast: false, forwarded: true }
+}
+
 // The one-time move of the old frontend inbox. Deleted with this file's caller
 // after the candidate that ships it.
 
-/// `%LOCALAPPDATA%\sot`, else `$XDG_STATE_HOME/sot`, else `~/.local/state/sot`:
-/// where the frontend wrote `fe-inbox.jsonl` (the path `comm-lib.sh` computed).
-fn old_fe_dir() -> Option<PathBuf> {
-    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-    var("LOCALAPPDATA")
-        .or_else(|| var("XDG_STATE_HOME"))
-        .or_else(|| var("HOME").map(|h| h.join(".local").join("state")))
-        .map(|d| d.join("sot"))
-}
-
+/// Only a Windows frontend ever read `fe-inbox.jsonl` through a cursor. Elsewhere
+/// the frontend wrote it too, but `comm-listen` had already delivered that mail,
+/// so moving it would file it a second time.
 fn move_fe_inbox() -> Result<(), String> {
-    let (Some(dir), Some(home)) = (old_fe_dir(), crate::paths::sot_comm_home()) else {
+    let (Some(dir), Some(home)) = (sot_log::state_dir::sot_state_dir(), crate::paths::sot_comm_home()) else {
         return Ok(());
     };
-    move_fe_inbox_in(&dir, &home).map(|n| {
+    move_fe_inbox_if(cfg!(windows), &dir, &home).map(|n| {
         if n > 0 {
             tracing::info!(lines = n, "moved unread frontend mail into the inboxes");
         }
     })
+}
+
+/// `move_fe_inbox_in` when `on_windows`, else nothing and nothing touched.
+fn move_fe_inbox_if(on_windows: bool, dir: &Path, home: &Path) -> Result<usize, String> {
+    if !on_windows {
+        return Ok(0);
+    }
+    move_fe_inbox_in(dir, home)
 }
 
 /// Moves each unread line of `<dir>/fe-inbox.jsonl` into `<home>/inbox/<to>.jsonl`.
@@ -193,7 +201,8 @@ fn move_fe_inbox() -> Result<(), String> {
 /// start that finds `.moving` repeats the appends (a line may then be doubled,
 /// never lost), and the last step renames it to `.moved`. A registry that
 /// cannot be read leaves everything where it is: with no handles, the rename
-/// would drop the mail.
+/// would drop the mail. Once moved, the frontend's `read/*.fe.cursor` files are
+/// deleted: they counted lines of a file that no longer exists.
 fn move_fe_inbox_in(dir: &Path, home: &Path) -> Result<usize, String> {
     let (inbox, moving, moved) = (dir.join("fe-inbox.jsonl"), dir.join("fe-inbox.jsonl.moving"), dir.join("fe-inbox.jsonl.moved"));
     if !moving.exists() && !inbox.exists() {
@@ -219,12 +228,13 @@ fn move_fe_inbox_in(dir: &Path, home: &Path) -> Result<usize, String> {
             .filter(|c| *c <= lines.len())
             .unwrap_or(0);
         for l in &lines[cur..] {
-            // A line that is not an object is skipped, like a torn one; `fe_down` markers have no `to`.
+            // A line that is not an object is skipped, like a torn one; so is an `fe_down`
+            // marker, which is addressed to a handle but is not mail.
             let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(l) else {
                 continue;
             };
             let s = |k: &str| o.get(k).and_then(|v| v.as_str()).unwrap_or("");
-            if s("to") != h || s("from") == h {
+            if s("kind") == "fe_down" || s("to") != h || s("from") == h {
                 continue;
             }
             let text = if o.contains_key("msg") { s("msg") } else { s("text") };
@@ -232,8 +242,14 @@ fn move_fe_inbox_in(dir: &Path, home: &Path) -> Result<usize, String> {
             moved_lines += 1;
         }
     }
-    let _ = std::fs::remove_file(&moved);
     std::fs::rename(&moving, &moved).map_err(|e| format!("rename to {}: {e}", moved.display()))?;
+    if let Ok(rd) = std::fs::read_dir(home.join("read")) {
+        for ent in rd.flatten() {
+            if ent.file_name().to_string_lossy().ends_with(".fe.cursor") {
+                let _ = std::fs::remove_file(ent.path());
+            }
+        }
+    }
     Ok(moved_lines)
 }
 
@@ -253,6 +269,7 @@ fn registry_handles(home: &Path) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn setup(registry: &str, fe: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
         let t = tempfile::tempdir().unwrap();
@@ -280,7 +297,7 @@ mod tests {
             r#"{"from":"x","to":"a","text":"a-unread","ts":"2"}"#,
             r#"{"from":"x","to":"b","text":"b-unread","ts":"3"}"#,
             r#"{"from":"a","to":"a","text":"a-self","ts":"4"}"#,
-            r#"{"fe_down":true,"ts":"5"}"#,
+            r#"{"from":"sot-fe","to":"a","text":"possible relay gap","ts":"5","kind":"fe_down","window":{"last_evidence":"0"}}"#,
             r#"{"from":"x","to":"gone","text":"not-listed","ts":"6"}"#,
             "not json",
         ]
@@ -297,6 +314,7 @@ mod tests {
         assert_eq!(msgs(&home, "b"), ["b-unread"]);
         assert!(!dir.join("fe-inbox.jsonl").exists() && !dir.join("fe-inbox.jsonl.moving").exists());
         assert!(dir.join("fe-inbox.jsonl.moved").exists());
+        assert!(!home.join("read/a.fe.cursor").exists(), "a stale cursor outlived the move");
         // A second start finds nothing to move.
         assert_eq!(move_fe_inbox_in(&dir, &home), Ok(0));
         assert_eq!(msgs(&home, "a"), ["a-unread"]);
@@ -325,6 +343,21 @@ mod tests {
         assert!(move_fe_inbox_in(&dir, &home).is_err());
         assert!(dir.join("fe-inbox.jsonl").exists());
         assert!(!dir.join("fe-inbox.jsonl.moving").exists());
+    }
+
+    #[test]
+    fn off_windows_the_old_inbox_is_left_untouched() {
+        let (_t, dir, home) = setup(REG, &fe_lines());
+        let before = std::fs::read(dir.join("fe-inbox.jsonl")).unwrap();
+        assert_eq!(move_fe_inbox_if(false, &dir, &home), Ok(0));
+        assert_eq!(std::fs::read(dir.join("fe-inbox.jsonl")).unwrap(), before);
+        assert!(!dir.join("fe-inbox.jsonl.moving").exists() && !dir.join("fe-inbox.jsonl.moved").exists());
+        assert!(!home.join("inbox").exists(), "a line was filed off Windows");
+    }
+
+    #[test]
+    fn a_hub_frame_is_filed_as_forwarded() {
+        assert!(hub_frame_req("x".into(), "a".into(), "t".into()).forwarded);
     }
 
     #[test]

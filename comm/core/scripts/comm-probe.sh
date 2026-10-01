@@ -214,11 +214,11 @@ probe_self_handle() {
 # costs one stat.
 probe_inbox_stamp() {
     local handle="$1" total=0 f sz
-    for f in "$INBOX_DIR/$handle.jsonl"; do
-        [ -n "$f" ] && [ -f "$f" ] || continue
+    f="$INBOX_DIR/$handle.jsonl"
+    if [ -f "$f" ]; then
         sz="$(wc -c < "$f" 2>/dev/null)" || sz=0
-        total=$((total + ${sz:-0}))
-    done
+        total=${sz:-0}
+    fi
     printf '%s\n' "$total"
 }
 

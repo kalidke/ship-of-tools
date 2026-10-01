@@ -54,10 +54,8 @@
 #       idle while the agent is actually waiting.
 #
 #   (2) NEW MAIL. A turn does not end while directed sot-comm mail sits unread:
-#       the hook reads this handle's inbox — BOTH of them on Windows, where the
-#       frontend's shared fe-inbox.jsonl is where cross-box mail actually lands
-#       (2026-09-27) — and, when a line newer than that file's read cursor is
-#       addressed to it, blocks with "run comm-poll.sh". That is how a BUSY
+#       the hook reads this handle's inbox and, when a line newer than that
+#       file's read cursor is addressed to it, blocks with "run comm-poll.sh". That is how a BUSY
 #       session is reached — no watcher, no keystrokes, no human (the messaging
 #       ruling, 2026-09-26). See the branches below for the exact rules.
 #

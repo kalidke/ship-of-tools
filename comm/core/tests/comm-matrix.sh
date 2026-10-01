@@ -83,30 +83,25 @@ matrix_receipt_line() {
     printf '%s\n' "$2" | sed -n '1p'
 }
 
-# matrix_inbox_texts FILE ME [FE_FILE] — every message text addressed to ME, from
-# the per-handle inbox and (on Windows) the frontend's shared fe-inbox, one per
+# matrix_inbox_texts FILE — every message text in the per-handle inbox, one per
 # line. CURSOR-FREE: this reads, it never marks anything read, so the row's own
 # responder still sees its mail.
 matrix_inbox_texts() {
-    local file="$1" me="$2" fe="${3:-}"
+    local file="$1"
     [ -f "$file" ] && jq -Rr '(fromjson? // empty) | select(type == "object") | (.msg // .text // "")' \
         < "$file" 2>/dev/null
-    [ -n "$fe" ] && [ -f "$fe" ] && jq -Rr --arg me "$me" \
-        '(fromjson? // empty) | select(type == "object") | select((.to // "") == $me) | (.msg // .text // "")' \
-        < "$fe" 2>/dev/null
     return 0
 }
 
 # matrix_find_prefix FILE ME PREFIX — the first message text beginning PREFIX
 # (e.g. "ECHO <nonce>" or "VERDICT <nonce>"). rc 1 when none.
 matrix_find_prefix() {
-    local file="$1" me="$2" prefix="$3" fe texts hit
-    fe=""
+    local file="$1" me="$2" prefix="$3" texts hit
     # A HERE-STRING, never a pipe: `grep -m1` closes its input on the match,
     # jq takes SIGPIPE, and under `pipefail` the whole pipeline then reports a
     # failure — a found line read as "nothing arrived", which is the exact
     # false negative this instrument exists to catch.
-    texts="$(matrix_inbox_texts "$file" "$me" "$fe")"
+    texts="$(matrix_inbox_texts "$file")"
     hit="$(grep -m1 -F "$prefix" <<< "$texts")" || return 1
     [ -n "$hit" ] || return 1
     printf '%s\n' "$hit"
@@ -192,64 +187,6 @@ matrix_nonce() {
     n="$(od -An -tx1 -N6 /dev/urandom 2>/dev/null | tr -d ' \n')"
     [ "${#n}" -eq 12 ] || n="$(printf '%06x%06x' "$((RANDOM * RANDOM % 16777216))" "$((RANDOM * RANDOM % 16777216))")"
     printf '%s\n' "$n"
-}
-
-# matrix_fe_inbox_copies NONCE — how many copies of the ECHO frame carrying
-# NONCE are in THIS box's frontend inbox. rc 1 when this platform has no
-# frontend inbox at all, which is not the same fact as "none found" and must
-# not be reported as one.
-#
-# It counts the FRAME, not the nonce, and the key is the one the forward leg
-# already uses (`matrix_find_prefix ... "ECHO $nonce"`) — one key in both legs
-# so the two cannot disagree about what they are counting. A nonce count would
-# be wrong on every correct fleet: the responder answers `ECHO $nonce` AND then
-# sends `VERDICT $nonce ...` to the same asker (comm-probe.sh's probe_reply),
-# so a direction delivers two frames carrying the nonce and a hop line three.
-# No VERDICT line contains this substring.
-matrix_fe_inbox_copies() {
-    # No frontend inbox exists on any platform any more (decision 0031 B2).
-    return 1
-}
-
-# matrix_fe_dupe_verdict NONCE FRONTENDS — the two-frontend leg (ADR 0048
-# amendment 9), as "<PASS|FAIL|SKIP> <TAB> <note>". Counts the ECHO frame
-# carrying NONCE, never the nonce itself — see matrix_fe_inbox_copies.
-#
-# The daemon fans every relayed frame out to EVERY attached connection, and each
-# attached frontend appends into one inbox whose path has no per-frontend
-# component. One copy is the whole rule. Two is a failure in the same way a
-# false success is, and for the same reason: this instrument exists to name the
-# gap between what was claimed and what happened, and a session woken twice by
-# one message is that gap.
-#
-# TWO SKIPS, and they are DIFFERENT. A platform whose readers never open that
-# file has nothing to count — the leg is not applicable there, and reporting it
-# as a pass would claim a proof nobody performed. A box with fewer than two
-# frontends cannot produce the defect at all. Collapsing the two would let "this
-# platform has no such file" masquerade as "this box has one frontend".
-#
-# FRONTENDS is the preflight's count of named frontend clients for this box. The
-# roster prints no instance, so two frontends on one box are two identical
-# `fe@<box>` lines and their COUNT is the only available signal; it is printed
-# on the skip so that a future roster change folding duplicates into one row
-# with a multiplier cannot make this leg skip silently.
-matrix_fe_dupe_verdict() {
-    local nonce="$1" frontends="${2:-0}" count
-    if ! count="$(matrix_fe_inbox_copies "$nonce")"; then
-        printf 'SKIP\tno frontend inbox on this platform — nothing here reads that file\n'
-        return 0
-    fi
-    if [ "$frontends" -lt 2 ]; then
-        printf 'SKIP\t%s frontend(s) counted for this box — one cannot produce the defect (copies seen: %s)\n' \
-            "$frontends" "$count"
-        return 0
-    fi
-    case "$count" in
-        1) printf 'PASS\tone copy of the echo in the frontend inbox, from %s frontends\n' "$frontends" ;;
-        0) printf 'SKIP\tnot delivered through the frontend inbox (a local registry hit files directly)\n' ;;
-        *) printf 'FAIL\t%s copies of the echo in the frontend inbox — %s frontends each filed the same frame\n' \
-               "$count" "$frontends" ;;
-    esac
 }
 
 matrix_preflight() {
@@ -405,15 +342,6 @@ for i in "${!L_NAME[@]}"; do
         "$(matrix_receipt_line "${L_RC[$i]}" "${L_OUT[$i]}")"
     printf '       %s\n' "$note"
     [ "$state" = "FAIL" ] && FAILS=$((FAILS + 1))
-    # Once a direction's echo is found, ask the second question this box can
-    # answer alone: did the frame land in the frontend inbox exactly once?
-    if [ "${L_EXPECT[$i]}" = "echo" ] && [ -n "${L_SEEN[$i]}" ]; then
-        verdict="$(matrix_fe_dupe_verdict "${L_NONCE[$i]}" "$MATRIX_FE_LOCAL")"
-        state="${verdict%%	*}"; note="${verdict#*	}"
-        printf '%-4s %-26s\n' "$state" "${L_NAME[$i]} (fe inbox)"
-        printf '       %s\n' "$note"
-        [ "$state" = "FAIL" ] && FAILS=$((FAILS + 1))
-    fi
     if [ -n "${L_REVERSE[$i]}" ]; then
         verdict="$(matrix_reverse_verdict "$INBOX" "$ME" "${L_NONCE[$i]}")"
         state="${verdict%%	*}"; note="${verdict#*	}"

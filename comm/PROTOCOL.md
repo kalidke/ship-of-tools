@@ -328,6 +328,9 @@ lists the receiver:
    the hub refuses it as `file_failed` with the recovery named — restart
    the hub when its own machine wrote the record (a remount), else stop
    every daemon on the folder, delete the record and start the hub.
+   On Windows, the daemon's first start moves the old frontend inbox's
+   unread lines (`fe-inbox.jsonl`) into the inboxes; lines for handles not in
+   the registry stay in `fe-inbox.jsonl.moved`.
 2. It cannot: `comm-relay.sh send @h` (which `comm-send.sh` execs on a
    registry miss) writes ONE `comm.file` request to the relay endpoint, the
    hub, and reads ONE answer. The hub files for its own home: when its comm

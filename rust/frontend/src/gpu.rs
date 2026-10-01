@@ -10198,8 +10198,8 @@ impl State {
     /// client's `fe_down_last_evidence` is always `None` (this client's
     /// markers are the drawer's alone per ADR 0042 L1's own "fe_down
     /// markers ... NOT written" — `FeDownBaseline::capture(None)` makes
-    /// `marker_for_attach` return `None` forever, so nothing this client
-    /// ever produces reaches fe-inbox), and the initial size is the
+    /// `marker_for_attach` return `None` forever, so this client
+    /// never produces one), and the initial size is the
     /// CALLER's `(cols, rows)` (the session pane's current rect) not the
     /// drawer's 80×24 default — a freshly-selected row should show at
     /// its real size on the very first paint, not resize a frame later.
@@ -14830,7 +14830,7 @@ impl State {
                         // silently re-query the WRONG connection.
                         let _ =
                             self.send_to(&event_host, crate::transport::OutgoingReq::WorkspaceList);
-} else if op == sot_protocol::op::AGENT_MESSAGE {
+                    } else if op == sot_protocol::op::AGENT_MESSAGE {
                         // A session can drive this FE's nav by broadcasting a
                         // `sot_ui` envelope as the message text. Filing mail
                         // is the daemon's (`hub_link.rs`), never this
@@ -15648,8 +15648,8 @@ impl State {
                     self.workspace_lists.insert(event_host.clone(), workspaces);
                     self.rebuild_workspace_caches();
                     self.prune_warm_attach(&event_host);
-// No handle declaration is sent for message routing: the daemon files for
-// its own comm folder (`hub_link.rs`), and a frontend plays no part in it.
+                    // No handle declaration is sent for message routing: the daemon files for
+                    // its own comm folder (`hub_link.rs`), and a frontend plays no part in it.
                     //
                     // A DIFFERENT declaration — for SESSION LISTING, not
                     // message routing (session-listing brief decision 2)
