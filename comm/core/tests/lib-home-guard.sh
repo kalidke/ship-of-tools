@@ -12,11 +12,20 @@
 # SOT_WORKSPACE_ID, SOT_SOCKET and every exported *_ENDPOINT, plus the host
 # session's CLAUDE_CODE_SESSION_ID, which the hooks key their tick files on
 # ahead of SOT_WORKSPACE_ID (inherited, it merged a suite's per-run keys into
-# one and throttled every run after the first). Right after the
+# one and throttled every run after the first). It then closes the daemon
+# discovery routes comm-lib.sh has beyond those variables, so a suite can never
+# reach a live daemon by rediscovery (that once sent a test frame to the real
+# one): SOTD_BIN and SOT_WORKSPACE are unset, XDG_RUNTIME_DIR (and, once
+# guard_fresh_home runs, TMPDIR) point at fresh directories, and a directory of
+# refusing `sotd`, `sotd.exe` and `pgrep` stubs (exit 97) leads PATH. A
+# self-test sources the tree's comm-lib.sh and calls sot_daemon_endpoint and
+# sot_relay_endpoint; if either prints or succeeds, or the library does not
+# load, the suite stops with FATAL before any test runs. Right after the
 # suite makes its mktemp work directory and names its comm home, before any
 # other command, it calls:
 #   guard_fresh_home WORK            HOME becomes WORK/test-home, fresh, so the
-#                                    suite's own cleanup of WORK removes it
+#                                    suite's own cleanup of WORK removes it;
+#                                    the discovery guard moves under WORK too
 #   guard_refuse_live_home HOME_DIR  FATAL and exit 2 when HOME_DIR, the
 #                                    suite's comm home, is empty, or equals or
 #                                    lies under a recorded live home
@@ -37,6 +46,40 @@ for _guard_v in $(compgen -e); do
 done
 unset _guard_v
 
+_guard_fatal() { echo "lib-home-guard: FATAL $*" >&2; [ -z "${_GUARD_BOOT:-}" ] || rm -rf "${_GUARD_BOOT:?}"; exit 1; }
+
+# _guard_self_test DIR — the tree's own comm-lib.sh must find no daemon and no hub.
+_guard_self_test() {
+    local lib fn out rc
+    lib="$(dirname "${BASH_SOURCE[0]}")/../scripts/comm-lib.sh"
+    [ -r "$lib" ] || _guard_fatal "daemon discovery cannot be checked: no $lib"
+    for fn in sot_daemon_endpoint sot_relay_endpoint; do
+        out="$( export SOT_COMM_HOME="$1/comm"; . "$lib" >/dev/null 2>&1 || exit 99; "$fn" 2>/dev/null )" && rc=0 || rc=$?
+        if [ "$rc" -eq 0 ] || [ -n "$out" ] || [ "$rc" -eq 99 ]; then
+            _guard_fatal "daemon discovery is reachable ($fn: rc=$rc out='$out')"
+        fi
+    done
+}
+
+# _guard_close_discovery DIR [tmp] — the run's own scratch under DIR, refusing
+# stubs first on PATH, then the self-test. Called again by guard_fresh_home.
+_guard_close_discovery() {
+    local d="$1" s
+    mkdir -p "$d/bin" "$d/run" "$d/tmp" "$d/comm" && chmod 700 "$d/run" || _guard_fatal "no scratch directory $d"
+    for s in sotd sotd.exe pgrep; do
+        printf '#!/bin/sh\necho "lib-home-guard: refused daemon discovery ($0 $*)" >&2\nexit 97\n' > "$d/bin/$s" \
+            && chmod +x "$d/bin/$s" || _guard_fatal "cannot install the $s stub"
+    done
+    unset SOTD_BIN SOT_SOCKET SOT_WORKSPACE_ID SOT_COMM_SELF_FILE SOT_COMM_NAME SOT_WORKSPACE
+    [ -z "${_GUARD_STUBS:-}" ] || PATH="${PATH//$_GUARD_STUBS:/}"
+    _GUARD_STUBS="$d/bin"
+    export PATH="$_GUARD_STUBS:$PATH" XDG_RUNTIME_DIR="$d/run"
+    [ -z "${2:-}" ] || export TMPDIR="$d/tmp"
+    _guard_self_test "$d"
+}
+_GUARD_BOOT="$(mktemp -d)" || _guard_fatal "no scratch directory"
+_guard_close_discovery "$_GUARD_BOOT"
+
 _guard_phys() {  # PATH
     local d="${1%/}" rest=""
     while [ ! -d "$d" ]; do
@@ -50,6 +93,9 @@ guard_fresh_home() {  # WORK
     [ -n "${1:-}" ] && [ -d "$1" ] && mkdir -p "$1/test-home" \
         || { echo "FATAL: no work directory to hold a fresh HOME (got: '${1:-}')" >&2; exit 2; }
     export HOME="$1/test-home"
+    _guard_close_discovery "$1/guard" tmp
+    [ -z "${_GUARD_BOOT:-}" ] || rm -rf "${_GUARD_BOOT:?}"
+    _GUARD_BOOT=""
 }
 
 guard_refuse_live_home() {  # HOME_DIR

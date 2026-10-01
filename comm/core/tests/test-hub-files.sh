@@ -60,7 +60,7 @@ HOLDERS=()
 trap 'for p in "${HOLDERS[@]}"; do kill -9 "$p" 2>/dev/null; done; rm -rf "${WORK:?}"' EXIT
 
 BIN="$WORK/bin"
-cp -r "$SCRIPTS_DIR" "$BIN"
+cp -r "$SCRIPTS_DIR" "$BIN" && chmod -R u+w "$BIN" || { echo "FATAL: cannot copy the scripts" >&2; exit 1; }
 cat >> "$BIN/comm-lib.sh" <<'STUB'
 
 # ---- no daemon, a fixture mount (test only) ---------------------------------
@@ -69,6 +69,7 @@ sot_relay_endpoint() { [ -n "${1:-}" ] || return 1; printf '%s\n' "$1"; }  # an 
 _sot_findmnt() { printf '%s\n' "${FAKE_MNT-nfs4 rw,vers=4.2,local_lock=none filer.example:/export/home}"; }
 _sot_machine_id() { printf '0123456789abcdef0123456789abcdef'; }
 STUB
+grep -q '^_sot_machine_id() { printf' "$BIN/comm-lib.sh" || { echo "FATAL: the fixture stub did not land in the copy" >&2; exit 1; }
 RECORD="nfs4 filer.example:/export/home"
 printf '%s\n' "$RECORD" > "$SOT_COMM_HOME/inbox-lock-manager"
 SEND="$BIN/comm-send.sh"
