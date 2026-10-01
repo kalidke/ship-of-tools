@@ -3408,6 +3408,14 @@ pub async fn handle_video_open(
 ///   using a parent-relative asset link still 404s. Fixing that would mean
 ///   parsing the page's own HTML for its relative links, which this handler
 ///   deliberately does not do (no HTML heuristics for routing decisions).
+///
+/// URL root (v0.6.6): the rooting rule above picks the CONTENT root, where
+/// ordinary files are served from. A page on the shared prefix server whose
+/// repo tracks a symlink to data under a root this machine declares in its
+/// `data-roots` file gets a URL space starting at the repo top instead, so
+/// `../../data/x.mp4` reaches the link folder; the returned path is then
+/// prefixed with the content root's place below it (`Site::url_path`). What is
+/// served does not widen; see `site_serve.rs`.
 pub async fn handle_docs_open(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -3551,29 +3559,37 @@ pub async fn handle_docs_open(
     // fallback to a possibly-uncanonical path (security review — that
     // fallback was the TOCTOU: if a second canonicalize somehow failed, it
     // silently registered the raw, unverified root instead of erroring).
-    let mut pool_port: Option<(u16, String)> = None;
+    let mut root_relative = false;
     if entry_is_html {
         if let Ok(bytes) = tokio::fs::read(&entry).await {
             // Cap the scan — an index is small, but a bundled SPA can be large.
             let head = &bytes[..bytes.len().min(512 * 1024)];
-            if has_root_relative_refs(&String::from_utf8_lossy(head)) {
-                match crate::site_serve::assign_pool_port(serial, root.clone()) {
-                    Some(assigned) => pool_port = Some(assigned),
-                    None => {
-                        return Ok(err(
-                            format!(
-                                "{} uses root-relative links and every dedicated \
-                                 port is busy ({} of {} in use by other \
-                                 connections), or a secure token couldn't be minted \
-                                 — close another root-relative site, reconnect, or retry",
-                                entry.display(),
-                                crate::site_serve::pool_in_use(),
-                                crate::site_serve::POOL_SIZE,
-                            ),
-                            "root_relative_pool_busy",
-                        ));
-                    }
-                }
+            root_relative = has_root_relative_refs(&String::from_utf8_lossy(head));
+        }
+    }
+    // The site: content root `root`, and a URL space that reaches a tracked
+    // data link's folder when the page rides the shared prefix server (a
+    // root-relative site keeps its own origin, so it is never widened).
+    let site = crate::site_serve::Site::open(root, ws_root, !root_relative).await;
+    let rel = site.url_path(&rel);
+    let mut pool_port: Option<(u16, String)> = None;
+    let mut site = Some(site);
+    if root_relative {
+        match crate::site_serve::assign_pool_port(serial, site.take().expect("site")) {
+            Some(assigned) => pool_port = Some(assigned),
+            None => {
+                return Ok(err(
+                    format!(
+                        "{} uses root-relative links and every dedicated \
+                         port is busy ({} of {} in use by other \
+                         connections), or a secure token couldn't be minted \
+                         — close another root-relative site, reconnect, or retry",
+                        entry.display(),
+                        crate::site_serve::pool_in_use(),
+                        crate::site_serve::POOL_SIZE,
+                    ),
+                    "root_relative_pool_busy",
+                ));
             }
         }
     }
@@ -3597,7 +3613,7 @@ pub async fn handle_docs_open(
         // nonce `set_root` minted (security review — not the raw serial).
         // `None` means the CSPRNG read failed — fail closed rather than mint
         // a guessable nonce.
-        let Some(nonce) = crate::site_serve::set_root(serial, root) else {
+        let Some(nonce) = crate::site_serve::set_root(serial, site.take().expect("site")) else {
             return Ok(err(
                 "could not mint a secure site token (system RNG unavailable) — try again".into(),
                 "rng_unavailable",

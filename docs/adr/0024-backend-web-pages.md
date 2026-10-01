@@ -210,3 +210,34 @@ root; a stale prior tab 404s on reload). A path-prefixed multi-site scheme is a
 later refinement — and since root-relative `/asset` links force one-site-per-
 origin anyway, multi-site really needs the deferred per-port/proxy work. The op
 name stays `docs.open` (legacy) to keep the change backend-only.
+
+## Revision: linked data through tracked links (v0.6.6)
+
+A page can show data that lives outside its repo, through a symlink the repo
+tracks. Two roots, once one, are now separate. The **content root** is where
+ordinary files are served from (`find_site_root`, unchanged). The **URL root** is
+where the URL path space maps: the repo top when the page rides the shared prefix
+server, git tracks a symlink under it and the machine declares a data root, else
+the content root. A browser collapses `../../../data/x.mp4` above the nonce
+segment, so the link folder is reachable only when the URL space starts at a
+common ancestor. Root-relative sites keep their own pool origin and are not
+widened. Widening the URL space does not widen what is served.
+
+Follow rule, checked on every request:
+
+- `.git` in any path part is refused, and so is a `..` part.
+- A path that resolves inside the content root is served as before.
+- Otherwise the first symlink below the URL root must be tracked by git (the set
+  is rebuilt whenever the repo index file changes), a data root must be declared
+  in the machine's own `data-roots` file (read at each request, each root
+  canonicalized), the link's target must lie under one, and the file must stay
+  inside that target: a link inside the linked folder is not followed out of it.
+- Each refusal names the rule and, for a root that did not count, why.
+- Off Linux and macOS no link is followed.
+
+The file is opened without following a symlink below its base (`openat` with
+`O_NOFOLLOW`), so a link swapped in after the check fails the open instead of
+escaping. What a page's script can read: the content root, plus files inside the
+targets of tracked links under a declared root; never `.git`, never an untracked
+repo file outside the content root, never anything through an untracked link.
+Range, content types and the empty-file case are shared with the video server.

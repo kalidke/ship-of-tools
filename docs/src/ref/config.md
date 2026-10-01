@@ -1,7 +1,8 @@
 # Configuration Files
 
-Three TOML files, each read by a different piece and none of them by more
-than one parser: `settings.toml` (layout + terminal, read by the frontend,
+Three TOML files and one plain list file, each read by a different piece and
+none of them by more than one parser. The list file, `data-roots`, is
+described [below](#data-roots). The TOML files: `settings.toml` (layout + terminal, read by the frontend,
 first file found wins), `hosts.toml` (the declared topology —
 hub, daemon and frontend hosts, monitor targets — read ONLY by
 `sot_protocol::topology`/`sotd topology`; the frontend reads no config
@@ -252,6 +253,27 @@ the frontend: an ssh child into the hub, no argument for the hub's own
 daemon and `--host otherbox` to reach the hub's relay socket for the
 other one. No port, no forward — read the actual endpoints from
 `sotd topology plan`, never hardcode one.
+
+## `data-roots`
+
+The data folders a browser page opened with `W` may reach through git-tracked
+symlinks. It lives in the per-user config folder (`$XDG_CONFIG_HOME/sot` or
+`~/.config/sot`; `%LOCALAPPDATA%\sot\config` on Windows) and never in a
+repository, so a repo cannot declare its own data roots. It is not TOML: one
+absolute directory per line, blank lines and lines starting with `#` ignored.
+
+```
+# where the lab's results live
+/mnt/lab/results
+```
+
+A line is skipped, and named in the refusal message, when it is not an absolute
+path, does not exist on this host, is not a directory, is `/`, or contains your
+home directory. Each root is resolved to its canonical path when read, so a root
+given through a symlinked path still matches. The file is read again at every
+request: removing a root stops the pages using it at the next request, with no
+restart. Adding one takes effect at the next `W`. With no file, or no usable
+line, no link is followed.
 
 ## See also
 
