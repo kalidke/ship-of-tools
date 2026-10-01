@@ -4184,9 +4184,9 @@ pub mod headless {
     /// The comm wake's one attach (0031 B3): attach, checkpoint, test the
     /// screen on that same client with `is_free(lines, cursor, agent)`, and
     /// only then type `line` and Enter as [`write_and_enter`] does. A screen
-    /// that is not free costs nothing; one that is must then hold identical
-    /// (lines and cursor) for `still_for`, else it is a working row and
-    /// nothing is typed. Never takes the pen unless the prompt is free and
+    /// that is not free gets no hold (it still costs the attach); one that is
+    /// must then hold identical (lines and cursor) for `still_for`, else it
+    /// is a working row and nothing is typed. Never takes the pen unless the prompt is free and
     /// still, and never retries.
     pub fn wake_if_free(
         state_dir: &Path,
