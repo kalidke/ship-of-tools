@@ -250,6 +250,8 @@ jobs:
           # named in the FAILED line; the race, the mixed rollout, the touch
           # bound and the clear command.
           bash test-registry-lock.sh
+          # A second agent started inside a session (codex exec, claude -p) never acts as the row's handle.
+          bash test-agent-layers.sh
 
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
   # `ClosePseudoConsole` that returns immediately — it cannot exercise the
