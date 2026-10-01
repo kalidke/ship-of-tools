@@ -67,8 +67,9 @@ jobs:
       # --nocapture: the fault sweeps REPORT (never assert) their torn-tail
       # hit counts on stderr — captured output would hide them from CI logs,
       # making the sweeps' actual coverage invisible (review finding).
+      # --no-fail-fast: one failing test binary must not hide the others.
       - name: Test workspace
-        run: cargo test --workspace --locked -- --nocapture
+        run: cargo test --workspace --locked --no-fail-fast -- --nocapture
 
       # (The dedicated lane_bridge step was deleted 2026-09-18: "Test
       # workspace" above runs that suite byte-identically, so the step was
