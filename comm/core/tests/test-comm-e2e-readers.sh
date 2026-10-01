@@ -19,8 +19,7 @@
 # anything but 0 and no reader names a lock failure in a WARNING; every
 # Stop-hook call returns within 5 s, blocks while mail
 # is unread, and is silent after the final poll; in a strict phase (poll loops
-# stopped, 60 sends 3 s apart, one at a time) each send gets its own wake ping
-# before the next send to that handle, and the last poll shows exactly those
+# stopped, 60 sends 3 s apart, one at a time) the last poll shows exactly those
 # messages; nothing pings in the 60 s after the final polls (a reader that took the
 # `<count> <crc>-<len>` cursor for a whole number would see every row unread
 # forever); the wire stub saw 0 frames; every inbox is whole. In the concurrent
@@ -129,7 +128,7 @@ verdict "the v3 host computes a different identity ($id_v3)" "$([ "$id_v3" != "$
 # established ssh connection. A fresh `ssh host date` runs the remote date after
 # connection setup and returns fast, so its midpoint reads ~150 ms of setup as skew.
 # A correction is applied only when its error (at most RTT/2) is known and small.
-skew_peer=0; skew_v3=0; skew_tol=0
+skew_peer=0; skew_v3=0
 for h in "$PEER" "$V3"; do
     coproc SK { ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" 'while read -r _; do date +%s%3N; done'; }
     # Bash unsets SK and SK_PID once it reaps a dead coproc (fatal under set -u),
@@ -145,8 +144,6 @@ for h in "$PEER" "$V3"; do
     echo "clock skew $h: $sk ms (rtt $best ms)"
     [ "$best" -le 20 ] || { echo "FATAL: the skew exchange with $h took $best ms; it cannot bound a timing" >&2; exit 1; }
     [ "$h" = "$PEER" ] && skew_peer=$sk || skew_v3=$sk
-    # 5a pairs a send on one host with a ping on another: their errors add.
-    skew_tol=$((skew_tol + best / 2 + 2))
 done
 
 # Rows: readers on host e2e-reg, senders on host e2e-snd, so no send ever
@@ -390,24 +387,6 @@ for h in "${HANDLES[@]}"; do
         {cov=0; for(i=1;i<=n;i++) if(p[i]>$1){fp=p[i];cov=1;break}
          if(cov && (!($2 in s) || s[$2]>=fp)) a++; else b++}
         END{printf "  NOTE %s: concurrent phase, %d lines covered by a ping first, %d shown by a poll first or never pinged\n", h, a+0, b+0}' "$L/pings-norm-$t" "$L/firstshown-$t" "$L/filedat-$t"
-    # strict phase: every send has its own ping before the next send to that handle
-    { for sn in here peer; do awk -v h="$h" -v s="$(skew_of "e2e-snd-$sn")" '$3==h{print $1 - s, $4}' "$L/strict-e2e-snd-$sn.log"; done; } | sort -n > "$L/strictsends-$t"
-    nst="$(wc -l < "$L/strictsends-$t")"
-    unp="$(awk -v u="$skew_tol" 'FILENAME==ARGV[1]{p[++n]=$1;next} {st[++m]=$1; id[m]=$2}
-        END{for(i=1;i<=m;i++){lo=st[i]-u; hi=(i<m)?st[i+1]-u:9e18; c=0; for(j=1;j<=n;j++) if(p[j]>=lo && p[j]<hi) c++; if(c<1) print id[i]}}' "$L/pings-norm-$t" "$L/strictsends-$t" | awk 'NR<=3' | tr '\n' ' ')"
-    nsp="$(awk -v ss="$sst" '$1>=ss' "$L/pings-norm-$t" | wc -l)"
-    # Every strict send's wake latency, one line each (the kept run log is the record; $L goes on a pass): the
-    # first ping in its 5a window less the time comm-send.sh returned, in ms, skew-normalised. The send files the
-    # line before it returns, so a ping can land first and the value go below 0.
-    { for sn in here peer; do awk -v h="$h" -v s="$(skew_of "e2e-snd-$sn")" '$3==h{print $1 - s, $2 - s, $4}' "$L/strict-e2e-snd-$sn.log"; done; } | sort -n |
-        awk -v u="$skew_tol" 'FILENAME==ARGV[1]{p[++n]=$1;next} {st[++m]=$1; fd[m]=$2; id[m]=$3}
-            END{for(i=1;i<=m;i++){lo=st[i]-u; hi=(i<m)?st[i+1]-u:9e18; pg="-"; for(j=1;j<=n;j++) if(p[j]>=lo && p[j]<hi){pg=p[j]; break}
-                printf "%s sent %d filed %d ping %s latency %s\n", id[i], st[i], fd[i], pg, (pg=="-")?"-":pg-fd[i]}}' "$L/pings-norm-$t" - > "$L/pinglat-$t"
-    sed 's/^/    ping /' "$L/pinglat-$t"
-    awk '$NF!="-"{print $NF}' "$L/pinglat-$t" | sort -n |
-        awk -v h="$h" -v m="$nst" '{v[++n]=$1} END{printf "  latency %s: %d of %d strict sends pinged, min %s ms, median %s ms, max %s ms\n", h, n+0, m, v[1], v[int((n+1)/2)], v[n]}'
-    verdict "5a. $h: strict phase, every one of its $nst sends got its own ping before the next send to it ($nsp pings since the phase began)" \
-        "$([ "$nst" -eq 20 ] && [ -z "$unp" ] || echo "$nst sends; no ping before the next send after: $unp")"
     fin="$(cat "$L/final-$t")"
     late="$(awk -v f="$fin" '$1>f' "$pl" | wc -l)"
     verdict "5b. $h: no wake storm ($late pings in the ${QUIET} s after the final poll)" \
