@@ -32,7 +32,8 @@
 # SHIPPED as a stub that logs once and then sleeps (a shipped name is never
 # pruned); only otherwise is the file deleted, and the record removes it.
 # `COMM_DEPRECATED_BIN` below covers boxes installed before the record existed;
-# until a released install writes the record, a retired script is appended there.
+# append every retirement there while an upgrade can start from a record-less
+# install (0.6.5 or older).
 
 const COMM_PROTOCOL_VERSION = 1
 const COMM_SRC = normpath(joinpath(@__DIR__, "..", "comm"))
@@ -233,11 +234,12 @@ end
 #   git log --diff-filter=D --name-only --format= -- comm/core/scripts \
 #       comm/adapters/claude/hooks comm/adapters/codex/hooks
 # (and --diff-filter=R --name-status, which found no rename), keeping basenames
-# not shipped today. Once a released install has written the record, later
-# retirements are handled by the manifest diff; until then, scripts a lane
-# retires are appended here. No running loop re-execs either name: the old
-# relay/listen loops re-exec `comm-relay.sh bridge`, which is still shipped and
-# so never pruned; `comm-listen.sh` and `bus.sh` were only one-shot calls.
+# not shipped today. Append every retirement here while an upgrade can start
+# from a record-less install (0.6.5 or older); the manifest diff covers only
+# boxes that already have the record. No running loop re-execs a name on this
+# list: the old relay/listen loops re-exec `comm-relay.sh bridge`, which is
+# still shipped and so never pruned; `codex-watch.sh` execs `comm-wake.sh` once
+# at its start, and no script here re-execs its own name.
 const COMM_DEPRECATED_BIN = ["bus.sh", "comm-listen.sh", "comm-wake.sh", "comm-watch.sh",
                              "codex-watch.sh", "comm-postcompact-reminder.sh",
                              "comm-postclear-reminder.sh", "comm-session-skill.sh"]
