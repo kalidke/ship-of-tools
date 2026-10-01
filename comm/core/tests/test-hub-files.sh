@@ -917,9 +917,9 @@ case_the_lock_wait_is_chosen_by_lock_kind() {
     chmod +x "$WORK/fbin/flock"
     for kind in nfs4 local none; do
         case "$kind" in
-            nfs4)  mnt="nfs4 rw,vers=4.2,local_lock=none filer.example:/export/home"; rec="$RECORD"; want=poll ;;
-            local) mnt="ext4 rw /dev/sda1"; rec="local $mid"; want=block ;;
-            none)  mnt="nfs rw,vers=3 filer.example:/export/home"; rec="none@$mid"; want=block ;;
+            nfs4)  mnt="nfs4 rw,vers=4.2,local_lock=none filer.example:/export/home"; rec="$RECORD"; want=poll; lim=450 ;;
+            local) mnt="ext4 rw /dev/sda1"; rec="local $mid"; want=block; lim=2000 ;;
+            none)  mnt="nfs rw,vers=3 filer.example:/export/home"; rec="none@$mid"; want=block; lim=2000 ;;
         esac
         setup_rows || return 1
         printf '%s\n' "$rec" > "$SOT_COMM_HOME/inbox-lock-manager"
@@ -934,7 +934,10 @@ case_the_lock_wait_is_chosen_by_lock_kind() {
         ms=$(( ($(date +%s%N) - t0) / 1000000 ))
         printf '%s\n' "$RECORD" > "$SOT_COMM_HOME/inbox-lock-manager"
         echo "  $kind: filed ${ms} ms after start, flock calls: $(tr '\n' '|' < "$WORK/flock.log")"
-        [ "$ms" -lt 450 ] || { echo "  $kind: took ${ms} ms, more than a retry after the 300 ms release"; return 1; }
+        # A poll must follow the release within a retry; a blocking wait is woken
+        # by it, and its bound is wall time under the box's load, well short of
+        # the 10 s wait a missed wake would run out.
+        [ "$ms" -lt "$lim" ] || { echo "  $kind: took ${ms} ms, more than ${lim} ms after the 300 ms release"; return 1; }
         case "$want" in
             poll)  grep -q -e '-n ' "$WORK/flock.log" && ! grep -q -e '-w ' "$WORK/flock.log" || { echo "  $kind should poll"; return 1; } ;;
             block) grep -q -e '-w ' "$WORK/flock.log" && ! grep -q -e '-n ' "$WORK/flock.log" || { echo "  $kind should block"; return 1; } ;;

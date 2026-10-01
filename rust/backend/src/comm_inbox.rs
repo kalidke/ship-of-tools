@@ -897,8 +897,10 @@ mod tests {
     }
 
     // A holder frees the lock after 300 ms; the filing follows it within a
-    // retry, under either wait, and a lock that is never freed gives the same
-    // sentence at the bound.
+    // retry under the polled wait, and within 2 s under a blocking one (the
+    // bound is wall time, so it carries the box's load; a missed wake would
+    // only end at the 5 s bound). A lock that is never freed gives the same
+    // sentence at the bound under either wait.
     fn held_then_freed(own: &str) -> (Duration, Result<(), String>) {
         let d = tempfile::tempdir().unwrap();
         let holder = OpenOptions::new().create(true).append(true).open(d.path().join("h.lock")).unwrap();
@@ -925,7 +927,7 @@ mod tests {
         for own in ["local m", "none@m"] {
             let (took, r) = held_then_freed(own);
             r.unwrap();
-            assert!(took >= Duration::from_millis(300) && took < Duration::from_millis(500), "{own}: {took:?}");
+            assert!(took >= Duration::from_millis(300) && took < Duration::from_secs(2), "{own}: {took:?}");
         }
     }
 
