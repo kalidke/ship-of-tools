@@ -182,7 +182,8 @@ case_list_is_not_a_workspace_list() {
     local before; before="$(reg_hash)"
     LIST_PAYLOAD='{"error":"x"}'
     start_stub_daemon; run_despawn h4; stop_stub_daemon
-    assert_unresolved h4 "workspace.list returned no workspace list" "$before"
+    assert_unresolved h4 "workspace.list returned no workspace list" "$before" || return 1
+    ! contains "$DESPAWN_ERR" "comm-leave" || { echo "  comm-leave hint after a failed list: $DESPAWN_ERR"; return 1; }
 }
 
 case_refused_destroy_keeps_the_row() {
@@ -209,6 +210,37 @@ case_confirmed_destroy_deregisters() {
     contains "$DESPAWN_OUT" "Removed @h6" || { echo "  stdout: $DESPAWN_OUT"; return 1; }
     ! reg_has h6 || { echo "  registry row survived a confirmed destroy"; return 1; }
     [ "$d" -eq 1 ] && [ "$n" -ge 1 ] || { echo "  destroys=$d ws-6 mentions=$n"; return 1; }
+}
+
+# Only the destroyed workspace's own identity slot goes, by its exact name.
+case_self_file_exact_name() {
+    new_home; seed_row proj-wt-b3 ws-b3; seed_row proj-wt-b3-fix ws-b3-fix
+    mkdir -p "$CH/self"
+    printf 'mine\n' > "$CH/self/test-host__ws-b3.txt"
+    printf 'sibling\n' > "$CH/self/test-host__ws-b3-fix.txt"
+    printf 'main\n' > "$CH/self/test-host__ws-main.txt"
+    local sib main; sib="$(sha256sum "$CH/self/test-host__ws-b3-fix.txt")"; main="$(sha256sum "$CH/self/test-host__ws-main.txt")"
+    LIST_PAYLOAD="{\"workspaces\":[$(ws_entry ws-b3 s1 l1),$(ws_entry ws-b3-fix s2 l2)]}"
+    DESTROY_PAYLOAD='{"workspace_id":"ws-b3"}'
+    start_stub_daemon; run_despawn proj-wt-b3; stop_stub_daemon
+    [ "$DESPAWN_RC" -eq 0 ] || { echo "  exited $DESPAWN_RC: $DESPAWN_ERR"; return 1; }
+    [ ! -e "$CH/self/test-host__ws-b3.txt" ] || { echo "  its own self-file survived"; return 1; }
+    [ "$(sha256sum "$CH/self/test-host__ws-b3-fix.txt")" = "$sib" ] || { echo "  the sibling's self-file changed"; return 1; }
+    [ "$(sha256sum "$CH/self/test-host__ws-main.txt")" = "$main" ] || { echo "  the main self-file changed"; return 1; }
+}
+
+# A handle equal to ANOTHER workspace's label destroys its own recorded one.
+case_recorded_workspace_first() {
+    new_home; seed_row h8 ws-8
+    LIST_PAYLOAD="{\"workspaces\":[$(ws_entry ws-other s9 h8),$(ws_entry ws-8 s8 l8)]}"
+    DESTROY_PAYLOAD='{"workspace_id":"ws-8"}'
+    start_stub_daemon; run_despawn h8
+    local mine other
+    mine="$(grep -c '"op":"workspace.destroy".*"workspace_id":"ws-8"' "$REQLOG")"
+    other="$(grep -c '"op":"workspace.destroy".*"workspace_id":"ws-other"' "$REQLOG")"
+    stop_stub_daemon
+    [ "$DESPAWN_RC" -eq 0 ] || { echo "  exited $DESPAWN_RC: $DESPAWN_ERR"; return 1; }
+    [ "$mine" -eq 1 ] && [ "$other" -eq 0 ] || { echo "  destroyed own=$mine other=$other"; return 1; }
 }
 
 # --- comm-worktree-clean.sh ----------------------------------------------
@@ -262,14 +294,44 @@ case_worktree_clean_label_fallback() {
     [ "$d" -eq 1 ] || { echo "  destroys=$d (want 1)"; return 1; }
 }
 
+# Handle row has a stale workspace id and the label differs: the label pass
+# destroys the workspace and the handle's row goes too.
+case_worktree_clean_label_deregisters() {
+    rm -rf "${WORK:?}/wt"; make_worktree
+    new_home; seed_row proj-wt-x ws-stale
+    LIST_PAYLOAD="{\"workspaces\":[$(ws_entry ws-wt p-wt-x .P-wt-x)]}"
+    DESTROY_PAYLOAD='{"workspace_id":"ws-wt"}'
+    start_stub_daemon; run_clean
+    local d; d="$(destroys)"
+    stop_stub_daemon
+    [ "$CLEAN_RC" -eq 0 ] || { echo "  exited $CLEAN_RC: $CLEAN_OUT"; return 1; }
+    [ "$d" -eq 1 ] || { echo "  destroys=$d (want 1)"; return 1; }
+    ! reg_has proj-wt-x || { echo "  @proj-wt-x is still registered"; return 1; }
+}
+
+# A despawn that fails leaves the worktree in place.
+case_worktree_clean_keeps_on_failed_despawn() {
+    rm -rf "${WORK:?}/wt"; make_worktree
+    new_home; seed_row proj-wt-x ws-wt
+    LIST_PAYLOAD="{\"workspaces\":[$(ws_entry ws-wt p-wt-x .P-wt-x)]}"
+    start_stub_daemon; run_clean
+    stop_stub_daemon
+    [ "$CLEAN_RC" -ne 0 ] || { echo "  exited 0: $CLEAN_OUT"; return 1; }
+    [ -d "$WORK/wt/worktrees/proj-wt-x" ] || { echo "  the worktree was removed"; return 1; }
+}
+
 check "D1 registry row without a workspace_id: refused, row kept, comm-leave hint" case_row_without_workspace_id
 check "D2 registry row names an unlisted workspace: refused, row kept" case_row_names_unlisted_workspace
 check "D3 no row and no workspace: refused, no comm-leave hint" case_no_row_no_workspace
-check "D4 workspace.list is not a workspace list: refused, row kept" case_list_is_not_a_workspace_list
+check "D4 workspace.list is not a workspace list: refused, row kept, no comm-leave hint" case_list_is_not_a_workspace_list
 check "D5 destroy refused: exit 1, row kept" case_refused_destroy_keeps_the_row
 check "D6 confirmed destroy: row removed afterwards" case_confirmed_destroy_deregisters
+check "D7 despawn removes only its own self-file, by exact name" case_self_file_exact_name
+check "D8 despawn destroys the registry's recorded workspace first" case_recorded_workspace_first
 check "W1 worktree-clean despawns once, by handle" case_worktree_clean_despawns_once
 check "W2 worktree-clean falls back to the label with no registry row" case_worktree_clean_label_fallback
+check "W3 label fallback also deregisters the handle" case_worktree_clean_label_deregisters
+check "W4 failed despawn keeps the worktree and exits nonzero" case_worktree_clean_keeps_on_failed_despawn
 
 echo ""
 echo "$PASS passed, $FAIL failed"

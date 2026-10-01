@@ -79,15 +79,6 @@ if [ "$FORCE" != true ]; then
     fi
 fi
 
-echo "removing worktree $WT (branch '${BRANCH:-detached}', session @$HANDLE)…"
-if [ "$FORCE" = true ]; then
-    git worktree remove --force "$WT"
-else
-    git worktree remove "$WT"
-fi
-if [ -n "$BRANCH" ]; then
-    if [ "$FORCE" = true ]; then git branch -D "$BRANCH" 2>&1 || true; else git branch -d "$BRANCH" 2>&1 || true; fi
-fi
 DESPAWNED=false
 if [ "$KEEP_SESSION" != true ]; then
     # By HANDLE first: comm-despawn finds the workspace through the handle's
@@ -98,7 +89,23 @@ if [ "$KEEP_SESSION" != true ]; then
         DESPAWNED=true
     elif [ "$LABEL" != "$HANDLE" ] && "$SCRIPT_DIR/comm-despawn.sh" "$LABEL"; then
         DESPAWNED=true
+        # The label pass destroyed the workspace but removes only a row named
+        # LABEL: the handle's own row is dropped here.
+        "$SCRIPT_DIR/comm-leave.sh" --name "$HANDLE" || echo "comm-worktree-clean.sh: could not remove @$HANDLE from the registry" >&2
     fi
+    if [ "$DESPAWNED" != true ]; then
+        echo "comm-worktree-clean.sh: the session @$HANDLE was not despawned (see above); keeping worktree $WT" >&2
+        exit 1
+    fi
+fi
+echo "removing worktree $WT (branch '${BRANCH:-detached}', session @$HANDLE)…"
+if [ "$FORCE" = true ]; then
+    git worktree remove --force "$WT"
+else
+    git worktree remove "$WT"
+fi
+if [ -n "$BRANCH" ]; then
+    if [ "$FORCE" = true ]; then git branch -D "$BRANCH" 2>&1 || true; else git branch -d "$BRANCH" 2>&1 || true; fi
 fi
 if [ "$KEEP_SESSION" = true ]; then
     SESSION_NOTE=""
