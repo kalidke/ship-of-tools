@@ -94,6 +94,8 @@ harness **Monitor** wake (codex has no equivalent primitive).
 
 > *Note (2026-09-30, ADR 0049 B1): the comm bridge (`comm-listen`) named here is gone; the `codex-watch` half stands.*
 
+> *Note (2026-09-30, ADR 0049 B3): `codex-watch` is gone as well; a Codex row is one the daemon does not type into, and its end-of-turn check reads the mail.*
+
 ### 4. Identity + interop
 - Handle convention **`<repo>-cx-<host>`** so a CC session and a Codex
   session coexist on one repo without collision; registry row gains

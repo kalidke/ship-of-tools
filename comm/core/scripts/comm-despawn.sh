@@ -54,24 +54,6 @@ if [ "$reg_rc" -eq 0 ]; then
     echo "Removed @$WHO from sot-comm registry"
 fi
 
-# Belt-and-braces for the owned lifetimes (messaging ruling §3): the watcher
-# now ends with its owner by itself, so this should find nothing — but a row
-# being torn down is exactly where a survivor would look like a live receiver
-# for a handle that no longer exists, so the marker is read and cleared here
-# too.
-_reap_markers() {
-    local who="$1" pid
-    # sot_watcher_pid_for, never the bare pid on the marker's first line: these
-    # markers sit on a shared home and survive reboots, so a REUSED pid would
-    # make this kill an unrelated process of the same user. It must still BE a
-    # watcher for this handle; anything else means the marker is stale and only
-    # the file is removed.
-    if pid="$(sot_watcher_pid_for "$who")"; then
-        kill "$pid" 2>/dev/null && echo "Stopped watcher pid $pid for @$who"
-    fi
-    rm -f "${COMM_HOME:?}/state/$who.watch" 2>/dev/null || true
-}
-
 # 2) destroy the workspace
 if ! ENDPOINT="$(resolve_endpoint)"; then echo "ERROR: no sotd daemon found; set --endpoint unix:/path or ssh:target[/host]" >&2; exit 1; fi
 # nc is needed only for a unix: daemon (sot_oneshot_request's unix: arm) --
@@ -93,14 +75,12 @@ if [ -z "$WSID" ] && [ -n "$AGENT_WSID" ]; then
 fi
 if [ -z "$WSID" ]; then
     echo "No workspace matching '$WHO' (slug/label/id${AGENT_WSID:+, nor registry row '$AGENT_WSID'}). Nothing to destroy."
-    _reap_markers "$WHO"
     exit 0
 fi
 DESTROY="$(jq -nc --arg id "$WSID" '{v:1,id:2,kind:"req",op:"workspace.destroy",payload:{workspace_id:$id}}')"
 RESP="$(sot_send "$DESTROY" workspace.destroy || true)"
 if printf '%s' "$RESP" | jq -e '.payload.workspace_id' >/dev/null 2>&1; then
     echo "Destroyed workspace: $(printf '%s' "$RESP" | jq -c '.payload')"
-    _reap_markers "$WHO"
     echo "In the FE: refresh the session list (enter Sessions mode) to drop the row."
 else
     echo "ERROR: workspace.destroy failed: $(printf '%s' "$RESP" | jq -c '.payload' 2>/dev/null || printf '%s' "$RESP")" >&2

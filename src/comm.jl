@@ -788,7 +788,7 @@ function _install_adapter(cli::Symbol)
     elseif cli === :codex
         # ADR 0031 — codex adapter: ccx launcher, the PermissionRequest->blocked
         # hook script, and the hooks.json plugin payload (state-nav wiring). The shared
-        # state scripts (comm-status-*.sh) and codex-watch.sh ride the core
+        # state scripts (comm-status-*.sh) ride the core
         # deploy above.
         home = codex_home()
         @info "Installed into codex home" dir = home
@@ -1011,32 +1011,6 @@ const _COMM_STATE_HOOKS = [
     # is AskUserQuestion, is instead the owner replying: sends prompt origin
     # user (a fresh turn start), not a heartbeat refresh.
     ("PostToolUse", "comm-status-heartbeat.sh", nothing),
-    # Post-compaction re-bootstrap (2026-07-19, Keith): SessionStart fires with
-    # source=compact after a context summary; the hook (matcher-scoped to
-    # `compact`) prints a stdout directive telling the session to RE-RUN its
-    # session-start skill — compaction can strip the operating instructions
-    # themselves (handle, verbs, work-state), so a bare reminder isn't enough.
-    # The skill opens with a "Step 0" that detects survival (end-anchored pgrep
-    # of the live watcher) and STOPS on a compaction, so the re-run restores the
-    # instructions by being re-read but does NOT re-arm the Monitor, re-comm-poll
-    # (replaying handled messages), or re-comm-join (whose row-replace would wipe
-    # the live work-state). The hook's command is `comm-postcompact-reminder.sh`
-    # (not `comm-status-*`), so `_remove_stale_comm_hooks!` never strips it and
-    # this add is idempotent.
-    ("SessionStart", "comm-postcompact-reminder.sh", "compact"),
-    # Post-`/clear` re-bootstrap (2026-07-25, Keith): SessionStart also fires
-    # with source=clear, which the compact hook explicitly skipped — so a
-    # `/clear`ed session got NOTHING, despite `/clear` being the harsher case
-    # (compaction leaves a summary; `/clear` leaves nothing, so the session no
-    # longer knows its handle or verbs while its listener + Monitor keep
-    # delivering). The receive path survives a `/clear` exactly as it survives a
-    # compaction — the session process isn't killed, so the watcher child lives
-    # (measured 2026-07-25) — hence the same Step 0 pgrep guard makes the re-run
-    # safe. Both directives now name ONE skill, resolved by
-    # `comm-session-skill.sh`, instead of listing three for the model to pick
-    # from: the wrong pick runs the frontend bootstrap on a backend box, which
-    # fails quietly.
-    ("SessionStart", "comm-postclear-reminder.sh", "clear"),
 ]
 
 # A hook command string. `\$HOME` (not the resolved path) so the entry is portable
@@ -1128,7 +1102,8 @@ end
 """
     _remove_stale_comm_hooks!(claude_dir)
 
-Strip every comm hook (any `~/.sot-comm/bin/comm-status-*.sh` command) from
+Strip every comm hook (any `~/.sot-comm/bin/comm-status-*.sh` command, and the
+retired `comm-postcompact-reminder.sh` / `comm-postclear-reminder.sh`) from
 `claude_dir/settings.json`, across all events, dropping events left empty. Run
 before re-adding the current set ([`_install_claude_hooks`]) so settings ends up
 matching `_COMM_STATE_HOOKS` exactly — retiring wirings we no longer use (notably
@@ -1140,11 +1115,11 @@ function _remove_stale_comm_hooks!(claude_dir::AbstractString)
     settings = joinpath(claude_dir, "settings.json")
     (Sys.which("jq") === nothing || !isfile(settings)) && return nothing
     # For each event, keep only matcher-groups that do NOT run a comm-status-*.sh
-    # command; then drop any event whose group list is now empty.
+    # (or retired post-compact/clear reminder) command; then drop any event whose group list is now empty.
     prog = """
     if .hooks then
       .hooks |= ( to_entries
-        | map(.value |= map(select(any((.hooks // [])[]?; (.command // "") | test("comm-status-")) | not)))
+        | map(.value |= map(select(any((.hooks // [])[]?; (.command // "") | test("comm-(status-|post(compact|clear)-reminder)")) | not)))
         | map(select((.value | length) > 0))
         | from_entries )
     else . end

@@ -1090,27 +1090,6 @@ case_a_lock_fault_blocks_a_marker_turn_once_and_prefixes_every_nudge() {
     return 0
 }
 
-# A lasting fault is ONE line in a looping reader's log, not one per tick, and
-# its end is one more. comm-watch runs its ticks on a fast `sleep` stub that
-# ends the fault at the sixth.
-case_a_lasting_fault_is_logged_once_by_a_looping_reader() {
-    local warn n fs="$WORK/fastsleep"
-    warn="WARNING: the inbox lock for @$PEER failed (65: Input/output error) — reading without it; a line may show twice, none is lost"
-    flock_stub 65 "Input/output error"
-    setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    mkdir -p "$fs"; rm -f "${fs:?}/n"
-    printf '#!/bin/sh\nn=$(( $(cat "%s/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "%s/n"\n[ "$n" -ne 6 ] || rm -f "%s/on"\nexec /bin/sleep 0.05\n' \
-        "$fs" "$fs" "$FF" > "$fs/sleep"
-    chmod +x "$fs/sleep"
-    ( cd "$WORK" && PATH="$fs:$FF:$PATH" timeout 2 bash "$BIN/comm-watch.sh" "$PEER" >/dev/null 2>"$WORK/watch.err" )
-    rm -f "${SOT_COMM_HOME:?}/state/$PEER.watch"
-    n="$(cat "$fs/n" 2>/dev/null || echo 0)"
-    [ "$n" -ge 10 ] && [ "$(grep -c -F -x -- "$warn" "$WORK/watch.err")" -eq 1 ] \
-        && [ "$(grep -c -F -x -- "the inbox lock fault for @$PEER has cleared" "$WORK/watch.err")" -eq 1 ] \
-        || { echo "  $n ticks, log: $(cat "$WORK/watch.err")"; return 1; }
-    return 0
-}
-
 # ...and a real held lock is still exit 75 and "being written", no warning.
 case_a_held_lock_is_still_try_again() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
@@ -1255,7 +1234,6 @@ check "S-A: a shared lock failing 65 with EIO is named as flock names it, never 
 check "S-A: a lock file that will not open is named, read unlocked, every line once; the hook blocks once" case_a_lock_file_that_will_not_open_is_named
 check "flock inside a subshell leaves the shared lock held in the calling shell" case_a_shared_lock_taken_inside_a_subshell_holds_in_the_caller
 check "a lock fault blocks a marker turn once, unstamped, never in a continuation, once per session, and prefixes every nudge" case_a_lock_fault_blocks_a_marker_turn_once_and_prefixes_every_nudge
-check "a lasting fault is one line in a looping reader's log, and its end one more" case_a_lasting_fault_is_logged_once_by_a_looping_reader
 check "S-A: a real held lock is still exit 75 and being written, never a warning" case_a_held_lock_is_still_try_again
 check "S-B: a last line holding a NUL, ending in CR, or empty is shown once and never stepped back over" case_a_nul_a_cr_or_an_empty_last_line_is_shown_once
 

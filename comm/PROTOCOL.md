@@ -249,8 +249,8 @@ directed.
 ## Delivery
 
 This section is ADR 0049's design of record. The mechanism below lands in
-stages; until each stage does, the two-mode delivery and ping watcher this
-replaces stay in place. The per-session relay bridge is gone on every box
+stages; until each stage does, the two-mode delivery this
+replaces stays in place. The per-session relay bridge is gone on every box
 that shares the hub's comm folder: the hub files for every handle that folder
 lists. A Windows host's receive path is still its frontend's `fe-inbox.jsonl`.
 
@@ -349,7 +349,7 @@ case (shell here, shell on the peer and the daemon's filer, 200 each at once)
 expects 0 `FAILED`, since a send that fails under ordinary two-host load is a
 working-comms failure, and counts as proof only when its three writers overlap
 too. `test-comm-e2e-readers.sh` runs the real readers (comm-poll, the Stop
-hook, comm-wake and comm-watch) on three hosts against a scratch comm home on
+hook and the daemon's wake) on three hosts against a scratch comm home on
 the shared mount; like the two lock tests it needs real boxes, so it runs in no
 workflow.
 

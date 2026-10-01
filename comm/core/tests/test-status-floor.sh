@@ -858,99 +858,6 @@ case_failed_prompt_write_exits_nonzero() {
     expect blocked/-/q/-/- untouched
 }
 
-# ---- deaf-session warning (2026-09-15): comm-status-heartbeat.sh warns to
-# stderr when a session's harness inbox watcher died but nothing told the
-# session — see the hook's own header comment for the mechanism. ----
-WATCH_MARKER="$SOT_COMM_HOME/state/$NAME.watch"
-WARN_STAMP="$SOT_COMM_HOME/state/$NAME.watchwarn"
-mkmarker() {  # PID [SESSION_ID] -- write a watcher marker in comm-watch.sh's own format
-    mkdir -p "$(dirname "$WATCH_MARKER")"
-    printf '%s\n%s\n' "$1" "${2:-}" > "$WATCH_MARKER"
-}
-rmmarker() { rm -f "${WATCH_MARKER:?}" "${WARN_STAMP:?}"; }
-# A live process that the marker verifier will RECOGNISE as this handle's
-# watcher: liveness is now identity-checked (comm-lib.sh's sot_watcher_pid_for),
-# so a bare `sleep` proves nothing — on a shared home that is exactly what a
-# reused pid looks like.
-mkdir -p "$WORK/fakebin"
-FAKE_WATCHER="$WORK/fakebin/comm-watch.sh"
-printf '#!/bin/sh\nsleep 30\n' > "$FAKE_WATCHER"; chmod +x "$FAKE_WATCHER"
-fake_watcher() { "$FAKE_WATCHER" "$NAME" >/dev/null 2>&1 & echo $!; }
-dead_pid() {  # a pid guaranteed not to be running: backgrounded, then reaped
-    ( exit 0 ) & local p=$!
-    wait "$p" 2>/dev/null
-    echo "$p"
-}
-# HBW [SESSION_ID]: like HB, but runs with CLAUDE_CODE_SESSION_ID set (as a
-# real Claude Code hook shell always has it), and leaves whatever the hook
-# wrote to stderr in $HBW_ERR (stdout discarded, same as HB).
-HBW() {
-    rm -f "${SOT_COMM_HOME:?}"/state/hb-*.tick 2>/dev/null
-    HBW_ERR="$(printf '{"tool_name":"Bash"}' \
-        | CLAUDE_CODE_SESSION_ID="${1:-sess-a}" bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh" 2>&1 1>/dev/null)"
-}
-case_deaf_warns_on_dead_pid() {
-    seed idle; rmmarker; mkmarker "$(dead_pid)"
-    HBW
-    [[ "$HBW_ERR" == *"no live inbox watcher for @$NAME"* ]] || { echo "    got '$HBW_ERR'"; return 1; }
-}
-case_deaf_warns_on_missing_marker() {
-    seed idle; rmmarker
-    HBW
-    [[ "$HBW_ERR" == *"no live inbox watcher for @$NAME"* ]] || { echo "    got '$HBW_ERR'"; return 1; }
-}
-case_deaf_silent_while_watcher_alive() {
-    seed idle; rmmarker
-    local p; p="$(fake_watcher)"
-    mkmarker "$p" "sess-a"
-    HBW
-    kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
-    [ -z "$HBW_ERR" ] || { echo "    got '$HBW_ERR'"; return 1; }
-}
-case_deaf_warns_on_a_live_pid_that_is_not_a_watcher() {
-    # What pid REUSE looks like: the marker names a pid that is alive and is not
-    # a watcher at all. `kill -0` read that as a live watcher and told a
-    # genuinely deaf session it was fine — the exact shape this ruling exists to
-    # remove: broken, and reporting healthy.
-    seed idle; rmmarker
-    sleep 30 & local p=$!
-    mkmarker "$p" "sess-a"
-    HBW
-    kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
-    [[ "$HBW_ERR" == *"no live inbox watcher for @$NAME"* ]] || { echo "    got '$HBW_ERR'"; return 1; }
-}
-case_deaf_silent_with_no_registry_row() {
-    printf '{"agents":{}}\n' > "$REGISTRY"; rmmarker
-    HBW
-    [ -z "$HBW_ERR" ] || { echo "    got '$HBW_ERR'"; return 1; }
-}
-case_deaf_silent_without_session_id() {
-    seed idle; rmmarker
-    rm -f "${SOT_COMM_HOME:?}"/state/hb-*.tick 2>/dev/null
-    HBW_ERR="$(printf '{"tool_name":"Bash"}' | bash "$FLAT_BIN_DIR/comm-status-heartbeat.sh" 2>&1 1>/dev/null)"
-    [ -z "$HBW_ERR" ] || { echo "    got '$HBW_ERR'"; return 1; }
-}
-case_deaf_warning_is_throttled() {
-    seed idle; rmmarker
-    HBW
-    [ -n "$HBW_ERR" ] || { echo "    first call: expected a warning, got none"; return 1; }
-    HBW
-    [ -z "$HBW_ERR" ] || { echo "    second call inside the 10min window: got '$HBW_ERR'"; return 1; }
-}
-case_deaf_silent_for_subagent_sharing_parents_watcher() {
-    # Same handle, marker alive, a DIFFERENT session id in both the env and
-    # the marker's own second line — must stay silent: a lane shares its
-    # parent's handle and must read the parent's live watcher as proof this
-    # handle isn't deaf (see the hook's header comment for why there is
-    # deliberately no session-id comparison here).
-    seed idle; rmmarker
-    local p; p="$(fake_watcher)"
-    mkmarker "$p" "sess-parent"
-    HBW "sess-lane"
-    kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
-    [ -z "$HBW_ERR" ] || { echo "    got '$HBW_ERR'"; return 1; }
-}
-
 check "reduction: a question with no floor is blocked, summary is the question" case_reduction_question_no_floor_is_blocked
 check "reduction: a floor outranks question/waiting/done, summary is the note" case_reduction_floor_outranks_question_waiting_done
 check "reduction: waiting outranks done, summary is the wait" case_reduction_waiting_outranks_done
@@ -1030,14 +937,6 @@ check "race: a done committed while stop waits for the lock is kept" case_race_d
 check "race: a machine start committed while stop waits ends gray, not blue" case_race_machine_start_while_stop_waits_ends_gray
 check "a failed declaration write exits non-zero and leaves the row untouched" case_failed_declaration_write_exits_nonzero
 check "a failed prompt-event write exits non-zero and leaves the row untouched" case_failed_prompt_write_exits_nonzero
-check "deaf warning fires when the watcher marker's pid is dead" case_deaf_warns_on_dead_pid
-check "deaf warning fires when the watcher marker is missing" case_deaf_warns_on_missing_marker
-check "deaf warning stays silent while the watcher pid is alive" case_deaf_silent_while_watcher_alive
-check "deaf warning fires when the marker's live pid is not a watcher" case_deaf_warns_on_a_live_pid_that_is_not_a_watcher
-check "deaf warning stays silent with no registry row" case_deaf_silent_with_no_registry_row
-check "deaf warning stays silent without CLAUDE_CODE_SESSION_ID" case_deaf_silent_without_session_id
-check "deaf warning is throttled to once per window" case_deaf_warning_is_throttled
-check "deaf warning stays silent for a subagent sharing its parent's live watcher" case_deaf_silent_for_subagent_sharing_parents_watcher
 rmmarker
 
 echo ""

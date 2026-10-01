@@ -389,7 +389,7 @@ steps() {      # steps "a;b;..." — xdrive lines, plus "rows_state <spec>" run 
 # with agent "none" + boot, the op the frontend's own new-session flow sends).
 # A row's work state is set the way an agent's hooks set it: the product's
 # comm-join.sh / comm-status.sh typed into the row's own shell (pty.input, the
-# op comm-wake.sh uses), writing the throwaway HOME's registry. The first row
+# op the daemon's wake uses), writing the throwaway HOME's registry. The first row
 # is the project the frontend resumes into, so the llm column shows its shell.
 #
 # An agent segment would slot in here later: a row created with agent

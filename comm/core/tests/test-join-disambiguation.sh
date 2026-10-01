@@ -224,9 +224,8 @@ spawn_in() {
 STUB_SOCK=""; STUB_REQLOG=""; STUB_NC_PID=""; STUB_WATCHER_PID=""; STUBN=0
 start_stub_daemon() {  # WSID SLUG ROOT [HANDLE]
     # HANDLE is what the row DECLARES through agent.join, which is how the
-    # daemon publishes a row's sot-comm handle and how comm-send.sh now finds
-    # the row to poke (comm-lib.sh's sot_wake_row). A stub that leaves it
-    # empty models a row that never joined, and no poke is aimed at it.
+    # daemon publishes a row's sot-comm handle. A stub that leaves it empty
+    # models a row that never joined.
     local wsid="$1" slug="$2" root="$3" handle="${4:-}" fifo hello create list ptyin
     STUBN=$((STUBN + 1))
     STUB_SOCK="$WORK/stub-$STUBN.sock"; fifo="$WORK/stub-$STUBN.fifo"; STUB_REQLOG="$WORK/stub-$STUBN.log"
@@ -237,10 +236,6 @@ start_stub_daemon() {  # WSID SLUG ROOT [HANDLE]
     list="$(jq -nc --arg id "$wsid" --arg slug "$slug" --arg root "$root" --arg h "$handle" \
         '{v:1,id:1,kind:"res",op:"workspace.list",payload:{workspaces:[{workspace_id:$id,slug:$slug,label:$slug,project_root:$root,kernel_running:false,is_default:false,autostart_claude:true,agent:"claude",agent_name:"",agent_handle:$h,task:"",agent_state:"",agent_summary:"",agent_status_at:"",repl_state:"idle",runtime:"capsule",phase:"ready"}]}}')"
     ptyin='{"v":1,"id":1,"kind":"res","op":"pty.input","payload":{"ok":true,"bytes":1,"runtime":"capsule","enter_sent":true}}'
-    # comm-send.sh types only into a row whose CURRENT screen shows a free
-    # prompt (comm-lib.sh's sot_pty_input_gated): without a pty.screen answer
-    # the gate returns "no reply" and nothing is typed at all.
-    ptyscreen='{"v":1,"id":1,"kind":"res","op":"pty.screen","payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'
     exec 3<>"$fifo"
     nc -klU "$STUB_SOCK" < "$fifo" >> "$STUB_REQLOG" &
     STUB_NC_PID=$!
@@ -250,7 +245,6 @@ start_stub_daemon() {  # WSID SLUG ROOT [HANDLE]
             workspace.create) printf '%s\n' "$create" >&3 ;;
             workspace.list)   printf '%s\n' "$list" >&3 ;;
             pty.input)        printf '%s\n' "$ptyin" >&3 ;;
-            pty.screen)       printf '%s\n' "$ptyscreen" >&3 ;;
         esac
       done ) &
     STUB_WATCHER_PID=$!
@@ -969,12 +963,10 @@ case_comm_bootstrap_refuses_with_no_identity() {
     return 0
 }
 
-case_send_types_live_into_same_host_row_else_queues() {
-    # Live delivery is the daemon's pty.input on the recipient's workspace
-    # row (the row id its join recorded from SOT_WORKSPACE_ID), Enter
-    # appended and confirmed as enter_sent. With no reachable daemon the
-    # same send still lands in the inbox and says it queued; a recipient
-    # with no row is never typed into.
+case_send_files_and_types_nothing() {
+    # A send is its inbox append and nothing else: the daemon wakes the row,
+    # so comm-send.sh sends no pty.input and its line carries no wake verdict,
+    # with a daemon reachable or not.
     local root_sender root_recipient h_sender h_recipient self_sender errfile out rc err
     mkdir -p "$WORK/send-live/sender31" "$WORK/send-live/recipient31"
     root_sender="$(realpath "$WORK/send-live/sender31")"
@@ -996,27 +988,20 @@ case_send_types_live_into_same_host_row_else_queues() {
         SOT_SOCKET="$STUB_SOCK" "$SEND" "@$h_recipient" "hello live" 2>"$errfile")"
     rc=$?
     err="$(cat "$errfile" 2>/dev/null || true)"
-    local req; req="$(grep -m1 '"op":"pty.input"' "$STUB_REQLOG" 2>/dev/null || true)"
+    local req; req="$(grep -m1 '"op":"pty\.' "$STUB_REQLOG" 2>/dev/null || true)"
     stop_stub_daemon
     [ "$rc" -eq 0 ] || { echo "  comm-send.sh failed: rc=$rc, stderr: $err"; return 1; }
     contains "$out" "filed -> @$h_recipient" || { echo "  stdout: $out (want 'filed -> @$h_recipient')"; return 1; }
-    contains "$out" "+woken" || { echo "  stdout: $out (want '+woken' for a row typed into)"; return 1; }
-    [ -n "$req" ] || { echo "  the stub daemon never saw a pty.input request"; return 1; }
-    [ "$(printf '%s' "$req" | jq -r '.payload.workspace_id')" = "ws-live-31" ] \
-        || { echo "  pty.input targeted the wrong row: $req"; return 1; }
-    [ "$(printf '%s' "$req" | jq -r '.payload.enter')" = "true" ] || { echo "  pty.input without enter:true: $req"; return 1; }
-    [ "$(printf '%s' "$req" | jq -r '.payload.data_b64' | base64 -d)" = "[$h_sender:sender31] hello live" ] \
-        || { echo "  typed text is not the formatted message: $(printf '%s' "$req" | jq -r '.payload.data_b64' | base64 -d)"; return 1; }
+    contains "$out" "woken" && { echo "  stdout: $out (a send carries no wake verdict)"; return 1; }
+    [ -z "$req" ] || { echo "  comm-send.sh typed into a row: $req"; return 1; }
 
-    # No daemon: queued, never an error.
+    # No daemon: filed all the same, never an error.
     out="$(cd "$root_sender" && SOT_COMM_SELF_FILE="$self_sender" SOT_COMM_TEST_HOST="$HOST" \
         SOT_SOCKET="$WORK/no-daemon.sock" "$SEND" "@$h_recipient" "hello queued" 2>"$errfile")"
     rc=$?
     [ "$rc" -eq 0 ] || { echo "  comm-send.sh failed with no daemon: rc=$rc, stderr: $(cat "$errfile")"; return 1; }
-    # The ack is the FILE: filed either way, and with no daemon the poke simply
-    # did not happen -- a diagnostic on the verdict, never the verdict.
+    # The ack is the FILE: filed with a daemon or without one.
     contains "$out" "filed -> @$h_recipient" || { echo "  stdout: $out (want 'filed -> @$h_recipient' with no daemon)"; return 1; }
-    contains "$out" "not woken" || { echo "  stdout: $out (want a 'not woken' reason with no daemon)"; return 1; }
     [ "$(jq -r 'select(.msg == "hello queued") | .from' "$INBOX_DIR/$h_recipient.jsonl")" = "$h_sender" ] \
         || { echo "  recipient inbox missing the queued message"; return 1; }
     return 0
@@ -2148,7 +2133,7 @@ check "nopane WITH a matching registry root: heals (round-2 F-A positive path)" 
 check "nopane self-file read from a non-repo cwd: discarded, not healed; a send from there refuses loudly" case_nopane_selffile_from_non_repo_cwd_not_healed_and_send_refuses
 check "comm-relay.sh send refuses with no resolved identity" case_comm_relay_send_refuses_with_no_identity
 check "comm-bootstrap.sh refuses with no resolved identity" case_comm_bootstrap_refuses_with_no_identity
-check "comm-send.sh types live into a same-host row (pty.input, enter) and queues with no daemon" case_send_types_live_into_same_host_row_else_queues
+check "comm-send.sh files and types nothing, with a daemon or without one" case_send_files_and_types_nothing
 check "comm-relay.sh send fails loudly with no reachable daemon, never claims 'relayed' (round-3 F3)" case_relay_send_fails_loudly_with_no_reachable_daemon
 check "comm-send.sh succeeds with two genuinely rooted, registered identities (round-3 F8 positive path)" case_send_succeeds_with_rooted_registry_row
 check "comm-send.sh refuses when NAME resolves but has no registry row (round-2 F4/C)" case_send_refuses_when_registry_row_missing_despite_resolved_name

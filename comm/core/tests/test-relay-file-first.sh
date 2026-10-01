@@ -146,7 +146,7 @@ case_registry_target_is_filed_with_the_daemon_down() {
     local n; n="$(grep -c 'file-first path' "$inbox" 2>/dev/null || echo 0)"
     [ "$n" -eq 1 ] || { echo "  the target's inbox holds $n copies of the message, want exactly 1"; return 1; }
     # The `to` stamp is what keeps a directed frame distinguishable from a
-    # broadcast for the recipient's Stop hook and its ping watcher.
+    # broadcast for the recipient's Stop hook and the daemon's wake.
     jq -e --arg t "$TARGET" 'select(.to == $t)' "$inbox" >/dev/null 2>&1 \
         || { echo "  the filed line is not stamped to @$TARGET"; return 1; }
     return 0

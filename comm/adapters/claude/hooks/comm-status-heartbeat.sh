@@ -147,59 +147,6 @@ hb_lib="$COMM_HOME/bin/comm-lib.sh"
 row="$( ( . "$hb_lib" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" ) | jq -r '(.floor // "") + "|" + (.status_at // "")' 2>/dev/null || true)"
 [ -n "$row" ] || exit 0
 
-# DEAF-SESSION WARNING (2026-09-15): a session whose harness inbox Monitor
-# died still looks alive here — this hook keeps running, the registry row
-# keeps updating below — while the daemon keeps filing relay traffic
-# into its inbox with nothing left to wake it on. The bug is silence, not a
-# crash, so this must run BEFORE the state/staleness early exits below
-# (the case statement and the throttle's `exit 0`), because those two exit
-# on exactly the busy-but-silent rows this warning exists to catch.
-#
-# Liveness is ONE implementation, comm-lib.sh's `sot_watcher_pid_for`, shared
-# with comm-session-start.sh's `_survived()` and comm-wake.sh's start-time
-# mutex: two readers of one marker that disagree is worse than either, and the
-# disagreement here was silent. `kill -0` alone is not liveness for THIS marker
-# — it lives on a shared home and survives reboots, so a reused pid read as a
-# live watcher told a genuinely deaf session it was fine. The helper verifies
-# the recorded pid IS a watcher for this handle.
-#
-# Sourced in a SUBSHELL, as for the registry reads, the only way this
-# standalone-by-design hook touches the library: comm-lib.sh owns variable names this hook also uses (SELF_DIR
-# among them), so only the exit status crosses back. One fork per throttle
-# window, and if the library cannot be sourced at all the answer is "no live
-# watcher" — for a deafness warning, a spurious warning (throttled to once per
-# 10 minutes) is the safe direction and silence is not.
-# UNLIKE `_survived`, this check makes no session-id comparison — no session-id
-# comparison: a subagent/lane inherits its parent's handle but gets its own
-# $CLAUDE_CODE_SESSION_ID, and no env signal proves subagent-ness
-# ($CLAUDE_CODE_CHILD_SESSION is set in a parent session's own hook shell
-# too), so a lane must read the parent's still-live watcher as proof this
-# handle isn't deaf, even when the marker names a different session.
-if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
-    watch_marker="$COMM_HOME/state/$NAME.watch"
-    watcher_alive=0
-    if [ -f "$watch_marker" ] && [ -r "$hb_lib" ] \
-        && ( . "$hb_lib" >/dev/null 2>&1 && sot_watcher_pid_for "$NAME" >/dev/null 2>&1 ); then
-        watcher_alive=1
-    fi
-    if [ "$watcher_alive" = 0 ]; then
-        # Own throttle stamp (NOT the registry's status_at) so a busy row
-        # that legitimately skips the registry write below (lock contention,
-        # a `done`/`blocked` state) still only warns once per 10 minutes.
-        warn_stamp="$COMM_HOME/state/$NAME.watchwarn"
-        warn_age=999999
-        if [ -f "$warn_stamp" ]; then
-            wmtime="$(stat -c '%Y' "$warn_stamp" 2>/dev/null || echo 0)"
-            warn_age=$(( $(date -u +%s) - wmtime ))
-        fi
-        if [ "$warn_age" -ge 600 ]; then
-            echo "comm-status-heartbeat: no live inbox watcher for @$NAME — you are deaf; run $COMM_HOME/bin/comm-session-start.sh (starts the ping wake on a capsule row, else prints the Monitor command)" >&2
-            mkdir -p "$(dirname "$warn_stamp")" 2>/dev/null
-            touch -- "$warn_stamp" 2>/dev/null || true
-        fi
-    fi
-fi
-
 floor="${row%%|*}"; at="${row#*|}"
 
 # No floor → no turn is running → nothing to refresh (a subagent/lane

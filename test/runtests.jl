@@ -747,6 +747,32 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
         end
     end
 
+    @testset "_remove_stale_comm_hooks!: retired reminder hooks go, others stay" begin
+        # The post-compact and post-clear reminder scripts are deleted, so an
+        # install must also drop their settings entries, or settings.json keeps
+        # two hooks pointing at files that no longer exist.
+        mktempdir() do dir
+            settings = joinpath(dir, "settings.json")
+            open(settings, "w") do io
+                write(io, """{"hooks":{
+                  "SessionStart":[
+                    {"matcher":"compact","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-postcompact-reminder.sh"}]},
+                    {"matcher":"clear","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-postclear-reminder.sh"}]},
+                    {"matcher":"startup","hooks":[{"type":"command","command":"/usr/local/bin/mine.sh"}]}],
+                  "Stop":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-idle.sh"}]}],
+                  "PostToolUse":[{"hooks":[{"type":"command","command":"/usr/local/bin/other.sh"}]}]}}""")
+            end
+            ShipTools._remove_stale_comm_hooks!(dir)
+            txt = read(settings, String)
+            @test !occursin("comm-postcompact-reminder", txt)
+            @test !occursin("comm-postclear-reminder", txt)
+            @test !occursin("comm-status-idle", txt)
+            @test occursin("/usr/local/bin/mine.sh", txt)
+            @test occursin("/usr/local/bin/other.sh", txt)
+            @test !occursin("\"Stop\"", txt)
+        end
+    end
+
     @testset "project-local skills match their shipped copies" begin
         # A fresh checkout runs /sot-setup (and the skills it calls) from
         # .claude/skills before anything is installed; the installer ships

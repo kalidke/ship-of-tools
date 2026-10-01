@@ -53,25 +53,6 @@ printf '{"id":"%s","cwd":"%s"}\n' "$ROLLOUT_ID" "$PROJECT_DIR" \
 EMPTY_COMM_HOME="$WORK/empty-comm-home"
 mkdir -p "$EMPTY_COMM_HOME/bin"
 
-# A comm home WITH stub comm-join.sh + codex-watch.sh (argv-recording),
-# for proving --capsule starts the watcher in capsule mode (no pane arg).
-CAPSULE_COMM_HOME="$WORK/capsule-comm-home"
-mkdir -p "$CAPSULE_COMM_HOME/bin"
-cat > "$CAPSULE_COMM_HOME/bin/comm-join.sh" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
-chmod +x "$CAPSULE_COMM_HOME/bin/comm-join.sh"
-WATCH_ARGV_LOG="$WORK/watch-argv.log"
-cat > "$CAPSULE_COMM_HOME/bin/codex-watch.sh" <<'EOF'
-#!/bin/sh
-: > "$WATCH_ARGV_LOG_PATH"
-for a in "$@"; do
-    printf '%s\n' "$a" >> "$WATCH_ARGV_LOG_PATH"
-done
-EOF
-chmod +x "$CAPSULE_COMM_HOME/bin/codex-watch.sh"
-
 run_ccx() {  # extra ccx args...
     (
         cd "$PROJECT_DIR" || exit 1
@@ -155,68 +136,12 @@ case_capsule_flag_with_fresh_flag_stays_fresh_even_with_continue() {
     started_fresh
 }
 
-case_capsule_flag_starts_the_capsule_watcher() {
-    rm -f "${WATCH_ARGV_LOG:?}"
-    (
-        cd "$PROJECT_DIR" || exit 1
-        ARGV_LOG_PATH="$ARGV_LOG" \
-        HOME="$WORK/empty-home" \
-        PATH="$STUB_DIR:$PATH" \
-        SOT_COMM_HOME="$CAPSULE_COMM_HOME" \
-        SOT_COMM_NAME="ccx-resume-test" \
-        WATCH_ARGV_LOG_PATH="$WATCH_ARGV_LOG" \
-        CODEX_HOME="$CODEX_HOME_DIR" \
-        TMUX_PANE="" \
-        "$CCX" --capsule >/dev/null 2>"$WORK/stderr.log"
-    )
-    # nohup-launched: may still be writing just after ccx exec's the codex stub.
-    local n=0
-    while [ ! -f "$WATCH_ARGV_LOG" ] && [ "$n" -lt 20 ]; do
-        sleep 0.1
-        n=$((n + 1))
-    done
-    [ -f "$WATCH_ARGV_LOG" ] || { echo "  codex-watch.sh stub never ran"; return 1; }
-    [ "$(sed -n 1p "$WATCH_ARGV_LOG")" = "ccx-resume-test" ] || { echo "  argv[1] != handle: $(cat "$WATCH_ARGV_LOG")"; return 1; }
-    # argv after the handle is exactly `--owner <pid>` (the liveness tie ccx
-    # passes since the watcher no longer walks for its owner) -- never a pane.
-    [ "$(sed -n 2p "$WATCH_ARGV_LOG")" = "--owner" ] && [[ "$(sed -n 3p "$WATCH_ARGV_LOG")" =~ ^[0-9]+$ ]] && [ "$(wc -l < "$WATCH_ARGV_LOG")" -eq 3 ] \
-        || { echo "  want '<handle> --owner <pid>' only: $(cat "$WATCH_ARGV_LOG")"; return 1; }
-    return 0
-}
-
-case_capsule_flag_starts_the_capsule_watcher_even_with_a_leaked_pane_var() {
-    rm -f "${WATCH_ARGV_LOG:?}"
-    (
-        cd "$PROJECT_DIR" || exit 1
-        ARGV_LOG_PATH="$ARGV_LOG" \
-        HOME="$WORK/empty-home" \
-        PATH="$STUB_DIR:$PATH" \
-        SOT_COMM_HOME="$CAPSULE_COMM_HOME" \
-        SOT_COMM_NAME="ccx-resume-test" \
-        WATCH_ARGV_LOG_PATH="$WATCH_ARGV_LOG" \
-        CODEX_HOME="$CODEX_HOME_DIR" \
-        TMUX_PANE="%99" \
-        "$CCX" --capsule >/dev/null 2>"$WORK/stderr.log"
-    )
-    local n=0
-    while [ ! -f "$WATCH_ARGV_LOG" ] && [ "$n" -lt 20 ]; do
-        sleep 0.1
-        n=$((n + 1))
-    done
-    [ -f "$WATCH_ARGV_LOG" ] || { echo "  codex-watch.sh stub never ran"; return 1; }
-    [ "$(sed -n 2p "$WATCH_ARGV_LOG")" = "--owner" ] && [ "$(wc -l < "$WATCH_ARGV_LOG")" -eq 3 ] \
-        || { echo "  want '<handle> --owner <pid>' despite --capsule, no pane: $(cat "$WATCH_ARGV_LOG")"; return 1; }
-    return 0
-}
-
 check "a row env (SOT_WORKSPACE_ID set, no --capsule) resumes by default" case_row_env_resumes_by_default
 check "a hand-run ccx with no SOT_* env at all keeps resuming by default" case_hand_run_ccx_with_no_env_resumes_by_default
 check "a hand-run ccx inside a capsule row's env, without --capsule, keeps its resume default" case_hand_run_ccx_inside_a_capsule_row_keeps_resume_default
 check "--capsule: a bare ccx starts fresh" case_capsule_flag_bare_ccx_starts_fresh
 check "--capsule: --continue triggers the resume scan" case_capsule_flag_with_continue_resumes
 check "--capsule: --fresh wins even alongside --continue" case_capsule_flag_with_fresh_flag_stays_fresh_even_with_continue
-check "--capsule starts codex-watch.sh in capsule mode (no pane arg)" case_capsule_flag_starts_the_capsule_watcher
-check "--capsule starts the capsule watcher even with a leaked TMUX_PANE" case_capsule_flag_starts_the_capsule_watcher_even_with_a_leaked_pane_var
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

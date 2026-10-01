@@ -193,8 +193,7 @@ jobs:
           # 0031 B1: every inbox append is taken under the kernel's file
           # lock, and one that cannot be made is FAILED, never `filed` -- the
           # two writers, a killed holder, a frozen one, the no-flock route and
-          # the one wait constant. The poke guard pins that comm-send.sh
-          # still files, pokes and prints its line with the append behind it.
+          # the one wait constant.
           bash test-hub-files.sh
           # The registry's one writer never publishes an empty, unparseable or
           # two-document file, and its one reader says unreadable, never absent.
@@ -206,7 +205,6 @@ jobs:
           # tracked shell file, so an empty one aborts instead of deleting
           # from /.
           bash test-rm-guard.sh
-          bash test-send-poke-row.sh
           # 0031 B1's caller: a registry miss goes to the wire and one lap ends
           # in one verdict; the acceptance matrix's classifier keys on that
           # verdict; and a spawn onto another box writes no row here, so a
@@ -219,7 +217,6 @@ jobs:
           # 10 s bound, so a call that ends at once costs 50 ms, not a whole
           # second. Timed against a stub, hermetic, about two seconds.
           bash test-heartbeat-ctx-wait.sh
-          bash test-session-start-survived.sh
           bash test-sot-fe-version.sh
           # A session may declare its handle only into the row its own
           # identity names. Until this suite ran here, the one thing that

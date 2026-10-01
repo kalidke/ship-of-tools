@@ -22,15 +22,11 @@ once, when a session first starts — not again on every resume.
 This is ADR 0049's design of record, landing in stages: a send's verdict now is
 `filed -> @h` or `FAILED -> @h: <reason>`, except that until B2 a handle the
 hub's folder does not list can still get `NOT CONFIRMED: sent for @h; …` or
-`filed -> @h (by <filer>, relay)`; the
-line typed into a row reads `[sot-comm] new message for @<handle> — run
-…/comm-poll.sh` rather than `[sot-comm] you have mail`, and a resumed session
-must still re-run this bootstrap — until the daemon does the waking, the
-launcher's `--continue` re-runs it for exactly that reason. Any
-line the call above prints that orders a Monitor armed
-is the old mechanism, not this design, and is not to be acted on: there is
-nothing to arm, own or re-arm. Mail is read with `comm-poll.sh` regardless of
-what any of those lines say.
+`filed -> @h (by <filer>, relay)`. The daemon wakes an idle row by typing
+`[sot-comm] you have mail: run comm-poll.sh`, and a resumed session re-runs
+this bootstrap so its handle is declared again — the launcher's `--continue`
+does that. The call above ends with `BOOTSTRAP-ARM … WAKE: daemon`: there is
+nothing to arm, own or re-arm. Mail is read with `comm-poll.sh`.
 
 **Identity**: a pin (`SOT_COMM_NAME`, or a private `SOT_COMM_SELF_FILE`)
 always wins; otherwise a validated prior identity; otherwise fresh

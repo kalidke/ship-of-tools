@@ -9,25 +9,11 @@
 # separately-invoked script (e.g. a retried invocation) never
 # sees it and falls through to Linux-only logic that has no role on Windows).
 # comm-session-skill.sh keeps its own tiny copy (it does not source this file, by
-# design). comm-watch.sh used to as well, and mirroring is how it came to poll a
-# different file from the one comm-poll.sh read — it now sources this library like
-# everything else (2026-09-27). Every script that sources comm-lib.sh calls this
+# design). Every script that sources comm-lib.sh calls this
 # one instead of re-deriving it.
 _sot_is_windows() {
     case "${OS:-}" in Windows_NT) return 0 ;; esac
     case "${OSTYPE:-}" in msys*|cygwin*|win32) return 0 ;; esac
-    case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
-    return 1
-}
-
-# _sot_is_msys — a git-bash/Cygwin shell, which is NARROWER than
-# _sot_is_windows on purpose: $OS=Windows_NT is an environment variable (a
-# test fixture sets it, a native Windows shell inherits it), while the tier
-# gated on this one needs the msys USERLAND — /proc/<pid>/winpid, `ps -W`,
-# and a powershell.exe on PATH. Asking the wrong question here would spawn a
-# PowerShell on a box that has none.
-_sot_is_msys() {
-    case "${OSTYPE:-}" in msys*|cygwin*) return 0 ;; esac
     case "$(uname -s 2>/dev/null || true)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
     return 1
 }
@@ -477,7 +463,7 @@ sot_daemon_endpoint() {
         local line
         while IFS= read -r line; do
             case "$line" in
-                *comm-relay*|*comm-spawn*|*comm-despawn*|*comm-watch*|*comm-poll*|*sot-fe*|*sot-nav*)
+                *comm-relay*|*comm-spawn*|*comm-despawn*|*comm-poll*|*sot-fe*|*sot-nav*)
                     continue
                     ;;
             esac
@@ -1055,9 +1041,8 @@ _sot_retry_note() { [ -z "${SOT_COMM_TEST_RETRY_LOG:-}" ] || echo "$1" >> "$SOT_
 # locally the reader's count-and-read takes a shared lock bounded by
 # SOT_INBOX_READ_WAIT_SECS (a lock held past it means try again, exit 75; any
 # other lock fault, a lock file that will not open or any flock error, is named
-# and the read runs unlocked) — comm-poll and comm-wake let go before they
-# show anything, while comm-watch holds the lock as it prints (B3 replaces
-# it) — and on every host the cursor keeps
+# and the read runs unlocked) — comm-poll lets go before it
+# shows anything — and on every host the cursor keeps
 # `<count> <crc>-<len>` of the last line the reader READ (hashed from the bytes
 # it holds, never re-read from the file), so a reader steps back one line when
 # a cut-back removed it.
@@ -1206,19 +1191,6 @@ sot_inbox_read_lock() {  # HANDLE
     SOT_INBOX_READ_WARNING="WARNING: the inbox lock for @$1 failed ($err) — reading without it; a line may show twice, none is lost"
 }
 sot_inbox_read_unlock() { exec 9>&-; }
-# sot_inbox_read_warning_log HANDLE — for a reader that loops (comm-wake,
-# comm-watch; B3 replaces both): after sot_inbox_read_lock, the warning goes to
-# stderr only when it changes, and one line says when it clears, so a lasting
-# fault is one log line rather than one per tick.
-sot_inbox_read_warning_log() {  # HANDLE
-    [ "$SOT_INBOX_READ_WARNING" != "${_SOT_INBOX_WARNING_LOGGED:-}" ] || return 0
-    if [ -n "$SOT_INBOX_READ_WARNING" ]; then
-        printf '%s\n' "$SOT_INBOX_READ_WARNING" >&2
-    else
-        printf 'the inbox lock fault for @%s has cleared\n' "$1" >&2
-    fi
-    _SOT_INBOX_WARNING_LOGGED="$SOT_INBOX_READ_WARNING"
-}
 sot_inbox_append() {  # HANDLE
     local h="$1" line err rc=0 id
     line="$(cat)"
@@ -1519,336 +1491,6 @@ sot_write_self_file() {
     return 0
 }
 
-# --- owned lifetimes: who a watcher belongs to -------------------
-#
-# sot_owner_pid — the pid of the nearest ancestor whose command is `claude` or
-# `codex`, walking up from $PPID. Lives HERE, not in one caller, because every
-# process that outlives a turn has to end with the agent it serves, and a flag
-# a caller can forget leaves exactly one leg ownerless (the Codex watch leg was
-# that leg). A caller still directly attached to the agent may pass the pid it
-# already knows; anything spawned without one discovers it the same way here.
-# `ps -o comm=` is tried at each hop, then /proc; if neither answers the walk
-# stops and prints nothing (rc 1) — which is a REFUSAL at the call site, never
-# an untethered process.
-#
-# Three ways to read a name, tried in turn: `ps -o comm=`, then
-# `<pid>/comm`, then `Name:` from `<pid>/status` for a procfs that has the
-# second but not the first. A leading path and a trailing `.exe` are stripped
-# before the match, so a name that matched before still matches.
-#
-# None of that reaches an agent on git-bash, and the tier below is why: msys
-# procfs does not cross the Windows process boundary, so this walk stops at
-# the first hop there whatever it reads the name from.
-sot_owner_pid() {
-    _sot_owner_pid_proc && return 0
-    # The /proc walk is the whole answer everywhere but git-bash, where it
-    # stops at the first hop: msys procfs does not cross the Windows process
-    # boundary, so a real chain of bash.exe -> bash.exe -> claude.exe reads as
-    # one line, "Name: bash", and the ancestor that IS there is invisible
-    # (measured on a Windows box, 2026-09-28). Only then is the Windows tier
-    # worth a spawn — and only where its userland exists.
-    _sot_is_msys || return 1
-    _sot_owner_pid_windows
-}
-
-# _sot_owner_pid_proc — the portable walk: `ps -o comm=`, then /proc. This is
-# the ONLY tier on Linux and macOS, unchanged, and it still answers first on
-# git-bash for a chain that never leaves msys (a claude started from the shell
-# itself).
-_sot_owner_pid_proc() {
-    local pid="${PPID:-}" comm ppid
-    while [ -n "$pid" ] && [ "$pid" != "1" ]; do
-        comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')"
-        if [ -z "$comm" ] && [ -r "/proc/$pid/comm" ]; then
-            comm="$(tr -d ' \t\n' < "/proc/$pid/comm" 2>/dev/null)"
-        fi
-        if [ -z "$comm" ] && [ -r "/proc/$pid/status" ]; then
-            comm="$(awk '/^Name:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)"
-        fi
-        [ -n "$comm" ] || return 1
-        comm="${comm##*/}"
-        case "${comm%.exe}" in
-            claude|codex) printf '%s\n' "$pid"; return 0 ;;
-        esac
-        ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
-        if [ -z "$ppid" ] && [ -r "/proc/$pid/status" ]; then
-            ppid="$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null)"
-        fi
-        [ -n "$ppid" ] && [ "$ppid" != "$pid" ] || break
-        pid="$ppid"
-    done
-    return 1
-}
-
-# sot_pid_alive PID — is that process still there? One helper, because the
-# answer is NOT `kill -0` everywhere and the exception is invisible until it
-# bites: `sot_owner_pid`'s git-bash tier legitimately returns a SYNTHETIC
-# Cygwin pid for a process msys did not start (the claude.exe above a capsule
-# row), and msys `kill -0` answers 1 for it — so every owner tether read its
-# live agent as dead, armed, and exited on its first tick (measured on a
-# Windows box, 2026-09-28: pid 73528 maps to WINPID 7992, the real claude.exe,
-# and `kill -0 73528` fails).
-#
-# `kill -0` FIRST and always: on Linux and macOS that is the whole function
-# and nothing else runs. The `ps -W` fallback is reached only after a failure
-# and only on msys, so the hot path — a watcher asks this every two seconds —
-# is unchanged off Windows and is one cheap fork on it. Never PowerShell or
-# tasklist here, whatever the walk itself may cost once at startup.
-#
-# EITHER column matches: `ps -W` lists the msys pid in column 1 and the
-# Windows pid in column 4, and `_sot_msys_pid_of` can legitimately hand back a
-# WINPID when no msys pid exists for it.
-sot_pid_alive() {
-    local pid="${1:-}"
-    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-    kill -0 "$pid" 2>/dev/null && return 0
-    _sot_is_msys || return 1
-    ps -W 2>/dev/null | awk -v p="$pid" '$1 == p || $4 == p { found = 1; exit } END { exit !found }'
-}
-
-# --- the git-bash tier: one spawn, and the pid namespaces kept straight -----
-#
-# TWO PID NAMESPACES. An msys pid is not a Windows pid, and handing one to a
-# Win32 query walks an unrelated process tree — which is WORSE than failing,
-# because it answers confidently with a pid that owns nothing here. So every
-# crossing is mapped explicitly: /proc/<pid>/winpid going out, the WINPID
-# column of `ps -W` coming back, and nothing is returned that was not mapped.
-#
-# ONE SPAWN, not one per hop: the whole ancestor chain is walked inside a
-# single PowerShell invocation over one `Get-CimInstance Win32_Process`
-# snapshot (never `wmic`, which current Windows no longer ships).
-#
-# FAIL CLOSED AND FAST: no PowerShell, a refusal, a hang, an unmappable pid —
-# every one of them returns non-zero, which lands the box exactly where it is
-# today (the bootstrap prints MONITOR). This is on the bootstrap's hot path,
-# so the call is bounded by `timeout` where one exists.
-
-# _sot_winpid_of MSYS_PID — the Windows pid for an msys pid.
-_sot_winpid_of() {
-    local pid="${1:-}" w=""
-    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-    [ -r "/proc/$pid/winpid" ] && w="$(tr -dc '0-9' < "/proc/$pid/winpid" 2>/dev/null)"
-    [ -n "$w" ] || w="$(ps -W 2>/dev/null | awk -v p="$pid" '$1 == p { print $4; exit }')"
-    [[ "$w" =~ ^[0-9]+$ ]] || return 1
-    printf '%s\n' "$w"
-}
-
-# _sot_msys_pid_of WIN_PID — the msys pid for a Windows pid, or the Windows pid
-# itself when `ps -W` lists it without an msys one (a pure Win32 process is
-# listed under its own winpid, which is the pid this shell's `kill` names it
-# by). The caller needs a pid `kill -0` can ask about, never a raw handle.
-_sot_msys_pid_of() {
-    local w="${1:-}" m
-    [[ "$w" =~ ^[0-9]+$ ]] || return 1
-    m="$(ps -W 2>/dev/null | awk -v w="$w" '$4 == w { print $1; exit }')"
-    [[ "$m" =~ ^[0-9]+$ ]] || m="$w"
-    printf '%s\n' "$m"
-}
-
-# _sot_owner_pid_windows — the nearest claude/codex ancestor across the Windows
-# boundary, as a pid THIS shell can signal. Prints nothing (rc 1) on any doubt.
-_sot_owner_pid_windows() {
-    local start ps_bin timeout_bin win
-    start="$(_sot_winpid_of "${PPID:-}")" || return 1
-    ps_bin="$(command -v powershell.exe 2>/dev/null || command -v pwsh.exe 2>/dev/null)" || return 1
-    # NO BOUND, NO TIER. A corrupt WMI repository leaves Get-CimInstance
-    # blocked for as long as it likes, and this runs on the session-start
-    # path, so an unbounded call is a session that never starts. Without a
-    # `timeout` binary there is nothing to bound it with, so the tier refuses
-    # and the box keeps the Monitor — the same answer every other failure here
-    # gives.
-    timeout_bin="$(command -v timeout 2>/dev/null)" || return 1
-    win="$(SOT_WALK_FROM="$start" "$timeout_bin" 10 "$ps_bin" -NoProfile -NonInteractive -Command '
-$id = [int]$env:SOT_WALK_FROM
-$map = @{}
-Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate |
-    ForEach-Object { $map[[int]$_.ProcessId] = $_ }
-for ($i = 0; $i -lt 64 -and $map.ContainsKey($id); $i++) {
-    $p = $map[$id]
-    $n = ($p.Name -replace "\.exe$","").ToLower()
-    if ($n -eq "claude" -or $n -eq "codex") { "$($p.ProcessId)"; break }
-    $next = [int]$p.ParentProcessId
-    if ($next -eq $id -or -not $map.ContainsKey($next)) { break }
-    # A Windows pid is small, recycled hard, and ParentProcessId is NOT
-    # cleared when the parent exits -- so a chain with no agent in it can
-    # climb into a STRANGER whose pid was reused, and this would return it
-    # with full confidence. A parent that started after its child is that
-    # stranger; stop rather than answer.
-    if ($map[$next].CreationDate -gt $p.CreationDate) { break }
-    $id = $next
-}' 2>/dev/null | tr -d '\r' | tr -dc '0-9')"
-    [[ "$win" =~ ^[0-9]+$ ]] || return 1
-    _sot_msys_pid_of "$win"
-}
-
-# sot_watcher_pid_for HANDLE — the live watcher pid recorded in
-# state/<handle>.watch, verified BY IDENTITY, else nothing (rc 1). `kill -0`
-# alone is not enough to act on: these markers live on a shared home and
-# survive reboots, so a REUSED pid would let a teardown kill an unrelated
-# process and let the start-time mutex refuse a legitimate watcher forever. The
-# recorded pid must still BE a watcher for this handle — its command line names
-# one of the watcher scripts and the handle itself. Anything else (gone,
-# different command, no way to read one) means the marker is STALE: rc 1, and
-# the caller proceeds as if it were absent.
-sot_watcher_pid_for() {
-    local handle="$1" pid
-    pid="$(sed -n '1p' "$COMM_HOME/state/$handle.watch" 2>/dev/null)"
-    sot_pid_is_watcher_for "$pid" "$handle" || return 1
-    printf '%s\n' "$pid"
-}
-
-# sot_wake_watcher_pid_for HANDLE — the same marker read, narrowed to a live
-# `comm-wake.sh`. The marker is SHARED by all three watcher scripts, so a
-# guard that used the broad read above would refuse a ping start because a
-# MONITOR's marker is there — the same wrong answer by the other door.
-sot_wake_watcher_pid_for() {
-    local handle="$1" pid
-    pid="$(sed -n '1p' "$COMM_HOME/state/$handle.watch" 2>/dev/null)"
-    sot_pid_is_wake_watcher_for "$pid" "$handle" || return 1
-    printf '%s\n' "$pid"
-}
-
-# sot_pid_is_watcher_for PID HANDLE — is THIS pid a live watcher for HANDLE?
-# The test sot_watcher_pid_for always applied to the marker's pid, lifted out
-# so it can be applied to a pid found any other way. Liveness AND identity:
-# the marker outlives reboots on a shared home, so a reused pid would let a
-# teardown kill an unrelated process and let a start-time mutex refuse a
-# legitimate watcher forever.
-#
-# The script must be what the process IS, not something its command line
-# MENTIONS — only the first two arguments are looked at, and by basename. A
-# watcher runs as `bash /path/comm-wake.sh <handle> ...` (its shebang puts the
-# script in argv[1]), so those two fields are where the answer lives. The
-# substring test this replaces was harmless while the only pid asked about
-# came from our own marker, and became unsafe the moment a SCAN asked it about
-# every pid on the box: any shell whose command line happened to carry both
-# the script name and the handle — a grep, an editor, the session's own
-# tooling — then counted as a live watcher and would refuse a legitimate
-# start, i.e. leave the session deaf. Measured while building this, not
-# theorised.
-# BROAD: any of the three scripts that write the shared marker. This is the
-# one the marker's own consumers use, because a Monitor's marker must read as
-# LIVE there — narrow it and `_survived` would call a healthy Monitor stale,
-# remove its marker and report the wrong thing.
-sot_pid_is_watcher_for() {
-    _sot_pid_is_watcher "${1:-}" "${2:-}" any
-}
-
-# NARROW: a live `comm-wake.sh` and nothing else. This is the one the START
-# GUARD uses, because the guard exists to stop two PING watchers — a Monitor
-# running beside one costs a doubled notice, while refusing to start costs a
-# deaf session, and nobody re-arms a Monitor after this release. The two are
-# deliberately different tests; folding them together reintroduces exactly
-# that (measured on a Windows box, 2026-09-28: the guard counted a live
-# comm-watch.sh as the handle's watcher).
-sot_pid_is_wake_watcher_for() {
-    _sot_pid_is_watcher "${1:-}" "${2:-}" wake
-}
-
-# _sot_pid_is_watcher PID HANDLE any|wake — liveness AND identity: the marker
-# outlives reboots on a shared home, so a reused pid would let a teardown kill
-# an unrelated process and let a start guard refuse a legitimate watcher
-# forever.
-_sot_pid_is_watcher() {
-    local pid="${1:-}" handle="${2:-}" mode="${3:-any}" args rest field ok=0
-    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-    sot_pid_alive "$pid" || return 1
-    if [ -r "/proc/$pid/cmdline" ]; then
-        args="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
-    else
-        args="$(ps -o args= -p "$pid" 2>/dev/null)"
-    fi
-    [ -n "$args" ] || return 1
-    rest="${args#* }"
-    for field in "${args%% *}" "${rest%% *}"; do
-        case "${field##*/}" in
-            comm-wake.sh) ok=1 ;;
-            comm-watch.sh|codex-watch.sh) [ "$mode" = any ] && ok=1 ;;
-        esac
-    done
-    [ "$ok" = 1 ] || return 1
-    case "$args" in *"$handle"*) ;; *) return 1 ;; esac
-    return 0
-}
-
-# sot_pid_starttime PID — when the process started, in a unit comparable
-# BETWEEN TWO PIDS ON THIS BOX (field 22 of /proc/<pid>/stat, ticks since
-# boot). Prints nothing where there is no procfs; callers must treat that as
-# "unknown", never as zero. Read from the field AFTER the last ')' because a
-# process name can contain spaces and parentheses.
-sot_pid_starttime() {
-    local pid="${1:-}" stat
-    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-    [ -r "/proc/$pid/stat" ] || return 1
-    stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 1
-    stat="${stat#*) }"
-    printf '%s\n' "$stat" | awk '{ print $20 }' | tr -dc '0-9'
-    printf '\n'
-}
-
-# sot_live_wake_watcher_for HANDLE [SELF_PID] — the pid of a live
-# `comm-wake.sh` for HANDLE in the PROCESS TABLE, or nothing (rc 1). Narrow on
-# purpose (see sot_pid_is_wake_watcher_for): its two callers are the start
-# guard and the bootstrap's did-it-come-up check, and both ask the same
-# question — does this row have a PING watcher.
-#
-# WHY THE PROCESS TABLE and not the record we keep: the defect this exists for
-# was two watchers running side by side for seventeen hours, one of them named
-# by no file at all — and every start consulted only the pid the marker named,
-# so the unrecorded one was invisible to every future start and unreapable by
-# every cleanup. A file can be missing, overwritten or judged stale; the
-# process table cannot.
-#
-# TWO EXCLUSIONS, both load-bearing:
-#   * SELF. This scan runs INSIDE a watcher, whose own command line carries
-#     both the script name and the handle, so a naive scan always finds itself
-#     and the watcher refuses to start every single time.
-#   * A CANDIDATE THAT STARTED AFTER US, in `older` mode (the default, and
-#     the START GUARD's question: is one ALREADY running that I must yield
-#     to). The bootstrap asks a different question after spawning one -- does
-#     this row have a ping watcher AT ALL -- and the answer there is a process
-#     that is NEWER than the asker by definition, so it passes `any`. One
-#     scan, two questions, named at the call site rather than duplicated.
-#     Two starts racing for one handle can
-#     each see the other as a live watcher and both refuse, leaving the
-#     session with no watcher at all -- deafness, which is worse than the
-#     double wake this guard exists to prevent. Only an EARLIER process
-#     refuses us, so of any two racing starts exactly one proceeds; the tie
-#     (two starts in the same clock tick) breaks on the lower pid, which is
-#     arbitrary but is a total order, which is all this needs. Where no start
-#     time is available (no procfs) the rule falls back to refusing on ANY
-#     live watcher: the safe direction, and never the platform this was
-#     written for.
-sot_live_wake_watcher_for() {
-    local handle="$1" self="${2:-$$}" mode="${3:-older}" mine pid theirs
-    mine=""
-    [ "$mode" = older ] && mine="$(sot_pid_starttime "$self" 2>/dev/null)"
-    _sot_scan_pids | while read -r pid; do
-        [ "$pid" = "$self" ] && continue
-        sot_pid_is_wake_watcher_for "$pid" "$handle" || continue
-        if [ -n "$mine" ]; then
-            theirs="$(sot_pid_starttime "$pid" 2>/dev/null)"
-            [ -n "$theirs" ] || { printf '%s\n' "$pid"; return 0; }
-            if [ "$theirs" -gt "$mine" ]; then continue; fi
-            if [ "$theirs" -eq "$mine" ] && [ "$pid" -gt "$self" ]; then continue; fi
-        fi
-        printf '%s\n' "$pid"
-        return 0
-    done | { read -r pid && { printf '%s\n' "$pid"; return 0; }; return 1; }
-}
-
-# _sot_scan_pids — every pid on this box, one per line. /proc where there is
-# one (Linux AND git-bash, whose procfs lists every msys process), `ps`
-# elsewhere.
-_sot_scan_pids() {
-    local d
-    if [ -r /proc/self/cmdline ]; then
-        for d in /proc/[0-9]*; do printf '%s\n' "${d##*/}"; done
-        return 0
-    fi
-    ps -A -o pid= 2>/dev/null | tr -dc '0-9\n'
-}
-
 # --- the read cursor: a LINE OFFSET into inbox/<handle>.jsonl ----------------
 #
 # read/<handle>.cursor holds the NUMBER of inbox lines the recipient has been
@@ -1884,7 +1526,7 @@ _sot_scan_pids() {
 # is tolerable where dropping one is not.
 sot_cursor_offset() {
     local handle="$1" cur n cnt hash="" total
-    # $COMM_HOME, not the source-time $READ_DIR: comm-wake.sh re-derives its
+    # $COMM_HOME, not the source-time $READ_DIR: a script may re-derive its
     # home inside its own main, and a helper reading a different one than its
     # caller is a silently wrong answer.
     cur="$(cat "$COMM_HOME/read/$handle.cursor" 2>/dev/null || true)"
@@ -1966,7 +1608,7 @@ _sot_clamp_offset() {
 # to get the two quiet parts wrong. Readability is tested FIRST because the
 # SHELL, not wc, prints "No such file" for `< missing` — before wc's own
 # 2>/dev/null can suppress it, into whatever the caller's stderr happens to be
-# (a durable watcher log, a bootstrap's one-line-per-outcome contract). And the
+# (a durable log, a bootstrap's one-line-per-outcome contract). And the
 # count is stripped of the leading spaces a BSD `wc` pads it with, so callers
 # can compare it as a number without each one remembering to.
 sot_file_lines() {
@@ -1984,8 +1626,7 @@ sot_inbox_lines() {
 # --- the WINDOWS FRONTEND inbox: a second file, a second cursor --------------
 #
 # On Windows nothing writes inbox/<handle>.jsonl:
-# the frontend files every inbound relay frame into its own fe-inbox.jsonl
-# (comm-watch.sh's Windows branch), so THAT file is the
+# the frontend files every inbound relay frame into its own fe-inbox.jsonl, so THAT file is the
 # mail. Every reader was blind to it, and a Windows session went an hour without
 # seeing two messages while comm-poll.sh printed "No new messages" from a
 # per-handle file three weeks stale (field report, 2026-09-27). Two facts make it
@@ -2010,8 +1651,7 @@ sot_inbox_lines() {
 # it gets nothing and its frontend arm is simply inert.
 
 # sot_fe_inbox_path — the frontend inbox, or NOTHING on every non-Windows box.
-# Mirrors comm-watch.sh's Windows branch exactly, including the fallback chain
-# for a box with no %LOCALAPPDATA%.
+# The fallback chain covers a box with no %LOCALAPPDATA%.
 sot_fe_inbox_path() {
     _sot_is_windows || return 0
     printf '%s/sot/fe-inbox.jsonl\n' "${LOCALAPPDATA:-${XDG_STATE_HOME:-$HOME/.local/state}}"
@@ -2066,8 +1706,7 @@ sot_fe_unread_lines() {
             | . + {msg: (.msg // .text // "")}' 2>/dev/null || true
 }
 
-# --- live delivery into a workspace row (comm-send.sh, comm-bootstrap.sh,
-# codex-watch.sh) ---
+# --- live delivery into a workspace row (comm-bootstrap.sh, comm-probe.sh) ---
 #
 # sot_pty_input WORKSPACE_ID DATA_B64 — one `pty.input` request (enter:true)
 # to the daemon at ENDPOINT (caller's scope); prints the response line.
@@ -2090,8 +1729,8 @@ sot_pty_input() {
 # sot_pty_screen WORKSPACE_ID — one `pty.screen` request (no scrollback,
 # current screen only) to the daemon at ENDPOINT (caller's scope); prints
 # the response line. Lifted out of sot-fe's send_pty_screen (ADR 0042
-# amendment) so comm-wake.sh's prompt-free gate and sot-fe share the one
-# implementation instead of two frame-builders drifting apart.
+# amendment) so sot-fe and comm-lib callers share the one implementation
+# instead of two frame-builders drifting apart.
 sot_pty_screen() {
     local wsid="$1" frame
     frame="$(jq -nc --arg w "$wsid" '{v:1,id:1,kind:"req",op:"pty.screen",payload:{workspace_id:$w}}')"
@@ -2102,152 +1741,6 @@ sot_pty_screen() {
     # SEND_TIMEOUT), so the flag was silently ignored. Let the callee's own
     # fallback apply unmangled.
     sot_oneshot_request "$frame" "pty.screen"
-}
-
-# sot_pty_input_gated WORKSPACE_ID DATA_B64 — sot_pty_input, but only into a
-# row that is sitting at a FREE prompt. Typing plus Enter submits a turn, so a
-# row with a dialog, a menu or a half-typed draft on screen must never be
-# typed into: the keystrokes would land in whatever is open. The test is
-# `sot_prompt_free` above — the CURSOR's position, not the line's text — so the
-# sender's poke (comm-send.sh) and the ping watcher share ONE implementation
-# instead of two that drift. Returns 0 typed, 1 screen read but NOT free (also an
-# accepted-but-not-ok row — nothing was typed either way), 2 no reply at all
-# (transport error/empty response, kept distinct so a caller can tell a busy
-# row from a dead daemon), 3 the daemon does not have this row at all. 3 is
-# separate from 1 because they are different facts about different worlds: 1 is
-# a row that IS there with something on its screen, 3 is a row that is not
-# there. Both arrive as a non-empty reply that is not a free prompt, and
-# collapsing them made a destroyed row report as a session sitting at a dialog
-# — a default dressed as a signal from a row that no longer exists. Checked on
-# BOTH replies: the row can be destroyed between the screen read and the input.
-# sot_prompt_free SCREEN_JSON — 0 when the row is sitting at an EMPTY input
-# line with the cursor at its start. THE prompt test: both the sender's poke
-# (sot_pty_input_gated) and the ping watcher's gate read it, so "free prompt"
-# cannot come to mean two different things.
-#
-# It is the CURSOR that decides, not the text. pty.screen returns plain text
-# with every attribute stripped (capsule_workspace.rs maps the vt100 rows
-# through trim_end), so a grey PROMPT SUGGESTION — ghost text Claude Code
-# draws after the insertion point on an empty input — is byte-identical to a
-# half-typed human draft. Matching the text alone therefore held every wake
-# for as long as a suggestion sat on screen: a row went deaf for a day with a
-# live watcher and no signal (2026-09-25). The cursor separates them with no
-# new protocol: ghost text leaves the cursor AT the input start, typed text
-# pushes it past what was typed. Anchoring on the cursor's own line also
-# closes the opposite hole — a bare `❯` anywhere on screen (in output, or
-# behind a permission dialog) used to open the gate.
-#
-# FREE means all of: a cursor is present; its row indexes a real line; that
-# line carries `❯` with nothing but spaces before it; and the cursor column
-# is at the insertion point. That last part does NOT guess which convention
-# the renderer uses, because guessing is unsound in both directions. A renderer
-# that draws a separator (`❯ text` — the measured one: a live row showed the
-# glyph at column 0 and the cursor at column 2, with a NON-BREAKING space
-# between) puts an empty input's cursor at glyph+2; one that draws none
-# (`❯text`) puts it at glyph+1, and puts a ONE-CHARACTER DRAFT at glyph+2.
-# So glyph+2 alone is not "empty" and neither is the pair: accept both columns
-# blindly and a one-character draft on a no-separator prompt reads FREE and
-# gets submitted, which is the exact harm this gate exists to prevent.
-# The screen already carries the answer, so READ it instead: glyph+1 is always
-# the insertion point, and glyph+2 is the insertion point only when the cell
-# between glyph and cursor is a separator — a space, a non-breaking space, a
-# tab, or ABSENT (the backend trims trailing whitespace, so an empty prompt
-# under the separator convention arrives as a bare `❯` with nothing at
-# glyph+1). A typed character there is not a separator, and the gate holds.
-# The all-spaces prefix test above is what makes the byte offset `index`
-# returns safe to reuse as a codepoint index here: an all-ASCII prefix has
-# both the same. Everything else is NOT free: no
-# cursor (never happens on a healthy capsule row — the field has existed
-# since the op was born, and the only other runtime answers with an error
-# payload and no lines at all), a row out of range, an error payload, a
-# malformed reply, or an empty string. The glyph is written `❯` so the
-# jq PROGRAM stays pure ASCII across the git-bash leg's native jq.
-sot_prompt_free() {
-    # jq exits 0 on EMPTY stdin, which would read as "free" — a screen we
-    # never saw is never a free prompt.
-    [ -n "$1" ] || return 1
-    printf '%s' "$1" | jq -e '
-        (.payload // {}) as $p
-        | ($p.lines // []) as $L
-        | ($p.cursor // {}) as $k
-        | ($k.row // -1) as $r
-        | ($k.col // -1) as $c
-        | if ($r|type) != "number" or ($c|type) != "number"
-             or $r < 0 or $r >= ($L|length) then false
-          else ($L[$r]) as $line
-             | ($line | index("\u276f")) as $g
-             | ($g != null)
-               and (($line[0:$g] | test("[^ ]")) | not)
-               and ( $c == $g + 1
-                     or ( $c == $g + 2
-                          and ( $line[$g+1:$g+2]
-                                | . == "" or . == " " or . == "\u00a0" or . == "\t" ) ) )
-          end
-    ' >/dev/null 2>&1
-}
-
-# sot_wake_row HANDLE — the LIVE workspace row that declares HANDLE, asked of
-# the daemon at $ENDPOINT at the moment of asking. This is the wake path's ONE
-# authority for handle->row: the registry's own `workspace_id` and the ping
-# watcher's environment are both copies taken once at join time, and a session
-# that continues in another row keeps waking the row it used to be in
-# (2026-09-28: one ping held ~27h). The daemon owns rows and re-learns the
-# binding on every `agent.join` (ADR 0046), so ask IT.
-# Prints the id and returns 0 for exactly one match; 1 when the daemon answered
-# and no live row declares it; 2 when there was no usable answer; 3 when two or
-# more rows declare it. Two rows CAN declare one handle: `set_agent_handle`
-# writes one row and clears no other. 1 and 3 are REFUSALS -- a wake aimed by a
-# guess types into someone else's session, which is the harm the prompt gate
-# exists to prevent.
-# $ENDPOINT is the caller's, exactly as sot_pty_screen and sot_pty_input
-# already take it; this never resolves an endpoint itself.
-sot_wake_row() {
-    local h="$1" resp ids id count=0 first=""
-    [ -n "$h" ] || return 2
-    resp="$(sot_oneshot_request '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list 2>/dev/null)" || return 2
-    [ -n "$resp" ] || return 2
-    # The array check is what separates rc 2 (garbage) from rc 1 (a real empty
-    # answer). Without it a malformed reply reads as "no live row" and the
-    # watcher exits on a transport hiccup.
-    printf '%s' "$resp" | jq -e '(.payload.workspaces | type) == "array"' >/dev/null 2>&1 || return 2
-    ids="$(printf '%s' "$resp" | jq -r --arg h "$h" \
-        '.payload.workspaces[] | select((.agent_handle // "") == $h) | .workspace_id' 2>/dev/null)" || return 2
-    # Counted in this shell, not a pipeline: no `grep -c`, no `wc -l` on a
-    # possibly-empty string, and no subshell that would lose $count.
-    while IFS= read -r id; do
-        [ -n "$id" ] || continue
-        count=$((count + 1))
-        [ "$count" -eq 1 ] && first="$id"
-    done <<EOF
-$ids
-EOF
-    case "$count" in
-        0) return 1 ;;
-        1) printf '%s\n' "$first"; return 0 ;;
-        *) return 3 ;;
-    esac
-}
-
-# sot_row_gone RESP — 0 when RESP is the daemon's refusal for a workspace it
-# does not have (`code: "unknown_workspace"`, the pty.screen and pty.input arms
-# both answer it), 1 otherwise, including an empty RESP: a reply we never saw
-# is not evidence the row is gone.
-sot_row_gone() {
-    [ -n "$1" ] || return 1
-    printf '%s' "$1" | jq -e '(.payload.code // "") == "unknown_workspace"' >/dev/null 2>&1
-}
-
-sot_pty_input_gated() {
-    local wsid="$1" data="$2" screen resp
-    screen="$(sot_pty_screen "$wsid" 2>/dev/null)"
-    [ -n "$screen" ] || return 2
-    sot_row_gone "$screen" && return 3
-    sot_prompt_free "$screen" || return 1
-    resp="$(sot_pty_input "$wsid" "$data" 2>/dev/null || true)"
-    [ -n "$resp" ] || return 2
-    sot_row_gone "$resp" && return 3
-    printf '%s' "$resp" | jq -e '.payload.ok == true' >/dev/null 2>&1 || return 1
-    return 0
 }
 
 # sot_capsule_workspace_id — print the row id THIS SHELL'S IDENTITY names,

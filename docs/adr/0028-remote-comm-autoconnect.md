@@ -87,6 +87,8 @@ and keep setting `SOT_RELAY_ENDPOINT` inline in git-bash.
   and zero-config-from-profile) reached myhost's `sotd` and woke the myhost session's
   inbox Monitor; the tunnels survived the `sotd` systemd cutover.
 
+> *Note (2026-09-30, ADR 0049 B3): the inbox Monitor named in the consequences above is gone too; the daemon wakes an idle row.*
+
 > *Note (2026-09-30, ADR 0049 B1): the comm bridge (`comm-listen.sh`) named here is gone; what remains at this anchor is the autoconnect decision itself.*
 
 ### Operational notes
