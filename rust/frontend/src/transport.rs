@@ -1775,12 +1775,12 @@ async fn connect_and_run(
                 ResolvedDial::Ssh(recipe.clone()),
             )
             .await;
-            // `child` is dropped here (`kill_on_drop`), ending the ssh login
-            // this attempt owns before the reconnect loop's next attempt spawns
-            // a fresh one.
+            // `child` is dropped when this arm returns (`kill_on_drop`), after the
+            // stderr read below, ending the ssh login this attempt owns before the
+            // reconnect loop's next attempt spawns a fresh one.
             if let Err(e) = &result {
                 if let Some(line) = sot_protocol::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
-                    return Err(anyhow::anyhow!("{e} (ssh: {line})"));
+                    return Err(anyhow::anyhow!("{e:#} (ssh: {line})"));
                 }
             }
             result
