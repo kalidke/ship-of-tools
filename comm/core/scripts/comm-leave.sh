@@ -34,6 +34,7 @@ if [ -n "$WHO" ] && [ "$WHO" != "$NAME" ]; then
 fi
 
 [ -z "$NAME" ] && { echo "Not joined — nothing to do."; exit 0; }
+if ! _why="$(sot_require_agent)"; then echo "comm-leave.sh: $_why" >&2; exit 1; fi
 with_lock registry_del "$NAME"
 rm -f "${SELF_FILE:?}"
 echo "Left sot-comm (@$NAME removed)."

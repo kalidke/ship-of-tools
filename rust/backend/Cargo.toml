@@ -56,7 +56,9 @@ uuid = { workspace = true }
 # real (non-dev) dependency since production code now names the type too.
 [target.'cfg(windows)'.dependencies]
 # `Win32_System_Registry`: comm_inbox.rs's machine id (`MachineGuid`).
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Registry"] }
+# `Win32_System_Diagnostics_ToolHelp` + `Win32_System_Threading`: ancestors.rs's
+# process snapshot and per-process creation times.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
 
 [[bin]]
 name = "sotd"

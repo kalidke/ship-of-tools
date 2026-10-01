@@ -144,6 +144,9 @@ fi
 # cannot be sourced is 2 too, never "no row"); only a row prints anything.
 hb_lib="$COMM_HOME/bin/comm-lib.sh"
 [ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
+# A second agent inside the session never refreshes the row (a child touching
+# the shared tick above delays the agent's own heartbeat by at most 10 s).
+( . "$hb_lib" >/dev/null 2>&1 || exit 0; sot_require_agent >/dev/null ) || exit 0
 row="$( ( . "$hb_lib" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" ) | jq -r '(.floor // "") + "|" + (.status_at // "")' 2>/dev/null || true)"
 [ -n "$row" ] || exit 0
 

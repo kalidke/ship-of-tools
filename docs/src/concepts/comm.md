@@ -44,6 +44,14 @@ or service. The daemon does not queue frames, so a send nothing can file is
 reported as a failure — `FAILED -> @h: …` — instead of an ack for the daemon's
 own success.
 
+**A second agent inside a session has no identity.** A process acts as a handle
+only if at most one agent (claude or codex; a node wrapper and its own binary
+count once) lies between it and its row's capsule, or the top of its process
+tree outside a row. A `codex exec` or `claude -p` started inside a session, and
+anything it starts, gets "has no comm identity" and must stop: it never reads
+the inbox, sends, joins or stamps the row. An agent that needs its own handle is
+started as its own row.
+
 ## The contract
 
 `comm/PROTOCOL.md` is the contract every client implements — the Claude Code

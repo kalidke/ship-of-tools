@@ -15,6 +15,7 @@
 // twin-daemon split-brain. See ADR 0010's 0.4.0 update block.
 
 mod accounts;
+mod ancestors;
 mod capsule_workspace;
 mod clients;
 mod comm_inbox;
@@ -181,6 +182,9 @@ async fn main() -> Result<()> {
                 println!("{}", paths::session_socket_path(&label).display());
                 return Ok(());
             }
+            // `sotd ancestors` (Windows only): comm-lib.sh reads it to count
+            // the agents above a comm script. A pure query like the arms around it.
+            "ancestors" => std::process::exit(ancestors::run()),
             // ADR 0046 decision 4: the daemon's `agent_argv` is the ONE
             // owner of the launch recipe; `ccb` execs THROUGH this
             // rather than carrying its own copy of the scrub
@@ -283,6 +287,7 @@ Pure queries (no startup side effects, answered before any of the above):
                           resolve and exec the named agent's launch
                           recipe in place (ADR 0046 decision 4); only
                           "claude" has a recipe today
+  ancestors (Windows only)  print this process's ancestor executables, parent first
   topology <plan|status|relay-endpoint|sync|apply>
                           what this box derives from hosts.toml
                           (`sotd topology` alone prints the details)

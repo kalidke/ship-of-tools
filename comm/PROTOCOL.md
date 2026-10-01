@@ -454,8 +454,19 @@ Monitor exists.
   daemon) has a handle and an inbox, and its end-of-turn check reads new
   mail before a turn ends. While idle it sees mail only at its next turn,
   and after ten idle minutes sends to it fail as "no live session".
-- A subagent is part of its parent session: it may send under the parent's
-  handle and never reads the inbox.
+- A subagent that runs inside its parent's agent process is part of that
+  session: it may send under the parent's handle and never reads the inbox.
+  Another agent started inside a session (`codex exec`, `claude -p`), and
+  anything it starts, has no comm identity: a process acts as a handle only if
+  at most one agent (claude or codex; a node wrapper and its own binary count
+  once) lies between it and its row's capsule, or the top of its process tree
+  outside a row. An agent that needs its own handle is started as its own row.
+
+A process acts as a comm handle only if at most one agent lies between it and
+its row's capsule (or the top of its process tree outside a row). A second
+agent was started inside the session; it, and anything it starts, has no comm
+identity. Agents are named, not launchers: the list is the agents comm ships an
+adapter for, and it grows in the commit that adds one.
 
 ## Dependencies
 

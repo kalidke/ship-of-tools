@@ -42,7 +42,12 @@ The owner asked for the fix as "agree on the one page comm system and then clean
 - **Cases** — a restarted or compacted row re-arms nothing, since the handle stays with
   the row and the count is a file. A session outside any row sees mail only at its own
   next turn end while idle, and after ten idle minutes a send to it fails. A subagent
-  sends under its parent's handle and never reads the inbox itself.
+  that runs inside its parent's agent process is part of that session: it may send under
+  the parent's handle and never reads the inbox. Another agent started inside a session
+  (`codex exec`, `claude -p`), and anything it starts, has no comm identity: a process
+  acts as a handle only if at most one agent (claude or codex; a node wrapper and its own
+  binary count once) lies between it and its row's capsule, or the top of its process
+  tree outside a row. An agent that needs its own handle is started as its own row.
 
 ## Why the daemon and not the frontend
 

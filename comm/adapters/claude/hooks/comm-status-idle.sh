@@ -134,6 +134,9 @@ NAME=""
 # fallback. In the repo checkout the hooks dir holds only hooks.
 CTX="$HOME_DIR/bin/comm-context.sh"; [ -x "$CTX" ] || CTX="$SELF_DIR/comm-context.sh"
 [ -x "$CTX" ] && eval "$("$CTX" 2>/dev/null)" 2>/dev/null || true
+# A second agent inside the session (codex exec, claude -p) shares the row's
+# handle through the env but is not the row's agent: no block, floor or stamp.
+if [ -n "${NAME:-}" ] && ! ( . "$FE_LIB" >/dev/null 2>&1 || exit 0; sot_require_agent >/dev/null ); then exit 0; fi
 # The tools this hook runs. A session whose jq, flock or perl is missing never
 # sees its mail, so the hook SAYS so instead of passing: it must not need the
 # missing tool to do it, so the joined-agent test below falls back to grep and

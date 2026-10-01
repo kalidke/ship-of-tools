@@ -87,7 +87,9 @@ F() { bash "$WORK/fake.sh" "$@"; }
 # from $WORK, as the handle SELF names. Tool shell last, agents above it.
 chain() {
     local kind="$1" self="$2"; shift 2
-    local tool=(bash -c '"$@"; true' _ "$@") cap=(sot-capsule hold.sh)
+    # The tool shell writes CMD's status to $RCF: a shell that outlives its
+    # command keeps the agent's own process shape, and its own status is not CMD's.
+    local tool=(bash -c '"$@"; echo $? > "$RCF"' _ "$@") cap=(sot-capsule hold.sh)
     cd "$WORK" || return 1
     export SOT_COMM_SELF_FILE="$self"
     case "$kind" in
@@ -97,7 +99,9 @@ chain() {
         bash)  F "${cap[@]}" bash hold.sh "${tool[@]}" ;;
     esac
 }
-run() { OUT="$(chain "$@" 2>&1)"; RC=$?; }   # -> OUT / RC, in the caller's shell
+RCF="$WORK/rc"; export RCF
+rc_of() { RC="$(cat "$RCF" 2>/dev/null)"; rm -f "${RCF:?}"; }
+run() { OUT="$(chain "$@" 2>&1)"; rc_of; }   # -> OUT / RC, in the caller's shell
 
 REG="$SOT_COMM_HOME/registry.json"
 ROW="row-agent"; PEER="peer"
@@ -115,14 +119,15 @@ FLAT="$WORK/flat"; mkdir -p "$FLAT"
 cp "$HOOKS_DIR/comm-status-heartbeat.sh" "$FLAT/"
 ln -s "$SCRIPTS_DIR/comm-context.sh" "$FLAT/comm-context.sh"
 ln -s "$SCRIPTS_DIR/comm-lib.sh" "$FLAT/comm-lib.sh"
-backdate() { jq --arg n "$ROW" '.agents[$n].status_at = "2020-01-01T00:00:00Z"' "$REG" > "$WORK/reg.tmp" && mv "$WORK/reg.tmp" "$REG"; }
+# A turn is running (a floor) and the row's stamp is old: what the heartbeat refreshes.
+backdate() { jq --arg n "$ROW" '.agents[$n] += {floor: "user", status_at: "2020-01-01T00:00:00Z"}' "$REG" > "$WORK/reg.tmp" && mv "$WORK/reg.tmp" "$REG"; }
 state_of() { jq -r --arg n "$ROW" '.agents[$n].state' "$REG"; }
 stop_hook() {  # KIND — the Stop hook, as a hook runs it: JSON on stdin
-    OUT="$(printf '{}' | CLAUDE_CODE_SESSION_ID=agl-stop chain "$1" "$SELF_ROW" bash "$HOOKS_DIR/comm-status-idle.sh" 2>&1)"; RC=$?
+    OUT="$(printf '{}' | CLAUDE_CODE_SESSION_ID=agl-stop chain "$1" "$SELF_ROW" bash "$HOOKS_DIR/comm-status-idle.sh" 2>&1)"; rc_of
 }
 heartbeat() {  # KIND SESSION
     rm -f "${SOT_COMM_HOME:?}"/state/hb-*.tick 2>/dev/null
-    OUT="$(printf '{"tool_name":"Bash"}' | CLAUDE_CODE_SESSION_ID="$2" chain "$1" "$SELF_ROW" bash "$FLAT/comm-status-heartbeat.sh" 2>&1)"; RC=$?
+    OUT="$(printf '{"tool_name":"Bash"}' | CLAUDE_CODE_SESSION_ID="$2" chain "$1" "$SELF_ROW" bash "$FLAT/comm-status-heartbeat.sh" 2>&1)"; rc_of
 }
 
 # --- the child first: a codex exec under a claude row ---------------------------

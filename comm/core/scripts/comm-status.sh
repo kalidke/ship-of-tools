@@ -80,6 +80,12 @@ _no_row() {
 }
 # An unreadable registry is no evidence either way: every verb FAILs.
 UNREADABLE="FAILED: the registry could not be read; stamp discarded"
+# A second agent inside the session never stamps the row: an event is a silent
+# no-op, a declaration a loud failure.
+if ! _why="$(sot_require_agent)"; then
+    case "$VERB" in prompt|stop) exit 0 ;; esac
+    echo "comm-status.sh: $_why" >&2; exit 1
+fi
 [ -n "${NAME:-}" ] || _no_row
 rc=0; sot_registry_read "$NAME" >/dev/null || rc=$?
 case "$rc" in 0) ;; 1) _no_row ;; *) echo "$UNREADABLE" >&2; exit 1 ;; esac

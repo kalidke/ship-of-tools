@@ -503,6 +503,8 @@ printf '#!/bin/sh\necho "MINGW64_NT-10.0-19045"\n' > "$WINFAKE/uname"
 cat > "$WINAPP/sot/bin/sotd.exe" <<'FAKESOTD'
 #!/bin/sh
 if [ "$1" = session-socket-path ] && [ "$2" = local ]; then printf '%s\n' '\\.\pipe\sot-fakeuser-local'; exit 0; fi
+# `ancestors`: the one process above a comm script, no agent among them.
+if [ "$1" = ancestors ]; then echo bash.exe; exit 0; fi
 exit 1
 FAKESOTD
 { printf '#!/bin/sh\nd=%s\n' "$WINHUB"; cat <<'FAKEPS'

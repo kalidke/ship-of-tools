@@ -6,7 +6,8 @@ description: "Use Ship of Tools comms from Codex: send/poll messages, coordinate
 # sot-comm
 
 Use the installed tools in `~/.sot-comm/bin/`; do not hand-roll registry or
-daemon protocol logic.
+daemon protocol logic. If a comm script says this process has no comm identity,
+you were started inside another session: stop; do not retry or join.
 
 ## Core Commands
 

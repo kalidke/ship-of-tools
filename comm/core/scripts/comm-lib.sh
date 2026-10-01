@@ -1770,7 +1770,8 @@ sot_require_routable_identity() {
         echo "your sot-comm identity did not resolve — refusing to send with no verifiable from-handle (a reply would silently misroute). Join first: comm-join.sh --name <canonical-handle> (never a bare comm-join.sh if you previously held one — see the sot-session-start skill's recovery recipe)."
         return 1
     fi
-    local reg_status reg_root qname qdir
+    local why reg_status reg_root qname qdir
+    why="$(sot_require_agent)" || { echo "$why"; return 1; }
     IFS=$'\t' read -r reg_status reg_root <<< "$(sot_registry_entry_status "$NAME")"
     # %q-quote the handle AND the executable path (Codex review round-3
     # finding 7): a raw $NAME/$SCRIPT_DIR interpolation produces a wrong
@@ -1789,6 +1790,74 @@ sot_require_routable_identity() {
         return 1
     fi
     return 0
+}
+
+# --- agent layers: a second agent inside a session has no identity ---
+#
+# A process acts as a comm handle only if at most one agent lies between it and
+# its row's capsule (or the top of its process tree outside a row). A second
+# agent was started inside the session; it, and anything it starts, has no comm
+# identity. Agents are named, not launchers: the list is the agents comm ships
+# an adapter for, and it grows in the commit that adds one.
+#
+# Zero agents is legitimate (a bash row, ccx before it execs codex, a CI
+# runner). An npm codex is two processes, `node …/codex` and its native child,
+# and counts once. The walk stops at the first sot-capsule, so a daemon that was
+# started from an agent's shell puts nothing above its rows. An agent run as
+# `node …/cli.js` or under a versioned argv[0] is not seen: bounded, because
+# only a listed agent has an adapter that tells it about mail.
+_SOT_AGENTS=" claude codex "
+
+# _sot_ancestor_chain — this process and its ancestors, one line of arguments
+# per process, the caller first, at most 64. 1 when nothing could be read.
+_sot_ancestor_chain() {
+    local out
+    if _sot_is_windows; then
+        # sotd.exe prints the executables, parent first; never
+        # _sot_windows_sotd_exe, which spawns powershell.
+        out="$("${SOTD_BIN:-${LOCALAPPDATA:-}/sot/bin/sotd.exe}" ancestors 2>/dev/null)" || return 1
+    else
+        # Separate -o: BSD ps reads "pid=,..." as one header.
+        out="$(ps -ww -A -o pid= -o ppid= -o args= 2>/dev/null | awk -v me="$$" '
+            { pid = $1; pp[pid] = $2; $1 = ""; $2 = ""; sub(/^ +/, ""); ar[pid] = $0 }
+            END { p = me
+                  for (n = 0; n < 64 && p > 1 && (p in ar); n++) { print ar[p]; p = pp[p] } }')" || return 1
+    fi
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out"
+}
+
+# _sot_agent_layers — stdin: a chain from _sot_ancestor_chain. Prints one agent
+# name per layer, nearest first, stopping after the capsule's line.
+_sot_agent_layers() {
+    awk -v agents="$_SOT_AGENTS" '
+        function nm(w) { sub(/^.*[\/\\]/, "", w); sub(/^-/, "", w); w = tolower(w); sub(/\.exe$/, "", w); return w }
+        { w0 = nm($1)
+          if (w0 == "node") { n = nm($2); sub(/\.(js|mjs|cjs)$/, "", n); kind = "node" } else { n = w0; kind = "native" }
+          agent = (n != "" && index(agents, " " n " ") > 0)
+          if (agent && !(kind == "node" && pkind == "native" && pagent && pn == n)) print n
+          pkind = kind; pn = n; pagent = agent
+          if (w0 == "sot-capsule") exit }'
+}
+
+# sot_require_agent — 0 when this process may act as its row's handle. Otherwise
+# prints ONE reason on stdout, the way sot_require_routable_identity does, and
+# returns 1. An unreadable ancestry is its own reason: it cannot be shown to be
+# the session's own agent.
+sot_require_agent() {
+    local chain layers l n=0 inner="" outer=""
+    chain="$(_sot_ancestor_chain)" || {
+        echo "cannot read this process's ancestry (ps; sotd.exe ancestors on Windows), so it cannot be shown to be its session's own agent — nothing was read, sent or stamped"
+        return 1
+    }
+    layers="$(printf '%s\n' "$chain" | _sot_agent_layers)"
+    while IFS= read -r l; do
+        [ -n "$l" ] || continue
+        n=$((n + 1)); [ -n "$inner" ] || inner="$l"; outer="$l"
+    done <<< "$layers"
+    [ "$n" -le 1 ] && return 0
+    echo "this process runs under $inner, started inside $outer's session, so it has no comm identity — nothing was read, sent or stamped; do not retry or join: an agent that needs its own handle is started as its own row"
+    return 1
 }
 
 # --- derived-handle disambiguation (ADR 0028 addendum: "derived vs
