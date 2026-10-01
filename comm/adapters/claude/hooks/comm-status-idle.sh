@@ -324,7 +324,7 @@ fi
 # heartbeat's, so a model that refuses to poll is nudged once, not in a loop.
 #
 # What counts as mail: `to` non-empty (a BROADCAST, to == "", never fires this —
-# the same demotion rule the sender and the ping watcher apply), `from` neither
+# the same demotion rule the sender and the daemon's wake apply), `from` neither
 # this handle (self-echo), and the line sitting PAST the read cursor. The cursor is a LINE OFFSET (comm-lib.sh's sot_cursor_offset owns
 # the format, including the one-shot conversion of a legacy ts cursor, which
 # is NEVER written back from here). Timestamps could not do this job: they are second-resolution

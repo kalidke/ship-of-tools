@@ -7,9 +7,8 @@
 #
 # One scratch comm home under $HOME (shared by every host), the hub's record
 # set to `nfs4`, and on each of three hosts the real readers for one handle:
-# comm-watch.sh, comm-wake.sh in ping mode (only the three terminal seams the
-# ping suite stubs are replaced: screen, input, row), comm-poll.sh in a loop
-# and the Stop hook every 2-3 s. Two senders, this host and the v4 peer, each
+# the daemon's wake (B3's `comm_wake_e2e`, wake.sh below), comm-poll.sh in a
+# loop and the Stop hook every 2-3 s. Two senders, this host and the v4 peer, each
 # send to all three handles through the real comm-send.sh: 30 paced 200 ms,
 # then 30 unpaced. The v3 host only reads (its sends would leave by the wire,
 # and no daemon serves this scratch home): its identity differs from the
@@ -20,10 +19,8 @@
 # anything but 0 and no reader names a lock failure in a WARNING; every
 # Stop-hook call returns within 5 s, blocks while mail
 # is unread, and is silent after the final poll; in a strict phase (poll loops
-# stopped, 60 sends 3 s apart, one at a time) each send gets its own wake ping
-# before the next send to that handle, and the last poll shows exactly those
-# messages; comm-watch.sh prints each directed line once; nothing pings or
-# prints in the 60 s after the final polls (a reader that took the
+# stopped, 60 sends 3 s apart, one at a time) the last poll shows exactly those
+# messages; nothing pings in the 60 s after the final polls (a reader that took the
 # `<count> <crc>-<len>` cursor for a whole number would see every row unread
 # forever); the wire stub saw 0 frames; every inbox is whole. In the concurrent
 # phase a wake rightly skips a line a poll already read, so that phase only
@@ -74,13 +71,13 @@ cleanup() {
     # and the reader without its final polls or hook. Not `go`, which would start
     # both senders into the kept dir.
     : > "$E/abort" 2>/dev/null
-    # Let the helpers reap their own children (wake and watch), for at most 10 s.
+    # Let the helpers reap their own children (the wake), for at most 10 s.
     for _ in $(seq 1 100); do
         for p in "${BG[@]}"; do kill -0 "$p" 2>/dev/null && { sleep 0.1; continue 2; }; done
         break
     done
     for p in "${BG[@]}"; do kill "$p" 2>/dev/null; done
-    # A reader killed mid-hook must not leave its wake or watch running.
+    # A reader killed mid-hook must not leave its wake running.
     pkill -f -- "$D/" 2>/dev/null
     for h in "$PEER" "$V3"; do
         ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" "pkill -f -- '$D/'" >/dev/null 2>&1
@@ -131,7 +128,7 @@ verdict "the v3 host computes a different identity ($id_v3)" "$([ "$id_v3" != "$
 # established ssh connection. A fresh `ssh host date` runs the remote date after
 # connection setup and returns fast, so its midpoint reads ~150 ms of setup as skew.
 # A correction is applied only when its error (at most RTT/2) is known and small.
-skew_peer=0; skew_v3=0; skew_tol=0
+skew_peer=0; skew_v3=0
 for h in "$PEER" "$V3"; do
     coproc SK { ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" 'while read -r _; do date +%s%3N; done'; }
     # Bash unsets SK and SK_PID once it reaps a dead coproc (fatal under set -u),
@@ -147,8 +144,6 @@ for h in "$PEER" "$V3"; do
     echo "clock skew $h: $sk ms (rtt $best ms)"
     [ "$best" -le 20 ] || { echo "FATAL: the skew exchange with $h took $best ms; it cannot bound a timing" >&2; exit 1; }
     [ "$h" = "$PEER" ] && skew_peer=$sk || skew_v3=$sk
-    # 5a pairs a send on one host with a ping on another: their errors add.
-    skew_tol=$((skew_tol + best / 2 + 2))
 done
 
 # Rows: readers on host e2e-reg, senders on host e2e-snd, so no send ever
@@ -170,13 +165,11 @@ rm -f -- "${D:?}/wire.log"
 # ---- the helpers each host runs (copies from $E, visible on every host) ------
 cat > "$E/wake.sh" <<'EOF'
 #!/usr/bin/env bash
-# The real comm-wake.sh, ping mode; only the terminal seams are replaced.
-D="$1"; H="$2"; TAG="$3"
-source "$D/bin/comm-wake.sh"
-_comm_wake_row() { printf 'ws-e2e\n'; }
-_comm_wake_pty_screen() { printf '%s' '{"payload":{"lines":["banner","❯"],"cursor":{"row":1,"col":2}}}'; }
-_comm_wake_pty_input() { printf '%s ping\n' "$(date +%s%3N)" >> "$D/log/ping-$TAG.log"; printf '%s' '{"payload":{"ok":true,"enter_sent":true}}'; }
-_comm_wake_main "$H" --deliver ping --owner $$
+# The daemon's wake: B3's `comm_wake_e2e` runs the real tick against a free
+# stub row, and the stub appends `<ms> ping` to the log named here.
+D="$1"; TAG="$3"
+SOT_E2E_PING_LOG="$D/log/ping-$TAG.log" exec cargo test --manifest-path "${SOT_E2E_MANIFEST:?set SOT_E2E_MANIFEST to rust/Cargo.toml}" \
+    -p sot-backend --test comm_wake -- --ignored comm_wake_e2e
 EOF
 cat > "$E/reader.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -204,9 +197,6 @@ poll_once() {  # LABEL
     [ -z "$out" ] || printf '%s\n' "$out" | sed "s/^/$t /" >> "$L/pollout-$TAG.log"
     [ "$1" != final2 ] || [ -z "$out" ] || printf '%s\n' "$out" | sed "s/^/$t /" >> "$L/pollstrict-$TAG.log"
 }
-: > "$L/watch-$TAG.out"
-run bash "$D/bin/comm-watch.sh" "$H" >> "$L/watch-$TAG.out" 2>&1 &
-WATCH=$!
 run bash "$E/wake.sh" "$D" "$H" "$TAG" >> "$L/wake-$TAG.err" 2>&1 &
 WAKE=$!
 ( while [ ! -e "$E/pollstop-$TAG" ] && [ ! -e "$E/abort" ] && [ -d "$E" ]; do poll_once loop; jitter 500 1001; done ) &
@@ -217,7 +207,7 @@ HOOKER=$!
 bail() {
     [ -e "$E/abort" ] || [ ! -d "$E" ] || return 0
     kill "$HOOKER" "$POLLER" 2>/dev/null
-    for p in "$WAKE" "$WATCH"; do pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done
+    pkill -P "$WAKE" 2>/dev/null; kill "$WAKE" 2>/dev/null
     exit 0
 }
 sleep 3; : > "$E/ready-$TAG"
@@ -229,12 +219,11 @@ poll_once final1; : > "$E/finaldone1-$TAG"
 while [ ! -e "$E/strictpoll-$TAG" ] && [ ! -e "$E/abort" ] && [ -d "$E" ]; do sleep 0.2; done
 bail
 poll_once final2; now > "$L/final-$TAG"; hook_once final
-wc -l < "$L/watch-$TAG.out" > "$L/watch-count-final-$TAG"; : > "$E/finaldone-$TAG"
+: > "$E/finaldone-$TAG"
 while [ ! -e "$E/stop-$TAG" ] && [ ! -e "$E/abort" ] && [ -d "$E" ]; do sleep 0.2; done
 bail
-wc -l < "$L/watch-$TAG.out" > "$L/watch-count-end-$TAG"
 kill "$HOOKER" 2>/dev/null
-for p in "$WAKE" "$WATCH"; do pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done
+pkill -P "$WAKE" 2>/dev/null; kill "$WAKE" 2>/dev/null
 wait 2>/dev/null
 EOF
 cat > "$E/sender.sh" <<'EOF'
@@ -356,10 +345,8 @@ done
 
 # A lock the client refused is no longer an exit status: every reader names it
 # in a WARNING line and reads unlocked, so a refusal is caught here or nowhere.
-# Each reader's own file: comm-wake sends its stderr to its log in the comm
-# home (comm-wake.sh's exec 2>>), never to wake-*.err.
-warned="$(grep -l -F 'WARNING: the inbox lock' "$L"/pollout-*.log "$L"/watch-*.out "$D"/state/comm-wake-*.log "$L"/hookwarn-*.log 2>/dev/null)"
-verdict "3a. no reader named a lock failure (poll, Stop hook, wake, watch)" \
+warned="$(grep -l -F 'WARNING: the inbox lock' "$L"/pollout-*.log "$L"/wake-*.err "$L"/hookwarn-*.log 2>/dev/null)"
+verdict "3a. no reader named a lock failure (poll, Stop hook, wake)" \
     "$([ -z "$warned" ] || { echo "warned in: $(printf '%s ' $warned)"; grep -h -m1 -F 'WARNING: the inbox lock' $warned | awk 'NR<=3'; })"
 
 allrc="$L/pollrc-all.log"; cat "$L"/pollrc-*.log > "$allrc"
@@ -400,34 +387,10 @@ for h in "${HANDLES[@]}"; do
         {cov=0; for(i=1;i<=n;i++) if(p[i]>$1){fp=p[i];cov=1;break}
          if(cov && (!($2 in s) || s[$2]>=fp)) a++; else b++}
         END{printf "  NOTE %s: concurrent phase, %d lines covered by a ping first, %d shown by a poll first or never pinged\n", h, a+0, b+0}' "$L/pings-norm-$t" "$L/firstshown-$t" "$L/filedat-$t"
-    # strict phase: every send has its own ping before the next send to that handle
-    { for sn in here peer; do awk -v h="$h" -v s="$(skew_of "e2e-snd-$sn")" '$3==h{print $1 - s, $4}' "$L/strict-e2e-snd-$sn.log"; done; } | sort -n > "$L/strictsends-$t"
-    nst="$(wc -l < "$L/strictsends-$t")"
-    unp="$(awk -v u="$skew_tol" 'FILENAME==ARGV[1]{p[++n]=$1;next} {st[++m]=$1; id[m]=$2}
-        END{for(i=1;i<=m;i++){lo=st[i]-u; hi=(i<m)?st[i+1]-u:9e18; c=0; for(j=1;j<=n;j++) if(p[j]>=lo && p[j]<hi) c++; if(c<1) print id[i]}}' "$L/pings-norm-$t" "$L/strictsends-$t" | awk 'NR<=3' | tr '\n' ' ')"
-    nsp="$(awk -v ss="$sst" '$1>=ss' "$L/pings-norm-$t" | wc -l)"
-    # Every strict send's wake latency, one line each (the kept run log is the record; $L goes on a pass): the
-    # first ping in its 5a window less the time comm-send.sh returned, in ms, skew-normalised. The send files the
-    # line before it returns, so a ping can land first and the value go below 0.
-    { for sn in here peer; do awk -v h="$h" -v s="$(skew_of "e2e-snd-$sn")" '$3==h{print $1 - s, $2 - s, $4}' "$L/strict-e2e-snd-$sn.log"; done; } | sort -n |
-        awk -v u="$skew_tol" 'FILENAME==ARGV[1]{p[++n]=$1;next} {st[++m]=$1; fd[m]=$2; id[m]=$3}
-            END{for(i=1;i<=m;i++){lo=st[i]-u; hi=(i<m)?st[i+1]-u:9e18; pg="-"; for(j=1;j<=n;j++) if(p[j]>=lo && p[j]<hi){pg=p[j]; break}
-                printf "%s sent %d filed %d ping %s latency %s\n", id[i], st[i], fd[i], pg, (pg=="-")?"-":pg-fd[i]}}' "$L/pings-norm-$t" - > "$L/pinglat-$t"
-    sed 's/^/    ping /' "$L/pinglat-$t"
-    awk '$NF!="-"{print $NF}' "$L/pinglat-$t" | sort -n |
-        awk -v h="$h" -v m="$nst" '{v[++n]=$1} END{printf "  latency %s: %d of %d strict sends pinged, min %s ms, median %s ms, max %s ms\n", h, n+0, m, v[1], v[int((n+1)/2)], v[n]}'
-    verdict "5a. $h: strict phase, every one of its $nst sends got its own ping before the next send to it ($nsp pings since the phase began)" \
-        "$([ "$nst" -eq 20 ] && [ -z "$unp" ] || echo "$nst sends; no ping before the next send after: $unp")"
-    grep -o 'm-[^ ]*$' "$L/watch-$t.out" | sort > "$L/watched-$t"
-    wdup="$(uniq -d "$L/watched-$t" | awk 'NR<=3' | tr '\n' ' ')"
-    wmiss="$(comm -23 "$L/want-$t" <(sort -u "$L/watched-$t") | awk 'NR<=3' | tr '\n' ' ')"
-    verdict "5b. $h: comm-watch.sh printed each directed line exactly once ($(wc -l < "$L/watched-$t") lines of $(wc -l < "$L/want-$t"))" \
-        "$([ -z "$wdup$wmiss" ] || echo "missing: $wmiss; twice: $wdup")"
     fin="$(cat "$L/final-$t")"
     late="$(awk -v f="$fin" '$1>f' "$pl" | wc -l)"
-    wl="$(( $(cat "$L/watch-count-end-$t") - $(cat "$L/watch-count-final-$t") ))"
-    verdict "5c. $h: no wake storm ($late pings, $wl watch lines in the ${QUIET} s after the final poll)" \
-        "$([ "$late" -eq 0 ] && [ "$wl" -eq 0 ] || echo "$late pings and $wl watch lines after the final poll")"
+    verdict "5b. $h: no wake storm ($late pings in the ${QUIET} s after the final poll)" \
+        "$([ "$late" -eq 0 ] || echo "$late pings after the final poll")"
 done
 
 nwire=0; [ ! -e "$D/wire.log" ] || nwire="$(wc -l < "$D/wire.log")"

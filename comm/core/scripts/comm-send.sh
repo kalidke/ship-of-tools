@@ -9,11 +9,8 @@
 # exit 0 means it. The append is comm-lib.sh's sot_inbox_append: under the
 # inbox lock, or by the daemon that owns the comm folder when this box cannot
 # prove it takes the same lock; one that cannot be made prints
-# `FAILED -> @name: <why>` and exits 1, never `filed`. A directed send to a row on THIS host is additionally POKED
-# — one gated keystroke line (comm-lib.sh's sot_pty_input_gated) for a
-# genuinely idle row, since a stopped agent is blocked on stdin and keystrokes
-# are the only way in. The poke is diagnostic only: `+woken` / `not woken:
-# <reason>` never changes the verdict.
+# `FAILED -> @name: <why>` and exits 1, never `filed`. The daemon wakes an
+# idle row; this script types into nobody.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
@@ -58,19 +55,8 @@ if ! why="$(sot_require_routable_identity)"; then
     exit 1
 fi
 
-FORMATTED="[${NAME:-?}:$REPO] $MSG"
-
-# The daemon that owns this host's rows, resolved once and only when a
-# live delivery is actually attempted: a broadcast never types into anyone,
-# and a shell with no daemon still files to the inbox.
-ENDPOINT=""
-_live_endpoint() {
-    [ -n "$ENDPOINT" ] && return 0
-    ENDPOINT="$(sot_daemon_endpoint 2>/dev/null)" && [ -n "$ENDPOINT" ]
-}
-
 deliver() {  # $1 = target name
-    local t="$1" thost tws ts resp ok enter_sent code row reg_rc=0
+    local t="$1" thost ts row reg_rc=0
     row="$(sot_registry_read "$t")" || reg_rc=$?
     if [ "$reg_rc" -ge 2 ]; then
         # Unreadable is not a miss: handing a LOCAL target to the relay would
@@ -113,7 +99,7 @@ deliver() {  # $1 = target name
     # the recipient can rank:
     # a directed send (to == their own name) wakes the session; a broadcast
     # copy (to == "") files silently for comm-poll — the same demotion rule
-    # the ping watcher applies. Lines without a `to` key (pre-stamp senders)
+    # the daemon wake applies. Lines without a `to` key (pre-stamp senders)
     # read as directed, which is why a --broadcast used to wake the whole
     # network (observed 2026-06-12: an @sot help blast woke every session).
     local to_stamp="$t"
@@ -126,48 +112,7 @@ deliver() {  # $1 = target name
         return 1
     fi
 
-    # 2) the poke. The frame is already filed, so this is no longer delivery:
-    # it only shortens the wait for a row that is sitting idle at its prompt.
-    # GATED (sot_pty_input_gated): typing plus Enter submits into whatever is on
-    # screen, so a dialog, a menu or a half-typed draft is never typed over. A
-    # busy session needs no poke at all — its Stop hook reads the inbox at the
-    # turn boundary. Broadcasts never type into anyone (a --broadcast blast once
-    # woke every session on the network, 2026-06-12).
-    local woke=""
-    if [ "$BROADCAST" = true ]; then
-        woke=""
-    elif [ "$thost" != "$HOST" ]; then
-        woke=" — not woken: row is on $thost, read at its next turn boundary"
-    elif ! _live_endpoint; then
-        woke=" — not woken: no daemon reachable from here"
-    else
-        # THE handle->row binding, asked of the daemon HERE, not read from the
-        # registry field a join stamped once (comm-join.sh) and nothing ever
-        # refreshes (comm-status.sh's "never clobbers workspace_id"). A session
-        # that continues in another row kept waking the row it used to be in.
-        # 0 or 2+ matches REFUSE: a poke aimed by a guess types into whatever
-        # row the guess names. Every rc is captured with `|| rc=$?` because
-        # `set -e` is in force here -- a bare assignment would abort the whole
-        # send on a refusal, losing the receipt for a frame that WAS filed.
-        local row_rc=0
-        tws="$(sot_wake_row "$t")" || row_rc=$?
-        case "$row_rc" in
-            0)
-                local gate_rc=0
-                sot_pty_input_gated "$tws" "$(printf '%s' "$FORMATTED" | base64 | tr -d '\n')" || gate_rc=$?
-                case "$gate_rc" in
-                    0) woke=" +woken" ;;
-                    1) woke=" — not woken: row $tws is not at a free prompt" ;;
-                    3) woke=" — not woken: row $tws is gone (the daemon has no such row)" ;;
-                    *) woke=" — not woken: row $tws did not answer" ;;
-                esac
-                ;;
-            1) woke=" — not woken: no live row declares @$t" ;;
-            3) woke=" — not woken: two or more rows declare @$t" ;;
-            *) woke=" — not woken: the daemon did not answer" ;;
-        esac
-    fi
-    # 3) the recipient annotation (messaging ruling, 2026-09-26): one factual
+    # 2) the recipient annotation (messaging ruling, 2026-09-26): one factual
     # clause read off the same registry entry `deliver` already has open --
     # never a second file, never the daemon. Empty (missing/malformed entry
     # or fields) means no clause, never a guess (sot_recipient_note's own
@@ -175,7 +120,7 @@ deliver() {  # $1 = target name
     local note=""
     note="$(sot_recipient_note "$t" 2>/dev/null)" || note=""
     [ -n "$note" ] && note=" ($note)"
-    echo "  filed -> @$t$woke$note"
+    echo "  filed -> @$t$note"
     return 0
 }
 

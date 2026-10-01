@@ -216,8 +216,8 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
     end
 
     @testset "install_file: a refused FILE destination is moved aside, never deleted" begin
-        # Windows refuses a rename over a file another process holds open
-        # (a live inbox watcher holds comm-watch.sh). Modeled through the
+        # Windows refuses a rename over a file another process holds open.
+        # Modeled through the
         # `rename` seam: the first rename onto dst is refused, everything
         # else behaves. The old file must survive under an aside name (the
         # holder keeps it), dst must carry the new bytes, and a later
@@ -546,11 +546,13 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             withhome() do home, bin
                 write(joinpath(bin, "comm-listen.sh"), "stale")
                 write(joinpath(bin, "bus.sh"), "stale")
+                write(joinpath(bin, "comm-wake.sh"), "stale")
                 write(joinpath(bin, "comm-poll.sh"), "OLD")
                 write(joinpath(bin, "my-own-tool.sh"), "mine")
                 ShipTools.update_comm(clis = [:claude])
                 @test !isfile(joinpath(bin, "comm-listen.sh"))
                 @test !isfile(joinpath(bin, "bus.sh"))
+                @test !isfile(joinpath(bin, "comm-wake.sh"))
                 @test read(joinpath(bin, "comm-poll.sh")) == read(joinpath(srcbin, "comm-poll.sh"))
                 @test read(joinpath(bin, "my-own-tool.sh"), String) == "mine"
                 @test isfile(joinpath(bin, manifest))
@@ -744,6 +746,32 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             end
             @test !isfile(joinpath(bindir, "ccbe"))
             @test isfile(joinpath(bindir, "my-launcher"))
+        end
+    end
+
+    @testset "_remove_stale_comm_hooks!: retired reminder hooks go, others stay" begin
+        # The post-compact and post-clear reminder scripts are deleted, so an
+        # install must also drop their settings entries, or settings.json keeps
+        # two hooks pointing at files that no longer exist.
+        mktempdir() do dir
+            settings = joinpath(dir, "settings.json")
+            open(settings, "w") do io
+                write(io, """{"hooks":{
+                  "SessionStart":[
+                    {"matcher":"compact","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-postcompact-reminder.sh"}]},
+                    {"matcher":"clear","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-postclear-reminder.sh"}]},
+                    {"matcher":"startup","hooks":[{"type":"command","command":"/usr/local/bin/mine.sh"}]}],
+                  "Stop":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-idle.sh"}]}],
+                  "PostToolUse":[{"hooks":[{"type":"command","command":"/usr/local/bin/other.sh"}]}]}}""")
+            end
+            ShipTools._remove_stale_comm_hooks!(dir)
+            txt = read(settings, String)
+            @test !occursin("comm-postcompact-reminder", txt)
+            @test !occursin("comm-postclear-reminder", txt)
+            @test !occursin("comm-status-idle", txt)
+            @test occursin("/usr/local/bin/mine.sh", txt)
+            @test occursin("/usr/local/bin/other.sh", txt)
+            @test !occursin("\"Stop\"", txt)
         end
     end
 

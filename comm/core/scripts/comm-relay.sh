@@ -355,12 +355,12 @@ send_frame() {  # $1 to, $2 text
 
 # FILE-FIRST (messaging ruling, 2026-09-26). A target with a row in THIS box's
 # registry shares this $SOT_COMM_HOME, so its inbox is a plain local append:
-# comm-send.sh files the frame, pokes the row if it is idle, and the FILE is the
+# comm-send.sh files the frame (the daemon wakes an idle row), and the FILE is the
 # acknowledgement. The wire is only for targets this box cannot name. `relayed`
 # was never proof of delivery — it reported the daemon's own success — and the
 # "only a reply proves the path" rule it forced on every caller is withdrawn.
 # The question BOTH doors must ask (ADR 0048): does this box's registry give
-# the target a HOST? That is the field comm-send.sh needs to file and poke,
+# the target a HOST? That is the field comm-send.sh needs to file,
 # and it is what `deliver()` refuses on. Asking a different question here —
 # "does a row exist at all" — made the two execs non-exclusive: a row that
 # existed with an empty or absent `host` was a hit for the relay and a miss

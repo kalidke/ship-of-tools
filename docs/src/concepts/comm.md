@@ -29,10 +29,10 @@ because the recipient's own end-of-turn hook reads its inbox and will not let
 the turn end while directed mail sits unread. That is also how a BUSY session
 is reached — no process, no keystrokes, nobody to ask. If a poll finds the inbox mid-write it says so and asks to be run again; it never skips a message.
 
-A session sitting idle at its prompt is additionally *poked*: one gated line
-typed into its row, because a stopped agent is blocked on stdin and keystrokes
-are the only way in. The poke is a shortcut, never the delivery — `+woken` or
-`not woken: <reason>` is a diagnostic on the verdict, not the verdict.
+A session sitting idle at its prompt is additionally woken by the daemon, which
+types one fixed line, `[sot-comm] you have mail: run comm-poll.sh`, into its row
+when the row is free. The wake is a shortcut, never the delivery: a send types
+nothing and its line says only that the message was filed.
 
 **The wire: the daemon.** For a handle this host cannot name — one on another
 box — the frame rides the Ship of Tools daemon, the same connection the

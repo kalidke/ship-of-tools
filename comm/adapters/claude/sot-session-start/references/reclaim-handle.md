@@ -13,10 +13,8 @@ problems — read which one you actually have before picking a recipe.
   say what to do about it. See "Unblocking a REFUSED start" below — this is
   a DIFFERENT situation, not a smaller version of the same one.
 
-This is ADR 0049's design of record, landing in stages: the Monitor named
-below is what this tree still runs today. ADR 0049 replaces it with one
-daemon-side wake and nothing to arm, but that replacement has not landed yet,
-so the recipe below still has to account for what is actually running.
+This is ADR 0049's design of record: the daemon wakes the row, and there is no
+Monitor or watcher to arm, move or stop.
 
 ## MISMATCH recipe
 
@@ -47,10 +45,8 @@ explicitly instead.
    ```
 
 This is the same two-command recipe `comm-join.sh`'s own warning prints when
-`identity=MISMATCH` fires. It does not move any armed Monitor — this tree
-still runs it, and it keeps serving whichever handle it was started against,
-exactly as that warning says. There is no separate step here to move it; the
-design of record (ADR 0049) removes it instead, in a later lane.
+`identity=MISMATCH` fires. There is nothing armed to move: the daemon wakes
+the row by the handle the row declares.
 
 ### Why MISMATCH is rare
 

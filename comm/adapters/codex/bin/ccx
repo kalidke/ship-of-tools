@@ -3,14 +3,12 @@
 #
 # Codex counterpart of ccb. Unlike ccb (whose claude session bootstraps its
 # own receive path via the /sot-session-start skill — ADR 0049 is the design
-# of record there too, daemon-woken with nothing to arm, until that lands),
+# of record there too, daemon-woken with nothing to arm),
 # codex has NO background-wake primitive — so ccx does the comm bootstrap
 # DETERMINISTICALLY in the launcher before exec'ing codex:
 #   1. join sot-comm as $SOT_COMM_NAME (default: <repo>-cx-<host> — the -cx-
 #      infix keeps a codex session from colliding with a claude session on
-#      the same repo);
-#   2. start codex-watch.sh — the wake: polls the inbox (NFS! poll, never
-#      tail -F), delivers into THIS session (the row's pty.input).
+#      the same repo).
 # Then exec codex, which reads AGENTS.md (identity, comm CLI usage, state
 # discipline) from the repo/checkout natively.
 #
@@ -67,12 +65,6 @@ export SOT_COMM_NAME
 
 if [ -x "$COMM/comm-join.sh" ]; then
     "$COMM/comm-join.sh" --name "$SOT_COMM_NAME" >/dev/null 2>&1 || true
-    # The wake half. Backgrounded; dies with the leg. Only a capsule row
-    # has a pty.input target, so only --capsule starts it.
-    if [ -x "$COMM/codex-watch.sh" ] && [ "$CAPSULE" = 1 ]; then
-        nohup "$COMM/codex-watch.sh" "$SOT_COMM_NAME" --owner "$$" \
-            >/dev/null 2>&1 &
-    fi
 fi
 
 # Pre-trust the workspace dir (idempotent): without this codex blocks on an

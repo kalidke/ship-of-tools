@@ -102,6 +102,14 @@ has "all tools: cold session start reports identity=ok" "$out" "identity=ok"
 out="$(STOP "$PATH")"
 check "all tools: stop hook prints no block" "$out" ""
 
+# A mode this script no longer has (the retired --context) must fail loudly
+# and write nothing, not fall through to the joining default.
+before="$(cksum < "$REGISTRY")"
+err="$(PATH="$PATH" "$BASH_BIN" "$SCRIPTS_DIR/comm-session-start.sh" --context 2>&1 >/dev/null)"; rc=$?
+check "an unknown argument exits 2" "$rc" "2"
+check "an unknown argument prints the usage line" "$err" "usage: comm-session-start.sh [--catch-up]"
+check "an unknown argument leaves registry.json byte-identical" "$(cksum < "$REGISTRY")" "$before"
+
 # The tool-fault block records its feedback (fb_file is set up before it), so
 # the next Stop knows it as the hook's own and not a new prompt: with jq
 # present and flock missing, the feedback file is written.

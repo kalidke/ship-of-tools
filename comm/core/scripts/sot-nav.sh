@@ -9,8 +9,7 @@
 #
 # Why broadcast (vs a directed send): the daemon broadcasts every agent.message
 # to all connected FEs anyway, and a to=="" frame FILES SILENTLY for sessions
-# (it does not wake them — see comm-relay.sh / the inbox Monitor's broadcast
-# demotion). So one broadcast reaches every FE without spamming peer sessions;
+# (it does not wake them — see comm-relay.sh and the daemon's wake). So one broadcast reaches every FE without spamming peer sessions;
 # each FE acts only if the envelope's workspace matches the workspace it is
 # currently viewing.
 #

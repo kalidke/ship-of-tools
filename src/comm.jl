@@ -31,8 +31,8 @@
 # version for a running loop that re-execs it. If one exists, the name stays
 # SHIPPED as a stub that logs once and then sleeps (a shipped name is never
 # pruned); only otherwise is the file deleted, and the record removes it.
-# `COMM_DEPRECATED_BIN` below is FROZEN and covers only boxes installed before
-# the record existed; nobody appends to it again.
+# `COMM_DEPRECATED_BIN` below covers boxes installed before the record existed;
+# until a released install writes the record, a retired script is appended there.
 
 const COMM_PROTOCOL_VERSION = 1
 const COMM_SRC = normpath(joinpath(@__DIR__, "..", "comm"))
@@ -229,15 +229,18 @@ function _json_toplevel_keys(txt::AbstractString)
 end
 
 # Managed bin/ files retired before the install kept a record of what it wrote
-# (`COMM_MANIFEST`). FROZEN: seeded once, from
+# (`COMM_MANIFEST`). Seeded from
 #   git log --diff-filter=D --name-only --format= -- comm/core/scripts \
 #       comm/adapters/claude/hooks comm/adapters/codex/hooks
 # (and --diff-filter=R --name-status, which found no rename), keeping basenames
-# not shipped today. Later retirements are handled by the manifest diff, so
-# nobody appends here again. No running loop re-execs either name: the old
+# not shipped today. Once a released install has written the record, later
+# retirements are handled by the manifest diff; until then, scripts a lane
+# retires are appended here. No running loop re-execs either name: the old
 # relay/listen loops re-exec `comm-relay.sh bridge`, which is still shipped and
 # so never pruned; `comm-listen.sh` and `bus.sh` were only one-shot calls.
-const COMM_DEPRECATED_BIN = ["bus.sh", "comm-listen.sh"]
+const COMM_DEPRECATED_BIN = ["bus.sh", "comm-listen.sh", "comm-wake.sh", "comm-watch.sh",
+                             "codex-watch.sh", "comm-postcompact-reminder.sh",
+                             "comm-postclear-reminder.sh", "comm-session-skill.sh"]
 
 # The names the last successful install shipped into `<bin>`, one per line.
 const COMM_MANIFEST = ".sot-comm-installed"
@@ -410,9 +413,7 @@ function install_file(src::AbstractString, dst::AbstractString;
             rename(tmp, dst)
         catch first_err
             # Windows refuses to rename over a file another process holds
-            # open — and the file a live inbox watcher holds open IS
-            # comm-watch.sh, so the install that carries a watcher fix could
-            # never land it (field report 2026-09-11). The old file is moved
+            # open (field report 2026-09-11). The old file is moved
             # ASIDE, never deleted: the running process keeps its inode, the
             # name is freed, the new file lands, and the aside copy is pruned
             # by the next successful replace of this name (`_reap_markers`). Only a FILE is moved
@@ -494,8 +495,8 @@ function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
         mkpath(dirname(dst))
         src = joinpath(srcdir, f)
         # A destination that already holds these exact bytes is current: skip the
-        # replace. A live Monitor on Windows holds comm-watch.sh open and the
-        # replace fails with EACCES even though nothing is stale.
+        # replace: on Windows a file another process holds open fails the
+        # replace with EACCES even though nothing is stale.
         if isfile(dst) && read(dst) == read(src)
             try
                 executable(f) && chmod(dst, 0o755)
@@ -605,8 +606,8 @@ function install_comm(; clis = [:claude, :codex])
     isdir(srcscripts) || error("comm scripts not found at $srcscripts")
     srcfiles = readdir(srcscripts)
     # Every stage runs; failures are collected and raised together at the
-    # end, so one refused file (a running comm-watch.sh on Windows, field
-    # report 2026-09-11) no longer leaves the skills and hooks un-updated.
+    # end, so one refused file (field report
+    # 2026-09-11) no longer leaves the skills and hooks un-updated.
     problems = String[]
     _stage!(problems, "comm scripts") do
         _install_files(srcscripts, bin, srcfiles; executable = endswith(".sh"))
@@ -788,7 +789,7 @@ function _install_adapter(cli::Symbol)
     elseif cli === :codex
         # ADR 0031 — codex adapter: ccx launcher, the PermissionRequest->blocked
         # hook script, and the hooks.json plugin payload (state-nav wiring). The shared
-        # state scripts (comm-status-*.sh) and codex-watch.sh ride the core
+        # state scripts (comm-status-*.sh) ride the core
         # deploy above.
         home = codex_home()
         @info "Installed into codex home" dir = home
@@ -1011,32 +1012,6 @@ const _COMM_STATE_HOOKS = [
     # is AskUserQuestion, is instead the owner replying: sends prompt origin
     # user (a fresh turn start), not a heartbeat refresh.
     ("PostToolUse", "comm-status-heartbeat.sh", nothing),
-    # Post-compaction re-bootstrap (2026-07-19, Keith): SessionStart fires with
-    # source=compact after a context summary; the hook (matcher-scoped to
-    # `compact`) prints a stdout directive telling the session to RE-RUN its
-    # session-start skill — compaction can strip the operating instructions
-    # themselves (handle, verbs, work-state), so a bare reminder isn't enough.
-    # The skill opens with a "Step 0" that detects survival (end-anchored pgrep
-    # of the live watcher) and STOPS on a compaction, so the re-run restores the
-    # instructions by being re-read but does NOT re-arm the Monitor, re-comm-poll
-    # (replaying handled messages), or re-comm-join (whose row-replace would wipe
-    # the live work-state). The hook's command is `comm-postcompact-reminder.sh`
-    # (not `comm-status-*`), so `_remove_stale_comm_hooks!` never strips it and
-    # this add is idempotent.
-    ("SessionStart", "comm-postcompact-reminder.sh", "compact"),
-    # Post-`/clear` re-bootstrap (2026-07-25, Keith): SessionStart also fires
-    # with source=clear, which the compact hook explicitly skipped — so a
-    # `/clear`ed session got NOTHING, despite `/clear` being the harsher case
-    # (compaction leaves a summary; `/clear` leaves nothing, so the session no
-    # longer knows its handle or verbs while its listener + Monitor keep
-    # delivering). The receive path survives a `/clear` exactly as it survives a
-    # compaction — the session process isn't killed, so the watcher child lives
-    # (measured 2026-07-25) — hence the same Step 0 pgrep guard makes the re-run
-    # safe. Both directives now name ONE skill, resolved by
-    # `comm-session-skill.sh`, instead of listing three for the model to pick
-    # from: the wrong pick runs the frontend bootstrap on a backend box, which
-    # fails quietly.
-    ("SessionStart", "comm-postclear-reminder.sh", "clear"),
 ]
 
 # A hook command string. `\$HOME` (not the resolved path) so the entry is portable
@@ -1128,7 +1103,8 @@ end
 """
     _remove_stale_comm_hooks!(claude_dir)
 
-Strip every comm hook (any `~/.sot-comm/bin/comm-status-*.sh` command) from
+Strip every comm hook (any `~/.sot-comm/bin/comm-status-*.sh` command, and the
+retired `comm-postcompact-reminder.sh` / `comm-postclear-reminder.sh`) from
 `claude_dir/settings.json`, across all events, dropping events left empty. Run
 before re-adding the current set ([`_install_claude_hooks`]) so settings ends up
 matching `_COMM_STATE_HOOKS` exactly — retiring wirings we no longer use (notably
@@ -1140,11 +1116,11 @@ function _remove_stale_comm_hooks!(claude_dir::AbstractString)
     settings = joinpath(claude_dir, "settings.json")
     (Sys.which("jq") === nothing || !isfile(settings)) && return nothing
     # For each event, keep only matcher-groups that do NOT run a comm-status-*.sh
-    # command; then drop any event whose group list is now empty.
+    # (or retired post-compact/clear reminder) command; then drop any event whose group list is now empty.
     prog = """
     if .hooks then
       .hooks |= ( to_entries
-        | map(.value |= map(select(any((.hooks // [])[]?; (.command // "") | test("comm-status-")) | not)))
+        | map(.value |= map(select(any((.hooks // [])[]?; (.command // "") | test("comm-(status-|post(compact|clear)-reminder)")) | not)))
         | map(select((.value | length) > 0))
         | from_entries )
     else . end

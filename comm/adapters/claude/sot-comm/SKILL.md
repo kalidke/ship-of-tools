@@ -18,10 +18,9 @@ once, when a session first starts — not again on every resume.
 This is ADR 0049's design of record, landing in stages: a send's verdict now is
 `filed -> @h` or `FAILED -> @h: <reason>`, except that until B2 a handle the
 hub's folder does not list can still get `NOT CONFIRMED: sent for @h; …` or
-`filed -> @h (by <filer>, relay)`; and the
-line typed into a row reads `[sot-comm] new message for @<handle> — run
-…/comm-poll.sh` rather than `[sot-comm] you have mail`. There is nothing to arm,
-own or re-arm. A session outside any row is never woken while idle — it sees
+`filed -> @h (by <filer>, relay)`. The daemon wakes an idle row by typing
+`[sot-comm] you have mail: run comm-poll.sh`; a send types nothing itself. There
+is nothing to arm, own or re-arm. A session outside any row is never woken while idle — it sees
 new mail only at its own next turn.
 
 **Scripts** (installed by `ShipTools.install_comm()`): `~/.sot-comm/bin/` — always use these, never hand-roll jq/registry logic.

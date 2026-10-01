@@ -820,8 +820,7 @@ send_pty_screen() {
     _need_endpoint
     ws_id="$(_ws_id_or_passthrough "$ws")"
     export SEND_TIMEOUT="${TIMEOUT:-10}"
-    # One implementation (comm-lib.sh's sot_pty_screen), shared with
-    # comm-wake.sh's prompt-free gate.
+    # One implementation: comm-lib.sh's sot_pty_screen.
     resp="$(sot_pty_screen "$ws_id" || true)"
     if [ -z "$resp" ]; then
         echo "ERROR: no response from pty.screen within ${SEND_TIMEOUT}s via $ENDPOINT." >&2

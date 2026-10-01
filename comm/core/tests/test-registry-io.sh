@@ -266,20 +266,6 @@ case_the_heartbeat_on_an_unreadable_registry_writes_nothing() {
         || { echo "  the heartbeat on a valid registry did not stamp: $(cat "$REG")"; return 1; }
 }
 
-case_the_reminders_on_an_unreadable_registry_remind() {
-    local out hook body
-    for hook in postclear postcompact; do
-        for body in "" "$TWO_ME_FIRST" MISSING; do
-            put_reg "$body"
-            out="$(printf '{"source":"%s"}' "${hook#post}" | in_root bash "$BIN/comm-$hook-reminder.sh" 2>/dev/null)"
-            case "$out" in *REMINDER-FROM-STUB*) ;; *) echo "  $hook [${body:0:20}]: no reminder on an unreadable registry: '$out'"; return 1 ;; esac
-        done
-        put_reg "$NOT_ME"
-        out="$(printf '{"source":"%s"}' "${hook#post}" | in_root bash "$BIN/comm-$hook-reminder.sh" 2>/dev/null)"
-        [ -z "$out" ] || { echo "  $hook: a registry without my row still reminded: '$out'"; return 1; }
-    done
-}
-
 case_the_stop_hook_on_an_unreadable_registry_reaches_the_mail_gate() {
     local out body n=0
     printf '{"to":"me","from":"peer","msg":"hi"}\n' > "$SOT_COMM_HOME/inbox/me.jsonl"
@@ -412,7 +398,6 @@ for c in case_reader_table \
          case_the_fsync_gates_the_rename \
          case_ensure_home_never_truncates \
          case_the_heartbeat_on_an_unreadable_registry_writes_nothing \
-         case_the_reminders_on_an_unreadable_registry_remind \
          case_the_stop_hook_on_an_unreadable_registry_reaches_the_mail_gate \
          case_a_zero_byte_read_is_re_read_and_a_lasting_one_is_unreadable \
          case_a_missing_registry_is_absent_and_unparseable_bytes_are_not_retried \
