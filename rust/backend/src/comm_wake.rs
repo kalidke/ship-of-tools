@@ -17,8 +17,11 @@
 //! environment), and only inside the input box there. A row at rest whose
 //! screen never holds still (a live clock, an animation) is never woken; this
 //! fails closed and its end-of-turn check still reads the mail.
-//! Still open: no permission-menu screen has been captured, so whether a
-//! `❯ 1. Yes` menu line can read free is unproven.
+//! The converse fails open: a working row whose screen happens not to change
+//! for [`STILL_FOR`] is typed into, and the line lands as a queued message.
+//! Still open: no permission-menu screen has been captured. A menu at rest
+//! holds still, so the hold does not protect it: if a `❯ 1. Yes` line ever
+//! read free, the wake's Enter would approve a tool call.
 //!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
@@ -608,22 +611,6 @@ mod tests {
         "  Session: 1k (in:1k out:1k) | $0.00",
         "  ⏵⏵ auto mode on · 2 monitors · ← for agents",
     ];
-    /// A claude row mid-turn, captured live on Linux (2026-10-01): the spinner is live above the box and the cursor still sits at (8, 2). Line 2 is a queued input echoed with the glyph OUTSIDE the box.
-    const LINUX_TURN_A: [&str; 13] = [
-        "     (ctrl+b to run in background)                                                                               │",
-        "                                                                                                                 │",
-        "❯ [sot-comm] you have mail: run comm-poll.sh                                                                     │",
-        "  ctrl+x ctrl+s to send now                                                                                      │",
-        "                                                                                                                 │",
-        "✢ Levitating… (56s · ↓ 3.4k tokens)                                                                              │",
-        "                                                                         ✔ Update installed · Restart to update  │",
-        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
-        "❯ Press up to edit queued messages",
-        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
-        "  Opus 5.5 [00000000] acct ·think:xhigh | v2.1.285 | demo:main | 0 uncommitted",
-        "  Session: 1k (in:1k out:1k) | $0.00",
-        "  ⏵⏵ auto mode on · 2 monitors · ← for agents",
-    ];
 
     // Windows: REAL captures of a claude row mid-turn on Windows (2026-10-01, Claude Code 2.1.282, the row's own
     // screen read, trailing spaces trimmed by the reader), statusline id and cost scrubbed. rows 75, cols 203,
@@ -686,8 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_reads_free_in_one_frame() {
-        assert!(on(&LINUX_TURN_A, (8, 2), false));
+    fn a_windows_turn_frame_passes_the_box_check() {
         assert!(on(&WIN_TURN_A, (7, 2), true));
     }
 

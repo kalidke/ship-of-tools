@@ -20,8 +20,10 @@
 # stamp and the two yield hooks send these too, on the model's behalf):
 #   working | idle     clear `question`, `waiting` and `done`
 #   blocked ["q"]       sets `question` (keeps `waiting` — red outranks
-#                       purple; the wait returns when the answer turn ends)
-#   waiting ["s"]       sets `waiting` (keeps `question`)
+#                       purple; the wait returns when the answer turn ends);
+#                       no text keeps the question's own text, else the note
+#   waiting ["s"]       sets `waiting` (keeps `question`); no text keeps the
+#                       wait's own text, else the note
 #   done                sets `done`, clears `question` and `waiting`
 #   TEXT omitted keeps the prior declaration line (`note`); pass "" to clear
 #   it.
@@ -37,7 +39,9 @@
 #   otherwise                    -> idle      summary = note
 # `note` holds the last working/idle/done line so the summary can return to it
 # once red or purple lifts; a blocked or waiting stamp WITH text deletes it.
-# The daemon never touches it.
+# The Codex permission hook stamps `blocked` with text, so a Codex permission
+# request deletes the note too, and after approval the summary is blank until
+# the next declaration. The daemon never touches it.
 #
 # READ-DECIDE-WRITE IS ONE CRITICAL SECTION (Codex review, #223): apply the
 # verb, delete legacy keys, reduce, and stamp are ONE jq program run inside
@@ -112,9 +116,9 @@ status_txn() {
                   # so a woken or answered row never shows a line written
                   # before its latest declaration (a row read working with a
                   # days-old note — field report, 2026-10-01).
-            if $st == "blocked" then (.question = (if $h == "1" then $sum else (.note // "") end))
+            if $st == "blocked" then (.question = (if $h == "1" then $sum else (.question // .note // "") end))
                 | (if $h == "1" then del(.note) else . end)
-              elif $st == "waiting" then (.waiting = (if $h == "1" then $sum else (.note // "") end))
+              elif $st == "waiting" then (.waiting = (if $h == "1" then $sum else (.waiting // .note // "") end))
                 | (if $h == "1" then del(.note) else . end)
               elif $st == "done" then (if $h == "1" then .note = $sum else . end) | .done = true | del(.question, .waiting)
               else (if $h == "1" then .note = $sum else . end) | del(.question, .waiting, .done) end   # working, idle

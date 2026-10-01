@@ -23,8 +23,9 @@ const HANDLE: &str = "wakeh";
 /// How long after one appended line the wake line must have been typed.
 const WAKE_WITHIN: Duration = Duration::from_secs(5);
 
-/// The wake must hold the screen for this long (`comm_wake::STILL_FOR`).
-const STILL_FOR: Duration = Duration::from_secs(1);
+/// The three wakes must land within one hold of each other (the spread bound for
+/// `rows_with_mail_are_held_at_once`; not `comm_wake::STILL_FOR`).
+const ONE_HOLD: Duration = Duration::from_secs(1);
 
 /// A stub `claude`: banner, then `❯ ` and one line read at a time. While
 /// `dialog` exists it shows a dialog instead of the prompt (checked before
@@ -238,7 +239,7 @@ async fn rows_with_mail_are_held_at_once() {
         .filter_map(|l| l.split(' ').next()?.parse().ok())
         .collect();
     let spread = stamps.iter().max().unwrap() - stamps.iter().min().unwrap();
-    assert!((spread as u128) < STILL_FOR.as_millis(), "the three wakes were {spread} ms apart");
+    assert!((spread as u128) < ONE_HOLD.as_millis(), "the three wakes were {spread} ms apart");
     row.env.kill_daemon_bounded().await;
 }
 
