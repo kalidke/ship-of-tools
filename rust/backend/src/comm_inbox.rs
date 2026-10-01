@@ -785,7 +785,8 @@ mod tests {
     // scripts' own (comm-lib.sh), so the guards under test are the real ones.
     // A comm home whose folder record matches this disk lets the locked reader
     // take the shared lock; a PATH with no flock(1) leaves the other one
-    // unlocked. The reader outwaits the 10 s poll of `until_a_waiter_blocks_on`.
+    // unlocked. The reader's 30 s wait gives the writer's release, after the poll of
+    // `until_a_waiter_blocks_on` detects it, headroom under load.
     #[cfg(target_os = "linux")]
     fn failing_sync_with_reader(
         home: &Path,
@@ -825,19 +826,20 @@ mod tests {
         (String::from_utf8_lossy(&out.stdout).into(), String::from_utf8_lossy(&out.stderr).into())
     }
 
-    // The kernel's word that a reader is blocked behind the lock: /proc/locks
-    // lists a waiter as a line with `->` on the lock's inode.
+    // The kernel's word that a reader or filer is blocked behind the lock:
+    // /proc/locks lists a waiter as a line with `->` on the lock's inode. The
+    // 20 s guard keeps margin over the 10 s filing wait in `held_then_freed`.
     #[cfg(target_os = "linux")]
     fn until_a_waiter_blocks_on(lock: &Path) {
         use std::os::unix::fs::MetadataExt;
         let needle = format!(":{} ", std::fs::metadata(lock).unwrap().ino());
-        let give_up = Instant::now() + Duration::from_secs(10);
+        let give_up = Instant::now() + Duration::from_secs(20);
         loop {
             let locks = std::fs::read_to_string("/proc/locks").unwrap();
             if locks.lines().any(|l| l.contains("->") && l.contains(&needle)) {
                 return;
             }
-            assert!(Instant::now() < give_up, "no reader blocked on {lock:?} within 10 s");
+            assert!(Instant::now() < give_up, "no waiter blocked on {lock:?} within 20 s");
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -923,7 +925,8 @@ mod tests {
     }
 
     // A holder frees the lock once the filing is seen waiting: a blocking
-    // wait shows in /proc/locks before the unlock, a polled wait is held 1 s.
+    // wait shows in /proc/locks before the unlock, a polled wait (and, off
+    // Linux, a blocking one too) is held 1 s.
     // `done >= at` proves the filing followed the unlock, under the polled wait
     // and under a blocking one alike; a missed wake or a stopped poll ends in
     // the bound's error. It promises no duration beyond that.
@@ -941,7 +944,7 @@ mod tests {
             }
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = (blocks, &lock);
+                let _ = blocks;
                 std::thread::sleep(Duration::from_secs(1));
             }
             let at = Instant::now();

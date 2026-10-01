@@ -5978,6 +5978,7 @@ mod comm_file_tests {
         let t0 = std::time::Instant::now();
         let (code, error) = file(Some(d.path()), "fresh", true).unwrap_err();
         // An empty registry is retried over the 200 ms schedule before the verdict; this is a lower bound, so load only lengthens it.
+        // It catches a `file()` that skips the retried read only if that read stalls 200 ms, so it does not pin the path deterministically.
         assert!(t0.elapsed() >= std::time::Duration::from_millis(200), "{:?}", t0.elapsed());
         assert_eq!(code, "file_failed");
         assert!(error.contains("could not be read"), "{error}");
@@ -5989,6 +5990,9 @@ mod comm_file_tests {
     // The heal runs inside a pause, so which try sees it is fixed; the
     // empty-registry test above pins both the verdict arm and that `file()`
     // reads through the retried read.
+
+    /// The retried read's pause schedule.
+    const SCHEDULE: [std::time::Duration; 3] = [std::time::Duration::from_millis(0), std::time::Duration::from_millis(100), std::time::Duration::from_millis(100)];
 
     /// Read the registry, running `heal` in pause number `at` (0 = never);
     /// returns the result and the pauses it took, in order.
@@ -6024,11 +6028,11 @@ mod comm_file_tests {
             std::fs::write(&reg, "").unwrap();
             let (r, pauses) = read_healed(&reg, at, || std::fs::rename(&tmp, &reg).unwrap());
             if at > 0 {
-                assert_eq!((r.unwrap(), pauses.len()), (good, at));
-                assert_eq!(pauses, [0, 100, 100].map(std::time::Duration::from_millis)[..at], "the schedule");
+                assert_eq!(r.unwrap(), good);
+                assert_eq!(pauses, SCHEDULE[..at], "the schedule");
             } else {
-                assert_eq!((unreadable(r).as_str(), pauses.len()), ("no good read in 4 tries; the last: zero bytes", 3));
-                assert_eq!(pauses, [0, 100, 100].map(std::time::Duration::from_millis), "the schedule");
+                assert_eq!(unreadable(r).as_str(), "no good read in 4 tries; the last: zero bytes");
+                assert_eq!(pauses, SCHEDULE, "the schedule");
             }
         }
     }
@@ -6057,12 +6061,11 @@ mod comm_file_tests {
                 }
             });
             if at > 0 && !vanish {
-                assert_eq!((r.unwrap(), pauses.len()), (good, at));
-                assert_eq!(pauses, [0, 100, 100].map(std::time::Duration::from_millis)[..at], "the schedule");
+                assert_eq!(r.unwrap(), good);
+                assert_eq!(pauses, SCHEDULE[..at], "the schedule");
             } else {
                 unreadable(r);
-                assert_eq!(pauses.len(), 3, "at {at}, vanish {vanish}");
-                assert_eq!(pauses, [0, 100, 100].map(std::time::Duration::from_millis), "the schedule");
+                assert_eq!(pauses, SCHEDULE, "the schedule");
             }
         }
     }
@@ -6082,12 +6085,11 @@ mod comm_file_tests {
                 std::fs::rename(&tmp, &reg).unwrap();
             });
             if at > 0 {
-                assert_eq!((r.unwrap(), pauses.len()), (good, at));
-                assert_eq!(pauses, [0, 100, 100].map(std::time::Duration::from_millis)[..at], "the schedule");
+                assert_eq!(r.unwrap(), good);
+                assert_eq!(pauses, SCHEDULE[..at], "the schedule");
             } else {
                 unreadable(r);
-                assert_eq!(pauses.len(), 3);
-                assert_eq!(pauses, [0, 100, 100].map(std::time::Duration::from_millis), "the schedule");
+                assert_eq!(pauses, SCHEDULE, "the schedule");
             }
         }
     }

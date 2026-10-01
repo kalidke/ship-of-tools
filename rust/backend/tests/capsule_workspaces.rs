@@ -717,7 +717,8 @@ async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_
 
     // ADR 0046 decision 2: workspace.list reads pure memory -- even with the
     // row genuinely unreachable, back-to-back calls keep reading it from
-    // memory; the log count below proves the burst provoked no lane probe.
+    // memory; the log count below proves at most one probe per burst (+2
+    // slack), with no burst-sized storm.
     let log_path_for_list_check = env.state_root.join("sot").join("sotd.log");
     let unreachable_lines_before = count_log_occurrences(&log_path_for_list_check, "supervisor lane unreachable");
     for _ in 0..10 {

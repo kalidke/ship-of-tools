@@ -384,8 +384,8 @@ mod tests {
     /// `ProxyCommand` child has on a real box, and the shape
     /// `write_stub_ssh` above already produces -- so a `read_to_string`
     /// there returns only when the `sleep` does. Against the pre-fix
-    /// `ChildGuard::last_stderr_line` this call took the full five seconds
-    /// (measured 5.0s, with the assertion below reported as a FAIL); the
+    /// `ChildGuard::last_stderr_line` this call returned only when the
+    /// holder did, failing the assertion below; the
     /// bound asserted is 10s against a holder that lives 30s, so the failure
     /// mode is a failed assertion rather than a suite that hangs. The folded line
     /// itself is deliberately NOT asserted: it is a hint the drain thread
@@ -418,8 +418,6 @@ mod tests {
         let err = dial_and_call("ssh:hub", "selfbox", "topology.set", serde_json::json!({}))
             .expect_err("a child that answers nothing must be an error, not a hang");
         let waited = started.elapsed();
-        // The holder lives 30 s, so a read of its pipe would end at 30 s; the
-        // ceiling is 10 s, a third of that.
         assert!(
             waited < std::time::Duration::from_secs(10),
             "the error path waited {waited:?}: it must not read a pipe other processes still hold open (err: {err})"
