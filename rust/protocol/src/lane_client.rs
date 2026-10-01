@@ -1002,13 +1002,14 @@ mod tests {
     fn spawn_stub_child() -> std::process::Child {
         // `more` with no filename argument reads stdin and copies it to
         // stdout, the same echo shape `cat` gives on Unix — no unix-only
-        // tool required.
-        std::process::Command::new("more")
+        // tool required. It is `more.com`, and Command looks up only `.exe`
+        // without an extension.
+        std::process::Command::new("more.com")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .expect("`more` must be on PATH for this test")
+            .expect("`more.com` must be on PATH for this test")
     }
 
     /// `BridgedClient::cancel()`'s own contract: the kill it issues must
