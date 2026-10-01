@@ -187,6 +187,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const GROUP_COMMIT_WINDOW: Duration = Duration::from_millis(50);
 const GROUP_COMMIT_BYTES: usize = 256 * 1024;
+/// The producer quiet this long with output pending means commit now.
+const OUTPUT_IDLE: Duration = Duration::from_millis(2);
+/// No idle commit sooner than this after the last real fsync (at most 100 idle fsyncs/s).
+const MIN_COMMIT_GAP: Duration = Duration::from_millis(10);
+
+/// Whether the main loop commits pending output now: always at the group
+/// window, and earlier when the producer has gone idle with output pending
+/// and the last fsync is at least [`MIN_COMMIT_GAP`] old.
+fn should_flush_output(since_commit: Duration, idle: bool, pending_bytes: usize, since_fsync: Duration) -> bool {
+    since_commit >= GROUP_COMMIT_WINDOW || (idle && pending_bytes > 0 && since_fsync >= MIN_COMMIT_GAP)
+}
 const SEGMENT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const READ_CHUNK: usize = 8192;
 
@@ -1375,6 +1386,7 @@ pub fn run<P: Producer>(
     let mut pending_output: Vec<u8> = Vec::new();
     let mut pending_bytes: usize = 0;
     let mut last_commit = Instant::now();
+    let mut last_fsync = Instant::now();
     // Loop-fairness MITIGATION, not a guarantee (real CI failure, windows-
     // latest only: `attach_mid_stream_checkpoint_reproduces_reference_
     // screen` timed out waiting on a connection the capsule itself closed
@@ -1510,6 +1522,7 @@ pub fn run<P: Producer>(
         ($w:expr) => {
             if pending_bytes > 0 {
                 $w.commit()?; // the watermark: fsync BEFORE anything is published
+                last_fsync = Instant::now();
                 execute_light_actions!(attach_proto.output_committed(&pending_output, Instant::now()));
                 pending_output.clear();
                 pending_bytes = 0;
@@ -2136,10 +2149,11 @@ pub fn run<P: Producer>(
         // of the NEXT iteration is guaranteed to find it). `Transport::
         // try_recv_event` itself is still never blocking (its own
         // contract, unchanged); this wait is what wakes early, not that
-        // drain. `GROUP_COMMIT_WINDOW` is unchanged as the bound on how
-        // long producer output may batch, and as the IDLE cadence when
-        // nothing — output or transport — has anything to say.
-        match output_rx.recv_timeout(GROUP_COMMIT_WINDOW) {
+        // drain. `GROUP_COMMIT_WINDOW` stays the bound on how long output
+        // may batch under sustained load and the cadence when nothing is
+        // pending; with output pending, `OUTPUT_IDLE` of quiet commits it.
+        let mut idle = false;
+        match output_rx.recv_timeout(if pending_bytes > 0 { OUTPUT_IDLE } else { GROUP_COMMIT_WINDOW }) {
             Ok(ReaderEvent::Output(bytes)) => {
                 pace_output!(bytes);
                 maybe_rotate!(w);
@@ -2174,7 +2188,7 @@ pub fn run<P: Producer>(
                 output_ended_early = Some(format!("{result:?}"));
                 break 'main ExitKind::ProducerExited;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => idle = true,
             Ok(ReaderEvent::ReaderGone) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 // Codex review (PR #227): `ReaderGone` (an explicit send,
                 // including from a panic unwind — see its own doc) and a
@@ -2192,7 +2206,7 @@ pub fn run<P: Producer>(
         // other non-`Timeout` result) can never starve this deadline —
         // continuous transport activity every `recv_timeout` call used to
         // mean `last_commit.elapsed()` was never even read.
-        if last_commit.elapsed() >= GROUP_COMMIT_WINDOW {
+        if should_flush_output(last_commit.elapsed(), idle, pending_bytes, last_fsync.elapsed()) {
             flush_output!(w);
         }
     };
@@ -2559,6 +2573,18 @@ mod tests {
             }
             thread::yield_now();
         }
+    }
+
+    #[test]
+    fn idle_output_commits_early_but_never_faster_than_the_fsync_gap() {
+        let ms = Duration::from_millis;
+        // flush: the window elapsed; or idle, pending, last fsync >= 10 ms ago.
+        assert!(should_flush_output(ms(50), false, 0, ms(0)));
+        assert!(should_flush_output(ms(5), true, 10, ms(10)));
+        // no flush: not idle; nothing pending before the window; fsync too recent.
+        assert!(!should_flush_output(ms(5), false, 10, ms(40)));
+        assert!(!should_flush_output(ms(5), true, 0, ms(40)));
+        assert!(!should_flush_output(ms(5), true, 10, ms(9)));
     }
 
     /// A reserve that finds the budget full parks in the condvar wait
