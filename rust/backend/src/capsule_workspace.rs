@@ -4183,14 +4183,18 @@ pub mod headless {
 
     /// The comm wake's one attach (0031 B3): attach, checkpoint, test the
     /// screen on that same client with `is_free(lines, cursor, agent)`, and
-    /// only then type `line` and Enter as [`write_and_enter`] does. Never
-    /// takes the pen unless the prompt is free, and never retries.
+    /// only then type `line` and Enter as [`write_and_enter`] does. A screen
+    /// that is not free costs nothing; one that is must then hold identical
+    /// (lines and cursor) for `still_for`, else it is a working row and
+    /// nothing is typed. Never takes the pen unless the prompt is free and
+    /// still, and never retries.
     pub fn wake_if_free(
         state_dir: &Path,
         controller_id: &str,
         line: &[u8],
         is_free: fn(&[String], Option<(u16, u16)>, &str) -> bool,
         agent: &str,
+        still_for: Duration,
         op_budget: Duration,
         quiet_budget: Duration,
         pacing_budget: Duration,
@@ -4200,12 +4204,24 @@ pub mod headless {
             client.shutdown(SHUTDOWN_WAIT);
             return Err(e);
         }
-        let cursor = Some(client.screen().cursor_position());
-        let out = if is_free(&current_lines(&client), cursor, agent) {
-            type_and_enter(&mut client, line, op_budget, quiet_budget, pacing_budget)
-                .map(|(_, enter_sent)| WakeOutcome::Woke { enter_sent })
-        } else {
+        let cursor = client.screen().cursor_position();
+        let first = current_lines(&client);
+        let out = if !is_free(&first, Some(cursor), agent) {
             Ok(WakeOutcome::NotFree)
+        } else {
+            let held_from = Instant::now();
+            let mut still = true;
+            while still && held_from.elapsed() < still_for {
+                std::thread::sleep(POLL_INTERVAL);
+                client.pump();
+                still = client.screen().cursor_position() == cursor && current_lines(&client) == first;
+            }
+            if still {
+                type_and_enter(&mut client, line, op_budget, quiet_budget, pacing_budget)
+                    .map(|(_, enter_sent)| WakeOutcome::Woke { enter_sent })
+            } else {
+                Ok(WakeOutcome::NotFree)
+            }
         };
         client.shutdown(SHUTDOWN_WAIT);
         out

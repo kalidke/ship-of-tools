@@ -23,10 +23,15 @@ const HANDLE: &str = "wakeh";
 /// How long after one appended line the wake line must have been typed.
 const WAKE_WITHIN: Duration = Duration::from_secs(5);
 
+/// The wake must hold the screen for this long (`comm_wake::STILL_FOR`).
+const STILL_FOR: Duration = Duration::from_secs(1);
+
 /// A stub `claude`: banner, then `❯ ` and one line read at a time. While
 /// `dialog` exists it shows a dialog instead of the prompt (checked before
-/// each prompt, so the file must exist before the row starts).
-fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path) -> PathBuf {
+/// each prompt, so the file must exist before the row starts). While `spin`
+/// exists a background loop redraws the line above the prompt every 0.2 s
+/// with a counter, the cursor staying just after `❯ `.
+fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
     let claude = dir.join("claude");
@@ -40,7 +45,10 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path) -> PathBuf {
              while [ -f '{dialog}' ]; do sleep 0.1; done\n\
            fi\n\
            printf '\\342\\235\\257 '\n\
+           ( n=0; while :; do if [ -f '{spin}' ]; then n=$((n+1)); printf '\\0337\\033[1A\\r spinner %d\\0338' $n; fi; sleep 0.2; done ) &\n\
+           spid=$!\n\
            IFS= read -r line\n\
+           kill $spid\n\
            case \"$line\" in\n\
              quit) exit 0 ;;
              '[sot-comm] you have mail'*) echo \"$(date +%s%3N) ping\" >> '{log}' ;;\n\
@@ -48,6 +56,7 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path) -> PathBuf {
            esac\n\
          done\n",
         dialog = dialog.display(),
+        spin = spin.display(),
         log = log.display(),
     );
     std::fs::write(&claude, script).expect("write stub claude");
@@ -61,10 +70,14 @@ fn pings(log: &Path) -> usize {
 
 /// Appends `n` complete inbox lines to `HANDLE` in ONE write, as one batch.
 fn append_mail(env: &Env, n: usize) {
+    append_mail_to(env, HANDLE, n);
+}
+
+fn append_mail_to(env: &Env, handle: &str, n: usize) {
     let dir = env.comm_root.join("inbox");
     std::fs::create_dir_all(&dir).expect("mkdir inbox");
-    let line = format!("{{\"from\":\"other\",\"to\":\"{HANDLE}\",\"repo\":\"r\",\"msg\":\"hi\",\"ts\":\"2026-01-01T00:00:00Z\"}}\n");
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{HANDLE}.jsonl"))).expect("open inbox");
+    let line = format!("{{\"from\":\"other\",\"to\":\"{handle}\",\"repo\":\"r\",\"msg\":\"hi\",\"ts\":\"2026-01-01T00:00:00Z\"}}\n");
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{handle}.jsonl"))).expect("open inbox");
     std::io::Write::write_all(&mut f, line.repeat(n).as_bytes()).expect("append inbox");
 }
 
@@ -86,6 +99,7 @@ struct Row {
     ws: String,
     log: PathBuf,
     dialog: PathBuf,
+    spin: PathBuf,
     stub_dir: PathBuf,
 }
 
@@ -138,7 +152,8 @@ async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
     let env = Env::new(tag);
     let log = log.unwrap_or_else(|| env._tmp.path().join("ping.log"));
     let dialog = env._tmp.path().join("dialog");
-    let stub_dir = write_stub_claude(&env._tmp.path().join("stubbin"), &log, &dialog);
+    let spin = env._tmp.path().join("spin");
+    let stub_dir = write_stub_claude(&env._tmp.path().join("stubbin"), &log, &dialog, &spin);
     if in_dialog {
         std::fs::write(&dialog, b"").unwrap();
     }
@@ -158,7 +173,7 @@ async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
     next_id += 1;
     assert_eq!(join.payload["ok"], true, "agent.join failed: {:?}", join.payload);
     poll_for_phase(&mut conn, &mut next_id, &ws, "ready", BOUND.max(Duration::from_secs(60))).await;
-    Row { env, conn, next_id, ws, log, dialog, stub_dir }
+    Row { env, conn, next_id, ws, log, dialog, spin, stub_dir }
 }
 
 /// An idle row is woken within 5 s of one appended line, and only once.
@@ -186,6 +201,44 @@ async fn a_row_in_a_dialog_is_not_typed_into_until_it_closes() {
     assert!(!row.screen_has("[sot-comm]").await, "typed into a dialog");
     std::fs::remove_file(&row.dialog).unwrap();
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?} of the dialog closing");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// A working row (its spinner redrawing above a live prompt) is not typed
+/// into, and is woken within 5 s of coming to rest.
+#[tokio::test]
+async fn a_working_row_is_not_typed_into_until_it_rests() {
+    let _serial = SERIAL.lock().await;
+    let row = start("cww", None, false).await;
+    std::fs::write(&row.spin, b"").unwrap();
+    append_mail(&row.env, 1);
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 0, "typed into a working row");
+    std::fs::remove_file(&row.spin).unwrap();
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?} of the row coming to rest");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// Rows with mail are checked together: three rows are all woken within one
+/// hold of each other, not one hold apiece.
+#[tokio::test]
+async fn rows_with_mail_are_held_at_once() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start("cwh", None, false).await;
+    add_row(&mut row, "wake-row-2", "wakeh2", "second").await;
+    add_row(&mut row, "wake-row-3", "wakeh3", "third").await;
+    for h in [HANDLE, "wakeh2", "wakeh3"] {
+        append_mail_to(&row.env, h, 1);
+    }
+    assert!(wait_pings(&row.log, 3, WAKE_WITHIN).await, "not all three rows were woken within {WAKE_WITHIN:?}");
+    let stamps: Vec<u64> = std::fs::read_to_string(&row.log)
+        .unwrap()
+        .lines()
+        .filter(|l| l.ends_with(" ping"))
+        .filter_map(|l| l.split(' ').next()?.parse().ok())
+        .collect();
+    let spread = stamps.iter().max().unwrap() - stamps.iter().min().unwrap();
+    assert!((spread as u128) < STILL_FOR.as_millis(), "the three wakes were {spread} ms apart");
     row.env.kill_daemon_bounded().await;
 }
 

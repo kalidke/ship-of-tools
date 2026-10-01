@@ -422,10 +422,12 @@ route. To get an answer, send, end the turn, and be woken.
 
 **Waking.** Every two seconds each daemon looks at every row it runs. If the
 row's handle has unread mail and the row sits at a free prompt — the cursor
-sitting at the start of the input line marked by the prompt glyph, so a grey
-suggestion or any other decoration does not count as a draft but a real
-draft still does, and a working session is not free either and is never
-typed into — the daemon types one fixed line, `[sot-comm] you have mail: run
+sitting at the start of the input line marked by the prompt glyph (`❯`, or
+`>` on Windows, where the line must also sit between the input box's two
+rules), so a grey suggestion or any other decoration does not count as a
+draft but a real draft still does, and the screen must then hold still for
+a second before anything is typed, which is how a working session is not
+free either and is never typed into — the daemon types one fixed line, `[sot-comm] you have mail: run
 comm-poll.sh`, and Enter. The daemon does this, not the frontend or the
 sender — several frontends can show one row and each would type, and a
 closed window would leave the row deaf. It types a fixed notice, never the

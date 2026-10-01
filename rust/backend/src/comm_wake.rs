@@ -8,6 +8,13 @@
 //! it is skipped and tried again next tick; its end-of-turn check still reads
 //! the mail. This module only READS the inbox and cursor.
 //!
+//! A working row keeps its input box live with the cursor at the prompt, so
+//! one frame cannot tell it from a row at rest. The screen is told apart by
+//! holding: a row is typed into only if its screen stays identical for
+//! [`STILL_FOR`] (a working row's spinner redraws several times a second).
+//! Still open: no permission-menu screen has been captured, so whether a
+//! `❯ 1. Yes` menu line can read free is unproven.
+//!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
 
@@ -26,6 +33,10 @@ const CONTROLLER_ID: &str = "sot-comm-wake";
 const OP_BUDGET: Duration = Duration::from_secs(3);
 const QUIET_BUDGET: Duration = Duration::from_millis(300);
 const PACING_BUDGET: Duration = Duration::from_secs(1);
+/// A working row's spinner redraws several times a second; a row at rest holds still.
+const STILL_FOR: Duration = Duration::from_secs(1);
+/// The rule drawn above and below Claude Code's input box.
+const RULE: char = '\u{2500}';
 
 /// When a handle was last woken: the inbox's complete-line count then.
 #[derive(Debug, Clone, Copy)]
@@ -193,27 +204,47 @@ fn decide(s: &Scan, woken: Option<&Woken>, now: Instant) -> Decision {
 }
 
 /// The prompt glyph of an agent the daemon can read, `None` for one it cannot.
-/// Codex ships OFF: no Codex screen has been captured, and a glyph is never
-/// guessed, so a Codex row counts as a row the daemon cannot type into.
-fn prompt_glyph(agent: &str) -> Option<char> {
+/// Claude Code draws `❯`, but a bare `>` on Windows. Codex ships OFF: no Codex
+/// screen has been captured, and a glyph is never guessed, so a Codex row
+/// counts as a row the daemon cannot type into.
+fn prompt_glyph(agent: &str, windows: bool) -> Option<char> {
     match agent {
-        "claude" => Some('\u{276f}'),
+        "claude" => Some(if windows { '>' } else { '\u{276f}' }),
         _ => None,
     }
+}
+
+/// A line of nothing but [`RULE`] (trailing spaces aside).
+fn is_rule(line: &str) -> bool {
+    let line = line.trim_end_matches(' ');
+    !line.is_empty() && line.chars().all(|c| c == RULE)
 }
 
 /// The free-prompt test: the cursor sits on the empty input line. The row
 /// indexes a real line, the line holds the glyph with only spaces before it,
 /// and the cursor column is just after the glyph (or one more, over a space,
-/// no-break space, tab or nothing). A dialog, a draft or a working session is
-/// not free.
+/// no-break space, tab or nothing). A dialog or a draft is not free. One
+/// frame cannot tell a working row, whose input box is live too; the hold in
+/// `wake_if_free` does. A bare `>` is a weak signal (quotes, diffs, shell
+/// output), so on Windows the lines directly above and below must also be rules.
 pub(crate) fn prompt_free(lines: &[String], cursor: Option<(u16, u16)>, agent: &str) -> bool {
-    let (Some(glyph), Some((row, col))) = (prompt_glyph(agent), cursor) else {
+    prompt_free_on(lines, cursor, agent, cfg!(windows))
+}
+
+pub(crate) fn prompt_free_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> bool {
+    let (Some(glyph), Some((row, col))) = (prompt_glyph(agent, windows), cursor) else {
         return false;
     };
-    let Some(line) = lines.get(row as usize) else {
+    let row = row as usize;
+    let Some(line) = lines.get(row) else {
         return false;
     };
+    if windows {
+        let boxed = row > 0 && is_rule(&lines[row - 1]) && lines.get(row + 1).is_some_and(|l| is_rule(l));
+        if !boxed {
+            return false;
+        }
+    }
     let cells: Vec<char> = line.chars().collect();
     let Some(g) = cells.iter().position(|c| *c == glyph) else {
         return false;
@@ -239,6 +270,7 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
                 *declared.entry(h).or_default() += 1;
             }
         }
+        let mut checks = Vec::new();
         for ws in rows {
             let handle = ws.agent_handle();
             if handle.is_empty() || ws.runtime != "capsule" {
@@ -253,15 +285,19 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
                 continue;
             }
             let agent = ws.agent();
-            if prompt_glyph(&agent).is_none() {
+            if prompt_glyph(&agent, cfg!(windows)).is_none() {
                 continue;
             }
             let state_dir = crate::capsule_workspace::state_dir_for(&state_root, &ws.workspace_id);
             let home = comm_home.clone();
             let prior = woken.get(&handle).copied();
             let h = handle.clone();
-            let result = tokio::task::spawn_blocking(move || check_row(&home, &h, &state_dir, &agent, prior)).await;
-            match result {
+            // Concurrent: each wake holds the screen for STILL_FOR, so N rows
+            // with mail cost one hold per tick, not N.
+            checks.push((handle, tokio::task::spawn_blocking(move || check_row(&home, &h, &state_dir, &agent, prior))));
+        }
+        for (handle, check) in checks {
+            match check.await {
                 Ok(Step::Clear) => {
                     woken.remove(&handle);
                 }
@@ -300,6 +336,7 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         WAKE_LINE,
         prompt_free,
         agent,
+        STILL_FOR,
         OP_BUDGET,
         QUIET_BUDGET,
         PACING_BUDGET,
@@ -538,5 +575,102 @@ mod tests {
         assert_eq!(decide(&mail(3, 0), Some(&w), later), Decision::Wake);
         // Read: forgotten.
         assert_eq!(decide(&mail(0, 0), Some(&w), later), Decision::Clear);
+    }
+
+    fn on(l: &[&str], cur: (u16, u16), windows: bool) -> bool {
+        prompt_free_on(&lines(l), Some(cur), "claude", windows)
+    }
+
+    /// A claude row at rest, captured live on Linux (2026-10-01): cursor (8, 2), after a grey suggestion. Identifying text scrubbed.
+    const LINUX_IDLE: [&str; 13] = [
+        "● Monitor event: a watched row changed state                                                                     │",
+        "                                                                                                                 │",
+        "● Nothing to act on; staying idle.                                                                               │",
+        "  Waiting for the next case.                                                                                     │",
+        "                                                                                                                 │",
+        "✻ Sautéed for 3s · done 9:21 AM · 2 monitors still running                                                       │",
+        "                                                                         ✔ Update installed · Restart to update  │",
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯\u{a0}ready for the next case",
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  Opus 5.5 [00000000] acct ·think:xhigh | v2.1.285 | demo:main | 0 uncommitted",
+        "  Session: 1k (in:1k out:1k) | $0.00",
+        "  ⏵⏵ auto mode on · 2 monitors · ← for agents",
+    ];
+    /// A claude row mid-turn, captured live on Linux (2026-10-01): the spinner is live above the box and the cursor still sits at (8, 2). Line 2 is a queued input echoed with the glyph OUTSIDE the box.
+    const LINUX_TURN_A: [&str; 13] = [
+        "     (ctrl+b to run in background)                                                                               │",
+        "                                                                                                                 │",
+        "❯ [sot-comm] you have mail: run comm-poll.sh                                                                     │",
+        "  ctrl+x ctrl+s to send now                                                                                      │",
+        "                                                                                                                 │",
+        "✢ Levitating… (56s · ↓ 3.4k tokens)                                                                              │",
+        "                                                                         ✔ Update installed · Restart to update  │",
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯ Press up to edit queued messages",
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  Opus 5.5 [00000000] acct ·think:xhigh | v2.1.285 | demo:main | 0 uncommitted",
+        "  Session: 1k (in:1k out:1k) | $0.00",
+        "  ⏵⏵ auto mode on · 2 monitors · ← for agents",
+    ];
+    /// The same turn 0.63 s later: only the spinner line moved.
+    const LINUX_TURN_B: [&str; 13] = [
+        "     (ctrl+b to run in background)                                                                               │",
+        "                                                                                                                 │",
+        "❯ [sot-comm] you have mail: run comm-poll.sh                                                                     │",
+        "  ctrl+x ctrl+s to send now                                                                                      │",
+        "                                                                                                                 │",
+        "✢ Levitating… (57s · ↓ 3.4k tokens)                                                                              │",
+        "                                                                         ✔ Update installed · Restart to update  │",
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯ Press up to edit queued messages",
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  Opus 5.5 [00000000] acct ·think:xhigh | v2.1.285 | demo:main | 0 uncommitted",
+        "  Session: 1k (in:1k out:1k) | $0.00",
+        "  ⏵⏵ auto mode on · 2 monitors · ← for agents",
+    ];
+
+    // Windows: RECONSTRUCTED from a Windows row's report (2026-10-01), NOT raw bytes: cols 203, rows 75, cursor
+    // (69, 2) on a prompt line that is the single byte '>'; above it a spinner line, a tip line and a rule; below
+    // it a rule, the statusline and the mode line. The rules are drawn as U+2500 the way Claude Code draws them
+    // on Linux; the Windows rule bytes are UNCONFIRMED.
+    // Cursor for all four: row 4, col 2 (WIN_QUOTED: row 0, col 2).
+    const WIN_RULE: &str = "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────";
+    /// A Windows claude row mid-turn: the spinner is live above the box.
+    const WIN_TURN_A: [&str; 8] = ["● Running the check.", "✻ Levitating… (12s · ↓ 1.0k tokens)", "  ⎿  Tip: press ctrl+b to run a command in the background", WIN_RULE, ">", WIN_RULE, "  Opus 5.5 [00000000] acct | v2.1.282 | demo:main", "  ⏵⏵ auto mode on"];
+    /// The same turn a moment later: only the spinner's elapsed time moved.
+    const WIN_TURN_B: [&str; 8] = ["● Running the check.", "✻ Levitating… (13s · ↓ 1.0k tokens)", "  ⎿  Tip: press ctrl+b to run a command in the background", WIN_RULE, ">", WIN_RULE, "  Opus 5.5 [00000000] acct | v2.1.282 | demo:main", "  ⏵⏵ auto mode on"];
+    /// The row at rest: the spinner line replaced by an output line.
+    const WIN_REST: [&str; 8] = ["● Running the check.", "● Done.", "  ⎿  Tip: press ctrl+b to run a command in the background", WIN_RULE, ">", WIN_RULE, "  Opus 5.5 [00000000] acct | v2.1.282 | demo:main", "  ⏵⏵ auto mode on"];
+    /// At rest, with a quoted '>' output line above the box (cursor put on it at (0, 2)).
+    const WIN_QUOTED: [&str; 8] = ["> quoted text", "● Done.", "  ⎿  Tip: press ctrl+b to run a command in the background", WIN_RULE, ">", WIN_RULE, "  Opus 5.5 [00000000] acct | v2.1.282 | demo:main", "  ⏵⏵ auto mode on"];
+
+    #[test]
+    fn linux_rest_capture_is_free() {
+        assert!(on(&LINUX_IDLE, (8, 2), false));
+    }
+
+    #[test]
+    fn a_turn_reads_free_in_one_frame() {
+        assert!(on(&LINUX_TURN_A, (8, 2), false));
+        assert!(on(&WIN_TURN_A, (4, 2), true));
+        assert_ne!(LINUX_TURN_A, LINUX_TURN_B);
+        assert_ne!(WIN_TURN_A, WIN_TURN_B);
+    }
+
+    #[test]
+    fn windows_rest_is_free() {
+        assert!(on(&WIN_REST, (4, 2), true));
+    }
+
+    #[test]
+    fn windows_quoted_gt_line_is_not_free() {
+        assert!(!on(&WIN_QUOTED, (0, 2), true));
+    }
+
+    #[test]
+    fn each_platform_takes_only_its_glyph() {
+        assert!(!on(&WIN_REST, (4, 2), false));
+        assert!(!on(&LINUX_IDLE, (8, 2), true));
     }
 }
