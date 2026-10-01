@@ -355,6 +355,13 @@ Pure queries (no startup side effects, answered before any of the above):
 
     let opts = parse_args().context("parsing command-line arguments")?;
 
+    // A second daemon pointed at a live daemon's socket refuses here,
+    // before any startup side effect (`server::refuse_live_socket`).
+    #[cfg(unix)]
+    if let Some(path) = opts.socket.as_deref() {
+        server::refuse_live_socket(path)?;
+    }
+
     // Finding 1, v0.6.5 macOS field report: refuse to serve a capsule row
     // sotd can never actually start, rather than booting cleanly and
     // leaving every pane blinking "supervisor lane not answering" while

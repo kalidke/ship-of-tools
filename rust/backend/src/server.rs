@@ -897,6 +897,27 @@ pub async fn run(opts: Opts) -> Result<()> {
     Ok(())
 }
 
+/// Refuses when a daemon still answers on the socket at `path`. Unlinking
+/// a live daemon's socket leaves it running on a deleted file that no
+/// client can reach until it restarts. Only a socket nobody answers on
+/// (ECONNREFUSED), or none at all, is stale; any other connect error
+/// refuses too, because it cannot tell.
+#[cfg(unix)]
+pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
+    match std::os::unix::net::UnixStream::connect(path) {
+        Ok(_) => anyhow::bail!(
+            "another daemon is already listening on {}; refusing to start on its socket \
+             (stop that daemon first, or pass a different --socket)",
+            path.display()
+        ),
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound) => Ok(()),
+        Err(e) => anyhow::bail!(
+            "cannot tell whether a daemon is listening on {}: {e}; refusing to unlink its socket",
+            path.display()
+        ),
+    }
+}
+
 /// The session pipe's security descriptor: protected, owner-only full
 /// access, no `OI`/`CI` inheritance — built from `sot_log::
 /// owner_protected_pipe_descriptor` (the SAME SDDL `pipe_win.rs` already
@@ -955,9 +976,11 @@ async fn run_local(
         }
     }
     // Unix sockets leave a filesystem entry that blocks rebind; Windows
-    // named pipes don't, so only do the cleanup on Unix.
+    // named pipes don't, so only do the cleanup on Unix, and only for a
+    // socket nobody answers on.
     #[cfg(unix)]
     if std::path::Path::new(&socket_path).exists() {
+        refuse_live_socket(std::path::Path::new(&socket_path))?;
         tokio::fs::remove_file(&socket_path)
             .await
             .with_context(|| format!("remove stale socket {socket_path:?}"))?;

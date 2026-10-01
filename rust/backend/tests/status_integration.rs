@@ -31,6 +31,12 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
     let _serial = SERIAL.lock().await;
     let env = Env::new("status");
+    // The label-derived socket lives under `$XDG_RUNTIME_DIR`
+    // (`runtime_sot_dir`), not `SOT_RUNTIME_DIR`. Left inherited, this test
+    // bound the developer's own `<runtime>/sot/sessions/sot.sock`, and the
+    // bind unlinked the live daemon's socket. This process and both
+    // children use this env's private runtime dir instead.
+    std::env::set_var("XDG_RUNTIME_DIR", env._runtime_tmp.path());
 
     // A one-host topology: this box is both the hub and its only daemon.
     let hosts_toml = env._tmp.path().join("hosts.toml");
@@ -65,11 +71,15 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
         .expect("spawn sotd");
     env.daemon.borrow_mut().replace(child);
 
-    // `SOT_RUNTIME_DIR` is already set process-wide by `Env::new`, so this
-    // process derives the identical path the daemon above just bound from
-    // the same label — the one `sotd status`'s own `local_endpoint()` will
-    // dial below.
+    // `XDG_RUNTIME_DIR` is set process-wide above, so this process derives
+    // the identical path the daemon above just bound from the same label —
+    // the one `sotd status`'s own `local_endpoint()` will dial below.
     let socket_path = sot_protocol::session_socket_path(sot_protocol::local_daemon_label());
+    #[cfg(unix)]
+    assert!(
+        socket_path.starts_with(env._runtime_tmp.path()),
+        "the test daemon's socket must sit in this env's private runtime dir, never the developer's: {socket_path:?}"
+    );
     let stream = poll_until(|| async { try_connect(&socket_path).await }, BOUND, "sotd's own-label socket to accept a connection").await;
     let mut conn = tokio::io::BufReader::new(stream);
     let hello = HelloReq {
