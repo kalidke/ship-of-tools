@@ -351,6 +351,50 @@ fn supervisor_status<E: Endpoint>(
     }
 }
 
+/// The steady state's supervisor lane: the ONE connection the pre-attach
+/// `Status` polling proved (no second connect+hello -- see
+/// [`ReadyOutcome`]), its reader, and the paced re-dial state (see
+/// [`SUPERVISOR_REDIAL_INITIAL`]). [`run_steady_state`] keeps it in a
+/// `Mutex` so exactly one thread drives its request/reply lockstep at a
+/// time: a liveness probe for its whole round trip, on its own thread,
+/// or `run_quit` for the ending transaction.
+struct SupLane<C> {
+    conn: C,
+    reader: FrameReader,
+    redial_at: Option<Instant>,
+    redial_backoff: Duration,
+}
+
+/// One liveness probe, run OFF the worker's input path -- a keystroke must
+/// never wait a `Status` round trip. The inline probe it replaces, minus
+/// the status text and health accounting, which stay with the worker:
+/// `Status` under its own budgets and, on a miss, the paced re-dial.
+fn probe_supervisor_lane<E: Endpoint>(endpoint: &E, h: &str, lane: &mut SupLane<E::Client>) -> Result<SupervisorPhase, LaneError> {
+    let now = Instant::now();
+    let answered = supervisor_status::<E>(&lane.conn, &mut lane.reader).map(|(_, _, phase)| phase);
+    if answered.is_ok() {
+        lane.redial_at = None;
+        lane.redial_backoff = SUPERVISOR_REDIAL_INITIAL;
+    } else if lane.redial_at.is_none_or(|t| now >= t) {
+        // The probe's own deadline shut this socket down (`cancel` is
+        // `shutdown(SHUT_RDWR)`), so the lane is dead from here on whatever
+        // the supervisor does next -- one stalled link would otherwise
+        // leave every later probe failing and the header lying until the
+        // next reattach. Re-dial now; the next answered probe restores
+        // "attached".
+        if let Ok((c, _)) = connect_supervisor_lane::<E>(endpoint, h) {
+            lane.conn = c;
+            lane.reader = FrameReader::new();
+            lane.redial_at = None;
+            lane.redial_backoff = SUPERVISOR_REDIAL_INITIAL;
+        } else {
+            lane.redial_at = Some(now + lane.redial_backoff);
+            lane.redial_backoff = (lane.redial_backoff * 2).min(SUPERVISOR_REDIAL_MAX);
+        }
+    }
+    answered
+}
+
 /// Ruling (d), Codex review round finding 8: called whenever the
 /// supervisor lane looks absent OR unresponsive THIS round. Applies the
 /// AND condition directly — the health-window timer only advances when
@@ -906,7 +950,7 @@ impl<E: Endpoint> AttachWorker<E> {
         sink: impl Fn(WorkerEvent) + Send + 'static,
     ) -> Result<Self, std::io::Error>
     where
-        E: Send + 'static,
+        E: Send + Sync + 'static,
         E::Client: 'static,
     {
         let rows = rows.max(2);
@@ -1098,7 +1142,7 @@ fn run_worker<E: Endpoint>(
     take_epoch_pub: Arc<AtomicU64>,
     headless: bool,
 ) where
-    E: Send + 'static,
+    E: Send + Sync + 'static,
     E::Client: 'static,
 {
     let mut reconnect = ReconnectState::new();
@@ -1230,7 +1274,7 @@ fn run_worker<E: Endpoint>(
         // supervisor lane is ALSO absent/unresponsive this round does the
         // health window even get consulted -- a reachable voyage pipe
         // (the capsule surviving headless) clears it unconditionally.
-        let (supervisor_conn, mut sup_reader, voyage, voyage_conn) = match supervisor_ready {
+        let (supervisor_conn, sup_reader, voyage, voyage_conn) = match supervisor_ready {
             Some(v) => v,
             None => {
                 // Finding 2: resolved FRESH here, not cached from the top
@@ -1438,7 +1482,6 @@ fn run_worker<E: Endpoint>(
                 return;
             }
         };
-        let mut supervisor_conn = supervisor_conn;
         let mut last_liveness_poll = Instant::now();
 
         // --- steady state ------------------------------------------
@@ -1448,8 +1491,8 @@ fn run_worker<E: Endpoint>(
             &emit,
             &lane,
             &shared_conn,
-            &mut supervisor_conn,
-            &mut sup_reader,
+            supervisor_conn,
+            sup_reader,
             &mut take,
             &mut take_intent,
             &mut outstanding,
@@ -1482,7 +1525,6 @@ fn run_worker<E: Endpoint>(
         shared_conn.cancel();
         let _ = reader_thread.join();
         drop(shared_conn);
-        drop(supervisor_conn);
 
         match episode_result {
             SteadyOutcome::Shutdown => {
@@ -2009,14 +2051,14 @@ fn run_attach_reader<E: Endpoint>(
 // -----------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
-fn run_steady_state<E: Endpoint>(
+fn run_steady_state<E: Endpoint + Sync>(
     endpoint: &E,
     cmd_rx: &Receiver<WorkerMsg>,
     emit: &dyn Fn(WorkerEvent),
     h: &str,
     attach_conn: &Arc<E::Client>,
-    supervisor_conn: &mut E::Client,
-    sup_reader: &mut FrameReader,
+    supervisor_conn: E::Client,
+    sup_reader: FrameReader,
     take: &mut TakeTransaction,
     take_intent: &mut TakeIntent,
     outstanding: &mut OutstandingSlot,
@@ -2037,10 +2079,6 @@ fn run_steady_state<E: Endpoint>(
     // retitle the pane until the next reattach -- the next answered probe
     // restores "attached" so the header tells the truth again.
     let mut probe_missed = false;
-    // Paced re-dial state (see SUPERVISOR_REDIAL_INITIAL): `redial_at` is
-    // the earliest instant another dial is allowed, `None` meaning "now".
-    let mut redial_at: Option<Instant> = None;
-    let mut redial_backoff = SUPERVISOR_REDIAL_INITIAL;
     // Codex review (PR 254): `probe_missed` alone records that a probe was
     // missed, NOT that the blink is still what the pane shows. Anything
     // else this loop reaches (a quit canceling outstanding input, a take
@@ -2055,93 +2093,32 @@ fn run_steady_state<E: Endpoint>(
         }
         emit(e)
     };
-    loop {
-        match cmd_rx.recv_timeout(WORKER_TICK) {
-            Ok(WorkerMsg::Shutdown) => return SteadyOutcome::Shutdown,
-            Ok(WorkerMsg::Input(bytes, _reservation)) => match take.role() {
-                Role::Watching => {
-                    for action in take.on_input_while_watching(&bytes) {
-                        apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
-                    }
-                }
-                Role::Taking | Role::Resizing => {
-                    for action in take.on_input_while_pending(&bytes) {
-                        apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
-                    }
-                }
-                Role::Driving => {
-                    if outstanding.outstanding().is_some() {
-                        // Ruling (b), Codex review round finding 5: an
-                        // input already outstanding queues the next one
-                        // rather than dropping it.
-                        for action in take.queue_while_driving(&bytes) {
-                            apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
-                        }
-                    } else {
-                        send_new_input::<E>(attach_conn, outstanding, *take_epoch, controller_id, voyage, bytes);
-                    }
-                }
-            },
-            Ok(WorkerMsg::Resize(c, r)) => {
-                *cols = c;
-                *rows = r;
-                // An ad hoc resize while already DRIVING is sent
-                // immediately (unrelated to the take transaction's own
-                // resize, which is awaited alone before ANYTHING else
-                // goes out — see ruling (b)'s lockstep fix). Not sent
-                // while WATCHING/TAKING/RESIZING: a watcher cannot
-                // correct the geometry until it holds the pen, and while
-                // RESIZING a second resize would itself violate lockstep.
-                if take.role() == Role::Driving {
-                    let frame = AttachClient::Resize { cols: c, rows: r };
-                    if let Ok(enc) = wire::encode_attach_client(&frame) {
-                        let _ = write_bounded::<E>(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
-                    }
-                }
-            }
-            Ok(WorkerMsg::Quit(reason)) => {
-                // `run_quit` now loops internally (entirely within this
-                // call) until the dispatcher reaches a terminal state --
-                // see its own doc for why verification cannot depend on
-                // this steady-state loop running again (the attach
-                // connection dies with the capsule end_run tears down).
-                run_quit::<E>(endpoint, supervisor_conn, sup_reader, h, voyage, reason, quit, outstanding, &emit);
-            }
-            Ok(WorkerMsg::Frame(frame)) => {
-                match handle_attach_frame::<E>(
-                    frame, attach_conn, take, take_intent, outstanding, take_epoch, controller_id, voyage, *cols,
-                    *rows, &emit, recorded_bytes, last_input_outcome, take_epoch_pub,
-                ) {
-                    FrameOutcome::ReattachRequested => return SteadyOutcome::ReconnectPreserveTake,
-                    FrameOutcome::Handled | FrameOutcome::Ignored => {}
-                }
-            }
-            Ok(WorkerMsg::ReaderDone) => {
-                return SteadyOutcome::Reconnect;
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return SteadyOutcome::Shutdown,
-        }
-
-        let now = Instant::now();
-        quit.tick(now);
-        if quit.should_exit() {
-            return SteadyOutcome::QuitEnded;
-        }
-        for action in take.tick_checkpoint_retry(now) {
-            apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
-        }
-
-        if now.duration_since(*last_liveness_poll) >= LIVENESS_POLL_INTERVAL {
-            *last_liveness_poll = now;
-            match supervisor_status::<E>(supervisor_conn, sup_reader) {
-                Ok((_, _, phase)) => {
+    // The lane lives here, not in the loop's own hands: a probe thread holds
+    // the lock for its round trip, so the input path never waits on it.
+    let sup_lane = Mutex::new(SupLane {
+        conn: supervisor_conn,
+        reader: sup_reader,
+        redial_at: None,
+        redial_backoff: SUPERVISOR_REDIAL_INITIAL,
+    });
+    // Scoped: a probe still in flight when this returns is joined, within
+    // its own budgets, before the lane drops.
+    thread::scope(|s| {
+        let mut probe: Option<thread::ScopedJoinHandle<'_, Result<SupervisorPhase, LaneError>>> = None;
+        loop {
+            let msg = cmd_rx.recv_timeout(WORKER_TICK);
+            // Harvest a finished probe. A Quit also waits out an unfinished
+            // one, because `run_quit` needs the lane it holds -- bounded by
+            // the probe's own budgets, never longer than the inline probe
+            // used to hold this whole loop.
+            let quitting = matches!(msg, Ok(WorkerMsg::Quit(_)));
+            if let Some(job) = probe.take_if(|j| quitting || j.is_finished()) {
+                match job.join().unwrap_or_else(|p| std::panic::resume_unwind(p)) {
+                    Ok(phase) => {
                     // The supervisor answered -- unambiguously NOT
                     // absent/unresponsive; the voyage pipe question
                     // never even arises (ruling (d), finding 8).
                     reconnect.clear_unresponsive();
-                    redial_at = None;
-                    redial_backoff = SUPERVISOR_REDIAL_INITIAL;
                     if let ReconnectDecision::Terminal(reason) = reconnect.classify_supervisor_phase(phase) {
                         return SteadyOutcome::Terminal(format!("supervisor: {reason:?}"));
                     }
@@ -2151,8 +2128,8 @@ fn run_steady_state<E: Endpoint>(
                             emit(WorkerEvent::Status("attached".to_string()));
                         }
                     }
-                }
-                Err(_) => {
+                    }
+                    Err(_) => {
                     // Codex review round, finding 8: the attach
                     // connection is DEMONSTRABLY alive right now (we are
                     // actively reading it in this very loop) — the
@@ -2161,32 +2138,107 @@ fn run_steady_state<E: Endpoint>(
                     // NEVER be consulted from this branch. "The capsule
                     // survives headless": keep going.
                     reconnect.clear_unresponsive();
-                    // The probe's own deadline shut this socket down
-                    // (`cancel` is `shutdown(SHUT_RDWR)`), so the lane
-                    // is dead from here on whatever the supervisor does
-                    // next -- one stalled link would otherwise leave
-                    // every later probe failing and the header lying
-                    // until the next reattach. Re-dial now; the next
-                    // answered probe restores "attached".
-                    if redial_at.is_none_or(|t| now >= t) {
-                        if let Ok((c, _)) = connect_supervisor_lane::<E>(endpoint, h) {
-                            *supervisor_conn = c;
-                            *sup_reader = FrameReader::new();
-                            redial_at = None;
-                            redial_backoff = SUPERVISOR_REDIAL_INITIAL;
-                        } else {
-                            redial_at = Some(now + redial_backoff);
-                            redial_backoff = (redial_backoff * 2).min(SUPERVISOR_REDIAL_MAX);
-                        }
-                    }
                     if !probe_missed {
                         probe_missed = true;
                         emit(WorkerEvent::Status(PROBE_MISSED_STATUS.to_string()));
                     }
+                    }
+                }
+            }
+            match msg {
+                Ok(WorkerMsg::Shutdown) => return SteadyOutcome::Shutdown,
+                Ok(WorkerMsg::Input(bytes, _reservation)) => match take.role() {
+                    Role::Watching => {
+                        for action in take.on_input_while_watching(&bytes) {
+                            apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
+                        }
+                    }
+                    Role::Taking | Role::Resizing => {
+                        for action in take.on_input_while_pending(&bytes) {
+                            apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
+                        }
+                    }
+                    Role::Driving => {
+                        if outstanding.outstanding().is_some() {
+                            // Ruling (b), Codex review round finding 5: an
+                            // input already outstanding queues the next one
+                            // rather than dropping it.
+                            for action in take.queue_while_driving(&bytes) {
+                                apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
+                            }
+                        } else {
+                            send_new_input::<E>(attach_conn, outstanding, *take_epoch, controller_id, voyage, bytes);
+                        }
+                    }
+                },
+                Ok(WorkerMsg::Resize(c, r)) => {
+                    *cols = c;
+                    *rows = r;
+                    // An ad hoc resize while already DRIVING is sent
+                    // immediately (unrelated to the take transaction's own
+                    // resize, which is awaited alone before ANYTHING else
+                    // goes out — see ruling (b)'s lockstep fix). Not sent
+                    // while WATCHING/TAKING/RESIZING: a watcher cannot
+                    // correct the geometry until it holds the pen, and while
+                    // RESIZING a second resize would itself violate lockstep.
+                    if take.role() == Role::Driving {
+                        let frame = AttachClient::Resize { cols: c, rows: r };
+                        if let Ok(enc) = wire::encode_attach_client(&frame) {
+                            let _ = write_bounded::<E>(attach_conn, &enc, Instant::now() + WRITE_BUDGET);
+                        }
+                    }
+                }
+                Ok(WorkerMsg::Quit(reason)) => {
+                    // `run_quit` now loops internally (entirely within this
+                    // call) until the dispatcher reaches a terminal state --
+                    // see its own doc for why verification cannot depend on
+                    // this steady-state loop running again (the attach
+                    // connection dies with the capsule end_run tears down).
+                    // The harvest above joined any in-flight probe, so the lock is free.
+                    let mut guard = sup_lane.lock().unwrap();
+                    let l = &mut *guard;
+                    run_quit::<E>(endpoint, &mut l.conn, &mut l.reader, h, voyage, reason, quit, outstanding, &emit);
+                }
+                Ok(WorkerMsg::Frame(frame)) => {
+                    match handle_attach_frame::<E>(
+                        frame, attach_conn, take, take_intent, outstanding, take_epoch, controller_id, voyage, *cols,
+                        *rows, &emit, recorded_bytes, last_input_outcome, take_epoch_pub,
+                    ) {
+                        FrameOutcome::ReattachRequested => return SteadyOutcome::ReconnectPreserveTake,
+                        FrameOutcome::Handled | FrameOutcome::Ignored => {}
+                    }
+                }
+                Ok(WorkerMsg::ReaderDone) => {
+                    return SteadyOutcome::Reconnect;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return SteadyOutcome::Shutdown,
+            }
+
+            let now = Instant::now();
+            quit.tick(now);
+            if quit.should_exit() {
+                return SteadyOutcome::QuitEnded;
+            }
+            for action in take.tick_checkpoint_retry(now) {
+                apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
+            }
+
+            if probe.is_none() && now.duration_since(*last_liveness_poll) >= LIVENESS_POLL_INTERVAL {
+                *last_liveness_poll = now;
+                match thread::Builder::new()
+                    .name("sot-fe-sup-probe".to_string())
+                    .spawn_scoped(s, || probe_supervisor_lane::<E>(endpoint, h, &mut *sup_lane.lock().unwrap()))
+                {
+                    Ok(job) => probe = Some(job),
+                    // No thread, no probe: a missed-probe status would claim
+                    // what nobody observed, so this round reports nothing and
+                    // the next one tries again.
+                    Err(e) => eprintln!("attach_worker: liveness probe thread failed to start ({e}); skipping this round"),
                 }
             }
         }
-    }
+    })
 }
 
 enum FrameOutcome {
@@ -3050,5 +3102,127 @@ mod tests {
             !capped.contains("survive") && !capped.contains("keep running"),
             "the pane line must not promise what a restart costs — the degraded-scope supervisor breaks that promise, got {capped:?}"
         );
+    }
+
+    /// Shared state behind [`StallClient`]: what was written, whether a
+    /// read is parked, and whether `cancel` released it.
+    #[derive(Default)]
+    struct StallState {
+        writes: Mutex<Vec<Vec<u8>>>,
+        read_entered: AtomicBool,
+        cancelled: Mutex<bool>,
+        released: Condvar,
+    }
+
+    /// A peer that never answers: `write_all` records and succeeds, `read`
+    /// parks until `cancel` -- a stalled supervisor behind a live socket.
+    struct StallClient(Arc<StallState>);
+    impl Client for StallClient {
+        fn write_all(&self, bytes: &[u8]) -> Result<(), crate::transport::TransportError> {
+            self.0.writes.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+        fn read(&self, _buf: &mut [u8]) -> Result<usize, crate::transport::TransportError> {
+            self.0.read_entered.store(true, Ordering::SeqCst);
+            let mut cancelled = self.0.cancelled.lock().unwrap();
+            while !*cancelled {
+                cancelled = self.0.released.wait(cancelled).unwrap();
+            }
+            Err(crate::transport::TransportError::Cancelled)
+        }
+        fn cancel(&self) {
+            *self.0.cancelled.lock().unwrap() = true;
+            self.0.released.notify_all();
+        }
+    }
+
+    /// Dials nothing: the re-dial after the stalled probe's deadline fails.
+    struct StallEndpoint;
+    impl Endpoint for StallEndpoint {
+        type Client = StallClient;
+        type Process = TestProcess;
+
+        fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            unreachable!("the steady state never dials the voyage lane")
+        }
+        fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            Err(crate::transport::TransportError::Cancelled)
+        }
+        fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+            unreachable!("the re-dial fails before any challenge")
+        }
+        fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
+            unreachable!("the steady state never authenticates")
+        }
+    }
+
+    /// F6: a keystroke goes out while a `Status` probe is outstanding on a
+    /// supervisor that does not answer. The inline probe made it wait the
+    /// probe's whole `STATUS_BUDGET` (5 s); the bound here is ten times
+    /// below that and five ticks of slack above an idle worker.
+    #[test]
+    fn a_keystroke_is_written_while_a_status_probe_is_outstanding() {
+        let attach_state = Arc::new(StallState::default());
+        let sup_state = Arc::new(StallState::default());
+        let attach_conn = Arc::new(StallClient(Arc::clone(&attach_state)));
+        let sup_conn = StallClient(Arc::clone(&sup_state));
+        let (tx, rx) = mpsc::channel::<WorkerMsg>();
+        let worker = thread::spawn(move || {
+            let mut take = TakeTransaction::new();
+            let mut take_intent = TakeIntent::Ordinary;
+            let mut outstanding = OutstandingSlot::new();
+            let mut quit = QuitDispatcher::new();
+            let mut reconnect = ReconnectState::new();
+            let (mut cols, mut rows, mut take_epoch) = (80u16, 24u16, 0u64);
+            // Due at once: the first tick launches the probe.
+            let mut last_poll = Instant::now().checked_sub(LIVENESS_POLL_INTERVAL).unwrap_or_else(Instant::now);
+            run_steady_state::<StallEndpoint>(
+                &StallEndpoint,
+                &rx,
+                &|_e| {},
+                "h",
+                &attach_conn,
+                sup_conn,
+                FrameReader::new(),
+                &mut take,
+                &mut take_intent,
+                &mut outstanding,
+                &mut quit,
+                &mut reconnect,
+                &mut cols,
+                &mut rows,
+                &mut take_epoch,
+                "controller-1",
+                "voyage-1",
+                &mut last_poll,
+                &Arc::new(AtomicU64::new(0)),
+                &Arc::new(Mutex::new(None)),
+                &Arc::new(AtomicU64::new(0)),
+            )
+        });
+
+        // The Status request is outstanding: the probe's read is parked.
+        let started = Instant::now();
+        while !sup_state.read_entered.load(Ordering::SeqCst) {
+            assert!(started.elapsed() < LIVENESS_POLL_INTERVAL * 2, "the liveness probe never started");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        // Watching: the keystroke's `take` goes out on the attach connection.
+        let reservation = IngressReservation { ingress_bytes: Arc::new(AtomicUsize::new(1)), n: 1 };
+        tx.send(WorkerMsg::Input(b"x".to_vec(), reservation)).unwrap();
+        let sent = Instant::now();
+        while attach_state.writes.lock().unwrap().is_empty() {
+            assert!(sent.elapsed() < WORKER_TICK * 5, "the keystroke waited behind the outstanding Status probe");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !*sup_state.cancelled.lock().unwrap(),
+            "the probe must still be outstanding when the keystroke goes out"
+        );
+
+        tx.send(WorkerMsg::Shutdown).unwrap();
+        let outcome = worker.join().expect("the worker thread must not panic");
+        assert!(matches!(outcome, SteadyOutcome::Shutdown), "Shutdown must end the steady state");
     }
 }

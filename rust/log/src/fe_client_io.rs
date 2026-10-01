@@ -219,7 +219,7 @@ impl<E: Endpoint> FeAttachClient<E> {
         wake: Box<dyn Fn() + Send + 'static>,
     ) -> Result<Self, FeAttachError>
     where
-        E: Send + 'static,
+        E: Send + Sync + 'static,
         E::Client: 'static,
     {
         Self::attach_inner(
@@ -253,7 +253,7 @@ impl<E: Endpoint> FeAttachClient<E> {
         controller_id: String,
     ) -> Result<Self, FeAttachError>
     where
-        E: Send + 'static,
+        E: Send + Sync + 'static,
         E::Client: 'static,
     {
         // Placeholder viewport: wholesale-replaced by the first checkpoint
@@ -287,7 +287,7 @@ impl<E: Endpoint> FeAttachClient<E> {
         headless: bool,
     ) -> Result<Self, FeAttachError>
     where
-        E: Send + 'static,
+        E: Send + Sync + 'static,
         E::Client: 'static,
     {
         let rows = rows.max(2);
