@@ -107,7 +107,9 @@ NAME=""
 # Bash-native watchdog, not an external `timeout`: in Git Bash a bare
 # `timeout` resolves to C:\WINDOWS\system32\timeout.exe, which is NOT
 # coreutils and takes no command, and /usr/bin/timeout isn't guaranteed
-# either. Run comm-context.sh in the background, poll for up to 10s, kill it
+# either. Run comm-context.sh in the background, poll every 50 ms for up to
+# 10s (a context call that ends in 30 ms costs 50 ms, not a whole second;
+# SOT_HB_CTX_TIMEOUT_TICKS shortens the bound for tests), kill it
 # if it's still alive past that -- collect its output only when it finished
 # on its own (a non-zero exit from a fast, legitimate no-context run still
 # has its output used, matching the old unconditional `|| true`).
@@ -115,9 +117,11 @@ if [ -x "$SELF_DIR/comm-context.sh" ]; then
     _ctx_out="$COMM_HOME/state/.hb-ctx-$$"
     "$SELF_DIR/comm-context.sh" >"$_ctx_out" 2>/dev/null &
     _ctx_pid=$!
+    _ticks="${SOT_HB_CTX_TIMEOUT_TICKS:-200}"
+    case "$_ticks" in ''|*[!0-9]*) _ticks=200 ;; esac
     _waited=0
-    while kill -0 "$_ctx_pid" 2>/dev/null && [ "$_waited" -lt 10 ]; do
-        sleep 1
+    while kill -0 "$_ctx_pid" 2>/dev/null && [ "$_waited" -lt "$_ticks" ]; do
+        sleep 0.05
         _waited=$((_waited + 1))
     done
     if kill -0 "$_ctx_pid" 2>/dev/null; then

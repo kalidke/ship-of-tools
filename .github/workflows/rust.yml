@@ -215,6 +215,10 @@ jobs:
           bash test-comm-matrix-verdict.sh
           bash test-spawn-remote-no-local-row.sh
           bash test-status-floor.sh
+          # The heartbeat waits on its context call in 50 ms ticks under a
+          # 10 s bound, so a call that ends at once costs 50 ms, not a whole
+          # second. Timed against a stub, hermetic, about two seconds.
+          bash test-heartbeat-ctx-wait.sh
           bash test-session-start-survived.sh
           bash test-sot-fe-version.sh
           # A session may declare its handle only into the row its own
