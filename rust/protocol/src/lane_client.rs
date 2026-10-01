@@ -161,6 +161,9 @@ impl TcpClient {
     /// a repeated syscall per byte.
     fn new(stream: TcpStream) -> Result<Self, TransportError> {
         stream
+            .set_nodelay(true)
+            .map_err(|source| TransportError::Io { op: "lane nodelay", source })?;
+        stream
             .set_read_timeout(Some(READ_POLL_INTERVAL))
             .map_err(|source| TransportError::Io { op: "lane read", source })?;
         Ok(Self { stream, cancelled: AtomicBool::new(false) })
@@ -724,6 +727,14 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn tcp_client_sets_nodelay() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let client = TcpClient::new(stream).unwrap();
+        assert!(client.stream.nodelay().unwrap());
+    }
 
     /// A `std::net::TcpListener` on loopback plays the daemon — portable,
     /// no daemon process needed — for every refusal/uncertainty case
