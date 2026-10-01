@@ -4755,22 +4755,6 @@ struct State {
         crate::dial::HostKey,
         tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
     )>,
-    /// Push-side of this process's ONE filer thread (ADR 0048 amendment
-    /// 14). The inbox append takes a file lock and reads a window back from
-    /// the file's end; both are filesystem waits, and the `agent.message`
-    /// arm that needs them sits inside an unbounded drain on the winit main
-    /// thread, where a wait stalls the event loop and a burst multiplies
-    /// the stall. The UI thread's whole cost per frame is now a pure claim
-    /// computation and this non-blocking push.
-    ///
-    /// The channel is UNBOUNDED on purpose: a bounded one either blocks the
-    /// send — putting the wait back on the UI thread, which is the defect
-    /// being fixed — or drops, which loses a message. `None` only in a
-    /// state built without a filer.
-    filer_tx: Option<std::sync::mpsc::Sender<FileJob>>,
-    /// The filer's join handle, so every exit path can drain it (see
-    /// [`State::drain_filer`]). Taken by the first drain; `None` after.
-    filer_join: Option<std::thread::JoinHandle<()>>,
     /// ADR 0045 decision 1: each host's own `TransportConfig` (its
     /// `lane.connect` bridge dial), so the session pane's capsule attach
     /// can reach THAT row's daemon — never a supervisor socket or a
@@ -5164,16 +5148,6 @@ struct State {
     /// (8 KiB, the same bound the take-transaction queue uses) — a
     /// runaway paste while waiting must not grow unbounded.
     pane_pending_input: Vec<u8>,
-    /// ADR 0041 step 6 U3 ruling (f): `fe-inbox.jsonl`'s "last inbox
-    /// evidence" read at FE PROCESS START (`State::new`), BEFORE the
-    /// fe-command watcher thread or anything else appends to that file
-    /// (Codex review round, finding 10: reading this lazily at first
-    /// drawer-open time let intervening traffic corrupt the baseline).
-    /// Cloned into every `FeAttachClient::attach` call this process ever
-    /// makes; `None` when no evidence exists yet (the marker's own
-    /// contract: "No baseline, no marker").
-    #[cfg(windows)]
-    fe_down_baseline_evidence: Option<String>,
     /// Last `(cols, rows)` the local terminal's PTY was sized to. `None`
     /// until the drawer rect is first observed; drives resize-on-change
     /// (mirrors `pty_size` for the LLM pane).
@@ -6036,20 +6010,6 @@ impl State {
         // "settings loaded" twice and could disagree if the file changed
         // mid-startup.
         let settings = Settings::load_layered();
-        // ADR 0041 step 6 U3 ruling (f): "No baseline, no marker" -- read
-        // BEFORE anything else in this process (this watcher, the fe-command
-        // watcher spawned later in `resumed`, an incoming relay message) can
-        // append to fe-inbox.jsonl (Codex review round, finding 10: an
-        // earlier version read this lazily at first Terminal-drawer open,
-        // so an inbound message arriving between process start and the
-        // user opening the drawer became this run's OWN baseline instead
-        // of prior evidence). Cheap and harmless off-Windows / off-flag —
-        // one file read, never referenced again if attach-only never
-        // constructs a client.
-        #[cfg(windows)]
-        let fe_down_baseline_evidence = fe_inbox_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| sot_log::fe_client::last_evidence_ts(&s));
         // Cross-platform window icon, decoded at runtime from the logo PNG that is
         // embedded into the binary at compile time — no Windows .rc/winres
         // resource compiler, so the build needs no extra tooling and is identical
@@ -6430,18 +6390,6 @@ impl State {
         let harness = cli.ephemeral || cli.capture.is_some();
         let want_terminal_init = !harness && cli.relaunched;
 
-        // ADR 0048 amendment 14: the process's one filer thread, created
-        // here (where `conns` already arrives) and not in `resumed`, which
-        // winit may call more than once.
-        let (filer_tx, filer_rx) = std::sync::mpsc::channel::<FileJob>();
-        let filer_join = std::thread::Builder::new()
-            .name("sot-fe-filer".into())
-            .spawn(move || run_filer(filer_rx))
-            .map_err(|e| {
-                tracing::warn!(error = %e, "filer thread spawn failed; filing inline");
-                e
-            })
-            .ok();
 
         let mut state = Self {
             window,
@@ -6635,8 +6583,6 @@ impl State {
             pending_start_path: cli.start_path.clone(),
             start_path_fired: None,
             conns,
-            filer_tx: filer_join.is_some().then_some(filer_tx),
-            filer_join,
             // Filled by `resumed()` from the same `PendingTransport` list
             // `conns` came from, before that list is consumed spawning
             // each host's transport task — empty here only briefly.
@@ -6743,8 +6689,6 @@ impl State {
             pane_attach_presented: false,
             pane_feed: PaneFeed::Pending,
             pane_pending_input: Vec::new(),
-            #[cfg(windows)]
-            fe_down_baseline_evidence,
             term_size: None,
             repo_dir,
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
@@ -6952,61 +6896,7 @@ impl State {
         }
     }
 
-    /// File one frame on THIS thread and, when the frame is in the file,
-    /// claim it — the fallback for every reason the filer cannot take the
-    /// job: it has panicked, there is no filer at all, or the connection
-    /// the frame arrived on is no longer held. A degraded frontend stalls
-    /// its own UI, bounded by the same fail-open deadline, rather than
-    /// going deaf; losing the mail instead was rejected, because the
-    /// durability invariant outranks a frame of jank on a process that has
-    /// already panicked once.
-    ///
-    /// The claim is gated on the file outcome and sits in the SAME branch
-    /// as it, exactly as [`file_one`] does on the filer thread. Written
-    /// once so the two arms of the delivery match cannot drift apart.
-    fn file_inline(
-        &self,
-        host: &crate::dial::HostKey,
-        payload: &serde_json::Value,
-        claim: Option<sot_protocol::AgentFiledReq>,
-    ) {
-        if append_agent_message(payload) {
-            if let Some(req) = claim {
-                let _ = self.send_to(host, crate::transport::OutgoingReq::AgentFiled(req));
-            }
-        }
-    }
 
-    /// Drop the filer's sender and join it, bounded (ADR 0048 amendment
-    /// 14). Called from every exit path. A hard kill loses whatever is
-    /// still queued and that is honest — no claim was sent for those
-    /// frames, so the sender reports a non-confirmation rather than a false
-    /// success — but an orderly exit should not lose them.
-    ///
-    /// Bounded by polling `is_finished` rather than joining outright: a
-    /// thread left unjoined at process exit is harmless, and the whole
-    /// point of the bound is that shutdown cannot hang on a filesystem that
-    /// is not answering.
-    fn drain_filer(&mut self, wait: std::time::Duration) {
-        let Some(handle) = self.filer_join.take() else {
-            return;
-        };
-        // Dropping the last sender is what closes the channel; `run_filer`
-        // returns once it has filed everything already queued.
-        self.filer_tx = None;
-        let started = std::time::Instant::now();
-        while !handle.is_finished() {
-            if started.elapsed() >= wait {
-                tracing::warn!(
-                    waited_ms = started.elapsed().as_millis() as u64,
-                    "filer did not drain within the bound; exiting without it"
-                );
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let _ = handle.join();
-    }
 
     /// Drain incoming transport events and apply them. Called at the top of
     /// each redraw — `request_redraw` from the transport task is what makes
@@ -10308,8 +10198,8 @@ impl State {
     /// client's `fe_down_last_evidence` is always `None` (this client's
     /// markers are the drawer's alone per ADR 0042 L1's own "fe_down
     /// markers ... NOT written" — `FeDownBaseline::capture(None)` makes
-    /// `marker_for_attach` return `None` forever, so nothing this client
-    /// ever produces reaches fe-inbox), and the initial size is the
+    /// `marker_for_attach` return `None` forever, so this client
+    /// never produces one), and the initial size is the
     /// CALLER's `(cols, rows)` (the session pane's current rect) not the
     /// drawer's 80×24 default — a freshly-selected row should show at
     /// its real size on the very first paint, not resize a frame later.
@@ -14941,73 +14831,14 @@ impl State {
                         let _ =
                             self.send_to(&event_host, crate::transport::OutgoingReq::WorkspaceList);
                     } else if op == sot_protocol::op::AGENT_MESSAGE {
-                        // Server relayed an agent-to-agent message over the
-                        // SSH-forwarded socket. Item 2: a session can drive
-                        // this FE's nav by broadcasting a `sot_ui` envelope
-                        // as the message text — intercept it BEFORE the inbox
-                        // append. A nav command is acted on (when it targets
-                        // our active workspace) and NEVER filed as chat;
-                        // anything else is an ordinary message → append to
-                        // fe-inbox.jsonl unconditionally, and where a reader
-                        // for it exists the in-terminal agent on this machine
-                        // receives it instantly (mirror the workspace.changed
-                        // push leg).
+                        // A session can drive this FE's nav by broadcasting a
+                        // `sot_ui` envelope as the message text. Filing mail
+                        // is the daemon's (`hub_link.rs`), never this
+                        // frontend's: anything that is not a nav command is
+                        // ignored here.
                         let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
                         if let Some(env) = parse_nav_envelope(text) {
                             self.handle_nav_envelope(&event_host, &env);
-                        } else {
-                            // ADR 0048: the append is unconditional; the
-                            // CLAIM is what promises a reader, so it is made
-                            // only where one exists. Claim only from a set we
-                            // KNOW — our own host's rows — and answer on the
-                            // connection the frame arrived on (the hub that
-                            // relayed it).
-                            //
-                            // Three rules, and the order of the code is the
-                            // order of the rules (amendment 9/10/14):
-                            //   - the append is never gated on the CLAIM: a
-                            //     late `agent.join` may cost a receipt, never
-                            //     a message;
-                            //   - the claim IS gated on the frame being in
-                            //     the file, which is true whether this box
-                            //     wrote the line or found a sibling
-                            //     frontend's copy of it under the lock;
-                            //   - neither runs on this thread. This arm sits
-                            //     inside an unbounded drain on the winit main
-                            //     thread, so the lock wait and the window read
-                            //     go to the filer, which also sends the claim
-                            //     once it knows the file outcome.
-                            let claim = receipt_for(
-                                &payload,
-                                own_host_rows(
-                                    &self.workspace_lists,
-                                    &self.declared_host,
-                                    frontend_identity().host.as_str(),
-                                ),
-                            );
-                            match (
-                                self.filer_tx.as_ref(),
-                                self.conns.iter().find(|(h, _)| h == &event_host),
-                            ) {
-                                (Some(ftx), Some((_, ctx))) => {
-                                    let job = FileJob {
-                                        payload: payload.clone(),
-                                        claim,
-                                        tx: ctx.clone(),
-                                    };
-                                    if let Err(e) = ftx.send(job) {
-                                        // The filer panicked. Recover the
-                                        // job from the error — dropping it
-                                        // here is the silent deafness this
-                                        // fallback exists to prevent.
-                                        tracing::warn!(error = %e, "agent.message: filer unavailable; filing inline");
-                                        let job = e.0;
-                                        self.file_inline(&event_host, &job.payload, job.claim);
-                                    }
-                                }
-                                // No filer, or no connection for this host.
-                                _ => self.file_inline(&event_host, &payload, claim),
-                            }
                         }
                     } else if op == sot_protocol::op::FE_COMMAND {
                         // ADR 0025 imperative FE command. The daemon broadcasts
@@ -15817,28 +15648,8 @@ impl State {
                     self.workspace_lists.insert(event_host.clone(), workspaces);
                     self.rebuild_workspace_caches();
                     self.prune_warm_attach(&event_host);
-                    // item 18 (variant-independent half): declare the
-                    // handles this connection's rows name, after every
-                    // OWN-HOST workspace.list reply — no new trigger, no
-                    // timer, this path already fires on connect and on
-                    // every workspace.changed. Own-host only: a frontend
-                    // files inbound frames into ONE inbox on the machine
-                    // it itself runs on, so it declares only for a daemon
-                    // that has declared the SAME host back (`Connected`'s
-                    // `host`, recorded in `declared_host`) — a remote
-                    // daemon's rows would be a promise this process
-                    // cannot keep.
-                    // No declaration for AGENT MESSAGE ROUTING is sent
-                    // from here (ADR 0048). `fe.files_for` is gone from
-                    // the wire: it only ever reached a daemon on this
-                    // frontend's OWN box, which already knows those
-                    // handles from their `agent.join`, while the remote
-                    // hub that answers a directed send never saw it. Its
-                    // successor is the filer receipt — the claim now
-                    // travels back over the link the frame arrived on, so
-                    // it cannot miss the hub by construction. The set
-                    // builder and its predicate stay and are read HERE, in
-                    // `receipt_from_rows`, wherever a reader exists.
+                    // No handle declaration is sent for message routing: the daemon files for
+                    // its own comm folder (`hub_link.rs`), and a frontend plays no part in it.
                     //
                     // A DIFFERENT declaration — for SESSION LISTING, not
                     // message routing (session-listing brief decision 2)
@@ -16036,11 +15847,6 @@ impl State {
         };
         let controller_id = self_comm_handle();
         let fe_down_to = self_comm_handle();
-        // Ruling (f), Codex review round finding 10: the SAME baseline
-        // captured once at FE process start (`State::new`) — never a
-        // fresh read here, which would let traffic since startup become
-        // this run's own false baseline.
-        let fe_down_last_evidence = self.fe_down_baseline_evidence.clone();
         let waker = self.window.clone();
         match sot_log::fe_client_io::FeAttachClient::attach(
             sot_log::client::PlatformEndpoint::default(),
@@ -16049,7 +15855,7 @@ impl State {
             24,
             controller_id,
             fe_down_to,
-            fe_down_last_evidence,
+            None,
             Box::new(move || waker.request_redraw()),
         ) {
             Ok(c) => {
@@ -16092,13 +15898,6 @@ impl State {
                 self.status = msg.to_string();
             } else {
                 self.status = t.status_line().to_string();
-            }
-        }
-        for marker in t.drain_fe_down_markers() {
-            if let Err(e) = append_fe_down_marker(&marker) {
-                // Ruling (f): a marker that exists so a failure is not
-                // quiet cannot fail quietly itself.
-                self.status = format!("fe_down marker append failed: {e}");
             }
         }
         if t.should_exit() {
@@ -19710,19 +19509,6 @@ fn fe_state_path() -> Option<std::path::PathBuf> {
     crate::paths::sot_state_dir().map(|d| d.join("fe-state.json"))
 }
 
-/// Path of the agent-relay inbox (`<state-dir>/fe-inbox.jsonl`). The daemon
-/// pushes `agent.message` evt frames over the SSH-forwarded socket; the FE
-/// appends each ordinary message as one JSON line here (a nav envelope is
-/// intercepted before the append), on every platform. A READER for it exists
-/// only where [`fe_inbox_has_a_local_reader`] says so: there the in-terminal
-/// agent on this machine receives cross-machine messages instantly instead of
-/// polling the git bus, and elsewhere nothing CONSUMES the line — no process
-/// acts on the frame — which is why the CLAIM, never the append, is what this
-/// frontend gates (ADR 0048). One object per line:
-/// `{"from":..,"to":..,"text":..,"ts":..}`.
-fn fe_inbox_path() -> Option<std::path::PathBuf> {
-    crate::paths::sot_state_dir().map(|d| d.join("fe-inbox.jsonl"))
-}
 
 /// A parsed `sot_ui` nav command (Item 2 — a session driving this FE's
 /// nav). Carried in an `agent.message` text payload; intercepted before the
@@ -19771,239 +19557,6 @@ fn parse_nav_envelope(text: &str) -> Option<NavEnvelope> {
 /// daemon can name this connection without a second derivation.
 pub(crate) fn self_comm_handle() -> String {
     frontend_identity().name.clone()
-}
-
-/// The complete set of sot-comm handles declared by `rows` (item 18) —
-/// pure over rows, no `&self`, no connection, so it unit-tests without a
-/// wire. This is the set `receipt_from_rows` tests a relayed frame's
-/// `to` against (ADR 0048) — read fresh from the own-host rows wherever a
-/// reader exists, so there is no declared set to go stale.
-///
-/// Keeps a row's `agent_handle` when it is non-empty — the filter is
-/// **only** that, kept on its own line rather than left for a test to
-/// discover: the hidden home-rooted anchor row exists on every host with
-/// `agent == "none"` and an empty handle, and an empty string in the
-/// declared set is junk that can only ever match junk.
-///
-/// Deliberately does **not** filter on liveness — not `phase`, not
-/// `repl_state`, not `agent_state`. A stopped row's handle IS declared.
-/// Delivery is durable: the append is read whenever that handle next
-/// starts, not a promise the handle is up right now. The contract puts liveness in the `+woken` / `not woken` note,
-/// never in `filed` — and the local path already files for a handle whose
-/// session is down. Declaring only ready rows here would make the wire
-/// path stricter than the local path for the same handle, with no
-/// invariant behind the difference. Do not add a liveness filter thinking
-/// it a tightening.
-/// Whether this frontend declares [`files_for_from_rows`]'s set to the
-/// connection whose rows just arrived: only when that daemon declared the
-/// SAME host this process runs on. A frontend files every inbound frame
-/// into ONE inbox on its own machine, so declaring for a remote daemon's
-/// rows would be a promise it cannot keep.
-///
-/// Pure, and separate from the call site, because the alternative is a
-/// gate no test can reach: with the wiring inlined, deleting the whole
-/// block left every `files_for_from_rows` test green — the op would never
-/// be sent by any build and the next release's daemon half would be
-/// diagnosed as a daemon bug. `declared` is `None` for a daemon too old to
-/// send `Connected`'s `host`, which declares nothing rather than guessing.
-fn declares_files_for(declared: Option<&str>, own: &str) -> bool {
-    declared == Some(own)
-}
-
-/// The rows of the daemon running on THIS frontend's own host — the only
-/// basis on which it may claim to have filed for a handle.
-///
-/// `workspace_lists` is keyed by the DIAL key (the label a host is reached
-/// under), never by the declared host: `host_label` exists precisely
-/// because the two differ. A lookup by hostname therefore finds nothing on
-/// any box whose local daemon is dialed under some other label, and this
-/// frontend would claim nothing, ever — a silent failure indistinguishable
-/// from an older frontend. Resolve through `declared_host` instead, with
-/// the same [`declares_files_for`] predicate that decides whether a
-/// connection's rows are this machine's at all.
-fn own_host_rows<'a>(
-    workspace_lists: &'a HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>>,
-    declared_host: &HashMap<HostKey, String>,
-    own: &str,
-) -> Option<&'a [crate::transport::WorkspaceInfo]> {
-    workspace_lists
-        .iter()
-        .find(|(dial, _)| declares_files_for(declared_host.get(*dial).map(String::as_str), own))
-        .map(|(_, rows)| rows.as_slice())
-}
-
-/// Whether any process on THIS operating system reads the frontend inbox.
-///
-/// Windows only, and the platform test belongs to the READERS, not here:
-/// `sot_fe_inbox_path` in `comm/core/scripts/comm-lib.sh` is
-/// `_sot_is_windows || return 0` — success with EMPTY output — so every
-/// shell reader that resolves the path through it (the Claude turn-end
-/// hook, `comm-poll.sh`, `comm-watch.sh`'s Monitor) reads nothing off
-/// Windows, and the readers that build the path by hand sit inside Windows
-/// branches. The only Rust read of [`fe_inbox_path`] is the `fe_down`
-/// baseline in `run`, which is itself `#[cfg(windows)]`.
-///
-/// `cfg!`, not `#[cfg]`, deliberately: both arms compile on every platform,
-/// so ONE test asserts the right answer on each leg of the CI matrix
-/// instead of a Windows-only test that the two fastest legs never run.
-const fn fe_inbox_has_a_local_reader() -> bool {
-    cfg!(windows)
-}
-
-/// The payload-and-rows half of this frontend's claim about ONE relayed
-/// frame it just appended (ADR 0048): `Some(req)` = "I appended this",
-/// `None` = say nothing at all. The platform half — whether any process on
-/// this operating system reads the file at all — is [`receipt_for`]'s.
-/// Pure over its arguments — no `&self`, no wire — because the whole value
-/// of a receipt is that it is checkable, and a gate no test can reach is
-/// how `fe.files_for` shipped a set builder with no caller.
-///
-/// **There is no negative claim, by construction.** A frontend knows it
-/// appended; it cannot know that no OTHER filer did, and the daemon fans
-/// every `agent.message` out to every connection — so "no row of mine
-/// declares @h" would be a global answer from local knowledge, and with
-/// several frontends attached the first denial to arrive would overrule a
-/// real delivery. Silence is the only honest negative, and the sender draws
-/// that conclusion itself when no receipt arrives.
-///
-/// Claim nothing when: the frame carries no `id` (an older hub — nothing to
-/// attribute a claim to), `to` is empty (a broadcast has no addressee), this
-/// frontend has no own-host row list (no basis), or the handle is absent
-/// from that list (not ours to vouch for).
-///
-/// The frame is appended either way (see the call site). This function
-/// decides what may be CLAIMED, never what is filed.
-fn receipt_from_rows(
-    payload: &serde_json::Value,
-    own_host_rows: Option<&[crate::transport::WorkspaceInfo]>,
-) -> Option<sot_protocol::AgentFiledReq> {
-    let id = payload
-        .get("id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())?;
-    let to = payload.get("to").and_then(|v| v.as_str()).unwrap_or("");
-    if to.is_empty() {
-        return None;
-    }
-    let rows = own_host_rows?;
-    if !files_for_from_rows(rows).iter().any(|h| h == to) {
-        return None;
-    }
-    Some(sot_protocol::AgentFiledReq { id: id.to_string() })
-}
-
-/// What this frontend may claim for one inbound frame: the platform
-/// decision AND the payload decision, in that order. The `agent.message`
-/// arm of `drain_events` calls this, and both delivery arms — the filer's
-/// [`file_one`] and [`State::file_inline`] — carry whatever it returns.
-///
-/// **A receipt must mean some reader will see the frame.** Off Windows the
-/// append still happens (it promises nobody anything), but no process on
-/// the box opens that file — see [`fe_inbox_has_a_local_reader`] — so a
-/// claim here would be a false success: the sender prints `filed -> @h`
-/// for a message nothing will ever read. Saying nothing instead makes the
-/// sender's own verdict `NOT CONFIRMED`, which is the true one; the
-/// frontend's own attachment keeps the roster non-empty, so the answer is
-/// never the different one, `no such handle`.
-///
-/// The composition is deliberate, not incidental: do not fold the gate
-/// into [`receipt_from_rows`]. ADR 0048's amendment "a receipt only where
-/// a reader exists" is where the reason is written.
-fn receipt_for(
-    payload: &serde_json::Value,
-    own_host_rows: Option<&[crate::transport::WorkspaceInfo]>,
-) -> Option<sot_protocol::AgentFiledReq> {
-    if !fe_inbox_has_a_local_reader() {
-        return None;
-    }
-    receipt_from_rows(payload, own_host_rows)
-}
-
-/// Whether `window` — a tail of the inbox file — already carries the frame
-/// identified by `(id, to)`, i.e. whether a sibling frontend on this box has
-/// already filed it (ADR 0048 amendment 9).
-///
-/// The key is the PAIR. ADR 0048's sender-minted id distinguishes two sends;
-/// the addressee distinguishes two handles the same id was fanned out to. One
-/// alone is not a match, and a line carrying no `id` never matches anything —
-/// content equality cannot tell a sibling's duplicate from a genuine resend of
-/// the same text to the same handle in the same second (the daemon stamps `ts`
-/// once and both frontends re-serialise what they were given), and collapsing
-/// a resend is a lost message, which is worse than the duplicate it prevents.
-///
-/// Pure over its arguments — no `&self`, no filesystem — for the reason
-/// [`receipt_from_rows`] gives above: a gate no test can reach is how a set
-/// builder shipped with no caller.
-fn inbox_window_has_frame(window: &str, id: &str, to: &str) -> bool {
-    window.lines().any(|line| {
-        // A torn append is realistic (the file is appended to by more than
-        // one process) and the shell readers already skip an unparsable
-        // line rather than stop — comm-lib.sh's own inbox reader does the
-        // same. Skipping here can only cost a duplicate, never a loss.
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            return false;
-        };
-        let Some(lid) = v.get("id").and_then(|x| x.as_str()) else {
-            return false;
-        };
-        let lto = v.get("to").and_then(|x| x.as_str()).unwrap_or("");
-        lid == id && lto == to
-    })
-}
-
-/// The bounded tail of the inbox as text, with any partial first line
-/// dropped. Read through the CALLER's handle — the same one the dedupe and
-/// the post-append verify both use — so one open serves the whole decision.
-/// Both consumers survive a short window in the safe direction: the dedupe
-/// writes a duplicate, the verify withholds a claim.
-fn inbox_tail_window(f: &mut std::fs::File, want: u64) -> std::io::Result<String> {
-    use std::io::{Read, Seek};
-    let len = f.seek(std::io::SeekFrom::End(0))?;
-    let start = len.saturating_sub(want);
-    f.seek(std::io::SeekFrom::Start(start))?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    let mut text = String::from_utf8_lossy(&buf).into_owned();
-    if start > 0 {
-        // The window opened mid-line. That first partial line is not a
-        // record and must not be read as one.
-        //
-        // Drop too MUCH — `start` landed on a line boundary, so this trims
-        // a complete line — and the window is shorter and a match is missed.
-        // Drop too LITTLE and the matcher is fed a partial line, which fails
-        // to parse and is skipped. Removing input from a pure predicate can
-        // only turn a true into a false, never a false into a true, and
-        // nothing on this path deletes, truncates or rewrites.
-        //
-        // What that costs depends on the caller, which is why `want` is the
-        // caller's to size and not a constant here. The dedupe pays one
-        // duplicate for a missed match. The verify pays a WITHHELD CLAIM for
-        // a write that landed, which is a false negative the sender answers
-        // with a resend — so its `want` must be at least the length of the
-        // record it is looking for, and then this trim can only ever drop a
-        // line that is not that record.
-        match text.find('\n') {
-            Some(i) => text = text.split_off(i + 1),
-            None => text.clear(),
-        }
-    }
-    Ok(text)
-}
-
-fn files_for_from_rows(rows: &[crate::transport::WorkspaceInfo]) -> Vec<String> {
-    // Through a set, not a Vec: two rows on one host CAN carry the same
-    // joined handle (`agent.join` enforces no per-host uniqueness, and the
-    // no-pane collision produces exactly that), and a consumer that fans
-    // out per naming receiver would then file one directed frame twice
-    // into one inbox. Deduping at the source also makes the order
-    // deterministic, so a daemon can compare two declarations for real
-    // change instead of re-deriving one.
-    rows.iter()
-        .filter(|w| !w.agent_handle.is_empty())
-        .map(|w| w.agent_handle.clone())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect()
 }
 
 /// ADR 0045 decision 1 (Codex review, lane B5 discharge): pure core of
@@ -20166,324 +19719,7 @@ fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) ->
     }
 }
 
-/// Append one `agent.message` evt payload to `fe-inbox.jsonl` (creating the
-/// file/dir if needed). Re-serializes the payload verbatim as a single line.
-/// Non-fatal on IO error: log and continue — a missed relay must not take
-/// down the frontend. UNCHANGED from before ADR 0041 step 6 U3 (Codex
-/// review round, finding 12: an earlier version of this file routed this
-/// through a shared `Result`-returning helper, which collapsed these
-/// per-stage diagnostics into one generic "append failed" message for
-/// EVERY caller, including this one — a behavior change outside the
-/// attach-only feature's own flag). [`append_fe_down_marker`] below is a
-/// SEPARATE, `Result`-returning function used ONLY by the `fe_down`
-/// marker, which needs to surface a visible drawer error on failure; it
-/// does not wrap or share code with this one.
-///
-/// ADR 0048 amendment 9 split the body out to [`append_agent_message_at`],
-/// which takes the path, so the arbitration is reachable by a test. Finding
-/// 12's constraint is met literally: every `tracing::warn!` on this path is
-/// the string it was, at the stage it was. This wrapper survives the move to
-/// the filer thread as the inline fallback for a frontend whose filer has
-/// panicked (see the `agent.message` arm of `drain_events`).
-fn append_agent_message(payload: &serde_json::Value) -> bool {
-    let Some(path) = fe_inbox_path() else {
-        tracing::warn!("agent.message: no state dir; dropping");
-        return false;
-    };
-    append_agent_message_at(&path, payload)
-}
 
-/// Bytes read back from the end of the inbox to look for a sibling
-/// frontend's copy of this frame. A heuristic, not a bound: the realistic
-/// separation between two copies is a handful of lines — two frontends
-/// handed the SAME broadcast frame enter the lock within milliseconds of
-/// each other — so this is sized generously against that, not derived from
-/// one. A separation larger than the window simply falls through to the
-/// append, so its only failure mode is a duplicate, never a loss.
-const FE_INBOX_DEDUPE_BYTES: u64 = 64 * 1024;
-
-/// Put `payload` in the inbox at `path` unless it is already there
-/// (ADR 0048 amendment 9). Returns whether THE FRAME IS IN THE FILE when
-/// this call returns — true when this call wrote it **and read it back
-/// intact**, and equally true when this call found it there under the lock
-/// and therefore skipped its own write. That is what amendment 10 lets a
-/// caller claim, and the narrower "I wrote it" cannot be used: two frontends
-/// on one box fill `workspace_lists` independently, so a just-attached one
-/// can win the lock, write the line, and have no row list to claim from —
-/// zero receipts for a frame that WAS filed, which the matrix reports as a
-/// false failure.
-///
-/// **Every failure fails open: append anyway.** Token unopenable, lock not
-/// granted within the deadline, lock error, window read error, unparsable
-/// window — all append. A duplicate is a nuisance the reader survives; a
-/// drop is a message nobody ever sees. The direction is named here so no
-/// later refactor reverses it.
-///
-/// A frame carrying no `id` (or no `to`) is appended unconditionally, as
-/// before the amendment — see [`inbox_window_has_frame`] for why content
-/// cannot stand in for the id.
-fn append_agent_message_at(path: &std::path::Path, payload: &serde_json::Value) -> bool {
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            tracing::warn!(error = %e, "agent.message: create state dir failed");
-            return false;
-        }
-    }
-    let mut line = match serde_json::to_string(payload) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "agent.message: serialize failed");
-            return false;
-        }
-    };
-    line.push('\n');
-    // The window must be able to CONTAIN the record being looked for, or both
-    // of its consumers go blind on a long frame at once: the dedupe appends a
-    // copy of a record it cannot see, and the verify withholds the claim for a
-    // write that landed — so the sender resends, and the resend is blind the
-    // same way. That is a duplicate per resend and a permanent false negative,
-    // on the one platform that has a reader. `FE_INBOX_DEDUPE_BYTES` sizes the
-    // search for a SIBLING's copy; this line is its own lower bound.
-    let want = FE_INBOX_DEDUPE_BYTES.max(line.len() as u64);
-    use std::io::Write;
-    // `read` as well as `append`: the dedupe below reads the tail through
-    // this same handle.
-    let mut f = match std::fs::OpenOptions::new()
-        .read(true)
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!(error = %e, ?path, "agent.message: open inbox failed");
-            return false;
-        }
-    };
-    let key = match (
-        payload
-            .get("id")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty()),
-        payload
-            .get("to")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty()),
-    ) {
-        (Some(id), Some(to)) => Some((id.to_string(), to.to_string())),
-        _ => None,
-    };
-    // The lock lives on a SIDECAR file, never on the inbox itself. Both arms
-    // of `File::try_lock` are exclusive, and the Windows arm (`LockFileEx`)
-    // is mandatory: a lock held on the inbox does not merely fail to exclude
-    // the fail-open writer above, it REFUSES that writer's append — and the
-    // frame is lost on the one platform that has a reader. A lock on
-    // `fe-inbox.lock` excludes exactly the writers it excludes today — this
-    // is the only function here that reads then writes, and the `fe_down`
-    // marker below takes no token by design — while leaving the data file
-    // open to the unlocked append the fail-open rule promises, to the shell
-    // readers, and to the `fe_down` baseline read in `run`. The repo's other
-    // fences work this way already: `supervisor.lock`, `.registry.lock`.
-    //
-    // Bound HERE and not inside the `if let` below: the lock must cover the
-    // write it authorises, not merely the read that decides it, and
-    // `try_lock_bounded` deliberately returns no guard of its own — the
-    // kernel releases the lock when this handle drops at the end of this
-    // function. Opened only for a frame that has a key; a keyless frame
-    // arbitrates nothing and is appended unconditionally.
-    let token_path = path.with_extension("lock");
-    let token = match &key {
-        Some(_) => match std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(&token_path)
-        {
-            Ok(t) => Some(t),
-            Err(e) => {
-                tracing::debug!(error = %e, path = ?token_path, "agent.message: inbox token unopenable; appending");
-                None
-            }
-        },
-        None => None,
-    };
-    if let Some((id, to)) = key.as_ref() {
-        if let Some(t) = token.as_ref() {
-            match sot_log::try_lock_bounded(t) {
-                Ok(true) => {
-                    // Bounded tail, never the whole file: the inbox grows
-                    // without limit and nothing here wants it in memory.
-                    let window = inbox_tail_window(&mut f, want);
-                    match window {
-                        Ok(w) if inbox_window_has_frame(&w, id, to) => {
-                            tracing::debug!(
-                                frame_id = %id,
-                                %to,
-                                ?path,
-                                "agent.message: already in the inbox; not appending again"
-                            );
-                            return true;
-                        }
-                        Ok(_) => {}
-                        Err(e) => tracing::debug!(
-                            error = %e,
-                            ?path,
-                            "agent.message: inbox window unreadable; appending"
-                        ),
-                    }
-                }
-                Ok(false) => tracing::debug!(
-                    ?path,
-                    "agent.message: inbox lock held past the deadline; appending"
-                ),
-                Err(e) => {
-                    tracing::debug!(error = %e, ?path, "agent.message: inbox lock failed; appending")
-                }
-            }
-        }
-    }
-    if let Err(e) = f.write_all(line.as_bytes()) {
-        tracing::warn!(error = %e, ?path, "agent.message: append failed");
-        return false;
-    }
-    // `write_all` returned Ok; that is not the same fact as "the frame is in
-    // the file" (ADR 0048 decision 10), and this function's caller sends a
-    // RECEIPT for whatever this returns. An append that overlapped an
-    // unlocked writer — the fail-open arm above is exactly such a writer —
-    // can land interleaved, and the result is a record no reader will ever
-    // parse. So read it back through the same window, with the same
-    // predicate the dedupe used: there is one notion of "in the file", not
-    // two. What this CANNOT see is a record destroyed by a writer on
-    // another host: the read-back goes through the handle we just wrote on,
-    // so on a network filesystem it returns our own cached bytes. Decision
-    // 14 keeps that out of scope by keeping readers off those platforms.
-    //
-    // This verify fails CLOSED, deliberately opposite to the append above.
-    // The append fails open because a duplicate beats a drop; a claim is a
-    // statement about something observed, so an unreadable window or a
-    // missing line yields no claim, the sender reads its existing
-    // NOT CONFIRMED, and a resend is safe because the (id, to) dedupe
-    // suppresses a duplicate of a record that DID land. There is no retry:
-    // a second append cannot promise what the first could not, and it can
-    // leave a second damaged record behind.
-    //
-    // A keyless frame is unverifiable by construction — nothing identifies
-    // it (see this function's doc) — and its sender already reads
-    // NOT CONFIRMED for want of an id, so it returns true exactly as before.
-    let Some((id, to)) = key else {
-        return true;
-    };
-    match inbox_tail_window(&mut f, want) {
-        Ok(w) if inbox_window_has_frame(&w, &id, &to) => true,
-        Ok(_) => {
-            tracing::warn!(
-                frame_id = %id, %to, ?path,
-                "agent.message: appended frame is not readable back; not claiming"
-            );
-            false
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e, frame_id = %id, %to, ?path,
-                "agent.message: inbox unreadable after append; not claiming"
-            );
-            false
-        }
-    }
-}
-
-/// One inbound frame handed to the filer thread (ADR 0048 amendment 14).
-struct FileJob {
-    payload: serde_json::Value,
-    /// What this frontend may claim for this frame, already decided on the
-    /// UI thread by [`receipt_for`]. `None` = claim nothing.
-    claim: Option<sot_protocol::AgentFiledReq>,
-    /// The connection the frame arrived on, so the claim goes back over it
-    /// — the hub that relayed the frame is the only one waiting for it.
-    tx: tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
-}
-
-/// File one job and, when the frame is in the file, send its claim.
-/// Returns whether the frame is in the file (for tests; the caller ignores
-/// it). The claim is DOWNSTREAM of the file outcome and in the same branch
-/// as it, never beside it — a receipt is a statement about something the
-/// claimant observed, so nothing may report success for a frame that is not
-/// in the file.
-///
-/// The filer sends the claim itself rather than routing the outcome back to
-/// the UI thread: the wire sender is `Clone + Send` with a non-blocking
-/// `send` that needs no runtime context, and routing back through the UI
-/// would make the claim's latency depend on the next redraw — which is
-/// throttled and may not happen at all on an idle frontend — against the
-/// sender's 5 s verdict window.
-fn file_one(path: &std::path::Path, job: &FileJob) -> bool {
-    let in_file = append_agent_message_at(path, &job.payload);
-    if in_file {
-        if let Some(req) = job.claim.clone() {
-            let _ = job.tx.send(OutgoingReq::AgentFiled(req));
-        }
-    }
-    in_file
-}
-
-/// The filer thread body (ADR 0048 amendment 14). One thread per process,
-/// fed by a FIFO channel, so this frontend appends frames in the order the
-/// daemon sent them — the reader is a line-offset cursor over one file, so
-/// reordering would show a conversation out of order. That is the argument
-/// against a thread per frame and against a pool: both reorder, and both
-/// multiply contention on a lock whose whole purpose is one writer at a
-/// time.
-///
-/// Resolves the inbox path ONCE. A process with no state dir warns once
-/// here and then drains without filing, so the UI thread's push stays cheap
-/// and uniform instead of re-deciding per frame.
-fn run_filer(rx: std::sync::mpsc::Receiver<FileJob>) {
-    let Some(path) = fe_inbox_path() else {
-        tracing::warn!("agent.message: no state dir; filer will drop every frame");
-        while rx.recv().is_ok() {}
-        return;
-    };
-    while let Ok(job) = rx.recv() {
-        file_one(&path, &job);
-    }
-}
-
-/// Append one `fe_down` marker to `fe-inbox.jsonl` (creating the file/dir
-/// if needed), re-serializing it verbatim as a single line. Returns the
-/// `io::Error` on any failure (no state dir, dir creation, serialize,
-/// open, or write) rather than only logging it — ADR 0041 step 6 U3's
-/// `fe_down` marker needs this to surface a VISIBLE drawer error ("a
-/// marker that exists so a failure is not quiet cannot fail quietly
-/// itself"). Deliberately NOT shared with [`append_agent_message`] above
-/// (Codex review round, finding 12) — that function's own diagnostics
-/// must stay exactly what they were before this feature existed.
-/// Windows-only: `pump_attach_term`, its only caller, is itself
-/// `#[cfg(windows)]`.
-///
-/// Takes NO token (ADR 0048 decision 15), deliberately: the token arbitrates
-/// the agent path's read-modify-write, and this function only appends, so a
-/// token here would serve symmetry rather than an invariant while adding a
-/// bounded lock wait to the UI thread this runs on. Before decision 15 it was
-/// excluded from the inbox by accident on Windows — the agent path's lock on
-/// the data file did not serialise this write, it REFUSED it, and the marker
-/// was dropped with a visible error that reported that bug rather than a real
-/// one.
-#[cfg(windows)]
-fn append_fe_down_marker(payload: &serde_json::Value) -> std::io::Result<()> {
-    let Some(path) = fe_inbox_path() else {
-        return Err(std::io::Error::other("no state dir resolved"));
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut line = serde_json::to_string(payload)?;
-    line.push('\n');
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
-    f.write_all(line.as_bytes())
-}
 
 /// A control command raised through the FE command-file channel (ADR 0019).
 /// One JSON object per file under `fe-commands/`, internally tagged by `cmd`.
@@ -20598,24 +19834,6 @@ fn fe_cmd_default_dir() -> i32 {
 }
 
 impl ApplicationHandler for App {
-    /// winit's single exit funnel (ADR 0048 amendment 14). Every
-    /// `event_loop.exit()` site in this file reaches here, so the filer is
-    /// drained in ONE place rather than at each of them — a new exit site
-    /// inherits the drain instead of having to remember it.
-    ///
-    /// **This must stay inside `impl ApplicationHandler for App`.** The
-    /// trait method has a DEFAULT body, so the identical function in a
-    /// plain `impl App` block one brace away would compile perfectly
-    /// clean as a private inherent method, never be called, and cost at
-    /// most a dead-code warning — the drain would simply never run and
-    /// nothing would say so. Sitting in the trait impl is the only reason
-    /// the compiler checks this at all.
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(state) = self.state.as_mut() {
-            state.drain_filer(std::time::Duration::from_secs(2));
-        }
-    }
-
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;
@@ -20838,12 +20056,6 @@ impl ApplicationHandler for App {
                 "relaunch requested; exiting for supervisor respawn"
             );
             state.persist_resume_state();
-            // "Abrupt exit is fine: state is saved on events" holds for
-            // everything except the filer's queue, which is the one piece of
-            // state no event has written yet — and `process::exit` below runs
-            // no destructors and joins nothing, so this site cannot inherit
-            // the `exiting` hook (ADR 0048 amendment 14).
-            state.drain_filer(std::time::Duration::from_secs(2));
             // We currently own the OS foreground, so we're allowed to hand the
             // foreground right to the about-to-spawn replacement. ASFW_ANY lifts
             // the Win32 foreground lock for the next SetForegroundWindow from
@@ -27841,481 +27053,6 @@ mod tests {
         assert_eq!(frontend_address("host-a"), "fe@host-a");
     }
 
-    // item 18 (variant-independent half): `files_for_from_rows`.
-
-    #[test]
-    fn files_for_from_rows_returns_the_joined_handle_never_agent_name() {
-        // The assertion that would have caught the whole class: a row
-        // where the asked-for handle and the joined handle DIFFER.
-        let w = crate::transport::WorkspaceInfo {
-            agent_name: "asked-for".to_string(),
-            agent_handle: "joined-handle".to_string(),
-            ..ws_info("proj", "sot-be-proj")
-        };
-        let handles = files_for_from_rows(&[w]);
-        assert_eq!(handles, vec!["joined-handle".to_string()]);
-        assert!(!handles.contains(&"asked-for".to_string()), "got {handles:?}");
-    }
-
-    #[test]
-    fn files_for_from_rows_drops_the_anchor_row() {
-        // The hidden home-rooted anchor row: `agent == "none"`, no handle
-        // ever joined. It must yield nothing — not by an is_inert_anchor
-        // special case, just because its handle is empty.
-        let w = crate::transport::WorkspaceInfo {
-            is_default: true,
-            agent: "none".to_string(),
-            agent_handle: String::new(),
-            ..ws_info("proj", "sot-be-proj")
-        };
-        assert!(files_for_from_rows(&[w]).is_empty());
-    }
-
-    /// Two rows on one host CAN carry the same joined handle, so the
-    /// declared set must be a set. A consumer that fans out per naming
-    /// receiver would otherwise file one directed frame twice.
-    #[test]
-    fn files_for_from_rows_dedupes_two_rows_that_joined_the_same_handle() {
-        let a = crate::transport::WorkspaceInfo {
-            agent_handle: "shared-handle".to_string(),
-            ..ws_info("proj-a", "sot-be-proj-a")
-        };
-        let b = crate::transport::WorkspaceInfo {
-            agent_handle: "shared-handle".to_string(),
-            ..ws_info("proj-b", "sot-be-proj-b")
-        };
-        assert_eq!(
-            files_for_from_rows(&[a, b]),
-            vec!["shared-handle".to_string()]
-        );
-    }
-
-    /// The wiring, which no other test reaches: own host declares, a
-    /// foreign host does not, and a daemon that declared no host at all
-    /// declares nothing rather than being guessed at.
-    #[test]
-    fn declares_files_for_only_to_a_daemon_on_this_frontends_own_host() {
-        assert!(declares_files_for(Some("boxa"), "boxa"));
-        assert!(!declares_files_for(Some("boxb"), "boxa"));
-        assert!(!declares_files_for(None, "boxa"));
-    }
-
-    #[test]
-    fn own_host_rows_resolves_through_the_declared_host_not_the_dial_key() {
-        // The bug this function exists to prevent: `workspace_lists` is
-        // keyed by the DIAL key, so a lookup by hostname returns None on
-        // every box whose own daemon is dialed under any other label, and
-        // the frontend then claims nothing for anyone, silently.
-        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
-        lists.insert("local-tunnel".to_string(), vec![crate::transport::WorkspaceInfo {
-            agent_handle: "peer-boxa".to_string(),
-            ..ws_info("peer", "sot-be-peer")
-        }]);
-        lists.insert("boxb".to_string(), vec![crate::transport::WorkspaceInfo {
-            agent_handle: "elsewhere-boxb".to_string(),
-            ..ws_info("elsewhere", "sot-be-elsewhere")
-        }]);
-        let declared: HashMap<HostKey, String> = [
-            ("local-tunnel".to_string(), "boxa".to_string()),
-            ("boxb".to_string(), "boxb".to_string()),
-        ]
-        .into_iter()
-        .collect();
-
-        let rows = own_host_rows(&lists, &declared, "boxa").expect("the own-host rows resolve");
-        assert_eq!(files_for_from_rows(rows), vec!["peer-boxa".to_string()]);
-        // A dial key that happens to equal our hostname but declares
-        // another host is NOT ours.
-        assert!(own_host_rows(&lists, &declared, "boxc").is_none());
-        // A daemon too old to declare a host declares nothing for anyone.
-        assert!(own_host_rows(&lists, &HashMap::new(), "boxa").is_none());
-    }
-
-    #[test]
-    fn receipt_from_rows_claims_only_from_a_set_it_knows() {
-        // ADR 0048, the whole decision table of `receipt_from_rows`, in
-        // the order the function applies it. The platform half of the claim
-        // is `receipt_for_says_nothing_where_no_process_reads_the_inbox`.
-        let row = crate::transport::WorkspaceInfo {
-            agent_handle: "peer-otherbox".to_string(),
-            ..ws_info("peer", "sot-be-peer")
-        };
-        let rows = vec![row];
-        let frame = |to: &str, id: Option<&str>| {
-            let mut v = serde_json::json!({"from": "a", "to": to, "text": "hi"});
-            if let Some(id) = id {
-                v["id"] = serde_json::Value::String(id.to_string());
-            }
-            v
-        };
-
-        // In the set: claim it, and the claim is one field.
-        let req = receipt_from_rows(&frame("peer-otherbox", Some("x-1")), Some(&rows))
-            .expect("a handle this frontend files for must be claimed");
-        assert_eq!(req.id, "x-1");
-
-        // Absent from a known set: say NOTHING. A denial would be a global
-        // claim from local knowledge, and every other attached frontend
-        // would make the same one about a handle it does not host.
-        assert!(receipt_from_rows(&frame("typo-otherbox", Some("x-2")), Some(&rows)).is_none());
-
-        // No id: the hub predates receipts, so there is nothing to
-        // attribute a claim to.
-        assert!(receipt_from_rows(&frame("peer-otherbox", None), Some(&rows)).is_none());
-        assert!(receipt_from_rows(&frame("peer-otherbox", Some("")), Some(&rows)).is_none());
-        // Broadcast: nobody is the addressee.
-        assert!(receipt_from_rows(&frame("", Some("x-3")), Some(&rows)).is_none());
-        // No own-host list at all, and an empty one: no basis either way.
-        assert!(receipt_from_rows(&frame("peer-otherbox", Some("x-4")), None).is_none());
-        assert!(receipt_from_rows(&frame("peer-otherbox", Some("x-5")), Some(&[])).is_none());
-    }
-
-    #[test]
-    fn receipt_for_says_nothing_where_no_process_reads_the_inbox() {
-        // The platform half of the claim decision, and ONLY it: every
-        // payload-level condition `receipt_from_rows` tests is satisfied here
-        // — an id, a non-empty `to`, and an own-host row declaring exactly
-        // that handle — so the answer can turn on nothing but the platform.
-        //
-        // On Windows the assertion is a positive — the gate must not
-        // silence the platform that DOES read the file; on every other leg
-        // it is the negative this gate exists to create.
-        let rows = vec![crate::transport::WorkspaceInfo {
-            agent_handle: "peer-otherbox".to_string(),
-            ..ws_info("peer", "sot-be-peer")
-        }];
-        let frame = serde_json::json!({
-            "from": "a", "to": "peer-otherbox", "text": "hi", "id": "x-1", "ts": 1.0
-        });
-        assert!(
-            receipt_from_rows(&frame, Some(&rows)).is_some(),
-            "the payload half must say yes for this input, or the platform \
-             assertion below proves nothing off Windows"
-        );
-        assert_eq!(
-            receipt_for(&frame, Some(&rows)).is_some(),
-            cfg!(windows),
-            "a frontend may claim a filing exactly where a process on this OS \
-             reads fe-inbox.jsonl; a claim anywhere else is a false success"
-        );
-    }
-
-    /// A throwaway inbox path under the OS temp dir, unique per test by
-    /// `tag` and per run by pid (`download.rs`'s own idiom), removed up
-    /// front so a previous run's file is never this run's window.
-    fn inbox_temp_path(tag: &str) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!("sot-fe-inbox-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_file(&p);
-        let _ = std::fs::remove_file(p.with_extension("lock"));
-        p
-    }
-
-    /// One fanned-out `agent.message` payload, shaped as the daemon writes
-    /// it: `id` optional, everything else always present.
-    fn inbox_frame(id: Option<&str>, to: &str, text: &str) -> serde_json::Value {
-        let mut v = serde_json::json!({"from": "sender", "to": to, "text": text, "ts": 1.0});
-        if let Some(id) = id {
-            v["id"] = serde_json::Value::String(id.to_string());
-        }
-        v
-    }
-
-    fn inbox_lines(path: &std::path::Path) -> Vec<String> {
-        std::fs::read_to_string(path)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(str::to_string)
-            .collect()
-    }
-
-    #[test]
-    fn the_inbox_dedupe_key_is_the_pair_and_nothing_else() {
-        // ADR 0048 amendment 9. Either half alone is NOT a match: the id
-        // distinguishes two sends, the addressee distinguishes two handles
-        // one id was fanned out to, and a frame with no id has nothing to
-        // be matched on at all.
-        let window = concat!(
-            r#"{"from":"a","to":"peer-one","text":"hi","id":"x-1"}"#,
-            "\n",
-            r#"{"from":"a","to":"peer-two","text":"hi","id":"x-9"}"#,
-            "\n",
-        );
-        assert!(inbox_window_has_frame(window, "x-1", "peer-one"));
-        // Same id, another addressee: a different delivery.
-        assert!(!inbox_window_has_frame(window, "x-1", "peer-two"));
-        // Same addressee, another id: a different send.
-        assert!(!inbox_window_has_frame(window, "x-2", "peer-one"));
-        // A line with no id never matches, whatever else it carries —
-        // including a byte-identical body, which is what a genuine resend
-        // looks like.
-        let idless = concat!(r#"{"from":"a","to":"peer-one","text":"hi"}"#, "\n");
-        assert!(!inbox_window_has_frame(idless, "x-1", "peer-one"));
-        assert!(!inbox_window_has_frame(idless, "", "peer-one"));
-        // Nothing to find.
-        assert!(!inbox_window_has_frame("", "x-1", "peer-one"));
-        assert!(!inbox_window_has_frame("   \n\n", "x-1", "peer-one"));
-    }
-
-    #[test]
-    fn an_unparsable_line_is_skipped_not_fatal() {
-        // A torn append is realistic — more than one process appends to
-        // this file — and the shell readers already skip one rather than
-        // stop. Skipping can only cost a duplicate; stopping would cost a
-        // match that IS there, after it.
-        let window = concat!(
-            "{\"from\":\"a\",\"to\":\"peer-one\",\"tex",
-            "\n",
-            r#"{"from":"a","to":"peer-one","text":"hi","id":"x-1"}"#,
-            "\n",
-        );
-        assert!(inbox_window_has_frame(window, "x-1", "peer-one"));
-        // And a torn copy is NOT the frame being present: the post-append
-        // verify rests on this — a record no reader can parse is not a
-        // delivered frame, however many bytes of it are on disk.
-        let torn_only = r#"{"from":"a","to":"peer-one","id":"x-1","tex"#;
-        assert!(!inbox_window_has_frame(torn_only, "x-1", "peer-one"));
-    }
-
-    #[test]
-    fn a_frame_larger_than_the_window_is_still_claimed() {
-        // The window is a fixed tail, so a record longer than it used to put
-        // its own start before the window's — and the partial-first-line trim
-        // then left nothing at all. The dedupe could not see the copy it had
-        // just written, and the verify could not see the write it had just
-        // made, so the frame was appended again on every resend and never
-        // claimed once. A relayed file or a long diff is enough to reach it.
-        let path = inbox_temp_path("big");
-        let frame = inbox_frame(Some("x-1"), "peer-one", &"z".repeat(80 * 1024));
-        assert!(append_agent_message_at(&path, &frame));
-        assert!(append_agent_message_at(&path, &frame));
-        assert_eq!(inbox_lines(&path).len(), 1);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn a_second_append_finds_the_frame_and_still_reports_it_in_the_file() {
-        // THE amendment 10 contract. The second call must not write a
-        // second line, and must still answer "the frame is in the file" —
-        // the narrower "I wrote it" is what could leave a filed frame with
-        // zero receipts, which the matrix reports as a false failure.
-        let path = inbox_temp_path("second-append");
-        let frame = inbox_frame(Some("x-1"), "peer-one", "hi");
-        assert!(append_agent_message_at(&path, &frame));
-        assert!(append_agent_message_at(&path, &frame));
-        assert_eq!(inbox_lines(&path).len(), 1);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn two_sends_are_two_lines_however_they_differ() {
-        // The key is the PAIR, so differing in either half is two frames.
-        let path = inbox_temp_path("two-sends");
-        assert!(append_agent_message_at(
-            &path,
-            &inbox_frame(Some("x-1"), "peer-one", "hi")
-        ));
-        assert!(append_agent_message_at(
-            &path,
-            &inbox_frame(Some("x-2"), "peer-one", "hi")
-        ));
-        assert!(append_agent_message_at(
-            &path,
-            &inbox_frame(Some("x-1"), "peer-two", "hi")
-        ));
-        assert_eq!(inbox_lines(&path).len(), 3);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn a_frame_with_no_id_is_appended_twice_because_content_cannot_prove_a_duplicate() {
-        // Amendment 9's deliberate hole. Two frontends' copies of one
-        // id-less frame are byte-identical, and so is a genuine resend of
-        // the same text to the same handle in the same second (the daemon
-        // stamps `ts` once). Collapsing that would lose a message, which
-        // is worse than the duplicate it would prevent.
-        let path = inbox_temp_path("no-id");
-        let frame = inbox_frame(None, "peer-one", "hi");
-        assert!(append_agent_message_at(&path, &frame));
-        assert!(append_agent_message_at(&path, &frame));
-        assert_eq!(inbox_lines(&path).len(), 2);
-        // Same hole for a frame with an id but no addressee: a broadcast
-        // has nobody to key against.
-        let path = inbox_temp_path("no-to");
-        let frame = inbox_frame(Some("x-1"), "", "hi");
-        assert!(append_agent_message_at(&path, &frame));
-        assert!(append_agent_message_at(&path, &frame));
-        assert_eq!(inbox_lines(&path).len(), 2);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn a_frame_that_could_not_be_written_is_not_in_the_file() {
-        // The return value is "the frame is in the file", so a failed open
-        // must answer false — a claim after it would vouch for nothing.
-        let blocker = inbox_temp_path("not-a-dir");
-        std::fs::write(&blocker, b"").unwrap();
-        let path = blocker.join("under-a-file/fe-inbox.jsonl");
-        assert!(!append_agent_message_at(
-            &path,
-            &inbox_frame(Some("x-1"), "peer-one", "hi")
-        ));
-        assert!(!path.exists());
-        let _ = std::fs::remove_file(&blocker);
-    }
-
-    #[test]
-    fn a_lock_it_cannot_take_fails_open_to_the_append() {
-        // The only direct test of the fail-open rule, available because
-        // the crate's lock is cross-THREAD as well as cross-process
-        // (sot-log's `WriterLock` doc). The lock under test is the TOKEN
-        // beside the inbox — `fe-inbox.lock`, ADR 0048 decision 15 — never
-        // the inbox itself: a lock held on the data file would not merely
-        // fail to exclude the append below, on Windows it would REFUSE it.
-        // A lock held past the bounded deadline must cost a duplicate,
-        // never a message.
-        let path = inbox_temp_path("fail-open");
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(path.with_extension("lock"))
-            .unwrap();
-        assert!(
-            sot_log::try_lock_bounded(&held).unwrap(),
-            "the test's own lock must be granted on a fresh file"
-        );
-        let frame = inbox_frame(Some("x-1"), "peer-one", "hi");
-        assert!(append_agent_message_at(&path, &frame));
-        assert_eq!(inbox_lines(&path).len(), 1);
-        // And again, still locked out: two appends, no dedupe, because the
-        // window was never readable. A duplicate is the documented cost.
-        assert!(append_agent_message_at(&path, &frame));
-        assert_eq!(inbox_lines(&path).len(), 2);
-        drop(held);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn the_claim_follows_the_file_not_the_write() {
-        // The B1 contract, all three arms (amendment 10 + 14): a claim is
-        // emitted whenever the frame is IN THE FILE — whether this call
-        // wrote the line or found a sibling frontend's copy of it — and
-        // never when the job carried no claim.
-        let path = inbox_temp_path("file-one");
-        let frame = inbox_frame(Some("x-1"), "peer-one", "hi");
-        let claim = || {
-            Some(sot_protocol::AgentFiledReq {
-                id: "x-1".to_string(),
-            })
-        };
-
-        // Wrote it: one line, and the claim goes out.
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutgoingReq>();
-        let job = FileJob {
-            payload: frame.clone(),
-            claim: claim(),
-            tx,
-        };
-        assert!(file_one(&path, &job));
-        assert_eq!(inbox_lines(&path).len(), 1);
-        match rx.try_recv() {
-            Ok(OutgoingReq::AgentFiled(req)) => assert_eq!(req.id, "x-1"),
-            other => panic!("expected an AgentFiled claim, got {other:?}"),
-        }
-
-        // Found it already there: NO second line, and the claim still
-        // goes out. This is the test that would have caught the first
-        // version of this design, which left the frame with no claimant.
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutgoingReq>();
-        let job = FileJob {
-            payload: frame.clone(),
-            claim: claim(),
-            tx,
-        };
-        assert!(file_one(&path, &job));
-        assert_eq!(inbox_lines(&path).len(), 1);
-        match rx.try_recv() {
-            Ok(OutgoingReq::AgentFiled(req)) => assert_eq!(req.id, "x-1"),
-            other => panic!("a frame found in the file is still claimed, got {other:?}"),
-        }
-
-        // Nothing to claim (no own-host row declares the addressee): the
-        // frame is still filed, and nothing is said about it.
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutgoingReq>();
-        let job = FileJob {
-            payload: inbox_frame(Some("x-2"), "peer-one", "hi"),
-            claim: None,
-            tx,
-        };
-        assert!(file_one(&path, &job));
-        assert_eq!(inbox_lines(&path).len(), 2);
-        assert!(rx.try_recv().is_err(), "a job with no claim says nothing");
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn two_writers_cannot_both_write_one_frame() {
-        // The mechanism two frontends exercise, in one process: two
-        // threads handed the SAME frames, entering the window at the same
-        // instant and in opposite order.
-        //
-        // The assertion is deliberately NOT "exactly N". A lock wait that
-        // expires is a legal, documented outcome that fails open to a
-        // duplicate, so exactness here would be flaky by design; exactness
-        // is proved instead by the serial second-append test above, which
-        // has no contention and no timeout.
-        const N: usize = 24;
-        let path = inbox_temp_path("two-writers");
-        let frames: Vec<serde_json::Value> = (0..N)
-            .map(|i| inbox_frame(Some(&format!("x-{i}")), "peer-one", "hi"))
-            .collect();
-        let mut handles = Vec::new();
-        for reversed in [false, true] {
-            let path = path.clone();
-            let mut frames = frames.clone();
-            if reversed {
-                frames.reverse();
-            }
-            handles.push(std::thread::spawn(move || {
-                for f in &frames {
-                    append_agent_message_at(&path, f);
-                }
-            }));
-        }
-        for h in handles {
-            h.join().unwrap();
-        }
-        let lines = inbox_lines(&path);
-        for i in 0..N {
-            let id = format!("x-{i}");
-            assert!(
-                inbox_window_has_frame(&lines.join("\n"), &id, "peer-one"),
-                "every frame must be in the file at least once; {id} is not"
-            );
-        }
-        assert!(
-            lines.len() <= 2 * N,
-            "no writer may write a frame more than once: {} lines for {N} frames",
-            lines.len()
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn files_for_from_rows_includes_a_stopped_row() {
-        // No liveness filter: a row whose REPL is dead and whose capsule
-        // lane is stopped still has its handle declared — delivery is
-        // durable, and liveness belongs in the wake note, never in `filed`.
-        let w = crate::transport::WorkspaceInfo {
-            agent_handle: "stopped-handle".to_string(),
-            repl_state: "dead".to_string(),
-            phase: Some("stopped".to_string()),
-            ..ws_info("proj", "sot-be-proj")
-        };
-        assert_eq!(files_for_from_rows(&[w]), vec!["stopped-handle".to_string()]);
-    }
-
     #[test]
     fn strip_pending_badges_name_with_sigil_and_accent() {
         // Badge floor (ADR 0025 §1): a workspace flagged pending gets a leading
@@ -30443,31 +29180,6 @@ mod tests {
         assert!(rxs.get_mut("alpha").unwrap().try_recv().is_err());
     }
 
-    #[test]
-    fn a_receipt_is_routed_to_the_host_the_message_arrived_on() {
-        // ADR 0048: the claim must go back to the hub that RELAYED the
-        // frame (`event_host`), never to the active host. A receipt sent to
-        // the wrong daemon reaches nobody who is waiting for it, and the
-        // sender's verdict is silence — indistinguishable from a frontend
-        // that never claimed at all. This pins the routing rule; the call
-        // site's own choice of `event_host` is pinned by a real run.
-        let (conns, mut rxs) = fake_conns();
-        let event_host = "local".to_string(); // active_host is "alpha"
-        route_send_to(
-            &conns,
-            &event_host,
-            OutgoingReq::AgentFiled(sot_protocol::AgentFiledReq { id: "x-1".into() }),
-        )
-        .expect("routes");
-        match rxs.get_mut("local").unwrap().try_recv() {
-            Ok(OutgoingReq::AgentFiled(req)) => assert_eq!(req.id, "x-1"),
-            other => panic!("expected the receipt on the arrival host, got {other:?}"),
-        }
-        assert!(
-            rxs.get_mut("alpha").unwrap().try_recv().is_err(),
-            "no receipt may go to the active host"
-        );
-    }
 
     #[test]
     fn send_to_unknown_host_errs_instead_of_silently_dropping() {

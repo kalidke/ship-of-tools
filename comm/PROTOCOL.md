@@ -252,7 +252,8 @@ This section is ADR 0049's design of record. The mechanism below lands in
 stages; until each stage does, the two-mode delivery this
 replaces stays in place. The per-session relay bridge is gone on every box
 that shares the hub's comm folder: the hub files for every handle that folder
-lists. A Windows host's receive path is still its frontend's `fe-inbox.jsonl`.
+lists, and a box that holds its own link to the hub (a Windows host) files for its
+own folder through its daemon, the frontend playing no part (decision 0031 B2).
 
 **Words.** A *row* is a session running inside Ship of Tools. The *daemon*
 is the background program on each box that runs that box's rows; it keeps
@@ -327,6 +328,9 @@ lists the receiver:
    the hub refuses it as `file_failed` with the recovery named — restart
    the hub when its own machine wrote the record (a remount), else stop
    every daemon on the folder, delete the record and start the hub.
+   On Windows, the daemon's first start moves the old frontend inbox's
+   unread lines (`fe-inbox.jsonl`) into the inboxes; lines for handles not in
+   the registry stay in `fe-inbox.jsonl.moved`.
 2. It cannot: `comm-relay.sh send @h` (which `comm-send.sh` execs on a
    registry miss) writes ONE `comm.file` request to the relay endpoint, the
    hub, and reads ONE answer. The hub files for its own home: when its comm

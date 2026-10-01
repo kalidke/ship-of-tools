@@ -209,16 +209,16 @@ probe_self_handle() {
         '[(.payload.workspaces // [])[]? | select(.workspace_id == $w) | .agent_handle][0] // empty' 2>/dev/null
 }
 
-# probe_inbox_stamp — a cheap total over both inbox files (the per-handle one and,
-# on Windows, the frontend's shared fe-inbox). Only a CHANGE here makes the loop
-# spend a comm-poll.sh; equality is the common case and costs one stat.
+# probe_inbox_stamp — a cheap size of the per-handle inbox file. Only a CHANGE
+# here makes the loop spend a comm-poll.sh; equality is the common case and
+# costs one stat.
 probe_inbox_stamp() {
     local handle="$1" total=0 f sz
-    for f in "$INBOX_DIR/$handle.jsonl" "$(sot_fe_inbox_path)"; do
-        [ -n "$f" ] && [ -f "$f" ] || continue
+    f="$INBOX_DIR/$handle.jsonl"
+    if [ -f "$f" ]; then
         sz="$(wc -c < "$f" 2>/dev/null)" || sz=0
-        total=$((total + ${sz:-0}))
-    done
+        total=${sz:-0}
+    fi
     printf '%s\n' "$total"
 }
 
@@ -298,9 +298,8 @@ probe_serve() {
         [ "$stamp" = "$last_stamp" ] && continue
         last_stamp="$stamp"
         # comm-poll.sh, the reader a session uses — not a bespoke inbox read.
-        # That is deliberate: on Windows it is the ONLY thing that knows about
-        # the frontend's shared fe-inbox, and a responder reading a different
-        # file from the one a real session reads would test the wrong path.
+        # That is deliberate: a responder reading a different file from the one
+        # a real session reads would test the wrong path.
         polled="$("$SCRIPT_DIR/comm-poll.sh" 2>/dev/null)" || true
         while IFS= read -r line; do
             case "$line" in *PROBE\ *) probe_handle_line "$line" poll "$me" ;; esac

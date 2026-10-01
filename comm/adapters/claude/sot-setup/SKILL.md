@@ -334,9 +334,10 @@ done
 Note this XDG `$HOME` may be **per-machine**, so its registry is local to the
 box; the relay still bridges sessions across machines over the tunnel.
 
-(Windows: the FE writes inbound relay messages to
-`%LOCALAPPDATA%\sot\fe-inbox.jsonl`. The bootstrap arms nothing: a drawer
-session's mail surfaces at its own turn-end check.)
+(Windows: the box's daemon holds a link to the hub and files inbound mail into
+`%USERPROFILE%\.sot-comm\inbox\<handle>.jsonl`, with the frontend window open
+or closed. The bootstrap arms nothing: a drawer session's mail surfaces at its
+own turn-end check.)
 Installing new skills requires a Claude Code **restart** to load them.
 
 ---

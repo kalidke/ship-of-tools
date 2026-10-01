@@ -5609,9 +5609,30 @@ pub async fn handle_comm_file(
     workspaces: &Workspaces,
 ) -> Result<HandlerOutput> {
     let req: CommFileReq = serde_json::from_value(payload_json).context("comm.file payload")?;
-    let rows = workspaces.list();
     let (from, to) = (req.from.clone(), req.to.clone());
-    let verdict = tokio::task::spawn_blocking(move || {
+    let verdict = file_comm(req, workspaces).await?;
+    let payload = match verdict {
+        Ok(()) => {
+            tracing::info!(%from, %to, "comm.file filed");
+            serde_json::to_value(CommFileRes { ok: true })?
+        }
+        Err((code, error)) => {
+            tracing::info!(%from, %to, code, %error, "comm.file refused");
+            json!({ "error": error, "code": code })
+        }
+    };
+    Ok(vec![(Frame::res(req_id, op::COMM_FILE, payload), None)])
+}
+
+/// The filing behind `comm.file`, callable in-process: the hub link
+/// (`hub_link.rs`) files what arrives on its connection through this same
+/// function. `Err` inside the `Ok` is the refusal `(code, sentence)`.
+pub(crate) async fn file_comm(
+    req: CommFileReq,
+    workspaces: &Workspaces,
+) -> Result<std::result::Result<(), (String, String)>> {
+    let rows = workspaces.list();
+    tokio::task::spawn_blocking(move || {
         // Arm 1 of liveness: a running row holds the handle, by THE
         // row-binding rule and the two phases counted as running.
         let row_holds = || {
@@ -5663,18 +5684,7 @@ pub async fn handle_comm_file(
         )
     })
     .await
-    .context("comm.file join")?;
-    let payload = match verdict {
-        Ok(()) => {
-            tracing::info!(%from, %to, "comm.file filed");
-            serde_json::to_value(CommFileRes { ok: true })?
-        }
-        Err((code, error)) => {
-            tracing::info!(%from, %to, code, %error, "comm.file refused");
-            json!({ "error": error, "code": code })
-        }
-    };
-    Ok(vec![(Frame::res(req_id, op::COMM_FILE, payload), None)])
+    .context("comm.file join")
 }
 
 /// A guest's forward answers inside the script's read window (the lock wait

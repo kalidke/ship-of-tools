@@ -503,6 +503,9 @@ pub async fn run(opts: Opts) -> Result<()> {
     let n = workspaces::scan_disk(&workspaces, opts.adopt_legacy_registry)
         .context("scanning the workspace registry")?;
     tracing::info!(count = n, "workspaces scanned from disk");
+    // The daemon holds the link to the hub and files for its own comm folder
+    // (0031 Part 3); a box with no such link returns at once.
+    tokio::spawn(crate::hub_link::run(workspaces.clone()));
     let default_label = opts
         .label
         .clone()

@@ -1672,50 +1672,6 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     return 0
 }
 
-case_the_windows_receive_path_never_collapses_to_a_bare_slash() {
-    # sot_fe_inbox_path (comm-lib.sh) names the frontend's receive path on a
-    # Windows host: LOCALAPPDATA, else XDG_STATE_HOME, else $HOME/.local/state.
-    # If an upstream env var the daemon would normally inject
-    # (capsule-comm-identity, #178) resolved empty, it must never collapse to
-    # a bare "/"-rooted guess.
-    local fakebin out
-    fakebin="$WORK/winuname2"
-    mkdir -p "$fakebin"
-    cat > "$fakebin/uname" <<'FAKEUNAME'
-#!/bin/sh
-echo "MINGW64_NT-10.0-19045"
-FAKEUNAME
-    chmod +x "$fakebin/uname"
-    local lib="$SCRIPTS_DIR/comm-lib.sh"
-
-    # LOCALAPPDATA present -> the path is rooted under it.
-    out="$(env -u OS -u OSTYPE -u XDG_STATE_HOME PATH="$fakebin:$PATH" \
-        LOCALAPPDATA="$WORK/AppDataLocal" SOT_COMM_HOME="$WORK/winnoop-home2" \
-        bash -c 'source "$1"; sot_fe_inbox_path' _ "$lib" 2>&1)"
-    [ "$out" = "$WORK/AppDataLocal/sot/fe-inbox.jsonl" ] \
-        || { echo "  LOCALAPPDATA-rooted path wrong: '$out'"; return 1; }
-
-    # LOCALAPPDATA and XDG_STATE_HOME both unset -> falls back to $HOME.
-    out="$(env -u OS -u OSTYPE -u LOCALAPPDATA -u XDG_STATE_HOME PATH="$fakebin:$PATH" \
-        HOME="$WORK/fakehome" SOT_COMM_HOME="$WORK/winnoop-home2" \
-        bash -c 'source "$1"; sot_fe_inbox_path' _ "$lib" 2>&1)"
-    [ "$out" = "$WORK/fakehome/.local/state/sot/fe-inbox.jsonl" ] \
-        || { echo "  HOME-fallback path wrong: '$out'"; return 1; }
-
-    # LOCALAPPDATA, XDG_STATE_HOME and HOME all EMPTY (the "resolved empty"
-    # scenario): the result is still non-empty and rooted under the fallback
-    # directory, never the bare /sot/fe-inbox.jsonl.
-    out="$(env -u OS -u OSTYPE PATH="$fakebin:$PATH" \
-        LOCALAPPDATA= XDG_STATE_HOME= HOME= SOT_COMM_HOME="$WORK/winnoop-home2" \
-        bash -c 'source "$1"; sot_fe_inbox_path' _ "$lib" 2>&1)"
-    [ -n "$out" ] || { echo "  empty path with every variable cleared"; return 1; }
-    [ "$out" = "/.local/state/sot/fe-inbox.jsonl" ] \
-        || { echo "  fallback path wrong (want /.local/state/sot/fe-inbox.jsonl): '$out'"; return 1; }
-
-    rm -rf "${WORK:?}/winnoop-home2"
-    return 0
-}
-
 # --- LU6e: the pipe: endpoint (ADR 0042 amendment, decision 5) ----------
 # This box has no real Windows/PowerShell to test against, so these cases
 # prove the BASH side only — dispatch on the pipe: prefix, the argv shape
@@ -2159,7 +2115,6 @@ check "comm-self-audit.sh flags a slot naming another project and no suffixed/ke
 check "the audit slugs a repo name with the daemon's own rule, not a second copy" case_self_audit_uses_the_daemons_own_slug_rule
 check "the audit does not excuse a repo that suffixes the label (the other direction)" case_self_audit_does_not_excuse_a_repo_suffixing_the_label
 check "a slot claimed during the join is refused by the writer with exit 3, not 1" case_slot_guard_refusal_in_the_write_gap_exits_three
-check "the Windows frontend receive path resolves under LOCALAPPDATA/HOME, never a bare /" case_the_windows_receive_path_never_collapses_to_a_bare_slash
 check "sot_oneshot_request over a pipe: endpoint dispatches to the stub powershell.exe and returns its matching reply (LU6e)" case_pipe_endpoint_oneshot_request_matches_reply
 check "sot_oneshot_request over a pipe: endpoint fails cleanly with no powershell.exe on PATH (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_powershell
 check "sot_oneshot_request over a pipe: endpoint fails cleanly with comm-pipe-request.ps1 missing (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_missing_ps1

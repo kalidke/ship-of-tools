@@ -83,12 +83,6 @@ if [ "$MODE" = "catchup" ]; then
         exit 0
     fi
 
-    # ONE reader, every platform. comm-poll.sh reads AND cursors both inboxes
-    # on Windows (comm-lib.sh's sot_fe_* helpers), so the Windows branch that
-    # used to live here was a second implementation of the same read -- and it
-    # kept its own third cursor file, read/<handle>.fe-cursor, that no other
-    # reader has ever looked at: catch-up marked frontend mail read where
-    # comm-poll.sh and the turn-end hook could not see it.
     POLL_OUT="$("$SCRIPT_DIR/comm-poll.sh" 2>&1)"; poll_rc=$?
     if [ "$poll_rc" -ne 0 ]; then
         POLL_COUNT="ERR"

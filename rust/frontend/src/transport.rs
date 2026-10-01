@@ -35,7 +35,7 @@ use interprocess::local_socket::{
 use serde_json::Value;
 use sot_protocol::{
     codec, op, AgentSendReq, ConceptReadReq, ConceptReadRes, ConceptWriteReq, ConceptWriteRes,
-    DirCreateReq, DirCreateRes, AgentFiledReq, DocsOpenReq, DocsOpenRes, FePresenceReq, FileChunk, FileDeleteReq, FileDeleteRes,
+    DirCreateReq, DirCreateRes, DocsOpenReq, DocsOpenRes, FePresenceReq, FileChunk, FileDeleteReq, FileDeleteRes,
     FileDownloadReq, FileReadReq, FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq,
     FileWriteRes, Frame,
     HelloReq, HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
@@ -1049,17 +1049,6 @@ pub enum OutgoingReq {
     /// `PendingKind`, an older daemon's unknown-op error is silently
     /// dropped by the unmatched-id fallthrough.
     FeSessions(Vec<sot_protocol::DeclaredSession>),
-    /// Claim the filing of ONE relayed frame this frontend just appended
-    /// (ADR 0048; there is no declining form — see `gpu::receipt_for`) — sent on the connection the
-    /// `agent.message` arrived on, so the claim reaches the hub that
-    /// relayed it rather than only this box's own daemon (which is what
-    /// made the declaration it replaces worthless). Built by
-    /// `gpu::receipt_for`, which claims only for a handle one of this
-    /// frontend's OWN-host rows declares. Fire-and-forget, same idiom as
-    /// `FePresence` above — no `PendingKind`, and an older daemon's
-    /// unknown-op error is silently dropped by the unmatched-id
-    /// fallthrough (no per-frame warn).
-    AgentFiled(AgentFiledReq),
     /// Ask the kernel for its loaded-modules list. Response surfaces as
     /// `IncomingEvt::ModulesList`. Currently the only kernel.request the
     /// frontend issues directly; expand the enum as more land.
@@ -2436,19 +2425,6 @@ where
                         .await?;
                         // No PendingKind: fire-and-forget, same idiom as
                         // FePresence above.
-                    }
-                    OutgoingReq::AgentFiled(req) => {
-                        tracing::debug!(id, frame_id = %req.id, "→ agent.filed");
-                        codec::write_frame(
-                            &mut tx,
-                            &Frame::req(id, op::AGENT_FILED, serde_json::to_value(req)?),
-                            None,
-                        )
-                        .await?;
-                        // No PendingKind: an ack we never read must not
-                        // allocate a pending slot — same idiom as
-                        // FePresence above. The verdict the SENDER reads is
-                        // the daemon's `agent.receipt` fan-out, not this ack.
                     }
                     OutgoingReq::ModulesList { workspace_id } => {
                         tracing::debug!(?workspace_id, id, "→ kernel.request modules.list");
