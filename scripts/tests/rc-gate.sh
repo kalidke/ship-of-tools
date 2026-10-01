@@ -18,8 +18,9 @@
 # has a 1200 s end (the builds do not). CARGO_TARGET_DIR must be the gate's
 # alone while it runs: any new process started from it counts as a leftover.
 # ALLDONE means every rc line is 0; the rc lines say which job failed.
-# Known limit: socket_unix's self-re-exec children share its stdout, so raw
-# `test result` counts vary between runs; compare per-test outcomes instead.
+# Known limit: socket_unix's and challenge_unix's self-re-exec children share
+# their stdout and can glue result lines together, so raw `test result` counts
+# vary between runs; compare the test names seen and the FAILED lines instead.
 
 SELF=$(readlink -f "$0")
 TO=(timeout -k 10 1200)
