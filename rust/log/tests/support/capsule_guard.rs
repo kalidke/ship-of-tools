@@ -4,9 +4,9 @@
 //! the test's own kill, and a `--survival normal` `run` leg outlives its
 //! supervisor by design, so killing the supervise child is not enough: the
 //! guard also sweeps every `supervise` and `run` process anchored on the
-//! test's OWN state root (its tempdir path), the same sweep the backend's
-//! test `Env::drop` does. Included by each test file with
-//! `#[path = "support/capsule_guard.rs"] mod capsule_guard;`.
+//! test's OWN state root (its tempdir path), the sweep the backend's test
+//! `Env::drop` does, with the pattern's end anchored. Included by each test
+//! file with `#[path = "support/capsule_guard.rs"] mod capsule_guard;`.
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -18,8 +18,9 @@ pub struct CapsuleGuard {
 }
 
 /// Whether `root` is safe to build a kill pattern from: absolute, no `..`,
-/// and STRICTLY below the temp dir. An empty or unanchored pattern would
-/// match every process, a production daemon included.
+/// STRICTLY below a temp dir that is not `/`, and outside the production
+/// state dirs. An empty or unanchored pattern would match every process, a
+/// production daemon included.
 pub fn sweep_root_ok(root: &Path) -> bool {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let xdg = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
@@ -67,7 +68,7 @@ impl CapsuleGuard {
         let state_root = state_root.into();
         assert!(
             sweep_root_ok(&state_root),
-            "CapsuleGuard refuses root {state_root:?}: it must be absolute, free of `..`, and strictly below the temp dir"
+            "CapsuleGuard refuses root {state_root:?}: it must be absolute, free of `..`, strictly below a temp dir that is not `/`, and outside the production state dirs"
         );
         Self { child: Some(child), exe: exe.into(), state_root }
     }

@@ -1623,10 +1623,13 @@ fn the_sweep_refuses_any_root_outside_the_test_temp_dir() {
     }
     // A temp dir with no normal component refuses everything.
     assert!(!sweep_root_ok_in(Path::new("/x/y"), Path::new("/"), None, None));
-    // A root under a protected dir refuses even when the temp dir contains it.
-    if let Some(home) = &home {
-        let root = home.join(".local/share/sot/x");
-        assert!(!sweep_root_ok_in(&root, home, Some(home), None));
+    // Each protected dir refuses on its own, even inside the temp dir.
+    let tmp = std::env::temp_dir();
+    let (h, xdg) = (tmp.join("h"), tmp.join("xdg"));
+    let ok = |root: &Path| sweep_root_ok_in(root, &tmp, Some(&h), Some(&xdg));
+    assert!(ok(&h.join("x")));
+    for root in [h.join(".local/share/sot/x"), h.join(".sot-comm/x"), xdg.join("sot")] {
+        assert!(!ok(&root), "{root:?} must be refused");
     }
     assert!(!sweep_root_ok_in(Path::new("/run/user/1000/sot/x"), Path::new("/run"), None, None));
     let dir = tempfile::tempdir().unwrap();
