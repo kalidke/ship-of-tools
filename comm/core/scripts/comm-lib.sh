@@ -34,6 +34,7 @@ _sot_is_msys() {
 
 PROTOCOL_VERSION=1
 
+# The one comm-folder rule; the daemon spells it as `sot_comm_home` (rust/backend/src/paths.rs).
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 REGISTRY="$COMM_HOME/registry.json"
 INBOX_DIR="$COMM_HOME/inbox"

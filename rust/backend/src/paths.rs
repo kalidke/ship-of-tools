@@ -333,7 +333,8 @@ pub(crate) fn windows_state_root() -> PathBuf {
 /// `%USERPROFILE%\.sot-comm`. Genuinely cross-platform (unlike
 /// `windows_state_root` above): a Linux/macOS daemon reads the SAME
 /// comm registry a Unix comm session writes, so this is never
-/// `#[cfg(windows)]`-gated. `None` only when none of the three are set.
+/// `#[cfg(windows)]`-gated. `None` only when none of the three are set. `comm-lib.sh`'s `COMM_HOME` is the
+/// same rule in shell (`$HOME` is the user profile under Git Bash).
 pub(crate) fn sot_comm_home() -> Option<PathBuf> {
     if let Some(v) = std::env::var_os("SOT_COMM_HOME") {
         if !v.is_empty() {

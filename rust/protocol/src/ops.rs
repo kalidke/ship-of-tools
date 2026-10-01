@@ -207,8 +207,8 @@ pub mod op {
     /// `AGENT_SEND`). Mirrors `workspace.changed`: the daemon broadcasts to
     /// every connection so the in-terminal agent on the other machine receives
     /// the message instantly instead of polling the slow git bus. Payload
-    /// carries `{from, to, text, ts}`; the frontend appends it as one JSON line
-    /// to `<state-dir>/fe-inbox.jsonl`.
+    /// carries `{from, to, text, ts}`; the daemon whose comm folder lists `to`
+    /// files it (`hub_link.rs`) and answers `agent.filed`.
     pub const AGENT_MESSAGE: &str = "agent.message";
     /// Client→daemon request (ADR 0048): whoever APPENDED a relayed frame
     /// to an inbox says so. Payload `AgentFiledReq { id }` — the

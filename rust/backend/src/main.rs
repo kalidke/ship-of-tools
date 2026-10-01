@@ -23,6 +23,7 @@ mod concept;
 mod file_io;
 mod files_mode;
 mod handlers;
+mod hub_link;
 mod http_serve;
 mod julia;
 mod kernel;
