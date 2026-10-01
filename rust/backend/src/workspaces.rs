@@ -1553,7 +1553,7 @@ pub(crate) fn app_config_dir() -> PathBuf {
 }
 
 /// The refusal text for a config dir that cannot be derived.
-pub(crate) const CONFIG_DIR_UNDERIVABLE: &str = "the daemon's config dir cannot be derived: neither XDG_CONFIG_HOME nor HOME is set; refusing to fall back to a shared directory such as /tmp";
+pub(crate) const CONFIG_DIR_UNDERIVABLE: &str = "the daemon's config dir cannot be derived: neither XDG_CONFIG_HOME nor HOME is set; set HOME or XDG_CONFIG_HOME and start it again (it refuses to fall back to a shared directory such as /tmp)";
 
 /// Startup form of `app_config_dir`'s refusal: an `Err` carrying
 /// `CONFIG_DIR_UNDERIVABLE` instead of a panic. Always `Ok` on Windows,
@@ -2942,7 +2942,7 @@ cursor_path = "src/lib.jl"
 
     #[test]
     #[cfg(not(windows))]
-    #[should_panic(expected = "refusing to fall back to a shared directory such as /tmp")]
+    #[should_panic(expected = "set HOME or XDG_CONFIG_HOME and start it again")]
     fn app_config_dir_unix_panics_when_xdg_config_home_and_home_are_both_unset() {
         let _guard = env_guarded();
         std::env::remove_var("XDG_CONFIG_HOME");
