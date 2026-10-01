@@ -107,7 +107,7 @@ $supervisorLog  = Join-Path $logDir 'supervisor.log'
 # which is the right bound for a log that is only ever read by hand.
 function Rotate-FrontendLogs {
     foreach ($f in @($frontendStdout, $frontendStderr)) {
-        if (Test-Path $f) { Move-Item -Path $f -Destination "$f.prev" -Force }
+        if (Test-Path $f) { Move-Item -Path $f -Destination "$f.prev" -Force -ErrorAction SilentlyContinue }
     }
 }
 function Write-SupLog {
@@ -1826,6 +1826,9 @@ try {
             # survive regardless, so this is only re-stage + relaunch.
         }
     } while ($relaunchNext)
+} catch {
+    Write-SupLog "supervisor loop failed: $($_.Exception.Message) $($_.InvocationInfo.PositionMessage)"
+    throw
 } finally {
     Stop-Splash   # safety — normally already closed by the DONE status write
     # C3 (isolation-plan.md §3): there is no separate tunnel process for
