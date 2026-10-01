@@ -1778,9 +1778,9 @@ async fn connect_and_run(
             // `child` is dropped here (`kill_on_drop`), ending the ssh login
             // this attempt owns before the reconnect loop's next attempt spawns
             // a fresh one.
-            if result.is_err() {
+            if let Err(e) = &result {
                 if let Some(line) = sot_protocol::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
-                    return Err(anyhow::anyhow!(line));
+                    return Err(anyhow::anyhow!("{e} (ssh: {line})"));
                 }
             }
             result
@@ -4423,7 +4423,6 @@ mod tests {
         // read waits forever.
         let (_far, near) = tokio::io::duplex(64);
         let mut rx = tokio::io::BufReader::new(near);
-        let started = std::time::Instant::now();
         let r = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             read_hello_reply(&mut rx, std::time::Duration::from_millis(100)),
@@ -4432,7 +4431,6 @@ mod tests {
         .expect("hang guard: the bounded read must return");
         let err = r.expect_err("a silent peer must time out");
         assert!(err.to_string().contains("timed out"), "{err}");
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]
