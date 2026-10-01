@@ -51,6 +51,36 @@ fn count_sealed_frames(root: &Path) -> u64 {
     n
 }
 
+/// Blocks until the capsule's `.open` segment holds one complete frame: the order
+/// proof that the kill below lands after the first write, whatever the load.
+fn wait_first_frame(root: &Path, capsule: &mut capsule_guard::CapsuleGuard, round: usize) {
+    let seg_dir = root.join("seg");
+    let start = std::time::Instant::now();
+    loop {
+        if let Ok(entries) = std::fs::read_dir(&seg_dir) {
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.extension().and_then(|x| x.to_str()) != Some(SegmentState::Open.ext()) {
+                    continue;
+                }
+                // A read error means the file is mid-write: no frame yet.
+                if let Ok(r) = SegmentReader::read(&path, false) {
+                    if !r.frames.is_empty() {
+                        return;
+                    }
+                }
+            }
+        }
+        if let Some(status) = capsule.child_mut().try_wait().unwrap() {
+            panic!("round {round}: capsule exited ({status}) before writing a frame");
+        }
+        if start.elapsed() > Duration::from_secs(30) {
+            panic!("round {round}: no complete frame in an open segment within 30 s");
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 #[test]
 fn kill9_sweep_recovers_green_every_round() {
     // ADR 0043 "Decisions for LU2" LU2b: the Linux `run` arm now binds a
@@ -108,6 +138,10 @@ fn kill9_sweep_recovers_green_every_round() {
             .expect("spawn sot-capsule");
         let mut capsule = capsule_guard::CapsuleGuard::new(capsule, &root);
 
+        // Order, not timing: the kill comes after the first frame, so every
+        // round adds sealed history; the random delay then picks the moment
+        // inside the write stream.
+        wait_first_frame(&root, &mut capsule, round);
         std::thread::sleep(Duration::from_millis(delay_ms(round)));
         // SIGKILL: no drop handlers, no seal, no flush — the crash the
         // format exists to survive. (The producer child is in its own
@@ -137,21 +171,15 @@ fn kill9_sweep_recovers_green_every_round() {
             .unwrap_or_else(|e| panic!("round {round}: verify failed after recovery: {e}"));
 
         let sealed_now = count_sealed_frames(&root);
+        // The frame `wait_first_frame` saw is in the page cache before the
+        // kill, and recovery keeps the valid prefix, so each round must add
+        // at least one sealed frame.
         assert!(
-            sealed_now >= sealed_frames_before,
-            "round {round}: sealed history shrank ({sealed_frames_before} -> {sealed_now})"
+            sealed_now > sealed_frames_before,
+            "round {round}: no frame survived the kill ({sealed_frames_before} -> {sealed_now})"
         );
         sealed_frames_before = sealed_now;
     }
-
-    // The sweep must have actually recorded something across the rounds —
-    // a vacuous pass (capsule killed before any frame every time) would
-    // prove nothing. The control preamble alone guarantees frames per round,
-    // so demand evidence of at least half the rounds landing real history.
-    assert!(
-        sealed_frames_before >= (ROUNDS as u64 / 2) * 4,
-        "sweep too vacuous: only {sealed_frames_before} sealed frames after {ROUNDS} rounds"
-    );
 
     // And no residue: quiescent state = only .sotseg files (each round's
     // reopen sealed the previous tip; the last round's tip was sealed by the
