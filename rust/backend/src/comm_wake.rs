@@ -76,21 +76,18 @@ fn line_hash(line: &[u8]) -> String {
 /// string. `None` where the segment emits nothing at all (a non-object JSON
 /// value: `.ts` errors and jq's `//` yields no element), so it is neither
 /// counted nor a boundary.
-fn ts_is_greater(segment: &str, cur: &str) -> Option<bool> {
+fn ts_is_greater(segment: &str, cur: &str) -> bool {
     use serde_json::Value;
-    let v = match serde_json::from_str::<Value>(segment) {
-        Ok(Value::Null | Value::Bool(false)) | Err(_) => return Some(false),
-        Ok(v) => v,
+    // `(fromjson? | objects) // {}`: only an object's `.ts` can be a boundary.
+    let Ok(Value::Object(o)) = serde_json::from_str::<Value>(segment) else {
+        return false;
     };
-    match v {
-        Value::Object(o) => Some(match o.get("ts") {
-            Some(Value::String(t)) => t.as_str() > cur,
-            // null and false read as "" (never greater than a non-empty
-            // cursor); true and numbers sort below every string.
-            Some(Value::Array(_) | Value::Object(_)) => true,
-            _ => false,
-        }),
-        _ => None,
+    match o.get("ts") {
+        Some(Value::String(t)) => t.as_str() > cur,
+        // null and false read as "" (never greater than a non-empty cursor);
+        // true and numbers sort below every string, arrays and objects above.
+        Some(Value::Array(_) | Value::Object(_)) => true,
+        _ => false,
     }
 }
 
@@ -128,11 +125,10 @@ pub(crate) fn cursor_offset(comm_home: &Path, handle: &str) -> u64 {
     let text = String::from_utf8_lossy(&inbox);
     let mut n = 0u64;
     for seg in text.split('\n').filter(|s| !s.is_empty()) {
-        match ts_is_greater(seg, cur) {
-            None => {}
-            Some(true) => break,
-            Some(false) => n += 1,
+        if ts_is_greater(seg, cur) {
+            break;
         }
+        n += 1;
     }
     if n > total {
         0
@@ -291,7 +287,9 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         Decision::Hold => return Step::Skip,
         Decision::Wake => {}
     }
-    // The read-only phase: a wake check must never restart a dead row.
+    // Only a Ready row is typed into: a row whose agent has ended can still
+    // show a prompt-shaped last screen. (Nothing on the wake path restarts a
+    // row; `wake_if_free` only attaches.)
     let ready = crate::capsule_workspace::phase_str(sot_log::wire::SupervisorPhase::Ready);
     if crate::capsule_workspace::phase_of(state_dir) != ready {
         return Step::Skip;
@@ -446,7 +444,9 @@ mod tests {
     }
 
     /// The shell is the spec: every fixture is run through the real
-    /// `sot_cursor_offset` and must give the same number.
+    /// `sot_cursor_offset` and must give the same number. Linux only, like the
+    /// other tests that run the shell: it needs bash and jq on PATH.
+    #[cfg(target_os = "linux")]
     #[test]
     fn agrees_with_the_shell() {
         let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../comm/core/scripts/comm-lib.sh");

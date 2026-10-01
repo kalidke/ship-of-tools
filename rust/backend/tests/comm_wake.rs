@@ -230,7 +230,8 @@ async fn two_rows_on_one_handle_are_not_woken() {
 }
 
 /// A row whose agent has exited holds unread mail: the wake types nothing and
-/// never restarts it (the phase check, `check_row`).
+/// never restarts it. Nothing on the wake path restarts a row; this guards the
+/// outcome.
 #[tokio::test]
 async fn a_dead_row_is_never_restarted_by_a_wake() {
     let _serial = SERIAL.lock().await;

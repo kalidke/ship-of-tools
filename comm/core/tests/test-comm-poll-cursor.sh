@@ -126,46 +126,34 @@ check "an offset past the end of the inbox resets to 0" case_an_offset_past_the_
 check "a legacy cursor stops at the first stamp past it, not at the last below it" case_legacy_cursor_stops_at_the_first_unread_stamp
 check "a legacy cursor covering the inbox re-shows nothing" case_legacy_cursor_covering_the_inbox_shows_nothing
 
-case_empty_poll_rewrites_a_legacy_cursor_to_count_form() {
-    reset_inbox
-    line "2026-01-01T00:00:01Z" "old news"
-    line "2026-01-01T00:00:02Z" "older news"
-    printf '%s' "2026-01-01T00:00:05Z" > "$CURSOR"
-    poll
-    case "$POLL_OUT" in *"No new messages"*) ;; *) echo "  poll showed mail: $POLL_OUT"; return 1 ;; esac
-    local want; want="2 $(sed -n 2p "$INBOX" | tr -d '\n\000' | cksum | awk '{print $1 "-" $2}')"
-    [ "$(cat "$CURSOR")" = "$want" ] || { echo "  cursor is '$(cat "$CURSOR")', want '$want'"; return 1; }
-    return 0
-}
-
-case_an_unchanged_cursor_is_not_rewritten() {
-    reset_inbox
-    line "2026-01-01T00:00:01Z" "old news"
-    printf '%s' "2026-01-01T00:00:05Z" > "$CURSOR"
-    poll
-    local before after
-    before="$(cat "$CURSOR")"
-    case "$before" in "1 "*-*) ;; *) echo "  first poll left '$before'"; return 1 ;; esac
-    touch -d '2020-01-01 00:00:00' "$CURSOR"
-    poll
-    after="$(cat "$CURSOR")"
-    [ "$before" = "$after" ] || { echo "  cursor changed: '$before' -> '$after'"; return 1; }
-    [ "$(stat -c %Y "$CURSOR")" = "$(date -d '2020-01-01 00:00:00' +%s)" ] || { echo "  cursor file was rewritten"; return 1; }
-    return 0
-}
-
-case_a_bare_count_is_rewritten_to_count_and_hash() {
+# A read that fails part-way writes no cursor: nothing is marked read that was
+# not shown. A stub sed fails every line-range print (`N,Mp` / `Np`) for one
+# poll; the cursor must come out byte-identical, and the next real poll shows
+# every line past it.
+case_a_failing_read_changes_no_cursor() {
     reset_inbox
     line "2026-01-01T00:00:01Z" "one"
     line "2026-01-01T00:00:02Z" "two"
-    printf '2' > "$CURSOR"
+    line "2026-01-01T00:00:03Z" "three"
+    printf '%s' "2026-01-01T00:00:01Z" > "$CURSOR"
+    local before real_sed; before="$(cat "$CURSOR")"; real_sed="$(command -v sed)"
+    mkdir -p "$WORK/failsed"
+    cat > "$WORK/failsed/sed" <<EOF
+#!/bin/sh
+for a in "\$@"; do
+    case "\$a" in [0-9]*p) case "\${a%p}" in *[!0-9,]*) ;; *) exit 1 ;; esac ;; esac
+done
+exec "$real_sed" "\$@"
+EOF
+    chmod +x "$WORK/failsed/sed"
+    POLL_OUT="$(cd "$WORK" && PATH="$WORK/failsed:$PATH" SOT_COMM_SELF_FILE="$SELF" SOT_COMM_TEST_HOST="$HOST" "$POLL" 2>&1)"
+    [ "$(cat "$CURSOR")" = "$before" ] || { echo "  a failed read moved the cursor: '$before' -> '$(cat "$CURSOR")'"; return 1; }
     poll
-    case "$(cat "$CURSOR")" in "2 "*-*) return 0 ;; *) echo "  cursor is '$(cat "$CURSOR")'"; return 1 ;; esac
+    case "$POLL_OUT" in *two*three*) ;; *) echo "  the next poll did not show two and three: $POLL_OUT"; return 1 ;; esac
+    return 0
 }
 
-check "a legacy cursor with no newer mail is rewritten to count form" case_empty_poll_rewrites_a_legacy_cursor_to_count_form
-check "an unchanged cursor is not rewritten" case_an_unchanged_cursor_is_not_rewritten
-check "a bare count is rewritten to count and hash" case_a_bare_count_is_rewritten_to_count_and_hash
+check "a read that fails part-way writes no cursor" case_a_failing_read_changes_no_cursor
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

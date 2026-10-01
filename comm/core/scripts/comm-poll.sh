@@ -86,27 +86,14 @@ if [ -f "$INBOX" ]; then
     [ -z "$SOT_INBOX_READ_WARNING" ] || printf '%s\n' "$SOT_INBOX_READ_WARNING"
     pos="$(sot_cursor_offset "$NAME")"
     total="$(sot_inbox_lines "$NAME")"
-    batch=""; last=""
+    batch=""
     # The sentinel keeps a trailing empty line that $(...) would strip.
     [ "$total" -gt "$pos" ] && { batch="$(sed -n "$((pos + 1)),${total}p" "$INBOX"; printf x)"; batch="${batch%x}"; }
-    # An empty batch still leaves the cursor in count form (a legacy ts or bare
-    # count is replaced), written only when it would change.
-    if [ -z "$batch" ]; then
-        if [ "$total" -gt 0 ]; then
-            last="$(sed -n "${total}p" "$INBOX"; printf x)"; last="${last%x}"; last="${last%$'\n'}"
-            want="$total $(printf '%s' "$last" | _sot_hash_stdin)"
-        else
-            want="0"
-        fi
-        have="$(cat "$COMM_HOME/read/$NAME.cursor" 2>/dev/null || true)"
-    fi
     sot_inbox_read_unlock
     if [ -n "$batch" ]; then
         batch="${batch%$'\n'}"
         show_stream <<< "$batch"
         sot_cursor_write "$NAME" "$total" "${batch##*$'\n'}"
-    elif [ "$have" != "$want" ]; then
-        sot_cursor_write "$NAME" "$total" "$last"
     fi
 fi
 

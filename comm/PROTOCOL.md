@@ -238,9 +238,9 @@ before it). The cursor is `<count> <crc>-<len>`: the count, then the `cksum` of
 line `<count>` without its newline and NUL bytes — one hash, taken alike of the
 file's line and of the reader's copy. If that line no longer hashes so, a
 cut-back removed it, and the reader steps back one line and says so. A
-count-only cursor still works. Every poll by the
-owner, empty or not, leaves the cursor in the `<count> <crc>-<len>` form, and the
-daemon's wake reads it exactly as `sot_cursor_offset` does. Only
+count-only cursor still works. The daemon's wake reads every form exactly as
+`sot_cursor_offset` does and never writes the cursor: a timestamp-form cursor
+means "read up to that time" until the next poll that shows a line. Only
 newline-terminated lines are ever counted.
 
 `to` equal to the handle is directed mail and counts as unread; `""` is a
