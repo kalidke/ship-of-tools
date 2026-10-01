@@ -77,6 +77,11 @@ if [ "$FORCE" != true ]; then
         echo "  merge it first (git merge $BRANCH / PR), then re-run; or --force to drop unmerged work." >&2
         exit 2
     fi
+    # git worktree remove refuses these files: refuse now, before the session goes.
+    if [ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]; then
+        echo "comm-worktree-clean.sh: $WT has modified or untracked files — refusing; commit or remove them, or --force to drop them." >&2
+        exit 2
+    fi
 fi
 
 DESPAWNED=false
@@ -95,6 +100,7 @@ if [ "$KEEP_SESSION" != true ]; then
     fi
     if [ "$DESPAWNED" != true ]; then
         echo "comm-worktree-clean.sh: the session @$HANDLE was not despawned (see above); keeping worktree $WT" >&2
+        echo "  if the session is already gone, re-run with --keep-session." >&2
         exit 1
     fi
 fi
@@ -107,11 +113,6 @@ fi
 if [ -n "$BRANCH" ]; then
     if [ "$FORCE" = true ]; then git branch -D "$BRANCH" 2>&1 || true; else git branch -d "$BRANCH" 2>&1 || true; fi
 fi
-if [ "$KEEP_SESSION" = true ]; then
-    SESSION_NOTE=""
-elif [ "$DESPAWNED" = true ]; then
-    SESSION_NOTE=", session @$HANDLE despawned"
-else
-    SESSION_NOTE=", no session despawned (comm-despawn said why above)"
-fi
+SESSION_NOTE=""
+if [ "$DESPAWNED" = true ]; then SESSION_NOTE=", session @$HANDLE despawned"; fi
 echo "cleaned: worktree removed${BRANCH:+, branch $BRANCH deleted}${SESSION_NOTE}."

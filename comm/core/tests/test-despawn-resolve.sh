@@ -254,11 +254,12 @@ make_worktree() {
     printf 'display_prefix = ".P"\n' > "$WORK/wt/proj/.sot/worktree.toml"
 }
 
-run_clean() {
+run_clean() {  # [flag] — --force unless given ("" for none)
+    local opt="${1---force}"
     CLEAN_OUT="$(cd "$WORK/wt/proj" && env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_RELAY_ENDPOINT -u SOT_SESSION -u SOT_SPAWN_ENDPOINT \
         SOT_SPAWN_ENDPOINT="unix:$SOCK" SOT_TOKEN="dummy-test-token" XDG_CONFIG_HOME="$CH/xdg" \
         SOT_COMM_HOME="$CH" SOT_COMM_SELF_FILE="$CH/self.txt" \
-        timeout 60 "$SCRIPTS_DIR/comm-worktree-clean.sh" x --force 2>&1)"
+        timeout 60 "$SCRIPTS_DIR/comm-worktree-clean.sh" x $opt 2>&1)"
     CLEAN_RC=$?
 }
 
@@ -318,6 +319,23 @@ case_worktree_clean_keeps_on_failed_despawn() {
     stop_stub_daemon
     [ "$CLEAN_RC" -ne 0 ] || { echo "  exited 0: $CLEAN_OUT"; return 1; }
     [ -d "$WORK/wt/worktrees/proj-wt-x" ] || { echo "  the worktree was removed"; return 1; }
+    contains "$CLEAN_OUT" "--keep-session" || { echo "  the refusal names no --keep-session: $CLEAN_OUT"; return 1; }
+}
+
+# Without --force a dirty worktree is refused BEFORE the session is destroyed.
+case_worktree_clean_dirty_keeps_the_session() {
+    rm -rf "${WORK:?}/wt"; make_worktree
+    : > "$WORK/wt/worktrees/proj-wt-x/untracked.txt"
+    new_home; seed_row proj-wt-x ws-wt
+    LIST_PAYLOAD="{\"workspaces\":[$(ws_entry ws-wt p-wt-x .P-wt-x)]}"
+    DESTROY_PAYLOAD='{"workspace_id":"ws-wt"}'
+    start_stub_daemon; run_clean ""
+    local d; d="$(destroys)"
+    stop_stub_daemon
+    [ "$CLEAN_RC" -ne 0 ] || { echo "  exited 0: $CLEAN_OUT"; return 1; }
+    [ "$d" -eq 0 ] || { echo "  destroys=$d (want 0): the session went before the refusal"; return 1; }
+    [ -d "$WORK/wt/worktrees/proj-wt-x" ] || { echo "  the worktree was removed"; return 1; }
+    reg_has proj-wt-x || { echo "  @proj-wt-x was deregistered"; return 1; }
 }
 
 check "D1 registry row without a workspace_id: refused, row kept, comm-leave hint" case_row_without_workspace_id
@@ -331,7 +349,8 @@ check "D8 despawn destroys the registry's recorded workspace first" case_recorde
 check "W1 worktree-clean despawns once, by handle" case_worktree_clean_despawns_once
 check "W2 worktree-clean falls back to the label with no registry row" case_worktree_clean_label_fallback
 check "W3 label fallback also deregisters the handle" case_worktree_clean_label_deregisters
-check "W4 failed despawn keeps the worktree and exits nonzero" case_worktree_clean_keeps_on_failed_despawn
+check "W4 failed despawn keeps the worktree, exits nonzero, names --keep-session" case_worktree_clean_keeps_on_failed_despawn
+check "W5 a dirty worktree without --force is refused before the session is destroyed" case_worktree_clean_dirty_keeps_the_session
 
 echo ""
 echo "$PASS passed, $FAIL failed"
