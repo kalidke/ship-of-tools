@@ -96,6 +96,23 @@ if [ -f "$_hb_tick" ] && [ -n "$(find "$_hb_tick" -newermt '-10 seconds' 2>/dev/
 fi
 mkdir -p "$COMM_HOME/state" 2>/dev/null || true
 touch -- "$_hb_tick" 2>/dev/null || true
+# comm-lib.sh, in the comm home's bin first (update_comm puts every script
+# there), then next to this file: the fallback pair the hook uses for
+# comm-context.sh too. It is only ever sourced in a subshell.
+hb_lib="$COMM_HOME/bin/comm-lib.sh"
+[ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
+# A second agent inside the session (codex exec, claude -p) never refreshes the
+# row (a child touching the shared tick above delays the agent's own heartbeat by
+# at most 10 s). The gate comes before the context call; it needs only $$. Status
+# 1 is a child, silent; any other nonzero (an ancestry that cannot be read, a lib
+# too old to hold the gate) says why on stderr, and the hook still stands down.
+_why="$( ( . "$hb_lib" >/dev/null 2>&1 || exit 127; sot_require_agent ) 2>/dev/null )"; _rc=$?
+case "$_rc" in
+    0) ;;
+    1) exit 0 ;;
+    *) [ -n "$_why" ] || _why="could not check whether this process is its own session's agent; comm-lib.sh did not load or lacks the check"
+       echo "sot-comm: $_why" >&2; exit 0 ;;
+esac
 NAME=""
 # TIMEOUT GUARD (2026-09-17): comm-context.sh was observed hung on Windows,
 # and because this hook fires on EVERY PostToolUse a stalled child piles up
@@ -137,16 +154,9 @@ fi
 [ -n "${NAME:-}" ] || exit 0
 
 # The row and the write below are comm-lib.sh's sot_registry_read and
-# registry_replace, sourced in a subshell: deployed layout first (update_comm
-# puts every script in the comm home's bin), then next to this file, the same
-# fallback pair the hook uses for comm-context.sh.
+# registry_replace, sourced in a subshell (hb_lib, above).
 # sot_registry_read: 0 my row on stdout, 1 no row, 2 unreadable (a lib that
 # cannot be sourced is 2 too, never "no row"); only a row prints anything.
-hb_lib="$COMM_HOME/bin/comm-lib.sh"
-[ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
-# A second agent inside the session never refreshes the row (a child touching
-# the shared tick above delays the agent's own heartbeat by at most 10 s).
-( . "$hb_lib" >/dev/null 2>&1 || exit 0; sot_require_agent >/dev/null ) || exit 0
 row="$( ( . "$hb_lib" >/dev/null 2>&1 || exit 2; sot_registry_read "$NAME" ) | jq -r '(.floor // "") + "|" + (.status_at // "")' 2>/dev/null || true)"
 [ -n "$row" ] || exit 0
 

@@ -1,16 +1,21 @@
-// ancestors.rs — `sotd ancestors`: this process's ancestor executables, parent
-// first, one per line. Windows only. comm-lib.sh's `_sot_ancestor_chain` reads
-// it where `ps` cannot see a native parent through an MSYS shell, to count how
-// many agents lie between a comm script and its row's capsule.
+// ancestors.rs — `sotd ancestors`: this process's ancestors, parent first, one
+// line each: `<exe file name>\t<full command line>`. Windows only. comm-lib.sh's
+// `_sot_ancestor_chain` reads it where `ps` cannot see a native parent through
+// an MSYS shell, to count how many agents lie between a comm script and its
+// row's capsule. The command line is what tells `node <agent script>` from any
+// other node; one that cannot be read is printed empty.
 //
 // One Toolhelp snapshot, then a walk upward from this process's own parent. The
 // snapshot keeps a parent pid after the parent has exited, and Windows reuses
 // pids, so the walk stops where the chain stops being one: a pid missing from
-// the snapshot, pid 0 or 4 (System), a repeat, 64 lines, or a parent whose
-// creation time is unreadable or later than its child's.
+// the snapshot or pid 0 or 4 (System) is the top. A walk cut short any other way
+// (64 lines, a parent whose creation time is unreadable or later than its
+// child's) ends with the line `!truncated` and exit 3: the caller must not take
+// what it has read for the whole chain.
 
 /// Runs the subcommand and returns its exit status: 0 when at least one line
-/// was printed, else 1; 2 off Windows.
+/// was printed and the walk reached the top, 3 when it was truncated, else 1;
+/// 2 off Windows.
 pub fn run() -> i32 {
     #[cfg(windows)]
     {
@@ -25,8 +30,9 @@ pub fn run() -> i32 {
 
 #[cfg(windows)]
 mod win {
-    use std::collections::{HashMap, HashSet};
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use std::collections::HashMap;
+    use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, UNICODE_STRING};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
@@ -75,24 +81,74 @@ mod win {
         }
     }
 
+    /// A process's full command line, or `None` when it cannot be read. Tabs and
+    /// line breaks become spaces: the caller reads one tab-separated line per
+    /// process.
+    fn command_line(pid: u32) -> Option<String> {
+        // SAFETY: `OpenProcess` returns null on failure; a non-null handle is
+        // closed before returning. The buffer is `u64` words, so the
+        // `UNICODE_STRING` header at its start is aligned, and the query writes
+        // the string's characters into the same buffer, which outlives the
+        // slice read from it.
+        unsafe {
+            let handle: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return None;
+            }
+            let mut need: u32 = 0;
+            NtQueryInformationProcess(handle, ProcessCommandLineInformation, std::ptr::null_mut(), 0, &mut need);
+            let text = if need == 0 {
+                None
+            } else {
+                let mut buf = vec![0u64; (need as usize).div_ceil(8)];
+                let status = NtQueryInformationProcess(
+                    handle,
+                    ProcessCommandLineInformation,
+                    buf.as_mut_ptr().cast(),
+                    (buf.len() * 8) as u32,
+                    &mut need,
+                );
+                let us = &*(buf.as_ptr() as *const UNICODE_STRING);
+                if status < 0 || us.Buffer.is_null() {
+                    None
+                } else {
+                    let wide = std::slice::from_raw_parts(us.Buffer, (us.Length / 2) as usize);
+                    Some(String::from_utf16_lossy(wide))
+                }
+            };
+            CloseHandle(handle);
+            text.map(|t| t.replace(['\t', '\r', '\n'], " "))
+        }
+    }
+
     pub fn run() -> i32 {
         let Some(procs) = snapshot() else { return 1 };
         let me = std::process::id();
         let Some(mut child_created) = created(me) else { return 1 };
         let mut pid = procs.get(&me).map(|p| p.0).unwrap_or(0);
-        let mut seen = HashSet::new();
         let mut printed = 0;
-        while printed < MAX_LINES && pid != 0 && pid != 4 && seen.insert(pid) {
+        let mut truncated = false;
+        while pid != 0 && pid != 4 {
+            if printed >= MAX_LINES {
+                truncated = true;
+                break;
+            }
             let Some((parent, exe)) = procs.get(&pid) else { break };
             match created(pid) {
                 Some(c) if c <= child_created => child_created = c,
-                _ => break,
+                _ => {
+                    truncated = true;
+                    break;
+                }
             }
-            println!("{exe}");
+            println!("{exe}\t{}", command_line(pid).unwrap_or_default());
             printed += 1;
             pid = *parent;
         }
-        if printed > 0 {
+        if truncated {
+            println!("!truncated");
+            3
+        } else if printed > 0 {
             0
         } else {
             1

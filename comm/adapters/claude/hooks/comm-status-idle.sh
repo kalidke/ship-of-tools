@@ -90,6 +90,21 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # mail gate below.
 FE_LIB="$HOME_DIR/bin/comm-lib.sh"; [ -r "$FE_LIB" ] || FE_LIB="$SELF_DIR/comm-lib.sh"
 
+# A second agent inside the session (codex exec, claude -p) is not the row's
+# agent: no block, floor or stamp. The gate comes before the context call and
+# needs only $$. Status 1 is a child, silent; any other nonzero (an ancestry
+# that cannot be read, a lib too old to hold the gate) says why in a
+# systemMessage, and the hook still stands down.
+_why="$( ( . "$FE_LIB" >/dev/null 2>&1 || exit 127; sot_require_agent ) 2>/dev/null )"; _rc=$?
+case "$_rc" in
+    0) ;;
+    1) exit 0 ;;
+    *) [ -n "$_why" ] || _why="could not check whether this process is its own session's agent; comm-lib.sh did not load or lacks the check"
+       _why="$(printf '%s' "$_why" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+       printf '{"systemMessage":"sot-comm: %s"}\n' "$_why"
+       exit 0 ;;
+esac
+
 # Every Stop ends with `stop`, whatever else this hook did first (the marker
 # stamp, the nudge continuation): it sets `done` only when `floor` was `user`
 # and neither `question` nor `waiting` is set, then clears `floor` — a fact
@@ -134,9 +149,6 @@ NAME=""
 # fallback. In the repo checkout the hooks dir holds only hooks.
 CTX="$HOME_DIR/bin/comm-context.sh"; [ -x "$CTX" ] || CTX="$SELF_DIR/comm-context.sh"
 [ -x "$CTX" ] && eval "$("$CTX" 2>/dev/null)" 2>/dev/null || true
-# A second agent inside the session (codex exec, claude -p) shares the row's
-# handle through the env but is not the row's agent: no block, floor or stamp.
-if [ -n "${NAME:-}" ] && ! ( . "$FE_LIB" >/dev/null 2>&1 || exit 0; sot_require_agent >/dev/null ); then exit 0; fi
 # The tools this hook runs. A session whose jq, flock or perl is missing never
 # sees its mail, so the hook SAYS so instead of passing: it must not need the
 # missing tool to do it, so the joined-agent test below falls back to grep and

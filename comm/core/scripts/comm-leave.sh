@@ -4,6 +4,9 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
+# A second agent inside the session never removes a row, its own or another's;
+# the gate comes before the context call, so a refused child touches nothing.
+_why="$(sot_require_agent)" || { echo "comm-leave.sh: $_why" >&2; exit 1; }
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 ensure_home
 
@@ -34,7 +37,6 @@ if [ -n "$WHO" ] && [ "$WHO" != "$NAME" ]; then
 fi
 
 [ -z "$NAME" ] && { echo "Not joined — nothing to do."; exit 0; }
-if ! _why="$(sot_require_agent)"; then echo "comm-leave.sh: $_why" >&2; exit 1; fi
 with_lock registry_del "$NAME"
 rm -f "${SELF_FILE:?}"
 echo "Left sot-comm (@$NAME removed)."

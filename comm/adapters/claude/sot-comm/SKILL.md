@@ -14,8 +14,8 @@ with `comm-send.sh @handle "text"` and read its one result. When
 `comm-poll.sh`; if it says the inbox is being written (exit 75), run it again.
 To wait for a reply, end your turn. Run the session-start step
 once, when a session first starts — not again on every resume. If a comm
-script says this process has no comm identity, you were started inside another
-session: stop; do not retry or join.
+script says this process has no comm identity (you were started inside another
+session) or cannot read its own ancestry: stop; do not retry or join.
 
 This is ADR 0049's design of record, landing in stages: a send's verdict now is
 `filed -> @h` or `FAILED -> @h: <reason>`, except that until B2 a handle the

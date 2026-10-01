@@ -14,8 +14,6 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
-eval "$("$SCRIPT_DIR/comm-context.sh")"
-ensure_home
 
 BROADCAST=false; TARGET=""; MSG=""
 while [ $# -gt 0 ]; do
@@ -37,6 +35,16 @@ while [ $# -gt 0 ]; do
 done
 
 [ -z "$MSG" ] && { echo "usage: comm-send.sh @name \"msg\" | --broadcast \"msg\"" >&2; exit 1; }
+
+# A second agent inside the session never sends as the row's handle. The gate
+# comes before the context call (which can heal a self file or create the
+# registry), so a refused child touches nothing.
+if ! why="$(sot_require_agent)"; then
+    if [ "$BROADCAST" = true ]; then echo "FAILED -> --broadcast: $why" >&2; else echo "FAILED -> @$TARGET: $why" >&2; fi
+    exit 1
+fi
+eval "$("$SCRIPT_DIR/comm-context.sh")"
+ensure_home
 
 # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): MSG can
 # legitimately start with "/" (an agent naturally opens with a slash

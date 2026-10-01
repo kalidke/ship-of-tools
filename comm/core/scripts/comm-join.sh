@@ -60,10 +60,10 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# A second agent inside a session never binds a handle: refuse before the context
+# call (which can heal a self file or create the registry) and any later write.
+_why="$(sot_require_agent)" || { echo "comm-join.sh: REFUSING to bind: $_why" >&2; exit 1; }
 eval "$("$SCRIPT_DIR/comm-context.sh")"
-# A second agent inside a session never binds a handle: refuse before any
-# registry, agent.join or slot write.
-if ! _why="$(sot_require_agent)"; then echo "comm-join.sh: REFUSING to bind: $_why" >&2; exit 1; fi
 ensure_home
 
 # Spawn handoff: comm-spawn (and the daemon's capsule producer env, see

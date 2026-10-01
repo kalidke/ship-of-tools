@@ -147,7 +147,7 @@ bash -c "$OLD_LOOP" sot-bridge "$SCRIPTS_DIR/comm-relay.sh" h "$TETHER" "" </dev
 LOOPA=$!
 sleep 3
 check "retired bridge, tethered: the line is logged once" "$(grep -cF "$RETIRED" "$WORK/bridge/a.log")" "1"
-CHILDA="$(pgrep -P "$LOOPA" | head -n1)"
+CHILDA="$(/usr/bin/pgrep -P "$LOOPA" | head -n1)"
 kill "$TETHER" 2>/dev/null; wait "$TETHER" 2>/dev/null
 gone=0
 for _ in $(seq 1 50); do
@@ -162,7 +162,7 @@ bash -c "$OLD_LOOP" sot-bridge "$SCRIPTS_DIR/comm-relay.sh" h "" "" </dev/null >
 LOOPB=$!
 sleep 6
 check "retired bridge, untethered: still exactly one line after 6 s" "$(grep -cF "$RETIRED" "$WORK/bridge/b.log")" "1"
-CHILDB="$(pgrep -P "$LOOPB" | head -n1)"
+CHILDB="$(/usr/bin/pgrep -P "$LOOPB" | head -n1)"
 check "retired bridge, untethered: the child is a sleep" "$(ps -o comm= -p "${CHILDB:-0}" 2>/dev/null)" "sleep"
 kill "$LOOPB" 2>/dev/null; [ -z "$CHILDB" ] || kill "$CHILDB" 2>/dev/null
 wait "$LOOPB" 2>/dev/null

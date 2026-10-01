@@ -45,9 +45,11 @@ The owner asked for the fix as "agree on the one page comm system and then clean
   that runs inside its parent's agent process is part of that session: it may send under
   the parent's handle and never reads the inbox. Another agent started inside a session
   (`codex exec`, `claude -p`), and anything it starts, has no comm identity: a process
-  acts as a handle only if at most one agent (claude or codex; a node wrapper and its own
-  binary count once) lies between it and its row's capsule, or the top of its process
-  tree outside a row. An agent that needs its own handle is started as its own row.
+  acts as a handle only if at most one agent (claude or codex; an npm agent's `node
+  <script>` and its native child count once) lies between it and its row's capsule, or
+  the top of its process tree outside a row; an ancestry that cannot be read in full is
+  refused. An agent that needs its own handle is started as its own row. What the check
+  does not see is listed in `comm/PROTOCOL.md`.
 
 ## Why the daemon and not the frontend
 

@@ -60,8 +60,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=comm-lib.sh
 source "$SCRIPT_DIR/comm-lib.sh"
-eval "$("$SCRIPT_DIR/comm-context.sh")"
-ensure_home
 
 VERB="${1:-}"
 case "$VERB" in
@@ -69,6 +67,16 @@ case "$VERB" in
     "") echo "usage: comm-status.sh <prompt|stop|working|idle|blocked|done|waiting> [\"text\"]" >&2; exit 2 ;;
     *)  echo "comm-status.sh: invalid verb '$VERB' (want prompt|stop|working|idle|blocked|done|waiting)" >&2; exit 2 ;;
 esac
+
+# A second agent inside the session never stamps the row: an event is a silent
+# no-op, a declaration a loud failure. The gate comes before the context call, so
+# a refused child touches nothing.
+if ! _why="$(sot_require_agent)"; then
+    case "$VERB" in prompt|stop) exit 0 ;; esac
+    echo "comm-status.sh: $_why" >&2; exit 1
+fi
+eval "$("$SCRIPT_DIR/comm-context.sh")"
+ensure_home
 
 # Self-gate: only a joined comm agent (a session with a self row) reports.
 # NAME comes from comm-context (the pane-keyed self file); empty / no row →
@@ -80,12 +88,6 @@ _no_row() {
 }
 # An unreadable registry is no evidence either way: every verb FAILs.
 UNREADABLE="FAILED: the registry could not be read; stamp discarded"
-# A second agent inside the session never stamps the row: an event is a silent
-# no-op, a declaration a loud failure.
-if ! _why="$(sot_require_agent)"; then
-    case "$VERB" in prompt|stop) exit 0 ;; esac
-    echo "comm-status.sh: $_why" >&2; exit 1
-fi
 [ -n "${NAME:-}" ] || _no_row
 rc=0; sot_registry_read "$NAME" >/dev/null || rc=$?
 case "$rc" in 0) ;; 1) _no_row ;; *) echo "$UNREADABLE" >&2; exit 1 ;; esac

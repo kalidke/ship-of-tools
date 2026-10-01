@@ -3,6 +3,9 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
+# A second agent inside the session never reads the row's inbox; the gate comes
+# before the context call, so a refused child touches nothing.
+_why="$(sot_require_agent)" || { echo "comm-poll: $_why" >&2; exit 1; }
 # jq parses every frame; flock and perl are the inbox's read and write lock on
 # Linux. Without one, mail is never seen and nothing said so: say it, here,
 # on stdout too (the session reads poll's stdout).
@@ -16,8 +19,6 @@ eval "$("$SCRIPT_DIR/comm-context.sh")"
 ensure_home
 
 [ -z "$NAME" ] && { echo "Not joined — run comm-join.sh first." >&2; exit 1; }
-# A second agent inside the session never reads the row's inbox.
-if ! _why="$(sot_require_agent)"; then echo "comm-poll: $_why" >&2; exit 1; fi
 
 INBOX="$INBOX_DIR/$NAME.jsonl"
 CUR="$READ_DIR/$NAME.cursor"
