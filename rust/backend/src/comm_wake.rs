@@ -8,6 +8,27 @@
 //! it is skipped and tried again next tick; its end-of-turn check still reads
 //! the mail. This module only READS the inbox and cursor.
 //!
+//! A working row keeps its input box live with the cursor at the prompt, so
+//! one frame cannot tell it from a row at rest. The screen is told apart by
+//! holding: a row is typed into only if its screen stays identical for
+//! [`STILL_FOR`] (a working row's spinner redraws several times a second).
+//! The prompt glyph is `❯`, or on Windows either `❯` or `>` (Claude Code's
+//! fallback when its unicode check fails, which on Windows depends on the
+//! environment). On both OSes the line sits directly between the input box's
+//! two rules and the glyph is followed by U+00A0, the main prompt's own mark
+//! (menus and dialog inputs draw an ASCII space); on Windows a bare glyph also
+//! counts until the NBSP is shown to survive ConPTY (`NBSP_ON_WINDOWS`). A row at rest whose
+//! screen never holds still (a live clock, an animation) is never woken; this
+//! fails closed and its end-of-turn check still reads the mail.
+//! The converse fails open: a working row whose screen happens not to change
+//! for [`STILL_FOR`] is typed into, and the line lands as a queued message.
+//! A permission menu is not free by construction (its options use an ASCII
+//! space and it is never boxed), though it holds still. The menu fixtures are
+//! synthetic (built from the bundle's layout; no menu screen has been
+//! captured), and this assumes the cursor follows focus into a dialog. The Windows-only gap:
+//! while the NBSP is not required there, an agents-view task box with an empty
+//! placeholder (a voice state) reads free.
+//!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
 
@@ -26,6 +47,10 @@ const CONTROLLER_ID: &str = "sot-comm-wake";
 const OP_BUDGET: Duration = Duration::from_secs(3);
 const QUIET_BUDGET: Duration = Duration::from_millis(300);
 const PACING_BUDGET: Duration = Duration::from_secs(1);
+/// A turn whose only change is a once-a-second counter must change inside the hold even when the screen reaches the daemon ~100 ms late.
+const STILL_FOR: Duration = Duration::from_millis(1500);
+/// The rule drawn above and below Claude Code's input box.
+const RULE: char = '\u{2500}';
 
 /// When a handle was last woken: the inbox's complete-line count then.
 #[derive(Debug, Clone, Copy)]
@@ -192,35 +217,66 @@ fn decide(s: &Scan, woken: Option<&Woken>, now: Instant) -> Decision {
     }
 }
 
-/// The prompt glyph of an agent the daemon can read, `None` for one it cannot.
-/// Codex ships OFF: no Codex screen has been captured, and a glyph is never
-/// guessed, so a Codex row counts as a row the daemon cannot type into.
-fn prompt_glyph(agent: &str) -> Option<char> {
+/// The prompt glyphs of an agent the daemon can read, none for one it cannot.
+/// Claude Code draws `❯`, or a bare `>` when its unicode check fails, which on
+/// Windows depends on the environment. Codex ships OFF: no Codex screen has
+/// been captured, and a glyph is never guessed, so a Codex row counts as a row
+/// the daemon cannot type into.
+fn prompt_glyphs(agent: &str, windows: bool) -> &'static [char] {
     match agent {
-        "claude" => Some('\u{276f}'),
-        _ => None,
+        "claude" if windows => &['\u{276f}', '>'],
+        "claude" => &['\u{276f}'],
+        _ => &[],
     }
 }
 
-/// The free-prompt test: the cursor sits on the empty input line. The row
-/// indexes a real line, the line holds the glyph with only spaces before it,
-/// and the cursor column is just after the glyph (or one more, over a space,
-/// no-break space, tab or nothing). A dialog, a draft or a working session is
-/// not free.
+/// A line of nothing but [`RULE`] (trailing spaces aside).
+fn is_rule(line: &str) -> bool {
+    let line = line.trim_end_matches(' ');
+    !line.is_empty() && line.chars().all(|c| c == RULE)
+}
+
+/// Whether the input prompt's own separator, U+00A0 after the glyph, is required on Windows. On Linux it always
+/// is. Off until a Windows screen read shows the NBSP survives ConPTY; while off, a bare glyph also counts there,
+/// and an agents-view task box with an empty placeholder (a voice state) reads free: a named Windows-only gap.
+const NBSP_ON_WINDOWS: bool = false;
+
+fn nbsp_required(windows: bool) -> bool {
+    !windows || NBSP_ON_WINDOWS
+}
+
+/// The free-prompt test, all of: (a) only spaces before the glyph; (b) the cursor
+/// is just after the glyph, or one more; (c) the line sits directly between two
+/// rule lines, the input box's; (d) the glyph is followed by U+00A0, the main
+/// prompt's own mark (menus and dialog inputs draw an ASCII space), or, where
+/// the NBSP is not required ([`NBSP_ON_WINDOWS`]), by nothing but spaces. A
+/// menu, a dialog or a draft is not free. One frame cannot tell a working row,
+/// whose input box is live too; the hold in `wake_if_free` does.
 pub(crate) fn prompt_free(lines: &[String], cursor: Option<(u16, u16)>, agent: &str) -> bool {
-    let (Some(glyph), Some((row, col))) = (prompt_glyph(agent), cursor) else {
+    prompt_free_on(lines, cursor, agent, cfg!(windows))
+}
+
+pub(crate) fn prompt_free_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> bool {
+    let glyphs = prompt_glyphs(agent, windows);
+    let (false, Some((row, col))) = (glyphs.is_empty(), cursor) else {
         return false;
     };
-    let Some(line) = lines.get(row as usize) else {
+    let row = row as usize;
+    let Some(line) = lines.get(row) else {
         return false;
     };
+    let boxed = row > 0 && is_rule(&lines[row - 1]) && lines.get(row + 1).is_some_and(|l| is_rule(l));
+    if !boxed {
+        return false;
+    }
     let cells: Vec<char> = line.chars().collect();
-    let Some(g) = cells.iter().position(|c| *c == glyph) else {
+    let Some(g) = cells.iter().position(|c| glyphs.contains(c)) else {
         return false;
     };
     let col = col as usize;
-    cells[..g].iter().all(|c| *c == ' ')
-        && (col == g + 1 || (col == g + 2 && matches!(cells.get(g + 1), None | Some(' ' | '\u{a0}' | '\t'))))
+    let nbsp = cells.get(g + 1) == Some(&'\u{a0}');
+    let bare = !nbsp_required(windows) && cells[g + 1..].iter().all(|c| *c == ' ');
+    cells[..g].iter().all(|c| *c == ' ') && (col == g + 1 || col == g + 2) && (nbsp || bare)
 }
 
 /// The tick. Runs forever; started once from `server::run`.
@@ -239,6 +295,7 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
                 *declared.entry(h).or_default() += 1;
             }
         }
+        let mut checks = Vec::new();
         for ws in rows {
             let handle = ws.agent_handle();
             if handle.is_empty() || ws.runtime != "capsule" {
@@ -253,15 +310,19 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
                 continue;
             }
             let agent = ws.agent();
-            if prompt_glyph(&agent).is_none() {
+            if prompt_glyphs(&agent, cfg!(windows)).is_empty() {
                 continue;
             }
             let state_dir = crate::capsule_workspace::state_dir_for(&state_root, &ws.workspace_id);
             let home = comm_home.clone();
             let prior = woken.get(&handle).copied();
             let h = handle.clone();
-            let result = tokio::task::spawn_blocking(move || check_row(&home, &h, &state_dir, &agent, prior)).await;
-            match result {
+            // Concurrent: each wake holds the screen for STILL_FOR, so N rows
+            // with mail cost one hold per tick, not N.
+            checks.push((handle, tokio::task::spawn_blocking(move || check_row(&home, &h, &state_dir, &agent, prior))));
+        }
+        for (handle, check) in checks {
+            match check.await {
                 Ok(Step::Clear) => {
                     woken.remove(&handle);
                 }
@@ -300,6 +361,7 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         WAKE_LINE,
         prompt_free,
         agent,
+        STILL_FOR,
         OP_BUDGET,
         QUIET_BUDGET,
         PACING_BUDGET,
@@ -322,33 +384,45 @@ mod tests {
     }
 
     fn free(l: &[&str], cur: Option<(u16, u16)>) -> bool {
-        prompt_free(&lines(l), cur, "claude")
+        prompt_free_on(&lines(l), cur, "claude", false)
+    }
+
+    const R: &str = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
+
+    fn boxed(line: &str) -> Vec<String> {
+        vec![R.to_string(), line.to_string(), R.to_string()]
+    }
+
+    fn bfree(line: &str, col: u16, windows: bool) -> bool {
+        prompt_free_on(&boxed(line), Some((1, col)), "claude", windows)
     }
 
     #[test]
     fn free_prompts() {
-        assert!(free(&["banner", "\u{276f}"], Some((1, 2))));
-        assert!(free(&["\u{276f}"], Some((0, 1))));
-        // Ghost-text suggestion with the cursor at its start.
-        assert!(free(&["\u{276f} try this"], Some((0, 1))));
-        assert!(free(&["\u{276f}\u{a0}"], Some((0, 2))));
+        for windows in [false, true] {
+            // Ghost-text suggestion with the cursor at its start.
+            assert!(bfree("\u{276f}\u{a0}try this", 2, windows));
+        }
     }
 
     #[test]
     fn drafts_dialogs_and_missing_cursors_are_not_free() {
-        assert!(!free(&["\u{276f} hello"], Some((0, 8))));
-        assert!(!free(&["\u{276f}h"], Some((0, 2))));
-        assert!(!free(&["\u{276f} h"], Some((0, 3))));
+        for w in [false, true] {
+            // The cursor at the draft's end (clause b), and text before the glyph (clause a).
+            assert!(!bfree("\u{276f}\u{a0}hello", 7, w));
+            assert!(!bfree("x\u{276f}\u{a0}", 3, w));
+        }
         assert!(!free(&["\u{276f}", "Allow this action? (y/n)"], Some((1, 24))));
         assert!(!free(&["\u{276f}"], None));
         assert!(!free(&["\u{276f}"], Some((5, 1))));
-        assert!(!free(&["x \u{276f}"], Some((0, 3))));
     }
 
     #[test]
     fn an_agent_without_a_predicate_is_never_free() {
-        assert!(!prompt_free(&lines(&["\u{203a}"]), Some((0, 1)), "codex"));
-        assert!(!prompt_free(&lines(&["\u{276f}"]), Some((0, 1)), "codex"));
+        for windows in [false, true] {
+            assert!(!prompt_free_on(&lines(&["\u{203a}"]), Some((0, 1)), "codex", windows));
+            assert!(!prompt_free_on(&lines(&["\u{276f}"]), Some((0, 1)), "codex", windows));
+        }
     }
 
     fn home(inbox: &str, cursor: Option<&str>) -> tempfile::TempDir {
@@ -538,5 +612,249 @@ mod tests {
         assert_eq!(decide(&mail(3, 0), Some(&w), later), Decision::Wake);
         // Read: forgotten.
         assert_eq!(decide(&mail(0, 0), Some(&w), later), Decision::Clear);
+    }
+
+    fn on(l: &[&str], cur: (u16, u16), windows: bool) -> bool {
+        prompt_free_on(&lines(l), Some(cur), "claude", windows)
+    }
+
+    /// A claude row at rest, captured live on Linux (2026-10-01): cursor (8, 2), after a grey suggestion. Identifying text scrubbed.
+    const LINUX_IDLE: [&str; 13] = [
+        "● Monitor event: a watched row changed state                                                                     │",
+        "                                                                                                                 │",
+        "● Nothing to act on; staying idle.                                                                               │",
+        "  Waiting for the next case.                                                                                     │",
+        "                                                                                                                 │",
+        "✻ Sautéed for 3s · done 9:21 AM · 2 monitors still running                                                       │",
+        "                                                                         ✔ Update installed · Restart to update  │",
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯\u{a0}ready for the next case",
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  Opus 5.5 [00000000] acct ·think:xhigh | v2.1.285 | demo:main | 0 uncommitted",
+        "  Session: 1k (in:1k out:1k) | $0.00",
+        "  ⏵⏵ auto mode on · 2 monitors · ← for agents",
+    ];
+
+    /// A claude row mid-turn, captured live on Linux (2026-10-01): the spinner is live above the box and the cursor still sits at (8, 2). Line 2 is a queued input echoed with the glyph OUTSIDE the box.
+    const LINUX_TURN_A: [&str; 13] = [
+        "     (ctrl+b to run in background)                                                                               │",
+        "                                                                                                                 │",
+        "❯ [sot-comm] you have mail: run comm-poll.sh                                                                     │",
+        "  ctrl+x ctrl+s to send now                                                                                      │",
+        "                                                                                                                 │",
+        "✢ Levitating… (56s · ↓ 3.4k tokens)                                                                              │",
+        "                                                                         ✔ Update installed · Restart to update  │",
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯\u{a0}Press up to edit queued messages",
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  Opus 5.5 [00000000] acct ·think:xhigh | v2.1.285 | demo:main | 0 uncommitted",
+        "  Session: 1k (in:1k out:1k) | $0.00",
+        "  ⏵⏵ auto mode on · 2 monitors · ← for agents",
+    ];
+
+    // Windows: REAL captures of a claude row mid-turn on Windows (2026-10-01, Claude Code 2.1.282, the row's own
+    // screen read, trailing spaces trimmed by the reader), statusline id and cost scrubbed. rows 75, cols 203,
+    // cursor (69, 2) = row 7 here, col 2. The prompt is the single byte '>' and the rules are U+2500 x 203: Claude
+    // Code's `figures` fallback, chosen when its unicode check fails (on Windows: no WT_SESSION, TERM other than
+    // xterm-256color, ...); the statusline's '√' is the same fallback for '✔'.
+    const WIN_RULE: &str = "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────";
+    /// Mid-turn: the spinner and the running tool are live above the box.
+    const WIN_TURN_A: [&str; 13] = [
+        "  ⎿  Running… (8s)",
+        "     (ctrl+b to run in background)",
+        "",
+        "✢ Prestidigitating… (38s · ↓ 584 tokens)",
+        "  ⎿  Tip: Hit shift+tab to cycle between manual mode, auto-accept edit mode, and plan mode",
+        "",
+        WIN_RULE,
+        ">",
+        WIN_RULE,
+        "  Opus 5.5 (1M context) [00000000] think:medium | v2.1.282 | demo:main | 0 uncommitted                                                                    √ Update installed · Restart to update",
+        "  Session: 197k (in:197k out:471) | $0.00",
+        "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
+        "",
+    ];
+    /// DERIVED from WIN_TURN_A (not captured): the turn ended; lines 0, 1 and 3 replaced by finished-turn text.
+    const WIN_REST: [&str; 13] = [
+        "  ⎿  Done.",
+        "",
+        "",
+        "✻ Worked for 38s",
+        "  ⎿  Tip: Hit shift+tab to cycle between manual mode, auto-accept edit mode, and plan mode",
+        "",
+        WIN_RULE,
+        ">",
+        WIN_RULE,
+        "  Opus 5.5 (1M context) [00000000] think:medium | v2.1.282 | demo:main | 0 uncommitted                                                                    √ Update installed · Restart to update",
+        "  Session: 197k (in:197k out:471) | $0.00",
+        "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
+        "",
+    ];
+    /// DERIVED from WIN_REST: a quoted ">" output line at row 1 (put the cursor on it at (1, 2)).
+    const WIN_QUOTED: [&str; 13] = [
+        "  ⎿  Done.",
+        "> quoted text",
+        "",
+        "✻ Worked for 38s",
+        "  ⎿  Tip: Hit shift+tab to cycle between manual mode, auto-accept edit mode, and plan mode",
+        "",
+        WIN_RULE,
+        ">",
+        WIN_RULE,
+        "  Opus 5.5 (1M context) [00000000] think:medium | v2.1.282 | demo:main | 0 uncommitted                                                                    √ Update installed · Restart to update",
+        "  Session: 197k (in:197k out:471) | $0.00",
+        "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
+        "",
+    ];
+
+    #[test]
+    fn linux_rest_capture_is_free() {
+        assert!(on(&LINUX_IDLE, (8, 2), false));
+    }
+
+    #[test]
+    fn one_turn_frame_reads_free() {
+        // One frame of a working row reads free (its box shows the glyph, NBSP and a queued-message hint); only
+        // the hold in `wake_if_free` protects it (itest `a_working_row_is_not_typed_into_until_it_rests`).
+        assert!(on(&LINUX_TURN_A, (8, 2), false));
+        assert_eq!(on(&WIN_TURN_A, (7, 2), true), !nbsp_required(true));
+        let mut nbsp = WIN_TURN_A;
+        nbsp[7] = ">\u{a0}";
+        assert!(on(&nbsp, (7, 2), true));
+    }
+
+    #[test]
+    fn windows_takes_both_glyphs_inside_the_box() {
+        assert_eq!(on(&WIN_REST, (7, 2), true), !nbsp_required(true));
+        let mut nbsp = WIN_REST;
+        nbsp[7] = ">\u{a0}";
+        assert!(on(&nbsp, (7, 2), true));
+        let mut bare = WIN_REST;
+        bare[7] = "\u{276f}";
+        assert_eq!(on(&bare, (7, 2), true), !nbsp_required(true));
+        bare[7] = "\u{276f}\u{a0}";
+        assert!(on(&bare, (7, 2), true));
+        assert!(on(&LINUX_IDLE, (8, 2), true));
+    }
+
+    #[test]
+    fn windows_quoted_lines_are_not_free() {
+        assert!(!on(&WIN_QUOTED, (1, 2), true));
+        let mut quoted = WIN_QUOTED;
+        quoted[1] = "\u{276f} quoted text";
+        assert!(!on(&quoted, (1, 2), true));
+    }
+
+    /// SYNTHETIC, from the layout of Claude Code's permission dialog: every option is `[pointer-or-space, " ", label]`.
+    const PERM_MENU: [&str; 10] = [
+        "Bash command",
+        "",
+        "  rm -rf build",
+        "  Remove the build directory",
+        "",
+        "Do you want to proceed?",
+        "",
+        "\u{276f} 1. Yes",
+        "  2. Yes, and don't ask again for rm commands",
+        "  3. No, and tell Claude what to do differently (esc)",
+    ];
+    /// SYNTHETIC, from the layout of the AskUserQuestion dialog.
+    const ASKQ_MENU: [&str; 6] = [
+        "Which approach?",
+        "",
+        "\u{276f} 1. Fast path",
+        "     Skip the cache",
+        "  2. Safe path",
+        "  3. Type something.",
+    ];
+
+    fn with_rules<const N: usize>(menu: [&str; N], rows: [usize; 2]) -> [&str; N] {
+        let mut m = menu;
+        m[rows[0]] = R;
+        m[rows[1]] = R;
+        m
+    }
+
+    #[test]
+    fn menus_are_never_free() {
+        let perm_boxed = with_rules(PERM_MENU, [6, 8]);
+        let askq_boxed = with_rules(ASKQ_MENU, [1, 3]);
+        for windows in [false, true] {
+            assert!(!on(&PERM_MENU, (7, 2), windows));
+            assert!(!on(&perm_boxed, (7, 2), windows));
+            assert!(!on(&ASKQ_MENU, (2, 2), windows));
+            assert!(!on(&askq_boxed, (2, 2), windows));
+        }
+        let mut perm_gt = PERM_MENU;
+        perm_gt[7] = "> 1. Yes";
+        let mut perm_gt_boxed = perm_boxed;
+        perm_gt_boxed[7] = "> 1. Yes";
+        let mut askq_gt = ASKQ_MENU;
+        askq_gt[2] = "> 1. Fast path";
+        let mut askq_gt_boxed = askq_boxed;
+        askq_gt_boxed[2] = "> 1. Fast path";
+        assert!(!on(&perm_gt, (7, 2), true));
+        assert!(!on(&perm_gt_boxed, (7, 2), true));
+        assert!(!on(&askq_gt, (2, 2), true));
+        assert!(!on(&askq_gt_boxed, (2, 2), true));
+        assert!(!free(&["\u{276f} 1. Yes"], Some((0, 2))));
+    }
+
+    #[test]
+    fn dialog_inputs_are_never_free() {
+        for windows in [false, true] {
+            let ask = "\u{276f} press 1-3 or type your answer";
+            assert!(!prompt_free_on(&lines(&[ask]), Some((0, 2)), "claude", windows));
+            assert!(!bfree(ask, 2, windows));
+            assert!(!bfree("\u{276f} describe a task for a new session", 2, windows));
+        }
+    }
+
+    #[test]
+    fn an_empty_idle_prompt_as_the_wake_reads_it_is_free() {
+        let mut idle = LINUX_IDLE;
+        idle[8] = "\u{276f}\u{a0}";
+        for windows in [false, true] {
+            assert!(on(&idle, (8, 2), windows));
+            assert!(on(&idle, (8, 1), windows));
+            assert!(bfree("\u{276f}\u{a0}", 2, windows));
+            assert!(bfree("\u{276f}\u{a0}", 1, windows));
+        }
+    }
+
+    #[test]
+    fn a_suggestion_row_is_free() {
+        for windows in [false, true] {
+            assert!(on(&LINUX_IDLE, (8, 2), windows));
+        }
+        assert!(bfree(">\u{a0}text", 2, true));
+        assert!(!bfree(">\u{a0}text", 2, false));
+    }
+
+    #[test]
+    fn a_glyph_then_a_space_is_not_free() {
+        for windows in [false, true] {
+            assert!(!bfree("\u{276f} text", 2, windows));
+        }
+        assert!(!bfree("> text", 2, true));
+    }
+
+    #[test]
+    fn output_lines_are_not_free() {
+        // The real queued-input echo of a working row: the glyph sits outside the box.
+        for windows in [false, true] {
+            assert!(!on(&LINUX_TURN_A, (2, 2), windows));
+        }
+    }
+
+    #[test]
+    fn a_bare_glyph_follows_the_switch() {
+        for windows in [false, true] {
+            assert_eq!(bfree("\u{276f}", 1, windows), !nbsp_required(windows));
+            assert_eq!(bfree("\u{276f}", 2, windows), !nbsp_required(windows));
+            // The agents-view task box with an empty placeholder (a voice state) reads as a bare glyph: free
+            // wherever the NBSP is not required, the named Windows-only gap.
+            assert_eq!(bfree("\u{276f}", 2, windows), !nbsp_required(windows));
+        }
     }
 }

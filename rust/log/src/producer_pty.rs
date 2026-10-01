@@ -410,8 +410,6 @@ impl Producer for PtyProducer {
         // at all, so without this the agent ran colourless (a white
         // status line, no markup) in every capsule row. The frontend's
         // own vt100 renders 256-colour and RGB, so both claims are true.
-        // Windows needs no counterpart: ConPTY clients detect VT support
-        // from the console itself, never from TERM.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         // ...and `NO_COLOR` does not get to contradict those two lines.
