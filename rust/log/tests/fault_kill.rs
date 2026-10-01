@@ -13,6 +13,20 @@
 //! power-loss write reordering below the fsync barrier) — those need a
 //! syscall shim or dm-flakey and are named follow-ups in the ADR's gate
 //! list, not silently claimed here.
+//!
+//! Known limits (review round 2; logged by ruling, not fixed):
+//! - Counts, not content: the checks prove that the frames the waiter saw
+//!   survive in number, not unchanged. A recovery that rewrote a frame and
+//!   regenerated its CRCs and seal would pass here; recovery.rs's
+//!   `torn_tail_recovers_and_keeps_valid_prefix` pins the verbatim copy.
+//! - The bound is what the waiter read, not what existed at the kill: a
+//!   recovery that drops complete frames appended after that read passes.
+//! - Load: the waiter's 30 s deadline, and the producer's 60 s cap (a test
+//!   thread starved past it before the kill fails "not SIGKILL").
+//! - The `pkill` reap marker is per test, not per run: two concurrent runs
+//!   on one host can kill each other's capsules.
+//! - Random kill points do not guarantee a torn record or a segment
+//!   rotation in any run.
 
 use sot_log::segment::{RetentionClass, SegmentReader, SegmentState};
 use sot_log::verify::verify_voyage;
@@ -73,7 +87,8 @@ fn wait_first_output(
                 continue;
             }
             // Non-strict, a torn tail is not an Err; an Err is a header not yet
-            // written, or corruption. Keep it for the timeout message.
+            // written, corruption, or the file renamed away. Keep it for the
+            // timeout message.
             match SegmentReader::read(&path, false) {
                 Ok(r) => {
                     if r.frames.iter().any(|f| f.class == sot_log::Class::Producer) {
@@ -126,7 +141,9 @@ fn kill9_sweep_recovers_green_every_round() {
     let mut sealed_before: (u64, u64) = (0, 0);
 
     for round in 0..ROUNDS {
-        // A chatty producer that would run ~forever; the kill is what ends it.
+        // A chatty producer that runs until its PTY dies or 60 s pass; the kill
+        // is what ends it, and the cap means a test that dies before its kill
+        // leaves no capsule writing.
         // `--assume-no-rollback-target`: this harness has no supervisor
         // and therefore no real rollout evidence to construct -- see
         // `sot-capsule run`'s own refusal message for what the flag
@@ -142,7 +159,8 @@ fn kill9_sweep_recovers_green_every_round() {
                 "--",
                 "/bin/sh",
                 "-c",
-                "i=0; while [ $i -lt 200000 ]; do echo payload-line-$i; i=$((i+1)); done",
+                "end=$(($(date +%s)+60)); i=0; while echo payload-line-$i; do i=$((i+1)); \
+                 [ $((i % 1000)) -ne 0 ] || [ $(date +%s) -lt $end ] || break; done",
             ])
             .env("SOT_RUNTIME_DIR", runtime_dir.path())
             .stdin(std::process::Stdio::null())
@@ -158,9 +176,10 @@ fn kill9_sweep_recovers_green_every_round() {
         let seen = wait_first_output(&root, &mut capsule, round);
         std::thread::sleep(Duration::from_millis(delay_ms(round)));
         // SIGKILL: no drop handlers, no seal, no flush — the crash the
-        // format exists to survive. (The producer child is in its own
-        // session on the PTY; losing the master ends it on its own.)
-        assert_eq!(unsafe { libc::kill(capsule.id() as i32, libc::SIGKILL) }, 0, "round {round}: kill failed");
+        // format exists to survive.
+        unsafe {
+            libc::kill(capsule.id() as i32, libc::SIGKILL);
+        }
         let status = capsule.child_mut().wait().unwrap();
         assert_eq!(
             status.signal(),
