@@ -27,11 +27,12 @@ const WAKE_WITHIN: Duration = Duration::from_secs(5);
 /// `rows_with_mail_are_held_at_once`; not `comm_wake::STILL_FOR`).
 const ONE_HOLD: Duration = Duration::from_secs(1);
 
-/// A stub `claude`: banner, then `❯ ` and one line read at a time. While
-/// `dialog` exists it shows a dialog instead of the prompt (checked before
-/// each prompt, so the file must exist before the row starts). While `spin`
-/// exists a background loop redraws the line above the prompt every 0.2 s
-/// with a counter, the cursor staying just after `❯ `.
+/// A stub `claude`: banner, then the real input box and one line read at a time:
+/// a rule line, `❯` and a no-break space, a second rule line, the cursor back
+/// on the prompt line just after `❯ `. While `dialog` exists it shows a dialog
+/// instead of the prompt (checked before each prompt, so the file must exist
+/// before the row starts). While `spin` exists a background loop redraws the
+/// line above the top rule every 0.2 s with a counter, the cursor staying put.
 fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
@@ -39,14 +40,15 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path) -> Path
     let script = format!(
         "#!/bin/sh\n\
          [ -f '{dialog}.down' ] && exit 1\n\
+         rule=$(printf '\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200')\n\
          echo banner\n\
          while :; do\n\
            if [ -f '{dialog}' ]; then\n\
              echo 'Allow this action? (y/n)'\n\
              while [ -f '{dialog}' ]; do sleep 0.1; done\n\
            fi\n\
-           printf '\\342\\235\\257 '\n\
-           ( n=0; while :; do if [ -f '{spin}' ]; then n=$((n+1)); printf '\\0337\\033[1A\\r spinner %d\\0338' $n; fi; sleep 0.2; done ) &\n\
+           printf '%s\\n\\342\\235\\257\\302\\240\\n%s\\033[1A\\033[3G' \"$rule\" \"$rule\"\n\
+           ( n=0; while :; do if [ -f '{spin}' ]; then n=$((n+1)); printf '\\0337\\033[2A\\r spinner %d\\0338' $n; fi; sleep 0.2; done ) &\n\
            spid=$!\n\
            IFS= read -r line\n\
            kill $spid\n\

@@ -14,14 +14,18 @@
 //! [`STILL_FOR`] (a working row's spinner redraws several times a second).
 //! The prompt glyph is `❯`, or on Windows either `❯` or `>` (Claude Code's
 //! fallback when its unicode check fails, which on Windows depends on the
-//! environment), and only inside the input box there. A row at rest whose
+//! environment). On both OSes the line sits directly between the input box's
+//! two rules and the glyph is followed by U+00A0, the main prompt's own mark
+//! (menus and dialog inputs draw an ASCII space); on Windows a bare glyph also
+//! counts until the NBSP is shown to survive ConPTY (`NBSP_ON_WINDOWS`). A row at rest whose
 //! screen never holds still (a live clock, an animation) is never woken; this
 //! fails closed and its end-of-turn check still reads the mail.
 //! The converse fails open: a working row whose screen happens not to change
 //! for [`STILL_FOR`] is typed into, and the line lands as a queued message.
-//! Still open: no permission-menu screen has been captured. A menu at rest
-//! holds still, so the hold does not protect it: if a `❯ 1. Yes` line ever
-//! read free, the wake's Enter would approve a tool call.
+//! A permission menu is not free by construction (its options use an ASCII
+//! space and it is never boxed), though it holds still. The Windows-only gap:
+//! while the NBSP is not required there, an agents-view task box with an empty
+//! placeholder (a voice state) reads free.
 //!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
@@ -230,14 +234,22 @@ fn is_rule(line: &str) -> bool {
     !line.is_empty() && line.chars().all(|c| c == RULE)
 }
 
-/// The free-prompt test: the cursor sits on the empty input line. The row
-/// indexes a real line, the line holds the glyph with only spaces before it,
-/// and the cursor column is just after the glyph (or one more, over a space,
-/// no-break space, tab or nothing). A dialog or a draft is not free. One
-/// frame cannot tell a working row, whose input box is live too; the hold in
-/// `wake_if_free` does. A bare `>` is a weak signal (quotes, diffs, shell
-/// output), so on Windows, for either glyph, the lines directly above and below
-/// must also be rules.
+/// Whether the input prompt's own separator, U+00A0 after the glyph, is required on Windows. On Linux it always
+/// is. Off until a Windows screen read shows the NBSP survives ConPTY; while off, a bare glyph also counts there,
+/// and an agents-view task box with an empty placeholder (a voice state) reads free: a named Windows-only gap.
+const NBSP_ON_WINDOWS: bool = false;
+
+fn nbsp_required(windows: bool) -> bool {
+    !windows || NBSP_ON_WINDOWS
+}
+
+/// The free-prompt test, all of: (a) only spaces before the glyph; (b) the cursor
+/// is just after the glyph, or one more; (c) the line sits directly between two
+/// rule lines, the input box's; (d) the glyph is followed by U+00A0, the main
+/// prompt's own mark (menus and dialog inputs draw an ASCII space), or, where
+/// the NBSP is not required ([`NBSP_ON_WINDOWS`]), by nothing but spaces. A
+/// menu, a dialog or a draft is not free. One frame cannot tell a working row,
+/// whose input box is live too; the hold in `wake_if_free` does.
 pub(crate) fn prompt_free(lines: &[String], cursor: Option<(u16, u16)>, agent: &str) -> bool {
     prompt_free_on(lines, cursor, agent, cfg!(windows))
 }
@@ -251,19 +263,18 @@ pub(crate) fn prompt_free_on(lines: &[String], cursor: Option<(u16, u16)>, agent
     let Some(line) = lines.get(row) else {
         return false;
     };
-    if windows {
-        let boxed = row > 0 && is_rule(&lines[row - 1]) && lines.get(row + 1).is_some_and(|l| is_rule(l));
-        if !boxed {
-            return false;
-        }
+    let boxed = row > 0 && is_rule(&lines[row - 1]) && lines.get(row + 1).is_some_and(|l| is_rule(l));
+    if !boxed {
+        return false;
     }
     let cells: Vec<char> = line.chars().collect();
     let Some(g) = cells.iter().position(|c| glyphs.contains(c)) else {
         return false;
     };
     let col = col as usize;
-    cells[..g].iter().all(|c| *c == ' ')
-        && (col == g + 1 || (col == g + 2 && matches!(cells.get(g + 1), None | Some(' ' | '\u{a0}' | '\t'))))
+    let nbsp = cells.get(g + 1) == Some(&'\u{a0}');
+    let bare = !nbsp_required(windows) && cells[g + 1..].iter().all(|c| *c == ' ');
+    cells[..g].iter().all(|c| *c == ' ') && (col == g + 1 || col == g + 2) && (nbsp || bare)
 }
 
 /// The tick. Runs forever; started once from `server::run`.
@@ -374,13 +385,24 @@ mod tests {
         prompt_free_on(&lines(l), cur, "claude", false)
     }
 
+    const R: &str = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
+
+    fn boxed(line: &str) -> Vec<String> {
+        vec![R.to_string(), line.to_string(), R.to_string()]
+    }
+
+    fn bfree(line: &str, col: u16, windows: bool) -> bool {
+        prompt_free_on(&boxed(line), Some((1, col)), "claude", windows)
+    }
+
     #[test]
     fn free_prompts() {
-        assert!(free(&["banner", "\u{276f}"], Some((1, 2))));
-        assert!(free(&["\u{276f}"], Some((0, 1))));
-        // Ghost-text suggestion with the cursor at its start.
-        assert!(free(&["\u{276f} try this"], Some((0, 1))));
-        assert!(free(&["\u{276f}\u{a0}"], Some((0, 2))));
+        for windows in [false, true] {
+            assert!(bfree("\u{276f}\u{a0}", 1, windows));
+            assert!(bfree("\u{276f}\u{a0}", 2, windows));
+            // Ghost-text suggestion with the cursor at its start.
+            assert!(bfree("\u{276f}\u{a0}try this", 2, windows));
+        }
     }
 
     #[test]
@@ -674,14 +696,22 @@ mod tests {
 
     #[test]
     fn a_windows_turn_frame_passes_the_box_check() {
-        assert!(on(&WIN_TURN_A, (7, 2), true));
+        assert_eq!(on(&WIN_TURN_A, (7, 2), true), !nbsp_required(true));
+        let mut nbsp = WIN_TURN_A;
+        nbsp[7] = ">\u{a0}";
+        assert!(on(&nbsp, (7, 2), true));
     }
 
     #[test]
     fn windows_takes_both_glyphs_inside_the_box() {
-        assert!(on(&WIN_REST, (7, 2), true));
+        assert_eq!(on(&WIN_REST, (7, 2), true), !nbsp_required(true));
+        let mut nbsp = WIN_REST;
+        nbsp[7] = ">\u{a0}";
+        assert!(on(&nbsp, (7, 2), true));
         let mut bare = WIN_REST;
         bare[7] = "\u{276f}";
+        assert_eq!(on(&bare, (7, 2), true), !nbsp_required(true));
+        bare[7] = "\u{276f}\u{a0}";
         assert!(on(&bare, (7, 2), true));
         assert!(on(&LINUX_IDLE, (8, 2), true));
     }
@@ -697,5 +727,119 @@ mod tests {
     #[test]
     fn linux_never_takes_gt() {
         assert!(!on(&WIN_REST, (7, 2), false));
+    }
+
+    /// SYNTHETIC, from the layout of Claude Code's permission dialog: every option is `[pointer-or-space, " ", label]`.
+    const PERM_MENU: [&str; 10] = [
+        "Bash command",
+        "",
+        "  rm -rf build",
+        "  Remove the build directory",
+        "",
+        "Do you want to proceed?",
+        "",
+        "\u{276f} 1. Yes",
+        "  2. Yes, and don't ask again for rm commands",
+        "  3. No, and tell Claude what to do differently (esc)",
+    ];
+    /// SYNTHETIC, from the layout of the AskUserQuestion dialog.
+    const ASKQ_MENU: [&str; 6] = [
+        "Which approach?",
+        "",
+        "\u{276f} 1. Fast path",
+        "     Skip the cache",
+        "  2. Safe path",
+        "  3. Type something.",
+    ];
+
+    fn with_rules<const N: usize>(menu: [&str; N], rows: [usize; 2]) -> [&str; N] {
+        let mut m = menu;
+        m[rows[0]] = R;
+        m[rows[1]] = R;
+        m
+    }
+
+    #[test]
+    fn menus_are_never_free() {
+        let perm_boxed = with_rules(PERM_MENU, [6, 8]);
+        let askq_boxed = with_rules(ASKQ_MENU, [1, 3]);
+        for windows in [false, true] {
+            assert!(!on(&PERM_MENU, (7, 2), windows));
+            assert!(!on(&perm_boxed, (7, 2), windows));
+            assert!(!on(&ASKQ_MENU, (2, 2), windows));
+            assert!(!on(&askq_boxed, (2, 2), windows));
+        }
+        let mut perm_gt = PERM_MENU;
+        perm_gt[7] = "> 1. Yes";
+        let mut perm_gt_boxed = perm_boxed;
+        perm_gt_boxed[7] = "> 1. Yes";
+        let mut askq_gt = ASKQ_MENU;
+        askq_gt[2] = "> 1. Fast path";
+        let mut askq_gt_boxed = askq_boxed;
+        askq_gt_boxed[2] = "> 1. Fast path";
+        assert!(!on(&perm_gt, (7, 2), true));
+        assert!(!on(&perm_gt_boxed, (7, 2), true));
+        assert!(!on(&askq_gt, (2, 2), true));
+        assert!(!on(&askq_gt_boxed, (2, 2), true));
+        assert!(!free(&["\u{276f} 1. Yes"], Some((0, 2))));
+    }
+
+    #[test]
+    fn dialog_inputs_are_never_free() {
+        for windows in [false, true] {
+            let ask = "\u{276f} press 1-3 or type your answer";
+            assert!(!prompt_free_on(&lines(&[ask]), Some((0, 2)), "claude", windows));
+            assert!(!bfree(ask, 2, windows));
+            assert!(!bfree("\u{276f} describe a task for a new session", 2, windows));
+            // The agents-view task box with an empty placeholder (a voice state) reads as a bare glyph: free
+            // wherever the NBSP is not required, the named Windows-only gap.
+            assert_eq!(bfree("\u{276f}", 2, windows), !nbsp_required(windows));
+        }
+    }
+
+    #[test]
+    fn an_empty_idle_prompt_as_the_wake_reads_it_is_free() {
+        let mut idle = LINUX_IDLE;
+        idle[8] = "\u{276f}\u{a0}";
+        for windows in [false, true] {
+            assert!(on(&idle, (8, 2), windows));
+            assert!(on(&idle, (8, 1), windows));
+            assert!(bfree("\u{276f}\u{a0}", 2, windows));
+            assert!(bfree("\u{276f}\u{a0}", 1, windows));
+        }
+    }
+
+    #[test]
+    fn a_suggestion_row_is_free() {
+        for windows in [false, true] {
+            assert!(on(&LINUX_IDLE, (8, 2), windows));
+        }
+        assert!(bfree(">\u{a0}text", 2, true));
+        assert!(!bfree(">\u{a0}text", 2, false));
+    }
+
+    #[test]
+    fn a_glyph_then_a_space_is_not_free() {
+        for windows in [false, true] {
+            assert!(!bfree("\u{276f} text", 2, windows));
+        }
+        assert!(!bfree("> text", 2, true));
+    }
+
+    #[test]
+    fn output_lines_are_not_free() {
+        let mut out = LINUX_IDLE;
+        out[2] = "\u{276f}\u{a0}an earlier prompt";
+        for windows in [false, true] {
+            assert!(!on(&out, (2, 2), windows));
+        }
+    }
+
+    #[test]
+    fn a_bare_glyph_follows_the_switch() {
+        for windows in [false, true] {
+            assert_eq!(bfree("\u{276f}", 1, windows), !nbsp_required(windows));
+            assert_eq!(bfree("\u{276f}", 2, windows), !nbsp_required(windows));
+        }
     }
 }

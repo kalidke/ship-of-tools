@@ -4205,7 +4205,7 @@ pub mod headless {
             return Err(e);
         }
         let cursor = client.screen().cursor_position();
-        let first = current_lines(&client);
+        let first = wake_lines(&client);
         let out = if !is_free(&first, Some(cursor), agent) {
             Ok(WakeOutcome::NotFree)
         } else {
@@ -4214,7 +4214,7 @@ pub mod headless {
             while still && held_from.elapsed() < still_for {
                 std::thread::sleep(POLL_INTERVAL);
                 client.pump();
-                still = client.screen().cursor_position() == cursor && current_lines(&client) == first;
+                still = client.screen().cursor_position() == cursor && wake_lines(&client) == first;
             }
             if still {
                 type_and_enter(&mut client, line, op_budget, quiet_budget, pacing_budget)
@@ -4278,6 +4278,13 @@ pub mod headless {
     fn current_lines(client: &Client) -> Vec<String> {
         let (_, cols) = client.screen().size();
         client.screen().rows(0, cols).map(|line| line.trim_end().to_string()).collect()
+    }
+
+    /// [`current_lines`] trimming ASCII spaces only: the no-break space after the
+    /// glyph is the main input prompt's own mark, and `trim_end` would strip it.
+    fn wake_lines(client: &Client) -> Vec<String> {
+        let (_, cols) = client.screen().size();
+        client.screen().rows(0, cols).map(|line| line.trim_end_matches(' ').to_string()).collect()
     }
 
     /// Reads the current, visible screen of the row at `state_dir` as a
