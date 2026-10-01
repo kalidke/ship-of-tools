@@ -18,6 +18,9 @@ use sot_log::segment::{RetentionClass, SegmentReader, SegmentState};
 use sot_log::verify::verify_voyage;
 use sot_log::voyage::VoyageStore;
 use std::path::Path;
+#[path = "support/capsule_guard.rs"]
+mod capsule_guard;
+
 use std::time::Duration;
 
 const ROUNDS: usize = 12;
@@ -86,7 +89,7 @@ fn kill9_sweep_recovers_green_every_round() {
         // actually asserts. The old stdout-echo flag is gone entirely
         // (LU2b): wire fan-out replaced it, and this harness attaches no
         // wire client at all.
-        let mut capsule = std::process::Command::new(capsule_bin)
+        let capsule = std::process::Command::new(capsule_bin)
             .args([
                 "run",
                 root.to_str().unwrap(),
@@ -103,6 +106,7 @@ fn kill9_sweep_recovers_green_every_round() {
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("spawn sot-capsule");
+        let mut capsule = capsule_guard::CapsuleGuard::new(capsule, &root);
 
         std::thread::sleep(Duration::from_millis(delay_ms(round)));
         // SIGKILL: no drop handlers, no seal, no flush — the crash the
@@ -111,7 +115,7 @@ fn kill9_sweep_recovers_green_every_round() {
         unsafe {
             libc::kill(capsule.id() as i32, libc::SIGKILL);
         }
-        let _ = capsule.wait();
+        let _ = capsule.child_mut().wait();
         // Reap the orphaned producer too (its own session on a now-dead
         // PTY — it can block there indefinitely). The marker string is
         // unique to this test.

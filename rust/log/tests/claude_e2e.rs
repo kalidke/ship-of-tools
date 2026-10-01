@@ -19,6 +19,9 @@ use sot_log::{Class, RefKind};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+#[path = "support/capsule_guard.rs"]
+mod capsule_guard;
+
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -524,38 +527,32 @@ fn e2e_kill_domain_sweep() {
     }
     // Null stdio: an inherited pipe held by a leaked descendant would hold
     // the whole test runner hostage on a failure; the log frames are the
-    // diagnostics. KillOnDrop makes a panicking assert leave no orphans.
-    struct KillOnDrop(std::process::Child);
-    impl Drop for KillOnDrop {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-    let mut capsule = KillOnDrop(
+    // diagnostics. The guard makes a panicking assert leave no orphans.
+    let mut capsule = capsule_guard::CapsuleGuard::new(
         capsule
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .expect("sot-capsule binary"),
+        &root,
     );
-    let mut stdin = capsule.0.stdin.take().unwrap();
-    let pid = capsule.0.id() as i32;
+    let mut stdin = capsule.child_mut().stdin.take().unwrap();
+    let pid = capsule.id() as i32;
     // A pre-ready turn is (correctly) refused and never forwarded — wait
     // for the producer before submitting, same as the in-process scenarios.
     assert!(
-        wait_for_count(&root, b"producer_ready", 1, || matches!(capsule.0.try_wait(), Ok(None))),
+        wait_for_count(&root, b"producer_ready", 1, || matches!(capsule.child_mut().try_wait(), Ok(None))),
         "capsule producer never ready"
     );
     writeln!(stdin, "{}", serde_json::json!({"turn": "SOT-STALL hold"})).unwrap();
     assert!(
-        wait_for_count(&root, b"\"forwarded\"", 1, || matches!(capsule.0.try_wait(), Ok(None))),
+        wait_for_count(&root, b"\"forwarded\"", 1, || matches!(capsule.child_mut().try_wait(), Ok(None))),
         "turn never forwarded (capsule died early?)"
     );
     std::thread::sleep(Duration::from_millis(750));
     unsafe { libc::kill(pid, libc::SIGKILL) };
-    let _ = capsule.0.wait();
+    let _ = capsule.child_mut().wait();
 
     // The successor's act: read the authority-bearing locator from the
     // (unsealed, possibly torn) log — never from ambient state.

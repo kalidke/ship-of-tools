@@ -27,6 +27,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/capsule_guard.rs"]
+mod capsule_guard;
+use capsule_guard::CapsuleGuard;
+
 /// L1-unix LU3c: the lane's own client type, chosen once — the SAME
 /// platform-chosen alias `sot_log::supervisor.rs`'s own production code
 /// is generic over, so this test names one type regardless of platform
@@ -114,19 +118,6 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 
 fn capsule_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sot-capsule"))
-}
-
-/// Reaps a spawned child on every exit path (a panicking assertion
-/// included) — the same shape `tests/pipe_win.rs`'s own cross-process
-/// challenge test uses.
-struct KillGuard(Option<Child>);
-impl Drop for KillGuard {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
 }
 
 fn poll_until<T>(mut attempt: impl FnMut() -> Option<T>, timeout: Duration, what: &str) -> T {
@@ -261,7 +252,7 @@ fn expect_connection_closes(conn: Client, timeout: Duration) {
     }
 }
 
-fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> Child {
+fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> CapsuleGuard {
     let mut cmd = Command::new(capsule_exe());
     cmd.arg("supervise")
         .arg(state_dir)
@@ -280,11 +271,11 @@ fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> Child {
         // already captures and only shows on a failing test.
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    cmd.spawn().expect("spawn sot-capsule supervise")
+    CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise"), state_dir)
 }
 
-fn wait_for_exit(mut child: Child, timeout: Duration) -> std::process::ExitStatus {
-    poll_until(|| child.try_wait().unwrap(), timeout, "the supervisor process to exit")
+fn wait_for_exit(child: &mut CapsuleGuard, timeout: Duration) -> std::process::ExitStatus {
+    poll_until(|| child.child_mut().try_wait().unwrap(), timeout, "the supervisor process to exit")
 }
 
 /// Single-owner reaping (review round 2, F7): a count of THIS
@@ -379,8 +370,7 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL); // stays open until EndRun
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
 
     // `wait_for_lane` already ran the FULL same-connection challenge,
     // whose own `hello`/`hello_ok` round trip IS this connection's hello
@@ -405,7 +395,7 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
     // itself exits and reparents any leftover zombie to init."
     #[cfg(target_os = "linux")]
     assert_eq!(
-        zombie_children_of(guard.0.as_ref().expect("supervisor still held").id()),
+        zombie_children_of(guard.id()),
         0,
         "the ended leg must already be reaped while the supervisor is still alive"
     );
@@ -423,8 +413,7 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
     let stop_reply = command(&conn, "test-stop-1", SupervisorOp::Stop);
     assert_eq!(stop_reply, SupervisorOperationState::Stopping);
 
-    let child = guard.0.take().unwrap();
-    let status = wait_for_exit(child, Duration::from_secs(30));
+    let status = wait_for_exit(&mut guard, Duration::from_secs(30));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_CLEAN), "a clean EndRun+Stop must exit 0");
 }
 
@@ -460,8 +449,7 @@ fn a_status_probe_against_an_idle_supervisor_is_not_poll_bound() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL); // stays open until EndRun
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
 
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
@@ -493,8 +481,7 @@ fn a_status_probe_against_an_idle_supervisor_is_not_poll_bound() {
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
     let stop_reply = command(&conn, "cleanup-stop", SupervisorOp::Stop);
     assert_eq!(stop_reply, SupervisorOperationState::Stopping);
-    let child = guard.0.take().unwrap();
-    let status = wait_for_exit(child, Duration::from_secs(30));
+    let status = wait_for_exit(&mut guard, Duration::from_secs(30));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_CLEAN), "a clean EndRun+Stop must exit 0");
 
     println!(
@@ -570,8 +557,7 @@ fn end_run_racing_a_self_exiting_leg_leaves_no_zombie() {
 
     const SELF_EXITING_SOON: &[&str] = &["/bin/sh", "-c", "sleep 1; exit 0"];
 
-    let child = spawn_supervisor(&state_dir, "--start", SELF_EXITING_SOON);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SELF_EXITING_SOON);
 
     let mut conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
@@ -632,7 +618,7 @@ fn end_run_racing_a_self_exiting_leg_leaves_no_zombie() {
     // which one actually resolved this run (G4).
     #[cfg(target_os = "linux")]
     assert_eq!(
-        zombie_children_of(guard.0.as_ref().expect("supervisor still held").id()),
+        zombie_children_of(guard.id()),
         0,
         "the raced leg must not be left an unreaped zombie while the supervisor is still alive (schedule: {final_state:?})"
     );
@@ -641,8 +627,7 @@ fn end_run_racing_a_self_exiting_leg_leaves_no_zombie() {
     // authority whether this race left it EndedNoRespawn, Terminal, or
     // respawned into a fresh Ready.
     let _ = command(&conn, "test-stop-race", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    let _status = wait_for_exit(child, Duration::from_secs(30));
+    let _status = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// ADR 0041 start-mode table: "`--resume` | sealed, carrying its own
@@ -660,19 +645,18 @@ fn resume_after_a_requested_end_serves_ended_no_respawn_then_exits_on_stop() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
+    let mut child = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
     end_run_and_expect_record_closed(&conn, "req-end", "test", voyage);
     let final_state = poll_to_terminal(&conn, "req-end", Duration::from_secs(60));
     assert_eq!(final_state, SupervisorOperationState::RecordVerified);
     assert_eq!(command(&conn, "req-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
-    let status1 = wait_for_exit(child, Duration::from_secs(30));
+    let status1 = wait_for_exit(&mut child, Duration::from_secs(30));
     assert_eq!(status1.code(), Some(sot_log::supervisor::EXIT_CLEAN));
 
     // A SECOND supervisor, `--resume`, against the SAME state-dir.
-    let child2 = spawn_supervisor(&state_dir, "--resume", SHELL);
-    let mut guard2 = KillGuard(Some(child2));
+    let mut guard2 = spawn_supervisor(&state_dir, "--resume", SHELL);
     let conn2 = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage2, leg2, phase2) = poll_until(
         || {
@@ -692,8 +676,7 @@ fn resume_after_a_requested_end_serves_ended_no_respawn_then_exits_on_stop() {
     );
 
     assert_eq!(command(&conn2, "req-stop-2", SupervisorOp::Stop), SupervisorOperationState::Stopping);
-    let child2 = guard2.0.take().unwrap();
-    let status2 = wait_for_exit(child2, Duration::from_secs(30));
+    let status2 = wait_for_exit(&mut guard2, Duration::from_secs(30));
     assert_eq!(status2.code(), Some(sot_log::supervisor::EXIT_CLEAN));
 }
 
@@ -713,8 +696,7 @@ fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SELF_EXITING_PRODUCER);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SELF_EXITING_PRODUCER);
 
     // Ready observed: connect and poll status, logging every phase.
     // `poll_until` itself already proves this (a successful return can
@@ -749,7 +731,7 @@ fn a_shell_that_dies_shortly_after_ready_trips_the_anti_flap_bound() {
     // was below the bound this test's own implementation is allowed to
     // legally take, not a bug in the implementation itself.
     let status =
-        wait_for_exit_with_diagnostics(guard.0.as_mut().unwrap(), &h, Duration::from_secs(360));
+        wait_for_exit_with_diagnostics(guard.child_mut(), &h, Duration::from_secs(360));
     assert_eq!(status.code(), Some(sot_log::supervisor::EXIT_TERMINAL), "three unstable legs must terminate the supervisor");
 }
 
@@ -766,8 +748,7 @@ fn a_second_supervisor_adopts_a_leg_left_behind_by_a_killed_first_one() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let first = spawn_supervisor(&state_dir, "--start", SHELL); // stays open
-    let mut first_guard = KillGuard(Some(first));
+    let mut first_guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, leg) = wait_for_ready(&conn, Duration::from_secs(90));
     drop(conn);
@@ -776,12 +757,10 @@ fn a_second_supervisor_adopts_a_leg_left_behind_by_a_killed_first_one() {
     // job/kill-domain (ADR 0041/0043: "the supervisor dying must be
     // harmless to the run"), so the shell must still be alive and
     // answering afterward.
-    let mut first = first_guard.0.take().unwrap();
-    first.kill().unwrap();
-    first.wait().unwrap();
+    first_guard.child_mut().kill().unwrap();
+    first_guard.child_mut().wait().unwrap();
 
-    let second = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut second_guard = KillGuard(Some(second));
+    let mut second_guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn2 = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage2, leg2) = wait_for_ready(&conn2, Duration::from_secs(30));
     assert_eq!(voyage2, voyage, "the SAME voyage, never a re-mint");
@@ -792,8 +771,7 @@ fn a_second_supervisor_adopts_a_leg_left_behind_by_a_killed_first_one() {
     end_run_and_expect_record_closed(&conn2, "cleanup-end", "test cleanup", voyage2);
     let _ = poll_to_terminal(&conn2, "cleanup-end", Duration::from_secs(60));
     assert_eq!(command(&conn2, "cleanup-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
-    let second = second_guard.0.take().unwrap();
-    let _ = wait_for_exit(second, Duration::from_secs(60));
+    let _ = wait_for_exit(&mut second_guard, Duration::from_secs(60));
 }
 
 /// ADR 0045 decision 7/9 (retiring ADR 0041 Lifecycle "Build boundary",
@@ -817,8 +795,7 @@ fn a_different_build_id_with_the_same_proto_is_proven() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let (conn, outcome) = poll_until(
         || sot_log::supervisor::connect_and_challenge_with_build_for_test(&h, "some-other-build").ok(),
         Duration::from_secs(30),
@@ -833,8 +810,7 @@ fn a_different_build_id_with_the_same_proto_is_proven() {
     end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
     assert_eq!(command(&conn, "cleanup-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
-    let child = guard.0.take().unwrap();
-    let _ = wait_for_exit(child, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// ADR 0045 decision 7: the ONE thing a lane peer still refuses is a
@@ -857,8 +833,7 @@ fn a_mismatched_lane_proto_is_refused_and_the_connection_closes() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let (conn, outcome) = poll_until(
         || sot_log::supervisor::connect_and_challenge_with_proto_for_test(&h, 999).ok(),
         Duration::from_secs(30),
@@ -879,8 +854,7 @@ fn a_mismatched_lane_proto_is_refused_and_the_connection_closes() {
     end_run_and_expect_record_closed(&conn2, "cleanup-end", "cleanup", voyage);
     let _ = poll_to_terminal(&conn2, "cleanup-end", Duration::from_secs(60));
     assert_eq!(command(&conn2, "cleanup-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
-    let child = guard.0.take().unwrap();
-    let _ = wait_for_exit(child, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// ADR 0041 no-supervisor capability matrix: "proven ABSENT: reset only"
@@ -941,8 +915,7 @@ fn a_second_hello_closes_the_connection_but_the_authority_survives() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -963,8 +936,7 @@ fn a_second_hello_closes_the_connection_but_the_authority_survives() {
     end_run_and_expect_record_closed(&conn2, "cleanup-end", "cleanup", voyage2.unwrap());
     let _ = poll_to_terminal(&conn2, "cleanup-end", Duration::from_secs(60));
     assert_eq!(command(&conn2, "cleanup-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
-    let child = guard.0.take().unwrap();
-    let _ = wait_for_exit(child, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// A supervisor that journaled `end_run` as `accepted` (durable, under
@@ -1013,8 +985,7 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     let h = state_dir_hash(&state_dir);
 
     // A running capsule, exactly as any other test here starts one.
-    let first = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut first_guard = KillGuard(Some(first));
+    let mut first_guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -1023,9 +994,8 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     // so it stays alive, orphaned — the "crash after admission, before
     // the capsule was ever told" state this test constructs directly
     // rather than racing a kill against a live submission to land there.
-    let mut first = first_guard.0.take().unwrap();
-    first.kill().unwrap();
-    first.wait().unwrap();
+    first_guard.child_mut().kill().unwrap();
+    first_guard.child_mut().wait().unwrap();
 
     // Hand-journal the SAME `ActiveOp::EndRun` record a live admission
     // would have written (`supervisor.rs`'s own `handle_command`:
@@ -1059,8 +1029,7 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     // A fresh supervisor, `--resume`: recovery must DELIVER the
     // end_run to the still-live orphaned capsule (this test's own fix),
     // not merely wait for a writer nobody ever told to go away.
-    let second = spawn_supervisor(&state_dir, "--resume", SHELL);
-    let mut second_guard = KillGuard(Some(second));
+    let mut second_guard = spawn_supervisor(&state_dir, "--resume", SHELL);
     let conn2 = wait_for_lane(&h, Duration::from_secs(30));
 
     let final_state = poll_to_terminal(&conn2, op_id, Duration::from_secs(120));
@@ -1091,8 +1060,7 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     assert!(leg2.is_none(), "no leg is running once ended-no-respawn");
 
     assert_eq!(command(&conn2, "op-recover-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
-    let second = second_guard.0.take().unwrap();
-    let _ = wait_for_exit(second, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut second_guard, Duration::from_secs(30));
 }
 
 /// ADR 0041 voyage-fencing: a mismatch is refused `stale_voyage` with NO
@@ -1108,8 +1076,7 @@ fn a_command_naming_the_wrong_voyage_is_refused_stale_voyage() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -1121,8 +1088,7 @@ fn a_command_naming_the_wrong_voyage_is_refused_stale_voyage() {
     end_run_and_expect_record_closed(&conn, "stale-1", "test", voyage);
     let _ = poll_to_terminal(&conn, "stale-1", Duration::from_secs(60));
     assert_eq!(command(&conn, "stale-1-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
-    let child = guard.0.take().unwrap();
-    let _ = wait_for_exit(child, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// ADR 0041 (Codex review round 2, B2): `reset` is admissible ONLY from
@@ -1139,8 +1105,7 @@ fn reset_is_refused_while_a_leg_is_live() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -1163,8 +1128,7 @@ fn reset_is_refused_while_a_leg_is_live() {
     end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
     assert_eq!(command(&conn, "cleanup-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
-    let child = guard.0.take().unwrap();
-    let _ = wait_for_exit(child, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// ADR 0041 (Codex review round 2, B2): once `EndedNoRespawn`, `reset`
@@ -1179,8 +1143,7 @@ fn reset_from_ended_no_respawn_mints_a_new_voyage_and_spawns_for_it() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (old_voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -1207,8 +1170,7 @@ fn reset_from_ended_no_respawn_mints_a_new_voyage_and_spawns_for_it() {
     end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", new_voyage);
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
     assert_eq!(command(&conn, "cleanup-stop", SupervisorOp::Stop), SupervisorOperationState::Stopping);
-    let child = guard.0.take().unwrap();
-    let _ = wait_for_exit(child, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// ADR 0043 decision 27/30: with the InitialProbe's connect no longer
@@ -1230,8 +1192,7 @@ fn start_reaches_ready_promptly() {
     let h = state_dir_hash(&state_dir);
 
     let started = Instant::now();
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (_voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(30));
     let elapsed = started.elapsed();
@@ -1239,8 +1200,7 @@ fn start_reaches_ready_promptly() {
     assert!(elapsed < Duration::from_secs(30), "expected Ready well within the generous 30s bound, took {elapsed:?}");
 
     let _ = command(&conn, "start-reaches-ready-stop", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    let _ = wait_for_exit(child, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// The supervisor-epoch ruling's whole Linux safety argument, in
@@ -1265,14 +1225,13 @@ fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let spawned_pid = child.id();
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
+    let spawned_pid = guard.id();
     // The spawn-side read, performed EXACTLY as the daemon's deleted
     // `spawned_identity` performed it: this pid, this function, from the
     // parent, the instant after spawn.
     let spawn_side_ticks =
         sot_log::challenge_unix::process_start_ticks(spawned_pid).expect("read the child's own /proc start ticks");
-    let mut guard = KillGuard(Some(child));
 
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (reported_pid, reported_created) =
@@ -1290,8 +1249,7 @@ fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
     );
 
     let _ = command(&conn, "identity-equality-stop", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    let _ = wait_for_exit(child, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// ADR 0043 decision 33's retirement clause: a leg forks from the SUPERVISOR's own running
@@ -1334,8 +1292,12 @@ fn a_leg_spawned_after_the_binary_is_renamed_runs_the_supervisors_own_inode() {
         .args(SHELL)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let mut guard = KillGuard(Some(cmd.spawn().expect("spawn sot-capsule supervise from the copy")));
-    let supervisor_pid = guard.0.as_ref().unwrap().id();
+    let mut guard = CapsuleGuard::new_for_exe(
+        cmd.spawn().expect("spawn sot-capsule supervise from the copy"),
+        &copy_path,
+        &state_dir,
+    );
+    let supervisor_pid = guard.id();
 
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
@@ -1392,8 +1354,7 @@ fn a_leg_spawned_after_the_binary_is_renamed_runs_the_supervisors_own_inode() {
     end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
     let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    let _ = wait_for_exit(child, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// `--first-leg-without <token>` (docs/adr/0042 §1's 2026-09-12/09-14
@@ -1437,8 +1398,8 @@ fn first_leg_without_strips_a_token_from_the_first_leg_and_an_unstable_respawn()
         .arg("--continue")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let mut guard = KillGuard(Some(cmd.spawn().expect("spawn sot-capsule supervise")));
-    let supervisor_pid = guard.0.as_ref().unwrap().id();
+    let mut guard = CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise"), &state_dir);
+    let supervisor_pid = guard.id();
 
     let read_lines = |path: &Path| -> Option<Vec<String>> {
         std::fs::read_to_string(path).ok().map(|c| c.lines().map(str::to_string).collect())
@@ -1480,8 +1441,7 @@ fn first_leg_without_strips_a_token_from_the_first_leg_and_an_unstable_respawn()
     end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
     let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    let _ = wait_for_exit(child, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// `sot_log::supervisor_client::Persistent` reconnects transparently
@@ -1499,8 +1459,7 @@ fn persistent_client_survives_a_supervisor_restart_and_a_5s_idle_expiry() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let first = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut first_guard = KillGuard(Some(first));
+    let mut first_guard = spawn_supervisor(&state_dir, "--start", SHELL);
     // Wait for the lane over the raw helper first, proving the row is up before `Persistent` connects.
     let raw_conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, leg) = wait_for_ready(&raw_conn, Duration::from_secs(90));
@@ -1513,12 +1472,10 @@ fn persistent_client_survives_a_supervisor_restart_and_a_5s_idle_expiry() {
     assert_eq!(report.phase, SupervisorPhase::Ready);
 
     // (a) Kill the supervisor only (the leg survives) and spawn a second one over the same state dir.
-    let mut first = first_guard.0.take().unwrap();
-    first.kill().unwrap();
-    first.wait().unwrap();
+    first_guard.child_mut().kill().unwrap();
+    first_guard.child_mut().wait().unwrap();
 
-    let second = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut second_guard = KillGuard(Some(second));
+    let mut second_guard = spawn_supervisor(&state_dir, "--start", SHELL);
     // The old connection is now dead; give the new supervisor's lane a moment to bind.
     let raw_conn2 = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage2, leg2) = wait_for_ready(&raw_conn2, Duration::from_secs(30));
@@ -1547,8 +1504,7 @@ fn persistent_client_survives_a_supervisor_restart_and_a_5s_idle_expiry() {
     end_run_and_expect_record_closed(&conn3, "cleanup-end", "cleanup", voyage);
     let _ = poll_to_terminal(&conn3, "cleanup-end", Duration::from_secs(60));
     let _ = command(&conn3, "cleanup-stop", SupervisorOp::Stop);
-    let second = second_guard.0.take().unwrap();
-    let _ = wait_for_exit(second, Duration::from_secs(60));
+    let _ = wait_for_exit(&mut second_guard, Duration::from_secs(60));
 }
 
 /// `cancel()` and publishing a fresh connection share one lock, so a
@@ -1563,8 +1519,7 @@ fn a_cancel_landing_between_connect_and_publish_is_never_missed() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let raw_conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&raw_conn, Duration::from_secs(90));
     drop(raw_conn);
@@ -1592,8 +1547,7 @@ fn a_cancel_landing_between_connect_and_publish_is_never_missed() {
     end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
     let _ = poll_to_terminal(&conn, "cleanup-end", Duration::from_secs(60));
     let _ = command(&conn, "cleanup-stop", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    let _ = wait_for_exit(child, Duration::from_secs(30));
+    let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// The self-heal buys one clean retry, never an exemption: a producer
@@ -1626,7 +1580,7 @@ fn first_leg_without_does_not_exempt_a_real_crash_loop_from_the_anti_flap_bound(
         .arg("--continue")
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let mut guard = KillGuard(Some(cmd.spawn().expect("spawn sot-capsule supervise")));
+    let mut guard = CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise"), &state_dir);
 
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     poll_until(
@@ -1639,10 +1593,70 @@ fn first_leg_without_does_not_exempt_a_real_crash_loop_from_the_anti_flap_bound(
     );
     drop(conn);
 
-    let status = wait_for_exit_with_diagnostics(guard.0.as_mut().unwrap(), &h, Duration::from_secs(180));
+    let status = wait_for_exit_with_diagnostics(guard.child_mut(), &h, Duration::from_secs(180));
     assert_eq!(
         status.code(),
         Some(sot_log::supervisor::EXIT_TERMINAL),
         "a producer that fails regardless of the token must still trip the anti-flap bound"
+    );
+}
+
+#[test]
+fn the_sweep_refuses_any_root_outside_the_test_temp_dir() {
+    use capsule_guard::sweep_root_ok;
+    let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
+    let bad = [
+        PathBuf::new(),
+        PathBuf::from("relative/dir"),
+        std::env::temp_dir(),
+        std::env::temp_dir().join("x/../.."),
+        PathBuf::from("/run/user/1000/sot"),
+        home.join(".local/share/sot"),
+        home.join(".sot-comm"),
+    ];
+    for root in &bad {
+        assert!(!sweep_root_ok(root), "{root:?} must be refused");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    assert!(sweep_root_ok(dir.path()));
+}
+
+#[cfg(unix)]
+#[test]
+#[should_panic(expected = "CapsuleGuard refuses root")]
+fn a_capsule_guard_cannot_be_built_with_a_bad_root() {
+    let child = Command::new("true").spawn().expect("spawn true");
+    let _guard = capsule_guard::CapsuleGuard::new(child, std::env::temp_dir());
+}
+
+/// A panicking test must leave no capsule process: not the supervisor, and
+/// not the `--survival normal` leg that outlives it by design.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_panicking_test_leaves_no_capsule_process() {
+    use capsule_guard::{any_process_matches, build_leg_pgrep_pattern};
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let exe = capsule_exe();
+    let supervise = build_leg_pgrep_pattern(&exe, "supervise", &state_dir);
+    let run = build_leg_pgrep_pattern(&exe, "run", &state_dir);
+    println!("sweep patterns: {supervise} | {run}");
+
+    let child = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "exec sleep 600"]);
+    poll_until(|| any_process_matches(&run).then_some(true), Duration::from_secs(10), "a run leg to exist");
+
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _held = child;
+        panic!("a test assert fires before its own kill");
+    }));
+    assert!(unwound.is_err());
+
+    poll_until(
+        || (!any_process_matches(&supervise) && !any_process_matches(&run)).then_some(true),
+        Duration::from_secs(3),
+        "no supervise or run process to survive the unwind",
     );
 }
