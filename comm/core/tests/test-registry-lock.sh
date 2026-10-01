@@ -15,8 +15,9 @@
 #     reclaim.<D> made each round (a waiter that judges the reclaimer after it
 #     exited may add reclaim.<reclaimer>, then declines to act), and every
 #     marker a round makes was made by one of its waiters and names D or one;
-#   5 a marker held by a frozen reclaimer gives FAILED naming both, a marker
-#     held by a dead one is reclaimed through reclaim.<R>, both markers kept;
+#   5 a marker held by a frozen reclaimer gives FAILED naming the holder and
+#     either true reason, a marker held by a dead one is reclaimed through
+#     reclaim.<R>, both markers kept;
 #   6 the mixed rollout: an older peer's mkdir lock gives FAILED "older
 #     version" and is left as it was, with nothing linked into it; the older
 #     mkdir waiter waits on a file lock and proceeds after its release;
@@ -200,17 +201,22 @@ t4() {
 check "4: 100 rounds of 3 waiters on a dead holder: one holder at a time, reclaim.<D> made, every marker the round's" t4
 
 t5() {
-    reset; local d r err
+    reset; local d r err bad=""
     d="$(dead_holder)"
     record_then STOP; r="$(cat "$WORK/r")"
     printf '%s\n' "$r" > "$(marker "$d")"
     err="$(lib 'SOT_LOCK_WAIT_SECS=0.2 with_lock true' 2>&1)" && { echo "took past a frozen reclaimer"; return 1; }
-    contains "$err" "is held by $(field "$d" 1) pid $(field "$d" 5) " || { echo "$err"; return 1; }
-    contains "$err" "it is dead, but its reclaim by $(field "$r" 1) pid $(field "$r" 5) did not finish: it is running" || { echo "$err"; return 1; }
-    [ "$(cat "$P")" = "$d" ] || { echo "the lock changed"; return 1; }
+    # Which true reason prints depends on the runner's speed: the last walk
+    # reaches R before the deadline (it is running) or after it (still walked).
+    contains "$err" "is held by $(field "$d" 1) pid $(field "$d" 5) " || { echo "$err"; bad=1; }
+    contains "$err" "it is dead, but its reclaim by $(field "$r" 1) pid $(field "$r" 5) did not finish: it is running" \
+        || contains "$err" "its reclaim chain was still being walked at the deadline" || { echo "$err"; bad=1; }
+    [ "$(cat "$P")" = "$d" ] || { echo "the lock changed"; bad=1; }
+    # The second half runs whatever the first half found.
     kill -9 "$R"; wait "$R" 2>/dev/null
     lib 'with_lock true' || { echo "the nested reclaim failed"; return 1; }
     [ -e "$(marker "$d")" ] && [ -e "$(marker "$r")" ] || { echo "a marker is gone"; return 1; }
+    [ -z "$bad" ]
 }
 check "5: a frozen reclaimer is named with the holder; a dead one is reclaimed through reclaim.<R>" t5
 
