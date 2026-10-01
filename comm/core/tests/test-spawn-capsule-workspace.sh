@@ -81,13 +81,17 @@ start_stub_daemon() {
     nc -klU "$SOCK" < "$fifo" >> "$REQLOG" &
     STUB_NC_PID=$!
 
-    ( local listn=0 idx max=${#list_replies[@]}
+    ( local listn=0 idx max=${#list_replies[@]} created=0
       tail -n +1 -F "$REQLOG" 2>/dev/null | while IFS= read -r line; do
         local op; op="$(printf '%s' "$line" | jq -r '.op // empty' 2>/dev/null)"
         case "$op" in
             hello) printf '%s\n' "$hello_reply" >&3 ;;
-            workspace.create) printf '%s\n' "$create_reply" >&3 ;;
+            workspace.create) created=1; printf '%s\n' "$create_reply" >&3 ;;
             workspace.list)
+                if [ "$created" -eq 0 ]; then
+                    printf '%s\n' "{\"v\":1,\"id\":1,\"kind\":\"res\",\"op\":\"workspace.list\",\"payload\":{\"workspaces\":${PRE_CREATE_LIST:-[]}}}" >&3
+                    continue
+                fi
                 listn=$((listn + 1))
                 idx=$listn
                 [ "$idx" -gt "$max" ] && idx=$max
@@ -146,7 +150,7 @@ run_spawn() {
     SPAWN_OUT="$(cd "$WORK" && env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_RELAY_ENDPOINT -u SOT_SESSION \
         SOT_TOKEN="dummy-test-token" XDG_CONFIG_HOME="$SPAWN_HOME/xdg-config" \
         SOT_COMM_HOME="$SPAWN_HOME" SOT_COMM_SELF_FILE="$SPAWN_HOME/self.txt" \
-        timeout 30 "$SPAWN" --name "$name" "$REPO_PATH" --endpoint "unix:$SOCK" "$@" 2>"$errfile")"
+        timeout 30 "$SPAWN" ${name:+--name "$name"} "$REPO_PATH" --endpoint "unix:$SOCK" "$@" 2>"$errfile")"
     SPAWN_RC=$?
     SPAWN_ERR="$(cat "$errfile" 2>/dev/null || true)"
 }
@@ -216,6 +220,42 @@ case_list_never_reports_id_never_destroys() {
     assert_never_destroyed "$wsid" spawn-nolist
 }
 
+# One repo root, one workspace: a root the daemon already lists is refused
+# before any registry write or workspace.create.
+assert_occupied_root_refused() {
+    local who="$1"
+    [ "$SPAWN_RC" -eq 1 ] || { echo "  exited $SPAWN_RC (want 1): $SPAWN_ERR"; return 1; }
+    contains "$SPAWN_ERR" "already has a workspace: 'repo' (slug 'repo', id ws-occ)" \
+        || { echo "  stderr: $SPAWN_ERR"; return 1; }
+    contains "$SPAWN_ERR" "comm-worktree-new.sh" || { echo "  no worktree pointer: $SPAWN_ERR"; return 1; }
+    ! grep -q '"op":"workspace.create"' "$REQLOG" || { echo "  workspace.create was sent"; return 1; }
+    [ ! -e "$SPAWN_HOME/registry.json" ] || jq -e '(.agents // {}) == {}' "$SPAWN_HOME/registry.json" >/dev/null \
+        || { echo "  a registry row was written"; return 1; }
+    ! contains "$SPAWN_ERR" "roll" || { echo "  rollback verdict printed for a row never written: $SPAWN_ERR"; return 1; }
+    if [ -n "$who" ]; then
+        [ ! -f "$SPAWN_HOME/inbox/$who.jsonl" ] || { echo "  inbox file created for $who"; return 1; }
+    fi
+    return 0
+}
+
+case_occupied_root_refused_explicit_name() {
+    PRE_CREATE_LIST="$(entry ws-occ repo capsule ready)"
+    start_stub_daemon ws-occ repo "$(entry ws-occ repo capsule ready)"
+    SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn spawn-occ
+    stop_stub_daemon
+    PRE_CREATE_LIST=""
+    assert_occupied_root_refused spawn-occ
+}
+
+case_occupied_root_refused_derived_name() {
+    PRE_CREATE_LIST="$(entry ws-occ repo capsule ready)"
+    start_stub_daemon ws-occ repo "$(entry ws-occ repo capsule ready)"
+    SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn ""
+    stop_stub_daemon
+    PRE_CREATE_LIST=""
+    assert_occupied_root_refused ""
+}
+
 # --- run -----------------------------------------------------------------
 
 check "capsule row reaches phase 'ready' on the second poll: succeeds" \
@@ -226,6 +266,10 @@ check "capsule row never reaches 'ready' within the wait: TIMEOUT never destroys
     case_capsule_timeout_never_destroys
 check "workspace.list never reports the created id: never destroys" \
     case_list_never_reports_id_never_destroys
+check "occupied root, explicit --name: refused before any write or create" \
+    case_occupied_root_refused_explicit_name
+check "occupied root, derived name: refused before any write or create" \
+    case_occupied_root_refused_derived_name
 
 echo ""
 echo "$PASS passed, $FAIL failed"

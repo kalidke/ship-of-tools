@@ -184,8 +184,9 @@ fi
 # workspace slug, and a
 # task-named session is unfindable next to its repo-named siblings (a spawn
 # labeled 'edge-classify' hid the MyPackage agent from the user). The
-# label must be the repo basename, optionally suffixed ('<Repo>-2') for a
-# deliberate second workspace on the same repo. Task identity belongs in
+# label must be the repo basename, optionally suffixed ('<Repo>-<suffix>'); a second
+# session on one repo is a worktree (comm-worktree-new.sh), because one root
+# holds one workspace. Task identity belongs in
 # --task / --expertise, never in the label.
 REPO_BASE="$(basename "$REPO_PATH")"
 REPO_NAME="$REPO_BASE"
@@ -200,7 +201,7 @@ REPO_NAME="$REPO_BASE"
 # once NAME is known) is by construction always "<repo-base>-<qualifier>"
 # and always satisfies the pattern, so it needs no separate re-check.
 if [ -z "$DISPLAY_LABEL" ] && [ "$LABEL" != "$REPO_BASE" ] && [[ "$LABEL" != "$REPO_BASE"-* ]]; then
-    echo "ERROR: --label '$LABEL' must be the repo name '$REPO_BASE' (or '${REPO_BASE}-<suffix>' for a second workspace on the same repo)." >&2
+    echo "ERROR: --label '$LABEL' must be the repo name '$REPO_BASE' (or '${REPO_BASE}-<suffix>')." >&2
     echo "       Sessions are named after the repo; put task identity in --task (or --display-label for deliberate grouping)." >&2
     exit 1
 fi
@@ -341,6 +342,33 @@ if [ -n "$SPAWN_HOST" ] && [ -n "$SELF_HOST" ] && [ "$SPAWN_HOST" != "$SELF_HOST
 elif [ -z "$SPAWN_HOST" ]; then
     echo "comm-spawn: the daemon at $ENDPOINT did not declare a host (predates version.query's host field) — assuming it runs on this box (${SELF_HOST:-unknown})." >&2
 fi
+
+# One repo root, one workspace (ADR 0036): a root the daemon already lists is
+# refused HERE, before either registry write below, so a refusal leaves no
+# handle behind. Fails closed, like the display-label check further down: a
+# list that does not answer refuses too. Compared by canonical path, the
+# daemon's own rule; a listed root that does not resolve here is compared as
+# written.
+if ! OCC_LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)" \
+    || ! printf '%s' "$OCC_LIST" | jq -e '.payload.workspaces' >/dev/null 2>&1; then
+    echo "ERROR: could not confirm that $CANON_ROOT has no workspace yet (workspace.list did not answer via $ENDPOINT); nothing was spawned." >&2
+    exit 1
+fi
+OCC_N="$(printf '%s' "$OCC_LIST" | sot_jq -r '.payload.workspaces | length')"
+occ_i=0
+while [ "$occ_i" -lt "$OCC_N" ]; do
+    OCC_ROW="$(printf '%s' "$OCC_LIST" | jq -c --argjson i "$occ_i" '.payload.workspaces[$i]')"
+    OCC_ROOT="$(printf '%s' "$OCC_ROW" | sot_jq -r '.project_root // empty')"
+    if [ -n "$OCC_ROOT" ]; then
+        OCC_CANON="$(sot_canonical_path "$OCC_ROOT" 2>/dev/null)" || OCC_CANON="$OCC_ROOT"
+        if [ "$OCC_CANON" = "$CANON_ROOT" ]; then
+            echo "ERROR: $CANON_ROOT already has a workspace: '$(printf '%s' "$OCC_ROW" | sot_jq -r '.label')' (slug '$(printf '%s' "$OCC_ROW" | sot_jq -r '.slug')', id $(printf '%s' "$OCC_ROW" | sot_jq -r '.workspace_id')); nothing was spawned." >&2
+            echo "       One repo root holds one session. For a second session on this repo, make a worktree: $COMM_HOME/bin/comm-worktree-new.sh <short>" >&2
+            exit 1
+        fi
+    fi
+    occ_i=$((occ_i + 1))
+done
 
 # NAME omitted -> derive it AND write the provisional row atomically, same
 # algorithm + same locked-claim path as a plain comm-join.sh (ADR 0028

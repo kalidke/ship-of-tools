@@ -100,14 +100,18 @@ start_stub_daemon() {
     nc -klU "$SOCK" < "$fifo" >> "$REQLOG" &
     STUB_NC_PID=$!
 
-    ( local listn=0 idx max=${#list_replies[@]}
+    ( local listn=0 idx max=${#list_replies[@]} created=0
       tail -n +1 -F "$REQLOG" 2>/dev/null | while IFS= read -r line; do
         local op; op="$(printf '%s' "$line" | jq -r '.op // empty' 2>/dev/null)"
         case "$op" in
             hello) printf '%s\n' "$hello_reply" >&3 ;;
             version.query) printf '%s\n' "$version_reply" >&3 ;;
-            workspace.create) printf '%s\n' "$create_reply" >&3 ;;
+            workspace.create) created=1; printf '%s\n' "$create_reply" >&3 ;;
             workspace.list)
+                if [ "$created" -eq 0 ]; then
+                    printf '%s\n' "{\"v\":1,\"id\":1,\"kind\":\"res\",\"op\":\"workspace.list\",\"payload\":{\"workspaces\":${PRE_CREATE_LIST:-[]}}}" >&3
+                    continue
+                fi
                 listn=$((listn + 1))
                 idx=$listn
                 [ "$idx" -gt "$max" ] && idx=$max

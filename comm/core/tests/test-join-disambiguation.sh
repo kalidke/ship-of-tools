@@ -244,11 +244,17 @@ start_stub_daemon() {  # WSID SLUG ROOT [HANDLE]
     exec 3<>"$fifo"
     nc -klU "$STUB_SOCK" < "$fifo" >> "$STUB_REQLOG" &
     STUB_NC_PID=$!
-    ( tail -n +1 -F "$STUB_REQLOG" 2>/dev/null | while IFS= read -r line; do
+    ( created=0
+      tail -n +1 -F "$STUB_REQLOG" 2>/dev/null | while IFS= read -r line; do
         case "$(printf '%s' "$line" | jq -r '.op // empty' 2>/dev/null)" in
             hello)            printf '%s\n' "$hello" >&3 ;;
-            workspace.create) printf '%s\n' "$create" >&3 ;;
-            workspace.list)   printf '%s\n' "$list" >&3 ;;
+            workspace.create) created=1; printf '%s\n' "$create" >&3 ;;
+            workspace.list)
+                if [ "$created" -eq 0 ] && [ -n "${PRE_CREATE_LIST:-}" ]; then
+                    printf '%s\n' "{\"v\":1,\"id\":1,\"kind\":\"res\",\"op\":\"workspace.list\",\"payload\":{\"workspaces\":${PRE_CREATE_LIST}}}" >&3
+                else
+                    printf '%s\n' "$list" >&3
+                fi ;;
             pty.input)        printf '%s\n' "$ptyin" >&3 ;;
             pty.screen)       printf '%s\n' "$ptyscreen" >&3 ;;
         esac
@@ -1240,10 +1246,12 @@ case_spawn_fresh_only_refusal() {
 
     # The stub daemon answers the create and reports the row ready; a real
     # sotd is never reached (the suite-wide endpoint is dead).
+    PRE_CREATE_LIST='[]'
     start_stub_daemon "ws-fresh-1" "$base" "$root"
     SOT_SPAWN_ENDPOINT="unix:$STUB_SOCK" spawn_in "$root"
     local created; created="$(grep -c '"op":"workspace.create"' "$STUB_REQLOG" 2>/dev/null || echo 0)"
     stop_stub_daemon
+    unset PRE_CREATE_LIST
     [ "$SPAWN_RC" -eq 0 ] || { echo "  comm-spawn.sh exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
     contains "$SPAWN_OUT" "@$h2" \
         || { echo "  spawn stdout: $SPAWN_OUT (want escalation to @$h2, not a reclaim of @$h1)"; return 1; }

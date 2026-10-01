@@ -163,6 +163,8 @@ Ctrl+PageDown), boots `ccb` on first FE attach so its own
 task-only brief. **Addressable immediately** — the handle is pre-registered,
 so `comm-send.sh @<name>` queues even before it finishes joining. Label =
 repo name, never the task (`comm-spawn.sh` rejects task-named labels).
+One repo root holds one session: `comm-spawn.sh` refuses a root that already has a
+workspace, naming it; a second session on a repo is a worktree (`/worktree`).
 Refresh the FE's session list to see the new row; despawn with
 `comm-despawn.sh <name|slug>`.
 
