@@ -12,12 +12,12 @@
 # DBUS_SESSION_BUS_ADDRESS: they would put test scopes into the user's systemd
 # manager. Needs jq. Exit 2 on bad args; otherwise 0 (130 if interrupted) and
 # the verdict is in <logdir>/summary.txt: it ends in ALLDONE, or ALLDONE FAILED
-# when the job runner failed, a job never ran, the run was interrupted, or a
-# test left a process behind. Every job's result file starts as `unrun`, so a
-# job that never ran cannot pass; each job's command has a 1200 s end (the
-# builds do not). CARGO_TARGET_DIR must be the gate's alone while it runs: any
-# new process started from it counts as a leftover.
-# ALLDONE marks the end of the run, not a pass: the rc lines are the verdict.
+# when any job's rc is nonzero, the job runner failed, a job never ran, the run
+# was interrupted, or a test left a process behind. Every job's result file
+# starts as `unrun`, so a job that never ran cannot pass; each job's command
+# has a 1200 s end (the builds do not). CARGO_TARGET_DIR must be the gate's
+# alone while it runs: any new process started from it counts as a leftover.
+# ALLDONE means every rc line is 0; the rc lines say which job failed.
 
 SELF=$(readlink -f "$0")
 TO=(timeout -k 10 1200)
@@ -331,14 +331,15 @@ done
 # one sweep over every result file: a failure or a job that never ran is a failure
 RC=0
 NOTES=
-UNRUN=0
+UNRUN=0 STEPFAIL=0
 for f in "$L"/rust/*.rc "$L"/steps/*.rc; do
   [ -e "$f" ] || continue
   v=$(cat "$f")
   case $f in
     "$L"/rust/*) [ "$v" = unrun ] && UNRUN=1
        [ "$v" = 0 ] || { RC=101; NOTES+="rust-failed $(basename "$f" .rc) $v"$'\n'; } ;;
-    *) [ "$v" = unrun ] && { UNRUN=1; NOTES+="$(basename "$f" .rc) rc=unrun"$'\n'; } ;;
+    *) [ "$v" = unrun ] && { UNRUN=1; NOTES+="$(basename "$f" .rc) rc=unrun"$'\n'; }
+       [ "$v" = 0 ] || STEPFAIL=1 ;;
   esac
 done
 [ "$BUILD_RC" -eq 0 ] || RC=$BUILD_RC
@@ -350,7 +351,8 @@ rc rust-workspace "$RC" "binaries=$BIN passed=$PASSED failed=$FAILED ignored=$IG
 PEAK=$({ awk '$2 == "start" {print $5}' "$L/summary.txt"
   awk 'FNR == 1 && $1 == "Running" {print $NF}' "$L"/rust/*.log 2> /dev/null; } | sort -n | tail -n 1)
 echo "end $(date +%H:%M:%S) load $(cut -d' ' -f1-3 /proc/loadavg) cargo=$(pgrep -c cargo) peak-load ${PEAK:-0} wall $(($(date +%s) - T0))s" >> "$L/summary.txt"
-if [ "$XS" -eq 0 ] && [ "$INTR" -eq 0 ] && [ "$UNRUN" -eq 0 ] && [ -z "$LEFT" ]; then
+if [ "$RC" -eq 0 ] && [ "$STEPFAIL" -eq 0 ] && [ "$XS" -eq 0 ] && [ "$INTR" -eq 0 ] && [ "$UNRUN" -eq 0 ] &&
+  [ -z "$LEFT" ]; then
   echo ALLDONE >> "$L/summary.txt"
 else
   echo "ALLDONE FAILED" >> "$L/summary.txt"
