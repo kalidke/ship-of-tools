@@ -168,6 +168,14 @@ jobs:
         run: bash scripts/tests/test-tunnel-plan.sh
         working-directory: .
 
+      # The installer's pure decisions and the sot-launch socket probe, run
+      # from install.sh's own text; hermetic and fast.
+      - name: Test installer state (bash)
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 5
+        run: bash scripts/tests/installer-state.sh
+        working-directory: .
+
       # PR #148 Codex review F10: hermetic + fast, so it rides along in this
       # existing ubuntu leg rather than a dedicated job.
       - name: Test sot-comm disambiguation (hermetic)

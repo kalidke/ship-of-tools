@@ -289,6 +289,33 @@ check "a live daemon from another prefix refuses before any FE file is even look
     "refuse:the sotd.service running for this user runs $OTHER_PREFIX/bin/sotd; this install targets $GPREFIX/bin/sotd" \
     "$(installer_ownership_gate "$OTHER_PREFIX/bin/sotd" "$GHOME" "$GPREFIX" Linux 1 0)"
 
+# --- sot-launch: an nc that cannot probe a UNIX socket never deletes it -----
+# netcat-traditional has no -U, so its probe of a LIVE daemon's socket failed and
+# the wrapper removed the socket. The two functions are taken from the wrapper
+# text install.sh writes, with its \$ escapes undone.
+LBIN="$WORK/launch-bin"; mkdir -p "$LBIN"
+cat > "$LBIN/nc" <<'NC'
+#!/bin/sh
+# netcat-traditional: its help lists no -U, and -U is an invalid option.
+case "$1" in -h) printf '[v1.10-47]\n\t-u\t\t\tUDP mode\n' >&2; exit 1 ;; esac
+echo "nc: invalid option -- 'U'" >&2; exit 1
+NC
+cat > "$LBIN/sotd" <<'SOTD'
+#!/bin/sh
+: > "$(dirname "$0")/sotd-started"
+SOTD
+chmod +x "$LBIN/nc" "$LBIN/sotd"
+LSOCK="$WORK/sot.sock"
+python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$LSOCK"
+LAUNCH_FNS="$(sed -n '/^socket_open() {$/,/^}$/p; /^start_daemon_if_needed() {$/,/^}$/p' "$(dirname "$0")/../install.sh" | sed 's/\\\$/$/g')"
+LAUNCH_RC="$(SOCKET="$LSOCK" PREFIX="$WORK/launch" PATH="$LBIN:$PATH" bash -c "$LAUNCH_FNS"'
+    mkdir -p "$PREFIX/bin"; ln -sf "'"$LBIN"'/sotd" "$PREFIX/bin/sotd"
+    sleep() { if [ "$1" = 1 ]; then command sleep 1; fi; }  # the probe waits for real, the retries do not
+    start_daemon_if_needed; echo $?' 2>/dev/null)" || LAUNCH_RC=exited
+check "an nc without -U leaves the socket in place and starts no daemon" \
+    "0 socket=yes started=no" \
+    "$LAUNCH_RC socket=$([ -S "$LSOCK" ] && echo yes || echo no) started=$([ -e "$LBIN/sotd-started" ] && echo yes || echo no)"
+
 # ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then

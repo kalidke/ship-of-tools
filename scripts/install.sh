@@ -861,7 +861,7 @@ apply_pending
 SOCKET="\$("$PREFIX/bin/sotd" session-socket-path sot)"
 socket_open() {
     [ -S "\$SOCKET" ] || return 1
-    if command -v nc >/dev/null 2>&1; then
+    if command -v nc >/dev/null 2>&1 && nc -h 2>&1 | grep -q -- '-U'; then
         nc -U "\$SOCKET" </dev/null >/dev/null 2>&1 &
         pid=\$!
         sleep 1
@@ -873,8 +873,10 @@ socket_open() {
         wait "\$pid"
         return \$?
     fi
-    # Minimal installs may not have nc. A socket file is the best available
-    # probe; the frontend will still fail loud if the connect cannot complete.
+    # No nc, or an nc without -U (netcat-traditional), cannot probe:
+    # the socket file is the best available evidence, and it is never removed
+    # on that evidence; the frontend still fails loud if the connect cannot
+    # complete.
     return 0
 }
 start_daemon_if_needed() {
