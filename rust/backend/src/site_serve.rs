@@ -27,7 +27,8 @@
 // folder when the URL space starts above S. Widening the URL space does not
 // widen what is served: outside S, only files inside the target of a link git
 // tracks, under a data root the machine's own `data-roots` file declares, are
-// served (see `resolve_and_open` for the refusals). `.git` is never served.
+// served (see `resolve_and_open` for the refusals). No file whose resolved path
+// lies inside a `.git` directory under the site is served.
 //
 // Scope/security: binds 127.0.0.1 only (then SSH-forwarded, loopback on both
 // ends), but neither port has auth of its own — any local user on a shared
@@ -474,6 +475,14 @@ pub struct Site {
     url_root: PathBuf,
     /// Test-only override of the data-roots file; `None` reads the config dir.
     roots_file: Option<PathBuf>,
+    /// The canonical data roots, keyed on the data-roots file's stat: an
+    /// unchanged file is never canonicalized again (a stalled share would
+    /// otherwise stall every request).
+    #[cfg(unix)]
+    roots_cache: Mutex<Option<(Option<IndexStamp>, std::sync::Arc<DataRoots>)>>,
+    /// Test-only: how many times the file was read and its roots canonicalized.
+    #[cfg(all(unix, test))]
+    roots_reads: std::sync::atomic::AtomicUsize,
     #[cfg(unix)]
     git: Option<GitState>,
 }
@@ -510,7 +519,7 @@ fn index_stamp(index: &Path) -> Option<IndexStamp> {
 /// that was skipped and why (named in the R2c/R3 refusal so a person sees why
 /// their root did not count).
 #[cfg(unix)]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct DataRoots {
     pub(crate) roots: Vec<PathBuf>,
     pub(crate) skipped: Vec<String>,
@@ -687,6 +696,10 @@ impl Site {
             url_root: root,
             roots_file: None,
             #[cfg(unix)]
+            roots_cache: Mutex::new(None),
+            #[cfg(all(unix, test))]
+            roots_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(unix)]
             git: None,
         }
     }
@@ -719,9 +732,10 @@ impl Site {
         site.roots_file = roots_file;
         #[cfg(unix)]
         {
-            // git is only asked when the machine declares at least one root.
+            // git is only asked when the machine declares at least one root;
+            // no root is canonicalized here, a dead share must not stall open.
             let site = tokio::task::spawn_blocking(move || {
-                if !site.data_roots().roots.is_empty() {
+                if site.declares_a_root() {
                     site.attach_git(&ws_root, widen);
                 }
                 site
@@ -765,18 +779,46 @@ impl Site {
         self.git = Some(g);
     }
 
-    /// The data roots, read from the file NOW: removing a root takes effect at
-    /// the next request. No config dir (`None`) means no roots.
     #[cfg(unix)]
-    fn data_roots(&self) -> DataRoots {
-        let file = self
-            .roots_file
+    fn roots_path(&self) -> Option<PathBuf> {
+        self.roots_file
             .clone()
-            .or_else(|| sot_log::state_dir::sot_config_dir().map(|d| d.join("data-roots")));
-        match file {
-            Some(f) => read_data_roots(&f, std::env::var_os("HOME").map(PathBuf::from).as_deref()),
-            None => DataRoots::default(),
+            .or_else(|| sot_log::state_dir::sot_config_dir().map(|d| d.join("data-roots")))
+    }
+
+    /// Whether the data-roots file has a non-comment absolute line: text only,
+    /// nothing is resolved.
+    #[cfg(unix)]
+    fn declares_a_root(&self) -> bool {
+        let Some(text) = self.roots_path().and_then(|f| std::fs::read_to_string(f).ok()) else {
+            return false;
+        };
+        text.lines().map(str::trim).any(|l| !l.starts_with('#') && Path::new(l).is_absolute())
+    }
+
+    /// The data roots as of the file's current stat: a root added or removed
+    /// is seen at the next request, an unchanged file is not re-read. No
+    /// config dir (`None`) means no roots.
+    #[cfg(unix)]
+    fn data_roots(&self) -> std::sync::Arc<DataRoots> {
+        let Some(f) = self.roots_path() else {
+            return Default::default();
+        };
+        let stamp = index_stamp(&f);
+        let mut cache = self.roots_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((s, r)) = cache.as_ref() {
+            if *s == stamp {
+                return r.clone();
+            }
         }
+        #[cfg(test)]
+        self.roots_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let r = std::sync::Arc::new(read_data_roots(
+            &f,
+            std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+        ));
+        *cache = Some((stamp, r.clone()));
+        r
     }
 
     /// The URL path (below the nonce) of a page `rel` under the content root:
@@ -870,6 +912,16 @@ fn open_beneath(base: &Path, rel: &Path) -> std::io::Result<std::fs::File> {
 fn open_checked(base: &Path, rel: &Path, shown: &str) -> Result<std::fs::File, Refusal> {
     #[cfg(not(unix))]
     let _ = shown;
+    // R0 on the resolved path: a link into `.git`, an 8.3 short name or an
+    // NTFS stream all canonicalize to a `.git` component.
+    if rel.components().any(|c| c.as_os_str().eq_ignore_ascii_case(".git")) {
+        return Err(refuse(
+            shown,
+            "403 Forbidden",
+            "R0",
+            "refused: .git is never served".into(),
+        ));
+    }
     match open_beneath(base, rel) {
         Ok(f) => Ok(f),
         #[cfg(unix)]
@@ -1762,6 +1814,63 @@ mod linked_data_tests {
         let t = body_text(&body);
         assert!(t.contains("none is declared") && t.contains("ghost-share"), "{t}");
         remove_root(serial);
+    }
+
+    /// B1: the repo top is the site; a tracked link reaches `.git`.
+    #[tokio::test]
+    async fn a_tracked_link_into_dot_git_is_refused_b1a() {
+        let f = fixture();
+        symlink("../.git", f.repo.join("site/g")).unwrap();
+        git(&f.repo, &["add", "site/g"]);
+        let (addr, nonce, serial) = serve(Site::plain(f.repo.clone())).await;
+        let (st, _, body) = get(addr, &format!("/{nonce}/site/g/config"), &[]).await;
+        assert_eq!(st, 403, "{}", body_text(&body));
+        assert!(body_text(&body).contains(".git is never served"));
+        remove_root(serial);
+    }
+
+    /// B1: a mixed-case `.Git` directory reached through a link.
+    #[tokio::test]
+    async fn a_mixed_case_dot_git_behind_a_link_is_refused_b1b() {
+        let f = fixture();
+        write(&f.repo.join("meta/.Git/secret"), b"s");
+        symlink("meta/.Git", f.repo.join("g2")).unwrap();
+        git(&f.repo, &["add", "g2"]);
+        let (addr, nonce, serial) = serve(Site::plain(f.repo.clone())).await;
+        let (st, _, body) = get(addr, &format!("/{nonce}/g2/secret"), &[]).await;
+        assert_eq!(st, 403, "{}", body_text(&body));
+        assert!(body_text(&body).contains(".git is never served"));
+        remove_root(serial);
+    }
+
+    fn reads(site: &Site) -> usize {
+        site.roots_reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// B2a: opening canonicalizes nothing, even for a root that is not there.
+    #[tokio::test]
+    async fn open_does_not_resolve_a_missing_root_b2a() {
+        let f = fixture();
+        let ghost = f.base.join("ghost-share");
+        std::fs::write(&f.roots_file, format!("{}\n", ghost.display())).unwrap();
+        let site =
+            Site::with_roots(f.repo.join("site"), f.repo.clone(), true, f.roots_file.clone()).await;
+        assert_eq!(reads(&site), 0);
+    }
+
+    /// B2b and B2c: one read for an unchanged file, a fresh one after a change.
+    #[tokio::test]
+    async fn roots_are_resolved_once_per_file_state_b2() {
+        let f = fixture();
+        let site = widened(&f).await;
+        assert_eq!(reads(&site), 0);
+        assert_eq!(site.data_roots().roots, vec![f.share.clone()]);
+        assert_eq!(site.data_roots().roots, vec![f.share.clone()]);
+        assert_eq!(reads(&site), 1);
+        std::fs::write(&f.roots_file, format!("{}\n{}\n", f.share.display(), f.outside.display()))
+            .unwrap();
+        assert_eq!(site.data_roots().roots, vec![f.share.clone(), f.outside.clone()]);
+        assert_eq!(reads(&site), 2);
     }
 
     #[tokio::test]

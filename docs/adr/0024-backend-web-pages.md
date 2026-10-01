@@ -225,7 +225,10 @@ widened. Widening the URL space does not widen what is served.
 
 Follow rule, checked on every request:
 
-- `.git` in any path part is refused, and so is a `..` part.
+- `.git` in any path part is refused, and so is a `..` part. A resolved path
+  with a `.git` component below the site is refused too (a tracked link into
+  `.git`, an 8.3 short name): no file whose resolved path lies inside a `.git`
+  directory under the site is served.
 - A path that resolves inside the content root is served as before.
 - Otherwise the first symlink below the URL root must be tracked by git (the set
   is rebuilt whenever the repo index file changes), a data root must be declared
@@ -238,6 +241,6 @@ Follow rule, checked on every request:
 The file is opened without following a symlink below its base (`openat` with
 `O_NOFOLLOW`), so a link swapped in after the check fails the open instead of
 escaping. What a page's script can read: the content root, plus files inside the
-targets of tracked links under a declared root; never `.git`, never an untracked
+targets of tracked links under a declared root; never anything inside a `.git` directory, never an untracked
 repo file outside the content root, never anything through an untracked link.
 Range, content types and the empty-file case are shared with the video server.
