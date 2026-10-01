@@ -1540,14 +1540,30 @@ fn sessions_dir() -> PathBuf {
 /// The derivation itself is `sot_log::state_dir::sot_config_dir` (one
 /// resolver, shared with `sot-protocol`'s `topology` reader so the daemon
 /// and `sotd topology` read `hosts.toml` from the same place); this wrapper
-/// keeps the two fallbacks: the Windows panic, and the Unix
-/// `/tmp/.config/sot` for a process with neither `$XDG_CONFIG_HOME` nor
-/// `$HOME`.
+/// keeps the Windows panic; on Unix a process with neither
+/// `$XDG_CONFIG_HOME` nor `$HOME` panics with `CONFIG_DIR_UNDERIVABLE`
+/// rather than fall back to a shared directory such as `/tmp`, where any
+/// local user could pre-create the registry. `main` checks this at startup
+/// (`check_config_dir`), so the panic only fires in a caller that skipped it.
 pub(crate) fn app_config_dir() -> PathBuf {
     #[cfg(windows)]
     return crate::paths::windows_state_root().join("config");
     #[cfg(not(windows))]
-    sot_log::state_dir::sot_config_dir().unwrap_or_else(|| PathBuf::from("/tmp/.config/sot"))
+    sot_log::state_dir::sot_config_dir().expect(CONFIG_DIR_UNDERIVABLE)
+}
+
+/// The refusal text for a config dir that cannot be derived.
+pub(crate) const CONFIG_DIR_UNDERIVABLE: &str = "the daemon's config dir cannot be derived: neither XDG_CONFIG_HOME nor HOME is set; refusing to fall back to a shared directory such as /tmp";
+
+/// Startup form of `app_config_dir`'s refusal: an `Err` carrying
+/// `CONFIG_DIR_UNDERIVABLE` instead of a panic. Always `Ok` on Windows,
+/// which has its own check (`paths::windows_state_root`).
+pub(crate) fn check_config_dir() -> Result<(), String> {
+    #[cfg(not(windows))]
+    if sot_log::state_dir::sot_config_dir().is_none() {
+        return Err(CONFIG_DIR_UNDERIVABLE.to_string());
+    }
+    Ok(())
 }
 
 /// Directory entries directly under `root` matching the backend's OWN
@@ -2922,6 +2938,27 @@ cursor_path = "src/lib.jl"
         std::env::set_var("XDG_CONFIG_HOME", "/xdg-config");
         std::env::set_var("HOME", "/home/someone");
         assert_eq!(app_config_dir(), PathBuf::from("/xdg-config/sot"));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    #[should_panic(expected = "refusing to fall back to a shared directory such as /tmp")]
+    fn app_config_dir_unix_panics_when_xdg_config_home_and_home_are_both_unset() {
+        let _guard = env_guarded();
+        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("HOME");
+        let _ = app_config_dir();
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn check_config_dir_errs_without_xdg_config_home_and_home_and_is_ok_with_home() {
+        let _guard = env_guarded();
+        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("HOME");
+        assert_eq!(check_config_dir(), Err(CONFIG_DIR_UNDERIVABLE.to_string()));
+        std::env::set_var("HOME", "/home/someone");
+        assert_eq!(check_config_dir(), Ok(()));
     }
 
     #[test]

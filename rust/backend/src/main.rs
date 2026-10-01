@@ -295,6 +295,14 @@ Pure queries (no startup side effects, answered before any of the above):
     }
 
     apply_umask();
+
+    // First reach of `workspaces::app_config_dir` is the registry load far
+    // below; refuse here, before any state is created, rather than panic
+    // mid-request (or fall back to a shared directory).
+    if let Err(msg) = workspaces::check_config_dir() {
+        eprintln!("sotd: {msg}");
+        std::process::exit(78);
+    }
     // Defect fix (field-proven, Windows; see `sot_log::winhandle`'s module
     // doc): harden this process's own inherited stdio before anything is
     // spawned, so it can never leak into a supervisor/leg that outlives us.
