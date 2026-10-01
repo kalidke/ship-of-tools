@@ -153,17 +153,15 @@ The smallest useful working slice:
 - This is ADR 0049's design of record, landing in stages: a send's verdict
   now is `filed -> @h` or `FAILED -> @h: <reason>`, except that until B2 a
   handle the hub's folder does not list can still get `NOT CONFIRMED: sent
-  for @h; …` or `filed -> @h (by <filer>, relay)`; and until B3 the typed
-  wake line reads `[sot-comm] new message for @<handle> — run
-  …/comm-poll.sh` rather than `[sot-comm] you have mail`.
+  for @h; …` or `filed -> @h (by <filer>, relay)`.
 - A session that can receive has one handle: its folder name plus its box name.
 - `comm-context.sh` prints yours.
 - Send with `comm-send.sh @handle "text"` and read its one result, `filed` or `FAILED` — nothing is queued and there is no second route.
 - When `[sot-comm] you have mail` appears, or your end-of-turn check says so, run `comm-poll.sh`.
 - To wait for a reply, end your turn.
-- Run the session-start step once, when a session first starts. Today a
-  resumed session must still re-run it — until the daemon does the waking,
-  which is why the launcher's `--continue` does exactly that.
+- Run the session-start step once, when a session first starts. A
+  resumed session must re-run it, which is why the launcher's `--continue`
+  does exactly that.
 
 ## Conventions for Claude
 

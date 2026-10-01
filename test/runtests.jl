@@ -216,8 +216,8 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
     end
 
     @testset "install_file: a refused FILE destination is moved aside, never deleted" begin
-        # Windows refuses a rename over a file another process holds open
-        # (a live inbox watcher holds comm-watch.sh). Modeled through the
+        # Windows refuses a rename over a file another process holds open.
+        # Modeled through the
         # `rename` seam: the first rename onto dst is refused, everything
         # else behaves. The old file must survive under an aside name (the
         # holder keeps it), dst must carry the new bytes, and a later
@@ -546,11 +546,13 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             withhome() do home, bin
                 write(joinpath(bin, "comm-listen.sh"), "stale")
                 write(joinpath(bin, "bus.sh"), "stale")
+                write(joinpath(bin, "comm-wake.sh"), "stale")
                 write(joinpath(bin, "comm-poll.sh"), "OLD")
                 write(joinpath(bin, "my-own-tool.sh"), "mine")
                 ShipTools.update_comm(clis = [:claude])
                 @test !isfile(joinpath(bin, "comm-listen.sh"))
                 @test !isfile(joinpath(bin, "bus.sh"))
+                @test !isfile(joinpath(bin, "comm-wake.sh"))
                 @test read(joinpath(bin, "comm-poll.sh")) == read(joinpath(srcbin, "comm-poll.sh"))
                 @test read(joinpath(bin, "my-own-tool.sh"), String) == "mine"
                 @test isfile(joinpath(bin, manifest))

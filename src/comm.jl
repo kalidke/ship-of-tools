@@ -31,8 +31,8 @@
 # version for a running loop that re-execs it. If one exists, the name stays
 # SHIPPED as a stub that logs once and then sleeps (a shipped name is never
 # pruned); only otherwise is the file deleted, and the record removes it.
-# `COMM_DEPRECATED_BIN` below is FROZEN and covers only boxes installed before
-# the record existed; nobody appends to it again.
+# `COMM_DEPRECATED_BIN` below covers boxes installed before the record existed;
+# until a released install writes the record, a retired script is appended there.
 
 const COMM_PROTOCOL_VERSION = 1
 const COMM_SRC = normpath(joinpath(@__DIR__, "..", "comm"))
@@ -229,15 +229,18 @@ function _json_toplevel_keys(txt::AbstractString)
 end
 
 # Managed bin/ files retired before the install kept a record of what it wrote
-# (`COMM_MANIFEST`). FROZEN: seeded once, from
+# (`COMM_MANIFEST`). Seeded from
 #   git log --diff-filter=D --name-only --format= -- comm/core/scripts \
 #       comm/adapters/claude/hooks comm/adapters/codex/hooks
 # (and --diff-filter=R --name-status, which found no rename), keeping basenames
-# not shipped today. Later retirements are handled by the manifest diff, so
-# nobody appends here again. No running loop re-execs either name: the old
+# not shipped today. Once a released install has written the record, later
+# retirements are handled by the manifest diff; until then, scripts a lane
+# retires are appended here. No running loop re-execs either name: the old
 # relay/listen loops re-exec `comm-relay.sh bridge`, which is still shipped and
 # so never pruned; `comm-listen.sh` and `bus.sh` were only one-shot calls.
-const COMM_DEPRECATED_BIN = ["bus.sh", "comm-listen.sh"]
+const COMM_DEPRECATED_BIN = ["bus.sh", "comm-listen.sh", "comm-wake.sh", "comm-watch.sh",
+                             "codex-watch.sh", "comm-postcompact-reminder.sh",
+                             "comm-postclear-reminder.sh", "comm-session-skill.sh"]
 
 # The names the last successful install shipped into `<bin>`, one per line.
 const COMM_MANIFEST = ".sot-comm-installed"
@@ -410,9 +413,7 @@ function install_file(src::AbstractString, dst::AbstractString;
             rename(tmp, dst)
         catch first_err
             # Windows refuses to rename over a file another process holds
-            # open — and the file a live inbox watcher holds open IS
-            # comm-watch.sh, so the install that carries a watcher fix could
-            # never land it (field report 2026-09-11). The old file is moved
+            # open (field report 2026-09-11). The old file is moved
             # ASIDE, never deleted: the running process keeps its inode, the
             # name is freed, the new file lands, and the aside copy is pruned
             # by the next successful replace of this name (`_reap_markers`). Only a FILE is moved
@@ -494,8 +495,8 @@ function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
         mkpath(dirname(dst))
         src = joinpath(srcdir, f)
         # A destination that already holds these exact bytes is current: skip the
-        # replace. A live Monitor on Windows holds comm-watch.sh open and the
-        # replace fails with EACCES even though nothing is stale.
+        # replace: on Windows a file another process holds open fails the
+        # replace with EACCES even though nothing is stale.
         if isfile(dst) && read(dst) == read(src)
             try
                 executable(f) && chmod(dst, 0o755)
@@ -605,8 +606,8 @@ function install_comm(; clis = [:claude, :codex])
     isdir(srcscripts) || error("comm scripts not found at $srcscripts")
     srcfiles = readdir(srcscripts)
     # Every stage runs; failures are collected and raised together at the
-    # end, so one refused file (a running comm-watch.sh on Windows, field
-    # report 2026-09-11) no longer leaves the skills and hooks un-updated.
+    # end, so one refused file (field report
+    # 2026-09-11) no longer leaves the skills and hooks un-updated.
     problems = String[]
     _stage!(problems, "comm scripts") do
         _install_files(srcscripts, bin, srcfiles; executable = endswith(".sh"))

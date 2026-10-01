@@ -27,6 +27,12 @@
 # See comm/adapters/claude/sot-session-start/SKILL.md for what the calling
 # skill does with each printed line.
 set -uo pipefail
+# Any other argument is a mode this script does not have: fail before anything
+# runs or writes, never fall through to the joining default.
+case "${1:-}" in
+    ""|--catch-up) ;;
+    *) echo "usage: comm-session-start.sh [--catch-up]" >&2; exit 2 ;;
+esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=comm-lib.sh
 source "$SCRIPT_DIR/comm-lib.sh"
@@ -40,9 +46,7 @@ if ! _start_missing="$(sot_require_tools "start the comm session" $_start_tools 
 fi
 
 MODE="arm"
-case "${1:-}" in
-    --catch-up) MODE="catchup" ;;
-esac
+if [ "${1:-}" = "--catch-up" ]; then MODE="catchup"; fi
 
 # The work-state rule, printed on EVERY bootstrap outcome (fresh,
 # catch-up): the nav row colour is derived from it, and a session that
