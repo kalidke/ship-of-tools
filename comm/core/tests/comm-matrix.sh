@@ -33,9 +33,6 @@
 # names that gap in both directions:
 #   FALSE FAILURE — the echo arrived but the sender said NOT CONFIRMED.
 #   FALSE SUCCESS — the sender said filed but no echo ever came.
-#   DOUBLE DELIVERY — one frame reached the frontend inbox twice, so the
-#     session is woken twice and reads the same message twice (ADR 0048
-#     amendment 9: two frontends on one box must file a frame once).
 # Any of them is a FAIL even though the classic one-sided check would pass.
 #
 # Exit: the number of FAILs (0 = the matrix is clean), or 2 from preflight.
@@ -198,11 +195,6 @@ matrix_preflight() {
         exit 2
     }
     printf '%s\n' "$out" | grep -E '^(fe@|unix:|tcp:|pipe:|npipe:)' || true
-    # How many named frontends this box has, for the two-frontend leg below.
-    # `local` is deliberately absent: the verdict helper reads it per line.
-    MATRIX_FE_LOCAL="$(printf '%s\n' "$out" | grep -c "^fe@$self[[:space:]]")" || MATRIX_FE_LOCAL=0
-    [[ "$MATRIX_FE_LOCAL" =~ ^[0-9]+$ ]] || MATRIX_FE_LOCAL=0
-    echo "frontends attached for $self: $MATRIX_FE_LOCAL"
     [ -n "$expect" ] || { echo; return 0; }
     for box in ${boxes//,/ }; do
         line="$(printf '%s\n' "$out" | grep -m1 "^fe@$box[[:space:]]")" || line=""
@@ -272,7 +264,6 @@ MY_ROOT="$(sed -n '3p' "$SELF_FILE_PATH" 2>/dev/null)"; MY_ROOT="${MY_ROOT#root=
 export SOT_COMM_SELF_FILE="$SELF_FILE_PATH"
 cd "$MY_ROOT" || exit 2
 
-MATRIX_FE_LOCAL=0
 matrix_preflight "$EXPECT" "$BOXES" "$SELF"
 
 # The lines. Each is: NAME | TARGET | HOP | EXPECT. A hop is how a box is made

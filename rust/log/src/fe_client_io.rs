@@ -480,11 +480,8 @@ impl<E: Endpoint> FeAttachClient<E> {
         changed
     }
 
-    /// Any `fe_down` markers `pump` received since the last drain — the
-    /// caller (the frontend) must surface a VISIBLE failure if handling
-    /// one fails ("a marker that exists so a failure is not quiet cannot
-    /// fail quietly itself"). Call AFTER `pump`, which is what actually populates the
-    /// queue this drains.
+    /// Any `fe_down` markers `pump` received since the last drain. Call
+    /// AFTER `pump`, which is what actually populates the queue this drains.
     pub fn drain_fe_down_markers(&mut self) -> Vec<serde_json::Value> {
         self.pending_fe_down_markers.drain(..).collect()
     }
