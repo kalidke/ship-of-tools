@@ -1966,6 +1966,23 @@ fn ping_interval_duration() -> std::time::Duration {
         .unwrap_or(std::time::Duration::from_secs(30))
 }
 
+/// How long the hello reply may take. An ssh child stalled before auth
+/// leaves the pipe open and silent, so without a bound the one control
+/// transport waits forever; on expiry the read errors like an EOF and the
+/// reconnect loop backs off normally, dropping the child.
+const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Read the hello reply frame, bounded by `timeout` (a parameter so a test
+/// can pass a short one).
+async fn read_hello_reply<R: tokio::io::AsyncBufRead + Unpin>(
+    rx: &mut R,
+    timeout: std::time::Duration,
+) -> Result<(Frame, Option<Vec<u8>>)> {
+    tokio::time::timeout(timeout, codec::read_frame(rx))
+        .await
+        .map_err(|_| anyhow::anyhow!("hello reply timed out after {timeout:?}"))?
+}
+
 /// Drive the wire protocol over an already-connected stream's halves. Generic
 /// over the read/write types so the same code path serves the local-socket
 /// transport and an ssh child's stdio — C3 as amended §0: adding this
@@ -2064,7 +2081,7 @@ where
     )
     .await?;
 
-    let (frame, _) = codec::read_frame(&mut rx).await?;
+    let (frame, _) = read_hello_reply(&mut rx, HELLO_TIMEOUT).await?;
     if frame.id != hello_id {
         anyhow::bail!("hello reply id mismatch: got {}, want {hello_id}", frame.id);
     }
@@ -4399,6 +4416,24 @@ mod tests {
 
     // --- Field incident 2026-09-08, defect (b): the read path must never
     // stall on synchronous per-frame disk I/O. ---
+
+    #[tokio::test]
+    async fn hello_read_times_out_against_a_silent_peer() {
+        // The far end is held open and never written: without a bound the
+        // read waits forever.
+        let (_far, near) = tokio::io::duplex(64);
+        let mut rx = tokio::io::BufReader::new(near);
+        let started = std::time::Instant::now();
+        let r = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            read_hello_reply(&mut rx, std::time::Duration::from_millis(100)),
+        )
+        .await
+        .expect("hang guard: the bounded read must return");
+        let err = r.expect_err("a silent peer must time out");
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
 
     #[test]
     fn state_save_gate_is_due_on_a_fresh_connection() {
