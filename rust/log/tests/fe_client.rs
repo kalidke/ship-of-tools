@@ -35,10 +35,14 @@ use sot_log::wire::{
     SupervisorRequest,
 };
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+#[path = "support/capsule_guard.rs"]
+mod capsule_guard;
+use capsule_guard::CapsuleGuard;
 
 /// L1-unix LU3c: the lane's own client type, chosen once — see
 /// `tests/supervisor.rs`'s identical alias for why this replaces
@@ -103,29 +107,6 @@ fn capsule_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sot-capsule"))
 }
 
-/// Reaps a spawned child on every exit path (a panicking assertion
-/// included) — identical shape to `tests/supervisor.rs`'s own guard.
-/// Codex review round, finding 14: the wait after `kill()` is bounded by
-/// the SAME `poll_until` every other wait in this file uses, rather than
-/// an unbounded `Child::wait()` — a `Drop` that could itself hang would
-/// turn one failing test into a wedged whole binary.
-struct KillGuard(Option<Child>);
-impl Drop for KillGuard {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while Instant::now() < deadline {
-                if matches!(c.try_wait(), Ok(Some(_))) {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            eprintln!("KillGuard: process did not exit within 30s of kill(); abandoning the wait");
-        }
-    }
-}
-
 fn poll_until<T>(mut attempt: impl FnMut() -> Option<T>, timeout: Duration, what: &str) -> T {
     let deadline = Instant::now() + timeout;
     loop {
@@ -137,7 +118,7 @@ fn poll_until<T>(mut attempt: impl FnMut() -> Option<T>, timeout: Duration, what
     }
 }
 
-fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> Child {
+fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> CapsuleGuard {
     let mut cmd = Command::new(capsule_exe());
     cmd.arg("supervise")
         .arg(state_dir)
@@ -147,13 +128,13 @@ fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> Child {
         .args(argv)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    cmd.spawn().expect("spawn sot-capsule supervise")
+    CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise"), state_dir)
 }
 
 /// [`spawn_supervisor`] with an explicit initial pty size — ADR 0042
 /// amendment: proves a headless client adopts whatever geometry the
 /// capsule actually has, rather than the client's own placeholder.
-fn spawn_supervisor_sized(state_dir: &Path, mode: &str, cols: u16, rows: u16, argv: &[&str]) -> Child {
+fn spawn_supervisor_sized(state_dir: &Path, mode: &str, cols: u16, rows: u16, argv: &[&str]) -> CapsuleGuard {
     let mut cmd = Command::new(capsule_exe());
     cmd.arg("supervise")
         .arg(state_dir)
@@ -167,11 +148,11 @@ fn spawn_supervisor_sized(state_dir: &Path, mode: &str, cols: u16, rows: u16, ar
         .args(argv)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    cmd.spawn().expect("spawn sot-capsule supervise (sized)")
+    CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise (sized)"), state_dir)
 }
 
-fn wait_for_exit(mut child: Child, timeout: Duration) -> std::process::ExitStatus {
-    poll_until(|| child.try_wait().unwrap(), timeout, "the supervisor process to exit")
+fn wait_for_exit(child: &mut CapsuleGuard, timeout: Duration) -> std::process::ExitStatus {
+    poll_until(|| child.child_mut().try_wait().unwrap(), timeout, "the supervisor process to exit")
 }
 
 /// Bounded poll for the lane to accept a connection AND answer the
@@ -412,8 +393,7 @@ fn attach_as_watcher_receives_the_checkpoint() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -437,8 +417,7 @@ fn attach_as_watcher_receives_the_checkpoint() {
 
     end_run_and_wait_verified(&conn, &voyage);
     let _ = command(&conn, "test-a-stop", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    wait_for_exit(child, Duration::from_secs(30));
+    wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 // -----------------------------------------------------------------------
@@ -456,9 +435,8 @@ fn a_missed_liveness_probe_clears_on_the_next_answer() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let sup_pid = child.id();
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
+    let sup_pid = guard.id();
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -533,8 +511,7 @@ fn a_missed_liveness_probe_clears_on_the_next_answer() {
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     end_run_and_wait_verified(&conn, &voyage);
     let _ = command(&conn, "probe-blink-stop", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    wait_for_exit(child, Duration::from_secs(30));
+    wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 // -----------------------------------------------------------------------
@@ -550,8 +527,7 @@ fn first_input_takes_the_pen_and_resize_precedes_the_flush() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -625,8 +601,7 @@ fn first_input_takes_the_pen_and_resize_precedes_the_flush() {
     );
 
     let _ = command(&conn, "test-b-stop", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    wait_for_exit(child, Duration::from_secs(30));
+    wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 // -----------------------------------------------------------------------
@@ -648,8 +623,7 @@ fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (_voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -739,8 +713,7 @@ fn end_run_from_the_quit_dispatcher_reaches_client_visible_record_verified() {
     assert!(corroborated, "the authority never reached EndedNoRespawn after record_closed");
 
     let _ = command(&conn, "test-c-stop", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    wait_for_exit(child, Duration::from_secs(30));
+    wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 // -----------------------------------------------------------------------
@@ -757,8 +730,7 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkp
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard1 = KillGuard(Some(child));
+    let mut guard1 = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn1 = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn1, Duration::from_secs(90));
 
@@ -796,16 +768,13 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkp
     // child.
     let pid = capsule_pid(&voyage);
     taskkill(pid);
-    if let Some(mut c) = guard1.0.take() {
-        let _ = c.kill();
-        let _ = c.wait();
-    }
+    let _ = guard1.child_mut().kill();
+    let _ = guard1.child_mut().wait();
 
     // A fresh supervisor, `--resume` against the SAME state dir: no live
     // capsule survives to adopt, so it spawns a fresh leg under the SAME
     // (already-published, unchanged) voyage pointer.
-    let child2 = spawn_supervisor(&state_dir, "--resume", SHELL);
-    let mut guard2 = KillGuard(Some(child2));
+    let mut guard2 = spawn_supervisor(&state_dir, "--resume", SHELL);
     let conn2 = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage2, _leg2) = wait_for_ready(&conn2, Duration::from_secs(90));
     assert_eq!(voyage2, voyage, "a fresh spawn under --resume must keep the SAME voyage pointer");
@@ -830,8 +799,7 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkp
     drop(client);
     end_run_and_wait_verified(&conn2, &voyage2);
     let _ = command(&conn2, "test-d-stop", SupervisorOp::Stop);
-    let child2 = guard2.0.take().unwrap();
-    wait_for_exit(child2, Duration::from_secs(30));
+    wait_for_exit(&mut guard2, Duration::from_secs(30));
 }
 
 // -----------------------------------------------------------------------
@@ -860,8 +828,7 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
     // A capsule sized other than the client's own 24x24 placeholder AND
     // other than the common 80x24 default, so an assertion that the
     // client ends up at (120, 40) cannot pass by coincidence.
-    let child = spawn_supervisor_sized(&state_dir, "--start", 120, 40, SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor_sized(&state_dir, "--start", 120, 40, SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -924,8 +891,7 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
     );
 
     let _ = command(&conn, "test-headless-a-stop", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    wait_for_exit(child, Duration::from_secs(30));
+    wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// `screen_of`'s own core mechanism: a WATCHER attach reads the checkpoint
@@ -941,8 +907,7 @@ fn headless_screen_read_never_takes_the_pen() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -988,8 +953,7 @@ fn headless_screen_read_never_takes_the_pen() {
     drop(client);
     end_run_and_wait_verified(&conn, &voyage);
     let _ = command(&conn, "test-headless-b-stop", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    wait_for_exit(child, Duration::from_secs(30));
+    wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 /// Decision 28 (LU6b, attach convergence): a state dir with NO supervisor
@@ -1058,8 +1022,7 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let mut guard = KillGuard(Some(child));
+    let mut guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -1165,8 +1128,7 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
     assert_eq!(refused_stale_count, 1, "exactly ONE of driver_a's attempts must be the refused-stale one the demotion causes");
 
     let _ = command(&conn, "test-headless-c-stop", SupervisorOp::Stop);
-    let child = guard.0.take().unwrap();
-    wait_for_exit(child, Duration::from_secs(30));
+    wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
 #[cfg(target_os = "linux")]
@@ -1210,8 +1172,7 @@ fn attach_converges_on_the_supervisors_word() {
     let h = state_dir_hash(&state_dir);
 
     let started = Instant::now();
-    let child = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "sleep 60"]);
-    let mut guard = KillGuard(Some(child));
+    let _guard = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "sleep 60"]);
 
     let (_woke, wake) = wake_flag();
     let mut client = FeAttachClient::attach(
@@ -1244,9 +1205,6 @@ fn attach_converges_on_the_supervisors_word() {
     // handling logs nothing on accept). Dropped, as the brief's own
     // fallback instructs.
     drop(client);
-    let mut child = guard.0.take().unwrap();
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 #[test]
@@ -1265,8 +1223,7 @@ fn quit_is_dispatched_before_ready() {
     // of the producer's behavior (~600ms either way): the real margin
     // this test relies on is `request_quit` being called at time ~0,
     // before the worker thread's first network round trip even starts.
-    let child = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "sleep 3; sleep 60"]);
-    let mut guard = KillGuard(Some(child));
+    let _guard = spawn_supervisor(&state_dir, "--start", &["/bin/sh", "-c", "sleep 3; sleep 60"]);
 
     let (_woke, wake) = wake_flag();
     let mut client: FeAttachClient = FeAttachClient::attach(
@@ -1320,9 +1277,6 @@ fn quit_is_dispatched_before_ready() {
     // Either way this test's property already holds, so teardown here is
     // a plain kill rather than negotiating a specific quit outcome.
     drop(client);
-    let mut child = guard.0.take().unwrap();
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// Codex review round finding 8: the predecessor version of this test

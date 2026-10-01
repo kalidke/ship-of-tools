@@ -32,10 +32,14 @@ use sot_log::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
 use sot_log::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+#[path = "support/capsule_guard.rs"]
+mod capsule_guard;
+use capsule_guard::CapsuleGuard;
 
 type Client = <PlatformEndpoint as Endpoint>::Client;
 
@@ -81,23 +85,6 @@ fn capsule_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sot-capsule"))
 }
 
-struct KillGuard(Option<Child>);
-impl Drop for KillGuard {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while Instant::now() < deadline {
-                if matches!(c.try_wait(), Ok(Some(_))) {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            eprintln!("KillGuard: process did not exit within 30s of kill(); abandoning the wait");
-        }
-    }
-}
-
 fn poll_until<T>(mut attempt: impl FnMut() -> Option<T>, timeout: Duration, what: &str) -> T {
     let deadline = Instant::now() + timeout;
     loop {
@@ -109,7 +96,7 @@ fn poll_until<T>(mut attempt: impl FnMut() -> Option<T>, timeout: Duration, what
     }
 }
 
-fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> Child {
+fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> CapsuleGuard {
     let mut cmd = Command::new(capsule_exe());
     cmd.arg("supervise")
         .arg(state_dir)
@@ -119,10 +106,10 @@ fn spawn_supervisor(state_dir: &Path, mode: &str, argv: &[&str]) -> Child {
         .args(argv)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    cmd.spawn().expect("spawn sot-capsule supervise")
+    CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise"), state_dir)
 }
 
-fn spawn_supervisor_sized(state_dir: &Path, mode: &str, cols: u16, rows: u16, argv: &[&str]) -> Child {
+fn spawn_supervisor_sized(state_dir: &Path, mode: &str, cols: u16, rows: u16, argv: &[&str]) -> CapsuleGuard {
     let mut cmd = Command::new(capsule_exe());
     cmd.arg("supervise")
         .arg(state_dir)
@@ -136,7 +123,7 @@ fn spawn_supervisor_sized(state_dir: &Path, mode: &str, cols: u16, rows: u16, ar
         .args(argv)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    cmd.spawn().expect("spawn sot-capsule supervise (sized)")
+    CapsuleGuard::new(cmd.spawn().expect("spawn sot-capsule supervise (sized)"), state_dir)
 }
 
 fn wait_for_lane(h: &str, timeout: Duration) -> Client {
@@ -271,8 +258,7 @@ fn an_oversize_input_is_admitted_when_the_queue_is_idle() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let child = spawn_supervisor(&state_dir, "--start", SHELL);
-    let guard = KillGuard(Some(child));
+    let guard = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 
@@ -325,8 +311,7 @@ fn multi_chunk_checkpoint_reassembles_correctly() {
         "p=$(printf '%.0sX' $(seq 1 500)); i=0; while [ $i -lt 300 ]; do printf '\\033[48;5;%dm%s\\033[0m\\n' $((i % 256)) \"$p\"; i=$((i+1)); done; sleep 3600",
     ];
 
-    let child = spawn_supervisor_sized(&state_dir, "--start", 512, 256, &argv);
-    let guard = KillGuard(Some(child));
+    let guard = spawn_supervisor_sized(&state_dir, "--start", 512, 256, &argv);
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
 

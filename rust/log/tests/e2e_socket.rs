@@ -24,6 +24,9 @@ use sot_log::verify::verify_voyage;
 use sot_log::wire::{self, Survival};
 use sot_log::{Class, Envelope, RefKind};
 use std::collections::VecDeque;
+#[path = "support/capsule_guard.rs"]
+mod capsule_guard;
+
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -737,7 +740,7 @@ fn pdeathsig_kills_the_producer_when_the_capsule_dies_hard() {
     let voyage_root = dir.path().join(&voyage_id);
 
     let capsule_exe = env!("CARGO_BIN_EXE_sot-capsule");
-    let mut child = std::process::Command::new(capsule_exe)
+    let child = std::process::Command::new(capsule_exe)
         .arg("run")
         .arg(&voyage_root)
         .arg(&voyage_id)
@@ -752,6 +755,7 @@ fn pdeathsig_kills_the_producer_when_the_capsule_dies_hard() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn sot-capsule");
+    let mut child = capsule_guard::CapsuleGuard::new(child, &voyage_root);
     let capsule_pid = child.id();
 
     // Poll directly for the producer's own child pid to appear -- the
@@ -764,8 +768,6 @@ fn pdeathsig_kills_the_producer_when_the_capsule_dies_hard() {
             break pid;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
             panic!("the capsule never spawned a producer child within 10s");
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -782,16 +784,14 @@ fn pdeathsig_kills_the_producer_when_the_capsule_dies_hard() {
             break;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
             panic!("the producer never became a ready, post-exec `sleep` session leader within 10s");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
 
     // Hard-kill the capsule itself -- SIGKILL, no graceful EndRun at all.
-    child.kill().expect("SIGKILL the capsule");
-    let _ = child.wait();
+    child.child_mut().kill().expect("SIGKILL the capsule");
+    let _ = child.child_mut().wait();
 
     // `PR_SET_PDEATHSIG(SIGKILL)` fires on the death of the SPAWNING
     // THREAD (the capsule's own main thread, just killed above) -- the
