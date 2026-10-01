@@ -126,6 +126,47 @@ check "an offset past the end of the inbox resets to 0" case_an_offset_past_the_
 check "a legacy cursor stops at the first stamp past it, not at the last below it" case_legacy_cursor_stops_at_the_first_unread_stamp
 check "a legacy cursor covering the inbox re-shows nothing" case_legacy_cursor_covering_the_inbox_shows_nothing
 
+case_empty_poll_rewrites_a_legacy_cursor_to_count_form() {
+    reset_inbox
+    line "2026-01-01T00:00:01Z" "old news"
+    line "2026-01-01T00:00:02Z" "older news"
+    printf '%s' "2026-01-01T00:00:05Z" > "$CURSOR"
+    poll
+    case "$POLL_OUT" in *"No new messages"*) ;; *) echo "  poll showed mail: $POLL_OUT"; return 1 ;; esac
+    local want; want="2 $(sed -n 2p "$INBOX" | tr -d '\n\000' | cksum | awk '{print $1 "-" $2}')"
+    [ "$(cat "$CURSOR")" = "$want" ] || { echo "  cursor is '$(cat "$CURSOR")', want '$want'"; return 1; }
+    return 0
+}
+
+case_an_unchanged_cursor_is_not_rewritten() {
+    reset_inbox
+    line "2026-01-01T00:00:01Z" "old news"
+    printf '%s' "2026-01-01T00:00:05Z" > "$CURSOR"
+    poll
+    local before after
+    before="$(cat "$CURSOR")"
+    case "$before" in "1 "*-*) ;; *) echo "  first poll left '$before'"; return 1 ;; esac
+    touch -d '2020-01-01 00:00:00' "$CURSOR"
+    poll
+    after="$(cat "$CURSOR")"
+    [ "$before" = "$after" ] || { echo "  cursor changed: '$before' -> '$after'"; return 1; }
+    [ "$(stat -c %Y "$CURSOR")" = "$(date -d '2020-01-01 00:00:00' +%s)" ] || { echo "  cursor file was rewritten"; return 1; }
+    return 0
+}
+
+case_a_bare_count_is_rewritten_to_count_and_hash() {
+    reset_inbox
+    line "2026-01-01T00:00:01Z" "one"
+    line "2026-01-01T00:00:02Z" "two"
+    printf '2' > "$CURSOR"
+    poll
+    case "$(cat "$CURSOR")" in "2 "*-*) return 0 ;; *) echo "  cursor is '$(cat "$CURSOR")'"; return 1 ;; esac
+}
+
+check "a legacy cursor with no newer mail is rewritten to count form" case_empty_poll_rewrites_a_legacy_cursor_to_count_form
+check "an unchanged cursor is not rewritten" case_an_unchanged_cursor_is_not_rewritten
+check "a bare count is rewritten to count and hash" case_a_bare_count_is_rewritten_to_count_and_hash
+
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
