@@ -4000,21 +4000,6 @@ impl<C> WarmAttachPool<C> {
     }
 }
 
-/// A host's control connection dropped: forget its resolved dial and take
-/// every warm client of that host out of the pool (returned for shutdown),
-/// so no per-row lane keeps redialing a host that is down. Other hosts'
-/// entries are untouched. The next `Connected` for the host re-records the
-/// dial; the viewed row re-attaches through the reconnect handler's
-/// `PtyOpen` and the pool refills as rows are switched away from.
-fn forget_host_dials<C>(
-    pool: &mut WarmAttachPool<C>,
-    dials: &mut HashMap<crate::dial::HostKey, ResolvedDial>,
-    host: &crate::dial::HostKey,
-) -> Vec<C> {
-    dials.remove(host);
-    pool.retain_rows(host, |_| false)
-}
-
 fn shutdown_detached(clients: Vec<PaneAttachClient>) {
     for mut c in clients {
         std::thread::spawn(move || {
@@ -13186,23 +13171,6 @@ impl State {
                     } // if event_host == self.active_host
                 }
                 crate::transport::IncomingEvt::Disconnected { reason } => {
-                    // One redial loop per host during an outage: stop the
-                    // pane attach and every warm lane of THIS host (each
-                    // would otherwise open its own ssh and retry on its
-                    // own) and drop its resolved dial so attaches wait for
-                    // `Connected`.
-                    if let Some(t) = self.pane_attach_term.take_if(|_| {
-                        self.bl_pane_target.as_ref().is_some_and(|(h, _)| *h == event_host)
-                    }) {
-                        self.pane_hold = Some(HeldPaneScreen(t.screen().clone()));
-                        self.pane_feed = PaneFeed::Pending;
-                        shutdown_detached(vec![t]);
-                    }
-                    shutdown_detached(forget_host_dials(
-                        &mut self.warm_attach,
-                        &mut self.host_resolved_dial,
-                        &event_host,
-                    ));
                     if event_host == self.active_host {
                         self.status = format!("disconnected · {reason}");
                     } else {
@@ -29731,24 +29699,6 @@ mod capsule_pane_tests {
         assert_eq!(pool.park(c, "client-c", 2), vec!["dialed"]);
         assert_eq!(pool.retain_rows(&host(), |row| row == "sot-be-c"), vec!["client-a"]);
         assert!(pool.take(&a).is_none());
-    }
-
-    #[test]
-    fn a_host_disconnect_drops_only_that_hosts_warm_clients_and_dial() {
-        let (ha, hb) = ("a".to_string(), "b".to_string());
-        let mut pool: WarmAttachPool<&'static str> = WarmAttachPool::new();
-        assert!(pool.park((ha.clone(), "r1".to_string()), "a1", 4).is_empty());
-        assert!(pool.park((ha.clone(), "r2".to_string()), "a2", 4).is_empty());
-        assert!(pool.park((hb.clone(), "r1".to_string()), "b1", 4).is_empty());
-        let mut dials = HashMap::new();
-        dials.insert(ha.clone(), ResolvedDial::Local);
-        dials.insert(hb.clone(), ResolvedDial::Local);
-        let mut dropped = forget_host_dials(&mut pool, &mut dials, &ha);
-        dropped.sort();
-        assert_eq!(dropped, vec!["a1", "a2"]);
-        assert!(!dials.contains_key(&ha) && dials.contains_key(&hb));
-        assert!(pool.take(&(ha, "r1".to_string())).is_none());
-        assert_eq!(pool.take(&(hb, "r1".to_string())), Some("b1"));
     }
 
     #[test]
