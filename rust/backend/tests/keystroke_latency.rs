@@ -208,7 +208,7 @@ async fn k_tcp_loopback() {
 async fn k3b_ssh_cold_dial() {
     let env = Env::new("k3b");
     env.spawn_sotd();
-    let (_conn, _) = connect_and_hello(&env.socket_path).await;
+    let (mut conn, next_id) = connect_and_hello(&env.socket_path).await;
 
     let rt = tempfile::Builder::new().prefix("sotk3b-").tempdir_in("/tmp").expect("runtime dir");
     let sessions = rt.path().join("sot").join("sessions");
@@ -220,6 +220,8 @@ async fn k3b_ssh_cold_dial() {
         }
     }
     std::os::unix::fs::symlink(&env.socket_path, sessions.join("sot.sock")).expect("symlink");
+    assert!(sot_log::state_dir::is_private_dir(rt.path()), "temp runtime dir is not private");
+    assert!(sot_log::state_dir::is_private_dir(&rt.path().join("sot")), "temp sot dir is not private");
     let remote = format!("env XDG_RUNTIME_DIR={} {} stdio-bridge", rt.path().display(), sotd_exe().display());
 
     let hello = || {
@@ -237,25 +239,41 @@ async fn k3b_ssh_cold_dial() {
         };
         Frame::req(1, op::HELLO, serde_json::to_value(&h).unwrap())
     };
-    // One dial: spawn `argv`, send hello, wait for the first reply frame.
-    let dial = |mut cmd: Command| -> Option<Duration> {
+    // The private daemon's session id; the local run's reply must carry the same one.
+    let private_sid = call(&mut conn, next_id, op::HELLO, hello().payload).await.payload["session_id"].clone();
+    assert!(private_sid.is_string(), "private daemon hello carries no session_id");
+    // One dial: spawn `cmd`, send hello, wait up to 10 s for the first reply frame. The
+    // child is always killed and reaped.
+    let dial = |mut cmd: Command| -> Option<(Duration, Frame)> {
         let t0 = Instant::now();
         let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn");
         let mut stdin = child.stdin.take().unwrap();
         let ok = codec::write_frame_blocking(&mut stdin, &hello()).is_ok() && stdin.flush().is_ok();
         let mut out = BufReader::new(child.stdout.take().unwrap());
-        let reply = if ok { codec::read_frame_blocking(&mut out).ok() } else { None };
+        let reply = if ok {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(codec::read_frame_blocking(&mut out).ok());
+            });
+            rx.recv_timeout(Duration::from_secs(10)).ok().flatten()
+        } else {
+            None
+        };
         let t = t0.elapsed();
         drop(stdin);
         let _ = child.kill();
         let _ = child.wait();
-        reply.filter(|f| f.payload.get("error").is_none()).map(|_| t)
+        reply.filter(|f| f.payload.get("error").is_none()).map(|f| (t, f))
     };
 
     let mut local = Command::new("sh");
     local.arg("-c").arg(&remote);
-    let local_ok = dial(local);
-    println!("k3b local run of the remote command reaches the private daemon: {}", local_ok.is_some());
+    let local_reply = dial(local);
+    if let Some((_, f)) = &local_reply {
+        assert_eq!(f.payload["session_id"], private_sid, "the local run reached a daemon other than the private one");
+    }
+    let local_ok = local_reply.map(|(t, _)| t);
+    println!("k3b local run of the remote command reaches the private daemon (session id matched): {}", local_ok.is_some());
     let ssh_ok = Command::new("ssh").args(["-T", "-o", "BatchMode=yes", "localhost", "true"]).stdin(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
     println!("k3b ssh localhost without a password: {ssh_ok}");
 
@@ -264,7 +282,7 @@ async fn k3b_ssh_cold_dial() {
         if local_ok.is_some() && ssh_ok {
             let mut c = Command::new("ssh");
             c.args(["-T", "-o", "BatchMode=yes", "localhost", &remote]);
-            times.push(dial(c).expect("ssh bridge dial"));
+            times.push(dial(c).expect("ssh bridge dial").0);
         } else {
             let t0 = Instant::now();
             let _ = Command::new("ssh").args(["-T", "-o", "BatchMode=yes", "localhost", "true"]).stdin(Stdio::null()).status();
