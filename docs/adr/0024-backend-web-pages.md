@@ -226,21 +226,28 @@ widened. Widening the URL space does not widen what is served.
 Follow rule, checked on every request:
 
 - `.git` in any path part is refused, and so is a `..` part. A resolved path
-  with a `.git` component below the site is refused too (a tracked link into
-  `.git`, an 8.3 short name): no file whose resolved path lies inside a `.git`
-  directory under the site is served.
+  with a `.git` component below the folder it is served from (the site or the
+  data root) is refused too (a tracked link into `.git`, an 8.3 short name): no
+  file whose resolved path lies inside a `.git` directory below that folder is
+  served.
 - A path that resolves inside the content root is served as before.
 - Otherwise the first symlink below the URL root must be tracked by git (the set
   is rebuilt whenever the repo index file changes), a data root must be declared
-  in the machine's own `data-roots` file (read at each request, each root
-  canonicalized), the link's target must lie under one, and the file must stay
-  inside that target: a link inside the linked folder is not followed out of it.
+  in the machine's own `data-roots` file (re-read when its stat changes, its
+  roots canonicalized once per file state), the link's target must lie under
+  one, and the file must stay inside that target: a link inside the linked
+  folder is not followed out of it. A root that cannot be resolved when the
+  file is read stays skipped until the file changes or the page is reopened.
+  A dead root on a hard NFS mount hangs the first request that resolves the
+  roots, and the page's later linked requests queue behind it; this is not a
+  regression, since resolving at every request hung the same way.
 - Each refusal names the rule and, for a root that did not count, why.
 - Off Linux and macOS no link is followed.
 
 The file is opened without following a symlink below its base (`openat` with
 `O_NOFOLLOW`), so a link swapped in after the check fails the open instead of
 escaping. What a page's script can read: the content root, plus files inside the
-targets of tracked links under a declared root; never anything inside a `.git` directory, never an untracked
-repo file outside the content root, never anything through an untracked link.
+targets of tracked links under a declared root; never anything inside a `.git`
+directory below the folder it is served from, never an untracked repo file
+outside the content root, never anything through an untracked link.
 Range, content types and the empty-file case are shared with the video server.

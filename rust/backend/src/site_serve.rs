@@ -28,7 +28,8 @@
 // widen what is served: outside S, only files inside the target of a link git
 // tracks, under a data root the machine's own `data-roots` file declares, are
 // served (see `resolve_and_open` for the refusals). No file whose resolved path
-// lies inside a `.git` directory under the site is served.
+// lies inside a `.git` directory below the folder it is served from (the site
+// or the data root) is served.
 //
 // Scope/security: binds 127.0.0.1 only (then SSH-forwarded, loopback on both
 // ends), but neither port has auth of its own — any local user on a shared
@@ -477,7 +478,8 @@ pub struct Site {
     roots_file: Option<PathBuf>,
     /// The canonical data roots, keyed on the data-roots file's stat: an
     /// unchanged file is never canonicalized again (a stalled share would
-    /// otherwise stall every request).
+    /// otherwise stall every request). A miss still canonicalizes every root,
+    /// so a dead hard mount stalls that request and the ones queued behind it.
     #[cfg(unix)]
     roots_cache: Mutex<Option<(Option<IndexStamp>, std::sync::Arc<DataRoots>)>>,
     /// Test-only: how many times the file was read and its roots canonicalized.

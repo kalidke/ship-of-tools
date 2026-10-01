@@ -269,10 +269,11 @@ absolute directory per line, blank lines and lines starting with `#` ignored.
 
 A line is skipped, and named in the refusal message, when it is not an absolute
 path, does not exist on this host, is not a directory, is `/`, or contains your
-home directory. Each root is resolved to its canonical path when read, so a root
-given through a symlinked path still matches. The file is read again at every
-request: removing a root stops the pages using it at the next request, with no
-restart. Adding one takes effect at the next `W`. With no file, or no usable
+home directory. Each root is resolved to its canonical path, so a root given
+through a symlinked path still matches. The file is re-read whenever it changes:
+removing a root stops the pages using it at the next request, with no restart. A
+root that cannot be resolved when the file is read stays skipped until the file
+changes or the page is reopened with `W`. Adding one takes effect at the next `W`. With no file, or no usable
 line, no link is followed.
 
 ## See also
