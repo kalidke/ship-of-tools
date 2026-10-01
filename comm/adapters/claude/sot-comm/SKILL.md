@@ -162,8 +162,11 @@ Ctrl+PageDown), boots `ccb` on first FE attach so its own
 task-only brief. **Addressable immediately** — the handle is pre-registered,
 so `comm-send.sh @<name>` queues even before it finishes joining. Label =
 repo name, never the task (`comm-spawn.sh` rejects task-named labels).
+One repo root holds one session: `comm-spawn.sh` refuses a root that already has a
+workspace, naming it; a second session on a repo is a worktree (`/worktree`).
 Refresh the FE's session list to see the new row; despawn with
-`comm-despawn.sh <name|slug>`.
+`comm-despawn.sh <name|slug>`, which fails (exit 1, nothing changed) when it cannot resolve the name
+to a workspace; a handle with no workspace is removed with `comm-leave.sh --name <handle>`.
 
 **Never hand-roll a Claude session outside a workspace row** (it inherits
 your `CLAUDECODE` env). A durable peer is a capsule row: `comm-spawn.sh`, or a

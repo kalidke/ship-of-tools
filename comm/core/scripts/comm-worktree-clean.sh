@@ -77,8 +77,33 @@ if [ "$FORCE" != true ]; then
         echo "  merge it first (git merge $BRANCH / PR), then re-run; or --force to drop unmerged work." >&2
         exit 2
     fi
+    # git worktree remove refuses these files: refuse now, before the session goes.
+    if [ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]; then
+        echo "comm-worktree-clean.sh: $WT has modified or untracked files — refusing; commit or remove them, or --force to drop them." >&2
+        exit 2
+    fi
 fi
 
+DESPAWNED=false
+if [ "$KEEP_SESSION" != true ]; then
+    # By HANDLE first: comm-despawn finds the workspace through the handle's
+    # registry row even when the label differs (display-prefix decoupling).
+    # By LABEL only when that fails, e.g. the row is already gone: a
+    # comm-despawn that cannot resolve its name fails and changes nothing.
+    if "$SCRIPT_DIR/comm-despawn.sh" "$HANDLE"; then
+        DESPAWNED=true
+    elif [ "$LABEL" != "$HANDLE" ] && "$SCRIPT_DIR/comm-despawn.sh" "$LABEL"; then
+        DESPAWNED=true
+        # The label pass destroyed the workspace but removes only a row named
+        # LABEL: the handle's own row is dropped here.
+        "$SCRIPT_DIR/comm-leave.sh" --name "$HANDLE" || echo "comm-worktree-clean.sh: could not remove @$HANDLE from the registry" >&2
+    fi
+    if [ "$DESPAWNED" != true ]; then
+        echo "comm-worktree-clean.sh: the session @$HANDLE was not despawned (see above); keeping worktree $WT" >&2
+        echo "  if the session is already gone, re-run with --keep-session." >&2
+        exit 1
+    fi
+fi
 echo "removing worktree $WT (branch '${BRANCH:-detached}', session @$HANDLE)…"
 if [ "$FORCE" = true ]; then
     git worktree remove --force "$WT"
@@ -88,17 +113,6 @@ fi
 if [ -n "$BRANCH" ]; then
     if [ "$FORCE" = true ]; then git branch -D "$BRANCH" 2>&1 || true; else git branch -d "$BRANCH" 2>&1 || true; fi
 fi
-if [ "$KEEP_SESSION" != true ]; then
-    # Primary: despawn by HANDLE — deregisters the comm agent AND (via
-    # comm-despawn's registry-slug recovery) destroys the workspace even when the
-    # label/slug differs from the handle.
-    "$SCRIPT_DIR/comm-despawn.sh" "$HANDLE" 2>&1 | tail -3 || echo "  (despawn @$HANDLE: not running / already gone)"
-    # Belt-and-suspenders: if the LABEL differs from the HANDLE, also target it
-    # directly, covering the edge where the agent's registry row was already gone
-    # so the handle pass couldn't recover the slug. Idempotent — a no-op ("Nothing
-    # to destroy") if the handle pass already removed it.
-    if [ "$LABEL" != "$HANDLE" ]; then
-        "$SCRIPT_DIR/comm-despawn.sh" "$LABEL" 2>&1 | tail -2 || true
-    fi
-fi
-echo "cleaned: worktree removed${BRANCH:+, branch $BRANCH deleted}$([ "$KEEP_SESSION" = true ] && echo "" || echo ", session @$HANDLE despawned")."
+SESSION_NOTE=""
+if [ "$DESPAWNED" = true ]; then SESSION_NOTE=", session @$HANDLE despawned"; fi
+echo "cleaned: worktree removed${BRANCH:+, branch $BRANCH deleted}${SESSION_NOTE}."

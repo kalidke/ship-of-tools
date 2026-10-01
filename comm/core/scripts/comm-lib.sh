@@ -1869,8 +1869,8 @@ sot_hash6() {
 # "default". Verified against every example in that function's own doc
 # comment (MyPackage.jl -> mypackage_jl, "Foo Bar" -> foo-bar, /abs/path
 # -> abs-path, "  " -> default) plus literal-repeated-dash and leading-
-# junk cases. Needed because workspace.create's same-slug path is an
-# intentional metadata-refresh idempotence, not an error — two labels
+# junk cases. Needed because workspace.create's same-slug path
+# refreshes a row that is not in use instead of refusing — two labels
 # that only differ by case, or by a dot vs underscore, resolve to the
 # SAME workspace and must be caught as a collision too, not just a
 # byte-identical label match.

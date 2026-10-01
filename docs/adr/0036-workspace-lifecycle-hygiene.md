@@ -63,6 +63,13 @@ agent, so a real session at its root is not this collision):
   The gate only rejects a *second identity* for one root, never a re-create
   of the same identity.
 
+  > **Update — 2026-09-30 (0.6.6):** a same-slug create is refused with
+  > `label_in_use` (with the same `existing` block plus its `phase`) unless the
+  > existing row is a capsule row in phase `stopped`; only that row keeps the
+  > id-preserving refresh. Start on any other row contends with the supervisor
+  > that holds it, and the refresh would rewrite a running row's account,
+  > agent and task.
+
 - **Canonicalization failure → skip the gate** (log a warning, proceed).
   The candidate was already `exists()`+`is_dir()`-checked, so a failure here
   is exotic (permissions, racing unlink). Prevention must not make creation

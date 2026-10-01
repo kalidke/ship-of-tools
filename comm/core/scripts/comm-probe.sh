@@ -88,9 +88,9 @@ probe_row_id() {
 # the pane is a login shell we can type into; `agent_name` is what declares the
 # handle to the daemon at creation, which is why this path needs no agent.join
 # from the caller's shell (see the note in `serve`).
-# A same-slug create is an id-preserving REFRESH in the daemon, not an error
-# (`Workspaces::insert`), and the slug comes from the label — so this can only
-# ever refresh a row already labelled `probe-…`, never adopt someone else's.
+# A same-slug create refreshes a `probe-…` row only while it is not in use; one
+# in use is refused (`label_in_use`). The slug comes from the label, so this
+# never adopts someone else's row.
 probe_create() {
     local handle="$1" req resp wsid root
     root="$(probe_root "$handle")" || return 1

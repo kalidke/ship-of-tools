@@ -498,7 +498,7 @@ task**. A task-named anything is unfindable next to its repo-named siblings
 | Frontend address | `fe@<host>` — the frontend PROCESS's declared hello `name`, the target `sot-fe --fe <host>` scopes a directed `fe.command`/`open-url` to (two frontends on one box differ by `instance`); the frontend is a client, never a comm peer, and no session derives or joins as this name | `fe@laptop` |
 | Workspace label | repo basename (comm-spawn default; task-named labels are **rejected**) | `MyPackage` |
 | Workspace slug (the row's name) | derived from the label by the daemon | `mypackage` |
-| Second workspace on one repo | `<Repo>-<suffix>` label, deliberately | `MyPackage-2` |
+| Second session on one repo | a git worktree (`comm-worktree-new.sh`); `comm-spawn.sh` refuses a root that already has a workspace | `MyPackage-wt-rotation` |
 
 A bare `<repo-lowercase>` handle is the default for a normal repo checkout. For a
 **git worktree**, use `<repo>-wt-<shortname>` — the `-wt-` infix is reserved for
@@ -509,8 +509,7 @@ worktree, never the task. Don't hand-roll it: the **`/worktree`** skill
 `<repo-parent>/worktrees/<repo>-wt-<shortname>` on branch `wt/<shortname>` and
 spawns the session with that handle+label, so the slug groups it correctly. (Today the
 worktree handle carries no box name and the parent is found by repo family —
-**superseded by ADR 0049, removed in B6:** every handle carries the box name.) A deliberate second
-workspace is `<repo>-2`. Never a suffix on a plain repo open, and never a task
+**superseded by ADR 0049, removed in B6:** every handle carries the box name.) Never a suffix on a plain repo open, and never a task
 name (`repo-fix` for a direct checkout was wrong on both counts: a
 task-ish descriptor AND a shortened base; the right handle was
 `myrepo`).

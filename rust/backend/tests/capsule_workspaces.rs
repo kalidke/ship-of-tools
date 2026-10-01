@@ -517,6 +517,54 @@ fn spawn_lane_refusal_fixture(state_dir: &Path, reply_bytes: Vec<u8>) -> std::th
     })
 }
 
+/// A same-slug `workspace.create` on a live row is refused (`label_in_use`)
+/// and leaves the row's task, id and phase as they were (ADR 0036 update).
+#[tokio::test]
+async fn workspace_create_on_a_live_label_is_refused_and_leaves_the_row_untouched() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("cil");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create = |task: &str| {
+        serde_json::json!({
+            "label": "cil-workspace",
+            "project_root": env.workspace_project_root.to_string_lossy(),
+            "runtime": "capsule",
+            "task": task,
+        })
+    };
+    let first = call(&mut conn, next_id, op::WORKSPACE_CREATE, create("first")).await;
+    next_id += 1;
+    assert!(first.payload.get("error").is_none(), "first create failed: {:?}", first.payload);
+    let workspace_id = first.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
+
+    let second = call(&mut conn, next_id, op::WORKSPACE_CREATE, create("second")).await;
+    next_id += 1;
+    assert_eq!(second.payload["code"], "label_in_use", "second create: {:?}", second.payload);
+    assert!(second.payload.get("workspace_id").is_none(), "refusal must not read as success: {:?}", second.payload);
+    assert_eq!(second.payload["existing"]["workspace_id"], workspace_id.as_str());
+    assert_eq!(second.payload["existing"]["phase"], "ready");
+
+    let list = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await;
+    next_id += 1;
+    let row = find_row(&list.payload, &workspace_id).expect("row survives the refused create");
+    assert_eq!(row["task"], "first", "row: {row:?}");
+    assert_eq!(row["phase"], "ready", "row: {row:?}");
+
+    let destroy = call(&mut conn, next_id, op::WORKSPACE_DESTROY, serde_json::json!({ "workspace_id": workspace_id })).await;
+    assert!(destroy.payload.get("error").is_none(), "destroy failed: {:?}", destroy.payload);
+}
+
 /// ADR 0030 §8 decision 31c (cross-referenced as ADR 0043 decision 31;
 /// the gate itself is superseded by ADR 0045 decision 7 -- `proto`, not
 /// build): `phase_of` reports `"foreign"` for a capsule row whose
