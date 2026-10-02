@@ -703,9 +703,14 @@ fn quit_prompt_on_focus(prompt: Option<&NavPrompt>, to: PaneFocus) -> Option<Qui
         .then_some(QuitPromptStep::Cancel)
 }
 
-fn quit_prompt_line(keep: bool) -> String {
-    let (no, yes) = if keep { ("No", "[Yes]") } else { ("[No]", "Yes") };
-    format!("Keep the daemon and sessions running?  {no}  {yes}   Tab switches \u{b7} Enter confirms \u{b7} Esc cancels")
+/// The quit prompt as its text and its choice; the choice ends the prompt
+/// (`nav_pinned_rows` keeps it whole on the last row).
+fn quit_prompt_line(keep: bool) -> (String, String) {
+    let choice = if keep { "No  [Yes]" } else { "[No]  Yes" };
+    (
+        "Keep the daemon and sessions running?  Tab switches \u{b7} Enter confirms \u{b7} Esc cancels".to_string(),
+        choice.to_string(),
+    )
 }
 
 /// Why the window is being asked to exit.
@@ -5844,17 +5849,29 @@ fn status_spans(status: &str, width: usize) -> Vec<RtLine<'static>> {
 /// `closing…`), then the open prompt, each wrapped at `width` cells. A pane
 /// too short for them all gives whole lines in priority order (the prompt,
 /// then `line`, then the notice) and drops the rest whole; a prompt that
-/// does not fit keeps only its last row. Returns the height left to the
+/// does not fit keeps only its last row. A prompt is its text and its choice
+/// (empty for none); the choice joins the last wrapped row if it fits there,
+/// else takes its own row, so the kept last row always holds it whole. Returns the height left to the
 /// list, the rows, and whether `line` was drawn whole.
 fn nav_pinned_rows(
-    prompt: Option<&str>,
+    prompt: Option<(&str, &str)>,
     notice: Option<&str>,
     line: Option<&str>,
     width: usize,
     pane_height: usize,
 ) -> (usize, Vec<String>, bool) {
     let wrap = |text: Option<&str>| text.map(|t| wrap_status(t, width, width)).unwrap_or_default();
-    let mut prompt = wrap(prompt);
+    let prompt_in = prompt;
+    let mut prompt = wrap(prompt.map(|(text, _)| text));
+    if let Some((_, choice)) = prompt_in.filter(|(_, c)| !c.is_empty()) {
+        match prompt.last_mut() {
+            Some(last) if last.chars().count() + 3 + choice.chars().count() <= width => {
+                last.push_str("   ");
+                last.push_str(choice);
+            }
+            _ => prompt.push(choice.to_string()),
+        }
+    }
     if prompt.len() > pane_height {
         prompt.drain(..prompt.len() - pane_height.min(1));
     }
@@ -16576,9 +16593,9 @@ impl State {
         // insertion point.
         let status = self.status.clone();
         let nav_prompt_line = match &self.nav_prompt {
-            Some(NavPrompt::CreateFile { input, .. }) => Some(format!("new file or dir/: {input}▏")),
-            Some(NavPrompt::ConfirmDelete { label, .. }) => Some(format!("delete {label}? [y/N]")),
-            Some(NavPrompt::ScaleEntry { input, .. }) => Some(format!("pixel size (nm): {input}▏")),
+            Some(NavPrompt::CreateFile { input, .. }) => Some((format!("new file or dir/: {input}▏"), String::new())),
+            Some(NavPrompt::ConfirmDelete { label, .. }) => Some((format!("delete {label}? [y/N]"), String::new())),
+            Some(NavPrompt::ScaleEntry { input, .. }) => Some((format!("pixel size (nm): {input}▏"), String::new())),
             Some(NavPrompt::ConfirmQuit { keep }) => Some(quit_prompt_line(*keep)),
             None => None,
         };
@@ -17351,7 +17368,7 @@ impl State {
                 // before the draw) shifts by the extra lines here.
                 let nav_w = nav_rect.width as usize;
                 let (nav_list_h, nav_pinned, line_whole) = nav_pinned_rows(
-                    nav_prompt_line.as_deref(),
+                    nav_prompt_line.as_ref().map(|(t, c)| (t.as_str(), c.as_str())),
                     lease_notice,
                     nav_line.as_deref(),
                     nav_w,
@@ -24589,9 +24606,9 @@ mod tests {
         assert_eq!(prompt_takes_key(false, false, Some(Action::Cancel), false), Cancel);
         assert_eq!(prompt_takes_key(false, false, Some(Action::Confirm), true), Ignore);
         assert_eq!(prompt_takes_key(false, true, None, true), Ignore);
-        let no = quit_prompt_line(false);
+        let (_, no) = quit_prompt_line(false);
         assert!(no.contains("[No]") && no.contains("Yes") && !no.contains("[Yes]"));
-        let yes = quit_prompt_line(true);
+        let (_, yes) = quit_prompt_line(true);
         assert!(yes.contains("[Yes]") && !yes.contains("[No]"));
     }
 
@@ -25748,9 +25765,10 @@ mod tests {
     fn quit_prompt_visible_when_scrolled() {
         // The pinned rows never read the list or its scroll: however long
         // the list and however far it is scrolled, they sit under it.
-        let prompt = quit_prompt_line(false);
-        let (list_h, rows, _) = nav_pinned_rows(Some(&prompt), None, None, 30, 20);
-        assert_eq!(rows.join(" "), prompt);
+        let (text, choice) = quit_prompt_line(false);
+        let prompt = Some((text.as_str(), choice.as_str()));
+        let (list_h, rows, _) = nav_pinned_rows(prompt, None, None, 30, 20);
+        assert!(rows.join(" ").starts_with(&text) && rows.join(" ").ends_with(&choice), "{rows:?}");
         assert_eq!(list_h + rows.len(), 20);
         assert!(rows.len() > 1 && list_h > 0);
         // With no prompt open, the not-ended line shows under the notice.
@@ -25760,33 +25778,55 @@ mod tests {
         assert_eq!((rows.join(" "), whole), (format!("{notice} {ended}"), true));
         // Nothing pinned: the list keeps the pane.
         assert_eq!(nav_pinned_rows(None, None, None, 30, 20), (20, vec![], false));
-        assert_eq!(nav_pinned_rows(Some(&prompt), None, None, 30, 0), (0, vec![], false));
+        assert_eq!(nav_pinned_rows(prompt, None, None, 30, 0), (0, vec![], false));
     }
 
     #[test]
     fn pinned_lines_are_whole_or_dropped() {
-        let prompt = quit_prompt_line(false);
+        let (text, choice) = quit_prompt_line(false);
+        let prompt = Some((text.as_str(), choice.as_str()));
         let notice = "closing will not end sessions: there is no backend on this computer";
         let ended = "2 sessions could not be ended and are still running";
         let owed = [("h".to_string(), 2)];
+        let own = nav_pinned_rows(prompt, None, None, 30, 20).1;
+        let flat = own.join(" ");
         // A height that fits all of them: every line whole, and the count is acked.
-        let (list_h, rows, whole) = nav_pinned_rows(Some(&prompt), Some(notice), Some(ended), 30, 20);
-        assert_eq!(rows.join(" "), format!("{notice} {ended} {prompt}"));
+        let (list_h, rows, whole) = nav_pinned_rows(prompt, Some(notice), Some(ended), 30, 20);
+        assert_eq!(rows.join(" "), format!("{notice} {ended} {flat}"));
         assert_eq!(list_h + rows.len(), 20);
         assert!(whole);
         assert_eq!(acks_for_frame(&owed, whole), owed.to_vec());
-        // Height 1: the prompt's last row, and no ack.
-        let (list_h, rows, whole) = nav_pinned_rows(Some(&prompt), None, Some(ended), 30, 1);
+        // Height 1: the choice, whole, and no ack.
+        let (list_h, rows, whole) = nav_pinned_rows(prompt, None, Some(ended), 30, 1);
         assert_eq!(list_h, 0);
-        assert_eq!(rows.as_slice(), &wrap_status(&prompt, 30, 30)[wrap_status(&prompt, 30, 30).len() - 1..]);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains("[No]  Yes"), "{rows:?}");
+        assert_eq!(acks_for_frame(&owed, whole), vec![]);
+        let (ktext, kchoice) = quit_prompt_line(true);
+        let (_, rows, whole) = nav_pinned_rows(Some((&ktext, &kchoice)), None, Some(ended), 30, 1);
+        assert!(rows.len() == 1 && rows[0].contains("No  [Yes]"), "{rows:?}");
         assert_eq!(acks_for_frame(&owed, whole), vec![]);
         // Room for the prompt and the count only: the notice goes, whole.
-        let h = wrap_status(&prompt, 30, 30).len() + wrap_status(ended, 30, 30).len();
-        let (_, rows, whole) = nav_pinned_rows(Some(&prompt), Some(notice), Some(ended), 30, h);
-        assert_eq!((rows.join(" "), whole), (format!("{ended} {prompt}"), true));
+        let h = own.len() + wrap_status(ended, 30, 30).len();
+        let (_, rows, whole) = nav_pinned_rows(prompt, Some(notice), Some(ended), 30, h);
+        assert_eq!((rows.join(" "), whole), (format!("{ended} {flat}"), true));
         // One row less: the count goes whole, never leaving its tail.
-        let (_, rows, whole) = nav_pinned_rows(Some(&prompt), Some(notice), Some(ended), 30, h - 1);
-        assert_eq!((rows.join(" "), whole), (prompt.clone(), false));
+        let (_, rows, whole) = nav_pinned_rows(prompt, Some(notice), Some(ended), 30, h - 1);
+        assert_eq!((rows.join(" "), whole), (flat.clone(), false));
+    }
+
+    #[test]
+    fn quit_choice_is_whole_on_the_last_row() {
+        // No room left on the last wrapped row: the choice has its own row.
+        let rows = nav_pinned_rows(Some(("aaaa bbbb", "[No]  Yes")), None, None, 9, 20).1;
+        assert_eq!(rows.last().map(String::as_str), Some("[No]  Yes"));
+        assert_eq!(rows.len(), 2);
+        // Room on the last row: the choice joins it after three spaces.
+        let rows = nav_pinned_rows(Some(("aa", "[No]  Yes")), None, None, 20, 20).1;
+        assert_eq!(rows, vec!["aa   [No]  Yes".to_string()]);
+        // A short pane keeps the last row, which is the whole choice.
+        let rows = nav_pinned_rows(Some(("aaaa bbbb", "[No]  Yes")), None, None, 9, 1).1;
+        assert_eq!(rows, vec!["[No]  Yes".to_string()]);
     }
 
     #[test]
