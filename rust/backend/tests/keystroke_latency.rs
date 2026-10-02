@@ -222,7 +222,14 @@ async fn k3b_ssh_cold_dial() {
     std::os::unix::fs::symlink(&env.socket_path, sessions.join("sot.sock")).expect("symlink");
     assert!(sot_log::state_dir::is_private_dir(rt.path()), "temp runtime dir is not private");
     assert!(sot_log::state_dir::is_private_dir(&rt.path().join("sot")), "temp sot dir is not private");
-    let remote = format!("env XDG_RUNTIME_DIR={} {} stdio-bridge", rt.path().display(), sotd_exe().display());
+    // `test -S` fails closed: where this temp dir does not exist (another /tmp behind ssh), the
+    // bridge never starts, so it can never fall back to the live runtime dir's socket.
+    let remote = format!(
+        "test -S {} && env XDG_RUNTIME_DIR={} {} stdio-bridge",
+        sessions.join("sot.sock").display(),
+        rt.path().display(),
+        sotd_exe().display()
+    );
 
     let hello = || {
         let h = HelloReq {
@@ -282,7 +289,9 @@ async fn k3b_ssh_cold_dial() {
         if local_ok.is_some() && ssh_ok {
             let mut c = Command::new("ssh");
             c.args(["-T", "-o", "BatchMode=yes", "localhost", &remote]);
-            times.push(dial(c).expect("ssh bridge dial").0);
+            let (t, f) = dial(c).expect("ssh bridge dial");
+            assert_eq!(f.payload["session_id"], private_sid, "an ssh dial reached a daemon other than the private one");
+            times.push(t);
         } else {
             let t0 = Instant::now();
             let _ = Command::new("ssh").args(["-T", "-o", "BatchMode=yes", "localhost", "true"]).stdin(Stdio::null()).status();
