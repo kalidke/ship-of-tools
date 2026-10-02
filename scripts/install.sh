@@ -540,6 +540,13 @@ VERSION="${VERSION:-${SOT_INSTALL_TAG:-}}"
 VER="${VERSION#v}"
 say "installing Ship of Tools $VERSION into $PREFIX"
 
+# This body sources the tag's scripts/lib/sot-daemon.sh; a release older than
+# that library has none. Ask for it BEFORE the first copy, unit or symlink
+# (only the depot-config heal above has run). The one-liner never pairs this
+# body with an old tree: it runs the tag's own installer.
+curl -fsSI -o /dev/null "https://raw.githubusercontent.com/$REPO/$VERSION/scripts/lib/sot-daemon.sh" \
+    || die "release $VERSION predates this installer (no scripts/lib/sot-daemon.sh); install it with its own installer: run the one-liner without SOT_INSTALL_TAG, or that tag's scripts/install.sh"
+
 # ---- 2. download + verify ----------------------------------------------------
 ASSETS=("SHA256SUMS" "sot-$VER-$TARGET.tar.gz")
 

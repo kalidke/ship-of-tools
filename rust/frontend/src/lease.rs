@@ -664,7 +664,16 @@ mod tests {
         #[cfg(windows)]
         let path = PathBuf::from(format!(r"\\.\pipe\{unique}"));
         #[cfg(not(windows))]
-        let path = std::env::temp_dir().join(format!("{unique}.sock"));
+        let path = {
+            // macOS's temp_dir() is long enough to overflow sun_path
+            static SEQ: AtomicUsize = AtomicUsize::new(0);
+            let _ = &unique;
+            PathBuf::from(format!(
+                "/tmp/sl-{tag}-{}-{}.sock",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::Relaxed)
+            ))
+        };
         let _ = std::fs::remove_file(&path);
         let name = path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();
         let listener = ListenerOptions::new().name(name).create_tokio().expect("bind");
