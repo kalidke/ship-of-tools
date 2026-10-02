@@ -153,8 +153,57 @@ pub fn save(host: &HostKey, m: &SessionMemory) -> Result<()> {
     Ok(())
 }
 
+/// Process-wide serial lock plus a temp `XDG_STATE_HOME`, for tests that
+/// reach `state_path` and must not touch the real state dir.
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::path::PathBuf;
+
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) struct EnvGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        xdg_state: Option<std::ffi::OsString>,
+        dir: PathBuf,
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.xdg_state.take() {
+                Some(v) => std::env::set_var("XDG_STATE_HOME", v),
+                None => std::env::remove_var("XDG_STATE_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    pub(crate) fn set_test_env() -> EnvGuard {
+        let _serial = serial();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-state-migration-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = EnvGuard {
+            _serial,
+            xdg_state: std::env::var_os("XDG_STATE_HOME"),
+            dir: dir.clone(),
+        };
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        g
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_env::{serial, set_test_env};
     use super::*;
 
     // ADR 0042 L2a codex review, item H: the legacy session.json ->
@@ -170,12 +219,6 @@ mod tests {
     // and cross-module interference there was observed directly (a flaky
     // failure in load_tolerates_garbage_lines while this module's tests ran
     // concurrently).
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn serial() -> std::sync::MutexGuard<'static, ()> {
-        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     #[test]
     fn state_path_differs_per_host() {
         let _serial = serial();
@@ -201,41 +244,6 @@ mod tests {
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
         assert!(!name.contains('/'));
         assert!(!name.contains(':'));
-    }
-
-    struct EnvGuard {
-        _serial: std::sync::MutexGuard<'static, ()>,
-        xdg_state: Option<std::ffi::OsString>,
-        dir: PathBuf,
-    }
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match self.xdg_state.take() {
-                Some(v) => std::env::set_var("XDG_STATE_HOME", v),
-                None => std::env::remove_var("XDG_STATE_HOME"),
-            }
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
-
-    fn set_test_env() -> EnvGuard {
-        let _serial = serial();
-        let dir = std::env::temp_dir().join(format!(
-            "sot-state-migration-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let g = EnvGuard {
-            _serial,
-            xdg_state: std::env::var_os("XDG_STATE_HOME"),
-            dir: dir.clone(),
-        };
-        std::env::set_var("XDG_STATE_HOME", &dir);
-        g
     }
 
     #[test]
