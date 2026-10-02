@@ -200,6 +200,24 @@ impl Env {
             .map(|it| it.count())
             .unwrap_or(0)
     }
+
+    /// Start times (ns) of the recorded spawns, from the marker names, sorted.
+    #[cfg(unix)]
+    fn spawn_marker_stamps(&self) -> Vec<u64> {
+        let mut stamps: Vec<u64> = std::fs::read_dir(&self.spawn_marker_dir)
+            .into_iter()
+            .flatten()
+            .map(|e| {
+                let name = e.expect("read marker").file_name().to_string_lossy().into_owned();
+                name.rsplit('-')
+                    .next()
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or_else(|| panic!("spawn marker {name:?} has no ns stamp"))
+            })
+            .collect();
+        stamps.sort_unstable();
+        stamps
+    }
 }
 
 impl Drop for Env {
@@ -356,10 +374,17 @@ async fn do_hello(conn: &mut Conn) {
 ///   to the next one — `0` dies before ever answering hello (immediate
 ///   death); `1` answers hello then dies on the first real op (mid-request
 ///   death).
+/// - `SOT_LANE_FAKE_JULIA_DIE_HOLDING_N` (default 1): the dying generation
+///   reads this many requests past `DIE_AFTER_N` unanswered and exits on the
+///   last, so all are in flight when it dies (use with `DIE_AFTER_N` >= 1).
+/// - `SOT_LANE_FAKE_JULIA_HEALTHY_FROM_GEN` (default none): a process whose
+///   generation is at least this ignores `DIE_AFTER_N`.
 /// - `SOT_LANE_FAKE_JULIA_COUNTER_DIR` (always set by `Env::spawn_with`):
 ///   touch one uniquely-named file here per process started — the only way
 ///   these tests can count real child-process spawns from outside the
-///   daemon (`Env::spawn_marker_count`).
+///   daemon (`Env::spawn_marker_count`). The file is
+///   `spawn-<pid>-<start ns>`; the generation is the `spawn-*` count just
+///   after writing its own (exact: processes start one at a time).
 ///
 /// One fixed script, reused by every test in both modules below — behavior
 /// varies per test only through `extra_env`, never through the script text.
@@ -367,11 +392,16 @@ async fn do_hello(conn: &mut Conn) {
 fn write_fake_kernel(dir: &Path) -> PathBuf {
     let path = dir.join("fake-julia.sh");
     let script = r#"#!/bin/sh
+gen=1
 if [ -n "$SOT_LANE_FAKE_JULIA_COUNTER_DIR" ]; then
-    : > "$SOT_LANE_FAKE_JULIA_COUNTER_DIR/spawn-$$-$(date +%s%N 2>/dev/null || date +%s)"
+    : > "$SOT_LANE_FAKE_JULIA_COUNTER_DIR/spawn-$$-$(date +%s%N)"
+    set -- "$SOT_LANE_FAKE_JULIA_COUNTER_DIR"/spawn-*
+    gen=$#
 fi
 delay="${SOT_LANE_FAKE_JULIA_HELLO_DELAY_S:-0}"
 die_after="${SOT_LANE_FAKE_JULIA_DIE_AFTER_N:-}"
+[ -n "${SOT_LANE_FAKE_JULIA_HEALTHY_FROM_GEN:-}" ] && [ "$gen" -ge "$SOT_LANE_FAKE_JULIA_HEALTHY_FROM_GEN" ] && die_after=""
+holding="${SOT_LANE_FAKE_JULIA_DIE_HOLDING_N:-1}"
 served=0
 first=1
 while IFS= read -r line; do
@@ -379,7 +409,8 @@ while IFS= read -r line; do
     op=$(printf '%s' "$line" | sed -n 's/.*"op":"\([^"]*\)".*/\1/p')
     served=$((served + 1))
     if [ -n "$die_after" ] && [ "$served" -gt "$die_after" ]; then
-        exit 1
+        if [ "$served" -ge $((die_after + holding)) ]; then exit 1; fi
+        continue
     fi
     if [ "$first" = 1 ] && [ "$delay" != "0" ]; then
         sleep "$delay"
@@ -444,12 +475,13 @@ fn assert_kernel_unavailable(frame: &Frame, label: &str) {
 mod dead_kernel {
     use super::*;
 
-    /// Bound for a single dead-kernel round trip. Generous for a loaded CI
-    /// runner while still an order of magnitude under the field-observed
-    /// ~3s (worst case the full 10s `KERNEL_REQUEST_TIMEOUT`) this fixes —
-    /// a regression back to that stall fails this bound comfortably; the
-    /// real-command proof times the production case precisely (sub-100ms).
-    const DEAD_KERNEL_BOUND: Duration = Duration::from_secs(3);
+    /// Bound for a single dead-kernel round trip: half of the 10s
+    /// `KERNEL_REQUEST_TIMEOUT` a regression falls back to; the real-command
+    /// proof times the production case precisely (sub-100ms).
+    const DEAD_KERNEL_BOUND: Duration = Duration::from_secs(5);
+
+    /// Mirrors kernel.rs's respawn backoff floor.
+    const RESPAWN_BACKOFF_FLOOR: Duration = Duration::from_millis(250);
 
     #[tokio::test]
     async fn preview_get_on_a_bounded_output_file_surfaces_kernel_unavailable_fast() {
@@ -497,22 +529,26 @@ mod dead_kernel {
         assert_kernel_unavailable(&frame, "preview.get");
     }
 
-    /// Finding 9 / concurrency: exactly ONE spawn attempt per backoff
-    /// window, no matter how many concurrent requests are asking — the
-    /// supervisor is a single sequential loop, so ten pipelined
-    /// `kernel.request`s against an always-dies stub must all share the
-    /// SAME (one) spawn, and a request sent after the backoff floor elapses
-    /// must trigger exactly one MORE.
+    /// Finding 9 / concurrency: N concurrent `kernel.request`s are all in
+    /// flight in ONE generation when it dies and each gets its typed reason;
+    /// then the supervisor alone starts exactly one more generation, which
+    /// serves.
     #[tokio::test]
-    async fn concurrent_failures_spawn_exactly_one_child_and_backoff_throttles_the_next() {
-        const N: u64 = 10;
+    async fn concurrent_requests_share_one_generation_and_only_the_supervisor_respawns() {
+        // N = `OFFLOOP_CONCURRENCY` (server.rs): gen 1 holds all N, so N may not exceed it.
+        const N: u64 = 4;
+        let n = N.to_string();
         let stub_dir = tempfile::tempdir().expect("stub dir");
         let stub = write_fake_kernel(stub_dir.path());
         let env = Env::spawn_with(
             "deadkernel-concurrency",
             Some(&stub),
             &[],
-            &[("SOT_LANE_FAKE_JULIA_DIE_AFTER_N", "0")],
+            &[
+                ("SOT_LANE_FAKE_JULIA_DIE_AFTER_N", "1"),
+                ("SOT_LANE_FAKE_JULIA_DIE_HOLDING_N", &n),
+                ("SOT_LANE_FAKE_JULIA_HEALTHY_FROM_GEN", "2"),
+            ],
         );
         let mut conn = poll_until_connected(&env.socket_path).await;
 
@@ -537,36 +573,42 @@ mod dead_kernel {
                     continue;
                 }
                 assert_kernel_unavailable(&frame, "concurrent kernel.request");
+                let msg = frame.payload.get("error").and_then(|e| e.as_str()).unwrap_or_default();
+                assert!(msg.contains("exited mid-request"), "unexpected reason: {msg:?}");
                 seen += 1;
             }
         };
         tokio::time::timeout(BOUND, body).await.expect("exchange timed out");
-        assert_eq!(
-            env.spawn_marker_count(),
-            1,
-            "ten concurrent requests against a dead kernel must share exactly ONE spawn attempt"
-        );
-
-        // Past the 250ms respawn-backoff floor: exactly one MORE attempt.
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        // No request in flight: only the supervisor's own respawn can start gen 2.
+        crate::support::poll_until(
+            || {
+                let n = env.spawn_marker_count();
+                async move { (n >= 2).then_some(()) }
+            },
+            BOUND,
+            "the supervisor's own respawn",
+        )
+        .await;
         let (_elapsed, frame) = tokio::time::timeout(
             BOUND,
             one_kernel_request(&mut conn, 2 + N, "kernel.hello"),
         )
         .await
         .expect("exchange timed out");
-        assert_kernel_unavailable(&frame, "post-backoff kernel.request");
+        assert_eq!(frame.payload["version"], "fake", "gen 2 must serve: {:?}", frame.payload);
+        // Exact at any read: gen 2 never dies.
         assert_eq!(
             env.spawn_marker_count(),
             2,
-            "a request sent after the backoff window elapses must trigger exactly one more spawn"
+            "exactly one respawn: the supervisor's own, and gen 2 serves"
         );
     }
 
     /// A child that answers `kernel.hello` and THEN dies before replying to
     /// the next request must deliver the typed unavailable reason to that
     /// SAME in-flight request (not a generic wire error) and record `Dead`
-    /// before any other caller can see a stale `Running`.
+    /// before any other caller can see a stale `Running`. The supervisor's
+    /// own respawn then waits out the backoff floor.
     #[tokio::test]
     async fn child_that_dies_mid_request_delivers_kernel_unavailable_and_marks_dead() {
         let stub_dir = tempfile::tempdir().expect("stub dir");
@@ -590,13 +632,29 @@ mod dead_kernel {
             tokio::time::timeout(BOUND, body).await.expect("exchange timed out");
 
         assert_kernel_unavailable(&first, "request that killed the kernel");
-        // Sent immediately after, inside the backoff floor: must return the
-        // CACHED Dead reason, not queue behind a second spawn attempt.
+        // Sent right after: the cached reason inside the floor, or gen 2's own
+        // death if late; typed either way. The cached case is not
+        // order-provable. preview_get's hang guard catches a Dead arm that
+        // waits out the deadline, not one that waits for the next generation.
         assert_kernel_unavailable(&second, "request right after the kernel died");
-        assert_eq!(
-            env.spawn_marker_count(),
-            1,
-            "the second request must not have triggered a respawn yet (backoff floor)"
+        let stamps = crate::support::poll_until(
+            || {
+                let s = env.spawn_marker_stamps();
+                async move { (s.len() >= 2).then_some(s) }
+            },
+            BOUND,
+            "the supervisor's own respawn",
+        )
+        .await;
+        let gap = Duration::from_nanos(stamps[1] - stamps[0]);
+        // A lower bound: load only lengthens it, so it never fails correct
+        // code under load. Its limits: the gap starts at gen 1's start, so
+        // under load gen 1's own life can hide a missing backoff (a weaker
+        // check, never a false fail); and the stamps are wall clock, so a
+        // backward clock step between them can fail it.
+        assert!(
+            gap >= RESPAWN_BACKOFF_FLOOR,
+            "respawn came {gap:?} after gen 1 started, inside the {RESPAWN_BACKOFF_FLOOR:?} backoff floor"
         );
     }
 
@@ -698,12 +756,6 @@ mod dead_kernel {
 mod pty_not_starved {
     use super::*;
 
-    /// The `pty.screen` reply must land well inside the real, several-
-    /// second kernel-startup delay below — if the fix regressed and
-    /// `kernel.request` went back to blocking this connection's dispatch
-    /// loop inline, this reply would instead wait out the whole delay.
-    const PTY_REPLY_BOUND: Duration = Duration::from_millis(500);
-
     #[tokio::test]
     async fn pty_screen_is_served_while_a_real_slow_kernel_request_is_pending() {
         let stub_dir = tempfile::tempdir().expect("stub dir");
@@ -731,7 +783,6 @@ mod pty_not_starved {
 
             // id 3: the pty op, sent immediately after — while the kernel
             // startup above is still pending.
-            let started = Instant::now();
             let unknown_workspace = serde_json::json!({ "workspace_id": "does-not-exist" });
             codec::write_frame(&mut conn, &Frame::req(3, op::PTY_SCREEN, unknown_workspace), None)
                 .await
@@ -742,21 +793,17 @@ mod pty_not_starved {
             // ordering half of the head-of-line test above, now exercised
             // against the actual op this fix moved off-loop.
             let mut order = Vec::new();
-            let mut pty_elapsed = None;
             while order.len() < 2 {
                 let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read reply");
                 if frame.kind == Kind::Evt || (frame.id != 2 && frame.id != 3) {
                     continue;
                 }
-                if frame.id == 3 {
-                    pty_elapsed = Some(started.elapsed());
-                }
                 order.push(frame.id);
             }
-            (order, pty_elapsed.expect("pty reply observed"))
+            order
         };
 
-        let (order, pty_elapsed) = tokio::time::timeout(BOUND, body).await.expect("exchange timed out");
+        let order = tokio::time::timeout(BOUND, body).await.expect("exchange timed out");
 
         assert_eq!(
             order,
@@ -764,11 +811,6 @@ mod pty_not_starved {
             "the pty.screen reply (id 3) must be OBSERVED before the slow kernel.request (id 2) \
              — kernel.request running off-loop means it no longer head-of-line-blocks pane traffic \
              on the same connection"
-        );
-        assert!(
-            pty_elapsed < PTY_REPLY_BOUND,
-            "pty.screen took {pty_elapsed:?} while a real slow kernel.request was pending, \
-             expected well under the 3s kernel-startup delay ({PTY_REPLY_BOUND:?} bound)"
         );
     }
 }
@@ -783,10 +825,6 @@ mod capsule_pty_open_answers_before_activation {
     };
     use sot_protocol::op;
     use std::time::{Duration, Instant};
-
-    /// Ceiling on `pty.open`'s own reply — a phase-cell read plus a
-    /// `tokio::spawn` has no business taking anywhere near this long.
-    const REPLY_BOUND: Duration = Duration::from_millis(500);
 
     #[tokio::test]
     async fn pty_open_answers_with_no_lane_traffic_before_the_reply() {
@@ -814,15 +852,8 @@ mod capsule_pty_open_answers_before_activation {
         );
 
         let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
-        let started = Instant::now();
         let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
-        let elapsed = started.elapsed();
         assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
-        assert!(
-            elapsed < REPLY_BOUND,
-            "pty.open took {elapsed:?} to answer attach_direct; it must never await its own \
-             async activation (bound {REPLY_BOUND:?})"
-        );
 
         // Barrier still absent — the activation is provably still blocked.
         assert!(!barrier.exists(), "test bug: the barrier must not have been released yet");

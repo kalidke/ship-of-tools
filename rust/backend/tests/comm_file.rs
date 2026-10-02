@@ -141,9 +141,10 @@ fn a_killed_holder_frees_the_lock_at_once() {
     let mut h = holder(&inbox, "k", "exec sleep 60");
     h.kill().unwrap();
     h.wait().unwrap();
-    let t0 = Instant::now();
+    let lock = std::fs::OpenOptions::new().read(true).append(true).create(true).open(inbox.join("k.lock")).unwrap();
+    lock.try_lock().expect("the killed holder's lock is still held");
+    drop(lock);
     file_frame(&inbox, "rust", "k", false, "after", "t", Duration::from_secs(10), "local t").unwrap();
-    assert!(t0.elapsed() < Duration::from_secs(2), "waited {:?} for a dead holder", t0.elapsed());
     assert_eq!(whole_lines(&inbox.join("k.jsonl")), ["after"]);
 }
 

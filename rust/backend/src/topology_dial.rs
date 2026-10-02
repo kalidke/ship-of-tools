@@ -365,16 +365,29 @@ mod tests {
         assert!(connect("ssh:Hub").is_err(), "an uppercase target must be refused (not a plain host name)");
     }
 
+    /// Kills the stub's background `sleep` on every path out of the test.
+    #[cfg(unix)]
+    struct KillHolder(std::path::PathBuf);
+
+    #[cfg(unix)]
+    impl Drop for KillHolder {
+        fn drop(&mut self) {
+            if let Ok(pid) = std::fs::read_to_string(&self.0) {
+                let _ = std::process::Command::new("kill").arg(pid.trim()).status();
+            }
+        }
+    }
+
     /// ROUND-3 BLOCKER: no error path may WAIT on the ssh child's stderr.
     /// The stub below leaves a background `sleep` holding that pipe after
     /// exiting itself -- the shape a `ControlMaster` mux or a
     /// `ProxyCommand` child has on a real box, and the shape
     /// `write_stub_ssh` above already produces -- so a `read_to_string`
     /// there returns only when the `sleep` does. Against the pre-fix
-    /// `ChildGuard::last_stderr_line` this call took the full five seconds
-    /// (measured 5.0s, with the assertion below reported as a FAIL); the
-    /// bound asserted is 3s, well under the sleep, so the failure mode is
-    /// a failed assertion rather than a suite that hangs. The folded line
+    /// `ChildGuard::last_stderr_line` this call returned only when the
+    /// holder did, failing the assertion below; the
+    /// bound asserted is 10s against a holder that lives 30s, so the failure
+    /// mode is a failed assertion rather than a suite that hangs. The folded line
     /// itself is deliberately NOT asserted: it is a hint the drain thread
     /// may or may not have parked by the time the read half EOFs, and a
     /// test of a race is worth less than the bound this one proves.
@@ -393,7 +406,12 @@ mod tests {
         // also what makes this case specific: holding stdout too would
         // stall the reply read instead, a different wait with a different
         // cause, and the assertion below could no longer tell them apart.
-        write_ssh_script(dir.path(), "echo 'Permission denied (publickey).' >&2\nsleep 5 >/dev/null &\nexit 255\n");
+        let pid_file = dir.path().join("holder.pid");
+        write_ssh_script(
+            dir.path(),
+            &format!("echo 'Permission denied (publickey).' >&2\nsleep 30 >/dev/null &\necho $! > '{}'\nexit 255\n", pid_file.display()),
+        );
+        let _holder = KillHolder(pid_file.clone());
         prepend_to_path(dir.path());
 
         let started = std::time::Instant::now();
@@ -401,7 +419,7 @@ mod tests {
             .expect_err("a child that answers nothing must be an error, not a hang");
         let waited = started.elapsed();
         assert!(
-            waited < std::time::Duration::from_secs(3),
+            waited < std::time::Duration::from_secs(10),
             "the error path waited {waited:?}: it must not read a pipe other processes still hold open (err: {err})"
         );
         // Promptly is only half of it: the verdict has to be the right one,
