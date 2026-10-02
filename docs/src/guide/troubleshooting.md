@@ -32,7 +32,8 @@ attached loses its connection, most keys typed during the outage are discarded
 without notice, and keys typed while the pane is reattaching, before it reports
 itself attached again, may still be delivered once it reattaches, even into a
 session that was restarted in the meantime. Wait for the pane to show it is
-attached before typing.
+attached before typing. An agent pane only one row tall shows the reason it is
+not live but not the discarded count.
 
 ## The agent pane says `frontend out of date`
 
@@ -40,6 +41,13 @@ The daemon speaks a newer protocol than this frontend, so the two cannot talk.
 Update the frontend (see [Updating](updating.md)). `daemon out of date` is the
 reverse skew: the daemon is the side that is behind. The preview pane shows both
 versions.
+
+## The bottom of the preview
+
+The preview stops each block of text and each table at its last whole line, so no line is drawn
+cut in half, and while you edit an annotation it scrolls to the end of what you are editing.
+Known limits: a pane shorter than one line of text still shows that one partial line, and a
+table's last whole row can sit in the narrow bottom margin where body text stops.
 
 ## A pane stays at `connecting…`
 
