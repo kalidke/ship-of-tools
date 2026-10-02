@@ -726,38 +726,23 @@ enum ExitStep {
     Ask,
     Leave { intent: LeaveIntent, code: i32 },
     Supersede,
-    Now,
+    Now { code: i32 },
     Ignore,
 }
 
-/// What an exit request does. A window already leaving exits at once on a
-/// second close, except that an X or OS close during a Keep supersedes it
-/// with a Close: the user's latest intent wins. A relaunch then defers to
-/// the leave in progress.
+/// What an exit request does. A window already leaving exits at once, with
+/// 0, on a second close, except that an X or OS close during a Keep
+/// supersedes it with a Close: the user's latest intent wins, so a second
+/// close during a Handover never relaunches. A relaunch then defers to the
+/// leave in progress.
 fn exit_intent(reason: ExitReason, leaving: Option<LeaveIntent>) -> ExitStep {
     match (reason, leaving) {
         (ExitReason::WindowClose, None) => ExitStep::Leave { intent: LeaveIntent::Close, code: 0 },
         (ExitReason::QuitKey, None) => ExitStep::Ask,
         (ExitReason::Relaunch(code), None) => ExitStep::Leave { intent: LeaveIntent::Handover, code },
         (ExitReason::WindowClose, Some(LeaveIntent::Keep)) => ExitStep::Supersede,
-        (ExitReason::WindowClose | ExitReason::QuitKey, Some(_)) => ExitStep::Now,
+        (ExitReason::WindowClose | ExitReason::QuitKey, Some(_)) => ExitStep::Now { code: 0 },
         (ExitReason::Relaunch(_), Some(_)) => ExitStep::Ignore,
-    }
-}
-
-/// What `leave` does once the leases are told: with one held, poll its ack
-/// (`about_to_wait`); with none, exit at once.
-#[derive(Debug, PartialEq, Eq)]
-enum LeaveNext {
-    Poll,
-    ExitNow,
-}
-
-fn leave_next(leasing: bool) -> LeaveNext {
-    if leasing {
-        LeaveNext::Poll
-    } else {
-        LeaveNext::ExitNow
     }
 }
 
@@ -5851,7 +5836,9 @@ fn status_spans(status: &str, width: usize) -> Vec<RtLine<'static>> {
 /// then `line`, then the notice) and drops the rest whole; a prompt that
 /// does not fit keeps only its last row. A prompt is its text and its choice
 /// (empty for none); the choice joins the last wrapped row if it fits there,
-/// else takes its own row, so the kept last row always holds it whole. Returns the height left to the
+/// else takes its own row, so the kept last row always holds it whole; in a
+/// pane narrower than the choice it is dropped, never cut. `line` may be two
+/// lines, kept or dropped together. Returns the height left to the
 /// list, the rows, and whether `line` was drawn whole.
 fn nav_pinned_rows(
     prompt: Option<(&str, &str)>,
@@ -5860,10 +5847,12 @@ fn nav_pinned_rows(
     width: usize,
     pane_height: usize,
 ) -> (usize, Vec<String>, bool) {
-    let wrap = |text: Option<&str>| text.map(|t| wrap_status(t, width, width)).unwrap_or_default();
+    let wrap = |text: Option<&str>| -> Vec<String> {
+        text.map(|t| t.split('\n').flat_map(|l| wrap_status(l, width, width)).collect()).unwrap_or_default()
+    };
     let prompt_in = prompt;
     let mut prompt = wrap(prompt.map(|(text, _)| text));
-    if let Some((_, choice)) = prompt_in.filter(|(_, c)| !c.is_empty()) {
+    if let Some((_, choice)) = prompt_in.filter(|(_, c)| !c.is_empty() && c.chars().count() <= width) {
         match prompt.last_mut() {
             Some(last) if last.chars().count() + 3 + choice.chars().count() <= width => {
                 last.push_str("   ");
@@ -16303,11 +16292,7 @@ impl State {
     /// ADR 0041 step 6 U3: drains checkpoint/output/notice/status/
     /// terminal/fe_down events from an EXISTING attach client. Called by
     /// the caller on every redraw whenever `self.attach_term.is_some()`
-    /// — deliberately NOT gated on `self.drawer` (Codex review round,
-    /// finding 2): the quit dispatcher's own `ShouldExit` outcome must
-    /// reach `self.should_exit` even while the drawer is closed, or a
-    /// window-close request issued with the Terminal drawer hidden would
-    /// never actually exit.
+    /// — deliberately NOT gated on `self.drawer`.
     #[cfg(windows)]
     fn pump_attach_term(&mut self) {
         let Some(t) = self.attach_term.as_mut() else {
@@ -16330,10 +16315,6 @@ impl State {
                 self.status = t.status_line().to_string();
             }
         }
-        if t.should_exit() {
-            self.should_exit = true;
-            self.window.request_redraw();
-        }
     }
 
     /// ADR 0041 step 6 U3 ruling (a): the ONE quit dispatcher every
@@ -16354,27 +16335,25 @@ impl State {
                 self.nav_prompt = Some(NavPrompt::ConfirmQuit { keep: false });
                 self.window.request_redraw();
             }
-            ExitStep::Now => {
-                let code = self.leaving.as_ref().map_or(0, |l| l.exit_code);
-                self.finish_exit(event_loop, code);
-            }
+            ExitStep::Now { code } => self.finish_exit(event_loop, code),
             ExitStep::Ignore => {}
             ExitStep::Supersede => self.leave(event_loop, LeaveIntent::Close, 0),
             ExitStep::Leave { intent, code } => self.leave(event_loop, intent, code),
         }
     }
 
-    /// Start leaving: tell every held lease's daemon `intent`. The exit
-    /// itself happens in `about_to_wait` once the acks are in. The window
-    /// never ends the drawer's session itself: the daemon's Close ends it,
-    /// and a Keep keeps it.
+    /// Start leaving: tell every held lease's daemon `intent`. With a lease
+    /// to leave, the exit itself happens in `about_to_wait` once the acks are
+    /// in; with none, at once. The window never ends the drawer's session
+    /// itself: the daemon's Close ends it, and a Keep keeps it.
     fn leave(&mut self, event_loop: &ActiveEventLoop, intent: LeaveIntent, code: i32) {
         self.nav_prompt = None;
         self.leaving = self.leases.leave_all(intent, code, std::time::Instant::now());
         self.should_exit = true;
-        match leave_next(self.leaving.is_some()) {
-            LeaveNext::Poll => self.window.request_redraw(),
-            LeaveNext::ExitNow => self.finish_exit(event_loop, code),
+        if self.leaving.is_some() {
+            self.window.request_redraw();
+        } else {
+            self.finish_exit(event_loop, code);
         }
     }
 
@@ -16770,10 +16749,7 @@ impl State {
 
         // ADR 0041 step 6 U3 ruling (a), Codex review round finding 2:
         // spawn (gated on the drawer being open) is separate from pump
-        // (which must run on EVERY redraw regardless of drawer
-        // visibility, so a quit dispatched while the drawer is closed
-        // still reaches `should_exit` — see `pump_attach_term`'s own
-        // doc for why gating pump on visibility would starve it).
+        // (which runs on EVERY redraw regardless of drawer visibility).
         #[cfg(windows)]
         if self.drawer == DrawerContent::Terminal && use_attach_only && self.attach_term.is_none() {
             self.spawn_attach_term();
@@ -23095,13 +23071,8 @@ impl ApplicationHandler for App {
         if state.capture_path.is_some() {
             return;
         }
-        // ADR 0041 step 6 U3 ruling (a): the quit dispatcher's own
-        // `Ended` outcome (from `pump_attach_term`, run during `redraw`,
-        // which has no `event_loop` of its own) reaches an actual exit
-        // HERE — the one place every idle cycle already passes through
-        // with both `state` and `event_loop` in hand. A leaving window
-        // exits only here too, once its acks are in, with its own exit
-        // code: the redraw exit skips it (`redraw_exits`).
+        // A leaving window exits only here, once its acks are in, with its
+        // own exit code: the redraw exit skips it (`redraw_exits`).
         if state.should_exit {
             let now = std::time::Instant::now();
             match state.leaving.as_mut().map(|l| l.poll(now)) {
@@ -24502,33 +24473,43 @@ mod tests {
         }
     }
 
-    #[test]
-    fn focus_written_only_by_set_focus() {
-        let src = include_str!("gpu.rs");
-        // Every spelling of a write, each pattern split so this test's own
-        // text does not match: the field assigned with or without spaces
-        // (but not compared), swapped or replaced through `mem`, or named in
-        // a destructuring assignment.
-        let pat = [".focus", " = "].concat();
-        assert_eq!(src.matches(pat.as_str()).count(), 1);
-        let at = src.find(pat.as_str()).unwrap();
-        assert!(src[..at].rfind("fn set_focus").is_some_and(|f| at - f < 600));
+    /// The focus writes in `src` other than the spaced one
+    /// `focus_written_only_by_set_focus` counts: unspaced, swapped or
+    /// replaced through `mem`, or named in a destructuring assignment. Each
+    /// pattern is split so this test's own text does not match.
+    fn stray_focus_writes(src: &str) -> Vec<String> {
+        let src = src.replace("\r\n", "\n");
+        let mut hits = Vec::new();
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        // A `&mut` borrow of the field, which can write it anywhere.
+        for (i, _) in src.match_indices("&mut ") {
+            let path: String = src[i + 5..].chars().take_while(|&c| ident(c) || c == '.').collect();
+            if path.ends_with(".focus") {
+                hits.push(src[i..].lines().next().unwrap_or_default().to_string());
+            }
+        }
         let tight = [".focus", "="].concat();
-        assert!(
-            src.match_indices(tight.as_str()).all(|(i, _)| src[i + tight.len()..].starts_with('=')),
-            "an unspaced focus write"
-        );
+        for (i, _) in src.match_indices(tight.as_str()) {
+            if !src[i + tight.len()..].starts_with('=') {
+                hits.push(src[i..].lines().next().unwrap_or_default().to_string());
+            }
+        }
         for f in [["mem::", "swap("].concat(), ["mem::", "replace("].concat()] {
             for (i, _) in src.match_indices(f.as_str()) {
                 let call = &src[i..i + src[i..].find(';').unwrap_or(src.len() - i)];
-                assert!(!call.contains(".focus"), "{call}");
+                if call.contains(".focus") {
+                    hits.push(call.to_string());
+                }
             }
         }
-        let ident = |c: char| c.is_alphanumeric() || c == '_';
         let names_focus = |lhs: &str| {
             lhs.match_indices("focus").any(|(i, _)| !lhs[..i].ends_with(ident) && !lhs[i + 5..].starts_with(ident))
         };
-        for line in src.lines() {
+        let mut off = 0;
+        for line in src.split_inclusive('\n') {
+            let at = off + line.len() - line.trim_start().len();
+            off += line.len();
+            let line = line.trim_end_matches('\n');
             let t = line.trim_start();
             if t.starts_with("let ") {
                 continue;
@@ -24539,10 +24520,51 @@ mod tests {
             }) else {
                 continue;
             };
-            let lhs = t[..eq].trim_end();
-            if lhs.starts_with(['(', '[']) || lhs.ends_with('}') {
-                assert!(!names_focus(lhs), "a destructuring focus write: {line}");
+            let mut lhs = t[..eq].trim_end().to_string();
+            // A pattern over several lines ends in a lone bracket: take it
+            // whole, from its opening bracket's line, as one line.
+            if let Some((open, close)) = [('(', ')'), ('[', ']'), ('{', '}')].into_iter().find(|&(_, c)| lhs == c.to_string()) {
+                let mut depth = 0i32;
+                let start = src[..=at].char_indices().rev().find(|&(_, c)| {
+                    depth += (c == close) as i32 - (c == open) as i32;
+                    depth == 0
+                });
+                if let Some((i, _)) = start {
+                    let from = src[..i].rfind('\n').map_or(0, |n| n + 1);
+                    lhs = src[from..=at].split_whitespace().collect::<Vec<_>>().join(" ");
+                }
             }
+            if lhs.starts_with("let ") {
+                continue;
+            }
+            if (lhs.starts_with(['(', '[']) || lhs.ends_with('}')) && names_focus(&lhs) {
+                hits.push(line.to_string());
+            }
+        }
+        hits
+    }
+
+    #[test]
+    fn focus_written_only_by_set_focus() {
+        let src = include_str!("gpu.rs").replace("\r\n", "\n");
+        // The one spaced write is `set_focus`'s (the field assigned, not compared).
+        let pat = [".focus", " = "].concat();
+        assert_eq!(src.matches(pat.as_str()).count(), 1);
+        let at = src.find(pat.as_str()).unwrap();
+        assert!(src[..at].rfind("fn set_focus").is_some_and(|f| at - f < 600));
+        assert_eq!(stray_focus_writes(&src), Vec::<String>::new());
+        // Every other spelling is caught (`FOCUS` keeps this text from matching).
+        for case in [
+            "x.FOCUS=y;",
+            "std::mem::swap(&mut a, &mut s.FOCUS);",
+            "(s.FOCUS, b) = (c, d);",
+            "State { FOCUS, .. } = other;",
+            "(\n    self.FOCUS,\n    other,\n) = pair;",
+            "(\r\n    self.FOCUS,\r\n    other,\r\n) = pair;",
+            "let f = &mut self.FOCUS;",
+        ] {
+            let case = case.replace("FOCUS", "focus");
+            assert!(!stray_focus_writes(&case).is_empty(), "missed: {case:?}");
         }
     }
 
@@ -24551,22 +24573,24 @@ mod tests {
         // `leave` serves every intent alike: no early return, and no end of
         // the drawer's session from the window (the daemon's Close ends it,
         // a Keep keeps it).
-        let src = include_str!("gpu.rs");
+        let src = include_str!("gpu.rs").replace("\r\n", "\n");
         let start = src.find(&["fn leave(&mut self, event_loop: &ActiveEventLoop, ", "intent"].concat()).unwrap();
         let body = &src[start..start + src[start..].find("\n    }\n").unwrap()];
         for banned in ["attach_term", "request_quit", "return"] {
             assert!(!body.contains(banned), "`leave` contains `{banned}`");
         }
-        // Held leases are polled (`about_to_wait`); with none the window exits at once.
-        assert_eq!(leave_next(true), LeaveNext::Poll);
-        assert_eq!(leave_next(false), LeaveNext::ExitNow);
+        // Every leave sets `should_exit` before it polls or exits, so
+        // `about_to_wait` polls the acks.
+        let set = body.find(&["self.should_exit = ", "true;"].concat()).expect("`leave` sets `should_exit`");
+        assert!(body.find("request_redraw").is_some_and(|i| set < i), "{body}");
+        assert!(body.find("self.finish_exit(").is_some_and(|i| set < i), "{body}");
     }
 
     #[test]
     fn roi_paste_dismisses_the_prompt_first() {
         // An open quit prompt is dismissed (`set_focus`) before the agent
         // pane takes the ROI paste's bytes.
-        let src = include_str!("gpu.rs");
+        let src = include_str!("gpu.rs").replace("\r\n", "\n");
         let at = src.find(&["\"ROI {w}", "×{h} of {name}"].concat()).unwrap();
         let arm = &src[at.saturating_sub(4000)..at];
         let focus = arm.rfind(&["self.set_focus(", "PaneFocus::Llm);"].concat()).unwrap();
@@ -24623,10 +24647,11 @@ mod tests {
         assert_eq!(exit_intent(Relaunch(76), None), Leave { intent: LeaveIntent::Handover, code: 76 });
         // The user's latest intent wins: an X or OS close during a Keep closes.
         assert_eq!(exit_intent(WindowClose, keep), Supersede);
-        assert_eq!(exit_intent(WindowClose, close), Now);
-        assert_eq!(exit_intent(WindowClose, handover), Now);
+        // A second close exits 0: during a Handover it never relaunches.
+        assert_eq!(exit_intent(WindowClose, close), Now { code: 0 });
+        assert_eq!(exit_intent(WindowClose, handover), Now { code: 0 });
         for leaving in [keep, close, handover] {
-            assert_eq!(exit_intent(QuitKey, leaving), Now);
+            assert_eq!(exit_intent(QuitKey, leaving), Now { code: 0 });
             assert_eq!(exit_intent(Relaunch(75), leaving), Ignore);
         }
     }
@@ -25827,6 +25852,19 @@ mod tests {
         // A short pane keeps the last row, which is the whole choice.
         let rows = nav_pinned_rows(Some(("aaaa bbbb", "[No]  Yes")), None, None, 9, 1).1;
         assert_eq!(rows, vec!["[No]  Yes".to_string()]);
+    }
+
+    #[test]
+    fn narrow_pane_never_cuts_the_choice() {
+        // A pane narrower than the choice's 9 columns drops the choice row
+        // whole; the prompt's text still shows.
+        for keep in [false, true] {
+            let (_, choice) = quit_prompt_line(keep);
+            let rows = nav_pinned_rows(Some(("aaaa bbbb", choice.as_str())), None, None, 8, 20).1;
+            assert_eq!(rows, vec!["aaaa".to_string(), "bbbb".to_string()]);
+            let rows = nav_pinned_rows(Some(("aaaa bbbb", choice.as_str())), None, None, 8, 1).1;
+            assert_eq!(rows, vec!["bbbb".to_string()]);
+        }
     }
 
     #[test]
