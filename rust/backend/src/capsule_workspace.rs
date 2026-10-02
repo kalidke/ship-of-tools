@@ -4183,21 +4183,22 @@ pub mod headless {
         /// The line was typed but the live screen then did not show it alone in main's input box, for `reason`
         /// (the gate's own); `border` is the line above the cursor's row at the gate. No Enter was sent.
         TypedNoEnter { reason: &'static str, border: String },
-        /// The line was typed and the gate passed, but the Enter write returned an error (`detail`, the phase and
-        /// its text), or its delivery is unknown: the Enter may still have reached the agent.
-        EnterFailed { detail: String },
+        /// A write on `step` (`"text"` or `"enter"`) returned an error (`detail`, the phase and its text), or its
+        /// delivery is unknown: what that step wrote may still have reached the agent.
+        Unconfirmed { step: &'static str, detail: String },
     }
 
-    /// What the typing step ended in: the gate's refusal (reason and border) or `None` when it passed, and
-    /// the Enter write's result (`Ok` when none was tried and the gate refused).
-    pub(crate) fn wake_outcome(gate: Option<(&'static str, String)>, enter: Result<(), HeadlessError>) -> WakeOutcome {
-        match gate {
-            Some((reason, border)) => WakeOutcome::TypedNoEnter { reason, border },
-            None => match enter {
-                Ok(()) => WakeOutcome::Woke,
-                Err(e) => WakeOutcome::EnterFailed { detail: format!("{}: {}", e.phase, e.detail) },
-            },
+    /// The outcome once the line is typed and the gate passed: the Enter write's result.
+    pub(crate) fn wake_outcome(enter: Result<(), HeadlessError>) -> WakeOutcome {
+        match enter {
+            Ok(()) => WakeOutcome::Woke,
+            Err(e) => unconfirmed("enter", e),
         }
+    }
+
+    /// A failed write on `step`, as the outcome the wake reports.
+    pub(crate) fn unconfirmed(step: &'static str, e: HeadlessError) -> WakeOutcome {
+        WakeOutcome::Unconfirmed { step, detail: format!("{}: {}", e.phase, e.detail) }
     }
 
     /// The comm wake's one attach (0031 B3): attach, checkpoint, test the
@@ -4258,16 +4259,19 @@ pub mod headless {
             // The live screen, not `seen`: the rows through the box can hold still while focus moves below them.
             if still && is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent) {
                 mark("final-ok");
-                type_and_pace(&mut client, line.as_bytes(), op_budget, quiet_budget, pacing_budget).map(|_| {
-                    client.pump();
-                    let lines = free_test_lines(client.screen());
-                    let cursor = Some(client.screen().cursor_position());
-                    match crate::comm_wake::typed_refusal(&lines, cursor, agent, cfg!(windows), line) {
-                        Some(reason) => {
-                            let border = cursor.and_then(|(row, _)| lines.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
-                            wake_outcome(Some((reason, border)), Ok(()))
+                Ok(match type_and_pace(&mut client, line.as_bytes(), op_budget, quiet_budget, pacing_budget) {
+                    Err(e) => unconfirmed("text", e),
+                    Ok(_) => {
+                        client.pump();
+                        let lines = free_test_lines(client.screen());
+                        let cursor = Some(client.screen().cursor_position());
+                        match crate::comm_wake::typed_refusal(&lines, cursor, agent, cfg!(windows), line) {
+                            Some(reason) => {
+                                let border = cursor.and_then(|(row, _)| lines.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
+                                WakeOutcome::TypedNoEnter { reason, border }
+                            }
+                            None => wake_outcome(send_enter(&mut client, op_budget)),
                         }
-                        None => wake_outcome(None, send_enter(&mut client, op_budget)),
                     }
                 })
             } else {
@@ -4427,7 +4431,7 @@ mod headless_size_gate_tests {
     // dir on disk, and no real process at all — a nonexistent path is
     // fine, and a real attach attempt against it would prove the test
     // wrong (the size gate must short-circuit before that).
-    use super::headless::{type_into, wake_outcome, write_and_enter, HeadlessError, WakeOutcome};
+    use super::headless::{type_into, unconfirmed, wake_outcome, write_and_enter, HeadlessError, WakeOutcome};
     use std::path::Path;
     use std::time::{Duration, Instant};
 
@@ -4437,12 +4441,18 @@ mod headless_size_gate_tests {
 
     #[test]
     fn wake_outcome_table() {
-        let no = || Some(("no prompt glyph", "top".to_string()));
-        // A gate refusal carries its reason and border.
-        assert_eq!(wake_outcome(no(), Ok(())), WakeOutcome::TypedNoEnter { reason: "no prompt glyph", border: "top".to_string() });
-        let failed = HeadlessError { phase: "record", detail: "input delivery unknown".to_string(), submitted: true };
-        assert_eq!(wake_outcome(None, Err(failed)), WakeOutcome::EnterFailed { detail: "record: input delivery unknown".to_string() });
-        assert_eq!(wake_outcome(None, Ok(())), WakeOutcome::Woke);
+        let failed = || HeadlessError { phase: "record", detail: "input delivery unknown".to_string(), submitted: true };
+        assert_eq!(wake_outcome(Ok(())), WakeOutcome::Woke);
+        assert_eq!(wake_outcome(Err(failed())), WakeOutcome::Unconfirmed { step: "enter", detail: "record: input delivery unknown".to_string() });
+    }
+
+    #[test]
+    fn text_write_failure_is_unconfirmed_not_skipped() {
+        // The mapping `wake_if_free` applies to a `type_and_pace` error; a real text-write failure needs a stub
+        // supervisor with no seam here, so the mapping is tested directly.
+        let failed = HeadlessError { phase: "write", detail: "broken pipe".to_string(), submitted: true };
+        let out = unconfirmed("text", failed);
+        assert_eq!(out, WakeOutcome::Unconfirmed { step: "text", detail: "write: broken pipe".to_string() });
     }
 
     #[test]
