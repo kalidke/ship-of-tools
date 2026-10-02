@@ -53,10 +53,11 @@
 //! suggestion on Windows until a screen read shows SGR 2 survives ConPTY; a statusline that draws `●` or `◯`
 //! below the box refuses the row; with no panel nothing below the box is checked, so a view of another agent
 //! or a focus off the input that drew no panel would read free (every captured view draws the panel).
-//! Enter goes only after a screen read shows the typed line alone in main's input box ([`typed_into_main`]);
-//! otherwise the line stays typed and the row is refused. A keypress between the last screen read and the typing
-//! can still put the wake line, without Enter, into the panel or a draft; the next wake then refuses ("input not
-//! empty") and the refusal streak logs it.
+//! Enter goes only after a screen read shows the typed line alone in main's input box ([`typed_refusal`]);
+//! otherwise the line stays typed and the row is refused. That gate catches a stray key between the final read
+//! and the typing in the same wake. The window nothing guards is a dialog or permission prompt drawn between the
+//! gate's read and the Enter. A later wake refuses for whatever the screen then shows, and the refusal streak
+//! logs it.
 //!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
@@ -78,7 +79,7 @@ const REFUSED_FOR: Duration = Duration::from_secs(60);
 /// registry entry carries a `stop_at` mark at most this old is running its Stop hook and is not typed into; an
 /// older mark is a Stop that never ended (Esc, an API error, a killed hook).
 const STOP_HOOK_BOUND: Duration = Duration::from_secs(60);
-const WAKE_LINE: &[u8] = b"[sot-comm] you have mail: run comm-poll.sh";
+const WAKE_LINE: &str = "[sot-comm] you have mail: run comm-poll.sh";
 const CONTROLLER_ID: &str = "sot-comm-wake";
 const OP_BUDGET: Duration = Duration::from_secs(3);
 const QUIET_BUDGET: Duration = Duration::from_millis(300);
@@ -333,17 +334,16 @@ fn refused_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows
 
 /// What the input box is expected to hold: nothing (the free test), or exactly the typed wake line (the gate
 /// before Enter).
-#[derive(Clone, Copy)]
 enum Expect<'a> {
     Empty,
     Typed(&'a str),
 }
 
-/// Whether `text`, just typed, sits alone in main's input box: every structural check of [`refused_on`] (a box,
+/// Why `text`, just typed, does not sit alone in main's input box (`None` when it does): every structural check of [`refused_on`] (a box,
 /// the glyph, nothing before it, [`panel_refusal`] below) except the cursor column, then after the glyph the
 /// NBSP (a space where the NBSP is not required), exactly `text`, and spaces. Enter goes only when this holds.
-pub(crate) fn typed_into_main(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool, text: &str) -> bool {
-    input_refused(lines, cursor, agent, windows, Expect::Typed(text)).is_none()
+pub(crate) fn typed_refusal(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool, text: &str) -> Option<&'static str> {
+    input_refused(lines, cursor, agent, windows, Expect::Typed(text))
 }
 
 fn input_refused(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool, expect: Expect) -> Option<&'static str> {
@@ -537,32 +537,31 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         *seen.borrow_mut() = (reason, border);
         reason.is_none()
     };
-    let typed = |l: &[String], c: Option<(u16, u16)>, a: &str| {
-        typed_into_main(l, c, a, cfg!(windows), std::str::from_utf8(WAKE_LINE).unwrap_or_default())
-    };
     match wake_if_free(
         state_dir,
         CONTROLLER_ID,
         WAKE_LINE,
         &free,
-        &typed,
         agent,
         STILL_FOR,
         OP_BUDGET,
         QUIET_BUDGET,
         PACING_BUDGET,
     ) {
-        Ok(WakeOutcome::Woke { enter_sent: true }) => Step::Woke(Woken { line: s.total, at: Instant::now() }),
+        Ok(WakeOutcome::Woke) => Step::Woke(Woken { line: s.total, at: Instant::now() }),
         Ok(WakeOutcome::NotFree) => {
             let (reason, border) = seen.take();
             Step::Refused(Refusal { reason: reason.unwrap_or("moved during the hold"), border })
         }
-        Ok(WakeOutcome::TypedNoEnter) => {
-            let (_, border) = seen.take();
-            tracing::warn!(handle, border = ?border, "comm wake: typed the line but it did not show in main's input box; no Enter sent");
+        Ok(WakeOutcome::TypedNoEnter { reason, border }) => {
+            tracing::warn!(handle, border = ?border, "comm wake: typed the line but it did not show in main's input box ({reason}); no Enter sent");
             Step::Refused(Refusal { reason: "typed text not in main's input box", border })
         }
-        Ok(_) => Step::Skip,
+        Ok(WakeOutcome::EnterFailed) => {
+            let (_, border) = seen.take();
+            tracing::warn!(handle, border = ?border, "comm wake: typed the line but the Enter write failed");
+            Step::Refused(Refusal { reason: "enter write failed", border })
+        }
         Err(e) => {
             tracing::debug!(handle, phase = e.phase, detail = %e.detail, "comm wake: row not typeable this tick");
             Step::Skip
@@ -1171,12 +1170,12 @@ mod tests {
     fn typed_into_main_table() {
         const L: &str = "[sot-comm] you have mail: run comm-poll.sh";
         let at = |col: u16| Some((16, col));
-        let typed = |top: &str, prompt: &str, footer: &str, panel: [&str; 2], cur, windows| typed_into_main(&probe(top, prompt, footer, panel), cur, "claude", windows, L);
+        let typed = |top: &str, prompt: &str, footer: &str, panel: [&str; 2], cur, windows| typed_refusal(&probe(top, prompt, footer, panel), cur, "claude", windows, L).is_none();
         let line = format!("\u{276f}\u{a0}{L}");
         // The line in a leader box, wherever the cursor sits on the prompt row.
         assert!(typed(&rule80(), &line, F_LEADER, [P_MAIN, P_SUB], at(2 + L.len() as u16), false));
         assert!(typed(&rule80(), &line, F_LEADER, [P_MAIN, P_SUB], at(2), false));
-        assert!(typed_into_main(&boxed(&line), Some((1, 44)), "claude", false, L));
+        assert!(typed_refusal(&boxed(&line), Some((1, 44)), "claude", false, L).is_none());
         // A focused panel under the box.
         assert!(!typed(&rule80(), &line, F_SELECT, [P_MAIN, "❯ ◯ general-purpose"], at(2), false));
         assert!(!typed(&rule80(), &line, F_DOWN, [P_MAIN, P_SUB], at(2), false));
@@ -1198,6 +1197,12 @@ mod tests {
             assert!(!typed(&rule80(), &format!("{glyph}{L}"), F_LEADER, [P_MAIN, P_SUB], at(2), true));
             assert!(!typed(&rule80(), &format!("{glyph}\u{a0}{L} x"), F_LEADER, [P_MAIN, P_SUB], at(2), true));
         }
+        // The line followed by Claude Code's dim suggestion: dim cells read blank, so the line still sits alone.
+        let rule = "\u{2500}".repeat(80);
+        let mut p = vt100_ctt::Parser::new(3, 80, 0);
+        p.process(format!("{rule}\r\n\u{276f}\u{a0}{L}\x1b[2m try this\x1b[22m\r\n{rule}\x1b[2;{}H", 3 + L.len()).as_bytes());
+        let seen = free_test_lines(p.screen());
+        assert_eq!(typed_refusal(&seen, Some(p.screen().cursor_position()), "claude", false, L), None);
     }
 
     #[test]
