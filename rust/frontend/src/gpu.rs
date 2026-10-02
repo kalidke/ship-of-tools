@@ -663,6 +663,7 @@ enum QuitPromptStep {
     Stay { keep: bool },
     Leave(LeaveIntent),
     Cancel,
+    Ignore,
 }
 
 /// The Ctrl+Q prompt's key table: Tab flips the answer, Enter confirms it,
@@ -672,8 +673,27 @@ fn quit_prompt_key(keep: bool, key: QuitKey) -> QuitPromptStep {
         QuitKey::Tab => QuitPromptStep::Stay { keep: !keep },
         QuitKey::Enter => QuitPromptStep::Leave(if keep { LeaveIntent::Keep } else { LeaveIntent::Close }),
         QuitKey::Esc => QuitPromptStep::Cancel,
-        QuitKey::Other => QuitPromptStep::Stay { keep },
+        QuitKey::Other => QuitPromptStep::Ignore,
     }
+}
+
+/// The Ctrl+Q prompt's reading of a key. It owns the keyboard while open,
+/// so every key reaches it before any global binding: Tab, Enter and Esc act
+/// as `quit_prompt_key` says, and repeats and every other key do nothing.
+fn prompt_takes_key(keep: bool, tab: bool, action: Option<Action>, repeat: bool) -> QuitPromptStep {
+    if repeat {
+        return QuitPromptStep::Ignore;
+    }
+    let key = if tab {
+        QuitKey::Tab
+    } else if action == Some(Action::Confirm) {
+        QuitKey::Enter
+    } else if action == Some(Action::Cancel) {
+        QuitKey::Esc
+    } else {
+        QuitKey::Other
+    };
+    quit_prompt_key(keep, key)
 }
 
 fn quit_prompt_line(keep: bool) -> String {
@@ -4981,10 +5001,11 @@ struct State {
     /// lease; the attach-only drawer needs a lease that carries it (ADR 0050).
     #[cfg(windows)]
     own_state_root: Option<String>,
-    /// Not-ended counts shown and not yet reported to the daemon; sent
-    /// right after the frame that shows them is presented.
+    /// Not-ended counts not yet reported to the daemon, newest last; acked
+    /// right after a presented frame draws them (`acks_for_frame`).
     notice_acks: Vec<(crate::dial::HostKey, u32)>,
-    /// The not-ended line a lease grant reported, and when it stops showing.
+    /// The not-ended line a lease grant reported once a frame showed it, and
+    /// when it stops showing.
     not_ended_shown: Option<(String, std::time::Instant)>,
     /// Set once the window is on its way out and waiting for the daemons' acks.
     leaving: Option<crate::lease::Leaving>,
@@ -5810,6 +5831,22 @@ fn nav_pinned_rows(
     let keep = rows.len().min(pane_height);
     rows.drain(..rows.len() - keep);
     (pane_height - keep, rows)
+}
+
+/// The `fe.notice_seen` acks a presented frame owes: none unless it drew the
+/// not-ended line, else each daemon's newest pending count. The daemon clears
+/// only on an equal count, so an older one is dropped, not sent.
+fn acks_for_frame(pending: &[(crate::dial::HostKey, u32)], drawn: bool) -> Vec<(crate::dial::HostKey, u32)> {
+    let mut out: Vec<(crate::dial::HostKey, u32)> = Vec::new();
+    if drawn {
+        for (host, n) in pending {
+            match out.iter_mut().find(|(h, _)| h == host) {
+                Some(slot) => slot.1 = *n,
+                None => out.push((host.clone(), *n)),
+            }
+        }
+    }
+    out
 }
 
 /// Letterbox an image of `(iw, ih)` into `outer`, preserving aspect ratio.
@@ -13489,9 +13526,7 @@ impl State {
                     } // if event_host == self.active_host
                 }
                 crate::transport::IncomingEvt::NotEnded { count } => {
-                    if let Some(line) = crate::lease::not_ended_line(count) {
-                        self.not_ended_shown =
-                            Some((line, std::time::Instant::now() + NOTIFY_STICKY));
+                    if count > 0 {
                         self.notice_acks.push((event_host.clone(), count));
                         self.window.request_redraw();
                     }
@@ -16509,10 +16544,16 @@ impl State {
             Some(NavPrompt::ConfirmQuit { keep }) => Some(quit_prompt_line(*keep)),
             None => None,
         };
-        let nav_line = self.leaving.as_ref().and_then(|l| l.line()).or_else(|| {
+        // The not-ended line the pending acks owe; it shows until a
+        // presented frame has drawn it, then holds as `not_ended_shown`.
+        let owed_line = crate::lease::not_ended_line(
+            acks_for_frame(&self.notice_acks, true).iter().map(|(_, n)| n).sum(),
+        );
+        let nav_line = self.leaving.as_ref().and_then(|l| l.line()).or_else(|| owed_line.clone()).or_else(|| {
             let now = std::time::Instant::now();
             self.not_ended_shown.as_ref().filter(|(_, until)| now < *until).map(|(l, _)| l.clone())
         });
+        let mut owed_drawn = false;
         let lease_notice = self.leases.notice();
         // Local wall-clock of the machine running the frontend, sampled once
         // per frame and turned into the top-right chrome clock text at the
@@ -17278,6 +17319,10 @@ impl State {
                     nav_rect.height as usize,
                 );
                 let nav_list_rect = ratatui::layout::Rect { height: nav_list_h as u16, ..nav_rect };
+                owed_drawn = nav_prompt_line.is_none()
+                    && owed_line.is_some()
+                    && nav_line == owed_line
+                    && !nav_pinned.is_empty();
                 let mut body_lines = status_spans(&status, nav_w);
                 let nav_cursor_body_pos = nav_cursor_body_pos + body_lines.len() - 1;
                 body_lines.push(RtLine::from(""));
@@ -19730,8 +19775,15 @@ impl State {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
-        for (h, n) in self.notice_acks.drain(..) {
-            self.leases.notice_seen(&h, n);
+        let acks = acks_for_frame(&self.notice_acks, owed_drawn);
+        if !acks.is_empty() {
+            for (h, n) in &acks {
+                self.leases.notice_seen(h, *n);
+            }
+            self.notice_acks.clear();
+            if self.leaving.is_none() {
+                self.not_ended_shown = owed_line.map(|l| (l, std::time::Instant::now() + NOTIFY_STICKY));
+            }
         }
         self.text.trim();
 
@@ -20813,6 +20865,22 @@ impl ApplicationHandler for App {
                 let context = state.help_context();
                 let action = state.bindings.resolve(&event.logical_key, Some(&base_key),
                     Modifiers { ctrl, alt, shift, super_ }, context.consumes_text(), |a| context.allows(a));
+                // The Ctrl+Q prompt owns the keyboard while it is open in
+                // navigation focus: it reads every key before any global
+                // binding (`prompt_takes_key`).
+                if let (Some(NavPrompt::ConfirmQuit { keep }), PaneFocus::NavTree) = (&state.nav_prompt, state.focus) {
+                    let tab = matches!(event.logical_key, Key::Named(NamedKey::Tab));
+                    match prompt_takes_key(*keep, tab, action, event.repeat) {
+                        QuitPromptStep::Stay { keep } => {
+                            state.nav_prompt = Some(NavPrompt::ConfirmQuit { keep });
+                            state.window.request_redraw();
+                        }
+                        QuitPromptStep::Cancel => state.cancel_nav_prompt(),
+                        QuitPromptStep::Leave(i) => state.leave(event_loop, i, 0, "Ctrl+Q quit action"),
+                        QuitPromptStep::Ignore => {}
+                    }
+                    return;
+                }
                 if !event.repeat && action == Some(Action::ToggleHelpDrawer) {
                     if state.drawer == DrawerContent::Help { state.close_help_drawer(); }
                     else { state.open_help_drawer(context); }
@@ -21356,32 +21424,6 @@ impl ApplicationHandler for App {
                         // any other nav key is swallowed so arrows / mode
                         // switches don't disturb the tree mid-type.
                         if state.nav_prompt.is_some() {
-                            // ConfirmQuit: Tab flips, Enter confirms, Esc
-                            // cancels; repeats and every other key do nothing.
-                            if let Some(NavPrompt::ConfirmQuit { keep }) = state.nav_prompt {
-                                if !event.repeat {
-                                    let key = if matches!(event.logical_key, Key::Named(NamedKey::Tab)) {
-                                        QuitKey::Tab
-                                    } else if action == Some(Action::Confirm) {
-                                        QuitKey::Enter
-                                    } else if action == Some(Action::Cancel) {
-                                        QuitKey::Esc
-                                    } else {
-                                        QuitKey::Other
-                                    };
-                                    match quit_prompt_key(keep, key) {
-                                        QuitPromptStep::Stay { keep } => {
-                                            state.nav_prompt = Some(NavPrompt::ConfirmQuit { keep });
-                                            state.window.request_redraw();
-                                        }
-                                        QuitPromptStep::Cancel => state.cancel_nav_prompt(),
-                                        QuitPromptStep::Leave(i) => {
-                                            state.leave(event_loop, i, 0, "Ctrl+Q quit action")
-                                        }
-                                    }
-                                }
-                                return;
-                            }
                             // ConfirmDelete is a y/N gate, not a text field:
                             // 'y'/'Y' confirms, everything else (incl.
                             // 'n'/'N'/Esc) cancels. CreateFile keeps its
@@ -24385,8 +24427,18 @@ mod tests {
         assert_eq!(quit_prompt_key(true, Enter), Leave(LeaveIntent::Keep));
         assert_eq!(quit_prompt_key(false, Esc), Cancel);
         assert_eq!(quit_prompt_key(true, Esc), Cancel);
-        assert_eq!(quit_prompt_key(false, Other), Stay { keep: false });
-        assert_eq!(quit_prompt_key(true, Other), Stay { keep: true });
+        assert_eq!(quit_prompt_key(false, Other), Ignore);
+        assert_eq!(quit_prompt_key(true, Other), Ignore);
+        // The prompt sees every key before global dispatch: Ctrl+T (the
+        // terminal drawer) and Ctrl+= (font size) do nothing while it is open.
+        assert_eq!(prompt_takes_key(false, false, Some(Action::ToggleTerminalDrawer), false), Ignore);
+        assert_eq!(prompt_takes_key(true, false, Some(Action::FontScaleUp), false), Ignore);
+        assert_eq!(prompt_takes_key(false, false, None, false), Ignore);
+        assert_eq!(prompt_takes_key(false, true, None, false), Stay { keep: true });
+        assert_eq!(prompt_takes_key(true, false, Some(Action::Confirm), false), Leave(LeaveIntent::Keep));
+        assert_eq!(prompt_takes_key(false, false, Some(Action::Cancel), false), Cancel);
+        assert_eq!(prompt_takes_key(false, false, Some(Action::Confirm), true), Ignore);
+        assert_eq!(prompt_takes_key(false, true, None, true), Ignore);
         let no = quit_prompt_line(false);
         assert!(no.contains("[No]") && no.contains("Yes") && !no.contains("[Yes]"));
         let yes = quit_prompt_line(true);
@@ -25517,6 +25569,23 @@ mod tests {
         for seg in &segs {
             assert_eq!(all.matches(seg.as_str()).count(), 1, "{seg}");
         }
+    }
+
+    #[test]
+    fn notice_ack_table() {
+        let (a, b) = ("a".to_string(), "b".to_string());
+        // Hidden by a prompt: no ack, and the count stays pending.
+        assert_eq!(acks_for_frame(&[(a.clone(), 2)], false), vec![]);
+        // Drawn: its ack.
+        assert_eq!(acks_for_frame(&[(a.clone(), 2)], true), vec![(a.clone(), 2)]);
+        // Two pending from one daemon, the newer drawn: the newer's ack only.
+        assert_eq!(acks_for_frame(&[(a.clone(), 2), (a.clone(), 3)], true), vec![(a.clone(), 3)]);
+        // Two daemons: one ack each, its own count.
+        assert_eq!(
+            acks_for_frame(&[(a.clone(), 2), (b.clone(), 1), (a.clone(), 4)], true),
+            vec![(a.clone(), 4), (b.clone(), 1)]
+        );
+        assert_eq!(acks_for_frame(&[], true), vec![]);
     }
 
     #[test]
