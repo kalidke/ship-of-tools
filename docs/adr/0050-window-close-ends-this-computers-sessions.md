@@ -48,9 +48,10 @@ When intents arrive in order on one lease, the latest wins.
 - Every granted lease gets a generation, counted per daemon process; an entry leaves by
   generation only, so a late end of a replaced lease is a no-op.
 - A lease departs at the first of: a well-formed `fe.leaving` (its intent decides); EOF,
-  including a partial line then EOF; an io error. Nothing else ends it. A complete line
-  that is not a well-formed request gets an error payload and the lease continues
-  (ruling a). The daemon never closes a lease itself.
+  including a partial line then EOF; an io error; a reply the window has not drained
+  within the 5 s write bound. Nothing else ends it. A complete line that is not a
+  well-formed request gets an error payload and the lease continues (ruling a). Short of
+  that write bound, the daemon never closes a lease itself.
 - An end without `fe.leaving` is a `Close`. The intents are `Close`, `Keep` and `Handover`.
   If the departing lease is not the last, nothing else happens. If it is the last:
   `Close` is a shutdown; `Keep` does nothing and is the only open-ended keep; `Handover`
