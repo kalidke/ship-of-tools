@@ -142,6 +142,7 @@ $envSaved = $null
 $testPipePrefix = 'test-sot-ld-'
 
 try {
+    try {
     Write-Host "`n=== 0. syntax parse of every .ps1 this unit touches ===" -ForegroundColor Cyan
     foreach ($f in @(
             (Join-Path $repo 'scripts\sot-local-daemon.ps1'),
@@ -155,6 +156,8 @@ try {
         Check "parses: $(Split-Path $f -Leaf)" ($errs.Count -eq 0) $detail
     }
 
+    } catch { Check '0: section ran' $false $_.Exception.Message }
+    try {
     Write-Host "`n=== 1. refusal when sot-capsule.exe is missing ===" -ForegroundColor Cyan
     $p1 = Join-Path $root 'p1'
     New-Fixture -Prefix $p1
@@ -168,11 +171,15 @@ try {
     Check 'log file written' (Test-Path $log1) 'no log file'
     $lines1 = if (Test-Path $log1) { (Get-Content $log1).Count } else { 0 }
 
+    } catch { Check '1: section ran' $false $_.Exception.Message }
+    try {
     Write-Host "`n=== 2. log file is append-only across invocations ===" -ForegroundColor Cyan
     $null = & $script -Prefix $p1 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe1 -ProjectRoot $root 6>&1 2>&1
     $lines2 = (Get-Content $log1).Count
     Check 'log grew, was not truncated' ($lines2 -gt $lines1) "was $lines1 lines, now $lines2"
 
+    } catch { Check '2: section ran' $false $_.Exception.Message }
+    try {
     Write-Host "`n=== 2b. unlaunchable placeholder sotd.exe -- distinct diagnostic from an absent pair ===" -ForegroundColor Cyan
     # A field report hit a COMPLETE but WEEKS-STALE dev pair taking the
     # ABSENT-pair refusal (section 1's message) -- blaming absence when the
@@ -209,6 +216,7 @@ try {
     $exitStop2b = $LASTEXITCODE
     Check '-Stop: exit code 1' ($exitStop2b -eq 1) "got $exitStop2b; log: $outStop2b"
     Check '-Stop: refused as unlaunchable, not as absent' ((($outStop2b -join ' ')) -match 'REFUSED: could not execute') "log was: $outStop2b"
+    } catch { Check '2b: section ran' $false $_.Exception.Message }
 
     if (-not $haveRealSotd) {
         if ($env:CI) {
@@ -248,6 +256,7 @@ try {
         $spacedProjectRoot = Join-Path $fixtureHome 'a project root'
         New-Item -ItemType Directory -Force -Path $spacedProjectRoot | Out-Null
 
+        try {
         Write-Host "`n=== 3. start when absent (also proves --project-root quoting through a space) ===" -ForegroundColor Cyan
         $p3 = Join-Path $root 'p3'
         New-Fixture -Prefix $p3 -WithCapsule -SotdSource $realSotd
@@ -260,6 +269,8 @@ try {
         $procs3 = @(Get-DaemonProcs $pipePath3)
         Check 'exactly one sotd.exe on this pipe' ($procs3.Count -eq 1) "found $($procs3.Count)"
 
+        } catch { Check '3: section ran' $false $_.Exception.Message }
+        try {
         Write-Host "`n=== 4. no second start when the pipe already answers ===" -ForegroundColor Cyan
         $out4 = & $script -Prefix $p3 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe3 -ProjectRoot $spacedProjectRoot 6>&1 2>&1
         $exit4 = $LASTEXITCODE
@@ -271,6 +282,8 @@ try {
             Check 'same pid (not restarted)' ($procs4[0].ProcessId -eq $procs3[0].ProcessId) 'pid changed'
         }
 
+        } catch { Check '4: section ran' $false $_.Exception.Message }
+        try {
         Write-Host "`n=== 5. shutdown stops the daemon and leaves a fake supervisor alone ===" -ForegroundColor Cyan
         # Stand-in for a capsule supervisor: any long-lived NON-sotd.exe
         # process. Proves -Stop's exact match (Name='sotd.exe' + this exact
@@ -288,6 +301,8 @@ try {
         $fakeSup.Refresh()
         Check 'fake supervisor left alone' (-not $fakeSup.HasExited) 'fake supervisor was killed too'
 
+        } catch { Check '5: section ran' $false $_.Exception.Message }
+        try {
         Write-Host "`n=== 6. pipe name comes from 'sotd session-socket-path local', not a hardcoded guess ===" -ForegroundColor Cyan
         # ADR 0042 L2b design C: no -PipeName override here -- the script
         # must resolve $daemonExe itself and query IT for the pipe path,
@@ -343,6 +358,7 @@ try {
             }
             Check 'derived pipe gone after stop' (Wait-PipeGone $pipeName6) 'pipe still answering after -Stop'
         }
+        } catch { Check '6: section ran' $false $_.Exception.Message }
     }
 
     # ---- 7-8: a fake daemon (C#, compiled once) that can bind late and exit by itself ----
@@ -468,6 +484,7 @@ public static class FakeSotd
     }
 
     if ($compiled) {
+        try {
         Write-Host "`n=== 7. EnsureKeepsWaitingDaemon: a late bind is waited for, never killed ===" -ForegroundColor Cyan
         Clear-FakeEnv
         $env:FAKE_SOTD_BIND_DELAY_MS = '7000'
@@ -488,6 +505,8 @@ public static class FakeSotd
             Clear-FakeEnv
         }
 
+        } catch { Check '7: section ran' $false $_.Exception.Message }
+        try {
         Write-Host "`n=== 8. StopWaitsForSelfShutdown: -Stop waits while a shutdown is under way ===" -ForegroundColor Cyan
         $heldPath = Join-Path $fakeLocalAppData 'sot\held.json'
         Remove-Item -LiteralPath $heldPath -Force -ErrorAction SilentlyContinue
@@ -550,6 +569,7 @@ public static class FakeSotd
             Stop-FakeOn $pipe8c
             Clear-FakeEnv
         }
+        } catch { Check '8: section ran' $false $_.Exception.Message }
     }
 
     # ---- 9-11: launch-sot.ps1 order (AST) and the converge lease (C4b) ----
@@ -571,21 +591,26 @@ public static class FakeSotd
         $root.FindAll({ param($n) ($n -is [System.Management.Automation.Language.IfStatementAst]) -and ($n.Clauses[0].Item1.Extent.Text -like $condText) }, $true)
     }
 
+    try {
     Write-Host "`n=== 9. InitialEnsureBeforeChecks: the first ensure precedes the -Local and nothing-reachable checks ===" -ForegroundColor Cyan
     $ensure9 = @($launchAst.FindAll({ param($n)
         ($n -is [System.Management.Automation.Language.AssignmentStatementAst]) -and
         $n.Left.Extent.Text -eq '$localDaemonReady' -and $n.Right.Extent.Text -eq 'Invoke-LocalDaemonEnsure' }, $true) |
         Where-Object { -not (Test-HasLoopAncestor $_) })
-    $ifLocal9 = @(Find-Ifs $launchAst '$Local' | Where-Object { $_.Parent -eq $launchAst.EndBlock })
+    # Only the -Local branch that CONSUMES the ensure result: a UI step such as
+    # `if ($Local) { Stop-Splash }` deliberately runs before the ensure.
+    $ifLocal9 = @(Find-Ifs $launchAst '$Local' | Where-Object { ($_.Parent -eq $launchAst.EndBlock) -and ($_.Extent.Text -match '\$localDaemonReady') })
     $ifNone9 = @(Find-Ifs $launchAst '*-not $defaultRemoteOk*' | Where-Object { $_.Parent -eq $launchAst.EndBlock })
     Check '9: one top-level ensure assignment' ($ensure9.Count -eq 1) "found $($ensure9.Count)"
-    Check '9: one top-level if ($Local)' ($ifLocal9.Count -eq 1) "found $($ifLocal9.Count)"
+    Check '9: one top-level if ($Local) that reads the ensure' ($ifLocal9.Count -eq 1) "found $($ifLocal9.Count)"
     Check '9: one top-level nothing-reachable check' ($ifNone9.Count -eq 1) "found $($ifNone9.Count)"
     if ($ensure9.Count -eq 1 -and $ifLocal9.Count -eq 1 -and $ifNone9.Count -eq 1) {
         Check '9: ensure precedes if ($Local)' ($ensure9[0].Extent.StartOffset -lt $ifLocal9[0].Extent.StartOffset) 'order is wrong'
         Check '9: ensure precedes the nothing-reachable check' ($ensure9[0].Extent.StartOffset -lt $ifNone9[0].Extent.StartOffset) 'order is wrong'
     }
 
+    } catch { Check '9: section ran' $false $_.Exception.Message }
+    try {
     Write-Host "`n=== 10. RespawnEnsuresDaemon / ConvergeLeaseOrder: ensure and lease order in the supervisor loop ===" -ForegroundColor Cyan
     $loop10 = @($launchAst.FindAll({ param($n)
         ($n -is [System.Management.Automation.Language.DoWhileStatementAst]) -and $n.Condition.Extent.Text -eq '$relaunchNext' }, $true))
@@ -627,7 +652,9 @@ public static class FakeSotd
         }
     }
 
+    } catch { Check '10: section ran' $false $_.Exception.Message }
     if ($compiled) {
+        try {
         Write-Host "`n=== 11. ConvergeLeaseHandover: the lease line, the handover line, the refusal warning ===" -ForegroundColor Cyan
         foreach ($fname in @('Get-SotBootId', 'Open-SotLease', 'Close-SotLeases')) {
             $fn = $launchAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)
@@ -703,7 +730,40 @@ public static class FakeSotd
             Check '11c: Get-SotBootId is stable' ($b1 -ceq $b2) "got '$b1' then '$b2'"
             Check '11c: Get-SotBootId is a decimal number' ($b1 -match '^\d+$') "got '$b1'"
         }
+        } catch { Check '11: section ran' $false $_.Exception.Message }
     }
+try {
+    if ($compiled) {
+        Write-Host "`n=== 12. SuccessorKeepsOldLogs: a spawn over a held stdout log does not lose its content ===" -ForegroundColor Cyan
+        # Diagnostic: the ensure can run while the previous daemon still holds
+        # its stdout log open. Hold it here with the share mode a child would
+        # (no FileShare.Delete), put a known line in it, spawn through the real
+        # path, and look for the line in the old name or a rotated one.
+        Clear-FakeEnv
+        $p12 = New-FakePrefix 'p12'
+        $pipe12 = New-TestPipeName
+        $log12dir = Join-Path $p12 'logs'
+        New-Item -ItemType Directory -Force -Path $log12dir | Out-Null
+        $out12 = Join-Path $log12dir 'sotd-local.stdout.log'
+        $held12 = $null
+        try {
+            $held12 = New-Object System.IO.FileStream($out12, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+            $bytes12 = [System.Text.Encoding]::ASCII.GetBytes("known-line-12`r`n")
+            $held12.Write($bytes12, 0, $bytes12.Length); $held12.Flush()
+            $null = & $script -Prefix $p12 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe12 -ProjectRoot $root 6>&1 2>&1
+            $kept12 = $false
+            foreach ($f12 in @(Get-ChildItem -LiteralPath $log12dir -Filter 'sotd-local.stdout.log*' -ErrorAction SilentlyContinue)) {
+                $fs12 = New-Object System.IO.FileStream($f12.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try { if ((New-Object System.IO.StreamReader($fs12)).ReadToEnd() -match 'known-line-12') { $kept12 = $true } } finally { $fs12.Dispose() }
+            }
+            Check '12: the held log line survives the successor spawn' $kept12 'known line found in no sotd-local.stdout.log* file'
+        } finally {
+            if ($held12) { $held12.Dispose() }
+            Stop-FakeOn $pipe12
+            Clear-FakeEnv
+        }
+    }
+} catch { Check '12: section ran' $false $_.Exception.Message }
 } finally {
     # ONE place for every cleanup this file owes, so a terminating error
     # anywhere above (not just a failed Check, which never throws) still
