@@ -28,6 +28,13 @@ you are away. See [Going remote](../start/remote.md#Reconnecting).
 Keys typed into a session pane while its host is disconnected are not sent
 later; the pane's top line says how many were discarded.
 
+## The agent pane says `frontend out of date`
+
+The daemon speaks a newer protocol than this frontend, so the two cannot talk.
+Update the frontend (see [Updating](updating.md)). `daemon out of date` is the
+reverse skew: the daemon is the side that is behind. The preview pane shows both
+versions.
+
 ## A pane stays at `connecting…`
 
 The status line under the pane names the reason the capsule gave. `capsule busy

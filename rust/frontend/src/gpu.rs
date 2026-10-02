@@ -16545,6 +16545,17 @@ impl State {
         // host has a known-broken dial — same priority tier as a live
         // client's own failure.
         .or_else(|| self.pane_dial_error.clone())
+        .or_else(|| {
+            let h = self
+                .bl_pane_target
+                .as_ref()
+                .map(|(h, _)| h)
+                .unwrap_or(&self.active_host);
+            self.protocol_mismatch
+                .get(h)
+                .and_then(|m| m.lines().next())
+                .map(str::to_owned)
+        })
         .or_else(|| self.pane_input.notice());
         // Switch-latency Phase 1, item 3: the acceptance metric itself
         // (keypress → current screen visible), not merely the client's
