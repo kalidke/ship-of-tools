@@ -573,6 +573,7 @@ fn converge_on_ready<E: Endpoint>(
     quit: &mut QuitDispatcher,
     outstanding: &mut OutstandingSlot,
     first_attach_deadline: Option<Instant>,
+    viewed: &AtomicBool,
     emit: &dyn Fn(WorkerEvent),
 ) -> ReadyOutcome<E> {
     // Emitted at most once per "still starting" spell — re-armed every
@@ -670,12 +671,18 @@ fn converge_on_ready<E: Endpoint>(
                     };
                     return ReadyOutcome::Terminal(msg);
                 }
-                e @ (LaneError::Unreachable(_) | LaneError::Undetermined(_) | LaneError::LinkDown) => {
+                LaneError::LinkDown => {
+                    reconnect.clear_unresponsive();
+                    match pause_for_link(endpoint, cmd_rx, held, viewed, emit) {
+                        WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
+                        WaitOutcome::Continue => continue,
+                    }
+                }
+                e @ (LaneError::Unreachable(_) | LaneError::Undetermined(_)) => {
                     reconnect.clear_unresponsive();
                     let msg = match &e {
                         LaneError::Unreachable(d) => format!("daemon unreachable — retrying ({d})"),
                         LaneError::Undetermined(_) => "daemon could not identify the lane — retrying".to_string(),
-                        LaneError::LinkDown => "host offline — retrying".to_string(),
                         _ => unreachable!("matched above"),
                     };
                     emit(WorkerEvent::Status(msg));
@@ -917,6 +924,9 @@ pub struct AttachWorker<E: Endpoint> {
     /// The episode reader's own byte-accounted backpressure — see
     /// [`QueuedBytes`]'s own doc. Released by [`Self::ack_output_consumed`].
     queued_bytes: Arc<QueuedBytes>,
+    /// Whether the client is the one the user is looking at; a worker
+    /// paused for a down link resumes only while this is set.
+    viewed: Arc<AtomicBool>,
     worker_handle: Option<thread::JoinHandle<()>>,
     _endpoint: PhantomData<E>,
 }
@@ -963,6 +973,8 @@ impl<E: Endpoint> AttachWorker<E> {
         let worker_queued_bytes = Arc::clone(&queued_bytes);
         let ingress_bytes = Arc::new(AtomicUsize::new(0));
         let discarded = Arc::new(AtomicUsize::new(0));
+        let viewed = Arc::new(AtomicBool::new(true));
+        let worker_viewed = Arc::clone(&viewed);
 
         let worker_handle = thread::Builder::new()
             .name("sot-fe-attach-worker".to_string())
@@ -983,11 +995,12 @@ impl<E: Endpoint> AttachWorker<E> {
                     last_input_outcome,
                     take_epoch_pub,
                     discarded,
+                    Arc::clone(&worker_viewed),
                     headless,
                 );
             })?;
 
-        Ok(Self { msg_tx, ingress_bytes, ingress_bound, queued_bytes, worker_handle: Some(worker_handle), _endpoint: PhantomData })
+        Ok(Self { msg_tx, ingress_bytes, ingress_bound, queued_bytes, viewed, worker_handle: Some(worker_handle), _endpoint: PhantomData })
     }
 
     /// A sink that consumes [`WorkerEvent::Output`] bytes calls this with
@@ -996,6 +1009,10 @@ impl<E: Endpoint> AttachWorker<E> {
     /// down (see that type's own doc). `fe_client_io::FeAttachClient::
     /// pump` calls this exactly where the pre-extraction module's own
     /// `queued_bytes.sub` call was.
+    pub fn set_viewed(&self, viewed: bool) {
+        self.viewed.store(viewed, Ordering::Release);
+    }
+
     pub fn ack_output_consumed(&self, n: usize) {
         self.queued_bytes.sub(n);
     }
@@ -1092,6 +1109,7 @@ impl<E: Endpoint> AttachWorker<E> {
             ingress_bytes: Arc::new(AtomicUsize::new(0)),
             ingress_bound: usize::MAX,
             queued_bytes: Arc::new(QueuedBytes::new()),
+            viewed: Arc::new(AtomicBool::new(true)),
             worker_handle: None,
             _endpoint: PhantomData,
         }
@@ -1144,6 +1162,7 @@ fn run_worker<E: Endpoint>(
     last_input_outcome: Arc<Mutex<Option<InputOutcome>>>,
     take_epoch_pub: Arc<AtomicU64>,
     discarded: Arc<AtomicUsize>,
+    viewed: Arc<AtomicBool>,
     headless: bool,
 ) where
     E: Send + Sync + 'static,
@@ -1204,6 +1223,7 @@ fn run_worker<E: Endpoint>(
                     &mut quit,
                     &mut outstanding,
                     first_attach_deadline,
+                    &viewed,
                     &emit,
                 ) {
                     ReadyOutcome::Ready { conn, sup_reader, voyage_id, voyage_conn } => {
@@ -1258,12 +1278,18 @@ fn run_worker<E: Endpoint>(
                 emit(WorkerEvent::Terminal(msg));
                 return;
             }
-            Err(e @ (LaneError::Unreachable(_) | LaneError::Undetermined(_) | LaneError::LinkDown)) => {
+            Err(LaneError::LinkDown) => {
+                reconnect.clear_unresponsive();
+                match pause_for_link(&endpoint, &cmd_rx, &mut held, &viewed, &emit) {
+                    WaitOutcome::Shutdown => break 'episodes,
+                    WaitOutcome::Continue => continue 'episodes,
+                }
+            }
+            Err(e @ (LaneError::Unreachable(_) | LaneError::Undetermined(_))) => {
                 reconnect.clear_unresponsive();
                 let msg = match &e {
                     LaneError::Unreachable(d) => format!("daemon unreachable — retrying ({d})"),
                     LaneError::Undetermined(_) => "daemon could not identify the lane — retrying".to_string(),
-                        LaneError::LinkDown => "host offline — retrying".to_string(),
                     _ => unreachable!("matched above"),
                 };
                 emit(WorkerEvent::Status(msg));
@@ -1637,6 +1663,35 @@ fn wait_for_retry_or_shutdown(cmd_rx: &Receiver<WorkerMsg>, wait: Duration, held
             }
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return WaitOutcome::Shutdown,
+        }
+    }
+}
+
+/// The S3a/S3b pause for a down link: one status line, then a tick-by-tick
+/// wait that reads the channel through [`hold`] (a `Resize` is kept for the
+/// next attach, an `Input` is counted) until the endpoint's link is up AND
+/// the client is viewed. A tick always passes first, so an endpoint that
+/// reports `LinkDown` while `link_up()` is true cannot spin.
+fn pause_for_link<E: Endpoint>(
+    endpoint: &E,
+    cmd_rx: &Receiver<WorkerMsg>,
+    held: &mut Held,
+    viewed: &AtomicBool,
+    emit: &dyn Fn(WorkerEvent),
+) -> WaitOutcome {
+    emit(WorkerEvent::Status("host offline, waiting for the link".to_string()));
+    loop {
+        match cmd_rx.recv_timeout(WORKER_TICK) {
+            Ok(msg) => {
+                if let Some(outcome) = hold(msg, held) {
+                    return outcome;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return WaitOutcome::Shutdown,
+        }
+        if endpoint.link_up() && viewed.load(Ordering::Acquire) {
+            return WaitOutcome::Continue;
         }
     }
 }
@@ -2607,6 +2662,7 @@ mod tests {
             ingress_bytes: Arc::new(AtomicUsize::new(0)),
             ingress_bound: 64,
             queued_bytes: Arc::new(QueuedBytes::new()),
+            viewed: Arc::new(AtomicBool::new(true)),
             worker_handle: None,
             _endpoint: PhantomData,
         };
@@ -3044,6 +3100,7 @@ mod tests {
             &mut quit,
             &mut outstanding,
             first_attach_deadline,
+            &AtomicBool::new(true),
             &|_e| {},
         );
 
@@ -3086,6 +3143,98 @@ mod tests {
         }
     }
 
+    /// A voyage dial that answers `LinkDown`, with a flag standing in for the
+    /// host's link gate.
+    struct LinkDownEndpoint {
+        link_up: Arc<AtomicBool>,
+        voyage_dials: Arc<AtomicUsize>,
+    }
+    impl Endpoint for LinkDownEndpoint {
+        type Client = ScriptedReadyClient;
+        type Process = TestProcess;
+
+        fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            self.voyage_dials.fetch_add(1, Ordering::AcqRel);
+            Err(crate::transport::TransportError::LinkDown)
+        }
+        fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            unreachable!("converge_on_ready never reconnects the supervisor lane itself")
+        }
+        fn challenge(
+            &self,
+            _conn: &Self::Client,
+            _exchange: &mut dyn crate::exchange::IdentityExchange,
+            _deadline: Instant,
+        ) -> ChallengeOutcome<Self::Process> {
+            unreachable!("converge_on_ready never challenges")
+        }
+        fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
+            unreachable!("converge_on_ready never authenticates")
+        }
+        fn link_up(&self) -> bool {
+            self.link_up.load(Ordering::Acquire)
+        }
+    }
+
+    /// A worker whose dial answers `LinkDown` pauses after that one dial:
+    /// no further dial while the link is down, none while it is up but the
+    /// client is not viewed, one within a few ticks of both holding, and a
+    /// `Resize` read during the pause is kept for the next attach.
+    #[test]
+    fn a_link_down_dial_pauses_until_the_link_is_up_and_the_client_is_viewed() {
+        let v = "11111111-1111-1111-1111-111111111111";
+        let ready = SupervisorReply::StatusOk { pid: 1, created: 1, voyage: Some(v.to_string()), leg: Some(1), phase: SupervisorPhase::Ready };
+        let conn = ScriptedReadyClient::new((0..60).map(|_| ready.clone()).collect());
+        let link_up = Arc::new(AtomicBool::new(false));
+        let voyage_dials = Arc::new(AtomicUsize::new(0));
+        let ep = LinkDownEndpoint { link_up: Arc::clone(&link_up), voyage_dials: Arc::clone(&voyage_dials) };
+        let viewed = Arc::new(AtomicBool::new(false));
+
+        let (msg_tx, cmd_rx) = mpsc::channel::<WorkerMsg>();
+        let worker_viewed = Arc::clone(&viewed);
+        let worker = thread::spawn(move || {
+            let mut reconnect = ReconnectState::new();
+            let mut held = Held { quit: None, resize: None, discarded: Arc::new(AtomicUsize::new(0)) };
+            let mut quit = QuitDispatcher::new();
+            let mut outstanding = OutstandingSlot::new();
+            let outcome = converge_on_ready::<LinkDownEndpoint>(
+                &ep,
+                conn,
+                FrameReader::new(),
+                "sot-capsule-row-r4d",
+                &cmd_rx,
+                &mut reconnect,
+                &mut held,
+                &mut quit,
+                &mut outstanding,
+                None,
+                &worker_viewed,
+                &|_e| {},
+            );
+            (matches!(outcome, ReadyOutcome::Shutdown), held.resize)
+        });
+
+        thread::sleep(Duration::from_millis(2000));
+        assert_eq!(voyage_dials.load(Ordering::Acquire), 1, "link down: one dial, then paused");
+        msg_tx.send(WorkerMsg::Resize(101, 41)).unwrap();
+
+        link_up.store(true, Ordering::Release);
+        thread::sleep(Duration::from_millis(2000));
+        assert_eq!(voyage_dials.load(Ordering::Acquire), 1, "link up but not viewed: still paused");
+
+        viewed.store(true, Ordering::Release);
+        let resumed = Instant::now();
+        while voyage_dials.load(Ordering::Acquire) < 2 && resumed.elapsed() < Duration::from_millis(300) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(voyage_dials.load(Ordering::Acquire) >= 2, "link up and viewed: the next dial within 300 ms");
+
+        msg_tx.send(WorkerMsg::Shutdown).unwrap();
+        let (shut_down, resize) = worker.join().unwrap();
+        assert!(shut_down);
+        assert_eq!(resize, Some((101, 41)), "a Resize read while paused is the size of the next attach");
+    }
+
     /// ADR 0043 decision 28: a failed voyage dial waits the doubling backoff
     /// even before the row's first attach (over an ssh lane each dial is a
     /// login), so 2 s of `Ready` + `Unreachable` holds at most 4 dials
@@ -3117,6 +3266,7 @@ mod tests {
             &mut quit,
             &mut outstanding,
             None,
+            &AtomicBool::new(true),
             &|_e| {},
         );
         stopper.join().unwrap();

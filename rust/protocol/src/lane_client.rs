@@ -495,6 +495,14 @@ impl Endpoint for DaemonLaneEndpoint {
     fn authenticate_server(&self, conn: &Self::Client) -> PeerAuthOutcome {
         PeerAuthOutcome::Authenticated(conn.peer)
     }
+
+    /// The host's link gate for an ssh dial; every other dial is local.
+    fn link_up(&self) -> bool {
+        match &self.dial {
+            LaneDial::Ssh(_, gate) => gate.is_up(),
+            _ => true,
+        }
+    }
 }
 
 /// The standard error payload `crate::ops::LaneConnectReq`'s own doc

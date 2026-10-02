@@ -158,6 +158,13 @@ pub trait Endpoint {
     /// identity — no wire I/O, deliberately weaker than [`Self::challenge`]
     /// (see either concrete module's own `authenticate_server` doc).
     fn authenticate_server(&self, conn: &Self::Client) -> PeerAuthOutcome;
+    /// Whether a dial through this endpoint can start at all right now.
+    /// An endpoint reached over a link another component watches (an ssh
+    /// lane) reports that link here, so a worker pauses instead of dialing
+    /// into it. Local endpoints have no such link and are always up.
+    fn link_up(&self) -> bool {
+        true
+    }
 }
 
 /// L1-unix LU3b: the endpoint a process speaks on the platform it runs

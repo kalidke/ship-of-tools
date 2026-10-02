@@ -10431,6 +10431,7 @@ impl State {
                     .map(|s| s.elapsed().as_millis() as u64)
                     .unwrap_or(0);
                 tracing::info!(since_request_ms, "session pane: warm capsule client reused");
+                c.set_viewed(true);
                 self.pane_attach_term = Some(c);
                 self.pane_dial_error = None;
                 self.pane_hold = None;
@@ -10715,6 +10716,9 @@ impl State {
             .get(&key.0)
             .map(|l| l.iter().filter(|w| !w.is_inert_anchor()).count())
             .unwrap_or(1);
+        // A parked client's worker stays alive but must not dial after an
+        // outage; it resumes when the row is viewed again.
+        client.set_viewed(false);
         shutdown_detached(self.warm_attach.park(key, client, bound));
     }
 
@@ -13292,7 +13296,12 @@ impl State {
                         // transport), so it needs no help from this daemon
                         // reconnect handler and re-firing would only be a
                         // redundant round trip against a row already
-                        // correctly attached.
+                        // correctly attached. That episode is gated by this
+                        // host's link gate (written only by the transport):
+                        // while the link is down the client dials nothing,
+                        // and once this very Connected has opened the gate
+                        // the viewed client resumes within one worker tick,
+                        // a parked one when it is next viewed.
                         //
                         // SHOULD-FIX (Codex review, lane B5 discharge):
                         // also skipped when this row already carries a

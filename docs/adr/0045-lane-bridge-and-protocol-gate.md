@@ -203,6 +203,15 @@ migration mechanism, not two.
     lengthens the transfer. Invariant: a slow or interrupted link is
     never mistaken for a dead row, and recording never blocks on either.
 
+    **AMENDED 2026-10-01, no lane dials while the link is down.** Over
+    an ssh lane every dial is a login, so "the next dial is
+    `Unreachable` → retry … for as long as the outage lasts" no longer
+    holds for a down link: while the host's link is down no lane dials
+    (`LinkDown`, decision 4), the viewed pane resumes within one worker
+    tick of the transport's hello reply, and a parked (warm) client
+    resumes when it is next viewed. Other outages (the daemon answered
+    `Unreachable`) are retried as before, on the doubling backoff.
+
 ## What this deletes
 
 `pair_verdict`, `check_pair`, `PAIR_PROBE_BOUND`; build-string equality
