@@ -53,9 +53,9 @@ pub struct Cli {
     /// is still too small or shrink it to fit more on screen.
     pub scale: f32,
     /// Which mode the chrome opens in. Mostly useful for the `--capture`
-    /// path, where we can't inject `m`/`f` keystrokes mid-render. Accepts
-    /// `files` or `modules`; defaults to `files`.
-    pub start_mode: String,
+    /// path, where we can't inject `m`/`f` keystrokes mid-render.
+    /// files|modules|sessions|hosts; `None` resumes the persisted last mode.
+    pub start_mode: Option<String>,
     /// Initial cursor row in the TreeView, applied as soon as the first
     /// `tree.root` response lands. Like `--start-mode`, this is for the
     /// `--capture` path where we can't inject arrow keys. Out-of-range
@@ -184,6 +184,47 @@ pub struct Cli {
     pub relaunched: bool,
 }
 
+/// `sot --help` text.
+const HELP: &str = r#"
+Usage: sot [OPTIONS]
+
+Connection:
+  --dial <host>=<endpoint>  one connection (repeatable); endpoint is
+                            unix:<path> / pipe:<path> / ssh:<target>[/<host>]
+                            (what the launcher renders from
+                            `sotd topology plan --self <host>`)
+  --socket <path>       connect over a unix socket / named pipe
+  --token <token>       app-level auth token (must match the backend)
+  (--socket overrides the "local" connection; no connection flag at all is
+   offline sample mode with demo data — a remote box is `--dial
+   local=ssh:<target>`)
+
+Status:
+  --update-status       how far this box's own self-update has got
+                        (staged/prepared/armed) and what to do next; prints
+                        and exits without touching the pipeline
+
+Display:
+  --scale <f>           UI scale factor
+  --font-scale <f>      font scale (0.5..3.0; overrides persisted/default)
+  --contrast-mode       high-contrast rendering
+  --start-fullscreen    start borderless-fullscreen on the active monitor
+  --start-maximized     maximize the focused pane (as Alt+=); see --start-focus
+  --start-focus <p>     nav|preview|llm|repl, the pane focused at start (default nav)
+  --start-monitor       open the server-monitor drawer (as Ctrl+M)
+  --start-mode <m>      files|modules|sessions|hosts
+  --start-path <p>      cursor a path         --start-help        open the Help drawer
+
+Automation / dev (screenshots, demos):
+  --capture <png> [--capture-delay-ms <ms>] [--capture-cycle] [--capture-preview]
+  --start-scalebar      scalebar overlay on (ADR 0034; needs a scaled raster)
+  --demo-sessions <a:working,b:idle,...>      --demo-repl-eval <file>
+  --start-help-peek     show the temporary pane overlay at startup
+  --ephemeral           don't persist state   --relaunched        (set by the supervisor)
+
+Ctrl+? shows pane actions briefly; press again for the Help drawer.
+F1 opens Help directly. Focused pane borders show the active shortcuts."#;
+
 impl Cli {
     pub fn parse() -> Self {
         let mut dial: Vec<String> = Vec::new();
@@ -191,7 +232,7 @@ impl Cli {
         let mut token: Option<String> = None;
         let mut capture: Option<PathBuf> = None;
         let mut scale: f32 = 1.0;
-        let mut start_mode: String = "files".to_string();
+        let mut start_mode: Option<String> = None;
         let mut start_selected: Option<usize> = None;
         let mut auto_expand = false;
         let mut demo_function_methods: Option<(String, String)> = None;
@@ -232,42 +273,7 @@ impl Cli {
                 // startup log. Print usage like a CLI and exit.
                 "--help" | "-h" => {
                     println!("{}", sot_protocol::version_line("sot"));
-                    println!(r#"
-Usage: sot [OPTIONS]
-
-Connection:
-  --dial <host>=<endpoint>  one connection (repeatable); endpoint is
-                            unix:<path> / pipe:<path> / ssh:<target>[/<host>]
-                            (what the launcher renders from
-                            `sotd topology plan --self <host>`)
-  --socket <path>       connect over a unix socket / named pipe
-  --token <token>       app-level auth token (must match the backend)
-  (--socket overrides the "local" connection; no connection flag at all is
-   offline sample mode with demo data — a remote box is `--dial
-   local=ssh:<target>`)
-
-Status:
-  --update-status       how far this box's own self-update has got
-                        (staged/prepared/armed) and what to do next; prints
-                        and exits without touching the pipeline
-
-Display:
-  --scale <f>           UI scale factor
-  --font-scale <f>      font scale (0.5..3.0; overrides persisted/default)
-  --contrast-mode       high-contrast rendering
-  --start-fullscreen    start fullscreen      --start-maximized   start maximized
-  --start-monitor <n>   pick monitor          --start-mode <m>    files|modules|sessions|hosts
-  --start-path <p>      cursor a path         --start-help        open the Help drawer
-
-Automation / dev (screenshots, demos):
-  --capture <png> [--capture-delay-ms <ms>] [--capture-cycle] [--capture-preview]
-  --start-scalebar      scalebar overlay on (ADR 0034; needs a scaled raster)
-  --demo-sessions <a:working,b:idle,...>      --demo-repl-eval <file>
-  --start-help-peek     show the temporary pane overlay at startup
-  --ephemeral           don't persist state   --relaunched        (set by the supervisor)
-
-Ctrl+? shows pane actions briefly; press again for the Help drawer.
-F1 opens Help directly. Focused pane borders show the active shortcuts."#);
+                    println!("{HELP}");
                     std::process::exit(0);
                 }
                 "--dial" => {
@@ -302,7 +308,7 @@ F1 opens Help directly. Focused pane borders show the active shortcuts."#);
                 "--start-mode" => {
                     if let Some(v) = args.next() {
                         if matches!(v.as_str(), "files" | "modules" | "sessions" | "hosts") {
-                            start_mode = v;
+                            start_mode = Some(v);
                         }
                     }
                 }
@@ -473,7 +479,14 @@ F1 opens Help directly. Focused pane borders show the active shortcuts."#);
 
 #[cfg(test)]
 mod tests {
-    use super::parse_demo_session;
+    use super::{parse_demo_session, HELP};
+
+    #[test]
+    fn help_describes_the_start_flags() {
+        assert!(HELP.contains("--start-focus <p>"));
+        assert!(HELP.contains("maximize the focused pane"));
+        assert!(!HELP.contains("--start-monitor <"));
+    }
 
     #[test]
     fn demo_session_parses_optional_state() {

@@ -142,7 +142,8 @@ pub enum IncomingEvt {
     /// `Disconnected`, this is a hard, self-diagnosing skew: the chrome shows a
     /// persistent blocking full-pane "update needed" message carrying both
     /// sides' versions + protocols + the dev fix hint. `message` is the
-    /// pre-formatted multi-line body to display.
+    /// pre-formatted multi-line body to display; its first line is also the
+    /// agent pane's state ("frontend out of date" / "daemon out of date").
     ProtocolMismatch {
         message: String,
     },
@@ -1668,7 +1669,7 @@ pub fn spawn(
                 Err(e) => {
                     tracing::warn!(
                         %host,
-                        error = %e,
+                        error = %format_args!("{e:#}"),
                         backoff_ms,
                         "transport task ended; reconnecting"
                     );
@@ -4397,14 +4398,18 @@ pub(crate) fn protocol_mismatch_message(payload: &serde_json::Value, err_msg: &s
             v.to_string()
         }
     };
+    let theirs = get_u32("backend_protocol");
+    let ours = u64::from(sot_protocol::PROTOCOL_VERSION);
+    let behind = if theirs > ours { "frontend" } else { "daemon" };
     format!(
-        "Update needed — FE/BE protocol mismatch\n\n\
+        "{behind} out of date — daemon {backend_version} speaks protocol {theirs}, this frontend {} speaks {ours}\n\n\
          backend:  {}  (protocol {})\n\
          frontend: {}  (protocol {})\n\n\
          dev: git pull + rebuild + relaunch · see docs/adr/0030\n\n\
          ({err_msg})",
+        sot_protocol::app_version(),
         backend_version,
-        get_u32("backend_protocol"),
+        theirs,
         sot_protocol::app_version(),
         sot_protocol::PROTOCOL_VERSION,
     )
@@ -5216,4 +5221,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn protocol_mismatch_headline_names_the_side_that_is_behind() {
+        let headline = |theirs: u32, version: &str| {
+            let payload = serde_json::json!({
+                "code": "protocol_mismatch",
+                "backend_protocol": theirs,
+                "backend_version": version,
+            });
+            let msg = super::protocol_mismatch_message(&payload, "protocol mismatch");
+            msg.lines().next().unwrap().to_string()
+        };
+        let ahead = sot_protocol::PROTOCOL_VERSION + 1;
+        let first = headline(ahead, "9.9.9");
+        assert!(first.starts_with("frontend out of date"), "{first}");
+        assert!(first.contains(&format!("protocol {ahead}")), "{first}");
+        let first = headline(sot_protocol::PROTOCOL_VERSION - 1, "0.5.9");
+        assert!(first.starts_with("daemon out of date"), "{first}");
+    }
 }

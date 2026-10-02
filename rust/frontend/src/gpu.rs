@@ -96,6 +96,18 @@ impl Mode {
     }
 }
 
+/// The mode a launch opens in: `--start-mode` if given, else the persisted
+/// `last_mode` (B5), else Files. A `harness` run ignores the persisted mode:
+/// harness runs must be deterministic, as for the workspace restore.
+fn initial_mode(cli: Option<&str>, persisted: Option<&str>, harness: bool) -> Mode {
+    match cli.or(persisted.filter(|_| !harness)) {
+        Some("modules") => Mode::Modules,
+        Some("sessions") => Mode::Sessions,
+        Some("hosts") => Mode::Hosts,
+        _ => Mode::Files,
+    }
+}
+
 /// Which of the four quadrant panes has keyboard focus. Spatial moves
 /// via Ctrl+Arrow. Tab is deliberately not a focus switcher — it must
 /// reach the terminal panes for shell/REPL completion. Status-line and
@@ -120,29 +132,61 @@ enum PaneFocus {
 }
 
 impl PaneFocus {
-    /// Spatial neighbour of `self` in `dir`. Updated for the 3-column
-    /// layout (ADR 0014): nav | preview | llm horizontally, REPL below
-    /// any column when the drawer is open. Movement off the layout (or
-    /// into a hidden drawer) returns `self` — the caller handles the
-    /// drawer-closed skip-Repl rule in its Ctrl+Arrow path.
-    fn move_in(self, dir: SpatialDir) -> Self {
-        use PaneFocus::*;
+    fn slot(self) -> crate::settings::Slot {
+        use crate::settings::Slot;
+        match self {
+            PaneFocus::NavTree => Slot::Nav,
+            PaneFocus::Preview => Slot::Preview,
+            PaneFocus::Llm => Slot::Llm,
+            PaneFocus::Repl => Slot::Repl,
+        }
+    }
+
+    fn from_slot(slot: crate::settings::Slot) -> Self {
+        use crate::settings::Slot;
+        match slot {
+            Slot::Nav => PaneFocus::NavTree,
+            Slot::Preview => PaneFocus::Preview,
+            Slot::Llm => PaneFocus::Llm,
+            Slot::Repl => PaneFocus::Repl,
+        }
+    }
+
+    /// Spatial neighbour of `self` in `dir`, walking only the panes the
+    /// layout shows: `columns` is the preset's column order (ADR 0014) and
+    /// `drawer` is the slot the open drawer shows (`None` when closed or the
+    /// preset has none). Left/Right step along `columns` and stop at its
+    /// ends; Down enters the drawer; Up from a column stays. The drawer pane
+    /// is not a column: Up leaves it for the preview (else the first
+    /// column), Left/Right for the first/last column. A `self` the layout
+    /// hides lands on the first column.
+    fn move_in(
+        self,
+        dir: SpatialDir,
+        columns: &[crate::settings::Slot],
+        drawer: Option<crate::settings::Slot>,
+    ) -> Self {
+        use crate::settings::Slot;
         use SpatialDir::*;
-        match (self, dir) {
-            // Horizontal walk through the column row.
-            (NavTree, Right) => Preview,
-            (Preview, Right) => Llm,
-            (Llm, Left) => Preview,
-            (Preview, Left) => NavTree,
-            // Drawer entry from any column row.
-            (NavTree, Down) | (Preview, Down) | (Llm, Down) => Repl,
-            // Drawer exit maps to the column above the direction pressed:
-            // the drawer spans all three columns, so Left -> nav, Up ->
-            // preview (middle, closest to the eyes), Right -> llm.
-            (Repl, Up) => Preview,
-            (Repl, Left) => NavTree,
-            (Repl, Right) => Llm,
-            _ => self,
+        let (Some(&first), Some(&last)) = (columns.first(), columns.last()) else {
+            return self;
+        };
+        let Some(i) = columns.iter().position(|&c| c == self.slot()) else {
+            if drawer != Some(self.slot()) {
+                return Self::from_slot(first);
+            }
+            return Self::from_slot(match dir {
+                Up if columns.contains(&Slot::Preview) => Slot::Preview,
+                Right => last,
+                Down => return self,
+                _ => first,
+            });
+        };
+        match dir {
+            Left => Self::from_slot(columns[i.saturating_sub(1)]),
+            Right => Self::from_slot(columns[(i + 1).min(columns.len() - 1)]),
+            Down => drawer.map_or(self, Self::from_slot),
+            Up => self,
         }
     }
 }
@@ -231,6 +275,17 @@ struct TableBufferEntry {
     rendered: String,
     buffer: cosmic_text::Buffer,
     natural_w_px: f32,
+}
+
+/// Bottom of the last whole `pitch`-tall row of a buffer whose first row's
+/// top is at `top`, clipped at `limit`: a table reaching the pane bottom stops
+/// at a row boundary instead of slicing one. `top` (nothing drawn) when not
+/// even the first row fits; `limit` for a degenerate pitch.
+fn whole_row_bottom(top: f32, pitch: f32, limit: f32) -> f32 {
+    if pitch <= 0.0 {
+        return limit;
+    }
+    top + ((limit - top + 0.5) / pitch).floor().max(0.0) * pitch
 }
 
 /// One cached MathJax-rendered math span. SVG bytes survive across
@@ -3891,6 +3946,27 @@ fn pane_terminal_reason_text(shows_reason: bool, client_status: Option<&str>) ->
     shows_reason.then(|| client_status.unwrap_or_default().to_string())
 }
 
+/// The agent pane's reason line. A daemon's protocol refusal leads: it is
+/// the root cause of whatever the retained client or the dial reports.
+/// Then the client's own reason, then the row's dial error.
+fn pane_reason_line(
+    mismatch: Option<&str>,
+    client: Option<String>,
+    dial_error: Option<&str>,
+) -> Option<String> {
+    mismatch
+        .map(str::to_owned)
+        .or(client)
+        .or_else(|| dial_error.map(str::to_owned))
+}
+
+/// The agent pane's overlay, one row each, top down: why it is not live,
+/// then the discarded-input count. Separate rows, so a long reason never
+/// truncates the count off the pane and the count never hides the reason.
+fn pane_overlay_lines(reason: Option<String>, notice: Option<String>) -> Vec<String> {
+    reason.into_iter().chain(notice).collect()
+}
+
 /// ADR 0042 slice L1b fix 2: how many bytes of an incoming chunk fit in
 /// `queue_pane_pending_input`'s buffer, given it already holds
 /// `buffered_len` bytes and the whole buffer is capped at `cap` — pulled
@@ -3900,6 +3976,103 @@ fn pane_terminal_reason_text(shows_reason: bool, client_status: Option<&str>) ->
 fn pending_input_room(buffered_len: usize, incoming_len: usize, cap: usize) -> usize {
     let room = cap.saturating_sub(buffered_len);
     incoming_len.min(room)
+}
+
+/// Session-pane input held while `pane_feed == PaneFeed::Pending` (ADR 0042
+/// L1b fix 2), and the count a disconnect threw away (never replayed).
+#[derive(Default)]
+struct PanePendingInput {
+    /// For the attach to flush; capped at `TAKE_QUEUE_CAP`.
+    bytes: Vec<u8>,
+    /// Inputs in `bytes`, so a discard can say how many.
+    inputs: usize,
+    /// Inputs discarded this outage; > 0 paints the notice.
+    discarded: usize,
+}
+
+impl PanePendingInput {
+    fn queue(&mut self, b: &[u8]) {
+        let cap = sot_log::fe_client::TAKE_QUEUE_CAP;
+        let take = pending_input_room(self.bytes.len(), b.len(), cap);
+        self.bytes.extend_from_slice(&b[..take]);
+        self.inputs += 1;
+    }
+
+    fn discard(&mut self) {
+        self.discarded += self.inputs;
+        self.bytes.clear();
+        self.inputs = 0;
+    }
+
+    /// Hands the bytes to the attach; also ends the notice.
+    fn take(&mut self) -> Vec<u8> {
+        std::mem::take(self).bytes
+    }
+
+    /// Shown until the pane next attaches (`take`), so it outlives the outage.
+    fn notice(&self) -> Option<String> {
+        let n = self.discarded;
+        match n {
+            0 => None,
+            1 => Some("1 keystroke discarded during an outage, not sent".to_string()),
+            _ => Some(format!("{n} keystrokes discarded during an outage, not sent")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod pane_input_tests {
+    use super::*;
+
+    #[test]
+    fn pane_input_discard_counts_and_never_flushes() {
+        let mut q = PanePendingInput::default();
+        q.queue(b"a");
+        q.queue(b"b");
+        q.queue(b"c");
+        q.discard();
+        assert_eq!(
+            q.notice().as_deref(),
+            Some("3 keystrokes discarded during an outage, not sent")
+        );
+        assert!(q.take().is_empty());
+    }
+
+    #[test]
+    fn pane_input_take_ends_the_outage() {
+        let mut q = PanePendingInput::default();
+        q.queue(b"a");
+        q.discard();
+        q.queue(b"x");
+        assert_eq!(q.take(), b"x");
+        assert_eq!(q.notice(), None);
+    }
+
+    #[test]
+    fn pane_overlay_keeps_the_count_beside_any_reason() {
+        let n = || Some("2 keystrokes discarded during an outage, not sent".to_string());
+        assert_eq!(
+            pane_overlay_lines(Some("dial failed".to_string()), n()),
+            vec!["dial failed".to_string(), n().unwrap()]
+        );
+        assert_eq!(pane_overlay_lines(None, n()), vec![n().unwrap()]);
+        assert_eq!(
+            pane_overlay_lines(Some("dial failed".to_string()), None),
+            vec!["dial failed".to_string()]
+        );
+        assert!(pane_overlay_lines(None, None).is_empty());
+    }
+
+    #[test]
+    fn pane_input_one_keystroke_is_singular() {
+        let mut q = PanePendingInput::default();
+        q.queue(b"a");
+        q.discard();
+        assert_eq!(
+            q.notice().as_deref(),
+            Some("1 keystroke discarded during an outage, not sent")
+        );
+    }
 }
 
 // ADR 0045 decision 1 (Codex review, lane B5 discharge); reshaped by C3 as
@@ -5146,8 +5319,11 @@ struct State {
     /// buffered for the DEPARTING row must never reach whatever the new
     /// one turns out to be. Capped at `sot_log::fe_client::TAKE_QUEUE_CAP`
     /// (8 KiB, the same bound the take-transaction queue uses) — a
-    /// runaway paste while waiting must not grow unbounded.
-    pane_pending_input: Vec<u8>,
+    /// runaway paste while waiting must not grow unbounded. Discarded
+    /// (never replayed) when the pane's host disconnects, and input typed
+    /// while that host is down is discarded too; the count is shown in the
+    /// pane until the next attach takes the buffer.
+    pane_input: PanePendingInput,
     /// Last `(cols, rows)` the local terminal's PTY was sized to. `None`
     /// until the drawer rect is first observed; drives resize-on-change
     /// (mirrors `pty_size` for the LLM pane).
@@ -6460,25 +6636,11 @@ impl State {
             pending_deleted_node_id: None,
             notify_sticky_until: None,
             tree: TreeView::new(),
-            mode: {
-                // CLI override takes precedence; otherwise resume from
-                // the persisted last_mode (B5). Default Files.
-                let persisted = crate::state_persistence::load();
-                if cli.start_mode == "modules" {
-                    Mode::Modules
-                } else if cli.start_mode == "sessions" {
-                    Mode::Sessions
-                } else if cli.start_mode == "files" {
-                    Mode::Files
-                } else {
-                    match persisted.last_mode.as_deref() {
-                        Some("modules") => Mode::Modules,
-                        Some("sessions") => Mode::Sessions,
-                        Some("hosts") => Mode::Hosts,
-                        _ => Mode::Files,
-                    }
-                }
-            },
+            mode: initial_mode(
+                cli.start_mode.as_deref(),
+                persisted_geom.last_mode.as_deref(),
+                harness,
+            ),
             concept_target_fired: None,
             last_cursor_pos: None,
             cursor_moved_at: None,
@@ -6689,7 +6851,7 @@ impl State {
             pane_attach_episode_warnings: 0,
             pane_attach_presented: false,
             pane_feed: PaneFeed::Pending,
-            pane_pending_input: Vec::new(),
+            pane_input: PanePendingInput::default(),
             term_size: None,
             repo_dir,
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
@@ -10109,7 +10271,7 @@ impl State {
         // ADR 0042 slice L1b fix 2: a switch always invalidates whatever
         // was buffered for the DEPARTING target — it must never leak
         // into the row we're about to select.
-        self.pane_pending_input.clear();
+        self.pane_input = PanePendingInput::default();
         // ADR 0042 shrink round (rule A): the frontend ALWAYS asks the
         // daemon first — no more cache-hit fast path that attached
         // straight from a cached `workspace_runtime` entry. That fast
@@ -10347,18 +10509,26 @@ impl State {
     /// it's allowed to go). Excess bytes are silently dropped, matching
     /// the take queue's own cap behavior.
     fn queue_pane_pending_input(&mut self, bytes: &[u8]) {
-        let cap = sot_log::fe_client::TAKE_QUEUE_CAP;
-        let take = pending_input_room(self.pane_pending_input.len(), bytes.len(), cap);
-        self.pane_pending_input.extend_from_slice(&bytes[..take]);
+        self.pane_input.queue(bytes);
+        if self.pane_host_down() {
+            self.pane_input.discard();
+        }
     }
 
-    /// Flushes `pane_pending_input` through the capsule client's own
+    /// True while the session pane's host is known to be disconnected.
+    fn pane_host_down(&self) -> bool {
+        self.bl_pane_target
+            .as_ref()
+            .is_some_and(|(h, _)| self.host_connected.get(h) == Some(&false))
+    }
+
+    /// Flushes `pane_input` through the capsule client's own
     /// `send_input` — call once `pane_feed` resolves to `Capsule`.
     fn flush_pane_pending_input_to_capsule(&mut self) {
-        if self.pane_pending_input.is_empty() {
+        let bytes = self.pane_input.take();
+        if bytes.is_empty() {
             return;
         }
-        let bytes = std::mem::take(&mut self.pane_pending_input);
         if let Some(t) = self.pane_attach_term.as_mut() {
             t.send_input(&bytes);
         }
@@ -10367,7 +10537,7 @@ impl State {
     /// ADR 0042 slice L1b fix 2/3, narrowed post-notmux (every row is a
     /// capsule; there is no tmux fallback anymore): routes session-pane
     /// input bytes to the capsule client's own `send_input`, or queues
-    /// in `pane_pending_input` while resolution is still `Pending`. The
+    /// in `pane_input` while resolution is still `Pending`. The
     /// ONE routing point every input source (typed keystrokes, LLM-pane
     /// paste, ROI paste) shares, so a future source only has to call
     /// this rather than re-derive the branch.
@@ -13171,6 +13341,13 @@ impl State {
                     } // if event_host == self.active_host
                 }
                 crate::transport::IncomingEvt::Disconnected { reason } => {
+                    if self
+                        .bl_pane_target
+                        .as_ref()
+                        .is_some_and(|(h, _)| *h == event_host)
+                    {
+                        self.pane_input.discard();
+                    }
                     if event_host == self.active_host {
                         self.status = format!("disconnected · {reason}");
                     } else {
@@ -15097,7 +15274,7 @@ impl State {
                                     .unwrap_or(false)
                             {
                                 self.pane_attach_term = None;
-                                self.pane_pending_input.clear();
+                                self.pane_input = PanePendingInput::default();
                                 self.bl_pane_target = None;
                                 self.pane_feed = PaneFeed::Pending;
                             }
@@ -16417,16 +16594,29 @@ impl State {
         // own explanation to whatever last touched the status bar.
         let pane_attach_status = self.pane_attach_term.as_ref().map(|t| t.status_line());
         let pane_attach_is_attached = pane_attach_status == Some("attached");
-        let pane_terminal_reason: Option<String> = pane_terminal_reason_text(
-            pane_shows_terminal_reason(pane_attach_has_client, pane_attach_is_attached),
-            pane_attach_status,
-        )
+        // A daemon that refused this frontend's protocol is the root cause of
+        // whatever the client or the dial reports, so its line leads.
+        let pane_host = self
+            .bl_pane_target
+            .as_ref()
+            .map(|(h, _)| h)
+            .unwrap_or(&self.active_host);
+        let pane_terminal_reason: Option<String> = pane_reason_line(
+            self.protocol_mismatch
+                .get(pane_host)
+                .and_then(|m| m.lines().next()),
+            pane_terminal_reason_text(
+                pane_shows_terminal_reason(pane_attach_has_client, pane_attach_is_attached),
+                pane_attach_status,
+            ),
         // SHOULD-FIX (Codex review, lane B5 discharge): no live client at
         // all (a dial that never got to attach in the first place) still
         // needs a persistent, non-clobberable reason when this row's
         // host has a known-broken dial — same priority tier as a live
         // client's own failure.
-        .or_else(|| self.pane_dial_error.clone());
+            self.pane_dial_error.as_deref(),
+        );
+        let pane_overlay = pane_overlay_lines(pane_terminal_reason, self.pane_input.notice());
         // Switch-latency Phase 1, item 3: the acceptance metric itself
         // (keypress → current screen visible), not merely the client's
         // own parser being ready (`pump_pane_attach_term`'s "checkpoint
@@ -16825,12 +17015,7 @@ impl State {
                 // `cols >= 2 && rows >= 2` similarly keeps the BL
                 // backend safe). Toggle: Ctrl+z.
                 let maximize_slot = if maximized {
-                    Some(match focus {
-                        PaneFocus::NavTree => crate::settings::Slot::Nav,
-                        PaneFocus::Preview => crate::settings::Slot::Preview,
-                        PaneFocus::Llm => crate::settings::Slot::Llm,
-                        PaneFocus::Repl => crate::settings::Slot::Repl,
-                    })
+                    Some(focus.slot())
                 } else {
                     None
                 };
@@ -17447,21 +17632,22 @@ impl State {
                 // exactly.
                 paint_terminal(buf, llm_rect, &pty_screen);
                 // ADR 0030 §8 "Where it is shown", widened by ADR 0045
-                // decision 1 (Codex review): overlays ONE persistent
-                // reason line whenever `pane_terminal_reason` is set —
+                // decision 1 (Codex review): overlays the persistent reason
+                // line, and under it the discarded-input count, whenever
+                // either is set —
                 // whatever `pty_screen` actually painted underneath,
                 // including a checkpointed client's own now-STALE frozen
                 // content (a live failure/retry must never hide behind
                 // real-but-old output), not only the dead-uncheckpointed
                 // fallback to the (usually blank, unrelated) tmux screen
                 // this originally covered.
-                if let Some(reason) = pane_terminal_reason.as_deref() {
-                    if llm_rect.width > 2 {
+                if llm_rect.width > 2 {
+                    for (row, line) in pane_overlay.iter().enumerate().take(llm_rect.height as usize) {
                         write_title(
                             buf,
                             llm_rect.x + 1,
-                            llm_rect.y,
-                            reason,
+                            llm_rect.y + row as u16,
+                            line,
                             llm_rect.width - 2,
                             Style::default().fg(Color::Yellow),
                         );
@@ -18172,6 +18358,13 @@ impl State {
         // no inset arithmetic of its own.
         let scalebar_draw = self.build_scalebar(png_rect, image_rect);
 
+        // The preview text is laid out at its own line pitch, so the cell-grid
+        // bottom rarely lands on a line boundary; clip at the last whole line.
+        let whole_line_clip = |p: &MarkdownPreview, r: ScreenRect, scroll_px: f32| {
+            r.y + crate::text::EXTRA_TOP_PAD_PX
+                + p.whole_line_bottom(scroll_px, r.h - crate::text::EXTRA_TOP_PAD_PX)
+        };
+        let md_clip_bottom = whole_line_clip(&self.preview_md, md_rect, preview_scroll_px);
         let mut extras: Vec<crate::text::ExtraArea> = Vec::new();
         if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.scalebar_label.as_ref()) {
             extras.push(crate::text::ExtraArea {
@@ -18209,7 +18402,7 @@ impl State {
                 x: md_rect.x,
                 y: md_rect.y,
                 right: md_rect.x + md_rect.w,
-                bottom: md_rect.y + md_rect.h,
+                bottom: md_clip_bottom,
                 clip_left: None,
                 clip_top: None,
                 color: (220, 220, 220),
@@ -18223,7 +18416,7 @@ impl State {
                     x: concept_rect.x,
                     y: concept_rect.y,
                     right: concept_rect.x + concept_rect.w,
-                    bottom: concept_rect.y + concept_rect.h,
+                    bottom: whole_line_clip(pc, concept_rect, preview_scroll_px),
                     clip_left: None,
                     clip_top: None,
                     // Slight magenta tint so the annotation reads as the
@@ -18240,7 +18433,7 @@ impl State {
                     x: preview_rect.x,
                     y: preview_rect.y,
                     right: preview_rect.x + preview_rect.w,
-                    bottom: preview_rect.y + preview_rect.h,
+                    bottom: whole_line_clip(pe, preview_rect, preview_scroll_px),
                     clip_left: None,
                     clip_top: None,
                     // Warm gold tint so the user sees at a glance that
@@ -18260,7 +18453,7 @@ impl State {
                     x: preview_rect.x,
                     y: preview_rect.y,
                     right: preview_rect.x + preview_rect.w,
-                    bottom: preview_rect.y + preview_rect.h,
+                    bottom: whole_line_clip(pf, preview_rect, 0.0),
                     clip_left: None,
                     clip_top: None,
                     color: (240, 160, 150),
@@ -18311,9 +18504,14 @@ impl State {
                     // Bounds clip to the preview pane in BOTH axes so
                     // the table's natural-width overflow gets glyph-
                     // clipped at the pane right edge, and vertical
-                    // scroll past the pane edges is invisible.
+                    // scroll past the pane edges is invisible. The bottom
+                    // stops at the last whole row.
                     right: preview_rect.x + preview_rect.w,
-                    bottom: preview_rect.y + preview_rect.h,
+                    bottom: whole_row_bottom(
+                        rect.y,
+                        entry.buffer.metrics().line_height,
+                        preview_rect.y + preview_rect.h,
+                    ),
                     // Pin the bounds.left to the pane edge — the
                     // glyph origin (`x`) is shifted into negative
                     // territory by `md_table_scroll_px` and would
@@ -20572,19 +20770,21 @@ impl ApplicationHandler for App {
                         None
                     };
                     if let Some(dir) = dir {
-                        let next = state.focus.move_in(dir);
-                        // When the REPL drawer is closed, don't let
-                        // spatial Down land focus on the invisible Repl
-                        // slot. User must explicitly
-                        // summon the drawer (Primary+J) before it can take
-                        // focus. Same rule for the LLM pane while
-                        // wide-preview hides it — keystrokes must never
-                        // route to an invisible pty.
-                        if !(next == PaneFocus::Repl && !state.drawer.is_open())
-                            && !(next == PaneFocus::Llm && state.wide_preview)
-                        {
-                            state.focus = next;
-                        }
+                        // move_in walks only laid-out panes, so focus never
+                        // reaches an invisible pty.
+                        let preset = state.settings.resolve_preset(state.monitor_aspect);
+                        let columns = if state.wide_preview {
+                            preset.wide_preview().columns
+                        } else {
+                            preset.columns.clone()
+                        };
+                        // The slot redraw lays out in the drawer; Help borrows Repl's when the preset has none.
+                        let drawer = match state.drawer {
+                            DrawerContent::Closed => None,
+                            DrawerContent::Help => preset.drawer.or(Some(crate::settings::Slot::Repl)),
+                            _ => preset.drawer,
+                        };
+                        state.focus = state.focus.move_in(dir, &columns, drawer);
                         // Keymap-driven label (Ctrl+Arrow on Windows/Linux,
                         // Cmd+Arrow on macOS) instead of a hard-coded
                         // "Ctrl+" prefix, which used to print "Ctrl+Left"
@@ -22937,8 +23137,9 @@ fn build_repl_lines(
 // junction; cells to the right of `x` get the outer vertical run
 // unchanged.
 // `llm_left_vline`: x of the vertical divider that runs full height
-// (Llm's left edge) when the drawer is partially scoped. Other vlines
-// stop at the drawer line.
+// (Llm's left edge) when the drawer is partially scoped. It and every
+// vline right of it run full height; vlines left of it stop at the
+// drawer line.
 fn draw_wireframe(
     buf: &mut ratatui::buffer::Buffer,
     area: ratatui::layout::Rect,
@@ -22974,18 +23175,24 @@ fn draw_wireframe(
             buf.set_string(x, bot, "─", style);
         }
     }
+    // The drawer line runs to `hline_right_excl`; a vertical at `x` past
+    // that is not crossed by it and so is drawn on the hline rows too.
+    let hline_right_excl = drawer_x_end.map(|x| x + 1).unwrap_or(right);
+    let hline_reaches = |x: u16| x <= hline_right_excl;
+    let full_height = |x: u16| llm_left_vline.is_some_and(|lv| x >= lv);
     // Outer left/right vertical runs (skip the cell where an hline
     // crosses — junction handling fills it in below).
     for y in (top + 1)..bot {
         if !is_hline(y) {
             buf.set_string(left, y, "│", style);
+        }
+        if !is_hline(y) || !hline_reaches(right) {
             buf.set_string(right, y, "│", style);
         }
     }
     // Inner horizontal runs (drawer top). Optionally truncated at
     // `drawer_x_end` when the Llm column wants the right side full
     // height.
-    let hline_right_excl = drawer_x_end.map(|x| x + 1).unwrap_or(right);
     for &y in hlines {
         for x in (left + 1)..hline_right_excl {
             if !is_vline(x) {
@@ -22993,17 +23200,16 @@ fn draw_wireframe(
             }
         }
     }
-    // Inner vertical runs. The Llm-left vline runs full height; every
-    // other vline stops at the drawer line.
+    // Inner vertical runs. The Llm-left vline and every vline right of
+    // it run full height; the others stop at the drawer line.
     for &x in vlines {
-        let full_height = Some(x) == llm_left_vline;
-        let v_bot = if full_height {
+        let v_bot = if full_height(x) {
             bot.saturating_sub(1)
         } else {
             short_vline_bot_y
         };
         for y in (top + 1)..=v_bot {
-            if !is_hline(y) {
+            if !is_hline(y) || !hline_reaches(x) {
                 buf.set_string(x, y, "│", style);
             }
         }
@@ -23020,10 +23226,9 @@ fn draw_wireframe(
     }
     // Bottom-edge T-junctions for every vline that reaches the
     // outer bottom — i.e. when no drawer is open, OR when this vline
-    // is the Llm-left full-height divider running past the drawer.
+    // is a full-height divider running past the drawer.
     for &x in vlines {
-        let full_height = Some(x) == llm_left_vline;
-        let reaches_bot = hlines.is_empty() || full_height;
+        let reaches_bot = hlines.is_empty() || full_height(x);
         if reaches_bot {
             buf.set_string(x, bot, "┴", style);
         }
@@ -23038,8 +23243,10 @@ fn draw_wireframe(
             buf.set_string(right, y, "┤", style);
         }
         for &x in vlines {
-            let full_height = Some(x) == llm_left_vline;
-            if full_height {
+            if !hline_reaches(x) {
+                continue;
+            }
+            if full_height(x) {
                 // Hline approaches from the left only; vline runs
                 // top → bottom through this cell: ┤.
                 buf.set_string(x, y, "┤", style);
@@ -23905,6 +24112,94 @@ fn force_os_foreground(window: &winit::window::Window) -> bool {
 mod tests {
     use super::*;
     use sot_protocol::TreeNode;
+
+    #[test]
+    fn whole_row_bottom_stops_at_the_last_whole_row() {
+        assert_eq!(whole_row_bottom(100.0, 20.0, 175.0), 160.0);
+        assert_eq!(whole_row_bottom(100.0, 20.0, 180.0), 180.0);
+        assert_eq!(whole_row_bottom(100.0, 20.0, 179.6), 180.0);
+        assert_eq!(whole_row_bottom(100.0, 20.0, 115.0), 100.0);
+        assert_eq!(whole_row_bottom(40.0, 20.0, 175.0), 160.0);
+        assert_eq!(whole_row_bottom(100.0, 0.0, 175.0), 175.0);
+    }
+
+    #[test]
+    fn wireframe_right_edges_survive_a_partial_drawer() {
+        use crate::settings::{LayoutPreset, Slot};
+        use ratatui::{buffer::Buffer, layout::Rect};
+        let area = Rect::new(0, 0, 60, 20);
+        let paint = |p: &LayoutPreset| {
+            let geom = crate::layout::compute(area, p, true, None);
+            let mut buf = Buffer::empty(area);
+            draw_wireframe(
+                &mut buf,
+                area,
+                &geom.vlines,
+                &geom.hlines,
+                geom.drawer_x_end,
+                geom.llm_left_vline,
+                Style::default(),
+            );
+            (buf, geom)
+        };
+        // (a) the outer right edge is unbroken at the drawer line.
+        let (buf, geom) = paint(&LayoutPreset::default_ultrawide());
+        let y = geom.hlines[0];
+        assert_eq!(buf[(59, y)].symbol(), "│");
+        // (b) a divider right of the agent column runs full height.
+        let p = LayoutPreset {
+            columns: vec![Slot::Nav, Slot::Llm, Slot::Preview],
+            widths: vec![0.2, 0.4, 0.4],
+            drawer: Some(Slot::Repl),
+            drawer_height: 0.4,
+        };
+        let (buf, geom) = paint(&p);
+        let y = geom.hlines[0];
+        let x = geom.vlines[1];
+        assert_eq!(buf[(x, y)].symbol(), "│");
+        assert_eq!(buf[(x, y + 1)].symbol(), "│");
+        assert_eq!(buf[(x, 19)].symbol(), "┴");
+    }
+
+    #[test]
+    fn move_in_walks_only_the_laid_out_columns() {
+        use crate::settings::Slot as S;
+        use PaneFocus::*;
+        use SpatialDir::*;
+        let full = [S::Nav, S::Preview, S::Llm];
+        assert_eq!(NavTree.move_in(Right, &full, None), Preview);
+        assert_eq!(Repl.move_in(Up, &full, Some(S::Repl)), Preview);
+        assert_eq!(Repl.move_in(Left, &full, Some(S::Repl)), NavTree);
+        assert_eq!(Repl.move_in(Right, &full, Some(S::Repl)), Llm);
+        let portrait = [S::Nav, S::Preview];
+        assert_eq!(Preview.move_in(Right, &portrait, None), Preview);
+        assert_eq!(Repl.move_in(Right, &portrait, Some(S::Repl)), Preview);
+        assert_eq!(Preview.move_in(Down, &portrait, None), Preview);
+        assert_eq!(Preview.move_in(Down, &portrait, Some(S::Repl)), Repl);
+        assert_eq!(Llm.move_in(Left, &portrait, None), NavTree);
+        let no_preview = [S::Nav, S::Llm];
+        assert_eq!(NavTree.move_in(Right, &no_preview, None), Llm);
+        assert_eq!(Llm.move_in(Left, &no_preview, None), NavTree);
+        assert_eq!(Repl.move_in(Up, &no_preview, Some(S::Repl)), NavTree);
+        assert_eq!(Repl.move_in(Up, &full, None), NavTree);
+        let custom = [S::Nav, S::Llm];
+        assert_eq!(NavTree.move_in(Down, &custom, Some(S::Preview)), Preview);
+        assert_eq!(Preview.move_in(Up, &custom, Some(S::Preview)), NavTree);
+        assert_eq!(Preview.move_in(Right, &custom, Some(S::Preview)), Llm);
+        assert_eq!(Preview.move_in(Down, &custom, Some(S::Preview)), Preview);
+        assert_eq!(Repl.move_in(Down, &custom, Some(S::Preview)), NavTree);
+    }
+
+    #[test]
+    fn initial_mode_resumes_the_persisted_mode_unless_the_cli_names_one() {
+        assert_eq!(initial_mode(None, Some("sessions"), false), Mode::Sessions);
+        assert_eq!(initial_mode(Some("hosts"), Some("modules"), false), Mode::Hosts);
+        assert_eq!(initial_mode(Some("files"), Some("sessions"), false), Mode::Files);
+        assert_eq!(initial_mode(None, None, false), Mode::Files);
+        assert_eq!(initial_mode(None, Some("bogus"), false), Mode::Files);
+        assert_eq!(initial_mode(None, Some("sessions"), true), Mode::Files);
+        assert_eq!(initial_mode(Some("hosts"), Some("modules"), true), Mode::Hosts);
+    }
 
     fn fixed_now() -> chrono::NaiveDateTime {
         // A Monday, so the weekday abbreviation is unambiguous.
@@ -30010,5 +30305,20 @@ mod capsule_pane_tests {
     #[test]
     fn pane_terminal_reason_text_is_none_when_no_reason_is_shown() {
         assert_eq!(pane_terminal_reason_text(false, Some("attached")), None);
+    }
+
+    #[test]
+    fn pane_reason_line_leads_with_a_protocol_refusal() {
+        let s = |x: &str| Some(x.to_string());
+        assert_eq!(
+            pane_reason_line(Some("frontend out of date"), s("connecting…"), Some("dial failed")),
+            s("frontend out of date")
+        );
+        assert_eq!(
+            pane_reason_line(None, s("connecting…"), Some("dial failed")),
+            s("connecting…")
+        );
+        assert_eq!(pane_reason_line(None, None, Some("dial failed")), s("dial failed"));
+        assert_eq!(pane_reason_line(None, None, None), None);
     }
 }
