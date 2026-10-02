@@ -267,6 +267,17 @@ struct TableBufferEntry {
     natural_w_px: f32,
 }
 
+/// Bottom of the last whole `pitch`-tall row of a buffer whose first row's
+/// top is at `top`, clipped at `limit`: a table reaching the pane bottom stops
+/// at a row boundary instead of slicing one. `top` (nothing drawn) when not
+/// even the first row fits; `limit` for a degenerate pitch.
+fn whole_row_bottom(top: f32, pitch: f32, limit: f32) -> f32 {
+    if pitch <= 0.0 {
+        return limit;
+    }
+    top + ((limit - top + 0.5) / pitch).floor().max(0.0) * pitch
+}
+
 /// One cached MathJax-rendered math span. SVG bytes survive across
 /// re-renders so navigation/scroll doesn't re-roundtrip; the
 /// rasterised quad is built lazily on first paint and held in the
@@ -18299,11 +18310,11 @@ impl State {
 
         // The preview text is laid out at its own line pitch, so the cell-grid
         // bottom rarely lands on a line boundary; clip at the last whole line.
-        let md_clip_bottom = md_rect.y
-            + crate::text::EXTRA_TOP_PAD_PX
-            + self
-                .preview_md
-                .whole_line_bottom(preview_scroll_px, md_rect.h - crate::text::EXTRA_TOP_PAD_PX);
+        let whole_line_clip = |p: &MarkdownPreview, r: ScreenRect, scroll_px: f32| {
+            r.y + crate::text::EXTRA_TOP_PAD_PX
+                + p.whole_line_bottom(scroll_px, r.h - crate::text::EXTRA_TOP_PAD_PX)
+        };
+        let md_clip_bottom = whole_line_clip(&self.preview_md, md_rect, preview_scroll_px);
         let mut extras: Vec<crate::text::ExtraArea> = Vec::new();
         if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.scalebar_label.as_ref()) {
             extras.push(crate::text::ExtraArea {
@@ -18355,7 +18366,7 @@ impl State {
                     x: concept_rect.x,
                     y: concept_rect.y,
                     right: concept_rect.x + concept_rect.w,
-                    bottom: concept_rect.y + concept_rect.h,
+                    bottom: whole_line_clip(pc, concept_rect, preview_scroll_px),
                     clip_left: None,
                     clip_top: None,
                     // Slight magenta tint so the annotation reads as the
@@ -18372,7 +18383,7 @@ impl State {
                     x: preview_rect.x,
                     y: preview_rect.y,
                     right: preview_rect.x + preview_rect.w,
-                    bottom: preview_rect.y + preview_rect.h,
+                    bottom: whole_line_clip(pe, preview_rect, preview_scroll_px),
                     clip_left: None,
                     clip_top: None,
                     // Warm gold tint so the user sees at a glance that
@@ -18392,7 +18403,7 @@ impl State {
                     x: preview_rect.x,
                     y: preview_rect.y,
                     right: preview_rect.x + preview_rect.w,
-                    bottom: preview_rect.y + preview_rect.h,
+                    bottom: whole_line_clip(pf, preview_rect, 0.0),
                     clip_left: None,
                     clip_top: None,
                     color: (240, 160, 150),
@@ -18443,9 +18454,14 @@ impl State {
                     // Bounds clip to the preview pane in BOTH axes so
                     // the table's natural-width overflow gets glyph-
                     // clipped at the pane right edge, and vertical
-                    // scroll past the pane edges is invisible.
+                    // scroll past the pane edges is invisible. The bottom
+                    // stops at the last whole row.
                     right: preview_rect.x + preview_rect.w,
-                    bottom: preview_rect.y + preview_rect.h,
+                    bottom: whole_row_bottom(
+                        rect.y,
+                        entry.buffer.metrics().line_height,
+                        preview_rect.y + preview_rect.h,
+                    ),
                     // Pin the bounds.left to the pane edge — the
                     // glyph origin (`x`) is shifted into negative
                     // territory by `md_table_scroll_px` and would
@@ -24040,6 +24056,16 @@ fn force_os_foreground(window: &winit::window::Window) -> bool {
 mod tests {
     use super::*;
     use sot_protocol::TreeNode;
+
+    #[test]
+    fn whole_row_bottom_stops_at_the_last_whole_row() {
+        assert_eq!(whole_row_bottom(100.0, 20.0, 175.0), 160.0);
+        assert_eq!(whole_row_bottom(100.0, 20.0, 180.0), 180.0);
+        assert_eq!(whole_row_bottom(100.0, 20.0, 179.6), 180.0);
+        assert_eq!(whole_row_bottom(100.0, 20.0, 115.0), 100.0);
+        assert_eq!(whole_row_bottom(40.0, 20.0, 175.0), 160.0);
+        assert_eq!(whole_row_bottom(100.0, 0.0, 175.0), 175.0);
+    }
 
     #[test]
     fn wireframe_right_edges_survive_a_partial_drawer() {
