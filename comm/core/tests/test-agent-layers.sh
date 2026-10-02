@@ -25,10 +25,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 HOOKS_DIR="$(cd "$SCRIPT_DIR/../../adapters/claude/hooks" && pwd)"
-JOIN="$SCRIPTS_DIR/comm-join.sh"
-POLL="$SCRIPTS_DIR/comm-poll.sh"
-SEND="$SCRIPTS_DIR/comm-send.sh"
-STATUS="$SCRIPTS_DIR/comm-status.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-agent-layers-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
@@ -190,6 +186,26 @@ wtbl 2 "node.exe cli.js with no arguments over a native claude.exe whose command
     "bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}" "node.exe${TAB}node.exe C:\\n\\node_modules\\@anthropic-ai\\claude-code\\cli.js" "sot-capsule.exe${TAB}sot-capsule.exe run"
 wtbl 1 "a standalone claude.exe with an unreadable command line is one layer" \
     "bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}" "sot-capsule.exe${TAB}sot-capsule.exe run"
+# Exact arguments: sotd.exe prints a newline and a return inside a command line as \x1c and
+# \x1b (a TAB stays a raw TAB), so a host and a child whose arguments differ only by one of
+# them against a space are two layers, and identical ones are one.
+WCLI='node.exe C:\n\node_modules\@anthropic-ai\claude-code\cli.js'
+for g in $'\x1c' $'\x1b'; do
+    gn="$(printf '%s' "$g" | od -An -tx1 | tr -d ' ')"
+    wtbl 2 "a node host and a native child whose arguments differ only by \\x$gn against a space" \
+        "bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}claude.exe -p A B" "node.exe${TAB}$WCLI -p A${g}B" "sot-capsule.exe${TAB}sot-capsule.exe run"
+    wtbl 1 "a node host and a native child with the same \\x$gn argument are one layer" \
+        "bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}claude.exe -p A${g}B" "node.exe${TAB}$WCLI -p A${g}B" "sot-capsule.exe${TAB}sot-capsule.exe run"
+done
+# An unquoted TAB is an argument separator and a quoted one stays in its argument (the new
+# sotd prints it raw, so the command line is everything after the first TAB).
+WCJS='node.exe C:\n\node_modules\@openai\codex\bin\codex.js'
+wtbl 1 "an unquoted TAB in a node host's command line separates arguments: one layer" \
+    "bash.exe${TAB}bash.exe -c x" "codex.exe${TAB}codex.exe --flag work" "node.exe${TAB}$WCJS --flag${TAB}work" "sot-capsule.exe${TAB}sot-capsule.exe run"
+wtbl 2 "a quoted TAB stays inside its argument, and the rest is read: two layers" \
+    "bash.exe${TAB}bash.exe -c x" "codex.exe${TAB}codex.exe \"A${TAB}B\" D" "node.exe${TAB}$WCJS \"A${TAB}B\" C" "sot-capsule.exe${TAB}sot-capsule.exe run"
+wtbl 2 "a quoted TAB against a space in the child: two layers" \
+    "bash.exe${TAB}bash.exe -c x" "codex.exe${TAB}codex.exe \"A B\"" "node.exe${TAB}$WCJS \"A${TAB}B\"" "sot-capsule.exe${TAB}sot-capsule.exe run"
 
 # --- 1c. the two non-Linux parsers, as stdin filters (Linux walks /proc, so they run nowhere else) ---
 pipes() { tr "$US" '|' | tr '\n' ' ' | sed 's/ $//'; }
@@ -207,6 +223,9 @@ eq "windows filter: a node.exe with an empty command line is truncated, and noth
     "$(printf '%s\n' "bash.exe${TAB}bash.exe" "node.exe${TAB}" "claude.exe${TAB}claude.exe" | _sot_win_records | pipes)" "bash.exe !truncated"
 eq "windows filter: any other exe with an empty command line has arguments unknown (one RS argument), not an empty tail" \
     "$(printf '%s\n' "claude.exe${TAB}" "a.exe${TAB}a.exe" | _sot_win_records | pipes)" "claude.exe|$(printf '\036') a.exe !end"
+eq "windows filter: the encoded newline and return stay inside their token" \
+    "$(printf '%s\n' "a.exe${TAB}a.exe p q"$'\x1c'"s t"$'\x1b'"u" | _sot_win_records | tr -d '\n' | od -An -c | tr -d ' ' | tr -d '\n')" \
+    "$(printf '%s' "a.exe${US}p${US}q"$'\x1c'"s${US}t"$'\x1b'"u!end" | od -An -c | tr -d ' ' | tr -d '\n')"
 eq "windows filter: a !truncated line passes through and ends the output" \
     "$(printf '%s\n' "bash.exe${TAB}bash.exe" '!truncated' | _sot_win_records | pipes)" "bash.exe !truncated"
 
@@ -378,6 +397,18 @@ eq  "child: that refusal did not move the cursor" "$(sum "$CURSOR")" "$cur0"
 natrun codex "$WORK/nat/node_modules/@openai/codex/bin/codex.js" -c "$NAT_CMD"
 eq  "own: node codex.js forwarding its arguments to the native codex is one layer: poll succeeds" "$RC" 0
 if natchain_has "$WORK/natbin/codex|-c|"; then ok "own: the native codex is in the recorded chain"; else bad "own: the native codex is in the recorded chain"; fi
+# Exact arguments: the host's and the native child's differ only by a newline against a space
+# (the command is the same either way): two layers, refused. Identical ones are one layer.
+NAT_CMD_NL="${NAT_CMD/; /;$'\n'}"
+[ "$NAT_CMD_NL" != "$NAT_CMD" ] || { echo "FATAL: the newline variant of the native command did not differ" >&2; exit 1; }
+cur0="$(sum "$CURSOR")"
+natrun claude "$WORK/nat/node_modules/@anthropic-ai/claude-code/cli.js" -c "$NAT_CMD_NL"
+eq  "child: a node host and a native child whose arguments differ only by a newline against a space are two layers: refused" "$RC" 1
+has "child: that refusal names the cause" "$OUT" "has no comm identity"
+if natchain_has "$WORK/natbin/claude|-c|"; then ok "child: the native claude is in the recorded chain (newline vs space)"; else bad "child: the native claude is in the recorded chain (newline vs space)"; fi
+eq  "child: that refusal did not move the cursor" "$(sum "$CURSOR")" "$cur0"
+natrun claude "$WORK/nat/node_modules/@anthropic-ai/claude-code/cli.js" -c "$NAT_CMD"
+eq  "own: a node host and a native child with identical arguments are one layer: poll succeeds" "$RC" 0
 
 # --- a refused child changes nothing under the comm home --------------------------
 # Every verb, both hooks: the files (by content, size and mtime), and the listing
@@ -454,14 +485,25 @@ for v in "h" "$ROW" "h --endpoint unix:/nonexistent" "--endpoint unix:/nonexiste
         if [ "$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")" = "$before" ]; then ok "child: comm-despawn.sh $v ($kind) changes nothing under the comm home"; else bad "child: comm-despawn.sh $v ($kind) changed the comm home"; fi
     done
 done
+# comm-probe.sh makes and stops rows: a child refuses it, before the home or any request.
+for v in up down serve status "" --help bogus; do
+    for kind in child nodechild; do
+        before="$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")"
+        run "$kind" "$SELF_ROW" "$SCRIPTS_DIR/comm-probe.sh" $v
+        eq  "child: comm-probe.sh $v ($kind) exits 1" "$RC" 1
+        has "child: comm-probe.sh $v ($kind) names the cause" "$OUT" "has no comm identity"
+        if [ "$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")" = "$before" ]; then ok "child: comm-probe.sh $v ($kind) changes nothing under the comm home"; else bad "child: comm-probe.sh $v ($kind) changed the comm home"; fi
+    done
+done
 # A fresh comm home: a refused child makes no registry skeleton.
 H2="$WORK/home2"; mkdir -p "$H2"
 before="$(snap "$H2")"
-for v in "$POLL" "$STATUS working q" "$SCRIPTS_DIR/comm-leave.sh"; do
+for v in "$POLL" "$STATUS working q" "$SCRIPTS_DIR/comm-leave.sh" "$SCRIPTS_DIR/comm-list.sh"; do
     ( export SOT_COMM_HOME="$H2"; chain child "$SELF_LEG" $v ) >/dev/null 2>&1 || true
 done
 for v in "$SCRIPTS_DIR/comm-context.sh" "$SCRIPTS_DIR/comm-session-start.sh" "$SCRIPTS_DIR/comm-relay.sh send @$PEER x" "$SCRIPTS_DIR/comm-bootstrap.sh some-row" \
-         "$SCRIPTS_DIR/comm-spawn.sh --name h $WORK" "$SCRIPTS_DIR/comm-despawn.sh h"; do
+         "$SCRIPTS_DIR/comm-spawn.sh --name h $WORK" "$SCRIPTS_DIR/comm-despawn.sh h" "$SCRIPTS_DIR/comm-probe.sh up" "$SCRIPTS_DIR/comm-probe.sh down" \
+         "$SCRIPTS_DIR/comm-probe.sh" "$SCRIPTS_DIR/comm-probe.sh --help" "$SCRIPTS_DIR/comm-probe.sh bogus"; do
     ( export SOT_COMM_HOME="$H2"; chain child "$SELF_LEG" $v ) >/dev/null 2>&1 || true
 done
 if [ "$(snap "$H2")" = "$before" ]; then ok "child: no registry skeleton in a fresh comm home"; else bad "child: a refused verb made files in a fresh comm home: $(snap "$H2" | tr '\n' ' ' | cut -c1-300)"; fi

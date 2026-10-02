@@ -478,11 +478,12 @@ Monitor exists.
   command line are refused. A reused pid means the real parent has exited, the
   twin of reparenting. On Windows an unreadable command line is recorded as
   arguments unknown, which equals nothing: a native agent so recorded never
-  counts once with its node host, though a standalone one is one layer. Every
-  comm script on Windows refuses ("update sotd") until the installed `sotd.exe`
-  has the `ancestors` subcommand, so the scripts and `sotd.exe` ship together.
-  A refused process may neither spawn nor despawn rows, and no hook of it writes
-  anything under the comm home. An agent that needs its own handle is started as
+  counts once with its node host, though a standalone one is one layer. On
+  Windows every comm script that reads mail, sends, joins or stamps refuses
+  ("update sotd") until the installed `sotd.exe` has the `ancestors` subcommand, so the
+  scripts and `sotd.exe` ship together. A refused process may neither spawn nor
+  despawn rows (`comm-probe.sh`'s included), and no hook of it writes anything
+  under the comm home. An agent that needs its own handle is started as
   its own row.
 - What that check does not see: a process reparented away from its agent; an
   agent whose name is not in the list; a macOS agent whose argv[0] contains a
@@ -491,7 +492,11 @@ Monitor exists.
   agent's own name (a volta-style shim), which may be refused instead. On macOS
   the walk reads `ps`, which folds runs of white space, so a native agent started
   directly by its node host with arguments that differ only in white space counts
-  as one layer with it; exact argv on macOS comes after 0.6.6.
+  as one layer with it; exact argv on macOS comes after 0.6.6. An argument that itself contains the
+  record's marker bytes (\x1f, \x1e, \x1c, \x1b) reads as a separator, an unknown
+  marker or an encoded newline or return. On Windows an unpaired UTF-16 surrogate
+  in a command line reads as U+FFFD. On Linux a process whose whole command line
+  is exactly `!end` ends the walk as if it were the top.
 
 ## Dependencies
 

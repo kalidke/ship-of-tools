@@ -44,7 +44,6 @@ if ! why="$(sot_require_agent)"; then
     exit 1
 fi
 eval "$("$SCRIPT_DIR/comm-context.sh")"
-ensure_home
 
 # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): MSG can
 # legitimately start with "/" (an agent naturally opens with a slash

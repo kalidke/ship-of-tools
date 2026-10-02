@@ -3,15 +3,16 @@
 // `_sot_ancestor_chain` reads it where `ps` cannot see a native parent through
 // an MSYS shell, to count how many agents lie between a comm script and its
 // row's capsule. The command line is what tells `node <agent script>` from any
-// other node; one that cannot be read is printed empty.
+// other node; one that cannot be read is printed empty. A TAB inside a command
+// line is printed raw (the exe ends at the first TAB); a newline and a return are
+// printed as \x1c and \x1b, never a space.
 //
 // One Toolhelp snapshot, then a walk upward from this process's own parent. The
 // snapshot keeps a parent pid after the parent has exited, and Windows reuses
 // pids, so the walk stops where the chain stops being one, and that place is the
 // top: a pid missing from the snapshot, pid 0 or 4 (System), a process whose
-// record cannot be opened (another account's, so never the row's capsule or one
-// of its agents), one created after its child (a reused pid: the real parent has
-// exited, the twin of reparenting to pid 1). Only a chain that goes on past 64
+// record cannot be opened, one created after its child (a reused pid: the real
+// parent has exited, the twin of reparenting to pid 1). Only a chain that goes on past 64
 // lines is cut short: it ends with the line `!truncated` and exit 3, and the
 // caller must not take what it has read for the whole chain.
 
@@ -51,6 +52,16 @@ fn step(pid: u32, printed: usize, in_snapshot: bool, created: Option<u64>, child
     }
 }
 
+/// A command line as it is printed on one `<exe>\t<command line>` line. A TAB
+/// stays raw: the exe ends at the first TAB and the reader takes the rest, an
+/// unquoted TAB being an argument separator. A newline would end the line and a
+/// space would make two command lines that differ only by one equal, so a
+/// newline and a return each have their own byte: \x1c and \x1b.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn encode_command_line(text: &str) -> String {
+    text.replace('\n', "\u{1c}").replace('\r', "\u{1b}")
+}
+
 /// Runs the subcommand and returns its exit status: 0 when at least one line
 /// was printed and the walk reached the top, 3 when it was truncated, else 1;
 /// 2 off Windows.
@@ -68,7 +79,7 @@ pub fn run() -> i32 {
 
 #[cfg(windows)]
 mod win {
-    use super::{step, Step};
+    use super::{encode_command_line, step, Step};
     use std::collections::HashMap;
     use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, UNICODE_STRING};
@@ -106,8 +117,7 @@ mod win {
     /// A process's creation time and full command line, from one handle, or
     /// `None` when its record cannot be opened or its creation time read (the
     /// caller then treats it as the top). The command line is `None` when it
-    /// cannot be read; tabs and line breaks become spaces, for the caller reads
-    /// one tab-separated line per process.
+    /// cannot be read.
     fn info(pid: u32) -> Option<(u64, Option<String>)> {
         // SAFETY: `OpenProcess` returns null on failure; a non-null handle is
         // closed before returning. The buffer is `u64` words, so the
@@ -142,7 +152,7 @@ mod win {
                 }
             };
             CloseHandle(handle);
-            created.map(|c| (c, text.map(|t| t.replace(['\t', '\r', '\n'], " "))))
+            created.map(|c| (c, text.map(|t| encode_command_line(&t))))
         }
     }
 
@@ -217,5 +227,13 @@ mod tests {
         assert_eq!(step(500, 64, true, Some(7), 100), Step::Truncated);
         // the cap is for a chain that goes on; a top at line 64 is a whole walk
         assert_eq!(step(500, 64, true, None, 100), Step::Top);
+    }
+
+    #[test]
+    fn a_tab_stays_raw_and_a_newline_and_a_return_each_have_their_own_byte() {
+        assert_eq!(encode_command_line("a\tb"), "a\tb");
+        assert_eq!(encode_command_line("a\nb"), "a\u{1c}b");
+        assert_eq!(encode_command_line("a\rb"), "a\u{1b}b");
+        assert_eq!(encode_command_line("a b"), "a b");
     }
 }

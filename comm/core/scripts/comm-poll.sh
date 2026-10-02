@@ -16,7 +16,6 @@ if ! _poll_missing="$(sot_require_tools "poll for mail" $_poll_tools 2>&1)"; the
     exit 1
 fi
 eval "$("$SCRIPT_DIR/comm-context.sh")"
-ensure_home
 
 [ -z "$NAME" ] && { echo "Not joined — run comm-join.sh first." >&2; exit 1; }
 

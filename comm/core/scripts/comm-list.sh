@@ -9,7 +9,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
-ensure_home
 
 STALE_SECS="${SOT_COMM_STALE_SECS:-600}"
 nows="$(date -u +%s)"

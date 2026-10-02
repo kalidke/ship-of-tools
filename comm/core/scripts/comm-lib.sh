@@ -1834,17 +1834,20 @@ _sot_ps_records() {
 }
 
 # _sot_win_records — stdin: sotd.exe's `<exe>\t<command line>` lines, parent
-# first. Prints one record per process (the exe, then the command line's
-# arguments after argv[0], tokenised the way Windows does: double quotes group,
-# \" is a quote), then `!end`. A `!` line from sotd, or a node.exe whose command
-# line could not be read (a node host cannot be told from any other node), is
+# first; the exe ends at the first TAB (an exe name holds none) and the command
+# line is everything after it, its own TABs raw. Prints one record per process
+# (the exe, then the command line's arguments after argv[0], tokenised the way
+# Windows does: double quotes group, \" is a quote, an unquoted TAB or space
+# separates and a quoted one stays; \x1c and \x1b, sotd's newline and return,
+# are not white space and stay inside their token), then `!end`. A `!` line from
+# sotd, or a node.exe whose command line could not be read (a node host cannot be told from any other node), is
 # `!truncated` and ends the output. Any other exe whose command line could not
 # be read gets ONE argument, RS (\036): arguments unknown, which is not an empty
 # tail and equals nothing (_sot_agent_layers).
 _sot_win_records() {
     awk -F '\t' -v us="$(printf '\037')" -v rs="$(printf '\036')" '
         /^!/ { print "!truncated"; trunc = 1; exit }
-        { exe = $1; cl = $2; nt = 0; cur = ""; q = 0; has = 0
+        { exe = $1; cl = substr($0, length($1) + 2); nt = 0; cur = ""; q = 0; has = 0
           for (i = 1; i <= length(cl); i++) { c = substr(cl, i, 1)
             if (c == "\\" && substr(cl, i + 1, 1) == "\"") { cur = cur "\""; i++; has = 1 }
             else if (c == "\"") { q = !q; has = 1 }
@@ -1861,8 +1864,9 @@ _sot_win_records() {
 
 # _sot_ancestor_chain — this process and its ancestors, one record per process,
 # the caller first, at most 64: the argv, fields joined by US (a space inside
-# an argument survives, except from ps). The output ends with `!end` (the top
-# was reached) or `!truncated` (the walk stopped short of it). 1 when nothing
+# an argument survives, except from ps; a newline is \x1c on Linux, and sotd.exe
+# prints a newline and a return as \x1c and \x1b and a TAB raw). The output ends
+# with `!end` (the top was reached) or `!truncated` (the walk stopped short of it). 1 when nothing
 # could be read, or sotd.exe failed (it then prints why).
 _sot_ancestor_chain() {
     local us=$'\037' out p line rest a rec n=0 rc sotd
@@ -1886,7 +1890,9 @@ _sot_ancestor_chain() {
             IFS= read -r line < "/proc/$p/stat" 2>/dev/null || { echo '!truncated'; break; }
             rest="${line##*) }"; rest="${rest#* }"
             rec=""
-            while IFS= read -r -d '' a; do rec="$rec${a//$'\n'/ }$us"; done < "/proc/$p/cmdline" 2>/dev/null
+            # A newline would end the record: it becomes \x1c, never a space (an argument
+            # that differs only by one must not look equal to the host's).
+            while IFS= read -r -d '' a; do rec="$rec${a//$'\n'/$'\034'}$us"; done < "/proc/$p/cmdline" 2>/dev/null
             if [ -z "$rec" ]; then echo '!truncated'; break; fi
             printf '%s\n' "${rec%"$us"}"
             n=$((n + 1)); p="${rest%% *}"

@@ -8,7 +8,6 @@ source "$SCRIPT_DIR/comm-lib.sh"
 # the gate comes before the context call, so a refused child touches nothing.
 _why="$(sot_require_agent)" || { echo "comm-leave.sh: $_why" >&2; exit 1; }
 eval "$("$SCRIPT_DIR/comm-context.sh")"
-ensure_home
 
 # Arg handling is strict: this script once took no args and silently ignored
 # them, so `comm-leave.sh --name X` removed the CALLER's row instead of X's
