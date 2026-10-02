@@ -139,8 +139,10 @@ the first table are always written in your home directory, and an existing
 elsewhere. If `CLAUDE_CONFIG_DIR` names an account folder under
 `~/.claude-auth` that has no `settings.json`, none is created there; the hooks
 go into `~/.claude/settings.json` (created if missing), which the backend links
-into the account. Setting those three variables is
-therefore not an isolated try-out; for that, install under a separate user
+into the account. The install ends by naming every Claude settings file it
+left without the hooks, with the reason (an account with no `settings.json`, a
+file made read-only, one that could not be read or parsed). Setting those three
+variables is therefore not an isolated try-out; for that, install under a separate user
 account or in a virtual machine.
 
 The hooks do nothing in an agent session that has not joined the Ship of
