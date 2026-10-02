@@ -476,9 +476,11 @@ Monitor exists.
   ancestor whose record cannot be opened, or whose creation time is after its
   child's, ends the walk as the top; only the 64 cap and node.exe's unreadable
   command line are refused. A reused pid means the real parent has exited, the
-  twin of reparenting. On Windows an unreadable command line is recorded as
-  arguments unknown, which equals nothing: a native agent so recorded never
-  counts once with its node host, though a standalone one is one layer. On
+  twin of reparenting. On Windows, and on macOS where `ps` prints `(name)` for
+  arguments it cannot read, an unreadable command line is recorded as the
+  program name with arguments unknown, which equals nothing: a native agent so
+  recorded never counts once with its node host, though a standalone one is one
+  layer, and a `node` so recorded is refused. On
   Windows every comm script that reads mail, sends, joins or stamps refuses
   ("update sotd") until the installed `sotd.exe` has the `ancestors` subcommand, so the
   scripts and `sotd.exe` ship together. A refused process may neither spawn nor
@@ -488,7 +490,8 @@ Monitor exists.
   its own row.
 - What that check does not see: a process reparented away from its agent; an
   agent whose name is not in the list; a macOS agent whose argv[0] contains a
-  space; on Windows, an agent above an ancestor whose record cannot be opened or
+  space; on macOS, an agent whose arguments `ps` cannot read and whose program
+  file is not named after it; on Windows, an agent above an ancestor whose record cannot be opened or
   that was created after its child; and a shim that starts `node` under the
   agent's own name (a volta-style shim), which may be refused instead. On macOS
   the walk reads `ps`, which folds runs of white space, so a native agent started

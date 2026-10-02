@@ -222,6 +222,23 @@ eq "ps filter: a chain to the top, spaces become field breaks" \
 eq "ps filter: a parent missing from the table is a truncated walk" \
     "$(printf '%s\n' '  100    99 bash -c x' '   50     1 init' | _sot_ps_records 100 | pipes)" "bash|-c|x !truncated"
 eq "ps filter: my own pid missing prints nothing" "$(printf '%s\n' '   50     1 init' | _sot_ps_records 100 | pipes)" ""
+# mtbl WANT DESC LINE... : the layers a macOS chain counts, through the ps filter (`ps` lines, caller first).
+mtbl() {
+    local want="$1" desc="$2" got; shift 2
+    got="$(printf '%s\n' "$@" | _sot_ps_records 100 | _sot_agent_layers 2>/dev/null | awk 'NF && $0 != "!ok"' | wc -l | tr -d ' ')"
+    eq "macOS table: $desc" "$got" "$want"
+}
+B='  100    99 bash -c x'; CAP='   97     1 sot-capsule run'
+mtbl 2 "a (claude) whose arguments ps cannot read under a codex is a second layer" "$B" '   99    98 codex exec y' '   98    97 (claude)' "$CAP"
+mtbl 2 "a (claude) never dedupes with its node host" "$B" '   99    98 (claude)' '   98    97 node /n/node_modules/@anthropic-ai/claude-code/cli.js -p q' "$CAP"
+mtbl 1 "a standalone (claude) is one layer" "$B" '   99    97 (claude)' "$CAP"
+mtbl 1 "a readable claude under a login shell is one layer" "$B" '   99    98 claude -p q' '   98    97 -zsh' '   97     1 (login)'
+eq "ps filter: a (name) record is the name with arguments unknown" \
+    "$(printf '%s\n' '  100    99 bash -c x' '   99    97 (claude)' "$CAP" | _sot_ps_records 100 | pipes)" "bash|-c|x claude|$(printf '\036') sot-capsule|run !end"
+eq "ps filter: a (node) record is truncated, and nothing follows" \
+    "$(printf '%s\n' '  100    99 bash -c x' '   99    97 (node)' | _sot_ps_records 100 | pipes)" "bash|-c|x !truncated"
+eq "ps filter: a (name with spaces) record keeps the whole name" \
+    "$(printf '%s\n' '  100    99 bash -c x' '   99     1 (Foo Helper)' | _sot_ps_records 100 | pipes)" "bash|-c|x Foo Helper|$(printf '\036') !end"
 eq "ps filter: a chain past 64 is truncated at 64" \
     "$(for ((i = 1000; i < 1070; i++)); do printf '%s %s bash\n' "$i" "$((i + 1))"; done | _sot_ps_records 1000 | awk 'END { print NR, $0 }')" "65 !truncated"
 eq "windows filter: arguments, quotes and an escaped quote; argv[0] is dropped" \

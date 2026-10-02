@@ -1814,22 +1814,29 @@ _sot_identity_routable() {
 # above its rows. An ancestry that cannot be read in full before the capsule or
 # the top (a cap of 64, an unreadable record, a parse that did not finish) is
 # refused, never trusted. Not seen, by design: a process reparented away from
-# its agent, an agent not in the list, a macOS argv[0] holding a space, a shim
-# that hides the agent behind another name (PROTOCOL.md lists them).
+# its agent, an agent not in the list, a macOS argv[0] holding a space, on macOS
+# an agent whose arguments `ps` cannot read and whose program file is not named
+# after it, a shim that hides the agent behind another name (PROTOCOL.md lists them).
 _SOT_AGENTS=" claude codex "
 
 # _sot_ps_records ME — stdin: `ps -o pid= -o ppid= -o args=` lines. Prints ME's
 # chain, caller first, one record per process (fields joined by US; ps cannot
 # print NUL-separated arguments, so every run of white space is a field break),
 # then `!end` at the top or `!truncated` where the chain stops short of it.
-# Nothing when ME is not in the table.
+# Nothing when ME is not in the table. `ps` prints `(name)` (the kernel command
+# name) for a process whose arguments it cannot read: that record is `name`, US,
+# RS (\036) — arguments unknown, which equals nothing, as on Windows — except
+# `(node)`, which cannot be told from an agent's host and is `!truncated`, ending
+# the output.
 _sot_ps_records() {
-    awk -v me="$1" -v us="$(printf '\037')" '
-        { pid = $1; pp[pid] = $2; $1 = ""; $2 = ""; sub(/^ +/, ""); gsub(/[ \t]+/, us); ar[pid] = $0 }
+    awk -v me="$1" -v us="$(printf '\037')" -v rs="$(printf '\036')" '
+        { pid = $1; pp[pid] = $2; $1 = ""; $2 = ""; sub(/^ +/, "")
+          if ($0 ~ /^\(.*\)$/) { c = substr($0, 2, length($0) - 2); ar[pid] = (c == "node") ? "!truncated" : (c us rs) }
+          else { gsub(/[ \t]+/, us); ar[pid] = $0 } }
         END { p = me
               for (n = 0; p > 1; n++) {
                   if (n >= 64 || !(p in ar)) { if (n > 0) print "!truncated"; exit }
-                  print ar[p]; p = pp[p] }
+                  print ar[p]; if (ar[p] == "!truncated") exit; p = pp[p] }
               if (n > 0) print "!end" }'
 }
 
