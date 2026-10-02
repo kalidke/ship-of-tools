@@ -363,7 +363,7 @@ installer_enable_local_service() {  # <prefix> <template> <socket>
     render_sotd_unit "$1" "$2" "$HOME/.config/systemd/user/sotd.service"
     systemctl --user daemon-reload
     systemctl --user enable --now sotd.service
-    loginctl enable-linger "$USER" 2>/dev/null || true
+    loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
     say "sotd running: $(systemctl --user is-active sotd.service) (socket $3)"
 }
 
