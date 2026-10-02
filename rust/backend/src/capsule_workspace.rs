@@ -1430,20 +1430,34 @@ mod capsule_sibling_present_tests {
 pub(crate) mod row_scope {
     use crate::row_scope_aim::{aim, prefix};
     use sot_log::state_dir::state_dir_hash;
-    use std::collections::HashMap;
     use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
     pub(crate) const CGROUP_ROOT: &str = "/sys/fs/cgroup";
     /// The cgroup fence's own `QUIESCENCE_TIMEOUT` (`sot_log::claude`).
     pub(crate) const SCOPE_EMPTY_BOUND: Duration = Duration::from_secs(10);
-    /// Scopes an end could not empty within the bound, by state dir. The
-    /// next end of that row re-kills them before anything else: after the
-    /// stop, a retry would otherwise prove the row absent and count it
-    /// ended while its scope still holds processes.
-    static UNEMPTIED: OnceLock<Mutex<HashMap<PathBuf, Vec<String>>>> = OnceLock::new();
+    /// The row's remembered scopes, one cgroup rel per line, in its state
+    /// dir. Written at capture, before any stop or kill, and removed only
+    /// once an end proves every listed scope empty or gone, so neither a
+    /// retry nor a restarted daemon counts the row ended while a scope it
+    /// captured may still hold processes.
+    pub(crate) const SCOPES_FILE: &str = "row-scopes";
+
+    #[cfg(test)]
+    thread_local! {
+        /// A unit test's fake cgroup root; never `/sys/fs/cgroup`.
+        pub(crate) static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// The cgroup2 root every end aims at.
+    pub(crate) fn root() -> PathBuf {
+        #[cfg(test)]
+        if let Some(root) = TEST_ROOT.with(|r| r.borrow().clone()) {
+            return root;
+        }
+        PathBuf::from(CGROUP_ROOT)
+    }
 
     /// `systemd-run --unit` value for a new scoped supervisor of this row.
     pub(crate) fn unit_name(state_dir: &Path) -> String {
@@ -1459,60 +1473,105 @@ pub(crate) mod row_scope {
         proc_cgroup.lines().find_map(|l| l.strip_prefix("0::")).map(|rel| rel.trim().to_string())
     }
 
-    /// The scope of the supervisor `pid`, captured before the end.
-    pub(crate) fn capture(root: &Path, state_dir: &Path, pid: u32) -> Option<String> {
-        let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
-        capture_from(root, state_dir, &text)
+    /// The scope of the supervisor `pid`, captured before the end and
+    /// listed in [`SCOPES_FILE`] before anything is stopped or killed.
+    pub(crate) fn capture(root: &Path, state_dir: &Path, pid: u32) -> Result<Option<String>, String> {
+        match std::fs::read_to_string(format!("/proc/{pid}/cgroup")) {
+            Ok(text) => capture_from(root, state_dir, &text),
+            Err(_) => Ok(None),
+        }
     }
 
     /// The `0::` path of `proc_cgroup` when its leaf is a scope of this
-    /// row and `cgroup.kill` is there to end it; `None` ends the row
-    /// exactly as before this module (an unscoped or older row, a
-    /// frontend-spawned drawer, a kernel before 5.14).
-    pub(crate) fn capture_from(root: &Path, state_dir: &Path, proc_cgroup: &str) -> Option<String> {
-        let rel = rel_of(proc_cgroup)?;
+    /// row and `cgroup.kill` is there to end it, listed durably in
+    /// [`SCOPES_FILE`]; `Ok(None)` ends the row exactly as before this
+    /// module (an unscoped or older row, a frontend-spawned drawer, a
+    /// kernel before 5.14). `Err` is a failed write: nothing is killed.
+    pub(crate) fn capture_from(root: &Path, state_dir: &Path, proc_cgroup: &str) -> Result<Option<String>, String> {
+        let Some(rel) = rel_of(proc_cgroup) else { return Ok(None) };
         let leaf = rel.rsplit('/').next().unwrap_or("");
         if !(leaf.starts_with(&prefix(&state_dir_hash(state_dir))) && leaf.ends_with(".scope")) {
-            return None;
+            return Ok(None);
         }
-        match std::fs::metadata(at(root, &rel).join("cgroup.kill")) {
-            Err(e) if e.kind() == ErrorKind::NotFound => {
+        if let Err(e) = std::fs::metadata(at(root, &rel).join("cgroup.kill")) {
+            if e.kind() == ErrorKind::NotFound {
                 tracing::warn!(
                     scope = %rel,
                     "capsule workspace: no cgroup.kill (Linux before 5.14); a child that left the agent's \
                      process group survives this row's end"
                 );
-                None
+                return Ok(None);
             }
-            _ => Some(rel),
+        }
+        remember(state_dir, std::slice::from_ref(&rel))?;
+        Ok(Some(rel))
+    }
+
+    /// The scopes [`SCOPES_FILE`] lists; an absent file lists none.
+    pub(crate) fn listed(state_dir: &Path) -> Result<Vec<String>, String> {
+        let path = state_dir.join(SCOPES_FILE);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Ok(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(format!("read {path:?}: {e}")),
         }
     }
 
-    /// Kill `rel` and every sibling scope of this row (an adopted leg's
-    /// older scope), then wait up to `bound` for each to be empty or gone.
-    pub(crate) fn end(root: &Path, own_rel: &str, state_dir: &Path, rel: &str, bound: Duration) -> Result<(), String> {
-        let hash = state_dir_hash(state_dir);
-        let parent = &rel[..rel.rfind('/').unwrap_or(0)];
-        let dir = at(root, parent);
-        let entries = std::fs::read_dir(&dir).map_err(|e| format!("list {dir:?}: {e}"))?;
-        let mut scopes = Vec::new();
-        for entry in entries {
-            let name = entry.map_err(|e| format!("list {dir:?}: {e}"))?.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with(&prefix(&hash)) && name.ends_with(".scope") {
-                scopes.push(format!("{parent}/{name}"));
+    /// Adds `rels` to [`SCOPES_FILE`], durably.
+    fn remember(state_dir: &Path, rels: &[String]) -> Result<(), String> {
+        let mut all = listed(state_dir)?;
+        let before = all.len();
+        for rel in rels {
+            if !all.contains(rel) {
+                all.push(rel.clone());
             }
+        }
+        if all.len() == before {
+            return Ok(());
+        }
+        rewrite(state_dir, &all)
+    }
+
+    /// [`SCOPES_FILE`] lists exactly `rels`, durably; none removes it.
+    fn rewrite(state_dir: &Path, rels: &[String]) -> Result<(), String> {
+        let path = state_dir.join(SCOPES_FILE);
+        let written = if rels.is_empty() {
+            crate::durable::remove(&path)
+        } else {
+            crate::durable::write(&path, format!("{}\n", rels.join("\n")).as_bytes())
+        };
+        written.map_err(|e| format!("record the row's scopes in {path:?}: {e}"))
+    }
+
+    /// Kill every scope [`SCOPES_FILE`] lists, plus `captured` and every
+    /// sibling scope of this row beside it (an adopted leg's older scope),
+    /// then wait up to `bound` for each to be empty or gone.
+    pub(crate) fn end(
+        root: &Path,
+        own_rel: &str,
+        state_dir: &Path,
+        captured: Option<&str>,
+        bound: Duration,
+    ) -> Result<(), String> {
+        let hash = state_dir_hash(state_dir);
+        let mut scopes = listed(state_dir)?;
+        if let Some(rel) = captured {
+            let parent = &rel[..rel.rfind('/').unwrap_or(0)];
+            let dir = at(root, parent);
+            let entries = std::fs::read_dir(&dir).map_err(|e| format!("list {dir:?}: {e}"))?;
+            for entry in entries {
+                let name = entry.map_err(|e| format!("list {dir:?}: {e}"))?.file_name();
+                let name = name.to_string_lossy();
+                let scope = format!("{parent}/{name}");
+                if name.starts_with(&prefix(&hash)) && name.ends_with(".scope") && !scopes.contains(&scope) {
+                    scopes.push(scope);
+                }
+            }
+        }
+        if scopes.is_empty() {
+            return Ok(());
         }
         end_set(root, own_rel, state_dir, &hash, scopes, bound)
-    }
-
-    /// Re-end the scopes an earlier end of this row left populated.
-    pub(crate) fn recheck(root: &Path, own_rel: &str, state_dir: &Path, bound: Duration) -> Result<(), String> {
-        let scopes = match unemptied().get(state_dir) {
-            Some(scopes) => scopes.clone(),
-            None => return Ok(()),
-        };
-        end_set(root, own_rel, state_dir, &state_dir_hash(state_dir), scopes, bound)
     }
 
     fn end_set(
@@ -1523,6 +1582,7 @@ pub(crate) mod row_scope {
         scopes: Vec<String>,
         bound: Duration,
     ) -> Result<(), String> {
+        remember(state_dir, &scopes)?;
         for scope in &scopes {
             aim(scope, own_rel, hash)?;
             match std::fs::write(at(root, scope).join("cgroup.kill"), "1") {
@@ -1540,11 +1600,10 @@ pub(crate) mod row_scope {
                 }
             }
             if left.is_empty() {
-                unemptied().remove(state_dir);
-                return Ok(());
+                return rewrite(state_dir, &[]);
             }
             if Instant::now() >= deadline {
-                unemptied().insert(state_dir.to_path_buf(), left.clone());
+                rewrite(state_dir, &left)?;
                 return Err(format!("the row's scope did not empty within {bound:?}: {left:?}"));
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -1568,10 +1627,6 @@ pub(crate) mod row_scope {
 
     fn at(root: &Path, rel: &str) -> PathBuf {
         root.join(rel.trim_start_matches('/'))
-    }
-
-    fn unemptied() -> std::sync::MutexGuard<'static, HashMap<PathBuf, Vec<String>>> {
-        UNEMPTIED.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner())
     }
 
     #[cfg(test)]
@@ -1616,7 +1671,7 @@ pub(crate) mod row_scope {
             fake_scope(root.path(), &theirs, "populated 1\n");
             let no_kill = format!("/a/app.slice/sot-row-{h}-y.scope");
             std::fs::create_dir_all(root.path().join(no_kill.trim_start_matches('/'))).unwrap();
-            let at = |text: String| capture_from(root.path(), state.path(), &text);
+            let at = |text: String| capture_from(root.path(), state.path(), &text).expect("capture");
 
             assert_eq!(at(format!("0::{ours}\n")), Some(ours.clone()), "this row's scope");
             assert_eq!(at("0::/a/app.slice/run-u5.scope\n".to_string()), None, "a run-u scope");
@@ -1635,7 +1690,7 @@ pub(crate) mod row_scope {
             let c = fake_scope(root.path(), &format!("/a/app.slice/sot-row-{other}-c.scope"), "populated 0\nfrozen 0\n");
 
             let rel = format!("/a/app.slice/sot-row-{h}-a.scope");
-            end(root.path(), OWN, state.path(), &rel, Duration::from_millis(200)).expect("end");
+            end(root.path(), OWN, state.path(), Some(&rel), Duration::from_millis(200)).expect("end");
             let kill = |d: &Path| std::fs::read_to_string(d.join("cgroup.kill")).unwrap();
             assert_eq!(kill(&a), "1", "the captured scope was not killed");
             assert_eq!(kill(&b), "1", "a sibling scope of this row was not killed");
@@ -1650,19 +1705,19 @@ pub(crate) mod row_scope {
             let dir = fake_scope(root.path(), &rel, "populated 1\nfrozen 0\n");
             let bound = Duration::from_millis(100);
 
-            let err = end(root.path(), OWN, state.path(), &rel, bound).expect_err("end on a populated scope");
+            let err = end(root.path(), OWN, state.path(), Some(&rel), bound).expect_err("end on a populated scope");
             assert!(err.contains("did not empty"), "{err}");
-            recheck(root.path(), OWN, state.path(), bound).expect_err("recheck on a still-populated scope");
+            end(root.path(), OWN, state.path(), None, bound).expect_err("a retry on a still-populated scope");
             std::fs::write(dir.join("cgroup.events"), "populated 0\nfrozen 0\n").unwrap();
-            recheck(root.path(), OWN, state.path(), bound).expect("recheck once emptied");
-            recheck(root.path(), OWN, state.path(), bound).expect("a second recheck");
+            end(root.path(), OWN, state.path(), None, bound).expect("a retry once emptied");
+            end(root.path(), OWN, state.path(), None, bound).expect("a second retry");
 
             let fresh = tempfile::tempdir().unwrap();
             let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(fresh.path()));
             let dir = fake_scope(root.path(), &rel, "populated 1\n");
-            end(root.path(), OWN, fresh.path(), &rel, bound).expect_err("end on a populated scope");
+            end(root.path(), OWN, fresh.path(), Some(&rel), bound).expect_err("end on a populated scope");
             std::fs::remove_dir_all(&dir).unwrap();
-            recheck(root.path(), OWN, fresh.path(), bound).expect("a scope that is gone is empty");
+            end(root.path(), OWN, fresh.path(), None, bound).expect("a scope that is gone is empty");
         }
 
         #[test]
@@ -1672,8 +1727,123 @@ pub(crate) mod row_scope {
             let dir = root.path().join(rel.trim_start_matches('/'));
             std::fs::create_dir_all(dir.join("cgroup.events")).unwrap();
             std::fs::write(dir.join("cgroup.kill"), "").unwrap();
-            end(root.path(), OWN, state.path(), &rel, Duration::from_millis(100))
+            end(root.path(), OWN, state.path(), Some(&rel), Duration::from_millis(100))
                 .expect_err("an unreadable cgroup.events is not an empty scope");
+        }
+
+        /// A row whose authority and leg are both proven absent, so
+        /// `end_run`'s unreachable arm reaches its `Unheld` answer.
+        fn absent_row(state_dir: &Path) {
+            let voyage_id = "a1b2c3d4-e5f6-4890-9abc-def012345678";
+            sot_log::pointer::publish(state_dir, voyage_id).expect("publish the pointer");
+            let voyage_root = sot_log::supervisor::voyage_root_path(state_dir, voyage_id);
+            std::fs::create_dir_all(&voyage_root).expect("voyage root");
+            std::fs::write(voyage_root.join("writer.lock"), b"").expect("writer.lock file");
+        }
+
+        /// Points `root()` at a fake cgroup root for this test's thread.
+        struct FakeRoot;
+        impl FakeRoot {
+            fn at(root: &Path) -> Self {
+                TEST_ROOT.with(|r| *r.borrow_mut() = Some(root.to_path_buf()));
+                FakeRoot
+            }
+        }
+        impl Drop for FakeRoot {
+            fn drop(&mut self) {
+                TEST_ROOT.with(|r| *r.borrow_mut() = None);
+            }
+        }
+
+        #[test]
+        fn row_scope_file_written_at_capture_before_any_kill() {
+            let (state, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let _root = FakeRoot::at(root.path());
+            let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(state.path()));
+            let dir = fake_scope(root.path(), &rel, "populated 0\n");
+            let kill = || std::fs::read_to_string(dir.join("cgroup.kill")).unwrap();
+
+            // Capture lists the scope on disk and kills nothing.
+            let text = format!("0::{rel}\n");
+            assert_eq!(capture_from(root.path(), state.path(), &text), Ok(Some(rel.clone())));
+            assert_eq!(listed(state.path()), Ok(vec![rel.clone()]), "the file after capture");
+            assert_eq!(kill(), "", "capture killed");
+            // A capture-then-return arm (the transport error, Failed,
+            // Refused, OutcomeUnknown, Starting) returns here; the file
+            // stays, and the next capture adds nothing twice.
+            assert_eq!(capture_from(root.path(), state.path(), &text), Ok(Some(rel.clone())));
+            assert_eq!(listed(state.path()), Ok(vec![rel.clone()]), "the file after a second capture");
+
+            // The supervisor-outcome arms: the file lists the scope when
+            // the stop runs, and the kill comes only after it.
+            let mut at_stop = None;
+            crate::capsule_workspace::runtime::stop_then_end_scope(state.path(), Some(&rel), || {
+                at_stop = Some((listed(state.path()), kill()))
+            })
+            .expect("end an empty scope");
+            assert_eq!(at_stop, Some((Ok(vec![rel.clone()]), String::new())), "the file and kill at the stop");
+            assert_eq!(kill(), "1", "the scope was not killed after the stop");
+            assert!(!state.path().join(SCOPES_FILE).exists(), "a proven-empty end left the file");
+        }
+
+        #[test]
+        fn every_not_ended_scope_path_keeps_the_file() {
+            let bound = Duration::from_millis(100);
+            for fault in ["aim refusal", "kill write error", "events read error", "parent-dir list error"] {
+                let (state, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+                let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(state.path()));
+                let dir = root.path().join(rel.trim_start_matches('/'));
+                let mut own = OWN.to_string();
+                match fault {
+                    "aim refusal" => {
+                        fake_scope(root.path(), &rel, "populated 1\n");
+                        own = rel.clone();
+                    }
+                    "kill write error" => {
+                        std::fs::create_dir_all(dir.join("cgroup.kill")).unwrap();
+                        std::fs::write(dir.join("cgroup.events"), "populated 0\n").unwrap();
+                    }
+                    "events read error" => {
+                        std::fs::create_dir_all(dir.join("cgroup.events")).unwrap();
+                        std::fs::write(dir.join("cgroup.kill"), "").unwrap();
+                    }
+                    _ => {
+                        std::fs::create_dir_all(root.path().join("a")).unwrap();
+                        std::fs::write(root.path().join("a/app.slice"), "").unwrap();
+                    }
+                }
+                let captured = capture_from(root.path(), state.path(), &format!("0::{rel}\n"));
+                assert_eq!(captured, Ok(Some(rel.clone())), "{fault}: capture");
+                end(root.path(), &own, state.path(), Some(&rel), bound).expect_err(fault);
+                assert_eq!(listed(state.path()), Ok(vec![rel.clone()]), "{fault}: the file after the end");
+                end(root.path(), &own, state.path(), None, bound).expect_err(&format!("{fault}: a retry ended"));
+                assert_eq!(listed(state.path()), Ok(vec![rel.clone()]), "{fault}: the file after the retry");
+            }
+        }
+
+        #[test]
+        fn scope_file_left_by_a_killed_daemon_is_ended_by_the_next_end() {
+            use crate::capsule_workspace::EndRunOutcome;
+            let root = tempfile::tempdir().unwrap();
+            let _root = FakeRoot::at(root.path());
+            for (events, ends) in [("populated 0\n", true), ("populated 1\n", false)] {
+                let state = tempfile::tempdir().unwrap();
+                absent_row(state.path());
+                let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(state.path()));
+                let dir = fake_scope(root.path(), &rel, events);
+                // Only the file: no in-process state names this scope.
+                std::fs::write(state.path().join(SCOPES_FILE), format!("{rel}\n")).unwrap();
+
+                let outcome = crate::capsule_workspace::end_run(state.path(), "test reason", true);
+                assert_eq!(std::fs::read_to_string(dir.join("cgroup.kill")).unwrap(), "1", "{events}: not killed");
+                if ends {
+                    assert!(matches!(outcome, Ok(EndRunOutcome::Unheld)), "{events}: {outcome:?}");
+                    assert!(!state.path().join(SCOPES_FILE).exists(), "{events}: the file stayed");
+                } else {
+                    assert!(matches!(outcome, Ok(EndRunOutcome::NotEnded(_))), "{events}: {outcome:?}");
+                    assert_eq!(listed(state.path()), Ok(vec![rel]), "{events}: the file after NotEnded");
+                }
+            }
         }
     }
 }
@@ -2333,22 +2503,23 @@ mod runtime {
         use sot_log::supervisor_client::EndRunOutcome as O;
         use sot_log::wire::SupervisorPhase;
 
-        // A4b: a scope an earlier end of this row left populated is
-        // re-ended before anything else, so a retry can never count the
-        // row ended while it still holds processes.
+        // A4b: the row's remembered scopes (`row_scope::SCOPES_FILE`)
+        // are ended after the graceful end when a supervisor answers, and
+        // before `Unheld` when none does, so no retry and no restarted
+        // daemon counts the row ended while a scope may hold processes.
         #[cfg(target_os = "linux")]
-        let (root, own) = (Path::new(super::row_scope::CGROUP_ROOT), super::row_scope::own_rel().unwrap_or_default());
-        #[cfg(target_os = "linux")]
-        if let Err(d) = super::row_scope::recheck(root, &own, state_dir, super::row_scope::SCOPE_EMPTY_BOUND) {
-            return Ok(R::NotEnded(d));
-        }
+        let (root, own) = (super::row_scope::root(), super::row_scope::own_rel().unwrap_or_default());
 
         let (status, scope) = match sot_log::supervisor_client::query_status(state_dir) {
             Ok((status, process)) => {
                 // A4b: the challenged supervisor's own scope, captured
-                // before the end that makes it exit.
+                // and listed durably before the end that makes it exit; a
+                // failed write kills nothing.
                 #[cfg(target_os = "linux")]
-                let scope = super::row_scope::capture(root, state_dir, process.pid());
+                let scope = match super::row_scope::capture(&root, state_dir, process.pid()) {
+                    Ok(scope) => scope,
+                    Err(d) => return Ok(R::NotEnded(d)),
+                };
                 #[cfg(not(target_os = "linux"))]
                 let scope: Option<String> = {
                     let _ = process;
@@ -2432,7 +2603,17 @@ mod runtime {
                 // fence-stage failure keeps the ORIGINAL "lane
                 // unreachable" text (`e`), unchanged.
                 return match absence_proof(state_dir) {
-                    Ok(true) => Ok(R::Unheld),
+                    Ok(true) => {
+                        // A4b: scopes an earlier end listed are proven
+                        // empty before the row is counted ended.
+                        #[cfg(target_os = "linux")]
+                        if let Err(d) =
+                            super::row_scope::end(&root, &own, state_dir, None, super::row_scope::SCOPE_EMPTY_BOUND)
+                        {
+                            return Ok(R::NotEnded(d));
+                        }
+                        Ok(R::Unheld)
+                    }
                     Ok(false) => Err(std::io::Error::other("a leg is running with no authority")),
                     Err(NotProven::LegCheckFailed(detail)) => Err(std::io::Error::other(detail)),
                     Err(NotProven::FenceUnavailable) => Err(std::io::Error::other(e.to_string())),
@@ -2678,21 +2859,30 @@ mod runtime {
         }
     }
 
-    /// [`stop_and_warn`], then (Linux, A4b) end the row's own scope that
-    /// [`end_run`] captured, so a descendant that left the agent's process
-    /// group ends with the row. The kill comes after the stop, so it only
-    /// finds what the protocol could not reach. `Err` keeps the row not
-    /// ended.
+    /// [`stop_and_warn`], then (Linux, A4b) end the row's remembered
+    /// scopes and the one [`end_run`] captured, so a descendant that left
+    /// the agent's process group ends with the row. `Err` keeps the row
+    /// not ended.
     fn stop_and_end_scope(state_dir: &Path, why: &'static str, scope: Option<&str>) -> Result<(), String> {
-        stop_and_warn(state_dir, why);
+        stop_then_end_scope(state_dir, scope, || stop_and_warn(state_dir, why))
+    }
+
+    /// The graceful `stop`, then the scope end: a live supervisor is never
+    /// hard-killed ahead of its graceful end, and the kill only finds what
+    /// the protocol could not reach. `stop` is a parameter so a unit test
+    /// can see the scope file at the stop.
+    pub(super) fn stop_then_end_scope(state_dir: &Path, scope: Option<&str>, stop: impl FnOnce()) -> Result<(), String> {
+        stop();
         #[cfg(target_os = "linux")]
-        if let Some(rel) = scope {
-            use super::row_scope::{end, own_rel, CGROUP_ROOT, SCOPE_EMPTY_BOUND};
-            return end(Path::new(CGROUP_ROOT), &own_rel().unwrap_or_default(), state_dir, rel, SCOPE_EMPTY_BOUND);
+        {
+            use super::row_scope::{end, own_rel, root, SCOPE_EMPTY_BOUND};
+            end(&root(), &own_rel().unwrap_or_default(), state_dir, scope, SCOPE_EMPTY_BOUND)
         }
         #[cfg(not(target_os = "linux"))]
-        let _ = scope;
-        Ok(())
+        {
+            let _ = (state_dir, scope);
+            Ok(())
+        }
     }
 
     /// Spawn a capsule's supervisor authority AND hand it to a watchdog

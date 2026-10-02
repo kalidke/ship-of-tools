@@ -22,6 +22,7 @@ mod comm_inbox;
 mod comm_wake;
 mod comm_registry_lock;
 mod concept;
+mod durable;
 mod file_io;
 mod files_mode;
 mod handlers;
