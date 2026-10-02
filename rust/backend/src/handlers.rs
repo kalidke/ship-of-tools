@@ -4877,7 +4877,13 @@ pub(crate) enum CapsuleDestroyOutcome {
     /// row and toml MUST be kept: never orphan a live run, never claim
     /// "ended" for one that wasn't.
     Kept { detail: String },
+    /// Another path removed the row before this end reached its run: not
+    /// ours to end, and nothing of it is kept.
+    AlreadyRemoved,
 }
+
+/// What `workspace.destroy` answers for [`CapsuleDestroyOutcome::AlreadyRemoved`].
+const ALREADY_REMOVED: &str = "workspace was removed before its capsule run could be ended";
 
 /// Maps a `capsule_workspace::EndRunOutcome` to whether `workspace.destroy`
 /// may remove the row. Pure/portable so it's unit-testable without a real
@@ -5164,12 +5170,9 @@ pub(crate) async fn destroy_capsule_workspace(
             // exact sentinel string. A `None` guard here is the "row
             // already gone" race above, reusing the SAME NotFound kind —
             // never mistaken for a missing state dir.
-            Ok((Err(e), held)) if held.is_none() && e.kind() == std::io::ErrorKind::NotFound => (
-                CapsuleDestroyOutcome::Kept {
-                    detail: "workspace was removed before its capsule run could be ended".to_string(),
-                },
-                None,
-            ),
+            Ok((Err(e), held)) if held.is_none() && e.kind() == std::io::ErrorKind::NotFound => {
+                (CapsuleDestroyOutcome::AlreadyRemoved, None)
+            }
             Ok((Err(e), held)) if e.kind() == std::io::ErrorKind::NotFound => {
                 (CapsuleDestroyOutcome::Kept { detail: "state_dir_missing".to_string() }, held)
             }
@@ -5242,6 +5245,7 @@ fn default_row_end_response(
             )
         }
         CapsuleDestroyOutcome::Kept { detail } => (capsule_end_not_reached_payload(&detail), false),
+        CapsuleDestroyOutcome::AlreadyRemoved => (capsule_end_not_reached_payload(ALREADY_REMOVED), false),
     }
 }
 
@@ -5392,6 +5396,13 @@ pub async fn handle_workspace_destroy(
                         op::WORKSPACE_DESTROY,
                         capsule_end_not_reached_payload(&detail),
                     ),
+                    None,
+                )]);
+            }
+            CapsuleDestroyOutcome::AlreadyRemoved => {
+                tracing::info!(workspace_id = %workspace_id, "workspace.destroy: already removed by another end");
+                return Ok(vec![(
+                    Frame::res(req_id, op::WORKSPACE_DESTROY, capsule_end_not_reached_payload(ALREADY_REMOVED)),
                     None,
                 )]);
             }
@@ -10086,6 +10097,7 @@ mod workspace_destroy_default_row_tests {
         // `None` bypassed it) -- dropped once this proof has run.
         assert!(held.is_some(), "a terminal row must take the same row guard every other row does");
         match outcome {
+            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Removable(_) => {}
             CapsuleDestroyOutcome::Kept { detail } => {
                 panic!(
@@ -10273,6 +10285,7 @@ mod workspace_destroy_default_row_tests {
     fn starting_outcome_maps_to_a_retryable_kept_not_not_running() {
         let outcome = capsule_destroy_outcome_of(crate::capsule_workspace::EndRunOutcome::Starting);
         match outcome {
+            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Kept { detail } => {
                 assert_eq!(detail, "supervisor is starting; retry");
             }
@@ -10290,6 +10303,7 @@ mod workspace_destroy_default_row_tests {
         let outcome =
             capsule_destroy_outcome_of(crate::capsule_workspace::EndRunOutcome::AlreadyEnded);
         match outcome {
+            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Removable(detail) => {
                 assert!(
                     !detail.contains("verified"),
@@ -10319,6 +10333,7 @@ mod workspace_destroy_default_row_tests {
             );
         }
         match capsule_destroy_outcome_of(O::NotEnded("end_run failed: boom".to_string())) {
+            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Kept { detail } => assert_eq!(detail, "end_run failed: boom"),
             CapsuleDestroyOutcome::Removable(detail) => {
                 panic!("NotEnded must never map to Removable: {detail}");
@@ -10335,6 +10350,7 @@ mod workspace_destroy_default_row_tests {
     fn terminal_outcome_is_removable_not_kept() {
         use crate::capsule_workspace::EndRunOutcome as O;
         match capsule_destroy_outcome_of(O::Terminal) {
+            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Removable(detail) => {
                 assert!(
                     detail.contains("terminal"),
@@ -10354,6 +10370,7 @@ mod workspace_destroy_default_row_tests {
     fn unheld_outcome_is_removable_not_kept() {
         use crate::capsule_workspace::EndRunOutcome as O;
         match capsule_destroy_outcome_of(O::Unheld) {
+            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Removable(detail) => {
                 assert_eq!(detail, "no supervisor held the row");
             }

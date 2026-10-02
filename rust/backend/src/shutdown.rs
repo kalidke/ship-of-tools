@@ -45,6 +45,8 @@ enum Ended {
     /// Ended, but its registration files would not go.
     Forget(String),
     Drawer,
+    /// Already removed by another end: not ours to end, and not counted.
+    Gone,
     /// Not confirmed ended by the deadline.
     Not,
 }
@@ -93,7 +95,7 @@ async fn join_by(deadline: Instant, joins: Vec<(String, tokio::task::JoinHandle<
         match tokio::time::timeout_at(deadline, j).await {
             Ok(Ok(Ended::Row(id))) => report.ended.push(id),
             Ok(Ok(Ended::Forget(id))) => report.forget.push(id),
-            Ok(Ok(Ended::Drawer)) => {}
+            Ok(Ok(Ended::Drawer | Ended::Gone)) => {}
             Ok(Ok(Ended::Not)) | Ok(Err(_)) => report.not_ended += 1,
             Err(_) => {
                 tracing::warn!(%target, "window closed: its end was still running at the deadline; not ended");
@@ -134,11 +136,15 @@ async fn end_row(
             false,
         )
         .await;
-        confirmed(outcome).map(|()| held)
+        confirmed(outcome).map(|ours| ours.then_some(held))
     })
     .await;
     let held = match ended {
-        Ok(held) => held,
+        Ok(Some(held)) => held,
+        Ok(None) => {
+            tracing::info!(workspace_id = %ws.workspace_id, "window closed: already removed by another end");
+            return Ended::Gone;
+        }
         Err(detail) => {
             tracing::warn!(workspace_id = %ws.workspace_id, %detail, "window closed: row not ended by the deadline; it stays registered and running");
             return Ended::Not;
@@ -192,7 +198,7 @@ async fn end_drawer(state_root: PathBuf, deadline: Instant) -> Ended {
             })
             .await
             {
-                Ok(Ok(o)) => confirmed(crate::handlers::capsule_destroy_outcome_of(o)),
+                Ok(Ok(o)) => confirmed(crate::handlers::capsule_destroy_outcome_of(o)).map(|_| ()),
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(join_err) => Err(format!("end_run task panicked: {join_err}")),
             }
@@ -208,10 +214,12 @@ async fn end_drawer(state_root: PathBuf, deadline: Instant) -> Ended {
     }
 }
 
-/// A confirmed end is done; a kept one is tried again.
-fn confirmed(outcome: CapsuleDestroyOutcome) -> Result<(), String> {
+/// A confirmed end is done (`true`), and so is a row another end already
+/// removed (`false`: not ours); a kept one is tried again.
+fn confirmed(outcome: CapsuleDestroyOutcome) -> Result<bool, String> {
     match outcome {
-        CapsuleDestroyOutcome::Removable(_) => Ok(()),
+        CapsuleDestroyOutcome::Removable(_) => Ok(true),
+        CapsuleDestroyOutcome::AlreadyRemoved => Ok(false),
         CapsuleDestroyOutcome::Kept { detail } => Err(detail),
     }
 }
@@ -344,7 +352,7 @@ mod tests {
             async move { confirmed(crate::handlers::capsule_destroy_outcome_of(o)) }
         })
         .await;
-        assert_eq!(got, Ok(()));
+        assert_eq!(got, Ok(true));
 
         // Refused forever: tried once per second, then not ended at the deadline.
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -418,6 +426,21 @@ mod tests {
             .await
             .expect("end_rows did not return by its deadline");
         assert_eq!(report, EndReport { ended: vec!["done".into()], not_ended: 1, forget: Vec::new() });
+    }
+
+    #[tokio::test]
+    async fn already_removed_row_is_not_kept() {
+        let reg = Workspaces::new();
+        let mut row = Workspace::from_label("gone", PathBuf::from("/p/gone"), false, "none".into(), String::new(), String::new());
+        row.runtime = "capsule".to_string();
+        let row = reg.insert(row);
+        // Another end removed it first.
+        let _ = reg.remove_by_id(&row.workspace_id);
+        let (events, _rx) = broadcast::channel(4);
+        let started = Instant::now();
+        let ended = end_row(&row, false, &reg, &events, started + Duration::from_secs(3)).await;
+        assert_eq!(ended, Ended::Gone);
+        assert!(started.elapsed() < RETRY_EVERY, "an already-removed row was retried");
     }
 
     #[cfg(unix)]
