@@ -17,6 +17,8 @@ Sessions end when the last window on the computer closes. Closing one of two lea
 
 A window that reaches a backend on another computer never ends sessions there: they keep running when it closes, and the next window reattaches. Closing the last window on the computer that runs the backend ends every session there, including any that a window on another computer was viewing.
 
+Every computer that runs a window also runs its own private backend, so a computer that only runs windows still opens sessions of its own, and they end with its last window. The one exception is an install made with `--backend <ssh-alias>`, whose window reaches only that remote backend.
+
 ## When closing will not end sessions
 
 A line at the bottom of the navigation pane says so when this window holds no claim on this computer's backend: the backend could not verify the window, the backend is older than the window, or there is no backend on this computer. Closing such a window leaves every session running.
