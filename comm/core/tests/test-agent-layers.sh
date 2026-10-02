@@ -207,6 +207,13 @@ wtbl 2 "a quoted TAB stays inside its argument, and the rest is read: two layers
 wtbl 2 "a quoted TAB against a space in the child: two layers" \
     "bash.exe${TAB}bash.exe -c x" "codex.exe${TAB}codex.exe \"A B\"" "node.exe${TAB}$WCJS \"A${TAB}B\"" "sot-capsule.exe${TAB}sot-capsule.exe run"
 
+# The Microsoft C runtime's rules for backslashes before a quote (and `""` inside quotes): a host
+# and a child whose arguments are the same under those rules are one layer, otherwise two.
+wpair() { wtbl "$1" "C runtime: host $2 against child $3" "bash.exe${TAB}bash.exe -c x" "codex.exe${TAB}codex.exe $3" "node.exe${TAB}$WCJS $2" "sot-capsule.exe${TAB}sot-capsule.exe run"; }
+wpair 1 '"a\\"' 'a\'; wpair 1 '"a\\\\"' 'a\\'; wpair 1 'a\\\"' '"a\\\""'; wpair 1 '"a b"\' '"a b\\"'   # F F C F
+wpair 1 '"a b\"' '"a b\""'; wpair 1 '"a""b c"' '"a\"b c"'; wpair 1 'p q' 'p q'                      # C F C
+wpair 2 '"a\\"' 'a\\'; wpair 2 'a\\\"' '"a\\"'; wpair 2 '"a b"' 'a b'                                 # C C C: arguments differ
+
 # --- 1c. the two non-Linux parsers, as stdin filters (Linux walks /proc, so they run nowhere else) ---
 pipes() { tr "$US" '|' | tr '\n' ' ' | sed 's/ $//'; }
 eq "ps filter: a chain to the top, spaces become field breaks" \
@@ -219,6 +226,7 @@ eq "ps filter: a chain past 64 is truncated at 64" \
     "$(for ((i = 1000; i < 1070; i++)); do printf '%s %s bash\n' "$i" "$((i + 1))"; done | _sot_ps_records 1000 | awk 'END { print NR, $0 }')" "65 !truncated"
 eq "windows filter: arguments, quotes and an escaped quote; argv[0] is dropped" \
     "$(printf '%s\n' "bash.exe${TAB}C:\\git\\bash.exe -c \"x y\"" "a.exe${TAB}a.exe \"p\\\"q\"" | _sot_win_records | pipes)" 'bash.exe|-c|x y a.exe|p"q !end'
+eq "windows filter: the C runtime's backslash and quote rules" "$(printf '%s\n' "a.exe${TAB}"'a.exe "a\\" a\\\" "a b"\ "a""b c" x\\y' | _sot_win_records | pipes)" 'a.exe|a\|a\"|a b\|a"b c|x\\y !end'
 eq "windows filter: a node.exe with an empty command line is truncated, and nothing follows" \
     "$(printf '%s\n' "bash.exe${TAB}bash.exe" "node.exe${TAB}" "claude.exe${TAB}claude.exe" | _sot_win_records | pipes)" "bash.exe !truncated"
 eq "windows filter: any other exe with an empty command line has arguments unknown (one RS argument), not an empty tail" \

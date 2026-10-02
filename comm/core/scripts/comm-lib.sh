@@ -1837,7 +1837,9 @@ _sot_ps_records() {
 # first; the exe ends at the first TAB (an exe name holds none) and the command
 # line is everything after it, its own TABs raw. Prints one record per process
 # (the exe, then the command line's arguments after argv[0], tokenised the way
-# Windows does: double quotes group, \" is a quote, an unquoted TAB or space
+# the Microsoft C runtime does: n backslashes then a quote give n/2 backslashes
+# and a literal quote when n is odd, else a quote mark; a quote mark inside quotes
+# followed by another quote is one literal quote; an unquoted TAB or space
 # separates and a quoted one stays; \x1c and \x1b, sotd's newline and return,
 # are not white space and stay inside their token), then `!end`. A `!` line from
 # sotd, or a node.exe whose command line could not be read (a node host cannot be told from any other node), is
@@ -1846,11 +1848,16 @@ _sot_ps_records() {
 # tail and equals nothing (_sot_agent_layers).
 _sot_win_records() {
     awk -F '\t' -v us="$(printf '\037')" -v rs="$(printf '\036')" '
+        function bs(k,   s) { s = ""; while (k-- > 0) s = s "\\"; return s }
         /^!/ { print "!truncated"; trunc = 1; exit }
         { exe = $1; cl = substr($0, length($1) + 2); nt = 0; cur = ""; q = 0; has = 0
           for (i = 1; i <= length(cl); i++) { c = substr(cl, i, 1)
-            if (c == "\\" && substr(cl, i + 1, 1) == "\"") { cur = cur "\""; i++; has = 1 }
-            else if (c == "\"") { q = !q; has = 1 }
+            if (c == "\\") { n = 0; while (substr(cl, i, 1) == "\\") { n++; i++ }
+              has = 1
+              if (substr(cl, i, 1) != "\"") { cur = cur bs(n); i--; continue }
+              cur = cur bs(int(n / 2)); if (n % 2) { cur = cur "\""; continue }
+              c = "\"" }
+            if (c == "\"") { if (q && substr(cl, i + 1, 1) == "\"") { cur = cur "\""; i++ } else q = !q; has = 1 }
             else if ((c == " " || c == "\t") && !q) { if (has) { tk[++nt] = cur; cur = ""; has = 0 } }
             else { cur = cur c; has = 1 } }
           if (has) tk[++nt] = cur
@@ -1880,8 +1887,8 @@ _sot_ancestor_chain() {
         case "$rc" in 0|3) ;; *) echo "sotd ancestors failed (rc $rc): update sotd"; return 1 ;; esac
         out="${out//$'\r'/}"
         [ -n "$out" ] || return 1
-        # On 3 sotd's own last line is `!truncated`; one is added only if it is missing.
-        { printf '%s\n' "$out"; [ "$rc" -ne 3 ] || case "${out##*$'\n'}" in '!truncated') ;; *) echo '!truncated' ;; esac; } | _sot_win_records
+        # On 3 a `!truncated` line is added; a second is never read (the filter exits at the first `!` line).
+        { printf '%s\n' "$out"; [ "$rc" -ne 3 ] || echo '!truncated'; } | _sot_win_records
     elif [ -r "/proc/$$/stat" ]; then
         p=$$
         while :; do

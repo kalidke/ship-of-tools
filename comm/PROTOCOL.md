@@ -467,7 +467,7 @@ Monitor exists.
   the top of its process tree outside a row. A `node` process is an agent when
   any of its arguments names one or lies in its npm package, and it counts once
   with its native child only when that child is its direct child and its
-  arguments after the binary equal the host's after its script. Agents are
+  arguments after the binary equal the host's after its script (on Windows, as the Microsoft C runtime splits each command line, its backslash and `""` rules included). Agents are
   named, not launchers: the list is the agents comm ships an adapter for, and it
   grows in the commit that adds one. The check reads each ancestor's full
   command line, and an ancestry it cannot read in full (a walk past 64
