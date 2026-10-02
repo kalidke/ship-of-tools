@@ -48,7 +48,8 @@
 //! (`headless::free_test_lines`): Claude Code draws its suggestion and placeholders dim, so they read empty,
 //! while a typed draft is not dim and reads not free wherever its cursor sits. The input must reach the main
 //! agent: no agents panel below the box, or the leader view's panel ([`panel_refusal`]); any other layout
-//! refuses. Known limits: a suggestion drawn by colour rather than dim reads as a draft, and so does every
+//! refuses. A row with unread mail that the wake refuses for [`REFUSED_FOR`] gets one log line per run of
+//! refusals, naming its handle, the reason and the line above the prompt. Known limits: a suggestion drawn by colour rather than dim reads as a draft, and so does every
 //! suggestion on Windows until a screen read shows SGR 2 survives ConPTY; a statusline that draws `●` or `◯`
 //! below the box refuses the row; with no panel nothing below the box is checked, so a view of another agent
 //! or a focus off the input that drew no panel would read free (every captured view draws the panel).
@@ -66,6 +67,9 @@ use crate::workspaces::Workspaces;
 pub const TICK: Duration = Duration::from_secs(2);
 /// Mail still unread this long after a wake gets one more line.
 const REPEAT_AFTER: Duration = Duration::from_secs(600);
+/// A row with unread mail that the wake has refused this long is logged, once per run of refusals, so a prompt
+/// the free test does not recognise is not silent.
+const REFUSED_FOR: Duration = Duration::from_secs(60);
 /// The Stop hook's longest run (its auditor call is capped at 45 s; Codex kills the hook at 10 s). A row whose
 /// registry entry carries a `stop_at` mark at most this old is running its Stop hook and is not typed into; an
 /// older mark is a Stop that never ended (Esc, an API error, a killed hook).
@@ -379,6 +383,7 @@ fn panel_refusal(below: &[String]) -> Option<&'static str> {
 /// The tick. Runs forever; started once from `server::run`.
 pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces, period: Duration) {
     let mut woken: HashMap<String, Woken> = HashMap::new();
+    let mut streaks: HashMap<String, Streak> = HashMap::new();
     let mut warned: HashSet<String> = HashSet::new();
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -419,14 +424,8 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
             checks.push((handle, tokio::task::spawn_blocking(move || check_row(&home, &h, &state_dir, &agent, prior))));
         }
         for (handle, check) in checks {
-            match check.await {
-                Ok(Step::Clear) => {
-                    woken.remove(&handle);
-                }
-                Ok(Step::Woke(w)) => {
-                    woken.insert(handle, w);
-                }
-                Ok(Step::Skip) | Err(_) => {}
+            if let Ok(step) = check.await {
+                settle(&mut woken, &mut streaks, handle, step, Instant::now());
             }
         }
     }
@@ -436,6 +435,44 @@ enum Step {
     Clear,
     Skip,
     Woke(Woken),
+    /// The screen was not a free prompt, or did not hold still.
+    Refused(Refusal),
+}
+
+/// Why the wake did not type into a row with mail: a [`refused_on`] reason, `stop hook running` or `moved during
+/// the hold`, and the line above the cursor's row (the box's top border, when there is a box).
+#[derive(Debug)]
+struct Refusal {
+    reason: &'static str,
+    border: String,
+}
+
+/// A row with mail that the wake keeps refusing: when the run of refusals began, and whether its one line is out.
+struct Streak {
+    since: Instant,
+    logged: bool,
+}
+
+/// One row's tick result into the task's memory. A wake or a read inbox ends the row's refusal streak.
+fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Streak>, handle: String, step: Step, now: Instant) {
+    match step {
+        Step::Clear => {
+            woken.remove(&handle);
+            streaks.remove(&handle);
+        }
+        Step::Woke(w) => {
+            streaks.remove(&handle);
+            woken.insert(handle, w);
+        }
+        Step::Refused(r) => {
+            let s = streaks.entry(handle.clone()).or_insert(Streak { since: now, logged: false });
+            if !s.logged && now.duration_since(s.since) >= REFUSED_FOR {
+                s.logged = true;
+                tracing::info!(handle = %handle, reason = ?r.reason, border = ?r.border, "comm wake: a row with unread mail keeps refusing the wake");
+            }
+        }
+        Step::Skip => {}
+    }
 }
 
 fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Option<Woken>) -> Step {
@@ -452,11 +489,15 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
     if crate::capsule_workspace::phase_of(state_dir) != ready {
         return Step::Skip;
     }
+    let seen: std::cell::RefCell<(Option<&'static str>, String)> = Default::default();
     let free = |l: &[String], c: Option<(u16, u16)>, a: &str| {
         // The registry, then the clock: a mark the read sees was stamped no later than `now`.
         let registry = crate::handlers::read_registry_fresh(&home.join("registry.json")).unwrap_or_default();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        refused_on(l, c, a, cfg!(windows)).is_none() && !stop_hook_running(&registry, handle, now)
+        let reason = refused_on(l, c, a, cfg!(windows)).or_else(|| stop_hook_running(&registry, handle, now).then_some("stop hook running"));
+        let border = c.and_then(|(row, _)| l.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
+        *seen.borrow_mut() = (reason, border);
+        reason.is_none()
     };
     match wake_if_free(
         state_dir,
@@ -470,6 +511,10 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         PACING_BUDGET,
     ) {
         Ok(WakeOutcome::Woke { enter_sent: true }) => Step::Woke(Woken { line: s.total, at: Instant::now() }),
+        Ok(WakeOutcome::NotFree) => {
+            let (reason, border) = seen.take();
+            Step::Refused(Refusal { reason: reason.unwrap_or("moved during the hold"), border })
+        }
         Ok(_) => Step::Skip,
         Err(e) => {
             tracing::debug!(handle, phase = e.phase, detail = %e.detail, "comm wake: row not typeable this tick");
@@ -1134,5 +1179,53 @@ mod tests {
         let mut p = parsed("\u{276f}\u{a0}");
         p.process(b"\x1b[4;1H\x1b[2mfooter\x1b[22m\x1b[2;3H");
         assert_eq!(free_test_lines(p.screen())[3], "footer");
+    }
+    /// A log sink for one test: `tracing` writes here while the test's subscriber is the default.
+    #[derive(Clone, Default)]
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_refusal_streak_logs_one_line_and_a_wake_or_a_read_ends_it() {
+        let buf = LogBuf::default();
+        let sink = buf.clone();
+        let sub = tracing_subscriber::fmt().with_writer(move || sink.clone()).with_ansi(false).finish();
+        let text = || String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        let count = || text().matches("keeps refusing the wake").count();
+        let refused = || Step::Refused(Refusal { reason: "input not empty", border: "──── named-session ─".to_string() });
+        let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
+        let t0 = Instant::now();
+        let mut at = |d: Duration, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + d);
+        tracing::subscriber::with_default(sub, || {
+            // Inside the bound: silent. Fails if the bound is ignored.
+            at(Duration::ZERO, refused());
+            at(REFUSED_FOR - Duration::from_secs(1), refused());
+            assert_eq!(count(), 0, "inside the bound: silent");
+            // One line per streak, with its fields. Fails if the info! is deleted, a field dropped, or a streak logs twice.
+            at(REFUSED_FOR, refused());
+            at(REFUSED_FOR * 5, refused());
+            assert_eq!(count(), 1, "one line per streak");
+            let t = text();
+            assert!(t.contains("handle=h ") && t.contains("reason=\"input not empty\"") && t.contains("border=\"──── named-session ─\""), "{t}");
+            // A wake ends the streak. Fails if it does not (the old streak is logged, so the count stays 1).
+            at(REFUSED_FOR * 6, Step::Woke(Woken { line: 1, at: t0 }));
+            at(REFUSED_FOR * 7, refused());
+            assert_eq!(count(), 1, "a new streak waits its own bound");
+            at(REFUSED_FOR * 8, refused());
+            assert_eq!(count(), 2);
+            // A read inbox ends it too. Fails if Clear leaves the streak.
+            at(REFUSED_FOR * 9, Step::Clear);
+            at(REFUSED_FOR * 10, refused());
+            at(REFUSED_FOR * 11, refused());
+            assert_eq!(count(), 3);
+        });
     }
 }
