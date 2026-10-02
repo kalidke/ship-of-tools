@@ -150,7 +150,9 @@ quote these facts to the human and wait for an explicit yes:
   plus user lingering (`loginctl enable-linger`) so the user-level `sotd`
   systemd service keeps the backend running after logout on Linux.
 - Skills and hooks go into their global `~/.claude` and `~/.codex`. Hooks are
-  merged into `~/.claude/settings.json` without removing existing ones. A
+  merged into `~/.claude/settings.json`, and into each
+  `~/.claude-auth/<name>/settings.json` that exists, without removing existing
+  ones. A
   skill of theirs with the same name as a shipped one (`julia-repl`,
   `show-result`, `sitrep`, `worktree`, `project-log`) is overwritten without a
   backup.

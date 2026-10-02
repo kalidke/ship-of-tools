@@ -125,15 +125,18 @@ installs the agent integration:
 | `~/.sot-comm/` | the session messaging scripts (`bin/`) and their runtime state |
 | `~/.local/bin/` | `ccb` (Claude Code launcher), `ccx` (Codex launcher), `sot-fe`, `show-result`, `sot-gh-auth` |
 | `~/.claude/skills/` | the Claude Code skills: `julia-repl`, `show-result`, `sot-comm`, `sot-session-start`, `sot-status`, `sitrep`, `worktree`, `project-log`, `sot-install`, `sot-setup`, `sot-statusline-setup`, `sot-gh-auth` |
-| `~/.claude/settings.json` | hook entries for `UserPromptSubmit`, `PreToolUse` (on `AskUserQuestion`), `PostToolUse`, `Stop` and `SessionStart` (on `compact` and `clear`), each calling a `comm-*.sh` script in `~/.sot-comm/bin`; merged in without removing existing hooks |
+| `~/.claude/settings.json` | hook entries for `UserPromptSubmit`, `PreToolUse` (on `AskUserQuestion`), `PostToolUse` and `Stop`, each calling a `comm-*.sh` script in `~/.sot-comm/bin`; merged in without removing existing hooks |
+| `~/.claude-auth/<name>/settings.json` | the same hook entries, merged the same way into each Claude account that has a `settings.json`; a link is followed and its target written once, and an account folder with none is skipped and none is created there (the backend links the shared one in at the account's first spawn) |
 | `~/.codex/skills/` | the Codex skills `sot-comm` and `sot-session-start` |
 | `~/.codex/AGENTS.md` | installed only if no `AGENTS.md` is there |
 | `~/.agents/plugins/sot-comm/`, `~/.agents/plugins/marketplace.json` | the Codex work-state hook plugin; written whether or not Codex is installed, and registered with `codex plugin add sot-comm@sot-local` when it is |
 
 `~/.claude` and `~/.codex` follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when
 those are set; `~/.sot-comm` follows `SOT_COMM_HOME`. The other paths do not
-move: `~/.local/bin`, `~/.agents/plugins` and everything in the first table
-are always written in your home directory. Setting those three variables is
+move: `~/.local/bin`, `~/.agents/plugins`, `~/.claude-auth` and everything in
+the first table are always written in your home directory, and an existing
+`~/.claude/settings.json` gets the hooks even when `CLAUDE_CONFIG_DIR` points
+elsewhere. Setting those three variables is
 therefore not an isolated try-out; for that, install under a separate user
 account or in a virtual machine.
 
@@ -217,7 +220,8 @@ them.
 Then, by hand:
 
 - remove the hook entries that call `~/.sot-comm/bin/comm-*.sh` from
-  `~/.claude/settings.json`;
+  `~/.claude/settings.json` and from each `~/.claude-auth/<name>/settings.json`
+  that is a file of its own;
 - if Codex is installed, remove the `sot-comm@sot-local` plugin (it is listed
   by `codex plugin list`);
 - remove the `sot-local` entry from `~/.agents/plugins/marketplace.json`, or
