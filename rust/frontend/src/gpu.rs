@@ -22947,8 +22947,9 @@ fn build_repl_lines(
 // junction; cells to the right of `x` get the outer vertical run
 // unchanged.
 // `llm_left_vline`: x of the vertical divider that runs full height
-// (Llm's left edge) when the drawer is partially scoped. Other vlines
-// stop at the drawer line.
+// (Llm's left edge) when the drawer is partially scoped. It and every
+// vline right of it run full height; vlines left of it stop at the
+// drawer line.
 fn draw_wireframe(
     buf: &mut ratatui::buffer::Buffer,
     area: ratatui::layout::Rect,
@@ -22984,18 +22985,24 @@ fn draw_wireframe(
             buf.set_string(x, bot, "─", style);
         }
     }
+    // The drawer line runs to `hline_right_excl`; a vertical at `x` past
+    // that is not crossed by it and so is drawn on the hline rows too.
+    let hline_right_excl = drawer_x_end.map(|x| x + 1).unwrap_or(right);
+    let hline_reaches = |x: u16| x <= hline_right_excl;
+    let full_height = |x: u16| llm_left_vline.is_some_and(|lv| x >= lv);
     // Outer left/right vertical runs (skip the cell where an hline
     // crosses — junction handling fills it in below).
     for y in (top + 1)..bot {
         if !is_hline(y) {
             buf.set_string(left, y, "│", style);
+        }
+        if !is_hline(y) || !hline_reaches(right) {
             buf.set_string(right, y, "│", style);
         }
     }
     // Inner horizontal runs (drawer top). Optionally truncated at
     // `drawer_x_end` when the Llm column wants the right side full
     // height.
-    let hline_right_excl = drawer_x_end.map(|x| x + 1).unwrap_or(right);
     for &y in hlines {
         for x in (left + 1)..hline_right_excl {
             if !is_vline(x) {
@@ -23003,17 +23010,16 @@ fn draw_wireframe(
             }
         }
     }
-    // Inner vertical runs. The Llm-left vline runs full height; every
-    // other vline stops at the drawer line.
+    // Inner vertical runs. The Llm-left vline and every vline right of
+    // it run full height; the others stop at the drawer line.
     for &x in vlines {
-        let full_height = Some(x) == llm_left_vline;
-        let v_bot = if full_height {
+        let v_bot = if full_height(x) {
             bot.saturating_sub(1)
         } else {
             short_vline_bot_y
         };
         for y in (top + 1)..=v_bot {
-            if !is_hline(y) {
+            if !is_hline(y) || !hline_reaches(x) {
                 buf.set_string(x, y, "│", style);
             }
         }
@@ -23030,10 +23036,9 @@ fn draw_wireframe(
     }
     // Bottom-edge T-junctions for every vline that reaches the
     // outer bottom — i.e. when no drawer is open, OR when this vline
-    // is the Llm-left full-height divider running past the drawer.
+    // is a full-height divider running past the drawer.
     for &x in vlines {
-        let full_height = Some(x) == llm_left_vline;
-        let reaches_bot = hlines.is_empty() || full_height;
+        let reaches_bot = hlines.is_empty() || full_height(x);
         if reaches_bot {
             buf.set_string(x, bot, "┴", style);
         }
@@ -23048,8 +23053,10 @@ fn draw_wireframe(
             buf.set_string(right, y, "┤", style);
         }
         for &x in vlines {
-            let full_height = Some(x) == llm_left_vline;
-            if full_height {
+            if !hline_reaches(x) {
+                continue;
+            }
+            if full_height(x) {
                 // Hline approaches from the left only; vline runs
                 // top → bottom through this cell: ┤.
                 buf.set_string(x, y, "┤", style);
@@ -23915,6 +23922,44 @@ fn force_os_foreground(window: &winit::window::Window) -> bool {
 mod tests {
     use super::*;
     use sot_protocol::TreeNode;
+
+    #[test]
+    fn wireframe_right_edges_survive_a_partial_drawer() {
+        use crate::settings::{LayoutPreset, Slot};
+        use ratatui::{buffer::Buffer, layout::Rect};
+        let area = Rect::new(0, 0, 60, 20);
+        let paint = |p: &LayoutPreset| {
+            let geom = crate::layout::compute(area, p, true, None);
+            let mut buf = Buffer::empty(area);
+            draw_wireframe(
+                &mut buf,
+                area,
+                &geom.vlines,
+                &geom.hlines,
+                geom.drawer_x_end,
+                geom.llm_left_vline,
+                Style::default(),
+            );
+            (buf, geom)
+        };
+        // (a) the outer right edge is unbroken at the drawer line.
+        let (buf, geom) = paint(&LayoutPreset::default_ultrawide());
+        let y = geom.hlines[0];
+        assert_eq!(buf[(59, y)].symbol(), "│");
+        // (b) a divider right of the agent column runs full height.
+        let p = LayoutPreset {
+            columns: vec![Slot::Nav, Slot::Llm, Slot::Preview],
+            widths: vec![0.2, 0.4, 0.4],
+            drawer: Some(Slot::Repl),
+            drawer_height: 0.4,
+        };
+        let (buf, geom) = paint(&p);
+        let y = geom.hlines[0];
+        let x = geom.vlines[1];
+        assert_eq!(buf[(x, y)].symbol(), "│");
+        assert_eq!(buf[(x, y + 1)].symbol(), "│");
+        assert_eq!(buf[(x, 19)].symbol(), "┴");
+    }
 
     #[test]
     fn move_in_walks_only_the_laid_out_columns() {
