@@ -41,7 +41,7 @@ source "$SCRIPT_DIR/comm-lib.sh"
 # add`); the gate comes before option parsing and any git write, --help included.
 _why="$(sot_require_agent)" || { echo "comm-worktree-new.sh: $_why" >&2; exit 1; }
 
-usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { awk 'NR > 1 { if (!/^#/) exit; print }' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 SHORT=""; BASE_REF=""; BRANCH=""; TASK=""; EXPERTISE=""; SPAWN=true; SYMLINKS=true; DISPLAY_PREFIX_FLAG=""; AGENT=""
 while [ $# -gt 0 ]; do

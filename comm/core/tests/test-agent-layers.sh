@@ -537,6 +537,10 @@ for v in "c1" "c1 --no-spawn"; do
 done
 run own "$SELF_ROW" bash -c 'cd "$1" && shift && exec "$@"' _ "$WTR" "$SCRIPTS_DIR/comm-worktree-new.sh" c2 --no-spawn
 if [ "$RC" -eq 0 ] && [ -d "$WORK/wtp/worktrees/repo-wt-c2" ] && git -C "$WTR" show-ref --quiet --verify refs/heads/wt/c2; then ok "own: comm-worktree-new.sh c2 --no-spawn makes the worktree and branch"; else bad "own: comm-worktree-new.sh c2 --no-spawn (rc $RC: $OUT)"; fi
+run own "$SELF_ROW" bash -c 'cd "$1" && shift && exec "$@"' _ "$WTR" "$SCRIPTS_DIR/comm-worktree-new.sh" --help
+eq  "own: comm-worktree-new.sh --help exits 0" "$RC" 0
+has "own: comm-worktree-new.sh --help describes --expertise" "$OUT" "--expertise \"...\" comma-separated"
+has "own: comm-worktree-new.sh --help describes --display-prefix (the last option)" "$OUT" "--display-prefix L  override"
 # A fresh comm home: a refused child makes no registry skeleton.
 H2="$WORK/home2"; mkdir -p "$H2"
 before="$(snap "$H2")"
