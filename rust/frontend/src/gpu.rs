@@ -4984,6 +4984,8 @@ struct State {
     /// Not-ended counts shown and not yet reported to the daemon; sent
     /// right after the frame that shows them is presented.
     notice_acks: Vec<(crate::dial::HostKey, u32)>,
+    /// The not-ended line a lease grant reported, and when it stops showing.
+    not_ended_shown: Option<(String, std::time::Instant)>,
     /// Set once the window is on its way out and waiting for the daemons' acks.
     leaving: Option<crate::lease::Leaving>,
     /// ADR 0045 decision 1 (Codex review, lane B5 discharge): which
@@ -5772,6 +5774,42 @@ fn wrap_status(text: &str, first_w: usize, rest_w: usize) -> Vec<String> {
         limit = rest_w;
         first = false;
     }
+}
+
+/// The nav pane's status lines: "status: " heads the first, and the text
+/// wraps under it at `width` cells.
+fn status_spans(status: &str, width: usize) -> Vec<RtLine<'static>> {
+    let label = "status: ";
+    let text = Style::default().fg(Color::LightGreen);
+    let first_w = width.saturating_sub(unicode_width::UnicodeWidthStr::width(label));
+    let mut segs = wrap_status(status, first_w, width).into_iter();
+    let mut lines = vec![RtLine::from(vec![
+        Span::styled(label, Style::default().fg(Color::DarkGray)),
+        Span::styled(segs.next().unwrap_or_default(), text),
+    ])];
+    lines.extend(segs.map(|seg| RtLine::from(vec![Span::styled(seg, text)])));
+    lines
+}
+
+/// The nav pane's pinned rows, drawn under the scrolled list so no scroll
+/// hides them: the lease notice, then the open prompt or, with none open,
+/// `line` (the not-ended count or `closing…`). Each wraps at `width` cells.
+/// Returns the height left to the list and the rows; a pane too short for
+/// them all keeps the last ones, so the prompt is the last to go.
+fn nav_pinned_rows(
+    prompt: Option<&str>,
+    notice: Option<&str>,
+    line: Option<&str>,
+    width: usize,
+    pane_height: usize,
+) -> (usize, Vec<String>) {
+    let mut rows = Vec::new();
+    for text in [notice, prompt.or(line)].into_iter().flatten() {
+        rows.extend(wrap_status(text, width, width));
+    }
+    let keep = rows.len().min(pane_height);
+    rows.drain(..rows.len() - keep);
+    (pane_height - keep, rows)
 }
 
 /// Letterbox an image of `(iw, ih)` into `outer`, preserving aspect ratio.
@@ -6877,6 +6915,7 @@ impl State {
             #[cfg(windows)]
             own_state_root: crate::paths::sot_state_dir().map(|d| sot_log::state_dir::state_dir_hash(&d)),
             notice_acks: Vec::new(),
+            not_ended_shown: None,
             leaving: None,
             host_resolved_dial: HashMap::new(),
             link_gates: HashMap::new(),
@@ -13451,9 +13490,8 @@ impl State {
                 }
                 crate::transport::IncomingEvt::NotEnded { count } => {
                     if let Some(line) = crate::lease::not_ended_line(count) {
-                        self.status = line;
-                        self.notify_sticky_until =
-                            Some(std::time::Instant::now() + NOTIFY_STICKY);
+                        self.not_ended_shown =
+                            Some((line, std::time::Instant::now() + NOTIFY_STICKY));
                         self.notice_acks.push((event_host.clone(), count));
                         self.window.request_redraw();
                     }
@@ -16458,25 +16496,24 @@ impl State {
         // pass tail to paint.
         let mut nav_spill_segs_out: Vec<NavSpillSeg> = Vec::new();
 
-        // When a NavTree text prompt is up, the status line becomes the
-        // prompt's input field so the user sees what they're typing — least
-        // invasive spot (no extra chrome row, no layout shift). A block
-        // cursor (▏) marks the insertion point.
-        let status = match &self.nav_prompt {
-            Some(NavPrompt::CreateFile { input, .. }) => format!("new file or dir/: {input}▏"),
-            Some(NavPrompt::ConfirmDelete { label, .. }) => {
-                format!("delete {label}? [y/N]")
-            }
-            Some(NavPrompt::ScaleEntry { input, .. }) => {
-                format!("pixel size (nm): {input}▏")
-            }
-            Some(NavPrompt::ConfirmQuit { keep }) => quit_prompt_line(*keep),
-            None => self
-                .leaving
-                .as_ref()
-                .and_then(|l| l.line())
-                .unwrap_or_else(|| crate::lease::status_line(self.leases.notice(), &self.status)),
+        // A NavTree prompt, the not-ended count or `closing…`, and the lease
+        // notice are pinned under the nav list (`nav_pinned_rows`), so no
+        // scroll hides what Enter would confirm. A text prompt is the
+        // input field the user types into; a block cursor (▏) marks the
+        // insertion point.
+        let status = self.status.clone();
+        let nav_prompt_line = match &self.nav_prompt {
+            Some(NavPrompt::CreateFile { input, .. }) => Some(format!("new file or dir/: {input}▏")),
+            Some(NavPrompt::ConfirmDelete { label, .. }) => Some(format!("delete {label}? [y/N]")),
+            Some(NavPrompt::ScaleEntry { input, .. }) => Some(format!("pixel size (nm): {input}▏")),
+            Some(NavPrompt::ConfirmQuit { keep }) => Some(quit_prompt_line(*keep)),
+            None => None,
         };
+        let nav_line = self.leaving.as_ref().and_then(|l| l.line()).or_else(|| {
+            let now = std::time::Instant::now();
+            self.not_ended_shown.as_ref().filter(|(_, until)| now < *until).map(|(l, _)| l.clone())
+        });
+        let lease_notice = self.leases.notice();
         // Local wall-clock of the machine running the frontend, sampled once
         // per frame and turned into the top-right chrome clock text at the
         // paint site below (`clock_label`, which also prefixes the date
@@ -17227,30 +17264,21 @@ impl State {
                     if nav_focus { "· [FOCUS]" } else { "" }
                 );
                 // Help lives on the focused border; keep the nav header compact.
-                // The status text wraps at the pane's width (a toast or the
-                // close reminder is a sentence): "status: " heads the first
-                // line only. Everything below counts from body_lines.len(),
-                // and the cursor's body position (a header of one status line
-                // and a spacer, computed before the draw) shifts by the extra
-                // lines here.
-                let status_label = "status: ";
+                // The status text wraps at the pane's width (a toast is a
+                // sentence): "status: " heads the first line only. Everything
+                // below counts from body_lines.len(), and the cursor's body
+                // position (a header of one status line and a spacer, computed
+                // before the draw) shifts by the extra lines here.
                 let nav_w = nav_rect.width as usize;
-                let mut status_segs = wrap_status(
-                    &status,
-                    nav_w.saturating_sub(unicode_width::UnicodeWidthStr::width(status_label)),
+                let (nav_list_h, nav_pinned) = nav_pinned_rows(
+                    nav_prompt_line.as_deref(),
+                    lease_notice,
+                    nav_line.as_deref(),
                     nav_w,
-                )
-                .into_iter();
-                let mut body_lines = Vec::new();
-                body_lines.push(RtLine::from(vec![
-                    Span::styled("status: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(status.clone(), Style::default().fg(Color::LightGreen)),
-                    Span::styled(status_label, Style::default().fg(Color::DarkGray)),
-                    Span::styled(status_segs.next().unwrap_or_default(), Style::default().fg(Color::LightGreen)),
-                ]));
-                for seg in status_segs {
-                    body_lines.push(RtLine::from(vec![Span::styled(seg, Style::default().fg(Color::LightGreen))]));
-                }
+                    nav_rect.height as usize,
+                );
+                let nav_list_rect = ratatui::layout::Rect { height: nav_list_h as u16, ..nav_rect };
+                let mut body_lines = status_spans(&status, nav_w);
                 let nav_cursor_body_pos = nav_cursor_body_pos + body_lines.len() - 1;
                 body_lines.push(RtLine::from(""));
                 if tree_empty {
@@ -17399,7 +17427,7 @@ impl State {
                 // releases it. Header lines scroll off the top as a
                 // simple trade; sub-paneled header/footer is a later
                 // refinement.
-                let nav_inner_h = nav_rect.height as usize;
+                let nav_inner_h = nav_list_h;
                 let body_len = body_lines.len();
                 if !nav_has_cursor || body_len <= nav_inner_h {
                     nav_scroll = 0;
@@ -17437,7 +17465,7 @@ impl State {
                         .saturating_sub(nav_rect.x) as usize;
                     let first = nav_scroll as usize;
                     let tree_span = tree_rows_body_start..tree_rows_body_end;
-                    let visible = body_lines.iter().skip(first).take(nav_rect.height as usize);
+                    let visible = body_lines.iter().skip(first).take(nav_list_h);
                     for (vis_idx, line) in visible.enumerate() {
                         if !tree_span.contains(&(first + vis_idx)) {
                             continue;
@@ -17636,7 +17664,20 @@ impl State {
                 // only render when the drawer is actually showing the REPL;
                 // when it shows the Terminal (G3) the vt100 grid is painted
                 // into `repl_rect` after the wireframe instead.
-                frame.render_widget(nav_body, nav_rect);
+                frame.render_widget(nav_body, nav_list_rect);
+                frame.render_widget(
+                    Paragraph::new(
+                        nav_pinned
+                            .iter()
+                            .map(|r| RtLine::from(Span::styled(r.clone(), Style::default().fg(Color::LightGreen))))
+                            .collect::<Vec<_>>(),
+                    ),
+                    ratatui::layout::Rect {
+                        y: nav_rect.y + nav_list_h as u16,
+                        height: nav_pinned.len() as u16,
+                        ..nav_rect
+                    },
+                );
                 if drawer == DrawerContent::Help {
                     help::render(frame, repl_rect, help_state, help_bindings);
                 }
@@ -22989,6 +23030,13 @@ impl ApplicationHandler for App {
                 state.window.request_redraw();
             }
         }
+        // The not-ended line's own expiry, same pattern as the toast.
+        if let Some((_, until)) = state.not_ended_shown {
+            if std::time::Instant::now() >= until {
+                state.not_ended_shown = None;
+                state.window.request_redraw();
+            }
+        }
         // Nav-spill expiry: same pattern as the toast — once the spill
         // window elapses, repaint so the nav column springs back to its
         // preset width. The ~1s idle tick bounds how late that lands.
@@ -25446,6 +25494,57 @@ mod tests {
         let toast = "The quick brown fox jumps over the lazy dog while the build finishes and every suite reports back to the lane ok";
         let lines = wrap_status(toast, 22, 30);
         assert_eq!(lines.join(" "), toast);
+    }
+
+    fn line_text(line: &RtLine) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn status_spans_show_text_once() {
+        let short: Vec<String> = status_spans("ready", 40).iter().map(line_text).collect();
+        assert_eq!(short, ["status: ready"]);
+        let text = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima";
+        let lines: Vec<String> = status_spans(text, 20).iter().map(line_text).collect();
+        let segs = wrap_status(text, 12, 20);
+        assert!(segs.len() > 2, "the text must wrap: {segs:?}");
+        let mut want = vec![format!("status: {}", segs[0])];
+        want.extend(segs[1..].iter().cloned());
+        assert_eq!(lines, want);
+        let all = lines.join(" ");
+        assert_eq!(all, format!("status: {text}"));
+        assert_eq!(all.matches("status: ").count(), 1);
+        for seg in &segs {
+            assert_eq!(all.matches(seg.as_str()).count(), 1, "{seg}");
+        }
+    }
+
+    #[test]
+    fn quit_prompt_visible_when_scrolled() {
+        // The pinned rows never read the list or its scroll: however long
+        // the list and however far it is scrolled, they sit under it.
+        let prompt = quit_prompt_line(false);
+        let (list_h, rows) = nav_pinned_rows(Some(&prompt), None, None, 30, 20);
+        assert_eq!(rows.join(" "), prompt);
+        assert_eq!(list_h + rows.len(), 20);
+        assert!(rows.len() > 1 && list_h > 0);
+        // The notice keeps its own rows above the prompt; the prompt hides
+        // the not-ended line.
+        let notice = "closing will not end sessions: there is no backend on this computer";
+        let ended = "2 sessions could not be ended and are still running";
+        let (list_h, rows) = nav_pinned_rows(Some(&prompt), Some(notice), Some(ended), 30, 20);
+        assert_eq!(rows.join(" "), format!("{notice} {prompt}"));
+        assert_eq!(list_h + rows.len(), 20);
+        // With no prompt open, the not-ended line shows under the notice.
+        let (_, rows) = nav_pinned_rows(None, Some(notice), Some(ended), 30, 20);
+        assert_eq!(rows.join(" "), format!("{notice} {ended}"));
+        // Nothing pinned: the list keeps the pane.
+        assert_eq!(nav_pinned_rows(None, None, None, 30, 20), (20, vec![]));
+        // A pane too short for every row keeps the prompt's last rows.
+        let (list_h, rows) = nav_pinned_rows(Some(&prompt), Some(notice), None, 30, 2);
+        assert_eq!(list_h, 0);
+        assert_eq!(rows, wrap_status(&prompt, 30, 30)[wrap_status(&prompt, 30, 30).len() - 2..]);
+        assert_eq!(nav_pinned_rows(Some(&prompt), None, None, 30, 0), (0, vec![]));
     }
 
     #[test]

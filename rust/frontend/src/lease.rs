@@ -324,14 +324,6 @@ pub fn lease_notice(exempt: bool, standings: &[Standing]) -> Option<&'static str
     }
 }
 
-/// The notice ahead of the normal status text.
-pub fn status_line(notice: Option<&str>, status: &str) -> String {
-    match notice {
-        Some(n) => format!("{n} · {status}"),
-        None => status.to_string(),
-    }
-}
-
 /// What the status line says about sessions an earlier close could not end.
 pub fn not_ended_line(n: u32) -> Option<String> {
     match n {
@@ -623,8 +615,6 @@ mod tests {
         assert_eq!(lease_notice(false, &[Unreached]), Some(NOTICE_NO_BACKEND));
         assert_eq!(lease_notice(false, &[]), Some(NOTICE_NO_BACKEND));
         assert_eq!(lease_notice(false, &[Undetermined, Unsupported]), Some(NOTICE_UNDETERMINED));
-        assert_eq!(status_line(Some("n"), "s"), "n · s");
-        assert_eq!(status_line(None, "s"), "s");
         // A granted slot whose holder has ended reads as unreached.
         let (tx, rx) = mpsc::unbounded_channel::<HolderCmd>();
         drop(rx);
