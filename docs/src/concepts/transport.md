@@ -75,12 +75,50 @@ connection — an accepted cost, not a bug, so a page with several
 subresources served by the same remote daemon pays once per resource, not
 once per page.
 
+**The link gate.** While a host's link is down — its control transport's
+last attempt got no hello reply, or its session ended — the frontend starts
+no ssh login to that host except the transport's own reconnect probe, and no
+start site repeats a failed login sooner than a doubling backoff allows. The
+gate is one flag per host. Only the transport writes it: up when any hello
+reply arrives (a refusal proves the link too), down as soon as its session
+ends for any reason but a refusal of the hello itself. Every other ssh start
+site asks the gate first, and the one ungated spawn is the transport's probe,
+so a new start site cannot skip it. A browser connection to a proxied page is
+refused while the gate is down.
+
+**Pause and resume.** An attach worker whose lane dial finds the link down
+stops dialing, shows "host offline, waiting for the link", and checks every
+100 ms whether the link is up and its pane is the one on screen. The
+transport's hello reply reopens the gate, so the viewed pane dials within a
+tick of it; parked panes keep their last screen and dial when next viewed.
+A resize read while paused is the size of the next attach. The pass bar is
+therefore: at the link's return, the transport's one login plus two lane
+logins (supervisor and voyage) per viewed row, and no login of any kind while
+the link is down.
+
+**Residual.** After a silent network drop the transport can take up to its
+keepalive window (about 45 s) to notice, so a lane that dies first may still
+dial once. Each such dial is bounded by the connect timeout and its backoff
+and reaches no sshd, because the host is unreachable. Closing this would let
+lane failures close a gate that only the transport can reopen, so it is
+accepted.
+
 A failed login or a dead `sotd` on the far end is the child exiting before
 speaking the protocol; its last stderr line is the diagnosis, surfaced in
 the pane's own status text or, for a proxied page, a log line — no
 per-cause exit codes to learn.
 
 ## What this page does not yet cover
+
+Known limits of the link gate:
+
+- Backend ssh callers are outside this frontend invariant and pass an
+  always-up gate.
+- A gate starts up and stays so until the transport's first attempt.
+- A partly queued input cut at the 8 KiB take queue, and a queue cleared
+  on a lost pen or when the 30 s checkpoint-in-flight wait runs out, are
+  reported by their own status line, not the discard count.
+- A refused browser connection logs one warning per attempt.
 
 Later work in this same design (per-user isolation for the browser-facing
 ports, the pipe/socket owner checks, and the daemon-side account guard)

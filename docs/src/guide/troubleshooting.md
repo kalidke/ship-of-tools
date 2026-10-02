@@ -25,15 +25,12 @@ Press **`F5`** to reconnect. The daemon replays what you missed or sends a
 fresh snapshot; agent sessions and the REPL keep running on the backend while
 you are away. See [Going remote](../start/remote.md#Reconnecting).
 
-Keys typed into a session pane while it is connecting and its host is
-disconnected are discarded, never sent later; the top of the pane says how many
-until the pane next attaches. Known limit: if a session pane that was already
-attached loses its connection, most keys typed during the outage are discarded
-without notice, and keys typed while the pane is reattaching, before it reports
-itself attached again, may still be delivered once it reattaches, even into a
-session that was restarted in the meantime. Wait for the pane to show it is
-attached before typing. An agent pane only one row tall shows the reason it is
-not live but not the discarded count.
+Keys typed into a session pane before it shows attached (while it connects,
+reconnects, or its host is down) are never sent later; so are keys refused
+because 64 KiB of input is already waiting to be sent. The pane's top line says
+how many were discarded. Wait for the pane to show it is attached before
+typing. An agent pane only one row tall shows the reason it is not live but not
+the discarded count.
 
 ## The agent pane says `frontend out of date`
 

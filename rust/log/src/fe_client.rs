@@ -101,6 +101,9 @@ pub enum TakeAction {
     /// context that no longer exists." The caller surfaces this in the
     /// UI; it must never be a silent drop.
     QueueDiscarded,
+    /// A non-empty input found the queue full and was dropped whole; the
+    /// worker counts it in its one discard counter.
+    InputDropped,
     /// `resize_refused{out_of_budget}`: "keeps the pen and reports the
     /// geometry unrepresentable." Promotes to [`Role::Driving`] anyway
     /// (the pen is still held; only the geometry failed) so the queue
@@ -110,11 +113,10 @@ pub enum TakeAction {
     /// [`Role::Watching`].
     PenLost,
     /// `take_refused{not_attached}`: "re-attaches first" — the caller
-    /// ends the current episode PRESERVING this transaction's role and
-    /// queue (never calls [`TakeTransaction::reset_to_watching`] for
-    /// this one teardown), reconnects, and once a fresh checkpoint
-    /// lands calls [`TakeTransaction::retry_take`] to re-issue `take`
-    /// for the SAME still-queued bytes.
+    /// ends the current episode and reconnects. The queue is discarded
+    /// at the next attach (the count is [`TakeTransaction::
+    /// reset_to_watching`]'s return), never delivered; only an input
+    /// already in flight is resent, under its idempotency key.
     Reattach,
 }
 
@@ -126,6 +128,9 @@ pub enum TakeAction {
 pub struct TakeTransaction {
     role: Role,
     queue: Vec<u8>,
+    /// How many non-empty inputs went into `queue` and have not been
+    /// taken or cleared.
+    queued_inputs: usize,
     checkpoint_retry_started_at: Option<Instant>,
     /// Gates [`Self::tick_checkpoint_retry`]'s own `SendTake` to the
     /// pinned 250 ms cadence (Codex review round, finding 4: the
@@ -156,6 +161,7 @@ impl TakeTransaction {
         Self {
             role: Role::Watching,
             queue: Vec::new(),
+            queued_inputs: 0,
             checkpoint_retry_started_at: None,
             next_retry_at: None,
             headless: false,
@@ -173,14 +179,25 @@ impl TakeTransaction {
     }
 
     /// Appends `bytes` to the hold queue, capped at [`TAKE_QUEUE_CAP`].
-    /// Returns `true` iff this call caused bytes to be discarded (the
-    /// caller surfaces [`TakeAction::QueueDiscarded`] exactly once per
-    /// discarding call, never once per dropped byte).
-    fn push_queue(&mut self, bytes: &[u8]) -> bool {
+    /// Returns the discard actions this call caused: none, or
+    /// [`TakeAction::QueueDiscarded`] exactly once per discarding call
+    /// (never once per dropped byte), plus [`TakeAction::InputDropped`]
+    /// when a non-empty input found the queue full and was dropped whole.
+    fn push_queue(&mut self, bytes: &[u8]) -> Vec<TakeAction> {
         let room = TAKE_QUEUE_CAP.saturating_sub(self.queue.len());
         let take = room.min(bytes.len());
         self.queue.extend_from_slice(&bytes[..take]);
-        take < bytes.len()
+        if take > 0 {
+            self.queued_inputs += 1;
+        }
+        let mut actions = Vec::new();
+        if take < bytes.len() {
+            actions.push(TakeAction::QueueDiscarded);
+            if take == 0 {
+                actions.push(TakeAction::InputDropped);
+            }
+        }
+        actions
     }
 
     /// The first input while WATCHING: enters TAKING, holds `bytes`, and
@@ -191,9 +208,7 @@ impl TakeTransaction {
         self.checkpoint_retry_started_at = None;
         self.next_retry_at = None;
         let mut actions = vec![TakeAction::SendTake];
-        if self.push_queue(bytes) {
-            actions.push(TakeAction::QueueDiscarded);
-        }
+        actions.extend(self.push_queue(bytes));
         actions
     }
 
@@ -203,11 +218,7 @@ impl TakeTransaction {
     /// already outstanding.
     pub fn on_input_while_pending(&mut self, bytes: &[u8]) -> Vec<TakeAction> {
         debug_assert!(matches!(self.role, Role::Taking | Role::Resizing));
-        if self.push_queue(bytes) {
-            vec![TakeAction::QueueDiscarded]
-        } else {
-            vec![]
-        }
+        self.push_queue(bytes)
     }
 
     /// Keystrokes arriving while DRIVING with an input ALREADY
@@ -217,11 +228,7 @@ impl TakeTransaction {
     /// via [`Self::take_queued`] once the outstanding reply resolves.
     pub fn queue_while_driving(&mut self, bytes: &[u8]) -> Vec<TakeAction> {
         debug_assert_eq!(self.role, Role::Driving);
-        if self.push_queue(bytes) {
-            vec![TakeAction::QueueDiscarded]
-        } else {
-            vec![]
-        }
+        self.push_queue(bytes)
     }
 
     /// `take_ok{take_epoch}`: RESIZING, and send `resize` ALONE — the
@@ -265,22 +272,16 @@ impl TakeTransaction {
         if self.queue.is_empty() {
             None
         } else {
+            self.queued_inputs = 0;
             Some(std::mem::take(&mut self.queue))
         }
     }
 
-    /// `take_refused{not_attached}`: role and queue are DELIBERATELY
-    /// left untouched here — see [`TakeAction::Reattach`]'s own doc.
+    /// `take_refused{not_attached}`: role and queue are left untouched
+    /// here; the reattach that follows resets the transaction and counts
+    /// the queue as discarded — see [`TakeAction::Reattach`]'s own doc.
     pub fn on_take_refused_not_attached(&mut self) -> Vec<TakeAction> {
         vec![TakeAction::Reattach]
-    }
-
-    /// Re-issue `take` for the still-queued bytes after a
-    /// `not_attached`-triggered reattach completed (role stays TAKING,
-    /// preserved across the episode boundary).
-    pub fn retry_take(&mut self) -> Vec<TakeAction> {
-        debug_assert_eq!(self.role, Role::Taking);
-        vec![TakeAction::SendTake]
     }
 
     /// `input_refused_stale` while DRIVING: "re-take first, then mint a
@@ -298,7 +299,7 @@ impl TakeTransaction {
         debug_assert_eq!(self.role, Role::Driving);
         if self.headless {
             self.role = Role::Watching;
-            self.queue.clear();
+            self.clear_queue();
             return vec![];
         }
         self.role = Role::Taking;
@@ -315,7 +316,7 @@ impl TakeTransaction {
     pub fn on_take_refused_checkpoint_in_flight(&mut self, now: Instant) -> Vec<TakeAction> {
         let started = *self.checkpoint_retry_started_at.get_or_insert(now);
         if now.duration_since(started) >= CHECKPOINT_IN_FLIGHT_BUDGET {
-            self.queue.clear();
+            self.clear_queue();
             self.checkpoint_retry_started_at = None;
             self.next_retry_at = None;
             self.role = Role::Watching;
@@ -335,7 +336,7 @@ impl TakeTransaction {
             return vec![];
         };
         if now.duration_since(started) >= CHECKPOINT_IN_FLIGHT_BUDGET {
-            self.queue.clear();
+            self.clear_queue();
             self.checkpoint_retry_started_at = None;
             self.next_retry_at = None;
             self.role = Role::Watching;
@@ -371,20 +372,28 @@ impl TakeTransaction {
             }
             ResizeRefusedReason::NotDriver => {
                 self.role = Role::Watching;
-                self.queue.clear();
+                self.clear_queue();
                 vec![TakeAction::PenLost]
             }
         }
     }
 
-    /// A fresh attach (or an ORDINARY reconnect, one not preserving a
-    /// `not_attached` in-flight take) always arrives WATCHING — ADR
-    /// 0037's who-may-type, restated by ruling (d).
-    pub fn reset_to_watching(&mut self) {
+    /// A fresh attach (or an ORDINARY reconnect) always arrives WATCHING —
+    /// ADR 0037's who-may-type, restated by ruling (d). Returns how many
+    /// queued inputs were dropped, for the caller to count.
+    #[must_use]
+    pub fn reset_to_watching(&mut self) -> usize {
         self.role = Role::Watching;
-        self.queue.clear();
+        let queued = self.queued_inputs;
+        self.clear_queue();
         self.checkpoint_retry_started_at = None;
         self.next_retry_at = None;
+        queued
+    }
+
+    fn clear_queue(&mut self) {
+        self.queue.clear();
+        self.queued_inputs = 0;
     }
 }
 
@@ -562,14 +571,10 @@ pub enum ReconnectDecision {
     Terminal(TerminalReason),
 }
 
-/// The fixed pre-attach poll interval, AND the first post-attach backoff
-/// (ADR 0043 decision 28): before the episode has ever reached a
-/// successful attach, [`ReconnectState::retry_with_backoff`] returns this
-/// value on every call without advancing — there is nothing to back off
-/// FROM yet, only a supervisor whose word the client is waiting on. Once
-/// [`ReconnectState::attached`] has fired at least once, this becomes the
-/// starting point of the doubling-to-[`RECONNECT_BACKOFF_CAP`] sequence
-/// for a lane that attached and then dropped.
+/// The first backoff of the doubling-to-[`RECONNECT_BACKOFF_CAP`] sequence
+/// [`ReconnectState::retry_with_backoff`] returns (reset by
+/// [`ReconnectState::attached`]), AND the fixed interval at which the worker
+/// polls a live supervisor connection's `Status` (ADR 0043 decision 28).
 pub const RECONNECT_BACKOFF_INITIAL: Duration = Duration::from_millis(250);
 pub const RECONNECT_BACKOFF_CAP: Duration = Duration::from_secs(4);
 
@@ -601,14 +606,6 @@ pub fn next_backoff(current: Duration) -> Duration {
 pub struct ReconnectState {
     backoff: Duration,
     unresponsive_since: Option<Instant>,
-    /// ADR 0043 decision 28: whether [`Self::attached`] has EVER fired.
-    /// Gates [`Self::retry_with_backoff`] — false throughout the whole
-    /// pre-attach convergence (an episode may retry many times waiting on
-    /// the supervisor's word before it ever opens the voyage lane), so
-    /// that wait never advances past the fixed pre-attach interval;
-    /// doubling is reserved for episodes that have attached at least once
-    /// and then dropped.
-    ever_attached: bool,
 }
 
 impl Default for ReconnectState {
@@ -619,7 +616,7 @@ impl Default for ReconnectState {
 
 impl ReconnectState {
     pub fn new() -> Self {
-        Self { backoff: RECONNECT_BACKOFF_INITIAL, unresponsive_since: None, ever_attached: false }
+        Self { backoff: RECONNECT_BACKOFF_INITIAL, unresponsive_since: None }
     }
 
     pub fn classify_hello_refused_version_skew(&mut self) -> ReconnectDecision {
@@ -681,24 +678,18 @@ impl ReconnectState {
     }
 
     /// Called once an attach succeeds: clears the unresponsive clock,
-    /// latches [`Self::ever_attached`] for good, and resets backoff — the
-    /// only behavior a "reached Watching" phase transition ever carried.
+    /// and resets backoff — the only behavior a "reached Watching" phase
+    /// transition ever carried.
     pub fn attached(&mut self) {
         self.unresponsive_since = None;
-        self.ever_attached = true;
         self.reset_backoff();
     }
 
-    /// Everything else retries. Before the first successful [`Self::attached`]
-    /// call, returns [`RECONNECT_BACKOFF_INITIAL`] on every call WITHOUT
-    /// advancing (ADR 0043 decision 28: the fixed pre-attach poll interval —
-    /// there is no prior attach to be backing off from). After the first
-    /// attach, returns the backoff to wait before the next attempt and
-    /// advances it (250ms doubling to 4s).
+    /// Everything else retries: returns the backoff to wait before the next
+    /// attempt and advances it (250ms doubling to 4s), whether or not the
+    /// row has ever attached — over an ssh lane every dial is a login (ADR
+    /// 0043 decision 28). [`Self::attached`] resets it.
     pub fn retry_with_backoff(&mut self) -> Duration {
-        if !self.ever_attached {
-            return RECONNECT_BACKOFF_INITIAL;
-        }
         let wait = self.backoff;
         self.backoff = next_backoff(self.backoff);
         wait
@@ -1052,6 +1043,16 @@ mod tests {
     }
 
     #[test]
+    fn an_input_dropped_whole_on_a_full_queue_is_reported() {
+        let mut t = TakeTransaction::new();
+        t.on_input_while_watching(&vec![b'a'; TAKE_QUEUE_CAP]);
+        let actions = t.on_input_while_pending(b"z");
+        assert!(actions.contains(&TakeAction::InputDropped));
+        let partly = TakeTransaction::new().on_input_while_watching(&vec![b'x'; TAKE_QUEUE_CAP + 1]);
+        assert!(!partly.contains(&TakeAction::InputDropped), "a partly queued input is not a whole drop");
+    }
+
+    #[test]
     fn queue_accumulates_across_multiple_calls_up_to_the_cap() {
         let mut t = TakeTransaction::new();
         t.on_input_while_watching(&vec![b'a'; TAKE_QUEUE_CAP - 10]);
@@ -1078,18 +1079,17 @@ mod tests {
     }
 
     #[test]
-    fn take_refused_not_attached_preserves_role_and_queue() {
+    fn take_refused_not_attached_leaves_the_queue_to_be_counted_at_the_reset() {
         let mut t = TakeTransaction::new();
         t.on_input_while_watching(b"x");
+        t.on_input_while_pending(b"y");
         let actions = t.on_take_refused_not_attached();
         assert_eq!(actions, vec![TakeAction::Reattach]);
-        // Role and queue survive -- retry_take re-sends `take` for the
-        // SAME still-queued bytes after the caller's own reattach.
         assert_eq!(t.role(), Role::Taking);
-        assert_eq!(t.retry_take(), vec![TakeAction::SendTake]);
-        t.on_take_ok(1, 1);
-        t.on_resize_ok();
-        assert_eq!(t.take_queued(), Some(b"x".to_vec()));
+        // The reattach resets the transaction and reports both queued inputs.
+        assert_eq!(t.reset_to_watching(), 2);
+        assert_eq!(t.role(), Role::Watching);
+        assert_eq!(t.reset_to_watching(), 0);
     }
 
     /// Codex review round, finding 6: a stale-epoch refusal while
@@ -1241,15 +1241,24 @@ mod tests {
     // ---- (d) ReconnectState ---------------------------------------------
 
     #[test]
-    fn pre_attach_backoff_stays_fixed_across_n_calls() {
-        // ADR 0043 decision 28: before the first `attached()`, every call
-        // returns the fixed pre-attach interval — no doubling. This is
-        // the state a fresh episode is in while it polls the supervisor's
-        // Status for Ready.
+    fn backoff_doubles_from_a_fresh_state_and_attached_resets_it() {
+        // ADR 0043 decision 28: every failed dial doubles, whether or not the
+        // row has ever attached — over an ssh lane each dial is a login.
         let mut r = ReconnectState::new();
-        for _ in 0..6 {
-            assert_eq!(r.retry_with_backoff(), Duration::from_millis(250));
-        }
+        let waits: Vec<Duration> = (0..6).map(|_| r.retry_with_backoff()).collect();
+        assert_eq!(
+            waits,
+            vec![
+                Duration::from_millis(250),
+                Duration::from_millis(500),
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(4),
+                Duration::from_secs(4),
+            ]
+        );
+        r.attached();
+        assert_eq!(r.retry_with_backoff(), Duration::from_millis(250));
     }
 
     #[test]
@@ -1287,21 +1296,6 @@ mod tests {
         // the old clock.
         let t1 = t0 + HEALTH_WINDOW + Duration::from_secs(1);
         assert_eq!(r.classify_unresponsive(t1), ReconnectDecision::Retry);
-    }
-
-    #[test]
-    fn attached_latches_ever_attached_so_a_later_drop_resumes_doubling() {
-        // A lane that attached, then dropped, resumes the DOUBLING
-        // backoff from its reset starting point — never re-enters the
-        // fixed pre-attach interval, which is reserved for episodes that
-        // have never yet reached Ready.
-        let mut r = ReconnectState::new();
-        r.attached();
-        let waits: Vec<Duration> = (0..3).map(|_| r.retry_with_backoff()).collect();
-        assert_eq!(
-            waits,
-            vec![Duration::from_millis(250), Duration::from_millis(500), Duration::from_secs(1)]
-        );
     }
 
     #[test]

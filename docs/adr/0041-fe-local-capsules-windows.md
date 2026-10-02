@@ -682,8 +682,11 @@ and the acceptance matrix.
   exists); send `take`; on `take_ok` send `resize` for the CURRENT
   viewport first — a watcher renders the driver's geometry and cannot
   correct it until it holds the pen — then flush in arrival order, one
-  outstanding request at a time. `take_refused{not_attached}` re-attaches
-  first; `take_refused{checkpoint_in_flight}` retries every 250 ms for up
+  outstanding request at a time. `take_refused{not_attached}`
+  re-attaches first, and the queue does not survive that: input typed
+  before the pane reports attached is discarded and counted, never
+  delivered; only the one in-flight input is resent under its
+  idempotency key (amended 2026-10-01). `take_refused{checkpoint_in_flight}` retries every 250 ms for up
   to 30 s, matching the connection's own write-progress allowance, since
   a legal 8.65 MiB checkpoint is entitled to that window, and at expiry
   the queue is DISCARDED visibly. `resize_refused{out_of_budget}` keeps

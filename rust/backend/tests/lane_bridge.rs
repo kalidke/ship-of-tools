@@ -1224,7 +1224,7 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
     let _path_guard = PathGuard::prepend(stub_dir.path());
 
     let recipe = sot_protocol::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe), token: None };
+    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, Default::default()), token: None };
     let (_woke, wake) = wake_flag_for_test();
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
         endpoint,
@@ -1281,7 +1281,7 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
     let _path_guard = PathGuard::prepend(stub_dir.path());
 
     let recipe = sot_protocol::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe), token: None };
+    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, Default::default()), token: None };
     let (_woke, wake) = wake_flag_for_test();
     // `attach()`'s only `Err` is a failed OS thread spawn (`attach_inner`,
     // `sot-log/src/fe_client_io.rs`) — the dial itself runs on the worker

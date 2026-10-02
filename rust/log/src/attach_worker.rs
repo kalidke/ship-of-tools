@@ -160,6 +160,9 @@ pub(crate) enum LaneError {
     /// identity check on the lane it dialed could not complete. Retried
     /// exactly like `Unreachable`.
     Undetermined(String),
+    /// ADR 0045 decision 4: the host's link is down and the dial started
+    /// no ssh. Treated as a failed dial: no absence charge, backoff.
+    LinkDown,
     /// The capsule refused the attach, carrying the reason IT named
     /// rather than collapsing into `Protocol("attach_refused")`. The
     /// reason is not decoration: `SubscriberCap` held by orphaned watcher
@@ -202,6 +205,7 @@ impl std::fmt::Display for LaneError {
             LaneError::Refused { code, detail } => write!(f, "refused ({code}): {detail}"),
             LaneError::Unreachable(s) => write!(f, "unreachable: {s}"),
             LaneError::Undetermined(s) => write!(f, "undetermined: {s}"),
+            LaneError::LinkDown => write!(f, "host link down"),
             LaneError::AttachRefused(r) => write!(f, "attach refused: {}", attach_refused_text(*r)),
         }
     }
@@ -230,6 +234,7 @@ fn classify_transport(e: TransportError) -> LaneError {
         TransportError::Refused { code, detail } => LaneError::Refused { code, detail },
         TransportError::Unreachable(io) => LaneError::Unreachable(io.to_string()),
         TransportError::Undetermined { detail, .. } => LaneError::Undetermined(detail),
+        TransportError::LinkDown => LaneError::LinkDown,
         other => LaneError::Io(transport_error_to_io(other)),
     }
 }
@@ -455,7 +460,7 @@ fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
         Err(e) => match classify_transport(e) {
             LaneError::Refused { code, .. } if code == "unauthenticated" => reconnect.classify_access_denied(),
             LaneError::Refused { code, detail } => reconnect.classify_lane_refused(code, detail),
-            LaneError::Unreachable(_) | LaneError::Undetermined(_) => {
+            LaneError::Unreachable(_) | LaneError::Undetermined(_) | LaneError::LinkDown => {
                 reconnect.clear_unresponsive();
                 ReconnectDecision::Retry
             }
@@ -466,7 +471,7 @@ fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
                     reconnect.classify_unresponsive(now)
                 }
             }
-            _ => unreachable!("classify_transport only ever produces Io/Refused/Unreachable/Undetermined"),
+            _ => unreachable!("classify_transport only ever produces Io/Refused/Unreachable/Undetermined/LinkDown"),
         },
     }
 }
@@ -501,19 +506,17 @@ enum ReadyOutcome<E: Endpoint> {
 /// `Quit` sent at that exact moment would sit unread through the whole
 /// attach hello + checkpoint transfer, which is exactly the "quit must
 /// never wait on the checkpoint" invariant (ruling (a)) this closes.
-/// `Quit` is latched exactly as `wait_for_retry_or_shutdown` does;
-/// `Shutdown` (or a disconnected channel) is reported for the caller to
-/// act on immediately; a queued `Input`/`Resize` has no live attach
-/// connection yet to act on and is dropped, matching
-/// `wait_for_retry_or_shutdown`'s own documented behavior.
-fn drain_pending_control(cmd_rx: &Receiver<WorkerMsg>, latched_quit_reason: &mut Option<String>) -> Option<WaitOutcome> {
+/// Every message goes through [`hold`], exactly as in
+/// `wait_for_retry_or_shutdown`; `Shutdown` (or a disconnected channel) is
+/// reported for the caller to act on immediately.
+fn drain_pending_control(cmd_rx: &Receiver<WorkerMsg>, held: &mut Held) -> Option<WaitOutcome> {
     loop {
         match cmd_rx.try_recv() {
-            Ok(WorkerMsg::Shutdown) => return Some(WaitOutcome::Shutdown),
-            Ok(WorkerMsg::Quit(reason)) => {
-                latched_quit_reason.get_or_insert(reason);
+            Ok(msg) => {
+                if let Some(outcome) = hold(msg, held) {
+                    return Some(outcome);
+                }
             }
-            Ok(_) => {}
             Err(mpsc::TryRecvError::Empty) => return None,
             Err(mpsc::TryRecvError::Disconnected) => return Some(WaitOutcome::Shutdown),
         }
@@ -529,10 +532,9 @@ const FIRST_ATTACH_ENDED_NO_RESPAWN_BOUND: Duration = TEARDOWN_AGGREGATE_DEADLIN
 /// already-connected, already-`hello`'d supervisor lane, polls `Status`
 /// on that SAME connection every [`fe_client::RECONNECT_BACKOFF_INITIAL`]
 /// (a FIXED interval — Codex review round finding 6: this loop is
-/// steady-state polling of a lane that is actively ANSWERING, never a
-/// reconnect attempt, so [`ReconnectState::retry_with_backoff`]'s
-/// doubling — which stays reserved for genuine reconnect waits in
-/// [`run_worker`]'s own outer episode loop — never applies here) until
+/// steady-state polling of a lane that is actively ANSWERING, so
+/// [`ReconnectState::retry_with_backoff`]'s doubling does not apply to
+/// that poll; it does apply to the wait after a failed voyage dial) until
 /// the report says `Ready` with a voyage id AND the voyage lane itself
 /// accepts a connection. Every answered `Status`, whatever its phase,
 /// clears [`ReconnectState::clear_unresponsive`] (finding 2) — an outage
@@ -567,10 +569,11 @@ fn converge_on_ready<E: Endpoint>(
     h: &str,
     cmd_rx: &Receiver<WorkerMsg>,
     reconnect: &mut ReconnectState,
-    latched_quit_reason: &mut Option<String>,
+    held: &mut Held,
     quit: &mut QuitDispatcher,
     outstanding: &mut OutstandingSlot,
     first_attach_deadline: Option<Instant>,
+    viewed: &AtomicBool,
     emit: &dyn Fn(WorkerEvent),
 ) -> ReadyOutcome<E> {
     // Emitted at most once per "still starting" spell — re-armed every
@@ -602,7 +605,7 @@ fn converge_on_ready<E: Endpoint>(
         // below, so a quit never waits on a supervisor that is still
         // starting.
         if let Some(id) = sv.clone() {
-            if let Some(reason) = latched_quit_reason.take() {
+            if let Some(reason) = held.quit.take() {
                 run_quit::<E>(endpoint, &mut conn, &mut sup_reader, h, &id, reason, quit, outstanding, emit);
                 if quit.should_exit() {
                     return ReadyOutcome::ShouldExit;
@@ -621,7 +624,7 @@ fn converge_on_ready<E: Endpoint>(
                 emit(WorkerEvent::Status("supervisor starting \u{2014} waiting\u{2026}".to_string()));
                 emitted_starting = true;
             }
-            match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, latched_quit_reason) {
+            match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, held) {
                 WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                 WaitOutcome::Continue => continue,
             }
@@ -633,10 +636,10 @@ fn converge_on_ready<E: Endpoint>(
         // to the attach transition below — a Quit that arrived while this
         // round's Status check ran must never be allowed to sail through
         // unread.
-        if let Some(WaitOutcome::Shutdown) = drain_pending_control(cmd_rx, latched_quit_reason) {
+        if let Some(WaitOutcome::Shutdown) = drain_pending_control(cmd_rx, held) {
             return ReadyOutcome::Shutdown;
         }
-        if let Some(reason) = latched_quit_reason.take() {
+        if let Some(reason) = held.quit.take() {
             run_quit::<E>(endpoint, &mut conn, &mut sup_reader, h, &id, reason, quit, outstanding, emit);
             if quit.should_exit() {
                 return ReadyOutcome::ShouldExit;
@@ -656,11 +659,9 @@ fn converge_on_ready<E: Endpoint>(
             // ADR 0045 decision 4: classified the SAME way as the
             // supervisor-lane connect above it in `run_worker` — a
             // refusal is terminal, its code named; the two uncertain
-            // arms clear the health window's clock and retry at this
-            // loop's own fixed per-round interval (unchanged from the
-            // plain "not yet available" wait below, since this is a
-            // bounded Status-polling round, not the episode-level
-            // backoff `ReconnectState::retry_with_backoff` governs).
+            // arms clear the health window's clock and wait the doubling
+            // `ReconnectState::retry_with_backoff` (ADR 0043 decision 28:
+            // over an ssh lane every failed dial is a login).
             Err(e) => match classify_transport(e) {
                 LaneError::Refused { code, detail } => {
                     let msg = if code == "no_bridge" {
@@ -670,6 +671,13 @@ fn converge_on_ready<E: Endpoint>(
                     };
                     return ReadyOutcome::Terminal(msg);
                 }
+                LaneError::LinkDown => {
+                    reconnect.clear_unresponsive();
+                    match pause_for_link(endpoint, cmd_rx, held, viewed, emit) {
+                        WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
+                        WaitOutcome::Continue => continue,
+                    }
+                }
                 e @ (LaneError::Unreachable(_) | LaneError::Undetermined(_)) => {
                     reconnect.clear_unresponsive();
                     let msg = match &e {
@@ -678,7 +686,7 @@ fn converge_on_ready<E: Endpoint>(
                         _ => unreachable!("matched above"),
                     };
                     emit(WorkerEvent::Status(msg));
-                    match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, latched_quit_reason) {
+                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_with_backoff(), held) {
                         WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                         WaitOutcome::Continue => continue,
                     }
@@ -688,12 +696,12 @@ fn converge_on_ready<E: Endpoint>(
                         return ReadyOutcome::Terminal("voyage pipe: access denied".to_string());
                     }
                     emit(WorkerEvent::Status(format!("voyage pipe not yet available: {io}")));
-                    match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, latched_quit_reason) {
+                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_with_backoff(), held) {
                         WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                         WaitOutcome::Continue => continue,
                     }
                 }
-                _ => unreachable!("classify_transport only ever produces Io/Refused/Unreachable/Undetermined"),
+                _ => unreachable!("classify_transport only ever produces Io/Refused/Unreachable/Undetermined/LinkDown"),
             },
         }
     }
@@ -837,7 +845,9 @@ impl Drop for IngressReservation {
 }
 
 enum WorkerMsg {
-    Input(Vec<u8>, IngressReservation),
+    /// The bytes, their reservation, and the attach generation read when
+    /// the caller sent them (see `attach_gen` in [`AttachWorker`]).
+    Input(Vec<u8>, IngressReservation, u64),
     Resize(u16, u16),
     Quit(String),
     Shutdown,
@@ -850,6 +860,8 @@ enum WorkerMsg {
 /// applies each of these to the parser/UI state.
 pub enum WorkerEvent {
     Checkpoint(Vec<u8>),
+    /// The count behind `inputs_discarded` changed; payload-free.
+    InputsDiscarded,
     Output(Vec<u8>),
     Notice(String),
     Status(String),
@@ -913,9 +925,20 @@ pub struct AttachWorker<E: Endpoint> {
     msg_tx: Sender<WorkerMsg>,
     ingress_bytes: Arc<AtomicUsize>,
     ingress_bound: usize,
+    /// Bumped by the worker immediately before each attach's checkpoint
+    /// is emitted; an input stamped with an older value was sent before
+    /// that attach and is discarded and counted, never delivered.
+    attach_gen: Arc<AtomicU64>,
+    /// Inputs that were discarded and not yet followed by a delivered
+    /// one: read while not attached, stamped before the current attach,
+    /// or refused at the ingress bound.
+    discarded: Arc<AtomicUsize>,
     /// The episode reader's own byte-accounted backpressure — see
     /// [`QueuedBytes`]'s own doc. Released by [`Self::ack_output_consumed`].
     queued_bytes: Arc<QueuedBytes>,
+    /// Whether the client is the one the user is looking at; a worker
+    /// paused for a down link resumes only while this is set.
+    viewed: Arc<AtomicBool>,
     worker_handle: Option<thread::JoinHandle<()>>,
     _endpoint: PhantomData<E>,
 }
@@ -961,6 +984,12 @@ impl<E: Endpoint> AttachWorker<E> {
         let queued_bytes = Arc::new(QueuedBytes::new());
         let worker_queued_bytes = Arc::clone(&queued_bytes);
         let ingress_bytes = Arc::new(AtomicUsize::new(0));
+        let discarded = Arc::new(AtomicUsize::new(0));
+        let attach_gen = Arc::new(AtomicU64::new(0));
+        let viewed = Arc::new(AtomicBool::new(true));
+        let worker_viewed = Arc::clone(&viewed);
+        let worker_discarded = Arc::clone(&discarded);
+        let worker_attach_gen = Arc::clone(&attach_gen);
 
         let worker_handle = thread::Builder::new()
             .name("sot-fe-attach-worker".to_string())
@@ -980,11 +1009,19 @@ impl<E: Endpoint> AttachWorker<E> {
                     recorded_bytes,
                     last_input_outcome,
                     take_epoch_pub,
+                    worker_discarded,
+                    worker_attach_gen,
+                    Arc::clone(&worker_viewed),
                     headless,
                 );
             })?;
 
-        Ok(Self { msg_tx, ingress_bytes, ingress_bound, queued_bytes, worker_handle: Some(worker_handle), _endpoint: PhantomData })
+        Ok(Self { msg_tx, ingress_bytes, ingress_bound, attach_gen, discarded, queued_bytes, viewed, worker_handle: Some(worker_handle), _endpoint: PhantomData })
+    }
+
+    /// Whether this worker's pane is on screen. A worker pauses on a down link whether viewed or not, and resumes only when the link is up AND the client is viewed.
+    pub fn set_viewed(&self, viewed: bool) {
+        self.viewed.store(viewed, Ordering::Release);
     }
 
     /// A sink that consumes [`WorkerEvent::Output`] bytes calls this with
@@ -1028,6 +1065,7 @@ impl<E: Endpoint> AttachWorker<E> {
             // only when something is ALREADY reserved and admitting this
             // one too would push the total past the bound.
             if cur > 0 && cur.saturating_add(n) > self.ingress_bound {
+                self.discarded.fetch_add(1, Ordering::AcqRel);
                 return Err(IngressRefused);
             }
             match self.ingress_bytes.compare_exchange_weak(cur, cur.saturating_add(n), Ordering::AcqRel, Ordering::Acquire) {
@@ -1042,8 +1080,18 @@ impl<E: Endpoint> AttachWorker<E> {
         // the same); on failure the returned `SendError` carries the
         // message right back here, and letting the `Result` drop
         // unused drops it immediately.
-        let _ = self.msg_tx.send(WorkerMsg::Input(bytes, reservation));
+        let gen = self.attach_gen.load(Ordering::Acquire);
+        if self.msg_tx.send(WorkerMsg::Input(bytes, reservation, gen)).is_err() {
+            // The worker has exited: the input is never delivered.
+            self.discarded.fetch_add(1, Ordering::AcqRel);
+        }
         Ok(())
+    }
+
+    /// How many inputs have been discarded since the last one that was
+    /// delivered (see the `discarded` field).
+    pub fn inputs_discarded(&self) -> usize {
+        self.discarded.load(Ordering::Acquire)
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {
@@ -1088,7 +1136,10 @@ impl<E: Endpoint> AttachWorker<E> {
             msg_tx,
             ingress_bytes: Arc::new(AtomicUsize::new(0)),
             ingress_bound: usize::MAX,
+            attach_gen: Arc::new(AtomicU64::new(0)),
+            discarded: Arc::new(AtomicUsize::new(0)),
             queued_bytes: Arc::new(QueuedBytes::new()),
+            viewed: Arc::new(AtomicBool::new(true)),
             worker_handle: None,
             _endpoint: PhantomData,
         }
@@ -1140,6 +1191,9 @@ fn run_worker<E: Endpoint>(
     recorded_bytes: Arc<AtomicU64>,
     last_input_outcome: Arc<Mutex<Option<InputOutcome>>>,
     take_epoch_pub: Arc<AtomicU64>,
+    discarded: Arc<AtomicUsize>,
+    attach_gen: Arc<AtomicU64>,
+    viewed: Arc<AtomicBool>,
     headless: bool,
 ) where
     E: Send + Sync + 'static,
@@ -1159,11 +1213,6 @@ fn run_worker<E: Endpoint>(
         (!headless).then(|| Instant::now() + FIRST_ATTACH_ENDED_NO_RESPAWN_BOUND);
     let mut take_epoch: u64 = 0;
     let mut shutdown = false;
-    // Ruling (b), Codex review round finding 4: set when
-    // `take_refused{not_attached}` fires, so the NEXT episode's own
-    // arrival at a fresh checkpoint knows to `retry_take()` (preserving
-    // role+queue) instead of `reset_to_watching()`.
-    let mut preserve_take_on_reconnect = false;
     // ADR 0041 "attach proto v2 bound to checkpoint v2" (Codex round on
     // #194): the version THIS episode's `hello` asks for. Starts at the
     // newest this build speaks; a `hello_refused` naming a version this
@@ -1178,7 +1227,7 @@ fn run_worker<E: Endpoint>(
     // dropped — applied the instant a fresh supervisor connection
     // exists, since `end_run` needs only that lane, never the attach
     // lane.
-    let mut latched_quit_reason: Option<String> = None;
+    let mut held = Held { quit: None, resize: None, discarded: Arc::clone(&discarded) };
 
     let emit = |e: WorkerEvent| sink(e);
 
@@ -1196,10 +1245,11 @@ fn run_worker<E: Endpoint>(
                     &lane,
                     &cmd_rx,
                     &mut reconnect,
-                    &mut latched_quit_reason,
+                    &mut held,
                     &mut quit,
                     &mut outstanding,
                     first_attach_deadline,
+                    &viewed,
                     &emit,
                 ) {
                     ReadyOutcome::Ready { conn, sup_reader, voyage_id, voyage_conn } => {
@@ -1254,6 +1304,13 @@ fn run_worker<E: Endpoint>(
                 emit(WorkerEvent::Terminal(msg));
                 return;
             }
+            Err(LaneError::LinkDown) => {
+                reconnect.clear_unresponsive();
+                match pause_for_link(&endpoint, &cmd_rx, &mut held, &viewed, &emit) {
+                    WaitOutcome::Shutdown => break 'episodes,
+                    WaitOutcome::Continue => continue 'episodes,
+                }
+            }
             Err(e @ (LaneError::Unreachable(_) | LaneError::Undetermined(_))) => {
                 reconnect.clear_unresponsive();
                 let msg = match &e {
@@ -1262,7 +1319,7 @@ fn run_worker<E: Endpoint>(
                     _ => unreachable!("matched above"),
                 };
                 emit(WorkerEvent::Status(msg));
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
                     WaitOutcome::Shutdown => break 'episodes,
                     WaitOutcome::Continue => continue 'episodes,
                 }
@@ -1290,7 +1347,7 @@ fn run_worker<E: Endpoint>(
                     }
                     ReconnectDecision::Retry => {
                         emit(WorkerEvent::Status("supervisor lane not answering \u{2014} retrying\u{2026}".to_string()));
-                        match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                        match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
                             WaitOutcome::Shutdown => break 'episodes,
                             WaitOutcome::Continue => continue 'episodes,
                         }
@@ -1299,6 +1356,13 @@ fn run_worker<E: Endpoint>(
             }
         };
 
+        // A resize read while not attached is applied before this attach's
+        // hello, so the capsule sees the size the pane has now.
+        if let Some((c, r)) = held.resize.take() {
+            cols = c;
+            rows = r;
+        }
+
         if voyage_uuid.as_deref() != Some(voyage.as_str()) {
             // A reset landed underneath us: any outstanding input from
             // the OLD voyage is canceled, never replayed into the new
@@ -1306,16 +1370,24 @@ fn run_worker<E: Endpoint>(
             // the id `converge_on_ready` confirmed against the
             // supervisor's own `Status` reply, not a locally cached
             // pointer read.
+            let mut canceled_input = false;
             if let fe_client::ReconnectResendDecision::Cancel { canceled } =
                 outstanding.resend_after_reconnect(&voyage, take_epoch)
             {
+                canceled_input = true;
                 emit(WorkerEvent::Status(format!(
                     "input canceled \u{2014} the voyage changed ({} byte(s) lost)",
                     canceled.bytes.len()
                 )));
             }
-            take.reset_to_watching();
-            preserve_take_on_reconnect = false;
+            let mut lost = take.reset_to_watching();
+            if canceled_input {
+                lost += 1;
+            }
+            if lost > 0 {
+                discarded.fetch_add(lost, Ordering::AcqRel);
+                emit(WorkerEvent::InputsDiscarded);
+            }
             take_intent = TakeIntent::Ordinary;
             voyage_uuid = Some(voyage.clone());
         }
@@ -1331,7 +1403,7 @@ fn run_worker<E: Endpoint>(
                 return;
             }
             PeerAuthOutcome::Undetermined => {
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
                     WaitOutcome::Shutdown => break 'episodes,
                     WaitOutcome::Continue => continue 'episodes,
                 }
@@ -1364,7 +1436,7 @@ fn run_worker<E: Endpoint>(
                     match wait_for_retry_or_shutdown(
                         &cmd_rx,
                         reconnect.retry_with_backoff(),
-                        &mut latched_quit_reason,
+                        &mut held,
                     ) {
                         WaitOutcome::Shutdown => break 'episodes,
                         WaitOutcome::Continue => continue 'episodes,
@@ -1385,7 +1457,7 @@ fn run_worker<E: Endpoint>(
                     if let LaneError::AttachRefused(reason) = e {
                         emit(WorkerEvent::Status(attach_refused_text(reason).to_string()));
                     }
-                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
                         WaitOutcome::Shutdown => break 'episodes,
                         WaitOutcome::Continue => continue 'episodes,
                     }
@@ -1403,6 +1475,10 @@ fn run_worker<E: Endpoint>(
         // needed.
         // First completed attach: never tolerate EndedNoRespawn again.
         first_attach_deadline = None;
+        // Stamped BEFORE the checkpoint is emitted: a headless caller may
+        // send as soon as it applies the checkpoint, and that input must
+        // read as current. An input sent earlier read the older value.
+        let attached_gen = attach_gen.fetch_add(1, Ordering::AcqRel) + 1;
         emit(WorkerEvent::Checkpoint(checkpoint));
         emit(WorkerEvent::Status("attached".to_string()));
         reconnect.attached();
@@ -1414,17 +1490,12 @@ fn run_worker<E: Endpoint>(
         // (pid, created) here and blocked input until it finished.
         emit(WorkerEvent::Notice(fe_client::attach_notice_text(&format!("{}", attach_identity.1))));
 
-        // Ruling (b), Codex review round finding 4: a `not_attached`
-        // reattach preserves the take transaction instead of resetting
-        // it -- re-issue `take` for the SAME still-queued bytes now that
-        // a fresh checkpoint has landed.
-        if preserve_take_on_reconnect {
-            preserve_take_on_reconnect = false;
-            for action in take.retry_take() {
-                apply_single_take_action::<E>(action, &voyage_conn, &controller_id, &emit);
-            }
-        } else {
-            take.reset_to_watching();
+        // Anything still queued was typed before this attach: discarded
+        // and counted, never delivered.
+        let lost = take.reset_to_watching();
+        if lost > 0 {
+            discarded.fetch_add(lost, Ordering::AcqRel);
+            emit(WorkerEvent::InputsDiscarded);
         }
 
         // Ruling (f): fe_down marker on every attach after the first.
@@ -1447,9 +1518,6 @@ fn run_worker<E: Endpoint>(
                         apply_single_take_action::<E>(action, &voyage_conn, &controller_id, &emit);
                     }
                 }
-                // Else: role is already Taking from the preserved
-                // not_attached retry above -- the same take_ok serves
-                // both purposes.
             }
             fe_client::ReconnectResendDecision::Cancel { canceled } => {
                 emit(WorkerEvent::Status(format!(
@@ -1507,6 +1575,8 @@ fn run_worker<E: Endpoint>(
             &recorded_bytes,
             &last_input_outcome,
             &take_epoch_pub,
+            attached_gen,
+            &discarded,
         );
 
         // Tear down this episode's connections before deciding what's
@@ -1539,14 +1609,7 @@ fn run_worker<E: Endpoint>(
                 return;
             }
             SteadyOutcome::Reconnect => {
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
-                    WaitOutcome::Shutdown => shutdown = true,
-                    WaitOutcome::Continue => {}
-                }
-            }
-            SteadyOutcome::ReconnectPreserveTake => {
-                preserve_take_on_reconnect = true;
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
                     WaitOutcome::Shutdown => shutdown = true,
                     WaitOutcome::Continue => {}
                 }
@@ -1559,13 +1622,39 @@ enum SteadyOutcome {
     Shutdown,
     QuitEnded,
     Terminal(String),
-    /// An ordinary episode end -- the NEXT episode resets the take
-    /// transaction to Watching.
+    /// An episode end -- the NEXT episode resets the take transaction to
+    /// Watching, counting any queued input as discarded.
     Reconnect,
-    /// `take_refused{not_attached}` ended this episode -- the NEXT
-    /// episode preserves the take transaction instead (ruling (b),
-    /// Codex review round finding 4).
-    ReconnectPreserveTake,
+}
+
+/// What the worker keeps of the commands it reads while it is NOT attached
+/// (backing off, polling the supervisor, or in the handshake): one latched
+/// `Quit`, the newest `Resize`, and a count of the keystrokes it had to
+/// drop because there was no live attach connection to send them on.
+struct Held {
+    quit: Option<String>,
+    resize: Option<(u16, u16)>,
+    discarded: Arc<AtomicUsize>,
+}
+
+/// The one reader of a command read while not attached. `Shutdown` is the
+/// only message that ends the wait; a `Quit` is latched (applied the moment
+/// a supervisor connection exists), a `Resize` is held for the next attach,
+/// an `Input` is counted and dropped (its reservation drops with it), and
+/// frames the worker's own reader sent are moot.
+fn hold(msg: WorkerMsg, held: &mut Held) -> Option<WaitOutcome> {
+    match msg {
+        WorkerMsg::Shutdown => return Some(WaitOutcome::Shutdown),
+        WorkerMsg::Quit(reason) => {
+            held.quit.get_or_insert(reason);
+        }
+        WorkerMsg::Resize(c, r) => held.resize = Some((c, r)),
+        WorkerMsg::Input(..) => {
+            held.discarded.fetch_add(1, Ordering::AcqRel);
+        }
+        _ => {}
+    }
+    None
 }
 
 enum WaitOutcome {
@@ -1574,20 +1663,13 @@ enum WaitOutcome {
 }
 
 /// Blocks up to `wait` for a `Shutdown` command, otherwise returns after
-/// the backoff elapses so the next episode can start. A `Quit` arriving
-/// during this wait is LATCHED into `*latched_quit_reason` rather than
-/// dropped (Codex review round, finding 2) — the top of the next episode
-/// applies it the moment a supervisor connection exists, since `end_run`
-/// needs only that lane. `Input`/`Resize` arriving with no live
-/// connection to send them on have nothing to act on yet and are
-/// dropped (the take transaction and outstanding slot are not mutated
-/// while disconnected, so a keystroke here would have nothing to attach
-/// its intent to).
-fn wait_for_retry_or_shutdown(
-    cmd_rx: &Receiver<WorkerMsg>,
-    wait: Duration,
-    latched_quit_reason: &mut Option<String>,
-) -> WaitOutcome {
+/// the backoff elapses so the next episode can start. Every other command
+/// read during the wait goes through [`hold`]: a `Quit` is LATCHED rather
+/// than dropped (Codex review round, finding 2) — the top of the next
+/// episode applies it the moment a supervisor connection exists, since
+/// `end_run` needs only that lane — and an `Input` has no live connection
+/// to be sent on, so it is counted and dropped.
+fn wait_for_retry_or_shutdown(cmd_rx: &Receiver<WorkerMsg>, wait: Duration, held: &mut Held) -> WaitOutcome {
     let deadline = Instant::now() + wait;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1595,14 +1677,42 @@ fn wait_for_retry_or_shutdown(
             return WaitOutcome::Continue;
         }
         match cmd_rx.recv_timeout(remaining.min(WORKER_TICK)) {
-            Ok(WorkerMsg::Shutdown) => return WaitOutcome::Shutdown,
-            Ok(WorkerMsg::Quit(reason)) => {
-                latched_quit_reason.get_or_insert(reason);
-                continue;
+            Ok(msg) => {
+                if let Some(outcome) = hold(msg, held) {
+                    return outcome;
+                }
             }
-            Ok(_) => continue,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return WaitOutcome::Shutdown,
+        }
+    }
+}
+
+/// The pause for a down link: one status line, then a tick-by-tick
+/// wait that reads the channel through [`hold`] (a `Resize` is kept for the
+/// next attach, an `Input` is counted) until the endpoint's link is up AND
+/// the client is viewed. A tick always passes first, so an endpoint that
+/// reports `LinkDown` while `link_up()` is true cannot spin.
+fn pause_for_link<E: Endpoint>(
+    endpoint: &E,
+    cmd_rx: &Receiver<WorkerMsg>,
+    held: &mut Held,
+    viewed: &AtomicBool,
+    emit: &dyn Fn(WorkerEvent),
+) -> WaitOutcome {
+    emit(WorkerEvent::Status("host offline, waiting for the link".to_string()));
+    loop {
+        match cmd_rx.recv_timeout(WORKER_TICK) {
+            Ok(msg) => {
+                if let Some(outcome) = hold(msg, held) {
+                    return outcome;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return WaitOutcome::Shutdown,
+        }
+        if endpoint.link_up() && viewed.load(Ordering::Acquire) {
+            return WaitOutcome::Continue;
         }
     }
 }
@@ -2073,6 +2183,8 @@ fn run_steady_state<E: Endpoint + Sync>(
     recorded_bytes: &Arc<AtomicU64>,
     last_input_outcome: &Arc<Mutex<Option<InputOutcome>>>,
     take_epoch_pub: &Arc<AtomicU64>,
+    attached_gen: u64,
+    discarded: &Arc<AtomicUsize>,
 ) -> SteadyOutcome {
     // Whether the pane header currently shows the missed-probe line below:
     // one missed `Status` (a stalled link, not a dead supervisor) must not
@@ -2147,15 +2259,24 @@ fn run_steady_state<E: Endpoint + Sync>(
             }
             match msg {
                 Ok(WorkerMsg::Shutdown) => return SteadyOutcome::Shutdown,
-                Ok(WorkerMsg::Input(bytes, _reservation)) => match take.role() {
+                Ok(WorkerMsg::Input(_, _reservation, gen)) if gen < attached_gen => {
+                    // Sent before this attach: never delivered.
+                    discarded.fetch_add(1, Ordering::AcqRel);
+                    emit(WorkerEvent::InputsDiscarded);
+                }
+                Ok(WorkerMsg::Input(bytes, _reservation, _)) => {
+                    // A current input that is queued or sent ends the count
+                    // of discarded ones; one dropped whole adds to it.
+                    let mut dropped = false;
+                    match take.role() {
                     Role::Watching => {
                         for action in take.on_input_while_watching(&bytes) {
-                            apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
+                            dropped |= apply_input_action::<E>(action, attach_conn, controller_id, &emit, discarded);
                         }
                     }
                     Role::Taking | Role::Resizing => {
                         for action in take.on_input_while_pending(&bytes) {
-                            apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
+                            dropped |= apply_input_action::<E>(action, attach_conn, controller_id, &emit, discarded);
                         }
                     }
                     Role::Driving => {
@@ -2164,13 +2285,17 @@ fn run_steady_state<E: Endpoint + Sync>(
                             // input already outstanding queues the next one
                             // rather than dropping it.
                             for action in take.queue_while_driving(&bytes) {
-                                apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
+                                dropped |= apply_input_action::<E>(action, attach_conn, controller_id, &emit, discarded);
                             }
                         } else {
                             send_new_input::<E>(attach_conn, outstanding, *take_epoch, controller_id, voyage, bytes);
                         }
                     }
-                },
+                    }
+                    if !dropped && discarded.swap(0, Ordering::AcqRel) > 0 {
+                        emit(WorkerEvent::InputsDiscarded);
+                    }
+                }
                 Ok(WorkerMsg::Resize(c, r)) => {
                     *cols = c;
                     *rows = r;
@@ -2204,7 +2329,7 @@ fn run_steady_state<E: Endpoint + Sync>(
                         frame, attach_conn, take, take_intent, outstanding, take_epoch, controller_id, voyage, *cols,
                         *rows, &emit, recorded_bytes, last_input_outcome, take_epoch_pub,
                     ) {
-                        FrameOutcome::ReattachRequested => return SteadyOutcome::ReconnectPreserveTake,
+                        FrameOutcome::ReattachRequested => return SteadyOutcome::Reconnect,
                         FrameOutcome::Handled | FrameOutcome::Ignored => {}
                     }
                 }
@@ -2244,9 +2369,8 @@ fn run_steady_state<E: Endpoint + Sync>(
 enum FrameOutcome {
     Handled,
     Ignored,
-    /// `take_refused{not_attached}` — the caller ends this episode
-    /// PRESERVING the take transaction (ruling (b), Codex review round
-    /// finding 4).
+    /// `take_refused{not_attached}` — the caller ends this episode; the
+    /// take transaction's queue is discarded and counted at the reset.
     ReattachRequested,
 }
 
@@ -2278,6 +2402,26 @@ fn send_new_input<E: Endpoint>(
     send_wire_input::<E>(attach_conn, controller_id, take_epoch, idem_key, bytes);
 }
 
+/// [`apply_single_take_action`] for the actions a typed input produced:
+/// an input dropped whole is counted in the worker's one discard counter.
+/// Returns whether this action was that whole drop.
+fn apply_input_action<E: Endpoint>(
+    action: TakeAction,
+    attach_conn: &E::Client,
+    controller_id: &str,
+    emit: &dyn Fn(WorkerEvent),
+    discarded: &AtomicUsize,
+) -> bool {
+    if action == TakeAction::InputDropped {
+        discarded.fetch_add(1, Ordering::AcqRel);
+        emit(WorkerEvent::InputsDiscarded);
+        true
+    } else {
+        apply_single_take_action::<E>(action, attach_conn, controller_id, emit);
+        false
+    }
+}
+
 /// Dispatches one `TakeAction`. `SendInput` no longer exists as a
 /// variant (Codex review round, finding 3: flushing the queue is never
 /// bundled with `take_ok`'s own actions) — every input send in this
@@ -2301,6 +2445,8 @@ fn apply_single_take_action<E: Endpoint>(action: TakeAction, attach_conn: &E::Cl
         TakeAction::QueueDiscarded => {
             emit(WorkerEvent::Status("input discarded \u{2014} the pen never arrived in time".to_string()));
         }
+        // Counted by `apply_input_action`, which has the counter.
+        TakeAction::InputDropped => {}
         TakeAction::GeometryUnrepresentable => {
             emit(WorkerEvent::Status("window size not representable by this session".to_string()));
         }
@@ -2310,7 +2456,7 @@ fn apply_single_take_action<E: Endpoint>(action: TakeAction, attach_conn: &E::Cl
         TakeAction::Reattach => {
             // Handled by the caller propagating `FrameOutcome::
             // ReattachRequested` up to `SteadyOutcome::
-            // ReconnectPreserveTake` -- nothing to send here (the
+            // Reconnect` -- nothing to send here (the
             // server already does not recognize this connection as
             // attached).
         }
@@ -2555,6 +2701,27 @@ mod tests {
     use super::*;
     use crate::client::PeerIdentity;
 
+    /// An input sent after the worker has exited is never delivered, and
+    /// is counted.
+    #[test]
+    fn an_input_sent_after_the_worker_exited_is_counted() {
+        let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
+        drop(msg_rx);
+        let worker = AttachWorker::<TestEndpoint> {
+            msg_tx,
+            ingress_bytes: Arc::new(AtomicUsize::new(0)),
+            attach_gen: Arc::new(AtomicU64::new(0)),
+            discarded: Arc::new(AtomicUsize::new(0)),
+            ingress_bound: 64,
+            queued_bytes: Arc::new(QueuedBytes::new()),
+            viewed: Arc::new(AtomicBool::new(true)),
+            worker_handle: None,
+            _endpoint: PhantomData,
+        };
+        assert_eq!(worker.send_input(b"x".to_vec()), Ok(()));
+        assert_eq!(worker.inputs_discarded(), 1);
+    }
+
     /// The manager's own ruling on top of Codex round 2: the ingress
     /// bound limits ACCUMULATION, never a single send. An input bigger
     /// than the bound is admitted outright when nothing else is queued
@@ -2571,8 +2738,11 @@ mod tests {
         let worker = AttachWorker::<TestEndpoint> {
             msg_tx,
             ingress_bytes: Arc::new(AtomicUsize::new(0)),
+            attach_gen: Arc::new(AtomicU64::new(0)),
+            discarded: Arc::new(AtomicUsize::new(0)),
             ingress_bound: 64,
             queued_bytes: Arc::new(QueuedBytes::new()),
+            viewed: Arc::new(AtomicBool::new(true)),
             worker_handle: None,
             _endpoint: PhantomData,
         };
@@ -2591,12 +2761,13 @@ mod tests {
             Err(IngressRefused),
             "a second send while the first is still queued must be refused"
         );
+        assert_eq!(worker.discarded.load(Ordering::SeqCst), 1, "a refusal is counted as a discarded input");
 
         // Draining the channel (as the worker's own loop would, popping
         // the message and letting its reservation drop) releases the
         // first charge.
         match msg_rx.recv().expect("the first send's own message is queued") {
-            WorkerMsg::Input(bytes, _reservation) => assert_eq!(bytes.len(), 100),
+            WorkerMsg::Input(bytes, _reservation, _) => assert_eq!(bytes.len(), 100),
             _ => panic!("expected WorkerMsg::Input"),
         }
 
@@ -2992,7 +3163,7 @@ mod tests {
 
         let (_msg_tx, cmd_rx) = mpsc::channel::<WorkerMsg>();
         let mut reconnect = ReconnectState::new();
-        let mut latched_quit_reason: Option<String> = None;
+        let mut held = Held { quit: None, resize: None, discarded: Arc::new(AtomicUsize::new(0)) };
         let mut quit = QuitDispatcher::new();
         let mut outstanding = OutstandingSlot::new();
         // Generous relative to the scripted backoff waits; the deadline's
@@ -3006,10 +3177,11 @@ mod tests {
             "sot-capsule-row-r4d",
             &cmd_rx,
             &mut reconnect,
-            &mut latched_quit_reason,
+            &mut held,
             &mut quit,
             &mut outstanding,
             first_attach_deadline,
+            &AtomicBool::new(true),
             &|_e| {},
         );
 
@@ -3022,6 +3194,166 @@ mod tests {
             ReadyOutcome::ShouldExit => panic!("expected Ready(v2), got ShouldExit"),
             ReadyOutcome::Shutdown => panic!("expected Ready(v2), got Shutdown"),
         }
+    }
+
+    /// Counts [`Endpoint::connect_voyage_unchallenged`] calls and fails every one.
+    struct CountingUnreachableEndpoint {
+        voyage_dials: AtomicUsize,
+    }
+    impl Endpoint for CountingUnreachableEndpoint {
+        type Client = ScriptedReadyClient;
+        type Process = TestProcess;
+
+        fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            self.voyage_dials.fetch_add(1, Ordering::AcqRel);
+            Err(crate::transport::TransportError::Unreachable(std::io::Error::new(ErrorKind::TimedOut, "leg not up yet")))
+        }
+        fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            unreachable!("converge_on_ready never reconnects the supervisor lane itself")
+        }
+        fn challenge(
+            &self,
+            _conn: &Self::Client,
+            _exchange: &mut dyn crate::exchange::IdentityExchange,
+            _deadline: Instant,
+        ) -> ChallengeOutcome<Self::Process> {
+            unreachable!("converge_on_ready never challenges")
+        }
+        fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
+            unreachable!("converge_on_ready never authenticates")
+        }
+    }
+
+    /// A voyage dial that answers `LinkDown`, with a flag standing in for the
+    /// host's link gate.
+    struct LinkDownEndpoint {
+        link_up: Arc<AtomicBool>,
+        voyage_dials: Arc<AtomicUsize>,
+    }
+    impl Endpoint for LinkDownEndpoint {
+        type Client = ScriptedReadyClient;
+        type Process = TestProcess;
+
+        fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            self.voyage_dials.fetch_add(1, Ordering::AcqRel);
+            Err(crate::transport::TransportError::LinkDown)
+        }
+        fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            unreachable!("converge_on_ready never reconnects the supervisor lane itself")
+        }
+        fn challenge(
+            &self,
+            _conn: &Self::Client,
+            _exchange: &mut dyn crate::exchange::IdentityExchange,
+            _deadline: Instant,
+        ) -> ChallengeOutcome<Self::Process> {
+            unreachable!("converge_on_ready never challenges")
+        }
+        fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
+            unreachable!("converge_on_ready never authenticates")
+        }
+        fn link_up(&self) -> bool {
+            self.link_up.load(Ordering::Acquire)
+        }
+    }
+
+    /// A worker whose dial answers `LinkDown` pauses after that one dial:
+    /// no further dial while the link is down, none while it is up but the
+    /// client is not viewed, one within a few ticks of both holding, and a
+    /// `Resize` read during the pause is kept for the next attach.
+    #[test]
+    fn a_link_down_dial_pauses_until_the_link_is_up_and_the_client_is_viewed() {
+        let v = "11111111-1111-1111-1111-111111111111";
+        let ready = SupervisorReply::StatusOk { pid: 1, created: 1, voyage: Some(v.to_string()), leg: Some(1), phase: SupervisorPhase::Ready };
+        let conn = ScriptedReadyClient::new((0..60).map(|_| ready.clone()).collect());
+        let link_up = Arc::new(AtomicBool::new(false));
+        let voyage_dials = Arc::new(AtomicUsize::new(0));
+        let ep = LinkDownEndpoint { link_up: Arc::clone(&link_up), voyage_dials: Arc::clone(&voyage_dials) };
+        let viewed = Arc::new(AtomicBool::new(false));
+
+        let (msg_tx, cmd_rx) = mpsc::channel::<WorkerMsg>();
+        let worker_viewed = Arc::clone(&viewed);
+        let worker = thread::spawn(move || {
+            let mut reconnect = ReconnectState::new();
+            let mut held = Held { quit: None, resize: None, discarded: Arc::new(AtomicUsize::new(0)) };
+            let mut quit = QuitDispatcher::new();
+            let mut outstanding = OutstandingSlot::new();
+            let outcome = converge_on_ready::<LinkDownEndpoint>(
+                &ep,
+                conn,
+                FrameReader::new(),
+                "sot-capsule-row-r4d",
+                &cmd_rx,
+                &mut reconnect,
+                &mut held,
+                &mut quit,
+                &mut outstanding,
+                None,
+                &worker_viewed,
+                &|_e| {},
+            );
+            (matches!(outcome, ReadyOutcome::Shutdown), held.resize)
+        });
+
+        thread::sleep(Duration::from_millis(2000));
+        assert_eq!(voyage_dials.load(Ordering::Acquire), 1, "link down: one dial, then paused");
+        msg_tx.send(WorkerMsg::Resize(101, 41)).unwrap();
+
+        link_up.store(true, Ordering::Release);
+        thread::sleep(Duration::from_millis(2000));
+        assert_eq!(voyage_dials.load(Ordering::Acquire), 1, "link up but not viewed: still paused");
+
+        viewed.store(true, Ordering::Release);
+        let resumed = Instant::now();
+        while voyage_dials.load(Ordering::Acquire) < 2 && resumed.elapsed() < Duration::from_millis(300) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(voyage_dials.load(Ordering::Acquire) >= 2, "link up and viewed: the next dial within 300 ms");
+
+        msg_tx.send(WorkerMsg::Shutdown).unwrap();
+        let (shut_down, resize) = worker.join().unwrap();
+        assert!(shut_down);
+        assert_eq!(resize, Some((101, 41)), "a Resize read while paused is the size of the next attach");
+    }
+
+    /// ADR 0043 decision 28: a failed voyage dial waits the doubling backoff
+    /// even before the row's first attach (over an ssh lane each dial is a
+    /// login), so 2 s of `Ready` + `Unreachable` holds at most 4 dials
+    /// (at 0, 0.25, 0.75 and 1.75 s), not one per 250 ms.
+    #[test]
+    fn a_failed_voyage_dial_backs_off_before_the_first_attach() {
+        let v = "11111111-1111-1111-1111-111111111111";
+        let ready = SupervisorReply::StatusOk { pid: 1, created: 1, voyage: Some(v.to_string()), leg: Some(1), phase: SupervisorPhase::Ready };
+        let conn = ScriptedReadyClient::new((0..40).map(|_| ready.clone()).collect());
+        let ep = CountingUnreachableEndpoint { voyage_dials: AtomicUsize::new(0) };
+
+        let (msg_tx, cmd_rx) = mpsc::channel::<WorkerMsg>();
+        let stopper = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(2000));
+            let _ = msg_tx.send(WorkerMsg::Shutdown);
+        });
+        let mut reconnect = ReconnectState::new();
+        let mut held = Held { quit: None, resize: None, discarded: Arc::new(AtomicUsize::new(0)) };
+        let mut quit = QuitDispatcher::new();
+        let mut outstanding = OutstandingSlot::new();
+        let outcome = converge_on_ready::<CountingUnreachableEndpoint>(
+            &ep,
+            conn,
+            FrameReader::new(),
+            "sot-capsule-row-r4d",
+            &cmd_rx,
+            &mut reconnect,
+            &mut held,
+            &mut quit,
+            &mut outstanding,
+            None,
+            &AtomicBool::new(true),
+            &|_e| {},
+        );
+        stopper.join().unwrap();
+        assert!(matches!(outcome, ReadyOutcome::Shutdown), "the test ends the loop with Shutdown");
+        let dials = ep.voyage_dials.load(Ordering::Acquire);
+        assert!(dials <= 4, "at most 4 voyage dials in 2 s, got {dials}");
     }
 
     /// Answers the `attach` request with one scripted `attach_refused`
@@ -3160,6 +3492,122 @@ mod tests {
     /// supervisor that does not answer. The inline probe made it wait the
     /// probe's whole `STATUS_BUDGET` (5 s); the bound here is ten times
     /// below that and five ticks of slack above an idle worker.
+    /// Runs `run_steady_state` on the stall endpoint at `attached_gen`,
+    /// with the liveness probe due at once.
+    fn spawn_stall_steady(
+        rx: Receiver<WorkerMsg>,
+        attach_conn: Arc<StallClient>,
+        sup_conn: StallClient,
+        attached_gen: u64,
+        discarded: Arc<AtomicUsize>,
+    ) -> thread::JoinHandle<SteadyOutcome> {
+        thread::spawn(move || {
+            let mut take = TakeTransaction::new();
+            let mut take_intent = TakeIntent::Ordinary;
+            let mut outstanding = OutstandingSlot::new();
+            let mut quit = QuitDispatcher::new();
+            let mut reconnect = ReconnectState::new();
+            let (mut cols, mut rows, mut take_epoch) = (80u16, 24u16, 0u64);
+            let mut last_poll = Instant::now().checked_sub(LIVENESS_POLL_INTERVAL).unwrap_or_else(Instant::now);
+            run_steady_state::<StallEndpoint>(
+                &StallEndpoint,
+                &rx,
+                &|_e| {},
+                "h",
+                &attach_conn,
+                sup_conn,
+                FrameReader::new(),
+                &mut take,
+                &mut take_intent,
+                &mut outstanding,
+                &mut quit,
+                &mut reconnect,
+                &mut cols,
+                &mut rows,
+                &mut take_epoch,
+                "controller-1",
+                "voyage-1",
+                &mut last_poll,
+                &Arc::new(AtomicU64::new(0)),
+                &Arc::new(Mutex::new(None)),
+                &Arc::new(AtomicU64::new(0)),
+                attached_gen,
+                &discarded,
+            )
+        })
+    }
+
+    fn input_msg(bytes: &[u8], gen: u64) -> WorkerMsg {
+        let reservation = IngressReservation { ingress_bytes: Arc::new(AtomicUsize::new(bytes.len())), n: bytes.len() };
+        WorkerMsg::Input(bytes.to_vec(), reservation, gen)
+    }
+
+    /// An input stamped before this attach is discarded and counted,
+    /// never sent; the first current input is sent and clears the count.
+    #[test]
+    fn an_input_stamped_before_the_attach_is_counted_not_sent_and_a_current_one_is_sent() {
+        let attach_state = Arc::new(StallState::default());
+        let sup_state = Arc::new(StallState::default());
+        let attach_conn = Arc::new(StallClient(Arc::clone(&attach_state)));
+        let sup_conn = StallClient(Arc::clone(&sup_state));
+        let (tx, rx) = mpsc::channel::<WorkerMsg>();
+        let discarded = Arc::new(AtomicUsize::new(0));
+        let worker = spawn_stall_steady(rx, attach_conn, sup_conn, 2, Arc::clone(&discarded));
+
+        tx.send(input_msg(b"x", 1)).unwrap();
+        let started = Instant::now();
+        while discarded.load(Ordering::SeqCst) != 1 {
+            assert!(started.elapsed() < WORKER_TICK * 5, "the stale input was never counted");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(attach_state.writes.lock().unwrap().is_empty(), "a stale input must write nothing");
+
+        tx.send(input_msg(b"y", 2)).unwrap();
+        let sent = Instant::now();
+        while attach_state.writes.lock().unwrap().is_empty() {
+            assert!(sent.elapsed() < WORKER_TICK * 5, "the current input was never sent");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(discarded.load(Ordering::SeqCst), 0, "a current input clears the count");
+
+        tx.send(WorkerMsg::Shutdown).unwrap();
+        let outcome = worker.join().expect("the worker thread must not panic");
+        assert!(matches!(outcome, SteadyOutcome::Shutdown));
+    }
+
+    /// A current input that finds the take queue full is dropped whole and
+    /// counted, so no typed key vanishes uncounted.
+    #[test]
+    fn an_input_dropped_whole_by_a_full_take_queue_is_counted() {
+        let attach_state = Arc::new(StallState::default());
+        let sup_state = Arc::new(StallState::default());
+        let attach_conn = Arc::new(StallClient(Arc::clone(&attach_state)));
+        let sup_conn = StallClient(Arc::clone(&sup_state));
+        let (tx, rx) = mpsc::channel::<WorkerMsg>();
+        let discarded = Arc::new(AtomicUsize::new(0));
+        let worker = spawn_stall_steady(rx, attach_conn, sup_conn, 0, Arc::clone(&discarded));
+
+        tx.send(input_msg(&vec![b'a'; crate::fe_client::TAKE_QUEUE_CAP], 0)).unwrap();
+        tx.send(input_msg(b"z", 0)).unwrap();
+        let started = Instant::now();
+        while discarded.load(Ordering::SeqCst) != 1 {
+            assert!(started.elapsed() < WORKER_TICK * 5, "the dropped input was never counted");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        // Back-to-back whole drops accumulate; none wipes the count.
+        tx.send(input_msg(b"y", 0)).unwrap();
+        let started = Instant::now();
+        while discarded.load(Ordering::SeqCst) != 2 {
+            assert!(started.elapsed() < WORKER_TICK * 5, "the second dropped input was not added to the count");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        tx.send(WorkerMsg::Shutdown).unwrap();
+        let outcome = worker.join().expect("the worker thread must not panic");
+        assert!(matches!(outcome, SteadyOutcome::Shutdown));
+    }
+
     #[test]
     fn a_keystroke_is_written_while_a_status_probe_is_outstanding() {
         let attach_state = Arc::new(StallState::default());
@@ -3198,6 +3646,8 @@ mod tests {
                 &Arc::new(AtomicU64::new(0)),
                 &Arc::new(Mutex::new(None)),
                 &Arc::new(AtomicU64::new(0)),
+                1,
+                &Arc::new(AtomicUsize::new(0)),
             )
         });
 
@@ -3210,7 +3660,7 @@ mod tests {
 
         // Watching: the keystroke's `take` goes out on the attach connection.
         let reservation = IngressReservation { ingress_bytes: Arc::new(AtomicUsize::new(1)), n: 1 };
-        tx.send(WorkerMsg::Input(b"x".to_vec(), reservation)).unwrap();
+        tx.send(WorkerMsg::Input(b"x".to_vec(), reservation, 1)).unwrap();
         let sent = Instant::now();
         while attach_state.writes.lock().unwrap().is_empty() {
             assert!(sent.elapsed() < WORKER_TICK * 5, "the keystroke waited behind the outstanding Status probe");
@@ -3224,5 +3674,258 @@ mod tests {
         tx.send(WorkerMsg::Shutdown).unwrap();
         let outcome = worker.join().expect("the worker thread must not panic");
         assert!(matches!(outcome, SteadyOutcome::Shutdown), "Shutdown must end the steady state");
+    }
+
+    // -------------------------------------------------------------------
+    // The link-gate lane's required pair: keys typed while a re-attach's
+    // handshake is held are never delivered once it completes. The whole
+    // worker runs against a scripted endpoint; the re-attach's hello
+    // reply is held on a gate the test releases, so no clock decides the
+    // outcome.
+    // -------------------------------------------------------------------
+
+    const GATE_V1: &str = "11111111-1111-1111-1111-111111111111";
+    const GATE_V2: &str = "22222222-2222-2222-2222-222222222222";
+
+    #[derive(Default)]
+    struct GateConnState {
+        out: VecDeque<u8>,
+        closed: bool,
+        held_hello: Option<Vec<u8>>,
+    }
+
+    /// One scripted voyage connection: answers the attach lane in-process.
+    /// The second connection (the re-attach) withholds its hello reply
+    /// until [`GateConn::release`].
+    struct GateConn {
+        gated: bool,
+        state: Mutex<GateConnState>,
+        cv: Condvar,
+        splitter: Mutex<crate::wire::FrameSplitter>,
+        entered: Sender<()>,
+        inputs: Sender<Vec<u8>>,
+    }
+    impl GateConn {
+        fn push(&self, frame: AttachServer) {
+            let bytes = wire::encode_attach_server(&frame).expect("encode");
+            self.state.lock().unwrap().out.extend(bytes);
+            self.cv.notify_all();
+        }
+        fn release(&self) {
+            let held = self.state.lock().unwrap().held_hello.take();
+            if let Some(bytes) = held {
+                self.state.lock().unwrap().out.extend(bytes);
+                self.cv.notify_all();
+            }
+        }
+        fn close(&self) {
+            self.state.lock().unwrap().closed = true;
+            self.cv.notify_all();
+        }
+    }
+    /// A voyage connection, or the supervisor lane (every `Status` answered
+    /// `Ready` on the voyage the test currently names).
+    enum GateClient {
+        Voyage(Arc<GateConn>),
+        Sup(Arc<Mutex<String>>),
+    }
+    impl Client for GateClient {
+        fn write_all(&self, bytes: &[u8]) -> Result<(), crate::transport::TransportError> {
+            let GateClient::Voyage(conn) = self else { return Ok(()) };
+            let (frames, _) = conn.splitter.lock().unwrap().feed(bytes);
+            for f in frames {
+                match f {
+                    DecodedFrame::AttachClient(AttachClient::Hello { proto }) => {
+                        if conn.gated {
+                            let held = wire::encode_attach_server(&AttachServer::HelloOk { proto }).expect("encode");
+                            conn.state.lock().unwrap().held_hello = Some(held);
+                            let _ = conn.entered.send(());
+                        } else {
+                            conn.push(AttachServer::HelloOk { proto });
+                        }
+                    }
+                    DecodedFrame::AttachClient(AttachClient::Attach { .. }) => {
+                        conn.push(AttachServer::CheckpointChunk { last: true, bytes: b"$ ".to_vec() });
+                    }
+                    DecodedFrame::AttachClient(AttachClient::Take { .. }) => conn.push(AttachServer::TakeOk { take_epoch: 1 }),
+                    DecodedFrame::AttachClient(AttachClient::Input { payload, .. }) => {
+                        let _ = conn.inputs.send(payload);
+                        conn.push(AttachServer::InputRecorded);
+                    }
+                    DecodedFrame::AttachClient(AttachClient::Resize { .. }) => conn.push(AttachServer::ResizeOk),
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        fn read(&self, buf: &mut [u8]) -> Result<usize, crate::transport::TransportError> {
+            let conn = match self {
+                GateClient::Voyage(conn) => conn,
+                GateClient::Sup(voyage) => {
+                    let reply = SupervisorReply::StatusOk {
+                        pid: 1,
+                        created: 1,
+                        voyage: Some(voyage.lock().unwrap().clone()),
+                        leg: Some(1),
+                        phase: SupervisorPhase::Ready,
+                    };
+                    let frame = wire::encode_supervisor_reply(&reply).expect("encode");
+                    buf[..frame.len()].copy_from_slice(&frame);
+                    return Ok(frame.len());
+                }
+            };
+            let mut st = conn.state.lock().unwrap();
+            loop {
+                if st.closed {
+                    return Err(crate::transport::TransportError::Cancelled);
+                }
+                if !st.out.is_empty() {
+                    let n = st.out.len().min(buf.len());
+                    for slot in buf.iter_mut().take(n) {
+                        *slot = st.out.pop_front().unwrap();
+                    }
+                    return Ok(n);
+                }
+                st = conn.cv.wait(st).unwrap();
+            }
+        }
+        fn cancel(&self) {
+            if let GateClient::Voyage(conn) = self {
+                conn.close();
+            }
+        }
+    }
+
+    struct GateEndpoint {
+        voyage: Arc<Mutex<String>>,
+        conns: Arc<Mutex<Vec<Arc<GateConn>>>>,
+        entered: Sender<()>,
+        inputs: Sender<Vec<u8>>,
+    }
+    impl Endpoint for GateEndpoint {
+        type Client = GateClient;
+        type Process = TestProcess;
+
+        fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            let mut conns = self.conns.lock().unwrap();
+            let conn = Arc::new(GateConn {
+                gated: !conns.is_empty(),
+                state: Mutex::new(GateConnState::default()),
+                cv: Condvar::new(),
+                splitter: Mutex::new(crate::wire::FrameSplitter::new()),
+                entered: self.entered.clone(),
+                inputs: self.inputs.clone(),
+            });
+            conns.push(Arc::clone(&conn));
+            Ok(GateClient::Voyage(conn))
+        }
+        fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            Ok(GateClient::Sup(Arc::clone(&self.voyage)))
+        }
+        fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+            ChallengeOutcome::Proven(TestProcess)
+        }
+        fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
+            PeerAuthOutcome::Authenticated(crate::challenge::PeerAuthenticated { pid: 7, created: 7 })
+        }
+    }
+
+    /// Drives the full worker through attach, a dropped lane and a re-attach
+    /// whose hello reply is held on a gate; types four keys while it is
+    /// held, then releases it. Once the pane reports attached again, a
+    /// current key is sent; no write up to and including it may carry a
+    /// key typed during the handshake.
+    fn keys_typed_during_a_held_handshake_are_not_delivered(change_voyage: bool) {
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (inputs_tx, inputs_rx) = mpsc::channel::<Vec<u8>>();
+        let (events_tx, events_rx) = mpsc::channel::<WorkerEvent>();
+        let voyage = Arc::new(Mutex::new(GATE_V1.to_string()));
+        let conns: Arc<Mutex<Vec<Arc<GateConn>>>> = Arc::new(Mutex::new(Vec::new()));
+        let endpoint = GateEndpoint { voyage: Arc::clone(&voyage), conns: Arc::clone(&conns), entered: entered_tx, inputs: inputs_tx };
+        let events_tx = Mutex::new(events_tx);
+        let worker = AttachWorker::<GateEndpoint>::spawn(
+            endpoint,
+            "row".to_string(),
+            80,
+            24,
+            "controller-1".to_string(),
+            "handle".to_string(),
+            None,
+            false,
+            64 * 1024,
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicU64::new(0)),
+            move |e| {
+                let _ = events_tx.lock().unwrap().send(e);
+            },
+        )
+        .expect("spawn the worker");
+        // Bounds only: a failure to progress must fail the test, never decide it.
+        let bound = Duration::from_secs(30);
+        let mut attached = 0usize;
+        let mut wait_attached = |want: usize| {
+            while attached < want {
+                match events_rx.recv_timeout(bound).expect("the worker never reported attached") {
+                    WorkerEvent::Status(s) if s == "attached" => attached += 1,
+                    WorkerEvent::Terminal(t) => panic!("the worker went terminal: {t}"),
+                    _ => {}
+                }
+            }
+        };
+
+        wait_attached(1);
+        if change_voyage {
+            *voyage.lock().unwrap() = GATE_V2.to_string();
+        }
+        let first = Arc::clone(&conns.lock().unwrap()[0]);
+        first.close();
+        entered_rx.recv_timeout(bound).expect("the re-attach handshake was never entered");
+        for i in 0..4 {
+            worker.send_input(format!("stale-{i}").into_bytes()).expect("ingress");
+        }
+        let second = Arc::clone(&conns.lock().unwrap()[1]);
+        second.release();
+        wait_attached(2);
+
+        // The worker reads the four stale inputs once it is attached;
+        // the poll is bounded only so a lost count fails the test.
+        let started = Instant::now();
+        while worker.inputs_discarded() != 4 {
+            assert!(started.elapsed() < bound, "the stale inputs were never counted: {}", worker.inputs_discarded());
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        worker.send_input(b"current".to_vec()).expect("ingress");
+        let mut written: Vec<Vec<u8>> = Vec::new();
+        loop {
+            let payload = inputs_rx.recv_timeout(bound).expect("the current key never reached the capsule");
+            let is_current = payload.windows(7).any(|w| w == b"current");
+            written.push(payload);
+            if is_current {
+                break;
+            }
+        }
+        let delivered: Vec<String> = written.iter().map(|p| String::from_utf8_lossy(p).into_owned()).collect();
+        assert!(
+            delivered.iter().all(|p| !p.contains("stale-")),
+            "keys typed while the pane re-attached were delivered: {delivered:?}"
+        );
+        assert_eq!(worker.inputs_discarded(), 0, "a current input clears the count");
+
+        for c in conns.lock().unwrap().iter() {
+            c.close();
+        }
+        drop(worker);
+    }
+
+    #[test]
+    fn keys_typed_while_a_re_attach_handshake_is_held_are_never_delivered() {
+        keys_typed_during_a_held_handshake_are_not_delivered(false);
+    }
+
+    #[test]
+    fn keys_typed_while_a_re_attach_handshake_is_held_are_never_delivered_into_a_restarted_voyage() {
+        keys_typed_during_a_held_handshake_are_not_delivered(true);
     }
 }

@@ -159,7 +159,7 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
             None => (rest, None),
         };
         let recipe = sot_protocol::ssh_bridge::SshRecipe::new(target, host).map_err(|e| format!("{endpoint}: {e}"))?;
-        let child = sot_protocol::ssh_bridge::spawn_sync(&recipe).map_err(|e| format!("{endpoint}: {e}"))?;
+        let child = sot_protocol::ssh_bridge::LinkGate::default().spawn_sync(&recipe).map_err(|e| format!("{endpoint}: {e}"))?;
         return Ok(Conn::Bridged(child));
     }
     Err(format!("{endpoint}: unrecognised endpoint spelling (expected unix:/tcp:/pipe:/ssh:)"))

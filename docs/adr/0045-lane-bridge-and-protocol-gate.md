@@ -115,6 +115,17 @@ migration mechanism, not two.
    120 s health window. Invariant: a hiccup and a genuinely dead row
    must never look alike to the client deciding whether to keep waiting.
 
+   **AMENDED 2026-10-01, a fourth bridge variant (wording corrected 2026-10-01).**
+   `TransportError::LinkDown` ("the host's link is down; no ssh was
+   started") is returned by a lane dial over ssh while that host's
+   `LinkGate` is down, before any child is spawned (`LaneError::LinkDown`
+   in the attach worker). The attach worker's supervisor and voyage
+   dials in `converge_on_ready` never retry it on their own clock: every worker pauses
+   on it. The other connect sites (the voyage probe for an absent supervisor,
+   the steady-state supervisor re-dial, the quit-transaction re-dial) treat it as a failed dial under
+   their existing pacing; no ssh starts. Only the host's control transport writes
+   the gate, and `LinkGate::probe` is the one ungated ssh spawn.
+
 5. **An `Endpoint` is a value; the row is named once.** The four trait
    methods take `&self`; `PipeEndpoint`/`SocketEndpoint` become unit
    values. `attach`/`attach_headless` take `(endpoint, lane, …)` in
@@ -193,6 +204,15 @@ migration mechanism, not two.
     checkpoint chunks are emitted one per step, so a slow link only
     lengthens the transfer. Invariant: a slow or interrupted link is
     never mistaken for a dead row, and recording never blocks on either.
+
+    **AMENDED 2026-10-01, no lane dials while the link is down.** Over
+    an ssh lane every dial is a login, so "the next dial is
+    `Unreachable` → retry … for as long as the outage lasts" no longer
+    holds for a down link: while the host's link is down no lane dials
+    (`LinkDown`, decision 4), the viewed pane resumes within one worker
+    tick of the transport's hello reply, and a parked (warm) client
+    resumes when it is next viewed. Other outages (the daemon answered
+    `Unreachable`) are retried as before, on the doubling backoff.
 
 ## What this deletes
 

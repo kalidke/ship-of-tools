@@ -77,7 +77,7 @@ async fn link_once(
     name: &str,
     workspaces: &Workspaces,
 ) -> Result<(), String> {
-    let mut child = sot_protocol::ssh_bridge::spawn_async(recipe).map_err(|e| format!("spawn {recipe}: {e}"))?;
+    let mut child = sot_protocol::ssh_bridge::LinkGate::default().spawn_async(recipe).map_err(|e| format!("spawn {recipe}: {e}"))?;
     let mut tx = child.stdin.take().ok_or("no stdin")?;
     let mut rx = codec::buffered(child.stdout.take().ok_or("no stdout")?);
     let stderr = child.stderr.take().ok_or("no stderr")?;
