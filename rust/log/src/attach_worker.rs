@@ -501,19 +501,17 @@ enum ReadyOutcome<E: Endpoint> {
 /// `Quit` sent at that exact moment would sit unread through the whole
 /// attach hello + checkpoint transfer, which is exactly the "quit must
 /// never wait on the checkpoint" invariant (ruling (a)) this closes.
-/// `Quit` is latched exactly as `wait_for_retry_or_shutdown` does;
-/// `Shutdown` (or a disconnected channel) is reported for the caller to
-/// act on immediately; a queued `Input`/`Resize` has no live attach
-/// connection yet to act on and is dropped, matching
-/// `wait_for_retry_or_shutdown`'s own documented behavior.
-fn drain_pending_control(cmd_rx: &Receiver<WorkerMsg>, latched_quit_reason: &mut Option<String>) -> Option<WaitOutcome> {
+/// Every message goes through [`hold`], exactly as in
+/// `wait_for_retry_or_shutdown`; `Shutdown` (or a disconnected channel) is
+/// reported for the caller to act on immediately.
+fn drain_pending_control(cmd_rx: &Receiver<WorkerMsg>, held: &mut Held) -> Option<WaitOutcome> {
     loop {
         match cmd_rx.try_recv() {
-            Ok(WorkerMsg::Shutdown) => return Some(WaitOutcome::Shutdown),
-            Ok(WorkerMsg::Quit(reason)) => {
-                latched_quit_reason.get_or_insert(reason);
+            Ok(msg) => {
+                if let Some(outcome) = hold(msg, held) {
+                    return Some(outcome);
+                }
             }
-            Ok(_) => {}
             Err(mpsc::TryRecvError::Empty) => return None,
             Err(mpsc::TryRecvError::Disconnected) => return Some(WaitOutcome::Shutdown),
         }
@@ -567,7 +565,7 @@ fn converge_on_ready<E: Endpoint>(
     h: &str,
     cmd_rx: &Receiver<WorkerMsg>,
     reconnect: &mut ReconnectState,
-    latched_quit_reason: &mut Option<String>,
+    held: &mut Held,
     quit: &mut QuitDispatcher,
     outstanding: &mut OutstandingSlot,
     first_attach_deadline: Option<Instant>,
@@ -602,7 +600,7 @@ fn converge_on_ready<E: Endpoint>(
         // below, so a quit never waits on a supervisor that is still
         // starting.
         if let Some(id) = sv.clone() {
-            if let Some(reason) = latched_quit_reason.take() {
+            if let Some(reason) = held.quit.take() {
                 run_quit::<E>(endpoint, &mut conn, &mut sup_reader, h, &id, reason, quit, outstanding, emit);
                 if quit.should_exit() {
                     return ReadyOutcome::ShouldExit;
@@ -621,7 +619,7 @@ fn converge_on_ready<E: Endpoint>(
                 emit(WorkerEvent::Status("supervisor starting \u{2014} waiting\u{2026}".to_string()));
                 emitted_starting = true;
             }
-            match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, latched_quit_reason) {
+            match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, held) {
                 WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                 WaitOutcome::Continue => continue,
             }
@@ -633,10 +631,10 @@ fn converge_on_ready<E: Endpoint>(
         // to the attach transition below — a Quit that arrived while this
         // round's Status check ran must never be allowed to sail through
         // unread.
-        if let Some(WaitOutcome::Shutdown) = drain_pending_control(cmd_rx, latched_quit_reason) {
+        if let Some(WaitOutcome::Shutdown) = drain_pending_control(cmd_rx, held) {
             return ReadyOutcome::Shutdown;
         }
-        if let Some(reason) = latched_quit_reason.take() {
+        if let Some(reason) = held.quit.take() {
             run_quit::<E>(endpoint, &mut conn, &mut sup_reader, h, &id, reason, quit, outstanding, emit);
             if quit.should_exit() {
                 return ReadyOutcome::ShouldExit;
@@ -678,7 +676,7 @@ fn converge_on_ready<E: Endpoint>(
                         _ => unreachable!("matched above"),
                     };
                     emit(WorkerEvent::Status(msg));
-                    match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, latched_quit_reason) {
+                    match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, held) {
                         WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                         WaitOutcome::Continue => continue,
                     }
@@ -688,7 +686,7 @@ fn converge_on_ready<E: Endpoint>(
                         return ReadyOutcome::Terminal("voyage pipe: access denied".to_string());
                     }
                     emit(WorkerEvent::Status(format!("voyage pipe not yet available: {io}")));
-                    match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, latched_quit_reason) {
+                    match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, held) {
                         WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                         WaitOutcome::Continue => continue,
                     }
@@ -961,6 +959,7 @@ impl<E: Endpoint> AttachWorker<E> {
         let queued_bytes = Arc::new(QueuedBytes::new());
         let worker_queued_bytes = Arc::clone(&queued_bytes);
         let ingress_bytes = Arc::new(AtomicUsize::new(0));
+        let discarded = Arc::new(AtomicUsize::new(0));
 
         let worker_handle = thread::Builder::new()
             .name("sot-fe-attach-worker".to_string())
@@ -980,6 +979,7 @@ impl<E: Endpoint> AttachWorker<E> {
                     recorded_bytes,
                     last_input_outcome,
                     take_epoch_pub,
+                    discarded,
                     headless,
                 );
             })?;
@@ -1140,6 +1140,7 @@ fn run_worker<E: Endpoint>(
     recorded_bytes: Arc<AtomicU64>,
     last_input_outcome: Arc<Mutex<Option<InputOutcome>>>,
     take_epoch_pub: Arc<AtomicU64>,
+    discarded: Arc<AtomicUsize>,
     headless: bool,
 ) where
     E: Send + Sync + 'static,
@@ -1178,7 +1179,7 @@ fn run_worker<E: Endpoint>(
     // dropped — applied the instant a fresh supervisor connection
     // exists, since `end_run` needs only that lane, never the attach
     // lane.
-    let mut latched_quit_reason: Option<String> = None;
+    let mut held = Held { quit: None, resize: None, discarded };
 
     let emit = |e: WorkerEvent| sink(e);
 
@@ -1196,7 +1197,7 @@ fn run_worker<E: Endpoint>(
                     &lane,
                     &cmd_rx,
                     &mut reconnect,
-                    &mut latched_quit_reason,
+                    &mut held,
                     &mut quit,
                     &mut outstanding,
                     first_attach_deadline,
@@ -1262,7 +1263,7 @@ fn run_worker<E: Endpoint>(
                     _ => unreachable!("matched above"),
                 };
                 emit(WorkerEvent::Status(msg));
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
                     WaitOutcome::Shutdown => break 'episodes,
                     WaitOutcome::Continue => continue 'episodes,
                 }
@@ -1290,7 +1291,7 @@ fn run_worker<E: Endpoint>(
                     }
                     ReconnectDecision::Retry => {
                         emit(WorkerEvent::Status("supervisor lane not answering \u{2014} retrying\u{2026}".to_string()));
-                        match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                        match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
                             WaitOutcome::Shutdown => break 'episodes,
                             WaitOutcome::Continue => continue 'episodes,
                         }
@@ -1298,6 +1299,13 @@ fn run_worker<E: Endpoint>(
                 }
             }
         };
+
+        // A resize read while not attached is applied before this attach's
+        // hello, so the capsule sees the size the pane has now.
+        if let Some((c, r)) = held.resize.take() {
+            cols = c;
+            rows = r;
+        }
 
         if voyage_uuid.as_deref() != Some(voyage.as_str()) {
             // A reset landed underneath us: any outstanding input from
@@ -1331,7 +1339,7 @@ fn run_worker<E: Endpoint>(
                 return;
             }
             PeerAuthOutcome::Undetermined => {
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
                     WaitOutcome::Shutdown => break 'episodes,
                     WaitOutcome::Continue => continue 'episodes,
                 }
@@ -1364,7 +1372,7 @@ fn run_worker<E: Endpoint>(
                     match wait_for_retry_or_shutdown(
                         &cmd_rx,
                         reconnect.retry_with_backoff(),
-                        &mut latched_quit_reason,
+                        &mut held,
                     ) {
                         WaitOutcome::Shutdown => break 'episodes,
                         WaitOutcome::Continue => continue 'episodes,
@@ -1385,7 +1393,7 @@ fn run_worker<E: Endpoint>(
                     if let LaneError::AttachRefused(reason) = e {
                         emit(WorkerEvent::Status(attach_refused_text(reason).to_string()));
                     }
-                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
                         WaitOutcome::Shutdown => break 'episodes,
                         WaitOutcome::Continue => continue 'episodes,
                     }
@@ -1539,14 +1547,14 @@ fn run_worker<E: Endpoint>(
                 return;
             }
             SteadyOutcome::Reconnect => {
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
                     WaitOutcome::Shutdown => shutdown = true,
                     WaitOutcome::Continue => {}
                 }
             }
             SteadyOutcome::ReconnectPreserveTake => {
                 preserve_take_on_reconnect = true;
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut latched_quit_reason) {
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
                     WaitOutcome::Shutdown => shutdown = true,
                     WaitOutcome::Continue => {}
                 }
@@ -1568,26 +1576,49 @@ enum SteadyOutcome {
     ReconnectPreserveTake,
 }
 
+/// What the worker keeps of the commands it reads while it is NOT attached
+/// (backing off, polling the supervisor, or in the handshake): one latched
+/// `Quit`, the newest `Resize`, and a count of the keystrokes it had to
+/// drop because there was no live attach connection to send them on.
+struct Held {
+    quit: Option<String>,
+    resize: Option<(u16, u16)>,
+    discarded: Arc<AtomicUsize>,
+}
+
+/// The one reader of a command read while not attached. `Shutdown` is the
+/// only message that ends the wait; a `Quit` is latched (applied the moment
+/// a supervisor connection exists), a `Resize` is held for the next attach,
+/// an `Input` is counted and dropped (its reservation drops with it), and
+/// frames the worker's own reader sent are moot.
+fn hold(msg: WorkerMsg, held: &mut Held) -> Option<WaitOutcome> {
+    match msg {
+        WorkerMsg::Shutdown => return Some(WaitOutcome::Shutdown),
+        WorkerMsg::Quit(reason) => {
+            held.quit.get_or_insert(reason);
+        }
+        WorkerMsg::Resize(c, r) => held.resize = Some((c, r)),
+        WorkerMsg::Input(..) => {
+            held.discarded.fetch_add(1, Ordering::AcqRel);
+        }
+        _ => {}
+    }
+    None
+}
+
 enum WaitOutcome {
     Continue,
     Shutdown,
 }
 
 /// Blocks up to `wait` for a `Shutdown` command, otherwise returns after
-/// the backoff elapses so the next episode can start. A `Quit` arriving
-/// during this wait is LATCHED into `*latched_quit_reason` rather than
-/// dropped (Codex review round, finding 2) — the top of the next episode
-/// applies it the moment a supervisor connection exists, since `end_run`
-/// needs only that lane. `Input`/`Resize` arriving with no live
-/// connection to send them on have nothing to act on yet and are
-/// dropped (the take transaction and outstanding slot are not mutated
-/// while disconnected, so a keystroke here would have nothing to attach
-/// its intent to).
-fn wait_for_retry_or_shutdown(
-    cmd_rx: &Receiver<WorkerMsg>,
-    wait: Duration,
-    latched_quit_reason: &mut Option<String>,
-) -> WaitOutcome {
+/// the backoff elapses so the next episode can start. Every other command
+/// read during the wait goes through [`hold`]: a `Quit` is LATCHED rather
+/// than dropped (Codex review round, finding 2) — the top of the next
+/// episode applies it the moment a supervisor connection exists, since
+/// `end_run` needs only that lane — and an `Input` has no live connection
+/// to be sent on, so it is counted and dropped.
+fn wait_for_retry_or_shutdown(cmd_rx: &Receiver<WorkerMsg>, wait: Duration, held: &mut Held) -> WaitOutcome {
     let deadline = Instant::now() + wait;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1595,12 +1626,11 @@ fn wait_for_retry_or_shutdown(
             return WaitOutcome::Continue;
         }
         match cmd_rx.recv_timeout(remaining.min(WORKER_TICK)) {
-            Ok(WorkerMsg::Shutdown) => return WaitOutcome::Shutdown,
-            Ok(WorkerMsg::Quit(reason)) => {
-                latched_quit_reason.get_or_insert(reason);
-                continue;
+            Ok(msg) => {
+                if let Some(outcome) = hold(msg, held) {
+                    return outcome;
+                }
             }
-            Ok(_) => continue,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return WaitOutcome::Shutdown,
         }
@@ -2992,7 +3022,7 @@ mod tests {
 
         let (_msg_tx, cmd_rx) = mpsc::channel::<WorkerMsg>();
         let mut reconnect = ReconnectState::new();
-        let mut latched_quit_reason: Option<String> = None;
+        let mut held = Held { quit: None, resize: None, discarded: Arc::new(AtomicUsize::new(0)) };
         let mut quit = QuitDispatcher::new();
         let mut outstanding = OutstandingSlot::new();
         // Generous relative to the scripted backoff waits; the deadline's
@@ -3006,7 +3036,7 @@ mod tests {
             "sot-capsule-row-r4d",
             &cmd_rx,
             &mut reconnect,
-            &mut latched_quit_reason,
+            &mut held,
             &mut quit,
             &mut outstanding,
             first_attach_deadline,
