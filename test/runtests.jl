@@ -896,6 +896,102 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
         end
     end
 
+    @testset "_settings_tmp: the staging file has the settings file's mode before it holds anything" begin
+        if Sys.iswindows()
+            @test_skip false
+        else
+            mktempdir() do dir
+                f = joinpath(dir, "settings.json")
+                write(f, "{}")
+                chmod(f, 0o604)
+                t = ShipTools._settings_tmp(f)
+                @test isfile(t)
+                @test filesize(t) == 0
+                @test filemode(t) & 0o777 == 0o604
+                rm(t)
+            end
+        end
+    end
+
+    @testset "_install_claude_hooks: nothing is created in .claude-auth through a relative, linked or bare config dir" begin
+        jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
+        cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
+        mktempdir() do home
+            default = joinpath(home, ".claude", "settings.json")
+            mkpath(dirname(default)); write(default, "{}")
+            auth = joinpath(home, ".claude-auth")
+            c = joinpath(auth, "c"); mkpath(c)
+            symlink(c, joinpath(home, "alias"))
+            srchooks = joinpath(COMM_DIR, "adapters", "claude", "hooks")
+            withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                    "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                cd(home) do
+                    ShipTools._install_claude_hooks(srchooks, joinpath(".claude-auth", "c"))
+                end
+                ShipTools._install_claude_hooks(srchooks, joinpath(home, "alias"))
+                ShipTools._install_claude_hooks(srchooks, auth)
+                @test isempty(readdir(c))
+                @test !ispath(joinpath(auth, "settings.json"))
+                for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
+                    @test count(==(ShipTools._hook_command(script)), cmds(default, ev)) == 1
+                end
+            end
+        end
+    end
+
+    @testset "_claude_settings_targets: an account link into an unsearchable dir is skipped, not fatal" begin
+        mktempdir() do home
+            default = joinpath(home, ".claude", "settings.json")
+            mkpath(dirname(default)); write(default, "{}")
+            a = joinpath(home, ".claude-auth", "a", "settings.json")
+            mkpath(dirname(a)); write(a, "{}")
+            locked = joinpath(home, "locked")
+            mkpath(joinpath(locked, "target"))
+            symlink(joinpath(locked, "target"), joinpath(home, ".claude-auth", "x"))
+            chmod(locked, 0o000)
+            try
+                restrained = try isfile(joinpath(locked, "probe")); false catch; true end
+                if !restrained
+                    @test_skip false
+                else
+                    @test ShipTools._claude_settings_targets(home, joinpath(home, ".claude")) ==
+                          [realpath(default), realpath(a)]
+                end
+            finally
+                chmod(locked, 0o755)
+            end
+        end
+    end
+
+    @testset "_install_claude_hooks: a merge that throws fails the install, after the other files are done" begin
+        jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
+        cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
+        mktempdir() do home
+            a = joinpath(home, ".claude-auth", "a", "settings.json")
+            mkpath(dirname(a)); write(a, "{}")
+            ro = joinpath(home, "ro"); mkpath(ro)
+            chmod(ro, 0o555)
+            try
+                restrained = try touch(joinpath(ro, "probe")); rm(joinpath(ro, "probe")); false catch; true end
+                if !restrained
+                    @test_skip false
+                else
+                    srchooks = joinpath(COMM_DIR, "adapters", "claude", "hooks")
+                    withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                            "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                        @test_throws ErrorException ShipTools._install_claude_hooks(srchooks, ro)
+                        for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
+                            @test count(==(ShipTools._hook_command(script)), cmds(a, ev)) == 1
+                        end
+                        @test !ispath(joinpath(ro, "settings.json"))
+                    end
+                end
+            finally
+                chmod(ro, 0o755)
+            end
+        end
+    end
+
     @testset "installer prunes the retired session-start aliases and ccbe" begin
         # Both adapters route through _install_skills: the Codex-only path
         # that never carried resource files must not silently return.
@@ -967,6 +1063,13 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             ShipTools._remove_stale_comm_hooks!(settings)
             got = split(readchomp(`jq -r '.hooks.Notification[].hooks[].command' $settings`), '\n'; keepempty = false)
             @test got == ["/usr/local/bin/mine.sh"]
+        end
+        mktempdir() do dir
+            settings = joinpath(dir, "settings.json")
+            write(settings, """{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/comm-status-report.sh"}]}]}}""")
+            ShipTools._remove_stale_comm_hooks!(settings)
+            got = split(readchomp(`jq -r '.hooks.Stop[].hooks[].command' $settings`), '\n'; keepempty = false)
+            @test got == ["/usr/local/bin/comm-status-report.sh"]
         end
     end
 
