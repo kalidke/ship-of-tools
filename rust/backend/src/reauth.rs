@@ -483,11 +483,11 @@ pub(crate) trait RestartEffects {
         root_canonicalized: bool,
     ) -> std::io::Result<crate::capsule_workspace::EndRunOutcome>;
     fn spawn_replacement(&self, plan: &ReauthRestart) -> Result<&'static str, String>;
-    fn reset(&self, state_dir: &Path) -> Result<String, String>;
+    fn reset(&self, workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<String, String>;
 }
 
 /// The production impl, and the ONLY place in this module that names the
-/// real `end_run`, `start_supervisor`, `query_status` or `reset`. A future
+/// real `end_run`, `start_supervisor`, `query_status` or `reset_run`. A future
 /// edit that calls one of them directly from [`restart_blocking`] defeats
 /// the ordering test silently; the guard is that each of those four paths
 /// appears exactly once in this file, inside this impl. Rust cannot enforce
@@ -518,8 +518,8 @@ impl RestartEffects for LiveSupervisor {
             plan.workspaces.clone(),
         )
     }
-    fn reset(&self, state_dir: &Path) -> Result<String, String> {
-        sot_log::supervisor_client::reset(state_dir).map_err(|e| e.to_string())
+    fn reset(&self, workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<String, String> {
+        crate::capsule_workspace::reset_run(workspaces, workspace_id, state_dir)
     }
 }
 
@@ -606,7 +606,7 @@ pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
     // prevent — with a red log instead of a green one, which is no better
     // for the conversation. So wait for the authority to rest on its own
     // clock, and then let the phase decide.
-    let voyage = match mint_replacement_voyage(fx, &state_dir, retired) {
+    let voyage = match mint_replacement_voyage(fx, &plan, &state_dir, retired) {
         Ok(voyage) => voyage,
         Err(MintRefusal::NeverAnswered(detail)) => {
             tracing::error!(
@@ -690,6 +690,7 @@ enum MintRefusal {
 ///      consequence.
 fn mint_replacement_voyage(
     fx: &dyn RestartEffects,
+    plan: &ReauthRestart,
     state_dir: &Path,
     retired: Option<(u32, u64)>,
 ) -> Result<String, MintRefusal> {
@@ -698,7 +699,7 @@ fn mint_replacement_voyage(
     if let Err(detail) = ready_to_mint(report.phase, retired, (report.pid, report.created)) {
         return Err(MintRefusal::Refused { settled, detail });
     }
-    match fx.reset(state_dir) {
+    match fx.reset(&plan.workspaces, &plan.row.workspace_id, state_dir) {
         Ok(voyage) if !voyage.trim().is_empty() => Ok(voyage),
         other => Err(MintRefusal::MintedNothing {
             settled,
@@ -1293,7 +1294,7 @@ mod tests {
             *self.spawned_argv.lock().unwrap() = Some(plan.argv.clone());
             self.spawn.clone()
         }
-        fn reset(&self, _state_dir: &Path) -> Result<String, String> {
+        fn reset(&self, _workspaces: &Workspaces, _workspace_id: &str, _state_dir: &Path) -> Result<String, String> {
             self.record.lock().unwrap().push(Effect::Reset);
             self.reset.clone()
         }

@@ -1457,7 +1457,7 @@ mod runtime {
         StartMode, FOREIGN_PHASE, LANE_CONCURRENCY, MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB,
         NEVER_STARTED_PHASE, RESTART_BACKOFFS, RESTART_WINDOW, UNREACHABLE_PHASE,
     };
-    use crate::workspaces::Workspaces;
+    use crate::workspaces::{StartPermit, Workspaces};
     use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -1600,6 +1600,7 @@ mod runtime {
     /// unlike the root check above this one DOES need `state_dir`, since
     /// nesting is a property of THIS row, not of the machine.
     fn spawn_detached_supervisor(
+        _permit: &StartPermit,
         sot_capsule_exe: &Path,
         state_dir: &Path,
         mode: StartMode,
@@ -2412,6 +2413,7 @@ mod runtime {
     /// land inside it. The phase this settles to is what the caller
     /// reports.
     pub fn spawn_and_watch(
+        permit: &StartPermit,
         sot_capsule_exe: &Path,
         state_dir: &Path,
         mode: StartMode,
@@ -2440,7 +2442,7 @@ mod runtime {
             .map(|ws| (ws.agent(), ws.account()))
             .unwrap_or_default();
         let child = spawn_detached_supervisor(
-            sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug, &agent_kind, &account,
+            permit, sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug, &agent_kind, &account,
         )?;
         // The supervisor authors its own identity; this daemon only
         // LEARNS it, here, from the first status the settle draws out.
@@ -2513,12 +2515,16 @@ mod runtime {
         slug: &str,
         workspaces: Workspaces,
     ) -> Result<&'static str, String> {
+        // The run gate first, held to return: a refused start locates and
+        // spawns nothing.
+        let permit = workspaces.begin_start(workspace_id)?;
         let state_dir = super::state_dir_for(state_root, workspace_id);
         let exe = match sot_capsule_exe() {
             Ok(exe) => exe,
             Err(e) => return Err(format!("could not locate sot-capsule.exe next to this daemon: {e}")),
         };
         spawn_and_watch(
+            &permit,
             &exe,
             &state_dir,
             mode,
@@ -2530,6 +2536,15 @@ mod runtime {
             workspaces.clone(),
         )
         .map_err(|e| format!("capsule supervisor spawn failed: {e}"))
+    }
+
+    /// Mints a fresh voyage on the row's live authority — a run start, so
+    /// it passes the gate first. The ONLY `supervisor_client::reset` call
+    /// outside tests; the retire arm of [`ensure_started`] and
+    /// `reauth::mint_replacement_voyage` both come through here.
+    pub(crate) fn reset_run(workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<String, String> {
+        let _permit = workspaces.begin_start(workspace_id)?;
+        sot_log::supervisor_client::reset(state_dir).map_err(|e| e.to_string())
     }
 
     /// Bound for [`settle_after_spawn`] — the ONE deadline every spawn
@@ -3014,9 +3029,9 @@ mod runtime {
                 }
             }
             // The second of the two resets in this tree, and the other is
-            // `reauth::mint_replacement_voyage`. Its doc comment carries
-            // the long form.
-            return LockedStep::Done(match sot_log::supervisor_client::reset(&state_dir) {
+            // `reauth::mint_replacement_voyage`; both go through
+            // [`reset_run`]. Its doc comment carries the long form.
+            return LockedStep::Done(match reset_run(&workspaces, workspace_id, &state_dir) {
                 // Mints a fresh voyage on the SAME epoch; the observer's next round supersedes the latch.
                 Ok(_new_voyage) => Ok(Some(())),
                 Err(e) => Err(format!("capsule workspace reset (after retiring an ended run) failed: {e}")),
@@ -3331,6 +3346,16 @@ mod runtime {
                         );
                         tokio::time::sleep(backoff).await;
                         restart_times.push(Instant::now());
+                        // The run gate, asked after the backoff so a
+                        // closing or held-back gate is read as it is now.
+                        // Held through this leg's settle below.
+                        let permit = match workspaces.begin_start(&workspace_id) {
+                            Ok(permit) => permit,
+                            Err(refusal) => {
+                                tracing::info!(workspace_id = %workspace_id, %refusal, "capsule supervisor watchdog: restart refused by the run gate -- not restarting");
+                                return;
+                            }
+                        };
                         // ADR 0043 decision 29: a process spawn never runs
                         // on a Tokio worker. Clones are the closure's OWN
                         // copies (`'static` + `Send`, required across the
@@ -3358,6 +3383,7 @@ mod runtime {
                             .unwrap_or_default();
                         let spawn_result = tokio::task::spawn_blocking(move || {
                             spawn_detached_supervisor(
+                                &permit,
                                 &exe,
                                 &dir,
                                 StartMode::Resume,
@@ -3369,10 +3395,11 @@ mod runtime {
                                 &agent_kind_for_spawn,
                                 &account_for_spawn,
                             )
+                            .map(|child| (child, permit))
                         })
                         .await;
                         match spawn_result {
-                            Ok(Ok(child)) => {
+                            Ok(Ok((child, permit))) => {
                                 // Settle BEFORE this guard drops — the
                                 // SAME shared wait `spawn_and_watch`
                                 // itself uses; see `settle_after_spawn`'s
@@ -3398,6 +3425,7 @@ mod runtime {
                                 if let (Ok((_phase, observation)), Some(ws)) = (settled, workspaces.resolve(Some(&workspace_id))) {
                                     observe_with_adoption(&ws, observation);
                                 }
+                                drop(permit);
                                 leg_opt = Some(child);
                             }
                             Ok(Err(e)) if e.kind() == ErrorKind::Unsupported => {
@@ -4408,6 +4436,106 @@ mod headless_size_gate_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `source` without its `#[cfg(test)]` modules and its comment lines.
+    /// A module ends at the first `}` line at its own indentation; counting
+    /// braces would miscount the ones inside string literals.
+    fn without_test_modules(source: &str) -> String {
+        let mut out = String::new();
+        let mut lines = source.lines().peekable();
+        while let Some(line) = lines.next() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            let next_is_mod = lines.peek().is_some_and(|next| {
+                let next = next.trim_start();
+                next.starts_with("mod ") || next.starts_with("pub mod ") || next.starts_with("pub(crate) mod ")
+            });
+            if trimmed == "#[cfg(test)]" && next_is_mod {
+                let header = lines.next().unwrap_or_default();
+                if header.trim_end().ends_with(';') || header.trim_end().ends_with('}') {
+                    continue;
+                }
+                let close = format!("{}}}", &header[..header.len() - header.trim_start().len()]);
+                for skipped in lines.by_ref() {
+                    if skipped.trim_end() == close {
+                        break;
+                    }
+                }
+                continue;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+
+    // #8: every run start passes the gate. The compiler enumerates spawns
+    // through `spawn_detached_supervisor`'s permit parameter; this pins
+    // what it cannot see — that the one reset is behind the gate, that
+    // every spawn call hands a permit, and that a closing gate refuses
+    // before anything is located or dialled.
+    #[test]
+    fn every_run_start_path_takes_a_permit() {
+        let mut faults = Vec::new();
+
+        let reg = crate::workspaces::Workspaces::new();
+        assert!(reg.close_gate_and_settle(std::time::Instant::now()));
+        let root = tempfile::tempdir().unwrap();
+        let refusal = "workspace ws-gate-1 cannot start: this computer's backend is shutting down".to_string();
+        let started = start_supervisor(
+            root.path(), "ws-gate-1", StartMode::Start, &["true".to_string()], root.path(), "", "gate", reg.clone(),
+        );
+        if started != Err(refusal.clone()) {
+            faults.push(format!("start_supervisor with the gate closing answered {started:?}"));
+        }
+        let reset = reset_run(&reg, "ws-gate-1", &state_dir_for(root.path(), "ws-gate-1"));
+        if reset != Err(refusal.clone()) {
+            faults.push(format!("reset_run with the gate closing answered {reset:?}"));
+        }
+
+        let reset_needle = "supervisor_client::reset(";
+        let spawn_needle = "spawn_detached_supervisor(";
+        let mut resets = 0;
+        let mut spawn_calls = 0;
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(&src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = without_test_modules(&std::fs::read_to_string(&path).unwrap());
+            for (pos, _) in text.match_indices(reset_needle) {
+                resets += 1;
+                let enclosing = text[..pos].rfind("fn ").map(|at| &text[at + 3..]).unwrap_or("");
+                if !enclosing.starts_with("reset_run(") {
+                    faults.push(format!("{}: supervisor_client::reset called outside reset_run", path.display()));
+                }
+            }
+            for (pos, _) in text.match_indices(spawn_needle) {
+                let args = text[pos + spawn_needle.len()..].trim_start();
+                if text[..pos].ends_with("fn ") {
+                    if !args.starts_with("_permit: &StartPermit,") {
+                        faults.push(format!("{}: spawn_detached_supervisor does not take a permit first", path.display()));
+                    }
+                    continue;
+                }
+                spawn_calls += 1;
+                let first = args.split(',').next().unwrap_or("");
+                if !first.contains("permit") {
+                    faults.push(format!("{}: a spawn_detached_supervisor call passes {first:?} first", path.display()));
+                }
+            }
+        }
+        if resets != 1 {
+            faults.push(format!("supervisor_client::reset occurs {resets} times outside tests, not once"));
+        }
+        if spawn_calls < 2 {
+            faults.push(format!("found {spawn_calls} spawn_detached_supervisor calls; the scan is not seeing the spawns"));
+        }
+        assert!(faults.is_empty(), "{faults:#?}");
+    }
 
     #[test]
     fn state_dir_joins_workspaces_and_the_id() {

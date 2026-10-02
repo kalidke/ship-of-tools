@@ -4679,6 +4679,22 @@ pub async fn handle_workspace_create(
     );
     ws_seed.runtime = runtime;
     ws_seed.account = std::sync::Mutex::new(account);
+    // The run gate, before the row exists: a refused create leaves nothing
+    // to roll back. Held through the start below, so a shutdown that
+    // closes the gate meanwhile waits for this create to finish.
+    let start_permit = match workspaces.begin_start(&ws_seed.workspace_id) {
+        Ok(permit) => permit,
+        Err(refusal) => {
+            let payload = json!({
+                "error": format!("capsule workspace could not be started: {refusal}"),
+                "code": "capsule_spawn_failed",
+            });
+            return Ok(vec![(
+                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                None,
+            )]);
+        }
+    };
     let ws_handle = workspaces.insert(ws_seed);
     if let Err(e) = crate::workspaces::save(&ws_handle) {
         tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
@@ -4817,6 +4833,7 @@ pub async fn handle_workspace_create(
         }
     }
     }
+    drop(start_permit);
 
     let res = WorkspaceCreateRes {
         workspace_id: ws_handle.workspace_id.clone(),
