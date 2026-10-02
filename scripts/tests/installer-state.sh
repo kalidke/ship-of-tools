@@ -52,8 +52,8 @@ STATUS_TABLE="$(printf 'HOST DECLARED\nhub-box hub,daemon\nhost-4 daemon,fronten
 
 check "a host listed daemon-only" \
     "daemon:1 frontend:0" "$(installer_topology_role "$STATUS_TABLE" host-2)"
-check "a host listed frontend-only" \
-    "daemon:0 frontend:1" "$(installer_topology_role "$STATUS_TABLE" laptop)"
+check "a host listed frontend-only installs its own local daemon" \
+    "daemon:1 frontend:1" "$(installer_topology_role "$STATUS_TABLE" laptop)"
 check "a host listed as neither (shell)" \
     "daemon:0 frontend:0" "$(installer_topology_role "$STATUS_TABLE" host-3)"
 check "a host listed daemon and frontend" \
@@ -84,6 +84,63 @@ nohub="$(installer_manifest_json "$WORK/prefix" "$WORK/config" none 0.6.0 v0.6.0
 check "hub is empty when not given" 1 "$(printf '%s' "$nohub" | grep -c '"hub": ""')"
 check "daemon recorded false"       1 "$(printf '%s' "$nohub" | grep -c '"daemon": false')"
 check "frontend recorded true"      1 "$(printf '%s' "$nohub" | grep -c '"frontend": true')"
+
+# ---------------------------------------------------------------------------
+case_start "a frontend-only box runs its own private local daemon, as on Windows"
+# The defect: a host the topology lists `frontend` alone resolved daemon:0,
+# so the install wrote no unit and disabled an existing sotd.service, and
+# the window on that box had no daemon of its own to open a session on.
+# STATUS_TABLE above is the topology stub; systemctl and loginctl are
+# logging stubs and HOME is scratch, so nothing here touches a live unit.
+fe_install() {  # <dir> <want-daemon 0|1> <unit enabled 0|1> <be-alias or "">: steps 6-8
+    local d="$1"
+    mkdir -p "$d/home/.local/bin" "$d/prefix" "$d/stubs"
+    : > "$d/log"
+    cat > "$d/stubs/systemctl" <<STUBEOF
+#!/bin/sh
+printf 'systemctl %s\n' "\$*" >> "$d/log"
+case "\$*" in *is-enabled*) [ "$3" = 1 ] ;; esac
+STUBEOF
+    cat > "$d/stubs/loginctl" <<STUBEOF
+#!/bin/sh
+printf 'loginctl %s\n' "\$*" >> "$d/log"
+STUBEOF
+    chmod +x "$d/stubs/systemctl" "$d/stubs/loginctl"
+    (
+        HOME="$d/home"; PATH="$d/stubs:$PATH"
+        installer_retire_local_service "$2"
+        [ "$2" = 0 ] || installer_enable_local_service "$d/prefix" "$(dirname "$0")/../../deploy/sotd.service" "$d/sot.sock"
+        installer_render_wrapper "$d/prefix" testtarget "$4" "$d/home/.local/bin/sot-launch"
+    ) >/dev/null 2>&1 || true
+}
+fe_role="$(installer_topology_role "$STATUS_TABLE" laptop)"
+fe_want=0
+case "$fe_role" in *"daemon:1"*) fe_want=1 ;; esac
+
+d="$WORK/fe-only"; fe_install "$d" "$fe_want" 0 ""
+check "the unit is rendered for this prefix" \
+    "$d/prefix/bin/sotd" "$({ sot_unit_owner_path < "$d/home/.config/systemd/user/sotd.service"; } 2>/dev/null)"
+check "the unit is enabled and started" \
+    "1" "$(grep -c -- '^systemctl --user enable --now sotd.service$' "$d/log" || true)"
+check "the wrapper ensures this box's own daemon before every window" \
+    "1" "$(grep -c 'sot_daemon_ensure ' "$d/home/.local/bin/sot-launch" 2>/dev/null || true)"
+check "the window dials that daemon's own socket" \
+    "1" "$(grep -c -- '/bin/sot" --socket "\$SOCKET"$' "$d/home/.local/bin/sot-launch" 2>/dev/null || true)"
+check "no disable is ever issued" "0" "$(grep -c 'disable' "$d/log" || true)"
+check "install.json records daemon true" \
+    "1" "$(installer_manifest_json "$d/prefix" "$WORK/config" systemd 0.6.0 v0.6.0 abc123 2026-09-15T00:00:00Z "" "$fe_want" 1 | grep -c '"daemon": true' || true)"
+
+d="$WORK/fe-only-enabled"; fe_install "$d" "$fe_want" 1 ""
+check "an existing enabled sotd.service is never disabled" "0" "$(grep -c 'disable' "$d/log" || true)"
+check "and stays enabled" \
+    "1" "$(grep -c -- '^systemctl --user enable --now sotd.service$' "$d/log" || true)"
+
+# The one exception: --backend <alias> names a remote backend explicitly.
+d="$WORK/fe-backend"; fe_install "$d" "$(case "$(installer_role_from_flags remote)" in *"daemon:1"*) echo 1 ;; *) echo 0 ;; esac)" 1 be-alias
+check "--backend: an enabled local unit is still disabled, none enabled" \
+    "1 0" "$(grep -c -- '--user disable --now sotd.service' "$d/log" || true) $(grep -c 'enable --now' "$d/log" || true)"
+check "--backend: the wrapper names the remote backend and carries no ensure" \
+    "1 0" "$(grep -c '^export SOT_HOST="be-alias"$' "$d/home/.local/bin/sot-launch" 2>/dev/null || true) $(grep -c 'sot_daemon_ensure' "$d/home/.local/bin/sot-launch" 2>/dev/null || true)"
 
 # ---------------------------------------------------------------------------
 case_start "unit ownership: ExecStart path extraction (old + wrapped forms)"

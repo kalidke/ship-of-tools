@@ -55,6 +55,13 @@ If `~/.config/sot/hosts.toml` already names this host, that entry decides
 which parts are installed and enabled here, and a role flag on the command
 line is ignored.
 
+Every machine that runs a window also runs its own private local daemon, so
+an entry with `frontend = true` alone installs one as `--local` does.
+`daemon = true` means other machines dial that daemon through the hub; the
+installer never adds this machine to anyone's dial list. The one exception is
+`--backend <ssh-alias>`, an explicit choice of a remote backend, which
+installs no local daemon.
+
 The checkout under the prefix is part of the installed product: a
 `git clone --filter=blob:none` of the selected tag, so history is available but
 only that tag's files are downloaded. The runtime resources and the in-app
