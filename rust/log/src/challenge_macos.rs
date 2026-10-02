@@ -179,6 +179,13 @@ fn peer_token(fd: RawFd) -> io::Result<PeerToken> {
     })
 }
 
+/// The peer's pid and kernel pidversion (the macOS `created`), from the
+/// one `LOCAL_PEERTOKEN` read.
+pub fn peer_pid_created(fd: RawFd) -> io::Result<(u32, u64)> {
+    let t = peer_token(fd)?;
+    Ok((t.pid, u64::from(t.pidversion)))
+}
+
 /// `TASK_AUDIT_TOKEN` (`osfmk/mach/task_info.h`): the `task_info`
 /// flavor that yields the calling task's own `audit_token_t`. `libc`
 /// exports `task_info` and `mach_task_self` for apple targets but not

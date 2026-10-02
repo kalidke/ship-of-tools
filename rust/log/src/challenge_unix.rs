@@ -620,6 +620,20 @@ mod tests {
     use std::io;
     use std::time::Duration;
 
+    /// A socketpair's peer is this very process, so `SO_PEERCRED` and
+    /// the `/proc` stamp must agree with `self_identity`.
+    #[test]
+    fn self_identity_matches_own_peer_identity() {
+        use std::os::fd::AsRawFd;
+        let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let cred = super::peer_credentials(a.as_raw_fd()).unwrap();
+        let me = crate::challenge::self_identity().unwrap();
+        assert_eq!(cred.pid, me.pid);
+        assert_eq!(cred.pid, std::process::id());
+        assert_eq!(crate::challenge::process_created(cred.pid).unwrap(), me.created);
+        assert_eq!(me.boot, crate::challenge::boot_identity().unwrap());
+    }
+
     /// A literal `/proc/pid/stat`-shaped line whose `comm` field (the
     /// second, parenthesized field) contains BOTH a space and a nested
     /// close-paren -- the exact shape that breaks a naive
