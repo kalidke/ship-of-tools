@@ -1844,72 +1844,131 @@ _sot_ps_records() {
               if (n > 0) print "!end" }'
 }
 
-# _sot_win_records — stdin: sotd.exe's `<exe>\t<command line>` lines, parent
-# first; the exe ends at the first TAB (an exe name holds none) and the command
-# line is everything after it, its own TABs raw. Prints one record per process
-# (the exe, then the command line's arguments after argv[0], tokenised the way
-# Windows does: double quotes group, \" is a quote, an unquoted TAB or space
-# separates and a quoted one stays; \x1c and \x1b, sotd's newline and return,
-# are not white space and stay inside their token), then `!end`. A `!` line from
-# sotd, or a node.exe whose command line could not be read (a node host cannot be told from any other node), is
-# `!truncated` and ends the output. Any other exe whose command line could not
-# be read gets ONE argument, RS (\036): arguments unknown, which is not an empty
-# tail and equals nothing (_sot_agent_layers).
+# _sot_win_records — stdin: sotd.exe's `<pid>\t<exe>\t<command line>` lines, parent
+# first; the pid and the exe end at the first and second TAB (neither holds one) and
+# the command line is everything after, its own TABs raw. Prints one record per
+# process (the exe, then the command line's arguments after argv[0], tokenised the
+# way the Microsoft C runtime does: n backslashes then a quote give n/2 backslashes
+# and a literal quote when n is odd, else a quote mark; a quote mark inside quotes
+# followed by another quote is one literal quote; an unquoted TAB or space
+# separates and a quoted one stays; \x1c and \x1b, sotd's newline and return, are
+# not white space and stay inside their token). A `!` line from sotd, a line that
+# does not begin with a pid (a sotd.exe older than `ancestors --from`), or a node.exe
+# whose command line could not be read (a node host cannot be told from any other
+# node) prints `!truncated`, ends the output and returns 1. Any other exe whose
+# command line could not be read gets ONE argument, RS (\036): arguments unknown,
+# which is not an empty tail and equals nothing (_sot_agent_layers). The walk
+# prints its own end.
 _sot_win_records() {
     awk -F '\t' -v us="$(printf '\037')" -v rs="$(printf '\036')" '
-        /^!/ { print "!truncated"; trunc = 1; exit }
-        { exe = $1; cl = substr($0, length($1) + 2); nt = 0; cur = ""; q = 0; has = 0
+        function bs(k,   s) { s = ""; while (k-- > 0) s = s "\\"; return s }
+        /^!/ || $1 !~ /^[0-9]+$/ || NF < 3 { print "!truncated"; exit 1 }
+        { exe = $2; cl = substr($0, length($1) + length($2) + 3); nt = 0; cur = ""; q = 0; has = 0
           for (i = 1; i <= length(cl); i++) { c = substr(cl, i, 1)
-            if (c == "\\" && substr(cl, i + 1, 1) == "\"") { cur = cur "\""; i++; has = 1 }
-            else if (c == "\"") { q = !q; has = 1 }
+            if (c == "\\") { n = 0; while (substr(cl, i, 1) == "\\") { n++; i++ }
+              has = 1
+              if (substr(cl, i, 1) != "\"") { cur = cur bs(n); i--; continue }
+              cur = cur bs(int(n / 2)); if (n % 2) { cur = cur "\""; continue }
+              c = "\"" }
+            if (c == "\"") { if (q && substr(cl, i + 1, 1) == "\"") { cur = cur "\""; i++ } else q = !q; has = 1 }
             else if ((c == " " || c == "\t") && !q) { if (has) { tk[++nt] = cur; cur = ""; has = 0 } }
             else { cur = cur c; has = 1 } }
           if (has) tk[++nt] = cur
-          if (nt == 0 && tolower(exe) == "node.exe") { print "!truncated"; trunc = 1; exit }
+          if (nt == 0 && tolower(exe) == "node.exe") { print "!truncated"; exit 1 }
           rec = exe
           if (nt == 0) rec = rec us rs
           for (i = 2; i <= nt; i++) rec = rec us tk[i]
-          print rec }
-        END { if (!trunc) print "!end" }'
+          print rec }'
+}
+
+# The /proc a walk reads: Linux's, or on Windows Cygwin's own (the MSYS runtime Git
+# for Windows ships). A plain assignment, never read from the environment; a test's
+# private copy of this file points it at a stand-in.
+_SOT_PROC=/proc
+
+# _sot_proc_ppid PID — sets the caller's pp to the field after PID's command name and
+# state in $_SOT_PROC/PID/stat (its parent's pid); 1 when that file cannot be read.
+# The caller checks that pp is a number.
+_sot_proc_ppid() {
+    local line
+    IFS= read -r line < "$_SOT_PROC/$1/stat" 2>/dev/null || return 1
+    line="${line##*) }"; line="${line#* }"; pp="${line%% *}"
 }
 
 # _sot_ancestor_chain — this process and its ancestors, one record per process,
 # the caller first, at most 64: the argv, fields joined by US (a space inside
-# an argument survives, except from ps; a newline is \x1c on Linux, and sotd.exe
+# an argument survives, except from ps; a newline is \x1c from /proc, and sotd.exe
 # prints a newline and a return as \x1c and \x1b and a TAB raw). The output ends
-# with `!end` (the top was reached) or `!truncated` (the walk stopped short of it). 1 when nothing
-# could be read, or sotd.exe failed (it then prints why).
+# with `!end` (the top was reached) or `!truncated` (the walk stopped short of it).
+# 1 when nothing could be read, or sotd.exe failed (its last line says why). The
+# walk starts at $$, this script's own process, never at a $(...) fork of it.
+# On Windows it reads Cygwin's /proc while the parent is an MSYS process, and above
+# the first MSYS process whose parent is native (ppid 1) runs `sotd.exe ancestors
+# --from <its winpid>`, never _sot_windows_sotd_exe, which spawns powershell. An
+# MSYS program that execs another MSYS program is a new Windows process whose
+# Windows parent has exited, so sotd's walk can stop at an MSYS process short of
+# the agents; the walk then goes on from that process's Cygwin parent.
 _sot_ancestor_chain() {
-    local us=$'\037' out p line rest a rec n=0 rc sotd
-    if _sot_is_windows; then
-        # sotd.exe prints `<exe>\t<command line>` per process, parent first; never
-        # _sot_windows_sotd_exe, which spawns powershell. Its exit status is
-        # kept: 0 is a whole walk, 3 a truncated one, anything else a sotd that
-        # lacks the subcommand or failed.
-        sotd="${SOTD_BIN:-${LOCALAPPDATA:-}/sot/bin/sotd.exe}"
-        out="$("$sotd" ancestors 2>/dev/null)"; rc=$?
-        case "$rc" in 0|3) ;; *) echo "sotd ancestors failed (rc $rc): update sotd"; return 1 ;; esac
-        out="${out//$'\r'/}"
-        [ -n "$out" ] || return 1
-        # On 3 sotd's own last line is `!truncated`; one is added only if it is missing.
-        { printf '%s\n' "$out"; [ "$rc" -ne 3 ] || case "${out##*$'\n'}" in '!truncated') ;; *) echo '!truncated' ;; esac; } | _sot_win_records
-    elif [ -r "/proc/$$/stat" ]; then
-        p=$$
+    local us=$'\037' p=$$ pp n=0 a rec w sotd out rc line buf wt wb f c scanned=""
+    if [ -r "$_SOT_PROC/$$/stat" ]; then
         while :; do
-            if [ "$p" -le 1 ]; then echo '!end'; break; fi
             if [ "$n" -ge 64 ]; then echo '!truncated'; break; fi
-            IFS= read -r line < "/proc/$p/stat" 2>/dev/null || { echo '!truncated'; break; }
-            rest="${line##*) }"; rest="${rest#* }"
+            _sot_proc_ppid "$p" || { echo '!truncated'; break; }
             rec=""
             # A newline would end the record: it becomes \x1c, never a space (an argument
             # that differs only by one must not look equal to the host's).
-            while IFS= read -r -d '' a; do rec="$rec${a//$'\n'/$'\034'}$us"; done < "/proc/$p/cmdline" 2>/dev/null
+            while IFS= read -r -d '' a; do rec="$rec${a//$'\n'/$'\034'}$us"; done < "$_SOT_PROC/$p/cmdline" 2>/dev/null
             if [ -z "$rec" ]; then echo '!truncated'; break; fi
             printf '%s\n' "${rec%"$us"}"
-            n=$((n + 1)); p="${rest%% *}"
-            case "$p" in ''|*[!0-9]*) echo '!truncated'; break ;; esac
+            n=$((n + 1))
+            case "$pp" in ''|*[!0-9]*) echo '!truncated'; break ;; esac
+            if [ "$pp" -gt 1 ]; then p="$pp"; continue; fi
+            _sot_is_windows || { echo '!end'; break; }
+            # Windows: p's parent is native, so sotd.exe walks on from p's Windows process.
+            IFS= read -r w < "$_SOT_PROC/$p/winpid" 2>/dev/null || { echo '!truncated'; break; }
+            if [ -z "$scanned" ]; then
+                # Cygwin's processes by winpid, read once and before any sotd snapshot: a
+                # process sotd prints is an ancestor, so it was created before this scan and
+                # is alive at the snapshot, and the pid it holds there names it here too.
+                local -A cyg; scanned=1
+                for f in "$_SOT_PROC"/[0-9]*/winpid; do
+                    IFS= read -r a < "$f" 2>/dev/null && [ -n "$a" ] || continue
+                    f="${f%/winpid}"; cyg[$a]="${f##*/}"
+                done
+            fi
+            sotd="${SOTD_BIN:-${LOCALAPPDATA:-}/sot/bin/sotd.exe}"
+            # Its exit status is kept: 0 is a whole walk, 3 a truncated one, anything
+            # else a sotd that lacks `ancestors --from` or failed.
+            out="$("$sotd" ancestors --from "$w" 2>/dev/null)"; rc=$?
+            case "$rc" in 0|3) ;; *) echo "sotd ancestors failed (rc $rc): update sotd"; return 1 ;; esac
+            # Its lines up to the walk's 64th record; wt is the last one's pid, wb the pid
+            # of the one before it (p's own winpid when there is one line).
+            buf=""; wt=""; wb="$w"
+            while IFS= read -r line; do
+                line="${line%$'\r'}"
+                [ -n "$line" ] || continue
+                case "$line" in '!'*) buf="$buf$line"$'\n'; break ;; esac
+                if [ "$n" -ge 64 ]; then buf="$buf!truncated"$'\n'; break; fi
+                buf="$buf$line"$'\n'; wb="${wt:-$w}"; wt="${line%%$'\t'*}"; n=$((n + 1))
+            done <<< "$out"
+            # On 3 sotd's own last line is `!truncated`; the filter stops at the first.
+            [ "$rc" -ne 3 ] || buf="$buf!truncated"$'\n'
+            # A `!` line, a line with no pid or an unreadable node.exe: it printed `!truncated`.
+            printf '%s' "$buf" | _sot_win_records || break
+            [ -n "$wt" ] || { echo '!end'; break; }
+            # sotd stopped at its last line. The walk goes on from the Cygwin parent of the
+            # process that line is, or else of the one whose current image is the line before
+            # (the last line is then that process's stub, left by its exec of a native program).
+            c="${cyg[$wt]:-${cyg[$wb]:-}}"
+            [ -n "$c" ] || { echo '!end'; break; }
+            _sot_proc_ppid "$c" || { echo '!truncated'; break; }
+            case "$pp" in ''|*[!0-9]*) echo '!truncated'; break ;; esac
+            [ "$pp" -gt 1 ] || { echo '!end'; break; }
+            p="$pp"
         done
         [ "$n" -gt 0 ] || return 1
+    elif _sot_is_windows; then
+        return 1
     else
         # Separate -o: BSD ps reads "pid=,..." as one header.
         out="$(ps -ww -A -o pid= -o ppid= -o args= 2>/dev/null | _sot_ps_records "$$")" || return 1
@@ -1997,10 +2056,11 @@ sot_require_agent() {
     fi
     return 0
 }
-# _sot_agent_unreadable [CHAIN_OUTPUT] — the reason; a sotd.exe failure is named.
+# _sot_agent_unreadable [CHAIN_OUTPUT] — the reason; a sotd.exe failure (the output's last line) is named.
 _sot_agent_unreadable() {
-    local why=""
-    case "${1:-}" in "sotd ancestors failed"*) why=" ($1)" ;; esac
+    local why="" last="${1:-}"
+    last="${last##*$'\n'}"
+    case "$last" in "sotd ancestors failed"*) why=" ($last)" ;; esac
     echo "cannot read this process's ancestry in full (/proc or ps; sotd.exe ancestors on Windows), so it cannot be shown to be its session's own agent${why} — nothing was read, sent or stamped"
 }
 

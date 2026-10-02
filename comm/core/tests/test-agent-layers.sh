@@ -50,6 +50,35 @@ sot_daemon_endpoint() { return 1; }
 sot_relay_endpoint() { return 1; }
 STUB
 grep -q '^sot_relay_endpoint() { return 1; }$' "$SCRIPTS_DIR/comm-lib.sh" || { echo "FATAL: the no-daemon stub did not land in the copy" >&2; exit 1; }
+cat >> "$SCRIPTS_DIR/comm-lib.sh" <<'SIMWIN'
+
+# ---- a Windows host on Linux (test only, only while SIMWIN is set) ----------
+# Windows pids are Linux pids; a process is native when its argv[0] ends in .exe,
+# else MSYS. Cygwin's /proc, this process and its MSYS ancestors (ppid 1 under a
+# native parent), is built here, when the library is sourced; $SIMWIN/sotd walks
+# the native part.
+if [ -n "${SIMWIN:-}" ]; then
+    _sot_is_windows() { return 0; }
+    SOTD_BIN="$SIMWIN/sotd"
+    _SOT_PROC="$SIMWIN/proc.$$"
+    rm -rf "$_SOT_PROC"; mkdir -p "$_SOT_PROC"
+    _sim_p=$$
+    while [ "$_sim_p" -gt 1 ] && IFS= read -r _sim_l < "/proc/$_sim_p/stat" 2>/dev/null; do
+        _sim_l="${_sim_l##*) }"; _sim_l="${_sim_l#* }"; _sim_pp="${_sim_l%% *}"
+        _sim_a0=""; IFS= read -r -d '' _sim_a0 < "/proc/$_sim_p/cmdline" 2>/dev/null || :
+        _sim_pa0=""; [ "$_sim_pp" -le 1 ] || { IFS= read -r -d '' _sim_pa0 < "/proc/$_sim_pp/cmdline" 2>/dev/null || :; }
+        case "$_sim_a0" in
+            *.exe) ;;
+            *) mkdir -p "$_SOT_PROC/$_sim_p"
+               ln -sf "/proc/$_sim_p/cmdline" "$_SOT_PROC/$_sim_p/cmdline"
+               echo "$_sim_p" > "$_SOT_PROC/$_sim_p/winpid"
+               case "$_sim_pa0" in *.exe|'') _sim_q=1 ;; *) _sim_q="$_sim_pp" ;; esac
+               printf '%s (sim) S %s\n' "$_sim_p" "$_sim_q" > "$_SOT_PROC/$_sim_p/stat" ;;
+        esac
+        _sim_p="$_sim_pp"
+    done
+fi
+SIMWIN
 JOIN="$SCRIPTS_DIR/comm-join.sh"; POLL="$SCRIPTS_DIR/comm-poll.sh"
 SEND="$SCRIPTS_DIR/comm-send.sh"; STATUS="$SCRIPTS_DIR/comm-status.sh"
 ln -s "$SCRIPTS_DIR" "$SOT_COMM_HOME/bin"
@@ -169,16 +198,41 @@ case "$res" in "rc=2|"*"$R_TREE_TEXT"*) ok "require: an awk that exits 1 with no
 # (each LINE is `<exe><TAB><command line>`, caller first, the capsule last).
 wtbl() {
     local want="$1" desc="$2" got; shift 2
-    got="$(printf '%s\n' "$@" | _sot_win_records | _sot_agent_layers 2>/dev/null | awk 'NF && $0 != "!ok"' | wc -l | tr -d ' ')"
+    got="$( { printf '%s\n' "$@" | awk -v OFS='\t' '{ print NR, $0 }' | _sot_win_records && echo '!end'; } | _sot_agent_layers 2>/dev/null | awk 'NF && $0 != "!ok"' | wc -l | tr -d ' ')"
     eq "windows table: $desc" "$got" "$want"
 }
-# winreq WANT_RC DESC TEXT SOTD_RC LINE... : sot_require_agent over a stub sotd.exe on a "Windows" host.
-winreq() {
-    local want="$1" desc="$2" text="$3" src="$4" res; shift 4
-    printf '%s\n' "$@" > "$WORK/sotd-win.out"
-    printf '#!/bin/sh\n[ "$1" = ancestors ] || exit 9\ncat "%s"\nexit %s\n' "$WORK/sotd-win.out" "$src" > "$WORK/sotd-win"; chmod +x "$WORK/sotd-win"
-    res="$( _sot_is_windows() { return 0; }; export SOTD_BIN="$WORK/sotd-win"; o="$(sot_require_agent)"; echo "rc=$?|$o" )"
-    case "$res" in "rc=$want|"*"$text"*) ok "sotd.exe: $desc" ;; *) bad "sotd.exe: $desc (want rc=$want and '$text', got: $res)" ;; esac
+# The Windows walk on a "Windows" host: $BR stands in for Cygwin's /proc, and the stub
+# sotd answers `ancestors --from W` with $BR/sotd.W (one `pid<TAB>exe<TAB>command line`
+# per line) and exits with $BR/sotd.W.rc; anything else exits 2.
+BR="$WORK/bridge"
+printf '#!/bin/sh\n[ "$#" = 3 ] && [ "$1" = ancestors ] && [ "$2" = --from ] && [ -f "%s/sotd.$3" ] || exit 2\ncat "%s/sotd.$3"\nexit "$(cat "%s/sotd.$3.rc")"\n' \
+    "$BR" "$BR" "$BR" > "$WORK/sotd-bridge"; chmod +x "$WORK/sotd-bridge"
+bproc() {  # PID PPID WINPID ARGV... : one Cygwin process in $BR
+    local p="$1" pp="$2" w="$3"; shift 3
+    mkdir -p "$BR/$p"; printf '%s (x) S %s 0 0\n' "$p" "$pp" > "$BR/$p/stat"; printf '%s\0' "$@" > "$BR/$p/cmdline"; echo "$w" > "$BR/$p/winpid"
+}
+bsotd() {  # FROM RC LINE... : the stub's answer to --from FROM, and its status
+    local f="$1" rc="$2"; shift 2; printf '%s\n' "$@" > "$BR/sotd.$f"; echo "$rc" > "$BR/sotd.$f.rc"
+}
+# bwalk SOTD_RC LINE... : $BR holds this shell alone, under a native parent (winpid 9000),
+# and sotd's walk from it is LINE... (each `<exe><TAB><command line>`), given the pids
+# 9001, 9002, ... in order (a `!` line none).
+bwalk() {
+    local rc="$1" l i=9000 out=(); shift
+    rm -rf "$BR"; bproc $$ 1 9000 bash -c x
+    for l in "$@"; do case "$l" in '!'*) out+=("$l") ;; *) i=$((i + 1)); out+=("$i${TAB}$l") ;; esac; done
+    bsotd 9000 "$rc" "${out[@]}"
+}
+breq() {  # WANT_RC DESC TEXT SELF WSID : sot_require_agent on a "Windows" host over $BR
+    local want="$1" desc="$2" text="$3" self="$4" wsid="$5" res
+    res="$( [ -z "$self" ] || export SOT_COMM_SELF_FILE="$self"; [ -z "$wsid" ] || export SOT_WORKSPACE_ID="$wsid"
+            _sot_is_windows() { return 0; }; _SOT_PROC="$BR"; export SOTD_BIN="$WORK/sotd-bridge"
+            o="$(sot_require_agent)"; echo "rc=$?|$o" )"
+    case "$res" in "rc=$want|"*"$text"*) ok "$desc" ;; *) bad "$desc (want rc=$want and '$text', got: $res)" ;; esac
+}
+winreq() {  # WANT_RC DESC TEXT SOTD_RC LINE... : sot_require_agent over bwalk on a "Windows" host
+    local want="$1" desc="$2" text="$3" src="$4"; shift 4
+    bwalk "$src" "$@"; breq "$want" "sotd.exe: $desc" "$text" "" ""
 }
 TAB=$'\t'
 WALK=("bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}claude.exe" "sot-capsule.exe${TAB}sot-capsule.exe run")
@@ -212,6 +266,13 @@ wtbl 2 "a quoted TAB stays inside its argument, and the rest is read: two layers
     "bash.exe${TAB}bash.exe -c x" "codex.exe${TAB}codex.exe \"A${TAB}B\" D" "node.exe${TAB}$WCJS \"A${TAB}B\" C" "sot-capsule.exe${TAB}sot-capsule.exe run"
 wtbl 2 "a quoted TAB against a space in the child: two layers" \
     "bash.exe${TAB}bash.exe -c x" "codex.exe${TAB}codex.exe \"A B\"" "node.exe${TAB}$WCJS \"A${TAB}B\"" "sot-capsule.exe${TAB}sot-capsule.exe run"
+
+# The Microsoft C runtime's rules for backslashes before a quote (and `""` inside quotes): a host
+# and a child whose arguments are the same under those rules are one layer, otherwise two.
+wpair() { wtbl "$1" "C runtime: host $2 against child $3" "bash.exe${TAB}bash.exe -c x" "codex.exe${TAB}codex.exe $3" "node.exe${TAB}$WCJS $2" "sot-capsule.exe${TAB}sot-capsule.exe run"; }
+wpair 1 '"a\\"' 'a\'; wpair 1 '"a\\\\"' 'a\\'; wpair 1 'a\\\"' '"a\\\""'; wpair 1 '"a b"\' '"a b\\"'   # F F C F
+wpair 1 '"a b\"' '"a b\""'; wpair 1 '"a""b c"' '"a\"b c"'; wpair 1 'p q' 'p q'                      # C F C
+wpair 2 '"a\\"' 'a\\'; wpair 2 'a\\\"' '"a\\"'; wpair 2 '"a b"' 'a b'                                 # C C C: arguments differ
 
 # --- 1b2. the row rule: a process that names a row must reach that row's capsule ---
 R_ROW_TEXT="is not shown to run inside that row's capsule"
@@ -253,12 +314,8 @@ RHOST=other rreq 2 "host other does not match dev__box: first __, row box__ws-a,
 
 # rwinreq WANT DESC TEXT SELF WSID SOTD_RC LINE... : winreq with an identity set only inside its subshell.
 rwinreq() {
-    local want="$1" desc="$2" text="$3" self="$4" wsid="$5" src="$6" res; shift 6
-    printf '%s\n' "$@" > "$WORK/sotd-win.out"
-    printf '#!/bin/sh\n[ "$1" = ancestors ] || exit 9\ncat "%s"\nexit %s\n' "$WORK/sotd-win.out" "$src" > "$WORK/sotd-win"; chmod +x "$WORK/sotd-win"
-    res="$( [ -z "$self" ] || export SOT_COMM_SELF_FILE="$self"; [ -z "$wsid" ] || export SOT_WORKSPACE_ID="$wsid"
-            _sot_is_windows() { return 0; }; export SOTD_BIN="$WORK/sotd-win"; o="$(sot_require_agent)"; echo "rc=$?|$o" )"
-    case "$res" in "rc=$want|"*"$text"*) ok "sotd.exe row rule: $desc" ;; *) bad "sotd.exe row rule: $desc (want rc=$want and '$text', got: $res)" ;; esac
+    local want="$1" desc="$2" text="$3" self="$4" wsid="$5" src="$6"; shift 6
+    bwalk "$src" "$@"; breq "$want" "sotd.exe row rule: $desc" "$text" "$self" "$wsid"
 }
 WSANDBOX=("bash.exe${TAB}bash.exe -c x" "bash.exe${TAB}bash.exe")
 rwinreq 2 "the sandbox gap: exit 0 and only bash.exe lines"  "$R_ROW_TEXT" "$SA" "" 0 "${WSANDBOX[@]}"
@@ -279,17 +336,68 @@ eq "ps filter: a parent missing from the table is a truncated walk" \
 eq "ps filter: my own pid missing prints nothing" "$(printf '%s\n' '   50     1 init' | _sot_ps_records 100 | pipes)" ""
 eq "ps filter: a chain past 64 is truncated at 64" \
     "$(for ((i = 1000; i < 1070; i++)); do printf '%s %s bash\n' "$i" "$((i + 1))"; done | _sot_ps_records 1000 | awk 'END { print NR, $0 }')" "65 !truncated"
-eq "windows filter: arguments, quotes and an escaped quote; argv[0] is dropped" \
-    "$(printf '%s\n' "bash.exe${TAB}C:\\git\\bash.exe -c \"x y\"" "a.exe${TAB}a.exe \"p\\\"q\"" | _sot_win_records | pipes)" 'bash.exe|-c|x y a.exe|p"q !end'
+eq "windows filter: arguments, quotes and an escaped quote; the pid and argv[0] are dropped" \
+    "$(printf '%s\n' "11${TAB}bash.exe${TAB}C:\\git\\bash.exe -c \"x y\"" "12${TAB}a.exe${TAB}a.exe \"p\\\"q\"" | _sot_win_records | pipes)" 'bash.exe|-c|x y a.exe|p"q'
 eq "windows filter: a node.exe with an empty command line is truncated, and nothing follows" \
-    "$(printf '%s\n' "bash.exe${TAB}bash.exe" "node.exe${TAB}" "claude.exe${TAB}claude.exe" | _sot_win_records | pipes)" "bash.exe !truncated"
+    "$(printf '%s\n' "11${TAB}bash.exe${TAB}bash.exe" "12${TAB}node.exe${TAB}" "13${TAB}claude.exe${TAB}claude.exe" | _sot_win_records | pipes)" "bash.exe !truncated"
 eq "windows filter: any other exe with an empty command line has arguments unknown (one RS argument), not an empty tail" \
-    "$(printf '%s\n' "claude.exe${TAB}" "a.exe${TAB}a.exe" | _sot_win_records | pipes)" "claude.exe|$(printf '\036') a.exe !end"
+    "$(printf '%s\n' "11${TAB}claude.exe${TAB}" "12${TAB}a.exe${TAB}a.exe" | _sot_win_records | pipes)" "claude.exe|$(printf '\036') a.exe"
 eq "windows filter: the encoded newline and return stay inside their token" \
-    "$(printf '%s\n' "a.exe${TAB}a.exe p q"$'\x1c'"s t"$'\x1b'"u" | _sot_win_records | tr -d '\n' | od -An -c | tr -d ' ' | tr -d '\n')" \
-    "$(printf '%s' "a.exe${US}p${US}q"$'\x1c'"s${US}t"$'\x1b'"u!end" | od -An -c | tr -d ' ' | tr -d '\n')"
+    "$(printf '%s\n' "11${TAB}a.exe${TAB}a.exe p q"$'\x1c'"s t"$'\x1b'"u" | _sot_win_records | tr -d '\n' | od -An -c | tr -d ' ' | tr -d '\n')" \
+    "$(printf '%s' "a.exe${US}p${US}q"$'\x1c'"s${US}t"$'\x1b'"u" | od -An -c | tr -d ' ' | tr -d '\n')"
 eq "windows filter: a !truncated line passes through and ends the output" \
-    "$(printf '%s\n' "bash.exe${TAB}bash.exe" '!truncated' | _sot_win_records | pipes)" "bash.exe !truncated"
+    "$(printf '%s\n' "11${TAB}bash.exe${TAB}bash.exe" '!truncated' | _sot_win_records | pipes)" "bash.exe !truncated"
+eq "windows filter: a line that does not begin with a pid (a sotd.exe older than --from) is truncated" \
+    "$(printf '%s\n' "bash.exe${TAB}bash.exe -c x" | _sot_win_records | pipes)" "!truncated"
+eq "windows filter: the status is 0 after records, 1 once it has printed !truncated" \
+    "$(printf '%s\n' "11${TAB}a.exe${TAB}a.exe" | _sot_win_records > /dev/null; printf '%s ' "$?"; printf '%s\n' '!truncated' | _sot_win_records > /dev/null; echo "$?")" "0 1"
+eq "windows filter: the C runtime's backslash and quote rules" "$(printf '%s\n' "11${TAB}a.exe${TAB}"'a.exe "a\\" a\\\" "a b"\ "a""b c" x\\y' | _sot_win_records | pipes)" 'a.exe|a\|a\"|a b\|a"b c|x\\y'
+
+# --- 1d. the Windows walk: Cygwin's /proc up to a native parent, sotd above it, segment by segment ---
+CAPA="sot-capsule.exe${TAB}sot-capsule.exe run C:\\s\\workspaces\\ws-a\\voyages\\v1 v1"
+CLA="claude.exe${TAB}claude --x"
+WCX="runs under codex, started inside claude's session"
+rm -rf "$BR"; bproc $$ 7001 9000 bash /s/comm-poll.sh; bproc 7001 1 9001 bash -c tool
+bsotd 9001 0 "9101${TAB}bash.exe${TAB}C:\\git\\bin\\bash.exe -c tool" "9102${TAB}$CLA" "9103${TAB}$CAPA"
+breq 0 "windows walk: a script started as a script reaches its row's capsule through its MSYS parent" "" "$SA" ""
+# codex.exe started by a script: sotd stops at that script (an MSYS exec, no live Windows parent).
+rm -rf "$BR"; bproc $$ 7001 9000 bash /s/comm-poll.sh; bproc 7001 1 9001 bash -c poll
+bsotd 9001 0 "9201${TAB}codex.exe${TAB}codex exec x" "9202${TAB}bash.exe${TAB}bash w.sh"
+bproc 7002 7003 9202 bash w.sh; bproc 7003 1 9003 bash -c tool
+bsotd 9003 0 "9301${TAB}bash.exe${TAB}C:\\git\\bin\\bash.exe -c tool" "9302${TAB}$CLA" "9303${TAB}$CAPA"
+breq 1 "windows walk: where sotd stops at a live MSYS process, its Cygwin parent carries the walk to claude" "$WCX" "$SA" ""
+breq 1 "windows walk: the same with no row named still sees the second agent" "$WCX" "" ""
+# The same, but the stopped-at process reports its native image's winpid (the line before).
+rm -rf "$BR/7002"; bproc 7002 7003 9201 bash w.sh
+breq 1 "windows walk: where sotd stops at a stub, the line before names its Cygwin process" "$WCX" "$SA" ""
+# Both lines map: the last line's own process is taken first.
+rm -rf "$BR"; bproc $$ 7001 9000 bash /s/x.sh; bproc 7001 1 9001 bash -c poll
+bsotd 9001 0 "9401${TAB}a.exe${TAB}a.exe" "9402${TAB}bash.exe${TAB}bash s.sh"
+bproc 7402 7403 9402 bash s.sh; bproc 7403 1 9403 bash -c tool
+bproc 7401 7404 9401 bash t.sh; bproc 7404 1 9404 bash -c other
+bsotd 9403 0 "9501${TAB}$CLA" "9502${TAB}$CAPA"
+bsotd 9404 0 "9601${TAB}codex.exe${TAB}codex" "9602${TAB}$CLA" "9603${TAB}$CAPA"
+breq 0 "windows walk: the last line's own process is tried before the line before's" "" "$SA" ""
+# The stopped-at process has a native parent: that is the top.
+rm -rf "$BR"; bproc $$ 7001 9000 bash /s/x.sh; bproc 7001 1 9001 bash -c poll
+bsotd 9001 0 "9701${TAB}codex.exe${TAB}codex" "9702${TAB}bash.exe${TAB}bash -c y"; bproc 7702 1 9702 bash -c y
+breq 2 "windows walk: a stopped-at process with a native parent is the top, refused for a row" "$R_ROW_TEXT" "$SA" ""
+breq 0 "windows walk: the same top passes with no row named" "" "" ""
+# sotd printed nothing: the head's native parent is the top.
+rm -rf "$BR"; bproc $$ 1 9000 bash /s/x.sh; bsotd 9000 0
+breq 2 "windows walk: sotd prints no line, the top, refused for a row" "$R_ROW_TEXT" "$SA" ""
+breq 0 "windows walk: the same passes with no row named" "" "" ""
+# Unreadable: a head with no winpid; a sotd line with no pid.
+rm -rf "$BR"; bproc $$ 1 9000 bash /s/x.sh; rm -f "$BR/$$/winpid"
+breq 2 "windows walk: a head whose winpid cannot be read is refused" "$R_TREE_TEXT" "" ""
+rm -rf "$BR"; bproc $$ 1 9000 bash /s/x.sh; bsotd 9000 0 "bash.exe${TAB}bash.exe -c x" "$CLA" "sot-capsule.exe${TAB}sot-capsule.exe run"
+breq 2 "windows walk: a sotd line with no pid (built before --from) is refused" "$R_TREE_TEXT" "" ""
+# The 64 cap counts both kinds of record: 41 from /proc, then a capsule at sotd's 31st line.
+rm -rf "$BR"; bproc $$ 7001 9000 bash x
+for ((i = 7001; i < 7040; i++)); do bproc "$i" "$((i + 1))" "$((i + 2000))" bash x; done; bproc 7040 1 9040 bash x
+CAPL=(); for ((i = 1; i <= 30; i++)); do CAPL+=("$((9900 + i))${TAB}bash.exe${TAB}bash.exe"); done
+bsotd 9040 0 "${CAPL[@]}" "9999${TAB}$CAPA"
+breq 2 "windows walk: the 64 cap spans both kinds of record, so a capsule past it is not reached" "$R_TREE_TEXT" "$SA" ""
 
 # --- 2. end to end --------------------------------------------------------------
 printf '%s\n' 'n=$1; shift; exec -a "$n" bash "$@"' > "$WORK/fake.sh"
@@ -313,6 +421,8 @@ chain() {
         bash)  F "${cap[@]}" bash hold.sh "${tool[@]}" ;;
         # One agent beneath the stand-in for row $ROWID's capsule (lib-home-guard.sh).
         rown)  in_row "$ROWID" bash "$WORK/fake.sh" claude hold.sh "${tool[@]}" ;;
+        # A Windows row (SIMWIN): a native claude.exe beneath row $ROWID's native capsule.
+        wown)  in_wrow "$ROWID" bash "$WORK/fake.sh" claude.exe hold.sh "${tool[@]}" ;;
         # An npm agent is `node <script>`; the script runs CMD in its own shell.
         # NODE_ARGS is node's argv after `node`; "$@" is CMD, which the script runs.
         nodechild) F "${cap[@]}" bash "$WORK/fake.sh" claude hold.sh node "${NODE_ARGS[@]}" "$@" ;;
@@ -656,6 +766,80 @@ ORC="$WORK/orphan.rc"; rm -f "${ORC:?}"
 for ((i = 0; i < 100; i++)); do [ -s "$ORC" ] && break; sleep 0.1; done
 eq  "row rule: an orphan naming ws-a, reparented away from its capsule, exits 1 (the library's rc 2)" "$(cat "$ORC" 2>/dev/null)" 1
 has "row rule: the orphan's refusal names the cause" "$(cat "$ORC.out" 2>/dev/null)" "$R_ROW_TEXT"
+
+# --- the Windows walk, end to end: every comm script started as a script, as on the box ---
+# SIMWIN turns on the stand-ins appended to the scripts' copy: an argv[0] ending in .exe
+# is native, anything else MSYS, and an MSYS process started by an MSYS program other
+# than a fork of itself has no live Windows parent (an MSYS exec).
+SIMWIN="$WORK/simwin"; mkdir -p "$SIMWIN"
+cat > "$SIMWIN/sotd" <<'SIMSOTD'
+#!/usr/bin/env bash
+# sotd.exe ancestors on a Linux "Windows": from the parent of --from's process
+# (default: this one), parent first, one `<pid>\t<exe>\t<command line>` line each,
+# stopping after an MSYS process whose parent is an MSYS process with another
+# command line (an MSYS exec: its old Windows process has exited).
+case "$#:${1:-}:${2:-}" in
+    1:ancestors:) s=$$ ;;
+    3:ancestors:--from) s=$3 ;;
+    *) exit 2 ;;
+esac
+a0()   { local a=""; IFS= read -r -d '' a < "/proc/$1/cmdline" 2>/dev/null; printf '%s' "$a"; }
+cl()   { local a out=""; while IFS= read -r -d '' a; do case "$a" in *[\ \"]*) a="\"${a//\"/\\\"}\"" ;; esac; out="$out${out:+ }$a"; done < "/proc/$1/cmdline" 2>/dev/null; printf '%s' "$out"; }
+ppid() { local l; IFS= read -r l < "/proc/$1/stat" 2>/dev/null || return 1; l="${l##*) }"; l="${l#* }"; printf '%s' "${l%% *}"; }
+p="$(ppid "$s")" || exit 1
+while [ "$p" -gt 1 ] && [ -r "/proc/$p/cmdline" ]; do
+    n0="$(a0 "$p")"; c="$(cl "$p")"
+    printf '%s\t%s\t%s\n' "$p" "${n0##*/}" "$c"
+    pp="$(ppid "$p")" || break
+    case "$n0" in *.exe) ;; *)
+        case "$(a0 "$pp")" in *.exe|'') ;; *) [ "$c" = "$(cl "$pp")" ] || break ;; esac ;;
+    esac
+    p="$pp"
+done
+exit 0
+SIMSOTD
+chmod +x "$SIMWIN/sotd"
+# The 6b probe: run by a second agent's own process, as a script.
+cat > "$SIMWIN/probe.sh" <<PROBE
+export SOT_COMM_HOME="$SIMWIN/home-6b"
+. "$SCRIPTS_DIR/comm-lib.sh"
+why="\$(sot_require_agent)"; echo "require rc=\$? \$why"
+bash "$SCRIPTS_DIR/comm-send.sh" @$PEER from-6b 2>&1; echo "send rc=\$?"
+bash "$SCRIPTS_DIR/comm-context.sh" > /dev/null 2>&1; echo "context rc=\$?"
+echo "home entries: \$(ls -A "$SIMWIN/home-6b" | wc -l | tr -d ' ')"
+PROBE
+in_wrow() {  # ID CMD... : CMD beneath a native stand-in for row ID's capsule
+    local id="$1"; shift
+    ( exec -a sot-capsule.exe bash -c 'shift; "$@"; exit $?' _ "/s/workspaces/$id/voyages/v0" "$@" )
+}
+RW="row-w"; SELF_WW="$WORK/self/testhost__ws-w.txt"
+ROWID=ws-w; run rown "$SELF_WW" "$JOIN" --name "$RW" || true
+eq  "windows walk: setup, $RW joins in its row (a Linux walk)" "$RC" 0
+run own "$SELF_PEER" "$SEND" "@$RW" "frame-w"
+eq  "windows walk: setup, the peer sends to $RW (a Linux walk)" "$RC" 0
+export SIMWIN
+run wown "$SELF_WW" "$POLL"
+eq  "windows walk: the row's own agent polls from a script started as a script" "$RC" 0
+has "windows walk: that poll shows the frame" "$OUT" "frame-w"
+run wown "$SELF_WW" bash "$WORK/hold.sh" "$POLL"
+eq  "windows walk: the row's own agent polls from a script started from a script" "$RC" 0
+WCOD=(bash "$WORK/fake.sh" codex.exe hold.sh bash -c '"$@"; exit $?' _ "$POLL")
+run wown "$SELF_WW" "${WCOD[@]}"
+eq  "windows walk: a poll under a native codex.exe in the tool shell refuses" "$RC" 1
+has "windows walk: that refusal names claude's session" "$OUT" "$WCX"
+for v in "$SELF_WW" "$WORK/self/self-x.txt"; do
+    case "$v" in "$SELF_WW") lbl="naming ws-w" ;; *) lbl="naming no row" ;; esac
+    run wown "$v" bash "$WORK/hold.sh" "${WCOD[@]}"
+    eq  "windows walk: codex.exe started by a script, $lbl: poll refuses" "$RC" 1
+    has "windows walk: codex.exe started by a script, $lbl: the walk goes on past that script to claude" "$OUT" "$WCX"
+    rm -rf "$SIMWIN/home-6b"; mkdir -p "$SIMWIN/home-6b"
+    run wown "$v" bash "$WORK/fake.sh" codex "$SIMWIN/probe.sh"
+    has "windows walk: 6b, $lbl: the probe's own gate counts claude above codex" "$OUT" "require rc=1 this process $WCX"
+    has "windows walk: 6b, $lbl: its send is refused at the gate" "$OUT" "FAILED -> @$PEER: this process $WCX"
+    has "windows walk: 6b, $lbl: send rc=1" "$OUT" "send rc=1"
+    has "windows walk: 6b, $lbl: neither the send nor comm-context.sh wrote to the empty comm home" "$OUT" "home entries: 0"
+done
+unset SIMWIN
 
 # --- the matrix runner's private copy of the probe row's self file ---------------
 SELF_P2="$WORK/self/testhost__ws-p2.txt"; PRIVD="$WORK/matrix-priv"; mkdir -p "$PRIVD"

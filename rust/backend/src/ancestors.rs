@@ -1,14 +1,20 @@
-// ancestors.rs — `sotd ancestors`: this process's ancestors, parent first, one
-// line each: `<exe file name>\t<full command line>`. Windows only. comm-lib.sh's
-// `_sot_ancestor_chain` reads it where `ps` cannot see a native parent through
-// an MSYS shell, to count how many agents lie between a comm script and its
-// row's capsule. The command line is what tells `node <agent script>` from any
-// other node; one that cannot be read is printed empty. A TAB inside a command
-// line is printed raw (the exe ends at the first TAB); a newline and a return are
-// printed as \x1c and \x1b, never a space.
+// ancestors.rs — `sotd ancestors [--from <pid>]`: the ancestors of process
+// <pid> (default: this one), parent first, one line each:
+// `<pid>\t<exe file name>\t<full command line>`. Windows only. comm-lib.sh's
+// `_sot_ancestor_chain` reads it to count how many agents lie between a comm
+// script and its row's capsule. It reads Cygwin's /proc up to the first MSYS
+// process whose parent is native and passes that process's Windows pid as
+// --from: an MSYS program that execs another is a new Windows process whose
+// Windows parent has exited, so a walk from sotd's own parent would stop at
+// the script's own shell. Each line's pid is what lets the script go on
+// through Cygwin's /proc where this walk stops. The command line is what tells
+// `node <agent script>` from any other node; one that cannot be read is
+// printed empty. A TAB inside a command line is printed raw (the pid and the
+// exe end at the first two TABs); a newline and a return are printed as \x1c
+// and \x1b, never a space.
 //
-// One Toolhelp snapshot, then a walk upward from this process's own parent. The
-// snapshot keeps a parent pid after the parent has exited, and Windows reuses
+// One Toolhelp snapshot, then a walk upward from
+// the start process's parent. The snapshot keeps a parent pid after the parent has exited, and Windows reuses
 // pids, so the walk stops where the chain stops being one, and that place is the
 // top: a pid missing from the snapshot, pid 0 or 4 (System), a process whose
 // record cannot be opened, one created after its child (a reused pid: the real
@@ -62,16 +68,46 @@ fn encode_command_line(text: &str) -> String {
     text.replace('\n', "\u{1c}").replace('\r', "\u{1b}")
 }
 
-/// Runs the subcommand and returns its exit status: 0 when at least one line
-/// was printed and the walk reached the top, 3 when it was truncated, else 1;
-/// 2 off Windows.
-pub fn run() -> i32 {
+/// `--from <pid>`, the process whose ancestors are printed, or `None` for this
+/// one; any other arguments are a usage error.
+fn parse_from(args: &[String]) -> Result<Option<u32>, String> {
+    match args {
+        [] => Ok(None),
+        [flag, pid] if flag == "--from" => pid
+            .parse()
+            .map(Some)
+            .map_err(|_| format!("--from takes a process id, not {pid:?}")),
+        _ => Err("usage: sotd ancestors [--from <pid>]".to_string()),
+    }
+}
+
+/// One printed line: the pid, the exe, then the command line, which alone may
+/// hold a TAB.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn line(pid: u32, exe: &str, cl: &str) -> String {
+    format!("{pid}\t{exe}\t{cl}")
+}
+
+/// Runs the subcommand with the arguments after `ancestors` and returns its
+/// exit status: 0 when the walk reached the top (no line at all when the start
+/// process's parent is already the top), 3 when it was truncated, 1 when the
+/// snapshot or the start process's record cannot be read, 2 for any other
+/// arguments or off Windows.
+pub fn run(args: &[String]) -> i32 {
+    let from = match parse_from(args) {
+        Ok(from) => from,
+        Err(e) => {
+            eprintln!("sotd ancestors: {e}");
+            return 2;
+        }
+    };
     #[cfg(windows)]
     {
-        win::run()
+        win::run(from)
     }
     #[cfg(not(windows))]
     {
+        let _ = from;
         eprintln!("sotd ancestors: Windows only");
         2
     }
@@ -79,7 +115,7 @@ pub fn run() -> i32 {
 
 #[cfg(windows)]
 mod win {
-    use super::{encode_command_line, step, Step};
+    use super::{encode_command_line, line, step, Step};
     use std::collections::HashMap;
     use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, UNICODE_STRING};
@@ -156,11 +192,11 @@ mod win {
         }
     }
 
-    pub fn run() -> i32 {
+    pub fn run(from: Option<u32>) -> i32 {
         let Some(procs) = snapshot() else { return 1 };
-        let me = std::process::id();
-        let Some((mut child_created, _)) = info(me) else { return 1 };
-        let mut pid = procs.get(&me).map(|p| p.0).unwrap_or(0);
+        let start = from.unwrap_or_else(std::process::id);
+        let Some((mut child_created, _)) = info(start) else { return 1 };
+        let Some(mut pid) = procs.get(&start).map(|p| p.0) else { return 1 };
         let mut printed = 0;
         let mut truncated = false;
         loop {
@@ -177,7 +213,7 @@ mod win {
                     child_created = c;
                     let Some((parent, exe)) = entry else { break };
                     let cl = found.and_then(|f| f.1).unwrap_or_default();
-                    println!("{exe}\t{cl}");
+                    println!("{}", line(pid, exe, &cl));
                     printed += 1;
                     pid = *parent;
                 }
@@ -186,10 +222,8 @@ mod win {
         if truncated {
             println!("!truncated");
             3
-        } else if printed > 0 {
-            0
         } else {
-            1
+            0
         }
     }
 }
@@ -235,5 +269,28 @@ mod tests {
         assert_eq!(encode_command_line("a\nb"), "a\u{1c}b");
         assert_eq!(encode_command_line("a\rb"), "a\u{1b}b");
         assert_eq!(encode_command_line("a b"), "a b");
+    }
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn no_argument_starts_at_this_process_and_from_names_the_start() {
+        assert_eq!(parse_from(&args(&[])), Ok(None));
+        assert_eq!(parse_from(&args(&["--from", "4242"])), Ok(Some(4242)));
+    }
+
+    #[test]
+    fn any_other_arguments_are_a_usage_error() {
+        for bad in [&["--from"][..], &["--from", "x"], &["--from", "-1"], &["--from", "1", "2"], &["4242"], &["--to", "1"]] {
+            assert!(parse_from(&args(bad)).is_err(), "{bad:?} parsed");
+        }
+    }
+
+    #[test]
+    fn a_line_is_the_pid_the_exe_and_the_command_line_whose_tabs_stay_raw() {
+        assert_eq!(line(4242, "bash.exe", "bash.exe -c\tx"), "4242\tbash.exe\tbash.exe -c\tx");
+        assert_eq!(line(7, "claude.exe", ""), "7\tclaude.exe\t");
     }
 }
