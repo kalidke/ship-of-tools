@@ -939,12 +939,24 @@ pub fn cgroup_rel(pid: u32) -> String {
 /// A4b: kills a row scope this test created when the test ends, panic or
 /// not. Only [`arm_scope_guard`] builds one.
 #[cfg(target_os = "linux")]
-pub struct ScopeKillGuard(PathBuf);
+pub struct ScopeKillGuard {
+    rel: String,
+    hash: String,
+    /// The caller's own cgroup when the arming gave one; else re-read at drop.
+    own_rel: Option<String>,
+}
 
 #[cfg(target_os = "linux")]
 impl Drop for ScopeKillGuard {
     fn drop(&mut self) {
-        let kill = self.0.join("cgroup.kill");
+        // The aim rule runs again just before the write: the scope's identity
+        // is the one kept at arming, the caller's cgroup is read now.
+        let own = self.own_rel.clone().unwrap_or_else(|| cgroup_rel(std::process::id()));
+        if let Err(e) = row_scope_aim::aim(&self.rel, &own, &self.hash) {
+            eprintln!("ScopeKillGuard: the aim rule refuses {} at drop, nothing written: {e}", self.rel);
+            return;
+        }
+        let kill = Path::new("/sys/fs/cgroup").join(self.rel.trim_start_matches('/')).join("cgroup.kill");
         if kill.exists() {
             let _ = std::fs::write(&kill, "1");
         }
@@ -958,7 +970,9 @@ impl Drop for ScopeKillGuard {
 /// can never aim the guard at a live session.
 #[cfg(target_os = "linux")]
 pub fn arm_scope_guard(rel: &str, state_dir: &Path) -> ScopeKillGuard {
-    arm_scope_guard_against(rel, &cgroup_rel(std::process::id()), state_dir)
+    let mut guard = arm_scope_guard_against(rel, &cgroup_rel(std::process::id()), state_dir);
+    guard.own_rel = None;
+    guard
 }
 
 /// [`arm_scope_guard`] with the caller's own cgroup given, for the aim table.
@@ -968,7 +982,7 @@ pub fn arm_scope_guard_against(rel: &str, own_rel: &str, state_dir: &Path) -> Sc
     if let Err(e) = row_scope_aim::aim(rel, own_rel, &hash) {
         panic!("arm_scope_guard: the production aim rule refuses this target: {e}");
     }
-    ScopeKillGuard(Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/')))
+    ScopeKillGuard { rel: rel.to_string(), hash, own_rel: Some(own_rel.to_string()) }
 }
 
 /// A4b: polls every 100 ms until the scope's `cgroup.events` is gone or
