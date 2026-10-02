@@ -5830,7 +5830,7 @@ pub(crate) async fn file_comm(
                 Err(e) => return Err(crate::comm_inbox::refusal::hosts_toml_unreadable(e)),
             };
             let endpoint = endpoint.map_err(|e| crate::comm_inbox::refusal::hub_did_not_answer("the relay endpoint", &e))?;
-            crate::topology_dial::forward_comm_file(&endpoint, &self_host, fwd, within).map_err(|e| {
+            crate::topology_dial::forward_comm_file(&endpoint, &self_host, fwd, within, crate::shutdown::process()).map_err(|e| {
                 let e = e.strip_prefix(&format!("{endpoint}: ")).unwrap_or(&e);
                 crate::comm_inbox::refusal::hub_did_not_answer(&endpoint, e)
             })
