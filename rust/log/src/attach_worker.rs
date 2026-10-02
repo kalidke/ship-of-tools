@@ -3476,4 +3476,248 @@ mod tests {
         let outcome = worker.join().expect("the worker thread must not panic");
         assert!(matches!(outcome, SteadyOutcome::Shutdown), "Shutdown must end the steady state");
     }
+
+    // -------------------------------------------------------------------
+    // The link-gate lane's required pair: keys typed while a re-attach's
+    // handshake is held are never delivered once it completes. The whole
+    // worker runs against a scripted endpoint; the re-attach's hello
+    // reply is held on a gate the test releases, so no clock decides the
+    // outcome.
+    // -------------------------------------------------------------------
+
+    const GATE_V1: &str = "11111111-1111-1111-1111-111111111111";
+    const GATE_V2: &str = "22222222-2222-2222-2222-222222222222";
+
+    #[derive(Default)]
+    struct GateConnState {
+        out: VecDeque<u8>,
+        closed: bool,
+        held_hello: Option<Vec<u8>>,
+    }
+
+    /// One scripted voyage connection: answers the attach lane in-process.
+    /// The second connection (the re-attach) withholds its hello reply
+    /// until [`GateConn::release`].
+    struct GateConn {
+        gated: bool,
+        state: Mutex<GateConnState>,
+        cv: Condvar,
+        splitter: Mutex<crate::wire::FrameSplitter>,
+        entered: Sender<()>,
+        inputs: Sender<Vec<u8>>,
+    }
+    impl GateConn {
+        fn push(&self, frame: AttachServer) {
+            let bytes = wire::encode_attach_server(&frame).expect("encode");
+            self.state.lock().unwrap().out.extend(bytes);
+            self.cv.notify_all();
+        }
+        fn release(&self) {
+            let held = self.state.lock().unwrap().held_hello.take();
+            if let Some(bytes) = held {
+                self.state.lock().unwrap().out.extend(bytes);
+                self.cv.notify_all();
+            }
+        }
+        fn close(&self) {
+            self.state.lock().unwrap().closed = true;
+            self.cv.notify_all();
+        }
+    }
+    /// A voyage connection, or the supervisor lane (every `Status` answered
+    /// `Ready` on the voyage the test currently names).
+    enum GateClient {
+        Voyage(Arc<GateConn>),
+        Sup(Arc<Mutex<String>>),
+    }
+    impl Client for GateClient {
+        fn write_all(&self, bytes: &[u8]) -> Result<(), crate::transport::TransportError> {
+            let GateClient::Voyage(conn) = self else { return Ok(()) };
+            let (frames, _) = conn.splitter.lock().unwrap().feed(bytes);
+            for f in frames {
+                match f {
+                    DecodedFrame::AttachClient(AttachClient::Hello { proto }) => {
+                        if conn.gated {
+                            let held = wire::encode_attach_server(&AttachServer::HelloOk { proto }).expect("encode");
+                            conn.state.lock().unwrap().held_hello = Some(held);
+                            let _ = conn.entered.send(());
+                        } else {
+                            conn.push(AttachServer::HelloOk { proto });
+                        }
+                    }
+                    DecodedFrame::AttachClient(AttachClient::Attach { .. }) => {
+                        conn.push(AttachServer::CheckpointChunk { last: true, bytes: b"$ ".to_vec() });
+                    }
+                    DecodedFrame::AttachClient(AttachClient::Take { .. }) => conn.push(AttachServer::TakeOk { take_epoch: 1 }),
+                    DecodedFrame::AttachClient(AttachClient::Input { payload, .. }) => {
+                        let _ = conn.inputs.send(payload);
+                        conn.push(AttachServer::InputRecorded);
+                    }
+                    DecodedFrame::AttachClient(AttachClient::Resize { .. }) => conn.push(AttachServer::ResizeOk),
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        fn read(&self, buf: &mut [u8]) -> Result<usize, crate::transport::TransportError> {
+            let conn = match self {
+                GateClient::Voyage(conn) => conn,
+                GateClient::Sup(voyage) => {
+                    let reply = SupervisorReply::StatusOk {
+                        pid: 1,
+                        created: 1,
+                        voyage: Some(voyage.lock().unwrap().clone()),
+                        leg: Some(1),
+                        phase: SupervisorPhase::Ready,
+                    };
+                    let frame = wire::encode_supervisor_reply(&reply).expect("encode");
+                    buf[..frame.len()].copy_from_slice(&frame);
+                    return Ok(frame.len());
+                }
+            };
+            let mut st = conn.state.lock().unwrap();
+            loop {
+                if st.closed {
+                    return Err(crate::transport::TransportError::Cancelled);
+                }
+                if !st.out.is_empty() {
+                    let n = st.out.len().min(buf.len());
+                    for slot in buf.iter_mut().take(n) {
+                        *slot = st.out.pop_front().unwrap();
+                    }
+                    return Ok(n);
+                }
+                st = conn.cv.wait(st).unwrap();
+            }
+        }
+        fn cancel(&self) {
+            if let GateClient::Voyage(conn) = self {
+                conn.close();
+            }
+        }
+    }
+
+    struct GateEndpoint {
+        voyage: Arc<Mutex<String>>,
+        conns: Arc<Mutex<Vec<Arc<GateConn>>>>,
+        entered: Sender<()>,
+        inputs: Sender<Vec<u8>>,
+    }
+    impl Endpoint for GateEndpoint {
+        type Client = GateClient;
+        type Process = TestProcess;
+
+        fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            let mut conns = self.conns.lock().unwrap();
+            let conn = Arc::new(GateConn {
+                gated: !conns.is_empty(),
+                state: Mutex::new(GateConnState::default()),
+                cv: Condvar::new(),
+                splitter: Mutex::new(crate::wire::FrameSplitter::new()),
+                entered: self.entered.clone(),
+                inputs: self.inputs.clone(),
+            });
+            conns.push(Arc::clone(&conn));
+            Ok(GateClient::Voyage(conn))
+        }
+        fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            Ok(GateClient::Sup(Arc::clone(&self.voyage)))
+        }
+        fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+            ChallengeOutcome::Proven(TestProcess)
+        }
+        fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
+            PeerAuthOutcome::Authenticated(crate::challenge::PeerAuthenticated { pid: 7, created: 7 })
+        }
+    }
+
+    /// Drives the full worker through attach, a dropped lane and a re-attach
+    /// whose hello reply is held on a gate; types four keys while it is
+    /// held, then releases it. Once the pane reports attached again, a
+    /// current key is sent; no write up to and including it may carry a
+    /// key typed during the handshake.
+    fn keys_typed_during_a_held_handshake_are_not_delivered(change_voyage: bool) {
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (inputs_tx, inputs_rx) = mpsc::channel::<Vec<u8>>();
+        let (events_tx, events_rx) = mpsc::channel::<WorkerEvent>();
+        let voyage = Arc::new(Mutex::new(GATE_V1.to_string()));
+        let conns: Arc<Mutex<Vec<Arc<GateConn>>>> = Arc::new(Mutex::new(Vec::new()));
+        let endpoint = GateEndpoint { voyage: Arc::clone(&voyage), conns: Arc::clone(&conns), entered: entered_tx, inputs: inputs_tx };
+        let events_tx = Mutex::new(events_tx);
+        let worker = AttachWorker::<GateEndpoint>::spawn(
+            endpoint,
+            "row".to_string(),
+            80,
+            24,
+            "controller-1".to_string(),
+            "handle".to_string(),
+            None,
+            false,
+            64 * 1024,
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicU64::new(0)),
+            move |e| {
+                let _ = events_tx.lock().unwrap().send(e);
+            },
+        )
+        .expect("spawn the worker");
+        // Bounds only: a failure to progress must fail the test, never decide it.
+        let bound = Duration::from_secs(30);
+        let mut attached = 0usize;
+        let mut wait_attached = |want: usize| {
+            while attached < want {
+                match events_rx.recv_timeout(bound).expect("the worker never reported attached") {
+                    WorkerEvent::Status(s) if s == "attached" => attached += 1,
+                    WorkerEvent::Terminal(t) => panic!("the worker went terminal: {t}"),
+                    _ => {}
+                }
+            }
+        };
+
+        wait_attached(1);
+        if change_voyage {
+            *voyage.lock().unwrap() = GATE_V2.to_string();
+        }
+        let first = Arc::clone(&conns.lock().unwrap()[0]);
+        first.close();
+        entered_rx.recv_timeout(bound).expect("the re-attach handshake was never entered");
+        for i in 0..4 {
+            worker.send_input(format!("stale-{i}").into_bytes()).expect("ingress");
+        }
+        let second = Arc::clone(&conns.lock().unwrap()[1]);
+        second.release();
+        wait_attached(2);
+
+        worker.send_input(b"current".to_vec()).expect("ingress");
+        let mut written: Vec<Vec<u8>> = Vec::new();
+        loop {
+            let payload = inputs_rx.recv_timeout(bound).expect("the current key never reached the capsule");
+            let is_current = payload.windows(7).any(|w| w == b"current");
+            written.push(payload);
+            if is_current {
+                break;
+            }
+        }
+        let delivered: Vec<String> = written.iter().map(|p| String::from_utf8_lossy(p).into_owned()).collect();
+        assert!(
+            delivered.iter().all(|p| !p.contains("stale-")),
+            "keys typed while the pane re-attached were delivered: {delivered:?}"
+        );
+
+        for c in conns.lock().unwrap().iter() {
+            c.close();
+        }
+        drop(worker);
+    }
+
+    #[test]
+    fn keys_typed_while_a_re_attach_handshake_is_held_are_never_delivered() {
+        keys_typed_during_a_held_handshake_are_not_delivered(false);
+    }
+
+    #[test]
+    fn keys_typed_while_a_re_attach_handshake_is_held_are_never_delivered_into_a_restarted_voyage() {
+        keys_typed_during_a_held_handshake_are_not_delivered(true);
+    }
 }
