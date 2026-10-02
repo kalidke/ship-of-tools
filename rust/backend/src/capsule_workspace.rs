@@ -1431,9 +1431,10 @@ pub(crate) mod row_scope {
     use crate::row_scope_aim::{aim, prefix};
     use sot_log::state_dir::state_dir_hash;
     use std::collections::HashMap;
+    use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, OnceLock};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     pub(crate) const CGROUP_ROOT: &str = "/sys/fs/cgroup";
     /// The cgroup fence's own `QUIESCENCE_TIMEOUT` (`sot_log::claude`).
@@ -1464,16 +1465,113 @@ pub(crate) mod row_scope {
         capture_from(root, state_dir, &text)
     }
 
-    pub(crate) fn capture_from(_root: &Path, _state_dir: &Path, _proc_cgroup: &str) -> Option<String> {
-        None
+    /// The `0::` path of `proc_cgroup` when its leaf is a scope of this
+    /// row and `cgroup.kill` is there to end it; `None` ends the row
+    /// exactly as before this module (an unscoped or older row, a
+    /// frontend-spawned drawer, a kernel before 5.14).
+    pub(crate) fn capture_from(root: &Path, state_dir: &Path, proc_cgroup: &str) -> Option<String> {
+        let rel = rel_of(proc_cgroup)?;
+        let leaf = rel.rsplit('/').next().unwrap_or("");
+        if !(leaf.starts_with(&prefix(&state_dir_hash(state_dir))) && leaf.ends_with(".scope")) {
+            return None;
+        }
+        match std::fs::metadata(at(root, &rel).join("cgroup.kill")) {
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                tracing::warn!(
+                    scope = %rel,
+                    "capsule workspace: no cgroup.kill (Linux before 5.14); a child that left the agent's \
+                     process group survives this row's end"
+                );
+                None
+            }
+            _ => Some(rel),
+        }
     }
 
-    pub(crate) fn end(_root: &Path, _own_rel: &str, _state_dir: &Path, _rel: &str, _bound: Duration) -> Result<(), String> {
-        Ok(())
+    /// Kill `rel` and every sibling scope of this row (an adopted leg's
+    /// older scope), then wait up to `bound` for each to be empty or gone.
+    pub(crate) fn end(root: &Path, own_rel: &str, state_dir: &Path, rel: &str, bound: Duration) -> Result<(), String> {
+        let hash = state_dir_hash(state_dir);
+        let parent = &rel[..rel.rfind('/').unwrap_or(0)];
+        let dir = at(root, parent);
+        let entries = std::fs::read_dir(&dir).map_err(|e| format!("list {dir:?}: {e}"))?;
+        let mut scopes = Vec::new();
+        for entry in entries {
+            let name = entry.map_err(|e| format!("list {dir:?}: {e}"))?.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&prefix(&hash)) && name.ends_with(".scope") {
+                scopes.push(format!("{parent}/{name}"));
+            }
+        }
+        end_set(root, own_rel, state_dir, &hash, scopes, bound)
     }
 
-    pub(crate) fn recheck(_root: &Path, _own_rel: &str, _state_dir: &Path, _bound: Duration) -> Result<(), String> {
-        Ok(())
+    /// Re-end the scopes an earlier end of this row left populated.
+    pub(crate) fn recheck(root: &Path, own_rel: &str, state_dir: &Path, bound: Duration) -> Result<(), String> {
+        let scopes = match unemptied().get(state_dir) {
+            Some(scopes) => scopes.clone(),
+            None => return Ok(()),
+        };
+        end_set(root, own_rel, state_dir, &state_dir_hash(state_dir), scopes, bound)
+    }
+
+    fn end_set(
+        root: &Path,
+        own_rel: &str,
+        state_dir: &Path,
+        hash: &str,
+        scopes: Vec<String>,
+        bound: Duration,
+    ) -> Result<(), String> {
+        for scope in &scopes {
+            aim(scope, own_rel, hash)?;
+            match std::fs::write(at(root, scope).join("cgroup.kill"), "1") {
+                Ok(()) => {}
+                Err(e) if gone(&e) => {}
+                Err(e) => return Err(format!("kill {scope}: {e}")),
+            }
+        }
+        let deadline = Instant::now() + bound;
+        loop {
+            let mut left = Vec::new();
+            for scope in &scopes {
+                if populated(root, scope)? {
+                    left.push(scope.clone());
+                }
+            }
+            if left.is_empty() {
+                unemptied().remove(state_dir);
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                unemptied().insert(state_dir.to_path_buf(), left.clone());
+                return Err(format!("the row's scope did not empty within {bound:?}: {left:?}"));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Only an absent `cgroup.events` (the scope is gone) or a line
+    /// `populated 0` is empty; any other read error is an `Err`.
+    fn populated(root: &Path, rel: &str) -> Result<bool, String> {
+        match std::fs::read_to_string(at(root, rel).join("cgroup.events")) {
+            Ok(text) => Ok(!text.lines().any(|l| l.trim() == "populated 0")),
+            Err(e) if gone(&e) => Ok(false),
+            Err(e) => Err(format!("read {rel}/cgroup.events: {e}")),
+        }
+    }
+
+    /// NotFound or `ENODEV`: the cgroup was removed.
+    fn gone(e: &std::io::Error) -> bool {
+        e.kind() == ErrorKind::NotFound || e.raw_os_error() == Some(libc::ENODEV)
+    }
+
+    fn at(root: &Path, rel: &str) -> PathBuf {
+        root.join(rel.trim_start_matches('/'))
+    }
+
+    fn unemptied() -> std::sync::MutexGuard<'static, HashMap<PathBuf, Vec<String>>> {
+        UNEMPTIED.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner())
     }
 
     #[cfg(test)]
@@ -1845,9 +1943,11 @@ mod runtime {
                     .arg("--quiet")
                     .arg("--collect")
                     .arg("--description")
-                    .arg(format!("sot-capsule {workspace_id}"))
-                    .arg("--")
-                    .arg(sot_capsule_exe);
+                    .arg(format!("sot-capsule {workspace_id}"));
+                // A4b: the unit name is the row's scope record.
+                #[cfg(target_os = "linux")]
+                c.arg("--unit").arg(super::row_scope::unit_name(state_dir));
+                c.arg("--").arg(sot_capsule_exe);
                 c
             } else {
                 Command::new(sot_capsule_exe)
@@ -2233,8 +2333,29 @@ mod runtime {
         use sot_log::supervisor_client::EndRunOutcome as O;
         use sot_log::wire::SupervisorPhase;
 
-        let status = match sot_log::supervisor_client::query_status(state_dir) {
-            Ok((status, _process)) => status,
+        // A4b: a scope an earlier end of this row left populated is
+        // re-ended before anything else, so a retry can never count the
+        // row ended while it still holds processes.
+        #[cfg(target_os = "linux")]
+        let (root, own) = (Path::new(super::row_scope::CGROUP_ROOT), super::row_scope::own_rel().unwrap_or_default());
+        #[cfg(target_os = "linux")]
+        if let Err(d) = super::row_scope::recheck(root, &own, state_dir, super::row_scope::SCOPE_EMPTY_BOUND) {
+            return Ok(R::NotEnded(d));
+        }
+
+        let (status, scope) = match sot_log::supervisor_client::query_status(state_dir) {
+            Ok((status, process)) => {
+                // A4b: the challenged supervisor's own scope, captured
+                // before the end that makes it exit.
+                #[cfg(target_os = "linux")]
+                let scope = super::row_scope::capture(root, state_dir, process.pid());
+                #[cfg(not(target_os = "linux"))]
+                let scope: Option<String> = {
+                    let _ = process;
+                    None
+                };
+                (status, scope)
+            }
             Err(e) => {
                 // Recoverability (ADR 0043 decision 33): a row is
                 // removed only after a confirmed end or a PROVEN absence
@@ -2330,7 +2451,11 @@ mod runtime {
                 // `supervisor.rs`'s `handle_command`). Skip the doomed
                 // round trip; retry the stop instead of fabricating a
                 // verified outcome this call never actually observed.
-                stop_and_warn(state_dir, "already ended (EndedNoRespawn) before this call");
+                if let Err(d) =
+                    stop_and_end_scope(state_dir, "already ended (EndedNoRespawn) before this call", scope.as_deref())
+                {
+                    return Ok(R::NotEnded(d));
+                }
                 return Ok(R::AlreadyEnded);
             }
             SupervisorPhase::Terminal => {
@@ -2344,7 +2469,13 @@ mod runtime {
                 // This is therefore NOT a confirmed end on its own — the
                 // SAME independent [`absence_proof`] the unreachable arm
                 // above uses decides whether the row is actually Removable.
-                stop_and_warn(state_dir, "the authority was terminal before this call reached it");
+                if let Err(d) = stop_and_end_scope(
+                    state_dir,
+                    "the authority was terminal before this call reached it",
+                    scope.as_deref(),
+                ) {
+                    return Ok(R::NotEnded(d));
+                }
                 return match absence_proof(state_dir) {
                     Ok(true) => Ok(R::Terminal),
                     Ok(false) => {
@@ -2368,14 +2499,14 @@ mod runtime {
         let outcome = sot_log::supervisor_client::end_run(state_dir, &voyage, reason)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         Ok(match outcome {
-            O::RecordVerified => {
-                stop_and_warn(state_dir, "end_run confirmed verified");
-                R::RecordVerified
-            }
-            O::RecordClosed => {
-                stop_and_warn(state_dir, "end_run confirmed closed");
-                R::RecordClosed
-            }
+            O::RecordVerified => match stop_and_end_scope(state_dir, "end_run confirmed verified", scope.as_deref()) {
+                Ok(()) => R::RecordVerified,
+                Err(d) => R::NotEnded(d),
+            },
+            O::RecordClosed => match stop_and_end_scope(state_dir, "end_run confirmed closed", scope.as_deref()) {
+                Ok(()) => R::RecordClosed,
+                Err(d) => R::NotEnded(d),
+            },
             O::Failed(detail) => R::NotEnded(format!("end_run failed: {detail}")),
             O::Refused(detail) => R::NotEnded(format!("end_run refused: {detail}")),
             O::OutcomeUnknown => R::NotEnded(
@@ -2545,6 +2676,23 @@ mod runtime {
                 "capsule workspace: stop after end_run failed (resident supervisor leaked)"
             );
         }
+    }
+
+    /// [`stop_and_warn`], then (Linux, A4b) end the row's own scope that
+    /// [`end_run`] captured, so a descendant that left the agent's process
+    /// group ends with the row. The kill comes after the stop, so it only
+    /// finds what the protocol could not reach. `Err` keeps the row not
+    /// ended.
+    fn stop_and_end_scope(state_dir: &Path, why: &'static str, scope: Option<&str>) -> Result<(), String> {
+        stop_and_warn(state_dir, why);
+        #[cfg(target_os = "linux")]
+        if let Some(rel) = scope {
+            use super::row_scope::{end, own_rel, CGROUP_ROOT, SCOPE_EMPTY_BOUND};
+            return end(Path::new(CGROUP_ROOT), &own_rel().unwrap_or_default(), state_dir, rel, SCOPE_EMPTY_BOUND);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = scope;
+        Ok(())
     }
 
     /// Spawn a capsule's supervisor authority AND hand it to a watchdog

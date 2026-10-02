@@ -3166,8 +3166,8 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
         .unwrap_or_else(|e| panic!("read /proc/{pid}/cgroup: {e}"));
     let last_segment = cgroup.trim().rsplit('/').next().unwrap_or("");
     assert!(
-        last_segment.starts_with("run-") && last_segment.ends_with(".scope"),
-        "supervisor's own cgroup does not end in a run-*.scope (still inside the daemon's own unit?): {cgroup:?}"
+        last_segment.starts_with("sot-row-") && last_segment.ends_with(".scope"),
+        "supervisor's own cgroup does not end in a sot-row-*.scope (still inside the daemon's own unit?): {cgroup:?}"
     );
     assert!(
         !cgroup.contains(&unit),
